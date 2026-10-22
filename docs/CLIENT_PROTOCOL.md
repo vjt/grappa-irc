@@ -772,7 +772,7 @@ The keys themselves never come back out of grappa.
 
 Answers are rate-limited, so a stranger can only slowly drain your bundle,
 and cannot use it to starve your connection: per nick (case-folded), one
-answer per 30 s, and a one-time key at most once a minute (else the fallback
+answer per 15 s, and a one-time key at most once a minute (else the fallback
 key); per connection, at most 30 one-time keys an hour (someone cycling
 nicks can still take those 30, so keep the bundle topped up), and answers
 spend at most 22 s of fake-lag bank in any 60 s. A request past a limit, or with no bundle, goes unanswered; the

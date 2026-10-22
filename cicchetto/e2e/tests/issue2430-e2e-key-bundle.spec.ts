@@ -47,7 +47,7 @@ function ed25519Verifies(publicKey: string, message: string, signature: string):
 }
 
 // A fresh peer asks `target` for keys and gets grappa's answer from the
-// bundle. One nick per ask: grappa answers a nick once per 30 s. The suffix
+// bundle. One nick per ask: grappa answers a nick once per 15 s. The suffix
 // keeps parallel repeats of this spec off each other's nick.
 async function askForKeys(label: string, target: string): Promise<Keys> {
   const peer = await IrcPeer.connect({ nick: `${label}-${randomBytes(2).toString("hex")}` });
