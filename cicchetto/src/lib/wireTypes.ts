@@ -606,6 +606,55 @@ export type E2eKeysWireStatus = {
   fallback: boolean;
 };
 
+// === Grappa.E2ePairing.Wire ===
+
+export const E2E_PAIRING_WIRE_SIDE = ["creator", "joiner"] as const;
+export type E2ePairingWireSide = (typeof E2E_PAIRING_WIRE_SIDE)[number];
+
+export const E2E_PAIRING_WIRE_CLOSE_REASON = ["closed", "expired", "replaced"] as const;
+export type E2ePairingWireCloseReason = (typeof E2E_PAIRING_WIRE_CLOSE_REASON)[number];
+
+export type E2ePairingWireRendezvous = {
+  id: string;
+  role: E2ePairingWireSide;
+  expires_at: string;
+};
+
+export type E2ePairingWireMessage = {
+  seq: number;
+  from: E2ePairingWireSide;
+  payload: string;
+};
+
+export type E2ePairingWireRendezvousResponse = {
+  rendezvous: E2ePairingWireRendezvous;
+};
+
+export type E2ePairingWireMessageResponse = {
+  message: E2ePairingWireMessage;
+};
+
+export type E2ePairingWireMessagesResponse = {
+  messages: E2ePairingWireMessage[];
+};
+
+export type E2ePairingWireE2ePairingMessagePayload = {
+  kind: "e2e_pairing_message";
+  rendezvous_id: string;
+  seq: number;
+  from: E2ePairingWireSide;
+};
+
+export type E2ePairingWireE2ePairingClosedPayload = {
+  kind: "e2e_pairing_closed";
+  rendezvous_id: string;
+  reason: E2ePairingWireCloseReason;
+};
+
+export type WireE2ePairingEvent =
+  | E2ePairingWireE2ePairingMessagePayload
+  | E2ePairingWireE2ePairingClosedPayload;
+
 // === Grappa.LiveIntrospection.AdminWire ===
 
 export type LiveIntrospectionAdminWireLiveStateJson = {
@@ -1845,6 +1894,11 @@ export const ERROR_TOKENS_REST_ERROR_TOKEN = [
   "last_admin",
   "share_token_expired",
   "share_token_consumed",
+  "pairing_already_joined",
+  "pairing_own_rendezvous",
+  "pairing_not_joined",
+  "pairing_not_a_party",
+  "pairing_full",
   "not_invited",
   "not_held",
   "validation_failed",

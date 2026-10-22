@@ -347,6 +347,17 @@ defmodule GrappaWeb.Router do
     # independently of where the route is declared.
     post "/me/share-token", ShareTokenController, :mint
 
+    # issue 2430 X1 — the blind pairing relay. In THIS block for the share
+    # link's reason (#1353): what a pairing yields is one more device of
+    # the account's E2E identity, which is credential management, so a
+    # per-client token may not start or join one. Subject-wide, not under
+    # `/networks/:id`: one pairing covers every network.
+    post "/e2e/pairings", E2ePairingController, :create
+    post "/e2e/pairings/:id/join", E2ePairingController, :join
+    post "/e2e/pairings/:id/messages", E2ePairingController, :post_message
+    get "/e2e/pairings/:id/messages", E2ePairingController, :messages
+    delete "/e2e/pairings/:id", E2ePairingController, :delete
+
     # issue 2219 — DETACH a network from the caller's own session: the
     # inverse `POST /session/networks` never had. Parks + quits the
     # network, then marks the credential detached; everything the subject

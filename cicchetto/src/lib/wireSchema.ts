@@ -15,6 +15,8 @@ import {
   ADMIN_EVENTS_WIRE_LOGIN_THROTTLE_SCOPE,
   ADMISSION_FLOW,
   CHANNEL_DIRECTORY_STATUS,
+  E2E_PAIRING_WIRE_CLOSE_REASON,
+  E2E_PAIRING_WIRE_SIDE,
   ERROR_TOKENS_SHARED_ERROR_TOKEN,
   IRCAUTH_FSMAUTH_METHOD,
   IRCIDENTIFIER_CASEMAPPING,
@@ -532,6 +534,50 @@ export const S_CicWireBundleHashPayload = {
 
 // Grappa.E2eKeys.Wire.status/0
 export const S_E2eKeysWireStatus = { o: { one_time_keys: "i", fallback: "b" } } as const;
+
+// Grappa.E2ePairing.Wire.close_reason/0
+export const S_E2ePairingWireCloseReason = { e: [...E2E_PAIRING_WIRE_CLOSE_REASON] } as const;
+
+// Grappa.E2ePairing.Wire.e2e_pairing_closed_payload/0
+export const S_E2ePairingWireE2ePairingClosedPayload = {
+  o: { kind: { l: "e2e_pairing_closed" }, rendezvous_id: "s", reason: S_E2ePairingWireCloseReason },
+} as const;
+
+// Grappa.E2ePairing.Wire.side/0
+export const S_E2ePairingWireSide = { e: [...E2E_PAIRING_WIRE_SIDE] } as const;
+
+// Grappa.E2ePairing.Wire.e2e_pairing_message_payload/0
+export const S_E2ePairingWireE2ePairingMessagePayload = {
+  o: {
+    kind: { l: "e2e_pairing_message" },
+    rendezvous_id: "s",
+    seq: "i",
+    from: S_E2ePairingWireSide,
+  },
+} as const;
+
+// Grappa.E2ePairing.Wire.message/0
+export const S_E2ePairingWireMessage = {
+  o: { seq: "i", from: S_E2ePairingWireSide, payload: "s" },
+} as const;
+
+// Grappa.E2ePairing.Wire.message_response/0
+export const S_E2ePairingWireMessageResponse = { o: { message: S_E2ePairingWireMessage } } as const;
+
+// Grappa.E2ePairing.Wire.messages_response/0
+export const S_E2ePairingWireMessagesResponse = {
+  o: { messages: { a: S_E2ePairingWireMessage } },
+} as const;
+
+// Grappa.E2ePairing.Wire.rendezvous/0
+export const S_E2ePairingWireRendezvous = {
+  o: { id: "s", role: S_E2ePairingWireSide, expires_at: "s" },
+} as const;
+
+// Grappa.E2ePairing.Wire.rendezvous_response/0
+export const S_E2ePairingWireRendezvousResponse = {
+  o: { rendezvous: S_E2ePairingWireRendezvous },
+} as const;
 
 // Grappa.IRC.AuthFSM.auth_method/0
 export const S_IRCAuthFSMAuthMethod = { e: [...IRCAUTH_FSMAUTH_METHOD] } as const;
@@ -1811,6 +1857,11 @@ export const S_ErrorTokensRestErrorToken = {
     { l: "last_admin" },
     { l: "share_token_expired" },
     { l: "share_token_consumed" },
+    { l: "pairing_already_joined" },
+    { l: "pairing_own_rendezvous" },
+    { l: "pairing_not_joined" },
+    { l: "pairing_not_a_party" },
+    { l: "pairing_full" },
     { l: "not_invited" },
     { l: "not_held" },
     { l: "validation_failed" },

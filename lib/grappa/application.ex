@@ -10,6 +10,8 @@ defmodule Grappa.Application do
       Grappa.AdminOverview,
       Grappa.Bootstrap,
       Grappa.Cic.Bundle,
+      # issue 2430 X1 — supervises the pairing relay.
+      Grappa.E2ePairing,
       Grappa.Health,
       Grappa.HttpHosts,
       Grappa.Net.PtrCache,
@@ -364,6 +366,12 @@ defmodule Grappa.Application do
         # #442 — one-shot WebAuthn ceremonies. Ephemeral by design: a
         # restart invalidates pending challenges but never credentials.
         Grappa.Accounts.WebAuthnChallengeStore,
+        # issue 2430 X1 — the blind pairing relay: rendezvous between two
+        # devices of one account, in memory, gone in 300 s. Before Endpoint
+        # so its REST door never races a missing process; no upstream deps
+        # beyond PubSub (above) and TokenBucket (below, reached only on a
+        # call, never at start).
+        Grappa.E2ePairing,
         # #340 — per-(subject, network) inbound message-send token bucket.
         # ETS-backed singleton, sibling of DailyQuota / FailureWindow: must
         # exist before Endpoint so MessagesController.create's send throttle

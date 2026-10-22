@@ -53,13 +53,15 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v46 -> v47 (issue 2430): `network` on `isupport_changed`,
- * the 005 `NETWORK=` value or null. A terminal answers no order challenge
- * and reads no field it does not know, so nothing it reads changed.
+ * Last read, v47 -> v48 (issue 2430, X1): the pairing relay, the
+ * `/e2e/pairings` REST doors and the user-topic `e2e_pairing_message` /
+ * `e2e_pairing_closed`. A terminal holds no E2E identity to pair a device
+ * into, and wire_narrow drops a kind it does not know, so nothing it reads
+ * changed.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 47
+#define WIRE_PROTOCOL_VERSION 48
 
 #include <stdbool.h>
 #include <stddef.h>

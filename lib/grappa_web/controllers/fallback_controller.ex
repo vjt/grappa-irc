@@ -46,6 +46,11 @@ defmodule GrappaWeb.FallbackController do
            | :not_found
            | :no_session
            | :not_invited
+           | :pairing_already_joined
+           | :pairing_own_rendezvous
+           | :pairing_not_a_party
+           | :pairing_not_joined
+           | :pairing_full
            | :not_held
            | :not_connected
            | :invalid_credentials
@@ -448,6 +453,46 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:not_found)
     |> json(%{error: "not_found"})
+  end
+
+  # issue 2430 X1 — the pairing relay (`Grappa.E2ePairing`). A second
+  # device joining a rendezvous somebody already joined, or the creating
+  # device joining its own: 409, each its own token, because the user must
+  # be TOLD the code is used (a joiner that heard nothing would wait out
+  # the five minutes). The creator posting before anyone joined is 409 too:
+  # the joiner speaks first.
+  def call(conn, {:error, :pairing_already_joined}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "pairing_already_joined"})
+  end
+
+  def call(conn, {:error, :pairing_own_rendezvous}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "pairing_own_rendezvous"})
+  end
+
+  def call(conn, {:error, :pairing_not_joined}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "pairing_not_joined"})
+  end
+
+  # A third device of the same account: it found the rendezvous (same
+  # subject) but holds neither side, so 403 rather than 404.
+  def call(conn, {:error, :pairing_not_a_party}) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{error: "pairing_not_a_party"})
+  end
+
+  # The rendezvous's byte or message budget is spent. 413: the payload
+  # cannot be taken however often it is retried.
+  def call(conn, {:error, :pairing_full}) do
+    conn
+    |> put_status(:request_entity_too_large)
+    |> json(%{error: "pairing_full"})
   end
 
   # #976 — declining something that is not an invite. Distinct token from
