@@ -1125,6 +1125,7 @@ export const S_SessionWireIsupportChangedPayload = {
     nicklen: { u: ["i", "z"] },
     channellen: { u: ["i", "z"] },
     topiclen: { u: ["i", "z"] },
+    network: { u: ["s", "z"] },
     frame_budget_base: "i",
   },
 } as const;

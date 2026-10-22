@@ -193,6 +193,7 @@ defmodule Grappa.Session.Wire do
           nicklen: integer() | nil,
           channellen: integer() | nil,
           topiclen: integer() | nil,
+          network: String.t() | nil,
           frame_budget_base: integer()
         }
 
@@ -1099,6 +1100,10 @@ defmodule Grappa.Session.Wire do
   network whose advertised order disagrees — which is every network richer
   than the one grappa runs on.
 
+  `network` (issue 2430) is the network's own name, `NETWORK=` verbatim, or
+  `nil` when it advertised none: what a bot's order challenge names, and
+  what the client must match exactly before it answers one.
+
   What does NOT cross: `ISupport.raw/1`, the verbatim token archive. That
   is a Phase 6 listener-facade input; a bag of IRC tokens on this wire
   would be IRC protocol re-entering the web client through the window
@@ -1123,6 +1128,7 @@ defmodule Grappa.Session.Wire do
       nicklen: ISupport.nicklen(isupport),
       channellen: ISupport.channellen(isupport),
       topiclen: ISupport.topiclen(isupport),
+      network: ISupport.network(isupport),
       frame_budget_base: LineSplit.frame_budget_base(linelen)
     }
   end

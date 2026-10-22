@@ -177,6 +177,7 @@ describe("WireChannelEvent canonical union (H3)", () => {
         channellen: 200,
         topiclen: 307,
         frame_budget_base: 393,
+        network: "Azzurra",
       },
       expectedKind: "isupport_changed",
     },

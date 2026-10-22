@@ -39,6 +39,7 @@ const WIRE_PAYLOAD = {
   channellen: 200,
   topiclen: 307,
   frame_budget_base: 393,
+  network: "AzzurraNet",
 };
 
 describe("isupport store", () => {
@@ -86,6 +87,7 @@ describe("isupport store", () => {
       channellen: 200,
       topiclen: 307,
       frameBudgetBase: 393,
+      network: "AzzurraNet",
     };
     seedIsupport(7, entry);
     expect(isupportByNetwork()[7]).toEqual(entry);
@@ -136,6 +138,13 @@ describe("isupport widening (#1255)", () => {
     // below feeds `normalizeNick`/`nickEquals`.
     const entry = isupportEntryFromWire({ ...WIRE_PAYLOAD, casemapping: "rfc1459" });
     expect(entry.casemapping).toBe("rfc1459");
+  });
+
+  // issue 2430 — what an order challenge is matched against, exactly.
+  it("isupportEntryFromWire carries the network's own name, and its absence as null", () => {
+    expect(isupportEntryFromWire(WIRE_PAYLOAD).network).toBe("AzzurraNet");
+    expect(isupportEntryFromWire({ ...WIRE_PAYLOAD, network: null }).network).toBeNull();
+    expect(DEFAULT_ISUPPORT.network).toBeNull();
   });
 
   it("carries an absent length limit as null, never as a guess", () => {
@@ -203,6 +212,15 @@ describe("isupport → nick fold composition (#1861)", () => {
     ...WIRE_PAYLOAD,
     network_id: networkId,
     casemapping,
+  });
+
+  // issue 2430 — a pre-47 server sends no `network`: the push still seeds
+  // the table, and the name reads as absent (order challenges fail closed).
+  it("narrows the network's name, and an absent or empty one to null", () => {
+    expect(narrowIsupportChanged(rawWire(54, "ascii"))?.network).toBe("AzzurraNet");
+    const { network: _, ...pre47 } = rawWire(55, "ascii");
+    expect(narrowIsupportChanged(pre47)?.network).toBeNull();
+    expect(narrowIsupportChanged({ ...rawWire(56, "ascii"), network: "" })?.network).toBeNull();
   });
 
   it("an rfc1459 005 makes the two spellings of one nick compare EQUAL", () => {

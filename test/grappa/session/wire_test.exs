@@ -148,13 +148,15 @@ defmodule Grappa.Session.WireTest do
             "MAXLIST=beI:100",
             "NICKLEN=30",
             "CHANNELLEN=200",
-            "TOPICLEN=307"
+            "TOPICLEN=307",
+            "NETWORK=AzzurraNet"
           ],
           ISupport.default()
         )
 
       payload = Wire.isupport_changed(7, isupport, 512)
 
+      assert payload.network == "AzzurraNet"
       assert payload.chantypes == ["#", "&"]
       assert payload.casemapping == :rfc1459
       assert payload.maxlist == %{"b" => 100, "e" => 100, "I" => 100}
@@ -169,6 +171,7 @@ defmodule Grappa.Session.WireTest do
       # caps — `nil` is "do not enforce", not "zero".
       payload = Wire.isupport_changed(7, ISupport.default(), 512)
 
+      assert payload.network == nil
       assert payload.chantypes == ISupport.default_chantypes()
       assert payload.casemapping == ISupport.default_casemapping()
       assert payload.maxlist == %{}
@@ -199,6 +202,7 @@ defmodule Grappa.Session.WireTest do
       assert payload.chantypes == ISupport.default_chantypes()
       assert payload.maxlist == %{}
       assert payload.nicklen == nil
+      assert payload.network == nil
       assert {:ok, _} = Jason.encode(payload)
     end
 
@@ -216,7 +220,12 @@ defmodule Grappa.Session.WireTest do
       payload = Wire.isupport_changed(7, isupport, 512)
 
       refute Map.has_key?(payload, :raw)
-      refute payload |> Jason.encode!() |> String.contains?("Azzurra")
+      # NETWORK crosses as the typed `network` fact (issue 2430); the tokens
+      # with no typed field do not cross at all.
+      encoded = Jason.encode!(payload)
+      refute encoded =~ "TARGMAX"
+      refute encoded =~ "PRIVMSG:4"
+      refute encoded =~ "SAFELIST"
     end
 
     # #1108 — the builder takes LINELEN and publishes the BUDGET, and the

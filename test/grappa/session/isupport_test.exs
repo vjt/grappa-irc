@@ -897,6 +897,35 @@ defmodule Grappa.Session.ISupportTest do
     end
   end
 
+  # issue 2430 — the network's own name, as a bot's order challenge carries
+  # it: the client compares it EXACTLY, so it is the advertised value or
+  # nothing, never a guess.
+  describe "network/1 (issue 2430)" do
+    test "is the advertised NETWORK= value, verbatim" do
+      isupport = ISupport.merge_isupport(["grappa-test", "NETWORK=AzzurraNet"], ISupport.default())
+      assert ISupport.network(isupport) == "AzzurraNet"
+    end
+
+    test "is nil before a 005, and when the network names itself with nothing" do
+      assert ISupport.network(ISupport.default()) == nil
+
+      for token <- ["NETWORK=", "NETWORK"] do
+        isupport = ISupport.merge_isupport(["grappa-test", token], ISupport.default())
+        assert ISupport.network(isupport) == nil, token
+      end
+    end
+
+    test "-NETWORK takes the name back" do
+      seeded = ISupport.merge_isupport(["grappa-test", "NETWORK=Azzurra"], ISupport.default())
+      revoked = ISupport.merge_isupport(["grappa-test", "-NETWORK"], seeded)
+      assert ISupport.network(revoked) == nil
+    end
+
+    test "is nil on a table predating the raw archive" do
+      assert ISupport.network(Map.drop(ISupport.default(), [:raw])) == nil
+    end
+  end
+
   describe "presence_mechanism/1 (#247)" do
     test "default/0 advertises no presence mechanism (:none pre-005)" do
       assert ISupport.presence_mechanism(ISupport.default()) == :none

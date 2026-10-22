@@ -333,7 +333,13 @@ let _socket: Socket | null = null;
 // answer deadline), its 422 `too_late`, and the user-topic
 // `e2e_send_dropped` push. Nothing here sends `expires_at` yet and the
 // push is only validated, so `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 46;
+//
+// 47 (issue 2430) — `network` on `isupport_changed`, the 005 `NETWORK=`
+// value or null: what an order challenge names, matched exactly before
+// cicchetto answers one. A pre-47 server never sends it, and an order
+// challenge from a bot there goes unanswered (fail closed), so
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 47;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

@@ -84,6 +84,11 @@ export type IsupportEntry = {
   // has no honest default, because it is LINELEN minus the #246 worst-case
   // relay reserve and a guess is just a wrong number to warn from.
   frameBudgetBase: number | null;
+  // issue 2430 — the network's own name, its 005 `NETWORK=` verbatim, `null`
+  // when it advertised none. An order challenge names the network by it,
+  // and cicchetto answers one only on an exact match (`e2e/orders.ts`), so
+  // absent stays `null`: nothing to compare, nothing answered.
+  network: string | null;
 };
 
 // Keep in lockstep with `Grappa.Session.ISupport.default/0` (server).
@@ -104,6 +109,7 @@ export const DEFAULT_ISUPPORT: IsupportEntry = {
   channellen: null,
   topiclen: null,
   frameBudgetBase: null,
+  network: null,
 };
 
 const exports_ = moduleRoot(() => {
@@ -151,6 +157,7 @@ export function isupportEntryFromWire(payload: {
   channellen: number | null;
   topiclen: number | null;
   frame_budget_base: number | null;
+  network: string | null;
 }): IsupportEntry {
   return {
     chanmodes: {
@@ -169,6 +176,7 @@ export function isupportEntryFromWire(payload: {
     channellen: payload.channellen,
     topiclen: payload.topiclen,
     frameBudgetBase: payload.frame_budget_base,
+    network: payload.network,
   };
 }
 
