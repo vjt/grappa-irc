@@ -4,6 +4,8 @@ import type { Network } from "./lib/api";
 import { ownNickForNetwork } from "./lib/api";
 import { awayByNetwork } from "./lib/awayStatus";
 import { channelKey } from "./lib/channelKey";
+import { encryptedChatsFor } from "./lib/encryptedChats";
+import { closeEncryptedWindow, encryptedWindowSelected } from "./lib/encryptedWindow";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import { isNetworkParked } from "./lib/networkParked";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
@@ -24,6 +26,7 @@ import type { WindowKind } from "./lib/windowKinds";
 import {
   ADMIN_WINDOW_NAME,
   ADMIN_WINDOW_SLUG,
+  encryptedWindowName,
   HOME_WINDOW_NAME,
   HOME_WINDOW_SLUG,
   LIST_WINDOW_NAME,
@@ -32,7 +35,7 @@ import {
 import { windowStateByChannel } from "./lib/windowState";
 import { NOT_JOINED_STATES } from "./lib/windowStateSets";
 import NickText from "./NickText";
-import WindowBadges from "./WindowBadges";
+import WindowBadges, { EncryptedUnreadBadge } from "./WindowBadges";
 
 // Left-pane sidebar: network → window tree. Renders ordered windows:
 //   1. Server (always present, not closeable)
@@ -650,6 +653,43 @@ const Sidebar: Component<Props> = (props) => {
                       </li>
                     );
                   }}
+                </For>
+
+                {/* issue 2430 — encrypted query windows. cic-local: the list,
+                  the unread count and whether a window is open are the
+                  device's chat index (lib/encryptedChats.ts), so none of the
+                  server-backed row state above (greying, WindowBadges)
+                  applies. The 🔒 is decoration; the sr-only word says it. */}
+                <For each={encryptedChatsFor(network.slug)}>
+                  {(chat) => (
+                    <li
+                      classList={{ selected: encryptedWindowSelected(network.slug, chat.key) }}
+                      data-window-name={encryptedWindowName(chat.nick)}
+                    >
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleClick(network.slug, encryptedWindowName(chat.nick), "encrypted")
+                        }
+                        class="sidebar-window-btn"
+                        aria-current={
+                          encryptedWindowSelected(network.slug, chat.key) ? "true" : undefined
+                        }
+                      >
+                        <span class="encrypted-marker" aria-hidden="true">
+                          🔒
+                        </span>
+                        <NickText nick={chat.nick} extraClass="sidebar-channel-name" />
+                        <span class="sr-only"> (encrypted)</span>
+                        <EncryptedUnreadBadge count={chat.unread} variant="sidebar" />
+                      </button>
+                      <CloseButton
+                        class="sidebar-close"
+                        ariaLabel={`Close encrypted query with ${chat.nick}`}
+                        onConfirm={() => closeEncryptedWindow(network.slug, chat.nick)}
+                      />
+                    </li>
+                  )}
                 </For>
               </ul>
 

@@ -209,6 +209,20 @@ vi.mock("../lib/windowState", () => ({
   forceParted: (...args: unknown[]) => forcePartedMock(...args),
 }));
 
+// issue 2430 — the encrypted query rows read the device's chat index; a
+// holder here, like the other mutable mocks (empty unless a test fills it).
+// `encryptedWindow` keeps its real `encryptedWindowSelected` (it reads the
+// mocked selection) and spies the close.
+let mockEncryptedChats: { key: string; nick: string; unread: number }[] = [];
+const closeEncryptedWindowMock = vi.hoisted(() => vi.fn());
+vi.mock("../lib/encryptedChats", () => ({
+  encryptedChatsFor: (slug: string) => (slug === "freenode" ? mockEncryptedChats : []),
+}));
+vi.mock("../lib/encryptedWindow", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/encryptedWindow")>()),
+  closeEncryptedWindow: (...args: unknown[]) => closeEncryptedWindowMock(...args),
+}));
+
 import * as apiMod from "../lib/api";
 // #195 — the confirm-dialog store, imported STATICALLY so the test shares the
 // SAME module instance windowClose writes to on × click (a dynamic
@@ -222,6 +236,7 @@ import * as scrollCmd from "../lib/scrollToBottomCommand";
 import * as selMod from "../lib/selection";
 // windowKinds is NOT mocked — import constants from the real module.
 import {
+  encryptedWindowName,
   HOME_WINDOW_NAME,
   HOME_WINDOW_SLUG,
   LIST_WINDOW_NAME,
@@ -230,6 +245,7 @@ import {
 import Sidebar from "../Sidebar";
 
 beforeEach(() => {
+  mockEncryptedChats = [];
   // #2037 B — the events pill is opt-in now; this spec asserts it renders.
   setShowEventBadge(true);
   vi.clearAllMocks();
@@ -1417,5 +1433,56 @@ describe("Sidebar", () => {
       expect(screen.getByRole("button", { name: /^#italia\s*\(failed\)/ })).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /^#italia\s*\(invited\)/ })).toBeNull();
     });
+  });
+});
+
+// issue 2430 — encrypted query windows: cic-local rows after the queries.
+describe("Sidebar — encrypted query rows", () => {
+  const rowOf = () =>
+    document.querySelector<HTMLElement>(`li[data-window-name="${encryptedWindowName("Bob")}"]`);
+
+  it("lists each open encrypted chat after the queries, marked, with its unread count", () => {
+    mockEncryptedChats = [{ key: "bob", nick: "Bob", unread: 2 }];
+    render(() => <Sidebar />);
+    const row = rowOf();
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain("Bob");
+    expect(row?.textContent).toContain("(encrypted)");
+    expect(row?.querySelector(".encrypted-marker")).not.toBeNull();
+    expect(row?.querySelector('[aria-label="2 unread messages"]')?.textContent).toBe("2");
+    // After the plaintext queries, which keep their own rows.
+    const names = [...document.querySelectorAll("li[data-window-name]")].map((li) =>
+      li.getAttribute("data-window-name"),
+    );
+    expect(names.indexOf(encryptedWindowName("Bob"))).toBeGreaterThan(names.indexOf("bob"));
+  });
+
+  it("a click focuses the encrypted window", () => {
+    mockEncryptedChats = [{ key: "bob", nick: "Bob", unread: 0 }];
+    render(() => <Sidebar />);
+    fireEvent.click(rowOf()?.querySelector(".sidebar-window-btn") as HTMLElement);
+    expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
+      networkSlug: "freenode",
+      channelName: encryptedWindowName("Bob"),
+      kind: "encrypted",
+    });
+  });
+
+  it("is the selected row whatever the case of the nick in the window's name", () => {
+    mockEncryptedChats = [{ key: "bob", nick: "Bob", unread: 0 }];
+    mockSelectedChannel = {
+      networkSlug: "freenode",
+      channelName: encryptedWindowName("BOB"),
+      kind: "encrypted",
+    };
+    render(() => <Sidebar />);
+    expect(rowOf()?.classList.contains("selected")).toBe(true);
+  });
+
+  it("its × closes the encrypted chat", () => {
+    mockEncryptedChats = [{ key: "bob", nick: "Bob", unread: 0 }];
+    render(() => <Sidebar />);
+    fireEvent.click(rowOf()?.querySelector(".sidebar-close") as HTMLElement);
+    expect(closeEncryptedWindowMock).toHaveBeenCalledWith("freenode", "Bob");
   });
 });

@@ -103,11 +103,23 @@ vi.mock("../lib/archive", () => ({
   archiveModalOpen: () => false,
 }));
 
+// issue 2430 — the encrypted query tabs read the device's chat index.
+let mockEncryptedChats: { key: string; nick: string; unread: number }[] = [];
+const closeEncryptedWindowMock = vi.hoisted(() => vi.fn());
+vi.mock("../lib/encryptedChats", () => ({
+  encryptedChatsFor: (slug: string) => (slug === "freenode" ? mockEncryptedChats : []),
+}));
+vi.mock("../lib/encryptedWindow", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/encryptedWindow")>()),
+  closeEncryptedWindow: (...args: unknown[]) => closeEncryptedWindowMock(...args),
+}));
+
 import BottomBar from "../BottomBar";
 import { setShowEventBadge } from "../lib/eventBadge";
 import * as scrollCmd from "../lib/scrollToBottomCommand";
 import * as selMod from "../lib/selection";
 import * as windowCloseMod from "../lib/windowClose";
+import { encryptedWindowName } from "../lib/windowKinds";
 
 beforeEach(() => {
   // #2037 B — the events pill is opt-in now; this spec asserts it renders.
@@ -796,5 +808,35 @@ describe("BottomBar", () => {
       expect(screen.queryByText("#failed")).toBeNull();
       expect(container.querySelector(".bottom-bar-tab[data-window-state]")).toBeNull();
     });
+  });
+});
+
+// issue 2430 — encrypted query tabs (the Sidebar twin, on mobile).
+describe("BottomBar — encrypted query tabs", () => {
+  beforeEach(() => {
+    mockEncryptedChats = [{ key: "bob", nick: "Bob", unread: 3 }];
+  });
+
+  const tabOf = () =>
+    document.querySelector<HTMLElement>(`button[data-window-name="${encryptedWindowName("Bob")}"]`);
+
+  it("shows the tab, marked, with its unread count, and a click focuses it", () => {
+    render(() => <BottomBar />);
+    const tab = tabOf();
+    expect(tab?.textContent).toContain("Bob");
+    expect(tab?.querySelector(".encrypted-marker")).not.toBeNull();
+    expect(tab?.querySelector('[aria-label="3 unread messages"]')?.textContent).toBe("3");
+    fireEvent.click(tab as HTMLElement);
+    expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
+      networkSlug: "freenode",
+      channelName: encryptedWindowName("Bob"),
+      kind: "encrypted",
+    });
+  });
+
+  it("its × closes the encrypted chat", () => {
+    render(() => <BottomBar />);
+    fireEvent.click(tabOf()?.nextElementSibling as HTMLElement);
+    expect(closeEncryptedWindowMock).toHaveBeenCalledWith("freenode", "Bob");
   });
 });
