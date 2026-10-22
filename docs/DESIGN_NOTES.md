@@ -3699,3 +3699,83 @@ apart, as the fake-lag bank let each one leave, so the third outlasted the
 before sending the next.
 
 Client-only, no wire change: the cic bundle.
+<!-- entry #2430w2c -->
+
+---
+
+## 2026-10-22 — #2430w2c: cicchetto answers a bot's order challenge for a line it sent
+
+Slice e of 2430 ("Authorising orders"). A bot that takes orders from a
+pinned peer does not act on a plaintext line alone: it sends the peer,
+inside the verified Olm session, a CHAL naming the line (its network's
+005 `NETWORK=` token, the raw PRIVMSG target, the body's SHA-256, a nonce,
+a 15 s expiry), and the peer's client answers `{t: "ack", nonce}` only if
+it sent exactly that line, on that network, to that target, in the last
+15 s. In cic the "it sent" is `e2e/orders.ts`: an in-memory log of the
+PRIVMSGs cic itself sends, written in `scrollback.sendMessage` before the
+POST (so no CHAL can come first) and forgotten if the POST fails. The echo
+never writes it: grappa echoes every client's lines, and a line another
+client sent is exactly what an ACK must not confirm.
+
+**The network is matched by its 005 name, so the name crosses the wire
+(protocol 47, orchestrator ruling Q1 = A).** The bot only knows
+`NETWORK=`; grappa's slug is local naming. Without a network to compare,
+or comparing the network the CHAL arrived on, the cross-network case stays
+open: a bot using one key on two networks sees a line on network Y from
+someone squatting the user's nick there, challenges the user, and an ACK
+for the same line in a same-named channel on network X releases the
+order on Y. So `isupport_changed` carries `network` (as advertised and
+undecoded, or null when the server sends none), read off the raw 005 by
+`ISupport.network/1` without a second parse; the raw archive still never
+crosses (#1255). The name and the line's hash must match exactly; the
+target is compared under the network's casemapping, because the ircd
+relays a channel as it stores it, not as the sender typed it.
+
+**Only a verified session gets an answer.** The issue's identity rule is
+that an unverified session encrypts but does not authorise orders, and an
+ACK is the authorisation: a key cic trusted on first use, or one it took
+off an alarm without verifying, gets no ACK until it is pinned by hand or
+a SAS matches. Two more limits came out of the review: a CHAL that names a
+private message (its `channel` is not a channel) must name the bot asking,
+or a peer could ask whether cic sent some text to somebody else; and one
+sent line confirms one challenge. The bot challenges every copy of a line
+it sees, so a copy someone else put out in the user's nick inside the 15 s
+(another client, grappa itself) would otherwise run the order twice: the
+first CHAL that matches binds the line to its nonce, and the same nonce
+again is answered again, so a re-delivered CHAL still works. Across tabs
+the binding travels over the same BroadcastChannel as the log, so two tabs
+draining two copies inside one message's delivery could still both answer;
+the account lock serialises drains, which makes that window small, and
+closing it would mean writing the log into the sealed account state.
+
+**It fails closed, by design, and the bot refuses the order when its
+challenge expires.** No ACK for: a network with no `NETWORK=`, or a server
+before protocol 47 (nothing to match); a line grappa split into several
+PRIVMSGs (the bot hashes one of them); a line sent from another device or
+client, or from another login in the same browser (only that one could
+know); a reload inside the 15 s (the log is memory); an expired CHAL, by
+this device's clock; an unverified session; anything short of the match
+above. The interop spec (`issue2430-interop-bot.spec.ts`, steps 6 and 7)
+asserts both halves against the real bot: a line from cic's compose box
+must come out CONFIRMED, the same nick's line through grappa's REST door
+`UNTRUSTED WHY=no-ack`.
+
+**No visible warning for a CHAL cic cannot confirm, only a console line**,
+which names what it saw (no network name, another network, expired, a PM
+to someone else, no such line or already confirmed, an unverified key).
+Most such CHALs are the fail-closed cases above, not an attack, and an
+alarm that is mostly false teaches people to ignore it. The bot's refusal
+is the protection either way.
+
+**The log is the device's, not the tab's, and holds hashes.** Any tab may
+drain the inbox the CHAL lands in, so each tab tells the others what it
+sent over a BroadcastChannel; a line is kept as its SHA-256, never its
+body, because a NickServ password goes out through the same send. Each
+entry carries the login it was sent from, so another identity's tab in the
+same browser confirms nothing. The CHAL's `sender_mask` is not checked:
+the bot challenges only the key pinned to the nick that spoke, and the
+mask adds nothing the nick does not. An ACK has no row, like a SAS step;
+it leaves through the send door at control priority with the CHAL's own
+`expires_at` (protocol 46), a 422 `too_late` is a drop never retried, and
+an `e2e_send_dropped` for it is logged, while one for a message turns its
+row failed with the reason.
