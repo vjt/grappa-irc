@@ -9,9 +9,9 @@ import {
   type MessageRelay,
   type ScrollbackMessage,
 } from "./api";
-import { token } from "./auth";
+import { getSubject, token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
-import { sendLog } from "./e2e/orders";
+import { sendLog, subjectKey } from "./e2e/orders";
 import { identityMoved } from "./identityMoved";
 import { identityScopedStore } from "./identityScopedStore";
 import { membersByChannel } from "./members";
@@ -1652,11 +1652,17 @@ const exports = identityScopedStore((onIdentityChange) => {
     // fails. A NOTICE is no order. The echo never writes the log: it carries
     // every client's lines, and a line another client sent is exactly what
     // the ACK must not confirm.
+    const me = getSubject();
     const sent =
-      relay?.kind === "notice"
+      relay?.kind === "notice" || me === null
         ? null
-        : { slug, target: relay?.target ?? name, body, at: Date.now() };
-    if (sent !== null) sendLog.record(sent);
+        : await sendLog.record({
+            subject: subjectKey(me),
+            slug,
+            target: relay?.target ?? name,
+            body,
+            at: Date.now(),
+          });
     let row: Awaited<ReturnType<typeof apiSendMessage>>;
     try {
       row = await apiSendMessage(t, slug, name, body, relay);

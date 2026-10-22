@@ -28,7 +28,13 @@ import type { AccountStore } from "./accountStore";
 import type { ChatChange, ChatStore, DoorRefusal, SendDropped } from "./chatStore";
 import { type E2eEvent, type E2eState, Engine, type Outbound } from "./engine";
 import type { Olm } from "./olm";
-import { type Challenge, ORDER_TAG, parseChallenge } from "./orders";
+import {
+  type Challenge,
+  ORDER_TAG,
+  type OrderVerdict,
+  parseChallenge,
+  UNCONFIRMED,
+} from "./orders";
 import { isSas, SAS_TAG, type SasHost, type SasStep, type SasView, Verifier } from "./sas";
 import { fold, type ReceiveVerb } from "./wire";
 
@@ -54,8 +60,8 @@ export type E2eContext = {
   slot: string;
   ownNick: string;
   door: Door;
-  /** Whether this cic sent the line `chal` names, there, in the 15 s before `at` (`SendLog.confirms`). */
-  orders: (chal: Challenge, at: number) => Promise<boolean>;
+  /** Whether this cic sent the line `chal` from `challenger` names, there, in the 15 s before `at` (`SendLog.confirms`). */
+  orders: (chal: Challenge, challenger: string, at: number) => OrderVerdict;
 };
 
 /**
@@ -190,9 +196,11 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
 
 // A SAS step and an ACK have no row to mark: the SAS waits for its step until
 // its time runs out, and the bot refuses the order once its challenge expires.
-const rowless = (tag: string): boolean => tag === SAS_TAG || tag === ORDER_TAG;
+type RowlessTag = typeof SAS_TAG | typeof ORDER_TAG;
 
-function rowlessLost(tag: string, nick: string, reason: string): void {
+const rowless = (tag: string): tag is RowlessTag => tag === SAS_TAG || tag === ORDER_TAG;
+
+function rowlessLost(tag: RowlessTag, nick: string, reason: string): void {
   if (tag === SAS_TAG) {
     console.warn(`[e2e] a SAS step to ${nick} was not sent (${reason}); the SAS will time out`);
   } else {
@@ -284,24 +292,32 @@ export function e2eClient(
   }
 
   // The answer to an order challenge from `nick`: an ACK, with the CHAL's own
-  // deadline (grappa drops it unsent past that), when this cic sent the line
-  // the CHAL names; otherwise nothing, and nothing shown. A bot only sends a
+  // deadline (grappa drops it unsent past that), when the session is verified
+  // and this cic sent the line the CHAL names; otherwise nothing, and nothing
+  // shown. Until a key is verified (pinned by hand, or a SAS) the session
+  // does not authorise orders (issue 2430, "Identity"). A bot only sends a
   // CHAL to the key pinned to the nick that spoke, so a CHAL for a line this
   // cic never sent is someone giving orders in the user's name, or one of the
   // fail-closed cases (`orders.ts`); either way the bot refuses the order.
-  async function answer(
+  function answer(
     ctx: E2eContext,
     engine: Engine,
     nick: string,
+    verified: boolean,
     inner: Record<string, unknown>,
-  ): Promise<{ changes: ChatChange[]; outbound: Outbound[] }> {
+  ): { changes: ChatChange[]; outbound: Outbound[] } {
     const chal = parseChallenge(inner);
     if (chal === null) {
       console.debug(`[e2e] dropped a malformed order challenge from ${nick}`);
       return { changes: [], outbound: [] };
     }
-    if (!(await ctx.orders(chal, now()))) {
-      console.warn(`[e2e] ${nick} asked to confirm an order this cic did not send; not confirmed`);
+    if (!verified) {
+      console.warn(`[e2e] order challenge from ${nick} not confirmed: their key is not verified`);
+      return { changes: [], outbound: [] };
+    }
+    const verdict = ctx.orders(chal, nick, now());
+    if (verdict !== "confirmed") {
+      console.warn(`[e2e] order challenge from ${nick} not confirmed: ${UNCONFIRMED[verdict]}`);
       return { changes: [], outbound: [] };
     }
     const res = engine.send(nick, { t: "ack", nonce: chal.nonce }, ORDER_TAG, chal.expiresAt);
@@ -351,7 +367,7 @@ export function e2eClient(
               if (isSas(e.inner)) {
                 await verifier.receive(e.nick, e.peer.ed25519, e.inner, `in:${m.id}:${i}`);
               } else if (e.inner.t === "chal") {
-                const acked = await answer(ctx, engine, e.nick, e.inner);
+                const acked = answer(ctx, engine, e.nick, e.peer.verified, e.inner);
                 changes.push(...acked.changes);
                 outbound.push(...acked.outbound);
               }

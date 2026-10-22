@@ -77,6 +77,9 @@ const FAILURE_LABEL: Record<OutFailure, string> = {
   "rekey-throttled": "a new session was started too recently",
   "rate-limited": "grappa's queue for this peer is full",
   "too-large": "it is too large",
+  // `too-late` and `late` only happen to a payload with a deadline, and only
+  // an ACK carries one; an ACK has no row. Kept so the map stays total over
+  // the reasons the door and the drop push can name.
   "too-late": "its deadline had passed",
   refused: "grappa refused it",
   late: "its deadline passed before it could go",

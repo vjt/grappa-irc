@@ -9,7 +9,17 @@ import { chatStore } from "../lib/e2e/chatStore";
 import { e2eClient, NoAccountError } from "../lib/e2e/client";
 import { KEYREQ_RETRY_MS, OUTQ_TTL_MS } from "../lib/e2e/engine";
 import { ORDER_TAG } from "../lib/e2e/orders";
-import { chat, inject, inners, pair, rowsOf, type Side, SLOT, World } from "./helpers/e2eClients";
+import {
+  chat,
+  inject,
+  inners,
+  pair,
+  rowsOf,
+  SCOPE,
+  type Side,
+  SLOT,
+  World,
+} from "./helpers/e2eClients";
 import { memoryLock, memoryVault } from "./helpers/e2eVault";
 import { olm } from "./helpers/olm";
 
@@ -395,7 +405,7 @@ describe("e2eClient", () => {
       slot: SLOT,
       ownNick: "alice",
       door: w.grappa.door("alice"),
-      orders: async () => false,
+      orders: () => "not-sent" as const,
     };
 
     await expect(client.drain(ctx)).rejects.toBeInstanceOf(NoAccountError);
@@ -408,8 +418,8 @@ describe("e2eClient", () => {
 
 // 2430 "Authorising orders": Bob plays the bot. He saw a line from alice in
 // a channel (or a plaintext PM), and asks her cic inside their session
-// whether she sent it. Her cic answers ACK only for a line it sent itself,
-// and shows nothing either way.
+// whether she sent it. Her cic answers ACK only on a verified session, only
+// for a line it sent itself, and shows nothing either way.
 describe("e2eClient, order challenges", () => {
   const LINE = "Bob: ping";
   const sha256 = async (body: string) =>
@@ -427,12 +437,25 @@ describe("e2eClient, order challenges", () => {
     expires_at: Math.floor(w.now / 1000) + 15,
   });
   const acks = (w: World) => w.grappa.sends.filter((s) => s.by === "alice" && s.tag === ORDER_TAG);
+  const sent = (w: World, a: Side, body: string) =>
+    a.sent.record({ subject: SCOPE.subject, slug: "azzurra", target: "#grappa", body, at: w.now });
+  /** alice pins Bob's key by hand: the session is verified. */
+  const verify = async (a: Side, b: Side) => {
+    const key = await b.accounts.withAccount(SLOT, async ({ account }) => account.ed25519_key());
+    await a.client.pin(a.ctx, b.nick, key, true);
+  };
+  /** A session alice and Bob both hold, Bob's key verified on alice's side. */
+  const verifiedPair = async () => {
+    const p = await pair();
+    await chat(p.a, p.b);
+    await verify(p.a, p.b);
+    return p;
+  };
 
   it("ACKs the line this cic sent, ahead of text, with the CHAL's deadline, and shows nothing", async () => {
-    const { w, a, b } = await pair();
-    await chat(a, b);
+    const { w, a, b } = await verifiedPair();
     const rows = await rowsOf(a, "Bob");
-    a.sent.record({ slug: "azzurra", target: "#grappa", body: LINE, at: w.now });
+    await sent(w, a, LINE);
     w.now += 2_000;
 
     const asked = await chal(w, LINE);
@@ -452,10 +475,9 @@ describe("e2eClient, order challenges", () => {
   });
 
   it("stays silent for a line this cic never sent: no ACK, no row, the inbox drained", async () => {
-    const { w, a, b } = await pair();
-    await chat(a, b);
+    const { w, a, b } = await verifiedPair();
     const rows = await rowsOf(a, "Bob");
-    a.sent.record({ slug: "azzurra", target: "#grappa", body: "Bob: pong", at: w.now });
+    await sent(w, a, "Bob: pong");
 
     await inject(w, b, "alice", await chal(w, LINE));
     await a.client.drain(a.ctx);
@@ -465,19 +487,59 @@ describe("e2eClient, order challenges", () => {
     expect(w.grappa.inboxes.get("alice")).toEqual([]);
   });
 
-  it("an ACK grappa refuses as too late is dropped, never sent again", async () => {
+  it("stays silent on a session it has not verified, for a line it did send", async () => {
     const { w, a, b } = await pair();
     await chat(a, b);
-    const rows = await rowsOf(a, "Bob");
-    a.sent.record({ slug: "azzurra", target: "#grappa", body: LINE, at: w.now });
-    w.grappa.refuse = (o) => (o.tag === ORDER_TAG ? "too-late" : undefined);
+    await sent(w, a, LINE);
 
     await inject(w, b, "alice", await chal(w, LINE));
     await a.client.drain(a.ctx);
+
+    expect(acks(w)).toEqual([]);
+    expect(w.grappa.inboxes.get("alice")).toEqual([]);
+  });
+
+  it("one sent line confirms one challenge: a second one for the same line gets no ACK", async () => {
+    const { w, a, b } = await verifiedPair();
+    await sent(w, a, LINE);
+
+    await inject(w, b, "alice", { ...(await chal(w, LINE)), nonce: "Zmlyc3Q" });
+    await inject(w, b, "alice", { ...(await chal(w, LINE)), nonce: "c2Vjb25k" });
+    await a.client.drain(a.ctx);
+
+    expect(await inners(w, b)).toEqual([{ t: "ack", nonce: "Zmlyc3Q" }]);
+  });
+
+  it("drops a malformed challenge without answering it", async () => {
+    const { w, a, b } = await verifiedPair();
+    await sent(w, a, LINE);
+
+    await inject(w, b, "alice", { ...(await chal(w, LINE)), nonce: "" });
+    await a.client.drain(a.ctx);
+
+    expect(acks(w)).toEqual([]);
+    expect(w.grappa.inboxes.get("alice")).toEqual([]);
+  });
+
+  it("an ACK grappa refuses as too late is dropped, never sent again", async () => {
+    const { w, a, b } = await verifiedPair();
+    const rows = await rowsOf(a, "Bob");
+    await sent(w, a, LINE);
+    let tried = 0;
+    w.grappa.refuse = (o) => {
+      if (o.tag !== ORDER_TAG) return undefined;
+      tried += 1;
+      return "too-late";
+    };
+
+    await inject(w, b, "alice", await chal(w, LINE));
+    await a.client.drain(a.ctx);
+    expect(tried).toBe(1);
     w.grappa.refuse = () => undefined;
     await a.client.tick(a.ctx);
     await a.client.drain(a.ctx);
 
+    expect(tried).toBe(1);
     expect(acks(w)).toEqual([]);
     expect(await rowsOf(a, "Bob")).toEqual(rows);
     // Forgotten: no NACK can name what never left.
@@ -504,9 +566,8 @@ describe("e2eClient, order challenges", () => {
   });
 
   it("a drop of a message this device did not send, or of an ACK, changes no row", async () => {
-    const { w, a, b } = await pair();
-    await chat(a, b);
-    a.sent.record({ slug: "azzurra", target: "#grappa", body: LINE, at: w.now });
+    const { w, a, b } = await verifiedPair();
+    await sent(w, a, LINE);
     await inject(w, b, "alice", await chal(w, LINE));
     await a.client.drain(a.ctx);
     const ack = acks(w)[0];
@@ -516,5 +577,16 @@ describe("e2eClient, order challenges", () => {
     expect((await a.client.dropped(a.ctx, ack?.msgid ?? "", "late")).chats).toEqual([]);
 
     expect(await rowsOf(a, "Bob")).toEqual(rows);
+  });
+
+  it("a drop of a message whose chat was deleted since is tolerated: the chat stays gone", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    await a.client.send(a.ctx, "Bob", "lost on the way");
+    const msgid = w.grappa.sends.at(-1)?.msgid ?? "";
+    await a.client.deleteChat(a.ctx, "Bob");
+
+    expect((await a.client.dropped(a.ctx, msgid, "session-ended")).chats).toEqual([]);
+    expect(await rowsOf(a, "Bob")).toEqual([]);
   });
 });
