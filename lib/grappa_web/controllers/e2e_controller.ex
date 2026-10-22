@@ -37,7 +37,8 @@ defmodule GrappaWeb.E2eController do
   **202, not 201.** Nothing is created and nothing is stored; the lines may
   still be waiting in the pacer when this returns, and IRC never confirms
   delivery. The body carries the `msgid` grappa chose,
-  which is what a peer's `NACK` will name.
+  which is what a peer's `NACK` will name, and what an `e2e_send_dropped`
+  push names if the session drops the message unsent after all.
 
   `priority` is `control` or `text`, and absent means `text`. A `control`
   MSG/PKMSG goes ahead of text within the connection's urgent budget

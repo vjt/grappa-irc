@@ -3479,3 +3479,97 @@ in two browsers compare emoji over real Olm through a real ircd, and the alarm
 path after a wiped browser takes the new key and verifies it.
 
 Client-only, no wire change: the cic bundle.
+<!-- entry #2430w2b -->
+
+---
+
+## 2026-10-22 — #2430: the E2E pacer becomes irc-olm's final rule; an order's answer gets its deadline
+
+Replaces a1b's interim rule (entry #2430c: 8 urgent lines per peer per
+minute, two classes) with the rule vjt posted as final (2430 comment
+6266838337, "it supersedes every earlier version"). The reference is irc-olm's
+`src/irc_olm/pacing.py` at 77688e5 (byte-identical at 309c9c7); `E2ePacer`
+follows its `Pacer` function by function, in integer milliseconds on the
+monotonic clock. Not wire: the pacer decides only when grappa's own lines
+leave.
+
+**What the rule is**, briefly (the moduledoc has it whole): three lanes,
+URGENT (KEYREQ, and a MSG/PKMSG the client marks `control` because it carries
+a CHAL or an ACK), REACTIVE (KEYS, NACK) and TEXT, scheduled by message, with
+one urgent and one text message under way per connection. Budgets of bank
+per minute rank ahead of text (URGENT 36 s for the connection, REACTIVE 18 s
+per target and 22 s for the connection) and never refuse; a 9 s allowance and
+an 8 s patience for first contacts; a 20 s floor for text and for a KEYS/NACK
+under way; turns to the target served longest ago; 5 s of the bank kept for
+URGENT. `E2ePacer.lane/2` is the one mapping from `(verb, priority)`, shared
+by the facade and the session, so they cannot drift.
+
+**How it was checked against the reference.** Beyond porting irc-olm's own
+scenarios as unit tests (and its wake test as a StreamData property: nothing
+falls due between two wakes, and a wake is never now), a scratch differential
+harness, not committed, drove both implementations through 900 random
+scenarios: no divergence. Mutating the constants and rank conditions, the
+harness killed 14 of 18 mutants; three of the four survivors now die in the
+unit tests, and the fourth (the patience cutoff compared with `<=` instead of
+`<`) is equivalent: the cutoff consumes a seq of its own, so no message ever
+carries it.
+
+**The ACK's deadline, applied by grappa (protocol 46).** irc-olm's CHAL
+starts only if its last line can leave `ACK_MARGIN` (2 s) before its
+deadline, and is dropped otherwise. In grappa the client sends the ACK
+through the send door, so the door takes an optional `expires_at`: unix
+seconds, the CHAL's own value, valid only on a `control` MSG/PKMSG (else
+400). The session converts it once to a monotonic deadline against this
+host's wall clock, with no pad: a skew between the bot's clock and grappa's
+moves the drop instant, and in either direction the order fails closed
+(unconfirmed), which is why padding buys nothing (orchestrator's ruling, Q1).
+A deadline already out of reach is refused at the door with 422 `too_late`,
+a new error token; one that turns too late while waiting is dropped unsent.
+
+**No silent drop after a 202.** A message dropped after acceptance is
+announced on the user topic as `e2e_send_dropped` `{network, target, msgid,
+reason}` (Q3), the msgid being the one the 202 gave: `late`, `send_failed`,
+or `session_ended`, for what still waits when the session process stops
+(announced from `terminate/2`, so a process killed outright says nothing).
+The last one was a review's find, not the plan: the session stops on every
+upstream drop, park and deploy, and a long text drips at a line per 5 s, so
+it is the commonest drop of all. A KEYS is grappa's own answer, so its drop
+stays a log line. Nothing is
+dropped for a cap after acceptance: the pacer admits a message whole or
+refuses it at the door (429), which is the notice. A line that fails to
+reach the socket now drops the rest of its message, as irc-olm's
+`PacedSender` does: the receiver could never complete it.
+
+**KEYS: answered once per 15 s per nick, and a3's 22 s refusal stays.**
+irc-olm answers a nick at most once per 15 s, half its KEYREQ retry, so the
+30 s became 15 s. a3's connection-wide refusal of KEYS answers past 22 s of
+bank a minute (entry #2430d) was going to be deleted as redundant with the
+REACTIVE budgets, and is KEPT, by the orchestrator's ruling reversing that
+plan: the REACTIVE budgets rank, they never refuse, and grappa's 128 queued
+urgent and reactive lines per connection are shared with the user's own
+orders and NACKs. Unbounded KEYS answers would let a few nicks queue answers
+faster than the bank drains them (about 7 a minute at 8 s each) and fill
+those 128 lines, after which every order the user answers is refused. Four
+nicks are enough, not two as first argued: each nick's REACTIVE lane holds
+32 lines, so two hold 64 at most, while four asking every 15 s draw 16
+answers a minute. irc-olm has no shared cap, so it needs no such bound. The KEYS answer now waits in the
+REACTIVE lane instead of control.
+
+Caps: 32 text messages per target, counting the Olm messages refused or
+dropped behind queued text (each leaves the receiver a key to skip); 32
+lines per target in each of URGENT and REACTIVE; 480 s of queued text; and
+grappa's 128 lines per connection on top (Q6), so a session's memory stays
+bounded however many nicks draw from it. The 128 count URGENT and REACTIVE
+lines only: counting text let the user's own chatter (four peers of 32
+short messages fit the 480 s) refuse a CHAL's answer or a KEYREQ, which
+irc-olm would admit, and text is already bounded by its 480 s.
+
+Known limits, carried from the reference: the start check counts the bank,
+not the target's window, so a CHAL arriving with under 8 s left behind two
+NACKs to the same peer can finish up to 3 s late; and the CHAL bound holds
+only with none of grappa's own lines in the previous 10 s, while its lazy
+CTCP probes still bypass the pacer.
+
+COLD deploy: the `E2ePacer` struct changes, and it is a `LongLivedModules`
+state helper. Protocol 46 (c2 took 45): the `expires_at` request field, the
+`too_late` token and the `e2e_send_dropped` push.
