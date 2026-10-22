@@ -81,8 +81,11 @@ export type Peer = {
   verified: boolean;
 };
 
-/** A message on its way: the inner message, as the JSON Olm encrypts. */
-type Outgoing = { plaintext: string; urgent: boolean; sends: number };
+/**
+ * A message on its way: the inner message, as the JSON Olm encrypts, and the
+ * caller's tag for it, which every event and payload about it carries back.
+ */
+type Outgoing = { plaintext: string; urgent: boolean; sends: number; tag: string };
 /** Waiting for keys. `ed25519` is the key it is meant for; "" is whatever key answers. */
 type Queued = { nick: string; ed25519: string; msg: Outgoing; at: number };
 /** Handed to grappa; `msgid` once grappa named it (`sent()`), as a NACK refers to it. */
@@ -172,13 +175,13 @@ export type E2eEvent =
   | { kind: "undecryptable"; nick: string; msgid: string; reason: UndecryptableReason }
   | { kind: "replayed"; nick: string; sessionId: string }
   | { kind: "dropped"; nick: string; reason: DropReason; verb?: ReceiveVerb; detail?: string }
-  | { kind: "send_queued"; nick: string; queued: number }
-  | { kind: "send_failed"; nick: string; reason: SendFailure; lost: number }
+  | { kind: "send_queued"; nick: string; queued: number; tag: string }
+  | { kind: "send_failed"; nick: string; reason: SendFailure; tags: string[] }
   | { kind: "rekeying"; nick: string; peer: Peer };
 
 /**
- * A payload for grappa's send door. `ref` is set on a PKMSG/MSG that
- * carries a message: report grappa's msgid for it with `sent()` (a NACK
+ * A payload for grappa's send door. `ref` and `tag` are set on a PKMSG/MSG
+ * that carries a message: report grappa's msgid for it with `sent()` (a NACK
  * names it), or `discard()` it when grappa refused the send.
  */
 export type Outbound = {
@@ -187,6 +190,7 @@ export type Outbound = {
   payload: string;
   priority: "control" | "text";
   ref?: string;
+  tag?: string;
 };
 
 export type Result = { events: E2eEvent[]; outbound: Outbound[] };
@@ -249,13 +253,15 @@ export class Engine {
    * Encrypt `inner` for the identity pinned to `nick`; with no session yet
    * (or keys already asked for), queue it and ask for keys. A nick with no
    * pin is asked for keys too: whatever key answers is pinned on first use.
+   * `tag` is the caller's name for the message: whatever happens to it later,
+   * in this call or another, names it by its tag.
    */
-  send(nick: string, inner: Record<string, unknown>): Result {
+  send(nick: string, inner: Record<string, unknown>, tag: string): Result {
     const res = emptyResult();
     if (fold(nick) === fold(this.ownNick)) {
       // grappa would answer our own KEYREQ with our own bundle, which
       // `identify` refuses: say so now rather than after a minute.
-      res.events.push({ kind: "send_failed", nick, reason: "own-nick", lost: 1 });
+      res.events.push({ kind: "send_failed", nick, reason: "own-nick", tags: [tag] });
       return res;
     }
     let plaintext: string;
@@ -264,11 +270,11 @@ export class Engine {
       // queue flush or a re-send least of all.
       plaintext = JSON.stringify(inner);
     } catch {
-      res.events.push({ kind: "send_failed", nick, reason: "unencodable", lost: 1 });
+      res.events.push({ kind: "send_failed", nick, reason: "unencodable", tags: [tag] });
       return res;
     }
     const urgent = typeof inner.t === "string" && URGENT_INNER.has(inner.t);
-    const msg: Outgoing = { plaintext, urgent, sends: 1 };
+    const msg: Outgoing = { plaintext, urgent, sends: 1, tag };
     const peer = this.pinned(nick);
     if (peer === undefined) this.enqueue(nick, "", msg, res);
     else this.sendTo(nick, peer, msg, res);
@@ -305,12 +311,12 @@ export class Engine {
     const key = fold(nick);
     const q = this.liveQueue(key, res);
     if (q.length >= OUTQ_MAX) {
-      res.events.push({ kind: "send_failed", nick, reason: "queue-full", lost: 1 });
+      res.events.push({ kind: "send_failed", nick, reason: "queue-full", tags: [msg.tag] });
       return;
     }
     q.push({ nick, ed25519, msg, at: this.now() });
     this.state.outq[key] = q;
-    res.events.push({ kind: "send_queued", nick, queued: q.length });
+    res.events.push({ kind: "send_queued", nick, queued: q.length, tag: msg.tag });
     this.maybeKeyreq(nick, res);
   }
 
@@ -325,7 +331,7 @@ export class Engine {
         kind: "send_failed",
         nick: first.nick,
         reason: "keys-timeout",
-        lost: q.length - live.length,
+        tags: q.filter((x) => !live.includes(x)).map((x) => x.msg.tag),
       });
     }
     if (live.length > 0) this.state.outq[key] = live;
@@ -365,7 +371,7 @@ export class Engine {
       if (linesNeeded(verb, payload, this.ownNick, nick) > MAX_FRAGMENTS) {
         // grappa would refuse it (413). The session stays where it was:
         // nothing is stored, so the peer has no message key to skip.
-        res.events.push({ kind: "send_failed", nick, reason: "too-long", lost: 1 });
+        res.events.push({ kind: "send_failed", nick, reason: "too-long", tags: [msg.tag] });
         return;
       }
       pickles[0] = session.pickle();
@@ -386,6 +392,7 @@ export class Engine {
         payload,
         priority: msg.urgent ? "control" : "text",
         ref,
+        tag: msg.tag,
       });
     } finally {
       session.free();
@@ -464,7 +471,7 @@ export class Engine {
           kind: "send_failed",
           nick,
           reason: "key-mismatch",
-          lost: queue.length - mine.length,
+          tags: queue.filter((q) => !mine.includes(q)).map((q) => q.msg.tag),
         });
       }
       if (peer === undefined || session === undefined || mine.length === 0) return;
@@ -627,21 +634,21 @@ export class Engine {
         kind: "send_failed",
         nick: sent.nick,
         reason: "nack-from-another-nick",
-        lost: 1,
+        tags: [sent.msg.tag],
       });
       return;
     }
     const peer = this.state.peers[sent.ed25519];
     if (peer === undefined) {
-      res.events.push({ kind: "send_failed", nick, reason: "unpinned-key", lost: 1 });
+      res.events.push({ kind: "send_failed", nick, reason: "unpinned-key", tags: [sent.msg.tag] });
       return;
     }
     if (!this.reachedAt(nick, peer.ed25519)) {
-      res.events.push({ kind: "send_failed", nick, reason: "repinned", lost: 1 });
+      res.events.push({ kind: "send_failed", nick, reason: "repinned", tags: [sent.msg.tag] });
       return;
     }
     if (sent.msg.sends >= MAX_SENDS) {
-      res.events.push({ kind: "send_failed", nick, reason: "resend-failed", lost: 1 });
+      res.events.push({ kind: "send_failed", nick, reason: "resend-failed", tags: [sent.msg.tag] });
       return;
     }
     const again: Outgoing = { ...sent.msg, sends: sent.msg.sends + 1 };
@@ -661,7 +668,12 @@ export class Engine {
     // allows one per peer per minute.
     const last = this.state.rekeyAt[peer.ed25519];
     if (last !== undefined && this.now() - last < REKEY_INTERVAL_MS) {
-      res.events.push({ kind: "send_failed", nick, reason: "rekey-throttled", lost: 1 });
+      res.events.push({
+        kind: "send_failed",
+        nick,
+        reason: "rekey-throttled",
+        tags: [sent.msg.tag],
+      });
       return;
     }
     this.dropSession(peer.curve25519, sent.sessionId);
