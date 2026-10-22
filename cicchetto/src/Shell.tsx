@@ -327,11 +327,20 @@ const Shell: Component = () => {
   // branch begins mounting, no concurrent owner-tree mutation.
   const isAdminPaneVisible = createMemo(() => selectedChannel()?.kind === "admin" && isAdmin());
   const selKind = createMemo(() => selectedChannel()?.kind ?? null);
-  // issue 2430 — the peer of a focused encrypted window, else null.
-  const encryptedPeer = createMemo(() => {
-    const sel = selectedChannel();
-    return sel?.kind === "encrypted" ? encryptedWindowPeer(sel.channelName) : null;
-  });
+  // issue 2430 — the focused encrypted window (its network and peer), else
+  // null. A new value only when the window changes: the panes below are
+  // KEYED on it, so each encrypted window gets a pane of its own and none of
+  // a chat's state (a draft, a key being pasted, a search) follows into the
+  // next one, where it would be sent or pinned to the wrong peer.
+  const encryptedWindow = createMemo(
+    () => {
+      const sel = selectedChannel();
+      const peer = sel?.kind === "encrypted" ? encryptedWindowPeer(sel.channelName) : null;
+      return sel && peer !== null ? { networkSlug: sel.networkSlug, nick: peer } : null;
+    },
+    null,
+    { equals: (a, b) => a?.networkSlug === b?.networkSlug && a?.nick === b?.nick },
+  );
 
   // UX-6 bucket A — refcounted overlay scroll-lock for the two
   // Shell-owned mobile overlays (members drawer + AdminPane). The
@@ -910,16 +919,11 @@ const Shell: Component = () => {
                     view+action pane (browse + join), not a chat pane. */}
                   <DirectoryPane networkSlug={selectedChannel()?.networkSlug ?? ""} />
                 </Match>
-                <Match when={encryptedPeer()}>
+                <Match when={encryptedWindow()} keyed>
                   {/* issue 2430 — an encrypted query: its own pane and its
                     own compose line (EncryptedChatPane.tsx says why neither
                     is the scrollback pair). No MembersPane. */}
-                  {(peer) => (
-                    <EncryptedChatPane
-                      networkSlug={selectedChannel()?.networkSlug ?? ""}
-                      nick={peer()}
-                    />
-                  )}
+                  {(w) => <EncryptedChatPane networkSlug={w.networkSlug} nick={w.nick} />}
                 </Match>
               </Switch>
             </section>
@@ -1236,14 +1240,9 @@ const Shell: Component = () => {
                   DirectoryPane component as desktop. */}
                 <DirectoryPane networkSlug={selectedChannel()?.networkSlug ?? ""} />
               </Match>
-              <Match when={encryptedPeer()}>
+              <Match when={encryptedWindow()} keyed>
                 {/* issue 2430 — the encrypted query pane on mobile. */}
-                {(peer) => (
-                  <EncryptedChatPane
-                    networkSlug={selectedChannel()?.networkSlug ?? ""}
-                    nick={peer()}
-                  />
-                )}
+                {(w) => <EncryptedChatPane networkSlug={w.networkSlug} nick={w.nick} />}
               </Match>
             </Switch>
           </section>

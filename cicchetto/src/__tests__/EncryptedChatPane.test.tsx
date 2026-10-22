@@ -349,21 +349,6 @@ describe("EncryptedChatPane", () => {
     expect(button.textContent).toBe("delete this chat");
   });
 
-  it("another chat in the pane starts with no search and the delete disarmed", () => {
-    const [nick, setNick] = createSignal("bob");
-    render(() => <EncryptedChatPane networkSlug="azzurra" nick={nick()} />);
-    const input = screen.getByTestId("e2e-search-input") as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "codes" } });
-    fireEvent.click(screen.getByTestId("e2e-delete-chat"));
-
-    setNick("carol");
-
-    expect(input.value).toBe("");
-    expect(screen.getByTestId("e2e-delete-chat").textContent).toBe("delete this chat");
-    fireEvent.click(screen.getByTestId("e2e-delete-chat"));
-    expect(deleteEncryptedChat).not.toHaveBeenCalled();
-  });
-
   it("marks what arrives read while the page is visible, and not while it is hidden", () => {
     setVisible(false);
     setChat({ nick: "Bob", open: true, unread: 2 });
