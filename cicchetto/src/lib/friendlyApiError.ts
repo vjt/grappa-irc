@@ -439,6 +439,26 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
     case "share_token_consumed":
       // 410 Gone — the visitor share link was already redeemed (one-shot).
       return "This share link has already been used.";
+    case "too_many_devices":
+      // issue 2430 — 409: `E2eKeys` caps a subject at four devices per
+      // network and this would be a fifth.
+      return "This account already has four devices for this network. Remove one first.";
+    case "master_mismatch":
+      // 409 — a device list signed by another master than the one grappa
+      // holds: another device put its list first. No advice to reset: a
+      // replace repeated now would destroy that device's fresh identity.
+      return "Another device started an encryption identity for this network first.";
+    case "stale_list":
+      // 409 — the list's version does not rise above the stored one: another
+      // device changed the list first. Re-read it and sign a higher version.
+      return "Your device list is out of date. Reload it and try again.";
+    case "listed_device":
+      // 409 — the current list still names this device.
+      return "That device is still on your device list. Remove it from the list first.";
+    case "unknown_device":
+      // 422 — a well-signed list naming a key no device of the account
+      // registered on this network.
+      return "That device list names a device that is not registered on this network.";
     case "pairing_already_joined":
       // issue 2430 X1 — 409: another device already scanned this pairing
       // code. A code pairs one device; the other screen can show a new one.
