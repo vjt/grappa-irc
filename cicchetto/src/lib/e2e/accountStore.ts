@@ -1,19 +1,27 @@
 // issue 2430 — the Olm account: one per (subject, network), since vjt ruled
-// ONE identity key per network. It lives in IndexedDB as vodozemac's pickle,
-// sealed with AES-GCM under a key WebCrypto created non-extractable, so the
-// database alone (a profile copied off the disk) never yields the account:
-// opening it takes this origin's running code. Nothing in the page can read
-// the wrapping key's bytes either; it can only ask WebCrypto to use it.
+// ONE identity key per network, with the E2E engine's state for it (peers,
+// pins, sessions, queues: `engine.ts`). Both live in IndexedDB as ONE record,
+// vodozemac's pickle and the state as JSON, sealed with AES-GCM under a key
+// WebCrypto created non-extractable, so the database alone (a profile copied
+// off the disk) never yields the account: opening it takes this origin's
+// running code. Nothing in the page can read the wrapping key's bytes
+// either; it can only ask WebCrypto to use it.
+//
+// One record, because the two change together: a pre-key message uses up a
+// one-time key of the account AND opens a session in the state, and storing
+// one without the other leaves a session nobody can open again, or a key
+// that opens one twice.
 //
 // Every read-modify-write of an account runs under an exclusive Web Lock
 // named after its slot, so two tabs never load the same account, change it
 // differently and store over each other (a one-time key generated in one tab
 // and lost by the other would be published and never decryptable).
 
+import { type E2eState, newState } from "./engine";
 import type { Olm } from "./olm";
 import type { Account } from "./vodozemac/vodozemac_binding";
 
-/** A sealed pickle: AES-GCM ciphertext, and the IV it was sealed with. */
+/** A sealed record: AES-GCM ciphertext, and the IV it was sealed with. */
 export type Sealed = { iv: Uint8Array<ArrayBuffer>; ciphertext: ArrayBuffer };
 
 /** Where sealed accounts and the key that seals them are kept. */
@@ -29,20 +37,22 @@ export type Lock = <T>(name: string, fn: () => Promise<T>) => Promise<T>;
 
 export type AccountSession = {
   account: Account;
+  /** The engine's state for the account, changed in place and stored with it. */
+  state: E2eState;
   /**
    * No usable account was stored, so this one is new: whatever key bundle
    * grappa holds for the slot belongs to an account that is gone.
    */
   created: boolean;
-  /** Seals the account as it is now into its slot. */
+  /** Seals the account and the state as they are now into their slot. */
   persist(): Promise<void>;
 };
 
 export type AccountStore = {
   /**
    * Runs `fn` on the account of `slot` under the slot's lock, and stores the
-   * account when `fn` returns. A failing `fn` stores nothing beyond what it
-   * `persist()`ed itself.
+   * account and its state when `fn` returns. A failing `fn` stores nothing
+   * beyond what it `persist()`ed itself.
    */
   withAccount<T>(slot: string, fn: (session: AccountSession) => Promise<T>): Promise<T>;
 };
@@ -50,14 +60,14 @@ export type AccountStore = {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-async function seal(key: CryptoKey, slot: string, pickle: string): Promise<Sealed> {
+async function seal(key: CryptoKey, slot: string, plain: string): Promise<Sealed> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   // The slot is the additional data: a record copied under another slot does
   // not open there.
   const ciphertext = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv, additionalData: encoder.encode(slot) },
     key,
-    encoder.encode(pickle),
+    encoder.encode(plain),
   );
   return { iv, ciphertext };
 }
@@ -71,16 +81,32 @@ async function open(key: CryptoKey, slot: string, sealed: Sealed): Promise<strin
   return decoder.decode(plain);
 }
 
+/** What a sealed record holds. */
+type StoredRecord = { account: string; state: E2eState };
+
+function parseRecord(plain: string): StoredRecord {
+  const record = JSON.parse(plain) as Partial<StoredRecord> | null;
+  if (typeof record?.account !== "string" || record.state?.v !== 1) {
+    throw new Error("not an account record");
+  }
+  return record as StoredRecord;
+}
+
 export function accountStore(olm: Olm, vault: Vault, lock: Lock): AccountStore {
-  async function load(key: CryptoKey, slot: string): Promise<Account | undefined> {
+  async function load(
+    key: CryptoKey,
+    slot: string,
+  ): Promise<{ account: Account; state: E2eState } | undefined> {
     const sealed = await vault.load(slot);
     if (sealed === undefined) return undefined;
     try {
-      return olm.Account.from_pickle(await open(key, slot, sealed));
+      const record = parseRecord(await open(key, slot, sealed));
+      return { account: olm.Account.from_pickle(record.account), state: record.state };
     } catch (err) {
-      // The wrapping key that sealed it is gone, or the record is damaged:
-      // it can never be opened again, and the slot starts over. Peers that
-      // pinned the old identity will see the new one as a different key.
+      // The wrapping key that sealed it is gone, or the record is damaged (or
+      // a bare pickle from before the state joined it): it can never be
+      // opened again, and the slot starts over. Peers that pinned the old
+      // identity will see the new one as a different key.
       console.warn(
         `[e2e] the stored account for ${slot} cannot be opened; starting a new one`,
         err,
@@ -94,10 +120,15 @@ export function accountStore(olm: Olm, vault: Vault, lock: Lock): AccountStore {
       lock(`grappa-e2e:account:${slot}`, async () => {
         const key = await vault.wrappingKey();
         const stored = await load(key, slot);
-        const account = stored ?? new olm.Account();
-        const persist = async () => vault.store(slot, await seal(key, slot, account.pickle()));
+        const account = stored?.account ?? new olm.Account();
+        const state = stored?.state ?? newState();
+        const persist = async () =>
+          vault.store(
+            slot,
+            await seal(key, slot, JSON.stringify({ account: account.pickle(), state })),
+          );
         try {
-          const result = await fn({ account, created: stored === undefined, persist });
+          const result = await fn({ account, state, created: stored === undefined, persist });
           await persist();
           return result;
         } finally {

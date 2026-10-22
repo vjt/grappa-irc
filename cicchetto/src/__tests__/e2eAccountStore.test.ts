@@ -1,10 +1,11 @@
-// issue 2430 — the Olm account cic keeps per (subject, network), sealed under
-// a non-extractable key. The vault and the lock are the two browser services
+// issue 2430 — the Olm account cic keeps per (subject, network), with the E2E
+// engine's state for it, sealed under a non-extractable key. The vault and the lock are the two browser services
 // (IndexedDB, Web Locks) jsdom does not have; they are replaced by in-memory
 // twins with the same contract, and everything else is real: the vodozemac
 // binding, and WebCrypto's AES-GCM.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { accountStore, type Lock, type Sealed, type Vault } from "../lib/e2e/accountStore";
+import { newState } from "../lib/e2e/engine";
 import { olm } from "./helpers/olm";
 
 function memoryVault(): Vault & { records: Map<string, Sealed>; rekey(): void } {
@@ -150,6 +151,97 @@ describe("accountStore", () => {
     expect(
       await store.withAccount(SLOT, async ({ account }) => account.one_time_keys().length),
     ).toBe(2);
+  });
+
+  it("stores the engine state in the same record, and restores it with the account", async () => {
+    const vault = memoryVault();
+    const store = accountStore(olm(), vault, memoryLock());
+
+    const fresh = await store.withAccount(SLOT, async ({ state }) => {
+      const before = structuredClone(state);
+      state.pins.bob = "a-pinned-key";
+      return before;
+    });
+    const restored = await store.withAccount(SLOT, async ({ state }) => state);
+
+    expect(fresh).toEqual(newState());
+    expect(restored).toEqual({ ...newState(), pins: { bob: "a-pinned-key" } });
+    // Sealed like the account: nothing of it in the clear.
+    const sealed = vault.records.get(SLOT);
+    if (sealed === undefined) throw new Error("nothing stored");
+    expect(new TextDecoder("latin1").decode(new Uint8Array(sealed.ciphertext))).not.toContain(
+      "a-pinned-key",
+    );
+  });
+
+  it("persist() stores the state with the account, so a failing session keeps both as persisted", async () => {
+    const store = accountStore(olm(), memoryVault(), memoryLock());
+
+    await expect(
+      store.withAccount(SLOT, async ({ account, state, persist }) => {
+        account.generate_one_time_keys(1);
+        state.pins.bob = "kept";
+        await persist();
+        account.generate_one_time_keys(1);
+        state.pins.carol = "lost";
+        throw new Error("send failed");
+      }),
+    ).rejects.toThrow("send failed");
+
+    expect(
+      await store.withAccount(SLOT, async ({ account, state }) => ({
+        keys: account.one_time_keys().length,
+        pins: state.pins,
+      })),
+    ).toEqual({ keys: 1, pins: { bob: "kept" } });
+  });
+
+  it("starts over on a record that holds a bare pickle, the format before the state joined it", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const vault = memoryVault();
+    const store = accountStore(olm(), vault, memoryLock());
+    const old = new (olm().Account)();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(SLOT) },
+      await vault.wrappingKey(),
+      new TextEncoder().encode(old.pickle()),
+    );
+    vault.records.set(SLOT, { iv, ciphertext });
+
+    const opened = await store.withAccount(SLOT, async ({ account, created }) => ({
+      created,
+      ed25519: account.ed25519_key(),
+    }));
+
+    expect(opened.created).toBe(true);
+    expect(opened.ed25519).not.toBe(old.ed25519_key());
+    expect(warn).toHaveBeenCalledTimes(1);
+    old.free();
+  });
+
+  it("starts over on a record that holds an account but no engine state", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const vault = memoryVault();
+    const store = accountStore(olm(), vault, memoryLock());
+    const old = new (olm().Account)();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(SLOT) },
+      await vault.wrappingKey(),
+      new TextEncoder().encode(JSON.stringify({ account: old.pickle() })),
+    );
+    vault.records.set(SLOT, { iv, ciphertext });
+
+    const opened = await store.withAccount(SLOT, async ({ account, created }) => ({
+      created,
+      ed25519: account.ed25519_key(),
+    }));
+
+    expect(opened.created).toBe(true);
+    expect(opened.ed25519).not.toBe(old.ed25519_key());
+    expect(warn).toHaveBeenCalledTimes(1);
+    old.free();
   });
 
   it("two sessions on one slot never interleave, so neither loses the other's keys", async () => {
