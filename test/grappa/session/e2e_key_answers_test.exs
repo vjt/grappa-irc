@@ -8,11 +8,13 @@ defmodule Grappa.Session.E2eKeyAnswersTest do
   @keys_cost 8_000
 
   describe "per nick" do
-    test "a nick gets one KEYS answer per 30 s, a one-time key in it at most once a minute" do
+    test "a nick gets one KEYS answer per 15 s, a one-time key in it at most once a minute" do
+      assert E2eKeyAnswers.nick_interval_ms() == 15_000
       answers = E2eKeyAnswers.record(E2eKeyAnswers.new(), "alice", :otk, @keys_cost, 0)
 
-      assert {:error, :too_soon} = E2eKeyAnswers.admit(answers, "alice", 29_999)
-      assert {:ok, :fallback} = E2eKeyAnswers.admit(answers, "alice", 30_000)
+      assert {:error, :too_soon} = E2eKeyAnswers.admit(answers, "alice", 14_999)
+      assert {:ok, :fallback} = E2eKeyAnswers.admit(answers, "alice", 15_000)
+      assert {:ok, :fallback} = E2eKeyAnswers.admit(answers, "alice", 59_999)
       assert {:ok, :otk} = E2eKeyAnswers.admit(answers, "alice", 60_000)
     end
 
@@ -23,7 +25,7 @@ defmodule Grappa.Session.E2eKeyAnswersTest do
 
     test "an answer that carried the fallback key does not count against the one-time keys" do
       answers = E2eKeyAnswers.record(E2eKeyAnswers.new(), "alice", :fallback, @keys_cost, 0)
-      assert {:ok, :otk} = E2eKeyAnswers.admit(answers, "alice", 30_000)
+      assert {:ok, :otk} = E2eKeyAnswers.admit(answers, "alice", 15_000)
     end
   end
 
@@ -59,10 +61,10 @@ defmodule Grappa.Session.E2eKeyAnswersTest do
         E2eKeyAnswers.record(acc, "nick#{n}", :otk, 1, n * 10_000)
       end)
 
-    # At 4000 s, only the nicks answered in the last 30 s and 60 s are still
+    # At 4000 s, only the nicks answered in the last 15 s and 60 s are still
     # held, the spend of the last minute, and the one-time keys of the hour.
     %E2eKeyAnswers{answered: answered, otk_given: otk_given, otks: otks, spent: spent} = answers
-    assert map_size(answered) <= 3
+    assert map_size(answered) <= 2
     assert map_size(otk_given) <= 6
     assert length(otks) <= 360
     assert length(spent) <= 6
@@ -73,8 +75,9 @@ defmodule Grappa.Session.E2eKeyAnswersTest do
       answered = simulate(requests)
 
       for {at, nick, _, _} <- answered do
-        same = Enum.count(answered, fn {t, n, _, _} -> n == nick and t >= at and t < at + 30_000 end)
-        assert same == 1, "#{same} KEYS answers to #{nick} within 30 s of #{at}"
+        interval = E2eKeyAnswers.nick_interval_ms()
+        same = Enum.count(answered, fn {t, n, _, _} -> n == nick and t >= at and t < at + interval end)
+        assert same == 1, "#{same} KEYS answers to #{nick} within #{interval} ms of #{at}"
       end
 
       for {at, nick, :otk, _} <- answered do

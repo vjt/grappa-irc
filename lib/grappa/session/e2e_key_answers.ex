@@ -12,9 +12,10 @@ defmodule Grappa.Session.E2eKeyAnswers do
   bounded on both, with w2's numbers (agreed on 2430, the same irc-olm
   uses):
 
-    * per folded nick, one KEYS answer per `nick_interval_ms/0`, and a
-      one-time key in it at most once per `otk_interval_ms/0` (else the
-      fallback key);
+    * per folded nick, one KEYS answer per `nick_interval_ms/0`, half of
+      irc-olm's KEYREQ retry, so an honest peer that asks again is answered
+      while a stranger hammering one nick is not; and a one-time key in it
+      at most once per `otk_interval_ms/0` (else the fallback key);
     * per connection, at most `otks_per_hour/0` one-time keys an hour;
     * per connection, KEYS answers spend at most `bank_budget_ms/0` of
       fake-lag bank in any `bank_window_ms/0`. The per-nick limits alone
@@ -30,7 +31,7 @@ defmodule Grappa.Session.E2eKeyAnswers do
   asked: every call drops what has left its window.
   """
 
-  @nick_interval_ms 30_000
+  @nick_interval_ms 15_000
   @otk_interval_ms 60_000
   @otks_per_hour 30
   @hour_ms 3_600_000
@@ -55,7 +56,7 @@ defmodule Grappa.Session.E2eKeyAnswers do
         }
 
   @doc "How often one nick gets a KEYS answer."
-  @spec nick_interval_ms() :: 30_000
+  @spec nick_interval_ms() :: 15_000
   def nick_interval_ms, do: @nick_interval_ms
 
   @doc "How often one nick gets a one-time key."

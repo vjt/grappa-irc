@@ -141,7 +141,7 @@ defmodule Grappa.Session.E2eSessionTest do
       assert rows(network) == 0
     end
 
-    test "a nick asking again within 30 s is not answered; another nick is, with the next key" do
+    test "a nick asking again within 15 s is not answered; another nick is, with the next key" do
       {server, pid, user, network} = connected_session()
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
       subject = {:user, user.id}
@@ -153,7 +153,7 @@ defmodule Grappa.Session.E2eSessionTest do
       keyreq!(server, "alice")
       assert await_keys(server, "alice") == fallback
       # Recorded as what she got, not what she was allowed: a one-time key
-      # stays hers to take once the 30 s are up.
+      # stays hers to take once the 15 s are up.
       refute Map.has_key?(:sys.get_state(pid).e2e_key_answers.otk_given, "alice")
 
       otk = keys_payload(false)
