@@ -85,8 +85,17 @@ export type Peer = {
 /**
  * A message on its way: the inner message, as the JSON Olm encrypts, and the
  * caller's tag for it, which every event and payload about it carries back.
+ * `expiresAt` is an order's answer deadline (unix seconds): an ACK carries
+ * its CHAL's, everything else none (a message stored before it existed
+ * reads `undefined`, which is none too).
  */
-type Outgoing = { plaintext: string; urgent: boolean; sends: number; tag: string };
+type Outgoing = {
+  plaintext: string;
+  urgent: boolean;
+  sends: number;
+  tag: string;
+  expiresAt: number | null;
+};
 /** Waiting for keys. `ed25519` is the key it is meant for; "" is whatever key answers. */
 type Queued = { nick: string; ed25519: string; msg: Outgoing; at: number };
 /** Handed to grappa; `msgid` once grappa named it (`sent()`), as a NACK refers to it. */
@@ -192,7 +201,9 @@ export type E2eEvent =
 /**
  * A payload for grappa's send door. `ref` and `tag` are set on a PKMSG/MSG
  * that carries a message: report grappa's msgid for it with `sent()` (a NACK
- * names it), or `discard()` it when grappa refused the send.
+ * names it), or `discard()` it when grappa refused the send. `expiresAt` is
+ * set on the one that answers an order: the door's `expires_at`, past which
+ * grappa drops it unsent (CLIENT_PROTOCOL §4f).
  */
 export type Outbound = {
   target: string;
@@ -201,6 +212,7 @@ export type Outbound = {
   priority: "control" | "text";
   ref?: string;
   tag?: string;
+  expiresAt?: number;
 };
 
 export type Result = { events: E2eEvent[]; outbound: Outbound[] };
@@ -311,9 +323,16 @@ export class Engine {
    * (or keys already asked for), queue it and ask for keys. A nick with no
    * pin is asked for keys too: whatever key answers is pinned on first use.
    * `tag` is the caller's name for the message: whatever happens to it later,
-   * in this call or another, names it by its tag.
+   * in this call or another, names it by its tag. `expiresAt` is the answer
+   * deadline of the order an ACK answers (unix seconds), null for anything
+   * else.
    */
-  send(nick: string, inner: Record<string, unknown>, tag: string): Result {
+  send(
+    nick: string,
+    inner: Record<string, unknown>,
+    tag: string,
+    expiresAt: number | null,
+  ): Result {
     const res = emptyResult();
     if (fold(nick) === fold(this.ownNick)) {
       // grappa would answer our own KEYREQ with our own bundle, which
@@ -331,7 +350,7 @@ export class Engine {
       return res;
     }
     const urgent = typeof inner.t === "string" && URGENT_INNER.has(inner.t);
-    const msg: Outgoing = { plaintext, urgent, sends: 1, tag };
+    const msg: Outgoing = { plaintext, urgent, sends: 1, tag, expiresAt };
     const peer = this.pinned(nick);
     if (peer === undefined) this.enqueue(nick, "", msg, res);
     else this.sendTo(nick, peer, msg, res);
@@ -359,6 +378,19 @@ export class Engine {
     const key = fold(nick);
     delete this.state.outq[key];
     this.state.sent = this.state.sent.filter((s) => fold(s.nick) !== key);
+  }
+
+  /**
+   * grappa dropped `msgid` after accepting it (`e2e_send_dropped`): it never
+   * left whole, so no NACK will name it. Answers who it was for and the
+   * caller's tag, or undefined for a msgid this device did not send (the
+   * push reaches every client of the user) or no longer remembers.
+   */
+  dropped(msgid: string): { nick: string; tag: string } | undefined {
+    const record = this.state.sent.find((s) => s.msgid === msgid);
+    if (record === undefined) return undefined;
+    this.discard(record.ref);
+    return { nick: record.nick, tag: record.msg.tag };
   }
 
   private sendTo(nick: string, peer: Peer, msg: Outgoing, res: Result): void {
@@ -462,6 +494,7 @@ export class Engine {
         priority: msg.urgent ? "control" : "text",
         ref,
         tag: msg.tag,
+        ...(typeof msg.expiresAt === "number" ? { expiresAt: msg.expiresAt } : {}),
       });
     } finally {
       session.free();

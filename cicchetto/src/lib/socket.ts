@@ -338,7 +338,8 @@ let _socket: Socket | null = null;
 // value or null: what an order challenge names, matched exactly before
 // cicchetto answers one. A pre-47 server never sends it, and an order
 // challenge from a bot there goes unanswered (fail closed), so
-// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9. From here on cicchetto also
+// sends 46's `expires_at` (on an order's ACK) and reads `e2e_send_dropped`.
 export const CLIENT_PROTOCOL_VERSION = 47;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.

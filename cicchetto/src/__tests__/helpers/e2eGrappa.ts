@@ -17,8 +17,8 @@ export class Grappa {
   bundles = new Map<string, { otks: string[]; fallback: string | null }>();
   nextId = 1;
   pageSize = 100;
-  /** Every send the door took, with who sent it. */
-  sends: (Outbound & { by: string })[] = [];
+  /** Every send the door took, with who sent it and the msgid it named it. */
+  sends: (Outbound & { by: string; msgid: string })[] = [];
   refuse: (o: Outbound) => DoorRefusal | undefined = () => undefined;
   /** A KEYREQ the door takes and nobody answers. */
   unanswered: (o: Outbound) => boolean = () => false;
@@ -66,8 +66,8 @@ export class Grappa {
       send: async (o) => {
         const refused = this.refuse(o);
         if (refused !== undefined) return { refused };
-        this.sends.push({ ...o, by: nick });
         const msgid = base64Unpadded(crypto.getRandomValues(new Uint8Array(8)));
+        this.sends.push({ ...o, by: nick, msgid });
         if (o.verb === "keyreq") {
           if (this.unanswered(o)) return { msgid };
           const bundle = this.bundles.get(fold(o.target));

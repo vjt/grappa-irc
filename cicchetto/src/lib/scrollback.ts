@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
+import { sendLog } from "./e2e/orders";
 import { identityMoved } from "./identityMoved";
 import { identityScopedStore } from "./identityScopedStore";
 import { membersByChannel } from "./members";
@@ -1645,7 +1646,24 @@ const exports = identityScopedStore((onIdentityChange) => {
     // (networks ↔ selection). Three-line inline body + the doc here
     // is cheaper than hoisting `setCursorIfAdvances` to a leaf module
     // for a single second caller.
-    const row = await apiSendMessage(t, slug, name, body, relay);
+    // issue 2430 — a bot's order challenge is ACKed only for a line THIS cic
+    // sent (`e2e/orders.ts`): every PRIVMSG it sends is logged here, before
+    // the POST so no challenge can come first, and forgotten if the POST
+    // fails. A NOTICE is no order. The echo never writes the log: it carries
+    // every client's lines, and a line another client sent is exactly what
+    // the ACK must not confirm.
+    const sent =
+      relay?.kind === "notice"
+        ? null
+        : { slug, target: relay?.target ?? name, body, at: Date.now() };
+    if (sent !== null) sendLog.record(sent);
+    let row: Awaited<ReturnType<typeof apiSendMessage>>;
+    try {
+      row = await apiSendMessage(t, slug, name, body, relay);
+    } catch (err) {
+      if (sent !== null) sendLog.forget(sent);
+      throw err;
+    }
     // #788 — the cursor POST below was already unreachable past a rotation, but
     // only by accident: the store purge empties the pane, `hasRenderedRow`
     // goes false, and the anti-poison gate declines. That is a guarantee owed

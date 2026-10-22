@@ -15,7 +15,9 @@
 //   5. inbox messages are acknowledged last.
 //
 // SAS steps (`sas.ts`) ride the same order: the verifier changes the state
-// and queues its steps, which go through the engine like any message.
+// and queues its steps, which go through the engine like any message. So do
+// the ACKs of order challenges (`orders.ts`): a CHAL is answered in the drain
+// that decrypted it, only for a line this cic sent, and never shown.
 //
 // A message processed again (the tab died after 2) finds its rows already
 // written, and one past the stored watermark (`E2eState.inbox`) is skipped:
@@ -23,9 +25,10 @@
 // (AUTOINCREMENT), so the watermark is enough.
 
 import type { AccountStore } from "./accountStore";
-import type { ChatChange, ChatStore, DoorRefusal } from "./chatStore";
+import type { ChatChange, ChatStore, DoorRefusal, SendDropped } from "./chatStore";
 import { type E2eEvent, type E2eState, Engine, type Outbound } from "./engine";
 import type { Olm } from "./olm";
+import { type Challenge, ORDER_TAG, parseChallenge } from "./orders";
 import { isSas, SAS_TAG, type SasHost, type SasStep, type SasView, Verifier } from "./sas";
 import { fold, type ReceiveVerb } from "./wire";
 
@@ -47,7 +50,13 @@ export type Door = {
   send(out: Outbound): Promise<{ msgid: string } | { refused: DoorRefusal }>;
 };
 
-export type E2eContext = { slot: string; ownNick: string; door: Door };
+export type E2eContext = {
+  slot: string;
+  ownNick: string;
+  door: Door;
+  /** Whether this cic sent the line `chal` names, there, in the 15 s before `at` (`SendLog.confirms`). */
+  orders: (chal: Challenge, at: number) => Promise<boolean>;
+};
 
 /**
  * What an operation changed: the chats it changed (folded nicks), how many
@@ -76,6 +85,8 @@ export type E2eClient = {
   ): Promise<{ result: ReturnType<Engine["pin"]>; chats: string[] }>;
   /** The user's step in the SAS with the key `nick` is pinned to (`sas.ts`). */
   verify(ctx: E2eContext, nick: string, step: SasStep): Promise<Report>;
+  /** grappa dropped `msgid` after accepting it (`e2e_send_dropped`): its row turns failed. */
+  dropped(ctx: E2eContext, msgid: string, reason: SendDropped): Promise<Report>;
   /**
    * Deletes the chat with `nick` (`ChatStore.remove`) and what the engine
    * still holds of it in the clear (`Engine.forget`); answers the chat it
@@ -110,7 +121,8 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
     const id = `in:${inbox}:${i}`;
     switch (e.kind) {
       case "received":
-        // Only text is shown; a CHAL or an ACK is the authorisation slice's.
+        // Only text is shown. A CHAL is answered in the drain (`answer`),
+        // never shown; an ACK means nothing here (cic challenges no one).
         if (e.inner.t === "text" && typeof e.inner.body === "string" && inbox !== null) {
           changes.push({
             op: "add",
@@ -148,14 +160,14 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
         }
         break;
       case "send_queued":
-        if (e.tag !== SAS_TAG) {
+        if (!rowless(e.tag)) {
           changes.push({ op: "out", nick: e.nick, id: e.tag, state: "queued", reason: null });
         }
         break;
       case "send_failed":
         for (const tag of e.tags) {
-          if (tag === SAS_TAG) {
-            sasStepLost(e.nick, e.reason);
+          if (rowless(tag)) {
+            rowlessLost(tag, e.nick, e.reason);
           } else {
             changes.push({ op: "out", nick: e.nick, id: tag, state: "failed", reason: e.reason });
           }
@@ -176,9 +188,18 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
   return changes;
 }
 
-// A SAS step has no row to mark: the SAS waits for it until its time runs out.
-function sasStepLost(nick: string, reason: string): void {
-  console.warn(`[e2e] a SAS step to ${nick} was not sent (${reason}); the SAS will time out`);
+// A SAS step and an ACK have no row to mark: the SAS waits for its step until
+// its time runs out, and the bot refuses the order once its challenge expires.
+const rowless = (tag: string): boolean => tag === SAS_TAG || tag === ORDER_TAG;
+
+function rowlessLost(tag: string, nick: string, reason: string): void {
+  if (tag === SAS_TAG) {
+    console.warn(`[e2e] a SAS step to ${nick} was not sent (${reason}); the SAS will time out`);
+  } else {
+    console.warn(
+      `[e2e] the ACK of an order to ${nick} was not sent (${reason}); it goes unconfirmed`,
+    );
+  }
 }
 
 const waitsOnTheClock = (state: E2eState): boolean =>
@@ -202,10 +223,10 @@ export function e2eClient(
         }
         continue;
       }
-      if (out.tag === SAS_TAG) {
+      if (rowless(out.tag)) {
         if ("refused" in answer) {
           engine.discard(out.ref);
-          sasStepLost(out.target, answer.refused);
+          rowlessLost(out.tag, out.target, answer.refused);
         } else {
           engine.sent(out.ref, answer.msgid);
         }
@@ -255,11 +276,36 @@ export function e2eClient(
     const { sends, changes, chats: touched } = verifier.take();
     const outbound: Outbound[] = [];
     for (const { nick, inner } of sends) {
-      const res = engine.send(nick, inner, SAS_TAG);
+      const res = engine.send(nick, inner, SAS_TAG, null);
       changes.push(...changesFor(res.events, now(), null));
       outbound.push(...res.outbound);
     }
     return { changes, outbound, chats: touched };
+  }
+
+  // The answer to an order challenge from `nick`: an ACK, with the CHAL's own
+  // deadline (grappa drops it unsent past that), when this cic sent the line
+  // the CHAL names; otherwise nothing, and nothing shown. A bot only sends a
+  // CHAL to the key pinned to the nick that spoke, so a CHAL for a line this
+  // cic never sent is someone giving orders in the user's name, or one of the
+  // fail-closed cases (`orders.ts`); either way the bot refuses the order.
+  async function answer(
+    ctx: E2eContext,
+    engine: Engine,
+    nick: string,
+    inner: Record<string, unknown>,
+  ): Promise<{ changes: ChatChange[]; outbound: Outbound[] }> {
+    const chal = parseChallenge(inner);
+    if (chal === null) {
+      console.debug(`[e2e] dropped a malformed order challenge from ${nick}`);
+      return { changes: [], outbound: [] };
+    }
+    if (!(await ctx.orders(chal, now()))) {
+      console.warn(`[e2e] ${nick} asked to confirm an order this cic did not send; not confirmed`);
+      return { changes: [], outbound: [] };
+    }
+    const res = engine.send(nick, { t: "ack", nonce: chal.nonce }, ORDER_TAG, chal.expiresAt);
+    return { changes: changesFor(res.events, now(), null), outbound: res.outbound };
   }
 
   // Steps 2–4 for what an operation made: `changes` and what the verifier
@@ -301,8 +347,13 @@ export function e2eClient(
             changes.push(...changesFor(res.events, now(), m.id));
             outbound.push(...res.outbound);
             for (const [i, e] of res.events.entries()) {
-              if (e.kind === "received" && isSas(e.inner)) {
+              if (e.kind !== "received") continue;
+              if (isSas(e.inner)) {
                 await verifier.receive(e.nick, e.peer.ed25519, e.inner, `in:${m.id}:${i}`);
+              } else if (e.inner.t === "chal") {
+                const acked = await answer(ctx, engine, e.nick, e.inner);
+                changes.push(...acked.changes);
+                outbound.push(...acked.outbound);
               }
             }
             state.inbox = m.id;
@@ -336,7 +387,7 @@ export function e2eClient(
     send: (ctx, nick, body) =>
       withEngine(ctx, async (engine, state, persist) => {
         const tag = crypto.randomUUID();
-        const res = engine.send(nick, { t: "text", body }, tag);
+        const res = engine.send(nick, { t: "text", body }, tag, null);
         const touched = new Set(
           await chats.apply(ctx.slot, [
             {
@@ -416,6 +467,18 @@ export function e2eClient(
         await persist();
         await chats.remove(ctx.slot, nick);
         return [fold(nick)];
+      }),
+
+    dropped: (ctx, msgid, reason) =>
+      withEngine(ctx, async (engine, state, persist, verifier) => {
+        const lost = engine.dropped(msgid);
+        const changes: ChatChange[] = [];
+        if (lost !== undefined && rowless(lost.tag)) {
+          rowlessLost(lost.tag, lost.nick, reason);
+        } else if (lost !== undefined) {
+          changes.push({ op: "out", nick: lost.nick, id: lost.tag, state: "failed", reason });
+        }
+        return finish(ctx, engine, verifier, state, persist, changes, []);
       }),
 
     identity: (ctx, nicks) =>

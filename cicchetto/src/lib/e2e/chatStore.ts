@@ -21,9 +21,14 @@ import { fold } from "./wire";
 
 /** Where an outgoing message is: waiting for keys, handed to grappa, accepted, or not. */
 export type OutState = "queued" | "sending" | "sent" | "failed";
-/** grappa's send door refused the payload: its queue for the peer was full, or worse. */
-export type DoorRefusal = "rate-limited" | "too-large" | "refused";
-export type OutFailure = SendFailure | DoorRefusal;
+/**
+ * grappa's send door refused the payload: its queue for the peer was full,
+ * an order's deadline was already out of reach, or worse.
+ */
+export type DoorRefusal = "rate-limited" | "too-large" | "too-late" | "refused";
+/** grappa accepted the payload, then dropped it unsent (`e2e_send_dropped`). */
+export type SendDropped = "late" | "send-failed" | "session-ended";
+export type OutFailure = SendFailure | DoorRefusal | SendDropped;
 
 export type ChatRow =
   | { kind: "in"; id: string; at: number; nick: string; ed25519: string; body: string }

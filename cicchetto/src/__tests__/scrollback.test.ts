@@ -316,6 +316,52 @@ describe("scrollback verbs", () => {
     });
   });
 
+  // issue 2430 — a bot's order challenge is ACKed only for a line this cic
+  // sent: what goes out through this door, and nothing else, is in the log.
+  it("logs every PRIVMSG it sends for order challenges, never a NOTICE or a failed send", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    const { sendLog } = await import("../lib/e2e/orders");
+    const sha256 = async (body: string) =>
+      Array.from(
+        new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))),
+        (b) => b.toString(16).padStart(2, "0"),
+      ).join("");
+    const scope = { slug: "freenode", network: "Freenode", casemapping: "ascii" as const };
+    const sentHere = async (channel: string, body: string) =>
+      sendLog.confirms(
+        {
+          network: "Freenode",
+          channel,
+          senderMask: "alice!~a@host",
+          lineSha256: await sha256(body),
+          nonce: "bm9uY2U",
+          expiresAt: Math.floor(Date.now() / 1000) + 15,
+        },
+        scope,
+        Date.now(),
+      );
+    vi.mocked(api.sendMessage).mockResolvedValue(null);
+
+    await scrollback.sendMessage("freenode", "#grappa", "bot: ping");
+    await scrollback.sendMessage("freenode", "#grappa", "\x01PING 1\x01", {
+      kind: "ctcp",
+      target: "bot",
+    });
+    await scrollback.sendMessage("freenode", "#grappa", "bot: notice", {
+      kind: "notice",
+      target: "bot",
+    });
+    vi.mocked(api.sendMessage).mockRejectedValueOnce(new Error("429"));
+    await expect(scrollback.sendMessage("freenode", "#grappa", "bot: lost")).rejects.toThrow();
+
+    expect(await sentHere("#grappa", "bot: ping")).toBe(true);
+    expect(await sentHere("bot", "\x01PING 1\x01")).toBe(true);
+    expect(await sentHere("bot", "bot: notice")).toBe(false);
+    expect(await sentHere("#grappa", "bot: lost")).toBe(false);
+  });
+
   // Bucket D — post-success cursor advance. The id from the 201 body
   // must drive a `setReadCursor` write (forward-only) so the in-pane
   // unread marker collapses and any second device of this operator
