@@ -3573,3 +3573,125 @@ CTCP probes still bypass the pacer.
 COLD deploy: the `E2ePacer` struct changes, and it is a `LongLivedModules`
 state helper. Protocol 46 (c2 took 45): the `expires_at` request field, the
 `too_late` token and the `e2e_send_dropped` push.
+<!-- entry #2430i -->
+
+---
+
+## 2026-10-22 — #2430: encrypted queries in cic — the chat's history: delete, the close prompt, search
+
+Slice f: the three verbs 2430's "cicchetto side" asks of the encrypted
+window's local history. The four forks are 2430 comment 6341689166; the
+orchestrator took 1, 1a, 2 and 3 as recommended and picked the archive's
+button for 4.
+
+- **No cache was built: it already existed (c2, #2430g).** "Decrypted
+  messages cached only on the device (IndexedDB, encrypted at rest)" is
+  `lib/e2e/chatStore.ts`: one sealed index record per (subject, network) and
+  one sealed record per chat under a random id, AES-GCM under the same
+  non-extractable wrapping key as the Olm account, every change under the
+  slot's chat lock, `CHAT_ROWS_MAX` rows per chat. Closing a window already
+  hid the chat and kept its rows. f adds verbs on that store and nothing
+  beside it.
+- **Delete (fork 1).** `ChatStore.remove` deletes the chat's sealed record and
+  its index entry (`Vault.remove`, new: an IndexedDB delete, durable on
+  commit like `put`). The record goes before the index entry that names it:
+  a tab dying in between leaves an entry whose rows read as none, and
+  deleting again finishes it; the other order would leave sealed rows that
+  no index names and nothing would ever delete. `deleteEncryptedChat` posts
+  the change on the BroadcastChannel like every chat change, so every tab
+  drops the window, and the selection close-watcher moves focus as after a
+  close. A later message from the peer, or `/equery`, opens the chat empty
+  under a new random id.
+- **What delete does NOT touch: trust.** The pin, the verified flag and the
+  Olm sessions stay in `E2eState`. Deleting history must not reset trust:
+  otherwise the next message is a fresh first contact, and a key verified by
+  emoji has to be verified again. The e2e proves it from the pane (the
+  peer's key is still the pinned one after the delete) and the unit test
+  from the wire (the next message goes out with no KEYREQ).
+- **Delete also drops the engine's plaintext for the nick (fork 1a).** The
+  sealed account record held some of the chat in the clear: messages waiting
+  for keys (`OUTQ_TTL_MS`) and sent messages kept for a re-send after a NACK
+  (`SENT_MEMORY_MS`, half an hour). `Engine.forget` drops both for the folded
+  nick. The price, accepted: a message still waiting for keys is never sent,
+  and a NACK for a forgotten message finds nothing to re-send (dropped as
+  `unknown-nack-ref`, as for a msgid long forgotten). `client.deleteChat`
+  runs under the account lock (no drain or send of another tab interleaves)
+  in the order forget, persist, remove the rows: a delete failing half way
+  has dropped the plaintext and leaves rows to delete again, never rows gone
+  with the text still kept.
+- **Consequences, so nobody rediscovers them.** The "key changed" badge is
+  derived from the rows (`trustOf`: a `key_alarm` row with no pin, accept or
+  verification after it), so deleting the chat clears it; the engine still
+  ignores the other key, and the next line written with it raises a new
+  alarm. A delete does not end an emoji comparison under way: the SAS lives
+  in `E2eState.sas`, not in the rows, `Engine.forget` drops its steps still
+  kept for a re-send like any other, and the row the SAS writes when it ends
+  (cancelled at its timeout, or verified) opens the chat again, as any new
+  row does. A delete whose index write fails after the record went leaves
+  this tab showing rows that are gone, with the other tabs not told, until it
+  is retried (deleting again finishes it).
+- **The close prompt (fork 2).** The × on an encrypted window whose chat
+  keeps rows asks Delete / Keep / Cancel, Cancel the default (#195). Delete
+  is the affirmative and Keep, the old close, is the confirm modal's third
+  door (#816). The forks comment had it the other way round, Keep as the
+  affirmative; the review caught that the affirmative is painted red
+  (`.confirm-modal-confirm`) and the third door calm accent ("neither
+  destructive nor a dismissal"), so a user steering by colour avoided the
+  red Keep and tapped the calm button that destroys history for good. The
+  roles were swapped to match every other destructive yes in cic, and the
+  orchestrator was told. Notices count as rows: they are what Delete
+  deletes. A chat with no rows closes without asking. Whether it has rows is
+  read from the store (`encryptedChatHasRows`), not from the window's copy,
+  since the × can close a chat this tab never showed.
+- **Each encrypted window mounts a pane of its own (found by the review, a
+  c2 defect).** Shell mounted `EncryptedChatPane` under a non-keyed `Match`,
+  so moving from one encrypted window to another re-pointed the SAME pane:
+  a draft typed for Bob went to Carol on the next Enter, and a key pasted in
+  Bob's window and submitted in Carol's pinned it to carol as verified. Both
+  Matches are now keyed on the focused window (network and peer, compared
+  by value), so every chat's state, the new search and armed delete
+  included, goes with its pane.
+- **Search (fork 3) is the open window's.** A filter box in the pane header:
+  a case-insensitive substring match over the bodies of the messages in and
+  out, notice rows hidden while it filters, "N of M messages", Esc clears. It
+  looks at the rows the window already holds decrypted, at most
+  `CHAT_ROWS_MAX` (older rows were dropped by the store long before):
+  nothing indexed, nothing leaving the page, which is all 2430's line asks
+  ("client-side only, no server index, no blind index"). A search across
+  every chat of a network was the alternative: a results UI and unsealing
+  every chat record per search, for nothing the spec asks.
+- **"Delete this chat" (fork 4) is the archive's `InlineConfirmButton`**
+  ("delete this chat", then "really delete?"), the orchestrator's pick for
+  consistency with the delete cic already has for grappa's DM history; the
+  confirm modal is the close prompt's alone. Another chat gets a fresh pane
+  (above), so a tap armed on one chat never deletes another.
+- **Kept chats have no list.** The archive lists grappa's scrollback, which
+  encrypted rows never reach; a closed encrypted chat comes back with
+  `/equery <nick>`, as before. Not proposed.
+
+Tested: the store (delete, the vault record gone, a delete and a write from
+two tabs both land, a deleted chat written to again starts over); the engine
+(the nick's queued and sent plaintext gone and nobody else's, a forgotten
+queued message never sent when the keys come, a NACK for a forgotten message
+finds nothing); the client (rows and plaintext gone, pin and session kept, a
+failing row delete has already stored the forgetting); the glue (every tab
+told, the pin kept, a new message starts over); the close prompt (both doors,
+Cancel, the empty chat, failures said); the pane (search, count, Esc, the
+two taps); Shell (a fresh pane for another chat and for the same nick on
+another network, the same window keeping its pane, on both layouts). Hand
+mutants over the store, the engine, the client, the glue, the close prompt,
+the pane and Shell's mount: 29 run, 29 killed. End to end
+(`issue2430-history.spec.ts`): two grappa users in two browsers chat over
+real Olm through a real ircd; Alice searches, keeps, deletes, takes Bob's next
+message into an empty chat, deletes it with the window's button and reloads.
+The sealed records in IndexedDB's `chats` store are counted around each
+delete (index plus chat, then the index alone), so a delete that dropped the
+index entry and left the record would fail, and the reload shows the window's
+empty list is what IndexedDB holds. Green locally on the final tree: the
+spec 4 of 4 on its own, and the full integration suite 1053 passed, 1
+skipped, 1 failed. The red was `issue1250-ime-paste-flood-guard`, which died
+logging in (the WebSocket never upgraded, `Database busy` on its teardown)
+before reaching anything this slice touches, and passed 10 of 10 in
+isolation.
+
+Client-only, no wire change: the cic bundle.
