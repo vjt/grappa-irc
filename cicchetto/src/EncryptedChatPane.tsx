@@ -1,4 +1,14 @@
-import { type Component, createEffect, createSignal, For, Match, on, Show, Switch } from "solid-js";
+import {
+  type Component,
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  on,
+  Show,
+  Switch,
+} from "solid-js";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { copyText } from "./lib/clipboard";
 import { isDocumentVisible } from "./lib/documentVisibility";
@@ -332,11 +342,11 @@ const EncryptedChatPane: Component<Props> = (props) => {
   // While searching, only the messages that hold what was typed, in any case.
   const needle = () => query().trim().toLowerCase();
   const messages = () => rows().filter((row) => messageBody(row) !== null);
-  const shown = () => {
+  const shown = createMemo(() => {
     const n = needle();
     if (n === "") return rows();
     return messages().filter((row) => messageBody(row)?.toLowerCase().includes(n));
-  };
+  });
 
   createEffect(
     on(
@@ -503,7 +513,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
             }}
           />
           <Show when={needle() !== ""}>
-            <span class="e2e-search-count muted" data-testid="e2e-search-count">
+            <span class="e2e-search-count muted" data-testid="e2e-search-count" aria-live="polite">
               {shown().length} of {messages().length} messages
             </span>
           </Show>
