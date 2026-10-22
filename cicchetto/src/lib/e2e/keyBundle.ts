@@ -13,6 +13,7 @@
 
 import type { E2eKeysWireStatus } from "../wireTypes";
 import type { Account } from "./vodozemac/vodozemac_binding";
+import { encodePayload, ID_SIG_PREFIX, type IdBlock, OTK_SIG_PREFIX, WIRE_VERSION } from "./wire";
 
 /**
  * How many one-time keys grappa holds for one subject on one network
@@ -24,14 +25,6 @@ export const MAX_HOSTED_ONE_TIME_KEYS = 50;
 /** What `POST /networks/:network/e2e/keys` takes. */
 export type BundleUpload = { one_time_keys: string[]; fallback: string | null };
 
-const encoder = new TextEncoder();
-
-function base64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
 /**
  * The KEYS payload for one key of `account`, as the peer receives it: the
  * padded standard base64 of the agreed JSON. The identity block is signed
@@ -39,17 +32,21 @@ function base64(bytes: Uint8Array): string {
  * `irc-e2e:v1:otk:` + the key, both with the Ed25519 identity key.
  */
 export function keysPayload(account: Account, key: string, fallback: boolean): string {
-  const curve25519 = account.curve25519_key();
-  const json = JSON.stringify({
-    v: 1,
-    id: {
-      curve25519,
-      ed25519: account.ed25519_key(),
-      sig: account.sign(`irc-e2e:v1:id:${curve25519}`),
-    },
-    otk: { key, fallback, sig: account.sign(`irc-e2e:v1:otk:${key}`) },
+  return encodePayload({
+    v: WIRE_VERSION,
+    id: identityBlock(account),
+    otk: { key, fallback, sig: account.sign(`${OTK_SIG_PREFIX}${key}`) },
   });
-  return base64(encoder.encode(json));
+}
+
+/** Our signed identity block, as KEYS and PKMSG carry it. */
+export function identityBlock(account: Account): IdBlock {
+  const curve25519 = account.curve25519_key();
+  return {
+    curve25519,
+    ed25519: account.ed25519_key(),
+    sig: account.sign(`${ID_SIG_PREFIX}${curve25519}`),
+  };
 }
 
 /**
