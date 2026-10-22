@@ -32,8 +32,8 @@ defmodule Grappa.SubjectXorTest do
   alias Grappa.Accounts.Session
   alias Grappa.ChannelDirectory.Entry, as: DirectoryEntry
   alias Grappa.Dcc.SpoolFile
-  alias Grappa.E2eInbox.Entry, as: E2eInboxEntry
-  alias Grappa.E2eKeys.Key, as: E2eKey
+  alias Grappa.E2eKeys.Device, as: E2eDevice
+  alias Grappa.E2eKeys.DeviceList, as: E2eDeviceList
   alias Grappa.Networks.Credential
   alias Grappa.Notify.Entry, as: NotifyEntry
   alias Grappa.Push.Subscription
@@ -68,8 +68,8 @@ defmodule Grappa.SubjectXorTest do
     {Grant, :changeset},
     {Theme, :changeset},
     {Credential, :changeset},
-    {E2eInboxEntry, :changeset},
-    {E2eKey, :changeset},
+    {E2eDeviceList, :changeset},
+    {E2eDevice, :changeset},
     {Upload, :insert_changeset},
     {SpoolFile, :insert_changeset}
   ]

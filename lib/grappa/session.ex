@@ -133,9 +133,9 @@ defmodule Grappa.Session do
     # drifts. It is a pure module with no process or state behind it.
     exports: [NSInterceptor, Server, Wire]
 
+  alias Grappa.{E2eKeys, UserSettings}
   alias Grappa.IRC.{AuthFSM, CTCP, E2e, Identifier, Ignore}
   alias Grappa.Session.{Deps, E2ePacer, FloodAllowance, ISupport, Server, Wire}
-  alias Grappa.UserSettings
 
   require Logger
 
@@ -211,11 +211,19 @@ defmodule Grappa.Session do
   @type send_transport_error :: :no_socket | :closed | :timeout | :inet.posix()
 
   @typedoc """
-  issue 2430 — every way `send_e2e/7` refuses a message, named once so
+  issue 2430 — every way `send_e2e/8` refuses a message, named once so
   its REST door states the same set.
   """
   @type e2e_send_error ::
-          :no_session | :no_socket | :timeout | :invalid_line | :bad_request | :too_large | :rate_limited | :too_late
+          :no_session
+          | :no_socket
+          | :timeout
+          | :invalid_line
+          | :bad_request
+          | :unknown_device
+          | :too_large
+          | :rate_limited
+          | :too_late
 
   @typedoc """
   Per-channel member entry as returned by `list_members/3`. The
@@ -952,27 +960,31 @@ defmodule Grappa.Session do
   @e2e_send_verbs [:keyreq, :pkmsg, :msg, :nack]
 
   # grappa cannot see inside MSG/PKMSG, so for those the client says which
-  # carry a CHAL or an ACK; KEYREQ and NACK have their lane by what they
-  # are (`E2ePacer.lane/2`).
-  @e2e_priorities [:control, :text]
+  # carry a CHAL or an ACK (`:control`), and which answer the peer's
+  # protocol state (`:reactive`, the device list a peer asked for); KEYREQ
+  # and NACK have their lane by what they are (`E2ePacer.lane/2`).
+  @e2e_priorities [:control, :reactive, :text]
 
   @doc """
-  issue 2430 — the E2E verbs `send_e2e/6` accepts, for the web door to
+  issue 2430 — the E2E verbs `send_e2e/8` accepts, for the web door to
   map its strings onto. One list, so the controller and the facade cannot
   disagree on the closed set.
   """
   @spec e2e_send_verbs() :: [E2e.verb(), ...]
   def e2e_send_verbs, do: @e2e_send_verbs
 
-  @doc "issue 2430 — the priorities `send_e2e/6` accepts. Same reason as `e2e_send_verbs/0`."
+  @doc "issue 2430 — the priorities `send_e2e/8` accepts. Same reason as `e2e_send_verbs/0`."
   @spec e2e_priorities() :: [E2ePacer.priority(), ...]
   def e2e_priorities, do: @e2e_priorities
 
   @doc """
   issue 2430 — sends one end-to-end encrypted message to `target` (a nick).
 
-  `payload` is what the client built: the standard base64 of the agreed
-  JSON payload, which grappa never decodes. The session picks the msgid,
+  `payload` is what the client built: the compact JSON text of the agreed
+  payload (wire v2), which grappa never parses. `{from, to}` are the
+  frame's addresses (`Grappa.IRC.E2e.addressed?/3`): `from` is the
+  sending device's did, and must name a device of the subject's stored
+  list; `to` is the peer's device, or `*`. The session picks the msgid,
   cuts the payload into `\\x01E2E …\\x01` lines sized for the worst-case
   relayed prefix, and hands them to `Grappa.Session.E2ePacer`: at most 3
   lines per 6 s per recipient (bahamut's FLUD), and never past the
@@ -984,9 +996,10 @@ defmodule Grappa.Session do
   `:control` MSG or PKMSG is URGENT: it goes ahead of text within the
   connection's urgent budget, as KEYREQ does whatever `priority` says. A
   `:text` one keeps its order behind earlier text, so a peer never
-  displays two messages backwards. NACK is REACTIVE whatever `priority`
-  says: ahead of text within a per-peer and a per-connection budget. Only
-  the client knows that a MSG or PKMSG carries a CHAL or an ACK.
+  displays two messages backwards. A `:reactive` one, and NACK whatever
+  `priority` says, is REACTIVE: ahead of text within a per-peer and a
+  per-connection budget. Only the client knows that a MSG or PKMSG carries
+  a CHAL or an ACK, or the device list a peer asked for.
 
   `expires_at` is the deadline of the order a `:control` MSG or PKMSG
   answers, in unix seconds (the CHAL's own `expires_at`), or `nil`. The
@@ -1005,30 +1018,51 @@ defmodule Grappa.Session do
 
   `{:error, :invalid_line}` for a CR/LF/NUL in `target`;
   `{:error, :bad_request}` for a target that is not a nick, a verb outside
-  `e2e_send_verbs/0`, a priority outside `e2e_priorities/0`, a payload that
-  is not base64, or an `expires_at` that is not positive or rides anything
-  but a `:control` MSG or PKMSG; `{:error, :too_large}` past
+  `e2e_send_verbs/0`, a priority outside `e2e_priorities/0`, addresses the
+  verb may not carry, a payload that is not compact JSON text, or an
+  `expires_at` that is not positive or rides anything but a `:control` MSG
+  or PKMSG; `{:error, :unknown_device}` when `from` names no device of the
+  subject's stored list; `{:error, :too_large}` past
   `E2e.max_payload_bytes/0` or when the payload needs more than 64 lines;
   `{:error, :rate_limited}` when the peer's queue (32 text messages, 32
   lines in each of the urgent and reactive lanes) or the connection's (128
   urgent and reactive lines, 480 s of text) cannot take it whole;
   `{:error, :too_late}` when `expires_at` can already no longer be met.
   """
-  @spec send_e2e(subject(), integer(), String.t(), E2e.verb(), E2ePacer.priority(), String.t(), integer() | nil) ::
-          {:ok, String.t()} | {:error, e2e_send_error()}
-  def send_e2e(subject, network_id, target, verb, priority, payload, expires_at)
+  @spec send_e2e(
+          subject(),
+          integer(),
+          String.t(),
+          E2e.verb(),
+          E2ePacer.priority(),
+          {E2e.address(), E2e.address()},
+          String.t(),
+          integer() | nil
+        ) :: {:ok, String.t()} | {:error, e2e_send_error()}
+  def send_e2e(subject, network_id, target, verb, priority, {from, _} = addresses, payload, expires_at)
       when is_subject(subject) and is_integer(network_id) and is_binary(target) and is_atom(verb) and
              is_atom(priority) and is_binary(payload) and (is_nil(expires_at) or is_integer(expires_at)) do
-    with :ok <- validate_e2e_send(target, verb, priority, payload, expires_at) do
-      call_session(subject, network_id, {:send_e2e, target, verb, E2ePacer.lane(verb, priority), payload, expires_at})
+    with :ok <- validate_e2e_send(target, verb, priority, addresses, payload, expires_at),
+         :ok <- listed_device(subject, network_id, from) do
+      call_session(
+        subject,
+        network_id,
+        {:send_e2e, target, verb, E2ePacer.lane(verb, priority), addresses, payload, expires_at}
+      )
     end
   end
 
   # The size check runs before the session is asked, so a payload no
   # receiver could hold is never copied into its mailbox.
-  @spec validate_e2e_send(String.t(), E2e.verb(), E2ePacer.priority(), String.t(), integer() | nil) ::
-          :ok | {:error, :invalid_line | :bad_request | :too_large}
-  defp validate_e2e_send(target, verb, priority, payload, expires_at) do
+  @spec validate_e2e_send(
+          String.t(),
+          E2e.verb(),
+          E2ePacer.priority(),
+          {String.t(), String.t()},
+          String.t(),
+          integer() | nil
+        ) :: :ok | {:error, :invalid_line | :bad_request | :too_large}
+  defp validate_e2e_send(target, verb, priority, {from, to}, payload, expires_at) do
     cond do
       not Identifier.safe_line_token?(target) ->
         {:error, :invalid_line}
@@ -1036,18 +1070,33 @@ defmodule Grappa.Session do
       byte_size(payload) > E2e.max_payload_bytes() ->
         {:error, :too_large}
 
-      not (verb in @e2e_send_verbs and priority in @e2e_priorities) ->
+      not known_e2e_send?(verb, priority, expires_at) ->
         {:error, :bad_request}
 
-      not deadline_ok?(verb, priority, expires_at) ->
-        {:error, :bad_request}
-
-      Identifier.valid_nick?(target) and E2e.chunk?(payload) ->
+      # `addressed?/3` takes any term, so it is also what judges the
+      # addresses' type.
+      Identifier.valid_nick?(target) and E2e.addressed?(verb, from, to) and E2e.chunk?(payload) ->
         :ok
 
       true ->
         {:error, :bad_request}
     end
+  end
+
+  # A verb and a priority from the closed sets, and a deadline only where
+  # one belongs.
+  @spec known_e2e_send?(atom(), atom(), integer() | nil) :: boolean()
+  defp known_e2e_send?(verb, priority, expires_at),
+    do: verb in @e2e_send_verbs and priority in @e2e_priorities and deadline_ok?(verb, priority, expires_at)
+
+  # A device speaks only once the master has listed it: a peer drops
+  # anything else, and a device that is not listed gets nothing routed
+  # back either.
+  @spec listed_device(subject(), integer(), String.t()) :: :ok | {:error, :unknown_device}
+  defp listed_device(subject, network_id, did) do
+    if Enum.any?(E2eKeys.listed_devices(subject, network_id), &(&1.did == did)),
+      do: :ok,
+      else: {:error, :unknown_device}
   end
 
   # Only an order's CHAL or ACK has a deadline, and it is an instant.

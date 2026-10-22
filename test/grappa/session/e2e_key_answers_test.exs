@@ -53,6 +53,21 @@ defmodule Grappa.Session.E2eKeyAnswersTest do
       refute E2eKeyAnswers.afford?(answers, @keys_cost, 59_999)
       assert E2eKeyAnswers.afford?(answers, @keys_cost, 60_000)
     end
+
+    test "an idle window affords one answer however dear, and only one" do
+      # A KEYS for four devices is six lines, about 32 s of bank: past the
+      # budget on its own, and never answered at all without this.
+      four_devices = 32_000
+      assert E2eKeyAnswers.afford?(E2eKeyAnswers.new(), four_devices, 0)
+
+      answered = E2eKeyAnswers.record(E2eKeyAnswers.new(), "alice", :otk, four_devices, 0)
+      refute E2eKeyAnswers.afford?(answered, 1, 59_999)
+      assert E2eKeyAnswers.afford?(answered, four_devices, 60_000)
+
+      # Anything spent in the window, however little, and the budget binds.
+      spent = E2eKeyAnswers.record(E2eKeyAnswers.new(), "alice", :otk, 1, 0)
+      refute E2eKeyAnswers.afford?(spent, four_devices, 1)
+    end
   end
 
   test "what it remembers is bounded by its windows, not by how many nicks ever asked" do

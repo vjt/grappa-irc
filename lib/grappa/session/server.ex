@@ -584,7 +584,7 @@ defmodule Grappa.Session.Server do
           # the recipient about both, then empties this. Memory only: a crash
           # loses the counts of refused messages, never a stored message.
           e2e_inbox_timer: reference() | nil,
-          e2e_unqueued: %{String.t() => {String.t(), pos_integer()}},
+          e2e_unqueued: %{{String.t(), String.t()} => {String.t(), String.t(), pos_integer()}},
           # issue 2430: the KEYS answers grappa sent for the subject, per
           # nick and in all (`Grappa.Session.E2eKeyAnswers`), so a stranger
           # can neither drain the bundle nor the connection's bank. Memory
@@ -2008,15 +2008,15 @@ defmodule Grappa.Session.Server do
   # PRIVMSG in any sense the rest of this module knows: nothing is persisted
   # (`Scrollback.Message` would refuse the body anyway), nothing is echoed,
   # no query window opens, and `LineSplit` never sees it — the frame is
-  # `E2e.fragment/4`'s, sized against the same worst-case relay budget. The
+  # `E2e.fragment/5`'s, sized against the same worst-case relay budget. The
   # lines go through `E2ePacer`, so the reply means ACCEPTED: some lines may
   # still be waiting in the pacer when it returns.
   # (No @impl here — a continuation clause of handle_call/3, whose @impl
   # rides the no-Client refusal clause above.)
-  def handle_call({:send_e2e, target, verb, lane, payload, expires_at}, _, state)
-      when is_binary(target) and is_atom(verb) and is_atom(lane) and is_binary(payload) and
-             (is_nil(expires_at) or is_integer(expires_at)) do
-    {reply, state} = queue_e2e_send(state, target, verb, lane, payload, expires_at)
+  def handle_call({:send_e2e, target, verb, lane, {from, to} = addresses, payload, expires_at}, _, state)
+      when is_binary(target) and is_atom(verb) and is_atom(lane) and is_binary(from) and is_binary(to) and
+             is_binary(payload) and (is_nil(expires_at) or is_integer(expires_at)) do
+    {reply, state} = queue_e2e_send(state, target, verb, lane, addresses, payload, expires_at)
     {:reply, reply, state}
   end
 
@@ -8087,31 +8087,38 @@ defmodule Grappa.Session.Server do
   # never holds a message it cannot acknowledge. The refusal is counted per
   # sender and told to the recipient on the next sweep.
   #
-  # KEYREQ is never delivered: grappa answers it itself, from the bundle
-  # the subject's client uploaded (`Grappa.E2eKeys`), connected client or
+  # KEYREQ is never delivered: grappa answers it itself, from the bundles
+  # the subject's devices uploaded (`Grappa.E2eKeys`), connected client or
   # not — one path. The answer is REACTIVE in the pacer: what a peer draws
-  # from us, ahead of text within its budgets. Consuming the key is the
-  # LAST step, after every check that can refuse — who may have what
-  # (`E2eKeyAnswers.admit/3`), the bank budget against the answer's real
-  # cost, and the pacer's room (`E2ePacer.enqueue/7` is pure, so its answer
-  # is only committed once the key is spent) — so a refusal never wastes a
-  # one-time key. Every refusal is silent to the peer, who asks again
+  # from us, ahead of text within its budgets (scaled to the KEYS's cost).
+  # Consuming the keys is the LAST step, after every check that can
+  # refuse — who may have what (`E2eKeyAnswers.admit/3`), the bank budget
+  # against the answer's real cost, and the pacer's room
+  # (`E2ePacer.enqueue/7` is pure, so its answer is only committed once the
+  # keys are spent) — so a refusal never wastes a one-time key. Every refusal is silent to the peer, who asks again
   # later, and logged at debug: the peer decides how often it fires.
+  #
+  # Wire v2: the KEYS covers every listed device of the subject
+  # (`E2eKeys.answer/3`), goes out from `*` (it describes the user) to the
+  # device that asked, and is not started while an earlier KEYS to that
+  # nick is still going out: one for several devices outlasts the asker's
+  # retry, and a second behind it would only double its cost (O2 (a)).
   @spec deliver_e2e(t(), String.t(), E2eReassembly.message()) :: t()
-  defp deliver_e2e(state, from, %{verb: :keyreq}) do
+  defp deliver_e2e(state, from, %{verb: :keyreq, from: asker}) do
     now = System.monotonic_time(:millisecond)
     key = fold_key(state, from)
     msgid = E2e.new_msgid()
 
-    with {:ok, kind} <- E2eKeyAnswers.admit(state.e2e_key_answers, key, now),
-         {:ok, bundle_key} <- E2eKeys.next(state.subject, state.network_id, kind),
-         {:ok, lines} <- e2e_lines(state, from, :keys, msgid, bundle_key.payload),
+    with :ok <- no_keys_waiting(state, key),
+         {:ok, kind} <- E2eKeyAnswers.admit(state.e2e_key_answers, key, now),
+         {:ok, payload, bundle_keys} <- E2eKeys.answer(state.subject, state.network_id, kind),
+         {:ok, lines} <- e2e_lines(state, from, :keys, msgid, {"*", asker}, payload),
          cost = lines |> Enum.map(&elem(&1, 1)) |> Enum.sum(),
          :ok <- afford_keys(state, cost, now),
          message = %{msgid: msgid, verb: :keys, lane: :reactive, deadline_ms: nil},
          {:ok, releases, lost, pacer, wait} <- pace_e2e(state, from, message, lines, now),
-         :ok <- E2eKeys.consume(bundle_key) do
-      answers = E2eKeyAnswers.record(state.e2e_key_answers, key, bundle_key.kind, cost, now)
+         :ok <- E2eKeys.consume(bundle_keys) do
+      answers = E2eKeyAnswers.record(state.e2e_key_answers, key, answered_kind(bundle_keys), cost, now)
       commit_paced(%{state | e2e_key_answers: answers}, releases, lost, pacer, wait)
     else
       # Only the consume answers this, and its delete may have landed all
@@ -8134,30 +8141,70 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  defp deliver_e2e(state, from, %{verb: verb, msgid: msgid, payload: payload}) do
-    case E2eInbox.put(state.subject, state.network_id, %{sender: from, verb: verb, msgid: msgid, payload: payload}) do
-      {:ok, entry} ->
-        :ok = Broadcaster.to_user(state, SessionWire.e2e_message(state.network_slug, entry))
-        :ok = maybe_push_e2e(state, entry)
+  # Wire v2: a message goes to the queue of the device its `to` names, or of
+  # every listed device on `*` (it then carries a body for each). A `to`
+  # naming no listed device is dropped at debug, nothing said to the
+  # sender: it may be a revoked device, or one the sender guessed. Each
+  # queued copy is pushed with its device; the OS notification goes once
+  # per message, however many devices got it.
+  defp deliver_e2e(state, from, %{verb: verb, to: to} = message) do
+    case e2e_recipients(state, to) do
+      [] ->
+        Logger.debug("e2e message dropped: no listed device", sender: from, e2e_device: to)
         state
+
+      devices ->
+        {state, queued?} = Enum.reduce(devices, {state, false}, &queue_e2e_copy(from, message, &1, &2))
+        :ok = if queued?, do: maybe_push_e2e(state, verb, from), else: :ok
+        state
+    end
+  end
+
+  @spec e2e_recipients(t(), E2e.address()) :: [E2eKeys.Device.t()]
+  defp e2e_recipients(state, to) do
+    listed = E2eKeys.listed_devices(state.subject, state.network_id)
+    if to == "*", do: listed, else: Enum.filter(listed, &(&1.did == to))
+  end
+
+  @spec queue_e2e_copy(String.t(), E2eReassembly.message(), E2eKeys.Device.t(), {t(), boolean()}) :: {t(), boolean()}
+  defp queue_e2e_copy(from, message, device, {state, queued?}) do
+    attrs = %{sender: from, from_did: message.from, verb: message.verb, msgid: message.msgid, payload: message.payload}
+
+    case E2eInbox.put(device, attrs) do
+      {:ok, entry} ->
+        :ok = Broadcaster.to_user(state, SessionWire.e2e_message(state.network_slug, device.did, entry))
+        {state, true}
 
       # Debug: the sender decides how often a full queue refuses.
       {:error, :full} ->
-        Logger.debug("e2e message not queued: queue full", sender: from)
-        count_unqueued(state, from, verb)
+        Logger.debug("e2e message not queued: queue full", sender: from, e2e_device: device.did)
+        {count_unqueued(state, from, device.did, message.verb), queued?}
 
       {:error, :db_unavailable} ->
-        Logger.warning("e2e message not queued: database unavailable", sender: from)
-        count_unqueued(state, from, verb)
+        Logger.warning("e2e message not queued: database unavailable", sender: from, e2e_device: device.did)
+        {count_unqueued(state, from, device.did, message.verb), queued?}
+
+      # Revoked or dropped since the list was read: nothing is owed to a
+      # device that is no longer there. (No changeset refusal is caught:
+      # the router hands over only a nick and a parsed frame, so one would
+      # be a broken invariant, which should crash.)
+      {:error, :gone} ->
+        Logger.debug("e2e message not queued: device gone", sender: from, e2e_device: device.did)
+        {state, queued?}
     end
   end
+
+  # Not while a KEYS to that nick is still going out (O2 (a) above).
+  @spec no_keys_waiting(t(), String.t()) :: :ok | {:error, :keys_waiting}
+  defp no_keys_waiting(state, key),
+    do: if(E2ePacer.waiting?(state.e2e_pacer, key, :keys), do: {:error, :keys_waiting}, else: :ok)
 
   # The OS notification for a queued message that a person wrote — PKMSG or
   # MSG. Key material and NACKs are the protocol talking to itself. The
   # gates (prefs, mute, a device on screen) live in Triggers, as for the
   # other two trigger classes.
-  @spec maybe_push_e2e(t(), E2eInbox.Entry.t()) :: :ok
-  defp maybe_push_e2e(state, %E2eInbox.Entry{verb: verb, sender: sender}) do
+  @spec maybe_push_e2e(t(), E2eInbox.Entry.verb(), String.t()) :: :ok
+  defp maybe_push_e2e(state, verb, sender) do
     if E2eInbox.message_verb?(verb) do
       PushTriggers.dispatch_e2e(sender, %{
         subject: state.subject,
@@ -8170,14 +8217,16 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  # A refused PKMSG or MSG is counted for the recipient's notice. Refused
-  # key material and NACKs are not, as when they expire: there was no
-  # message to tell anyone about.
-  @spec count_unqueued(t(), String.t(), E2eInbox.Entry.verb()) :: t()
-  defp count_unqueued(state, from, verb) do
+  # A refused PKMSG or MSG is counted for the recipient's notice, per
+  # sender and device. Refused key material and NACKs are not, as when they
+  # expire: there was no message to tell anyone about.
+  @spec count_unqueued(t(), String.t(), String.t(), E2eInbox.Entry.verb()) :: t()
+  defp count_unqueued(state, from, did, verb) do
     if E2eInbox.message_verb?(verb) do
       unqueued =
-        Map.update(state.e2e_unqueued, fold_key(state, from), {from, 1}, fn {_, n} -> {from, n + 1} end)
+        Map.update(state.e2e_unqueued, {fold_key(state, from), did}, {from, did, 1}, fn {_, _, n} ->
+          {from, did, n + 1}
+        end)
 
       %{state | e2e_unqueued: unqueued}
     else
@@ -8186,10 +8235,12 @@ defmodule Grappa.Session.Server do
   end
 
   # Drops what waited past the queue's TTL, then tells the recipient — and
-  # only the recipient — who sent messages that were never read: what
-  # expired plus what the queue refused since the last sweep, ONE row per
-  # sender, in that sender's query window. The row is typed, not text
-  # (`meta.e2e_undeliverable` = how many; no body), so the client words it.
+  # only the recipient — who sent messages a device never read: what
+  # expired plus what a queue refused since the last sweep, ONE row per
+  # sender and device, in that sender's query window. The row is typed, not
+  # text (`meta.e2e_undeliverable` = how many, `meta.e2e_device` = the
+  # device's did; no body), so the client words it, and tells its own
+  # device from another.
   # The `{:persist, …}` arm opens the query window, as it does for every
   # nick-keyed row. A database that does not answer keeps the refused
   # counts for the next sweep.
@@ -8210,15 +8261,16 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  # Folds one sender's expired count into the refused counts, keeping the
-  # latest spelling.
-  @spec add_unread(t(), {String.t(), pos_integer()}, %{String.t() => {String.t(), pos_integer()}}) ::
-          %{String.t() => {String.t(), pos_integer()}}
-  defp add_unread(state, {sender, n}, acc),
-    do: Map.update(acc, fold_key(state, sender), {sender, n}, fn {_, m} -> {sender, m + n} end)
+  # Folds one sender's expired count for one device into the refused
+  # counts, keeping the latest spelling.
+  @spec add_unread(t(), {String.t(), String.t(), pos_integer()}, %{
+          {String.t(), String.t()} => {String.t(), String.t(), pos_integer()}
+        }) :: %{{String.t(), String.t()} => {String.t(), String.t(), pos_integer()}}
+  defp add_unread(state, {sender, did, n}, acc),
+    do: Map.update(acc, {fold_key(state, sender), did}, {sender, did, n}, fn {_, _, m} -> {sender, did, m + n} end)
 
-  @spec persist_e2e_undeliverable({String.t(), pos_integer()}, t()) :: t()
-  defp persist_e2e_undeliverable({sender, count}, state) do
+  @spec persist_e2e_undeliverable({String.t(), String.t(), pos_integer()}, t()) :: t()
+  defp persist_e2e_undeliverable({sender, did, count}, state) do
     attrs =
       Session.put_subject_id(
         %{
@@ -8227,7 +8279,7 @@ defmodule Grappa.Session.Server do
           server_time: System.system_time(:millisecond),
           sender: sender,
           body: nil,
-          meta: %{e2e_undeliverable: count}
+          meta: %{e2e_undeliverable: count, e2e_device: did}
         },
         state.subject
       )
@@ -8253,14 +8305,48 @@ defmodule Grappa.Session.Server do
   # `{:error, :too_late}` when an order's answer could already no longer
   # be back by `expires_at`. The pacer a refusal hands back is kept: it
   # counts a refused MSG/PKMSG as a gap.
-  @spec queue_e2e_send(t(), String.t(), E2e.verb(), E2ePacer.lane(), String.t(), pos_integer() | nil) ::
-          {{:ok, String.t()} | {:error, :too_large | :rate_limited | :too_late}, t()}
-  defp queue_e2e_send(state, target, verb, lane, payload, expires_at) do
+  #
+  # A KEYREQ to a nick whose KEYS is part-way through reassembly is refused
+  # as `:rate_limited` too: the answer is arriving, and cicchetto, which
+  # never sees fragments, cannot hold its retry itself (wire v2, O2 (b)).
+  @spec queue_e2e_send(
+          t(),
+          String.t(),
+          E2e.verb(),
+          E2ePacer.lane(),
+          {E2e.address(), E2e.address()},
+          String.t(),
+          pos_integer() | nil
+        ) :: {{:ok, String.t()} | {:error, :too_large | :rate_limited | :too_late}, t()}
+  defp queue_e2e_send(state, target, :keyreq, lane, addresses, payload, expires_at) do
+    if E2eReassembly.pending?(
+         state.e2e_reassembly,
+         fold_key(state, target),
+         :keys,
+         System.monotonic_time(:millisecond)
+       ),
+       do: {{:error, :rate_limited}, state},
+       else: queue_e2e_message(state, target, :keyreq, lane, addresses, payload, expires_at)
+  end
+
+  defp queue_e2e_send(state, target, verb, lane, addresses, payload, expires_at),
+    do: queue_e2e_message(state, target, verb, lane, addresses, payload, expires_at)
+
+  @spec queue_e2e_message(
+          t(),
+          String.t(),
+          E2e.verb(),
+          E2ePacer.lane(),
+          {E2e.address(), E2e.address()},
+          String.t(),
+          pos_integer() | nil
+        ) :: {{:ok, String.t()} | {:error, :too_large | :rate_limited | :too_late}, t()}
+  defp queue_e2e_message(state, target, verb, lane, addresses, payload, expires_at) do
     msgid = E2e.new_msgid()
     now = System.monotonic_time(:millisecond)
     message = %{msgid: msgid, verb: verb, lane: lane, deadline_ms: e2e_deadline_ms(expires_at, now)}
 
-    with {:ok, lines} <- e2e_lines(state, target, verb, msgid, payload),
+    with {:ok, lines} <- e2e_lines(state, target, verb, msgid, addresses, payload),
          {:ok, releases, lost, pacer, wait} <- pace_e2e(state, target, message, lines, now) do
       {{:ok, msgid}, commit_paced(state, releases, lost, pacer, wait)}
     else
@@ -8280,12 +8366,12 @@ defmodule Grappa.Session.Server do
 
   # The lines of one message to `target`, each with what bahamut will
   # charge for it.
-  @spec e2e_lines(t(), String.t(), E2e.verb(), String.t(), String.t()) ::
+  @spec e2e_lines(t(), String.t(), E2e.verb(), String.t(), {E2e.address(), E2e.address()}, String.t()) ::
           {:ok, [E2ePacer.line(), ...]} | {:error, :too_large}
-  defp e2e_lines(state, target, verb, msgid, payload) do
+  defp e2e_lines(state, target, verb, msgid, addresses, payload) do
     linelen = ISupport.linelen(Map.get(state, :isupport, ISupport.default()))
 
-    with {:ok, bodies} <- E2e.fragment(verb, msgid, payload, LineSplit.frame_budget(target, linelen)),
+    with {:ok, bodies} <- E2e.fragment(verb, msgid, addresses, payload, LineSplit.frame_budget(target, linelen)),
          do: {:ok, Enum.map(bodies, &{&1, Client.privmsg_cost_ms(target, &1)})}
   end
 
@@ -8334,6 +8420,11 @@ defmodule Grappa.Session.Server do
 
   defp tell_e2e_dropped(state, target, msgid, _, reason),
     do: :ok = Broadcaster.to_user(state, SessionWire.e2e_send_dropped(state.network_slug, target, msgid, reason))
+
+  # A KEYS that handed out any one-time key counts as one: that is what the
+  # per-nick and per-hour bounds ration.
+  @spec answered_kind([E2eKeys.Key.t(), ...]) :: E2eKeyAnswers.kind()
+  defp answered_kind(keys), do: if(Enum.any?(keys, &(&1.kind == :otk)), do: :otk, else: :fallback)
 
   @spec afford_keys(t(), non_neg_integer(), integer()) :: :ok | {:error, :over_budget}
   defp afford_keys(state, cost, now) do

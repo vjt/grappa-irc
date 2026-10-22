@@ -5,9 +5,9 @@ defmodule Grappa.Session.E2eKeyAnswers do
   and asks it before every answer.
 
   Anyone on the network can send a KEYREQ, and every answer costs the
-  subject two things: a one-time key from the bundle it uploaded (each is
-  handed out once, then only the fallback key is left until a client
-  replenishes), and fake-lag bank on the connection, the bank the user's
+  subject two things: a one-time key from each listed device's bundle
+  (each is handed out once, then only the device's fallback key is left
+  until it replenishes), and fake-lag bank on the connection, the bank the user's
   own messages and every other E2E line wait on. So the answers are
   bounded on both, with w2's numbers (agreed on 2430, the same irc-olm
   uses):
@@ -16,9 +16,12 @@ defmodule Grappa.Session.E2eKeyAnswers do
       irc-olm's KEYREQ retry, so an honest peer that asks again is answered
       while a stranger hammering one nick is not; and a one-time key in it
       at most once per `otk_interval_ms/0` (else the fallback key);
-    * per connection, at most `otks_per_hour/0` one-time keys an hour;
+    * per connection, at most `otks_per_hour/0` answers carrying one-time
+      keys an hour: one key per listed device in each (wire v2), so that
+      many of each device's keys;
     * per connection, KEYS answers spend at most `bank_budget_ms/0` of
-      fake-lag bank in any `bank_window_ms/0`. The per-nick limits alone
+      fake-lag bank in any `bank_window_ms/0`, except that a window with
+      nothing spent affords one answer whatever it costs (`afford?/3`). The per-nick limits alone
       leave the aggregate open to anyone with several nicks, and the
       pacer's REACTIVE budgets rank an answer behind text past them but
       never refuse it. The session's 128 queued urgent and reactive lines
@@ -67,7 +70,7 @@ defmodule Grappa.Session.E2eKeyAnswers do
   @spec otk_interval_ms() :: 60_000
   def otk_interval_ms, do: @otk_interval_ms
 
-  @doc "One-time keys the connection hands out in any hour."
+  @doc "Answers carrying one-time keys (one per listed device) the connection sends in any hour."
   @spec otks_per_hour() :: 30
   def otks_per_hour, do: @otks_per_hour
 
@@ -104,12 +107,16 @@ defmodule Grappa.Session.E2eKeyAnswers do
 
   @doc """
   True when an answer costing `cost_ms` of fake-lag bank fits the
-  connection's KEYS budget at `now_ms`.
+  connection's KEYS budget at `now_ms`. A window with nothing spent in it
+  affords one answer whatever it costs: a KEYS for four devices (wire v2)
+  costs more than the whole budget, and would otherwise never be answered.
+  It then fills the window on its own, so the bound still holds over any
+  `bank_window_ms/0`: one such answer.
   """
   @spec afford?(t(), non_neg_integer(), integer()) :: boolean()
   def afford?(%__MODULE__{} = answers, cost_ms, now_ms) when is_integer(cost_ms) and is_integer(now_ms) do
     spent = for {at, cost} <- answers.spent, within?(at, @bank_window_ms, now_ms), reduce: 0, do: (n -> n + cost)
-    spent + cost_ms <= @bank_budget_ms
+    spent == 0 or spent + cost_ms <= @bank_budget_ms
   end
 
   @doc """

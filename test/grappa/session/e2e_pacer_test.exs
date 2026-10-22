@@ -13,7 +13,7 @@ defmodule Grappa.Session.E2ePacerTest do
 
   describe "lane/2" do
     test "KEYS and NACK are reactive and KEYREQ urgent whatever the client says; a MSG/PKMSG is what it says" do
-      for priority <- [:control, :text] do
+      for priority <- [:control, :reactive, :text] do
         assert E2ePacer.lane(:keys, priority) == :reactive
         assert E2ePacer.lane(:nack, priority) == :reactive
         assert E2ePacer.lane(:keyreq, priority) == :urgent
@@ -21,8 +21,26 @@ defmodule Grappa.Session.E2ePacerTest do
 
       for verb <- [:pkmsg, :msg] do
         assert E2ePacer.lane(verb, :control) == :urgent
+        assert E2ePacer.lane(verb, :reactive) == :reactive
         assert E2ePacer.lane(verb, :text) == :text
       end
+    end
+  end
+
+  describe "waiting?/3" do
+    test "true while a message of that verb to that target still has a line queued" do
+      refute E2ePacer.waiting?(E2ePacer.new(), "alice", :keys)
+
+      message = %{msgid: "q83vEjRWeJA", verb: :keys, lane: :reactive, deadline_ms: nil}
+      lines = [{"one", 6_000}, {"two", 6_000}]
+      {:ok, _, _, pacer, _} = E2ePacer.enqueue(E2ePacer.new(), "alice", "Alice", message, lines, 0, @held)
+
+      assert E2ePacer.waiting?(pacer, "alice", :keys)
+      refute E2ePacer.waiting?(pacer, "bob", :keys)
+      refute E2ePacer.waiting?(pacer, "alice", :msg)
+
+      # Once its last line is gone, nothing of it waits.
+      refute pacer |> E2ePacer.drop("alice", "q83vEjRWeJA") |> E2ePacer.waiting?("alice", :keys)
     end
   end
 
@@ -215,6 +233,28 @@ defmodule Grappa.Session.E2ePacerTest do
         |> held!(nack("honest", "h", [2_000]), 25_000)
 
       assert {["h:1", "t:1"], [], _, _} = release(pacer, 25_000, 0)
+    end
+
+    test "a KEYS dearer than the reactive budgets fits them in an idle window; a NACK of that cost does not" do
+      # Seven full lines, past the 18 s per recipient, the 22 s for the
+      # connection and the allowance on top: what a KEYS for four devices
+      # costs (wire v2, 2430 comment 6346384093, O2 (c)).
+      costs = List.duplicate(5_000, 7)
+      assert Enum.sum(costs) > E2ePacer.reactive_total_ms() + E2ePacer.fresh_allowance_ms()
+
+      keys_first =
+        E2ePacer.new()
+        |> held!(text("t", "t", [2_000]))
+        |> held!(keys("alice", "k", costs))
+
+      assert {["k:1"], [], _, _} = release(keys_first, 0, 0)
+
+      text_first =
+        E2ePacer.new()
+        |> held!(text("t", "t", [2_000]))
+        |> held!(nack("alice", "n", costs))
+
+      assert {["t:1"], [], _, _} = release(text_first, 0, 0)
     end
 
     test "irc-olm: a KEYS for a peer that drew nothing goes ahead of older ones" do

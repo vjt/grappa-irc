@@ -101,6 +101,15 @@ defmodule GrappaWeb.ErrorTokens do
           # issue 2430 — 422: an E2E order's answer whose `expires_at` can
           # already no longer be met (`E2eController.create/2`).
           | :too_late
+          # issue 2430, multi-device — 409: a fifth device, a list under
+          # another master, a list whose version does not rise, the removal
+          # of a device the list names; 422: a list naming a key no device
+          # registered, or a send from a device not listed (`E2eController`).
+          | :too_many_devices
+          | :master_mismatch
+          | :stale_list
+          | :unknown_device
+          | :listed_device
           # #162 — 422: a `/ignore` mask that `Grappa.IRC.Mask.normalize/1`
           # rejects (empty, whitespace, CRLF, bad `nick!user@host` order).
           | :invalid_mask

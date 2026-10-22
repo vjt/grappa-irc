@@ -15,6 +15,12 @@ defmodule Grappa.Session.E2eSessionTest do
   the rows of one window — a row filed under a window nobody thought to
   look in is still a stored line.
 
+  Wire v2 (multi-device): every subject here holds a real E2E identity — a
+  master, devices with real keys, a signed list (`Grappa.E2eFixtures`) —
+  because grappa routes inbound lines to listed devices only, sends only
+  from a listed device, and answers a KEYREQ with a KEYS it composes from
+  them.
+
   `async: false` because `Grappa.SessionRegistry`,
   `Grappa.SessionSupervisor` and `Grappa.PubSub` are singletons.
   """
@@ -23,7 +29,7 @@ defmodule Grappa.Session.E2eSessionTest do
   import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.{E2eInbox, E2eKeys, IRCServer, Push, QueryWindows, Repo, Session}
+  alias Grappa.{E2eFixtures, E2eInbox, E2eKeys, IRCServer, Push, QueryWindows, Repo, Session}
   alias Grappa.IRC.{Client, E2e, LineSplit}
   alias Grappa.Networks.{Credentials, SessionPlan}
   alias Grappa.PubSub.Topic
@@ -32,44 +38,53 @@ defmodule Grappa.Session.E2eSessionTest do
 
   @nick "grappa-test"
 
+  # The peers' devices, as their frames name them.
+  @alice "AaZaARRDyBk"
+  @bob "BoBBoBBoBBo"
+
   # A real P-256 client key and auth secret (as in `Grappa.Push.TriggersTest`):
   # the web-push encryption runs on them before anything is sent.
   @client_p256dh "BCfaYE5dGabdzef68MI0SN24b4Gsf1t_N3ftUlWaFGzkuudjHLor0CRjosM3c7SLZ7PfFufpsFUh8vsO1t8wCHs"
   @client_auth "3aw2ceVFv0OIBXxAvkAlSA"
   @wire_timeout 1_000
 
-  # The padded base64 of a JSON payload, the agreed 2430 shape; big enough
-  # to need several lines on a 512-byte wire.
-  defp payload(bytes), do: Base.encode64(~s({"v":1,"body":"#{Base.encode64(:crypto.strong_rand_bytes(bytes))}"}))
+  # A KEYS for several devices drips a line per ~5 s of fake-lag bank, and
+  # past the reactive lane's budget for one peer (`E2ePacer`) it can wait
+  # out the fresh patience first. Measured: the last of two devices' four
+  # lines 15 s after the KEYREQ, the first line for four devices 8 s after
+  # it. Only a failing test waits this long.
+  @keys_timeout 60_000
 
-  # The peer's client cuts its lines against its own budget; any budget
-  # that fits the wire will do, the receiver must not care.
-  defp peer_lines(verb, msgid, payload) do
-    {:ok, lines} = E2e.fragment(verb, msgid, payload, LineSplit.frame_budget(@nick, 512))
-    Enum.map(lines, &":alice!u@h PRIVMSG #{@nick} :#{&1}\r\n")
-  end
+  # Compact JSON text, what a v2 frame carries; big enough to need several
+  # lines on a 512-byte wire.
+  defp payload(bytes), do: ~s({"v":2,"body":"#{Base.encode64(:crypto.strong_rand_bytes(bytes))}"})
+
+  @small ~s({"v":2})
 
   describe "inbound" do
-    test "a multi-line message reaches the user topic whole, and nothing is stored" do
+    test "a multi-line message reaches the user topic whole, for the device it names, and nothing is stored" do
       {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
       payload = payload(900)
-      lines = peer_lines(:pkmsg, "q83vEjRWeJA", payload)
+      lines = lines_from("alice", :pkmsg, "q83vEjRWeJA", {@alice, device.did}, payload)
       assert length(lines) > 1
 
       Enum.each(lines, &IRCServer.feed(server, &1))
 
       assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message} = event}, @wire_timeout
 
-      # The id is the queue's: the client acknowledges it, and a redelivery
+      # The id is the queue's: the device acknowledges it, and a redelivery
       # carries the same one.
-      assert [%E2eInbox.Entry{id: id, payload: ^payload}] = E2eInbox.list({:user, user.id}, network.id, 0)
+      assert [%E2eInbox.Entry{id: id, payload: ^payload}] = E2eInbox.list(device, 0)
 
       assert event == %{
                kind: :e2e_message,
                id: id,
                network: network.slug,
                from: "alice",
+               from_did: @alice,
+               to_did: device.did,
                verb: :pkmsg,
                msgid: "q83vEjRWeJA",
                payload: payload
@@ -81,14 +96,67 @@ defmodule Grappa.Session.E2eSessionTest do
       assert rows(network) == 0
     end
 
+    test "a message to * is queued once for each listed device, never for one still being paired" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      [first] = listed(user, network)
+      second = add_listed_device!(subject, network)
+      %{device: pairing} = register_device!(subject, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      Enum.each(lines_from("alice", :msg, "q83vEjRWeJA", {@alice, "*"}, payload(600)), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, to_did: a}}, @wire_timeout
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, to_did: b}}, @wire_timeout
+      assert Enum.sort([a, b]) == Enum.sort([first.did, second.did])
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}, 100
+
+      assert [%E2eInbox.Entry{}] = E2eInbox.list(first, 0)
+      assert [%E2eInbox.Entry{}] = E2eInbox.list(second, 0)
+      assert E2eInbox.list(pairing, 0) == []
+    end
+
+    test "a message to a device that is not listed is dropped and the session carries on" do
+      {server, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      %{device: pairing} = register_device!(subject, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      for to <- [pairing.did, "AAAAAAAAAAA"] do
+        Enum.each(lines_from("alice", :msg, E2e.new_msgid(), {@alice, to}, @small), &IRCServer.feed(server, &1))
+      end
+
+      # A good line last: once ITS event arrives, every line before it has
+      # been through the session.
+      Enum.each(lines_from("alice", :msg, "q83vEjRWeJA", {@alice, device.did}, @small), &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, msgid: "q83vEjRWeJA"}}, @wire_timeout
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}
+
+      assert Process.alive?(pid)
+      assert E2eInbox.list(pairing, 0) == []
+      assert [_] = E2eInbox.list(device, 0)
+    end
+
     test "malformed, channel and NOTICE E2E lines are dropped and the session survives" do
       {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
-      [line] = peer_lines(:msg, "q83vEjRWeJA", Base.encode64(~s({"v":1})))
+      [line] = lines_from("alice", :msg, "q83vEjRWeJA", {@alice, device.did}, @small)
       body = line |> String.split(" :", parts: 2) |> List.last()
 
-      IRCServer.feed(server, ":alice!u@h PRIVMSG #{@nick} :\x01E2E MSG q83vEjRWeJA 0/1 eyJ2IjoxfQ==\x01\r\n")
-      IRCServer.feed(server, ":alice!u@h PRIVMSG #{@nick} :\x01E2E OFFLINE q83vEjRWeJA 1/1 eyJ2IjoxfQ==\x01\r\n")
+      IRCServer.feed(
+        server,
+        ":alice!u@h PRIVMSG #{@nick} :\x01E2E MSG q83vEjRWeJA 0/1 #{@alice} #{device.did} {}\x01\r\n"
+      )
+
+      IRCServer.feed(
+        server,
+        ":alice!u@h PRIVMSG #{@nick} :\x01E2E OFFLINE q83vEjRWeJA 1/1 #{@alice} #{device.did} {}\x01\r\n"
+      )
+
+      # A v1 line, which names no device: wire v2 is flag-day.
+      IRCServer.feed(server, ":alice!u@h PRIVMSG #{@nick} :\x01E2E MSG q83vEjRWeJA 1/1 eyJ2IjoxfQ==\x01\r\n")
       IRCServer.feed(server, ":alice!u@h PRIVMSG #italia :#{body}")
       IRCServer.feed(server, ":alice!u@h NOTICE #{@nick} :#{body}")
       # A good line last: once ITS event arrives, every line before it has
@@ -108,8 +176,9 @@ defmodule Grappa.Session.E2eSessionTest do
     # session at the queue.
     test "an E2E line whose sender is not a nick is dropped and the session survives" do
       {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
-      [line] = peer_lines(:msg, "q83vEjRWeJA", Base.encode64(~s({"v":1})))
+      [line] = lines_from("alice", :msg, "q83vEjRWeJA", {@alice, device.did}, @small)
       body = line |> String.split(" :", parts: 2) |> List.last()
 
       IRCServer.feed(server, ":irc.example.net PRIVMSG #{@nick} :#{body}")
@@ -120,88 +189,124 @@ defmodule Grappa.Session.E2eSessionTest do
       assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: "alice"}}, @wire_timeout
       refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}
       assert Process.alive?(pid)
-      assert [%E2eInbox.Entry{sender: "alice"}] = E2eInbox.list({:user, user.id}, network.id, 0)
+      assert [%E2eInbox.Entry{sender: "alice"}] = E2eInbox.list(device, 0)
     end
   end
 
-  describe "KEYREQ answered from the hosted bundle" do
-    test "a KEYREQ is answered with the oldest one-time key, framed as KEYS; nothing reaches the client or the database" do
+  describe "KEYREQ answered with a KEYS grappa composes" do
+    test "a KEYREQ is answered with the signed list and each device's oldest one-time key, from * to the asker" do
       {server, _, user, network} = connected_session()
       subject = {:user, user.id}
-      [first, _] = otks = [keys_payload(false), keys_payload(false)]
-      {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: otks, fallback: keys_payload(true)})
+      [device] = listed(user, network)
+      identity = identity_of(device)
+      [first, _] = otks = [E2eFixtures.signed_key(identity), E2eFixtures.signed_key(identity)]
+      {:ok, _} = E2eKeys.upload(device, %{one_time_keys: otks, fallback: E2eFixtures.signed_key(identity)})
+      {:ok, list} = E2eKeys.list(subject, network.id)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
-      keyreq!(server, "alice")
+      keyreq!(server, "alice", user, network)
 
-      assert await_keys(server, "alice") == first
-      assert E2eKeys.status(subject, network.id) == %{one_time_keys: 1, fallback: true}
+      assert %{"v" => 2, "master" => master, "devices" => [entry]} = await_keys(server, "alice", @alice)
+
+      assert master == %{
+               "ed25519" => list.master,
+               "list" => %{"ver" => 1, "devices" => list.devices},
+               "sig" => list.sig
+             }
+
+      assert entry["id"] == %{"curve25519" => device.curve25519, "ed25519" => device.ed25519, "sig" => device.sig}
+      assert entry["otk"] == %{"key" => first.key, "fallback" => false, "sig" => first.sig}
+
+      assert E2eKeys.status(device) == %{one_time_keys: 1, fallback: true}
       refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, verb: :keyreq}}
-      assert [%E2eInbox.Entry{verb: :msg}] = E2eInbox.list(subject, network.id, 0)
+      assert [%E2eInbox.Entry{verb: :msg}] = E2eInbox.list(device, 0)
       assert rows(network) == 0
+    end
+
+    test "the KEYS covers every listed device that has a key, and no device still being paired" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      [first] = listed(user, network)
+      second = add_listed_device!(subject, network)
+      %{device: pairing} = register_device!(subject, network)
+      for device <- [first, second, pairing], do: upload_otks!(device, 1)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      keyreq!(server, "alice", user, network)
+
+      %{"devices" => entries} = await_keys(server, "alice", @alice)
+      assert entries |> Enum.map(& &1["id"]["ed25519"]) |> Enum.sort() == Enum.sort([first.ed25519, second.ed25519])
+      assert E2eKeys.status(pairing).one_time_keys == 1
     end
 
     test "a nick asking again within 15 s is not answered; another nick is, with the next key" do
       {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
+      identity = identity_of(device)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
-      subject = {:user, user.id}
-      fallback = keys_payload(true)
-      {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: [], fallback: fallback})
+      fallback = E2eFixtures.signed_key(identity)
+      {:ok, _} = E2eKeys.upload(device, %{one_time_keys: [], fallback: fallback})
 
       # No one-time key yet: alice gets the fallback key, which leaves her
       # free to take a one-time key next time — unless she asks too soon.
-      keyreq!(server, "alice")
-      assert await_keys(server, "alice") == fallback
+      keyreq!(server, "alice", user, network)
+      assert %{"devices" => [%{"otk" => %{"key" => key, "fallback" => true}}]} = await_keys(server, "alice", @alice)
+      assert key == fallback.key
       # Recorded as what she got, not what she was allowed: a one-time key
       # stays hers to take once the 15 s are up.
       refute Map.has_key?(:sys.get_state(pid).e2e_key_answers.otk_given, "alice")
 
-      otk = keys_payload(false)
-      {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: [otk], fallback: nil})
-      keyreq!(server, "Alice")
-      assert E2eKeys.status(subject, network.id).one_time_keys == 1
+      otk = E2eFixtures.signed_key(identity)
+      {:ok, _} = E2eKeys.upload(device, %{one_time_keys: [otk], fallback: nil})
+      keyreq!(server, "Alice", user, network)
+      assert E2eKeys.status(device).one_time_keys == 1
 
-      keyreq!(server, "bob")
-      assert await_keys(server, "bob") == otk
-      assert E2eKeys.status(subject, network.id).one_time_keys == 0
+      keyreq!(server, "bob", user, network)
+      assert %{"devices" => [%{"otk" => %{"key" => key, "fallback" => false}}]} = await_keys(server, "bob", @alice)
+      assert key == otk.key
+      assert E2eKeys.status(device).one_time_keys == 0
     end
 
     test "answers stop at the connection's KEYS budget, however many nicks ask" do
       {server, _, user, network} = connected_session()
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
       subject = {:user, user.id}
-      [payload | _] = payloads = for _ <- 1..9, do: keys_payload(false)
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      upload_otks!(device, 9)
       asking = for n <- 1..9, do: "peer#{n}"
-      {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: payloads, fallback: nil})
 
-      # What one answer costs, from the framing and the fake-lag cost the
-      # session uses: every nick here has the same length, so every answer
-      # costs the same.
-      {:ok, bodies} = E2e.fragment(:keys, E2e.new_msgid(), payload, LineSplit.frame_budget("peer1", 512))
+      # What one answer costs, from the payload and framing the session
+      # uses: every nick here has the same length and every key the same
+      # size, so every answer costs the same.
+      {:ok, payload, _} = E2eKeys.answer(subject, network.id, :otk)
+      {:ok, bodies} = E2e.fragment(:keys, E2e.new_msgid(), {"*", @alice}, payload, LineSplit.frame_budget("peer1", 512))
       cost = bodies |> Enum.map(&Client.privmsg_cost_ms("peer1", &1)) |> Enum.sum()
-      fit = div(E2eKeyAnswers.bank_budget_ms(), cost)
+      fit = max(1, div(E2eKeyAnswers.bank_budget_ms(), cost))
       assert fit in 1..8
 
-      Enum.each(asking, &keyreq!(server, &1))
+      Enum.each(asking, &keyreq!(server, &1, user, network))
 
-      assert E2eKeys.status(subject, network.id).one_time_keys == 9 - fit
+      assert E2eKeys.status(device).one_time_keys == 9 - fit
     end
 
     test "the answer is reactive: ahead of the text already waiting for that peer" do
       {server, _, user, network} = connected_session()
       subject = {:user, user.id}
+      [device] = listed(user, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
-      {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: [keys_payload(false)], fallback: nil})
+      upload_otks!(device, 1)
 
       # A long text message to alice: its first lines fill the bank, the
       # rest wait on it at about one line per 5 s.
-      {:ok, text} = Session.send_e2e(subject, network.id, "alice", :msg, :text, payload(1600), nil)
+      {:ok, text} =
+        Session.send_e2e(subject, network.id, "alice", :msg, :text, {device.did, @alice}, payload(1600), nil)
+
       {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, " #{text} 1/"), 10_000)
       [%{total: total} | _] = sent_fragments(server, text)
       assert total >= 6
 
-      keyreq!(server, "alice")
-      _ = await_keys(server, "alice")
+      keyreq!(server, "alice", user, network)
+      _ = await_keys(server, "alice", @alice)
 
       # The whole answer is out while the text still drips: it did not wait
       # behind the text in alice's queue.
@@ -211,55 +316,118 @@ defmodule Grappa.Session.E2eSessionTest do
     test "a KEYREQ the pacer cannot take spends no one-time key" do
       {server, _, user, network} = connected_session()
       subject = {:user, user.id}
+      [device] = listed(user, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
-      {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: [keys_payload(false)], fallback: nil})
+      upload_otks!(device, 1)
 
       # Fill alice's reactive lane, where the answer would go, with our
       # own NACKs: one line each.
-      small = Base.encode64(~s({"v":1}))
-
       refused =
         Enum.find(1..(E2ePacer.max_lane_lines() + 10), fn _ ->
-          Session.send_e2e(subject, network.id, "alice", :nack, :text, small, nil) == {:error, :rate_limited}
+          Session.send_e2e(subject, network.id, "alice", :nack, :text, {device.did, @alice}, @small, nil) ==
+            {:error, :rate_limited}
         end)
 
       assert refused, "alice's reactive lane never filled"
 
-      keyreq!(server, "alice")
+      keyreq!(server, "alice", user, network)
 
-      assert E2eKeys.status(subject, network.id).one_time_keys == 1
+      assert E2eKeys.status(device).one_time_keys == 1
     end
 
-    test "with no bundle a KEYREQ goes unanswered and the session carries on" do
+    test "no second KEYS to a nick while the first is still going out, even once the nick may ask again" do
       {server, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      [first] = listed(user, network)
+      # Four devices: a KEYS of about six lines, which drips for half a
+      # minute on the fake-lag bank.
+      devices = [first | for(_ <- 1..3, do: add_listed_device!(subject, network))]
+      Enum.each(devices, &upload_otks!(&1, 2))
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
-      keyreq!(server, "alice")
+      keyreq!(server, "alice", user, network)
+      {:ok, _} = IRCServer.wait_for_line(server, &match?(%{verb: :keys}, fragment_to(&1, "alice")), @keys_timeout)
+      assert E2ePacer.waiting?(:sys.get_state(pid).e2e_pacer, "alice", :keys)
+
+      # Past the per-nick interval, as if 15 s had gone by: only the KEYS
+      # still going out can hold the second answer back now.
+      :sys.replace_state(pid, &%{&1 | e2e_key_answers: E2eKeyAnswers.new()})
+      keyreq!(server, "alice", user, network)
+
+      assert Enum.all?(devices, &(E2eKeys.status(&1).one_time_keys == 1))
+
+      msgids =
+        server
+        |> IRCServer.sent_lines()
+        |> Enum.map(&fragment_to(&1, "alice"))
+        |> Enum.filter(&match?(%{verb: :keys}, &1))
+        |> Enum.map(& &1.msgid)
+        |> Enum.uniq()
+
+      assert length(msgids) == 1
+    end
+
+    test "with no identity a KEYREQ goes unanswered and the session carries on" do
+      {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      keyreq!(server, "alice", user, network)
 
       assert Process.alive?(pid)
-      assert E2eKeys.status({:user, user.id}, network.id) == %{one_time_keys: 0, fallback: false}
+      assert E2eKeys.status(device) == %{one_time_keys: 0, fallback: false}
       refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "E2E KEYS"))
     end
   end
 
-  describe "offline queue" do
-    test "a message the queue refuses is not pushed, and the recipient is told on the next sweep" do
-      {server, pid, user, network} = connected_session()
+  describe "a client's KEYREQ while the peer's KEYS is arriving" do
+    test "is refused as rate-limited until the KEYS is whole: cicchetto never sees the fragments" do
+      {server, _, user, network} = connected_session()
       subject = {:user, user.id}
+      [device] = listed(user, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
-      fill_share!(subject, network.id, "alice")
+      [first | rest] = lines_from("alice", :keys, "q83vEjRWeJA", {"*", device.did}, payload(900))
+      assert rest != []
 
-      Enum.each(peer_lines(:msg, "q83vEjRWeJA", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
-      Enum.each(peer_lines(:msg, "BBBBBBBBBBB", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
+      IRCServer.feed(server, first)
+      # A barrier: bob's message is handled after alice's first line.
+      Enum.each(lines_from("bob", :msg, E2e.new_msgid(), {@bob, device.did}, @small), &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: "bob"}}, @wire_timeout
+
+      assert {:error, :rate_limited} =
+               Session.send_e2e(subject, network.id, "Alice", :keyreq, :control, {device.did, "*"}, @small, nil)
+
+      assert {:ok, _} = Session.send_e2e(subject, network.id, "bob", :keyreq, :control, {device.did, "*"}, @small, nil)
+
+      Enum.each(rest, &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, verb: :keys}}, @wire_timeout
+
+      assert {:ok, _} =
+               Session.send_e2e(subject, network.id, "alice", :keyreq, :control, {device.did, "*"}, @small, nil)
+    end
+  end
+
+  describe "offline queue" do
+    test "a message the queue refuses is not pushed, and the recipient is told on the next sweep, naming the device" do
+      {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      fill_share!(device, "alice")
+
+      Enum.each(lines_from("alice", :msg, "q83vEjRWeJA", {@alice, device.did}, @small), &IRCServer.feed(server, &1))
+      Enum.each(lines_from("alice", :msg, "BBBBBBBBBBB", {@alice, device.did}, @small), &IRCServer.feed(server, &1))
       # bob's message is the barrier: once it is out, alice's lines are in.
-      Enum.each(bob_lines(:msg, "CCCCCCCCCCC", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
+      Enum.each(lines_from("bob", :msg, "CCCCCCCCCCC", {@bob, device.did}, @small), &IRCServer.feed(server, &1))
       assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: "bob"}}, @wire_timeout
       refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: "alice"}}
 
       sweep(pid)
 
       assert [notice] = notices(network)
-      assert {notice.channel, notice.sender, notice.meta} == {"alice", "alice", %{e2e_undeliverable: 2}}
+
+      assert {notice.channel, notice.sender, notice.meta} ==
+               {"alice", "alice", %{e2e_undeliverable: 2, e2e_device: device.did}}
+
       # Told once: the count went out with the notice.
       sweep(pid)
       assert length(notices(network)) == 1
@@ -267,12 +435,13 @@ defmodule Grappa.Session.E2eSessionTest do
 
     test "refused key material and NACKs are not counted: there was no message to tell about" do
       {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
-      fill_share!({:user, user.id}, network.id, "alice")
+      fill_share!(device, "alice")
 
-      Enum.each(peer_lines(:keys, "AAAAAAAAAAA", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
-      Enum.each(peer_lines(:nack, "BBBBBBBBBBB", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
-      Enum.each(bob_lines(:msg, "CCCCCCCCCCC", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
+      Enum.each(lines_from("alice", :keys, "AAAAAAAAAAA", {"*", device.did}, @small), &IRCServer.feed(server, &1))
+      Enum.each(lines_from("alice", :nack, "BBBBBBBBBBB", {@alice, device.did}, @small), &IRCServer.feed(server, &1))
+      Enum.each(lines_from("bob", :msg, "CCCCCCCCCCC", {@bob, device.did}, @small), &IRCServer.feed(server, &1))
       assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: "bob"}}, @wire_timeout
       refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: "alice"}}
 
@@ -281,31 +450,44 @@ defmodule Grappa.Session.E2eSessionTest do
       assert notices(network) == []
     end
 
-    test "the sweep drops what expired and leaves one notice per sender, in that sender's query window" do
+    test "the sweep drops what expired and leaves one notice per sender and device, in that sender's query window" do
       {_, pid, user, network} = connected_session()
       subject = {:user, user.id}
-      old = Enum.map(["Alice", "alice", "bob"], &put_entry!(subject, network.id, &1, :msg))
-      keys = put_entry!(subject, network.id, "carol", :keys)
-      fresh = put_entry!(subject, network.id, "alice", :msg)
-      Enum.each([keys | old], &age!(&1, E2eInbox.ttl_seconds() + 60))
+      [device] = listed(user, network)
+      other = add_listed_device!(subject, network)
+      old = Enum.map(["Alice", "alice", "bob"], &put_entry!(device, &1, :msg))
+      elsewhere = put_entry!(other, "alice", :msg)
+      keys = put_entry!(device, "carol", :keys)
+      fresh = put_entry!(device, "alice", :msg)
+      Enum.each([keys, elsewhere | old], &age!(&1, E2eInbox.ttl_seconds() + 60))
 
       sweep(pid)
 
-      assert [%E2eInbox.Entry{id: id}] = E2eInbox.list(subject, network.id, 0)
+      assert [%E2eInbox.Entry{id: id}] = E2eInbox.list(device, 0)
       assert id == fresh.id
+      assert E2eInbox.list(other, 0) == []
 
       # Not scrollback content: no body, no DM thread — a typed row the
-      # client renders, filed under the peer's query window.
-      assert [a, b] = Enum.sort_by(notices(network), & &1.channel)
-      assert {a.channel, a.sender, a.dm_with, a.body, a.meta} == {"alice", "alice", nil, nil, %{e2e_undeliverable: 2}}
-      assert {b.channel, b.sender, b.meta} == {"bob", "bob", %{e2e_undeliverable: 1}}
+      # client renders, filed under the peer's query window, naming the
+      # device that never read it.
+      rows = network |> notices() |> Enum.map(&{&1.channel, &1.sender, &1.dm_with, &1.body, &1.meta}) |> Enum.sort()
+
+      assert rows ==
+               Enum.sort([
+                 {"alice", "alice", nil, nil, %{e2e_undeliverable: 2, e2e_device: device.did}},
+                 {"alice", "alice", nil, nil, %{e2e_undeliverable: 1, e2e_device: other.did}},
+                 {"bob", "bob", nil, nil, %{e2e_undeliverable: 1, e2e_device: device.did}}
+               ])
+
       assert QueryWindows.open?(subject, network.id, "alice")
       assert QueryWindows.open?(subject, network.id, "bob")
       refute QueryWindows.open?(subject, network.id, "carol")
     end
 
-    test "a queued PKMSG or MSG pushes a notification; key material and NACKs do not" do
-      {server, _, user, _} = connected_session()
+    test "a queued PKMSG or MSG pushes one notification however many devices got it; key material and NACKs none" do
+      {server, _, user, network} = connected_session()
+      [device] = listed(user, network)
+      _ = add_listed_device!({:user, user.id}, network)
       bypass = Bypass.open()
       Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
 
@@ -329,12 +511,13 @@ defmodule Grappa.Session.E2eSessionTest do
 
       on_exit(fn -> :telemetry.detach(handler) end)
 
-      Enum.each(peer_lines(:keys, "AAAAAAAAAAA", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
-      Enum.each(peer_lines(:nack, "BBBBBBBBBBB", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
+      Enum.each(lines_from("alice", :keys, "AAAAAAAAAAA", {"*", device.did}, @small), &IRCServer.feed(server, &1))
+      Enum.each(lines_from("alice", :nack, "BBBBBBBBBBB", {@alice, device.did}, @small), &IRCServer.feed(server, &1))
       refute_receive {:pushed, _}, 500
 
-      Enum.each(peer_lines(:msg, "CCCCCCCCCCC", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
+      Enum.each(lines_from("alice", :msg, "CCCCCCCCCCC", {@alice, "*"}, @small), &IRCServer.feed(server, &1))
       assert_receive {:pushed, %{subject: {:user, _}}}, 2_000
+      refute_receive {:pushed, _}, 500
     end
 
     test "a session sweeps what expired while it was down as soon as it starts" do
@@ -343,7 +526,8 @@ defmodule Grappa.Session.E2eSessionTest do
       {network, _} = network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
       _ = credential_fixture(user, network, %{})
       subject = {:user, user.id}
-      entry = put_entry!(subject, network.id, "alice", :pkmsg)
+      [device] = identity!(subject, network, 1)
+      entry = put_entry!(device, "alice", :pkmsg)
       age!(entry, E2eInbox.ttl_seconds() + 60)
 
       pid = start_session!(user, network)
@@ -351,7 +535,7 @@ defmodule Grappa.Session.E2eSessionTest do
       _ = :sys.get_state(pid)
 
       assert [%Message{channel: "alice", meta: %{e2e_undeliverable: 1}}] = notices(network)
-      assert E2eInbox.list(subject, network.id, 0) == []
+      assert E2eInbox.list(device, 0) == []
     end
   end
 
@@ -363,23 +547,24 @@ defmodule Grappa.Session.E2eSessionTest do
     test "two spellings of one nick share one queue: its bound refuses both" do
       {_, _, user, network} = connected_session()
       subject = {:user, user.id}
-      small = Base.encode64(~s({"v":1}))
+      [device] = listed(user, network)
+      send = &Session.send_e2e(subject, network.id, &1, :msg, :text, {device.did, @alice}, @small, nil)
 
-      refused =
-        Enum.find(1..(E2ePacer.max_text_messages() + 10), fn _ ->
-          Session.send_e2e(subject, network.id, "Bob", :msg, :text, small, nil) == {:error, :rate_limited}
-        end)
+      refused = Enum.find(1..(E2ePacer.max_text_messages() + 10), fn _ -> send.("Bob") == {:error, :rate_limited} end)
 
       assert refused, "Bob's queue never filled"
-      assert {:error, :rate_limited} = Session.send_e2e(subject, network.id, "bob", :msg, :text, small, nil)
-      assert {:ok, _} = Session.send_e2e(subject, network.id, "carol", :msg, :text, small, nil)
+      assert {:error, :rate_limited} = send.("bob")
+      assert {:ok, _} = send.("carol")
     end
 
-    test "a message goes out as lines that fit the relay, reassemble, wait on the fake-lag bank, and are never stored" do
+    test "a message goes out as lines that fit the relay, name both devices, reassemble, wait on the fake-lag bank, and are never stored" do
       {server, _, user, network} = connected_session()
+      [device] = listed(user, network)
       payload = payload(800)
 
-      assert {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :text, payload, nil)
+      assert {:ok, msgid} =
+               Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :text, {device.did, "*"}, payload, nil)
+
       assert E2e.msgid?(msgid)
 
       # A full line costs 5 s of bahamut fake lag, and the lines wait on the
@@ -398,7 +583,7 @@ defmodule Grappa.Session.E2eSessionTest do
       {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "#{msgid} #{total}/"), 5_500 * total)
 
       fragments = sent_fragments(server, msgid)
-      assert Enum.all?(fragments, &(&1.verb == :msg))
+      assert Enum.all?(fragments, &(&1.verb == :msg and &1.from == device.did and &1.to == "*"))
       assert fragments |> Enum.sort_by(& &1.index) |> Enum.map_join(& &1.chunk) == payload
 
       # The ircd relays `:<nick>!<user>@<host> PRIVMSG alice :<body>\r\n`; the
@@ -417,6 +602,7 @@ defmodule Grappa.Session.E2eSessionTest do
       # stuck write. Issue 2370's lesson: that must never take the session
       # down. Here the session queues the line and asks again later.
       {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
       # Registration's own last write (the umode query) must be done first,
       # or the session is still inside THAT call when the client freezes.
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "MODE "), 1_000)
@@ -424,7 +610,16 @@ defmodule Grappa.Session.E2eSessionTest do
       :ok = :sys.suspend(client)
 
       assert {:ok, msgid} =
-               Session.send_e2e({:user, user.id}, network.id, "alice", :keyreq, :control, "eyJ2IjoxfQ==", nil)
+               Session.send_e2e(
+                 {:user, user.id},
+                 network.id,
+                 "alice",
+                 :keyreq,
+                 :control,
+                 {device.did, "*"},
+                 @small,
+                 nil
+               )
 
       assert Process.alive?(pid)
 
@@ -435,18 +630,19 @@ defmodule Grappa.Session.E2eSessionTest do
     test "an order's answer that can no longer make its deadline is dropped unsent, the sender told, and the next line goes" do
       {server, _, user, network} = connected_session()
       subject = {:user, user.id}
-      small = Base.encode64(~s({"v":1}))
+      [device] = listed(user, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      send = &Session.send_e2e(subject, network.id, "alice", &1, :control, &2, @small, &3)
 
       # Three KEYREQs fill alice's window for 6 s.
-      for _ <- 1..3, do: {:ok, _} = Session.send_e2e(subject, network.id, "alice", :keyreq, :control, small, nil)
+      for _ <- 1..3, do: {:ok, _} = send.(:keyreq, {device.did, "*"}, nil)
 
       # An ACK whose CHAL expires in 5 s: accepted, since it might still
       # start in time, but the window opens too late for it to be back
       # by then. The KEYREQ behind it goes when the window opens.
       expires_at = System.os_time(:second) + 5
-      assert {:ok, ack} = Session.send_e2e(subject, network.id, "alice", :msg, :control, small, expires_at)
-      {:ok, keyreq} = Session.send_e2e(subject, network.id, "alice", :keyreq, :control, small, nil)
+      assert {:ok, ack} = send.(:msg, {device.did, @alice}, expires_at)
+      {:ok, keyreq} = send.(:keyreq, {device.did, "*"}, nil)
 
       assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, keyreq), 10_000)
       refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, ack))
@@ -460,12 +656,21 @@ defmodule Grappa.Session.E2eSessionTest do
 
     test "an order's answer already too late to make its deadline is refused at the door" do
       {server, _, user, network} = connected_session()
-      small = Base.encode64(~s({"v":1}))
+      [device] = listed(user, network)
       # Under the 2 s the answer needs to come back.
       expires_at = System.os_time(:second) + 1
 
       assert {:error, :too_late} =
-               Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :control, small, expires_at)
+               Session.send_e2e(
+                 {:user, user.id},
+                 network.id,
+                 "alice",
+                 :msg,
+                 :control,
+                 {device.did, @alice},
+                 @small,
+                 expires_at
+               )
 
       refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "E2E"))
     end
@@ -473,13 +678,15 @@ defmodule Grappa.Session.E2eSessionTest do
     test "a line that fails to go out drops the rest of its message, from this batch and the queue; the sender is told, the rest goes on" do
       {server, pid, user, network} = connected_session()
       subject = {:user, user.id}
+      [device] = listed(user, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
       # Registration's own last write must be done before the client is swapped.
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "MODE "), 1_000)
 
       # Two lines that fit an empty bank together, so they leave in one batch.
-      body = payload(300)
-      {:ok, bodies} = E2e.fragment(:msg, E2e.new_msgid(), body, LineSplit.frame_budget("Alice", 512))
+      body = payload(250)
+      addresses = {device.did, @alice}
+      {:ok, bodies} = E2e.fragment(:msg, E2e.new_msgid(), addresses, body, LineSplit.frame_budget("Alice", 512))
       assert [_, _] = costs = Enum.map(bodies, &Client.privmsg_cost_ms("Alice", &1))
       assert Enum.sum(costs) <= Client.fake_lag_ceiling_ms()
 
@@ -487,7 +694,7 @@ defmodule Grappa.Session.E2eSessionTest do
       stub = failing_client(pid, "Alice")
       :sys.replace_state(pid, &%{&1 | client: stub})
 
-      {:ok, ack} = Session.send_e2e(subject, network.id, "Alice", :msg, :control, body, nil)
+      {:ok, ack} = Session.send_e2e(subject, network.id, "Alice", :msg, :control, addresses, body, nil)
 
       # The first line fails, and the second is never attempted.
       assert_received {:failed, "PRIVMSG Alice :" <> first}
@@ -501,7 +708,7 @@ defmodule Grappa.Session.E2eSessionTest do
       }
 
       # The urgent lane the message held is free: the next order goes.
-      {:ok, keyreq} = Session.send_e2e(subject, network.id, "bob", :keyreq, :control, Base.encode64(~s({"v":1})), nil)
+      {:ok, keyreq} = Session.send_e2e(subject, network.id, "bob", :keyreq, :control, {device.did, "*"}, @small, nil)
       assert_received {:wrote, "PRIVMSG bob :" <> line}
       assert line =~ keyreq
       refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_send_dropped}}
@@ -510,10 +717,13 @@ defmodule Grappa.Session.E2eSessionTest do
     test "what still waits when the session ends is dropped, and the sender told" do
       {server, _, user, network} = connected_session()
       subject = {:user, user.id}
+      [device] = listed(user, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       # A long text message: one line leaves, the rest wait on the bank.
-      {:ok, msgid} = Session.send_e2e(subject, network.id, "alice", :msg, :text, payload(1600), nil)
+      {:ok, msgid} =
+        Session.send_e2e(subject, network.id, "alice", :msg, :text, {device.did, @alice}, payload(1600), nil)
+
       {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, " #{msgid} 1/"), 10_000)
 
       :ok = Session.stop_session(subject, network.id)
@@ -524,91 +734,189 @@ defmodule Grappa.Session.E2eSessionTest do
                      @wire_timeout
     end
 
-    test "refuses what is not a nick, a verb a client may not send, an unknown priority, and a non-base64 payload" do
+    test "a reactive MSG goes ahead of the text already waiting for that peer" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      send = &Session.send_e2e(subject, network.id, "alice", :msg, &1, {device.did, @alice}, &2, nil)
+
+      {:ok, text} = send.(:text, payload(1600))
+      {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, " #{text} 1/"), 10_000)
+      [%{total: total} | _] = sent_fragments(server, text)
+
+      # A device list a peer asked for (`t:list`): grappa cannot see inside
+      # it, so the client says it answers the peer's protocol state.
+      {:ok, list} = send.(:reactive, @small)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, list), 15_000)
+      refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, " #{text} #{total}/#{total} "))
+    end
+
+    test "refuses what is not a nick, a verb a client may not send, an unknown priority, addresses the verb may not carry, and a payload that is not JSON text" do
       {_, _, user, network} = connected_session()
       subject = {:user, user.id}
-      good = Base.encode64(~s({"v":1}))
+      [device] = listed(user, network)
+      mine = device.did
+      send = &Session.send_e2e(subject, network.id, &1, &2, &3, &4, &5, &6)
 
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "#italia", :msg, :text, good, nil)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :keys, :text, good, nil)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :offline, :text, good, nil)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :urgent, good, nil)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :text, "not base64!", nil)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :text, "", nil)
-      assert {:error, :invalid_line} = Session.send_e2e(subject, network.id, "alice\r\nQUIT", :msg, :text, good, nil)
+      assert {:error, :bad_request} = send.("#italia", :msg, :text, {mine, @alice}, @small, nil)
+      assert {:error, :bad_request} = send.("alice", :keys, :text, {"*", @alice}, @small, nil)
+      assert {:error, :bad_request} = send.("alice", :offline, :text, {mine, @alice}, @small, nil)
+      assert {:error, :bad_request} = send.("alice", :msg, :urgent, {mine, @alice}, @small, nil)
+      assert {:error, :bad_request} = send.("alice", :msg, :text, {mine, @alice}, ~s({"v": 2}), nil)
+      assert {:error, :bad_request} = send.("alice", :msg, :text, {mine, @alice}, "café", nil)
+      assert {:error, :bad_request} = send.("alice", :msg, :text, {mine, @alice}, "", nil)
+      assert {:error, :invalid_line} = send.("alice\r\nQUIT", :msg, :text, {mine, @alice}, @small, nil)
+
+      # The frame's addressing table, at the door.
+      assert {:error, :bad_request} = send.("alice", :keyreq, :control, {mine, @alice}, @small, nil)
+      assert {:error, :bad_request} = send.("alice", :nack, :text, {mine, "*"}, @small, nil)
+      assert {:error, :bad_request} = send.("alice", :msg, :text, {"*", @alice}, @small, nil)
+      assert {:error, :bad_request} = send.("alice", :msg, :text, {"short", @alice}, @small, nil)
 
       # A deadline belongs to an order's CHAL or ACK only: a MSG/PKMSG marked
       # control.
       soon = System.os_time(:second) + 15
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :text, good, soon)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :keyreq, :control, good, soon)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :nack, :control, good, soon)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :control, good, 0)
-      assert {:ok, _} = Session.send_e2e(subject, network.id, "alice", :pkmsg, :control, good, soon)
+      assert {:error, :bad_request} = send.("alice", :msg, :text, {mine, @alice}, @small, soon)
+      assert {:error, :bad_request} = send.("alice", :keyreq, :control, {mine, "*"}, @small, soon)
+      assert {:error, :bad_request} = send.("alice", :nack, :control, {mine, @alice}, @small, soon)
+      assert {:error, :bad_request} = send.("alice", :msg, :control, {mine, @alice}, @small, 0)
+      assert {:ok, _} = send.("alice", :pkmsg, :control, {mine, @alice}, @small, soon)
+    end
+
+    test "a device speaks only once listed: one still being paired, or one nobody registered, is refused" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      %{device: pairing} = register_device!(subject, network)
+      someone_elses = add_listed_device!({:user, user_fixture().id}, network)
+
+      for from <- [pairing.did, someone_elses.did, "AAAAAAAAAAA"] do
+        assert {:error, :unknown_device} =
+                 Session.send_e2e(subject, network.id, "alice", :keyreq, :control, {from, "*"}, @small, nil)
+      end
+
+      refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "E2E"))
     end
 
     test "a payload that needs more than 64 lines is refused before anything is sent" do
       {server, _, user, network} = connected_session()
+      [device] = listed(user, network)
       # Under the 32 KiB door bound, so it is the session's cut that refuses.
-      huge = Base.encode64(:crypto.strong_rand_bytes(20_000))
+      huge = payload(20_000)
       assert byte_size(huge) < E2e.max_payload_bytes()
 
-      assert {:error, :too_large} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :text, huge, nil)
+      assert {:error, :too_large} =
+               Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :text, {device.did, @alice}, huge, nil)
+
       refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "E2E"))
     end
 
     test "with no session the send is refused, not swallowed" do
       user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      network = network_fixture()
+      [device] = identity!({:user, user.id}, network, 1)
 
       assert {:error, :no_session} =
-               Session.send_e2e({:user, user.id}, 999_999, "alice", :msg, :text, "eyJ2IjoxfQ==", nil)
+               Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :text, {device.did, @alice}, @small, nil)
     end
   end
 
-  # A KEYS payload as the agreed 2430 shape builds it: padded standard
-  # base64 of JSON whose keys and signatures are unpadded base64. About
-  # 450 bytes, two lines on a 512-byte wire, like a real one.
-  defp keys_payload(fallback?) do
-    b64 = &Base.encode64(:crypto.strong_rand_bytes(&1), padding: false)
-    id = ~s({"curve25519":"#{b64.(32)}","ed25519":"#{b64.(32)}","sig":"#{b64.(64)}"})
-    Base.encode64(~s({"v":1,"id":#{id},"otk":{"key":"#{b64.(32)}","fallback":#{fallback?},"sig":"#{b64.(64)}"}}))
+  # The listed devices of the user on the network.
+  defp listed(user, network), do: E2eKeys.listed_devices({:user, user.id}, network.id)
+
+  # A registered device, not listed: one being paired. Its signing identity
+  # rides in the process dictionary, so a test can upload keys for it.
+  defp register_device!(subject, network) do
+    master = master_of(subject, network)
+    %{identity: identity, attrs: attrs} = E2eFixtures.device(master)
+    {:ok, device} = E2eKeys.register_device(subject, network.id, attrs)
+    Process.put({:e2e_identity, device.did}, identity)
+    %{device: device, identity: identity}
   end
 
-  # A KEYREQ from `nick`, then a MSG from the same nick: once the MSG has
-  # been queued (its push arrives), the session has handled the KEYREQ,
-  # which reached it first.
+  # One more device, registered and listed under a list one version up.
+  defp add_listed_device!(subject, network) do
+    %{device: device} = register_device!(subject, network)
+    master = master_of(subject, network)
+
+    {ver, keys} =
+      case E2eKeys.list(subject, network.id) do
+        {:ok, list} -> {list.ver + 1, list.devices}
+        {:error, :not_found} -> {1, []}
+      end
+
+    {:ok, _} = E2eKeys.put_list(subject, network.id, E2eFixtures.list(master, ver, [device.ed25519 | keys]))
+    device
+  end
+
+  # A subject's E2E identity on a network: `n` devices, all listed.
+  defp identity!(subject, network, n), do: for(_ <- 1..n, do: add_listed_device!(subject, network))
+
+  # One master per (subject, network), made on first use.
+  defp master_of(subject, network) do
+    case Process.get({:e2e_master, subject, network.id}) do
+      nil ->
+        master = E2eFixtures.identity()
+        Process.put({:e2e_master, subject, network.id}, master)
+        master
+
+      master ->
+        master
+    end
+  end
+
+  defp identity_of(device), do: Process.get({:e2e_identity, device.did})
+
+  defp upload_otks!(device, n) do
+    identity = identity_of(device)
+    otks = for _ <- 1..n, do: E2eFixtures.signed_key(identity)
+    {:ok, _} = E2eKeys.upload(device, %{one_time_keys: otks, fallback: nil})
+    :ok
+  end
+
+  # A KEYREQ from `nick`'s device, then a MSG from the same nick to our
+  # device: once the MSG has been queued (its push arrives), the session
+  # has handled the KEYREQ, which reached it first.
   # The caller must be subscribed to the user topic.
-  defp keyreq!(server, nick) do
+  defp keyreq!(server, nick, user, network) do
+    [device | _] = listed(user, network)
     sync = E2e.new_msgid()
-    small = Base.encode64(~s({"v":1}))
-    Enum.each(lines_from(nick, :keyreq, E2e.new_msgid(), small), &IRCServer.feed(server, &1))
-    Enum.each(lines_from(nick, :msg, sync, small), &IRCServer.feed(server, &1))
+    Enum.each(lines_from(nick, :keyreq, E2e.new_msgid(), {@alice, "*"}, @small), &IRCServer.feed(server, &1))
+    Enum.each(lines_from(nick, :msg, sync, {@alice, device.did}, @small), &IRCServer.feed(server, &1))
     assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, msgid: ^sync}}, @wire_timeout
     :ok
   end
 
-  defp lines_from(nick, verb, msgid, payload) do
-    {:ok, lines} = E2e.fragment(verb, msgid, payload, LineSplit.frame_budget(@nick, 512))
+  defp lines_from(nick, verb, msgid, addresses, payload) do
+    {:ok, lines} = E2e.fragment(verb, msgid, addresses, payload, LineSplit.frame_budget(@nick, 512))
     Enum.map(lines, &":#{nick}!u@h PRIVMSG #{@nick} :#{&1}\r\n")
   end
 
-  # Waits for the last line of a KEYS message to `nick`, then returns that
-  # message's payload, joined from its lines.
-  defp await_keys(server, nick) do
-    {:ok, last} = IRCServer.wait_for_line(server, &match?(%{index: same, total: same}, keys_fragment(&1, nick)), 15_000)
-    %{msgid: msgid} = keys_fragment(last, nick)
+  # Waits for the last line of a KEYS message to `nick`, checks it goes from
+  # `*` to `asker`, and returns that message's payload, joined from its
+  # lines and decoded.
+  defp await_keys(server, nick, asker) do
+    {:ok, last} =
+      IRCServer.wait_for_line(
+        server,
+        &match?(%{verb: :keys, index: same, total: same}, fragment_to(&1, nick)),
+        @keys_timeout
+      )
+
+    %{msgid: msgid, from: "*", to: ^asker} = fragment_to(last, nick)
 
     server
     |> IRCServer.sent_lines()
-    |> Enum.map(&keys_fragment(&1, nick))
+    |> Enum.map(&fragment_to(&1, nick))
     |> Enum.filter(&match?(%{msgid: ^msgid}, &1))
     |> Enum.sort_by(& &1.index)
     |> Enum.map_join(& &1.chunk)
+    |> Jason.decode!()
   end
 
-  defp keys_fragment(line, nick) do
+  # The E2E fragment a line sends to `nick`, or nil.
+  defp fragment_to(line, nick) do
     with ["PRIVMSG " <> ^nick, body] <- line |> String.trim_trailing("\r\n") |> String.split(" :", parts: 2),
-         {:ok, %{verb: :keys} = fragment} <- E2e.parse(body) do
+         {:ok, fragment} <- E2e.parse(body) do
       fragment
     else
       _ -> nil
@@ -672,21 +980,16 @@ defmodule Grappa.Session.E2eSessionTest do
     end)
   end
 
-  defp bob_lines(verb, msgid, payload) do
-    {:ok, lines} = E2e.fragment(verb, msgid, payload, LineSplit.frame_budget(@nick, 512))
-    Enum.map(lines, &":bob!u@h PRIVMSG #{@nick} :#{&1}\r\n")
-  end
-
-  defp put_entry!(subject, network_id, sender, verb) do
+  defp put_entry!(device, sender, verb) do
     {:ok, entry} =
-      E2eInbox.put(subject, network_id, %{sender: sender, verb: verb, msgid: "q83vEjRWeJA", payload: "eyJ2IjoxfQ"})
+      E2eInbox.put(device, %{sender: sender, from_did: @alice, verb: verb, msgid: "q83vEjRWeJA", payload: @small})
 
     entry
   end
 
-  # Fills `sender`'s share of the queue to the byte, so their next message
-  # is refused while anybody else's still fits.
-  defp fill_share!(subject, network_id, sender) do
+  # Fills `sender`'s share of the device's queue to the byte, so their next
+  # message is refused while anybody else's still fits.
+  defp fill_share!(device, sender) do
     full = E2e.max_payload_bytes() + E2eInbox.row_overhead_bytes()
     rest = rem(E2eInbox.max_sender_bytes(), full)
     sizes = [rest | List.duplicate(full, div(E2eInbox.max_sender_bytes(), full))]
@@ -695,7 +998,7 @@ defmodule Grappa.Session.E2eSessionTest do
       payload = String.duplicate("A", size - E2eInbox.row_overhead_bytes())
 
       {:ok, _} =
-        E2eInbox.put(subject, network_id, %{sender: sender, verb: :msg, msgid: "q83vEjRWeJA", payload: payload})
+        E2eInbox.put(device, %{sender: sender, from_did: @alice, verb: :msg, msgid: "q83vEjRWeJA", payload: payload})
     end)
   end
 
@@ -725,6 +1028,8 @@ defmodule Grappa.Session.E2eSessionTest do
     |> Repo.aggregate(:count)
   end
 
+  # A live session for a fresh user whose E2E identity on the network is
+  # one listed device.
   defp connected_session do
     {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", @nick))
 
@@ -734,6 +1039,7 @@ defmodule Grappa.Session.E2eSessionTest do
       network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
 
     _ = credential_fixture(user, network, %{})
+    _ = identity!({:user, user.id}, network, 1)
 
     pid = start_session!(user, network)
     :ok = IRCServer.await_handshake(server, @wire_timeout)

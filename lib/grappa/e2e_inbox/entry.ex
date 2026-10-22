@@ -1,28 +1,25 @@
 defmodule Grappa.E2eInbox.Entry do
   @moduledoc """
   Schema for `e2e_inbox` — one whole end-to-end encrypted message a peer
-  sent a subject on a network, waiting for a client to take it (issue
-  2430).
+  sent one device of a subject, waiting for that device to take it (issue
+  2430; per device since multi-device, wire v2).
 
-  `payload` is the base64 the peer cut into chunks, joined and NOT
-  decoded: grappa holds no key and never reads it. `bytes` is its size,
+  `payload` is the compact JSON text the peer cut into chunks, joined and
+  NOT parsed: grappa holds no key and never reads it. `bytes` is its size,
   derived here, so the queue's bounds are summed without reading a
   payload. `sender` is the RAW nick, a routing hint only — the client pins
-  the peer on its key.
+  the peer on its master key. `from_did` is the sending device as the
+  frame named it, or `*` on a KEYS (it describes a user, not a device).
 
-  Exactly one of `:user_id` / `:visitor_id` is set, enforced by
-  `Grappa.Subject.validate_xor/1` and the `e2e_inbox_subject_xor` CHECK,
-  like every other per-subject table. Public API lives in
-  `Grappa.E2eInbox`.
+  The subject and the network are the device's: an entry has no subject
+  columns of its own, and it goes when its device does. Public API lives
+  in `Grappa.E2eInbox`.
   """
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Grappa.Accounts.User
+  alias Grappa.E2eKeys.Device
   alias Grappa.IRC.{E2e, Identifier}
-  alias Grappa.Networks.Network
-  alias Grappa.Subject
-  alias Grappa.Visitors.Visitor
 
   # The verbs a client is handed. KEYREQ is not among them: grappa answers
   # key requests itself, so one is never queued for a client.
@@ -32,13 +29,10 @@ defmodule Grappa.E2eInbox.Entry do
 
   @type t :: %__MODULE__{
           id: pos_integer() | nil,
-          user_id: Ecto.UUID.t() | nil,
-          user: User.t() | Ecto.Association.NotLoaded.t() | nil,
-          visitor_id: Ecto.UUID.t() | nil,
-          visitor: Visitor.t() | Ecto.Association.NotLoaded.t() | nil,
-          network_id: integer() | nil,
-          network: Network.t() | Ecto.Association.NotLoaded.t() | nil,
+          device_id: pos_integer() | nil,
+          device: Device.t() | Ecto.Association.NotLoaded.t() | nil,
           sender: String.t() | nil,
+          from_did: E2e.address() | nil,
           verb: verb() | nil,
           msgid: String.t() | nil,
           bytes: non_neg_integer() | nil,
@@ -47,11 +41,10 @@ defmodule Grappa.E2eInbox.Entry do
         }
 
   schema "e2e_inbox" do
-    belongs_to :user, User, type: :binary_id
-    belongs_to :visitor, Visitor, type: :binary_id
-    belongs_to :network, Network
+    belongs_to :device, Device
 
     field :sender, :string
+    field :from_did, :string
     field :verb, Ecto.Enum, values: @verbs
     field :msgid, :string
     field :bytes, :integer
@@ -66,31 +59,28 @@ defmodule Grappa.E2eInbox.Entry do
 
   @doc """
   Builds an insert changeset. Every field is required; the sender must be
-  a nick, the msgid a token `Grappa.IRC.E2e.msgid?/1` accepts, and the
-  payload no longer than the receiver's per-message bound. `bytes` is
-  derived from the payload, never cast.
+  a nick, `from_did` a device id or `*`, the msgid a token
+  `Grappa.IRC.E2e.msgid?/1` accepts, and the payload no longer than the
+  receiver's per-message bound. `bytes` is derived from the payload, never
+  cast.
   """
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(entry, attrs) do
     entry
-    |> cast(attrs, [:user_id, :visitor_id, :network_id, :sender, :verb, :msgid, :payload])
-    |> validate_required([:network_id, :sender, :verb, :msgid, :payload])
+    |> cast(attrs, [:device_id, :sender, :from_did, :verb, :msgid, :payload])
+    |> validate_required([:device_id, :sender, :from_did, :verb, :msgid, :payload])
     |> validate_change(:sender, fn :sender, nick ->
       if Identifier.valid_nick?(nick), do: [], else: [sender: "is not a nick"]
+    end)
+    |> validate_change(:from_did, fn :from_did, from ->
+      if from == "*" or E2e.did?(from), do: [], else: [from_did: "is not a device id"]
     end)
     |> validate_change(:msgid, fn :msgid, msgid ->
       if E2e.msgid?(msgid), do: [], else: [msgid: "is not a msgid"]
     end)
     |> validate_length(:payload, max: E2e.max_payload_bytes(), count: :bytes)
     |> put_bytes()
-    |> Subject.validate_xor()
-    |> assoc_constraint(:user)
-    |> assoc_constraint(:visitor)
-    |> assoc_constraint(:network)
-    |> check_constraint(:subject,
-      name: :e2e_inbox_subject_xor,
-      message: "user_id and visitor_id are mutually exclusive"
-    )
+    |> assoc_constraint(:device)
   end
 
   @spec put_bytes(Ecto.Changeset.t()) :: Ecto.Changeset.t()

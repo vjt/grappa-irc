@@ -509,6 +509,9 @@ config :logger, :console,
     # satisfy the known_keys↔metadata sync test even though no Logger call
     # carries it today.
     :e2e_undeliverable,
+    # issue 2430, multi-device — the did of the device that never read
+    # them, on the same notice row. Here for the same sync test.
+    :e2e_device,
     # issue 2430 — the msgid of an outbound end-to-end encrypted message the
     # pacer dropped unsent, so the log line matches what the sender is told.
     :msgid,

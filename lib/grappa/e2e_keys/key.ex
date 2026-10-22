@@ -1,86 +1,63 @@
 defmodule Grappa.E2eKeys.Key do
   @moduledoc """
-  Schema for `e2e_keys` — one KEYS payload of a subject's key bundle on a
-  network (issue 2430): a one-time key, handed out once, or the fallback
-  key, handed out when the one-time keys run out.
+  Schema for `e2e_keys` — one key of a device's bundle (issue 2430,
+  multi-device): a one-time key, handed out once, or the device's fallback
+  key, handed out when its one-time keys run out.
 
-  `payload` is what the client built and signed, the padded standard
-  base64 of the agreed KEYS JSON; grappa frames it and never decodes it.
+  `key` is the Curve25519 key and `sig` the device's signature over
+  `"irc-e2e:v1:otk:" + key` (wire v2 keeps v1's `otk` block, 2430 comment
+  6346236542). grappa checks their shape and nothing else: the peer
+  verifies the signature.
 
-  Exactly one of `:user_id` / `:visitor_id` is set, enforced by
-  `Grappa.Subject.validate_xor/1` and the `e2e_keys_subject_xor` CHECK,
-  like every other per-subject table. Public API lives in
+  The subject and the network are the device's: a key has no subject
+  columns of its own, so it cannot disagree with its device about whose it
+  is, and it goes when the device does. Public API lives in
   `Grappa.E2eKeys`.
   """
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Grappa.Accounts.User
-  alias Grappa.IRC.E2e
-  alias Grappa.Networks.Network
-  alias Grappa.Subject
-  alias Grappa.Visitors.Visitor
+  alias Grappa.E2eKeys.Device
 
   @kinds [:otk, :fallback]
-
-  # A KEYS payload is about 450 bytes; this leaves room for fields a later
-  # payload version adds, and keeps every answer within four lines on a
-  # 512-byte wire (three below a 25-byte nick), about 17 s of fake lag at
-  # worst, so one always fits the connection's KEYS budget
-  # (`Grappa.Session.E2eKeyAnswers.bank_budget_ms/0`).
-  @max_payload_bytes 1024
 
   @type kind :: :otk | :fallback
 
   @type t :: %__MODULE__{
           id: pos_integer() | nil,
-          user_id: Ecto.UUID.t() | nil,
-          user: User.t() | Ecto.Association.NotLoaded.t() | nil,
-          visitor_id: Ecto.UUID.t() | nil,
-          visitor: Visitor.t() | Ecto.Association.NotLoaded.t() | nil,
-          network_id: integer() | nil,
-          network: Network.t() | Ecto.Association.NotLoaded.t() | nil,
+          device_id: pos_integer() | nil,
+          device: Device.t() | Ecto.Association.NotLoaded.t() | nil,
           kind: kind() | nil,
-          payload: String.t() | nil,
+          key: String.t() | nil,
+          sig: String.t() | nil,
           inserted_at: DateTime.t() | nil
         }
 
   schema "e2e_keys" do
-    belongs_to :user, User, type: :binary_id
-    belongs_to :visitor, Visitor, type: :binary_id
-    belongs_to :network, Network
+    belongs_to :device, Device
 
     field :kind, Ecto.Enum, values: @kinds
-    field :payload, :string
+    field :key, :string
+    field :sig, :string
 
     timestamps(type: :utc_datetime, updated_at: false)
   end
 
-  @doc "The longest payload a key may carry, in bytes."
-  @spec max_payload_bytes() :: 1024
-  def max_payload_bytes, do: @max_payload_bytes
-
   @doc """
-  Builds an insert changeset. Every field is required, and the payload
-  must be base64 (`Grappa.IRC.E2e.chunk?/1`, what the framing needs) no
-  longer than `max_payload_bytes/0`.
+  Builds an insert changeset. Every field is required; `key` must be a key
+  and `sig` a signature (`Grappa.E2eKeys.Device`).
   """
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(key, attrs) do
     key
-    |> cast(attrs, [:user_id, :visitor_id, :network_id, :kind, :payload])
-    |> validate_required([:network_id, :kind, :payload])
-    |> validate_length(:payload, max: @max_payload_bytes, count: :bytes)
-    |> validate_change(:payload, fn :payload, payload ->
-      if E2e.chunk?(payload), do: [], else: [payload: "is not base64"]
+    |> cast(attrs, [:device_id, :kind, :key, :sig])
+    |> validate_required([:device_id, :kind, :key, :sig])
+    |> validate_change(:key, fn :key, value -> if Device.key?(value), do: [], else: [key: "is not a key"] end)
+    |> validate_change(:sig, fn :sig, value ->
+      if Device.signature?(value), do: [], else: [sig: "is not a signature"]
     end)
-    |> Subject.validate_xor()
-    |> assoc_constraint(:user)
-    |> assoc_constraint(:visitor)
-    |> assoc_constraint(:network)
-    |> check_constraint(:subject,
-      name: :e2e_keys_subject_xor,
-      message: "user_id and visitor_id are mutually exclusive"
-    )
+    |> assoc_constraint(:device)
+    |> unique_constraint([:device_id, :key], error_key: :key)
+    |> unique_constraint(:device_id, name: :e2e_keys_device_id_index, error_key: :kind)
   end
 end

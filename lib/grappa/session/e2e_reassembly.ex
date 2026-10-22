@@ -38,7 +38,7 @@ defmodule Grappa.Session.E2eReassembly do
   against the sender's next messages until it expired.
 
   A fragment that contradicts the message it claims to belong to (another
-  verb, another total) drops the whole message: there is no telling which
+  verb, another total, another `from` or `to`) drops the whole message: there is no telling which
   side of the contradiction is the honest one, and an incomplete message
   is discarded anyway. A repeated index is ignored (first one wins), which
   also makes a duplicated line on the wire harmless.
@@ -54,8 +54,14 @@ defmodule Grappa.Session.E2eReassembly do
   @max_total_bytes 1024 * 1024
   @fragment_overhead_bytes 64
 
-  @typedoc "A whole message, ready to hand to the client."
-  @type message :: %{verb: E2e.verb(), msgid: String.t(), payload: String.t()}
+  @typedoc "A whole message, ready to hand to the client: its verb, msgid, addresses and payload."
+  @type message :: %{
+          verb: E2e.verb(),
+          msgid: String.t(),
+          from: E2e.address(),
+          to: E2e.address(),
+          payload: String.t()
+        }
 
   @typedoc "Why a fragment was not buffered (or what it took down with it)."
   @type drop_reason :: :sender_cap | :total_cap | :inconsistent
@@ -63,6 +69,8 @@ defmodule Grappa.Session.E2eReassembly do
   @typep entry :: %{
            verb: E2e.verb(),
            total: pos_integer(),
+           from: E2e.address(),
+           to: E2e.address(),
            parts: %{pos_integer() => String.t()},
            bytes: non_neg_integer(),
            last_ms: integer()
@@ -107,7 +115,7 @@ defmodule Grappa.Session.E2eReassembly do
   @spec put(t(), String.t(), Fragment.t(), integer()) ::
           {:complete, message(), t()} | {:pending, t()} | {:dropped, drop_reason(), t()}
   def put(%__MODULE__{} = buffer, _, %Fragment{total: 1} = fragment, _) do
-    {:complete, %{verb: fragment.verb, msgid: fragment.msgid, payload: fragment.chunk}, buffer}
+    {:complete, message(fragment.msgid, fragment, fragment.chunk), buffer}
   end
 
   def put(%__MODULE__{} = buffer, sender, %Fragment{} = fragment, now_ms) when is_binary(sender) do
@@ -118,6 +126,23 @@ defmodule Grappa.Session.E2eReassembly do
       {:ok, entry} -> extend(buffer, sender, key, entry, fragment, now_ms)
     end
   end
+
+  @doc """
+  True while a message of `verb` from the folded `sender` is part-way
+  through reassembly at `now_ms`. The session asks it before sending a
+  client's KEYREQ: cicchetto never sees fragments, so the rule that an
+  asker does not ask again while a KEYS is still arriving is grappa's to
+  keep for it (wire v2, 2430 comment 6346384093, O2 (b)). A message whose
+  last fragment is `timeout_ms/0` old is no longer arriving, whether or not
+  `expire/2` has dropped it yet: the sweep runs once a minute, and the
+  client's KEYREQ must not wait on it.
+  """
+  @spec pending?(t(), String.t(), E2e.verb(), integer()) :: boolean()
+  def pending?(%__MODULE__{entries: entries}, sender, verb, now_ms) when is_binary(sender) and is_integer(now_ms),
+    do:
+      Enum.any?(entries, fn {{from, _}, entry} ->
+        from == sender and entry.verb == verb and now_ms - entry.last_ms < @timeout_ms
+      end)
 
   @doc """
   Discards every message whose last accepted fragment is `timeout_ms/0` or
@@ -131,13 +156,21 @@ defmodule Grappa.Session.E2eReassembly do
 
   @spec new_entry(Fragment.t(), integer()) :: entry()
   defp new_entry(fragment, now_ms),
-    do: %{verb: fragment.verb, total: fragment.total, parts: %{}, bytes: 0, last_ms: now_ms}
+    do: %{
+      verb: fragment.verb,
+      total: fragment.total,
+      from: fragment.from,
+      to: fragment.to,
+      parts: %{},
+      bytes: 0,
+      last_ms: now_ms
+    }
 
   @spec extend(t(), String.t(), {String.t(), String.t()}, entry(), Fragment.t(), integer()) ::
           {:complete, message(), t()} | {:pending, t()} | {:dropped, drop_reason(), t()}
   defp extend(buffer, sender, key, entry, fragment, now_ms) do
     cond do
-      entry.verb != fragment.verb or entry.total != fragment.total ->
+      {entry.verb, entry.total, entry.from, entry.to} != {fragment.verb, fragment.total, fragment.from, fragment.to} ->
         {:dropped, :inconsistent, remove(buffer, key)}
 
       Map.has_key?(entry.parts, fragment.index) ->
@@ -181,10 +214,12 @@ defmodule Grappa.Session.E2eReassembly do
   end
 
   @spec assemble({String.t(), String.t()}, entry()) :: message()
-  defp assemble({_, msgid}, entry) do
-    payload = Enum.map_join(1..entry.total, &Map.fetch!(entry.parts, &1))
-    %{verb: entry.verb, msgid: msgid, payload: payload}
-  end
+  defp assemble({_, msgid}, entry),
+    do: message(msgid, entry, Enum.map_join(1..entry.total, &Map.fetch!(entry.parts, &1)))
+
+  @spec message(String.t(), Fragment.t() | entry(), String.t()) :: message()
+  defp message(msgid, %{verb: verb, from: from, to: to}, payload),
+    do: %{verb: verb, msgid: msgid, from: from, to: to, payload: payload}
 
   @spec put_entry(t(), String.t(), {String.t(), String.t()}, entry(), pos_integer()) :: t()
   defp put_entry(buffer, sender, key, entry, size) do

@@ -18,16 +18,18 @@ if Mix.env() in [:dev, :test] do
 
     use Boundary,
       top_level?: true,
-      deps: [Grappa.E2eInbox, Grappa.Repo, Grappa.Session, Grappa.Subject]
+      deps: [Grappa.E2eInbox, Grappa.E2eKeys, Grappa.Repo, Grappa.Session, Grappa.Subject]
 
     import Ecto.Query
 
     alias Grappa.{E2eInbox, Repo, Session, Subject}
     alias Grappa.E2eInbox.Entry
+    alias Grappa.E2eKeys.Device
 
     @doc """
-    Ages `subject`'s queue on `network_id` past the TTL and runs the live
-    session's sweep, returning once the session has handled it.
+    Ages the queues of `subject`'s devices on `network_id` past the TTL
+    and runs the live session's sweep, returning once the session has
+    handled it.
     `{:error, :no_session}` when no session runs for the pair: the sweep is
     the session's, so there is nothing to tick.
     """
@@ -40,11 +42,10 @@ if Mix.env() in [:dev, :test] do
         pid ->
           aged = DateTime.truncate(DateTime.add(DateTime.utc_now(), -(E2eInbox.ttl_seconds() + 60), :second), :second)
 
-          {_, _} =
-            Entry
-            |> Subject.subject_where(subject)
-            |> where([e], e.network_id == ^network_id)
-            |> Repo.update_all(set: [inserted_at: aged])
+          devices =
+            Device |> Subject.subject_where(subject) |> where([d], d.network_id == ^network_id) |> select([d], d.id)
+
+          {_, _} = Entry |> where([e], e.device_id in subquery(devices)) |> Repo.update_all(set: [inserted_at: aged])
 
           send(pid, :e2e_inbox_sweep)
           # The state read is queued behind the tick: once it answers, the
