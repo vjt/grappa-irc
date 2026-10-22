@@ -315,6 +315,70 @@ describe("e2eClient", () => {
     expect(await a.chats.chats(SLOT)).toEqual({});
   });
 
+  it("deletes a chat: its rows and the plaintext go, the pin and the sessions stay", async () => {
+    const { w, a, b } = await pair();
+    const key = await b.accounts.withAccount(SLOT, async ({ account }) => account.ed25519_key());
+    await a.client.pin(a.ctx, "Bob", key, true);
+    await a.client.send(a.ctx, "bob", "the launch codes");
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+    const keyreqs = () => w.grappa.sends.filter((s) => s.verb === "keyreq").length;
+    const asked = keyreqs();
+    const stored = () => a.accounts.withAccount(SLOT, async ({ state }) => JSON.stringify(state));
+    // Kept for a re-send after a NACK: the plaintext is in the account record.
+    expect(await stored()).toMatch(/launch codes/);
+
+    expect(await a.client.deleteChat(a.ctx, "BOB")).toEqual(["bob"]);
+
+    expect(await rowsOf(a, "bob")).toEqual([]);
+    expect(await a.chats.chats(SLOT)).toEqual({});
+    expect(await stored()).not.toMatch(/launch codes/);
+    expect((await a.client.identity(a.ctx, ["bob"])).peers).toEqual({
+      bob: { ed25519: key, verified: true },
+    });
+    // The next message goes on the session already open: no new first contact.
+    await a.client.send(a.ctx, "bob", "again");
+    await b.client.drain(b.ctx);
+    expect(keyreqs()).toBe(asked);
+    expect(await bodies(b, "alice")).toEqual(["the launch codes", "again"]);
+    expect(await bodies(a, "bob")).toEqual(["again"]);
+  });
+
+  it("never sends a message that waited for keys when its chat was deleted", async () => {
+    const { w, a, b } = await pair();
+    let quiet = true;
+    w.grappa.unanswered = () => quiet;
+    await a.client.send(a.ctx, "bob", "never");
+
+    await a.client.deleteChat(a.ctx, "bob");
+    quiet = false;
+    w.now += KEYREQ_RETRY_MS;
+    const ticked = await a.client.tick(a.ctx);
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+
+    expect(ticked.waiting).toBe(false);
+    expect(await rowsOf(b, "alice")).toEqual([]);
+    expect(await a.chats.chats(SLOT)).toEqual({});
+  });
+
+  it("has dropped the plaintext already when deleting the rows fails", async () => {
+    const { a, b } = await pair();
+    await a.client.send(a.ctx, "bob", "the launch codes");
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+    a.chats.remove = async () => {
+      throw new Error("the chat store is gone");
+    };
+    const stored = () => a.accounts.withAccount(SLOT, async ({ state }) => JSON.stringify(state));
+    expect(await stored()).toMatch(/launch codes/);
+
+    await expect(a.client.deleteChat(a.ctx, "bob")).rejects.toThrow("the chat store is gone");
+
+    expect(await stored()).not.toMatch(/launch codes/);
+    expect(await bodies(a, "bob")).toEqual(["the launch codes"]);
+  });
+
   it("never creates an account: that is the bundle sync's, which clears grappa's stale keys", async () => {
     const w = new World();
     const vault = memoryVault();

@@ -349,6 +349,18 @@ export class Engine {
     this.state.sent = this.state.sent.filter((s) => s.ref !== ref);
   }
 
+  /**
+   * The user deleted the chat with `nick`: what the engine still holds of it
+   * in the clear goes too. A message waiting for keys is never sent, and a
+   * NACK for a sent one finds nothing to re-send (`unknown-nack-ref`). Trust
+   * stays: the pin, the verification and the sessions.
+   */
+  forget(nick: string): void {
+    const key = fold(nick);
+    delete this.state.outq[key];
+    this.state.sent = this.state.sent.filter((s) => fold(s.nick) !== key);
+  }
+
   private sendTo(nick: string, peer: Peer, msg: Outgoing, res: Result): void {
     // While keys are asked for (first contact, or a re-key after a NACK) the
     // sessions we still hold are the ones that failed: wait.

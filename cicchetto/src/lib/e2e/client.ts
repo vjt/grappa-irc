@@ -77,6 +77,12 @@ export type E2eClient = {
   /** The user's step in the SAS with the key `nick` is pinned to (`sas.ts`). */
   verify(ctx: E2eContext, nick: string, step: SasStep): Promise<Report>;
   /**
+   * Deletes the chat with `nick` (`ChatStore.remove`) and what the engine
+   * still holds of it in the clear (`Engine.forget`); answers the chat it
+   * changed. Trust stays: the pin, the verification and the sessions.
+   */
+  deleteChat(ctx: E2eContext, nick: string): Promise<string[]>;
+  /**
    * Our Ed25519 key, and for each of `nicks` (by folded nick) the key it is
    * pinned to and the SAS under way with that key.
    */
@@ -400,6 +406,16 @@ export function e2eClient(
       withEngine(ctx, async (engine, state, persist, verifier) => {
         await verifier.step(nick, step);
         return finish(ctx, engine, verifier, state, persist, [], []);
+      }),
+
+    deleteChat: (ctx, nick) =>
+      withEngine(ctx, async (engine, _state, persist) => {
+        engine.forget(nick);
+        // Stored before the rows go: a delete that fails half way has dropped
+        // the plaintext and left rows to delete again, never the other way.
+        await persist();
+        await chats.remove(ctx.slot, nick);
+        return [fold(nick)];
       }),
 
     identity: (ctx, nicks) =>
