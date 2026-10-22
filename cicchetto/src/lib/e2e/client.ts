@@ -1,5 +1,6 @@
 // issue 2430 — cic's E2E client for one (subject, network): the engine
-// (`engine.ts`) between grappa's doors and the chat history (`chatStore.ts`).
+// (`engine.ts`) between this device's doors on grappa and the chat history
+// (`chatStore.ts`).
 //
 // Every operation runs under the account's lock, on one engine built for it,
 // in the order that keeps a crash anywhere harmless:
@@ -10,14 +11,20 @@
 //   3. the state is stored, before any of its ciphertext leaves: a ratchet
 //      step is never sent twice from a state reloaded after a crash;
 //   4. the payloads go to the send door, one at a time, in order; grappa's
-//      msgid is recorded for each message (a NACK names it), or the send is
-//      forgotten when grappa refused it;
+//      msgid is recorded for each payload (a NACK names it), or the payload
+//      is forgotten when grappa refused it;
 //   5. inbox messages are acknowledged last.
 //
 // SAS steps (`sas.ts`) ride the same order: the verifier changes the state
-// and queues its steps, which go through the engine like any message. So do
-// the ACKs of order challenges (`orders.ts`): a CHAL is answered in the drain
-// that decrypted it, only for a line this cic sent, and never shown.
+// and sends its steps through the engine, like any message. So do the ACKs
+// of order challenges (`orders.ts`): a CHAL is answered in the drain that
+// decrypted it, only for a line this cic sent, only to the device that asked,
+// and never shown.
+//
+// The doors are this device's (wire v2): its inbox holds only what was
+// addressed to it, and every payload leaves from its did. Both come from the
+// identity in the record (`identity.ts` sets it up); a slot without one runs
+// nothing.
 //
 // A message processed again (the tab died after 2) finds its rows already
 // written, and one past the stored watermark (`E2eState.inbox`) is skipped:
@@ -26,7 +33,15 @@
 
 import type { AccountStore } from "./accountStore";
 import type { ChatChange, ChatStore, DoorRefusal, SendDropped } from "./chatStore";
-import { type E2eEvent, type E2eState, Engine, type Outbound } from "./engine";
+import {
+  type E2eEvent,
+  type E2eState,
+  Engine,
+  LIST_TAG,
+  type Outbound,
+  type PinOutcome,
+  type Result,
+} from "./engine";
 import type { Olm } from "./olm";
 import {
   type Challenge,
@@ -38,18 +53,20 @@ import {
 import { isSas, SAS_TAG, type SasHost, type SasStep, type SasView, Verifier } from "./sas";
 import { fold, type ReceiveVerb } from "./wire";
 
-/** One whole message grappa holds for us (the `e2e_message` wire shape, minus its envelope). */
+/** One whole message grappa holds for this device (the `e2e_message` wire shape, minus its envelope). */
 export type InboxMessage = {
   id: number;
   from: string;
+  /** The device of `from` that sent it (its did), `*` on a KEYS. */
+  fromDid: string;
   verb: ReceiveVerb;
   msgid: string;
   payload: string;
 };
 
-/** grappa's E2E doors for one subject on one network. */
+/** grappa's E2E doors for one device of a subject on one network. */
 export type Door = {
-  /** The oldest page of the inbox past `after`. */
+  /** The oldest page of the device's inbox past `after`. */
   inbox(after: number): Promise<InboxMessage[]>;
   ack(ids: number[]): Promise<void>;
   /** Never throws: a refusal, or a send that failed on the way, is an answer. */
@@ -59,7 +76,13 @@ export type Door = {
 export type E2eContext = {
   slot: string;
   ownNick: string;
-  door: Door;
+  /**
+   * The network's `frame_budget_base` as grappa published it, null before it
+   * has (no live upstream session): what the engine sizes every message by.
+   */
+  frameBudgetBase: number | null;
+  /** The doors of this subject's device `did` on the network. */
+  door: (did: string) => Door;
   /** Whether this cic sent the line `chal` from `challenger` names, there, in the 15 s before `at` (`SendLog.confirms`). */
   orders: (chal: Challenge, challenger: string, at: number) => OrderVerdict;
 };
@@ -67,29 +90,31 @@ export type E2eContext = {
 /**
  * What an operation changed: the chats it changed (folded nicks), how many
  * pre-key messages it opened (each spent a one-time key: time to refill the
- * bundle), and whether something waits on the clock (time to tick):
- * messages waiting for keys, or a SAS.
+ * bundle), whether something waits on the clock (time to tick, the engine's
+ * own answer: `Engine.waitsOnTheClock`), and whether the send door refused a
+ * payload as from a device grappa does not list (`unknown-device`: time to
+ * sync, the identity moved).
  */
-export type Report = { chats: string[]; pkmsgs: number; waiting: boolean };
+export type Report = { chats: string[]; pkmsgs: number; waiting: boolean; unknownDevice: boolean };
 
-/** Who a nick is pinned to, as the user sees it. */
-export type PeerTrust = { ed25519: string; verified: boolean };
+/** Who a nick is pinned to, as the user sees it: the master, and how many of its devices are trusted. */
+export type PeerTrust = { master: string; verified: boolean; devices: number };
 
 export type E2eClient = {
-  /** Takes every message waiting in the inbox. */
+  /** Takes every message waiting in the device's inbox. */
   drain(ctx: E2eContext): Promise<Report>;
   /** Sends `body` to `nick`, encrypted, and writes it to their chat. */
   send(ctx: E2eContext, nick: string, body: string): Promise<Report>;
-  /** Reports messages that waited too long for keys. */
+  /** Reports messages that waited too long for keys, and sends what waited on the clock. */
   tick(ctx: E2eContext): Promise<Report>;
-  /** Pins `key` to `nick` by hand (`Engine.pin`); a pin is written to their chat. */
+  /** Pins `master` to `nick` by hand (`Engine.pin`); a pin is written to their chat. */
   pin(
     ctx: E2eContext,
     nick: string,
-    key: string,
+    master: string,
     verified: boolean,
-  ): Promise<{ result: ReturnType<Engine["pin"]>; chats: string[] }>;
-  /** The user's step in the SAS with the key `nick` is pinned to (`sas.ts`). */
+  ): Promise<Report & { result: PinOutcome }>;
+  /** The user's step in the SAS with the master `nick` is pinned to (`sas.ts`). */
   verify(ctx: E2eContext, nick: string, step: SasStep): Promise<Report>;
   /** grappa dropped `msgid` after accepting it (`e2e_send_dropped`): its row turns failed. */
   dropped(ctx: E2eContext, msgid: string, reason: SendDropped): Promise<Report>;
@@ -100,8 +125,8 @@ export type E2eClient = {
    */
   deleteChat(ctx: E2eContext, nick: string): Promise<string[]>;
   /**
-   * Our Ed25519 key, and for each of `nicks` (by folded nick) the key it is
-   * pinned to and the SAS under way with that key.
+   * Our master key, and for each of `nicks` (by folded nick) the master it is
+   * pinned to and the SAS under way with that master.
    */
   identity(
     ctx: E2eContext,
@@ -114,11 +139,19 @@ export type E2eClient = {
 };
 
 /**
- * The slot has no account yet. Only the bundle sync creates one, because a
- * new account must first clear whatever bundle grappa still holds for the
- * slot (keys of an account that is gone): sync, then try again.
+ * The slot has no account yet. Only the identity sync makes one
+ * (`identity.ts`), because an identity is never made over one grappa already
+ * holds: sync, then try again.
  */
 export class NoAccountError extends Error {}
+
+/**
+ * The slot's record holds no identity this device speaks for: what a replace
+ * leaves when its new identity failed after grappa's old one was deleted.
+ * Nothing runs on it; only the user starts a new identity, or pairs this
+ * browser with a device that holds one.
+ */
+export class IdentityElsewhereError extends Error {}
 
 /** The chat changes `events` make; rows from the inbox message `inbox` get ids derived from it. */
 function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatChange[] {
@@ -129,19 +162,13 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
       case "received":
         // Only text is shown. A CHAL is answered in the drain (`answer`),
         // never shown; an ACK means nothing here (cic challenges no one).
+        // The row names the master that wrote it, the key the user pins.
         if (e.inner.t === "text" && typeof e.inner.body === "string" && inbox !== null) {
           changes.push({
             op: "add",
             nick: e.nick,
             unread: true,
-            row: {
-              kind: "in",
-              id,
-              at,
-              nick: e.nick,
-              ed25519: e.peer.ed25519,
-              body: e.inner.body,
-            },
+            row: { kind: "in", id, at, nick: e.nick, ed25519: e.master, body: e.inner.body },
           });
         }
         break;
@@ -196,6 +223,8 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
 
 // A SAS step and an ACK have no row to mark: the SAS waits for its step until
 // its time runs out, and the bot refuses the order once its challenge expires.
+// The engine never reports its own list traffic (`LIST_TAG`), so it never
+// gets here.
 type RowlessTag = typeof SAS_TAG | typeof ORDER_TAG;
 
 const rowless = (tag: string): tag is RowlessTag => tag === SAS_TAG || tag === ORDER_TAG;
@@ -210,9 +239,6 @@ function rowlessLost(tag: RowlessTag, nick: string, reason: string): void {
   }
 }
 
-const waitsOnTheClock = (state: E2eState): boolean =>
-  Object.keys(state.outq).length > 0 || Object.keys(state.sas).length > 0;
-
 export function e2eClient(
   olm: Olm,
   accounts: AccountStore,
@@ -220,170 +246,195 @@ export function e2eClient(
   now: () => number,
   host: SasHost,
 ): E2eClient {
-  // Steps 4 for `outbound`: what the send door answered, as chat changes.
-  async function flush(engine: Engine, door: Door, outbound: Outbound[]): Promise<ChatChange[]> {
+  // Step 4 for `outbound`: what the send door answered, as chat changes, and
+  // whether it refused a payload as from a device it does not list. A
+  // refused payload is forgotten (`discard`); its message is lost only once
+  // nothing else of it is on its way or waiting, which the engine answers.
+  async function flush(
+    engine: Engine,
+    door: Door,
+    outbound: Outbound[],
+  ): Promise<{ changes: ChatChange[]; unknownDevice: boolean }> {
     const changes: ChatChange[] = [];
+    let unknownDevice = false;
     for (const out of outbound) {
       const answer = await door.send(out);
+      if ("refused" in answer && answer.refused === "unknown-device") unknownDevice = true;
       if (out.ref === undefined || out.tag === undefined) {
         if ("refused" in answer) {
           console.warn(`[e2e] grappa refused a ${out.verb} to ${out.target}: ${answer.refused}`);
         }
         continue;
       }
-      if (rowless(out.tag)) {
-        if ("refused" in answer) {
-          engine.discard(out.ref);
-          rowlessLost(out.tag, out.target, answer.refused);
-        } else {
-          engine.sent(out.ref, answer.msgid);
+      if (!("refused" in answer)) {
+        engine.sent(out.ref, answer.msgid);
+        if (out.tag !== LIST_TAG && !rowless(out.tag)) {
+          changes.push({ op: "out", nick: out.target, id: out.tag, state: "sent", reason: null });
         }
         continue;
       }
-      if ("refused" in answer) {
-        engine.discard(out.ref);
+      const lost = engine.discard(out.ref);
+      if (lost === undefined) {
+        // The engine's own list traffic, or a message another copy of which
+        // is still on its way: no row moves, but the refusal leaves a trace.
+        console.warn(
+          `[e2e] grappa refused a ${out.verb} to ${out.target} (${answer.refused}); ${
+            out.tag === LIST_TAG ? "the list traffic is dropped" : "another copy is on its way"
+          }`,
+        );
+      } else if (rowless(lost.tag)) {
+        rowlessLost(lost.tag, lost.nick, answer.refused);
+      } else {
         changes.push({
           op: "out",
-          nick: out.target,
-          id: out.tag,
+          nick: lost.nick,
+          id: lost.tag,
           state: "failed",
           reason: answer.refused,
         });
-      } else {
-        engine.sent(out.ref, answer.msgid);
-        changes.push({ op: "out", nick: out.target, id: out.tag, state: "sent", reason: null });
       }
     }
-    return changes;
+    return { changes, unknownDevice };
   }
 
-  // An operation on the slot's account, which must exist already.
+  // An operation on the slot's identity, which must exist already: its
+  // engine and verifier, and this device's doors.
   function withEngine<T>(
     ctx: E2eContext,
     fn: (
       engine: Engine,
-      state: E2eState,
       persist: () => Promise<void>,
       verifier: Verifier,
+      door: Door,
+      state: E2eState,
     ) => Promise<T>,
   ): Promise<T> {
-    return accounts.withAccount(ctx.slot, async ({ account, state, created, persist }) => {
+    return accounts.withAccount(ctx.slot, async ({ account, own, state, created, persist }) => {
       // Throwing stores nothing: the account just made is dropped again.
       if (created) throw new NoAccountError(`no E2E account for ${ctx.slot} yet`);
-      const engine = new Engine(olm, account, state, ctx.ownNick, now);
-      return fn(engine, state, persist, new Verifier(olm, engine, state, host, now));
+      if (own === null) throw new IdentityElsewhereError(`no E2E identity in ${ctx.slot}`);
+      const engine = new Engine(olm, account, own, state, ctx.ownNick, ctx.frameBudgetBase, now);
+      const verifier = new Verifier(olm, engine, state, host, now);
+      return fn(engine, persist, verifier, ctx.door(own.did), state);
     });
   }
 
-  // The steps the verifier queued, through the engine: their payloads, and
-  // the chat changes the verifier made.
-  function sasOutput(
-    engine: Engine,
-    verifier: Verifier,
-  ): { changes: ChatChange[]; outbound: Outbound[]; chats: string[] } {
-    const { sends, changes, chats: touched } = verifier.take();
-    const outbound: Outbound[] = [];
-    for (const { nick, inner } of sends) {
-      const res = engine.send(nick, inner, SAS_TAG, null);
-      changes.push(...changesFor(res.events, now(), null));
-      outbound.push(...res.outbound);
-    }
-    return { changes, outbound, chats: touched };
+  // What the verifier made (its rows, and what the engine answered to its
+  // steps), as chat changes and payloads.
+  function sasOutput(verifier: Verifier): {
+    changes: ChatChange[];
+    outbound: Outbound[];
+    chats: string[];
+  } {
+    const { changes, events, outbound, chats: touched } = verifier.take();
+    return { changes: [...changes, ...changesFor(events, now(), null)], outbound, chats: touched };
   }
 
-  // The answer to an order challenge from `nick`: an ACK, with the CHAL's own
-  // deadline (grappa drops it unsent past that), when the session is verified
-  // and this cic sent the line the CHAL names; otherwise nothing, and nothing
-  // shown. Until a key is verified (pinned by hand, or a SAS) the session
-  // does not authorise orders (issue 2430, "Identity"). A bot only sends a
-  // CHAL to the key pinned to the nick that spoke, so a CHAL for a line this
-  // cic never sent is someone giving orders in the user's name, or one of the
-  // fail-closed cases (`orders.ts`); either way the bot refuses the order.
+  // The answer to an order challenge from `nick`'s device `device`: an ACK to
+  // that device alone, with the CHAL's own deadline (grappa drops it unsent
+  // past that), when the master is verified and this cic sent the line the
+  // CHAL names; otherwise nothing, and nothing shown. Until a master is
+  // verified (pinned by hand, or a SAS) its devices do not authorise orders
+  // (issue 2430, "Identity"). A bot only sends a CHAL to the master pinned to
+  // the nick that spoke, so a CHAL for a line this cic never sent is someone
+  // giving orders in the user's name, or one of the fail-closed cases
+  // (`orders.ts`); either way the bot refuses the order.
   function answer(
     ctx: E2eContext,
     engine: Engine,
-    nick: string,
-    verified: boolean,
-    inner: Record<string, unknown>,
-  ): { changes: ChatChange[]; outbound: Outbound[] } {
-    const chal = parseChallenge(inner);
+    received: Extract<E2eEvent, { kind: "received" }>,
+  ): Result {
+    const { nick } = received;
+    const chal = parseChallenge(received.inner);
     if (chal === null) {
       console.debug(`[e2e] dropped a malformed order challenge from ${nick}`);
-      return { changes: [], outbound: [] };
+      return { events: [], outbound: [] };
     }
-    if (!verified) {
+    if (!received.verified) {
       console.warn(`[e2e] order challenge from ${nick} not confirmed: their key is not verified`);
-      return { changes: [], outbound: [] };
+      return { events: [], outbound: [] };
     }
     const verdict = ctx.orders(chal, nick, now());
     if (verdict !== "confirmed") {
       console.warn(`[e2e] order challenge from ${nick} not confirmed: ${UNCONFIRMED[verdict]}`);
-      return { changes: [], outbound: [] };
+      return { events: [], outbound: [] };
     }
-    const res = engine.send(nick, { t: "ack", nonce: chal.nonce }, ORDER_TAG, chal.expiresAt);
-    return { changes: changesFor(res.events, now(), null), outbound: res.outbound };
+    return engine.send(
+      nick,
+      { t: "ack", nonce: chal.nonce },
+      ORDER_TAG,
+      chal.expiresAt,
+      received.device,
+    );
   }
 
   // Steps 2–4 for what an operation made: `changes` and what the verifier
-  // made, then `outbound` and the verifier's steps.
+  // made, then `outbound` and the verifier's payloads.
   async function finish(
     ctx: E2eContext,
     engine: Engine,
     verifier: Verifier,
-    state: E2eState,
     persist: () => Promise<void>,
+    door: Door,
     changes: ChatChange[],
     outbound: Outbound[],
   ): Promise<Report> {
-    const sas = sasOutput(engine, verifier);
+    const sas = sasOutput(verifier);
     const touched = new Set(sas.chats);
     for (const key of await chats.apply(ctx.slot, [...sas.changes, ...changes])) touched.add(key);
     await persist();
-    const sent = await flush(engine, ctx.door, [...outbound, ...sas.outbound]);
-    for (const key of await chats.apply(ctx.slot, sent)) touched.add(key);
-    return { chats: [...touched], pkmsgs: 0, waiting: waitsOnTheClock(state) };
+    const sent = await flush(engine, door, [...outbound, ...sas.outbound]);
+    for (const key of await chats.apply(ctx.slot, sent.changes)) touched.add(key);
+    return {
+      chats: [...touched],
+      pkmsgs: 0,
+      waiting: engine.waitsOnTheClock(),
+      unknownDevice: sent.unknownDevice,
+    };
   }
 
   return {
     drain: (ctx) =>
-      withEngine(ctx, async (engine, state, persist, verifier) => {
+      withEngine(ctx, async (engine, persist, verifier, door, state) => {
         const touched = new Set<string>();
         let pkmsgs = 0;
+        let unknownDevice = false;
         let after = 0;
         for (;;) {
-          const page = await ctx.door.inbox(after);
+          const page = await door.inbox(after);
           const last = page.at(-1);
           if (last === undefined) break;
           const changes: ChatChange[] = [];
           const outbound: Outbound[] = [];
           for (const m of page) {
             if (m.id <= state.inbox) continue;
-            const res = engine.receive(m.from, m.verb, m.msgid, m.payload);
+            const res = engine.receive(m.from, m.verb, m.msgid, m.fromDid, m.payload);
             if (m.verb === "pkmsg") pkmsgs += 1;
             changes.push(...changesFor(res.events, now(), m.id));
             outbound.push(...res.outbound);
             for (const [i, e] of res.events.entries()) {
               if (e.kind !== "received") continue;
               if (isSas(e.inner)) {
-                await verifier.receive(e.nick, e.peer.ed25519, e.inner, `in:${m.id}:${i}`);
+                await verifier.receive(e.nick, e.master, e.device, e.inner, `in:${m.id}:${i}`);
               } else if (e.inner.t === "chal") {
-                const acked = answer(ctx, engine, e.nick, e.peer.verified, e.inner);
-                changes.push(...acked.changes);
+                const acked = answer(ctx, engine, e);
+                changes.push(...changesFor(acked.events, now(), null));
                 outbound.push(...acked.outbound);
               }
             }
             state.inbox = m.id;
           }
-          const sas = sasOutput(engine, verifier);
+          const sas = sasOutput(verifier);
           changes.push(...sas.changes);
           outbound.push(...sas.outbound);
           for (const key of sas.chats) touched.add(key);
           for (const key of await chats.apply(ctx.slot, changes)) touched.add(key);
           await persist();
-          const sent = await flush(engine, ctx.door, outbound);
+          const sent = await flush(engine, door, outbound);
+          unknownDevice ||= sent.unknownDevice;
           await persist();
-          for (const key of await chats.apply(ctx.slot, sent)) touched.add(key);
-          await ctx.door.ack(page.map((m) => m.id));
+          for (const key of await chats.apply(ctx.slot, sent.changes)) touched.add(key);
+          await door.ack(page.map((m) => m.id));
           after = last.id;
         }
         const ticked = engine.tick();
@@ -391,19 +442,24 @@ export function e2eClient(
           ctx,
           engine,
           verifier,
-          state,
           persist,
+          door,
           changesFor(ticked.events, now(), null),
           ticked.outbound,
         );
         for (const key of end.chats) touched.add(key);
-        return { chats: [...touched], pkmsgs, waiting: end.waiting };
+        return {
+          chats: [...touched],
+          pkmsgs,
+          waiting: end.waiting,
+          unknownDevice: unknownDevice || end.unknownDevice,
+        };
       }),
 
     send: (ctx, nick, body) =>
-      withEngine(ctx, async (engine, state, persist) => {
+      withEngine(ctx, async (engine, persist, _verifier, door) => {
         const tag = crypto.randomUUID();
-        const res = engine.send(nick, { t: "text", body }, tag, null);
+        const res = engine.send(nick, { t: "text", body }, tag, null, null);
         const touched = new Set(
           await chats.apply(ctx.slot, [
             {
@@ -416,67 +472,76 @@ export function e2eClient(
           ]),
         );
         await persist();
-        for (const key of await chats.apply(
-          ctx.slot,
-          await flush(engine, ctx.door, res.outbound),
-        )) {
-          touched.add(key);
-        }
-        return { chats: [...touched], pkmsgs: 0, waiting: waitsOnTheClock(state) };
+        const sent = await flush(engine, door, res.outbound);
+        for (const key of await chats.apply(ctx.slot, sent.changes)) touched.add(key);
+        return {
+          chats: [...touched],
+          pkmsgs: 0,
+          waiting: engine.waitsOnTheClock(),
+          unknownDevice: sent.unknownDevice,
+        };
       }),
 
     tick: (ctx) =>
-      withEngine(ctx, async (engine, state, persist, verifier) => {
+      withEngine(ctx, async (engine, persist, verifier, door) => {
         const ticked = engine.tick();
         verifier.tick(await host.alive());
         return finish(
           ctx,
           engine,
           verifier,
-          state,
           persist,
+          door,
           changesFor(ticked.events, now(), null),
           ticked.outbound,
         );
       }),
 
-    pin: (ctx, nick, key, verified) =>
-      withEngine(ctx, async (engine, state, persist, verifier) => {
-        const before = engine.pinned(nick)?.ed25519;
-        const result = engine.pin(nick, key, verified);
-        if (result !== "pinned") return { result, chats: [] };
-        // The key as the engine spells it: a paste may carry non-zero padding bits.
+    pin: (ctx, nick, master, verified) =>
+      withEngine(ctx, async (engine, persist, verifier, door) => {
+        const res = engine.pin(nick, master, verified);
+        if (res.outcome !== "pinned") {
+          return {
+            result: res.outcome,
+            chats: [],
+            pkmsgs: 0,
+            waiting: engine.waitsOnTheClock(),
+            unknownDevice: false,
+          };
+        }
+        // A SAS never runs on a master the nick no longer has: one that ran
+        // with the master the pin replaced ends here.
+        verifier.repinned(nick);
         const peer = engine.pinned(nick);
         if (peer === undefined) throw new Error("a pin just set is not there");
-        if (before !== undefined && before !== peer.ed25519) verifier.repinned(before);
-        // Taking a key someone already verified pins a verified key.
+        // Taking a master someone already verified pins a verified master.
         const row = {
           kind: peer.verified ? ("pinned" as const) : ("accepted" as const),
           id: crypto.randomUUID(),
           at: now(),
           nick,
-          ed25519: peer.ed25519,
+          ed25519: peer.master,
         };
         const report = await finish(
           ctx,
           engine,
           verifier,
-          state,
           persist,
-          [{ op: "add", nick, unread: false, row }],
-          [],
+          door,
+          [{ op: "add", nick, unread: false, row }, ...changesFor(res.events, now(), null)],
+          res.outbound,
         );
-        return { result, chats: report.chats };
+        return { ...report, result: res.outcome };
       }),
 
     verify: (ctx, nick, step) =>
-      withEngine(ctx, async (engine, state, persist, verifier) => {
+      withEngine(ctx, async (engine, persist, verifier, door) => {
         await verifier.step(nick, step);
-        return finish(ctx, engine, verifier, state, persist, [], []);
+        return finish(ctx, engine, verifier, persist, door, [], []);
       }),
 
     deleteChat: (ctx, nick) =>
-      withEngine(ctx, async (engine, _state, persist) => {
+      withEngine(ctx, async (engine, persist) => {
         engine.forget(nick);
         // Stored before the rows go: a delete that fails half way has dropped
         // the plaintext and left rows to delete again, never the other way.
@@ -486,7 +551,7 @@ export function e2eClient(
       }),
 
     dropped: (ctx, msgid, reason) =>
-      withEngine(ctx, async (engine, state, persist, verifier) => {
+      withEngine(ctx, async (engine, persist, verifier, door) => {
         const lost = engine.dropped(msgid);
         const changes: ChatChange[] = [];
         if (lost !== undefined && rowless(lost.tag)) {
@@ -494,20 +559,19 @@ export function e2eClient(
         } else if (lost !== undefined) {
           changes.push({ op: "out", nick: lost.nick, id: lost.tag, state: "failed", reason });
         }
-        return finish(ctx, engine, verifier, state, persist, changes, []);
+        return finish(ctx, engine, verifier, persist, door, changes, []);
       }),
 
     identity: (ctx, nicks) =>
-      withEngine(ctx, async (engine, state, persist, verifier) => {
+      withEngine(ctx, async (engine, persist, verifier, door) => {
         const peers: Record<string, PeerTrust | null> = {};
         const sas: Record<string, SasView | null> = {};
         for (const nick of nicks) {
           const peer = engine.pinned(nick);
-          peers[fold(nick)] =
-            peer === undefined ? null : { ed25519: peer.ed25519, verified: peer.verified };
+          peers[fold(nick)] = peer ?? null;
           sas[fold(nick)] = verifier.view(nick);
         }
-        if (!verifier.idle()) await finish(ctx, engine, verifier, state, persist, [], []);
+        if (!verifier.idle()) await finish(ctx, engine, verifier, persist, door, [], []);
         return { own: engine.fingerprint(), peers, sas };
       }),
   };

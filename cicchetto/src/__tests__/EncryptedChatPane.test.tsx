@@ -10,6 +10,7 @@ import { SAS_EMOJI } from "../lib/e2e/sasEmoji";
 // is the boundary: its reads are signals here and its verbs are spies, so
 // these tests pin what the pane shows and which verb each control reaches.
 // `trustOf` stays the real one: the badge is its answer, not a copy of it.
+// A key is a master.
 
 const KEY = "J2bCqN5ukKUq1qDNgzWbn9GZ7xjzM2bA0f9yqkvq0Ss";
 const OWN = "7hPz0kdkCq0cH1L2oW9i3l0gq3uM8V8vxa5w8Kq2yYk";
@@ -87,7 +88,7 @@ describe("EncryptedChatPane", () => {
     const badge = screen.getByTestId("e2e-peer-trust");
     expect(badge.dataset.trust).toBe("unverified");
 
-    setTrust({ ed25519: KEY, verified: true });
+    setTrust({ master: KEY, verified: true, devices: 1 });
     setRows([{ kind: "pinned", id: "p", at, nick: "Bob", ed25519: KEY }]);
     expect(badge.dataset.trust).toBe("verified");
     expect(screen.getByTestId("e2e-peer-key").textContent).toBe(KEY);
@@ -105,6 +106,7 @@ describe("EncryptedChatPane", () => {
       { kind: "out", id: "2", at, body: "waiting", state: "queued", reason: null },
       { kind: "out", id: "3", at, body: "done", state: "sent", reason: null },
       { kind: "out", id: "4", at, body: "nope", state: "failed", reason: "rate-limited" },
+      { kind: "out", id: "4b", at, body: "early", state: "failed", reason: "no-budget" },
       { kind: "undecryptable", id: "5", at, nick: "Bob" },
       { kind: "key_alarm", id: "6", at, nick: "Bob", presented: OWN },
       { kind: "pinned", id: "7", at, nick: "Bob", ed25519: KEY },
@@ -119,6 +121,7 @@ describe("EncryptedChatPane", () => {
     const shown = screen.getAllByTestId("e2e-row");
     expect(shown.map((r) => r.dataset.rowKind)).toEqual([
       "in",
+      "out",
       "out",
       "out",
       "out",
@@ -138,29 +141,32 @@ describe("EncryptedChatPane", () => {
     expect(shown[2]?.querySelector("[data-testid=e2e-row-state]")?.textContent).toBe("");
     expect(shown[3]?.textContent).toContain("not sent: grappa's queue for this peer is full");
     expect(shown[4]?.textContent).toContain(
+      "not sent: the network is not connected yet, so it could not be sized",
+    );
+    expect(shown[5]?.textContent).toContain(
       "Bob sent you an encrypted message that cannot be read here",
     );
-    expect(shown[5]?.textContent).toContain(OWN);
-    expect(shown[6]?.textContent).toContain(`you pinned Bob to ${KEY}`);
-    expect(shown[7]?.textContent).toContain(`you took ${KEY} as Bob's key, not verified`);
-    expect(shown[8]?.textContent).toContain("you asked Bob to compare emoji");
-    expect(shown[9]?.textContent).toContain("Bob asked to compare emoji with you");
-    expect(shown[10]?.textContent).toContain(
+    expect(shown[6]?.textContent).toContain(OWN);
+    expect(shown[7]?.textContent).toContain(`you pinned Bob to ${KEY}`);
+    expect(shown[8]?.textContent).toContain(`you took ${KEY} as Bob's key, not verified`);
+    expect(shown[9]?.textContent).toContain("you asked Bob to compare emoji");
+    expect(shown[10]?.textContent).toContain("Bob asked to compare emoji with you");
+    expect(shown[11]?.textContent).toContain(
       "the emoji comparison stopped: no answer in 10 minutes",
     );
-    expect(shown[11]?.textContent).toContain('Bob stopped the emoji comparison: "its own words"');
-    expect(shown[12]?.textContent).toContain(`you verified Bob's key ${KEY} by comparing emoji`);
+    expect(shown[12]?.textContent).toContain('Bob stopped the emoji comparison: "its own words"');
+    expect(shown[13]?.textContent).toContain(`you verified Bob's key ${KEY} by comparing emoji`);
   });
 
   it("the alarm offers to take the new key, unverified, until it is the pinned one", () => {
-    setTrust({ ed25519: KEY, verified: true });
+    setTrust({ master: KEY, verified: true, devices: 1 });
     setRows([{ kind: "key_alarm", id: "a", at, nick: "Bob", presented: OWN }]);
     renderPane();
 
     fireEvent.click(screen.getByTestId("e2e-alarm-accept"));
     expect(pinEncryptedKey).toHaveBeenCalledWith("azzurra", "bob", OWN, false);
 
-    setTrust({ ed25519: OWN, verified: false });
+    setTrust({ master: OWN, verified: false, devices: 1 });
     expect(screen.queryByTestId("e2e-alarm-accept")).toBeNull();
   });
 
@@ -168,11 +174,11 @@ describe("EncryptedChatPane", () => {
     renderPane();
     expect(screen.queryByTestId("e2e-sas-start")).toBeNull();
 
-    setTrust({ ed25519: KEY, verified: false });
+    setTrust({ master: KEY, verified: false, devices: 1 });
     fireEvent.click(screen.getByTestId("e2e-sas-start"));
     expect(verifyEncrypted).toHaveBeenCalledWith("azzurra", "bob", "start");
 
-    setTrust({ ed25519: KEY, verified: true });
+    setTrust({ master: KEY, verified: true, devices: 1 });
     expect(screen.queryByTestId("e2e-sas-start")).toBeNull();
   });
 
@@ -193,7 +199,7 @@ describe("EncryptedChatPane", () => {
     [view({ phase: "compare", here: false }), "elsewhere", "open in another tab"],
     [view({ phase: "compare", confirmed: true }), "confirmed", "waiting for Bob to confirm"],
   ])("a SAS (%o) reads %s, and can be cancelled", (shown, phase, text) => {
-    setTrust({ ed25519: KEY, verified: false });
+    setTrust({ master: KEY, verified: false, devices: 1 });
     setSas(shown);
     renderPane();
     const panel = screen.getByTestId("e2e-sas");
@@ -239,7 +245,7 @@ describe("EncryptedChatPane", () => {
   });
 
   it("a message written with another key than the nick's pinned one says so", () => {
-    setTrust({ ed25519: KEY, verified: true });
+    setTrust({ master: KEY, verified: true, devices: 1 });
     setRows([
       { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "from the pinned key" },
       { kind: "in", id: "2", at, nick: "Bob", ed25519: OWN, body: "from another" },
@@ -252,7 +258,20 @@ describe("EncryptedChatPane", () => {
     );
   });
 
-  it("shows our own key and copies it", async () => {
+  it("shows the master the peer's nick is pinned to, and how many of its devices are trusted", () => {
+    renderPane();
+    expect(screen.getByTestId("e2e-peer-key").textContent).toBe("none yet");
+    expect(screen.queryByTestId("e2e-peer-devices")).toBeNull();
+
+    setTrust({ master: KEY, verified: false, devices: 2 });
+    expect(screen.getByTestId("e2e-peer-key").textContent).toBe(KEY);
+    expect(screen.getByTestId("e2e-peer-devices").textContent).toBe(" (2 devices)");
+
+    setTrust({ master: KEY, verified: false, devices: 1 });
+    expect(screen.getByTestId("e2e-peer-devices").textContent).toBe(" (1 device)");
+  });
+
+  it("shows our own key, our master, and copies it", async () => {
     renderPane();
     expect(screen.getByTestId("e2e-own-identity").textContent).toBe(OWN);
     fireEvent.click(screen.getByTestId("e2e-own-identity-copy"));

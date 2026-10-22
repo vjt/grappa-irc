@@ -23,14 +23,17 @@ import { fold } from "./wire";
 export type OutState = "queued" | "sending" | "sent" | "failed";
 /**
  * grappa's send door refused the payload: its queue for the peer was full,
- * an order's deadline was already out of reach, or worse.
+ * an order's deadline was already out of reach, the device it came from is
+ * not one grappa lists for the subject (`unknown-device`: the identity was
+ * replaced, or this device revoked, elsewhere), or worse.
  */
-export type DoorRefusal = "rate-limited" | "too-large" | "too-late" | "refused";
+export type DoorRefusal = "rate-limited" | "too-large" | "too-late" | "unknown-device" | "refused";
 /** grappa accepted the payload, then dropped it unsent (`e2e_send_dropped`). */
 export type SendDropped = "late" | "send-failed" | "session-ended";
 export type OutFailure = SendFailure | DoorRefusal | SendDropped;
 
 export type ChatRow =
+  /** A message read: `ed25519` is the master of the device that wrote it, the key the nick is pinned to. */
   | { kind: "in"; id: string; at: number; nick: string; ed25519: string; body: string }
   | {
       kind: "out";
@@ -67,7 +70,8 @@ export type Chat = { nick: string; open: boolean; unread: number };
 /**
  * `add` writes a row unless one with its id is there already, and opens the
  * chat (a new message reopens a closed one, as a query window does). `out`
- * moves an outgoing row along, and changes nothing if the row is not there.
+ * moves an outgoing row along, and changes nothing if the row is not there,
+ * nor once the row is sent and the change would take it back (`backwards`).
  */
 export type ChatChange =
   | { op: "add"; nick: string; row: ChatRow; unread: boolean }
@@ -94,6 +98,14 @@ export type ChatStore = {
 type IndexEntry = { id: string; nick: string; open: boolean; unread: number };
 type ChatIndex = { v: 1; chats: Record<string, IndexEntry> };
 type ChatRecord = { v: 1; rows: ChatRow[] };
+
+/**
+ * A sent message is never shown as waiting again: a device that could not
+ * read it NACKs it, and its re-send can wait for keys (the engine reports it
+ * queued). It went, and should the re-send be lost, the row turns failed.
+ */
+const backwards = (from: OutState, to: OutState): boolean =>
+  from === "sent" && (to === "queued" || to === "sending");
 
 const indexKey = (slot: string) => `index:${slot}`;
 const chatKey = (id: string) => `chat:${id}`;
@@ -179,7 +191,7 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
               if (change.unread) chat.unread += 1;
             } else {
               rows = rows.map((r) =>
-                r.kind === "out" && r.id === change.id
+                r.kind === "out" && r.id === change.id && !backwards(r.state, change.state)
                   ? { ...r, state: change.state, reason: change.reason }
                   : r,
               );

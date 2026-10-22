@@ -75,7 +75,7 @@ declare global {
     __cic_resumeChannelDeliveryForTests?: (slug: string, name: string) => void;
     __cic_joinedTopicKeys?: () => string[];
 
-    // src/lib/e2e/bundleSync.ts — issue 2430, wipes this browser's E2E state.
+    // src/lib/e2e/identity.ts — issue 2430, wipes this browser's E2E state.
     __cic_e2eResetForTests?: () => Promise<void>;
 
     // src/lib/pushTarget.ts — set once the reader has ROUTED a parsed target,

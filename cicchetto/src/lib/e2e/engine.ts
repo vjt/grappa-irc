@@ -9,16 +9,21 @@
 // payloads to hand to grappa's send door.
 //
 // Two things irc-olm does are grappa's job here: answering KEYREQ (grappa
-// does it from the bundle cic uploads, `bundleSync.ts`, so KEYREQ never
+// does it from the bundles cic uploads, `identity.ts`, so KEYREQ never
 // reaches cic) and framing (grappa cuts a payload into lines and joins them
 // back, and names each message with its msgid).
 //
-// Trust: the pin is on the KEY, never on the nick (2430 "Identity"). A bot
-// pins only keys its operator pasted; a person in cic has no configuration
-// to paste into, so the first key a nick presents is pinned (trust on first
-// use) and is "unverified" until the user pastes it by hand or compares a SAS
-// (`sas.ts`). A different key on a pinned nick is an alarm, ignored,
-// never a silent replace; only the user re-pinning moves a pin.
+// Trust (wire v2 "Trust", rules 1-6): the pin is `nick → master`, on the
+// peer's MASTER key, never on one of its devices. A bot pins only masters its
+// operator pasted; a person in cic has no configuration to paste into, so the
+// first valid master a nick presents is pinned (trust on first use) and is
+// "unverified" until the user pastes it by hand or compares a SAS (`sas.ts`).
+// A different master on a pinned nick is an alarm, ignored, never a silent
+// replace; only the user re-pinning moves a pin. Each master keeps the highest
+// list of its devices that it signed and we accepted, and a device is trusted
+// only through the master pinned to the nick it writes from: listed there, or
+// certified by it for a list version above the stored one; not revoked; and
+// its own signature (S1) covering that very master.
 //
 // State: ALL of it is `E2eState`, plain JSON the caller seals and stores with
 // the account, in one record, under the slot's lock — irc-olm's in-memory
@@ -28,38 +33,55 @@
 // another tab asked for or sent; queued messages also survive a reload. The
 // engine changes the state in place: build one per locked operation.
 
-import { identityBlock } from "./keyBundle";
+import { frameBudgetForTarget } from "../frameBudget";
+import type { OwnIdentity } from "./accountStore";
+import { idBlock } from "./keyBundle";
 import type { Olm } from "./olm";
 import type { SasRecord } from "./sas";
-import type { Account } from "./vodozemac/vodozemac_binding";
+import type { Account, Session } from "./vodozemac/vodozemac_binding";
 import {
   base64Unpadded,
+  certSigText,
   decodePayload,
+  did,
   encodePayload,
+  fb,
   fold,
   ID_SIG_PREFIX,
   type IdBlock,
+  type KeysEntry,
   linesNeeded,
+  MAX_DEVICES,
   MAX_FRAGMENTS,
+  type MasterList,
   OTK_SIG_PREFIX,
   PayloadError,
   parseKeys,
+  parseMasterList,
   parseMsg,
   parseNack,
   parsePkmsg,
   type ReceiveVerb,
   type SendVerb,
   unbase64,
+  validMasterList,
+  validVer,
   WIRE_VERSION,
 } from "./wire";
 
-/** Re-ask for keys when still waiting after this long (ms). */
+/** At most one KEYREQ per nick in this long (ms), whatever a KEYS does in between. */
 export const KEYREQ_RETRY_MS = 30_000;
-/** Queued plaintext waiting for keys is dropped (reported) after this long. */
-export const OUTQ_TTL_MS = 60_000;
+/**
+ * Queued plaintext waiting for keys is dropped (reported) after this long: a
+ * re-asked KEYREQ may wait out the budget (30 s), and its KEYS then takes as
+ * long as 38 s for four devices (2430 amendment O2(c)).
+ */
+export const OUTQ_TTL_MS = 90_000;
 export const OUTQ_MAX = 16;
-/** At most one new outbound session per peer per minute (2430 "Recovery"). */
+/** At most one re-key after NACKs per nick per minute, however many of its devices NACK (W "Sending"). */
 export const REKEY_INTERVAL_MS = 60_000;
+/** At most one `listreq` per nick per minute, and one answer per (nick, device) per minute (W). */
+export const LISTREQ_INTERVAL_MS = 60_000;
 /** Plaintexts kept for a re-send after a NACK. */
 export const SENT_MEMORY_MS = 1_800_000;
 export const SENT_MAX = 1200;
@@ -67,53 +89,115 @@ export const SENT_MAX = 1200;
 export const MAX_SENDS = 2;
 export const MAX_SESSIONS_PER_PEER = 5;
 export const SEEN_SESSIONS_MAX = 10_000;
-/** Inner types that go ahead of text (grappa's `control` priority). */
-const URGENT_INNER = new Set(["chal", "ack"]);
+/** Inner types that go ahead of text (grappa's `control` priority): an order and its answer. */
+const CONTROL_INNER = new Set(["chal", "ack"]);
+/** The list traffic, on grappa's `reactive` lane (2430 amendment O4). */
+const REACTIVE_INNER = new Set(["list", "listreq"]);
+/**
+ * The tag of the engine's own list traffic (`t:list`, `t:listreq`): its
+ * payloads carry it for `sent()` and `discard()`, and nothing is ever
+ * reported about it, since no caller wrote it. `send` refuses it to a caller.
+ */
+export const LIST_TAG = "list";
 
-/** A pinned identity. `curve25519` is learned from its first signed id block. */
-export type Peer = {
-  ed25519: string;
-  curve25519: string | null;
-  /** The last nick seen with this key: a routing hint only. */
-  nick: string;
-  /** A pre-key message built to us on that curve decrypted (see `identify`). */
-  proven: boolean;
-  /** Pinned by the user, or confirmed by a SAS; else trusted on first use. */
-  verified: boolean;
-};
+/** The lane of grappa's send door a payload takes (CLIENT_PROTOCOL §4f). */
+type Priority = "control" | "reactive" | "text";
 
 /**
- * A message on its way: the inner message, as the JSON Olm encrypts, and the
- * caller's tag for it, which every event and payload about it carries back.
+ * A message on its way: the inner message, as the JSON Olm encrypts (our
+ * `lv` in it; a pre-key body adds `fb`), and the caller's tag for it, which
+ * every event and payload about it carries back. `id` names the message
+ * itself, which every copy and re-send of it shares, whatever its tag.
  * `expiresAt` is an order's answer deadline (unix seconds): an ACK carries
- * its CHAL's, everything else none (a message stored before it existed
- * reads `undefined`, which is none too).
+ * its CHAL's, everything else none.
  */
 type Outgoing = {
+  id: string;
   plaintext: string;
-  urgent: boolean;
+  priority: Priority;
   sends: number;
   tag: string;
   expiresAt: number | null;
 };
-/** Waiting for keys. `ed25519` is the key it is meant for; "" is whatever key answers. */
-type Queued = { nick: string; ed25519: string; msg: Outgoing; at: number };
-/** Handed to grappa; `msgid` once grappa named it (`sent()`), as a NACK refers to it. */
+/** A device of a peer, as a master's list names it: its keys, its master, its did. */
+export type PeerDevice = {
+  ed25519: string;
+  curve25519: string;
+  master: string;
+  did: string;
+  /**
+   * A pre-key message built to us on that curve decrypted, so the device holds
+   * the curve; an id block alone only claims it.
+   */
+  proven: boolean;
+  /**
+   * The list version its master's certificate for it names, as the pre-key
+   * message that bound it presented it, its signature verified then; null
+   * when none was seen (bound from a KEYS).
+   */
+  certVer: number | null;
+};
+
+/** A peer's master: the trust placed in it, and the highest list accepted from it. */
+export type Master = {
+  /** The nick it was first pinned to: a hint for a human, never used to attribute anything. */
+  nick: string;
+  /** Pinned by the user, or confirmed by a SAS; else trusted on first use. */
+  verified: boolean;
+  /** The stored list's version; 0 before one is accepted. */
+  ver: number;
+  /** The stored list: Ed25519 keys of the devices it vouches for. */
+  devices: string[];
+  /**
+   * Keys an accepted list named and the stored one no longer does (rule 5), and the
+   * curves of those bound under this master.
+   */
+  revoked: string[];
+  revokedCurves: string[];
+};
+
+/** A peer's master before any list of its was accepted: `ver` 0 is below every list. */
+function newMaster(nick: string, verified: boolean): Master {
+  return { nick, verified, ver: 0, devices: [], revoked: [], revokedCurves: [] };
+}
+
+/**
+ * Waiting for keys. `master` is the master it is meant for, "" whatever master
+ * answers; `only` the one device (Ed25519 key) of it it is for, null all;
+ * `done` the devices (Ed25519 keys) it already went to, which it never goes
+ * to again. Whether the message is lost is never read off `done`: it is
+ * asked across every copy of it (`pending`).
+ */
+type Queued = {
+  nick: string;
+  master: string;
+  only: string | null;
+  done: string[];
+  msg: Outgoing;
+  at: number;
+};
+/**
+ * Handed to grappa; `msgid` once grappa named it (`sent()`), as a NACK refers
+ * to it. `devices` are the devices it was encrypted to, by did, each with the
+ * session it went out on.
+ */
 type Sent = {
   ref: string;
   msgid: string | null;
   nick: string;
-  ed25519: string;
-  sessionId: string;
+  master: string;
+  devices: Record<string, { ed25519: string; sessionId: string }>;
   msg: Outgoing;
   at: number;
 };
 
 export type E2eState = {
-  v: 1;
-  /** Ed25519 → the peer. */
-  peers: Record<string, Peer>;
-  /** Folded nick → the Ed25519 key pinned to it. */
+  v: 2;
+  /** Master Ed25519 key → its stored list and the trust placed in it. */
+  masters: Record<string, Master>;
+  /** Device Ed25519 key → the device. */
+  devices: Record<string, PeerDevice>;
+  /** Folded nick → the master pinned to it. */
   pins: Record<string, string>;
   /** Curve25519 → session pickles, newest first. */
   sessions: Record<string, string[]>;
@@ -121,32 +205,57 @@ export type E2eState = {
   seen: string[];
   /** Folded nick → messages waiting for keys, oldest first. */
   outq: Record<string, Queued[]>;
-  /** Folded nick → when keys were last asked for, while waiting for them. */
-  keyreqAt: Record<string, number>;
-  /** Ed25519 → when the last outbound session to it was opened. */
+  /** Folded nick → when a KEYREQ last went to it: the budget, which a KEYS never resets. */
+  keyreqSentAt: Record<string, number>;
+  /** Folded nicks a KEYS is due from: a KEYREQ went and no KEYS answered it yet. */
+  keysAwaited: Record<string, true>;
+  /** Folded nick → when it was last re-keyed after a NACK. */
   rekeyAt: Record<string, number>;
+  /**
+   * Device Ed25519 keys that NACKed their newest session: none of their
+   * sessions is sent on until a KEYS opens a fresh one (W: "no working
+   * session"), whatever older ones they hold.
+   */
+  rekeying: Record<string, true>;
+  /** Folded nick → when a `listreq` last went to it, and for which `lv`s. */
+  listreqAt: Record<string, { at: number; lv: number[] }>;
+  /**
+   * Folded nick → nick: the `listreq` a pin or a SAS asked of it (O1) that
+   * has not gone yet, the per-nick minute or a missing line budget holding it
+   * back; `tick` sends it.
+   */
+  listreqHeld: Record<string, string>;
+  /** `${folded nick} ${did}` → when a `listreq` from that device was last answered. */
+  listAnsweredAt: Record<string, number>;
   /** Oldest first. */
   sent: Sent[];
+  /** The next name the engine gives out: a message's id, a payload's ref. */
   nextRef: number;
   /**
    * The last inbox id processed (`client.ts`). Not the engine's: kept here so
    * it is stored with what processing that message changed, in one record.
    */
   inbox: number;
-  /** Ed25519 → the SAS running with that key (`sas.ts`): its public half. */
+  /** Master Ed25519 key → the SAS running with it (`sas.ts`): its public half. */
   sas: Record<string, SasRecord>;
 };
 
 export function newState(): E2eState {
   return {
-    v: 1,
-    peers: {},
+    v: 2,
+    masters: {},
+    devices: {},
     pins: {},
     sessions: {},
     seen: [],
     outq: {},
-    keyreqAt: {},
+    keyreqSentAt: {},
+    keysAwaited: {},
     rekeyAt: {},
+    rekeying: {},
+    listreqAt: {},
+    listreqHeld: {},
+    listAnsweredAt: {},
     sent: [],
     nextRef: 1,
     inbox: 0,
@@ -164,9 +273,19 @@ export type DropReason =
   | "unpinned-key"
   | "identity-curve-mismatch"
   | "curve-already-bound"
+  | "non-canonical-key"
   | "undecodable-inner"
   | "inner-without-type"
-  | "unknown-nack-ref";
+  | "unknown-nack-ref"
+  | "bad-list"
+  | "listreq-rate-limited"
+  | "revoked-device"
+  | "unlisted-device"
+  | "stale-certificate"
+  | "bad-cert"
+  | "not-for-us"
+  | "inner-key-mismatch"
+  | "bad-from";
 
 export type SendFailure =
   | "own-nick"
@@ -174,6 +293,7 @@ export type SendFailure =
   | "queue-full"
   | "keys-timeout"
   | "too-long"
+  | "no-budget"
   | "key-mismatch"
   | "nack-from-another-nick"
   | "unpinned-key"
@@ -187,29 +307,43 @@ export type UndecryptableReason =
   | "no-session"
   | "decryption-failed";
 
-/** What happened. `inner` is plaintext: never log it. */
+/**
+ * What happened. `inner` is plaintext: never log it. A `received` names the
+ * master pinned to the nick and the device of it that wrote; a `key_alarm`
+ * names the master pinned to the nick and the other one presented.
+ */
 export type E2eEvent =
-  | { kind: "received"; nick: string; peer: Peer; inner: Record<string, unknown> }
+  | {
+      kind: "received";
+      nick: string;
+      master: string;
+      device: string;
+      verified: boolean;
+      inner: Record<string, unknown>;
+    }
   | { kind: "key_alarm"; nick: string; pinned: string; presented: string }
   | { kind: "undecryptable"; nick: string; msgid: string; reason: UndecryptableReason }
   | { kind: "replayed"; nick: string; sessionId: string }
   | { kind: "dropped"; nick: string; reason: DropReason; verb?: ReceiveVerb; detail?: string }
   | { kind: "send_queued"; nick: string; queued: number; tag: string }
   | { kind: "send_failed"; nick: string; reason: SendFailure; tags: string[] }
-  | { kind: "rekeying"; nick: string; peer: Peer };
+  | { kind: "rekeying"; nick: string; master: string; device: string };
 
 /**
- * A payload for grappa's send door. `ref` and `tag` are set on a PKMSG/MSG
- * that carries a message: report grappa's msgid for it with `sent()` (a NACK
+ * A payload for grappa's send door, `from` this device's did `to` a did or
+ * `*` (CLIENT_PROTOCOL §4f). `ref` and `tag` are set on a PKMSG/MSG that
+ * carries a message: report grappa's msgid for it with `sent()` (a NACK
  * names it), or `discard()` it when grappa refused the send. `expiresAt` is
  * set on the one that answers an order: the door's `expires_at`, past which
- * grappa drops it unsent (CLIENT_PROTOCOL §4f).
+ * grappa drops it unsent.
  */
 export type Outbound = {
   target: string;
   verb: SendVerb;
+  from: string;
+  to: string;
   payload: string;
-  priority: "control" | "text";
+  priority: Priority;
   ref?: string;
   tag?: string;
   expiresAt?: number;
@@ -217,12 +351,12 @@ export type Outbound = {
 
 export type Result = { events: E2eEvent[]; outbound: Outbound[] };
 
+/** What `pin` made of a key: pinned, not a key in vodozemac's spelling, or our own master. */
+export type PinOutcome = "pinned" | "bad-key" | "own-key";
+
 function emptyResult(): Result {
   return { events: [], outbound: [] };
 }
-
-/** A peer whose curve is known: what `identify` and `bind` hand back. */
-type Bound = Peer & { curve25519: string };
 
 /** vodozemac refused something that came off the wire. */
 class Rejected extends Error {}
@@ -249,112 +383,224 @@ function rejecting<T>(fn: () => T): T {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
+/** The lane an inner message takes: an order and its answer ahead of text, the list traffic its own. */
+function priorityOf(inner: Record<string, unknown>): Priority {
+  if (typeof inner.t !== "string") return "text";
+  if (CONTROL_INNER.has(inner.t)) return "control";
+  return REACTIVE_INNER.has(inner.t) ? "reactive" : "text";
+}
+
+/** An inner message's JSON with the binding `fb` added, as a pre-key body carries it (rev 2). */
+function withBinding(plaintext: string, binding: string): string {
+  return JSON.stringify({ ...(JSON.parse(plaintext) as Record<string, unknown>), fb: binding });
+}
+
+/** `items` in order, cut into runs of at most `size`. */
+function chunked<T>(items: T[], size: number): T[][] {
+  const runs: T[][] = [];
+  for (let i = 0; i < items.length; i += size) runs.push(items.slice(i, i + size));
+  return runs;
+}
+
+/** One device's body of a message, on its newest session, advanced in memory only. */
+type Body = { device: PeerDevice; session: Session; preKey: boolean; body: string };
+
+/** A message a step could not send for `reason`, to be judged once the step is done (`end`). */
+type Loss = { nick: string; reason: SendFailure; msg: Outgoing };
+
 export class Engine {
+  /** What this step could not send, each message once, under the first reason it met. */
+  private losses: Loss[] = [];
+
   constructor(
     private readonly olm: Olm,
+    /** This device's Olm account. */
     private readonly account: Account,
+    /** This device's place in the identity: the master peers pin, its certificate, its list. */
+    private readonly own: OwnIdentity,
     private readonly state: E2eState,
-    /** Our nick on the network now: bounds how long a payload may be. */
+    /** Our nick on the network now: never a peer (`send` refuses it). */
     private readonly ownNick: string,
+    /**
+     * The network's `frame_budget_base` as grappa published it (#1108), null
+     * before it has (no live upstream session). Less the target's length
+     * (`frameBudgetForTarget`), it is what one line leaves for a payload: it
+     * sizes every message before a session moves.
+     */
+    private readonly frameBudgetBase: number | null,
     private readonly now: () => number,
   ) {}
 
-  // --- pins --------------------------------------------------------------
+  // --- our identity ------------------------------------------------------
 
-  /** Our Ed25519 identity key, as a peer pins it. */
+  /** Our master Ed25519 key: what a peer pins, and what the user is shown as our key. */
   fingerprint(): string {
+    return this.own.master;
+  }
+
+  /** This device's Ed25519 key: what its id block names, and a SAS binds. */
+  deviceKey(): string {
     return this.account.ed25519_key();
   }
 
-  /**
-   * The identity to talk to as `nick`: the key pinned to that nick, else a
-   * pinned key last seen under it (a renamed peer).
-   */
-  pinned(nick: string): Peer | undefined {
-    const ed = this.state.pins[fold(nick)];
-    if (ed !== undefined) return this.state.peers[ed];
-    return Object.values(this.state.peers).find((p) => fold(p.nick) === fold(nick));
-  }
-
-  /**
-   * Pins `ed25519` to `nick` by hand: the one way a pin moves to another key
-   * (`identify` never does it). `verified` when the user pasted the key the
-   * peer printed (a bot: 2430 ruling 6253162964); not when the user only
-   * took a key the alarm showed, which a SAS then verifies (fork 7, 2430
-   * comment 6339695571). Taking a key never unverifies it. The key's
-   * sessions stay; a key never seen learns its curve from its first signed
-   * id block. The key is the spelling vodozemac prints: 43 characters of
-   * unpadded standard base64.
-   */
-  pin(nick: string, ed25519: string, verified: boolean): "pinned" | "bad-key" | "own-key" {
-    if (!/^[A-Za-z0-9+/]{43}$/.test(ed25519)) return "bad-key";
-    let ed: string;
-    try {
-      ed = rejecting(() => this.olm.canonical_ed25519(ed25519));
-    } catch (err) {
-      if (!(err instanceof Rejected)) throw err;
-      return "bad-key";
-    }
-    if (ed === this.account.ed25519_key()) return "own-key";
-    const known = this.state.peers[ed];
-    this.state.peers[ed] =
-      known === undefined
-        ? { ed25519: ed, curve25519: null, nick, proven: false, verified }
-        : { ...known, verified: known.verified || verified };
-    this.state.pins[fold(nick)] = ed;
-    return "pinned";
-  }
-
-  /** A SAS confirmed `ed25519` (`sas.ts`): verified, wherever it is pinned. */
-  verify(ed25519: string): void {
-    const peer = this.state.peers[ed25519];
-    if (peer !== undefined) this.state.peers[ed25519] = { ...peer, verified: true };
-  }
-
-  /** Our Curve25519 identity key: what a SAS binds besides the Ed25519 one. */
+  /** This device's Curve25519 key: what a SAS binds besides the Ed25519 one. */
   curve(): string {
     return this.account.curve25519_key();
+  }
+
+  // --- pins --------------------------------------------------------------
+
+  /**
+   * The master pinned to `nick`, whether it is verified, and how many of its
+   * devices are trusted. Only the nick's own pin counts (rule 2): a master
+   * last seen under another nick is not reached here.
+   */
+  pinned(nick: string): { master: string; verified: boolean; devices: number } | undefined {
+    const master = this.state.pins[fold(nick)];
+    const record = master === undefined ? undefined : this.state.masters[master];
+    if (master === undefined || record === undefined) return undefined;
+    return { master, verified: record.verified, devices: this.trustedDevices(master).length };
+  }
+
+  /**
+   * The device `ed25519` bound under `master` if that master vouches for it
+   * now (rule 4: listed, or certified past the stored list, and not revoked).
+   * A SAS verifies a master only through such a device (W "SAS").
+   */
+  trusted(master: string, ed25519: string): PeerDevice | undefined {
+    return this.trustedDevices(master).find((device) => device.ed25519 === ed25519);
+  }
+
+  /**
+   * Pins the master `master` to `nick` by hand: the one way a pin moves to
+   * another master (`checkMaster` never does it). `verified` when the user
+   * pasted the key the peer printed (a bot prints its master: 2430 ruling
+   * 6253162964); not when the user only took a master the alarm showed, which
+   * a SAS then verifies (fork 7, 2430 comment 6339695571). Taking a master
+   * never unverifies it. A master never seen has no list until its first
+   * valid block; one seen before keeps its list (rule 3). The master the nick
+   * leaves loses its devices' sessions (rule 6) once no nick is pinned to it
+   * any more, as irc-olm's `set_pins` does: another nick still reaches it. The
+   * key is the one spelling vodozemac prints: 43 characters of unpadded
+   * standard base64. A pin also asks the nick for its master's list (2430
+   * amendment O1, `requestList`): a bot challenges an order only on a session
+   * our device has written to, and this message is what gives it one; its
+   * answer comes back on it.
+   */
+  pin(nick: string, master: string, verified: boolean): Result & { outcome: PinOutcome } {
+    const res = emptyResult();
+    let canonical: string;
+    try {
+      canonical = rejecting(() => this.olm.canonical_ed25519(master));
+    } catch (err) {
+      if (!(err instanceof Rejected)) throw err;
+      return { ...res, outcome: "bad-key" };
+    }
+    if (canonical !== master) return { ...res, outcome: "bad-key" };
+    if (master === this.own.master) return { ...res, outcome: "own-key" };
+    const key = fold(nick);
+    const before = this.state.pins[key];
+    const known = this.state.masters[master];
+    if (known === undefined) this.state.masters[master] = newMaster(nick, verified);
+    else known.verified ||= verified;
+    this.state.pins[key] = master;
+    if (before !== undefined && !Object.values(this.state.pins).includes(before)) {
+      for (const device of Object.values(this.state.devices)) {
+        if (device.master === before) this.dropSessions(device);
+      }
+    }
+    this.askList(nick, res);
+    return { ...this.end(res), outcome: "pinned" };
+  }
+
+  /**
+   * A SAS with `nick` confirmed `master` (`sas.ts`): verified, under every
+   * nick pinned to it. `nick` is asked for the master's list too, as a pin
+   * asks (O1), if it is still pinned to that master (rule 2).
+   */
+  verify(nick: string, master: string): Result {
+    const res = emptyResult();
+    const record = this.state.masters[master];
+    if (record === undefined) return res;
+    record.verified = true;
+    if (this.state.pins[fold(nick)] === master) this.askList(nick, res);
+    return this.end(res);
   }
 
   // --- sending -----------------------------------------------------------
 
   /**
-   * Encrypt `inner` for the identity pinned to `nick`; with no session yet
-   * (or keys already asked for), queue it and ask for keys. A nick with no
-   * pin is asked for keys too: whatever key answers is pinned on first use.
-   * `tag` is the caller's name for the message: whatever happens to it later,
-   * in this call or another, names it by its tag. `expiresAt` is the answer
-   * deadline of the order an ACK answers (unix seconds), null for anything
-   * else.
+   * Encrypt `inner` now for every trusted device of the master pinned to
+   * `nick` that holds a working session, and queue it, asking for keys, for
+   * every trusted device that has none (all of them on first contact). A nick
+   * with no pin, or a master with no list yet, is asked for keys too: whatever
+   * master answers is pinned on first use. `only` is the one device (its
+   * Ed25519 key) the message is for, null every device: a SAS step after the
+   * start, an ACK to the device its CHAL came from. `tag` is the caller's
+   * name for the message: whatever happens to it later, in this call or
+   * another, names it by its tag. `expiresAt` is the answer deadline of the
+   * order an ACK answers (unix seconds), null for anything else. The inner
+   * message goes out with our list's version as its `lv`, and without any
+   * `lv` or `fb` the caller put in it: both are the engine's to write.
    */
   send(
     nick: string,
     inner: Record<string, unknown>,
     tag: string,
     expiresAt: number | null,
+    only: string | null,
   ): Result {
+    // A caller's message under it would go unreported, and pass for ours.
+    if (tag === LIST_TAG) throw new Error(`the tag ${LIST_TAG} is the engine's own`);
     const res = emptyResult();
+    this.dispatch(nick, inner, tag, expiresAt, only, res);
+    return this.end(res);
+  }
+
+  /** `send`'s work: true when the message went to a device or waits for keys, false when refused (reported). */
+  private dispatch(
+    nick: string,
+    inner: Record<string, unknown>,
+    tag: string,
+    expiresAt: number | null,
+    only: string | null,
+    res: Result,
+  ): boolean {
+    const refuse = (reason: SendFailure): false => {
+      this.failed(nick, reason, [tag], res);
+      return false;
+    };
+    if (frameBudgetForTarget(this.frameBudgetBase, nick) === null) {
+      // No line budget yet (no live upstream session): nothing could be
+      // sized, so nothing is queued and no KEYREQ goes to a dead door.
+      return refuse("no-budget");
+    }
     if (fold(nick) === fold(this.ownNick)) {
-      // grappa would answer our own KEYREQ with our own bundle, which
-      // `identify` refuses: say so now rather than after a minute.
-      res.events.push({ kind: "send_failed", nick, reason: "own-nick", tags: [tag] });
-      return res;
+      // grappa would answer our own KEYREQ with our own identity, which
+      // `checkMaster` refuses: say so now rather than after a minute.
+      return refuse("own-nick");
     }
     let plaintext: string;
     try {
       // Encoded once, here: past this point nothing can fail on it, in a
       // queue flush or a re-send least of all.
-      plaintext = JSON.stringify(inner);
+      const { lv: _lv, fb: _fb, ...theirs } = inner;
+      plaintext = JSON.stringify({ ...theirs, lv: this.own.list.ver });
     } catch {
-      res.events.push({ kind: "send_failed", nick, reason: "unencodable", tags: [tag] });
-      return res;
+      return refuse("unencodable");
     }
-    const urgent = typeof inner.t === "string" && URGENT_INNER.has(inner.t);
-    const msg: Outgoing = { plaintext, urgent, sends: 1, tag, expiresAt };
-    const peer = this.pinned(nick);
-    if (peer === undefined) this.enqueue(nick, "", msg, res);
-    else this.sendTo(nick, peer, msg, res);
-    return res;
+    const msg: Outgoing = {
+      id: String(this.state.nextRef++),
+      plaintext,
+      priority: priorityOf(inner),
+      sends: 1,
+      tag,
+      expiresAt,
+    };
+    const master = this.state.pins[fold(nick)];
+    return master === undefined
+      ? this.enqueue(nick, "", only, [], msg, res)
+      : this.sendTo(nick, master, only, [], msg, res);
   }
 
   /** grappa accepted the send of `ref` as `msgid`: a NACK may name it. */
@@ -363,9 +609,20 @@ export class Engine {
     if (record !== undefined) record.msgid = msgid;
   }
 
-  /** grappa refused the send of `ref`: it never left, so no NACK will name it. */
-  discard(ref: string): void {
-    this.state.sent = this.state.sent.filter((s) => s.ref !== ref);
+  /**
+   * grappa refused the send of `ref`: it never left, so no NACK will name it.
+   * One message can be several payloads (a MSG and a PKMSG, more than
+   * `MAX_DEVICES` devices), and a copy of it can still wait for keys: answers
+   * who it was for and the caller's tag once nothing of it is on its way or
+   * waiting (`pending`), so it reached no device; undefined while something
+   * is, for a ref it does not know, and for the engine's own list traffic.
+   */
+  discard(ref: string): { nick: string; tag: string } | undefined {
+    const record = this.state.sent.find((s) => s.ref === ref);
+    if (record === undefined) return undefined;
+    this.state.sent = this.state.sent.filter((s) => s !== record);
+    const { id, tag } = record.msg;
+    return this.pending(id) || tag === LIST_TAG ? undefined : { nick: record.nick, tag };
   }
 
   /**
@@ -382,129 +639,315 @@ export class Engine {
 
   /**
    * grappa dropped `msgid` after accepting it (`e2e_send_dropped`): it never
-   * left whole, so no NACK will name it. Answers who it was for and the
-   * caller's tag, or undefined for a msgid this device did not send (the
-   * push reaches every client of the user) or no longer remembers.
+   * left whole, so no NACK will name it. As `discard`: who the message was for
+   * and the caller's tag once nothing of it is left on its way or waiting;
+   * undefined while something is, and for a msgid this device did not send
+   * (the push reaches every client of the user) or no longer remembers.
    */
   dropped(msgid: string): { nick: string; tag: string } | undefined {
     const record = this.state.sent.find((s) => s.msgid === msgid);
-    if (record === undefined) return undefined;
-    this.discard(record.ref);
-    return { nick: record.nick, tag: record.msg.tag };
+    return record === undefined ? undefined : this.discard(record.ref);
   }
 
-  private sendTo(nick: string, peer: Peer, msg: Outgoing, res: Result): void {
-    // While keys are asked for (first contact, or a re-key after a NACK) the
-    // sessions we still hold are the ones that failed: wait.
-    const curve = peer.curve25519;
-    if (
-      curve !== null &&
-      this.sessionsOf(curve).length > 0 &&
-      this.state.keyreqAt[fold(nick)] === undefined
-    ) {
-      this.encrypt(nick, peer.ed25519, curve, msg, res);
-    } else {
-      this.enqueue(nick, peer.ed25519, msg, res);
+  /**
+   * `msg` now to the devices of `master` ready for it, past those in `done`
+   * (it went to them already), and queued for the ones that are not, keys
+   * asked for. True when it went to a device or waits; what cannot go is
+   * reported (`lost`), and the answer is false.
+   */
+  private sendTo(
+    nick: string,
+    master: string,
+    only: string | null,
+    done: string[],
+    msg: Outgoing,
+    res: Result,
+  ): boolean {
+    const { ready, lacking } = this.split(master, only, done);
+    // A message grappa would refuse is refused for every device.
+    const refused = ready.length > 0 ? this.encrypt(nick, master, ready, msg, res) : undefined;
+    if (refused !== undefined) {
+      this.lost(nick, refused, [msg]);
+      return false;
     }
+    const reached = [...done, ...ready.map((d) => d.ed25519)];
+    // Without a list, a KEYS brings it: a message for every device waits for
+    // it, one for a single device only if it reached nothing.
+    if (lacking.length > 0 || (!this.listHeld(master) && (only === null || ready.length === 0))) {
+      return this.enqueue(nick, master, only, reached, msg, res) || ready.length > 0;
+    }
+    if (ready.length > 0) return true;
+    // `only` names a device this master does not vouch for: no KEYS brings it.
+    this.lost(nick, "unpinned-key", [msg]);
+    return false;
   }
 
-  private enqueue(nick: string, ed25519: string, msg: Outgoing, res: Result): void {
+  /**
+   * The devices of `master` a message for `only` (null: every one) is still
+   * for, past those in `done`: the trusted ones with a working session
+   * (`ready`, it goes to them now), and the rest of those it vouches for
+   * (`lacking`, Ed25519 keys: a KEYS may bring them a session): its listed
+   * keys, bound or not, and the devices bound under it that a certificate
+   * admits, as irc-olm's `wanted()`.
+   */
+  private split(
+    master: string,
+    only: string | null,
+    done: string[],
+  ): { ready: PeerDevice[]; lacking: string[] } {
+    const due = (key: string): boolean => (only === null || key === only) && !done.includes(key);
+    const trusted = this.trustedDevices(master);
+    const ready = trusted.filter((device) => due(device.ed25519) && this.working(device));
+    const wanted = new Set([
+      ...(this.state.masters[master]?.devices ?? []),
+      ...trusted.map((device) => device.ed25519),
+    ]);
+    const lacking = [...wanted].filter(
+      (key) => due(key) && !ready.some((device) => device.ed25519 === key),
+    );
+    return { ready, lacking };
+  }
+
+  /** Whether `device` holds a session we may write on: none while it is re-keyed after a NACK. */
+  private working(device: PeerDevice): boolean {
+    return (
+      this.state.rekeying[device.ed25519] !== true && this.sessionsOf(device.curve25519).length > 0
+    );
+  }
+
+  /** Whether a list of `master`'s devices was accepted: without one, a KEYS brings it. */
+  private listHeld(master: string): boolean {
+    return (this.state.masters[master]?.ver ?? 0) > 0;
+  }
+
+  /**
+   * Queues `msg` for the devices it has not gone to (`done`), and asks for
+   * keys under the budget; false when the queue is full. A message a payload
+   * of which went out is not reported as queued, nor as lost when the queue
+   * is full (`lost`): it went, and the devices still without a session miss
+   * it. The engine's own list traffic is never reported.
+   */
+  private enqueue(
+    nick: string,
+    master: string,
+    only: string | null,
+    done: string[],
+    msg: Outgoing,
+    res: Result,
+  ): boolean {
     const key = fold(nick);
-    const q = this.liveQueue(key, res);
+    const q = this.liveQueue(key);
     if (q.length >= OUTQ_MAX) {
-      res.events.push({ kind: "send_failed", nick, reason: "queue-full", tags: [msg.tag] });
-      return;
+      this.lost(nick, "queue-full", [msg]);
+      return false;
     }
-    q.push({ nick, ed25519, msg, at: this.now() });
+    q.push({ nick, master, only, done, msg, at: this.now() });
     this.state.outq[key] = q;
-    res.events.push({ kind: "send_queued", nick, queued: q.length, tag: msg.tag });
+    if (msg.tag !== LIST_TAG && !this.wentOut(msg.id)) {
+      res.events.push({ kind: "send_queued", nick, queued: q.length, tag: msg.tag });
+    }
     this.maybeKeyreq(nick, res);
+    return true;
   }
 
-  /** The queue for a folded nick, minus what waited too long (reported). */
-  private liveQueue(key: string, res: Result): Queued[] {
+  /** The queue for a folded nick, minus what waited too long (`lost`: judged at the end of the step). */
+  private liveQueue(key: string): Queued[] {
     const q = this.state.outq[key] ?? [];
-    delete this.state.outq[key];
     const live = q.filter((x) => x.at > this.now() - OUTQ_TTL_MS);
-    const first = q[0];
-    if (first !== undefined && live.length < q.length) {
-      res.events.push({
-        kind: "send_failed",
-        nick: first.nick,
-        reason: "keys-timeout",
-        tags: q.filter((x) => !live.includes(x)).map((x) => x.msg.tag),
-      });
-    }
     if (live.length > 0) this.state.outq[key] = live;
+    else delete this.state.outq[key];
+    const first = q[0];
+    if (first !== undefined) {
+      this.lost(
+        first.nick,
+        "keys-timeout",
+        q.filter((x) => !live.includes(x)).map((x) => x.msg),
+      );
+    }
     return live;
   }
 
+  /** A KEYREQ to `nick`, unless one went less than `KEYREQ_RETRY_MS` ago. */
   private maybeKeyreq(nick: string, res: Result): void {
     const key = fold(nick);
-    const last = this.state.keyreqAt[key];
+    const last = this.state.keyreqSentAt[key];
     if (last !== undefined && this.now() - last < KEYREQ_RETRY_MS) return;
-    this.state.keyreqAt[key] = this.now();
+    this.state.keyreqSentAt[key] = this.now();
+    this.state.keysAwaited[key] = true;
     res.outbound.push({
       target: nick,
       verb: "keyreq",
+      from: this.own.did,
+      to: "*",
       payload: encodePayload({ v: WIRE_VERSION }),
       priority: "control",
     });
   }
 
-  // On the newest session to `curve`, which the caller checked exists.
-  private encrypt(nick: string, ed25519: string, curve: string, msg: Outgoing, res: Result): void {
-    const pickles = this.sessionsOf(curve);
-    const newest = pickles[0];
-    if (newest === undefined) throw new Error(`no session to encrypt on for ${nick}`);
-    const session = this.olm.Session.from_pickle(newest);
+  /**
+   * A `listreq` to `nick`, for `only` (null: every device of its master): at
+   * most once per nick a minute (W "After any decrypt"), however it is asked
+   * for. `lv` is the list version a device announced (null: a pin or a SAS
+   * asks), asked for at most once until a list that new is stored: never a
+   * high-water mark, or one device announcing a huge `lv` would silence every
+   * other (irc-olm `_maybe_listreq`). It goes the way any message goes, so it
+   * waits behind the keys it asks for when there is no session (O1). True
+   * when it went or waits: only then are the minute and the `lv` spent.
+   */
+  private requestList(nick: string, only: string | null, lv: number | null, res: Result): boolean {
+    const key = fold(nick);
+    const master = this.state.pins[key];
+    const ver = master === undefined ? 0 : (this.state.masters[master]?.ver ?? 0);
+    const last = this.state.listreqAt[key];
+    const asked = (last?.lv ?? []).filter((v) => v > ver);
+    if (last !== undefined) last.lv = asked;
+    if (lv !== null && asked.includes(lv)) return false;
+    if (last !== undefined && this.now() - last.at < LISTREQ_INTERVAL_MS) return false;
+    if (!this.dispatch(nick, { t: "listreq" }, LIST_TAG, null, only, res)) return false;
+    this.state.listreqAt[key] = { at: this.now(), lv: lv === null ? asked : [...asked, lv] };
+    return true;
+  }
+
+  /**
+   * A pin or a SAS asks `nick` for its list (O1): to every device of the
+   * master pinned to it when it goes. The minute another listreq spent (one
+   * to a single device, or one for a master the alarm replaced), or a missing
+   * line budget, holds it back, never away: `tick` asks again until it goes.
+   * Our own nick is never asked (`dispatch` refuses it), so its ask, a pin's
+   * or one held for a nick we took since, goes: held, it would wait on the
+   * clock for good.
+   */
+  private askList(nick: string, res: Result): void {
+    const key = fold(nick);
+    if (key === fold(this.ownNick)) {
+      delete this.state.listreqHeld[key];
+      return;
+    }
+    if (this.requestList(nick, null, null, res)) delete this.state.listreqHeld[key];
+    else this.state.listreqHeld[key] = nick;
+  }
+
+  /**
+   * `msg` to each of `devices` (trusted, each with a working session) on its
+   * newest session: one body per device, the normal ones in MSGs and the
+   * pre-key ones in PKMSGs (rev 2: never both kinds in one message), at most
+   * `MAX_DEVICES` bodies each, each `to` its device's did when it holds one
+   * body, else `*`; every one of them gets its own msgid. A pre-key body names
+   * both devices (`fb`). Sized before anything is stored: a message grappa
+   * would refuse (413), or one it cannot be sized for yet, leaves every
+   * session where it was, so no peer has a message key to skip; the answer is
+   * why (the caller reports it), else undefined.
+   */
+  private encrypt(
+    nick: string,
+    master: string,
+    devices: PeerDevice[],
+    msg: Outgoing,
+    res: Result,
+  ): "no-budget" | "too-long" | undefined {
+    const lineBudget = frameBudgetForTarget(this.frameBudgetBase, nick);
+    if (lineBudget === null) return "no-budget";
+    const sessions: Session[] = [];
     try {
-      const encrypted = session.encrypt(encoder.encode(msg.plaintext));
-      const preKey = encrypted.message_type === 0;
-      const body = base64Unpadded(encrypted.body);
-      encrypted.free();
-      const verb: SendVerb = preKey ? "pkmsg" : "msg";
-      const payload = encodePayload(
-        preKey
-          ? { v: WIRE_VERSION, id: identityBlock(this.account), body }
-          : { v: WIRE_VERSION, ck: this.account.curve25519_key(), body },
+      const bodies = devices.map((device): Body => {
+        const newest = this.sessionsOf(device.curve25519)[0];
+        if (newest === undefined) throw new Error(`no session to encrypt on for ${device.did}`);
+        const session = this.olm.Session.from_pickle(newest);
+        sessions.push(session);
+        // Until the device has answered on it, the session writes pre-key
+        // messages, and the inner message of one names both devices.
+        const preKey = !session.has_received_message();
+        const plaintext = preKey
+          ? withBinding(msg.plaintext, fb(this.olm, this.account.ed25519_key(), device.ed25519))
+          : msg.plaintext;
+        const encrypted = session.encrypt(encoder.encode(plaintext));
+        const kind = encrypted.message_type;
+        const body = base64Unpadded(encrypted.body);
+        encrypted.free();
+        if ((kind === 0) !== preKey) throw new Error("a session wrote another kind of message");
+        return { device, session, preKey, body };
+      });
+      // The MSG first: a device that answered on its session is one in use.
+      // A message holds `MAX_DEVICES` bodies, and a master's trusted devices
+      // can be more: a full list, and the devices certificates admit past
+      // it. Each kind goes in as many messages as it fills.
+      const messages = [false, true].flatMap((preKey) =>
+        chunked(
+          bodies.filter((b) => b.preKey === preKey),
+          MAX_DEVICES,
+        ).flatMap((group) => {
+          const [first] = group;
+          if (first === undefined) return [];
+          const wire = Object.fromEntries(group.map((b) => [b.device.did, b.body]));
+          const verb: SendVerb = preKey ? "pkmsg" : "msg";
+          const payload = encodePayload(
+            preKey
+              ? {
+                  v: WIRE_VERSION,
+                  id: idBlock(this.account, this.own.master),
+                  master: { ed25519: this.own.master, cert: this.own.cert, ver: this.own.certVer },
+                  bodies: wire,
+                }
+              : { v: WIRE_VERSION, ck: this.account.curve25519_key(), bodies: wire },
+          );
+          return [{ verb, to: group.length === 1 ? first.device.did : "*", payload, group }];
+        }),
       );
-      if (linesNeeded(verb, payload, this.ownNick, nick) > MAX_FRAGMENTS) {
-        // grappa would refuse it (413). The session stays where it was:
-        // nothing is stored, so the peer has no message key to skip.
-        res.events.push({ kind: "send_failed", nick, reason: "too-long", tags: [msg.tag] });
-        return;
+      if (
+        messages.some(
+          (m) => linesNeeded(m.verb, m.payload, lineBudget, this.own.did, m.to) > MAX_FRAGMENTS,
+        )
+      ) {
+        return "too-long";
       }
-      pickles[0] = session.pickle();
-      const ref = String(this.state.nextRef++);
-      this.state.sent.push({
-        ref,
-        msgid: null,
-        nick,
-        ed25519,
-        sessionId: session.session_id(),
-        msg,
-        at: this.now(),
-      });
-      this.trimSent();
-      res.outbound.push({
-        target: nick,
-        verb,
-        payload,
-        priority: msg.urgent ? "control" : "text",
-        ref,
-        tag: msg.tag,
-        ...(typeof msg.expiresAt === "number" ? { expiresAt: msg.expiresAt } : {}),
-      });
+      for (const b of bodies) this.sessionsOf(b.device.curve25519)[0] = b.session.pickle();
+      for (const { verb, to, payload, group } of messages) {
+        const ref = String(this.state.nextRef++);
+        this.state.sent.push({
+          ref,
+          msgid: null,
+          nick,
+          master,
+          devices: Object.fromEntries(
+            group.map((b) => [
+              b.device.did,
+              { ed25519: b.device.ed25519, sessionId: b.session.session_id() },
+            ]),
+          ),
+          msg,
+          at: this.now(),
+        });
+        res.outbound.push({
+          target: nick,
+          verb,
+          from: this.own.did,
+          to,
+          payload,
+          priority: msg.priority,
+          ref,
+          tag: msg.tag,
+          ...(typeof msg.expiresAt === "number" ? { expiresAt: msg.expiresAt } : {}),
+        });
+      }
+      return undefined;
     } finally {
-      session.free();
+      for (const session of sessions) session.free();
     }
   }
 
   // --- receiving ---------------------------------------------------------
 
-  /** A whole message grappa delivered from `nick`. Never throws on wire input. */
-  receive(nick: string, verb: ReceiveVerb, msgid: string, payload: string): Result {
+  /**
+   * A whole message grappa delivered from `nick`'s device `fromDid` (the
+   * frame's `from`: a did, `*` on a KEYS). Never throws on wire input.
+   */
+  receive(
+    nick: string,
+    verb: ReceiveVerb,
+    msgid: string,
+    fromDid: string,
+    payload: string,
+  ): Result {
     const res = emptyResult();
     let decoded: Record<string, unknown>;
     try {
@@ -520,13 +963,13 @@ export class Engine {
           this.onKeys(nick, decoded, res);
           break;
         case "pkmsg":
-          this.onPkmsg(nick, msgid, decoded, res);
+          this.onPkmsg(nick, msgid, fromDid, decoded, res);
           break;
         case "msg":
-          this.onMsg(nick, msgid, decoded, res);
+          this.onMsg(nick, msgid, fromDid, decoded, res);
           break;
         case "nack":
-          this.onNack(nick, decoded, res);
+          this.onNack(nick, fromDid, decoded, res);
           break;
       }
     } catch (err) {
@@ -536,87 +979,290 @@ export class Engine {
       if (!(err instanceof PayloadError || err instanceof Rejected)) throw err;
       res.events.push({ kind: "dropped", nick, reason: "bad-payload", verb, detail: err.message });
     }
-    return res;
+    return this.end(res);
   }
 
+  /**
+   * W "Receiver checks / KEYS", in order. One we did not ask for is dropped
+   * unread (1). A malformed one (2), or one whose master block is invalid
+   * (3), is dropped too, and what waits for keys waits on. Its master must be
+   * the one pinned to the nick, or is pinned now (4); else nothing is opened,
+   * and what waited for keys goes nowhere. Its list is applied (5), then each
+   * device's first entry is judged (6), and a session opened to each usable
+   * one that has none: the other one-time keys stay unused. What waited goes
+   * to every device it has not reached yet and is ready for it now; what is
+   * still for a device without a session waits on, and keys are asked for
+   * again when the budget allows (`tick`).
+   */
   private onKeys(nick: string, payload: Record<string, unknown>, res: Result): void {
-    const keys = parseKeys(payload);
     const key = fold(nick);
-    if (this.state.keyreqAt[key] === undefined) {
+    if (this.state.keysAwaited[key] !== true) {
       res.events.push({ kind: "dropped", nick, reason: "unsolicited-keys", verb: "keys" });
       return;
     }
-    if (!this.sigOk(keys.id.ed25519, `${OTK_SIG_PREFIX}${keys.otk.key}`, keys.otk.sig)) {
-      res.events.push({ kind: "dropped", nick, reason: "bad-otk-signature", verb: "keys" });
+    const keys = parseKeys(payload);
+    if (!validMasterList(this.olm, keys.master)) {
+      res.events.push({ kind: "dropped", nick, reason: "bad-list", verb: "keys" });
       return;
     }
-    const peer = this.identify(nick, keys.id, res, false);
-    // First, so that a one-time key vodozemac refuses (a drop) leaves the
-    // queue waiting, to be reported if it expires.
-    const session =
-      peer === undefined
-        ? undefined
-        : rejecting(() => this.account.create_outbound_session(peer.curve25519, keys.otk.key));
-    try {
-      delete this.state.keyreqAt[key];
-      const queue = this.liveQueue(key, res);
+    const master = keys.master.ed25519;
+    // The KEYREQ is answered; its budget stands (`maybeKeyreq`).
+    delete this.state.keysAwaited[key];
+    if (this.checkMaster(nick, master, res) === "alarm") {
+      const queue = this.liveQueue(key);
       delete this.state.outq[key];
-      // Each queued message goes to the key it was meant for, or nowhere:
-      // the nick may have been re-pinned since. A message queued before the
-      // nick had any pin goes to the key that answered.
-      const mine =
-        peer === undefined
-          ? []
-          : queue.filter((q) => q.ed25519 === peer.ed25519 || q.ed25519 === "");
-      if (mine.length < queue.length) {
-        res.events.push({
-          kind: "send_failed",
-          nick,
-          reason: "key-mismatch",
-          tags: queue.filter((q) => !mine.includes(q)).map((q) => q.msg.tag),
-        });
+      this.lost(
+        nick,
+        "key-mismatch",
+        queue.map((q) => q.msg),
+      );
+      return;
+    }
+    this.applyList(master, keys.master.list);
+    const judged = new Set<string>();
+    for (const entry of keys.devices) {
+      if (judged.has(entry.id.ed25519)) continue;
+      judged.add(entry.id.ed25519);
+      this.openSession(nick, master, entry, res);
+    }
+    this.flush(nick, master, res);
+  }
+
+  /**
+   * What waits for keys from `nick`, to every device of `master` it has not
+   * reached and that is ready for it now: one more holds a session, which a
+   * KEYS opened or the device's own pre-key message did. Each queued message
+   * goes to the master it was meant for, or nowhere: the nick may have been
+   * re-pinned since. One queued before the nick had any pin goes to
+   * `master`. What is still for a device without a session waits on; what
+   * cannot go is `lost`.
+   */
+  private flush(nick: string, master: string, res: Result): void {
+    const key = fold(nick);
+    const queue = this.liveQueue(key);
+    delete this.state.outq[key];
+    const waiting: Queued[] = [];
+    for (const q of queue) {
+      if (q.master !== master && q.master !== "") {
+        this.lost(nick, "key-mismatch", [q.msg]);
+        continue;
       }
-      if (peer === undefined || session === undefined || mine.length === 0) return;
-      this.bind(peer, nick, false);
-      this.addSession(peer.curve25519, session.pickle());
-      this.state.rekeyAt[peer.ed25519] = this.now();
-      for (const q of mine) this.encrypt(nick, peer.ed25519, peer.curve25519, q.msg, res);
+      const { ready, lacking } = this.split(master, q.only, q.done);
+      const refused = ready.length > 0 ? this.encrypt(nick, master, ready, q.msg, res) : undefined;
+      if (refused !== undefined) {
+        // Too long for its devices now (a pre-key body is longer), or unsized.
+        this.lost(nick, refused, [q.msg]);
+        continue;
+      }
+      const done = [...q.done, ...ready.map((d) => d.ed25519)];
+      if (lacking.length > 0) waiting.push({ ...q, master, done });
+      // Gone to every device it was for; or, reaching none, it was for a
+      // device this master's list does not name.
+      else this.lost(nick, "unpinned-key", [q.msg]);
+    }
+    if (waiting.length > 0) this.state.outq[key] = waiting;
+  }
+
+  /**
+   * KEYS check 6 for the first entry of one device: usable if the device is
+   * trusted (rule 4: `refusal`, then the curve rules) and signed its one-time
+   * key (S2). A usable device with no working session gets one: none, or only
+   * ones it NACKed the newest of (W "Sending"; irc-olm's `_ready`). It is
+   * bound only once it has it (an id block only claims its curve). A skipped
+   * entry is reported.
+   */
+  private openSession(nick: string, master: string, entry: KeysEntry, res: Result): void {
+    const { id, otk } = entry;
+    const reason =
+      this.refusal(master, id) ??
+      this.curveRefusal(id, false) ??
+      (this.sigOk(id.ed25519, `${OTK_SIG_PREFIX}${otk.key}`, otk.sig)
+        ? undefined
+        : "bad-otk-signature");
+    if (reason !== undefined) {
+      res.events.push({ kind: "dropped", nick, reason, verb: "keys" });
+      return;
+    }
+    if (this.state.rekeying[id.ed25519] !== true && this.sessionsOf(id.curve25519).length > 0) {
+      return;
+    }
+    let session: Session;
+    try {
+      session = rejecting(() => this.account.create_outbound_session(id.curve25519, otk.key));
+    } catch (err) {
+      if (!(err instanceof Rejected)) throw err;
+      res.events.push({
+        kind: "dropped",
+        nick,
+        reason: "bad-payload",
+        verb: "keys",
+        detail: err.message,
+      });
+      return;
+    }
+    try {
+      this.addSession(id.curve25519, session.pickle());
     } finally {
-      session?.free();
+      session.free();
+    }
+    delete this.state.rekeying[id.ed25519];
+    const known = this.state.devices[id.ed25519];
+    this.state.devices[id.ed25519] = {
+      ed25519: id.ed25519,
+      curve25519: id.curve25519,
+      master,
+      did: did(this.olm, id.ed25519),
+      proven: known?.proven ?? false,
+      certVer: known?.certVer ?? null,
+    };
+  }
+
+  /**
+   * Notes that a copy of each message of `msgs` could not go, for `reason`.
+   * Whether the message is lost is judged once the whole step is done
+   * (`end`), when every copy it queued and every payload it dropped is where
+   * it stays: a message is noted once per step, under the first reason the
+   * step met for it.
+   */
+  private lost(nick: string, reason: SendFailure, msgs: Outgoing[]): void {
+    for (const msg of msgs) {
+      if (this.losses.some((loss) => loss.msg.id === msg.id)) continue;
+      this.losses.push({ nick, reason, msg });
     }
   }
 
+  /**
+   * The end of a step (each public call that answers a `Result`): reports
+   * every message it noted (`lost`) that nothing of is pending any more: no
+   * payload of it held (a device has it) and no copy of it waiting for keys.
+   * One `send_failed` per nick and reason, in the order they were met. Old
+   * plaintexts are forgotten (`trimSent`) only then: a record trimmed first
+   * would read as no device holding its message.
+   */
+  private end<R extends Result>(res: R): R {
+    const losses = this.losses;
+    this.losses = [];
+    const reports = new Map<string, { nick: string; reason: SendFailure; tags: string[] }>();
+    for (const { nick, reason, msg } of losses) {
+      if (this.pending(msg.id)) continue;
+      const key = `${reason} ${nick}`;
+      const report = reports.get(key) ?? { nick, reason, tags: [] };
+      report.tags.push(msg.tag);
+      reports.set(key, report);
+    }
+    for (const { nick, reason, tags } of reports.values()) this.failed(nick, reason, tags, res);
+    this.trimSent();
+    return res;
+  }
+
+  /** `tags` lost for `reason`; the engine's own list traffic is nobody's to hear about. */
+  private failed(nick: string, reason: SendFailure, tags: string[], res: Result): void {
+    const theirs = tags.filter((tag) => tag !== LIST_TAG);
+    if (theirs.length > 0) res.events.push({ kind: "send_failed", nick, reason, tags: theirs });
+  }
+
+  /** Whether something of the message `id` is on its way (`wentOut`) or waits for keys. */
+  private pending(id: string): boolean {
+    return (
+      this.wentOut(id) ||
+      Object.values(this.state.outq).some((queue) => queue.some((q) => q.msg.id === id))
+    );
+  }
+
+  /** Whether a payload of the message `id` is held: it went to a device that has not NACKed it. */
+  private wentOut(id: string): boolean {
+    return this.state.sent.some((s) => s.msg.id === id);
+  }
+
+  /**
+   * W "Receiver checks / PKMSG" as revision 2 amends it, in order: the first
+   * check that fails decides.
+   * 1. Malformed: a key not in vodozemac's one spelling, or a frame whose
+   *    `from` is not the did of the device the id block names.
+   * 2. No body for this device: a `*` message to our other devices, never
+   *    ours, so it gets no NACK.
+   * 3. The certificate, under the master presented, over the list version it
+   *    names; 4. the device's S1 over its curve and that master. Both come
+   *    before 5, `checkMaster`: no pin and no alarm ever comes from a block
+   *    that fails its own signature.
+   * 6. A revoked device, or one the stored list leaves out whose certificate
+   *    names a version that list has reached (`standing`, its S1 good by
+   *    now): dropped with no NACK and no alarm (rule 5).
+   * 7. The curve rules, as a pre-key message, which proves its curve.
+   * A pre-key message on a session it opened before goes to that session.
+   * 8. One whose session was opened before and is gone is a replay, or a peer
+   *    still writing on a session we lost: NACKed, never opened again.
+   * 9. A session it cannot open is NACKed.
+   * 10. Its inner `fb` must bind its device to this one: else the new session
+   *    goes, and its id stays seen.
+   * The device of a session it opened is bound, proven, and is sent at once
+   * what waited for it (`flush`), so nothing newer overtakes it.
+   */
   private onPkmsg(
     nick: string,
     msgid: string,
+    fromDid: string,
     payload: Record<string, unknown>,
     res: Result,
   ): void {
-    const pkmsg = parsePkmsg(payload);
-    const peer = this.identify(nick, pkmsg.id, res, true);
-    if (peer === undefined) return;
-    const body = unbase64(pkmsg.body);
+    const { id, master: block, bodies } = parsePkmsg(payload);
+    const master = block.ed25519;
+    const drop = (reason: DropReason): void => {
+      res.events.push({ kind: "dropped", nick, reason, verb: "pkmsg" });
+    };
+    if (!this.canonical(id) || !this.ed25519Canonical(master)) {
+      drop("non-canonical-key");
+      return;
+    }
+    if (did(this.olm, id.ed25519) !== fromDid) {
+      drop("bad-from");
+      return;
+    }
+    const mine = bodies[this.own.did];
+    if (mine === undefined) {
+      drop("not-for-us");
+      return;
+    }
+    const body = unbase64(mine);
+    if (!this.sigOk(master, certSigText(block.ver, id.ed25519), block.cert)) {
+      drop("bad-cert");
+      return;
+    }
+    if (!this.idSigned(id, master)) {
+      drop("bad-identity-signature");
+      return;
+    }
+    if (this.checkMaster(nick, master, res) === "alarm") return;
+    const reason = this.standing(master, id.ed25519, block.ver) ?? this.curveRefusal(id, true);
+    if (reason !== undefined) {
+      drop(reason);
+      return;
+    }
     const sessionId = rejecting(() => this.olm.pre_key_session_id(body));
-    for (const pickle of this.sessionsOf(peer.curve25519)) {
-      if (this.sessionId(pickle) === sessionId) {
-        this.decryptOn(nick, msgid, peer, pickle, 0, body, res);
-        return;
-      }
+    // Bound, it is bound to this very curve (`curveRefusal`).
+    const bound = this.state.devices[id.ed25519];
+    const held =
+      bound === undefined
+        ? undefined
+        : this.sessionsOf(id.curve25519).find((p) => this.sessionId(p) === sessionId);
+    if (bound !== undefined && held !== undefined) {
+      this.decryptOn(nick, msgid, fromDid, master, bound, held, 0, body, res);
+      return;
     }
     if (this.state.seen.includes(sessionId)) {
-      // Either a replay (a fallback-key PKMSG opens the same session again
-      // and would re-deliver an old plaintext), or a peer still sending on a
-      // session we lost. Never decrypt; NACK, so the second case recovers.
+      // A fallback-key PKMSG opens the same session again, and would deliver
+      // an old plaintext again; a NACK lets a peer that lost the session
+      // recover, and gives a replayer only a NACK for a msgid not its own.
       res.events.push({ kind: "replayed", nick, sessionId });
-      this.undecryptable(nick, msgid, "replayed-session", peer.ed25519, res);
+      this.undecryptable(nick, msgid, fromDid, "replayed-session", res);
       return;
     }
     let created: ReturnType<Account["create_inbound_session"]>;
     try {
-      created = rejecting(() => this.account.create_inbound_session(peer.curve25519, body));
+      created = rejecting(() => this.account.create_inbound_session(id.curve25519, body));
     } catch (err) {
       if (!(err instanceof Rejected)) throw err;
-      this.undecryptable(nick, msgid, "session-creation", peer.ed25519, res);
+      this.undecryptable(nick, msgid, fromDid, "session-creation", res);
       return;
     }
     const session = created.take_session();
@@ -628,49 +1274,89 @@ export class Engine {
       if (this.state.seen.length > SEEN_SESSIONS_MAX) {
         this.state.seen.splice(0, this.state.seen.length - SEEN_SESSIONS_MAX);
       }
-      this.bind(peer, nick, true);
-      this.addSession(peer.curve25519, session.pickle());
-      this.touch(peer.ed25519, nick);
-      this.deliver(nick, peer.ed25519, plaintext, res);
+      const inner = this.inner(nick, plaintext, id.ed25519, res);
+      // Built for another pair of devices, or unreadable: the session goes.
+      if (inner === undefined) return;
+      const device = this.bindProven(master, id, block.ver);
+      this.addSession(id.curve25519, session.pickle());
+      this.deliver(nick, master, device, inner, res);
     } finally {
       session.free();
     }
+    this.flush(nick, master, res);
   }
 
-  private onMsg(nick: string, msgid: string, payload: Record<string, unknown>, res: Result): void {
+  /**
+   * W "Receiver checks / MSG", after the body for this device (none: a `*`
+   * message to our other devices, never NACKed). 2. A curve the master pinned
+   * to the nick revoked: dropped with no NACK. 3. The curve of a trusted
+   * device of that master: the frame's `from` must be its did, and what its
+   * sessions cannot read is NACKed. 4. A curve bound under another master:
+   * dropped. 5. A curve never seen: NACKed. Our state was lost, or a new
+   * identity writes from a nick that had a pin; the NACK makes the sender
+   * open a fresh session with its id block, which the pin, or trust on first
+   * use, then judges.
+   */
+  private onMsg(
+    nick: string,
+    msgid: string,
+    fromDid: string,
+    payload: Record<string, unknown>,
+    res: Result,
+  ): void {
     const msg = parseMsg(payload);
     const curve = rejecting(() => this.olm.canonical_curve25519(msg.ck));
-    const owner = this.curveOwner(curve);
-    if (owner === undefined) {
-      // A key we never saw a session for: our state was lost, or this is a
-      // new account on a nick that had a pin. A NACK makes the sender open
-      // a fresh session with its id block, which the pin, or trust on first
-      // use, then judges.
-      this.undecryptable(nick, msgid, "no-session", undefined, res);
+    const drop = (reason: DropReason): void => {
+      res.events.push({ kind: "dropped", nick, reason, verb: "msg" });
+    };
+    const mine = msg.bodies[this.own.did];
+    if (mine === undefined) {
+      drop("not-for-us");
       return;
     }
-    const pickles = this.sessionsOf(curve);
-    if (pickles.length === 0) {
-      this.undecryptable(nick, msgid, "no-session", owner, res);
+    const body = unbase64(mine);
+    const master = this.state.pins[fold(nick)];
+    const record = master === undefined ? undefined : this.state.masters[master];
+    if (record?.revokedCurves.includes(curve)) {
+      drop("revoked-device");
       return;
     }
-    // Nothing about the peer moves before a decrypt succeeds: `ck` is
-    // public, and anyone can put it on a line.
-    const body = unbase64(msg.body);
-    const peer = this.state.peers[owner] as Bound;
-    for (const pickle of [...pickles]) {
-      if (this.decryptOn(nick, msgid, peer, pickle, 1, body, res)) return;
+    const device =
+      master === undefined
+        ? undefined
+        : this.trustedDevices(master).find((d) => d.curve25519 === curve);
+    if (master !== undefined && device !== undefined) {
+      if (device.did !== fromDid) {
+        drop("bad-from");
+        return;
+      }
+      // Nothing about the device moves before a decrypt succeeds: `ck` is
+      // public, and anyone can put it on a line.
+      const pickles = this.sessionsOf(curve);
+      for (const pickle of [...pickles]) {
+        if (this.decryptOn(nick, msgid, fromDid, master, device, pickle, 1, body, res)) return;
+      }
+      const reason = pickles.length === 0 ? "no-session" : "decryption-failed";
+      this.undecryptable(nick, msgid, fromDid, reason, res);
+      return;
     }
-    this.undecryptable(nick, msgid, "decryption-failed", owner, res);
+    if (Object.values(this.state.devices).some((d) => d.curve25519 === curve)) {
+      drop("unpinned-key");
+      return;
+    }
+    this.undecryptable(nick, msgid, fromDid, "no-session", res);
   }
 
-  // True once the session `pickle` decrypted `body`. A pre-key message that
-  // matched its session but does not decrypt is undecryptable here and now;
-  // a normal one lets the caller try the next session.
+  // True once the session `pickle` of `device` (under `master`) decrypted
+  // `body`. A pre-key message that matched its session and does not decrypt
+  // is undecryptable here and now; a normal one lets the caller try the next
+  // session.
   private decryptOn(
     nick: string,
     msgid: string,
-    peer: Bound,
+    fromDid: string,
+    master: string,
+    device: PeerDevice,
     pickle: string,
     messageType: 0 | 1,
     body: Uint8Array,
@@ -683,29 +1369,39 @@ export class Engine {
         plaintext = rejecting(() => session.decrypt(messageType, body));
       } catch (err) {
         if (!(err instanceof Rejected)) throw err;
-        if (messageType === 0) {
-          this.undecryptable(nick, msgid, "decryption-failed", peer.ed25519, res);
-        }
+        if (messageType === 0) this.undecryptable(nick, msgid, fromDid, "decryption-failed", res);
         return messageType === 0;
       }
       // The session the peer just used is the one to answer on.
-      const rest = this.sessionsOf(peer.curve25519).filter((p) => p !== pickle);
-      this.state.sessions[peer.curve25519] = [session.pickle(), ...rest];
-      this.touch(peer.ed25519, nick);
-      this.deliver(nick, peer.ed25519, plaintext, res);
+      const rest = this.sessionsOf(device.curve25519).filter((p) => p !== pickle);
+      this.state.sessions[device.curve25519] = [session.pickle(), ...rest];
+      const sender = messageType === 0 ? device.ed25519 : null;
+      const inner = this.inner(nick, plaintext, sender, res);
+      if (inner !== undefined) this.deliver(nick, master, device, inner, res);
       return true;
     } finally {
       session.free();
     }
   }
 
-  private deliver(nick: string, ed25519: string, plaintext: Uint8Array, res: Result): void {
+  /**
+   * The inner message of a decrypted body, its `fb` taken off; undefined
+   * (reported) when it is not a typed JSON object, or when a pre-key body's
+   * `fb` does not bind `sender`, its device, to this one: a message built for
+   * another device, or claimed by another one (rev 2).
+   */
+  private inner(
+    nick: string,
+    plaintext: Uint8Array,
+    sender: string | null,
+    res: Result,
+  ): Record<string, unknown> | undefined {
     let inner: unknown;
     try {
       inner = JSON.parse(decoder.decode(plaintext));
     } catch {
       res.events.push({ kind: "dropped", nick, reason: "undecodable-inner" });
-      return;
+      return undefined;
     }
     if (
       typeof inner !== "object" ||
@@ -714,228 +1410,523 @@ export class Engine {
       typeof (inner as Record<string, unknown>).t !== "string"
     ) {
       res.events.push({ kind: "dropped", nick, reason: "inner-without-type" });
-      return;
+      return undefined;
     }
-    const peer = { ...(this.state.peers[ed25519] as Peer) };
-    res.events.push({ kind: "received", nick, peer, inner: inner as Record<string, unknown> });
-  }
-
-  private onNack(nick: string, payload: Record<string, unknown>, res: Result): void {
-    const nack = parseNack(payload);
-    this.trimSent();
-    const sent = this.state.sent.find((s) => s.msgid === nack.ref);
-    if (sent === undefined) {
-      res.events.push({ kind: "dropped", nick, reason: "unknown-nack-ref", verb: "nack" });
-      return;
+    const { fb: binding, ...rest } = inner as Record<string, unknown>;
+    if (sender !== null && binding !== fb(this.olm, sender, this.account.ed25519_key())) {
+      res.events.push({ kind: "dropped", nick, reason: "inner-key-mismatch" });
+      return undefined;
     }
-    this.state.sent = this.state.sent.filter((s) => s !== sent);
-    if (fold(sent.nick) !== fold(nick)) {
-      // NACKs are not authenticated: never re-send on the word of a nick we
-      // did not send to. The recipient renamed, most likely.
-      res.events.push({
-        kind: "send_failed",
-        nick: sent.nick,
-        reason: "nack-from-another-nick",
-        tags: [sent.msg.tag],
-      });
-      return;
-    }
-    const peer = this.state.peers[sent.ed25519];
-    if (peer === undefined) {
-      res.events.push({ kind: "send_failed", nick, reason: "unpinned-key", tags: [sent.msg.tag] });
-      return;
-    }
-    if (!this.reachedAt(nick, peer.ed25519)) {
-      res.events.push({ kind: "send_failed", nick, reason: "repinned", tags: [sent.msg.tag] });
-      return;
-    }
-    if (sent.msg.sends >= MAX_SENDS) {
-      res.events.push({ kind: "send_failed", nick, reason: "resend-failed", tags: [sent.msg.tag] });
-      return;
-    }
-    const again: Outgoing = { ...sent.msg, sends: sent.msg.sends + 1 };
-    const newest = this.sessionsOf(peer.curve25519)[0];
-    if (
-      (newest !== undefined && this.sessionId(newest) !== sent.sessionId) ||
-      this.state.keyreqAt[fold(nick)] !== undefined
-    ) {
-      // The failed session is not our newest, or keys are already asked for
-      // (a re-key for an earlier NACK of the same burst): re-send on the
-      // newest, or queue behind the keys. No new session.
-      this.dropSession(peer.curve25519, sent.sessionId);
-      this.sendTo(nick, peer, again, res);
-      return;
-    }
-    // The failed session is our newest: only a new one helps, and the spec
-    // allows one per peer per minute.
-    const last = this.state.rekeyAt[peer.ed25519];
-    if (last !== undefined && this.now() - last < REKEY_INTERVAL_MS) {
-      res.events.push({
-        kind: "send_failed",
-        nick,
-        reason: "rekey-throttled",
-        tags: [sent.msg.tag],
-      });
-      return;
-    }
-    this.dropSession(peer.curve25519, sent.sessionId);
-    res.events.push({ kind: "rekeying", nick, peer: this.state.peers[peer.ed25519] as Peer });
-    // Re-send the lost message on the new session (the spec's MAY).
-    this.enqueue(nick, peer.ed25519, again, res);
+    return rest;
   }
 
   /**
-   * Report it, and NACK unless `nick` is pinned to a key other than
-   * `ed25519`, the one the message claims (undefined: a key we never saw).
-   * A pinned key's curve and id block are public, and anyone can put them
-   * on a line; but a NACK goes back to the nick the message came from, and
-   * only a sender that holds the key acts on it. Every such message gets its
-   * own NACK: the sender re-sends what is NACKed, and a message without one
-   * is lost without a word.
+   * A decrypted inner message from `device` of `master`, the master pinned to
+   * `nick`: a `t:list` or a `t:listreq` is the engine's own and never handed
+   * on; anything else is, without its `lv`. W "After any decrypt": an `lv`
+   * above the version of the list stored for the master, read once a `t:list`
+   * in the very message is applied, asks that device for its list.
+   */
+  private deliver(
+    nick: string,
+    master: string,
+    device: PeerDevice,
+    inner: Record<string, unknown>,
+    res: Result,
+  ): void {
+    const { lv, ...rest } = inner;
+    if (rest.t === "list") {
+      this.onList(nick, rest, res);
+    } else if (rest.t === "listreq") {
+      this.onListreq(nick, device, res);
+    } else {
+      const verified = this.state.masters[master]?.verified === true;
+      res.events.push({
+        kind: "received",
+        nick,
+        master,
+        device: device.ed25519,
+        verified,
+        inner: rest,
+      });
+    }
+    if (validVer(lv) && lv > (this.state.masters[master]?.ver ?? 0)) {
+      this.requestList(nick, device.ed25519, lv, res);
+    }
+  }
+
+  /**
+   * A `t:list`: the KEYS steps 3-5 (W "After any decrypt"). An invalid list
+   * is dropped; one of another master than the one pinned to `nick`, which
+   * the device writing it was bound under, is the alarm; else rule 3.
+   */
+  private onList(nick: string, inner: Record<string, unknown>, res: Result): void {
+    const block = inner.master;
+    let list: MasterList | undefined;
+    try {
+      if (typeof block === "object" && block !== null && !Array.isArray(block)) {
+        list = parseMasterList(block as Record<string, unknown>);
+      }
+    } catch (err) {
+      if (!(err instanceof PayloadError)) throw err;
+    }
+    if (list === undefined || !validMasterList(this.olm, list)) {
+      res.events.push({ kind: "dropped", nick, reason: "bad-list" });
+      return;
+    }
+    if (this.checkMaster(nick, list.ed25519, res) === "alarm") return;
+    this.applyList(list.ed25519, list.list);
+  }
+
+  /**
+   * A `t:listreq` from `device`: our list, to that device alone, at most once
+   * per (nick, device) a minute; another ask within that minute is dropped.
+   */
+  private onListreq(nick: string, device: PeerDevice, res: Result): void {
+    const now = this.now();
+    for (const [asker, at] of Object.entries(this.state.listAnsweredAt)) {
+      if (now - at >= LISTREQ_INTERVAL_MS) delete this.state.listAnsweredAt[asker];
+    }
+    const asker = `${fold(nick)} ${device.did}`;
+    if (this.state.listAnsweredAt[asker] !== undefined) {
+      res.events.push({ kind: "dropped", nick, reason: "listreq-rate-limited" });
+      return;
+    }
+    this.state.listAnsweredAt[asker] = now;
+    const { ver, devices, sig } = this.own.list;
+    const master = { ed25519: this.own.master, list: { ver, devices }, sig };
+    this.dispatch(nick, { t: "list", master }, LIST_TAG, null, device.ed25519, res);
+  }
+
+  /**
+   * Binds the device of `id` under `master`, proven: a pre-key message built
+   * to us on its curve decrypted, under the certificate at `certVer` it
+   * carried. The proof evicts another device's claim on that curve, with the
+   * sessions opened on the claim (`curveRefusal` let it through only if that
+   * one is unproven).
+   */
+  private bindProven(master: string, id: IdBlock, certVer: number): PeerDevice {
+    const claimant = Object.values(this.state.devices).find(
+      (d) => d.curve25519 === id.curve25519 && d.ed25519 !== id.ed25519,
+    );
+    if (claimant !== undefined) {
+      delete this.state.devices[claimant.ed25519];
+      this.dropSessions(claimant);
+    }
+    const device: PeerDevice = {
+      ed25519: id.ed25519,
+      curve25519: id.curve25519,
+      master,
+      did: did(this.olm, id.ed25519),
+      proven: true,
+      certVer,
+    };
+    this.state.devices[id.ed25519] = device;
+    return device;
+  }
+
+  /**
+   * W "Receiver checks / NACK" as revision 2 has it: the device `fromDid`
+   * could not decrypt its body of our message `ref`. Acted on only if that
+   * message went to that very device, NACKs being unauthenticated, and each
+   * device's NACK of it once. Never on the word of another nick, nor for a
+   * nick pinned to another master since, nor for a device its master no
+   * longer vouches for (no re-key, no re-send: dropped). A copy goes out at
+   * most `MAX_SENDS` times. The session it failed on goes. If that was the
+   * device's newest, only a fresh one helps: the device is re-keyed, which
+   * takes a KEYREQ (under its own budget, `maybeKeyreq`); a NACK while keys
+   * are already asked for joins them, and otherwise at most one re-key per
+   * nick a minute starts, however many devices NACK. The copy then goes again
+   * to that device alone, on its newest session or once the keys come. A copy
+   * that cannot go again, a disowned device's included, is `lost`: the
+   * message is reported only if nothing else of it is pending.
+   */
+  private onNack(
+    nick: string,
+    fromDid: string,
+    payload: Record<string, unknown>,
+    res: Result,
+  ): void {
+    const drop = (reason: DropReason): void => {
+      res.events.push({ kind: "dropped", nick, reason, verb: "nack" });
+    };
+    const { ref } = parseNack(payload);
+    this.trimSent();
+    const sent = this.state.sent.find((s) => s.msgid === ref);
+    const body = sent?.devices[fromDid];
+    if (sent === undefined || body === undefined) {
+      drop("unknown-nack-ref");
+      return;
+    }
+    delete sent.devices[fromDid];
+    if (Object.keys(sent.devices).length === 0) {
+      this.state.sent = this.state.sent.filter((s) => s !== sent);
+    }
+    const lose = (reason: SendFailure, to: string): void => this.lost(to, reason, [sent.msg]);
+    if (fold(sent.nick) !== fold(nick)) {
+      // Never re-sent on the word of a nick it did not go to. The recipient
+      // renamed, most likely.
+      lose("nack-from-another-nick", sent.nick);
+      return;
+    }
+    if (this.state.pins[fold(nick)] !== sent.master) {
+      lose("repinned", nick);
+      return;
+    }
+    // It was bound under the master when the message went to it: unbound
+    // since, or bound under another one, it is gone as a revoked one is.
+    // Nothing goes to it again, so its copy is lost: the message too, if
+    // nothing else of it is pending, for a device its master does not vouch
+    // for (`unpinned-key`).
+    const disowned = (reason: DropReason): void => {
+      drop(reason);
+      lose("unpinned-key", nick);
+    };
+    const device = this.state.devices[body.ed25519];
+    if (device?.master !== sent.master) {
+      disowned("revoked-device");
+      return;
+    }
+    const untrusted = this.standing(sent.master, device.ed25519, device.certVer);
+    if (untrusted !== undefined) {
+      disowned(untrusted);
+      return;
+    }
+    if (sent.msg.sends >= MAX_SENDS) {
+      lose("resend-failed", nick);
+      return;
+    }
+    const newest = this.sessionsOf(device.curve25519)[0];
+    if (newest === undefined || this.sessionId(newest) === body.sessionId) {
+      const key = fold(nick);
+      if (!this.keysUnderWay(key)) {
+        const last = this.state.rekeyAt[key];
+        if (last !== undefined && this.now() - last < REKEY_INTERVAL_MS) {
+          lose("rekey-throttled", nick);
+          return;
+        }
+        this.state.rekeyAt[key] = this.now();
+        res.events.push({ kind: "rekeying", nick, master: sent.master, device: device.ed25519 });
+      }
+      this.state.rekeying[device.ed25519] = true;
+    }
+    this.dropSession(device.curve25519, body.sessionId);
+    // Re-sent to that device alone (the spec's MAY).
+    this.sendTo(
+      nick,
+      sent.master,
+      device.ed25519,
+      [],
+      { ...sent.msg, sends: sent.msg.sends + 1 },
+      res,
+    );
+  }
+
+  /**
+   * Whether keys are being asked of the folded nick `key`: a KEYREQ went
+   * within the retry and no KEYS answered it, or a re-key started since the
+   * last KEYREQ, whose own waits out the budget (`rekeyDue`). A NACK then
+   * joins it: the KEYS brings every device's keys.
+   */
+  private keysUnderWay(key: string): boolean {
+    const asked = this.state.keyreqSentAt[key];
+    const awaited =
+      this.state.keysAwaited[key] === true &&
+      asked !== undefined &&
+      this.now() - asked < KEYREQ_RETRY_MS;
+    return awaited || this.rekeyDue(key);
+  }
+
+  /** Whether a re-key of the folded nick `key` started after its last KEYREQ: its own is still to go. */
+  private rekeyDue(key: string): boolean {
+    const rekeyed = this.state.rekeyAt[key];
+    const asked = this.state.keyreqSentAt[key];
+    return rekeyed !== undefined && (asked === undefined || rekeyed > asked);
+  }
+
+  /**
+   * Reports it, and NACKs it from this device to the one it came from: every
+   * such message gets its own NACK, since the sender re-sends what is NACKed
+   * and a message without one is lost without a word. Only a message of the
+   * master pinned to the nick, or on a curve never seen, gets here: one
+   * presenting another master is the alarm (PKMSG check 5), one on a curve
+   * bound under another master is dropped (MSG check 4). A device's curve and
+   * id block are public, and anyone can put them on a line, but the NACK goes
+   * back to the nick it came from, and only a sender that holds the keys acts
+   * on it.
    *
-   * irc-olm NACKs only where the claimed key is pinned, since a bot talks to
+   * irc-olm NACKs only a message of a pinned master, since a bot talks to
    * nothing else. Here a nick with no pin is where trust on first use would
-   * pin the key, so it is answered too: without that, a peer whose storage
-   * was wiped never makes the sender re-key, and the sender never sees the
-   * new key it must raise the alarm for (2430 "Session recovery").
+   * pin one, so a curve never seen is answered too: without that, a peer whose
+   * storage was wiped never makes the sender re-key, and the sender never sees
+   * the new identity it must raise the alarm for (2430 "Session recovery").
    */
   private undecryptable(
     nick: string,
     msgid: string,
+    fromDid: string,
     reason: UndecryptableReason,
-    ed25519: string | undefined,
     res: Result,
   ): void {
     res.events.push({ kind: "undecryptable", nick, msgid, reason });
-    const mapped = this.pinned(nick);
-    if (mapped === undefined || ed25519 === undefined || mapped.ed25519 === ed25519) {
-      res.outbound.push({
-        target: nick,
-        verb: "nack",
-        payload: encodePayload({ v: WIRE_VERSION, ref: msgid }),
-        priority: "control",
-      });
-    }
-  }
-
-  /** Whether sending to `nick` reaches the key `ed25519`. */
-  private reachedAt(nick: string, ed25519: string): boolean {
-    return this.pinned(nick)?.ed25519 === ed25519;
+    res.outbound.push({
+      target: nick,
+      verb: "nack",
+      from: this.own.did,
+      to: fromDid,
+      payload: encodePayload({ v: WIRE_VERSION, ref: msgid }),
+      priority: "control",
+    });
   }
 
   // --- time --------------------------------------------------------------
 
   /**
    * Reports queued messages that waited too long for keys, asks again for
-   * the keys of the rest (`KEYREQ_RETRY_MS`), and forgets old plaintexts.
+   * keys (`KEYREQ_RETRY_MS`) where something waits that reached no device or
+   * a re-key's KEYREQ is due, sends the list asks held back (`askList`), and
+   * forgets old plaintexts.
    */
   tick(): Result {
     const res = emptyResult();
     for (const key of Object.keys(this.state.outq)) {
       // grappa answers a nick's KEYREQ at most so often and drops the rest
-      // without a word (`E2eKeyAnswers`): what still waits asks again.
-      const waiting = this.liveQueue(key, res)[0];
-      if (waiting !== undefined) this.maybeKeyreq(waiting.nick, res);
+      // without a word (`E2eKeyAnswers`). What reached no device asks again,
+      // as does a re-key whose KEYREQ waited out the budget; a message a
+      // device has waits for the next KEYS without asking.
+      const live = this.liveQueue(key);
+      const asking =
+        live.find((q) => !this.wentOut(q.msg.id)) ?? (this.rekeyDue(key) ? live[0] : undefined);
+      if (asking !== undefined) this.maybeKeyreq(asking.nick, res);
     }
-    this.trimSent();
-    return res;
+    for (const nick of Object.values(this.state.listreqHeld)) this.askList(nick, res);
+    return this.end(res);
   }
 
-  // --- identities and pins -----------------------------------------------
+  /**
+   * Whether `tick` has something to do, so the caller must come back: a
+   * message waiting for keys (a re-key whose KEYREQ is due among them, since
+   * its re-send waits in the queue too), a list ask held back, or a SAS
+   * (`sas.ts`), whose time runs out. Forgetting old plaintexts waits for the
+   * next call of any kind.
+   */
+  waitsOnTheClock(): boolean {
+    return (
+      Object.keys(this.state.outq).length > 0 ||
+      Object.keys(this.state.listreqHeld).length > 0 ||
+      Object.keys(this.state.sas).length > 0
+    );
+  }
+
+  // --- trust (wire v2 "Trust", rules 1-6) --------------------------------
 
   /**
-   * The peer behind a presented id block, with the presented curve filled
-   * in but NOT stored, or undefined: a bad signature, our own identity, a
-   * key other than the one pinned to this nick (the alarm), or a curve that
-   * belongs to another key. A key no one pinned yet comes back as a new,
-   * unverified peer; it is stored only once a session exists (`bind`).
-   *
-   * An id block is public and replayable, and its signature only says the
-   * Ed25519 key CLAIMS that curve, not that it holds it. Only a pre-key
-   * message the curve's holder built to us proves it: `proving` may take
-   * the curve from a key that only claimed it.
+   * Rules 1 and 6 for a master a block presented under `nick`; call it only
+   * once that block's own signature verified, since no pin and no alarm ever
+   * comes from one that does not. "ok" when it is the master pinned to the
+   * nick, or when the nick has no pin and it is pinned now, unverified (trust
+   * on first use), keeping the list and the verification it had under another
+   * nick (rule 3). Otherwise "alarm", and nothing is stored: with a
+   * `key_alarm` naming both masters when it is another master (only the user
+   * re-pinning moves a pin), with an `own-identity` drop when it is ours.
+   * Our master on a peer's nick would make our own other devices that peer's,
+   * and our own words, encrypted to them, could come back as its; `pin`
+   * refuses it too.
    */
-  private identify(nick: string, id: IdBlock, res: Result, proving: boolean): Bound | undefined {
-    if (!this.sigOk(id.ed25519, `${ID_SIG_PREFIX}${id.curve25519}`, id.sig)) {
-      res.events.push({ kind: "dropped", nick, reason: "bad-identity-signature" });
-      return undefined;
-    }
-    const ed = rejecting(() => this.olm.canonical_ed25519(id.ed25519));
-    const curve = rejecting(() => this.olm.canonical_curve25519(id.curve25519));
-    if (curve === this.account.curve25519_key()) {
-      // Else a key could claim our curve, hand us our own fallback key as
-      // its one-time key, and reflect our own messages back as its own.
+  private checkMaster(nick: string, master: string, res: Result): "ok" | "alarm" {
+    if (master === this.own.master) {
       res.events.push({ kind: "dropped", nick, reason: "own-identity" });
-      return undefined;
+      return "alarm";
     }
-    const known = this.state.peers[ed];
-    const pinnedEd = this.state.pins[fold(nick)];
-    if (known === undefined && pinnedEd !== undefined) {
-      // A key we never saw, on a nick pinned to another: never a silent
-      // replace. (A KNOWN key on another nick is a renamed peer, and fine.)
-      res.events.push({ kind: "key_alarm", nick, pinned: pinnedEd, presented: ed });
-      res.events.push({ kind: "dropped", nick, reason: "unpinned-key" });
-      return undefined;
+    const key = fold(nick);
+    const pinned = this.state.pins[key];
+    if (pinned === master) return "ok";
+    if (pinned !== undefined) {
+      res.events.push({ kind: "key_alarm", nick, pinned, presented: master });
+      return "alarm";
     }
-    if (known?.curve25519 != null && known.curve25519 !== curve) {
-      res.events.push({ kind: "dropped", nick, reason: "identity-curve-mismatch" });
-      return undefined;
-    }
-    const owner = this.curveOwner(curve);
-    if (
-      owner !== undefined &&
-      owner !== ed &&
-      (this.state.peers[owner]?.proven === true || !proving)
-    ) {
-      // One curve under two keys would let one peer's messages be read as
-      // the other's (sessions and MSG lookups go by curve).
-      res.events.push({ kind: "dropped", nick, reason: "curve-already-bound" });
-      return undefined;
-    }
-    const peer = known ?? { ed25519: ed, nick, proven: false, verified: false };
-    return { ...peer, curve25519: curve };
-  }
-
-  private curveOwner(curve: string): string | undefined {
-    return Object.values(this.state.peers).find((p) => p.curve25519 === curve)?.ed25519;
+    this.state.masters[master] ??= newMaster(nick, false);
+    this.state.pins[key] = master;
+    return "ok";
   }
 
   /**
-   * Store the peer and the curve a session was opened on, pinning a new key
-   * to `nick` (trust on first use); `proven` when a pre-key message
-   * decrypted on it. A proof evicts another key's claim on that curve,
-   * sessions included (`identify` let it through only if unproven).
+   * Rule 3 for a valid list of `master`, a master `checkMaster` let through:
+   * a higher `ver` replaces the stored list; an equal one changes nothing, as
+   * the same keys or as other keys only the master could have signed; a lower
+   * one is stale. Rule 5 for what a replacement revokes: a key the stored list
+   * named and the new one does not, with its curve when its device is bound
+   * under this master. Revoked means listed once and not now, so a key a
+   * newer list names again is no longer revoked. Every device bound under
+   * this master that it no longer vouches for (`standing`) loses its
+   * sessions: a revoked one, and one its certificate admitted once the new
+   * list reaches the certificate's version without naming it. Nothing records
+   * that verdict: it is read off the versions.
    */
-  private bind(peer: Bound, nick: string, proven: boolean): void {
-    const owner = this.curveOwner(peer.curve25519);
-    if (owner !== undefined && owner !== peer.ed25519) {
-      const other = this.state.peers[owner] as Peer;
-      this.state.peers[owner] = { ...other, curve25519: null };
-      delete this.state.sessions[peer.curve25519];
+  private applyList(master: string, list: MasterList["list"]): void {
+    const record = this.state.masters[master];
+    if (record === undefined) throw new Error("a list for a master no pin names");
+    if (list.ver <= record.ver) return;
+    const leaving = record.devices.filter((key) => !list.devices.includes(key));
+    const back = record.revoked.filter((key) => list.devices.includes(key));
+    // A list names keys, any keys; only a device's S1 says whose it is, so a
+    // device bound under another master keeps its sessions whatever this
+    // list does with its key.
+    const curves = (keys: string[]): string[] =>
+      keys.flatMap((key) => {
+        const device = this.state.devices[key];
+        return device?.master === master ? [device.curve25519] : [];
+      });
+    const leavingCurves = curves(leaving);
+    const backCurves = curves(back);
+    record.revoked = [...record.revoked.filter((key) => !back.includes(key)), ...leaving];
+    record.revokedCurves = [
+      ...record.revokedCurves.filter((curve) => !backCurves.includes(curve)),
+      ...leavingCurves,
+    ];
+    record.ver = list.ver;
+    record.devices = [...list.devices];
+    for (const device of Object.values(this.state.devices)) {
+      if (
+        device.master === master &&
+        this.standing(master, device.ed25519, device.certVer) !== undefined
+      ) {
+        this.dropSessions(device);
+      }
     }
-    const current = this.state.peers[peer.ed25519];
-    this.state.peers[peer.ed25519] = {
-      ed25519: peer.ed25519,
-      curve25519: current?.curve25519 ?? peer.curve25519,
-      nick: current?.nick ?? nick,
-      proven: (current?.proven ?? false) || proven,
-      verified: current?.verified ?? false,
-    };
-    this.state.pins[fold(nick)] ??= peer.ed25519;
   }
 
   /**
-   * The nick hint follows the key that just spoke. A hint names one key: any
-   * other key last seen there goes back to a nick pinned to it.
+   * Rule 4 for the devices already bound: those bound under `master` that it
+   * still vouches for (`standing`), listed or certified. Each one's S1 was
+   * checked against this master when it was bound, which is why a device
+   * bound under another master is never one of them, whatever this master
+   * lists.
    */
-  private touch(ed25519: string, nick: string): void {
-    for (const other of Object.values(this.state.peers)) {
-      if (other.ed25519 === ed25519 || fold(other.nick) !== fold(nick)) continue;
-      const home = Object.keys(this.state.pins).find((n) => this.state.pins[n] === other.ed25519);
-      if (home !== undefined) this.state.peers[other.ed25519] = { ...other, nick: home };
+  private trustedDevices(master: string): PeerDevice[] {
+    if (this.state.masters[master] === undefined) return [];
+    return Object.values(this.state.devices).filter(
+      (device) =>
+        device.master === master &&
+        this.standing(master, device.ed25519, device.certVer) === undefined,
+    );
+  }
+
+  /**
+   * Rule 4 for the device of a KEYS entry under `master`, a master
+   * `checkMaster` let through, before anything of it is bound: why it is not
+   * trusted, or undefined. Its S1 must cover its curve and this very master,
+   * so no other master can list it; then `standing`, with no certificate: a
+   * KEYS carries none. The curve rules are `curveRefusal`'s, which the caller
+   * runs next. A PKMSG verifies S1 before `checkMaster` and asks `standing`
+   * itself.
+   */
+  private refusal(
+    master: string,
+    id: IdBlock,
+  ):
+    | "bad-identity-signature"
+    | "revoked-device"
+    | "unlisted-device"
+    | "stale-certificate"
+    | undefined {
+    if (!this.idSigned(id, master)) return "bad-identity-signature";
+    return this.standing(master, id.ed25519, null);
+  }
+
+  /** Whether `id`'s device signed its curve and `master` (S1): then no other master can list it. */
+  private idSigned(id: IdBlock, master: string): boolean {
+    return this.sigOk(id.ed25519, `${ID_SIG_PREFIX}${id.curve25519}:${master}`, id.sig);
+  }
+
+  /**
+   * Why `master`, a master with a record, does not vouch for the device
+   * `ed25519` now (rules 4, 5), if not: its stored list names it, or its
+   * certificate admits it (`admitsUnlisted`). `certVer` is the version a
+   * certificate for the device names, its signature verified: a PKMSG's, or
+   * the one stored when the device was bound; null when there is none.
+   */
+  private standing(
+    master: string,
+    ed25519: string,
+    certVer: number | null,
+  ): "revoked-device" | "unlisted-device" | "stale-certificate" | undefined {
+    const record = this.state.masters[master];
+    if (record === undefined) throw new Error("a device presented under a master no pin names");
+    if (record.devices.includes(ed25519) || this.admitsUnlisted(record, ed25519, certVer)) {
+      return undefined;
     }
-    const current = this.state.peers[ed25519];
-    if (current !== undefined) this.state.peers[ed25519] = { ...current, nick };
+    if (record.revoked.includes(ed25519)) return "revoked-device";
+    return certVer === null ? "unlisted-device" : "stale-certificate";
+  }
+
+  /**
+   * Whether `record`'s master vouches for a device its stored list leaves out
+   * on its certificate alone: one whose signature verified names a list
+   * version `certVer` above the stored list's (a list at or past that version
+   * is the master's own word on the device), and the device was never revoked
+   * here. Read off the versions each time, never stored: a list that reaches
+   * `certVer` without naming the device ends it.
+   */
+  private admitsUnlisted(record: Master, ed25519: string, certVer: number | null): boolean {
+    return certVer !== null && certVer > record.ver && !record.revoked.includes(ed25519);
+  }
+
+  /**
+   * The rest of rule 4, v1's curve rules, for a device an id block presents:
+   * why its curve may not be bound to it, or undefined. Both keys only in
+   * vodozemac's one spelling (W "Encodings"): every rule here compares
+   * strings, and another spelling of a key would slip past each compare. Not
+   * our own curve: else a device could claim it, hand us our own fallback key
+   * as its one-time key, and reflect our own messages back as its own. Not
+   * another curve for a device already bound. Not a curve bound to another
+   * device: one curve under two would let one's messages be read as the
+   * other's (sessions and MSG lookups go by curve). An id block only claims
+   * its curve, and a pre-key message its holder built to us proves it: so
+   * `proving` (a PKMSG) may take a curve another device only claimed, never
+   * one a pre-key message proved.
+   */
+  private curveRefusal(
+    id: IdBlock,
+    proving: boolean,
+  ):
+    | "non-canonical-key"
+    | "own-identity"
+    | "identity-curve-mismatch"
+    | "curve-already-bound"
+    | undefined {
+    if (!this.canonical(id)) return "non-canonical-key";
+    if (id.curve25519 === this.account.curve25519_key()) return "own-identity";
+    const known = this.state.devices[id.ed25519];
+    if (known !== undefined && known.curve25519 !== id.curve25519) return "identity-curve-mismatch";
+    const owner = Object.values(this.state.devices).find((d) => d.curve25519 === id.curve25519);
+    if (owner !== undefined && owner.ed25519 !== id.ed25519 && (owner.proven || !proving)) {
+      return "curve-already-bound";
+    }
+    return undefined;
+  }
+
+  /** Whether both keys of `id` are in vodozemac's one spelling; a key it cannot read is not. */
+  private canonical(id: IdBlock): boolean {
+    return (
+      this.ed25519Canonical(id.ed25519) &&
+      this.inSpelling(() => this.olm.canonical_curve25519(id.curve25519), id.curve25519)
+    );
+  }
+
+  /** Whether `key` is an Ed25519 key in vodozemac's one spelling. */
+  private ed25519Canonical(key: string): boolean {
+    return this.inSpelling(() => this.olm.canonical_ed25519(key), key);
+  }
+
+  // Whether `key` is what `canon` spells it; a key vodozemac cannot read is not.
+  private inSpelling(canon: () => string, key: string): boolean {
+    try {
+      return rejecting(canon) === key;
+    } catch (err) {
+      if (!(err instanceof Rejected)) throw err;
+      return false;
+    }
   }
 
   // --- helpers -----------------------------------------------------------
@@ -964,6 +1955,12 @@ export class Engine {
     else delete this.state.sessions[curve];
   }
 
+  /** Every session of `device`, and its re-key with them: nothing is sent to it on them again. */
+  private dropSessions(device: PeerDevice): void {
+    delete this.state.sessions[device.curve25519];
+    delete this.state.rekeying[device.ed25519];
+  }
+
   private addSession(curve: string, pickle: string): void {
     this.state.sessions[curve] = [pickle, ...this.sessionsOf(curve)].slice(
       0,
@@ -971,9 +1968,22 @@ export class Engine {
     );
   }
 
+  /**
+   * Forgets old plaintexts: older than `SENT_MEMORY_MS`, then the oldest past
+   * `SENT_MAX`. A record whose message still has a copy waiting for keys is
+   * kept, whatever its age and however many there are: when that copy
+   * lapses, the record is what says a device has the message (`pending`).
+   */
   private trimSent(): void {
     const cutoff = this.now() - SENT_MEMORY_MS;
-    const fresh = this.state.sent.filter((s) => s.at >= cutoff);
-    this.state.sent = fresh.slice(Math.max(0, fresh.length - SENT_MAX));
+    const queued = new Set(Object.values(this.state.outq).flatMap((q) => q.map((x) => x.msg.id)));
+    const waiting = (s: Sent): boolean => queued.has(s.msg.id);
+    const fresh = this.state.sent.filter((s) => s.at >= cutoff || waiting(s));
+    let excess = fresh.length - SENT_MAX;
+    this.state.sent = fresh.filter((s) => {
+      if (excess <= 0 || waiting(s)) return true;
+      excess--;
+      return false;
+    });
   }
 }

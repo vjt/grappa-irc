@@ -1,15 +1,23 @@
-// issue 2430 — the Olm account cic keeps per (subject, network), with the E2E
-// engine's state for it, sealed under a non-extractable key. The vault and the lock are the two browser services
+// issue 2430 — what cic keeps per (subject, network): this device's Olm
+// account, the identity's master where this device made it, its place in the
+// identity, and the E2E engine's state, sealed under a non-extractable key. The vault and the lock are the two browser services
 // (IndexedDB, Web Locks) jsdom does not have; they are replaced by in-memory
 // twins with the same contract, and everything else is real: the vodozemac
 // binding, and WebCrypto's AES-GCM.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { accountStore } from "../lib/e2e/accountStore";
+import { accountStore, type OwnIdentity, seal } from "../lib/e2e/accountStore";
 import { newState } from "../lib/e2e/engine";
-import { memoryLock, memoryVault } from "./helpers/e2eVault";
+import { certSigText, listSigText } from "../lib/e2e/wire";
+import { type MemoryVault, memoryLock, memoryVault } from "./helpers/e2eVault";
 import { olm } from "./helpers/olm";
 
 const SLOT = "user:0b5e:1";
+
+/** Seals `record` (a string as it is, anything else as JSON) into `slot`, as the store seals one. */
+async function seed(vault: MemoryVault, slot: string, record: unknown): Promise<void> {
+  const plain = typeof record === "string" ? record : JSON.stringify(record);
+  vault.records.set(slot, await seal(await vault.wrappingKey(), slot, plain));
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -159,18 +167,198 @@ describe("accountStore", () => {
     ).toEqual({ keys: 1, pins: { bob: "kept" } });
   });
 
+  it("keeps the master and this device's place in the identity in the same record, sealed, and restores them", async () => {
+    const vault = memoryVault();
+    const store = accountStore(olm(), vault, memoryLock());
+
+    const made = await store.withAccount(SLOT, async (session) => {
+      expect(session.master).toBeNull();
+      expect(session.own).toBeNull();
+      const master = session.newAccount();
+      const device = session.account.ed25519_key();
+      const devices = [device];
+      const own: OwnIdentity = {
+        master: master.ed25519_key(),
+        cert: master.sign(certSigText(1, device)),
+        certVer: 1,
+        list: { ver: 1, devices, sig: master.sign(listSigText(1, devices)) },
+        did: "AaZaARRDyBk",
+      };
+      session.master = master;
+      session.own = own;
+      return { master: master.ed25519_key(), device, own };
+    });
+    const restored = await store.withAccount(SLOT, async ({ account, master, own, created }) => ({
+      created,
+      device: account.ed25519_key(),
+      master: master?.ed25519_key(),
+      // The master restored is the one that signed: it signs the same again.
+      signs: master?.sign(certSigText(1, account.ed25519_key())),
+      own,
+    }));
+
+    expect(restored).toEqual({
+      created: false,
+      device: made.device,
+      master: made.master,
+      signs: made.own.cert,
+      own: made.own,
+    });
+    const sealed = vault.records.get(SLOT);
+    if (sealed === undefined) throw new Error("nothing stored");
+    const bytes = new TextDecoder("latin1").decode(new Uint8Array(sealed.ciphertext));
+    expect(bytes).not.toContain(made.master);
+    expect(bytes).not.toContain(made.own.cert);
+  });
+
+  it("starts over on a record whose place in the identity names no certificate version, and says so", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const vault = memoryVault();
+    const Account = olm().Account;
+    const device = new Account();
+    const master = new Account();
+    const ed25519 = device.ed25519_key();
+    // A place from before it kept the list version its certificate names.
+    const own = {
+      master: master.ed25519_key(),
+      cert: master.sign(certSigText(1, ed25519)),
+      list: { ver: 1, devices: [ed25519], sig: master.sign(listSigText(1, [ed25519])) },
+      did: "AaZaARRDyBk",
+    };
+    await seed(vault, SLOT, {
+      account: device.pickle(),
+      master: master.pickle(),
+      own,
+      state: newState(),
+    });
+
+    const opened = await accountStore(olm(), vault, memoryLock()).withAccount(
+      SLOT,
+      async (session) => ({
+        created: session.created,
+        own: session.own,
+        ed25519: session.account.ed25519_key(),
+      }),
+    );
+
+    expect(opened).toEqual({ created: true, own: null, ed25519: expect.any(String) });
+    expect(opened.ed25519).not.toBe(ed25519);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("starting a new one"),
+      expect.anything(),
+    );
+    device.free();
+    master.free();
+  });
+
+  it("frees every account a session held when it ends: the one it loaded, and each one it made", async () => {
+    const store = accountStore(olm(), memoryVault(), memoryLock());
+    const frees: ReturnType<typeof vi.spyOn>[] = [];
+
+    await store.withAccount(SLOT, async (session) => {
+      frees.push(vi.spyOn(session.account, "free"));
+      const master = session.newAccount();
+      frees.push(vi.spyOn(master, "free"));
+      session.master = master;
+      // A new device account replaces the loaded one: both are the session's.
+      session.account = session.newAccount();
+      frees.push(vi.spyOn(session.account, "free"));
+      // One made and never kept is the session's too.
+      frees.push(vi.spyOn(session.newAccount(), "free"));
+    });
+
+    expect(frees.map((free) => free.mock.calls.length)).toEqual([1, 1, 1, 1]);
+  });
+
+  it.each([
+    ["its master", "master"],
+    ["its device account", "account"],
+  ])(
+    "frees what it already unpickled from a record whose pickle of %s is damaged, and starts over",
+    async (_name, damaged) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const vault = memoryVault();
+      const Account = olm().Account;
+      const device = new Account();
+      const master = new Account();
+      const record = {
+        account: damaged === "account" ? "not a pickle" : device.pickle(),
+        master: damaged === "master" ? "not a pickle" : master.pickle(),
+        own: null,
+        state: newState(),
+      };
+      await seed(vault, SLOT, record);
+      const unpickle = Account.from_pickle.bind(Account);
+      const frees: ReturnType<typeof vi.spyOn>[] = [];
+      vi.spyOn(Account, "from_pickle").mockImplementation((pickle: string) => {
+        const opened = unpickle(pickle);
+        frees.push(vi.spyOn(opened, "free"));
+        return opened;
+      });
+
+      const created = await accountStore(olm(), vault, memoryLock()).withAccount(
+        SLOT,
+        async (session) => session.created,
+      );
+
+      expect(created).toBe(true);
+      expect(warn).toHaveBeenCalledTimes(1);
+      // Whatever opened before the damaged pickle failed was freed, once.
+      expect(frees.map((free) => free.mock.calls.length)).toEqual(frees.map(() => 1));
+      device.free();
+      master.free();
+    },
+  );
+
+  // Both the record a v1 cic stored, and one shaped like v2 around a state
+  // that is not: the state's version alone decides.
+  it.each([
+    ["a v1 record, the format before the identity had devices", false],
+    ["a record whose state is not v2", true],
+  ])("starts over on %s, and says so", async (_name, v2Envelope) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const vault = memoryVault();
+    const store = accountStore(olm(), vault, memoryLock());
+    const old = new (olm().Account)();
+    const v1State = {
+      v: 1,
+      peers: {},
+      pins: { bob: "K" },
+      sessions: {},
+      seen: [],
+      outq: {},
+      keyreqAt: {},
+      rekeyAt: {},
+      sent: [],
+      nextRef: 1,
+      inbox: 7,
+      sas: {},
+    };
+    const envelope = v2Envelope ? { master: null, own: null } : {};
+    await seed(vault, SLOT, { account: old.pickle(), ...envelope, state: v1State });
+
+    const opened = await store.withAccount(SLOT, async ({ account, state, created }) => ({
+      created,
+      ed25519: account.ed25519_key(),
+      state,
+    }));
+
+    expect(opened.created).toBe(true);
+    expect(opened.ed25519).not.toBe(old.ed25519_key());
+    expect(opened.state).toEqual(newState());
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("starting a new one"),
+      expect.anything(),
+    );
+    old.free();
+  });
+
   it("starts over on a record that holds a bare pickle, the format before the state joined it", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const vault = memoryVault();
     const store = accountStore(olm(), vault, memoryLock());
     const old = new (olm().Account)();
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ciphertext = await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(SLOT) },
-      await vault.wrappingKey(),
-      new TextEncoder().encode(old.pickle()),
-    );
-    vault.records.set(SLOT, { iv, ciphertext });
+    await seed(vault, SLOT, old.pickle());
 
     const opened = await store.withAccount(SLOT, async ({ account, created }) => ({
       created,
@@ -188,13 +376,7 @@ describe("accountStore", () => {
     const vault = memoryVault();
     const store = accountStore(olm(), vault, memoryLock());
     const old = new (olm().Account)();
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ciphertext = await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(SLOT) },
-      await vault.wrappingKey(),
-      new TextEncoder().encode(JSON.stringify({ account: old.pickle() })),
-    );
-    vault.records.set(SLOT, { iv, ciphertext });
+    await seed(vault, SLOT, { account: old.pickle(), master: null, own: null });
 
     const opened = await store.withAccount(SLOT, async ({ account, created }) => ({
       created,
@@ -211,15 +393,9 @@ describe("accountStore", () => {
     const vault = memoryVault();
     const store = accountStore(olm(), vault, memoryLock());
     const old = new (olm().Account)();
-    // The state as slice c2 stored it: no `sas`.
-    const { sas: _sas, ...before } = { ...newState(), pins: { bob: "K" }, inbox: 7 };
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ciphertext = await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(SLOT) },
-      await vault.wrappingKey(),
-      new TextEncoder().encode(JSON.stringify({ account: old.pickle(), state: before })),
-    );
-    vault.records.set(SLOT, { iv, ciphertext });
+    // A v2 state from before `listAnsweredAt`.
+    const { listAnsweredAt: _gone, ...before } = { ...newState(), pins: { bob: "K" }, inbox: 7 };
+    await seed(vault, SLOT, { account: old.pickle(), master: null, own: null, state: before });
 
     const opened = await store.withAccount(SLOT, async ({ account, state, created }) => ({
       created,

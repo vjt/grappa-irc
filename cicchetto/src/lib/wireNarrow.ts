@@ -16,6 +16,9 @@ import {
   S_AdminEventsWireEvent,
   S_AdminOverviewWireT,
   S_ChannelDirectoryWireIndexPayload,
+  S_E2eKeysWireDevice,
+  S_E2eKeysWireDeviceList,
+  S_E2eKeysWireDevices,
   S_E2eKeysWireStatus,
   S_E2ePairingWireMessageResponse,
   S_E2ePairingWireMessagesResponse,
@@ -49,6 +52,9 @@ import type {
   AccountsAdminWireT,
   AdminOverviewWireT,
   ChannelDirectoryWireIndexPayload,
+  E2eKeysWireDevice,
+  E2eKeysWireDeviceList,
+  E2eKeysWireDevices,
   E2eKeysWireStatus,
   E2ePairingWireMessageResponse,
   E2ePairingWireMessagesResponse,
@@ -931,12 +937,27 @@ export function narrowDirectoryPageResponse(raw: unknown): ChannelDirectoryWireI
   return narrowRest(S_ChannelDirectoryWireIndexPayload, raw, "channel directory page");
 }
 
-/** `GET` / `POST /networks/:slug/e2e/keys` (issue 2430): what the key bundle holds. */
+/** `POST /networks/:slug/e2e/devices` (issue 2430): the device with its derived `did`. */
+export function narrowE2eDevice(raw: unknown): E2eKeysWireDevice {
+  return narrowRest(S_E2eKeysWireDevice, raw, "e2e device");
+}
+
+/** `GET /networks/:slug/e2e/devices`. */
+export function narrowE2eDevices(raw: unknown): E2eKeysWireDevices {
+  return narrowRest(S_E2eKeysWireDevices, raw, "e2e device list");
+}
+
+/** `GET` / `PUT /networks/:slug/e2e/list`: the master's signed device list. */
+export function narrowE2eList(raw: unknown): E2eKeysWireDeviceList {
+  return narrowRest(S_E2eKeysWireDeviceList, raw, "e2e signed list");
+}
+
+/** `GET` / `POST /networks/:slug/e2e/devices/:did/keys` (issue 2430): what the key bundle holds. */
 export function narrowE2eKeysStatus(raw: unknown): E2eKeysWireStatus {
   return narrowRest(S_E2eKeysWireStatus, raw, "key bundle status");
 }
 
-/** `GET /networks/:slug/e2e/inbox` (issue 2430): a page of the offline queue. */
+/** `GET /networks/:slug/e2e/devices/:did/inbox` (issue 2430): a page of the offline queue. */
 export function narrowE2eInboxResponse(raw: unknown): SessionWireE2eInboxPayload {
   return narrowRest(S_SessionWireE2eInboxPayload, raw, "encrypted inbox page");
 }

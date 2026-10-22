@@ -1,40 +1,40 @@
 // issue 2430 — the encrypted chats as the UI sees them: the glue between
-// grappa's doors, the E2E client and the device's stores. REST is mocked at
-// the api module (the boundary) and routed to a fake grappa
-// (`helpers/e2eGrappa.ts`); the engine, the account store (made by the real
-// bundle sync) and the chat store are real, over in-memory twins of
-// IndexedDB and Web Locks. The peer, Bob, is a bare E2E client on the same
-// fake grappa.
+// this device's doors on grappa, the E2E client and the device's stores.
+// REST is mocked at the api module (the boundary) and routed to a fake
+// grappa v2 (`helpers/e2eGrappa.ts`), whose bearer is the subject's nick; the
+// engine, the account store (made by the real identity sync) and the chat
+// store are real, over in-memory twins of IndexedDB and Web Locks. The peer,
+// Bob, is a bare E2E client on the same fake grappa.
 //
 // The store is a page singleton, so every test gets a network of its own
 // (its own slug and slot) and a fresh grappa.
 import { createRoot, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Engine, type Outbound } from "../lib/e2e/engine";
+import type { OwnIdentity } from "../lib/e2e/accountStore";
+import { IdentityElsewhereError } from "../lib/e2e/client";
+import { Engine } from "../lib/e2e/engine";
 import { sendLog, subjectKey } from "../lib/e2e/orders";
 import { DEFAULT_ISUPPORT, seedIsupport } from "../lib/isupport";
-import { Grappa, publishBundle } from "./helpers/e2eGrappa";
+import { FRAME_BUDGET_BASE } from "./helpers/e2eDevices";
+import { Grappa, routeApi } from "./helpers/e2eGrappa";
 import { memoryLock, memoryVault } from "./helpers/e2eVault";
 import { olm } from "./helpers/olm";
 
-vi.mock("../lib/api", () => {
-  class ApiError extends Error {
-    readonly status: number;
-    readonly code: string;
-    constructor(status: number, code: string) {
-      super(`${status} ${code}`);
-      this.status = status;
-      this.code = code;
-    }
-  }
+vi.mock("../lib/api", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../lib/api")>();
   return {
-    ApiError,
+    ApiError: real.ApiError,
+    registerE2eDevice: vi.fn(),
+    listE2eDevices: vi.fn(),
+    removeE2eDevice: vi.fn(),
+    getE2eList: vi.fn(),
+    putE2eList: vi.fn(),
+    getE2eDeviceKeys: vi.fn(),
+    uploadE2eDeviceKeys: vi.fn(),
+    listE2eDeviceInbox: vi.fn(),
+    ackE2eDeviceInbox: vi.fn(),
     sendE2e: vi.fn(),
-    listE2eInbox: vi.fn(),
-    ackE2eInbox: vi.fn(),
     clearE2eKeys: vi.fn(),
-    getE2eKeys: vi.fn(),
-    uploadE2eKeys: vi.fn(),
   };
 });
 
@@ -76,22 +76,18 @@ const { e2eClient } = await import("../lib/e2e/client");
 const { OUTQ_TTL_MS } = await import("../lib/e2e/engine");
 const { SAS_TIMEOUT_MS } = await import("../lib/e2e/sas");
 const { browserE2e } = await import("../lib/e2e/browser");
-const { accountSlot } = await import("../lib/e2e/bundleSync");
+const { accountSlot, replaceIdentity, syncIdentity } = await import("../lib/e2e/identity");
 const chats = await import("../lib/encryptedChats");
 
 const ME = { kind: "user", id: "0b5e" };
-/** The send door's refusals as grappa's FallbackController answers them: status, token. */
-const STATUS: Record<string, number> = {
-  "rate-limited": 429,
-  "too-large": 413,
-  "too-late": 422,
-  refused: 400,
-};
-const CODE: Record<string, string> = { "too-late": "too_late" };
 
 let grappa: Grappa;
 let net: Net;
 let netCount = 0;
+
+/** The network's 005 as grappa published it: its line size known, so messages can be sized. */
+const sized = (over: Partial<typeof DEFAULT_ISUPPORT>) =>
+  seedIsupport(net.id, { ...DEFAULT_ISUPPORT, frameBudgetBase: FRAME_BUDGET_BASE, ...over });
 
 beforeEach(() => {
   grappa = new Grappa();
@@ -99,49 +95,43 @@ beforeEach(() => {
   net = { id: netCount, slug: `net${netCount}`, nick: "alice" };
   setList([net]);
   setMe(ME);
-  setBearer("tok");
-  const door = () => grappa.door(net.nick);
-  vi.mocked(api.listE2eInbox).mockImplementation(async (_t, slug, after) => ({
-    messages: (await door().inbox(after)).map((m) => ({
-      ...m,
-      kind: "e2e_message" as const,
-      network: slug,
-      // The fake bouncer does not model devices; the wire requires both dids.
-      from_did: "If4x36FUomE",
-      to_did: "Qm9iRGV2aWM",
-    })),
-  }));
-  vi.mocked(api.ackE2eInbox).mockImplementation((_t, _s, ids) => door().ack(ids));
-  vi.mocked(api.sendE2e).mockImplementation(async (_t, _s, out) => {
-    const answer = await door().send(out as Outbound);
-    if ("refused" in answer) {
-      throw new api.ApiError(STATUS[answer.refused] ?? 500, CODE[answer.refused] ?? answer.refused);
-    }
-    return answer;
-  });
-  vi.mocked(api.clearE2eKeys).mockImplementation(async () => {
-    grappa.bundles.delete(net.nick);
-  });
-  vi.mocked(api.getE2eKeys).mockImplementation(async () => grappa.held(net.nick));
-  vi.mocked(api.uploadE2eKeys).mockImplementation(async (_t, _s, upload) => {
-    grappa.upload(net.nick, upload);
-    return grappa.held(net.nick);
-  });
+  // The fake grappa's bearer is the subject's nick.
+  setBearer(net.nick);
+  sized({});
+  routeApi(api, () => grappa);
 });
 
 afterEach(() => {
   vi.useRealTimers();
   vi.resetAllMocks();
+  vi.restoreAllMocks();
 });
 
 const slot = () => accountSlot(ME, net.id);
 
-/** Bob: a bare E2E client with his bundle on grappa. */
+/** This browser's place in alice's identity, as its record holds it. */
+async function own(): Promise<OwnIdentity> {
+  const { accounts } = await browserE2e();
+  const found = await accounts.withAccount(slot(), async (session) => session.own);
+  if (found === null) throw new Error("no identity here");
+  return found;
+}
+
+/** What grappa holds for this browser's device: its key bundle, and its inbox. */
+async function held() {
+  const { did } = await own();
+  return {
+    keys: await grappa.api.getE2eDeviceKeys(net.nick, net.slug, did),
+    inbox: (await grappa.api.listE2eDeviceInbox(net.nick, net.slug, did, 0)).messages,
+  };
+}
+
+/** Bob: a bare E2E client, his identity made by the real sync. */
 async function bob() {
   const lock = memoryLock();
   const accounts = accountStore(olm(), memoryVault(), lock);
   const store = chatStore(memoryVault(), lock);
-  await publishBundle(grappa, "Bob", accounts, "bob-slot");
+  expect(await syncIdentity(accounts, "Bob", "bob-slot", net.slug)).toBe("ready");
   const client = e2eClient(olm(), accounts, store, Date.now, {
     page: "bob-page",
     secrets: new Map(),
@@ -150,21 +140,23 @@ async function bob() {
   const ctx = {
     slot: "bob-slot",
     ownNick: "Bob",
-    door: grappa.door("Bob"),
+    frameBudgetBase: FRAME_BUDGET_BASE,
+    door: (did: string) => grappa.door("Bob", did),
     orders: () => "not-sent" as const,
   };
   const bodies = async () =>
     (await store.rows("bob-slot", net.nick)).flatMap((r) => (r.kind === "in" ? [r.body] : []));
-  const fingerprint = async () => (await client.identity(ctx, [])).own;
-  // An inner message of Bob's own making, on his session: a bot's CHAL.
+  const master = async () => (await client.identity(ctx, [])).own;
+  // An inner message of Bob's own making, on his sessions: a bot's CHAL.
   const inject = (inner: Record<string, unknown>) =>
-    accounts.withAccount("bob-slot", async ({ account, state }) => {
-      const engine = new Engine(olm(), account, state, "Bob", Date.now);
-      for (const out of engine.send(net.nick, inner, "chal", null).outbound) {
-        await ctx.door.send(out);
+    accounts.withAccount("bob-slot", async ({ account, own: place, state }) => {
+      if (place === null) throw new Error("Bob holds no identity");
+      const engine = new Engine(olm(), account, place, state, "Bob", FRAME_BUDGET_BASE, Date.now);
+      for (const out of engine.send(net.nick, inner, "chal", null, null).outbound) {
+        await ctx.door(place.did).send(out);
       }
     });
-  return { client, ctx, bodies, fingerprint, inject };
+  return { client, ctx, bodies, master, inject };
 }
 
 const outStates = () =>
@@ -173,17 +165,20 @@ const outStates = () =>
   );
 
 describe("encrypted chats", () => {
-  it("a slot with no account syncs the key bundle first (only the sync makes one), then drains", async () => {
+  it("a slot with no account makes its identity first (only the sync makes one), then drains this device's inbox", async () => {
     await chats.drainE2e(net.slug);
 
-    expect(api.clearE2eKeys).toHaveBeenCalledTimes(1);
-    expect(grappa.held(net.nick).fallback).toBe(true);
-    expect(api.listE2eInbox).toHaveBeenCalled();
+    expect(api.putE2eList).toHaveBeenCalledTimes(1);
+    expect(api.clearE2eKeys).not.toHaveBeenCalled();
+    const { did } = await own();
+    expect((await held()).keys.fallback).toBe(true);
+    expect(vi.mocked(api.listE2eDeviceInbox).mock.calls.map((call) => call[2])).toEqual([did]);
+    expect(chats.identityElsewhere(net.slug)).toBe(false);
   });
 
   it("a message from Bob lands in his chat, unread, the inbox empties, and the spent key is replaced", async () => {
     await chats.drainE2e(net.slug);
-    const full = grappa.held(net.nick).one_time_keys;
+    const full = (await held()).keys.one_time_keys;
     const b = await bob();
 
     await b.client.send(b.ctx, net.nick, "ciao alice");
@@ -191,14 +186,19 @@ describe("encrypted chats", () => {
     await chats.drainE2e(net.slug);
 
     expect(chats.encryptedChatsFor(net.slug)).toEqual([{ key: "bob", nick: "Bob", unread: 1 }]);
-    expect(grappa.inboxes.get(net.nick)).toEqual([]);
-    expect(grappa.held(net.nick).one_time_keys).toBe(full);
+    expect((await held()).inbox).toEqual([]);
+    expect((await held()).keys.one_time_keys).toBe(full);
 
     await chats.loadEncryptedChat(net.slug, "bob");
     expect(chats.encryptedRows(net.slug, "Bob")?.map((r) => r.kind === "in" && r.body)).toEqual([
       "ciao alice",
     ]);
-    // Never pinned by hand: the key is trusted on first use, not verified.
+    // Never pinned by hand: the master is trusted on first use, not verified.
+    expect(chats.encryptedTrust(net.slug, "Bob")).toEqual({
+      master: await b.master(),
+      verified: false,
+      devices: 1,
+    });
     expect(
       chats.trustOf(
         chats.encryptedRows(net.slug, "Bob") ?? [],
@@ -222,7 +222,19 @@ describe("encrypted chats", () => {
     expect(await b.bodies()).toEqual(["ciao bob"]);
   });
 
-  it.each(["rate-limited", "too-large", "too-late", "refused"] as const)(
+  it("a message while grappa has published no line size for the network fails at once, and asks for nothing", async () => {
+    await chats.drainE2e(net.slug);
+    await bob();
+    await chats.loadEncryptedChat(net.slug, "Bob");
+    sized({ frameBudgetBase: null });
+
+    await chats.sendEncrypted(net.slug, "Bob", "too soon");
+
+    expect(outStates()).toEqual([["too soon", "failed", "no-budget"]]);
+    expect(api.sendE2e).not.toHaveBeenCalled();
+  });
+
+  it.each(["rate-limited", "too-large", "too-late", "unknown-device", "refused"] as const)(
     "a send door refusal (%s) marks the message failed with its reason",
     async (reason) => {
       vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -258,7 +270,7 @@ describe("encrypted chats", () => {
       expires_at: Math.floor(Date.now() / 1000) + 15,
     });
     const acks = () =>
-      vi.mocked(api.sendE2e).mock.calls.filter(([, , out]) => out.expires_at !== undefined);
+      vi.mocked(api.sendE2e).mock.calls.filter(([, , out]) => out.expiresAt !== null);
 
     async function talking() {
       await chats.drainE2e(net.slug);
@@ -266,26 +278,32 @@ describe("encrypted chats", () => {
       await b.client.send(b.ctx, net.nick, "ciao alice");
       await b.client.drain(b.ctx);
       await chats.drainE2e(net.slug);
-      await chats.pinEncryptedKey(net.slug, "Bob", await b.fingerprint(), true);
+      await chats.pinEncryptedKey(net.slug, "Bob", await b.master(), true);
       return b;
     }
     const sent = (subject: string) =>
       sendLog.record({ subject, slug: net.slug, target: "#grappa", body: LINE, at: Date.now() });
 
-    it("is ACKed with its deadline when this device sent the line on that network", async () => {
+    it("is ACKed with its deadline, to the device that asked, when this device sent the line on that network", async () => {
       const b = await talking();
-      seedIsupport(net.id, { ...DEFAULT_ISUPPORT, network: "AzzurraNet" });
+      sized({ network: "AzzurraNet" });
       await sent(subjectKey(ME));
       const asked = await chal();
 
       await b.inject(asked);
       await chats.drainE2e(net.slug);
 
+      const bobDid = (await grappa.api.listE2eDevices("Bob", net.slug))[0]?.did;
       expect(acks()).toEqual([
         [
-          "tok",
+          net.nick,
           net.slug,
-          expect.objectContaining({ priority: "control", expires_at: asked.expires_at }),
+          expect.objectContaining({
+            priority: "control",
+            expiresAt: asked.expires_at,
+            from: (await own()).did,
+            to: bobDid,
+          }),
         ],
       ]);
     });
@@ -293,20 +311,20 @@ describe("encrypted chats", () => {
     it("goes unanswered on a network that never said its name (fail closed)", async () => {
       vi.spyOn(console, "warn").mockImplementation(() => undefined);
       const b = await talking();
-      seedIsupport(net.id, { ...DEFAULT_ISUPPORT, network: null });
+      sized({ network: null });
       await sent(subjectKey(ME));
 
       await b.inject(await chal());
       await chats.drainE2e(net.slug);
 
       expect(acks()).toEqual([]);
-      expect(grappa.inboxes.get(net.nick)).toEqual([]);
+      expect((await held()).inbox).toEqual([]);
     });
 
     it("goes unanswered for a line another login in this browser sent", async () => {
       vi.spyOn(console, "warn").mockImplementation(() => undefined);
       const b = await talking();
-      seedIsupport(net.id, { ...DEFAULT_ISUPPORT, network: "AzzurraNet" });
+      sized({ network: "AzzurraNet" });
       await sent(subjectKey({ kind: "user", id: "5ca1ab1e" }));
 
       await b.inject(await chal());
@@ -336,36 +354,58 @@ describe("encrypted chats", () => {
     },
   );
 
-  it("pins Bob's key by hand: the pin is shown and the badge reads verified", async () => {
+  it("pins Bob's master by hand: the pin is shown and the badge reads verified", async () => {
     await chats.drainE2e(net.slug);
     const b = await bob();
     await chats.loadEncryptedChat(net.slug, "Bob");
 
-    expect(await chats.pinEncryptedKey(net.slug, "Bob", await b.fingerprint(), true)).toBe(
-      "pinned",
-    );
+    expect(await chats.pinEncryptedKey(net.slug, "Bob", await b.master(), true)).toBe("pinned");
 
     const rows = chats.encryptedRows(net.slug, "Bob") ?? [];
     expect(rows.map((r) => r.kind)).toEqual(["pinned"]);
     expect(chats.encryptedTrust(net.slug, "Bob")).toEqual({
-      ed25519: await b.fingerprint(),
+      master: await b.master(),
       verified: true,
+      devices: 0,
     });
     expect(chats.trustOf(rows, chats.encryptedTrust(net.slug, "Bob"))).toBe("verified");
   });
 
-  it("takes a key unverified: the chat says so, and the badge reads not verified", async () => {
+  it("takes a master unverified: the chat says so, and the badge reads not verified", async () => {
     await chats.drainE2e(net.slug);
     const b = await bob();
     await chats.loadEncryptedChat(net.slug, "Bob");
 
-    expect(await chats.pinEncryptedKey(net.slug, "Bob", await b.fingerprint(), false)).toBe(
-      "pinned",
-    );
+    expect(await chats.pinEncryptedKey(net.slug, "Bob", await b.master(), false)).toBe("pinned");
 
     const rows = chats.encryptedRows(net.slug, "Bob") ?? [];
     expect(rows.map((r) => r.kind)).toEqual(["accepted"]);
     expect(chats.trustOf(rows, chats.encryptedTrust(net.slug, "Bob"))).toBe("unverified");
+  });
+
+  it("a pin whose list ask waits for the network's line size goes out on the next periodic tick", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const dispose = createRoot((dispose) => {
+      chats.mountEncryptedChats();
+      return dispose;
+    });
+    try {
+      await chats.drainE2e(net.slug);
+      const b = await bob();
+      sized({ frameBudgetBase: null });
+
+      expect(await chats.pinEncryptedKey(net.slug, "Bob", await b.master(), true)).toBe("pinned");
+      expect(api.sendE2e).not.toHaveBeenCalled();
+
+      sized({});
+      vi.advanceTimersByTime(chats.TICK_MS);
+
+      await vi.waitFor(() =>
+        expect(vi.mocked(api.sendE2e).mock.calls.map(([, , out]) => out.verb)).toEqual(["keyreq"]),
+      );
+    } finally {
+      dispose();
+    }
   });
 
   it("compares emoji with Bob: the request, the same 7 emoji on both sides, the match, the badge", async () => {
@@ -401,20 +441,20 @@ describe("encrypted chats", () => {
     expect(chats.trustOf(rows, chats.encryptedTrust(net.slug, "Bob"))).toBe("verified");
   });
 
-  it("refuses a pin that is not a key, or is our own, and writes nothing", async () => {
+  it("refuses a pin that is not a key, or is our own master, and writes nothing", async () => {
     await chats.drainE2e(net.slug);
     await chats.loadEncryptedChat(net.slug, "Bob");
-    const own = chats.ownKey(net.slug);
-    expect(own).toMatch(/^[A-Za-z0-9+/]{43}$/);
+    const ownKey = chats.ownKey(net.slug);
+    expect(ownKey).toBe((await own()).master);
 
     expect(await chats.pinEncryptedKey(net.slug, "Bob", "not a key", true)).toBe("bad-key");
-    expect(await chats.pinEncryptedKey(net.slug, "Bob", own ?? "", true)).toBe("own-key");
+    expect(await chats.pinEncryptedKey(net.slug, "Bob", ownKey ?? "", true)).toBe("own-key");
     expect(chats.encryptedRows(net.slug, "Bob")).toEqual([]);
   });
 
   it("drains asked for while one runs take the inbox once more after it, not once each", async () => {
     await chats.drainE2e(net.slug);
-    vi.mocked(api.listE2eInbox).mockClear();
+    vi.mocked(api.listE2eDeviceInbox).mockClear();
 
     await Promise.all([
       chats.drainE2e(net.slug),
@@ -423,7 +463,7 @@ describe("encrypted chats", () => {
     ]);
 
     // One run (one empty page) and the one more it owes.
-    expect(api.listE2eInbox).toHaveBeenCalledTimes(2);
+    expect(api.listE2eDeviceInbox).toHaveBeenCalledTimes(2);
   });
 
   it("reads a chat again when another tab says it changed it, and ignores another identity's", async () => {
@@ -457,13 +497,102 @@ describe("encrypted chats", () => {
     try {
       await chats.drainE2e(net.slug);
       await chats.loadEncryptedChat(net.slug, "Bob");
-      await chats.sendEncrypted(net.slug, "Bob", "anyone?"); // no bundle: no KEYS
+      await chats.sendEncrypted(net.slug, "Bob", "anyone?"); // Bob holds no identity: no KEYS
       expect(outStates()).toEqual([["anyone?", "queued", null]]);
 
       vi.setSystemTime(Date.now() + OUTQ_TTL_MS + 1);
       vi.advanceTimersByTime(chats.TICK_MS);
 
       await vi.waitFor(() => expect(outStates()).toEqual([["anyone?", "failed", "keys-timeout"]]));
+    } finally {
+      dispose();
+    }
+  });
+
+  it("a network that left the list leaves the tick, and the networks still there are ticked", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const dispose = createRoot((dispose) => {
+      chats.mountEncryptedChats();
+      return dispose;
+    });
+    const warn = vi.spyOn(console, "warn");
+    try {
+      // Something waits on the clock on a network that then goes away.
+      const gone = net;
+      await chats.drainE2e(gone.slug);
+      await chats.sendEncrypted(gone.slug, "Bob", "into the void");
+      // Another network: a grappa identity of its own.
+      grappa = new Grappa();
+      netCount += 1;
+      net = { id: netCount, slug: `net${netCount}`, nick: "alice" };
+      sized({});
+      setList([net]);
+      await chats.drainE2e(net.slug);
+      await chats.loadEncryptedChat(net.slug, "Bob");
+      await chats.sendEncrypted(net.slug, "Bob", "anyone?");
+
+      vi.setSystemTime(Date.now() + OUTQ_TTL_MS + 1);
+      vi.advanceTimersByTime(chats.TICK_MS);
+
+      await vi.waitFor(() => expect(outStates()).toEqual([["anyone?", "failed", "keys-timeout"]]));
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("a network whose tick fails is logged and ticked again later, and the networks after it are ticked", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    // Two networks at once, each with its own grappa.
+    const first = net;
+    const firstGrappa = grappa;
+    const secondGrappa = new Grappa();
+    netCount += 1;
+    const second = { id: netCount, slug: `net${netCount}`, nick: "alice" };
+    routeApi(api, (slug) => (slug === first.slug ? firstGrappa : secondGrappa));
+    seedIsupport(second.id, { ...DEFAULT_ISUPPORT, frameBudgetBase: FRAME_BUDGET_BASE });
+    setList([first, second]);
+    const dispose = createRoot((dispose) => {
+      chats.mountEncryptedChats();
+      return dispose;
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await chats.drainE2e(first.slug);
+      await chats.drainE2e(second.slug);
+      await chats.sendEncrypted(first.slug, "Bob", "first");
+      await chats.loadEncryptedChat(second.slug, "Bob");
+      await chats.sendEncrypted(second.slug, "Bob", "second");
+      // The first network's chat store write fails this once.
+      const { chats: store } = await browserE2e();
+      const apply = store.apply.bind(store);
+      const broken = new Error("the chat store is busy");
+      const failing = vi.spyOn(store, "apply").mockImplementation(async (slot, changes) => {
+        if (slot === accountSlot(ME, first.id)) throw broken;
+        return apply(slot, changes);
+      });
+
+      vi.setSystemTime(Date.now() + OUTQ_TTL_MS + 1);
+      vi.advanceTimersByTime(chats.TICK_MS);
+
+      net = second;
+      await vi.waitFor(() => expect(outStates()).toEqual([["second", "failed", "keys-timeout"]]));
+      expect(warn).toHaveBeenCalledWith(
+        `[e2e] could not check what waits on ${first.slug}`,
+        broken,
+      );
+
+      // Still waiting: the next tick takes it, to its end (it tells the other tabs last).
+      failing.mockRestore();
+      const told: { slug: string }[] = [];
+      const tabs = new BroadcastChannel("grappa-e2e-chats");
+      tabs.addEventListener("message", (event) => told.push(event.data));
+      net = first;
+      await chats.loadEncryptedChat(first.slug, "Bob");
+      vi.advanceTimersByTime(chats.TICK_MS);
+      await vi.waitFor(() => expect(told.map((m) => m.slug)).toContain(first.slug));
+      tabs.close();
+      expect(outStates()).toEqual([["first", "failed", "keys-timeout"]]);
     } finally {
       dispose();
     }
@@ -519,7 +648,8 @@ describe("encrypted chats", () => {
         {
           slot: slot(),
           ownNick: net.nick,
-          door: grappa.door(net.nick),
+          frameBudgetBase: FRAME_BUDGET_BASE,
+          door: (did) => grappa.door(net.nick, did),
           orders: () => "not-sent" as const,
         },
         "Bob",
@@ -540,12 +670,12 @@ describe("encrypted chats", () => {
   });
 
   it("on mount, drains the inbox of each network as the list brings it, once per login", async () => {
-    await chats.drainE2e(net.slug); // the account
+    await chats.drainE2e(net.slug); // the identity
     const b = await bob();
     await b.client.send(b.ctx, net.nick, "while you were away");
     await b.client.drain(b.ctx);
     setList(undefined);
-    vi.mocked(api.listE2eInbox).mockClear();
+    vi.mocked(api.listE2eDeviceInbox).mockClear();
 
     const dispose = createRoot((dispose) => {
       chats.mountEncryptedChats();
@@ -556,10 +686,10 @@ describe("encrypted chats", () => {
       await vi.waitFor(() =>
         expect(chats.encryptedChatsFor(net.slug)).toEqual([{ key: "bob", nick: "Bob", unread: 1 }]),
       );
-      const drains = vi.mocked(api.listE2eInbox).mock.calls.length;
+      const drains = vi.mocked(api.listE2eDeviceInbox).mock.calls.length;
       setList([{ ...net }]);
       await Promise.resolve();
-      expect(vi.mocked(api.listE2eInbox).mock.calls.length).toBe(drains);
+      expect(vi.mocked(api.listE2eDeviceInbox).mock.calls.length).toBe(drains);
     } finally {
       dispose();
     }
@@ -611,8 +741,193 @@ describe("encrypted chats", () => {
   });
 });
 
+// An identity is never replaced silently (vjt 6344779758): a browser that
+// holds none of the identity grappa holds reads "elsewhere", runs nothing,
+// writes nothing, and starts a new one only when the user says so.
+describe("encrypted chats, an identity held elsewhere", () => {
+  /** Another browser of alice's made the identity on this network first. */
+  async function madeElsewhere(): Promise<void> {
+    const other = accountStore(olm(), memoryVault(), memoryLock());
+    expect(await syncIdentity(other, net.nick, "another-browser", net.slug)).toBe("ready");
+    vi.mocked(api.putE2eList).mockClear();
+    vi.mocked(api.registerE2eDevice).mockClear();
+  }
+
+  it("reads elsewhere, writes nothing here or on grappa, and runs nothing more on the network", async () => {
+    await madeElsewhere();
+    const before = await grappa.api.getE2eList(net.nick, net.slug);
+
+    await chats.drainE2e(net.slug);
+
+    expect(chats.identityElsewhere(net.slug)).toBe(true);
+    expect(await grappa.api.getE2eList(net.nick, net.slug)).toEqual(before);
+    expect(api.registerE2eDevice).not.toHaveBeenCalled();
+    expect(api.putE2eList).not.toHaveBeenCalled();
+    expect(api.clearE2eKeys).not.toHaveBeenCalled();
+
+    // Every later operation stops at the flag: not one more look at grappa.
+    vi.mocked(api.getE2eList).mockClear();
+    await chats.drainE2e(net.slug);
+    await expect(chats.sendEncrypted(net.slug, "Bob", "hi")).rejects.toBeInstanceOf(
+      IdentityElsewhereError,
+    );
+    expect(api.getE2eList).not.toHaveBeenCalled();
+    expect(api.sendE2e).not.toHaveBeenCalled();
+    // Nothing was stored for the slot: a look now finds no record.
+    const { accounts } = await browserE2e();
+    expect(await accounts.withAccount(slot(), async (session) => session.created)).toBe(true);
+  });
+
+  it("a record that holds no identity (a new one failed after grappa's was deleted) reads elsewhere, and sends nothing", async () => {
+    await chats.drainE2e(net.slug);
+    const { accounts } = await browserE2e();
+    await accounts.withAccount(slot(), async (session) => {
+      session.master = null;
+      session.own = null;
+    });
+    vi.mocked(api.listE2eDeviceInbox).mockClear();
+
+    await chats.drainE2e(net.slug);
+
+    expect(chats.identityElsewhere(net.slug)).toBe(true);
+    expect(api.listE2eDeviceInbox).not.toHaveBeenCalled();
+    expect(api.sendE2e).not.toHaveBeenCalled();
+  });
+
+  it("a drop push on a network held elsewhere is no failure: the account's other devices send them", async () => {
+    const warn = vi.spyOn(console, "warn");
+    chats.identitySynced(net.slug, "elsewhere");
+
+    await expect(
+      chats.encryptedSendDropped(net.slug, "c29tZW9uZS1lbHNl", "late"),
+    ).resolves.toBeUndefined();
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("takes what the page's identity sync found, both ways", () => {
+    chats.identitySynced(net.slug, "elsewhere");
+    expect(chats.identityElsewhere(net.slug)).toBe(true);
+
+    chats.identitySynced(net.slug, "ready");
+    expect(chats.identityElsewhere(net.slug)).toBe(false);
+  });
+
+  it("a new identity started here on the user's word replaces the one grappa held, and the network runs again", async () => {
+    await madeElsewhere();
+    const old = await grappa.api.getE2eList(net.nick, net.slug);
+    await chats.drainE2e(net.slug);
+    await chats.loadEncryptedChat(net.slug, "Bob");
+    expect(chats.identityElsewhere(net.slug)).toBe(true);
+
+    await chats.replaceEncryptedIdentity(net.slug);
+
+    expect(chats.identityElsewhere(net.slug)).toBe(false);
+    expect(api.clearE2eKeys).toHaveBeenCalledTimes(1);
+    const now = await grappa.api.getE2eList(net.nick, net.slug);
+    expect(now?.master).toBe((await own()).master);
+    expect(now?.master).not.toBe(old?.master);
+    // The window shown reads the new identity.
+    expect(chats.ownKey(net.slug)).toBe((await own()).master);
+    const b = await bob();
+    await b.client.send(b.ctx, net.nick, "welcome back");
+    await b.client.drain(b.ctx);
+    await chats.drainE2e(net.slug);
+    expect(chats.encryptedRows(net.slug, "Bob")?.map((r) => r.kind === "in" && r.body)).toEqual([
+      "welcome back",
+    ]);
+  });
+
+  // The flag is worked out again on evidence, never on a clock: grappa can
+  // change under a page that has it set, or clear, by another tab or device.
+  describe("worked out again", () => {
+    /** Another browser of alice's starts a new identity over the one grappa holds: this device is gone from grappa. */
+    async function replacedElsewhere() {
+      const other = accountStore(olm(), memoryVault(), memoryLock());
+      await replaceIdentity(other, net.nick, "another-browser", net.slug);
+      vi.mocked(api.putE2eList).mockClear();
+      vi.mocked(api.registerE2eDevice).mockClear();
+      vi.mocked(api.clearE2eKeys).mockClear();
+      return grappa.api.getE2eList(net.nick, net.slug);
+    }
+
+    /** Another tab of this browser starts a new identity over the one held elsewhere, in the store both tabs share. */
+    async function replacedInAnotherTab() {
+      const { accounts } = await browserE2e();
+      await replaceIdentity(accounts, net.nick, slot(), net.slug);
+      vi.mocked(api.clearE2eKeys).mockClear();
+      return grappa.api.getE2eList(net.nick, net.slug);
+    }
+
+    it("clears when another tab of this browser says it changed the network: the new identity it started is this tab's too", async () => {
+      await madeElsewhere();
+      await chats.drainE2e(net.slug);
+      expect(chats.identityElsewhere(net.slug)).toBe(true);
+      const made = await replacedInAnotherTab();
+      const other = new BroadcastChannel("grappa-e2e-chats");
+
+      try {
+        other.postMessage({ slug: net.slug, slot: slot(), chats: [] });
+        await vi.waitFor(() => expect(chats.identityElsewhere(net.slug)).toBe(false));
+      } finally {
+        other.close();
+      }
+
+      expect(made?.master).toBe((await own()).master);
+      expect(await grappa.api.getE2eList(net.nick, net.slug)).toEqual(made);
+      expect(api.clearE2eKeys).not.toHaveBeenCalled();
+    });
+
+    it("a new identity confirmed on a flag gone stale deletes nothing: another tab of this browser holds the identity grappa lists", async () => {
+      await madeElsewhere();
+      await chats.drainE2e(net.slug);
+      expect(chats.identityElsewhere(net.slug)).toBe(true);
+      // This tab never hears of it.
+      const made = await replacedInAnotherTab();
+
+      await chats.replaceEncryptedIdentity(net.slug);
+
+      expect(api.clearE2eKeys).not.toHaveBeenCalled();
+      expect(chats.identityElsewhere(net.slug)).toBe(false);
+      expect(await grappa.api.getE2eList(net.nick, net.slug)).toEqual(made);
+      expect(made?.master).toBe((await own()).master);
+    });
+
+    it("sets on the first 404 from this device's doors: grappa holds the device no more, and nothing is written", async () => {
+      await chats.drainE2e(net.slug);
+      expect(chats.identityElsewhere(net.slug)).toBe(false);
+      const made = await replacedElsewhere();
+
+      await chats.drainE2e(net.slug);
+
+      expect(chats.identityElsewhere(net.slug)).toBe(true);
+      expect(await grappa.api.getE2eList(net.nick, net.slug)).toEqual(made);
+      expect(api.registerE2eDevice).not.toHaveBeenCalled();
+      expect(api.putE2eList).not.toHaveBeenCalled();
+      expect(api.clearE2eKeys).not.toHaveBeenCalled();
+    });
+
+    it("sets on the first send grappa refuses as from a device it does not know", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      await chats.drainE2e(net.slug);
+      await replacedElsewhere();
+      vi.mocked(api.listE2eDeviceInbox).mockClear();
+
+      await chats.sendEncrypted(net.slug, "Bob", "anyone?");
+
+      // The KEYREQ the message waits behind, refused: no inbox was read.
+      await expect(vi.mocked(api.sendE2e).mock.results[0]?.value).rejects.toMatchObject({
+        status: 422,
+        code: "unknown_device",
+      });
+      expect(api.listE2eDeviceInbox).not.toHaveBeenCalled();
+      expect(chats.identityElsewhere(net.slug)).toBe(true);
+    });
+  });
+});
+
 describe("trustOf", () => {
-  const peer = (verified: boolean) => ({ ed25519: "k".repeat(43), verified });
+  const peer = (verified: boolean) => ({ master: "k".repeat(43), verified, devices: 1 });
   const row = (kind: "key_alarm" | "pinned" | "accepted" | "verified", id: string) =>
     kind === "key_alarm"
       ? { kind, id, at: 0, nick: "Bob", presented: "x".repeat(43) }

@@ -14,6 +14,7 @@
 import { bootFetch } from "./bootFetch";
 import type { ModesEntry, TopicEntry } from "./channelTopic";
 import { getOrCreateClientId } from "./clientId";
+import type { SendVerb } from "./e2e/wire";
 import type { MemberEntry } from "./memberTypes";
 // #1400 — the REST boundary narrowers. `wireNarrow.ts` is the only module that
 // names a generated `S_*` schema; every door here calls a narrower, so the
@@ -33,8 +34,11 @@ import {
   narrowChannelListResponse,
   narrowCredentialResponse,
   narrowDirectoryPageResponse,
+  narrowE2eDevice,
+  narrowE2eDevices,
   narrowE2eInboxResponse,
   narrowE2eKeysStatus,
+  narrowE2eList,
   narrowE2eSentResponse,
   narrowFeaturedChannelsResponse,
   narrowMembersIndexResponse,
@@ -55,6 +59,8 @@ import type {
   ChannelDirectoryStatus,
   ChannelDirectoryWireEntry,
   ChannelDirectoryWireIndexPayload,
+  E2eKeysWireDevice,
+  E2eKeysWireDeviceList,
   E2eKeysWireStatus,
   E2ePairingWireE2ePairingClosedPayload,
   E2ePairingWireE2ePairingMessagePayload,
@@ -2586,26 +2592,112 @@ export async function refreshDirectory(token: string, networkSlug: string): Prom
   if (!res.ok) throw await readError(res);
 }
 
-// issue 2430 — the key bundle grappa hosts for this subject on `networkSlug`
-// and hands out to peers (CLIENT_PROTOCOL §4f). `getE2eKeys` answers what is
-// left; `uploadE2eKeys` adds one-time keys (one grappa already holds is
-// skipped) and replaces the fallback key, answering what it then holds;
-// `clearE2eKeys` drops the whole bundle, for an account that starts over.
-// `lib/e2e/bundleSync.ts` is the only caller.
-export async function getE2eKeys(token: string, networkSlug: string): Promise<E2eKeysWireStatus> {
-  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/e2e/keys`, {
+// issue 2430 — grappa protocol 49's per-device E2E doors (CLIENT_PROTOCOL
+// §4f). One identity per (subject, network): the master's signed device list
+// plus up to four devices, each with its own key bundle and queue. A `did` is
+// base64url, safe raw in a path segment (the server matches it raw), so it is
+// never `encodeURIComponent`ed. The shapes are the generated `wireTypes.ts`
+// ones; errors keep their token (`master_mismatch`, `stale_list`,
+// `listed_device`, `too_many_devices`, `unknown_device`) on the `ApiError`.
+// `lib/e2e/identity.ts` and `lib/encryptedChats.ts` are the callers.
+const e2eRoot = (networkSlug: string): string => `/networks/${encodeURIComponent(networkSlug)}/e2e`;
+
+/** Registers (or re-registers) this device; grappa derives the `did`. */
+export async function registerE2eDevice(
+  token: string,
+  networkSlug: string,
+  idBlock: { ed25519: string; curve25519: string; sig: string },
+): Promise<E2eKeysWireDevice> {
+  const res = await fetch(`${e2eRoot(networkSlug)}/devices`, {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify(idBlock),
+  });
+  if (!res.ok) throw await readError(res);
+  return narrowE2eDevice(await res.json());
+}
+
+export async function listE2eDevices(
+  token: string,
+  networkSlug: string,
+): Promise<E2eKeysWireDevice[]> {
+  const res = await fetch(`${e2eRoot(networkSlug)}/devices`, { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  return narrowE2eDevices(await res.json()).devices;
+}
+
+/** Drops an unlisted device; 409 `listed_device` for one the list names. */
+export async function removeE2eDevice(
+  token: string,
+  networkSlug: string,
+  did: string,
+): Promise<void> {
+  const res = await fetch(`${e2eRoot(networkSlug)}/devices/${did}`, {
+    method: "DELETE",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+/**
+ * The held device list. `null` means grappa holds no list for this subject on
+ * this network, OR the network does not resolve for this subject (unknown, no
+ * credential, detached): the two 404s are deliberately indistinguishable
+ * (`Plugs.ResolveNetwork`'s uniform body). Callers must treat a 404 from the
+ * NEXT write (`registerE2eDevice` / `putE2eList`) as a hard failure that
+ * persists nothing.
+ */
+export async function getE2eList(
+  token: string,
+  networkSlug: string,
+): Promise<E2eKeysWireDeviceList | null> {
+  const res = await fetch(`${e2eRoot(networkSlug)}/list`, { headers: buildHeaders(token) });
+  if (res.status === 404) return null;
+  if (!res.ok) throw await readError(res);
+  return narrowE2eList(await res.json());
+}
+
+/** 409 `master_mismatch` / `stale_list` and 422 `unknown_device` reach the caller as tokens. */
+export async function putE2eList(
+  token: string,
+  networkSlug: string,
+  list: E2eKeysWireDeviceList,
+): Promise<E2eKeysWireDeviceList> {
+  const res = await fetch(`${e2eRoot(networkSlug)}/list`, {
+    method: "PUT",
+    headers: buildHeaders(token),
+    body: JSON.stringify(list),
+  });
+  if (!res.ok) throw await readError(res);
+  return narrowE2eList(await res.json());
+}
+
+// `getE2eDeviceKeys` answers what that device's bundle still holds;
+// `uploadE2eDeviceKeys` adds signed one-time keys (one grappa already holds is
+// skipped) and replaces the fallback, answering what it then holds;
+// `clearE2eKeys` drops the whole identity, for an account that starts over.
+export async function getE2eDeviceKeys(
+  token: string,
+  networkSlug: string,
+  did: string,
+): Promise<E2eKeysWireStatus> {
+  const res = await fetch(`${e2eRoot(networkSlug)}/devices/${did}/keys`, {
     headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
   return narrowE2eKeysStatus(await res.json());
 }
 
-export async function uploadE2eKeys(
+export async function uploadE2eDeviceKeys(
   token: string,
   networkSlug: string,
-  upload: { one_time_keys: string[]; fallback: string | null },
+  did: string,
+  upload: {
+    one_time_keys: { key: string; sig: string }[];
+    fallback: { key: string; sig: string } | null;
+  },
 ): Promise<E2eKeysWireStatus> {
-  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/e2e/keys`, {
+  const res = await fetch(`${e2eRoot(networkSlug)}/devices/${did}/keys`, {
     method: "POST",
     headers: buildHeaders(token),
     body: JSON.stringify(upload),
@@ -2615,53 +2707,64 @@ export async function uploadE2eKeys(
 }
 
 export async function clearE2eKeys(token: string, networkSlug: string): Promise<void> {
-  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/e2e/keys`, {
+  const res = await fetch(`${e2eRoot(networkSlug)}/keys`, {
     method: "DELETE",
     headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
 }
 
-// issue 2430 — grappa's doors for encrypted messages (CLIENT_PROTOCOL §4f):
-// the send door (grappa frames and paces the payload, and names it with the
-// msgid a peer's NACK will quote), the offline queue's pages, oldest first,
-// and its acknowledgement. Not through `sendPipeline`: its 429 retry loop
-// would re-send a payload whose ratchet step the caller already recorded,
-// and a refusal here is an answer the user must see (the peer's queue is
-// full), not a hiccup to ride out. `lib/encryptedChats.ts` is the only caller.
+// The send door (grappa frames and paces the payload, and names it with the
+// msgid a peer's NACK will quote), a device's offline queue (pages, oldest
+// first) and its acknowledgement. Not through `sendPipeline`: its 429 retry
+// loop would re-send a payload whose ratchet step the caller already
+// recorded, and a refusal here is an answer the user must see (the peer's
+// queue is full), not a hiccup to ride out. `expiresAt` is the deadline of
+// the order a `control` MSG/PKMSG answers; null leaves the key off the wire.
 export async function sendE2e(
   token: string,
   networkSlug: string,
-  out: { target: string; verb: string; payload: string; priority: string; expires_at?: number },
+  out: {
+    target: string;
+    verb: SendVerb;
+    from: string;
+    to: string;
+    payload: string;
+    priority: "control" | "reactive" | "text";
+    expiresAt: number | null;
+  },
 ): Promise<SessionWireE2eSentPayload> {
-  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/e2e/messages`, {
+  const { expiresAt, ...rest } = out;
+  const res = await fetch(`${e2eRoot(networkSlug)}/messages`, {
     method: "POST",
     headers: buildHeaders(token),
-    body: JSON.stringify(out),
+    body: JSON.stringify(expiresAt === null ? rest : { ...rest, expires_at: expiresAt }),
   });
   if (!res.ok) throw await readError(res);
   return narrowE2eSentResponse(await res.json());
 }
 
-export async function listE2eInbox(
+export async function listE2eDeviceInbox(
   token: string,
   networkSlug: string,
+  did: string,
   after: number,
 ): Promise<SessionWireE2eInboxPayload> {
   const res = await fetch(
-    `/networks/${encodeURIComponent(networkSlug)}/e2e/inbox?after=${encodeURIComponent(after)}`,
+    `${e2eRoot(networkSlug)}/devices/${did}/inbox?after=${encodeURIComponent(after)}`,
     { headers: buildHeaders(token) },
   );
   if (!res.ok) throw await readError(res);
   return narrowE2eInboxResponse(await res.json());
 }
 
-export async function ackE2eInbox(
+export async function ackE2eDeviceInbox(
   token: string,
   networkSlug: string,
+  did: string,
   ids: number[],
 ): Promise<void> {
-  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/e2e/inbox/ack`, {
+  const res = await fetch(`${e2eRoot(networkSlug)}/devices/${did}/inbox/ack`, {
     method: "POST",
     headers: buildHeaders(token),
     body: JSON.stringify({ ids }),

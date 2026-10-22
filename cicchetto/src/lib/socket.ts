@@ -320,8 +320,9 @@ let _socket: Socket | null = null;
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
 //
 // 44 (issue 2430) — the hosted key bundle: `GET`/`POST`/`DELETE
-// …/e2e/keys`, answering `{one_time_keys, fallback}`. Called by the bundle
-// sync (`lib/e2e/bundleSync.ts`), which logs and retries on failure, so
+// …/e2e/keys`, answering `{one_time_keys, fallback}`. Called by the
+// identity sync (`lib/e2e/identity.ts`; per device since 49), which logs and
+// retries on failure, so
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
 //
 // 45 (issue 2430) — the inbox page and the send door's answer are declared

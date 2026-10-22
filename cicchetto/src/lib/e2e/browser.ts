@@ -1,7 +1,7 @@
 // issue 2430 — the browser's E2E stores, built once per page on first use:
 // the vodozemac binding, the Olm accounts and the encrypted chats, both
 // sealed in IndexedDB under one wrapping key and serialised by Web Locks.
-// The bundle sync and the chat glue share them, so they share the locks'
+// The identity sync and the chat glue share them, so they share the locks'
 // view of who holds what. And this page's part in the SASes (`sas.ts`).
 
 import { type AccountStore, accountStore, indexedDbVault, webLock } from "./accountStore";
