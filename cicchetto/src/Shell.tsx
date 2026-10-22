@@ -24,6 +24,7 @@ import CrtSplash from "./CrtSplash";
 import DiagFloat from "./DiagFloat";
 import DirectoryPane from "./DirectoryPane";
 import DropUploadZone from "./DropUploadZone";
+import EncryptedChatPane from "./EncryptedChatPane";
 import ErrorBanners from "./ErrorBanners";
 import HomePane from "./HomePane";
 import LinksModal from "./LinksModal";
@@ -61,7 +62,12 @@ import { windowBarInFlow } from "./lib/showBottomBar";
 import { isMobile } from "./lib/theme";
 import { bindEdgeGesture } from "./lib/touchGesture";
 import { loadUploadConfirmEnabled, loadUploadTtlSeconds } from "./lib/uploadOrchestrator";
-import { HOME_WINDOW_NAME, HOME_WINDOW_SLUG, kindHasScrollback } from "./lib/windowKinds";
+import {
+  encryptedWindowPeer,
+  HOME_WINDOW_NAME,
+  HOME_WINDOW_SLUG,
+  kindHasScrollback,
+} from "./lib/windowKinds";
 import { isActiveChannelJoined } from "./lib/windowState";
 import MediaViewerModal from "./MediaViewerModal";
 import MembersPane from "./MembersPane";
@@ -321,6 +327,11 @@ const Shell: Component = () => {
   // branch begins mounting, no concurrent owner-tree mutation.
   const isAdminPaneVisible = createMemo(() => selectedChannel()?.kind === "admin" && isAdmin());
   const selKind = createMemo(() => selectedChannel()?.kind ?? null);
+  // issue 2430 — the peer of a focused encrypted window, else null.
+  const encryptedPeer = createMemo(() => {
+    const sel = selectedChannel();
+    return sel?.kind === "encrypted" ? encryptedWindowPeer(sel.channelName) : null;
+  });
 
   // UX-6 bucket A — refcounted overlay scroll-lock for the two
   // Shell-owned mobile overlays (members drawer + AdminPane). The
@@ -899,6 +910,17 @@ const Shell: Component = () => {
                     view+action pane (browse + join), not a chat pane. */}
                   <DirectoryPane networkSlug={selectedChannel()?.networkSlug ?? ""} />
                 </Match>
+                <Match when={encryptedPeer()}>
+                  {/* issue 2430 — an encrypted query: its own pane and its
+                    own compose line (EncryptedChatPane.tsx says why neither
+                    is the scrollback pair). No MembersPane. */}
+                  {(peer) => (
+                    <EncryptedChatPane
+                      networkSlug={selectedChannel()?.networkSlug ?? ""}
+                      nick={peer()}
+                    />
+                  )}
+                </Match>
               </Switch>
             </section>
 
@@ -1213,6 +1235,15 @@ const Shell: Component = () => {
                 {/* #84 E3 — channel directory pane on mobile. Same
                   DirectoryPane component as desktop. */}
                 <DirectoryPane networkSlug={selectedChannel()?.networkSlug ?? ""} />
+              </Match>
+              <Match when={encryptedPeer()}>
+                {/* issue 2430 — the encrypted query pane on mobile. */}
+                {(peer) => (
+                  <EncryptedChatPane
+                    networkSlug={selectedChannel()?.networkSlug ?? ""}
+                    nick={peer()}
+                  />
+                )}
               </Match>
             </Switch>
           </section>
