@@ -16,7 +16,14 @@
 //   4. bot → cic on the session that opened, shown in the query;
 //   5. a message longer than one IRC line, both ways: fragmented by one
 //      engine, reassembled by the other, paced by the bot without the ircd
-//      dropping it.
+//      dropping it;
+//   6. an order in a channel, typed in cic's compose box: the bot holds it,
+//      challenges it inside the session, cic ACKs because it sent that line,
+//      and the bot takes it as CONFIRMED;
+//   7. an order sent as the same nick through grappa's REST door, which is
+//      what any other client of the user looks like to cic: the bot
+//      challenges it the same way, cic never sent it and stays silent, and
+//      the bot refuses it once the challenge expires.
 //
 // ## What makes this spec able to fail
 //
@@ -27,13 +34,18 @@
 //     drops the message as from a key it did not pin.
 //   * Reassembly or pacing breaks: the long message never shows, or the bot
 //     is disconnected by the ircd.
+//   * The two sides name the order differently (the network, the channel, the
+//     line's hash) or cic does not answer: the order cic sent comes out
+//     UNTRUSTED no-ack. cic confirms a line it did not send: the REST one
+//     comes out CONFIRMED.
 //
 // Timeouts are the 2430 bounds, never sleeps: KEYS within 32 s of a KEYREQ,
-// a message under way within 46 s.
+// a message under way within 46 s, an order challenge answered within 15 s.
 
+import { composeSend, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
 import { botCmd, botEvents, botPins, botWaitFor, test } from "../fixtures/e2eBot";
-import { boot, equery, ownKey, pin, row, send } from "../fixtures/encryptedQuery";
-import { sendPrivmsg } from "../fixtures/grappaApi";
+import { boot, e2eWindow, equery, ownKey, pin, row, send } from "../fixtures/encryptedQuery";
+import { joinChannel, sendPrivmsg } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import { awaitMail, extractFromMail } from "../fixtures/mailpit";
 import { NETWORK_SLUG } from "../fixtures/seedData";
@@ -46,6 +58,9 @@ const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 // delivered within 46 s.
 const KEYS_BOUND = 32_000;
 const UNDER_WAY_BOUND = 46_000;
+// An order challenge lives 15 s (irc-olm CHALLENGE_TTL); the bot ends a held
+// line at its next tick past that, so its verdict is in well within 25 s.
+const ORDER_VERDICT = 25_000;
 
 // Azzurra's NickServ: 5–32 chars, and the confirmation mail carries the code
 // as `/msg NickServ AUTH <digits>` (registration-wizard-real.spec.ts).
@@ -54,9 +69,9 @@ const AUTH_CODE_RE = /AUTH (\d+)/;
 // One WHOIS round trip: it sits behind bahamut's fake-lag bank, ~10 s cap.
 const WHOIS_ASK = 15_000;
 
-// Registration, a bot start, the browser boot, then four exchanges each
+// Registration, a bot start, the browser boot, then six exchanges each
 // bounded by the figures above.
-test.setTimeout(360_000);
+test.setTimeout(480_000);
 
 // Whether `nick` is registered as the bot will see it: a WHOIS whose replies
 // carry a 307 before their 318. Asked again until one does — services set
@@ -86,7 +101,14 @@ async function awaitRegistered(peer: IrcPeer, nick: string, timeoutMs: number): 
 const longBody = (from: string): string =>
   `${from}: ${Array.from({ length: 60 }, (_, i) => `parola${i} è cifrata`).join(" ")} fine`;
 
-test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand both ways, both directions, long messages", async ({
+// The bot's verdict on the order `body` from `nick`: either way, so a wrong
+// one fails at once and names itself instead of running out the clock.
+const orderVerdict = (nick: string, body: string): RegExp =>
+  new RegExp(
+    ` MSG (TRUSTED CONFIRMED=1|UNTRUSTED WHY=\\S+) FROM=${escapeRe(nick)} .* BODY=${escapeRe(body)}$`,
+  );
+
+test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand both ways, both directions, long messages, an order confirmed and one refused", async ({
   page,
   e2eBot,
 }, testInfo) => {
@@ -160,17 +182,72 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
     await botCmd(`ESAY ${cic.nick} ${longIn}`);
     await expect(row(page, "in", longIn)).toHaveCount(1, { timeout: UNDER_WAY_BOUND });
 
+    // Both in one channel. The bot has to be there before an order is said,
+    // or it never hears it.
+    const chan = `#e2e-interop-${run}`;
+    await botCmd(`JOIN ${chan}`);
+    const joined = await botWaitFor(
+      new RegExp(` JOIN ${escapeRe(bot.nick)} .* ${escapeRe(chan)}$`, "i"),
+      bot.since,
+      UNDER_WAY_BOUND,
+      "the bot's JOIN",
+    );
+    await joinChannel(cic.user.token, NETWORK_SLUG, chan);
+    await selectChannel(page, NETWORK_SLUG, chan, { ownNick: cic.nick });
+
+    // 6. An order cic sent: challenged, ACKed, confirmed.
+    const order = `${bot.nick}: ping`;
+    await composeSend(page, order);
+    await botWaitFor(
+      new RegExp(` ORDER_HELD FROM=${escapeRe(cic.nick)} .* TO=${escapeRe(chan)} `, "i"),
+      joined.n + 1,
+      UNDER_WAY_BOUND,
+      "the order held",
+    );
+    const confirmed = await botWaitFor(
+      orderVerdict(cic.nick, order),
+      joined.n + 1,
+      ORDER_VERDICT,
+      "the verdict on the order cic sent",
+    );
+    expect(confirmed.line).toMatch(/ MSG TRUSTED CONFIRMED=1 /);
+
+    // 7. An order in cic's nick that cic did not send: another client of
+    //    the same user, as far as cic can tell. Challenged the same way,
+    //    never ACKed, refused when the challenge expires.
+    const forged = `${bot.nick}: not from cic`;
+    await sendPrivmsg(cic.user.token, NETWORK_SLUG, chan, forged);
+    await botWaitFor(
+      new RegExp(` ORDER_HELD FROM=${escapeRe(cic.nick)} .* TO=${escapeRe(chan)} `, "i"),
+      confirmed.n + 1,
+      UNDER_WAY_BOUND,
+      "the REST order held",
+    );
+    const refused = await botWaitFor(
+      orderVerdict(cic.nick, forged),
+      confirmed.n + 1,
+      ORDER_VERDICT,
+      "the verdict on the REST order",
+    );
+    expect(refused.line).toMatch(/ MSG UNTRUSTED WHY=no-ack /);
+
     // Nothing went wrong on the bot's side along the way, and the window the
     // absences are read over holds the whole exchange.
     const lines = (await botEvents(bot.since)).map((e) => e.line);
     expect(lines.filter((l) => / E2E_PINS_LOADED N=1$/.test(l))).toHaveLength(1);
+    // One verdict per order: no late ACK turned the refused one around.
+    expect(lines.filter((l) => orderVerdict(cic.nick, forged).test(l))).toHaveLength(1);
     expect(
       lines.filter((l) =>
-        / (E2E_KEY_ALARM|E2E_UNDECRYPTABLE|E2E_SEND_FAILED|E2E_DROPPED|E2E_PINS_WRITABLE|DISCONNECTED|FATAL)( |$)/.test(
+        / (E2E_KEY_ALARM|E2E_UNDECRYPTABLE|E2E_SEND_FAILED|E2E_DROPPED|E2E_PINS_WRITABLE|ORDER_ACK_REJECTED|DISCONNECTED|FATAL)( |$)/.test(
           l,
         ),
       ),
     ).toEqual([]);
+    // Back in the query: the absences below are read off its pane.
+    await sidebarWindow(page, NETWORK_SLUG, e2eWindow(bot.nick)).locator("button").first().click();
+    await expect(page.getByTestId("e2e-pane")).toBeVisible();
+    await expect(row(page, "in", longIn)).toHaveCount(1);
     await expect(
       page.locator('[data-testid="e2e-row"][data-row-kind="undecryptable"]'),
     ).toHaveCount(0);
