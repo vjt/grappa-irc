@@ -8283,14 +8283,19 @@ defmodule Grappa.Session.Server do
     do: E2ePacer.enqueue(state.e2e_pacer, fold_key(state, target), target, message, lines, now, e2e_bank_ms(state))
 
   # Commits what the pacer decided: its new state, the messages it dropped
-  # as too late, the lines it released now, and the wake for the next.
+  # as too late, the lines it released now, and the wake for the next. A
+  # message a failed write dropped may have held a lane the next one waits
+  # on, so the pacer is asked again at once rather than at the old wake.
   @spec commit_paced(t(), [E2ePacer.release()], [E2ePacer.lost()], E2ePacer.t(), pos_integer() | nil) :: t()
   defp commit_paced(state, releases, lost, pacer, wait) do
     Enum.each(lost, fn {target, msgid, verb} ->
       Logger.warning("e2e #{verb} dropped unsent: too late to be answered", target: target, msgid: msgid)
     end)
 
-    %{state | e2e_pacer: pacer} |> send_e2e_releases(releases) |> arm_e2e_pacer(wait)
+    case send_e2e_releases(%{state | e2e_pacer: pacer}, releases) do
+      {state, []} -> arm_e2e_pacer(state, wait)
+      {state, _} -> arm_e2e_pacer(state, 0)
+    end
   end
 
   @spec afford_keys(t(), non_neg_integer(), integer()) :: :ok | {:error, :over_budget}
@@ -8299,28 +8304,52 @@ defmodule Grappa.Session.Server do
   end
 
   # A line the socket refuses is lost, and so is the message it belonged to
-  # (the receiver discards it incomplete); said in the log, never retried —
-  # a retry would land outside the window the pacer just accounted for.
-  @spec send_e2e_releases(t(), [E2ePacer.release()]) :: t()
-  defp send_e2e_releases(state, []), do: state
-
-  defp send_e2e_releases(%{client: nil} = state, releases) do
-    Logger.warning("#{length(releases)} e2e line(s) dropped: no upstream connection")
-    state
+  # (the receiver discards it incomplete): the rest of it is dropped from
+  # the pacer and skipped in this batch, said in the log, never retried — a
+  # retry would land outside the window the pacer just accounted for.
+  # Returns the messages so lost.
+  @spec send_e2e_releases(t(), [E2ePacer.release()]) :: {t(), [E2ePacer.lost()]}
+  defp send_e2e_releases(state, releases) do
+    {state, failed} = Enum.reduce(releases, {state, []}, &send_e2e_release/2)
+    {state, Enum.reverse(failed)}
   end
 
-  defp send_e2e_releases(%{client: client} = state, releases) do
-    Enum.each(releases, fn {target, _, _, body} ->
-      case Client.send_privmsg(client, target, body) do
-        :ok -> :ok
-        # Issue 2370: a timeout means the line is still in the client's
-        # mailbox and goes out late, not that it was dropped.
-        {:error, :timeout} -> Logger.warning("e2e line send timed out, delivery unknown", target: target)
-        {:error, reason} -> Logger.warning("e2e line not sent", target: target, reason: inspect(reason))
-      end
-    end)
+  defp send_e2e_release({target, msgid, verb, body}, {state, failed}) do
+    if Enum.member?(failed, {target, msgid, verb}) do
+      {state, failed}
+    else
+      case write_e2e_line(state.client, target, body) do
+        :ok ->
+          {state, failed}
 
-    state
+        {:error, reason} ->
+          Logger.warning("e2e #{verb} dropped: a line failed to go out",
+            target: target,
+            msgid: msgid,
+            reason: inspect(reason)
+          )
+
+          pacer = E2ePacer.drop(state.e2e_pacer, fold_key(state, target), msgid)
+          {%{state | e2e_pacer: pacer}, [{target, msgid, verb} | failed]}
+      end
+    end
+  end
+
+  # No client is no socket: every line fails alike.
+  @spec write_e2e_line(pid() | nil, String.t(), binary()) :: :ok | {:error, term()}
+  defp write_e2e_line(nil, _, _), do: {:error, :no_socket}
+
+  defp write_e2e_line(client, target, body) do
+    case Client.send_privmsg(client, target, body) do
+      # Issue 2370: a timeout means the line is still in the client's
+      # mailbox and goes out late, not that it was dropped.
+      {:error, :timeout} ->
+        Logger.warning("e2e line send timed out, delivery unknown", target: target)
+        :ok
+
+      result ->
+        result
+    end
   end
 
   # The connection's fake-lag bank, read from the client that charges every

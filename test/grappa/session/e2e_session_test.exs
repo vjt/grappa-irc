@@ -430,6 +430,25 @@ defmodule Grappa.Session.E2eSessionTest do
       assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, msgid), 10_000)
     end
 
+    test "a line that fails to go out drops the rest of its message at once" do
+      {server, pid, user, network} = connected_session()
+
+      # A long text message: one full line leaves, the rest drip on the bank.
+      {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :text, payload(1600))
+      {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, " #{msgid} 1/"), 10_000)
+      waiting = queued_lines(pid, msgid)
+      assert waiting >= 2
+
+      # Every write fails from here on, as with no socket to write to.
+      :sys.replace_state(pid, &%{&1 | client: nil})
+
+      # The first line that fails takes the whole rest of its message with
+      # it: the receiver could never complete it.
+      assert wait_until(fn -> queued_lines(pid, msgid) < waiting end, 10_000)
+      assert queued_lines(pid, msgid) == 0
+      assert :sys.get_state(pid).e2e_pacer.open == %{}
+    end
+
     test "refuses what is not a nick, a verb a client may not send, an unknown priority, and a non-base64 payload" do
       {_, _, user, network} = connected_session()
       subject = {:user, user.id}
@@ -511,6 +530,26 @@ defmodule Grappa.Session.E2eSessionTest do
   end
 
   # Every line of message `msgid` on the wire so far, parsed, in wire order.
+  # Lines of `msgid` still waiting in the session's pacer, in any lane.
+  defp queued_lines(pid, msgid) do
+    for {_, lanes} <- :sys.get_state(pid).e2e_pacer.queues,
+        {_, items} <- lanes,
+        item <- items,
+        item.msgid == msgid,
+        reduce: 0,
+        do: (n -> n + 1)
+  end
+
+  defp wait_until(check, timeout_ms) when timeout_ms <= 0, do: check.()
+
+  defp wait_until(check, timeout_ms) do
+    check.() or
+      (
+        Process.sleep(50)
+        wait_until(check, timeout_ms - 50)
+      )
+  end
+
   defp sent_fragments(server, msgid) do
     server
     |> IRCServer.sent_lines()
