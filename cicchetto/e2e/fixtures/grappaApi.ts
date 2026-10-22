@@ -1040,6 +1040,29 @@ export async function joinChannel(
   }
 }
 
+// POST /networks/:slug/channels/:target/messages — one PRIVMSG to `target` (a
+// channel or a nick) through grappa's REST door, as the token's subject: what
+// a client that is not cicchetto sends. 201 = persisted, 202 = sent and kept
+// nowhere (a *serv recipient).
+export async function sendPrivmsg(
+  token: string,
+  networkSlug: string,
+  target: string,
+  body: string,
+): Promise<void> {
+  const res = await fetch(
+    `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(target)}/messages`,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ body }),
+    },
+  );
+  if (res.status !== 201 && res.status !== 202) {
+    throw new Error(`sendPrivmsg: ${target} → ${res.status} ${await res.text()}`);
+  }
+}
+
 // GET /networks/:slug/channels — the channel list cic itself reads at boot
 // (`networks.ts` `channelsBySlug`). A spec whose PRECONDITION is "already in
 // this channel" must wait on THIS list rather than on `joinChannel` returning:
