@@ -340,7 +340,12 @@ let _socket: Socket | null = null;
 // challenge from a bot there goes unanswered (fail closed), so
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9. From here on cicchetto also
 // sends 46's `expires_at` (on an order's ACK) and reads `e2e_send_dropped`.
-export const CLIENT_PROTOCOL_VERSION = 47;
+//
+// 48 (issue 2430, X1) — the pairing relay: `/e2e/pairings` and the
+// user-topic `e2e_pairing_message` / `e2e_pairing_closed`. A pre-48 server
+// answers the doors 404, which `/pair` reports as a failed join, so
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 48;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

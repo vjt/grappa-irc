@@ -850,6 +850,62 @@ Check `protocol_version >= 42`, `>= 43` for the offline queue and `id`,
 `>= 44` for the key bundle, `>= 46` for `expires_at`, `too_late` and
 `e2e_send_dropped`, and `>= 47` for `network` on `isupport_changed`.
 
+### 4g. Pairing two devices of one account — the relay (issue 2430, v48)
+
+A second device joins the account's end-to-end identity by pairing with a
+device that already holds it. grappa relays the pairing channel blind: the
+two devices encrypt it between themselves (vodozemac's ECIES, the MSC4108
+shape), and the 2-digit check code both screens show is what defeats a
+relay in the middle. Every payload is an opaque base64 string to grappa.
+
+**The code.** The device showing the QR opens a rendezvous and puts this
+URL in the QR:
+
+```
+https://<host>/pair#pair=<rendezvous id>.<ephemeral Curve25519 key>
+```
+
+The id is 22 characters of url-safe base64; the key is 43 characters of
+standard base64. Both are public, and they ride the fragment, which a
+browser never sends with a request.
+
+**The sides.** A side is the auth session (bearer) of one device: the
+creator's at open, the joiner's at join. A rendezvous belongs to one
+account; to any other it does not exist (404). The joiner speaks first
+(the ECIES outbound side), then either side posts in any order, until one
+closes it. It lives 300 s, takes one joiner, at most 16 KiB per message
+and 64 KiB or 64 messages in all. One account holds one live rendezvous:
+opening a second closes the first (`replaced`). Opens are rate limited per
+account (429 `rate_limited`). The routes take a full session: a per-client
+token gets 403 `client_token_scope`, an incognito visitor 403 `forbidden`.
+
+| Request | Answer |
+|---|---|
+| `POST /e2e/pairings` | 201 `{rendezvous: {id, role: "creator", expires_at}}` |
+| `POST /e2e/pairings/:id/join` | 200 `{rendezvous: {id, role: "joiner", expires_at}}`; 409 `pairing_already_joined` to a second joiner, 409 `pairing_own_rendezvous` to the creating device |
+| `POST /e2e/pairings/:id/messages` `{payload}` | 201 `{message: {seq, from, payload}}`; 409 `pairing_not_joined` to a creator before anyone joined; 413 `pairing_full`; 422 for a payload that is not base64 or passes 16 KiB |
+| `GET /e2e/pairings/:id/messages?after=<seq>` | 200 `{messages: [{seq, from, payload}…]}`: what the OTHER side posted after `seq`, oldest first |
+| `DELETE /e2e/pairings/:id` | 204, for both sides |
+
+A third device of the same account gets 403 `pairing_not_a_party` on the
+last three. `expires_at` is ISO-8601; `seq` counts both sides' messages
+from 1.
+
+**The pushes.** On the user topic, to every device of the account:
+
+```json
+{"kind": "e2e_pairing_message", "rendezvous_id": "…", "seq": 3, "from": "joiner"}
+{"kind": "e2e_pairing_closed", "rendezvous_id": "…", "reason": "closed"}
+```
+
+`e2e_pairing_message` carries no payload, on purpose: the push reaches
+every device of the account, and the fetch above answers the two sides
+alone. On the push, fetch `after` the last `seq` you delivered; fetch
+again after a reconnect, since a push is not replayed. `reason` is
+`closed` (a side closed it), `expired` or `replaced`.
+
+Check `protocol_version >= 48`.
+
 ---
 
 ## 5. Wire format
@@ -1526,6 +1582,8 @@ forever.
 | `directory_failed` | user | the `/LIST` scan failed or timed out |
 | `directory_progress` | user | `/LIST` scan progress count |
 | `e2e_message` | user | one whole end-to-end encrypted message from a peer, payload never decoded; queued until acked (§4f) |
+| `e2e_pairing_closed` | user | a pairing rendezvous is gone: `closed` by a side, `expired`, or `replaced` by a newer open (§4g, v48) |
+| `e2e_pairing_message` | user | a side posted message `seq` on a pairing rendezvous; no payload, fetch it (§4g, v48) |
 | `e2e_send_dropped` | user | an outbound end-to-end encrypted message accepted by the send door and dropped unsent: `late`, `send_failed` or `session_ended` (§4f, v46) |
 | `invite_ack` | user | 341 RPL_INVITING — an INVITE you sent was accepted by the ircd |
 | `isupport_changed` | user | the network's 005 capability set (§5c, §5) |

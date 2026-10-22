@@ -170,6 +170,13 @@ defmodule GrappaWeb.ErrorTokens do
           | :last_admin
           | :share_token_expired
           | :share_token_consumed
+          # issue 2430 X1 — the pairing relay: a used or own rendezvous, a
+          # creator posting before the join, a third device, a spent budget.
+          | :pairing_already_joined
+          | :pairing_own_rendezvous
+          | :pairing_not_joined
+          | :pairing_not_a_party
+          | :pairing_full
           # #976 — DELETE /networks/:slug/invites/:channel on a window that
           # holds no invite. Distinct from `not_found` on purpose: the client
           # derives its decline affordance from server state, so this token

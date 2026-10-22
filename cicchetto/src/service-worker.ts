@@ -116,6 +116,11 @@ const navigationRoute = new NavigationRoute(navigationHandler, {
     // the SPA shell instead of the bytes. Pinned by
     // `GrappaWeb.RouterSwDenylistTest`, which is what caught its absence.
     /^\/dcc_files/,
+    // issue 2430 X1 — the pairing relay's REST doors (`/e2e/pairings`). The
+    // SPA route a pairing QR opens is `/pair`, deliberately outside this
+    // prefix, so it still gets the shell. Pinned by
+    // `GrappaWeb.RouterSwDenylistTest`, which is what caught its absence.
+    /^\/e2e/,
     // #75 themes REST surface. PLURAL only — `/^\/themes/` does NOT match the
     // singular `/theme/:id` SPA share route (after `/theme` comes `/`, not
     // `s`), so a shared theme link still resolves to the SPA shell.

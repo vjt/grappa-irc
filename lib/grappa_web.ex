@@ -43,6 +43,9 @@ defmodule GrappaWeb do
         # (`E2eController.keys/2` and siblings), and its wire projection.
         Grappa.E2eKeys,
         Grappa.E2eKeys.Wire,
+        # issue 2430 X1 — the pairing relay's REST door (`E2ePairingController`);
+        # its `Wire` comes with it as an export.
+        Grappa.E2ePairing,
         Grappa.Health,
         Grappa.HotReload,
         Grappa.IRC,

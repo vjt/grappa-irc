@@ -3779,3 +3779,57 @@ it leaves through the send door at control priority with the CHAL's own
 `expires_at` (protocol 46), a 422 `too_late` is a drop never retried, and
 an `e2e_send_dropped` for it is logged, while one for a message turns its
 row failed with the reason.
+<!-- entry #2430w2d -->
+
+---
+
+## 2026-10-22 — #2430 X1: the pairing relay, grappa's half
+
+A device that already holds the account's E2E identity shows a QR; a second
+device of the same account scans it, and the two talk through grappa until
+the second device is in the identity. vjt's "go on" for X1 fixed the edges:
+the existing `uqr` and the OS camera, no new dependency, and a URL fragment
+that carries public data only (`#pair=<rendezvous id>.<ephemeral Curve25519
+key>`). The crypto on the channel (vodozemac's ECIES, the MSC4108 shape) is
+w1's and waits on the wire v2 revision; this half relays opaque base64 and
+holds no key.
+
+**A side is an auth session.** The creator is the bearer that opened the
+rendezvous, the joiner the bearer that joined it. Nothing secret has to
+travel to tell the two apart, the creating device cannot join its own, and a
+third device of the same account finds the rendezvous (same subject) but is
+`pairing_not_a_party` on every verb. Another account gets `not_found`, the
+answer an id that never existed gets: existence is not leaked across
+accounts, which was w1's one hard requirement for the threat model.
+
+**The push is a doorbell.** `e2e_pairing_message` carries `{rendezvous_id,
+seq, from}` and no payload. The user topic reaches every device of the
+account, the REST fetch answers the two sides alone, so putting the
+ciphertext on the push would have handed it to devices the fetch refuses.
+It is also how cic already reads `e2e_message` (the push rings, the drain
+takes), and a missed push costs nothing: the next fetch `after` the last
+delivered `seq` picks it up.
+
+**One live rendezvous per account.** A second open closes the first
+(`replaced`) rather than refusing: the user who reopens the QR has
+abandoned the old one, and a refusal would leave them waiting out five
+minutes. Opens are capped by the house `TokenBucket` (5, refilling one a
+minute). The rest are w1's numbers: 300 s (the check code is compared and
+confirmed on two screens), one joiner, 16 KiB a message, 64 KiB and 64
+messages a rendezvous (a network's id block, cert and list are about
+600 B). A second joiner gets 409 `pairing_already_joined`, never silence.
+
+**In memory, on purpose.** A restart drops every rendezvous and the user
+starts over; nothing in one outlives five minutes, and a table would buy a
+migration and a reaper for state nobody may read back.
+
+**Where the routes sit.** In the `:full_session` block, next to the share
+link (#1353): a pairing ends with one more device in the account's E2E
+identity, which is credential management, so a per-client token is refused.
+An incognito visitor is refused too, for #363's reason: its session is
+deliberately non-portable. Subject-wide, not under `/networks/:id`: one
+pairing covers every network.
+
+**Protocol 48.** Routes, two pushes, five error tokens. MD-1 (w1) bumps the
+protocol too and lands stacked with this; whichever merges second takes the
+next number and regenerates the pin.

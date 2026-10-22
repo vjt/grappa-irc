@@ -1253,7 +1253,29 @@ defmodule Grappa.Protocol do
   # number.
   #
   # @min_protocol_version stays at 1: an older client ignores the new key.
-  @protocol_version 47
+  #
+  # ---------------------------------------------------------------------------
+  # 48 — issue 2430 X1: the pairing relay
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: the routes `POST /e2e/pairings`, `POST /e2e/pairings/:id/join`,
+  # `POST` and `GET /e2e/pairings/:id/messages` and `DELETE
+  # /e2e/pairings/:id` (`Grappa.E2ePairing.Wire.rendezvous` / `message`),
+  # the user-topic pushes `e2e_pairing_message` {rendezvous_id, seq, from}
+  # and `e2e_pairing_closed` {rendezvous_id, reason: closed | expired |
+  # replaced}, and five error tokens (`pairing_already_joined`,
+  # `pairing_own_rendezvous`, `pairing_not_joined`, `pairing_not_a_party`,
+  # `pairing_full`). A client that never pairs sees two pushes it may
+  # ignore.
+  #
+  # Checked for a collision before claiming 48: the one open PR that edits
+  # this file (#2102) still carries 21. Issue 2430's MD-1 (w1) will claim a
+  # number too, and lands stacked with this: whichever merges second takes
+  # the next one and regenerates the pin.
+  #
+  # @min_protocol_version stays at 1: nothing an older client sent changed
+  # meaning.
+  @protocol_version 48
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1294,7 +1316,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 47
+  @spec version() :: 48
   def version, do: @protocol_version
 
   @doc """
