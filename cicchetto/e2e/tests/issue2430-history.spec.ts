@@ -74,8 +74,14 @@ test("an encrypted chat's history: searched in the window, kept or deleted on cl
     await equery(peer.page, bob.nick, aliceNick);
     const bobKey = await ownKey(peer.page);
 
-    for (const body of ["ciao bob", "the codes are 1234", "a domani"]) await send(page, body);
-    await expect(row(peer.page, "in", "a domani")).toHaveCount(1, { timeout: KEYS_TIMEOUT });
+    // One at a time: under the pacer's final rule (protocol 46) a message
+    // leaves only when bahamut's fake-lag bank has room for it, and these
+    // went about 10 s apart on CI, so a burst of three outlasts the one
+    // message KEYS_TIMEOUT is for.
+    for (const body of ["ciao bob", "the codes are 1234", "a domani"]) {
+      await send(page, body);
+      await expect(row(peer.page, "in", body)).toHaveCount(1, { timeout: KEYS_TIMEOUT });
+    }
     await send(peer.page, "which CODES?");
     await expect(row(page, "in", "which CODES?")).toHaveCount(1, { timeout: KEYS_TIMEOUT });
     await expect(rows).toHaveCount(4);

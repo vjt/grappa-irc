@@ -3687,11 +3687,15 @@ message into an empty chat, deletes it with the window's button and reloads.
 The sealed records in IndexedDB's `chats` store are counted around each
 delete (index plus chat, then the index alone), so a delete that dropped the
 index entry and left the record would fail, and the reload shows the window's
-empty list is what IndexedDB holds. Green locally on the final tree: the
-spec 4 of 4 on its own, and the full integration suite 1053 passed, 1
-skipped, 1 failed. The red was `issue1250-ime-paste-flood-guard`, which died
-logging in (the WebSocket never upgraded, `Database busy` on its teardown)
-before reaching anything this slice touches, and passed 10 of 10 in
-isolation.
+empty list is what IndexedDB holds. Green locally before the rebase onto the
+pacer's final rule (entry #2430w2b): the spec 4 of 4 on its own, and the full
+integration suite 1053 passed, 1 skipped, 1 failed. The red was
+`issue1250-ime-paste-flood-guard`, which died logging in (the WebSocket never
+upgraded, `Database busy` on its teardown) before reaching anything this
+slice touches, and passed 10 of 10 in isolation. After the rebase, CI failed
+the spec at its opening burst: Alice's three messages reached Bob about 10 s
+apart, as the fake-lag bank let each one leave, so the third outlasted the
+30 s `KEYS_TIMEOUT` allows one message. The spec now waits for each message
+before sending the next.
 
 Client-only, no wire change: the cic bundle.
