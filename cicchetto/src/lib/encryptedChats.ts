@@ -269,6 +269,21 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     await changed(slug, [fold(nick)]);
   }
 
+  /**
+   * Deletes the chat with `nick` on this device, in every tab, and what the
+   * engine still holds of it in the clear; the pin and the sessions stay.
+   * A later message, or `/equery`, opens it again empty.
+   */
+  async function deleteEncryptedChat(slug: string, nick: string): Promise<void> {
+    await changed(slug, await run(slug, (client, ctx) => client.deleteChat(ctx, nick)));
+  }
+
+  /** Whether the chat with `nick` keeps any row on this device: what its close asks about. */
+  async function encryptedChatHasRows(slug: string, nick: string): Promise<boolean> {
+    const { chats } = await browserE2e();
+    return (await chats.rows(contextFor(slug).slot, nick)).length > 0;
+  }
+
   async function readEncryptedChat(slug: string, nick: string): Promise<void> {
     if ((chatsBySlug()[slug]?.[fold(nick)]?.unread ?? 0) === 0) return;
     const { chats } = await browserE2e();
@@ -354,6 +369,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     loadEncryptedChat,
     openEncryptedChat,
     closeEncryptedChat,
+    deleteEncryptedChat,
+    encryptedChatHasRows,
     readEncryptedChat,
     sendEncrypted,
     pinEncryptedKey,
@@ -373,6 +390,8 @@ export const drainEveryNetwork = exports_.drainEveryNetwork;
 export const loadEncryptedChat = exports_.loadEncryptedChat;
 export const openEncryptedChat = exports_.openEncryptedChat;
 export const closeEncryptedChat = exports_.closeEncryptedChat;
+export const deleteEncryptedChat = exports_.deleteEncryptedChat;
+export const encryptedChatHasRows = exports_.encryptedChatHasRows;
 export const readEncryptedChat = exports_.readEncryptedChat;
 export const sendEncrypted = exports_.sendEncrypted;
 export const pinEncryptedKey = exports_.pinEncryptedKey;

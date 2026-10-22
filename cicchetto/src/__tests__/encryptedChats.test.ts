@@ -436,6 +436,41 @@ describe("encrypted chats", () => {
     }
   });
 
+  it("deletes Bob's chat: its rows go in every tab, the badge's pin stays, a new message starts over", async () => {
+    await chats.drainE2e(net.slug);
+    const b = await bob();
+    await b.client.send(b.ctx, net.nick, "ciao alice");
+    await b.client.drain(b.ctx);
+    await chats.drainE2e(net.slug);
+    await chats.loadEncryptedChat(net.slug, "Bob");
+    const pinned = chats.encryptedTrust(net.slug, "Bob");
+    expect(await chats.encryptedChatHasRows(net.slug, "bob")).toBe(true);
+    const other = new BroadcastChannel("grappa-e2e-chats");
+    const told: unknown[] = [];
+    other.addEventListener("message", (event) => told.push(event.data));
+    try {
+      await chats.deleteEncryptedChat(net.slug, "BOB");
+
+      expect(chats.encryptedChatsFor(net.slug)).toEqual([]);
+      expect(chats.encryptedChat(net.slug, "Bob")).toBeUndefined();
+      expect(chats.encryptedRows(net.slug, "Bob")).toEqual([]);
+      expect(await chats.encryptedChatHasRows(net.slug, "bob")).toBe(false);
+      expect(chats.encryptedTrust(net.slug, "Bob")).toEqual(pinned);
+      await vi.waitFor(() =>
+        expect(told).toEqual([{ slug: net.slug, slot: slot(), chats: ["bob"] }]),
+      );
+    } finally {
+      other.close();
+    }
+
+    await b.client.send(b.ctx, net.nick, "still there?");
+    await chats.drainE2e(net.slug);
+    expect(chats.encryptedChatsFor(net.slug)).toEqual([{ key: "bob", nick: "Bob", unread: 1 }]);
+    expect(chats.encryptedRows(net.slug, "Bob")?.map((r) => r.kind === "in" && r.body)).toEqual([
+      "still there?",
+    ]);
+  });
+
   it("a new identity sees none of the last one's chats", async () => {
     await chats.drainE2e(net.slug);
     await chats.openEncryptedChat(net.slug, "Bob");
