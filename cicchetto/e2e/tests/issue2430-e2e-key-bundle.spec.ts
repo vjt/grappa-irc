@@ -24,7 +24,7 @@
 
 import { createPublicKey, randomBytes, verify } from "node:crypto";
 import type { Page } from "@playwright/test";
-import { loginAs } from "../fixtures/cicchettoPage";
+import { e2eBundleUploaded, loginAs } from "../fixtures/cicchettoPage";
 import { fetchE2eKeys } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import { NETWORK_SLUG } from "../fixtures/seedData";
@@ -78,13 +78,7 @@ function bundleCalls(page: Page): string[] {
   return calls;
 }
 
-const bundleUploaded = (page: Page) =>
-  page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      new URL(response.url()).pathname === `/networks/${NETWORK_SLUG}/e2e/keys` &&
-      response.ok(),
-  );
+const bundleUploaded = (page: Page) => e2eBundleUploaded(page, NETWORK_SLUG);
 
 // A new browser has no account: cic makes one, drops whatever grappa held
 // for the slot, and uploads a full bundle.
