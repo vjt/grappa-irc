@@ -646,7 +646,7 @@ Check `protocol_version >= 28`. ⚠️ There is no 27 — the shape moved twice
 before this version was published, and the pin gate requires a number per
 move. Nothing ever spoke 27.
 
-### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44)
+### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46)
 
 An encrypted query is a conversation grappa carries and cannot read. The
 endpoints (cicchetto, or a bot using the shared Python package) run Olm via
@@ -707,7 +707,7 @@ Sending:
 
 | route | answer |
 |---|---|
-| `POST /networks/:network_id/e2e/messages` `{"target", "verb", "payload"}` | **202** `{"msgid": "…"}` — accepted, not delivered |
+| `POST /networks/:network_id/e2e/messages` `{"target", "verb", "payload", "priority"?, "expires_at"?}` | **202** `{"msgid": "…"}` — accepted, not delivered |
 
 `target` is a nick; `verb` is `keyreq`, `pkmsg`, `msg` or `nack` (lowercase);
 `payload` is the base64 you built. grappa picks the msgid (a peer's `NACK`
@@ -726,32 +726,79 @@ them by two rules from bahamut's source:
   60 s from a message's LAST line, not its first.
 
 An optional `"priority"` field takes `"control"` or `"text"`; absent means
-`"text"`. A control message always goes ahead of the text queued for the
-SAME peer, so a CHAL or an ACK is not stuck behind a long message. Ahead
-of OTHER peers' lines it goes only within a budget: at most 8 control lines
-per peer in any 60 s; past that, that peer takes its turn with the others
-(its control lines still before its own text). Peers are served in turn,
-whoever was served longest ago first, so one long conversation does not
-hold up another. Text to one peer never reorders, so the peer never displays two
-messages backwards. `keyreq` and `nack` are control whatever the field
-says. grappa cannot see inside a `msg`/`pkmsg`, so set `"control"` on the
-one that carries a CHAL or an ACK.
+`"text"`. grappa cannot see inside a `msg`/`pkmsg`, so set `"control"` on
+the one that carries a CHAL or an ACK. Each message then waits in one of
+three lanes:
 
-What may wait is bounded: per peer, 32 text MESSAGES and 32 control lines;
-on the whole connection, 128 lines. A message that would pass any of these
-is refused WHOLE with the 429 below, and nothing of it is sent: tell your
-user, or hold it and try again later (vjt's ruling: refused, never silently
-dropped). So 202 means accepted: lines may still be waiting when it
-returns, and nobody ever tells the sender what happened next (no
-"delivered", no "expired", by ruling).
-400 `bad_request` for a channel target, an unknown verb or priority, or a
-non-base64 payload; 400 `invalid_line` for a CR, LF or NUL in `target`; 413 `too_large`
-for a payload over 32 KiB (what a receiver buffers per sender, so it could
-never be reassembled) or one that needs more than 64 lines; 429
-`rate_limited` when the peer's or the connection's queue cannot take the whole message;
-404 `not_found` with no session on the network; 502 `upstream_unreachable`
-while the upstream link is down; 504 `session_timeout` if the session does
-not answer.
+- **urgent**: `keyreq` whatever the field says, and a `"control"`
+  `msg`/`pkmsg`. Ahead of text, within 36 s of fake-lag bank per minute for
+  the whole connection; one urgent message goes at a time, whole;
+- **reactive**: `nack` whatever the field says, and grappa's own KEYS
+  answers (below). Ahead of text, within 18 s per peer and 22 s for the
+  connection per minute; in order per peer, but lines to different peers
+  may interleave;
+- **text**: every other `msg`/`pkmsg`. One text message goes at a time,
+  whole, and text to one peer never reorders, so the peer never displays two
+  messages backwards.
+
+Past its budget a message waits behind text, and still goes whenever no
+text can. Text never starves either: after 20 s without a text line, the
+text message under way goes next, right after an urgent message already
+under way. A peer that drew nothing else in the last
+minute may go a little past the budget, so a first contact is not stuck
+behind a flooder. Peers are served in turn, whoever was served longest ago
+first, and 5 s of the bank is kept for urgent lines. The full rule is
+irc-olm's, which grappa follows to the letter.
+
+**An order's deadline (v46).** On a `"control"` `msg`/`pkmsg`, an optional
+`"expires_at"` is the deadline of the order it answers, in unix seconds:
+the CHAL's own `expires_at`. grappa starts the message only if its last line
+can leave 2 s before that instant, so your ACK can still reach the bot in
+time; one that waits past that point is dropped unsent, and you are told
+(`e2e_send_dropped`, below). The deadline is read against grappa's clock,
+with no allowance for skew: either way a skewed clock fails closed, the
+order going unconfirmed. Anywhere else, or not a positive integer,
+`expires_at` is a 400. Before 46 a server ignores the field, so check
+`protocol_version >= 46` before relying on it.
+
+What may wait is bounded: per peer, 32 text MESSAGES (counting the
+`msg`/`pkmsg` refused or dropped behind queued text, each of which leaves the
+receiver a message key to skip) and 32 lines in each of the urgent and
+reactive lanes; on the whole connection, 480 s of text and 128 urgent and
+reactive lines (text does not count against those, so your own text never
+leaves an order unanswerable). A
+message that would pass any of these is refused WHOLE with the 429 below,
+and nothing of it is sent: tell your user, or hold it and try again later
+(vjt's ruling: refused, never silently dropped). So 202 means accepted:
+lines may still be waiting when it returns, and IRC never tells anyone a
+message was delivered.
+
+What grappa accepted and then dropped unsent is announced on the user topic
+(v46), with the msgid the 202 gave you:
+
+```json
+{"kind": "e2e_send_dropped", "network": "azzurra", "target": "vjt-claude",
+ "msgid": "Zm9vYmFyMDE", "reason": "late"}
+```
+
+`reason` is `late` (an order's answer that could no longer make its
+`expires_at`), `send_failed` (one of its lines failed to reach the socket,
+and the receiver could never complete the message, so the rest of it was
+not sent) or `session_ended` (the session stopped, an upstream drop, a
+disconnect or a restart, with the message still waiting). Nothing is
+dropped for a bound once accepted: a message fits whole at the door or is
+refused there. When a message's first line fails at once, the push can
+reach you before the 202 does: match it by msgid whenever it comes.
+
+400 `bad_request` for a channel target, an unknown verb or priority, a
+non-base64 payload, or an `expires_at` out of place; 400 `invalid_line` for
+a CR, LF or NUL in `target`; 413 `too_large` for a payload over 32 KiB (what
+a receiver buffers per sender, so it could never be reassembled) or one that
+needs more than 64 lines; 422 `too_late` when `expires_at` can already no
+longer be met; 429 `rate_limited` when the peer's or the connection's queue
+cannot take the whole message; 404 `not_found` with no session on the
+network; 502 `upstream_unreachable` while the upstream link is down; 504
+`session_timeout` if the session does not answer.
 
 **Your key bundle (v44).** A `KEYREQ` addressed to you is never delivered
 as an event: grappa answers it itself, connected client or not, from a
@@ -776,7 +823,13 @@ answer per 15 s, and a one-time key at most once a minute (else the fallback
 key); per connection, at most 30 one-time keys an hour (someone cycling
 nicks can still take those 30, so keep the bundle topped up), and answers
 spend at most 22 s of fake-lag bank in any 60 s. A request past a limit, or with no bundle, goes unanswered; the
-peer asks again later. The answer is paced as control.
+peer asks again later. The answer waits in the reactive lane. The 22 s are
+on top of that lane's budget, not instead of it: the lane ranks a KEYS
+ahead of text only within its budget, and behind it past that, but never
+refuses one, while the connection's 128 urgent and reactive lines are
+shared with your own orders and NACKs. Without the 22 s, four nicks asking
+every 15 s could fill them with answers (each peer's reactive lane holds 32
+lines), and every order you answer would be refused.
 
 The bundle holds at most 50 one-time keys and one fallback key; a payload
 is at most 1 KiB. 400 `bad_request` for an upload with nothing in it, a field
@@ -784,8 +837,9 @@ of the wrong type, or a payload that is not base64 or is too long; 413
 `too_large` when the bundle would pass 50 one-time keys. Either way nothing
 is stored.
 
-Check `protocol_version >= 42`, `>= 43` for the offline queue and `id`, and
-`>= 44` for the key bundle.
+Check `protocol_version >= 42`, `>= 43` for the offline queue and `id`,
+`>= 44` for the key bundle, and `>= 46` for `expires_at`, `too_late` and
+`e2e_send_dropped`.
 
 ---
 
@@ -1463,6 +1517,7 @@ forever.
 | `directory_failed` | user | the `/LIST` scan failed or timed out |
 | `directory_progress` | user | `/LIST` scan progress count |
 | `e2e_message` | user | one whole end-to-end encrypted message from a peer, payload never decoded; queued until acked (§4f) |
+| `e2e_send_dropped` | user | an outbound end-to-end encrypted message accepted by the send door and dropped unsent: `late`, `send_failed` or `session_ended` (§4f, v46) |
 | `invite_ack` | user | 341 RPL_INVITING — an INVITE you sent was accepted by the ircd |
 | `isupport_changed` | user | the network's 005 capability set (§5c, §5) |
 | `join_failed` | user | the window reached `:failed`, with reason + numeric |

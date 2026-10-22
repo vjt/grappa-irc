@@ -20,9 +20,13 @@ defmodule Grappa.Session.E2eKeyAnswers do
     * per connection, KEYS answers spend at most `bank_budget_ms/0` of
       fake-lag bank in any `bank_window_ms/0`. The per-nick limits alone
       leave the aggregate open to anyone with several nicks, and the
-      pacer's per-peer urgent budget bounds one peer, not all of them;
-      a bank budget across peers is the bound on what they can draw
-      together (agreed with w2 on 2430).
+      pacer's REACTIVE budgets rank an answer behind text past them but
+      never refuse it. The session's 128 queued urgent and reactive lines
+      are shared with the user's own orders and NACKs, and four nicks
+      asking every 15 s (each holding up to 32 lines) would fill them with
+      answers faster than the bank drains them: every order the user
+      answers would be refused. irc-olm needs no such bound, having no
+      shared cap; grappa keeps it (orchestrator's ruling on 2430).
 
   A request past a bound is not answered and not remembered: the peer asks
   again later. Remembering it would be state a stranger controls.
