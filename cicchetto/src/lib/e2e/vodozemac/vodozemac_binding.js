@@ -305,6 +305,76 @@ export class Encrypted {
 if (Symbol.dispose) Encrypted.prototype[Symbol.dispose] = Encrypted.prototype.free;
 
 /**
+ * A SAS once the keys are exchanged: the emoji to compare, and the MACs.
+ */
+export class EstablishedSas {
+    static __wrap(ptr) {
+        const obj = Object.create(EstablishedSas.prototype);
+        obj.__wbg_ptr = ptr;
+        EstablishedSasFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        EstablishedSasFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_establishedsas_free(ptr, 0);
+    }
+    /**
+     * The MAC of `input` under a key this secret derives under `info`.
+     * @param {string} input
+     * @param {string} info
+     * @returns {string}
+     */
+    calculate_mac(input, info) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(input, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(info, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len1 = WASM_VECTOR_LEN;
+            wasm.establishedsas_calculate_mac(retptr, this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred3_0 = r0;
+            deferred3_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * The 7 emoji, as indices into the Matrix SAS emoji table, of the
+     * bytes this secret derives under `info`.
+     * @param {string} info
+     * @returns {Uint8Array}
+     */
+    emoji_indices(info) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(info, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.establishedsas_emoji_indices(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v2 = getArrayU8FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            return v2;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+}
+if (Symbol.dispose) EstablishedSas.prototype[Symbol.dispose] = EstablishedSas.prototype.free;
+
+/**
  * What `Account::create_inbound_session` returns: the session, taken once,
  * and the plaintext of the message that opened it.
  */
@@ -352,6 +422,78 @@ export class InboundSession {
     }
 }
 if (Symbol.dispose) InboundSession.prototype[Symbol.dispose] = InboundSession.prototype.free;
+
+/**
+ * One side of a SAS verification before the keys are exchanged: an
+ * ephemeral Curve25519 key pair. vodozemac keeps the secret half in a type
+ * that cannot be pickled, so a SAS lives in the page that made it.
+ */
+export class Sas {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        SasFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_sas_free(ptr, 0);
+    }
+    /**
+     * The shared secret with the peer's public half. Uses this object up,
+     * failed or not: vodozemac refuses a key that makes no secret.
+     * @param {string} their_key
+     * @returns {EstablishedSas}
+     */
+    diffie_hellman(their_key) {
+        try {
+            const ptr = this.__destroy_into_raw();
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(their_key, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.sas_diffie_hellman(retptr, ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return EstablishedSas.__wrap(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * A new ephemeral key pair.
+     */
+    constructor() {
+        const ret = wasm.sas_new();
+        this.__wbg_ptr = ret;
+        SasFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * The public half, sent to the peer in `sas.key`.
+     * @returns {string}
+     */
+    public_key() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.sas_public_key(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred1_0, deferred1_1, 1);
+        }
+    }
+}
+if (Symbol.dispose) Sas.prototype[Symbol.dispose] = Sas.prototype.free;
 
 /**
  * An Olm session with one peer.
@@ -638,9 +780,15 @@ const AccountFinalization = (typeof FinalizationRegistry === 'undefined')
 const EncryptedFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_encrypted_free(ptr, 1));
+const EstablishedSasFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_establishedsas_free(ptr, 1));
 const InboundSessionFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_inboundsession_free(ptr, 1));
+const SasFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_sas_free(ptr, 1));
 const SessionFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_session_free(ptr, 1));

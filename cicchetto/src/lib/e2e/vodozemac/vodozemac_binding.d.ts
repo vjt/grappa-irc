@@ -88,6 +88,24 @@ export class Encrypted {
 }
 
 /**
+ * A SAS once the keys are exchanged: the emoji to compare, and the MACs.
+ */
+export class EstablishedSas {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * The MAC of `input` under a key this secret derives under `info`.
+     */
+    calculate_mac(input: string, info: string): string;
+    /**
+     * The 7 emoji, as indices into the Matrix SAS emoji table, of the
+     * bytes this secret derives under `info`.
+     */
+    emoji_indices(info: string): Uint8Array;
+}
+
+/**
  * What `Account::create_inbound_session` returns: the session, taken once,
  * and the plaintext of the message that opened it.
  */
@@ -103,6 +121,29 @@ export class InboundSession {
      * The new session; `undefined` once taken.
      */
     take_session(): Session | undefined;
+}
+
+/**
+ * One side of a SAS verification before the keys are exchanged: an
+ * ephemeral Curve25519 key pair. vodozemac keeps the secret half in a type
+ * that cannot be pickled, so a SAS lives in the page that made it.
+ */
+export class Sas {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * The shared secret with the peer's public half. Uses this object up,
+     * failed or not: vodozemac refuses a key that makes no secret.
+     */
+    diffie_hellman(their_key: string): EstablishedSas;
+    /**
+     * A new ephemeral key pair.
+     */
+    constructor();
+    /**
+     * The public half, sent to the peer in `sas.key`.
+     */
+    public_key(): string;
 }
 
 /**
@@ -165,7 +206,9 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_account_free: (a: number, b: number) => void;
     readonly __wbg_encrypted_free: (a: number, b: number) => void;
+    readonly __wbg_establishedsas_free: (a: number, b: number) => void;
     readonly __wbg_inboundsession_free: (a: number, b: number) => void;
+    readonly __wbg_sas_free: (a: number, b: number) => void;
     readonly __wbg_session_free: (a: number, b: number) => void;
     readonly account_create_inbound_session: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly account_create_outbound_session: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
@@ -185,9 +228,14 @@ export interface InitOutput {
     readonly canonical_ed25519: (a: number, b: number, c: number) => void;
     readonly encrypted_body: (a: number, b: number) => void;
     readonly encrypted_message_type: (a: number) => number;
+    readonly establishedsas_calculate_mac: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly establishedsas_emoji_indices: (a: number, b: number, c: number, d: number) => void;
     readonly inboundsession_plaintext: (a: number, b: number) => void;
     readonly inboundsession_take_session: (a: number) => number;
     readonly pre_key_session_id: (a: number, b: number, c: number) => void;
+    readonly sas_diffie_hellman: (a: number, b: number, c: number, d: number) => void;
+    readonly sas_new: () => number;
+    readonly sas_public_key: (a: number, b: number) => void;
     readonly session_decrypt: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly session_encrypt: (a: number, b: number, c: number, d: number) => void;
     readonly session_from_pickle: (a: number, b: number, c: number) => void;

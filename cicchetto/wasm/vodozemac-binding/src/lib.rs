@@ -9,6 +9,7 @@ use vodozemac::olm::{
     Account as OlmAccount, AccountPickle, OlmMessage, PreKeyMessage, Session as OlmSession, SessionConfig,
     SessionPickle,
 };
+use vodozemac::sas::{EstablishedSas as VodozemacEstablishedSas, Sas as VodozemacSas};
 use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, Ed25519Signature, base64_decode};
 use wasm_bindgen::prelude::*;
 
@@ -186,6 +187,51 @@ impl Encrypted {
     #[wasm_bindgen(getter)]
     pub fn body(&self) -> Vec<u8> {
         self.body.clone()
+    }
+}
+
+/// One side of a SAS verification before the keys are exchanged: an
+/// ephemeral Curve25519 key pair. vodozemac keeps the secret half in a type
+/// that cannot be pickled, so a SAS lives in the page that made it.
+#[wasm_bindgen]
+pub struct Sas(VodozemacSas);
+
+#[wasm_bindgen]
+impl Sas {
+    /// A new ephemeral key pair.
+    #[wasm_bindgen(constructor)]
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Sas {
+        Sas(VodozemacSas::new())
+    }
+
+    /// The public half, sent to the peer in `sas.key`.
+    pub fn public_key(&self) -> String {
+        self.0.public_key().to_base64()
+    }
+
+    /// The shared secret with the peer's public half. Uses this object up,
+    /// failed or not: vodozemac refuses a key that makes no secret.
+    pub fn diffie_hellman(self, their_key: &str) -> Result<EstablishedSas, JsError> {
+        Ok(EstablishedSas(self.0.diffie_hellman(curve25519(their_key)?).map_err(err)?))
+    }
+}
+
+/// A SAS once the keys are exchanged: the emoji to compare, and the MACs.
+#[wasm_bindgen]
+pub struct EstablishedSas(VodozemacEstablishedSas);
+
+#[wasm_bindgen]
+impl EstablishedSas {
+    /// The 7 emoji, as indices into the Matrix SAS emoji table, of the
+    /// bytes this secret derives under `info`.
+    pub fn emoji_indices(&self, info: &str) -> Vec<u8> {
+        self.0.bytes(info).emoji_indices().to_vec()
+    }
+
+    /// The MAC of `input` under a key this secret derives under `info`.
+    pub fn calculate_mac(&self, input: &str, info: &str) -> String {
+        self.0.calculate_mac(input, info).to_base64()
     }
 }
 

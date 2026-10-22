@@ -1,6 +1,6 @@
 // issue 2430 — loads the vodozemac binding on first use.
 //
-// The binding is ~290 KB of WebAssembly that only end-to-end encryption
+// The binding is ~300 KB of WebAssembly that only end-to-end encryption
 // needs, so it is not in the boot bundle: the first caller pays one dynamic
 // import and one fetch of the hashed `.wasm` asset (precached by the service
 // worker, see vite.config.ts), and every later caller shares that promise.
