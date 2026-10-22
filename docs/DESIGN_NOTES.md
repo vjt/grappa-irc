@@ -3358,3 +3358,124 @@ beyond grappa's "encrypted message".
 
 Client-only apart from the declaration-only protocol bump: HOT, plus the cic
 bundle.
+<!-- entry #2430h -->
+
+---
+
+## 2026-10-22 — #2430: encrypted queries in cic — SAS between two people
+
+Slice d: two people in cic verify each other's key by comparing 7 emoji, and
+the alarm can take a new key unverified so that a comparison verifies it. The
+steps are w2's agreed proposal (2430 comments 6252857813, encodings
+6252978193), on Matrix's m.sas.v1, as inner `sas.*` messages on the Olm
+session the query already runs: grappa relays MSG lines and sees nothing
+else, so no wire change and no protocol bump. The seven forks are 2430 comment
+6339695571; the orchestrator took every recommendation as written. Bots stay
+pinned by hand (ruling 6253162964); multi-device (6333417572) stays out.
+
+- **vodozemac's SAS cannot be pickled, so its secret lives in ONE page (fork
+  1, B).** `Sas` holds an x25519 `EphemeralSecret`, `EstablishedSas` a
+  `SharedSecret` (`sas.rs:112-126` @ 0.11.1). The page that starts or accepts
+  a SAS keeps the secret in memory (`SasHost.secrets`, by our SAS public key);
+  everything else is public and sealed with the account in `E2eState.sas`,
+  one record per peer Ed25519 key, so every tab shows the same state and
+  whichever tab drains the inbox answers the steps that need no secret (our
+  key, the commitment check). The owner page works the emoji out when the
+  window asks for the SAS's view, and at its human's "they match" computes
+  BOTH MACs: it sends ours and stores the one the peer must send
+  (`SasRecord.expected`), so from then on any tab finishes the SAS when the
+  peer's MAC comes. A page that goes away before that takes the secret with
+  it; a page is alive while it holds the Web Lock `grappa-e2e:page:<uuid>`
+  (the browser drops it with the page), and the tick in any other tab cancels
+  a SAS whose owner is gone (`page-gone`). A reload therefore cancels a SAS in
+  progress, by construction.
+- **Lane: text (fork 2).** A SAS step is sent like a message (`engine.send`
+  with the tag `"sas"`); only `chal`/`ack` are control in w2's pacer mapping.
+- **Time and interruptions (fork 3).** 600 s from the start, then the tick
+  sends `sas.cancel` `timeout`. A step out of order is `unexpected-message`; a
+  step for another tx, or one that does not parse, is ignored (logged). The
+  record is keyed by the peer's key, so a `sas.*` from any other key never
+  reaches it. A re-key and a key alarm do not cancel: the SAS is bound to the
+  identity keys, not the session. Both asking at once: on both sides the
+  smaller tx (as a string) wins, and the loser becomes B for it, committing
+  to the key it had not sent yet. **Re-pinning the nick to another key by
+  hand ends the SAS LOCALLY (`key-changed`), with no cancel on the wire**:
+  after the pin a step to the nick reaches the NEW key, so a cancel would go
+  to the wrong person; the old key's side runs into its own timeout.
+- **A verification is the same `verified` flag a pasted pin sets (fork 4),**
+  plus a `verified` chat row. That row, a `pinned` row and the new
+  `accepted` row each answer an earlier alarm for the badge
+  (`encryptedChats.trustOf`). A SAS never unverifies, and taking a key by hand
+  never takes a verification away (`verified: known.verified || verified`).
+- **A bot never answers (fork 5).** cic cannot tell a bot from a person, so
+  it offers the comparison to every pinned peer not yet verified, and the
+  waiting panel says that a bot never answers and its printed key should be
+  pinned. w2 confirmed on a LOCAL copy of claude-ircbot (12fc7b5, not the
+  deployed bot) that `bot.py` drops `sas.*` silently (`e2e_bridge.py:373`)
+  and sends no cancel: a request to a bot waits out the 600 s or the user's
+  cancel.
+- **Fork 6: nothing new.** c2's pane already shows our key and pins a bot's.
+- **🔴 Fork 7 — the alarm takes the new key UNVERIFIED, for vjt to
+  overrule.** c2's alarm row said "if it is theirs, pin it above", and that
+  pin made the new key VERIFIED: right for a bot (its key comes printed),
+  wrong for a person whose storage was wiped, since copying the key out of
+  the alarm compares nothing and 2430's "Session recovery" asks for
+  re-verification. The alarm row now offers "take this key (not verified)":
+  it re-pins the nick to the presented key with `verified: false`, writes an
+  `accepted` row, and a SAS then verifies it. A key pasted into the pin field
+  stays verified. `Engine.pin` takes the flag explicitly.
+- **The emoji are Matrix's table, verbatim** (`lib/e2e/sasEmoji.ts`,
+  matrix-spec `data-definitions/sas-emoji.json` @ 7aaeac07, Apache-2.0),
+  English names only, no decimals.
+- **The binding** gains `Sas` (`new`, `public_key`, `diffie_hellman`, which
+  consumes it whatever it answers) and `EstablishedSas` (`emoji_indices`,
+  `calculate_mac`). The wasm grows 297,198 → 301,576 B.
+- **Accepted price: a SAS step grappa refuses is only logged.** A message's
+  refusal fails its out-row; a SAS step has no row, so a refused step
+  (`console.warn`) leaves the SAS waiting for its timeout. Ending it on the
+  spot would mean changing and storing the state again AFTER the sends, which
+  the crash ordering stores before them, for a case (the peer's queue full) a
+  person will rarely meet. The same holds for a step lost to a crash between
+  the store and the send, and two outcomes are worth naming: a lost `sas.mac`
+  of ours leaves the peer unverified while we have verified it (its later
+  `timeout` cancel finds no SAS on our side), and a lost start of ours, with
+  the peer's larger start ignored by the tie-break, leaves both waiting the
+  10 minutes.
+- **Hardening from the review.** A peer whose curve is no longer known
+  (another key proved it, `Engine.bind`) ends the SAS `bad-key` where the
+  emoji or the MACs need it, instead of throwing out of every refresh of the
+  network. A `sas.start` counts only from the key its nick is pinned to (the
+  one the window shows); one from a known key on a nick pinned to another
+  key is ignored. A page drops the secret of a SAS that ended in another tab
+  the next time it runs an operation. A tab that sees a SAS ticks too, so a
+  tab that only reads it still ends it when its owner goes. A peer's cancel
+  reason that is not one of ours is shown quoted, as its words.
+- **Found by this slice's e2e, fixed in c2's engine: ask again for keys.**
+  grappa answers a nick's KEYREQ at most once per 30 s (`E2eKeyAnswers`; 15
+  s after w2's pacer port) and drops the rest silently, "the peer asks again
+  later". cic asked again only on the NEXT send to the nick, so one message
+  or one SAS step queued inside that window died at the 60 s TTL with no
+  second request: after Bob's wipe, Alice's request for his new key came
+  18.5 s after the one for his old key, Bob's session logged `KEYREQ not
+  answered reason=too_soon`, and the start never left her queue.
+  `Engine.tick` now asks again for every queue still waiting, every
+  `KEYREQ_RETRY_MS` as that constant always said, and both doors that tick
+  (the 5 s tick and the drain's last tick) send what it asks for after the
+  state is stored.
+- **An account record sealed before a state field existed opens with that
+  field empty** (`accountStore`: `{...newState(), ...record.state}`), so the
+  new `sas` map, and any later field, needs no migration.
+
+Tested: the binding (both ends derive the same emoji and MACs; a key that
+makes no secret is refused, and the exchange uses the object up); the protocol
+between two real cics on the fake grappa, every cancel reason, the tie-break
+(the smaller tx, on both sides), the second tab, the owner page closing, the
+refused step, a repeated MAC, a replacing start; the KEYREQ asked again by the
+tick and by the drain; the glue's tick and the pane's every panel phase, the
+alarm's "take", every row kind. Hand mutants over the verifier, the client
+glue and the pane: 51 run, 50 killed; the survivor skips a no-op rewrite of
+the chat index for a queued SAS step (no observable difference). End to end (`issue2430-sas.spec.ts`): two grappa users
+in two browsers compare emoji over real Olm through a real ircd, and the alarm
+path after a wiped browser takes the new key and verifies it.
+
+Client-only, no wire change: the cic bundle.
