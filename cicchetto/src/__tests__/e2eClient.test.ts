@@ -1,85 +1,18 @@
 // issue 2430 — cic's E2E client between grappa's three doors (the inbox, its
 // acknowledgement, the send door) and what the user sees (the chat history).
-// Two clients over a fake grappa that does what the real one does with
-// them: a per-recipient inbox with AUTOINCREMENT ids and paging, a msgid per
-// accepted send, a KEYREQ answered from the target's uploaded bundle, and a
-// refusal when told to. The engines, the account store and the chat store are
-// the real ones over in-memory twins of IndexedDB and Web Locks.
+// Two clients over a fake grappa (`helpers/e2eGrappa.ts`). The engines, the
+// account store and the chat store are the real ones over in-memory twins of
+// IndexedDB and Web Locks.
 import { describe, expect, it } from "vitest";
 import { type AccountStore, accountStore } from "../lib/e2e/accountStore";
-import { type ChatRow, type ChatStore, chatStore, type DoorRefusal } from "../lib/e2e/chatStore";
-import {
-  type Door,
-  type E2eContext,
-  e2eClient,
-  type InboxMessage,
-  NoAccountError,
-} from "../lib/e2e/client";
-import { OUTQ_TTL_MS, type Outbound } from "../lib/e2e/engine";
-import { topUp } from "../lib/e2e/keyBundle";
-import { base64Unpadded, fold } from "../lib/e2e/wire";
+import { type ChatRow, type ChatStore, chatStore } from "../lib/e2e/chatStore";
+import { type E2eContext, e2eClient, NoAccountError } from "../lib/e2e/client";
+import { OUTQ_TTL_MS } from "../lib/e2e/engine";
+import { Grappa, publishBundle } from "./helpers/e2eGrappa";
 import { type MemoryVault, memoryLock, memoryVault } from "./helpers/e2eVault";
 import { olm } from "./helpers/olm";
 
 const SLOT = "user:0b5e:1";
-
-class Grappa {
-  inboxes = new Map<string, InboxMessage[]>();
-  bundles = new Map<string, { otks: string[]; fallback: string }>();
-  nextId = 1;
-  pageSize = 100;
-  /** Every send the door took, with who sent it. */
-  sends: (Outbound & { by: string })[] = [];
-  refuse: (o: Outbound) => DoorRefusal | undefined = () => undefined;
-  failAck = false;
-
-  private inbox(nick: string): InboxMessage[] {
-    const key = fold(nick);
-    const found = this.inboxes.get(key) ?? [];
-    this.inboxes.set(key, found);
-    return found;
-  }
-
-  deliver(to: string, m: Omit<InboxMessage, "id">): void {
-    this.inbox(to).push({ ...m, id: this.nextId++ });
-  }
-
-  door(nick: string): Door {
-    return {
-      inbox: async (after) =>
-        this.inbox(nick)
-          .filter((m) => m.id > after)
-          .slice(0, this.pageSize),
-      ack: async (ids) => {
-        if (this.failAck) throw new Error("ack refused");
-        this.inboxes.set(
-          fold(nick),
-          this.inbox(nick).filter((m) => !ids.includes(m.id)),
-        );
-      },
-      send: async (o) => {
-        const refused = this.refuse(o);
-        if (refused !== undefined) return { refused };
-        this.sends.push({ ...o, by: nick });
-        const msgid = base64Unpadded(crypto.getRandomValues(new Uint8Array(8)));
-        if (o.verb === "keyreq") {
-          const bundle = this.bundles.get(fold(o.target));
-          if (bundle !== undefined) {
-            this.deliver(nick, {
-              from: o.target,
-              verb: "keys",
-              msgid,
-              payload: bundle.otks.shift() ?? bundle.fallback,
-            });
-          }
-        } else {
-          this.deliver(o.target, { from: nick, verb: o.verb, msgid, payload: o.payload });
-        }
-        return { msgid };
-      },
-    };
-  }
-}
 
 type Side = {
   nick: string;
@@ -102,15 +35,7 @@ class World {
     const accounts = accountStore(olm(), vault, lock);
     const chatVault = memoryVault();
     const chats = chatStore(chatVault, lock);
-    await accounts.withAccount(SLOT, async ({ account }) => {
-      const upload = topUp(account, { one_time_keys: 0, fallback: false });
-      if (upload === null || upload.fallback === null) throw new Error("no bundle built");
-      account.mark_keys_as_published();
-      this.grappa.bundles.set(fold(nick), {
-        otks: [...upload.one_time_keys],
-        fallback: upload.fallback,
-      });
-    });
+    await publishBundle(this.grappa, nick, accounts, SLOT);
     return {
       nick,
       ctx: { slot: SLOT, ownNick: nick, door: this.grappa.door(nick) },
