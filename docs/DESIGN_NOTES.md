@@ -3116,3 +3116,59 @@ Known gaps, recorded rather than fixed:
 
 Client-only: no server state, no deploy class beyond the cic bundle. The CSP
 change is a header literal, HOT.
+<!-- entry #2430w2a -->
+
+---
+
+## 2026-10-22 — #2430: the e2e stack runs the bots' own code as an `e2e-bot` service
+
+The interop tests need the BOT side of the E2E query protocol on the testnet:
+claude-ircbot's `bot.py` on the irc-olm engine, the code the real bots run.
+`cicchetto/e2e/e2e-bot/` builds it into a compose service, `control.py` drives
+it over HTTP (start, stop, pins, one FIFO line, the event stream), and
+`fixtures/e2eBot.ts` is the spec side. This slice ships the harness and one
+spec proving it on a real bahamut; the cic ↔ bot steps follow cic's slices c2
+(pins, the encrypted query) and e (the order challenge).
+
+- **It idles until a spec starts it, so it needs no compose profile.** An
+  idle container is not an IRC client, so no other spec ever meets it. A
+  profile would have had to be shard-aware: Playwright decides which of the
+  four CI shards holds a spec, and compose cannot know. Each shard runs its
+  own stack with `workers: 1`, so one spec at a time owns the bot. Two rules
+  keep a bot from outliving its spec, both measured: a `/start` with a JSON
+  object body that does not answer 200 stops the bot before answering (a 504
+  used to leave bot.py connected and still obeying its FIFO, an orphan a late
+  001 would have registered), and the stop is the `e2eBot` fixture's
+  TEARDOWN, because Playwright 1.59 runs a fixture teardown on a test timeout
+  and never runs a `finally` in the test body.
+- **The code under test is pinned by checksum, the base image by tag.** Twelve
+  `ADD --checksum` lines fetch irc-olm and claude-ircbot at their commits, and
+  `requirements.txt` is hash-locked (`--require-hashes --only-binary`): a
+  changed blob fails the build (measured with one wrong digit) instead of
+  testing something else. `python:3.12-slim` stays out of the digest-pin gate
+  on purpose: `base_image_digest_pin_test.bats` keeps e2e-only third parties
+  (`node:22-alpine`, `debian:trixie`, mailpit) unpinned, and what matters here
+  is the bots' code, which IS pinned. Gating it would take a `python:`
+  alternative in `PINNED_FAMILIES`, a digest on the Dockerfile's `FROM`, and
+  the runbook sentence the #1408 test reads.
+- **The pins are root's, the bot is not.** `control.py` runs as root and owns
+  `/data/etc`; `bot.py` and its keygen run as uid 1000 in `/data/bot`. That
+  is the bots' README posture (the bot only reads its pins), so the spec can
+  assert `E2E_PINS_WRITABLE` never appears; the positive control (pins
+  writable by uid 1000) makes it appear on every load.
+- **Every start is a new identity.** `/start` wipes `/data/bot`: irc-olm's
+  key only seals the state, and the Ed25519 identity lives in the state, so
+  keeping one without the other bought nothing. No Olm session crosses
+  specs; a spec pins the key `/start` answers.
+- **The refused challenge will be tested through grappa's REST door**
+  (orchestrator ruling, for slice e): the spec will send the line as the cic
+  user's nick over the REST send route, so grappa delivers it upstream while
+  cic, which never sent it, does not ACK. No test-only verb goes into the bot.
+
+Known cost, accepted: every CI shard now fetches twelve files from
+raw.githubusercontent.com and two wheels from PyPI at build time, so a fetch
+failure fails the integration job before any spec runs. The job already
+downloads its compose plugin from GitHub on every run; vendoring the files
+would trade this for a drift check.
+
+Test infrastructure only: no server or cic change, nothing to deploy.
