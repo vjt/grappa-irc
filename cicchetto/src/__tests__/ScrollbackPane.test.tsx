@@ -3106,6 +3106,40 @@ describe("ScrollbackPane", () => {
       });
     });
 
+    // issue 2430 — the pane hands the menu OUR nick, so "Encrypted query" is
+    // disabled on our own line and only there.
+    it.each([
+      ["vjt", true],
+      ["alice", false],
+    ])(
+      "right-clicking %s's line: Encrypted query disabled = %s (we are vjt)",
+      async (sender, disabled) => {
+        setUserNick("vjt");
+        setScrollback({
+          "freenode #grappa": [
+            {
+              id: 1,
+              network: "freenode",
+              channel: "#grappa",
+              server_time: 1_700_000_000_000,
+              kind: "privmsg",
+              sender,
+              body: "hello",
+              meta: {},
+            },
+          ],
+        });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        document
+          .querySelector(".scrollback-sender")
+          ?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+        const item = await screen.findByRole("button", { name: /^encrypted query$/i });
+        expect((item as HTMLButtonElement).disabled).toBe(disabled);
+      },
+    );
+
     it("sender span has .nick-clickable class on PRIVMSG lines", () => {
       setScrollback({
         "freenode #grappa": [

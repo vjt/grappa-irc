@@ -1,6 +1,9 @@
 import type { Component } from "solid-js";
 import ContextMenu, { type ContextMenuAction, type ContextMenuItem } from "./ContextMenu";
+import { casemappingForSlug } from "./lib/casemapping";
 import { sendCtcpQuery } from "./lib/ctcpQuery";
+import { openEncryptedWindow } from "./lib/encryptedWindow";
+import { nickEquals } from "./lib/nickEquals";
 import { banMenuItems, runOpsVerb } from "./lib/opsMenu";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
@@ -17,7 +20,8 @@ import {
 //
 // Op / deop / voice / devoice / kick and the issue 2346 ban rows (Ban nick /
 // Ban host / Kickban, from `lib/opsMenu`) are all gated on own-nick @ mode,
-// disabled-but-NOT-hidden when unmet; WHOIS + CTCP + Query are always enabled.
+// disabled-but-NOT-hidden when unmet; WHOIS + CTCP + Query are always enabled,
+// and so is "Encrypted query" (issue 2430) unless the nick is our own.
 //
 // Dispatches to existing socket.ts push helpers — no new IRC-issuance path —
 // and every op verb goes through `runOpsVerb`, so a rejected push is a toast
@@ -50,6 +54,9 @@ export type Props = {
   // every other opener.
   targetHost: string | null;
   ownModes: string[];
+  // issue 2430 — our nick on this network, as the opener resolved it
+  // (`ownNickForNetwork`); null when it has none. Gates "Encrypted query".
+  ownNick: string | null;
   position: { x: number; y: number };
   onClose: () => void;
 };
@@ -143,13 +150,26 @@ const UserContextMenu: Component<Props> = (props) => {
       action: () => pushWhois(props.networkId, props.targetNick, null),
     },
     {
-      // #1192 — sits between WHOIS and Query because it belongs with WHOIS:
-      // both interrogate the person, while Query talks to them. Always enabled,
-      // like its neighbours — asking a peer for its VERSION needs no channel
-      // privilege.
+      // #1192 — sits between WHOIS and the query rows because it belongs with
+      // WHOIS: both interrogate the person, while the queries talk to them.
+      // Always enabled, like its neighbours — asking a peer for its VERSION
+      // needs no channel privilege.
       label: "CTCP",
       enabled: true,
       submenu: ctcpItems(),
+    },
+    {
+      // issue 2430 — the encrypted twin of Query: opens (and focuses) the
+      // cic-local encrypted window. There is no encrypted query with oneself.
+      // ABOVE Query, as #1192 put CTCP: the last row stays a verb that is
+      // always enabled and closes the menu (the #487 clamp e2e clicks it).
+      label: "Encrypted query",
+      enabled: !nickEquals(props.targetNick, props.ownNick, casemappingForSlug(props.networkSlug)),
+      action: () => {
+        void openEncryptedWindow(props.networkSlug, props.targetNick).catch((err: unknown) => {
+          console.warn(`[e2e] could not open an encrypted query with ${props.targetNick}`, err);
+        });
+      },
     },
     {
       label: "Query",

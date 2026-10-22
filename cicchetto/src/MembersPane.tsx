@@ -154,13 +154,18 @@ const MembersPane: Component<Props> = (props) => {
   // surfaced as enabled when the operator does NOT actually hold @ on
   // this channel. See lib/api.ts ownNickForNetwork docstring for the
   // canonical resolution rules.
-  const ownModes = (): string[] => {
+  //
+  // issue 2430 — the same own nick also gates the menu's "Encrypted query".
+  const ownNick = (): string | null => {
     const me = user();
-    if (!me) return [];
     const net = networkBySlug(props.networkSlug);
-    if (!net) return [];
-    const nick = ownNickForNetwork(net, me);
-    if (!nick) return [];
+    return me && net ? ownNickForNetwork(net, me) : null;
+  };
+
+  const ownModes = (): string[] => {
+    const net = networkBySlug(props.networkSlug);
+    const nick = ownNick();
+    if (!net || !nick) return [];
     const entry = list().find((m) => nickEquals(m.nick, nick, casemappingForNetwork(net.id)));
     return entry?.modes ?? [];
   };
@@ -260,6 +265,7 @@ const MembersPane: Component<Props> = (props) => {
               targetNick={mf().nick}
               targetHost={null}
               ownModes={ownModes()}
+              ownNick={ownNick()}
               position={{ x: mf().x, y: mf().y }}
               onClose={closeMenu}
             />

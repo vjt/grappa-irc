@@ -543,6 +543,18 @@ describe("parseSlash — /msg", () => {
   );
 });
 
+// issue 2430 — /equery <nick>: the target as typed; bare is `null`, which
+// compose refuses (no bare close: the encrypted window takes no commands).
+describe("parseSlash — /equery", () => {
+  it("/equery <nick> → open an encrypted query", () => {
+    expect(parseSlash("/equery Bob")).toEqual({ kind: "equery", target: "Bob" });
+  });
+
+  it("/equery bare → {target: null}", () => {
+    expect(parseSlash("/equery")).toEqual({ kind: "equery", target: null });
+  });
+});
+
 describe("parseSlash — /query and /q (DM aliases)", () => {
   it("/query <nick> → open query window without message", () => {
     expect(parseSlash("/query alice")).toEqual({ kind: "query", target: "alice" });

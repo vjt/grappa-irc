@@ -370,10 +370,11 @@ describe("MembersPane", () => {
 
     // Capture the ownModes the menu receives by replacing the
     // UserContextMenu mock with one that records its props.
-    const recorded: { ownModes?: string[] } = {};
+    const recorded: { ownModes?: string[]; ownNick?: string | null } = {};
     vi.doMock("../UserContextMenu", () => ({
-      default: (props: { ownModes: string[] }) => {
+      default: (props: { ownModes: string[]; ownNick: string | null }) => {
         recorded.ownModes = props.ownModes;
+        recorded.ownNick = props.ownNick;
         return <div data-testid="context-menu-stub" />;
       },
     }));
@@ -389,6 +390,9 @@ describe("MembersPane", () => {
     // Post-fix: ownModes is the OPERATOR's modes ([]), NOT the peer's (@).
     // Pre-fix this would be ["@"] because lookup keyed on account name "vjt".
     expect(recorded.ownModes).toEqual([]);
+    // issue 2430 — and the nick that gates "Encrypted query" is the same
+    // per-network IRC nick, not the account name.
+    expect(recorded.ownNick).toBe("vjt-grappa");
 
     vi.doUnmock("../UserContextMenu");
   });

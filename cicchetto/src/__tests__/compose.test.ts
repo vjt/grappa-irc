@@ -212,6 +212,12 @@ vi.mock("../lib/queryWindows", () => ({
   canonicalQueryNick: vi.fn((_networkId: number, nick: string) => nick),
 }));
 
+// issue 2430 — /equery's door (open the encrypted window, focus it) is a
+// boundary spy; its own tests pin what it does.
+vi.mock("../lib/encryptedWindow", () => ({
+  openEncryptedWindow: vi.fn(async () => undefined),
+}));
+
 // Mock selection.ts — compose.ts reads selectedChannel for channel-context verbs.
 vi.mock("../lib/selection", () => ({
   selectedChannel: vi.fn(() => ({ networkSlug: "freenode", channelName: "#a", kind: "channel" })),
@@ -4159,6 +4165,60 @@ describe("compose submit — /cycle (#1796)", () => {
     expect(api.postPart).not.toHaveBeenCalled();
     expect(api.postJoin).not.toHaveBeenCalled();
     expect(result).toMatchObject({ error: expect.stringContaining("/cycle") });
+  });
+});
+
+// issue 2430 — /equery <nick> opens (and focuses) an encrypted query; a
+// channel, a services nick, our own nick or no nick at all is refused, and
+// nothing opens.
+describe("compose submit — /equery", () => {
+  const submitLine = async (line: string) => {
+    localStorage.setItem("grappa-token", "tok");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, line);
+    return compose.submit(k, "freenode", "#a");
+  };
+
+  it("/equery <nick> opens the encrypted window with the nick, as typed", async () => {
+    const ew = await import("../lib/encryptedWindow");
+    const result = await submitLine("/equery Alice");
+
+    expect(ew.openEncryptedWindow).toHaveBeenCalledWith("freenode", "Alice");
+    expect(result).toEqual({ ok: true });
+  });
+
+  it.each([
+    ["/equery", "/equery <nick> required"],
+    ["/equery #grappa", "/equery: #grappa is a channel"],
+    ["/equery NickServ", "/equery: NickServ is a services nick"],
+  ])("%s is refused and opens nothing", async (line, error) => {
+    const ew = await import("../lib/encryptedWindow");
+    const result = await submitLine(line);
+
+    expect(result).toMatchObject({ error: expect.stringContaining(error) });
+    expect(ew.openEncryptedWindow).not.toHaveBeenCalled();
+  });
+
+  it("/equery <own nick> is refused, in any case", async () => {
+    const ew = await import("../lib/encryptedWindow");
+    const api = await import("../lib/api");
+    const nets = await import("../lib/networks");
+    // Our nick comes from the one resolver every own-nick check uses
+    // (`ownNickForNetwork`, as /mode's self-gate). Reset, not `Once`: the
+    // submit may resolve it more than once, and clearAllMocks keeps
+    // implementations, so a stub left behind would outlive the test.
+    vi.mocked(nets.user).mockReturnValue({ kind: "user", name: "me" } as never);
+    vi.mocked(api.ownNickForNetwork).mockReturnValue("Me");
+    try {
+      const result = await submitLine("/equery ME");
+
+      expect(result).toMatchObject({ error: "/equery: that is your own nick" });
+      expect(ew.openEncryptedWindow).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(nets.user).mockReset();
+      vi.mocked(api.ownNickForNetwork).mockReset();
+    }
   });
 });
 
