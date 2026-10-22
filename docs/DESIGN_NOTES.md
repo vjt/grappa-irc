@@ -3844,3 +3844,140 @@ pairing covers every network.
 **Protocol 48.** Routes, two pushes, five error tokens. MD-1 (w1) bumps the
 protocol too and lands stacked with this; whichever merges second takes the
 next number and regenerates the pin.
+<!-- entry #2430j -->
+
+---
+
+## 2026-10-22 — #2430: one E2E identity, several devices — grappa's half (MD-1, wire v2)
+
+vjt ruled for multi-device (2430 comment 6344779758). The wire that
+implements it is w1's proposal 6346236542, amended by 6346384093 (w2's
+review, O1–O4) and 6346686730 (revision 2, after vjt's size objection).
+MD-1 is grappa's half: the storage, the routing and the send door. cic's
+half (MD-2) and irc-olm's (MD-3) land with it. Protocol 49 (X1, #2451,
+merged first with 48).
+
+**The frame names devices.** `\x01E2E <verb> <msgid> <i>/<n> <from> <to>
+<chunk>\x01`: `from` and `to` are each a device id (`did`) or `*`, in the
+combinations `IRC.E2e.addressed?/3` allows (KEYREQ `did → *`, KEYS
+`* → did`, PKMSG and MSG `did → did|*`, NACK `did → did`). They sit in the
+FRAME, not the payload, because grappa must address the KEYS it composes
+without decoding the KEYREQ it answers, and it decodes no payload. The
+chunk is a slice of the payload's compact JSON text, no longer of its
+base64: the outer encoding cost a third of every line (revision 2).
+
+**What grappa stores, and why each table.** `e2e_devices`: one row per
+device, its id block, and the `did` grappa derives (the first 8 bytes of
+the SHA-256 of the raw Ed25519 key, base64url unpadded). The client never
+chooses it. `e2e_device_lists`: the master's signed list, holding FULL
+Ed25519 keys. The `did` is a 64-bit routing label only, and a list of
+dids could be satisfied by a 2^64 second preimage. `e2e_keys` and
+`e2e_inbox` are now owned by a device (`device_id`, `ON DELETE CASCADE`).
+A revoked device's keys and queue go with its row, and no second copy of
+the subject sits beside the device's to drift. Keys are typed columns
+(`key`, `sig`), not client-built KEYS payloads: a v2 KEYS covers every
+listed device at once, so grappa composes it per KEYREQ
+(`E2eKeys.answer/3`). A device with no key left is simply absent from the
+answer. At most 4 devices: `DeviceList.max_devices/0` is the one number,
+enforced inside the write lock at registration and refused in the list.
+
+**grappa verifies exactly one signature, the list's.** It is input
+validation, not trust. grappa refuses a `ver` that does not rise. Without
+the check, a stolen bearer could SILENTLY lock out the master's real
+revocation: a junk list under the real master, its `ver` above anything
+the master will sign. The bearer's only other move, starting over under a
+master of its own (`DELETE …/e2e/keys`), is loud: every peer that pinned
+the real master sees the change. The device's own id signature is
+the peer's to check: the peer pins the master. A device a newer list drops
+is revoked, and its rows are deleted. A device registered and not yet
+listed (pairing) is left alone, but it neither sends (422
+`unknown_device`) nor receives: routing is to LISTED devices only.
+
+**A message to `*` is one row per listed device.** It carries a body for
+each, and each device decrypts its own. Each copy is pushed with its
+`to_did`; the OS notification goes once per message. The undeliverable
+notice is per (sender, device) and carries `meta.e2e_device`, so a client
+tells its own device's loss from a sibling's. Queue bounds are a2's
+(4 MiB, 1 MiB per sender, 7 days), applied per device.
+
+**Two KEYS rules from w2's review (O2), both in grappa.** (a) No second
+KEYS to a nick starts while one to it is still going out
+(`E2ePacer.waiting?/3`). A KEYS for several devices can outlast the
+asker's retry, and a second one behind it would only double the cost.
+(b) The client's own KEYREQ to a nick is refused `rate_limited` while a
+KEYS from that nick is part-way through reassembly
+(`E2eReassembly.pending?/4`). cic never sees fragments, so it cannot hold
+its retry itself. A buffer whose last fragment is a timeout old counts as
+gone, whether or not the once-a-minute sweep has dropped it: otherwise a
+stale one would refuse the client's KEYREQ for up to a minute more.
+
+**An idle KEYS window affords one answer, whatever it costs.** A KEYS for
+four devices costs more fake-lag bank than the connection's whole 22 s
+KEYS budget, so `E2eKeyAnswers.afford?/3` let none through. A window with
+nothing spent in it now affords one answer. That answer fills the window
+on its own, so the bound still holds over any 60 s.
+
+**The pacer's reactive budgets scale to a KEYS's cost (O2 (c)).** They
+were sized for v1's two-line KEYS: 18 s per peer, 22 s for the
+connection. A KEYS for four devices costs more than both, so it ranked as
+past-budget, behind the user's own text. Measured before the change, in
+`e2e_session_test`: on an idle connection the first line for four devices
+left only after the 8 s fresh patience. For a KEYS both budgets are now
+raised to the KEYS's own cost, so only what else the window holds puts it
+past them (`E2ePacer`'s `budgets/3`). This is the one place grappa's
+pacer departs from irc-olm's `pacing.py`. The amendment called it local,
+since each side sizes the KEYS it answers.
+
+**A device can vanish between the read and the write, and SQLite will not
+say which constraint caught it.** A list put or a clear can commit between
+the session reading the listed devices and queueing a copy for one, or
+between the controller resolving a `did` and the upload landing. SQLite
+reports a foreign-key failure with no constraint name, so
+`assoc_constraint/2` cannot match it: Ecto raises, and in
+`Session.Server` that would take the IRC link down. So `E2eInbox.put/2`
+and `E2eKeys.upload/2` check the device inside their immediate
+transaction, answering `:gone` (dropped at debug, nothing owed to a device
+that is no longer there) and `:not_found` (404). A changeset refusal is
+deliberately NOT caught in the session: the router drops a sender that is
+not a nick before anything is queued, so one would be a broken invariant.
+
+**Small doors.** `DELETE /e2e/devices/:did` drops a device the list does
+not name, so an abandoned pairing does not hold one of the four rooms
+until the whole identity is cleared. A listed device is refused
+(`listed_device`, 409): its removal is the master's signed act, a list
+that leaves it out. Putting the very list already held answers 200 and
+changes nothing, so a client retrying a put whose answer it lost is not
+refused its own list. Device labels (6346236542, "stay in grappa and are
+never sent") are not stored yet: nothing reads one before the device
+management slice.
+
+**The did is base64url, because it travels in a URL.** Rev 2 had it in
+the standard alphabet of every key on the wire, so about one did in seven
+held a `/` (and some a `+`). Raw in `/e2e/devices/:did/…`, the `/` split
+the segment, the request missed every device route, and the SPA's
+catch-all answered 200 with its page: the controller suite went red by the
+luck of the key bytes. Percent-encoding would have fixed the route and left
+a footgun in every client, so the orchestrator ruled the did base64url
+(RFC 4648 §5) everywhere instead, agreed with w2 for irc-olm and posted on
+2430 as an amendment with two vectors. A `+` or `/` in a frame address is
+now malformed (`IRC.E2e.did?/1`). Keys, signatures and msgids stay
+standard base64: none of them ever sits in a path.
+
+**Default index names, and why.** For a unique index on plain columns
+(partial or not), SQLite reports the COLUMNS, not the index's name
+(`UNIQUE constraint failed: e2e_keys.device_id, e2e_keys.key`), and
+ecto_sqlite3 derives the constraint name from them
+(`constraint_name_hack/1`, giving `e2e_keys_device_id_key_index`). Only an
+expression index is reported by name. A column index given a custom
+`name:` therefore never matches `unique_constraint/3`, and the violation
+raises instead of returning a changeset error. Every new index here keeps
+the default name.
+
+**A flag day, not a migration.** `e2e_keys` and `e2e_inbox` are dropped
+and rebuilt, not altered. Protocol 49 MOVES the per-account routes under
+`/e2e/devices/:did/` and changes `payload` from base64 to compact JSON:
+removals in the #1626 sense, which vjt ruled covered (2430 comment
+6348339431). Both rest on one fact: no release carries E2E. The first E2E
+commit, d7d3d006f, postdates v1.5.14, the last tag; E2E ships in v1.6, and
+the freeze keeps it off every deployed grappa, so no row and no bundle
+exists to carry over.
