@@ -1272,6 +1272,14 @@ export type SessionWireE2eMessagePayload = {
   payload: string;
 };
 
+export type SessionWireE2eInboxPayload = {
+  messages: SessionWireE2eMessagePayload[];
+};
+
+export type SessionWireE2eSentPayload = {
+  msgid: string;
+};
+
 export type SessionWireJoinFailedPayload = {
   kind: "join_failed";
   network: string;

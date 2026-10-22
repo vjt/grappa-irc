@@ -566,6 +566,18 @@ defmodule Grappa.Session.Wire do
           payload: String.t()
         }
 
+  @typedoc """
+  issue 2430 — `GET /networks/:network_id/e2e/inbox`: a page of the offline
+  queue, oldest first, each message the `e2e_message` the user topic pushes.
+  """
+  @type e2e_inbox_payload :: %{messages: [e2e_message_payload()]}
+
+  @typedoc """
+  issue 2430 — `POST /networks/:network_id/e2e/messages` (202): the msgid
+  grappa named the message with, which a peer's `NACK` will name.
+  """
+  @type e2e_sent_payload :: %{msgid: String.t()}
+
   @type join_failed_payload :: %{
           kind: :join_failed,
           network: String.t(),
@@ -1612,6 +1624,20 @@ defmodule Grappa.Session.Wire do
       payload: entry.payload
     }
   end
+
+  @doc """
+  issue 2430 — a page of the offline queue, in the envelope
+  `GET /networks/:network_id/e2e/inbox` answers: each message through
+  `e2e_message/2`, so a fetched one and a pushed one are one shape.
+  """
+  @spec e2e_inbox(String.t(), [E2eInbox.Entry.t()]) :: e2e_inbox_payload()
+  def e2e_inbox(network_slug, entries) when is_binary(network_slug) and is_list(entries) do
+    %{messages: Enum.map(entries, &e2e_message(network_slug, &1))}
+  end
+
+  @doc "issue 2430 — the send door's answer: the msgid grappa chose."
+  @spec e2e_sent(String.t()) :: e2e_sent_payload()
+  def e2e_sent(msgid) when is_binary(msgid), do: %{msgid: msgid}
 
   @doc """
   CP15 B2 — JOIN failure numeric (471/473/474/475/403/405)

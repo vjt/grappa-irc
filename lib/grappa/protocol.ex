@@ -1201,7 +1201,25 @@ defmodule Grappa.Protocol do
   # this file (#2102) still carries 21.
   #
   # @min_protocol_version stays at 1: an old bundle never calls the routes.
-  @protocol_version 44
+  #
+  # ---------------------------------------------------------------------------
+  # 45 — issue 2430: the encrypted-message doors' envelopes, declared
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED to the GENERATED shape, nothing to the bytes: the inbox page
+  # (`{messages: [e2e_message…]}`, `Session.Wire.e2e_inbox_payload`) and the
+  # send door's 202 (`{msgid}`, `e2e_sent_payload`) are declared, so the
+  # client that now reads both narrows them through the generated schema
+  # instead of a hand-written mirror (#1400). The JSON is the one 43 and 42
+  # answered. Bumped anyway on the #1393d rule, which keys on the generated
+  # shape (`wire_pin`), and it costs nothing: a client reading `>= 45`
+  # learns nothing false.
+  #
+  # Checked for a collision before claiming 45: the one open PR that edits
+  # this file (#2102) still carries 21.
+  #
+  # @min_protocol_version stays at 1: the bytes did not change.
+  @protocol_version 45
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1242,7 +1260,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 44
+  @spec version() :: 45
   def version, do: @protocol_version
 
   @doc """
