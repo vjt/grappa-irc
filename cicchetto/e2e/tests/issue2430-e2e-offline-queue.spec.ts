@@ -32,13 +32,19 @@
 //   * Push for KEYS: the absence arm goes red. Push for nothing: the MSG arm
 //     times out.
 //
+// cic drains that queue the moment an `e2e_message` arrives (and acks what it
+// took, which removes it), so a logged-in page would empty it before either
+// proof could read it. The page here is a push receiver and a window list,
+// not a reader: `holdE2eInbox` hands it empty inbox pages, so the queue stays
+// grappa's alone. The two-browser encrypted-query spec is where cic reads.
+//
 // The payloads hold no real Olm — grappa never decodes one and nobody here
 // holds a key — but they are shaped like the agreed wire (padded standard
 // base64 of a `"v":1` JSON object, an 11-char unpadded msgid), so the spec
 // does not lean on grappa being lax about anything it checks.
 
 import { randomBytes } from "node:crypto";
-import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
+import { holdE2eInbox, loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
 import { awaitE2eQueued, expireE2eInbox, fetchE2eInbox } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import {
@@ -70,6 +76,7 @@ test("encrypted messages nobody reads expire into one recipient-only notice in t
   page,
 }) => {
   const vjt = specUser();
+  await holdE2eInbox(page, NETWORK_SLUG);
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: specNick() });
 
@@ -126,6 +133,7 @@ test("a queued encrypted message pushes 'encrypted message' from the nick, and k
   await stubPushManager(context, { endpoint: pushCatcherEndpoint(subId) });
   await context.grantPermissions(["notifications"]);
 
+  await holdE2eInbox(page, NETWORK_SLUG);
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: specNick() });
   await enablePushFromSettings(page, context, { id: subId, token: vjt.token });

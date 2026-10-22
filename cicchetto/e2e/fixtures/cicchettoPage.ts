@@ -66,6 +66,7 @@ import {
   expect,
   type Locator,
   type Page,
+  type Response,
 } from "@playwright/test";
 import type { SeededUser } from "./grappaApi";
 import { type ScrollGestureResult, scrollByGesture, waitForScrollRest } from "./scrollGesture";
@@ -785,6 +786,31 @@ export async function awaitServerBundleHashPush(page: Page): Promise<void> {
     },
     null,
     { timeout: 10_000 },
+  );
+}
+
+// issue 2430 — resolves when the page's E2E key bundle upload for the network
+// succeeds: until then a peer's KEYREQ has nothing to be answered from. ARM IT
+// BEFORE the action that triggers the upload (login, reload), or it can miss.
+export function e2eBundleUploaded(page: Page, networkSlug: string): Promise<Response> {
+  return page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === `/networks/${networkSlug}/e2e/keys` &&
+      response.ok(),
+  );
+}
+
+// issue 2430 — keeps the page from taking anything out of grappa's
+// encrypted-message inbox on the network: every inbox page it asks for comes
+// back empty, so it never acknowledges, and so never removes, an entry. For
+// specs about grappa's QUEUE, which a logged-in cic would otherwise drain
+// within milliseconds of each arrival. Arm before login.
+export async function holdE2eInbox(page: Page, networkSlug: string): Promise<void> {
+  await page.route(new RegExp(`/networks/${networkSlug}/e2e/inbox(\\?|$)`), (route) =>
+    route.request().method() === "GET"
+      ? route.fulfill({ json: { messages: [] } })
+      : route.continue(),
   );
 }
 
