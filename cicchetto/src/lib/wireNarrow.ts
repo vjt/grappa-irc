@@ -17,6 +17,9 @@ import {
   S_AdminOverviewWireT,
   S_ChannelDirectoryWireIndexPayload,
   S_E2eKeysWireStatus,
+  S_E2ePairingWireMessageResponse,
+  S_E2ePairingWireMessagesResponse,
+  S_E2ePairingWireRendezvousResponse,
   S_LiveIntrospectionAdminWireIndexPayload,
   S_MeJSONMeJson,
   S_NetworksFeaturedChannelsAdminWireIndexPayload,
@@ -47,6 +50,9 @@ import type {
   AdminOverviewWireT,
   ChannelDirectoryWireIndexPayload,
   E2eKeysWireStatus,
+  E2ePairingWireMessageResponse,
+  E2ePairingWireMessagesResponse,
+  E2ePairingWireRendezvousResponse,
   LiveIntrospectionAdminWireIndexPayload,
   MeJSONMeJson,
   NetworksFeaturedChannelsAdminWireIndexPayload,
@@ -938,6 +944,21 @@ export function narrowE2eInboxResponse(raw: unknown): SessionWireE2eInboxPayload
 /** `POST /networks/:slug/e2e/messages` (issue 2430): the msgid grappa chose. */
 export function narrowE2eSentResponse(raw: unknown): SessionWireE2eSentPayload {
   return narrowRest(S_SessionWireE2eSentPayload, raw, "encrypted send");
+}
+
+/** `POST /e2e/pairings` and `POST /e2e/pairings/:id/join` (issue 2430, X1). */
+export function narrowPairingRendezvousResponse(raw: unknown): E2ePairingWireRendezvousResponse {
+  return narrowRest(S_E2ePairingWireRendezvousResponse, raw, "pairing rendezvous");
+}
+
+/** `POST /e2e/pairings/:id/messages` (issue 2430, X1). */
+export function narrowPairingMessageResponse(raw: unknown): E2ePairingWireMessageResponse {
+  return narrowRest(S_E2ePairingWireMessageResponse, raw, "pairing message");
+}
+
+/** `GET /e2e/pairings/:id/messages` (issue 2430, X1). */
+export function narrowPairingMessagesResponse(raw: unknown): E2ePairingWireMessagesResponse {
+  return narrowRest(S_E2ePairingWireMessagesResponse, raw, "pairing messages");
 }
 
 // ── #1400 slice 1 — the doors whose envelope was already generated ──

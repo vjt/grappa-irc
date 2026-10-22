@@ -900,8 +900,12 @@ from 1.
 
 `e2e_pairing_message` carries no payload, on purpose: the push reaches
 every device of the account, and the fetch above answers the two sides
-alone. On the push, fetch `after` the last `seq` you delivered; fetch
-again after a reconnect, since a push is not replayed. `reason` is
+alone. On the push, fetch `after` the last `seq` you delivered. A push is
+not replayed, so fetch also once as you open the channel (the other side
+may answer between your join and your subscribe) and again after every
+reconnect: in a handshake each side waits for the other, and a lost
+doorbell otherwise waits out the 300 s. A fetch answered 404 means the
+rendezvous ended while you missed the push saying so. `reason` is
 `closed` (a side closed it), `expired` or `replaced`.
 
 Check `protocol_version >= 48`.

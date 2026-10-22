@@ -56,6 +56,8 @@ import type {
   ChannelDirectoryWireEntry,
   ChannelDirectoryWireIndexPayload,
   E2eKeysWireStatus,
+  E2ePairingWireE2ePairingClosedPayload,
+  E2ePairingWireE2ePairingMessagePayload,
   LiveIntrospectionAdminWireT,
   NetworksAdminWireT,
   NetworksCredentialConnectionState,
@@ -1292,6 +1294,11 @@ export type WireUserEvent =
   // failed to reach the socket, `session_ended` when the session stopped
   // with it still queued. Generated shape verbatim.
   | SessionWireE2eSendDroppedPayload
+  // issue 2430 X1 (protocol 48) — the pairing relay: a side posted on a
+  // rendezvous (a doorbell, no payload: fetch it), or the rendezvous is
+  // gone. lib/e2e/pairing.ts is their only reader. Generated shape verbatim.
+  | E2ePairingWireE2ePairingMessagePayload
+  | E2ePairingWireE2ePairingClosedPayload
   | ({ kind: "names_reply" } & NamesReply)
   | ({ kind: "who_reply" } & WhoReply)
   | ({ kind: "server_reply" } & ServerReply)

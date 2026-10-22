@@ -3807,8 +3807,19 @@ seq, from}` and no payload. The user topic reaches every device of the
 account, the REST fetch answers the two sides alone, so putting the
 ciphertext on the push would have handed it to devices the fetch refuses.
 It is also how cic already reads `e2e_message` (the push rings, the drain
-takes), and a missed push costs nothing: the next fetch `after` the last
-delivered `seq` picks it up.
+takes). **A missed push costs nothing only because the doorbell is not the
+only trigger** — a review caught the first cut relying on it alone. In a
+handshake each side waits for the other, so a lost doorbell means no next
+one, and both screens sat until the expiry. The likeliest case is the
+commonest: the scanning phone's `/pair` is a fresh page load, so its REST
+join can beat its socket's user-topic join and the creator's answer rings
+nobody. cic therefore fetches once as a channel opens and again on every
+user-topic (re)join, like the inbox drain, and a 404 there (the rendezvous
+ended while the close push was lost too) ends the channel as `gone`, a
+client-side reason, since that is all the client can know. For the same
+reason the relay does not crash on a failed broadcast: one process holds
+every account's rendezvous, and a crash for one lost push would end them
+all; `Grappa.PubSub` emits the failure's telemetry and the fetch recovers.
 
 **One live rendezvous per account.** A second open closes the first
 (`replaced`) rather than refusing: the user who reopens the QR has

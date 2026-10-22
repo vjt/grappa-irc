@@ -13,6 +13,7 @@ import { onDirectoryComplete, onDirectoryFailed, onDirectoryProgress } from "./c
 import { channelKey } from "./channelKey";
 import { holdDccOffer, resolveDccOffer } from "./dccOffers";
 import { diagPush } from "./diagLog";
+import { catchUpPairings, deliverPairingEvent } from "./e2e/pairing";
 import { drainE2e, drainEveryNetwork, encryptedSendDropped } from "./encryptedChats";
 import { setSeveredForFlood } from "./floodSever";
 import { refreshHighlights } from "./highlightList";
@@ -81,6 +82,8 @@ import { narrowIsupportChanged, narrowWindowStateEvent } from "./wireNarrow";
 // us to close (#447), a per-field degrade that beats dropping the payload.
 // Do not migrate one of those without re-measuring it first.
 import {
+  S_E2ePairingWireE2ePairingClosedPayload,
+  S_E2ePairingWireE2ePairingMessagePayload,
   S_NetworksWireConnectionStateEvent,
   S_NetworksWireNetworkAttachedEvent,
   S_NetworksWireNetworkDetachedEvent,
@@ -519,6 +522,11 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // issue 2430 (protocol 46) — a message grappa accepted and then
       // dropped unsent; the dispatch arm below hands it to the E2E client.
       return validate(S_SessionWireE2eSendDroppedPayload, r);
+    case "e2e_pairing_message":
+      // issue 2430 X1 (protocol 48) — the pairing relay's doorbell.
+      return validate(S_E2ePairingWireE2ePairingMessagePayload, r);
+    case "e2e_pairing_closed":
+      return validate(S_E2ePairingWireE2ePairingClosedPayload, r);
     case "names_reply":
       // #140 — /names roster bundle. A malformed member element drops the
       // whole payload rather than rendering a half-typed row, which is the
@@ -960,6 +968,9 @@ moduleRoot(() => {
       // connected sit in grappa's offline queue, and no push re-announces
       // them: drain every network's inbox on every (re)join.
       drainEveryNetwork();
+      // issue 2430 X1 — the same for a pairing channel: its doorbells are
+      // not replayed either, and a handshake would wait out the TTL.
+      catchUpPairings();
     });
     channel.on("event", (raw: unknown) => {
       const payload = narrowUserEvent(raw);
@@ -1289,6 +1300,14 @@ moduleRoot(() => {
                 err,
               ),
           );
+          return;
+
+        case "e2e_pairing_message":
+        case "e2e_pairing_closed":
+          // issue 2430 X1 — to the pairing channel this tab holds for that
+          // rendezvous, if any; every device of the account hears both
+          // (lib/e2e/pairing.ts).
+          deliverPairingEvent(payload);
           return;
 
         case "names_reply": {
