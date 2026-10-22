@@ -320,6 +320,10 @@ describe("scrollback verbs", () => {
   // sent: what goes out through this door, and nothing else, is in the log.
   it("logs every PRIVMSG it sends for order challenges, never a NOTICE or a failed send", async () => {
     localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "0b5e", name: "alice" }),
+    );
     const api = await import("../lib/api");
     const scrollback = await import("../lib/scrollback");
     const { sendLog } = await import("../lib/e2e/orders");
@@ -328,7 +332,14 @@ describe("scrollback verbs", () => {
         new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))),
         (b) => b.toString(16).padStart(2, "0"),
       ).join("");
-    const scope = { slug: "freenode", network: "Freenode", casemapping: "ascii" as const };
+    const scope = {
+      subject: "user:0b5e",
+      slug: "freenode",
+      network: "Freenode",
+      casemapping: "ascii" as const,
+      chantypes: ["#"],
+    };
+    // The bot asking is "bot": a PM's CHAL names the bot's own nick.
     const sentHere = async (channel: string, body: string) =>
       sendLog.confirms(
         {
@@ -339,9 +350,10 @@ describe("scrollback verbs", () => {
           nonce: "bm9uY2U",
           expiresAt: Math.floor(Date.now() / 1000) + 15,
         },
+        "bot",
         scope,
         Date.now(),
-      );
+      ) === "confirmed";
     vi.mocked(api.sendMessage).mockResolvedValue(null);
 
     await scrollback.sendMessage("freenode", "#grappa", "bot: ping");

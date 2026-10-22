@@ -11,7 +11,7 @@
 import { createRoot, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Engine, type Outbound } from "../lib/e2e/engine";
-import { sendLog } from "../lib/e2e/orders";
+import { sendLog, subjectKey } from "../lib/e2e/orders";
 import { DEFAULT_ISUPPORT, seedIsupport } from "../lib/isupport";
 import { Grappa, publishBundle } from "./helpers/e2eGrappa";
 import { memoryLock, memoryVault } from "./helpers/e2eVault";
@@ -148,7 +148,7 @@ async function bob() {
     slot: "bob-slot",
     ownNick: "Bob",
     door: grappa.door("Bob"),
-    orders: async () => false,
+    orders: () => "not-sent" as const,
   };
   const bodies = async () =>
     (await store.rows("bob-slot", net.nick)).flatMap((r) => (r.kind === "in" ? [r.body] : []));
@@ -236,7 +236,8 @@ describe("encrypted chats", () => {
   );
 
   // 2430 "Authorising orders": Bob, playing a bot, saw "Bob: ping" from
-  // alice in #grappa and asks her cic whether she sent it.
+  // alice in #grappa and asks her cic, on a session she verified, whether
+  // she sent it.
   describe("an order challenge", () => {
     const LINE = "Bob: ping";
     const sha256 = async (body: string) =>
@@ -262,13 +263,16 @@ describe("encrypted chats", () => {
       await b.client.send(b.ctx, net.nick, "ciao alice");
       await b.client.drain(b.ctx);
       await chats.drainE2e(net.slug);
+      await chats.pinEncryptedKey(net.slug, "Bob", await b.fingerprint(), true);
       return b;
     }
+    const sent = (subject: string) =>
+      sendLog.record({ subject, slug: net.slug, target: "#grappa", body: LINE, at: Date.now() });
 
     it("is ACKed with its deadline when this device sent the line on that network", async () => {
       const b = await talking();
       seedIsupport(net.id, { ...DEFAULT_ISUPPORT, network: "AzzurraNet" });
-      sendLog.record({ slug: net.slug, target: "#grappa", body: LINE, at: Date.now() });
+      await sent(subjectKey(ME));
       const asked = await chal();
 
       await b.inject(asked);
@@ -287,7 +291,7 @@ describe("encrypted chats", () => {
       vi.spyOn(console, "warn").mockImplementation(() => undefined);
       const b = await talking();
       seedIsupport(net.id, { ...DEFAULT_ISUPPORT, network: null });
-      sendLog.record({ slug: net.slug, target: "#grappa", body: LINE, at: Date.now() });
+      await sent(subjectKey(ME));
 
       await b.inject(await chal());
       await chats.drainE2e(net.slug);
@@ -295,20 +299,39 @@ describe("encrypted chats", () => {
       expect(acks()).toEqual([]);
       expect(grappa.inboxes.get(net.nick)).toEqual([]);
     });
+
+    it("goes unanswered for a line another login in this browser sent", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const b = await talking();
+      seedIsupport(net.id, { ...DEFAULT_ISUPPORT, network: "AzzurraNet" });
+      await sent(subjectKey({ kind: "user", id: "5ca1ab1e" }));
+
+      await b.inject(await chal());
+      await chats.drainE2e(net.slug);
+
+      expect(acks()).toEqual([]);
+    });
   });
 
-  it("a message grappa dropped after accepting it turns failed with the reason", async () => {
-    await chats.drainE2e(net.slug);
-    await bob();
-    await chats.loadEncryptedChat(net.slug, "Bob");
-    await chats.sendEncrypted(net.slug, "Bob", "ciao bob");
-    await chats.drainE2e(net.slug);
-    const msgid = grappa.sends.at(-1)?.msgid ?? "";
+  it.each([
+    ["late", "late"],
+    ["send_failed", "send-failed"],
+    ["session_ended", "session-ended"],
+  ] as const)(
+    "a message grappa dropped after accepting it (%s) turns failed with %s",
+    async (wire, shown) => {
+      await chats.drainE2e(net.slug);
+      await bob();
+      await chats.loadEncryptedChat(net.slug, "Bob");
+      await chats.sendEncrypted(net.slug, "Bob", "ciao bob");
+      await chats.drainE2e(net.slug);
+      const msgid = grappa.sends.at(-1)?.msgid ?? "";
 
-    await chats.encryptedSendDropped(net.slug, msgid, "session_ended");
+      await chats.encryptedSendDropped(net.slug, msgid, wire);
 
-    expect(outStates()).toEqual([["ciao bob", "failed", "session-ended"]]);
-  });
+      expect(outStates()).toEqual([["ciao bob", "failed", shown]]);
+    },
+  );
 
   it("pins Bob's key by hand: the pin is shown and the badge reads verified", async () => {
     await chats.drainE2e(net.slug);
@@ -490,7 +513,12 @@ describe("encrypted chats", () => {
         alive: async () => new Set(),
       });
       await other.verify(
-        { slot: slot(), ownNick: net.nick, door: grappa.door(net.nick), orders: async () => false },
+        {
+          slot: slot(),
+          ownNick: net.nick,
+          door: grappa.door(net.nick),
+          orders: () => "not-sent" as const,
+        },
         "Bob",
         "start",
       );

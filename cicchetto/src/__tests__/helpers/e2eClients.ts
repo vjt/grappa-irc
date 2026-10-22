@@ -15,7 +15,13 @@ import { olm } from "./olm";
 
 export const SLOT = "user:0b5e:1";
 /** The network every side is on, as an order challenge names it. */
-export const SCOPE: OrderScope = { slug: "azzurra", network: "AzzurraNet", casemapping: "ascii" };
+export const SCOPE: OrderScope = {
+  subject: "user:0b5e",
+  slug: "azzurra",
+  network: "AzzurraNet",
+  casemapping: "ascii",
+  chantypes: ["#", "&"],
+};
 
 export type Side = {
   nick: string;
@@ -52,7 +58,7 @@ export class World {
         slot: SLOT,
         ownNick: nick,
         door: this.grappa.door(nick),
-        orders: (chal, at) => sent.confirms(chal, SCOPE, at),
+        orders: (chal, challenger, at) => sent.confirms(chal, challenger, SCOPE, at),
       },
       vault,
       chatVault,

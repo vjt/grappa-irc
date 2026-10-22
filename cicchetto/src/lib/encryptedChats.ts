@@ -41,11 +41,11 @@ import {
   type PeerTrust,
   type Report,
 } from "./e2e/client";
-import { sendLog } from "./e2e/orders";
+import { type OrderScope, sendLog, subjectKey } from "./e2e/orders";
 import type { SasStep, SasView } from "./e2e/sas";
 import { fold } from "./e2e/wire";
 import { identityScopedStore } from "./identityScopedStore";
-import { casemappingForNetwork, isupportForNetwork } from "./isupport";
+import { casemappingForNetwork, chantypesForNetwork, isupportForNetwork } from "./isupport";
 import { networkBySlug, networks, user } from "./networks";
 import type { SessionWireE2eDropReason } from "./wireTypes";
 
@@ -158,10 +158,12 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     const network = networkBySlug(slug);
     if (!bearer || !me || network === undefined) throw new Error(`no network ${slug} to use`);
     const slot = accountSlot(me, network.id);
-    const scope = {
+    const scope: OrderScope = {
+      subject: subjectKey(me),
       slug,
       network: isupportForNetwork(network.id).network,
       casemapping: casemappingForNetwork(network.id),
+      chantypes: chantypesForNetwork(network.id),
     };
     return {
       bearer,
@@ -170,7 +172,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         slot,
         ownNick: network.nick,
         door: door(bearer, slug),
-        orders: (chal, at) => sendLog.confirms(chal, scope, at),
+        orders: (chal, challenger, at) => sendLog.confirms(chal, challenger, scope, at),
       },
     };
   }
