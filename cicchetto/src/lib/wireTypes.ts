@@ -1032,6 +1032,7 @@ export const SESSION_WIRE_WIRE_EVENT_KIND = [
   "dcc_offer",
   "dcc_offer_resolved",
   "e2e_message",
+  "e2e_send_dropped",
   "join_failed",
   "kicked",
   "away_confirmed",
@@ -1278,6 +1279,17 @@ export type SessionWireE2eInboxPayload = {
 
 export type SessionWireE2eSentPayload = {
   msgid: string;
+};
+
+export const SESSION_WIRE_E2E_DROP_REASON = ["late", "send_failed", "session_ended"] as const;
+export type SessionWireE2eDropReason = (typeof SESSION_WIRE_E2E_DROP_REASON)[number];
+
+export type SessionWireE2eSendDroppedPayload = {
+  kind: "e2e_send_dropped";
+  network: string;
+  target: string;
+  msgid: string;
+  reason: SessionWireE2eDropReason;
 };
 
 export type SessionWireJoinFailedPayload = {
@@ -1528,6 +1540,7 @@ export type WireSessionEvent =
   | SessionWireDccOfferPayload
   | SessionWireDccOfferResolvedPayload
   | SessionWireE2eMessagePayload
+  | SessionWireE2eSendDroppedPayload
   | SessionWireJoinFailedPayload
   | SessionWireKickedPayload
   | SessionWireAwayConfirmedPayload
@@ -1778,6 +1791,7 @@ export const ERROR_TOKENS_REST_ERROR_TOKEN = [
   "too_many_attempts",
   "theme_cap_reached",
   "list_full",
+  "too_late",
   "invalid_mask",
   "invalid_text_pattern",
   "not_raster",

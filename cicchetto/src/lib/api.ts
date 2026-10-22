@@ -90,6 +90,7 @@ import type {
   SessionWireBanlistEntry,
   SessionWireE2eInboxPayload,
   SessionWireE2eMessagePayload,
+  SessionWireE2eSendDroppedPayload,
   SessionWireE2eSentPayload,
   SessionWireLinksBundlePayload,
   SessionWireLinksEntry,
@@ -1277,6 +1278,12 @@ export type WireUserEvent =
   // peer cut it: grappa joins the chunks and never decodes them. The cic
   // E2E lib (slice c) is its only reader. Generated shape verbatim.
   | SessionWireE2eMessagePayload
+  // issue 2430 (protocol 46) — an outbound E2E message the send door
+  // accepted (202) and grappa then dropped unsent: `late` when an order's
+  // answer could no longer make its `expires_at`, `send_failed` when a line
+  // failed to reach the socket, `session_ended` when the session stopped
+  // with it still queued. Generated shape verbatim.
+  | SessionWireE2eSendDroppedPayload
   | ({ kind: "names_reply" } & NamesReply)
   | ({ kind: "who_reply" } & WhoReply)
   | ({ kind: "server_reply" } & ServerReply)

@@ -359,6 +359,14 @@ defmodule Grappa.Session.E2ePacerTest do
     end
   end
 
+  test "pending/1 names every message with a line still waiting, once each" do
+    pacer = E2ePacer.new() |> held!(text("vjt", "m", [2_000, 2_000])) |> held!(nack("Lucy", "n", [2_000]))
+    assert Enum.sort(E2ePacer.pending(pacer)) == [{"Lucy", "n", :nack}, {"vjt", "m", :msg}]
+
+    {["n:1", "m:1"], [], released, _} = release(pacer, 0, 0)
+    assert E2ePacer.pending(released) == [{"vjt", "m", :msg}]
+  end
+
   describe "drop/3: a line that failed to go out" do
     test "irc-olm: dropping the rest of a message frees its text and its turn" do
       pacer =

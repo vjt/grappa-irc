@@ -195,7 +195,7 @@ defmodule Grappa.Session.E2eSessionTest do
 
       # A long text message to alice: its first lines fill the bank, the
       # rest wait on it at about one line per 5 s.
-      {:ok, text} = Session.send_e2e(subject, network.id, "alice", :msg, :text, payload(1600))
+      {:ok, text} = Session.send_e2e(subject, network.id, "alice", :msg, :text, payload(1600), nil)
       {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, " #{text} 1/"), 10_000)
       [%{total: total} | _] = sent_fragments(server, text)
       assert total >= 6
@@ -220,7 +220,7 @@ defmodule Grappa.Session.E2eSessionTest do
 
       refused =
         Enum.find(1..(E2ePacer.max_lane_lines() + 10), fn _ ->
-          Session.send_e2e(subject, network.id, "alice", :nack, :text, small) == {:error, :rate_limited}
+          Session.send_e2e(subject, network.id, "alice", :nack, :text, small, nil) == {:error, :rate_limited}
         end)
 
       assert refused, "alice's reactive lane never filled"
@@ -367,19 +367,19 @@ defmodule Grappa.Session.E2eSessionTest do
 
       refused =
         Enum.find(1..(E2ePacer.max_text_messages() + 10), fn _ ->
-          Session.send_e2e(subject, network.id, "Bob", :msg, :text, small) == {:error, :rate_limited}
+          Session.send_e2e(subject, network.id, "Bob", :msg, :text, small, nil) == {:error, :rate_limited}
         end)
 
       assert refused, "Bob's queue never filled"
-      assert {:error, :rate_limited} = Session.send_e2e(subject, network.id, "bob", :msg, :text, small)
-      assert {:ok, _} = Session.send_e2e(subject, network.id, "carol", :msg, :text, small)
+      assert {:error, :rate_limited} = Session.send_e2e(subject, network.id, "bob", :msg, :text, small, nil)
+      assert {:ok, _} = Session.send_e2e(subject, network.id, "carol", :msg, :text, small, nil)
     end
 
     test "a message goes out as lines that fit the relay, reassemble, wait on the fake-lag bank, and are never stored" do
       {server, _, user, network} = connected_session()
       payload = payload(800)
 
-      assert {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :text, payload)
+      assert {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :text, payload, nil)
       assert E2e.msgid?(msgid)
 
       # A full line costs 5 s of bahamut fake lag, and the lines wait on the
@@ -423,30 +423,105 @@ defmodule Grappa.Session.E2eSessionTest do
       client = :sys.get_state(pid).client
       :ok = :sys.suspend(client)
 
-      assert {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :keyreq, :control, "eyJ2IjoxfQ==")
+      assert {:ok, msgid} =
+               Session.send_e2e({:user, user.id}, network.id, "alice", :keyreq, :control, "eyJ2IjoxfQ==", nil)
+
       assert Process.alive?(pid)
 
       :ok = :sys.resume(client)
       assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, msgid), 10_000)
     end
 
-    test "a line that fails to go out drops the rest of its message at once" do
+    test "an order's answer that can no longer make its deadline is dropped unsent, the sender told, and the next line goes" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      small = Base.encode64(~s({"v":1}))
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      # Three KEYREQs fill alice's window for 6 s.
+      for _ <- 1..3, do: {:ok, _} = Session.send_e2e(subject, network.id, "alice", :keyreq, :control, small, nil)
+
+      # An ACK whose CHAL expires in 5 s: accepted, since it might still
+      # start in time, but the window opens too late for it to be back
+      # by then. The KEYREQ behind it goes when the window opens.
+      expires_at = System.os_time(:second) + 5
+      assert {:ok, ack} = Session.send_e2e(subject, network.id, "alice", :msg, :control, small, expires_at)
+      {:ok, keyreq} = Session.send_e2e(subject, network.id, "alice", :keyreq, :control, small, nil)
+
+      assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, keyreq), 10_000)
+      refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, ack))
+
+      slug = network.slug
+
+      assert_received %Phoenix.Socket.Broadcast{
+        payload: %{kind: :e2e_send_dropped, network: ^slug, target: "alice", msgid: ^ack, reason: :late}
+      }
+    end
+
+    test "an order's answer already too late to make its deadline is refused at the door" do
+      {server, _, user, network} = connected_session()
+      small = Base.encode64(~s({"v":1}))
+      # Under the 2 s the answer needs to come back.
+      expires_at = System.os_time(:second) + 1
+
+      assert {:error, :too_late} =
+               Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :control, small, expires_at)
+
+      refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "E2E"))
+    end
+
+    test "a line that fails to go out drops the rest of its message, from this batch and the queue; the sender is told, the rest goes on" do
       {server, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      # Registration's own last write must be done before the client is swapped.
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "MODE "), 1_000)
 
-      # A long text message: one full line leaves, the rest drip on the bank.
-      {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :text, payload(1600))
+      # Two lines that fit an empty bank together, so they leave in one batch.
+      body = payload(300)
+      {:ok, bodies} = E2e.fragment(:msg, E2e.new_msgid(), body, LineSplit.frame_budget("Alice", 512))
+      assert [_, _] = costs = Enum.map(bodies, &Client.privmsg_cost_ms("Alice", &1))
+      assert Enum.sum(costs) <= Client.fake_lag_ceiling_ms()
+
+      # From here a write to "Alice", spelt so, fails; any other goes out.
+      stub = failing_client(pid, "Alice")
+      :sys.replace_state(pid, &%{&1 | client: stub})
+
+      {:ok, ack} = Session.send_e2e(subject, network.id, "Alice", :msg, :control, body, nil)
+
+      # The first line fails, and the second is never attempted.
+      assert_received {:failed, "PRIVMSG Alice :" <> first}
+      assert first =~ " #{ack} 1/2 "
+      refute_received {:failed, _}
+      refute_received {:wrote, "PRIVMSG Alice " <> _}
+      assert queued_lines(pid, ack) == 0
+
+      assert_received %Phoenix.Socket.Broadcast{
+        payload: %{kind: :e2e_send_dropped, target: "Alice", msgid: ^ack, reason: :send_failed}
+      }
+
+      # The urgent lane the message held is free: the next order goes.
+      {:ok, keyreq} = Session.send_e2e(subject, network.id, "bob", :keyreq, :control, Base.encode64(~s({"v":1})), nil)
+      assert_received {:wrote, "PRIVMSG bob :" <> line}
+      assert line =~ keyreq
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_send_dropped}}
+    end
+
+    test "what still waits when the session ends is dropped, and the sender told" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      # A long text message: one line leaves, the rest wait on the bank.
+      {:ok, msgid} = Session.send_e2e(subject, network.id, "alice", :msg, :text, payload(1600), nil)
       {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, " #{msgid} 1/"), 10_000)
-      waiting = queued_lines(pid, msgid)
-      assert waiting >= 2
 
-      # Every write fails from here on, as with no socket to write to.
-      :sys.replace_state(pid, &%{&1 | client: nil})
+      :ok = Session.stop_session(subject, network.id)
 
-      # The first line that fails takes the whole rest of its message with
-      # it: the receiver could never complete it.
-      assert wait_until(fn -> queued_lines(pid, msgid) < waiting end, 10_000)
-      assert queued_lines(pid, msgid) == 0
-      assert :sys.get_state(pid).e2e_pacer.open == %{}
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :e2e_send_dropped, target: "alice", msgid: ^msgid, reason: :session_ended}
+                     },
+                     @wire_timeout
     end
 
     test "refuses what is not a nick, a verb a client may not send, an unknown priority, and a non-base64 payload" do
@@ -454,13 +529,22 @@ defmodule Grappa.Session.E2eSessionTest do
       subject = {:user, user.id}
       good = Base.encode64(~s({"v":1}))
 
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "#italia", :msg, :text, good)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :keys, :text, good)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :offline, :text, good)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :urgent, good)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :text, "not base64!")
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :text, "")
-      assert {:error, :invalid_line} = Session.send_e2e(subject, network.id, "alice\r\nQUIT", :msg, :text, good)
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "#italia", :msg, :text, good, nil)
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :keys, :text, good, nil)
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :offline, :text, good, nil)
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :urgent, good, nil)
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :text, "not base64!", nil)
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :text, "", nil)
+      assert {:error, :invalid_line} = Session.send_e2e(subject, network.id, "alice\r\nQUIT", :msg, :text, good, nil)
+
+      # A deadline belongs to an order's CHAL or ACK only: a MSG/PKMSG marked
+      # control.
+      soon = System.os_time(:second) + 15
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :text, good, soon)
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :keyreq, :control, good, soon)
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :nack, :control, good, soon)
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :control, good, 0)
+      assert {:ok, _} = Session.send_e2e(subject, network.id, "alice", :pkmsg, :control, good, soon)
     end
 
     test "a payload that needs more than 64 lines is refused before anything is sent" do
@@ -469,13 +553,15 @@ defmodule Grappa.Session.E2eSessionTest do
       huge = Base.encode64(:crypto.strong_rand_bytes(20_000))
       assert byte_size(huge) < E2e.max_payload_bytes()
 
-      assert {:error, :too_large} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :text, huge)
+      assert {:error, :too_large} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :text, huge, nil)
       refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "E2E"))
     end
 
     test "with no session the send is refused, not swallowed" do
       user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
-      assert {:error, :no_session} = Session.send_e2e({:user, user.id}, 999_999, "alice", :msg, :text, "eyJ2IjoxfQ==")
+
+      assert {:error, :no_session} =
+               Session.send_e2e({:user, user.id}, 999_999, "alice", :msg, :text, "eyJ2IjoxfQ==", nil)
     end
   end
 
@@ -529,7 +615,6 @@ defmodule Grappa.Session.E2eSessionTest do
     end
   end
 
-  # Every line of message `msgid` on the wire so far, parsed, in wire order.
   # Lines of `msgid` still waiting in the session's pacer, in any lane.
   defp queued_lines(pid, msgid) do
     for {_, lanes} <- :sys.get_state(pid).e2e_pacer.queues,
@@ -540,16 +625,42 @@ defmodule Grappa.Session.E2eSessionTest do
         do: (n -> n + 1)
   end
 
-  defp wait_until(check, timeout_ms) when timeout_ms <= 0, do: check.()
+  # A stand-in for the session's IRC client: the bank always reads empty, a
+  # write to the raw target `failing` fails as on a closed socket, any other
+  # goes through, and each attempt is reported to the test. It goes when
+  # the session does.
+  defp failing_client(session, failing) do
+    test = self()
 
-  defp wait_until(check, timeout_ms) do
-    check.() or
-      (
-        Process.sleep(50)
-        wait_until(check, timeout_ms - 50)
-      )
+    spawn(fn ->
+      ref = Process.monitor(session)
+      stub_client(test, ref, "PRIVMSG #{failing} :")
+    end)
   end
 
+  defp stub_client(test, ref, failing) do
+    receive do
+      {:DOWN, ^ref, :process, _, _} ->
+        :ok
+
+      {:"$gen_call", from, :fake_lag_bank_ms} ->
+        GenServer.reply(from, 0)
+        stub_client(test, ref, failing)
+
+      {:"$gen_call", from, {:send, frame}} ->
+        if String.starts_with?(frame, failing) do
+          send(test, {:failed, frame})
+          GenServer.reply(from, {:error, :closed})
+        else
+          send(test, {:wrote, frame})
+          GenServer.reply(from, :ok)
+        end
+
+        stub_client(test, ref, failing)
+    end
+  end
+
+  # Every line of message `msgid` on the wire so far, parsed, in wire order.
   defp sent_fragments(server, msgid) do
     server
     |> IRCServer.sent_lines()

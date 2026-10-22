@@ -328,7 +328,12 @@ let _socket: Socket | null = null;
 // in the generated shape (`SessionWireE2eInboxPayload`,
 // `SessionWireE2eSentPayload`); the bytes are the ones 42 and 43 sent, so
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 45;
+//
+// 46 (issue 2430) — the send door's optional `expires_at` (an order's
+// answer deadline), its 422 `too_late`, and the user-topic
+// `e2e_send_dropped` push. Nothing here sends `expires_at` yet and the
+// push is only validated, so `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 46;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

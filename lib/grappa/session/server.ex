@@ -1786,6 +1786,7 @@ defmodule Grappa.Session.Server do
   def terminate(reason, state)
       when reason == :shutdown or (is_tuple(reason) and elem(reason, 0) == :shutdown) do
     emit_lifecycle(:terminated, state)
+    :ok = drop_e2e_pending(state)
     # #543 INC-6 — drop this session's ref on the derived source alias.
     maybe_release_source_alias(state)
     # #215 — clean shutdown (SIGTERM / Application.stop / deploy recreate).
@@ -1827,6 +1828,7 @@ defmodule Grappa.Session.Server do
 
   def terminate(:normal, state) do
     emit_lifecycle(:terminated, state)
+    :ok = drop_e2e_pending(state)
     # #543 INC-6 — drop this session's ref on the derived source alias.
     maybe_release_source_alias(state)
     # #215 — operator-driven stop_session/2 (clean QUIT already sent).
@@ -1851,6 +1853,7 @@ defmodule Grappa.Session.Server do
   # we care about reaches this clause.
   def terminate(reason, state) do
     emit_lifecycle(:terminated, state)
+    :ok = drop_e2e_pending(state)
     # #543 INC-6 — drop this session's ref on the derived source alias.
     maybe_release_source_alias(state)
     # #215 — abnormal drop (:tcp_closed, {:client_exit, {:connect_failed, _}},
@@ -2010,9 +2013,10 @@ defmodule Grappa.Session.Server do
   # still be waiting in the pacer when it returns.
   # (No @impl here — a continuation clause of handle_call/3, whose @impl
   # rides the no-Client refusal clause above.)
-  def handle_call({:send_e2e, target, verb, lane, payload}, _, state)
-      when is_binary(target) and is_atom(verb) and is_atom(lane) and is_binary(payload) do
-    {reply, state} = queue_e2e_send(state, target, verb, lane, payload)
+  def handle_call({:send_e2e, target, verb, lane, payload, expires_at}, _, state)
+      when is_binary(target) and is_atom(verb) and is_atom(lane) and is_binary(payload) and
+             (is_nil(expires_at) or is_integer(expires_at)) do
+    {reply, state} = queue_e2e_send(state, target, verb, lane, payload, expires_at)
     {:reply, reply, state}
   end
 
@@ -8245,23 +8249,34 @@ defmodule Grappa.Session.Server do
 
   # `{:error, :rate_limited}` when the peer's queue or the connection's
   # cannot take the whole message — the pacer refuses it whole rather than
-  # send half, and the caller is told (vjt's ruling, 2430). The pacer a
-  # refusal hands back is kept: it counts a refused MSG/PKMSG as a gap.
-  @spec queue_e2e_send(t(), String.t(), E2e.verb(), E2ePacer.lane(), String.t()) ::
-          {{:ok, String.t()} | {:error, :too_large | :rate_limited}, t()}
-  defp queue_e2e_send(state, target, verb, lane, payload) do
+  # send half, and the caller is told (vjt's ruling, 2430);
+  # `{:error, :too_late}` when an order's answer could already no longer
+  # be back by `expires_at`. The pacer a refusal hands back is kept: it
+  # counts a refused MSG/PKMSG as a gap.
+  @spec queue_e2e_send(t(), String.t(), E2e.verb(), E2ePacer.lane(), String.t(), pos_integer() | nil) ::
+          {{:ok, String.t()} | {:error, :too_large | :rate_limited | :too_late}, t()}
+  defp queue_e2e_send(state, target, verb, lane, payload, expires_at) do
     msgid = E2e.new_msgid()
-    message = %{msgid: msgid, verb: verb, lane: lane, deadline_ms: nil}
+    now = System.monotonic_time(:millisecond)
+    message = %{msgid: msgid, verb: verb, lane: lane, deadline_ms: e2e_deadline_ms(expires_at, now)}
 
     with {:ok, lines} <- e2e_lines(state, target, verb, msgid, payload),
-         {:ok, releases, lost, pacer, wait} <-
-           pace_e2e(state, target, message, lines, System.monotonic_time(:millisecond)) do
+         {:ok, releases, lost, pacer, wait} <- pace_e2e(state, target, message, lines, now) do
       {{:ok, msgid}, commit_paced(state, releases, lost, pacer, wait)}
     else
       {:error, :too_large} -> {{:error, :too_large}, state}
       {:error, :queue_full, pacer} -> {{:error, :rate_limited}, %{state | e2e_pacer: pacer}}
+      {:error, :too_late, pacer} -> {{:error, :too_late}, %{state | e2e_pacer: pacer}}
     end
   end
+
+  # The CHAL's `expires_at` is unix seconds on the bot's clock; the pacer
+  # counts on the monotonic one. Converted once, here, against this host's
+  # wall clock, with no pad: a skew between the two hosts moves the drop
+  # instant, and in either direction the order fails closed (unconfirmed).
+  @spec e2e_deadline_ms(pos_integer() | nil, integer()) :: integer() | nil
+  defp e2e_deadline_ms(nil, _), do: nil
+  defp e2e_deadline_ms(expires_at, now), do: now + expires_at * 1_000 - System.os_time(:millisecond)
 
   # The lines of one message to `target`, each with what bahamut will
   # charge for it.
@@ -8290,6 +8305,7 @@ defmodule Grappa.Session.Server do
   defp commit_paced(state, releases, lost, pacer, wait) do
     Enum.each(lost, fn {target, msgid, verb} ->
       Logger.warning("e2e #{verb} dropped unsent: too late to be answered", target: target, msgid: msgid)
+      tell_e2e_dropped(state, target, msgid, verb, :late)
     end)
 
     case send_e2e_releases(%{state | e2e_pacer: pacer}, releases) do
@@ -8297,6 +8313,27 @@ defmodule Grappa.Session.Server do
       {state, _} -> arm_e2e_pacer(state, 0)
     end
   end
+
+  # issue 2430 — whatever still waits in the pacer dies with this process,
+  # so each message is announced as any other drop after a 202 is. Best
+  # effort: a process killed outright runs no terminate/2 and says nothing.
+  @spec drop_e2e_pending(t()) :: :ok
+  defp drop_e2e_pending(state) do
+    Enum.each(E2ePacer.pending(state.e2e_pacer), fn {target, msgid, verb} ->
+      Logger.warning("e2e #{verb} dropped unsent: the session ended", target: target, msgid: msgid)
+      tell_e2e_dropped(state, target, msgid, verb, :session_ended)
+    end)
+  end
+
+  # A message the send door accepted and the session then dropped: the
+  # sender is told on the user topic, never left trusting the 202. A KEYS
+  # is grappa's own answer, so nobody sent it to be told; the peer asks
+  # again.
+  @spec tell_e2e_dropped(t(), String.t(), String.t(), E2e.verb(), SessionWire.e2e_drop_reason()) :: :ok
+  defp tell_e2e_dropped(_, _, _, :keys, _), do: :ok
+
+  defp tell_e2e_dropped(state, target, msgid, _, reason),
+    do: :ok = Broadcaster.to_user(state, SessionWire.e2e_send_dropped(state.network_slug, target, msgid, reason))
 
   @spec afford_keys(t(), non_neg_integer(), integer()) :: :ok | {:error, :over_budget}
   defp afford_keys(state, cost, now) do
@@ -8314,6 +8351,7 @@ defmodule Grappa.Session.Server do
     {state, Enum.reverse(failed)}
   end
 
+  @spec send_e2e_release(E2ePacer.release(), {t(), [E2ePacer.lost()]}) :: {t(), [E2ePacer.lost()]}
   defp send_e2e_release({target, msgid, verb, body}, {state, failed}) do
     if Enum.member?(failed, {target, msgid, verb}) do
       {state, failed}
@@ -8329,6 +8367,7 @@ defmodule Grappa.Session.Server do
             reason: inspect(reason)
           )
 
+          :ok = tell_e2e_dropped(state, target, msgid, verb, :send_failed)
           pacer = E2ePacer.drop(state.e2e_pacer, fold_key(state, target), msgid)
           {%{state | e2e_pacer: pacer}, [{target, msgid, verb} | failed]}
       end
@@ -8354,10 +8393,11 @@ defmodule Grappa.Session.Server do
 
   # The connection's fake-lag bank, read from the client that charges every
   # frame. With no client there is nothing to pace against, and nothing a
-  # release could be written to either (`send_e2e_releases/2` says so). A
+  # release could be written to either (`write_e2e_line/3` says so). A
   # client that does not answer (mid-connect, or a stuck write) reads as a
-  # FULL bank: nothing is released, and the pacer asks again one line's cost
-  # later.
+  # FULL bank: nothing is released, and the pacer asks again when a full
+  # bank would have room. An order's answer read against that bank may turn
+  # too late sooner than it really is: it fails closed, unconfirmed.
   @spec e2e_bank_ms(t()) :: non_neg_integer()
   defp e2e_bank_ms(%{client: nil}), do: 0
 
