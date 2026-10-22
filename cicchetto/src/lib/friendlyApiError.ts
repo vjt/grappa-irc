@@ -439,6 +439,23 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
     case "share_token_consumed":
       // 410 Gone — the visitor share link was already redeemed (one-shot).
       return "This share link has already been used.";
+    case "pairing_already_joined":
+      // issue 2430 X1 — 409: another device already scanned this pairing
+      // code. A code pairs one device; the other screen can show a new one.
+      return "This pairing code has already been used. Show a new one on your other device.";
+    case "pairing_own_rendezvous":
+      // 409 — this device opened the rendezvous it is trying to join.
+      return "Scan this code from your other device, not from this one.";
+    case "pairing_not_joined":
+      // 409 — the showing side posted before anyone scanned its code; the
+      // scanner speaks first.
+      return "No device has scanned this pairing code yet.";
+    case "pairing_not_a_party":
+      // 403 — a third device of the account: it is neither side.
+      return "This pairing is between two other devices of your account.";
+    case "pairing_full":
+      // 413 — the rendezvous's message budget is spent.
+      return "This pairing exchanged more than it may. Start it again.";
     case "nickserv_pass_retired":
       // 410 Gone — #124 retired the perform page's nickserv password input.
       // Only a stale service-worker-cached bundle can still send the key, so

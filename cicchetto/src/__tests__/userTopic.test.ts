@@ -166,6 +166,11 @@ vi.mock("../lib/umodes", () => ({
   seedUmodes: vi.fn(),
 }));
 
+vi.mock("../lib/e2e/pairing", () => ({
+  catchUpPairings: vi.fn(),
+  deliverPairingEvent: vi.fn(),
+}));
+
 vi.mock("../lib/encryptedChats", () => ({
   drainE2e: vi.fn(async () => undefined),
   drainEveryNetwork: vi.fn(),
@@ -219,6 +224,25 @@ describe("userTopic", () => {
   it("joins the user topic when user resolves", async () => {
     const socket = await import("../lib/socket");
     expect(socket.joinUser).toHaveBeenCalledWith("vjt", expect.any(Function));
+  });
+
+  // issue 2430 — pushes are not replayed, so every (re)join re-fetches what
+  // a push would have announced: the offline E2E inbox and, X1, every live
+  // pairing channel (a handshake whose doorbell was lost waits out the TTL).
+  it("on every join catches up the E2E inbox and the pairing channels", async () => {
+    const socket = await import("../lib/socket");
+    const pairing = await import("../lib/e2e/pairing");
+    const chats = await import("../lib/encryptedChats");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const onJoinOk = vi.mocked(socket.joinUser).mock.calls[0]?.[1] as () => void;
+    onJoinOk();
+    onJoinOk();
+    expect(pairing.catchUpPairings).toHaveBeenCalledTimes(2);
+    expect(chats.drainEveryNetwork).toHaveBeenCalledTimes(2);
+    // The join also hydrates three settings lists, which fail here on the
+    // stubbed socket and fetch and warn: let them settle before restoring.
+    await new Promise((r) => setTimeout(r, 10));
+    warn.mockRestore();
   });
 
   it("calls refetchChannels on channels_changed event", async () => {
@@ -306,6 +330,33 @@ describe("userTopic", () => {
       reason: "late",
     });
     expect(encrypted.encryptedSendDropped).toHaveBeenCalledWith("azzurra", "Zm9vYmFyMDE", "late");
+  });
+
+  // issue 2430 X1 — the pairing relay's two pushes go to the pairing channel.
+  it("hands e2e_pairing_message and e2e_pairing_closed to the pairing channel", async () => {
+    const pairing = await import("../lib/e2e/pairing");
+    const ring = {
+      kind: "e2e_pairing_message",
+      rendezvous_id: "AbCdEfGhIjKlMnOpQrStUv",
+      seq: 2,
+      from: "joiner",
+    };
+    const end = {
+      kind: "e2e_pairing_closed",
+      rendezvous_id: "AbCdEfGhIjKlMnOpQrStUv",
+      reason: "expired",
+    };
+    channelMock.fireEvent(ring);
+    channelMock.fireEvent(end);
+    expect(pairing.deliverPairingEvent).toHaveBeenNthCalledWith(1, ring);
+    expect(pairing.deliverPairingEvent).toHaveBeenNthCalledWith(2, end);
+  });
+
+  it("drops a pairing push of the wrong shape before the pairing channel sees it", async () => {
+    const pairing = await import("../lib/e2e/pairing");
+    vi.mocked(pairing.deliverPairingEvent).mockClear();
+    channelMock.fireEvent({ kind: "e2e_pairing_closed", rendezvous_id: "x", reason: "bored" });
+    expect(pairing.deliverPairingEvent).not.toHaveBeenCalled();
   });
 
   // BUG1-FIX: own_nick_changed event updates network nick in memory.

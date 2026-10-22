@@ -116,6 +116,8 @@ import type { MemberEntry } from "./memberTypes";
 import type {
   AuthJSONSubjectWire,
   CicWireBundleHashPayload,
+  E2ePairingWireE2ePairingClosedPayload,
+  E2ePairingWireE2ePairingMessagePayload,
   MeJSONMeJson,
   NetworksCredentialAuthMethod,
   NetworksCredentialGender,
@@ -392,6 +394,10 @@ type CrossModuleArm = {
   // a named counterpart pins the shape.
   network_detached: NetworksWireNetworkDetachedEvent;
   network_attached: NetworksWireNetworkAttachedEvent;
+  // issue 2430 X1 — the pairing relay's two pushes. `Grappa.E2ePairing.Wire`
+  // payloads, out of the Session walk's reach like the two above.
+  e2e_pairing_message: E2ePairingWireE2ePairingMessagePayload;
+  e2e_pairing_closed: E2ePairingWireE2ePairingClosedPayload;
   bundle_hash: CicWireBundleHashPayload;
   // Two generated types carry `kind: "web_session_severed"` with different
   // shapes — `AdminEventsWireWebSessionSeveredEvent` (admin topic, five
