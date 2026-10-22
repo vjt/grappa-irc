@@ -780,10 +780,18 @@ export class Engine {
 
   // --- time --------------------------------------------------------------
 
-  /** Reports queued messages that waited too long for keys; forgets old plaintexts. */
+  /**
+   * Reports queued messages that waited too long for keys, asks again for
+   * the keys of the rest (`KEYREQ_RETRY_MS`), and forgets old plaintexts.
+   */
   tick(): Result {
     const res = emptyResult();
-    for (const key of Object.keys(this.state.outq)) this.liveQueue(key, res);
+    for (const key of Object.keys(this.state.outq)) {
+      // grappa answers a nick's KEYREQ at most so often and drops the rest
+      // without a word (`E2eKeyAnswers`): what still waits asks again.
+      const waiting = this.liveQueue(key, res)[0];
+      if (waiting !== undefined) this.maybeKeyreq(waiting.nick, res);
+    }
     this.trimSent();
     return res;
   }

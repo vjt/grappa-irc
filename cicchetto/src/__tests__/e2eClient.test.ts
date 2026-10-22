@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { accountStore } from "../lib/e2e/accountStore";
 import { chatStore } from "../lib/e2e/chatStore";
 import { e2eClient, NoAccountError } from "../lib/e2e/client";
-import { OUTQ_TTL_MS } from "../lib/e2e/engine";
+import { KEYREQ_RETRY_MS, OUTQ_TTL_MS } from "../lib/e2e/engine";
 import { pair, rowsOf, type Side, SLOT, World } from "./helpers/e2eClients";
 import { memoryLock, memoryVault } from "./helpers/e2eVault";
 import { olm } from "./helpers/olm";
@@ -161,6 +161,44 @@ describe("e2eClient", () => {
 
     expect(ticked).toEqual({ chats: ["nobody"], pkmsgs: 0, waiting: false });
     expect(await states(a, "nobody")).toEqual([["failed", "keys-timeout"]]);
+  });
+
+  it("asks again on a tick for keys grappa left unanswered, and the message goes once they come", async () => {
+    const { w, a, b } = await pair();
+    const keyreqs = () => w.grappa.sends.filter((s) => s.verb === "keyreq").length;
+    let quiet = true;
+    w.grappa.unanswered = () => quiet;
+
+    await a.client.send(a.ctx, "bob", "hello");
+    quiet = false;
+    w.now += KEYREQ_RETRY_MS - 1;
+    await a.client.tick(a.ctx);
+    expect(keyreqs()).toBe(1);
+    w.now += 1;
+    const ticked = await a.client.tick(a.ctx);
+    expect(keyreqs()).toBe(2);
+    expect(ticked.waiting).toBe(true);
+
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+    expect(await states(a, "bob")).toEqual([["sent", null]]);
+    expect(await bodies(b, "alice")).toEqual(["hello"]);
+  });
+
+  it("a drain past the retry time asks again for keys too, and sends the request", async () => {
+    const { w, a, b } = await pair();
+    const keyreqs = () => w.grappa.sends.filter((s) => s.verb === "keyreq").length;
+    let quiet = true;
+    w.grappa.unanswered = () => quiet;
+    await a.client.send(a.ctx, "bob", "hello");
+    quiet = false;
+
+    w.now += KEYREQ_RETRY_MS;
+    await a.client.drain(a.ctx);
+    expect(keyreqs()).toBe(2);
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+    expect(await bodies(b, "alice")).toEqual(["hello"]);
   });
 
   it("refuses a message to our own nick on the spot", async () => {

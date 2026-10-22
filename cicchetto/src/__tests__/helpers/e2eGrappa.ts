@@ -1,8 +1,10 @@
 // issue 2430 — a fake grappa for the E2E tests: it does what the real one
 // does with encrypted messages. A per-recipient inbox with AUTOINCREMENT ids
 // and paging, a msgid per accepted send, a KEYREQ answered from the target's
-// uploaded bundle (a one-time key while any is left, then the fallback), and
-// a refusal when told to.
+// uploaded bundle (a one-time key while any is left, then the fallback), a
+// KEYREQ left unanswered when told to (the real one answers a nick at most
+// so often, `E2eKeyAnswers`, and drops the rest without a word), and a
+// refusal when told to.
 import type { AccountStore } from "../../lib/e2e/accountStore";
 import type { DoorRefusal } from "../../lib/e2e/chatStore";
 import type { Door, InboxMessage } from "../../lib/e2e/client";
@@ -18,6 +20,8 @@ export class Grappa {
   /** Every send the door took, with who sent it. */
   sends: (Outbound & { by: string })[] = [];
   refuse: (o: Outbound) => DoorRefusal | undefined = () => undefined;
+  /** A KEYREQ the door takes and nobody answers. */
+  unanswered: (o: Outbound) => boolean = () => false;
   failAck = false;
 
   private inbox(nick: string): InboxMessage[] {
@@ -65,6 +69,7 @@ export class Grappa {
         this.sends.push({ ...o, by: nick });
         const msgid = base64Unpadded(crypto.getRandomValues(new Uint8Array(8)));
         if (o.verb === "keyreq") {
+          if (this.unanswered(o)) return { msgid };
           const bundle = this.bundles.get(fold(o.target));
           const payload = bundle?.otks.shift() ?? bundle?.fallback ?? null;
           if (payload !== null)
