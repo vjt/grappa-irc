@@ -646,73 +646,135 @@ Check `protocol_version >= 28`. ⚠️ There is no 27 — the shape moved twice
 before this version was published, and the pin gate requires a number per
 move. Nothing ever spoke 27.
 
-### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46; network name v47)
+### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46; network name v47; devices v49)
 
 An encrypted query is a conversation grappa carries and cannot read. The
 endpoints (cicchetto, or a bot using the shared Python package) run Olm via
 vodozemac; on IRC the traffic is CTCP inside PRIVMSG to the peer's nick,
-`\x01E2E <verb> <msgid> <i>/<n> <chunk>\x01`, in the format agreed on issue
-2430. **You never see those lines.** grappa parses them, reassembles the
-fragments, and hands you one event per whole message:
+`\x01E2E <verb> <msgid> <i>/<n> <from> <to> <chunk>\x01`, in the format agreed
+on issue 2430 (wire v2, comments 6346236542, 6346384093 and 6346686730).
+**You never see those lines.** grappa parses them, reassembles the
+fragments, and hands you one event per whole message and device:
 
 ```json
 {"kind": "e2e_message", "network": "azzurra", "id": 4711, "from": "vjt-claude",
- "verb": "pkmsg", "msgid": "q83vEjRWeJA", "payload": "eyJ2IjoxLCJpZCI6…"}
+ "from_did": "AaZaARRDyBk", "to_did": "BoBBoBBoBBo", "verb": "pkmsg",
+ "msgid": "q83vEjRWeJA", "payload": "{\"v\":2,\"id\":{…},\"bodies\":{…}}"}
 ```
 
-`payload` is the standard base64 of the payload JSON, exactly as the peer
-cut it, never decoded on the server. `verb` is one of `keys`, `pkmsg`,
-`msg`, `nack`. `from` is a routing hint only: pin the peer on its KEY, never
-its nick.
+`payload` is the compact JSON text the peer sent, as a string, exactly as
+the peer cut it, never parsed on the server. `verb` is one of `keys`,
+`pkmsg`, `msg`, `nack`. `from` is a routing hint only: pin the peer on its
+KEY, never its nick. `from_did` (v49) is the sending device, or `*` on a
+`keys` (it describes the whole user); `to_did` (v49) is the device of YOURS
+this copy is for.
 
-`id` (v43) names the entry in your **offline queue**. Every whole message
-from a peer is queued for you before it is pushed, connected or not, and
-stays there until you acknowledge it or it expires:
+**One identity, several devices (v49).** A subject holds one E2E identity
+per network: a master Ed25519 key, and up to **4** devices it vouches for.
+Each device registers its id block, and the master puts the signed list of
+the devices it vouches for. grappa routes only to LISTED devices and sends
+only from them:
 
 | route | answer |
 |---|---|
-| `GET /networks/:network_id/e2e/inbox?after=<id>` | **200** `{"messages": [e2e_message…]}` — oldest first, at most 100; page with the last `id` you got (`after` absent = from the start) |
-| `POST /networks/:network_id/e2e/inbox/ack` `{"ids": [<id>…]}` | **204** — those entries are deleted; idempotent; 1 to 100 positive integers, else 400 `bad_request` |
+| `POST /networks/:network_id/e2e/devices` `{"ed25519", "curve25519", "sig"}` | **200** the device: `{"did", "ed25519", "curve25519", "sig"}`. Registering the same `ed25519` again replaces its id block and stays one device |
+| `GET /networks/:network_id/e2e/devices` | **200** `{"devices": [device…]}`, oldest first, listed or not |
+| `DELETE /networks/:network_id/e2e/devices/:did` | **204** — a device the list does NOT name (a pairing that never finished) is dropped with its keys and queue, freeing its room; 404 `not_found` for a `did` that is not yours there, 409 `listed_device` for one the list names (that one goes with a list that leaves it out) |
+| `PUT /networks/:network_id/e2e/list` `{"master", "ver", "devices", "sig"}` | **200** the list as held |
+| `GET /networks/:network_id/e2e/list` | **200** the list; 404 `not_found` before one is put |
+| `DELETE /networks/:network_id/e2e/keys` | **204** — the whole identity is dropped: every device with its keys and queue, and the list. Do this when the account starts over with a new master, so no peer is handed a key of the old one |
 
-🔴 **Delivery is AT LEAST ONCE: dedupe by `id`.** On connect, drain the
-inbox page by page; keep handling `e2e_message` pushes as they come. The
-same entry can reach you both ways, and again after a lost ack. `id` is
-never reused, so it tells a repeat from a new message. Ack an entry once
-you have processed it, including one you could not decrypt (after you have
-NACKed it): an unacked entry stays until it expires.
+Keys and signatures are vodozemac's `to_base64()` (standard, unpadded: 43
+characters a key, 86 a signature). A device's `sig` is its own signature
+over `"irc-e2e:v2:id:" + curve25519 + ":" + master`. The `did` is grappa's,
+derived from `ed25519`, never yours to choose: the first 8 bytes of the
+SHA-256 of the raw key, **base64url** (RFC 4648 §5: `-` and `_` where the
+standard alphabet has `+` and `/`) unpadded, 11 characters. The device
+names it as its `from` and in its own routes below, where it goes into the
+path as it is. Keys and signatures stay standard base64; only the `did` is
+URL-safe. Two vectors: the RFC 8032 test-1 key
+`11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo` has the `did` `If4x36FUomE`,
+and `7l01yXGoarYtEU3nwHF01/CIo8/r8U0lJ01TnULT9IY` has `_Uw_z3-OAsk`. The list's `devices` are the
+devices' `ed25519` keys, 1 to 4, sorted strictly ascending (plain string
+order), and its `sig` is the master's signature over
+`"irc-e2e:v2:list:" + ver + ":" +` those keys joined by `","` (`ver` in
+decimal, 1 to 2³¹−1).
+
+grappa decides no trust, and verifies exactly one signature: the list's. A
+list must also name only registered devices and raise `ver` above the held
+one; a device the held list names and the new one does not is REVOKED, and
+grappa forgets it with everything stored for it. A device registered and
+not listed yet (one being paired) is left alone, but nothing is routed to
+it and it cannot send. 400 `bad_request` for an id block or a list that is
+malformed, or a list whose signature does not verify; 409
+`too_many_devices` for a fifth device (drop an unlisted one first); 409
+`master_mismatch` for a list under another master (start over with
+`DELETE …/e2e/keys`); 409 `stale_list` when `ver` does not rise, except
+that the very list held, put again, answers 200 and changes nothing (a
+retried put is safe); 422 `unknown_device` for a list naming a key no
+device of yours registered there. Either way nothing changes.
+
+`id` (v43) names the entry in the **offline queue** of the device in
+`to_did`. Every whole message from a peer is queued before it is pushed,
+connected or not: in the queue of the device its frame names, or of every
+listed device when it names `*` (such a message carries one encrypted body
+per device; decrypt only yours). It stays there until that device
+acknowledges it or it expires:
+
+| route | answer |
+|---|---|
+| `GET /networks/:network_id/e2e/devices/:did/inbox?after=<id>` | **200** `{"messages": [e2e_message…]}` — oldest first, at most 100; page with the last `id` you got (`after` absent = from the start) |
+| `POST /networks/:network_id/e2e/devices/:did/inbox/ack` `{"ids": [<id>…]}` | **204** — those entries of that device are deleted; idempotent, and an id of another device is skipped; 1 to 100 positive integers, else 400 `bad_request` |
+
+Both 404 `not_found` for a `did` that is not one of your devices there.
+
+🔴 **Delivery is AT LEAST ONCE: dedupe by `id`.** On connect, drain your
+device's inbox page by page; keep handling `e2e_message` pushes as they
+come, and skip the ones whose `to_did` is not yours (the push goes to every
+client of the account). The same entry can reach you both ways, and again
+after a lost ack. `id` is never reused, so it tells a repeat from a new
+message. Ack an entry once you have processed it, including one you could
+not decrypt (after you have NACKed it): an unacked entry stays until it
+expires.
 
 What the queue holds is ciphertext; grappa holds no key. An E2E line is
 still never stored anywhere else — not in scrollback, not in search, not in
 a push payload — so `GET …/messages` will never return one. Keep your own
 decrypted copy if you want history; that is the design.
 
-The queue is bounded per network: an entry expires **7 days** after it
-arrived, and one nick cannot hold more than 1 MiB of your queue (4 MiB in
-total, each entry charged its payload plus 256 bytes). A message that does
-not fit is not queued and not pushed. For both, YOU are told — the sender
-never is, by ruling: once an hour grappa writes one row per peer into that
-peer's query window (opening it), a `server_event` with no body and
-`meta.e2e_undeliverable` = how many messages from that peer you will never
-read. Only `pkmsg` and `msg` are counted; key material and NACKs expire,
-or are refused, silently. Because a refused message is never pushed either,
-a client that never acks stops receiving a peer's messages once that peer's
-share is full. cicchetto words it "*** <peer> sent you N encrypted messages that
-cannot be read here".
+The queue is bounded per device: an entry expires **7 days** after it
+arrived, and one nick cannot hold more than 1 MiB of a device's queue
+(4 MiB in total, each entry charged its payload plus 256 bytes). A message
+that does not fit is not queued and not pushed for that device. For both,
+YOU are told — the sender never is, by ruling: once an hour grappa writes
+one row per peer and device into that peer's query window (opening it), a
+`server_event` with no body, `meta.e2e_undeliverable` = how many messages
+from that peer the device will never read, and `meta.e2e_device` (v49) =
+that device's `did`. Only `pkmsg` and `msg` are counted; key material and
+NACKs expire, or are refused, silently. Because a refused message is never
+pushed either, a device that never acks stops receiving a peer's messages
+once that peer's share is full. cicchetto words it "*** <peer> sent you N
+encrypted messages that cannot be read here".
 
-A queued `pkmsg` or `msg` also raises a Web Push notification, under the
-same private-message preferences and mute as a DM: the title is the peer's
-nick, the body "encrypted message", nothing else.
+A queued `pkmsg` or `msg` also raises a Web Push notification, once per
+message however many devices it was queued for, under the same
+private-message preferences and mute as a DM: the title is the peer's nick,
+the body "encrypted message", nothing else.
 
 Sending:
 
 | route | answer |
 |---|---|
-| `POST /networks/:network_id/e2e/messages` `{"target", "verb", "payload", "priority"?, "expires_at"?}` | **202** `{"msgid": "…"}` — accepted, not delivered |
+| `POST /networks/:network_id/e2e/messages` `{"target", "verb", "from", "to", "payload", "priority"?, "expires_at"?}` | **202** `{"msgid": "…"}` — accepted, not delivered |
 
 `target` is a nick; `verb` is `keyreq`, `pkmsg`, `msg` or `nack` (lowercase);
-`payload` is the base64 you built. grappa picks the msgid (a peer's `NACK`
-names it), cuts the lines against the worst-case relayed prefix, and paces
-them by two rules from bahamut's source:
+`from` is the sending device's `did`, and must be LISTED; `to` is the
+peer's device or `*`, in the combinations the frame allows: `keyreq` goes
+to `*`, `pkmsg` and `msg` to one device or to `*` (one message, one body per
+device), `nack` to one device. `payload` is the compact JSON text you built
+(printable ASCII, no space: there is no outer base64 any more). grappa picks
+the msgid (a peer's `NACK` names it), cuts the lines against the worst-case
+relayed prefix, and paces them by two rules from bahamut's source:
 
 - **at most 3 lines per 6 s per recipient**. bahamut blocks every CTCP to a
   client that receives more than 4 in 3 s, for 15 s, silently;
@@ -725,18 +787,21 @@ them by two rules from bahamut's source:
   takes about five minutes. That is accepted by ruling, and receivers wait
   60 s from a message's LAST line, not its first.
 
-An optional `"priority"` field takes `"control"` or `"text"`; absent means
-`"text"`. grappa cannot see inside a `msg`/`pkmsg`, so set `"control"` on
-the one that carries a CHAL or an ACK. Each message then waits in one of
-three lanes:
+An optional `"priority"` field takes `"control"`, `"reactive"` or `"text"`;
+absent means `"text"`. grappa cannot see inside a `msg`/`pkmsg`, so set
+`"control"` on the one that carries a CHAL or an ACK, and `"reactive"` (v49)
+on one that carries the device list a peer asked for (`t:list`,
+`t:listreq`). Each message then waits in one of three lanes:
 
 - **urgent**: `keyreq` whatever the field says, and a `"control"`
   `msg`/`pkmsg`. Ahead of text, within 36 s of fake-lag bank per minute for
   the whole connection; one urgent message goes at a time, whole;
-- **reactive**: `nack` whatever the field says, and grappa's own KEYS
-  answers (below). Ahead of text, within 18 s per peer and 22 s for the
-  connection per minute; in order per peer, but lines to different peers
-  may interleave;
+- **reactive**: `nack` whatever the field says, a `"reactive"`
+  `msg`/`pkmsg`, and grappa's own KEYS answers (below). Ahead of text,
+  within 18 s per peer and 22 s for the connection per minute, both raised
+  to a KEYS's own cost for that KEYS (one covers every device of the user,
+  so four devices cost more than 22 s); in order per peer, but lines to
+  different peers may interleave;
 - **text**: every other `msg`/`pkmsg`. One text message goes at a time,
   whole, and text to one peer never reorders, so the peer never displays two
   messages backwards.
@@ -799,56 +864,71 @@ dropped for a bound once accepted: a message fits whole at the door or is
 refused there. When a message's first line fails at once, the push can
 reach you before the 202 does: match it by msgid whenever it comes.
 
-400 `bad_request` for a channel target, an unknown verb or priority, a
-non-base64 payload, or an `expires_at` out of place; 400 `invalid_line` for
-a CR, LF or NUL in `target`; 413 `too_large` for a payload over 32 KiB (what
-a receiver buffers per sender, so it could never be reassembled) or one that
-needs more than 64 lines; 422 `too_late` when `expires_at` can already no
-longer be met; 429 `rate_limited` when the peer's or the connection's queue
-cannot take the whole message; 404 `not_found` with no session on the
-network; 502 `upstream_unreachable` while the upstream link is down; 504
-`session_timeout` if the session does not answer.
+400 `bad_request` for a channel target, an unknown verb or priority,
+addresses the verb may not carry, a payload that is not compact JSON text,
+or an `expires_at` out of place; 400 `invalid_line` for a CR, LF or NUL in
+`target`; 422 `unknown_device` when `from` is not a listed device of yours
+(v49); 413 `too_large` for a payload over 32 KiB (what a receiver buffers
+per sender, so it could never be reassembled) or one that needs more than
+64 lines; 422 `too_late` when `expires_at` can already no longer be met;
+429 `rate_limited` when the peer's or the connection's queue cannot take
+the whole message, or for a `keyreq` while a KEYS from that peer is still
+arriving (asking again then only doubles its cost); 404 `not_found` with no
+session on the network; 502 `upstream_unreachable` while the upstream link
+is down; 504 `session_timeout` if the session does not answer.
 
-**Your key bundle (v44).** A `KEYREQ` addressed to you is never delivered
-as an event: grappa answers it itself, connected client or not, from a
-bundle you upload. Build and sign one KEYS payload per one-time key, and one
-for your fallback key, each the base64 you would send yourself:
+**Your key bundle (v44, per device since v49).** A `KEYREQ` addressed to
+you is never delivered as an event: grappa answers it itself, connected
+client or not, from the keys your devices upload. Each device uploads its
+own:
 
 | route | answer |
 |---|---|
-| `POST /networks/:network_id/e2e/keys` `{"one_time_keys": [<payload>…], "fallback": <payload>}` | **200** `{"one_time_keys": N, "fallback": true\|false}` — one-time keys are ADDED, each once (one already held is skipped, so retrying an upload is safe); a fallback key REPLACES the one held; either field may be absent or `null`, not both |
-| `GET /networks/:network_id/e2e/keys` | **200** the same `{one_time_keys, fallback}`: what is left to hand out |
-| `DELETE /networks/:network_id/e2e/keys` | **204** — the whole bundle is dropped (do this when you start over with a new account, so no peer is handed a key of the old one) |
+| `POST /networks/:network_id/e2e/devices/:did/keys` `{"one_time_keys": [{"key", "sig"}…], "fallback": {"key", "sig"}}` | **200** `{"one_time_keys": N, "fallback": true\|false}` — one-time keys are ADDED, each once (one already held is skipped, so retrying an upload is safe); a fallback key REPLACES the one held; either field may be absent or `null`, not both |
+| `GET /networks/:network_id/e2e/devices/:did/keys` | **200** the same `{one_time_keys, fallback}`: what that device has left to hand out |
 
-grappa never reads a payload. When a peer asks, it sends the OLDEST one-time
-key and deletes it, so each goes out once; when they run out it sends the
-fallback key, which stays. **Replenish when `one_time_keys` runs low**: on
-connect, and after a `pkmsg` reaches you (each one used up a one-time key).
-The keys themselves never come back out of grappa.
+`key` is a Curve25519 key and `sig` the device's signature over
+`"irc-e2e:v1:otk:" + key`. When a peer asks, grappa composes ONE KEYS for
+the whole user, from `*` to the asking device: your signed list, then, for
+each listed device that still has a key, its id block and one key — its
+OLDEST one-time key, deleted as it goes out so each goes out once, or its
+fallback key once none is left, which stays. A device with no key at all is
+left out of the answer, so unreachable for now. **Replenish when
+`one_time_keys` runs low**: on connect, and after a `pkmsg` reaches you
+(each one used up a one-time key). The keys themselves never come back out
+of grappa.
 
 Answers are rate-limited, so a stranger can only slowly drain your bundle,
 and cannot use it to starve your connection: per nick (case-folded), one
-answer per 15 s, and a one-time key at most once a minute (else the fallback
-key); per connection, at most 30 one-time keys an hour (someone cycling
-nicks can still take those 30, so keep the bundle topped up), and answers
-spend at most 22 s of fake-lag bank in any 60 s. A request past a limit, or with no bundle, goes unanswered; the
-peer asks again later. The answer waits in the reactive lane. The 22 s are
-on top of that lane's budget, not instead of it: the lane ranks a KEYS
-ahead of text only within its budget, and behind it past that, but never
-refuses one, while the connection's 128 urgent and reactive lines are
-shared with your own orders and NACKs. Without the 22 s, four nicks asking
-every 15 s could fill them with answers (each peer's reactive lane holds 32
-lines), and every order you answer would be refused.
+answer per 15 s, and one-time keys at most once a minute (else fallback
+keys); per connection, at most 30 answers with one-time keys an hour, one
+key per listed device in each (someone cycling nicks can still take those
+30, so keep the bundles topped up), and answers spend at most 22 s of
+fake-lag bank in any 60 s, except that a minute with nothing spent lets
+one answer through whatever it costs (a KEYS for four devices costs more
+than 22 s on its own); and no second KEYS to a nick starts while one to it
+is still going out. A request past a limit, or
+with no list or no key, goes unanswered; the peer asks again later. The
+answer waits in the reactive lane. The 22 s are on top of that lane's
+budget, not instead of it: the lane ranks a KEYS ahead of text only within
+its budget, and behind it past that, but never refuses one, while the
+connection's 128 urgent and reactive lines are shared with your own orders
+and NACKs. Without the 22 s, four nicks asking every 15 s could fill them
+with answers (each peer's reactive lane holds 32 lines), and every order you
+answer would be refused.
 
-The bundle holds at most 50 one-time keys and one fallback key; a payload
-is at most 1 KiB. 400 `bad_request` for an upload with nothing in it, a field
-of the wrong type, or a payload that is not base64 or is too long; 413
-`too_large` when the bundle would pass 50 one-time keys. Either way nothing
-is stored.
+A device's bundle holds at most 50 one-time keys and one fallback key. 400
+`bad_request` for an upload with nothing in it, a field of the wrong type,
+or an entry that is not a key and a signature; 404 `not_found` for a `did`
+that is not one of your devices there; 413 `too_large` when the bundle
+would pass 50 one-time keys. Either way nothing is stored.
 
 Check `protocol_version >= 42`, `>= 43` for the offline queue and `id`,
 `>= 44` for the key bundle, `>= 46` for `expires_at`, `too_late` and
-`e2e_send_dropped`, and `>= 47` for `network` on `isupport_changed`.
+`e2e_send_dropped`, `>= 47` for `network` on `isupport_changed`, and
+`>= 49` for devices: every route and field above that names one. A server
+between 42 and 47 speaks the v1 frame and the per-account shape, which no
+release ever carried; a v49 client does not talk E2E to it.
 
 ### 4g. Pairing two devices of one account — the relay (issue 2430, v48)
 
@@ -1585,7 +1665,7 @@ forever.
 | `directory_complete` | user | the `/LIST` channel-directory scan finished |
 | `directory_failed` | user | the `/LIST` scan failed or timed out |
 | `directory_progress` | user | `/LIST` scan progress count |
-| `e2e_message` | user | one whole end-to-end encrypted message from a peer, payload never decoded; queued until acked (§4f) |
+| `e2e_message` | user | one whole end-to-end encrypted message from a peer for one of your devices (`to_did`, v49), payload never decoded; queued until that device acks (§4f) |
 | `e2e_pairing_closed` | user | a pairing rendezvous is gone: `closed` by a side, `expired`, or `replaced` by a newer open (§4g, v48) |
 | `e2e_pairing_message` | user | a side posted message `seq` on a pairing rendezvous; no payload, fetch it (§4g, v48) |
 | `e2e_send_dropped` | user | an outbound end-to-end encrypted message accepted by the send door and dropped unsent: `late`, `send_failed` or `session_ended` (§4f, v46) |
