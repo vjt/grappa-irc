@@ -1,9 +1,10 @@
 // issue 2430 — an encrypted query between two people, end to end: two
 // browsers, two grappa users, two real vodozemac engines, one real ircd.
 //
-// Each cic keeps its own Olm account and fills its own key bundle on grappa.
-// Alice opens the query with `/equery`, both pin the other's key by hand
-// (read off the other's pane, the way a person reads it off a peer), and the
+// Each cic is one device of its user's identity: it keeps its own Olm account
+// and fills its device's key bundle on grappa. Alice opens the query with
+// `/equery`, both pin the other's master key by hand (read off the other's
+// pane, the way a person reads it off a peer), and the
 // messages go KEYREQ → KEYS → PKMSG → MSG through grappa, which relays the
 // lines and reads none of them.
 //
@@ -20,8 +21,8 @@
 //     or stays after the window is opened.
 //
 // The peer is a second subject (`provisionPeerSubject`) in a second browser
-// context: different users, so the multi-device question (2430 comment
-// 6333417572) does not arise.
+// context: different users with one device each; two devices of ONE user
+// are the interop suite's.
 
 import { selectChannel, sidebarMessageBadge, sidebarWindow } from "../fixtures/cicchettoPage";
 import {
@@ -35,7 +36,7 @@ import {
   row,
   send,
 } from "../fixtures/encryptedQuery";
-import { fetchAllMessagesAsc, fetchE2eInbox } from "../fixtures/grappaApi";
+import { fetchAllMessagesAsc, fetchE2eInbox, soleE2eDevice } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { provisionPeerSubject, teardownSpecSubject } from "../fixtures/specSubject";
 import { expect, specNick, specUser, test } from "../fixtures/test";
@@ -75,6 +76,8 @@ test("two people talk in an encrypted query: real Olm both ways, pinned by hand,
     });
     await expect(row(peer.page, "in", first)).toHaveCount(1, { timeout: KEYS_TIMEOUT });
     await expect(peer.page.getByTestId("e2e-peer-trust")).toHaveAttribute("data-trust", "verified");
+    // The keys Alice took named Bob's one device.
+    await expect(page.getByTestId("e2e-peer-devices")).toContainText("1 device");
 
     // Bob → Alice, on the session Alice's message opened.
     const reply = "ciao alice, ricevuto";
@@ -95,8 +98,10 @@ test("two people talk in an encrypted query: real Olm both ways, pinned by hand,
 
     // grappa relayed and kept nothing: both inboxes drained and acknowledged,
     // and no DM history either way.
-    expect(await fetchE2eInbox(alice.token, NETWORK_SLUG)).toEqual([]);
-    expect(await fetchE2eInbox(bob.user.token, NETWORK_SLUG)).toEqual([]);
+    const aliceDevice = await soleE2eDevice(alice.token, NETWORK_SLUG);
+    const bobDevice = await soleE2eDevice(bob.user.token, NETWORK_SLUG);
+    expect(await fetchE2eInbox(alice.token, NETWORK_SLUG, aliceDevice.did)).toEqual([]);
+    expect(await fetchE2eInbox(bob.user.token, NETWORK_SLUG, bobDevice.did)).toEqual([]);
     expect(await fetchAllMessagesAsc(alice.token, NETWORK_SLUG, bob.nick)).toEqual([]);
     expect(await fetchAllMessagesAsc(bob.user.token, NETWORK_SLUG, aliceNick)).toEqual([]);
   } finally {

@@ -2,8 +2,9 @@
 // through a real ircd.
 //
 // grappa relays an encrypted query and reads none of it: a peer's `E2E` CTCP
-// is reassembled, QUEUED opaque per (subject, network) until a client takes
-// it, and never becomes a scrollback row. Two things a human can see come out
+// is reassembled, QUEUED opaque per device (wire v2: one queue for each
+// listed device of the subject on the network) until that device takes it,
+// and never becomes a scrollback row. Two things a human can see come out
 // of that queue, and this spec drives both with real frames — peer → bahamut
 // → EventRouter → `Grappa.E2eInbox` → the sweep / the push trigger:
 //
@@ -20,8 +21,8 @@
 //
 // The peer's message is never a scrollback row, so the usual barrier —
 // `assertMessagePersisted` — cannot prove it arrived. The proof is the queue
-// itself (`awaitE2eQueued`), read through the REST door a client drains it
-// by. Without it, the "no window yet" and "no push for KEYS" halves below are
+// itself (`awaitE2eQueued`), read through the REST door the device drains it
+// by (`GET .../e2e/devices/:did/inbox`). Without it, the "no window yet" and "no push for KEYS" halves below are
 // absences that would pass on a message that never left the peer (#1152).
 //
 //   * Queue the messages without a window: a window minted on arrival would
@@ -38,14 +39,28 @@
 // not a reader: `holdE2eInbox` hands it empty inbox pages, so the queue stays
 // grappa's alone. The two-browser encrypted-query spec is where cic reads.
 //
-// The payloads hold no real Olm — grappa never decodes one and nobody here
-// holds a key — but they are shaped like the agreed wire (padded standard
-// base64 of a `"v":1` JSON object, an 11-char unpadded msgid), so the spec
-// does not lean on grappa being lax about anything it checks.
+// The page makes the device the frames are addressed to (it registers and
+// lists itself, as on any login), so the queue under test is a real one. The
+// payloads hold no real Olm — grappa never decodes one and nobody here holds
+// a key — but they are shaped like the agreed wire (compact `"v":2` JSON, an
+// 11-char unpadded msgid, a base64url device id), so the spec does not lean
+// on grappa being lax about anything it checks.
 
 import { randomBytes } from "node:crypto";
-import { holdE2eInbox, loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
-import { awaitE2eQueued, expireE2eInbox, fetchE2eInbox } from "../fixtures/grappaApi";
+import {
+  e2eBundleUploaded,
+  holdE2eInbox,
+  loginAs,
+  selectChannel,
+  sidebarWindow,
+} from "../fixtures/cicchettoPage";
+import {
+  awaitE2eQueued,
+  expireE2eInbox,
+  fetchE2eInbox,
+  type SeededUser,
+  soleE2eDevice,
+} from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import {
   assertNoPushDeliveryAfter,
@@ -65,36 +80,53 @@ import { expect, specNick, specUser, test } from "../fixtures/test";
 // 8 random bytes, standard base64, unpadded: the agreed msgid shape.
 const newMsgid = (): string => randomBytes(8).toString("base64").replace(/=+$/, "");
 
-// The padded standard base64 of a `"v":1` payload: one whole chunk, 1/1.
-const payloadB64 = (payload: Record<string, unknown>): string =>
-  Buffer.from(JSON.stringify({ v: 1, ...payload }), "utf8").toString("base64");
+// A device id as the wire spells it (8 bytes, base64url, 11 chars). The
+// peer's is made up: nothing here checks the sender's device.
+const newDid = (): string => randomBytes(8).toString("base64url");
 
-// A curve25519 key's shape (32 bytes, unpadded) for the MSG's `ck` field.
+// The compact JSON text of a `"v":2` payload: what a frame carries as is.
+const payloadText = (payload: Record<string, unknown>): string =>
+  JSON.stringify({ v: 2, ...payload });
+
+// A key's shape (32 bytes, unpadded): a MSG's `ck`, and the KEYS id block's keys.
 const fakeKey = (): string => randomBytes(32).toString("base64").replace(/=+$/, "");
+
+// A MSG for one device, in MSG v2's shape: the sender's curve key, then one
+// body per device, the base64 of an Olm message for it. grappa reads none of
+// it.
+const msgPayload = (did: string): string =>
+  payloadText({ ck: fakeKey(), bodies: { [did]: "AwogY2lwaGVydGV4dA" } });
+
+// The page's own device: once its key bundle is up, the identity exists on
+// grappa and the frames below have a listed device to be queued for.
+async function ownDevice(vjt: SeededUser): Promise<string> {
+  return (await soleE2eDevice(vjt.token, NETWORK_SLUG)).did;
+}
 
 test("encrypted messages nobody reads expire into one recipient-only notice in the peer's query window", async ({
   page,
 }) => {
   const vjt = specUser();
   await holdE2eInbox(page, NETWORK_SLUG);
+  const uploaded = e2eBundleUploaded(page, NETWORK_SLUG);
   await loginAs(page, vjt);
+  await uploaded;
   await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: specNick() });
+  const did = await ownDevice(vjt);
 
   const peer = await IrcPeer.connect({ nick: "i2430-unread" });
   try {
+    const peerDid = newDid();
     const msgids = [newMsgid(), newMsgid()];
     for (const msgid of msgids) {
-      peer.e2eSend(
-        specNick(),
-        "MSG",
-        msgid,
-        payloadB64({ ck: fakeKey(), body: "AwogY2lwaGVydGV4dA" }),
-      );
+      peer.e2eSend(specNick(), "MSG", msgid, peerDid, did, msgPayload(did));
     }
     for (const msgid of msgids) {
-      const entry = await awaitE2eQueued(vjt.token, NETWORK_SLUG, msgid);
+      const entry = await awaitE2eQueued(vjt.token, NETWORK_SLUG, did, msgid);
       expect(entry.verb).toBe("msg");
       expect(entry.from).toBe(peer.nick);
+      expect(entry.from_did).toBe(peerDid);
+      expect(entry.to_did).toBe(did);
     }
 
     // Queued, not shown: an encrypted message mints no window on arrival —
@@ -116,7 +148,7 @@ test("encrypted messages nobody reads expire into one recipient-only notice in t
 
     // What expired is gone: the notice replaces the messages, it does not
     // sit beside them.
-    expect(await fetchE2eInbox(vjt.token, NETWORK_SLUG)).toEqual([]);
+    expect(await fetchE2eInbox(vjt.token, NETWORK_SLUG, did)).toEqual([]);
   } finally {
     await peer.disconnect("2430 offline queue done");
   }
@@ -134,8 +166,11 @@ test("a queued encrypted message pushes 'encrypted message' from the nick, and k
   await context.grantPermissions(["notifications"]);
 
   await holdE2eInbox(page, NETWORK_SLUG);
+  const uploaded = e2eBundleUploaded(page, NETWORK_SLUG);
   await loginAs(page, vjt);
+  await uploaded;
   await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: specNick() });
+  const did = await ownDevice(vjt);
   await enablePushFromSettings(page, context, { id: subId, token: vjt.token });
 
   // Background the device so #182's foreground suppression decides neither
@@ -146,20 +181,29 @@ test("a queued encrypted message pushes 'encrypted message' from the nick, and k
   const queued = (msgid: string, verb: string): DeliveryProof => ({
     describe: `<${peer.nick}> E2E ${verb} ${msgid} → ${specNick()}`,
     delivered: async () => {
-      await awaitE2eQueued(vjt.token, NETWORK_SLUG, msgid);
+      await awaitE2eQueued(vjt.token, NETWORK_SLUG, did, msgid);
     },
   });
 
   try {
     // Negative arm — KEYS is the protocol talking to itself.
     const keysId = newMsgid();
+    const peerMaster = fakeKey();
+    const peerDevice = fakeKey();
     peer.e2eSend(
       specNick(),
       "KEYS",
       keysId,
-      payloadB64({
-        id: { curve25519: fakeKey(), ed25519: fakeKey(), sig: "c2ln" },
-        otk: { key: fakeKey(), fallback: false, sig: "c2ln" },
+      "*",
+      did,
+      payloadText({
+        master: { ed25519: peerMaster, list: { ver: 1, devices: [peerDevice] }, sig: "c2ln" },
+        devices: [
+          {
+            id: { curve25519: fakeKey(), ed25519: peerDevice, sig: "c2ln" },
+            otk: { key: fakeKey(), fallback: false, sig: "c2ln" },
+          },
+        ],
       }),
     );
     await assertNoPushDeliveryAfter(subId, queued(keysId, "KEYS"), 1_500);
@@ -167,12 +211,7 @@ test("a queued encrypted message pushes 'encrypted message' from the nick, and k
     // Positive arm — a MSG is a person writing. It also keeps the negative
     // arm from passing because push broke outright.
     const msgId = newMsgid();
-    peer.e2eSend(
-      specNick(),
-      "MSG",
-      msgId,
-      payloadB64({ ck: fakeKey(), body: "AwogY2lwaGVydGV4dA" }),
-    );
+    peer.e2eSend(specNick(), "MSG", msgId, newDid(), did, msgPayload(did));
     const deliveries = await awaitPushDeliveryAfter(subId, queued(msgId, "MSG"), {});
     expect(deliveries).toHaveLength(1);
     expectRfc8291Delivery(deliveries[0]);

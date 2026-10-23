@@ -1570,56 +1570,89 @@ export async function setQuitPartReason(token: string, reason: string | null): P
   }
 }
 
-// issue 2430 — one entry of the offline queue of end-to-end encrypted
-// messages, as `GET /networks/:slug/e2e/inbox` lists it (the same shape the
-// `e2e_message` push carries).
+// issue 2430 (wire v2, grappa protocol 49) — one device of the subject's
+// E2E identity on a network, as `GET /networks/:slug/e2e/devices` lists it.
+export type E2eDevice = {
+  did: string;
+  ed25519: string;
+  curve25519: string;
+  sig: string;
+};
+
+export async function fetchE2eDevices(token: string, networkSlug: string): Promise<E2eDevice[]> {
+  const res = await fetch(
+    `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/e2e/devices`,
+    { headers: { authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) throw new Error(`fetchE2eDevices: ${res.status} ${await res.text()}`);
+  return ((await res.json()) as { devices: E2eDevice[] }).devices;
+}
+
+// The one device a single browser has made. Throws on any other count: a spec
+// that reads "the" device of an account with two would test a coin toss.
+export async function soleE2eDevice(token: string, networkSlug: string): Promise<E2eDevice> {
+  const devices = await fetchE2eDevices(token, networkSlug);
+  const [device] = devices;
+  if (devices.length !== 1 || device === undefined) {
+    throw new Error(`soleE2eDevice: expected 1 device on ${networkSlug}, found ${devices.length}`);
+  }
+  return device;
+}
+
+// issue 2430 — one entry of one device's offline queue of end-to-end
+// encrypted messages, as `GET /networks/:slug/e2e/devices/:did/inbox` lists
+// it (the same shape the `e2e_message` push carries).
 export type E2eInboxEntry = {
   id: number;
   from: string;
+  from_did: string;
+  to_did: string;
   verb: "keys" | "pkmsg" | "msg" | "nack";
   msgid: string;
   payload: string;
 };
 
-export async function fetchE2eInbox(token: string, networkSlug: string): Promise<E2eInboxEntry[]> {
+export async function fetchE2eInbox(
+  token: string,
+  networkSlug: string,
+  did: string,
+): Promise<E2eInboxEntry[]> {
   const res = await fetch(
-    `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/e2e/inbox`,
-    {
-      headers: { authorization: `Bearer ${token}` },
-    },
+    `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/e2e/devices/${did}/inbox`,
+    { headers: { authorization: `Bearer ${token}` } },
   );
   if (!res.ok) throw new Error(`fetchE2eInbox: ${res.status} ${await res.text()}`);
   return ((await res.json()) as { messages: E2eInboxEntry[] }).messages;
 }
 
-// Polls the queue until `msgid` is in it: the proof that a peer's encrypted
-// message reached grappa, which never makes it a scrollback row.
+// Polls the device's queue until `msgid` is in it: the proof that a peer's
+// encrypted message reached grappa, which never makes it a scrollback row.
 export async function awaitE2eQueued(
   token: string,
   networkSlug: string,
+  did: string,
   msgid: string,
   timeoutMs = 10_000,
 ): Promise<E2eInboxEntry> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const hit = (await fetchE2eInbox(token, networkSlug)).find((e) => e.msgid === msgid);
+    const hit = (await fetchE2eInbox(token, networkSlug, did)).find((e) => e.msgid === msgid);
     if (hit) return hit;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`awaitE2eQueued: ${msgid} never reached the offline queue within ${timeoutMs}ms`);
 }
 
-// issue 2430 — what the key bundle grappa hosts for this subject on the
-// network still holds. cic fills it; a peer's KEYREQ takes a one-time key.
+// issue 2430 — what the key bundle grappa hosts for ONE device still holds.
+// cic fills it; a peer's KEYREQ takes a one-time key of every listed device.
 export async function fetchE2eKeys(
   token: string,
   networkSlug: string,
+  did: string,
 ): Promise<{ one_time_keys: number; fallback: boolean }> {
   const res = await fetch(
-    `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/e2e/keys`,
-    {
-      headers: { authorization: `Bearer ${token}` },
-    },
+    `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/e2e/devices/${did}/keys`,
+    { headers: { authorization: `Bearer ${token}` } },
   );
   if (!res.ok) throw new Error(`fetchE2eKeys: ${res.status} ${await res.text()}`);
   return (await res.json()) as { one_time_keys: number; fallback: boolean };

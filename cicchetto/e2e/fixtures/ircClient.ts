@@ -414,9 +414,11 @@ export class IrcPeer {
   }
 
   // issue 2430 — one end-to-end encrypted message, as a peer's client would
-  // put it on the wire: a single-fragment `E2E` CTCP inside a PRIVMSG,
-  // `<0x01>E2E <VERB> <msgid> 1/1 <chunk><0x01>`. The chunk is the padded
-  // standard base64 of the payload, which here is the WHOLE payload.
+  // put it on the wire (wire v2): a single-fragment `E2E` CTCP inside a
+  // PRIVMSG, `<0x01>E2E <VERB> <msgid> 1/1 <from> <to> <chunk><0x01>`.
+  // `from` and `to` are device ids (11 chars of base64url) or `*`, in the
+  // combinations the verb allows; the chunk is the payload's compact JSON
+  // text itself (printable ASCII, no space): there is no outer base64.
   //
   // Raw for the reason `dccSend` is raw: what grappa parses
   // (`Grappa.IRC.E2e.parse/1`) is the wire text, so the spec owns it. The
@@ -427,18 +429,29 @@ export class IrcPeer {
     targetNick: string,
     verb: "KEYREQ" | "KEYS" | "PKMSG" | "MSG" | "NACK",
     msgid: string,
-    payloadB64: string,
+    from: string,
+    to: string,
+    payload: string,
   ): void {
-    this.client.raw(["PRIVMSG", targetNick, `\u0001E2E ${verb} ${msgid} 1/1 ${payloadB64}\u0001`]);
+    this.client.raw([
+      "PRIVMSG",
+      targetNick,
+      `\u0001E2E ${verb} ${msgid} 1/1 ${from} ${to} ${payload}\u0001`,
+    ]);
   }
 
   // issue 2430 — the next whole `E2E <verb>` message `fromNick` sends this
-  // peer, its fragments (`i/n`, any order) joined back into the padded base64
-  // of the payload. What a peer's client does on receipt; grappa frames its
-  // own KEYS answers this way, so the spec reads them as a peer would.
-  awaitE2e(fromNick: string, verb: string, timeoutMs: number): Promise<string> {
+  // peer: its `from` and `to` (device ids or `*`, as the frame names them)
+  // and its fragments (`i/n`, any order) joined back into the payload's
+  // compact JSON text. What a peer's client does on receipt; grappa frames
+  // its own KEYS answers this way, so the spec reads them as a peer would.
+  awaitE2e(
+    fromNick: string,
+    verb: string,
+    timeoutMs: number,
+  ): Promise<{ from: string; to: string; payload: string }> {
     const line = new RegExp(
-      `^(?:@\\S+ )?:([^!\\s]+)!\\S+ PRIVMSG \\S+ :\u0001E2E ${verb} (\\S+) (\\d+)/(\\d+) (\\S+)\u0001$`,
+      `^(?:@\\S+ )?:([^!\\s]+)!\\S+ PRIVMSG \\S+ :\u0001E2E ${verb} (\\S+) (\\d+)/(\\d+) (\\S+) (\\S+) (\\S+)\u0001$`,
     );
     const fragments = new Map<string, string[]>();
     return new Promise((resolve, reject) => {
@@ -450,14 +463,14 @@ export class IrcPeer {
       const handler = (event: { line: string; from_server: boolean }) => {
         const m = event.from_server ? line.exec(stripEol(event.line)) : null;
         if (!m || m[1]?.toLowerCase() !== fromNick.toLowerCase()) return;
-        const [, , msgid = "", i = "0", n = "0", chunk = ""] = m;
+        const [, , msgid = "", i = "0", n = "0", from = "", to = "", chunk = ""] = m;
         const parts = fragments.get(msgid) ?? new Array<string>(Number(n)).fill("");
         parts[Number(i) - 1] = chunk;
         fragments.set(msgid, parts);
         if (parts.some((part) => part === "")) return;
         clearTimeout(timer);
         this.client.removeListener("raw", handler);
-        resolve(parts.join(""));
+        resolve({ from, to, payload: parts.join("") });
       };
       this.client.on("raw", handler);
     });

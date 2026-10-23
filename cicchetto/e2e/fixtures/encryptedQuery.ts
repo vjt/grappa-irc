@@ -42,11 +42,28 @@ export async function equery(page: Page, ownNick: string, nick: string): Promise
   );
 }
 
-/** Our Ed25519 key, as the pane shows it. */
+/** Our identity's MASTER Ed25519 key (what a peer pins), as the pane shows it. */
 export async function ownKey(page: Page): Promise<string> {
   const key = page.getByTestId("e2e-own-identity");
   await expect(key).toHaveText(/^[A-Za-z0-9+/]{43}$/);
   return (await key.textContent()) ?? "";
+}
+
+/**
+ * A browser that lost its identity on an account whose identity grappa still
+ * holds reads "elsewhere": the user starts a new identity on purpose, behind
+ * the inline confirm (first click arms, second confirms). Resolves once the
+ * new identity's key bundle is on grappa and the pane shows the new master.
+ * Call it with the encrypted pane open.
+ */
+export async function replaceIdentity(page: Page): Promise<void> {
+  const uploaded = e2eBundleUploaded(page, NETWORK_SLUG);
+  const replace = page.getByTestId("e2e-identity-replace");
+  await replace.click();
+  await expect(replace).toHaveClass(/confirming/);
+  await replace.click();
+  await uploaded;
+  await expect(page.getByTestId("e2e-identity-elsewhere")).toHaveCount(0);
 }
 
 /** Pastes `key` as the peer's and pins it: verified. */
