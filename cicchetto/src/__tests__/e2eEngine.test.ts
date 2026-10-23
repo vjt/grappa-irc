@@ -23,6 +23,7 @@ import {
   type Result,
   SENT_MAX,
   SENT_MEMORY_MS,
+  type SiblingCopy,
 } from "../lib/e2e/engine";
 import { idBlock, type SignedKey } from "../lib/e2e/keyBundle";
 import type { Account } from "../lib/e2e/vodozemac/vodozemac_binding";
@@ -57,6 +58,7 @@ import {
   deviceBlock,
   engineFor,
   enrolledAccount,
+  type OwnAccount,
   type OwnDevice,
   ownAccount,
 } from "./helpers/e2eSiblings";
@@ -5156,5 +5158,590 @@ describe("S1 sibling copies — send", () => {
     expect(res.copies.map((x) => [x.to, opened(c.account, x.verb, x.payload).body])).toEqual([
       [c.own.did, "one"],
     ]);
+  });
+});
+
+// --- S1: the copies a device's siblings send it -------------------------------
+//
+// A copy comes from grappa's inbox flagged `own`, and the engine reads it on a
+// path of its own (`receiveCopy`), never the peer path: our own master on a
+// peer's nick stays refused there. grappa is trusted with no content, so a
+// copy is read only from a device our own signed list names, under our master,
+// its signatures good: a sibling's real copies are what its engine wrote
+// (`copyFor`), and a forgery is one of them edited, or written by hand
+// (`copyWritten`).
+
+/** What claiming a key of `device` brings: a KEYS of `account`'s master, its list naming every device, with `device`'s entry. */
+const claimOf = (account: OwnAccount, device: OwnDevice): string =>
+  keysPayload(
+    { master: account.master, devices: [] },
+    account.list.ver,
+    account.devices.map((d) => d.account),
+    [entryOf(device.account, account.master)],
+  );
+
+/** The one copy of `res` that goes to `to`. */
+function copyTo(res: CopyResult, to: OwnDevice): SiblingCopy {
+  const copies = res.copies.filter((c) => c.to === to.own.did);
+  const [copy] = copies;
+  if (copy === undefined || copies.length > 1)
+    throw new Error(`${copies.length} copies to the sibling`);
+  return copy;
+}
+
+/**
+ * The copy `from`'s engine makes for its sibling `to` of the text `body` it
+ * sent `peer`: on the session it holds to `to`, else on one a claim of `to`'s
+ * key opens (`to` known from grappa's list first, beside the siblings it knows).
+ */
+function copyFor(
+  account: OwnAccount,
+  from: OwnDevice,
+  to: OwnDevice,
+  peer: string,
+  body: string,
+): SiblingCopy {
+  const engine = engineFor(account, from);
+  if (from.state.siblings[keyOf(to.account)] === undefined) {
+    const known = account.devices.filter(
+      (d) => d === to || from.state.siblings[keyOf(d.account)] !== undefined,
+    );
+    engine.setSiblings(known.map((d) => deviceBlock(d.account, keyOf(account.master))));
+  }
+  const res = engine.copy(peer, body);
+  if (res.copies.some((c) => c.to === to.own.did)) return copyTo(res, to);
+  return copyTo(engine.siblingKeys(to.own.did, claimOf(account, to)), to);
+}
+
+/** `device` takes `copy` from its sibling `from`, as grappa delivers an own item: what its engine makes of it. */
+const takesCopy = (
+  account: OwnAccount,
+  device: OwnDevice,
+  from: OwnDevice,
+  copy: Pick<SiblingCopy, "verb" | "payload">,
+): Result => engineFor(account, device).receiveCopy(from.own.did, copy.verb, copy.payload);
+
+/** The event a copy of `from`'s reads as: the text `body` it sent `peer`. */
+const copiedFrom = (from: OwnDevice, peer: string, body: string): E2eEvent => ({
+  kind: "copied",
+  peer,
+  body,
+  device: keyOf(from.account),
+});
+
+/** `x` and `y`, siblings, on the one session both have used: each writes the other MSGs from now on. */
+function siblingsTalking(account: OwnAccount, x: OwnDevice, y: OwnDevice): void {
+  expect(takesCopy(account, y, x, copyFor(account, x, y, "bob", "hello")).events).toEqual([
+    copiedFrom(x, "bob", "hello"),
+  ]);
+  expect(takesCopy(account, x, y, copyFor(account, y, x, "bob", "hi")).events).toEqual([
+    copiedFrom(y, "bob", "hi"),
+  ]);
+}
+
+/**
+ * The PKMSG the device `from` writes `to`, by hand and decoded: on a new
+ * session it opens on a new one-time key of `to`'s, its id block under
+ * `master`, `master`'s certificate for it at version 1, and one body, `inner`
+ * with the `fb` binding the two devices unless `inner` names its own.
+ */
+function copyWritten(
+  from: Account,
+  master: Account,
+  to: OwnDevice,
+  inner: Record<string, unknown>,
+): Record<string, unknown> {
+  to.account.generate_one_time_keys(1);
+  const session = from.create_outbound_session(
+    curveOf(to.account),
+    to.account.one_time_keys().at(-1) ?? "",
+  );
+  const plaintext = JSON.stringify({ fb: fb(olm(), keyOf(from), keyOf(to.account)), ...inner });
+  const encrypted = session.encrypt(new TextEncoder().encode(plaintext));
+  session.free();
+  const body = base64Unpadded(encrypted.body);
+  encrypted.free();
+  return {
+    v: 2,
+    id: idBlock(from, keyOf(master)),
+    master: { ed25519: keyOf(master), cert: master.sign(certSigText(1, keyOf(from))), ver: 1 },
+    bodies: { [to.own.did]: body },
+  };
+}
+
+/** `payload` as a PKMSG copy grappa delivers it. */
+const asPkmsg = (payload: Record<string, unknown>) => ({
+  verb: "pkmsg" as const,
+  payload: encodePayload(payload),
+});
+
+describe("S1 sibling copies — receive", () => {
+  it("a sibling's PKMSG copy opens a session and yields copied with the peer and body", async () => {
+    const g = new Grappa();
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    await enrolledAccount(g, alice);
+    const sender = engineFor(alice, b);
+    sender.setSiblings(await g.api.listE2eDevices("alice", SLUG));
+    sender.copy("bob", "hello");
+    const keys = await g.door("alice", b.own.did).claim(a.own.did);
+    const copy = copyTo(sender.siblingKeys(a.own.did, keys), a);
+    await g.door("alice", b.own.did).copy(copy.to, copy.verb, copy.payload);
+    const [item] = await g.door("alice", a.own.did).inbox(0);
+    if (item === undefined) throw new Error("nothing in the inbox");
+    expect(item).toMatchObject({ own: true, fromDid: b.own.did, verb: "pkmsg" });
+    if (item.verb !== "pkmsg" && item.verb !== "msg") throw new Error("not a copy's verb");
+
+    const res = engineFor(alice, a).receiveCopy(item.fromDid, item.verb, item.payload);
+
+    expect(res).toEqual({ events: [copiedFrom(b, "bob", "hello")], outbound: [] });
+    // Known by the curve its pre-key message proved, apart from every peer.
+    expect(a.state.siblings).toEqual({
+      [keyOf(b.account)]: { did: b.own.did, curve25519: curveOf(b.account) },
+    });
+    expect(sessionIdOf(a.state.sessions[curveOf(b.account)]?.[0])).toBe(
+      preKeySessionOf(copy.payload, a.account),
+    );
+    expect(a.state.sessions[curveOf(b.account)]).toHaveLength(1);
+    expect(a.state.seen).toEqual([preKeySessionOf(copy.payload, a.account)]);
+    expect(a.state.devices).toEqual({});
+    expect(a.state.pins).toEqual({});
+  });
+
+  it("a later MSG copy on that session yields copied", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    expect(takesCopy(alice, a, b, copyFor(alice, b, a, "bob", "one")).events).toEqual([
+      copiedFrom(b, "bob", "one"),
+    ]);
+
+    // The session the copy opened carries a copy back, as a MSG.
+    const back = copyFor(alice, a, b, "carol", "two");
+    expect(back.verb).toBe("msg");
+    expect(takesCopy(alice, b, a, back)).toEqual({
+      events: [copiedFrom(a, "carol", "two")],
+      outbound: [],
+    });
+    // Heard back on it, the sibling writes MSGs too.
+    const later = copyFor(alice, b, a, "dave", "three");
+    expect(later.verb).toBe("msg");
+    expect(takesCopy(alice, a, b, later)).toEqual({
+      events: [copiedFrom(b, "dave", "three")],
+      outbound: [],
+    });
+    expect(a.state.sessions[curveOf(b.account)]).toHaveLength(1);
+    expect(a.state.devices).toEqual({});
+  });
+
+  it("a second pre-key copy on the session the first opened is read on that session", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    const first = copyFor(alice, b, a, "bob", "one");
+    const second = copyFor(alice, b, a, "carol", "two");
+    expect(second.verb).toBe("pkmsg");
+
+    expect(takesCopy(alice, a, b, first).events).toEqual([copiedFrom(b, "bob", "one")]);
+    expect(takesCopy(alice, a, b, second).events).toEqual([copiedFrom(b, "carol", "two")]);
+
+    expect(a.state.sessions[curveOf(b.account)]).toHaveLength(1);
+    expect(a.state.seen).toEqual([preKeySessionOf(first.payload, a.account)]);
+  });
+
+  it("a copy whose master is not ours is dropped sibling-not-ours", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    const mallory = new (olm().Account)();
+    const [x] = peerWith(1).devices as [Account];
+    const genuine = decodePayload(copyFor(alice, b, a, "bob", "hello").payload);
+    // Our sibling's key and body, under a master that is not ours, every
+    // signature good over what it names.
+    const otherMaster = {
+      ...genuine,
+      id: idBlock(b.account, keyOf(mallory)),
+      master: {
+        ed25519: keyOf(mallory),
+        cert: mallory.sign(certSigText(1, keyOf(b.account))),
+        ver: 1,
+      },
+    };
+    // A peer's own pre-key message to this device, handed over as a copy.
+    const peers = copyWritten(x, mallory, a, { t: "copy", peer: "bob", body: "hello" });
+    const before = structuredClone(a.state);
+
+    for (const [fromDid, forged] of [
+      [b.own.did, otherMaster],
+      [didOf(x), peers],
+    ] as const) {
+      expect(engineFor(alice, a).receiveCopy(fromDid, "pkmsg", encodePayload(forged))).toEqual({
+        events: [{ kind: "dropped", nick: "alice", reason: "sibling-not-ours", verb: "pkmsg" }],
+        outbound: [],
+      });
+    }
+
+    expect(a.state).toEqual(before);
+    // The very body under our own master is read.
+    expect(takesCopy(alice, a, b, asPkmsg(genuine)).events).toEqual([
+      copiedFrom(b, "bob", "hello"),
+    ]);
+  });
+
+  it("a copy from a device outside our signed list is dropped sibling-unknown", () => {
+    const alice = ownAccount("alice", 3);
+    const [a, b, c] = alice.devices as [OwnDevice, OwnDevice, OwnDevice];
+    // Certified by our master and signed under it, every signature good.
+    const copy = copyFor(alice, c, a, "bob", "hello");
+    // Our master's list moves on without c.
+    a.own.list = signedList(alice.master, 2, [a.account, b.account]);
+    const before = structuredClone(a.state);
+
+    expect(takesCopy(alice, a, c, copy)).toEqual({
+      events: [{ kind: "dropped", nick: "alice", reason: "sibling-unknown", verb: "pkmsg" }],
+      outbound: [],
+    });
+    expect(a.state).toEqual(before);
+
+    // A list naming c again: the very copy is read.
+    a.own.list = signedList(alice.master, 3, [a.account, b.account, c.account]);
+    expect(takesCopy(alice, a, c, copy).events).toEqual([copiedFrom(c, "bob", "hello")]);
+  });
+
+  it("an MSG copy from a sibling our own list no longer names is dropped sibling-unknown, and the sibling forgotten", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    siblingsTalking(alice, b, a);
+    const one = copyFor(alice, b, a, "bob", "one");
+    const two = copyFor(alice, b, a, "bob", "two");
+    expect([one.verb, two.verb]).toEqual(["msg", "msg"]);
+    expect(takesCopy(alice, a, b, one).events).toEqual([copiedFrom(b, "bob", "one")]);
+
+    // Our master's list moves on without b; nobody told the engine.
+    a.own.list = signedList(alice.master, 2, [a.account]);
+
+    expect(takesCopy(alice, a, b, two)).toEqual({
+      events: [{ kind: "dropped", nick: "alice", reason: "sibling-unknown", verb: "msg" }],
+      outbound: [],
+    });
+    expect(a.state.siblings).toEqual({});
+    expect(a.state.sessions[curveOf(b.account)]).toBeUndefined();
+  });
+
+  it("a PKMSG copy whose frame names another device than its id block is dropped bad-from", () => {
+    const alice = ownAccount("alice", 3);
+    const [a, b, c] = alice.devices as [OwnDevice, OwnDevice, OwnDevice];
+    const copy = copyFor(alice, b, a, "bob", "hello");
+    const before = structuredClone(a.state);
+
+    // From another sibling of ours, and from this very device.
+    for (const from of [c, a]) {
+      expect(takesCopy(alice, a, from, copy)).toEqual({
+        events: [{ kind: "dropped", nick: "alice", reason: "bad-from", verb: "pkmsg" }],
+        outbound: [],
+      });
+    }
+
+    expect(a.state).toEqual(before);
+    expect(takesCopy(alice, a, b, copy).events).toEqual([copiedFrom(b, "bob", "hello")]);
+  });
+
+  it("a PKMSG copy whose certificate or id block signature fails is dropped sibling-bad-signature", () => {
+    const alice = ownAccount("alice", 3);
+    const [a, b, c] = alice.devices as [OwnDevice, OwnDevice, OwnDevice];
+    const M = keyOf(alice.master);
+    const B = keyOf(b.account);
+    const mallory = new (olm().Account)();
+    const genuine = decodePayload(copyFor(alice, b, a, "bob", "hello").payload);
+    const master = genuine.master as Record<string, unknown>;
+    const forgeries: [string, Record<string, unknown>][] = [
+      [
+        "a certificate another master signed",
+        { ...genuine, master: { ...master, cert: mallory.sign(certSigText(1, B)) } },
+      ],
+      ["a certificate presented at another version", { ...genuine, master: { ...master, ver: 2 } }],
+      [
+        "an id block signed under another master",
+        { ...genuine, id: idBlock(b.account, keyOf(mallory)) },
+      ],
+      [
+        "an id block another device signed",
+        {
+          ...genuine,
+          id: {
+            ...idBlock(b.account, M),
+            sig: c.account.sign(`${ID_SIG_PREFIX}${curveOf(b.account)}:${M}`),
+          },
+        },
+      ],
+    ];
+    const before = structuredClone(a.state);
+
+    const refusals = forgeries.map(([what, forged]) => {
+      const res = takesCopy(alice, a, b, asPkmsg(forged));
+      expect(res.outbound).toEqual([]);
+      return [what, res.events];
+    });
+
+    expect(refusals).toEqual(
+      forgeries.map(([what]) => [
+        what,
+        [{ kind: "dropped", nick: "alice", reason: "sibling-bad-signature", verb: "pkmsg" }],
+      ]),
+    );
+    expect(a.state).toEqual(before);
+    expect(takesCopy(alice, a, b, asPkmsg(genuine)).events).toEqual([
+      copiedFrom(b, "bob", "hello"),
+    ]);
+  });
+
+  it("a copy whose inner is not t:copy is dropped sibling-not-a-copy", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    const inners: Record<string, unknown>[] = [
+      { t: "text", peer: "bob", body: "hello" },
+      { t: "copy", peer: "", body: "hello" },
+      { t: "copy", peer: 7, body: "hello" },
+      { t: "copy", peer: "bob" },
+      { t: "copy", peer: "bob", body: 7 },
+    ];
+
+    for (const inner of inners) {
+      expect(
+        takesCopy(alice, a, b, asPkmsg(copyWritten(b.account, alice.master, a, inner))),
+      ).toEqual({
+        events: [{ kind: "dropped", nick: "alice", reason: "sibling-not-a-copy" }],
+        outbound: [],
+      });
+    }
+
+    // Read, and refused: no session stays, and the device is no sibling yet.
+    expect(a.state.sessions).toEqual({});
+    expect(a.state.siblings).toEqual({});
+    const copy = { t: "copy", peer: "bob", body: "hello" };
+    expect(
+      takesCopy(alice, a, b, asPkmsg(copyWritten(b.account, alice.master, a, copy))).events,
+    ).toEqual([copiedFrom(b, "bob", "hello")]);
+  });
+
+  it("a pre-key copy whose fb binds another pair of devices is dropped: no session, no sibling", () => {
+    const alice = ownAccount("alice", 3);
+    const [a, b, c] = alice.devices as [OwnDevice, OwnDevice, OwnDevice];
+    const copy = { t: "copy", peer: "bob", body: "hello" };
+    const bindings = [
+      // Built for another sibling of ours, and claimed by another one.
+      fb(olm(), keyOf(b.account), keyOf(c.account)),
+      fb(olm(), keyOf(c.account), keyOf(a.account)),
+    ];
+
+    for (const binding of bindings) {
+      expect(
+        takesCopy(
+          alice,
+          a,
+          b,
+          asPkmsg(copyWritten(b.account, alice.master, a, { ...copy, fb: binding })),
+        ),
+      ).toEqual({
+        events: [{ kind: "dropped", nick: "alice", reason: "inner-key-mismatch" }],
+        outbound: [],
+      });
+    }
+
+    expect(a.state.sessions).toEqual({});
+    expect(a.state.siblings).toEqual({});
+    expect(
+      takesCopy(alice, a, b, asPkmsg(copyWritten(b.account, alice.master, a, copy))).events,
+    ).toEqual([copiedFrom(b, "bob", "hello")]);
+  });
+
+  it("a copy this device cannot decrypt is dropped sibling-undecryptable, never NACKed", () => {
+    const alice = ownAccount("alice", 3);
+    const [a, b, c] = alice.devices as [OwnDevice, OwnDevice, OwnDevice];
+    const M = keyOf(alice.master);
+    const undecryptable = (verb: "pkmsg" | "msg") => ({
+      events: [{ kind: "dropped", nick: "alice", reason: "sibling-undecryptable", verb }],
+      outbound: [],
+    });
+    // A pre-key message on a key this device never had: no session opens.
+    const stranger = curveOf(new (olm().Account)());
+    const session = b.account.create_outbound_session(curveOf(a.account), stranger);
+    const encrypted = session.encrypt(
+      new TextEncoder().encode('{"t":"copy","peer":"bob","body":"x"}'),
+    );
+    session.free();
+    const noSession = copyWritten(b.account, alice.master, a, {});
+    noSession.bodies = { [a.own.did]: base64Unpadded(encrypted.body) };
+    encrypted.free();
+    expect(takesCopy(alice, a, b, asPkmsg(noSession))).toEqual(undecryptable("pkmsg"));
+
+    // A pre-key copy again, on the session it opened.
+    const first = copyFor(alice, b, a, "bob", "one");
+    expect(takesCopy(alice, a, b, first).events).toEqual([copiedFrom(b, "bob", "one")]);
+    expect(takesCopy(alice, a, b, first)).toEqual(undecryptable("pkmsg"));
+
+    // A MSG its sessions cannot read: spoiled, then read whole.
+    expect(takesCopy(alice, b, a, copyFor(alice, a, b, "carol", "two")).events).toEqual([
+      copiedFrom(a, "carol", "two"),
+    ]);
+    const msg = copyFor(alice, b, a, "bob", "three");
+    expect(msg.verb).toBe("msg");
+    const body = unbase64(bodiesOf(msg.payload)[a.own.did] ?? "");
+    body[body.length - 1] = (body[body.length - 1] ?? 0) ^ 0xff;
+    const spoiled = edited(msg.payload, (json) => {
+      json.bodies = { [a.own.did]: base64Unpadded(body) };
+    });
+    expect(takesCopy(alice, a, b, { verb: "msg", payload: spoiled })).toEqual(undecryptable("msg"));
+    expect(takesCopy(alice, a, b, msg).events).toEqual([copiedFrom(b, "bob", "three")]);
+
+    // A copy on our fallback key, which a claim brings once the one-time
+    // keys ran out and a replay could open its session on again: once that
+    // session went, it is never read again.
+    engineFor(alice, c).setSiblings([deviceBlock(a.account, M)]);
+    engineFor(alice, c).copy("bob", "four");
+    a.account.generate_fallback_key();
+    const fallback = a.account.fallback_key() ?? "";
+    const entry = {
+      id: idBlock(a.account, M),
+      otk: { key: fallback, fallback: true, sig: a.account.sign(`${OTK_SIG_PREFIX}${fallback}`) },
+    };
+    const all = alice.devices.map((d) => d.account);
+    const keys = keysPayload({ master: alice.master, devices: [] }, 1, all, [entry]);
+    const onFallback = copyTo(engineFor(alice, c).siblingKeys(a.own.did, keys), a);
+    expect(takesCopy(alice, a, c, onFallback).events).toEqual([copiedFrom(c, "bob", "four")]);
+    engineFor(alice, a).setSiblings([deviceBlock(b.account, M)]);
+    expect(a.state.sessions[curveOf(c.account)]).toBeUndefined();
+    expect(takesCopy(alice, a, c, onFallback)).toEqual(undecryptable("pkmsg"));
+  });
+
+  it("an MSG copy is read only on a sibling's curve, from its did, with a body for this device", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    siblingsTalking(alice, b, a);
+    const msg = copyFor(alice, b, a, "bob", "hello");
+    const dropped = (reason: DropReason) => ({
+      events: [{ kind: "dropped", nick: "alice", reason, verb: "msg" }],
+      outbound: [],
+    });
+    const before = structuredClone(a.state);
+
+    // From this very device, not the sibling the curve is.
+    expect(takesCopy(alice, a, a, msg)).toEqual(dropped("bad-from"));
+    // A curve no sibling has: a stranger's, and our own.
+    for (const ck of [curveOf(new (olm().Account)()), curveOf(a.account)]) {
+      const payload = edited(msg.payload, (json) => {
+        json.ck = ck;
+      });
+      expect(takesCopy(alice, a, b, { verb: "msg", payload })).toEqual(dropped("sibling-unknown"));
+    }
+    // No body for this device.
+    const elsewhere = edited(msg.payload, (json) => {
+      json.bodies = { [didOf(new (olm().Account)())]: bodiesOf(msg.payload)[a.own.did] };
+    });
+    expect(takesCopy(alice, a, b, { verb: "msg", payload: elsewhere })).toEqual(
+      dropped("not-for-us"),
+    );
+
+    expect(a.state).toEqual(before);
+    expect(takesCopy(alice, a, b, msg).events).toEqual([copiedFrom(b, "bob", "hello")]);
+  });
+
+  it("a copy that is no payload, or misses what its verb needs, is dropped as malformed, never thrown", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    const first = copyFor(alice, b, a, "bob", "one");
+    expect(first.verb).toBe("pkmsg");
+    const pkmsg = decodePayload(first.payload);
+    siblingsTalking(alice, b, a);
+    const later = copyFor(alice, b, a, "bob", "two");
+    expect(later.verb).toBe("msg");
+    const msg = decodePayload(later.payload);
+    const malformed = (verb: "pkmsg" | "msg", payload: string): DropReason | undefined => {
+      const res = engineFor(alice, a).receiveCopy(b.own.did, verb, payload);
+      expect(res.outbound).toEqual([]);
+      const [e] = res.events;
+      return res.events.length === 1 &&
+        e?.kind === "dropped" &&
+        e.nick === "alice" &&
+        e.verb === verb
+        ? e.reason
+        : undefined;
+    };
+    const { master: _master, ...noMaster } = pkmsg;
+
+    expect([
+      malformed("pkmsg", "not a payload"),
+      malformed("pkmsg", encodePayload(noMaster)),
+      malformed("msg", encodePayload({ ...msg, ck: "not a key" })),
+      malformed("msg", encodePayload({ ...msg, bodies: { [a.own.did]: "not base64!" } })),
+    ]).toEqual(["undecodable-payload", "bad-payload", "bad-payload", "bad-payload"]);
+  });
+
+  it("receive() still drops a sibling's PKMSG copy as own-identity, and receiveCopy reads it after", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    const copy = copyFor(alice, b, a, "bob", "hello");
+
+    expect(
+      engineFor(alice, a).receive("bob", "pkmsg", newMsgid(), b.own.did, copy.payload),
+    ).toEqual({
+      events: [{ kind: "dropped", nick: "bob", reason: "own-identity" }],
+      outbound: [],
+    });
+
+    expect(a.state).toEqual(newState());
+    expect(takesCopy(alice, a, b, copy).events).toEqual([copiedFrom(b, "bob", "hello")]);
+  });
+
+  it("receive() of an MSG from a sibling curve on a peer nick is not delivered", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    const carol = peerWith(1);
+    siblingsTalking(alice, b, a);
+    // carol pinned to her master, bob pinned to nothing.
+    expect(trust(engineFor(alice, a)).checkMaster("carol", keyOf(carol.master), noResult())).toBe(
+      "ok",
+    );
+    const msg = copyFor(alice, b, a, "bob", "hello");
+    const sessions = structuredClone(a.state.sessions[curveOf(b.account)]);
+
+    for (const nick of ["carol", "bob"]) {
+      const res = engineFor(alice, a).receive(nick, "msg", newMsgid(), b.own.did, msg.payload);
+      expect(res.events.filter((e) => e.kind === "received")).toEqual([]);
+    }
+
+    // No peer read a word of it on the sibling's session.
+    expect(a.state.sessions[curveOf(b.account)]).toEqual(sessions);
+    expect(takesCopy(alice, a, b, msg).events).toEqual([copiedFrom(b, "bob", "hello")]);
+  });
+
+  it("a sibling's first copy evicts a peer's earlier claim on its curve: its copies never read as that peer's", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    const bob = peerWith(1);
+    const [x] = bob.devices as [Account];
+    const engine = () => engineFor(alice, a);
+    // bob's device claims b's curve before b is known as our sibling.
+    engine().send("bob", text("one"), "one", null, null);
+    engine().receive(
+      "bob",
+      "keys",
+      newMsgid(),
+      "*",
+      keysPayload(bob, 1, [x], [claiming(x, bob.master, curveOf(b.account), oneTimeKey(x, x))]),
+    );
+    expect(a.state.devices[keyOf(x)]?.curve25519).toBe(curveOf(b.account));
+
+    expect(takesCopy(alice, a, b, copyFor(alice, b, a, "bob", "hello")).events).toEqual([
+      copiedFrom(b, "bob", "hello"),
+    ]);
+
+    expect(a.state.devices[keyOf(x)]).toBeUndefined();
+    expect(a.state.sessions[curveOf(b.account)]).toHaveLength(1);
+    // b writes MSGs once it heard back; one handed over as bob's is not bob's.
+    expect(takesCopy(alice, b, a, copyFor(alice, a, b, "carol", "two")).events).toEqual([
+      copiedFrom(a, "carol", "two"),
+    ]);
+    const later = copyFor(alice, b, a, "dave", "three");
+    const res = engine().receive("bob", "msg", newMsgid(), didOf(x), later.payload);
+    expect(res.events.filter((e) => e.kind === "received")).toEqual([]);
+    expect(takesCopy(alice, a, b, later).events).toEqual([copiedFrom(b, "dave", "three")]);
   });
 });
