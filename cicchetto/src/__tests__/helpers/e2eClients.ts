@@ -6,16 +6,21 @@
 // A side is one device of a subject. A tab is a client of its own over the
 // same stores, with a page of its own: what a second tab of the same cic is.
 // Another device of the same subject is what a pairing (X1) leaves behind,
-// built by hand here (`pairDevice`).
+// made through the pairing doors without the channel (`pairDevice`).
 import { type AccountStore, accountStore, type OwnIdentity } from "../../lib/e2e/accountStore";
 import { type ChatRow, type ChatStore, chatStore } from "../../lib/e2e/chatStore";
 import { type E2eContext, e2eClient } from "../../lib/e2e/client";
 import { Engine } from "../../lib/e2e/engine";
-import { replaceIdentity, syncIdentity } from "../../lib/e2e/identity";
-import { idBlock } from "../../lib/e2e/keyBundle";
+import {
+  addDevice,
+  completeJoin,
+  masterOf,
+  prepareJoin,
+  replaceIdentity,
+  syncIdentity,
+} from "../../lib/e2e/identity";
 import { type OrderScope, SendLog } from "../../lib/e2e/orders";
 import type { SasHost } from "../../lib/e2e/sas";
-import { certSigText, listSigText } from "../../lib/e2e/wire";
 import { FRAME_BUDGET_BASE, SLUG } from "./e2eDevices";
 import { Grappa } from "./e2eGrappa";
 import { type MemoryVault, memoryLock, memoryVault } from "./e2eVault";
@@ -88,33 +93,21 @@ export class World {
 
   /**
    * Another device of `side`'s subject, in a browser of its own, as a pairing
-   * leaves it: registered under the subject's master, which certifies it for
-   * the next list and puts that list, naming both; then its keys, by the real
-   * sync. It holds no master: `side`'s device keeps it.
+   * leaves it: through the pairing doors, without the channel. Registered
+   * under the subject's master, which lists and certifies it; then its keys.
+   * It holds no master: `side`'s device keeps it.
    */
   async pairDevice(side: Side): Promise<Side> {
     const stores = browser();
-    const own = await ownOf(side);
-    const { ed25519, id } = await stores.accounts.withAccount(SLOT, async ({ account }) => ({
-      ed25519: account.ed25519_key(),
-      id: idBlock(account, own.master),
-    }));
-    const { did } = await this.grappa.api.registerE2eDevice(side.nick, SLUG, id);
-    const placed = await side.accounts.withAccount(SLOT, async (session) => {
-      if (session.master === null || session.own === null) throw new Error("no master here");
-      const ver = session.own.list.ver + 1;
-      const devices = [...session.own.list.devices, ed25519].sort();
-      const list = { ver, devices, sig: session.master.sign(listSigText(ver, devices)) };
-      await this.grappa.api.putE2eList(side.nick, SLUG, { master: own.master, ...list });
-      session.own = { ...session.own, list };
-      const cert = session.master.sign(certSigText(ver, ed25519));
-      return { master: own.master, cert, certVer: ver, list, did };
-    });
-    await stores.accounts.withAccount(SLOT, async (session) => {
-      session.own = placed;
-    });
-    const state = await syncIdentity(stores.accounts, side.nick, SLOT, SLUG);
-    if (state !== "ready") throw new Error(`the paired device's identity is ${state}`);
+    const master = await masterOf(side.accounts, SLOT);
+    if (master === null) throw new Error(`${side.nick} holds no master`);
+    const joined = await prepareJoin(stores.accounts, side.nick, SLOT, SLUG, master);
+    if (typeof joined === "string") throw new Error(`the new device was refused: ${joined}`);
+    const signed = await addDevice(side.accounts, side.nick, SLOT, SLUG, joined.id);
+    if (typeof signed === "string") throw new Error(`the master refused the device: ${signed}`);
+    if (!(await completeJoin(stores.accounts, side.nick, SLOT, SLUG, master, signed))) {
+      throw new Error("the new device refused what the master signed");
+    }
     return this.side(side.nick, stores, new SendLog(null));
   }
 
