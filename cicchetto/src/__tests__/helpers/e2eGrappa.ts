@@ -427,7 +427,7 @@ export class Grappa {
   // oldest one-time key (consumed) or its fallback key (kept), refusing in
   // the order grappa does.
   private claim(nick: string, did: string, fromDid: string): string {
-    if (did === fromDid) throw new ApiError(409, "self");
+    if (did === fromDid) throw new ApiError(409, "same_device");
     const list = this.subject(nick).list;
     const listed = this.listed(nick);
     if (list === null || !listed.some((d) => d.did === fromDid)) {
@@ -437,7 +437,7 @@ export class Grappa {
     if (device === undefined) throw notFound();
     const otk = device.otks.shift();
     const key = otk ?? device.fallback;
-    if (key === null) throw new ApiError(409, "empty");
+    if (key === null) throw new ApiError(409, "keyless_device");
     return encodePayload({
       v: 2,
       master: {
@@ -467,7 +467,7 @@ export class Grappa {
       throw new ApiError(413, "too_large");
     }
     if (!/^[\x21-\x7e]+$/.test(o.payload)) throw badRequest();
-    if (toDid === o.from_did) throw new ApiError(409, "self");
+    if (toDid === o.from_did) throw new ApiError(409, "same_device");
     const listed = this.listed(nick);
     if (!listed.some((d) => d.did === o.from_did)) throw new ApiError(422, "unknown_device");
     const sibling = listed.find((d) => d.did === toDid);
@@ -475,7 +475,7 @@ export class Grappa {
     const cost = (m: { payload: string }) =>
       new TextEncoder().encode(m.payload).length + ROW_OVERHEAD_BYTES;
     const held = sibling.inbox.filter((m) => m.own).reduce((sum, m) => sum + cost(m), 0);
-    if (held + cost(o) > MAX_SENDER_BYTES) throw new ApiError(413, "full");
+    if (held + cost(o) > MAX_SENDER_BYTES) throw new ApiError(413, "inbox_full");
     const entry = { id: this.nextId++, msgid: newMsgid() };
     sibling.inbox.push({
       id: entry.id,

@@ -956,24 +956,27 @@ differences:
   undeliverable row and no notice;
 - **no push**: a copy raises no Web Push notification.
 
-A copy the sibling's queue cannot take is answered 413 `full`, and is then
-simply MISSING on that device: nobody is told later, and you need not retry.
+A copy the sibling's queue cannot take is answered 413 `inbox_full`, and is
+then simply MISSING on that device: nobody is told later, and you need not
+retry.
 A new device starts empty: copies apply from its pairing onward, with no
 backfill.
 
 Claim: 400 `bad_request` without a `from_did`; 404 `not_found` for a `did`
-your list does not name; 409 `self` for your own `did`, 409 `empty` when that
-device holds no key at all (unreachable until it uploads more), 409 `gone`
-when its key was taken between grappa's pick and the hand-out (ask again);
-422 `unknown_device` when `from_did` is not listed.
+your list does not name; 409 `same_device` for your own `did`, 409
+`keyless_device` when that device holds no key at all (unreachable until it
+uploads more), 409 `key_taken` when its key was taken between grappa's pick
+and the hand-out (ask again); 422 `unknown_device` when `from_did` is not
+listed.
 
 Copy: 400 `bad_request` for another verb, a payload that is not compact JSON
 text, or a missing field; 404 `not_found` for a `did` your list does not
-name, or with no session on the network (as on the send door); 409 `self`
-when `did` is `from_did`, 409 `gone` when that device was dropped meanwhile;
-413 `too_large` for a payload over 32 KiB, 413 `full` as above; 422
-`unknown_device` when `from_did` is not listed; 503 `db_unavailable` when the
-database stays busy; 504 `session_timeout` if the session does not answer.
+name, or with no session on the network (as on the send door); 409
+`same_device` when `did` is `from_did`, 409 `removed_device` when that device
+was dropped meanwhile; 413 `too_large` for a payload over 32 KiB, 413
+`inbox_full` as above; 422 `unknown_device` when `from_did` is not listed;
+503 `db_unavailable` when the database stays busy; 504 `session_timeout` if
+the session does not answer.
 
 Check `protocol_version >= 42`, `>= 43` for the offline queue and `id`,
 `>= 44` for the key bundle, `>= 46` for `expires_at`, `too_late` and

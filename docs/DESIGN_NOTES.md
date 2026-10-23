@@ -4419,16 +4419,21 @@ NACKed as an unseen curve, as today (R14).
 - `own: boolean` on the `e2e_message` inbox item and event: a copy is an
   item from one's own device; the client routes it to `receiveCopy`,
   never to the peer path.
-- New error tokens `self`, `empty`, `gone`, `full`. `self`/`empty`/`gone`
-  were already emitted by the claim door but undeclared, so the drift test
-  was red at the base; they ride the bump because they are generated into
-  `REST_ERROR_TOKENS`.
+- New error tokens, each named for its condition: 409 `same_device`,
+  `keyless_device`, `key_taken`, `removed_device`, and 413 `inbox_full`.
+  They first went in as `self`, `empty`, `gone` and `full`, generic words
+  in the global REST set: any later `{:error, :gone}` reaching the
+  FallbackController would have inherited 409 and "That device changed
+  just now", and `gone` already meant two things (a key taken on claim, a
+  sibling dropped on copies). Renamed while 50 is unreleased, since a
+  rename after a release is a removal that needs a ruling. They ride the
+  bump because they are generated into `REST_ERROR_TOKENS`.
 - Server choices, each "one answer for one condition across doors":
   an unlisted `from_did` is 422 `unknown_device` on both new doors, as on
   `POST /e2e/messages` (R5); no live session is 404 `not_found`, as
   `send_e2e` answers (R6); a key taken between pick and consume is 409
-  `gone` (R2); an over-share copy is 413 `full`. The verb is the send
-  door's lowercase `pkmsg`/`msg` everywhere (R1, R10, R12).
+  `key_taken` (R2); an over-share copy is 413 `inbox_full`. The verb is
+  the send door's lowercase `pkmsg`/`msg` everywhere (R1, R10, R12).
 - The SESSION picks the msgid (`E2e.new_msgid/0`), as for a peer message,
   and the door returns it with the id (R4): the column stays NOT NULL, no
   schema relaxation for one caller.
@@ -4439,12 +4444,14 @@ NACKed as an unseen curve, as today (R14).
   `Session.Server` from a REST call, on every send.
 - Statuses per door. claim: 400 `bad_request` without `from_did`; 404
   when the target is not in the stored list; 422 `unknown_device` when
-  `from_did` is not listed; 409 `self`; 409 `empty` (the target holds no
-  key); 409 `gone` (its key was taken between pick and consume, R2).
+  `from_did` is not listed; 409 `same_device`; 409 `keyless_device` (the
+  target holds no key); 409 `key_taken` (its key was taken between pick
+  and consume, R2).
   copies: 400 `bad_request` (another verb, or a payload that is not compact
   JSON text); 404 (target not listed, or no live session, R6); 422
-  `unknown_device`; 409 `self`; 409 `gone` (the sibling was dropped from
-  the list meanwhile); 413 `too_large` past 32 KiB; 413 `full`.
+  `unknown_device`; 409 `same_device`; 409 `removed_device` (the sibling
+  was dropped from the list meanwhile); 413 `too_large` past 32 KiB; 413
+  `inbox_full`.
 
 ### Known limits, accepted
 

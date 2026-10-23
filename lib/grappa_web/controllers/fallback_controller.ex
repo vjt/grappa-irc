@@ -101,10 +101,11 @@ defmodule GrappaWeb.FallbackController do
            | :stale_list
            | :unknown_device
            | :listed_device
-           | :self
-           | :empty
-           | :gone
-           | :full
+           | :same_device
+           | :keyless_device
+           | :key_taken
+           | :removed_device
+           | :inbox_full
            | :invalid_mask
            | :invalid_text_pattern
            | :not_raster
@@ -361,37 +362,44 @@ defmodule GrappaWeb.FallbackController do
   end
 
   # issue 2430, S1 — a sibling's key claimed (`E2eKeys.claim/4`), or a copy
-  # queued for it (`Session.copy_e2e/6`). 409, each its own token: `self` (a
-  # device never claims its own key, nor copies to itself), `empty` (the
-  # sibling holds no key at all, so it is unreachable for now) and `gone`
-  # (its key was taken between the pick and the consume: ask again; or the
-  # sibling was dropped before its copy went in).
-  def call(conn, {:error, :self}) do
+  # queued for it (`Session.copy_e2e/6`). 409, each its own token:
+  # `same_device` (a device never claims its own key, nor copies to itself),
+  # `keyless_device` (the sibling holds no key at all, so it is unreachable
+  # for now), `key_taken` (its key was taken between the pick and the
+  # consume: ask again) and `removed_device` (the sibling was dropped before
+  # its copy went in).
+  def call(conn, {:error, :same_device}) do
     conn
     |> put_status(:conflict)
-    |> json(%{error: "self"})
+    |> json(%{error: "same_device"})
   end
 
-  def call(conn, {:error, :empty}) do
+  def call(conn, {:error, :keyless_device}) do
     conn
     |> put_status(:conflict)
-    |> json(%{error: "empty"})
+    |> json(%{error: "keyless_device"})
   end
 
-  def call(conn, {:error, :gone}) do
+  def call(conn, {:error, :key_taken}) do
     conn
     |> put_status(:conflict)
-    |> json(%{error: "gone"})
+    |> json(%{error: "key_taken"})
+  end
+
+  def call(conn, {:error, :removed_device}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "removed_device"})
   end
 
   # issue 2430, S1 — the sibling's queue, or its share of the account's own
   # copies, cannot take the copy (`Grappa.E2eInbox.put/2`). 413 like the
   # other bounds a payload hits; its own token, because the remedy is not a
   # smaller payload: the copy is simply missing on that device.
-  def call(conn, {:error, :full}) do
+  def call(conn, {:error, :inbox_full}) do
     conn
     |> put_status(:request_entity_too_large)
-    |> json(%{error: "full"})
+    |> json(%{error: "inbox_full"})
   end
 
   # issue 2430, multi-device — a well-signed list naming a key no device of

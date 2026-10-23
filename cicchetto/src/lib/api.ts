@@ -2770,7 +2770,7 @@ export async function claimE2eDeviceKeys(
 // issue 2430 S1: a message this account's device `from_did` sent, encrypted
 // to its sibling `toDid`, queued there flagged own. Never on IRC; `verb` is
 // spelled as on the send door (pkmsg | msg). Like the send door, not through
-// `sendPipeline`: a refusal (413 `full`) is an answer, the copy is then
+// `sendPipeline`: a refusal (413 `inbox_full`) is an answer, the copy is then
 // simply missing on that sibling.
 export async function copyE2e(
   token: string,

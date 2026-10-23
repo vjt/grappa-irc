@@ -8191,7 +8191,7 @@ defmodule Grappa.Session.Server do
         {state, true}
 
       # Debug: the sender decides how often a full queue refuses.
-      {:error, :full} ->
+      {:error, :inbox_full} ->
         Logger.debug("e2e message not queued: queue full", sender: from, e2e_device: device.did)
         {count_unqueued(state, from, device.did, message.verb), queued?}
 
@@ -8201,7 +8201,7 @@ defmodule Grappa.Session.Server do
 
       # Revoked or dropped since the list was read: nothing is owed to a
       # device that is no longer there.
-      {:error, :gone} ->
+      {:error, :removed_device} ->
         Logger.debug("e2e message not queued: device gone", sender: from, e2e_device: device.did)
         {state, queued?}
     end
@@ -8219,14 +8219,14 @@ defmodule Grappa.Session.Server do
   # nick, only bounds it at a size no ircd's nick reaches. One would be a
   # broken invariant, which should crash.
   @spec put_e2e_entry(t(), E2eKeys.Device.t(), E2eInbox.attrs()) ::
-          {:ok, E2eInbox.Entry.t()} | {:error, :full | :gone | :db_unavailable}
+          {:ok, E2eInbox.Entry.t()} | {:error, :inbox_full | :removed_device | :db_unavailable}
   defp put_e2e_entry(state, device, attrs) do
     case E2eInbox.put(device, attrs) do
       {:ok, entry} ->
         :ok = Broadcaster.to_user(state, SessionWire.e2e_message(state.network_slug, device.did, entry))
         {:ok, entry}
 
-      {:error, reason} = refused when reason in [:full, :gone, :db_unavailable] ->
+      {:error, reason} = refused when reason in [:inbox_full, :removed_device, :db_unavailable] ->
         refused
     end
   end

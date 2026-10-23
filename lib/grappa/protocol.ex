@@ -1325,11 +1325,12 @@ defmodule Grappa.Protocol do
   # {from_did, verb, payload} (202 {id, msgid},
   # `Session.Wire.e2e_copied_payload`: a copy queued in that sibling's inbox,
   # never on IRC), `own` on `e2e_message` (true on such a copy, false on
-  # every peer message), and the error tokens `self`, `empty`, `gone` (409)
-  # and `full` (413). The copies share ONE sender bound in each queue,
-  # expire silently and raise no OS push. Bumped on the #1393d rule: a
-  # client that copies, or that reads `own` to show a copy as sent, cannot
-  # do it against a server predating the doors.
+  # every peer message), and the error tokens `same_device`,
+  # `keyless_device`, `key_taken`, `removed_device` (409) and `inbox_full`
+  # (413). The copies share ONE sender bound in each queue, expire silently
+  # and raise no OS push. Bumped on the #1393d rule: a client that copies,
+  # or that reads `own` to show a copy as sent, cannot do it against a
+  # server predating the doors.
   #
   # Checked for a collision before claiming 50: origin/main carries 49, and
   # the one open PR that edits this file (#2102) still carries 21.

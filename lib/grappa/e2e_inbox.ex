@@ -32,7 +32,7 @@ defmodule Grappa.E2eInbox do
   of it, so one nick cannot fill the queue against everybody else. It is
   per NICK, the only identity grappa sees: a peer using several nicks can
   still fill the whole queue. Past either bound `put/2` refuses with
-  `{:error, :full}`; a message to `*` is refused only at the devices whose
+  `{:error, :inbox_full}`; a message to `*` is refused only at the devices whose
   queue is full.
 
   A row older than `ttl_seconds/0` is dropped by `expire/3`, which the
@@ -115,17 +115,17 @@ defmodule Grappa.E2eInbox do
   @doc """
   Queues one whole message for `device`.
 
-  `{:error, :full}` when the row would take the device's queue past
-  `max_bytes/0`, or the sender's share past `max_sender_bytes/0`; the
-  check and the insert are one transaction, so two arrivals cannot both
-  squeeze into the last room. `{:error, :gone}` when the device was
-  revoked or dropped since the caller read it: a list put or a clear can
-  commit in between, and SQLite names no constraint for the foreign key it
-  then refuses, so nothing else could tell. `{:error, :db_unavailable}`
-  when the write lock stays taken past the retry budget.
+  `{:error, :inbox_full}` when the row would take the device's queue
+  past `max_bytes/0`, or the sender's share past `max_sender_bytes/0`;
+  the check and the insert are one transaction, so two arrivals cannot
+  both squeeze into the last room. `{:error, :removed_device}` when the
+  device was revoked or dropped since the caller read it: a list put or a
+  clear can commit in between, and SQLite names no constraint for the
+  foreign key it then refuses, so nothing else could tell. `{:error,
+  :db_unavailable}` when the write lock stays taken past the retry budget.
   """
   @spec put(Device.t(), attrs()) ::
-          {:ok, Entry.t()} | {:error, :full | :gone | :db_unavailable | Ecto.Changeset.t()}
+          {:ok, Entry.t()} | {:error, :inbox_full | :removed_device | :db_unavailable | Ecto.Changeset.t()}
   def put(%Device{id: device_id}, %{sender: sender, payload: payload} = attrs)
       when is_binary(sender) and is_binary(payload) do
     changeset = Entry.changeset(%Entry{}, Map.put(attrs, :device_id, device_id))
@@ -133,7 +133,8 @@ defmodule Grappa.E2eInbox do
     if changeset.valid?, do: Repo.BusyRetry.run(fn -> insert_transaction(changeset) end), else: {:error, changeset}
   end
 
-  @spec insert_transaction(Ecto.Changeset.t()) :: {:ok, Entry.t()} | {:error, :full | :gone | Ecto.Changeset.t()}
+  @spec insert_transaction(Ecto.Changeset.t()) ::
+          {:ok, Entry.t()} | {:error, :inbox_full | :removed_device | Ecto.Changeset.t()}
   defp insert_transaction(changeset), do: Repo.immediate_transaction(fn -> insert(changeset) end)
 
   # Inside the transaction: the device is still there, the usage check,
@@ -145,7 +146,7 @@ defmodule Grappa.E2eInbox do
   @spec insert(Ecto.Changeset.t()) :: Entry.t()
   defp insert(changeset) do
     entry = Ecto.Changeset.apply_changes(changeset)
-    _ = if not Repo.exists?(where(Device, [d], d.id == ^entry.device_id)), do: Repo.rollback(:gone)
+    _ = if not Repo.exists?(where(Device, [d], d.id == ^entry.device_id)), do: Repo.rollback(:removed_device)
     cost = byte_size(entry.payload) + @row_overhead_bytes
     folded = Identifier.canonical_target(entry.sender)
 
@@ -173,7 +174,7 @@ defmodule Grappa.E2eInbox do
       |> Repo.one()
 
     if total + cost > @max_bytes or sender_total + cost > @max_sender_bytes do
-      Repo.rollback(:full)
+      Repo.rollback(:inbox_full)
     else
       changeset |> Repo.insert() |> unwrap_or_rollback()
     end

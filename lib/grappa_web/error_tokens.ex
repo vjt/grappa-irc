@@ -111,14 +111,15 @@ defmodule GrappaWeb.ErrorTokens do
           | :unknown_device
           | :listed_device
           # issue 2430 S1 — 409: a device claiming its own key or copying to
-          # itself, a sibling with no key left, a key taken (or a sibling
-          # dropped) meanwhile; 413: a sibling's queue, or its share of the
-          # account's own copies, that cannot take a copy (`E2eController`
-          # `claim/2` and `copy/2`).
-          | :self
-          | :empty
-          | :gone
-          | :full
+          # itself, a sibling with no key left, a key taken meanwhile, a
+          # sibling dropped meanwhile; 413: a sibling's queue, or its share
+          # of the account's own copies, that cannot take a copy
+          # (`E2eController` `claim/2` and `copy/2`).
+          | :same_device
+          | :keyless_device
+          | :key_taken
+          | :removed_device
+          | :inbox_full
           # #162 — 422: a `/ignore` mask that `Grappa.IRC.Mask.normalize/1`
           # rejects (empty, whitespace, CRLF, bad `nick!user@host` order).
           | :invalid_mask

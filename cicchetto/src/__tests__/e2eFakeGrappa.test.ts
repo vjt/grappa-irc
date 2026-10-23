@@ -409,11 +409,11 @@ describe("fake grappa v2: claim and copy to a sibling", () => {
 
     await expect(grappa.api.claimE2eDeviceKeys("Bob", SLUG, d1.did, d1.did)).rejects.toMatchObject({
       status: 409,
-      code: "self",
+      code: "same_device",
     });
     await expect(grappa.api.claimE2eDeviceKeys("Bob", SLUG, d1.did, d2.did)).rejects.toMatchObject({
       status: 409,
-      code: "empty",
+      code: "keyless_device",
     });
     await expect(
       grappa.api.claimE2eDeviceKeys("Bob", SLUG, d2.did, "AAAAAAAAAAA"),
@@ -449,12 +449,12 @@ describe("fake grappa v2: claim and copy to a sibling", () => {
     const payload = "A".repeat(30_000);
     const fits = Math.floor(1_048_576 / (payload.length + 256));
     for (let i = 0; i < fits; i++) await copy(payload);
-    await expect(copy(payload)).rejects.toMatchObject({ status: 413, code: "full" });
+    await expect(copy(payload)).rejects.toMatchObject({ status: 413, code: "inbox_full" });
 
     await expect(copy('{"v":2}', "keyreq")).rejects.toMatchObject({ status: 400 });
     await expect(
       grappa.api.copyE2e("Bob", SLUG, d1.did, { from_did: d1.did, verb: "msg", payload: "x" }),
-    ).rejects.toMatchObject({ status: 409, code: "self" });
+    ).rejects.toMatchObject({ status: 409, code: "same_device" });
     await expect(
       grappa.api.copyE2e("Bob", SLUG, d2.did, {
         from_did: "AAAAAAAAAAA",

@@ -1128,7 +1128,7 @@ describe("e2eClient, copies to our other devices", () => {
     const second = await ownOf(a2);
     const claims = vi
       .spyOn(w.grappa.api, "claimE2eDeviceKeys")
-      .mockRejectedValue(new api.ApiError(409, "empty"));
+      .mockRejectedValue(new api.ApiError(409, "keyless_device"));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     await a.client.send(a.ctx, "Bob", "lost");
@@ -1160,7 +1160,7 @@ describe("e2eClient, copies to our other devices", () => {
     const second = await ownOf(a2);
     const copies = vi
       .spyOn(w.grappa.api, "copyE2e")
-      .mockRejectedValueOnce(new api.ApiError(413, "full"));
+      .mockRejectedValueOnce(new api.ApiError(413, "inbox_full"));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     await a.client.send(a.ctx, "Bob", "refused copy");
