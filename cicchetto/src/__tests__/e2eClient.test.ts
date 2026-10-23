@@ -1097,6 +1097,30 @@ describe("e2eClient, copies to our other devices", () => {
     ]);
   });
 
+  it("a text two of the peer's devices take in one flush is copied once", async () => {
+    const { w, a, a2, b } = await twoDevices();
+    const b2 = await w.pairDevice(b);
+    await bobWrites({ a, a2, b });
+    // Bob's second device gets "one" once its keys come: from then on alice
+    // holds a session to each of his devices, one of them not heard back on.
+    await a.client.send(a.ctx, "Bob", "one");
+    await a.client.drain(a.ctx);
+    const copies = vi.spyOn(w.grappa.api, "copyE2e");
+
+    await a.client.send(a.ctx, "Bob", "two");
+
+    // The precondition: grappa took two payloads of "two" in that one flush.
+    const two = w.grappa.sends.at(-1)?.tag;
+    const payloads = w.grappa.sends.filter((s) => s.by === "alice" && s.tag === two);
+    expect(payloads.map((s) => s.verb).sort()).toEqual(["msg", "pkmsg"]);
+    expect(copies).toHaveBeenCalledTimes(1);
+    await a2.client.drain(a2.ctx);
+    await b2.client.drain(b2.ctx);
+    expect(await bodies(a2, "bob")).toEqual(["hi alice", "one", "two"]);
+    // Bob's own "hi alice" is there too: b copied it to its sibling b2.
+    expect(await bodies(b2, "alice")).toEqual(["hi alice", "one", "two"]);
+  });
+
   it("stores the sibling's ratchet step before its copy leaves", async () => {
     const { w, a, a2, b } = await twoDevices();
     await bobWrites({ a, a2, b });
