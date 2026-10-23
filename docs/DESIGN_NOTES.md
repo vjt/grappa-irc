@@ -4179,7 +4179,8 @@ still held elsewhere, so a stale flag cannot destroy the identity another
 tab just made. Short of these, only a page reload syncs the network again
 (`mountIdentitySync` syncs a slot once per page load). Copies of one's own
 sent messages to one's OTHER devices are built by neither MD-1 nor MD-2: a
-message is encrypted to the peer's devices only.
+message is encrypted to the peer's devices only (since built by S1, see
+`#2430m` below).
 <!-- entry #2430l -->
 
 ---
@@ -4308,3 +4309,152 @@ device labels, and the remedy for a full list (revoking a device, X2).
 `issue2430-pairing.spec.ts`: two browsers of one user pair, a peer reads
 two devices and one line reaches both; and a wrong typed code adds
 nothing, ends the new browser, and leaves one device on grappa.
+<!-- entry #2430m -->
+
+---
+
+## 2026-10-23 — #2430m: S1, copies to my other devices
+
+A device that sends a text now hands a copy of it to the account's OTHER
+devices, so the conversation shows on every browser of one identity. It is
+the half MD-1 and MD-2 left out ("built by neither", `#2430l` above).
+grappa carries the copies and still never reads one: they are the same
+PKMSG/MSG ciphertext the peer path uses, with one body per sibling. The
+wire is protocol 50. irc-olm is unchanged: nothing here touches the
+crypto layer, only who is addressed.
+
+### Decisions
+
+- **S1, a copy is its own engine path, so the peer `own-identity` check
+  stays.** A copy arrives from one of OUR devices, which the peer path
+  refuses by design (a peer presenting our own master is an attack, not a
+  conversation). Loosening that check to let copies in would have made it
+  a flag on a security rule. `receiveCopy` and `copy`/`siblingKeys` are
+  separate verbs that share the checks both paths need (`presented`,
+  `openInbound`, `decryptWith`) and share nothing about WHO may speak:
+  the peer path's behaviour and drop reasons are byte-for-byte what they
+  were (the 176 existing engine tests pass untouched).
+- **S2, a claim door, not a KEYREQ over IRC.** A sibling's keys come from
+  grappa (`POST …/e2e/devices/:did/claim`, `E2eKeys.claim/4`): the same
+  KEYS text, one one-time key consumed, as the peer path answers, minus
+  the IRC round trip. A KEYREQ to our own nick would need a live socket,
+  would go through the ircd and a bot-shaped responder, and would be
+  visible to the server as chat. Both devices are already listed under
+  one master on grappa, so the REST door is the shorter and quieter way.
+  The client never trusts what the door returns (S5).
+- **S3, one share, silent expiry, no push.** An own copy counts against ONE
+  share for the whole account (`own: true`, 1 MiB per device), apart from
+  every peer's share, so a chatty peer cannot starve our copies and a
+  burst of ours cannot starve a peer. `E2eInbox.expire/3` still deletes a
+  stale copy but reports it to nobody: no `undeliverable` row, no NACK, no
+  push (`Session.copy_e2e` never calls the push trigger). A copy is the
+  user's own text on the user's own screen; nothing is owed to a sender
+  who is the reader.
+- **S4, copy only after the 202.** The client builds a copy only once
+  grappa answered 202 for the send door, and only for a text (not LIST,
+  SAS or ORDER), once per text: the copy step sits in `flush`, the one
+  path every payload takes, and skips a text whose out row is already
+  "sent" (a NACK re-send, a later device's keys). A refused or expired
+  text is never copied.
+- **S5, our OWN signed device list is the authority on every sibling
+  operation, send and receive.** Task 5's review found `copy()` and
+  `siblingKeys()` trusting the KEYS list grappa served. A list grappa
+  serves can only take a sibling AWAY, never add one: `setSiblings`,
+  `copy`, `siblingKeys` and `receiveCopy` all pass the shared
+  `ourListNames`/`listedSiblings` gate against `own.list` first, and a
+  sibling it no longer names is forgotten on the spot (sessions deleted,
+  waiting copies dropped `sibling-gone`). A sibling's did is derived from
+  its key, never read from grappa's printed one. A sibling's FIRST
+  verified PKMSG copy admits it (our list, S1 under our master, the curve
+  proven by decryption), which is why receiving needs no device listing
+  of its own and the drain never re-lists on an unknown did. The listing
+  stays only where SENDING needs it: lazily before a page's first copy,
+  then every 60 s (`SIBLINGS_TTL_MS`), kept per device key in a module map
+  because `encryptedChats.run` builds a new client per operation.
+- **S6, no NACK on copies; a lost sibling session is an accepted gap.**
+  Every copy drop is a log line (`{dropped, nick: ownNick, reason}`) and
+  never an outbound entry, so a copy cannot set off a NACK ladder between
+  two of our own devices. If a sibling loses its session, the copies to
+  it are lost; a lost state means a new device anyway (D5 below), and the
+  first message it reads after that opens a fresh session. A retraction
+  protocol for a convenience copy is the heavier mechanism the problem
+  does not call for.
+- **S7, a new device starts empty.** No backfill: the new browser sees
+  copies only from the moment it is listed and claimed. History would have
+  to be a transfer of plaintext, which the pairing channel refuses by
+  design (D5 of "X1-crypto").
+- **S8, text grappa 202s and later drops is already copied (R17).** The
+  copy is built on the 202, not on delivery. If grappa then drops the text
+  unsent (`e2e_dropped`), a sibling may show it sent while the sender
+  shows it failed. Accepted for S1; the spec's line is "a copy is built
+  only once grappa answered 202". Retracting copies on `e2e_dropped` is
+  the follow-up if it ever bites.
+
+### The refusal set of `receiveCopy`
+
+It is not only the five sibling reasons (`sibling-not-ours`,
+`sibling-unknown`, `sibling-bad-signature`, `sibling-undecryptable`,
+`sibling-not-a-copy`), plus `sibling-gone` and `sibling-no-keys` on the
+send side. Because the PKMSG checks are shared with the peer path, a copy
+also refuses with the peer reasons `undecodable-payload`, `bad-payload`,
+`non-canonical-key`, `bad-from`, `not-for-us`, `undecodable-inner`,
+`inner-without-type` and `inner-key-mismatch`. Code against the set, not
+against "five". Every refusal happens before a session opens and leaves
+the engine state unchanged, except a post-decrypt refusal (a forward
+compatibility case): it keeps the id in `seen` and has spent the
+one-time key. An MSG on a sibling's curve handed in under a PEER nick is
+deliberately not re-labelled `own-identity`: it is not delivered and is
+NACKed as an unseen curve, as today (R14).
+
+### Wire (protocol 50)
+
+- Two doors: `POST /networks/:network_id/e2e/devices/:did/claim` (body
+  `from_did`, 200 `{keys}`) and `…/e2e/devices/:did/copies` (body
+  `from_did`, `verb`, `payload`; 202 `{id, msgid}`).
+- `own: boolean` on the `e2e_message` inbox item and event: a copy is an
+  item from one's own device; the client routes it to `receiveCopy`,
+  never to the peer path.
+- New error tokens `self`, `empty`, `gone`, `full`. `self`/`empty`/`gone`
+  were already emitted by the claim door but undeclared, so the drift test
+  was red at the base; they ride the bump because they are generated into
+  `REST_ERROR_TOKENS`.
+- Server choices, each "one answer for one condition across doors":
+  an unlisted `from_did` is 422 `unknown_device` on both new doors, as on
+  `POST /e2e/messages` (R5); no live session is 404 `not_found`, as
+  `send_e2e` answers (R6); a key taken between pick and consume is 409
+  `gone` (R2); an over-share copy is 413 `full`. The verb is the send
+  door's lowercase `pkmsg`/`msg` everywhere (R1, R10, R12).
+- The SESSION picks the msgid (`E2e.new_msgid/0`), as for a peer message,
+  and the door returns it with the id (R4): the column stays NOT NULL, no
+  schema relaxation for one caller.
+- An own row's `sender` is bounded in bytes, not judged by `valid_nick?`
+  (R7): it is informational (the share groups own rows regardless of it,
+  expiry ignores them, cic ignores `from` on an own item). Judging it
+  made a copy sent under an upstream-assigned UID nick crash
+  `Session.Server` from a REST call, on every send.
+- `claim` and `copies` need `from_did` to be listed and distinct from the
+  target: self is 409 `self`, a target with no key is 409 `empty`.
+
+### Known limits, accepted
+
+- S6 and S8 above: a lost sibling session loses its copies; a dropped text
+  is already copied.
+- A copy waits at most `OUTQ_TTL_MS` for a sibling's keys; past it the
+  copy is dropped `sibling-no-keys`, not re-asked until a pause.
+- A crash between the client's persist and its claim leaves that
+  sibling reading "already asked" while sends keep arriving less than 90 s
+  apart (Task 7 review, minor).
+- A pre-50 server fails the `e2e_message` schema on every item, since the
+  generated schema requires `own`; harmless only because no release
+  carried E2E before 50.
+- The three doors (`devices`, `claim`, `copy`) map every failure to
+  "refused" in `encryptedChats.ts`, so a 503 or a network error reads as a
+  refusal in the log.
+
+### Test
+
+Server: `e2e_inbox_test`, `e2e_keys_test`, `e2e_controller_test`,
+`e2e_session_test` (the copy door, its share, expiry and no-push). cic:
+`e2eEngine.test.ts` (send and receive paths, 27 security mutants killed
+by the receive tests), `e2eClient.test.ts` (whole clients paired through
+`pairDevice`). The real-browser spec is a separate commit.
