@@ -73,12 +73,13 @@ defmodule Grappa.E2eInbox.Entry do
   def max_own_sender_bytes, do: @max_own_sender_bytes
 
   @doc """
-  Builds an insert changeset. Every field is required; the sender must be
-  a nick on a peer's row, and at most `max_own_sender_bytes/0` on an own
-  row (our nick, as the ircd set it); `from_did` a device id or `*`, the
-  msgid a token `Grappa.IRC.E2e.msgid?/1` accepts, and the payload no
-  longer than the receiver's per-message bound. `bytes` is derived from
-  the payload, never cast.
+  Builds an insert changeset. Every field is required but `own`, which
+  defaults to false (a peer's message). The sender must be a nick on a
+  peer's row; on an own row it is our nick as the ircd set it, which is
+  bounded at `max_own_sender_bytes/0` and not judged as a nick. `from_did`
+  is a device id or `*`, the msgid a token `Grappa.IRC.E2e.msgid?/1`
+  accepts, and the payload no longer than the receiver's per-message
+  bound. `bytes` is derived from the payload, never cast.
   """
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(entry, attrs) do

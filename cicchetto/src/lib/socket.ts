@@ -359,8 +359,11 @@ let _socket: Socket | null = null;
 // `…/e2e/devices/:did/claim` and `…/e2e/devices/:did/copies`, `own` on
 // `e2e_message`, the tokens `same_device` / `keyless_device` / `key_taken` /
 // `removed_device` / `inbox_full`. A pre-50 server answers the doors 404,
-// which leaves a copy missing on the other devices and nothing else, so
-// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+// and sends `e2e_message` without `own`, which the generated schema
+// requires: every push and inbox page from it fails narrowing, so no E2E
+// message reads there at all. Harmless only because no release carried E2E
+// before 50 (DESIGN_NOTES #2430m, known limits); nothing outside E2E
+// changed, so `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
 export const CLIENT_PROTOCOL_VERSION = 50;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.

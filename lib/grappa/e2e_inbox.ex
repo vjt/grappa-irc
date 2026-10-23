@@ -15,6 +15,13 @@ defmodule Grappa.E2eInbox do
   acknowledgement was lost sees it again, and tells it from a new one by
   the id, which is never reused.
 
+  The same queue carries own copies (issue 2430 S1, `own: true`): a copy
+  of a message one of the subject's devices sent, which that device
+  encrypted to another of the subject's devices and put here through the
+  copy door (`Grappa.Session.copy_e2e/6`). It is read, pushed and
+  acknowledged as a peer's message is; only its bound and its expiry
+  differ (below).
+
   Every message is queued, connected client or not. The spec asks for a
   queue "while no cicchetto is connected"; queueing always is the same
   promise with one path instead of two, and it also covers the client that
@@ -28,16 +35,19 @@ defmodule Grappa.E2eInbox do
 
   Each row is charged its payload plus `row_overhead_bytes/0`, so a flood
   of tiny messages is bounded too. A device's queue holds at most
-  `max_bytes/0`, and one sender (case-folded) at most `max_sender_bytes/0`
-  of it, so one nick cannot fill the queue against everybody else. It is
-  per NICK, the only identity grappa sees: a peer using several nicks can
-  still fill the whole queue. Past either bound `put/2` refuses with
-  `{:error, :inbox_full}`; a message to `*` is refused only at the devices whose
-  queue is full.
+  `max_bytes/0`, and one sender at most `max_sender_bytes/0` of it, so one
+  sender cannot fill the queue against everybody else. A peer's share is
+  per folded NICK, the only identity grappa sees: a peer using several
+  nicks can still fill the whole queue. The own copies in a device's queue
+  are ONE share of their own, whatever nick they went out under (a nick
+  change cannot widen it), apart from every peer's. Past either bound
+  `put/2` refuses with `{:error, :inbox_full}`; a message to `*` is refused
+  only at the devices whose queue is full.
 
   A row older than `ttl_seconds/0` is dropped by `expire/3`, which the
   session runs; the session then tells the recipient — and only the
-  recipient — who sent messages that a device never read.
+  recipient — who sent messages that a device never read. An own copy
+  expires silently: it is the subject's own text, so nobody is told.
 
   ## Boundary
 

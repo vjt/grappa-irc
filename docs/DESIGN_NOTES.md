@@ -4333,7 +4333,9 @@ crypto layer, only who is addressed.
   separate verbs that share the checks both paths need (`presented`,
   `openInbound`, `decryptWith`) and share nothing about WHO may speak:
   the peer path's behaviour and drop reasons are byte-for-byte what they
-  were (the 176 existing engine tests pass untouched).
+  were: the 163 engine tests that predate S1 pass untouched, and Task 6's
+  review traced the shared helpers one by one. (The 176 once quoted here
+  counted 13 S1 send tests too, so it did not measure the peer path.)
 - **S2, a claim door, not a KEYREQ over IRC.** A sibling's keys come from
   grappa (`POST …/e2e/devices/:did/claim`, `E2eKeys.claim/4`): the same
   KEYS text, one one-time key consumed, as the peer path answers. Two
@@ -4417,14 +4419,18 @@ The refusal set is not only the sibling reasons (`sibling-not-ours`,
 `sibling-unknown`, `sibling-list-behind`, `sibling-bad-signature`,
 `sibling-undecryptable`, `sibling-not-a-copy`), plus `sibling-gone` and
 `sibling-no-keys` on the send side; `sibling-list-behind` is the one the
-client treats as "not yet" rather than "no" (S5). Because the PKMSG checks are shared with the peer path, a copy
-also refuses with the peer reasons `undecodable-payload`, `bad-payload`,
-`non-canonical-key`, `bad-from`, `not-for-us`, `undecodable-inner`,
-`inner-without-type` and `inner-key-mismatch`. Code against the set, not
-against a count. Every refusal happens before a session opens and leaves
-the engine state unchanged, except a post-decrypt refusal (a forward
-compatibility case): it keeps the id in `seen` and has spent the
-one-time key. An MSG on a sibling's curve handed in under a PEER nick is
+client treats as "not yet" rather than "no" (S5). Because the PKMSG checks
+are shared with the peer path, a copy also refuses with the peer reasons
+`undecodable-payload`, `bad-payload`, `non-canonical-key`, `bad-from`,
+`not-for-us`, `undecodable-inner`, `inner-without-type` and
+`inner-key-mismatch`. Code against the set, not against a count. Every
+refusal happens before a session opens and opens or admits nothing. It
+does not leave the state untouched, though: the list check that runs
+first (`listedSiblings`) forgets, on every call, any sibling our list no
+longer names, its sessions and its waiting copies (`sibling-gone`), refusal
+or not. A post-decrypt refusal (a forward compatibility case) also keeps
+the id in `seen` and has spent the one-time key. An MSG on a sibling's
+curve handed in under a PEER nick is
 deliberately not re-labelled `own-identity`: it is not delivered and is
 NACKed as an unseen curve, as today (R14).
 
@@ -4490,4 +4496,6 @@ Server: `e2e_inbox_test`, `e2e_keys_test`, `e2e_controller_test`,
 `e2e_session_test` (the copy door, its share, expiry and no-push). cic:
 `e2eEngine.test.ts` (send and receive paths, 27 security mutants killed
 by the receive tests), `e2eClient.test.ts` (whole clients paired through
-`pairDevice`). The real-browser spec is a separate commit.
+`pairDevice`), `encryptedChats.test.ts` (a copy from a device paired since
+the page loaded, through `drainE2e`'s sync and second drain). The
+real-browser spec is a separate commit.

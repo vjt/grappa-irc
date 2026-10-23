@@ -278,7 +278,8 @@ defmodule GrappaWeb.E2eController do
   does not name for this subject; 422 `unknown_device` when `from_did` is
   not listed either; 409 `same_device` for the caller's own `did`, 409
   `keyless_device` when that device holds no key, 409 `key_taken` when its
-  key was taken meanwhile.
+  key was taken meanwhile; 503 `db_unavailable` when the write lock stays
+  taken.
   """
   @spec claim(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
