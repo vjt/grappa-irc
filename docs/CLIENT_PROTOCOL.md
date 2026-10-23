@@ -938,8 +938,9 @@ two doors act only inside your own account, never on IRC:
 | `POST /networks/:network_id/e2e/devices/:did/copies` `{"from_did", "verb", "payload"}` | **202** `{"id": <id>, "msgid": "…"}` — a copy of a message `from_did` sent, queued in the inbox of your sibling `did` and pushed as an `e2e_message` with `own: true`, `from` your nick at send time and `from_did` the sending device. `id` is its queue id there, `msgid` one grappa picked |
 
 `verb` is `pkmsg` or `msg`, spelled as on the send door; `payload` is the
-compact JSON text your sending device encrypted to the sibling, with the
-session the claim opened, never the ciphertext the peer got. Copy a message
+compact JSON text your sending device encrypted to the sibling, on the
+session it holds to it (the one a claim opened, or the one the sibling
+opened when it copied to you first), never the ciphertext the peer got. Copy a message
 only once grappa accepted it (the send door's 202): one that never left has
 nothing to copy. grappa fills these doors only for your own account, and is
 still not trusted for content: drop an `own` copy whose sending device is not
@@ -971,7 +972,7 @@ your list does not name; 409 `same_device` for your own `did`, 409
 `keyless_device` when that device holds no key at all (unreachable until it
 uploads more), 409 `key_taken` when its key was taken between grappa's pick
 and the hand-out (ask again); 422 `unknown_device` when `from_did` is not
-listed.
+listed; 503 `db_unavailable` when the database stays busy.
 
 Copy: 400 `bad_request` for another verb, a payload that is not compact JSON
 text, or a missing field; 404 `not_found` for a `did` your list does not
@@ -1767,7 +1768,7 @@ forever.
 | `directory_complete` | user | the `/LIST` channel-directory scan finished |
 | `directory_failed` | user | the `/LIST` scan failed or timed out |
 | `directory_progress` | user | `/LIST` scan progress count |
-| `e2e_message` | user | one whole end-to-end encrypted message from a peer for one of your devices (`to_did`, v49), payload never decoded; queued until that device acks (§4f) |
+| `e2e_message` | user | one whole end-to-end encrypted message for one of your devices (`to_did`, v49): from a peer, or, with `own: true` (v50), a copy of one your other device sent; payload never decoded; queued until that device acks (§4f) |
 | `e2e_pairing_closed` | user | a pairing rendezvous is gone: `closed` by a side, `expired`, or `replaced` by a newer open (§4g, v48) |
 | `e2e_pairing_message` | user | a side posted message `seq` on a pairing rendezvous; no payload, fetch it (§4g, v48) |
 | `e2e_send_dropped` | user | an outbound end-to-end encrypted message accepted by the send door and dropped unsent: `late`, `send_failed` or `session_ended` (§4f, v46) |
