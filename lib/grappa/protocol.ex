@@ -1318,9 +1318,10 @@ defmodule Grappa.Protocol do
   # ---------------------------------------------------------------------------
   #
   # ADDED: `POST /networks/:network_id/e2e/devices/:did/claim` {from_did}
-  # (200 {keys}: one key of a sibling device, the KEYS v2 text restricted to
-  # it, so the sender can open an Olm session to its own other device, which
-  # never asks itself for keys over IRC), `POST .../e2e/devices/:did/copies`
+  # (200 {keys}, `E2eKeys.Wire.claimed`: one key of a sibling device, the
+  # KEYS v2 text restricted to it, so the sender can open an Olm session to
+  # its own other device, which never asks itself for keys over IRC),
+  # `POST .../e2e/devices/:did/copies`
   # {from_did, verb, payload} (202 {id, msgid},
   # `Session.Wire.e2e_copied_payload`: a copy queued in that sibling's inbox,
   # never on IRC), `own` on `e2e_message` (true on such a copy, false on

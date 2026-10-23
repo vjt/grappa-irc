@@ -34,6 +34,7 @@ import {
   narrowChannelListResponse,
   narrowCredentialResponse,
   narrowDirectoryPageResponse,
+  narrowE2eClaimedResponse,
   narrowE2eCopiedResponse,
   narrowE2eDevice,
   narrowE2eDevices,
@@ -60,6 +61,7 @@ import type {
   ChannelDirectoryStatus,
   ChannelDirectoryWireEntry,
   ChannelDirectoryWireIndexPayload,
+  E2eKeysWireClaimed,
   E2eKeysWireDevice,
   E2eKeysWireDeviceList,
   E2eKeysWireStatus,
@@ -2755,23 +2757,14 @@ export async function claimE2eDeviceKeys(
   networkSlug: string,
   did: string,
   fromDid: string,
-): Promise<{ keys: string }> {
+): Promise<E2eKeysWireClaimed> {
   const res = await fetch(`${e2eRoot(networkSlug)}/devices/${did}/claim`, {
     method: "POST",
     headers: buildHeaders(token),
     body: JSON.stringify({ from_did: fromDid }),
   });
   if (!res.ok) throw await readError(res);
-  const body: unknown = await res.json();
-  if (
-    typeof body !== "object" ||
-    body === null ||
-    !("keys" in body) ||
-    typeof body.keys !== "string"
-  ) {
-    throw new Error("claim: unexpected response shape");
-  }
-  return { keys: body.keys };
+  return narrowE2eClaimedResponse(await res.json());
 }
 
 // issue 2430 S1: a message this account's device `from_did` sent, encrypted

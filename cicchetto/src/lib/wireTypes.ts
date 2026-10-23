@@ -625,6 +625,10 @@ export type E2eKeysWireStatus = {
   fallback: boolean;
 };
 
+export type E2eKeysWireClaimed = {
+  keys: string;
+};
+
 // === Grappa.E2ePairing.Wire ===
 
 export const E2E_PAIRING_WIRE_SIDE = ["creator", "joiner"] as const;

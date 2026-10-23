@@ -37,6 +37,13 @@ defmodule Grappa.E2eKeys.Wire do
   """
   @type status :: %{one_time_keys: non_neg_integer(), fallback: boolean()}
 
+  @typedoc """
+  issue 2430 S1 — `POST /networks/:network_id/e2e/devices/:did/claim`
+  (200): `keys`, one key of a sibling device as the KEYS v2 text a peer's
+  KEYREQ is answered with, restricted to that device (`E2eKeys.claim/4`).
+  """
+  @type claimed :: %{keys: String.t()}
+
   @doc "Projects a `Grappa.E2eKeys.Device` onto the wire."
   @spec device(Device.t()) :: device()
   def device(%Device{did: did, ed25519: ed25519, curve25519: curve25519, sig: sig}),
@@ -50,6 +57,10 @@ defmodule Grappa.E2eKeys.Wire do
   @spec list(DeviceList.t()) :: device_list()
   def list(%DeviceList{master: master, ver: ver, devices: devices, sig: sig}),
     do: %{master: master, ver: ver, devices: devices, sig: sig}
+
+  @doc "Projects the KEYS text `Grappa.E2eKeys.claim/4` answers onto the wire."
+  @spec claimed(String.t()) :: claimed()
+  def claimed(keys) when is_binary(keys), do: %{keys: keys}
 
   @doc "Projects `Grappa.E2eKeys.status/1` onto the wire."
   @spec status(E2eKeys.status()) :: status()

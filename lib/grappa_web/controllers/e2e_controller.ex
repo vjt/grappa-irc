@@ -284,7 +284,7 @@ defmodule GrappaWeb.E2eController do
           | {:error, :bad_request | :self | :unknown_device | :not_found | :empty | :gone | :db_unavailable}
   def claim(conn, %{"did" => did, "from_did" => from_did}) when is_binary(did) and is_binary(from_did) do
     with {:ok, keys} <- E2eKeys.claim(subject(conn), conn.assigns.network.id, from_did, did) do
-      json(conn, %{keys: keys})
+      json(conn, E2eKeysWire.claimed(keys))
     end
   end
 

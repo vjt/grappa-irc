@@ -218,6 +218,27 @@ describe("per-device inbox doors", () => {
   });
 });
 
+describe("claimE2eDeviceKeys (S1)", () => {
+  it("POSTs from_did to the sibling's claim door and returns the KEYS text", async () => {
+    const f = stub(200, { keys: '{"v":2}' });
+    expect(await api.claimE2eDeviceKeys("tok", "azzurra", DID, "If4x36FUomE")).toEqual({
+      keys: '{"v":2}',
+    });
+    expect(sent(f)).toEqual({
+      url: `/networks/azzurra/e2e/devices/${DID}/claim`,
+      method: "POST",
+      body: { from_did: "If4x36FUomE" },
+    });
+  });
+
+  it("rejects an answer that carries no KEYS text, as the generated schema does", async () => {
+    stub(200, { key: '{"v":2}' });
+    await expect(
+      api.claimE2eDeviceKeys("tok", "azzurra", DID, "If4x36FUomE"),
+    ).rejects.toBeInstanceOf(WireShapeError);
+  });
+});
+
 describe("sendE2e", () => {
   const base = {
     target: "peer",

@@ -13,4 +13,4 @@
 # the digest spans is not a wire-shape change, the gate cannot tell one
 # from the other, and reading the pin is the only place a review sees it.
 protocol_version = 50
-shape_digest = sha256:3924a618ff3e5588b7803217f4f5dc37a0d2e75b9966c9ca2a1d2e86207c0401
+shape_digest = sha256:b5be549d6a3ba6f4158afead824492c6497e3fe225dee25e1bac5fa5635a24d0
