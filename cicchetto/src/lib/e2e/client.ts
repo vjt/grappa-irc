@@ -38,6 +38,7 @@
 // it is only acknowledged again. grappa's inbox ids never come back
 // (AUTOINCREMENT), so the watermark is enough.
 
+import { ApiError } from "../api";
 import type { E2eKeysWireDevice } from "../wireTypes";
 import type { AccountStore } from "./accountStore";
 import type { ChatChange, ChatStore, DoorRefusal, SendDropped } from "./chatStore";
@@ -100,6 +101,58 @@ export type Door = {
    */
   copy(toDid: string, verb: "pkmsg" | "msg", payload: string): Promise<number | DoorRefusal>;
 };
+
+/**
+ * The refusal a door answers for a call to grappa that threw (`Door`: never
+ * throws): all the client acts on. A 5xx, a network failure and an answer
+ * of the wrong shape all read `refused`, so the door logs the cause first
+ * (`refusedBy`).
+ */
+function refusalOf(err: unknown): DoorRefusal {
+  if (err instanceof ApiError && err.status === 429) return "rate-limited";
+  if (err instanceof ApiError && err.status === 413) return "too-large";
+  if (err instanceof ApiError && err.status === 422 && err.code === "too_late") return "too-late";
+  if (err instanceof ApiError && err.status === 422 && err.code === "unknown_device") {
+    return "unknown-device";
+  }
+  return "refused";
+}
+
+/**
+ * A door's call to grappa that threw (`what` names it): its cause to the
+ * console, where an operator looks, then its refusal (`refusalOf`).
+ */
+export function refusedBy(what: string, err: unknown): DoorRefusal {
+  console.warn(`[e2e] ${what}`, err);
+  return refusalOf(err);
+}
+
+/** `Door.claim`'s answer to grappa's claim of a key of our sibling `did`. */
+export const claimAnswer = (
+  did: string,
+  call: Promise<{ keys: string }>,
+): Promise<string | DoorRefusal> =>
+  call.then(
+    (r) => r.keys,
+    (err: unknown) => refusedBy(`the claim door refused a key of our device ${did}`, err),
+  );
+
+/** `Door.copy`'s answer to grappa's queueing of a `verb` copy for our sibling `did`. */
+export const copyAnswer = (
+  did: string,
+  verb: "pkmsg" | "msg",
+  call: Promise<{ id: number }>,
+): Promise<number | DoorRefusal> =>
+  call.then(
+    (r) => r.id,
+    (err: unknown) => refusedBy(`the copy door refused a ${verb} copy to our device ${did}`, err),
+  );
+
+/** `Door.devices`'s answer to grappa's listing of the subject's devices. */
+export const devicesAnswer = (
+  call: Promise<E2eKeysWireDevice[]>,
+): Promise<E2eKeysWireDevice[] | DoorRefusal> =>
+  call.catch((err: unknown) => refusedBy("the devices door refused the list of our devices", err));
 
 export type E2eContext = {
   slot: string;

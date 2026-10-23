@@ -45,9 +45,12 @@ import {
 } from "./api";
 import { token } from "./auth";
 import { browserE2e } from "./e2e/browser";
-import type { Chat, ChatRow, DoorRefusal, SendDropped } from "./e2e/chatStore";
+import type { Chat, ChatRow, SendDropped } from "./e2e/chatStore";
 import {
+  claimAnswer,
+  copyAnswer,
   type Door,
+  devicesAnswer,
   type E2eClient,
   type E2eContext,
   e2eClient,
@@ -55,6 +58,7 @@ import {
   NoAccountError,
   type PeerTrust,
   type Report,
+  refusedBy,
 } from "./e2e/client";
 import type { PinOutcome } from "./e2e/engine";
 import { accountSlot, type IdentityState, replaceIdentity, syncIdentity } from "./e2e/identity";
@@ -99,16 +103,6 @@ export type EncryptedChatEntry = { key: string; nick: string; unread: number };
 
 type Ctx = { ctx: E2eContext; bearer: string; slot: string };
 
-const refusalOf = (err: unknown): DoorRefusal => {
-  if (err instanceof ApiError && err.status === 429) return "rate-limited";
-  if (err instanceof ApiError && err.status === 413) return "too-large";
-  if (err instanceof ApiError && err.status === 422 && err.code === "too_late") return "too-late";
-  if (err instanceof ApiError && err.status === 422 && err.code === "unknown_device") {
-    return "unknown-device";
-  }
-  return "refused";
-};
-
 /** The `e2e_send_dropped` reasons, as a row's failure. */
 const DROPPED: Record<SessionWireE2eDropReason, SendDropped> = {
   late: "late",
@@ -116,7 +110,11 @@ const DROPPED: Record<SessionWireE2eDropReason, SendDropped> = {
   session_ended: "session-ended",
 };
 
-/** grappa's doors for the subject's device `did` on the network: its own inbox, and the send door. */
+/**
+ * grappa's doors for the subject's device `did` on the network: its own
+ * inbox, the send door, and the doors to its siblings. A call that fails is
+ * answered as its refusal, the cause in the console first (`refusedBy`).
+ */
 const doors =
   (bearer: string, slug: string) =>
   (did: string): Door => ({
@@ -131,10 +129,10 @@ const doors =
         own: m.own,
       })),
     ack: (ids) => ackE2eDeviceInbox(bearer, slug, did, ids),
-    claim: (to) => claimE2eDeviceKeys(bearer, slug, to, did).then((r) => r.keys, refusalOf),
+    claim: (to) => claimAnswer(to, claimE2eDeviceKeys(bearer, slug, to, did)),
     copy: (to, verb, payload) =>
-      copyE2e(bearer, slug, to, { from_did: did, verb, payload }).then((r) => r.id, refusalOf),
-    devices: () => listE2eDevices(bearer, slug).catch(refusalOf),
+      copyAnswer(to, verb, copyE2e(bearer, slug, to, { from_did: did, verb, payload })),
+    devices: () => devicesAnswer(listE2eDevices(bearer, slug)),
     send: async (out) => {
       try {
         return await sendE2e(bearer, slug, {
@@ -147,10 +145,8 @@ const doors =
           expiresAt: out.expiresAt ?? null,
         });
       } catch (err) {
-        // The client marks the message failed with the reason; the cause
-        // goes to the console, where an operator looks.
-        console.warn(`[e2e] the send door refused a ${out.verb} to ${out.target}`, err);
-        return { refused: refusalOf(err) };
+        // The client marks the message failed with the reason.
+        return { refused: refusedBy(`the send door refused a ${out.verb} to ${out.target}`, err) };
       }
     },
   });

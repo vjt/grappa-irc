@@ -1122,19 +1122,19 @@ describe("e2eClient, copies to our other devices", () => {
     expect(await inboxOf(w, a2)).toEqual([]);
   });
 
-  it("a refused claim drops the waiting copies and asks no more", async () => {
+  it("a refused claim is logged with its cause, drops the waiting copies and asks no more", async () => {
     const { w, a, a2, b } = await twoDevices();
     await bobWrites({ a, a2, b });
     const second = await ownOf(a2);
-    const claims = vi
-      .spyOn(w.grappa.api, "claimE2eDeviceKeys")
-      .mockRejectedValue(new api.ApiError(409, "keyless_device"));
+    const keyless = new api.ApiError(409, "keyless_device");
+    const claims = vi.spyOn(w.grappa.api, "claimE2eDeviceKeys").mockRejectedValue(keyless);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     await a.client.send(a.ctx, "Bob", "lost");
 
     expect(claims).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls).toEqual([
+      [`[e2e] the claim door refused a key of our device ${second.did}`, keyless],
       [
         `[e2e] grappa refused a key of our device ${second.did} (refused); the copies waiting for it are dropped`,
       ],
@@ -1145,7 +1145,7 @@ describe("e2eClient, copies to our other devices", () => {
     await a.client.tick(a.ctx);
     await a.client.drain(a.ctx);
     expect(claims).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledTimes(3);
 
     // The next text asks for a key of its own, and is copied.
     claims.mockRestore();
@@ -1154,13 +1154,12 @@ describe("e2eClient, copies to our other devices", () => {
     expect(await bodies(a2, "bob")).toEqual(["hi alice", "next"]);
   });
 
-  it("a copy grappa refuses is one console line, and is never sent again", async () => {
+  it("a copy grappa refuses is logged with its cause, and is never sent again", async () => {
     const { w, a, a2, b } = await twoDevices();
     await bobWrites({ a, a2, b });
     const second = await ownOf(a2);
-    const copies = vi
-      .spyOn(w.grappa.api, "copyE2e")
-      .mockRejectedValueOnce(new api.ApiError(413, "inbox_full"));
+    const full = new api.ApiError(413, "inbox_full");
+    const copies = vi.spyOn(w.grappa.api, "copyE2e").mockRejectedValueOnce(full);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     await a.client.send(a.ctx, "Bob", "refused copy");
@@ -1170,6 +1169,7 @@ describe("e2eClient, copies to our other devices", () => {
 
     expect(copies).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls).toEqual([
+      [`[e2e] the copy door refused a pkmsg copy to our device ${second.did}`, full],
       [`[e2e] grappa refused a pkmsg copy to our device ${second.did}: too-large`],
     ]);
     expect(await states(a, "Bob")).toEqual([["sent", null]]);
@@ -1198,17 +1198,18 @@ describe("e2eClient, copies to our other devices", () => {
     expect(await bodies(a3, "bob")).toEqual(["four"]);
   });
 
-  it("a listing of the devices grappa refuses is one console line, and the next copy lists them again", async () => {
+  it("a listing of the devices grappa refuses is logged with its cause, and the next copy lists them again", async () => {
     const { w, a, a2, b } = await twoDevices();
     await bobWrites({ a, a2, b });
-    vi.spyOn(w.grappa.api, "listE2eDevices").mockRejectedValueOnce(
-      new api.ApiError(503, "db_unavailable"),
-    );
+    const unavailable = new api.ApiError(503, "db_unavailable");
+    vi.spyOn(w.grappa.api, "listE2eDevices").mockRejectedValueOnce(unavailable);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    // No sibling known yet: nothing to copy "one" to.
+    // No sibling known yet: nothing to copy "one" to. The refusal reads
+    // `refused` to the client; the 503 behind it is in the line before.
     await a.client.send(a.ctx, "Bob", "one");
     expect(warn.mock.calls).toEqual([
+      ["[e2e] the devices door refused the list of our devices", unavailable],
       ["[e2e] grappa refused the list of our devices (refused); copies go to the known ones"],
     ]);
     await a.client.send(a.ctx, "Bob", "two");

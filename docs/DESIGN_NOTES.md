@@ -4465,9 +4465,6 @@ NACKed as an unseen curve, as today (R14).
 - A pre-50 server fails the `e2e_message` schema on every item, since the
   generated schema requires `own`; harmless only because no release
   carried E2E before 50.
-- The three doors (`devices`, `claim`, `copy`) map every failure to
-  "refused" in `encryptedChats.ts`, so a 503 or a network error reads as a
-  refusal in the log.
 
 ### Test
 
