@@ -55,7 +55,7 @@
  *
  * Last read, v49 -> v50 (issue 2430 S1): two E2E doors per device
  * (`/e2e/devices/:did/claim`, `/e2e/devices/:did/copies`), `own` on
- * `e2e_message`, and four REST error tokens. A terminal speaks no E2E and
+ * `e2e_message`, and five REST error tokens. A terminal speaks no E2E and
  * ignores that push, so nothing it reads changed.
  *
  * Replace this note at the next bump rather than appending to it — the

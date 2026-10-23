@@ -276,12 +276,20 @@ defmodule GrappaWeb.E2eController do
 
   400 `bad_request` without a `from_did`; 404 for a `did` the stored list
   does not name for this subject; 422 `unknown_device` when `from_did` is
-  not listed either; 409 `self` for the caller's own `did`, 409 `empty`
-  when that device holds no key, 409 `gone` when its key was taken meanwhile.
+  not listed either; 409 `same_device` for the caller's own `did`, 409
+  `keyless_device` when that device holds no key, 409 `key_taken` when its
+  key was taken meanwhile.
   """
   @spec claim(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
-          | {:error, :bad_request | :self | :unknown_device | :not_found | :empty | :gone | :db_unavailable}
+          | {:error,
+             :bad_request
+             | :same_device
+             | :unknown_device
+             | :not_found
+             | :keyless_device
+             | :key_taken
+             | :db_unavailable}
   def claim(conn, %{"did" => did, "from_did" => from_did}) when is_binary(did) and is_binary(from_did) do
     with {:ok, keys} <- E2eKeys.claim(subject(conn), conn.assigns.network.id, from_did, did) do
       json(conn, E2eKeysWire.claimed(keys))
@@ -304,11 +312,12 @@ defmodule GrappaWeb.E2eController do
 
   400 `bad_request` for another verb or a payload that is not compact JSON
   text; 404 for a `did` the stored list does not name, or with no session
-  on the network (as a send); 409 `self` for the caller's own `did`, 409
-  `gone` when that device was dropped meanwhile; 413 `too_large` past 32
-  KiB, 413 `full` when the sibling's queue, or its share of the account's
-  own copies, cannot take it: that copy is then simply missing there, and
-  nobody is told later; 422 `unknown_device` when `from_did` is not listed.
+  on the network (as a send); 409 `same_device` for the caller's own
+  `did`, 409 `removed_device` when that device was dropped meanwhile; 413
+  `too_large` past 32 KiB, 413 `inbox_full` when the sibling's queue, or
+  its share of the account's own copies, cannot take it: that copy is then
+  simply missing there, and nobody is told later; 422 `unknown_device`
+  when `from_did` is not listed.
   """
   @spec copy(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, Session.e2e_copy_error()}
   def copy(conn, %{"did" => did, "from_did" => from_did, "verb" => verb, "payload" => payload})

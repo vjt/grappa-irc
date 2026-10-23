@@ -922,7 +922,7 @@ defmodule Grappa.Session.E2eSessionTest do
         assert {:error, :unknown_device} = copy.(from, sibling.did, :msg, @small)
       end
 
-      assert {:error, :self} = copy.(device.did, device.did, :msg, @small)
+      assert {:error, :same_device} = copy.(device.did, device.did, :msg, @small)
 
       # Only what a person wrote is copied, as compact JSON text the
       # receiver can hold.
@@ -959,7 +959,7 @@ defmodule Grappa.Session.E2eSessionTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
       fill_share!(sibling, @nick, true)
 
-      assert {:error, :full} = Session.copy_e2e(subject, network.id, device.did, sibling.did, :msg, @small)
+      assert {:error, :inbox_full} = Session.copy_e2e(subject, network.id, device.did, sibling.did, :msg, @small)
       refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}, 100
 
       # A refused copy is simply missing on that device: no notice, now or

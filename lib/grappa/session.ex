@@ -234,11 +234,11 @@ defmodule Grappa.Session do
           | :timeout
           | :bad_request
           | :too_large
-          | :self
+          | :same_device
           | :unknown_device
           | :not_found
-          | :full
-          | :gone
+          | :inbox_full
+          | :removed_device
           | :db_unavailable
 
   @typedoc """
@@ -1140,12 +1140,12 @@ defmodule Grappa.Session do
 
   `{:ok, entry}` once it is queued. `{:error, :bad_request}` for another
   verb or a payload that is not compact JSON text; `{:error, :too_large}`
-  past `E2e.max_payload_bytes/0`; `{:error, :self}` when both dids are the
-  same; `{:error, :unknown_device}` when `from_did` is not listed;
-  `{:error, :not_found}` when `to_did` is not; `{:error, :full}` when the
-  sibling's queue, or its share of own copies, cannot take it: the copy is
-  then simply missing on that device, and nobody is told later;
-  `{:error, :gone}` when the sibling was dropped meanwhile;
+  past `E2e.max_payload_bytes/0`; `{:error, :same_device}` when both dids
+  are the same; `{:error, :unknown_device}` when `from_did` is not listed;
+  `{:error, :not_found}` when `to_did` is not; `{:error, :inbox_full}` when
+  the sibling's queue, or its share of own copies, cannot take it: the copy
+  is then simply missing on that device, and nobody is told later;
+  `{:error, :removed_device}` when the sibling was dropped meanwhile;
   `{:error, :db_unavailable}`; `{:error, :no_session}` with no live session.
   """
   @spec copy_e2e(subject(), integer(), String.t(), String.t(), E2e.verb(), String.t()) ::
@@ -1162,12 +1162,12 @@ defmodule Grappa.Session do
   # The checks that read nothing, first; the size before the shape, as on
   # the send door.
   @spec validate_e2e_copy(String.t(), String.t(), atom(), String.t()) ::
-          :ok | {:error, :bad_request | :too_large | :self}
+          :ok | {:error, :bad_request | :too_large | :same_device}
   defp validate_e2e_copy(from_did, to_did, verb, payload) do
     cond do
       byte_size(payload) > E2e.max_payload_bytes() -> {:error, :too_large}
       not (E2eInbox.message_verb?(verb) and E2e.chunk?(payload)) -> {:error, :bad_request}
-      from_did == to_did -> {:error, :self}
+      from_did == to_did -> {:error, :same_device}
       true -> :ok
     end
   end

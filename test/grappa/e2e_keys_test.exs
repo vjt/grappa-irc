@@ -203,7 +203,7 @@ defmodule Grappa.E2eKeysTest do
       # Not consumed yet: asked again, the same answer.
       assert {:ok, ^payload, ^keys} = E2eKeys.answer(subject, network.id, :otk)
       assert :ok = E2eKeys.consume(keys)
-      assert {:error, :gone} = E2eKeys.consume(keys)
+      assert {:error, :key_taken} = E2eKeys.consume(keys)
 
       {:ok, next, next_keys} = E2eKeys.answer(subject, network.id, :otk)
       assert [%{"otk" => %{"key" => next_key}}] = decode!(next)["devices"]
@@ -263,7 +263,7 @@ defmodule Grappa.E2eKeysTest do
       # The client replaced b's fallback key after the answer was picked.
       {:ok, _} = upload(b, [], fallback(b))
 
-      assert {:error, :gone} = E2eKeys.consume(keys)
+      assert {:error, :key_taken} = E2eKeys.consume(keys)
       assert E2eKeys.status(a.device).one_time_keys == 1
     end
 
@@ -337,8 +337,8 @@ defmodule Grappa.E2eKeysTest do
       {:ok, _} = upload(a, otks(a, 1), nil)
       listed(subject, network, master, [a, b], 1)
 
-      assert {:error, :self} = E2eKeys.claim(subject, network.id, a.device.did, a.device.did)
-      assert {:error, :empty} = E2eKeys.claim(subject, network.id, a.device.did, b.device.did)
+      assert {:error, :same_device} = E2eKeys.claim(subject, network.id, a.device.did, a.device.did)
+      assert {:error, :keyless_device} = E2eKeys.claim(subject, network.id, a.device.did, b.device.did)
       assert E2eKeys.status(a.device).one_time_keys == 1
     end
 
@@ -413,7 +413,7 @@ defmodule Grappa.E2eKeysTest do
       assert {:error, :not_found} = E2eKeys.list(subject, network.id)
       assert E2eKeys.status(theirs.device).one_time_keys == 1
       # A key picked before the clear is not handed out after it.
-      assert {:error, :gone} = E2eKeys.consume(picked)
+      assert {:error, :key_taken} = E2eKeys.consume(picked)
 
       # The account starts over under a new master, whose first list is taken.
       new_master = E2eFixtures.identity()

@@ -459,19 +459,23 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // 422 — a well-signed list naming a key no device of the account
       // registered on this network.
       return "That device list names a device that is not registered on this network.";
-    case "self":
+    case "same_device":
       // issue 2430 S1 — 409: a device claiming its own key, or copying a
       // message to itself, on the sibling doors.
       return "That is this device. Pick another of your devices.";
-    case "empty":
+    case "keyless_device":
       // 409 — the sibling holds no key at all, so it cannot be reached until
       // it uploads new ones (it does on connect).
       return "That device has no keys left. It can be reached once it comes back online.";
-    case "gone":
-      // 409 — the sibling's key was taken, or the sibling dropped, between
-      // the lookup and the write. Asking again settles it either way.
-      return "That device changed just now. Try again.";
-    case "full":
+    case "key_taken":
+      // 409 — the sibling's key was taken between grappa's pick and the
+      // hand-out. Asking again gets the next one.
+      return "That device's key was taken just now. Try again.";
+    case "removed_device":
+      // 409 — the sibling was dropped from the account between the lookup
+      // and the copy going into its inbox.
+      return "That device was just removed from your account.";
+    case "inbox_full":
       // 413 — the sibling's encrypted inbox (or its share of this account's
       // own copies) is full; the copy is simply missing there.
       return "That device's encrypted inbox is full.";

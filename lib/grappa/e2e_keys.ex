@@ -443,24 +443,25 @@ defmodule Grappa.E2eKeys do
   one-time key is deleted, the fallback stays), since the payload goes
   straight to the caller and nowhere else.
 
-  `{:error, :self}` for the caller's own `did`; `{:error, :unknown_device}`
-  when `from_did` is not a device the stored list names; `{:error,
-  :not_found}` when `did` is not one the list names for this subject;
-  `{:error, :empty}` when that device holds no key at all; `{:error,
-  :gone}` when its key was taken between the pick and the consume (ask
-  again); `{:error, :db_unavailable}` when the write lock stays taken past
-  the retry budget.
+  `{:error, :same_device}` for the caller's own `did`; `{:error,
+  :unknown_device}` when `from_did` is not a device the stored list names;
+  `{:error, :not_found}` when `did` is not one the list names for this
+  subject; `{:error, :keyless_device}` when that device holds no key at
+  all; `{:error, :key_taken}` when its key was taken between the pick and
+  the consume (ask again); `{:error, :db_unavailable}` when the write lock
+  stays taken past the retry budget.
   """
   @spec claim(Subject.t(), integer(), String.t(), String.t()) ::
-          {:ok, String.t()} | {:error, :self | :unknown_device | :not_found | :empty | :gone | :db_unavailable}
+          {:ok, String.t()}
+          | {:error, :same_device | :unknown_device | :not_found | :keyless_device | :key_taken | :db_unavailable}
   def claim({_, _} = subject, network_id, from_did, did)
       when is_integer(network_id) and is_binary(from_did) and is_binary(did) do
-    with :ok <- if(did == from_did, do: {:error, :self}, else: :ok),
+    with :ok <- if(did == from_did, do: {:error, :same_device}, else: :ok),
          %DeviceList{} = list <- Repo.one(list_query(subject, network_id)),
          listed = listed(subject, network_id, list),
          :ok <- if(Enum.any?(listed, &(&1.did == from_did)), do: :ok, else: {:error, :unknown_device}),
          %Device{} = device <- Enum.find(listed, &(&1.did == did)) || {:error, :not_found},
-         %Key{} = key <- next_key(device, :otk) || {:error, :empty},
+         %Key{} = key <- next_key(device, :otk) || {:error, :keyless_device},
          :ok <- consume([key]) do
       {:ok, Jason.encode!(%{v: 2, master: master_block(list), devices: [entry_block({device, key})]})}
     else
@@ -500,8 +501,8 @@ defmodule Grappa.E2eKeys do
 
   @doc """
   Marks `keys` as handed out, all or none: each one-time key is deleted, so
-  it is never handed out again; each fallback key stays. `{:error, :gone}`
-  when any of them is no longer held — taken already, or dropped with its
+  it is never handed out again; each fallback key stays. `{:error,
+  :key_taken}` when any of them is no longer held — taken already, or dropped with its
   device, by `clear/2` or by a newer fallback key — and then nothing is
   deleted, so a KEYS picked before a client changed its bundle is never
   sent after.
@@ -509,7 +510,7 @@ defmodule Grappa.E2eKeys do
   #
   # By id alone: ids are never reused (the table is `AUTOINCREMENT`) and a
   # row never changes kind, so the id names the very key that was picked.
-  @spec consume([Key.t(), ...]) :: :ok | {:error, :gone | :db_unavailable}
+  @spec consume([Key.t(), ...]) :: :ok | {:error, :key_taken | :db_unavailable}
   def consume([%Key{} | _] = keys) do
     otks = for %Key{kind: :otk, id: id} <- keys, do: id
     fallbacks = for %Key{kind: :fallback, id: id} <- keys, do: id
@@ -520,12 +521,12 @@ defmodule Grappa.E2eKeys do
     end
   end
 
-  @spec consume_transaction([pos_integer()], [pos_integer()]) :: {:ok, :ok} | {:error, :gone}
+  @spec consume_transaction([pos_integer()], [pos_integer()]) :: {:ok, :ok} | {:error, :key_taken}
   defp consume_transaction(otks, fallbacks) do
     Repo.immediate_transaction(fn ->
       {deleted, _} = Repo.delete_all(where(Key, [k], k.id in ^otks))
       held = Repo.aggregate(where(Key, [k], k.id in ^fallbacks), :count)
-      if deleted == length(otks) and held == length(fallbacks), do: :ok, else: Repo.rollback(:gone)
+      if deleted == length(otks) and held == length(fallbacks), do: :ok, else: Repo.rollback(:key_taken)
     end)
   end
 

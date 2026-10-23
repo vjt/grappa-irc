@@ -426,4 +426,24 @@ defmodule GrappaWeb.FallbackControllerTest do
       assert Plug.Conn.get_resp_header(conn, "retry-after") == ["1"]
     end
   end
+
+  describe "issue 2430 S1 sibling doors (claim, copies)" do
+    # Each condition its own E2E-specific token: a generic word (`gone`,
+    # `full`) in the global set would hand its status and its friendly text
+    # to any later `{:error, :gone}` that happened to reach this module.
+    for {reason, status} <- [
+          same_device: 409,
+          keyless_device: 409,
+          key_taken: 409,
+          removed_device: 409,
+          inbox_full: 413
+        ] do
+      test "{:error, #{inspect(reason)}} → #{status} #{reason}" do
+        conn = FallbackController.call(build_conn_for_call(), {:error, unquote(reason)})
+
+        assert conn.status == unquote(status)
+        assert Jason.decode!(conn.resp_body) == %{"error" => unquote(Atom.to_string(reason))}
+      end
+    end
+  end
 end

@@ -439,7 +439,7 @@ defmodule GrappaWeb.E2eControllerTest do
       assert json_response(post(conn, "#{device_path(network, "AAAAAAAAAAA")}/copies", ok), 404) ==
                %{"error" => "not_found"}
 
-      assert json_response(post(conn, copies_path(network, a), ok), 409) == %{"error" => "self"}
+      assert json_response(post(conn, copies_path(network, a), ok), 409) == %{"error" => "same_device"}
 
       assert json_response(post(conn, copies_path(network, b), %{ok | from_did: "AAAAAAAAAAA"}), 422) ==
                %{"error" => "unknown_device"}
@@ -477,7 +477,7 @@ defmodule GrappaWeb.E2eControllerTest do
 
       for _ <- 1..fits, do: assert(%{"id" => _} = json_response(post(conn, copies_path(network, b), big), 202))
 
-      assert json_response(post(conn, copies_path(network, b), big), 413) == %{"error" => "full"}
+      assert json_response(post(conn, copies_path(network, b), big), 413) == %{"error" => "inbox_full"}
       assert length(E2eInbox.list(b, 0)) == fits
     end
 
@@ -631,7 +631,7 @@ defmodule GrappaWeb.E2eControllerTest do
       _ = json_response(put(conn, "#{base}/list", E2eFixtures.list(master, 1, [a.attrs.ed25519, b.attrs.ed25519])), 200)
 
       claim = "#{device_path(network, b_did)}/claim"
-      assert json_response(post(conn, claim, %{from_did: a_did}), 409) == %{"error" => "empty"}
+      assert json_response(post(conn, claim, %{from_did: a_did}), 409) == %{"error" => "keyless_device"}
 
       key = key_body(b.identity)
       _ = json_response(post(conn, "#{device_path(network, b_did)}/keys", %{one_time_keys: [key]}), 200)
@@ -642,7 +642,7 @@ defmodule GrappaWeb.E2eControllerTest do
       assert k == key["key"]
       assert json_response(get(conn, "#{device_path(network, b_did)}/keys"), 200)["one_time_keys"] == 0
 
-      assert json_response(post(conn, claim, %{from_did: b_did}), 409) == %{"error" => "self"}
+      assert json_response(post(conn, claim, %{from_did: b_did}), 409) == %{"error" => "same_device"}
 
       assert json_response(post(conn, "#{device_path(network, "AAAAAAAAAAA")}/claim", %{from_did: a_did}), 404) ==
                %{"error" => "not_found"}
