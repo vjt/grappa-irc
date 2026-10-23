@@ -1099,6 +1099,31 @@ describe("e2eClient, copies to our other devices", () => {
     expect(await bodies(a2, "bob")).toEqual(["hi alice", "one", "two", "three"]);
   });
 
+  it("a tab that dies after storing, before its sibling's key is claimed, holds up no later copy", async () => {
+    const { w, a, a2, b } = await twoDevices();
+    await bobWrites({ a, a2, b });
+    const store = a.vault.store;
+    const before = w.grappa.sends.length;
+    let died = false;
+    // The tab dies right after the first store once grappa took the text.
+    a.vault.store = async (slot, sealed) => {
+      await store(slot, sealed);
+      if (!died && w.grappa.sends.length > before) {
+        died = true;
+        throw new Error("tab closed");
+      }
+    };
+
+    await expect(a.client.send(a.ctx, "Bob", "two")).rejects.toThrow("tab closed");
+    a.vault.store = store;
+    await a.client.send(a.ctx, "Bob", "three");
+    await a2.client.drain(a2.ctx);
+
+    // "two"'s copy was stored, never sent, and is lost; nothing waits on a
+    // claim that never went, so "three" reaches the sibling.
+    expect(await bodies(a2, "bob")).toEqual(["hi alice", "three"]);
+  });
+
   it("re-draining the same inbox page adds the copy row once", async () => {
     const { w, a, a2 } = await twoDevices();
     await a.client.send(a.ctx, "bob", "hello");
