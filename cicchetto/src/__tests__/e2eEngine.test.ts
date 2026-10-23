@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import type { OwnIdentity } from "../lib/e2e/accountStore";
 import {
+  type CopyResult,
   type DropReason,
   type E2eEvent,
   type E2eState,
@@ -46,11 +47,19 @@ import {
 import {
   enlist,
   FRAME_BUDGET_BASE,
+  SLUG,
   signedList,
   throughDoor,
   uploadKeys,
 } from "./helpers/e2eDevices";
 import { type DeviceMessage, Grappa } from "./helpers/e2eGrappa";
+import {
+  deviceBlock,
+  engineFor,
+  enrolledAccount,
+  type OwnDevice,
+  ownAccount,
+} from "./helpers/e2eSiblings";
 import { olm } from "./helpers/olm";
 
 function newMsgid(): string {
@@ -4703,3 +4712,387 @@ function sessionIdOf(pickle: string | undefined): string {
     session.free();
   }
 }
+
+// --- S1: copies of what a device sends, to the account's other devices ------
+//
+// A device copies each text it sends, encrypted per sibling (another device
+// on our own master's list), so every device of the account shows it. The
+// sibling path stays apart from the peer path: siblings come from our own
+// signed list, never from a pin, and their curves are never bound to a nick.
+
+const curveOf = (account: Account): string => account.curve25519_key();
+
+/** The session a pre-key copy for `sibling` belongs to. */
+const preKeySessionOf = (payload: string, sibling: Account): string =>
+  olm().pre_key_session_id(unbase64(bodiesOf(payload)[didOf(sibling)] ?? ""));
+
+describe("S1 sibling copies — send", () => {
+  it("copy() to a sibling with no session asks for its keys, then sends a PKMSG once siblingKeys() answers", async () => {
+    const g = new Grappa();
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    await enrolledAccount(g, alice);
+    const blocks = await g.api.listE2eDevices("alice", SLUG);
+    expect(engineFor(alice, a).setSiblings(blocks)).toEqual({ events: [], outbound: [] });
+
+    expect(engineFor(alice, a).copy("bob", "hello")).toEqual({
+      events: [{ kind: "sibling_keys_needed", did: b.own.did }],
+      outbound: [],
+      copies: [],
+    });
+    const keys = await g.door("alice", a.own.did).claim(b.own.did);
+    const res = engineFor(alice, a).siblingKeys(b.own.did, keys);
+
+    expect(res.events).toEqual([]);
+    expect(res.outbound).toEqual([]);
+    expect(res.copies.map((c) => [c.to, c.verb])).toEqual([[b.own.did, "pkmsg"]]);
+    const [copy] = res.copies;
+    if (copy === undefined) throw new Error("no copy");
+    // A PKMSG as one to a peer: our master's certificate for this device, its
+    // id block, and one body, the sibling's.
+    expect(decodePayload(copy.payload)).toMatchObject({
+      id: idBlock(a.account, keyOf(alice.master)),
+      master: { ed25519: keyOf(alice.master), cert: a.own.cert, ver: 1 },
+    });
+    expect(Object.keys(bodiesOf(copy.payload))).toEqual([b.own.did]);
+    expect(opened(b.account, copy.verb, copy.payload)).toEqual({
+      t: "copy",
+      peer: "bob",
+      body: "hello",
+      fb: fb(olm(), keyOf(a.account), keyOf(b.account)),
+    });
+    expect(await g.door("alice", a.own.did).copy(copy.to, copy.verb, copy.payload)).toEqual(
+      expect.any(Number),
+    );
+    expect(a.state.copyq).toEqual({});
+    expect(a.state.devices).toEqual({});
+  });
+
+  it("a second copy rides the same session", async () => {
+    const g = new Grappa();
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    await enrolledAccount(g, alice);
+    engineFor(alice, a).setSiblings(await g.api.listE2eDevices("alice", SLUG));
+    engineFor(alice, a).copy("bob", "one");
+    const keys = await g.door("alice", a.own.did).claim(b.own.did);
+    const [first] = engineFor(alice, a).siblingKeys(b.own.did, keys).copies;
+    if (first === undefined) throw new Error("no copy");
+
+    const again = engineFor(alice, a).copy("carol", "two");
+
+    expect(again.events).toEqual([]);
+    expect(again.copies.map((c) => [c.to, c.verb])).toEqual([[b.own.did, "pkmsg"]]);
+    const [second] = again.copies;
+    if (second === undefined) throw new Error("no copy");
+    // Pre-key messages of one session, until the sibling answers on it.
+    expect(preKeySessionOf(second.payload, b.account)).toBe(
+      preKeySessionOf(first.payload, b.account),
+    );
+    expect(a.state.sessions[curveOf(b.account)]).toHaveLength(1);
+    expect([first, second].map((c) => opened(b.account, c.verb, c.payload))).toEqual([
+      { t: "copy", peer: "bob", body: "one", fb: fb(olm(), keyOf(a.account), keyOf(b.account)) },
+      { t: "copy", peer: "carol", body: "two", fb: fb(olm(), keyOf(a.account), keyOf(b.account)) },
+    ]);
+  });
+
+  it("setSiblings ignores a block outside our signed list, our own did, and a bad id signature", () => {
+    const alice = ownAccount("alice", 3);
+    const [a, b, c] = alice.devices as [OwnDevice, OwnDevice, OwnDevice];
+    const master = keyOf(alice.master);
+
+    const res = engineFor(alice, a).setSiblings([
+      deviceBlock(a.account, master),
+      // A did is its key's, whatever grappa prints beside it.
+      { ...deviceBlock(b.account, master), did: c.own.did },
+      deviceBlock(c.account, keyOf(new (olm().Account)())),
+      deviceBlock(new (olm().Account)(), master),
+    ]);
+
+    expect(res).toEqual({
+      events: [{ kind: "dropped", nick: "alice", reason: "sibling-bad-signature" }],
+      outbound: [],
+    });
+    expect(a.state.siblings).toEqual({
+      [keyOf(b.account)]: { did: b.own.did, curve25519: curveOf(b.account) },
+    });
+    expect(engineFor(alice, a).copy("bob", "hi").events).toEqual([
+      { kind: "sibling_keys_needed", did: b.own.did },
+    ]);
+  });
+
+  it("siblingKeys refuses a KEYS whose master is not ours", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    const accounts = [a.account, b.account];
+    engineFor(alice, a).setSiblings([deviceBlock(b.account, keyOf(alice.master))]);
+    engineFor(alice, a).copy("bob", "hello");
+    // Another master's valid list naming the sibling, with the sibling's own entry.
+    const mallory = { master: new (olm().Account)(), devices: [] };
+    const forged = keysPayload(mallory, 1, accounts, [entryOf(b.account, alice.master)]);
+
+    expect(engineFor(alice, a).siblingKeys(b.own.did, forged)).toEqual({
+      events: [
+        { kind: "dropped", nick: "alice", reason: "sibling-not-ours", verb: "keys" },
+        { kind: "dropped", nick: "bob", reason: "sibling-no-keys" },
+      ],
+      outbound: [],
+      copies: [],
+    });
+    expect(a.state.sessions[curveOf(b.account)]).toBeUndefined();
+    expect(a.state.copyq).toEqual({});
+    // The same entry under our own master's list opens the session.
+    engineFor(alice, a).copy("bob", "again");
+    const ours = { master: alice.master, devices: [] };
+    const keys = keysPayload(ours, 1, accounts, [entryOf(b.account, alice.master)]);
+    expect(
+      engineFor(alice, a)
+        .siblingKeys(b.own.did, keys)
+        .copies.map((c) => c.to),
+    ).toEqual([b.own.did]);
+  });
+
+  it("a sibling removed by setSiblings drops its waiting copies as sibling-gone", async () => {
+    const g = new Grappa();
+    const alice = ownAccount("alice", 4);
+    const [a, b, c, d] = alice.devices as [OwnDevice, OwnDevice, OwnDevice, OwnDevice];
+    await enrolledAccount(g, alice);
+    const claim = (sibling: OwnDevice) => g.door("alice", a.own.did).claim(sibling.own.did);
+    engineFor(alice, a).setSiblings(await g.api.listE2eDevices("alice", SLUG));
+    engineFor(alice, a).copy("bob", "one");
+    engineFor(alice, a).copy("carol", "two");
+    // c holds a session now; b and d still wait for keys.
+    expect(engineFor(alice, a).siblingKeys(c.own.did, await claim(c)).copies).toHaveLength(2);
+
+    // Our master puts a list without c and d, and grappa drops both.
+    a.own.list = signedList(alice.master, 2, [a.account, b.account]);
+    await enlist(g, "alice", alice.master, [], a.own.list);
+    const res = engineFor(alice, a).setSiblings(await g.api.listE2eDevices("alice", SLUG));
+
+    expect(res).toEqual({
+      events: [
+        { kind: "dropped", nick: "bob", reason: "sibling-gone" },
+        { kind: "dropped", nick: "carol", reason: "sibling-gone" },
+      ],
+      outbound: [],
+    });
+    expect(Object.keys(a.state.siblings)).toEqual([keyOf(b.account)]);
+    expect(a.state.sessions[curveOf(c.account)]).toBeUndefined();
+    expect(a.state.copyq[keyOf(d.account)]).toBeUndefined();
+    // b's copies still wait, and go once its keys come.
+    const sent = engineFor(alice, a).siblingKeys(b.own.did, await claim(b));
+    expect(sent.copies.map((x) => [x.to, opened(b.account, x.verb, x.payload).body])).toEqual([
+      [b.own.did, "one"],
+      [b.own.did, "two"],
+    ]);
+    expect(
+      engineFor(alice, a)
+        .copy("bob", "three")
+        .copies.map((x) => x.to),
+    ).toEqual([b.own.did]);
+  });
+
+  it("siblingKeys refuses a KEYS of our master whose list it did not sign, or whose entry is not the sibling admitted", () => {
+    const alice = ownAccount("alice", 3);
+    const [a, b, c] = alice.devices as [OwnDevice, OwnDevice, OwnDevice];
+    const all = [a.account, b.account, c.account];
+    const ours = { master: alice.master, devices: [] };
+    const elsewhere = keyOf(new (olm().Account)());
+    const keysWith = (listed: Account[], entry: KeysEntry) => keysPayload(ours, 1, listed, [entry]);
+    const genuine = keysWith(all, entryOf(b.account, alice.master));
+    const engine = () => engineFor(alice, a);
+    engine().setSiblings([deviceBlock(b.account, keyOf(alice.master))]);
+    const forgeries: [string, string][] = [
+      [
+        "a list signature over another list",
+        edited(genuine, (json) => {
+          (json.master as Record<string, unknown>).sig = alice.master.sign(
+            listSigText(2, listOf(1, all).devices),
+          );
+        }),
+      ],
+      [
+        "a list that does not name the sibling",
+        keysWith([a.account, c.account], entryOf(b.account, alice.master)),
+      ],
+      ["another device's entry", keysWith(all, entryOf(c.account, alice.master))],
+      [
+        "the sibling's key claiming another curve",
+        keysWith(
+          all,
+          claiming(b.account, alice.master, curveOf(c.account), oneTimeKey(b.account, b.account)),
+        ),
+      ],
+      [
+        "an id block signed under another master",
+        keysWith(all, { ...entryOf(b.account, alice.master), id: idBlock(b.account, elsewhere) }),
+      ],
+      [
+        "a one-time key another device signed",
+        keysWith(all, {
+          id: idBlock(b.account, keyOf(alice.master)),
+          otk: { ...oneTimeKey(b.account, c.account), fallback: false },
+        }),
+      ],
+      ["no JSON at all", "not a KEYS"],
+    ];
+
+    const refusals = forgeries.map(([what, keys]) => {
+      engine().copy("bob", what);
+      const res = engine().siblingKeys(b.own.did, keys);
+      expect(res.copies).toEqual([]);
+      expect(res.events[1]).toEqual({ kind: "dropped", nick: "bob", reason: "sibling-no-keys" });
+      return [what, res.events[0]?.kind === "dropped" ? res.events[0].reason : undefined];
+    });
+
+    expect(refusals).toEqual([
+      ["a list signature over another list", "sibling-bad-signature"],
+      ["a list that does not name the sibling", "sibling-unknown"],
+      ["another device's entry", "sibling-unknown"],
+      ["the sibling's key claiming another curve", "sibling-unknown"],
+      ["an id block signed under another master", "sibling-bad-signature"],
+      ["a one-time key another device signed", "sibling-bad-signature"],
+      ["no JSON at all", "bad-payload"],
+    ]);
+    expect(a.state.sessions[curveOf(b.account)]).toBeUndefined();
+    engine().copy("bob", "genuine");
+    expect(
+      engine()
+        .siblingKeys(b.own.did, genuine)
+        .copies.map((x) => x.to),
+    ).toEqual([b.own.did]);
+  });
+
+  it("a peer never binds a sibling's curve: a claim made before is evicted, one made after is our own", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    const bob = peerWith(1);
+    const [x] = bob.devices as [Account];
+    const engine = () => engineFor(alice, a);
+    const claim = () =>
+      keysPayload(bob, 1, [x], [claiming(x, bob.master, curveOf(b.account), oneTimeKey(x, x))]);
+    engine().send("bob", text("one"), "one", null, null);
+    engine().receive("bob", "keys", newMsgid(), "*", claim());
+    expect(a.state.devices[keyOf(x)]?.curve25519).toBe(curveOf(b.account));
+
+    engine().setSiblings([deviceBlock(b.account, keyOf(alice.master))]);
+
+    expect(a.state.devices[keyOf(x)]).toBeUndefined();
+    expect(a.state.sessions[curveOf(b.account)]).toBeUndefined();
+    expect(engine().copy("bob", "two").events).toEqual([
+      { kind: "sibling_keys_needed", did: b.own.did },
+    ]);
+    alice.now += KEYREQ_RETRY_MS;
+    engine().send("bob", text("three"), "three", null, null);
+    expect(engine().receive("bob", "keys", newMsgid(), "*", claim()).events).toContainEqual({
+      kind: "dropped",
+      nick: "bob",
+      reason: "own-identity",
+      verb: "keys",
+    });
+    expect(a.state.devices[keyOf(x)]).toBeUndefined();
+    expect(a.state.sessions[curveOf(b.account)]).toBeUndefined();
+  });
+
+  it("a copy waits for its sibling's keys at most OUTQ_TTL_MS, asking for them once while it waits", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    const engine = () => engineFor(alice, a);
+    const asked = [{ kind: "sibling_keys_needed", did: b.own.did }];
+    engine().setSiblings([deviceBlock(b.account, keyOf(alice.master))]);
+
+    expect(engine().copy("bob", "one").events).toEqual(asked);
+    alice.now += 1000;
+    expect(engine().copy("carol", "two").events).toEqual([]);
+    expect(engine().waitsOnTheClock()).toBe(true);
+    alice.now += OUTQ_TTL_MS - 1000;
+    expect(engine().tick().events).toEqual([
+      { kind: "dropped", nick: "bob", reason: "sibling-no-keys" },
+    ]);
+    alice.now += 1000;
+    expect(engine().tick().events).toEqual([
+      { kind: "dropped", nick: "carol", reason: "sibling-no-keys" },
+    ]);
+    expect(engine().waitsOnTheClock()).toBe(false);
+    expect(engine().copy("dave", "three").events).toEqual(asked);
+  });
+
+  it("siblingKeys(null): no keys came, and the waiting copies are dropped as sibling-no-keys", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    const engine = () => engineFor(alice, a);
+    engine().setSiblings([deviceBlock(b.account, keyOf(alice.master))]);
+    engine().copy("bob", "one");
+    engine().copy("carol", "two");
+
+    expect(engine().siblingKeys(b.own.did, null)).toEqual({
+      events: [
+        { kind: "dropped", nick: "bob", reason: "sibling-no-keys" },
+        { kind: "dropped", nick: "carol", reason: "sibling-no-keys" },
+      ],
+      outbound: [],
+      copies: [],
+    });
+    expect(a.state.copyq).toEqual({});
+    // Still a sibling: the next copy asks for its keys again.
+    expect(engine().copy("dave", "three").events).toEqual([
+      { kind: "sibling_keys_needed", did: b.own.did },
+    ]);
+  });
+
+  it("a session the sibling holds carries what waited for its keys, in order, whatever a KEYS brings", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    const engine = () => engineFor(alice, a);
+    const bodies = (res: CopyResult) =>
+      res.copies.map((c) => opened(b.account, c.verb, c.payload).body);
+    // A session to the sibling that no claim opened (as a pre-key copy from
+    // it leaves one behind).
+    const sessionAppears = () => {
+      b.account.generate_one_time_keys(1);
+      const session = a.account.create_outbound_session(
+        curveOf(b.account),
+        b.account.one_time_keys().at(-1) ?? "",
+      );
+      a.state.sessions[curveOf(b.account)] = [session.pickle()];
+      session.free();
+    };
+    engine().setSiblings([deviceBlock(b.account, keyOf(alice.master))]);
+
+    engine().copy("bob", "one");
+    sessionAppears();
+    expect(bodies(engine().copy("carol", "two"))).toEqual(["one", "two"]);
+
+    delete a.state.sessions[curveOf(b.account)];
+    engine().copy("dave", "three");
+    sessionAppears();
+    const res = engine().siblingKeys(b.own.did, "not a KEYS");
+    expect(res.events).toEqual([
+      {
+        kind: "dropped",
+        nick: "alice",
+        reason: "bad-payload",
+        verb: "keys",
+        detail: expect.any(String),
+      },
+    ]);
+    expect(bodies(res)).toEqual(["three"]);
+    expect(a.state.copyq).toEqual({});
+  });
+
+  it("deleting a chat drops the copies of it still waiting for a sibling's keys", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    const engine = () => engineFor(alice, a);
+    engine().setSiblings([deviceBlock(b.account, keyOf(alice.master))]);
+    engine().copy("bob", "one");
+    engine().copy("carol", "two");
+    engine().copy("Bob", "three");
+
+    engine().forget("BOB");
+
+    expect(a.state.copyq).toEqual({
+      [keyOf(b.account)]: [{ peer: "carol", body: "two", at: alice.now }],
+    });
+  });
+});

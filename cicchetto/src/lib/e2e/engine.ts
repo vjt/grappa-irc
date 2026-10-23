@@ -25,6 +25,12 @@
 // certified by it for a list version above the stored one; not revoked; and
 // its own signature (S1) covering that very master.
 //
+// Our own other devices (siblings, issue 2430 S1) get a copy of each text
+// this device sends, on a path of their own: they come from our master's
+// list, never from a pin, their curves are never bound to a nick, and their
+// keys come from grappa's claim door, never from a KEYREQ (`setSiblings`,
+// `copy`, `siblingKeys`). The peer path keeps refusing our own master.
+//
 // State: ALL of it is `E2eState`, plain JSON the caller seals and stores with
 // the account, in one record, under the slot's lock — irc-olm's in-memory
 // parts too (messages waiting for keys, when keys were last asked for, the
@@ -34,6 +40,7 @@
 // engine changes the state in place: build one per locked operation.
 
 import { frameBudgetForTarget } from "../frameBudget";
+import type { E2eKeysWireDevice } from "../wireTypes";
 import type { OwnIdentity } from "./accountStore";
 import { idBlock } from "./keyBundle";
 import type { Olm } from "./olm";
@@ -41,6 +48,7 @@ import type { SasRecord } from "./sas";
 import type { Account, Session } from "./vodozemac/vodozemac_binding";
 import {
   base64Unpadded,
+  type CopyInner,
   certSigText,
   decodePayload,
   did,
@@ -50,10 +58,12 @@ import {
   type IdBlock,
   idSigText,
   type KeysEntry,
+  type KeysPayload,
   linesNeeded,
   MAX_DEVICES,
   MAX_FRAGMENTS,
   type MasterList,
+  type MessageVerb,
   OTK_SIG_PREFIX,
   PayloadError,
   parseKeys,
@@ -190,6 +200,10 @@ type Sent = {
   msg: Outgoing;
   at: number;
 };
+/** A sibling: another device on our own master's list, its did and its curve (`setSiblings`). */
+type Sibling = { did: string; curve25519: string };
+/** The copy of a text this device sent `peer`, waiting since `at` for a sibling's keys. */
+type WaitingCopy = { peer: string; body: string; at: number };
 
 export type E2eState = {
   v: 2;
@@ -238,6 +252,14 @@ export type E2eState = {
   inbox: number;
   /** Master Ed25519 key → the SAS running with it (`sas.ts`): its public half. */
   sas: Record<string, SasRecord>;
+  /**
+   * Device Ed25519 key → our sibling of that key. Its sessions are in
+   * `sessions` with every other; a sibling is never in `devices`, and so
+   * never bound to a nick.
+   */
+  siblings: Record<string, Sibling>;
+  /** Sibling Ed25519 key → the copies waiting for its keys, oldest first. */
+  copyq: Record<string, WaitingCopy[]>;
 };
 
 export function newState(): E2eState {
@@ -260,6 +282,8 @@ export function newState(): E2eState {
     nextRef: 1,
     inbox: 0,
     sas: {},
+    siblings: {},
+    copyq: {},
   };
 }
 
@@ -285,7 +309,12 @@ export type DropReason =
   | "bad-cert"
   | "not-for-us"
   | "inner-key-mismatch"
-  | "bad-from";
+  | "bad-from"
+  | "sibling-gone"
+  | "sibling-no-keys"
+  | "sibling-not-ours"
+  | "sibling-bad-signature"
+  | "sibling-unknown";
 
 export type SendFailure =
   | "own-nick"
@@ -310,7 +339,12 @@ export type UndecryptableReason =
 /**
  * What happened. `inner` is plaintext: never log it. A `received` names the
  * master pinned to the nick and the device of it that wrote; a `key_alarm`
- * names the master pinned to the nick and the other one presented.
+ * names the master pinned to the nick and the other one presented. A
+ * `dropped` names the nick what it dropped came from: our own nick for
+ * something of our own account's, and the nick of the chat for a copy to a
+ * sibling that goes unsent. A `sibling_keys_needed` asks the caller to claim
+ * a key of our sibling `did` (grappa's claim door) and hand what came, or
+ * null, to `siblingKeys`.
  */
 export type E2eEvent =
   | {
@@ -327,7 +361,8 @@ export type E2eEvent =
   | { kind: "dropped"; nick: string; reason: DropReason; verb?: ReceiveVerb; detail?: string }
   | { kind: "send_queued"; nick: string; queued: number; tag: string }
   | { kind: "send_failed"; nick: string; reason: SendFailure; tags: string[] }
-  | { kind: "rekeying"; nick: string; master: string; device: string };
+  | { kind: "rekeying"; nick: string; master: string; device: string }
+  | { kind: "sibling_keys_needed"; did: string };
 
 /**
  * A payload for grappa's send door, `from` this device's did `to` a did or
@@ -350,6 +385,16 @@ export type Outbound = {
 };
 
 export type Result = { events: E2eEvent[]; outbound: Outbound[] };
+
+/**
+ * A copy for grappa's copy door (`Door.copy`, CLIENT_PROTOCOL §4f): a PKMSG
+ * or MSG payload whose one body is for the sibling `to` (its did). No NACK
+ * ever names a copy, so nothing of it is kept to send again.
+ */
+export type SiblingCopy = { to: string; verb: MessageVerb; payload: string };
+
+/** What a step that can encrypt copies answers: a `Result`, and the copies, one per sibling and text. */
+export type CopyResult = Result & { copies: SiblingCopy[] };
 
 /** What `pin` made of a key: pinned, not a key in vodozemac's spelling, or our own master. */
 export type PinOutcome = "pinned" | "bad-key" | "own-key";
@@ -402,8 +447,10 @@ function chunked<T>(items: T[], size: number): T[][] {
   return runs;
 }
 
-/** One device's body of a message, on its newest session, advanced in memory only. */
-type Body = { device: PeerDevice; session: Session; preKey: boolean; body: string };
+/** A body encrypted on a session, advanced in memory only; a pre-key one when `preKey`. */
+type Encrypted = { session: Session; preKey: boolean; body: string };
+/** One device's body of a message, on its newest session. */
+type Body = Encrypted & { device: PeerDevice };
 
 /** A message a step could not send for `reason`, to be judged once the step is done (`end`). */
 type Loss = { nick: string; reason: SendFailure; msg: Outgoing };
@@ -627,14 +674,20 @@ export class Engine {
 
   /**
    * The user deleted the chat with `nick`: what the engine still holds of it
-   * in the clear goes too. A message waiting for keys is never sent, and a
-   * NACK for a sent one finds nothing to re-send (`unknown-nack-ref`). Trust
-   * stays: the pin, the verification and the sessions.
+   * in the clear goes too. A message waiting for keys is never sent, nor is a
+   * copy of one waiting for a sibling's keys, and a NACK for a sent one finds
+   * nothing to re-send (`unknown-nack-ref`). Trust stays: the pin, the
+   * verification and the sessions.
    */
   forget(nick: string): void {
     const key = fold(nick);
     delete this.state.outq[key];
     this.state.sent = this.state.sent.filter((s) => fold(s.nick) !== key);
+    for (const [ed25519, waiting] of Object.entries(this.state.copyq)) {
+      const rest = waiting.filter((c) => fold(c.peer) !== key);
+      if (rest.length > 0) this.state.copyq[ed25519] = rest;
+      else delete this.state.copyq[ed25519];
+    }
   }
 
   /**
@@ -850,22 +903,9 @@ export class Engine {
     const sessions: Session[] = [];
     try {
       const bodies = devices.map((device): Body => {
-        const newest = this.sessionsOf(device.curve25519)[0];
-        if (newest === undefined) throw new Error(`no session to encrypt on for ${device.did}`);
-        const session = this.olm.Session.from_pickle(newest);
-        sessions.push(session);
-        // Until the device has answered on it, the session writes pre-key
-        // messages, and the inner message of one names both devices.
-        const preKey = !session.has_received_message();
-        const plaintext = preKey
-          ? withBinding(msg.plaintext, fb(this.olm, this.account.ed25519_key(), device.ed25519))
-          : msg.plaintext;
-        const encrypted = session.encrypt(encoder.encode(plaintext));
-        const kind = encrypted.message_type;
-        const body = base64Unpadded(encrypted.body);
-        encrypted.free();
-        if ((kind === 0) !== preKey) throw new Error("a session wrote another kind of message");
-        return { device, session, preKey, body };
+        const encrypted = this.encryptOn(device.curve25519, device.ed25519, msg.plaintext);
+        sessions.push(encrypted.session);
+        return { ...encrypted, device };
       });
       // The MSG first: a device that answered on its session is one in use.
       // A message holds `MAX_DEVICES` bodies, and a master's trusted devices
@@ -879,18 +919,13 @@ export class Engine {
           const [first] = group;
           if (first === undefined) return [];
           const wire = Object.fromEntries(group.map((b) => [b.device.did, b.body]));
-          const verb: SendVerb = preKey ? "pkmsg" : "msg";
-          const payload = encodePayload(
-            preKey
-              ? {
-                  v: WIRE_VERSION,
-                  id: idBlock(this.account, this.own.master),
-                  master: { ed25519: this.own.master, cert: this.own.cert, ver: this.own.certVer },
-                  bodies: wire,
-                }
-              : { v: WIRE_VERSION, ck: this.account.curve25519_key(), bodies: wire },
-          );
-          return [{ verb, to: group.length === 1 ? first.device.did : "*", payload, group }];
+          return [
+            {
+              ...this.wireOf(preKey, wire),
+              to: group.length === 1 ? first.device.did : "*",
+              group,
+            },
+          ];
         }),
       );
       if (
@@ -933,6 +968,253 @@ export class Engine {
     } finally {
       for (const session of sessions) session.free();
     }
+  }
+
+  /**
+   * `plaintext`, an inner message's JSON, encrypted to the device `ed25519`
+   * on the newest session to its curve `curve`. The session is advanced in
+   * memory only: the caller stores its pickle if the body goes, and frees it
+   * either way. Until the device has answered on it, the session writes
+   * pre-key messages, and the inner message of one names both devices (`fb`).
+   */
+  private encryptOn(curve: string, ed25519: string, plaintext: string): Encrypted {
+    const newest = this.sessionsOf(curve)[0];
+    if (newest === undefined) throw new Error(`no session to encrypt on for ${ed25519}`);
+    const session = this.olm.Session.from_pickle(newest);
+    try {
+      const preKey = !session.has_received_message();
+      const inner = preKey
+        ? withBinding(plaintext, fb(this.olm, this.account.ed25519_key(), ed25519))
+        : plaintext;
+      const encrypted = session.encrypt(encoder.encode(inner));
+      const kind = encrypted.message_type;
+      const body = base64Unpadded(encrypted.body);
+      encrypted.free();
+      if ((kind === 0) !== preKey) throw new Error("a session wrote another kind of message");
+      return { session, preKey, body };
+    } catch (err) {
+      session.free();
+      throw err;
+    }
+  }
+
+  /**
+   * The payload of `bodies` (did → body) from this device: all of them
+   * pre-key bodies, in a PKMSG presenting our master's certificate and our id
+   * block, or all normal ones, in a MSG (rev 2: never both kinds in one).
+   */
+  private wireOf(
+    preKey: boolean,
+    bodies: Record<string, string>,
+  ): { verb: MessageVerb; payload: string } {
+    if (!preKey) {
+      return {
+        verb: "msg",
+        payload: encodePayload({ v: WIRE_VERSION, ck: this.account.curve25519_key(), bodies }),
+      };
+    }
+    return {
+      verb: "pkmsg",
+      payload: encodePayload({
+        v: WIRE_VERSION,
+        id: idBlock(this.account, this.own.master),
+        master: { ed25519: this.own.master, cert: this.own.cert, ver: this.own.certVer },
+        bodies,
+      }),
+    };
+  }
+
+  // --- siblings (S1: a copy of each text sent, to our own other devices) ---
+
+  /**
+   * Our siblings, from what grappa lists of our account's devices (`GET
+   * …/e2e/devices`), none of which is taken on grappa's word. A device is one
+   * only if our master's list (`own.list`) names its key, it is not this
+   * device, and its id block is signed under our master (S1); its did is the
+   * one its key gives, whatever grappa printed beside it. A device the list
+   * names whose block fails its signature is reported: only a lie makes one.
+   * A peer's device bound to a sibling's curve (a claim from before the
+   * sibling was known: `curveRefusal` refuses one since) is unbound with its
+   * sessions, as a proof evicts a claim: our master's word on the curve is
+   * stronger still. A sibling no longer present goes with its sessions, and
+   * the copies waiting for its keys go unsent (`sibling-gone`).
+   */
+  setSiblings(blocks: E2eKeysWireDevice[]): Result {
+    const res = emptyResult();
+    const siblings: Record<string, Sibling> = {};
+    for (const block of blocks) {
+      // Registered and not on our list (yet: a device being paired).
+      if (!this.own.list.devices.includes(block.ed25519)) continue;
+      const siblingDid = did(this.olm, block.ed25519);
+      if (siblingDid === this.own.did) continue;
+      if (!this.idSigned(block, this.own.master)) {
+        res.events.push({ kind: "dropped", nick: this.ownNick, reason: "sibling-bad-signature" });
+        continue;
+      }
+      this.evictClaimant(block.curve25519, block.ed25519);
+      siblings[block.ed25519] = { did: siblingDid, curve25519: block.curve25519 };
+    }
+    for (const [ed25519, known] of Object.entries(this.state.siblings)) {
+      if (siblings[ed25519]?.curve25519 === known.curve25519) continue;
+      delete this.state.sessions[known.curve25519];
+      this.dropCopies(ed25519, "sibling-gone", res);
+    }
+    this.state.siblings = siblings;
+    return this.end(res);
+  }
+
+  /**
+   * A copy of the text `body` this device sent `peer`, for each sibling:
+   * `{t:"copy", peer, body}` encrypted to it on its newest session, `fb`
+   * added on a pre-key body as for a peer. A sibling with no session gets it
+   * once its keys come (`siblingKeys`): it waits, at most `OUTQ_TTL_MS`, and
+   * its keys are asked for (`sibling_keys_needed`) when nothing waited for
+   * it yet, so once while anything does. Call it only once grappa took the
+   * text: one it refused reaches no device.
+   */
+  copy(peer: string, body: string): CopyResult {
+    const res: CopyResult = { ...emptyResult(), copies: [] };
+    for (const [ed25519, sibling] of Object.entries(this.state.siblings)) {
+      const pending = [...this.liveCopies(ed25519, res), { peer, body, at: this.now() }];
+      if (this.sessionsOf(sibling.curve25519).length > 0) {
+        this.sendCopies(ed25519, sibling, pending, res);
+        continue;
+      }
+      if (pending.length === 1) res.events.push({ kind: "sibling_keys_needed", did: sibling.did });
+      this.state.copyq[ed25519] = pending;
+    }
+    return this.end(res);
+  }
+
+  /**
+   * What claiming a key of our sibling `siblingDid` brought (grappa's claim
+   * door): its KEYS text, or null when none came. The KEYS opens a session to
+   * the sibling, unless it holds one, only if its master is ours, its list
+   * our master's own word (`validMasterList`) and naming the sibling, and its
+   * entry the very sibling `setSiblings` admitted, its id block signed under
+   * our master (S1) and its one-time key by the sibling (S2). Anything else
+   * is reported, from our own nick, and opens nothing. Then what waits for
+   * the sibling goes, in order, if it holds a session; else it goes unsent
+   * (`sibling-no-keys`): nothing would bring keys for it now. A did that
+   * names no sibling opens nothing either. Never throws on wire input.
+   */
+  siblingKeys(siblingDid: string, keys: string | null): CopyResult {
+    const res: CopyResult = { ...emptyResult(), copies: [] };
+    const found = Object.entries(this.state.siblings).find(([, s]) => s.did === siblingDid);
+    if (found === undefined) {
+      if (keys !== null) {
+        res.events.push({
+          kind: "dropped",
+          nick: this.ownNick,
+          reason: "sibling-unknown",
+          verb: "keys",
+        });
+      }
+      return this.end(res);
+    }
+    const [ed25519, sibling] = found;
+    const pending = this.liveCopies(ed25519, res);
+    if (keys !== null) this.openToSibling(ed25519, sibling, keys, res);
+    if (this.sessionsOf(sibling.curve25519).length > 0) {
+      this.sendCopies(ed25519, sibling, pending, res);
+    } else {
+      this.dropCopies(ed25519, "sibling-no-keys", res);
+    }
+    return this.end(res);
+  }
+
+  /** A session to our sibling `ed25519` on the KEYS text `keys`, unless it holds one; a refusal is reported. */
+  private openToSibling(ed25519: string, sibling: Sibling, keys: string, res: Result): void {
+    let payload: KeysPayload;
+    try {
+      payload = parseKeys(decodePayload(keys));
+    } catch (err) {
+      if (!(err instanceof PayloadError)) throw err;
+      res.events.push({
+        kind: "dropped",
+        nick: this.ownNick,
+        reason: "bad-payload",
+        verb: "keys",
+        detail: err.message,
+      });
+      return;
+    }
+    const entry = this.siblingEntry(ed25519, sibling, payload);
+    if (typeof entry === "string") {
+      res.events.push({ kind: "dropped", nick: this.ownNick, reason: entry, verb: "keys" });
+    } else if (this.sessionsOf(sibling.curve25519).length === 0) {
+      this.outboundSession(this.ownNick, entry, res);
+    }
+  }
+
+  /**
+   * The entry of a claim's KEYS that opens a session to our sibling
+   * `ed25519`, or why none does: a master not ours, a list our master did not
+   * sign, no entry with the very keys `setSiblings` admitted or a list not
+   * naming it, a signature that fails (S1, S2).
+   */
+  private siblingEntry(
+    ed25519: string,
+    sibling: Sibling,
+    { master, devices }: KeysPayload,
+  ): KeysEntry | DropReason {
+    if (master.ed25519 !== this.own.master) return "sibling-not-ours";
+    if (!validMasterList(this.olm, master)) return "sibling-bad-signature";
+    const entry = devices.find((e) => e.id.ed25519 === ed25519);
+    if (
+      entry === undefined ||
+      entry.id.curve25519 !== sibling.curve25519 ||
+      !master.list.devices.includes(ed25519)
+    ) {
+      return "sibling-unknown";
+    }
+    if (!this.idSigned(entry.id, this.own.master) || !this.otkSigned(entry)) {
+      return "sibling-bad-signature";
+    }
+    return entry;
+  }
+
+  /** `pending`, in order, to our sibling `ed25519`, which holds a session: nothing of it waits on. */
+  private sendCopies(
+    ed25519: string,
+    sibling: Sibling,
+    pending: WaitingCopy[],
+    res: CopyResult,
+  ): void {
+    delete this.state.copyq[ed25519];
+    for (const { peer, body } of pending) {
+      const inner: CopyInner = { t: "copy", peer, body };
+      const encrypted = this.encryptOn(sibling.curve25519, ed25519, JSON.stringify(inner));
+      try {
+        this.sessionsOf(sibling.curve25519)[0] = encrypted.session.pickle();
+      } finally {
+        encrypted.session.free();
+      }
+      res.copies.push({
+        to: sibling.did,
+        ...this.wireOf(encrypted.preKey, { [sibling.did]: encrypted.body }),
+      });
+    }
+  }
+
+  /** The copies waiting for our sibling `ed25519`'s keys, minus those that waited `OUTQ_TTL_MS` (`sibling-no-keys`). */
+  private liveCopies(ed25519: string, res: Result): WaitingCopy[] {
+    const waiting = this.state.copyq[ed25519] ?? [];
+    const live = waiting.filter((c) => c.at > this.now() - OUTQ_TTL_MS);
+    for (const { peer } of waiting.filter((c) => !live.includes(c))) {
+      res.events.push({ kind: "dropped", nick: peer, reason: "sibling-no-keys" });
+    }
+    if (live.length > 0) this.state.copyq[ed25519] = live;
+    else delete this.state.copyq[ed25519];
+    return live;
+  }
+
+  /** The copies waiting for our sibling `ed25519`'s keys go unsent, each reported for `reason`. */
+  private dropCopies(ed25519: string, reason: DropReason, res: Result): void {
+    for (const { peer } of this.state.copyq[ed25519] ?? []) {
+      res.events.push({ kind: "dropped", nick: peer, reason });
+    }
+    delete this.state.copyq[ed25519];
   }
 
   // --- receiving ---------------------------------------------------------
@@ -1072,13 +1354,11 @@ export class Engine {
    * entry is reported.
    */
   private openSession(nick: string, master: string, entry: KeysEntry, res: Result): void {
-    const { id, otk } = entry;
+    const { id } = entry;
     const reason =
       this.refusal(master, id) ??
       this.curveRefusal(id, false) ??
-      (this.sigOk(id.ed25519, `${OTK_SIG_PREFIX}${otk.key}`, otk.sig)
-        ? undefined
-        : "bad-otk-signature");
+      (this.otkSigned(entry) ? undefined : "bad-otk-signature");
     if (reason !== undefined) {
       res.events.push({ kind: "dropped", nick, reason, verb: "keys" });
       return;
@@ -1086,6 +1366,25 @@ export class Engine {
     if (this.state.rekeying[id.ed25519] !== true && this.sessionsOf(id.curve25519).length > 0) {
       return;
     }
+    if (!this.outboundSession(nick, entry, res)) return;
+    delete this.state.rekeying[id.ed25519];
+    const known = this.state.devices[id.ed25519];
+    this.state.devices[id.ed25519] = {
+      ed25519: id.ed25519,
+      curve25519: id.curve25519,
+      master,
+      did: did(this.olm, id.ed25519),
+      proven: known?.proven ?? false,
+      certVer: known?.certVer ?? null,
+    };
+  }
+
+  /**
+   * A new session to the device of a KEYS entry, on its one-time key, stored
+   * as the newest to its curve; false when vodozemac refuses the keys,
+   * reported as a malformed KEYS from `nick`.
+   */
+  private outboundSession(nick: string, { id, otk }: KeysEntry, res: Result): boolean {
     let session: Session;
     try {
       session = rejecting(() => this.account.create_outbound_session(id.curve25519, otk.key));
@@ -1098,23 +1397,14 @@ export class Engine {
         verb: "keys",
         detail: err.message,
       });
-      return;
+      return false;
     }
     try {
       this.addSession(id.curve25519, session.pickle());
     } finally {
       session.free();
     }
-    delete this.state.rekeying[id.ed25519];
-    const known = this.state.devices[id.ed25519];
-    this.state.devices[id.ed25519] = {
-      ed25519: id.ed25519,
-      curve25519: id.curve25519,
-      master,
-      did: did(this.olm, id.ed25519),
-      proven: known?.proven ?? false,
-      certVer: known?.certVer ?? null,
-    };
+    return true;
   }
 
   /**
@@ -1506,13 +1796,7 @@ export class Engine {
    * one is unproven).
    */
   private bindProven(master: string, id: IdBlock, certVer: number): PeerDevice {
-    const claimant = Object.values(this.state.devices).find(
-      (d) => d.curve25519 === id.curve25519 && d.ed25519 !== id.ed25519,
-    );
-    if (claimant !== undefined) {
-      delete this.state.devices[claimant.ed25519];
-      this.dropSessions(claimant);
-    }
+    this.evictClaimant(id.curve25519, id.ed25519);
     const device: PeerDevice = {
       ed25519: id.ed25519,
       curve25519: id.curve25519,
@@ -1523,6 +1807,16 @@ export class Engine {
     };
     this.state.devices[id.ed25519] = device;
     return device;
+  }
+
+  /** Unbinds the device of another key than `ed25519` bound to `curve`, with the sessions opened on its claim. */
+  private evictClaimant(curve: string, ed25519: string): void {
+    const claimant = Object.values(this.state.devices).find(
+      (d) => d.curve25519 === curve && d.ed25519 !== ed25519,
+    );
+    if (claimant === undefined) return;
+    delete this.state.devices[claimant.ed25519];
+    this.dropSessions(claimant);
   }
 
   /**
@@ -1682,9 +1976,10 @@ export class Engine {
   // --- time --------------------------------------------------------------
 
   /**
-   * Reports queued messages that waited too long for keys, asks again for
-   * keys (`KEYREQ_RETRY_MS`) where something waits that reached no device or
-   * a re-key's KEYREQ is due, sends the list asks held back (`askList`), and
+   * Reports queued messages that waited too long for keys, and copies that
+   * waited too long for a sibling's (`liveCopies`), asks again for keys
+   * (`KEYREQ_RETRY_MS`) where something waits that reached no device or a
+   * re-key's KEYREQ is due, sends the list asks held back (`askList`), and
    * forgets old plaintexts.
    */
   tick(): Result {
@@ -1699,6 +1994,7 @@ export class Engine {
         live.find((q) => !this.wentOut(q.msg.id)) ?? (this.rekeyDue(key) ? live[0] : undefined);
       if (asking !== undefined) this.maybeKeyreq(asking.nick, res);
     }
+    for (const ed25519 of Object.keys(this.state.copyq)) this.liveCopies(ed25519, res);
     for (const nick of Object.values(this.state.listreqHeld)) this.askList(nick, res);
     return this.end(res);
   }
@@ -1706,13 +2002,14 @@ export class Engine {
   /**
    * Whether `tick` has something to do, so the caller must come back: a
    * message waiting for keys (a re-key whose KEYREQ is due among them, since
-   * its re-send waits in the queue too), a list ask held back, or a SAS
-   * (`sas.ts`), whose time runs out. Forgetting old plaintexts waits for the
-   * next call of any kind.
+   * its re-send waits in the queue too), a copy waiting for a sibling's, a
+   * list ask held back, or a SAS (`sas.ts`), whose time runs out. Forgetting
+   * old plaintexts waits for the next call of any kind.
    */
   waitsOnTheClock(): boolean {
     return (
       Object.keys(this.state.outq).length > 0 ||
+      Object.keys(this.state.copyq).length > 0 ||
       Object.keys(this.state.listreqHeld).length > 0 ||
       Object.keys(this.state.sas).length > 0
     );
@@ -1839,6 +2136,11 @@ export class Engine {
     return this.sigOk(id.ed25519, idSigText(id.curve25519, master), id.sig);
   }
 
+  /** Whether the device of a KEYS entry signed the entry's one-time key (S2). */
+  private otkSigned({ id, otk }: KeysEntry): boolean {
+    return this.sigOk(id.ed25519, `${OTK_SIG_PREFIX}${otk.key}`, otk.sig);
+  }
+
   /**
    * Why `master`, a master with a record, does not vouch for the device
    * `ed25519` now (rules 4, 5), if not: its stored list names it, or its
@@ -1878,8 +2180,10 @@ export class Engine {
    * vodozemac's one spelling (W "Encodings"): every rule here compares
    * strings, and another spelling of a key would slip past each compare. Not
    * our own curve: else a device could claim it, hand us our own fallback key
-   * as its one-time key, and reflect our own messages back as its own. Not
-   * another curve for a device already bound. Not a curve bound to another
+   * as its one-time key, and reflect our own messages back as its own. Nor a
+   * sibling's (`setSiblings`): a peer's session to it would sit among the
+   * sibling's, which copies go out on. Not another curve for a device already
+   * bound. Not a curve bound to another
    * device: one curve under two would let one's messages be read as the
    * other's (sessions and MSG lookups go by curve). An id block only claims
    * its curve, and a pre-key message its holder built to us proves it: so
@@ -1896,7 +2200,12 @@ export class Engine {
     | "curve-already-bound"
     | undefined {
     if (!this.canonical(id)) return "non-canonical-key";
-    if (id.curve25519 === this.account.curve25519_key()) return "own-identity";
+    if (
+      id.curve25519 === this.account.curve25519_key() ||
+      Object.values(this.state.siblings).some((s) => s.curve25519 === id.curve25519)
+    ) {
+      return "own-identity";
+    }
     const known = this.state.devices[id.ed25519];
     if (known !== undefined && known.curve25519 !== id.curve25519) return "identity-curve-mismatch";
     const owner = Object.values(this.state.devices).find((d) => d.curve25519 === id.curve25519);

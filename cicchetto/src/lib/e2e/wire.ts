@@ -16,6 +16,8 @@ import type { Olm } from "./olm";
 export type SendVerb = "keyreq" | "pkmsg" | "msg" | "nack";
 /** The verbs grappa delivers to cic (it never delivers KEYREQ). */
 export type ReceiveVerb = "keys" | "pkmsg" | "msg" | "nack";
+/** The verbs that carry an encrypted message: to a peer's devices, and a copy to a sibling's. */
+export type MessageVerb = Extract<SendVerb, "pkmsg" | "msg">;
 
 export const WIRE_VERSION = 2;
 /** What a device signs to vouch for its curve key and its master: `E.sign(ID_SIG_PREFIX + K + ":" + M)`. */
@@ -55,6 +57,12 @@ export type KeysPayload = { master: MasterList; devices: KeysEntry[] };
 export type PkmsgPayload = { id: IdBlock; master: MasterCert; bodies: Record<string, string> };
 export type MsgPayload = { ck: string; bodies: Record<string, string> };
 export type NackPayload = { ref: string };
+/**
+ * The inner message of a copy (S1): the text `body` a device of the account
+ * sent `peer`, encrypted to the account's other devices; a pre-key body adds
+ * `fb`, as one to a peer does.
+ */
+export type CopyInner = { t: "copy"; peer: string; body: string };
 
 /** A payload that does not decode, or lacks a field its verb needs. */
 export class PayloadError extends Error {}
