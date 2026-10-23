@@ -1153,36 +1153,20 @@ defmodule Grappa.Session do
   def copy_e2e(subject, network_id, from_did, to_did, verb, payload)
       when is_subject(subject) and is_integer(network_id) and is_binary(from_did) and is_binary(to_did) and
              is_atom(verb) and is_binary(payload) do
-    with :ok <- validate_e2e_copy(from_did, to_did, verb, payload),
-         {:ok, sibling} <- sibling_device(subject, network_id, from_did, to_did) do
+    with :ok <- validate_e2e_copy(verb, payload),
+         {:ok, _, sibling} <- E2eKeys.sibling(subject, network_id, from_did, to_did) do
       call_session(subject, network_id, {:copy_e2e, from_did, sibling, verb, payload})
     end
   end
 
   # The checks that read nothing, first; the size before the shape, as on
-  # the send door.
-  @spec validate_e2e_copy(String.t(), String.t(), atom(), String.t()) ::
-          :ok | {:error, :bad_request | :too_large | :same_device}
-  defp validate_e2e_copy(from_did, to_did, verb, payload) do
+  # the send door. Then the pair, as the claim door judges it.
+  @spec validate_e2e_copy(atom(), String.t()) :: :ok | {:error, :bad_request | :too_large}
+  defp validate_e2e_copy(verb, payload) do
     cond do
       byte_size(payload) > E2e.max_payload_bytes() -> {:error, :too_large}
       not (E2eInbox.message_verb?(verb) and E2e.chunk?(payload)) -> {:error, :bad_request}
-      from_did == to_did -> {:error, :same_device}
       true -> :ok
-    end
-  end
-
-  # Both ends of a copy are devices the subject's list names (one read of
-  # it): the sender, as on the send door, and the sibling the copy is for.
-  @spec sibling_device(subject(), integer(), String.t(), String.t()) ::
-          {:ok, E2eKeys.Device.t()} | {:error, :unknown_device | :not_found}
-  defp sibling_device(subject, network_id, from_did, to_did) do
-    listed = E2eKeys.listed_devices(subject, network_id)
-
-    case {Enum.any?(listed, &(&1.did == from_did)), Enum.find(listed, &(&1.did == to_did))} do
-      {false, _} -> {:error, :unknown_device}
-      {true, nil} -> {:error, :not_found}
-      {true, sibling} -> {:ok, sibling}
     end
   end
 

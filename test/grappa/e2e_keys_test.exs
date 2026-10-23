@@ -278,6 +278,45 @@ defmodule Grappa.E2eKeysTest do
     end
   end
 
+  describe "sibling/4" do
+    setup %{subject: subject, network: network, master: master} do
+      {:ok, a: device(subject, network, master), b: device(subject, network, master)}
+    end
+
+    test "answers the stored list and the sibling's device when both ends are listed and distinct",
+         %{subject: subject, network: network, master: master, a: a, b: b} do
+      {:ok, list} = listed(subject, network, master, [a, b], 1)
+
+      assert {:ok, %DeviceList{id: list_id}, %Device{id: device_id}} =
+               E2eKeys.sibling(subject, network.id, a.device.did, b.device.did)
+
+      assert {list_id, device_id} == {list.id, b.device.id}
+    end
+
+    test "refuses the same device before reading anything, an unlisted sender, then an unlisted target",
+         %{subject: subject, network: network, master: master, a: a, b: b} do
+      # No list stored yet: the sender cannot be listed, but the same device is still that.
+      assert {:error, :same_device} = E2eKeys.sibling(subject, network.id, a.device.did, a.device.did)
+      assert {:error, :unknown_device} = E2eKeys.sibling(subject, network.id, a.device.did, b.device.did)
+
+      listed(subject, network, master, [b], 1)
+      assert {:error, :unknown_device} = E2eKeys.sibling(subject, network.id, a.device.did, b.device.did)
+      assert {:error, :not_found} = E2eKeys.sibling(subject, network.id, b.device.did, a.device.did)
+    end
+
+    test "is scoped to the subject: another account's listed device is not a sibling",
+         %{subject: subject, network: network, master: master, a: a} do
+      listed(subject, network, master, [a], 1)
+      other = {:user, user_fixture().id}
+      other_master = E2eFixtures.identity()
+      theirs = device(other, network, other_master)
+      listed(other, network, other_master, [theirs], 1)
+
+      assert {:error, :not_found} = E2eKeys.sibling(subject, network.id, a.device.did, theirs.device.did)
+      assert {:error, :unknown_device} = E2eKeys.sibling(other, network.id, a.device.did, theirs.device.did)
+    end
+  end
+
   describe "claim/4" do
     setup %{subject: subject, network: network, master: master} do
       a = device(subject, network, master)
