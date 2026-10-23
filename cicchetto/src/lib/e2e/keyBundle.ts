@@ -14,7 +14,7 @@
 
 import type { E2eKeysWireStatus } from "../wireTypes";
 import type { Account } from "./vodozemac/vodozemac_binding";
-import { ID_SIG_PREFIX, type IdBlock, OTK_SIG_PREFIX } from "./wire";
+import { type IdBlock, idSigText, OTK_SIG_PREFIX } from "./wire";
 
 /**
  * How many one-time keys grappa holds for one device
@@ -39,7 +39,7 @@ export function idBlock(device: Account, master: string): IdBlock {
   return {
     curve25519,
     ed25519: device.ed25519_key(),
-    sig: device.sign(`${ID_SIG_PREFIX}${curve25519}:${master}`),
+    sig: device.sign(idSigText(curve25519, master)),
   };
 }
 

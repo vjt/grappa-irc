@@ -47,8 +47,8 @@ import {
   encodePayload,
   fb,
   fold,
-  ID_SIG_PREFIX,
   type IdBlock,
+  idSigText,
   type KeysEntry,
   linesNeeded,
   MAX_DEVICES,
@@ -1836,7 +1836,7 @@ export class Engine {
 
   /** Whether `id`'s device signed its curve and `master` (S1): then no other master can list it. */
   private idSigned(id: IdBlock, master: string): boolean {
-    return this.sigOk(id.ed25519, `${ID_SIG_PREFIX}${id.curve25519}:${master}`, id.sig);
+    return this.sigOk(id.ed25519, idSigText(id.curve25519, master), id.sig);
   }
 
   /**

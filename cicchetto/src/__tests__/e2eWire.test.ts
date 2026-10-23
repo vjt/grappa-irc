@@ -12,7 +12,9 @@ import {
   did,
   encodePayload,
   fb,
+  ID_SIG_PREFIX,
   type IdBlock,
+  idSigText,
   LIST_SIG_PREFIX,
   linesNeeded,
   listSigText,
@@ -84,6 +86,11 @@ describe("fb", () => {
 });
 
 describe("the signed strings", () => {
+  it("spells the id text (S1) with the device's curve key, then the master it vouches for", () => {
+    expect(idSigText(E1, E2)).toBe(`irc-e2e:v2:id:${E1}:${E2}`);
+    expect(ID_SIG_PREFIX).toBe("irc-e2e:v2:id:");
+  });
+
   it("spells the list text with N in decimal and the keys joined by commas", () => {
     expect(listSigText(7, [E1, E2])).toBe(`irc-e2e:v2:list:7:${E1},${E2}`);
     expect(LIST_SIG_PREFIX).toBe("irc-e2e:v2:list:");
