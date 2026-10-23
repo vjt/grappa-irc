@@ -532,6 +532,9 @@ export const S_CicWireBundleHashPayload = {
   q: ["version"],
 } as const;
 
+// Grappa.E2eKeys.Wire.claimed/0
+export const S_E2eKeysWireClaimed = { o: { keys: "s" } } as const;
+
 // Grappa.E2eKeys.Wire.device/0
 export const S_E2eKeysWireDevice = {
   o: { did: "s", ed25519: "s", curve25519: "s", sig: "s" },

@@ -16,6 +16,7 @@ import {
   S_AdminEventsWireEvent,
   S_AdminOverviewWireT,
   S_ChannelDirectoryWireIndexPayload,
+  S_E2eKeysWireClaimed,
   S_E2eKeysWireDevice,
   S_E2eKeysWireDeviceList,
   S_E2eKeysWireDevices,
@@ -53,6 +54,7 @@ import type {
   AccountsAdminWireT,
   AdminOverviewWireT,
   ChannelDirectoryWireIndexPayload,
+  E2eKeysWireClaimed,
   E2eKeysWireDevice,
   E2eKeysWireDeviceList,
   E2eKeysWireDevices,
@@ -967,6 +969,11 @@ export function narrowE2eInboxResponse(raw: unknown): SessionWireE2eInboxPayload
 /** `POST /networks/:slug/e2e/messages` (issue 2430): the msgid grappa chose. */
 export function narrowE2eSentResponse(raw: unknown): SessionWireE2eSentPayload {
   return narrowRest(S_SessionWireE2eSentPayload, raw, "encrypted send");
+}
+
+/** `POST /networks/:slug/e2e/devices/:did/claim` (issue 2430, S1): one key of a sibling, as KEYS v2 text. */
+export function narrowE2eClaimedResponse(raw: unknown): E2eKeysWireClaimed {
+  return narrowRest(S_E2eKeysWireClaimed, raw, "sibling key claim");
 }
 
 /** `POST /networks/:slug/e2e/devices/:did/copies` (issue 2430, S1): the queue id and msgid of the copy. */
