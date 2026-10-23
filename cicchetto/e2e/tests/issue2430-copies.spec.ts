@@ -116,11 +116,13 @@ test("a text sent on one device of an account shows on its other device as sent,
     await expect(bobWindow).toBeVisible({ timeout: KEYS_TIMEOUT });
     await expect(sidebarMessageBadge(aliceB, NETWORK_SLUG, e2eWindow(bob.nick))).toHaveCount(0);
 
-    // In it, the text reads as sent from here, once, and never as Bob's.
+    // In it, the text reads as sent from here, once, and never as Bob's. The
+    // pane loads its rows after the click (`loadEncryptedChat`), under the
+    // account lock a drain may hold: as long as a drain may take.
     await bobWindow.locator("button").first().click();
-    await expect(aliceB.getByTestId("e2e-pane")).toBeVisible();
+    await expect(aliceB.getByTestId("e2e-pane")).toBeVisible({ timeout: KEYS_TIMEOUT });
     const copy = row(aliceB, "out", first);
-    await expect(copy).toHaveCount(1);
+    await expect(copy).toHaveCount(1, { timeout: KEYS_TIMEOUT });
     await expect(copy.getByTestId("e2e-row-state")).toHaveAttribute("data-state", "sent");
     await expect(row(aliceB, "in", first)).toHaveCount(0);
 
@@ -145,6 +147,15 @@ test("a text sent on one device of an account shows on its other device as sent,
     await expect
       .poll(() => fetchE2eInbox(alice.token, NETWORK_SLUG, bDid), { timeout: 10_000 })
       .toEqual([]);
+
+    // Read again on B now that nothing is left for it to take: the counts
+    // above passed the moment the first row rendered, so a second row from
+    // the same inbox entry (taken by both the push and a join drain) only
+    // shows here.
+    for (const text of [first, next]) {
+      await expect(row(aliceB, "out", text)).toHaveCount(1);
+      await expect(row(aliceB, "in", text)).toHaveCount(0);
+    }
   } finally {
     await second?.context.close();
     await bobContext.context.close();
