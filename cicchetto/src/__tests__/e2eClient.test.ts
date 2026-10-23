@@ -969,6 +969,26 @@ describe("e2eClient, copies to our other devices", () => {
     reason: null,
   });
 
+  it("an account with one device lists no devices and stores no copy step", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    // Past the minute any listing of this page stands for.
+    w.now += SIBLINGS_TTL_MS + 1;
+    const listings = vi.spyOn(w.grappa.api, "listE2eDevices");
+    const stores = vi.spyOn(a.vault, "store");
+
+    await a.client.send(a.ctx, "Bob", "one");
+    await a.client.send(a.ctx, "Bob", "two");
+
+    // Our own list names this device alone: no sibling to list or copy to.
+    // A text costs the store before its payload leaves and the one that
+    // closes the operation (`withAccount`), and no copy step's.
+    expect(listings).not.toHaveBeenCalled();
+    expect(stores).toHaveBeenCalledTimes(4);
+    await b.client.drain(b.ctx);
+    expect(await bodies(b, "alice")).toEqual(["hello", "hi", "one", "two"]);
+  });
+
   it("a text sent on device A shows as a sent out row on device B, in the chat with the same peer", async () => {
     const { w, a, a2, b } = await twoDevices();
     await bobWrites({ a, a2, b });

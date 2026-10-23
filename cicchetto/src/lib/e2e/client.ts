@@ -417,6 +417,8 @@ export function e2eClient(
   // Then each text grappa took a payload of for the first time is copied to
   // our siblings (`copyOut`), once: its row is not sent yet (a re-send after
   // a NACK, or a payload for a device whose keys came later, finds it sent).
+  // An account whose list names this device alone has none: nothing of the
+  // copy step runs, no row read, no listing, no store.
   async function flush(
     ctx: E2eContext,
     engine: Engine,
@@ -467,7 +469,7 @@ export function e2eClient(
       }
     }
     const texts: Taken[] = [];
-    for (const [tag, nick] of taken) {
+    for (const [tag, nick] of engine.alone() ? [] : taken) {
       const row = (await chats.rows(ctx.slot, nick)).find((r) => r.id === tag);
       if (row?.kind === "out" && row.state !== "sent") texts.push({ nick, body: row.body });
     }
