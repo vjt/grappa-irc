@@ -7,7 +7,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { accountStore, open, seal } from "../lib/e2e/accountStore";
 import { chatStore } from "../lib/e2e/chatStore";
-import { e2eClient, IdentityElsewhereError, NoAccountError } from "../lib/e2e/client";
+import {
+  e2eClient,
+  IdentityElsewhereError,
+  NoAccountError,
+  SIBLINGS_TTL_MS,
+} from "../lib/e2e/client";
 import { KEYREQ_RETRY_MS, LIST_TAG, OUTQ_TTL_MS } from "../lib/e2e/engine";
 import { ORDER_TAG, UNCONFIRMED } from "../lib/e2e/orders";
 import { SAS_TAG } from "../lib/e2e/sas";
@@ -291,7 +296,8 @@ describe("e2eClient", () => {
     await b.client.drain(b.ctx);
     await b2.client.drain(b2.ctx);
     expect(await bodies(b, "alice")).toEqual(["hello", "hi", "half"]);
-    expect(await bodies(b2, "alice")).toEqual(["hello"]);
+    // Bob's own "hi" reaches his second device as a copy (S1); "half" not.
+    expect(await bodies(b2, "alice")).toEqual(["hello", "hi"]);
   });
 
   it("marks a message whose keys never came as failed, on a tick, and stops waiting", async () => {
@@ -932,5 +938,313 @@ describe("e2eClient, order challenges", () => {
 
     expect((await a.client.dropped(a.ctx, msgid, "session-ended")).chats).toEqual([]);
     expect(await rowsOf(a, "Bob")).toEqual([]);
+  });
+});
+
+// 2430 S1: a text one of alice's devices sends Bob reaches her other devices
+// too, as a copy encrypted to each (grappa's copy door, never IRC), and reads
+// there as sent, in the chat with Bob. alice has two devices, a and a2, a
+// pairing apart; Bob has one.
+describe("e2eClient, copies to our other devices", () => {
+  /** alice on two devices and Bob on one. */
+  const twoDevices = async () => {
+    const { w, a, b } = await pair();
+    return { w, a, a2: await w.pairDevice(a), b };
+  };
+  /**
+   * Bob writes alice first: both her devices read it, and each holds a
+   * session with him and, once he answered their list asks, his list.
+   */
+  const bobWrites = async ({ a, a2, b }: { a: Side; a2: Side; b: Side }) => {
+    await b.client.send(b.ctx, "alice", "hi alice");
+    for (const side of [b, a, a2, b, a, a2]) await side.client.drain(side.ctx);
+  };
+  /** A copy's row: sent, read at `at`, under an id from the inbox item that brought it. */
+  const copied = (body: string, at: number) => ({
+    kind: "out",
+    id: expect.stringMatching(/^copy:\d+:0$/),
+    at,
+    body,
+    state: "sent",
+    reason: null,
+  });
+
+  it("a text sent on device A shows as a sent out row on device B, in the chat with the same peer", async () => {
+    const { w, a, a2, b } = await twoDevices();
+    await bobWrites({ a, a2, b });
+    const second = await ownOf(a2);
+
+    await a.client.send(a.ctx, "Bob", "hi Bob");
+    const drained = await a2.client.drain(a2.ctx);
+
+    expect(drained.chats).toEqual(["bob"]);
+    expect(await rowsOf(a2, "bob")).toEqual([
+      expect.objectContaining({ kind: "in", body: "hi alice" }),
+      copied("hi Bob", w.now),
+    ]);
+    // alice's own text: the chat counts only Bob's as unread.
+    expect((await a2.chats.chats(SLOT)).bob).toEqual({ nick: "Bob", open: true, unread: 1 });
+    // Only grappa's copy door carried it: nothing alice handed the send door
+    // (IRC) is for her own nick or her other device.
+    expect(w.grappa.sends.filter((s) => s.by === "alice" && s.target !== "Bob")).toEqual([]);
+    expect(w.grappa.sends.filter((s) => s.by === "alice" && s.to === second.did)).toEqual([]);
+    await b.client.drain(b.ctx);
+    expect(await bodies(b, "alice")).toEqual(["hi alice", "hi Bob"]);
+  });
+
+  it("a text grappa refuses is never copied", async () => {
+    const { w, a, a2, b } = await twoDevices();
+    await bobWrites({ a, a2, b });
+    const copies = vi.spyOn(w.grappa.api, "copyE2e");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    w.grappa.refuse = (o) => (o.verb === "msg" || o.verb === "pkmsg" ? "rate-limited" : undefined);
+
+    // Refused at the door, and lost waiting for keys that never came.
+    await a.client.send(a.ctx, "Bob", "refused");
+    await a.client.send(a.ctx, "nobody", "anyone there?");
+    w.now += OUTQ_TTL_MS;
+    await a.client.tick(a.ctx);
+    await a2.client.drain(a2.ctx);
+
+    expect(await states(a, "Bob")).toEqual([["failed", "rate-limited"]]);
+    expect(await states(a, "nobody")).toEqual([["failed", "keys-timeout"]]);
+    expect(copies).not.toHaveBeenCalled();
+    expect(await bodies(a2, "bob")).toEqual(["hi alice"]);
+    expect((await a2.chats.chats(SLOT)).nobody).toBeUndefined();
+
+    // The next text grappa takes is copied, and only that one.
+    w.grappa.refuse = () => undefined;
+    await a.client.send(a.ctx, "Bob", "taken");
+    await a2.client.drain(a2.ctx);
+    expect(await bodies(a2, "bob")).toEqual(["hi alice", "taken"]);
+  });
+
+  it("a copy to a peer B never opened creates that chat with the out row", async () => {
+    const { w, a, a2 } = await twoDevices();
+
+    // No keys for Bob yet: the text waits for them, and nothing is copied
+    // before grappa takes it.
+    await a.client.send(a.ctx, "bob", "hello");
+    await a2.client.drain(a2.ctx);
+    expect(await a2.chats.chats(SLOT)).toEqual({});
+
+    await a.client.drain(a.ctx);
+    await a2.client.drain(a2.ctx);
+
+    expect(await a2.chats.chats(SLOT)).toEqual({ bob: { nick: "bob", open: true, unread: 0 } });
+    expect(await rowsOf(a2, "bob")).toEqual([copied("hello", w.now)]);
+  });
+
+  it("the second device's copy arrives after it claimed A's key once", async () => {
+    const { w, a, a2, b } = await twoDevices();
+    await bobWrites({ a, a2, b });
+    const first = await ownOf(a);
+    const claims = vi.spyOn(w.grappa.api, "claimE2eDeviceKeys");
+
+    await a2.client.send(a2.ctx, "Bob", "one");
+    await a2.client.send(a2.ctx, "Bob", "two");
+    await a.client.drain(a.ctx);
+
+    expect(claims.mock.calls.map(([, , did]) => did)).toEqual([first.did]);
+    expect(await bodies(a, "bob")).toEqual(["hi alice", "one", "two"]);
+    expect(await states(a, "bob")).toEqual([
+      ["sent", null],
+      ["sent", null],
+    ]);
+  });
+
+  it("a text that reaches the peer's second device later, once its keys came, is copied once, with its first payload", async () => {
+    const { w, a, a2, b } = await twoDevices();
+    const b2 = await w.pairDevice(b);
+    // alice holds a session with Bob's first device and his list, which
+    // names his second: her text goes to the first now, to the second once
+    // its keys come.
+    await bobWrites({ a, a2, b });
+
+    await a.client.send(a.ctx, "Bob", "hi Bob");
+    await a.client.drain(a.ctx);
+    await a2.client.drain(a2.ctx);
+    await b2.client.drain(b2.ctx);
+
+    const payloads = w.grappa.sends.filter(
+      (s) => s.by === "alice" && s.tag !== undefined && s.tag !== LIST_TAG,
+    );
+    expect(payloads.map((s) => s.verb)).toEqual(["msg", "pkmsg"]);
+    expect(await bodies(b2, "alice")).toContain("hi Bob");
+    expect(await rowsOf(a2, "bob")).toEqual([
+      expect.objectContaining({ kind: "in", body: "hi alice" }),
+      copied("hi Bob", w.now),
+    ]);
+  });
+
+  it("stores the sibling's ratchet step before its copy leaves", async () => {
+    const { w, a, a2, b } = await twoDevices();
+    await bobWrites({ a, a2, b });
+    await a.client.send(a.ctx, "Bob", "one");
+    const copies = vi.spyOn(w.grappa.api, "copyE2e");
+    const store = a.vault.store;
+    // The tab dies once the copy is on its way.
+    a.vault.store = async (slot, sealed) => {
+      if (copies.mock.calls.length > 0) throw new Error("tab closed");
+      return store(slot, sealed);
+    };
+
+    await expect(a.client.send(a.ctx, "Bob", "two")).rejects.toThrow("tab closed");
+    a.vault.store = store;
+    await a.client.send(a.ctx, "Bob", "three");
+    await a2.client.drain(a2.ctx);
+
+    // Copied from a state that had not moved, "three" would reuse the key
+    // "two" spent, and alice's other device could not read it.
+    expect(await bodies(a2, "bob")).toEqual(["hi alice", "one", "two", "three"]);
+  });
+
+  it("re-draining the same inbox page adds the copy row once", async () => {
+    const { w, a, a2 } = await twoDevices();
+    await a.client.send(a.ctx, "bob", "hello");
+    await a.client.drain(a.ctx);
+    const store = a2.vault.store;
+    // The tab dies storing the state that read the copy, after its row was
+    // written: the next drain reads the copy again.
+    a2.vault.store = async () => {
+      throw new Error("tab closed");
+    };
+    await expect(a2.client.drain(a2.ctx)).rejects.toThrow("tab closed");
+    a2.vault.store = store;
+    // Then the acknowledgement fails: the next drain finds the page again.
+    w.grappa.failAck = true;
+    await expect(a2.client.drain(a2.ctx)).rejects.toThrow("ack refused");
+    w.grappa.failAck = false;
+
+    await a2.client.drain(a2.ctx);
+
+    expect(await rowsOf(a2, "bob")).toEqual([copied("hello", w.now)]);
+    expect(await inboxOf(w, a2)).toEqual([]);
+  });
+
+  it("a refused claim drops the waiting copies and asks no more", async () => {
+    const { w, a, a2, b } = await twoDevices();
+    await bobWrites({ a, a2, b });
+    const second = await ownOf(a2);
+    const claims = vi
+      .spyOn(w.grappa.api, "claimE2eDeviceKeys")
+      .mockRejectedValue(new api.ApiError(409, "empty"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await a.client.send(a.ctx, "Bob", "lost");
+
+    expect(claims).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls).toEqual([
+      [
+        `[e2e] grappa refused a key of our device ${second.did} (refused); the copies waiting for it are dropped`,
+      ],
+      ["[e2e] a copy of a text to Bob was not sent to one of our devices: sibling-no-keys"],
+    ]);
+    // Nothing waits for those keys: no clock, and no claim again.
+    w.now += OUTQ_TTL_MS;
+    await a.client.tick(a.ctx);
+    await a.client.drain(a.ctx);
+    expect(claims).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(2);
+
+    // The next text asks for a key of its own, and is copied.
+    claims.mockRestore();
+    await a.client.send(a.ctx, "Bob", "next");
+    await a2.client.drain(a2.ctx);
+    expect(await bodies(a2, "bob")).toEqual(["hi alice", "next"]);
+  });
+
+  it("a copy grappa refuses is one console line, and is never sent again", async () => {
+    const { w, a, a2, b } = await twoDevices();
+    await bobWrites({ a, a2, b });
+    const second = await ownOf(a2);
+    const copies = vi
+      .spyOn(w.grappa.api, "copyE2e")
+      .mockRejectedValueOnce(new api.ApiError(413, "full"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await a.client.send(a.ctx, "Bob", "refused copy");
+    w.now += OUTQ_TTL_MS;
+    await a.client.tick(a.ctx);
+    await a.client.drain(a.ctx);
+
+    expect(copies).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls).toEqual([
+      [`[e2e] grappa refused a pkmsg copy to our device ${second.did}: too-large`],
+    ]);
+    expect(await states(a, "Bob")).toEqual([["sent", null]]);
+
+    await a.client.send(a.ctx, "Bob", "next");
+    await a2.client.drain(a2.ctx);
+    expect(copies).toHaveBeenCalledTimes(2);
+    expect(await bodies(a2, "bob")).toEqual(["hi alice", "next"]);
+  });
+
+  it("a device paired after the devices were listed gets copies once that listing is a minute old", async () => {
+    const { w, a, a2, b } = await twoDevices();
+    await bobWrites({ a, a2, b });
+    await a.client.send(a.ctx, "Bob", "one");
+    const a3 = await w.pairDevice(a);
+
+    await a.client.send(a.ctx, "Bob", "two");
+    w.now += SIBLINGS_TTL_MS;
+    await a.client.send(a.ctx, "Bob", "three");
+    w.now += 1;
+    await a.client.send(a.ctx, "Bob", "four");
+    await a2.client.drain(a2.ctx);
+    await a3.client.drain(a3.ctx);
+
+    expect(await bodies(a2, "bob")).toEqual(["hi alice", "one", "two", "three", "four"]);
+    expect(await bodies(a3, "bob")).toEqual(["four"]);
+  });
+
+  it("a listing of the devices grappa refuses is one console line, and the next copy lists them again", async () => {
+    const { w, a, a2, b } = await twoDevices();
+    await bobWrites({ a, a2, b });
+    vi.spyOn(w.grappa.api, "listE2eDevices").mockRejectedValueOnce(
+      new api.ApiError(503, "db_unavailable"),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    // No sibling known yet: nothing to copy "one" to.
+    await a.client.send(a.ctx, "Bob", "one");
+    expect(warn.mock.calls).toEqual([
+      ["[e2e] grappa refused the list of our devices (refused); copies go to the known ones"],
+    ]);
+    await a.client.send(a.ctx, "Bob", "two");
+    await a2.client.drain(a2.ctx);
+
+    expect(await bodies(a2, "bob")).toEqual(["hi alice", "two"]);
+  });
+
+  it("an own item that is no pkmsg or msg is dropped on the copy path, never read as a peer's", async () => {
+    const { w, a, a2 } = await twoDevices();
+    const first = await ownOf(a);
+    const second = await ownOf(a2);
+    vi.spyOn(w.grappa.api, "listE2eDeviceInbox").mockResolvedValueOnce({
+      messages: [
+        {
+          kind: "e2e_message",
+          network: "",
+          id: 1,
+          from: "alice",
+          from_did: first.did,
+          to_did: second.did,
+          verb: "nack",
+          msgid: "bXNnaWQ",
+          payload: '{"v":2}',
+          own: true,
+        },
+      ],
+    });
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+
+    const drained = await a2.client.drain(a2.ctx);
+
+    expect(drained.chats).toEqual([]);
+    expect(debug.mock.calls).toEqual([
+      [`[e2e] dropped an own nack from our device ${first.did}: not a copy`],
+    ]);
+    expect(w.grappa.sends.filter((s) => s.by === "alice")).toEqual([]);
   });
 });

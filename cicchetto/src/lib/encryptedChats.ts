@@ -40,6 +40,7 @@ import {
   claimE2eDeviceKeys,
   copyE2e,
   listE2eDeviceInbox,
+  listE2eDevices,
   sendE2e,
 } from "./api";
 import { token } from "./auth";
@@ -133,6 +134,7 @@ const doors =
     claim: (to) => claimE2eDeviceKeys(bearer, slug, to, did).then((r) => r.keys, refusalOf),
     copy: (to, verb, payload) =>
       copyE2e(bearer, slug, to, { from_did: did, verb, payload }).then((r) => r.id, refusalOf),
+    devices: () => listE2eDevices(bearer, slug).catch(refusalOf),
     send: async (out) => {
       try {
         return await sendE2e(bearer, slug, {

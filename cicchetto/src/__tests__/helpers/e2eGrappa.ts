@@ -96,6 +96,8 @@ export type DeviceDoor = {
   claim(did: string): Promise<string | DoorRefusal>;
   /** A refusal is an answer, as at the real door: the copy's queue id, or why not. */
   copy(toDid: string, verb: "pkmsg" | "msg", payload: string): Promise<number | DoorRefusal>;
+  /** A refusal is an answer, as at the real door: every device of the subject, or why not. */
+  devices(): Promise<E2eKeysWireDevice[] | DoorRefusal>;
 };
 
 type Queued = Omit<SessionWireE2eMessagePayload, "kind" | "network">;
@@ -266,6 +268,7 @@ export class Grappa {
         this.api
           .copyE2e(nick, "", toDid, { from_did: did, verb, payload })
           .then((r) => r.id, refusalOf),
+      devices: () => this.api.listE2eDevices(nick, "").catch(refusalOf),
     };
   }
 

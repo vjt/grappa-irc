@@ -12,8 +12,15 @@
 //      step is never sent twice from a state reloaded after a crash;
 //   4. the payloads go to the send door, one at a time, in order; grappa's
 //      msgid is recorded for each payload (a NACK names it), or the payload
-//      is forgotten when grappa refused it;
+//      is forgotten when grappa refused it; then each text grappa took is
+//      copied to our siblings (S1: this account's other devices), encrypted
+//      to each, the state stored first again, through the copy door, never
+//      IRC (`copyOut`);
 //   5. inbox messages are acknowledged last.
+//
+// An inbox message flagged `own` is such a copy, from one of our siblings:
+// it is read on the copy path (`Engine.receiveCopy`), never the peer one, and
+// shows as a sent row in the chat with the peer it went to.
 //
 // SAS steps (`sas.ts`) ride the same order: the verifier changes the state
 // and sends its steps through the engine, like any message. So do the ACKs
@@ -31,9 +38,11 @@
 // it is only acknowledged again. grappa's inbox ids never come back
 // (AUTOINCREMENT), so the watermark is enough.
 
+import type { E2eKeysWireDevice } from "../wireTypes";
 import type { AccountStore } from "./accountStore";
 import type { ChatChange, ChatStore, DoorRefusal, SendDropped } from "./chatStore";
 import {
+  type CopyResult,
   type E2eEvent,
   type E2eState,
   Engine,
@@ -73,6 +82,12 @@ export type Door = {
   ack(ids: number[]): Promise<void>;
   /** Never throws: a refusal, or a send that failed on the way, is an answer. */
   send(out: Outbound): Promise<{ msgid: string } | { refused: DoorRefusal }>;
+  /**
+   * Every device grappa holds for the subject on the network, none of them
+   * taken on its word (`Engine.setSiblings`). Never throws: a refusal is an
+   * answer.
+   */
+  devices(): Promise<E2eKeysWireDevice[] | DoorRefusal>;
   /**
    * The KEYS v2 text of a key of the sibling device `did` (consumed), for an
    * Olm session to it. Never throws: no key to give is a refusal.
@@ -166,6 +181,33 @@ export class NoAccountError extends Error {}
  */
 export class IdentityElsewhereError extends Error {}
 
+/**
+ * How long a listing of the account's devices (`Door.devices`) stands before
+ * a copy lists them again: a device paired since gets the copies of the texts
+ * sent once it is older.
+ */
+export const SIBLINGS_TTL_MS = 60_000;
+
+/**
+ * When this page last listed the siblings of each of its devices (by Ed25519
+ * key): a page's own memory, so a new page lists them before its first copy.
+ */
+const siblingsListed = new Map<string, number>();
+
+/** Every refusal a door answers: what a claim answers when it brings no KEYS text. */
+const REFUSALS: Record<DoorRefusal, true> = {
+  "rate-limited": true,
+  "too-large": true,
+  "too-late": true,
+  "unknown-device": true,
+  refused: true,
+};
+
+const isRefusal = (answer: string): answer is DoorRefusal => Object.hasOwn(REFUSALS, answer);
+
+/** A text grappa took a payload of for the first time: what our siblings get a copy of. */
+type Taken = { nick: string; body: string };
+
 /** The chat changes `events` make; rows from the inbox message `inbox` get ids derived from it. */
 function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatChange[] {
   const changes: ChatChange[] = [];
@@ -220,9 +262,39 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
         }
         break;
       case "dropped":
-        // Wire input that is not a message (a bad signature, a replay, an
-        // unsolicited KEYS): nothing for the user, but never without a trace.
-        console.debug(`[e2e] dropped a ${e.verb ?? "message"} from ${e.nick}: ${e.reason}`);
+        if (e.reason === "sibling-gone" || e.reason === "sibling-no-keys") {
+          // Not wire input: the copy of a text we sent `e.nick`, which one of
+          // our other devices goes without.
+          console.warn(
+            `[e2e] a copy of a text to ${e.nick} was not sent to one of our devices: ${e.reason}`,
+          );
+        } else {
+          // Wire input that is not a message (a bad signature, a replay, an
+          // unsolicited KEYS): nothing for the user, but never without a trace.
+          console.debug(`[e2e] dropped a ${e.verb ?? "message"} from ${e.nick}: ${e.reason}`);
+        }
+        break;
+      case "copied":
+        // A text one of our siblings sent `peer`: ours, so it reads as sent
+        // here too, in the chat with `peer` (made if this device has none).
+        if (inbox !== null) {
+          changes.push({
+            op: "add",
+            nick: e.peer,
+            unread: false,
+            row: {
+              kind: "out",
+              id: `copy:${inbox}:${i}`,
+              at,
+              body: e.body,
+              state: "sent",
+              reason: null,
+            },
+          });
+        }
+        break;
+      case "sibling_keys_needed":
+        // `copyOut` claims a key of the sibling, and hands it to the engine.
         break;
       case "replayed":
       case "rekeying":
@@ -252,6 +324,30 @@ function rowlessLost(tag: RowlessTag, nick: string, reason: string): void {
   }
 }
 
+// An inbox message flagged `own`: a copy one of our siblings sent, read on
+// the copy path, never the peer one (which refuses our own master). Only a
+// PKMSG or a MSG is one; grappa queues nothing else as own, so anything else
+// is dropped, with a trace.
+function copyFrom(engine: Engine, m: InboxMessage): Result {
+  if (m.verb === "pkmsg" || m.verb === "msg") {
+    return engine.receiveCopy(m.fromDid, m.verb, m.payload);
+  }
+  console.debug(`[e2e] dropped an own ${m.verb} from our device ${m.fromDid}: not a copy`);
+  return { events: [], outbound: [] };
+}
+
+// A key of our sibling `did` from grappa's claim door: its KEYS text, or
+// null when grappa refused it (logged, never claimed again for those copies:
+// the engine drops what waited for it).
+async function claim(door: Door, did: string): Promise<string | null> {
+  const keys = await door.claim(did);
+  if (!isRefusal(keys)) return keys;
+  console.warn(
+    `[e2e] grappa refused a key of our device ${did} (${keys}); the copies waiting for it are dropped`,
+  );
+  return null;
+}
+
 export function e2eClient(
   olm: Olm,
   accounts: AccountStore,
@@ -263,12 +359,19 @@ export function e2eClient(
   // whether it refused a payload as from a device it does not list. A
   // refused payload is forgotten (`discard`); its message is lost only once
   // nothing else of it is on its way or waiting, which the engine answers.
+  // Then each text grappa took a payload of for the first time is copied to
+  // our siblings (`copyOut`), once: its row is not sent yet (a re-send after
+  // a NACK, or a payload for a device whose keys came later, finds it sent).
   async function flush(
+    ctx: E2eContext,
     engine: Engine,
+    persist: () => Promise<void>,
     door: Door,
     outbound: Outbound[],
   ): Promise<{ changes: ChatChange[]; unknownDevice: boolean }> {
     const changes: ChatChange[] = [];
+    // Tag → nick, of the texts grappa took a payload of.
+    const taken = new Map<string, string>();
     let unknownDevice = false;
     for (const out of outbound) {
       const answer = await door.send(out);
@@ -283,6 +386,7 @@ export function e2eClient(
         engine.sent(out.ref, answer.msgid);
         if (out.tag !== LIST_TAG && !rowless(out.tag)) {
           changes.push({ op: "out", nick: out.target, id: out.tag, state: "sent", reason: null });
+          taken.set(out.tag, out.target);
         }
         continue;
       }
@@ -307,7 +411,70 @@ export function e2eClient(
         });
       }
     }
-    return { changes, unknownDevice };
+    const texts: Taken[] = [];
+    for (const [tag, nick] of taken) {
+      const row = (await chats.rows(ctx.slot, nick)).find((r) => r.id === tag);
+      if (row?.kind === "out" && row.state !== "sent") texts.push({ nick, body: row.body });
+    }
+    return {
+      changes: [...changes, ...(await copyOut(engine, persist, door, texts))],
+      unknownDevice,
+    };
+  }
+
+  // Our siblings as grappa lists the account's devices (`Engine.setSiblings`),
+  // when this page has not listed them for the device in `SIBLINGS_TTL_MS`.
+  // A listing grappa refuses is logged and keeps the siblings known; the next
+  // copy lists them again.
+  async function listSiblings(engine: Engine, door: Door): Promise<Result> {
+    const key = engine.deviceKey();
+    const at = siblingsListed.get(key);
+    if (at !== undefined && now() - at <= SIBLINGS_TTL_MS) return { events: [], outbound: [] };
+    const devices = await door.devices();
+    if (!Array.isArray(devices)) {
+      console.warn(
+        `[e2e] grappa refused the list of our devices (${devices}); copies go to the known ones`,
+      );
+      return { events: [], outbound: [] };
+    }
+    siblingsListed.set(key, now());
+    return engine.setSiblings(devices);
+  }
+
+  // The texts grappa just took (`flush`), copied to our siblings (S1). A
+  // sibling with a session gets its copies at once. For one without, the
+  // engine asks once (`sibling_keys_needed`): a key of it is claimed, and
+  // what came, or null when grappa refused, goes to `siblingKeys`, which
+  // sends what waited or drops it. The state is stored before any copy
+  // leaves, as before any payload. A copy or a claim grappa refuses is
+  // logged, never tried again: no NACK ever names a copy, so a lost one is
+  // lost. Answers what its events change in the chats.
+  async function copyOut(
+    engine: Engine,
+    persist: () => Promise<void>,
+    door: Door,
+    texts: Taken[],
+  ): Promise<ChatChange[]> {
+    if (texts.length === 0) return [];
+    const events = [...(await listSiblings(engine, door)).events];
+    let round: CopyResult[] = texts.map(({ nick, body }) => engine.copy(nick, body));
+    while (round.length > 0) {
+      const asked = round.flatMap((r) => r.events);
+      events.push(...asked);
+      await persist();
+      for (const copy of round.flatMap((r) => r.copies)) {
+        const id = await door.copy(copy.to, copy.verb, copy.payload);
+        if (typeof id !== "number") {
+          console.warn(`[e2e] grappa refused a ${copy.verb} copy to our device ${copy.to}: ${id}`);
+        }
+      }
+      round = [];
+      for (const e of asked) {
+        if (e.kind !== "sibling_keys_needed") continue;
+        round.push(engine.siblingKeys(e.did, await claim(door, e.did)));
+      }
+    }
+    return changesFor(events, now(), null);
   }
 
   // An operation on the slot's identity, which must exist already: its
@@ -396,7 +563,7 @@ export function e2eClient(
     const touched = new Set(sas.chats);
     for (const key of await chats.apply(ctx.slot, [...sas.changes, ...changes])) touched.add(key);
     await persist();
-    const sent = await flush(engine, door, [...outbound, ...sas.outbound]);
+    const sent = await flush(ctx, engine, persist, door, [...outbound, ...sas.outbound]);
     for (const key of await chats.apply(ctx.slot, sent.changes)) touched.add(key);
     return {
       chats: [...touched],
@@ -421,7 +588,9 @@ export function e2eClient(
           const outbound: Outbound[] = [];
           for (const m of page) {
             if (m.id <= state.inbox) continue;
-            const res = engine.receive(m.from, m.verb, m.msgid, m.fromDid, m.payload);
+            const res = m.own
+              ? copyFrom(engine, m)
+              : engine.receive(m.from, m.verb, m.msgid, m.fromDid, m.payload);
             if (m.verb === "pkmsg") pkmsgs += 1;
             changes.push(...changesFor(res.events, now(), m.id));
             outbound.push(...res.outbound);
@@ -443,7 +612,7 @@ export function e2eClient(
           for (const key of sas.chats) touched.add(key);
           for (const key of await chats.apply(ctx.slot, changes)) touched.add(key);
           await persist();
-          const sent = await flush(engine, door, outbound);
+          const sent = await flush(ctx, engine, persist, door, outbound);
           unknownDevice ||= sent.unknownDevice;
           await persist();
           for (const key of await chats.apply(ctx.slot, sent.changes)) touched.add(key);
@@ -485,7 +654,7 @@ export function e2eClient(
           ]),
         );
         await persist();
-        const sent = await flush(engine, door, res.outbound);
+        const sent = await flush(ctx, engine, persist, door, res.outbound);
         for (const key of await chats.apply(ctx.slot, sent.changes)) touched.add(key);
         return {
           chats: [...touched],
