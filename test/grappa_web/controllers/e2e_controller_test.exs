@@ -19,9 +19,10 @@ defmodule GrappaWeb.E2eControllerTest do
   import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.{E2eFixtures, E2eInbox, E2eKeys, IRCServer, Repo}
+  alias Grappa.{E2eFixtures, E2eInbox, E2eKeys, IRCServer, Repo, Session}
   alias Grappa.E2eKeys.DeviceList
   alias Grappa.IRC.E2e
+  alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Message
   alias Grappa.Session.E2ePacer
   alias Grappa.Session.Wire, as: SessionWire
@@ -53,13 +54,14 @@ defmodule GrappaWeb.E2eControllerTest do
   # there: one device, registered and listed. Every send names it as
   # `from`.
   defp live_network(vjt) do
-    {server, network, [device]} = live_network(vjt, 1)
+    {server, network, [device]} = live_network(vjt, 1, IRCServer.passthrough_handler())
     {server, network, device}
   end
 
-  # The same with `n` devices, all listed: a copy goes from one to another.
-  defp live_network(vjt, n) do
-    {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+  # The same with `n` devices, all listed (a copy goes from one to another),
+  # and the fake ircd driven by `handler`.
+  defp live_network(vjt, n, handler) do
+    {server, port} = IRCServer.start_server(handler)
     {network, _} = network_with_server(port: port, slug: "azzurra-#{u()}")
     _ = credential_fixture(vjt, network, %{nick: "grappa-test", autojoin_channels: []})
     devices = listed_devices!(vjt, network, n)
@@ -411,7 +413,7 @@ defmodule GrappaWeb.E2eControllerTest do
     defp copies_path(network, device), do: "#{device_path(network, device.did)}/copies"
 
     test "POST /e2e/devices/:did/copies answers 202 with the inbox id", %{conn: conn, vjt: vjt} do
-      {server, network, [a, b]} = live_network(vjt, 2)
+      {server, network, [a, b]} = live_network(vjt, 2, IRCServer.passthrough_handler())
       body = %{from_did: a.did, verb: "pkmsg", payload: @payload}
 
       assert %{"id" => id, "msgid" => msgid} = json_response(post(conn, copies_path(network, b), body), 202)
@@ -431,7 +433,7 @@ defmodule GrappaWeb.E2eControllerTest do
 
     test "404 for a did the list does not name, 409 self, 422 an unlisted sender, 400 a non-message verb or a payload that is not JSON text, 413 too_large",
          %{conn: conn, vjt: vjt} do
-      {_, network, [a, b]} = live_network(vjt, 2)
+      {_, network, [a, b]} = live_network(vjt, 2, IRCServer.passthrough_handler())
       ok = %{from_did: a.did, verb: "msg", payload: @payload}
 
       assert json_response(post(conn, "#{device_path(network, "AAAAAAAAAAA")}/copies", ok), 404) ==
@@ -467,7 +469,7 @@ defmodule GrappaWeb.E2eControllerTest do
 
     test "413 full once the sibling holds its share of own copies: the copy is simply missing there",
          %{conn: conn, vjt: vjt} do
-      {_, network, [a, b]} = live_network(vjt, 2)
+      {_, network, [a, b]} = live_network(vjt, 2, IRCServer.passthrough_handler())
       # Copies as big as the door takes: the share of own copies holds this
       # many, and the next one is refused.
       big = %{from_did: a.did, verb: "msg", payload: String.duplicate("A", E2e.max_payload_bytes())}
@@ -477,6 +479,26 @@ defmodule GrappaWeb.E2eControllerTest do
 
       assert json_response(post(conn, copies_path(network, b), big), 413) == %{"error" => "full"}
       assert length(E2eInbox.list(b, 0)) == fits
+    end
+
+    test "a copy under a nick the ircd forced (a UID, not a nick) answers 202, and the session stays up",
+         %{conn: conn, vjt: vjt} do
+      {server, network, [a, b]} = live_network(vjt, 2, IRCServer.welcome_handler(":irc", "grappa-test"))
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(vjt.name))
+
+      # What solanum does on a nick collision: renames us to our UID.
+      IRCServer.feed(server, ":grappa-test!u@h NICK :0AAAAAAAB\r\n")
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :own_nick_changed, nick: "0AAAAAAAB"}}, 1_000
+      pid = Session.whereis({:user, vjt.id}, network.id)
+
+      body = %{from_did: a.did, verb: "msg", payload: @payload}
+      assert %{"id" => id} = json_response(post(conn, copies_path(network, b), body), 202)
+
+      assert [%{"id" => ^id, "own" => true, "from" => "0AAAAAAAB"}] =
+               json_response(get(conn, "#{device_path(network, b.did)}/inbox"), 200)["messages"]
+
+      assert Session.whereis({:user, vjt.id}, network.id) == pid
+      assert Process.alive?(pid)
     end
 
     test "with no session on the network a copy is a 404, like a send", %{conn: conn, vjt: vjt} do
