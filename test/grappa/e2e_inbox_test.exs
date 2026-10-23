@@ -49,27 +49,18 @@ defmodule Grappa.E2eInboxTest do
   # A payload whose row costs exactly `bytes` against the caps.
   defp payload_costing(bytes), do: String.duplicate("A", bytes - E2eInbox.row_overhead_bytes())
 
-  # Rows from `sender` costing `bytes` in all: as many full-size messages as
+  # Rows from `sender` (own copies when `own?`) costing `bytes` in all: as many full-size messages as
   # fit, then one for the rest (which must be more than a row's overhead).
-  defp fill!(device, sender, bytes) do
+  defp fill!(device, sender, own?, bytes) do
     full = E2e.max_payload_bytes() + E2eInbox.row_overhead_bytes()
     rest = rem(bytes, full)
     true = rest == 0 or rest > E2eInbox.row_overhead_bytes()
 
     sizes = List.duplicate(full, div(bytes, full)) ++ if(rest > 0, do: [rest], else: [])
-    Enum.each(sizes, &put!(device, message(sender, :msg, payload_costing(&1))))
+    Enum.each(sizes, &put!(device, Map.put(message(sender, :msg, payload_costing(&1)), :own, own?)))
   end
 
   defp own_message(sender, payload), do: Map.put(message(sender, :msg, payload), :own, true)
-
-  defp fill_own!(device, sender, bytes) do
-    full = E2e.max_payload_bytes() + E2eInbox.row_overhead_bytes()
-    rest = rem(bytes, full)
-    true = rest == 0 or rest > E2eInbox.row_overhead_bytes()
-
-    sizes = List.duplicate(full, div(bytes, full)) ++ if(rest > 0, do: [rest], else: [])
-    Enum.each(sizes, &put!(device, own_message(sender, payload_costing(&1))))
-  end
 
   setup do
     user = user_fixture()
@@ -143,7 +134,7 @@ defmodule Grappa.E2eInboxTest do
 
   describe "caps" do
     test "one sender cannot hold more than its share; another sender still gets in", %{device: device} do
-      fill!(device, "Alice", E2eInbox.max_sender_bytes() - 1_000)
+      fill!(device, "Alice", false, E2eInbox.max_sender_bytes() - 1_000)
 
       # 1 000 bytes left in alice's share: a row costing 1 000 fits, the next
       # one does not — whatever case the nick arrives in. The share is
@@ -159,13 +150,13 @@ defmodule Grappa.E2eInboxTest do
       share = E2eInbox.max_sender_bytes()
       senders = div(E2eInbox.max_bytes(), share)
 
-      for n <- 1..senders, do: fill!(device, "peer#{n}", share)
+      for n <- 1..senders, do: fill!(device, "peer#{n}", false, share)
 
       assert {:error, :full} = E2eInbox.put(device, message("late", :msg, payload_costing(300)))
     end
 
     test "a device's full queue leaves its sibling's untouched", %{device: device, other: other} do
-      fill!(device, "alice", E2eInbox.max_sender_bytes())
+      fill!(device, "alice", false, E2eInbox.max_sender_bytes())
       assert {:error, :full} = E2eInbox.put(device, message("alice", :msg, payload_costing(300)))
 
       assert {:ok, _} = E2eInbox.put(other, message("alice", :msg, payload_costing(300)))
@@ -188,14 +179,14 @@ defmodule Grappa.E2eInboxTest do
     end
 
     test "own copies do not consume a peer's sender share", %{device: device} do
-      fill_own!(device, "vjt", E2eInbox.max_sender_bytes())
+      fill!(device, "vjt", true, E2eInbox.max_sender_bytes())
       assert {:error, :full} = E2eInbox.put(device, own_message("vjt", payload_costing(300)))
 
       assert {:ok, _} = E2eInbox.put(device, message("alice", :msg, payload_costing(300)))
     end
 
     test "a peer at its share does not block own copies", %{device: device} do
-      fill!(device, "alice", E2eInbox.max_sender_bytes())
+      fill!(device, "alice", false, E2eInbox.max_sender_bytes())
       assert {:error, :full} = E2eInbox.put(device, message("alice", :msg, payload_costing(300)))
 
       assert {:ok, _} = E2eInbox.put(device, own_message("vjt", payload_costing(300)))
@@ -205,8 +196,8 @@ defmodule Grappa.E2eInboxTest do
       share = E2eInbox.max_sender_bytes()
       peers = div(E2eInbox.max_bytes(), share) - 1
 
-      for n <- 1..peers, do: fill!(device, "peer#{n}", share)
-      fill_own!(device, "vjt", share)
+      for n <- 1..peers, do: fill!(device, "peer#{n}", false, share)
+      fill!(device, "vjt", true, share)
 
       assert {:error, :full} = E2eInbox.put(device, message("late", :msg, payload_costing(300)))
       assert {:error, :full} = E2eInbox.put(device, own_message("vjt", payload_costing(300)))
