@@ -264,6 +264,31 @@ defmodule GrappaWeb.E2eController do
   end
 
   @doc """
+  `POST /networks/:network_id/e2e/devices/:did/claim` — `{from_did}`: one
+  key of the sibling device `did`, for the caller's own device `from_did`
+  to open an Olm session to it (the copy of an encrypted message goes to
+  the account's other devices). 200 `{keys}`: the KEYS v2 text a peer's
+  KEYREQ would be answered with, restricted to that one device. The key
+  is consumed: a one-time key is never handed out twice, the fallback key
+  stays.
+
+  400 `bad_request` without a `from_did`; 404 for a `did` the stored list
+  does not name for this subject; 422 `unknown_device` when `from_did` is
+  not listed either; 409 `self` for the caller's own `did`, 409 `empty`
+  when that device holds no key, 409 `gone` when its key was taken meanwhile.
+  """
+  @spec claim(Plug.Conn.t(), map()) ::
+          Plug.Conn.t()
+          | {:error, :bad_request | :self | :unknown_device | :not_found | :empty | :gone | :db_unavailable}
+  def claim(conn, %{"did" => did, "from_did" => from_did}) when is_binary(did) and is_binary(from_did) do
+    with {:ok, keys} <- E2eKeys.claim(subject(conn), conn.assigns.network.id, from_did, did) do
+      json(conn, %{keys: keys})
+    end
+  end
+
+  def claim(_, _), do: {:error, :bad_request}
+
+  @doc """
   `DELETE /networks/:network_id/e2e/keys` — drops this subject's whole E2E
   identity on this network: every device with its keys, and the device
   list. What a client does when the account starts over with a new master,

@@ -278,6 +278,95 @@ defmodule Grappa.E2eKeysTest do
     end
   end
 
+  describe "claim/4" do
+    setup %{subject: subject, network: network, master: master} do
+      a = device(subject, network, master)
+      b = device(subject, network, master)
+      {:ok, a: a, b: b}
+    end
+
+    test "returns the sibling's block in the KEYS shape and consumes its one-time key",
+         %{subject: subject, network: network, master: master, a: a, b: b} do
+      [first, second] = otks(b, 2)
+      {:ok, _} = upload(b, [first, second], nil)
+      {:ok, list} = listed(subject, network, master, [a, b], 1)
+
+      assert {:ok, payload} = E2eKeys.claim(subject, network.id, a.device.did, b.device.did)
+      refute payload =~ " "
+
+      assert %{"v" => 2, "master" => master_block, "devices" => [entry]} = decode!(payload)
+
+      assert master_block == %{
+               "ed25519" => master.public,
+               "list" => %{"ver" => 1, "devices" => list.devices},
+               "sig" => list.sig
+             }
+
+      assert entry == %{
+               "id" => %{"curve25519" => b.device.curve25519, "ed25519" => b.device.ed25519, "sig" => b.device.sig},
+               "otk" => %{"key" => first.key, "fallback" => false, "sig" => first.sig}
+             }
+
+      assert E2eKeys.status(b.device).one_time_keys == 1
+
+      {:ok, next} = E2eKeys.claim(subject, network.id, a.device.did, b.device.did)
+      assert [%{"otk" => %{"key" => key}}] = decode!(next)["devices"]
+      assert key == second.key
+    end
+
+    test "hands the fallback key once the one-time keys are gone, and keeps it",
+         %{subject: subject, network: network, master: master, a: a, b: b} do
+      [only] = otks(b, 1)
+      fb = fallback(b)
+      {:ok, _} = upload(b, [only], fb)
+      listed(subject, network, master, [a, b], 1)
+
+      assert {:ok, _} = E2eKeys.claim(subject, network.id, a.device.did, b.device.did)
+
+      for _ <- 1..2 do
+        {:ok, payload} = E2eKeys.claim(subject, network.id, a.device.did, b.device.did)
+        assert [%{"otk" => %{"key" => key, "fallback" => true}}] = decode!(payload)["devices"]
+        assert key == fb.key
+      end
+
+      assert E2eKeys.status(b.device) == %{one_time_keys: 0, fallback: true}
+    end
+
+    test "refuses the caller's own did, and a sibling holding no key at all",
+         %{subject: subject, network: network, master: master, a: a, b: b} do
+      {:ok, _} = upload(a, otks(a, 1), nil)
+      listed(subject, network, master, [a, b], 1)
+
+      assert {:error, :self} = E2eKeys.claim(subject, network.id, a.device.did, a.device.did)
+      assert {:error, :empty} = E2eKeys.claim(subject, network.id, a.device.did, b.device.did)
+      assert E2eKeys.status(a.device).one_time_keys == 1
+    end
+
+    test "is scoped to the subject: a stranger's device, or an unlisted one, is not found",
+         %{subject: subject, network: network, master: master, a: a, b: b} do
+      listed(subject, network, master, [a], 1)
+      {:ok, _} = upload(b, otks(b, 1), nil)
+
+      other = {:user, user_fixture().id}
+      other_master = E2eFixtures.identity()
+      theirs = device(other, network, other_master)
+      {:ok, _} = upload(theirs, otks(theirs, 1), nil)
+      listed(other, network, other_master, [theirs], 1)
+
+      assert {:error, :not_found} = E2eKeys.claim(subject, network.id, a.device.did, theirs.device.did)
+      assert {:error, :not_found} = E2eKeys.claim(subject, network.id, a.device.did, b.device.did)
+      assert E2eKeys.status(theirs.device).one_time_keys == 1
+    end
+
+    test "the caller must be a listed device itself", %{subject: subject, network: network, master: master, a: a, b: b} do
+      {:ok, _} = upload(b, otks(b, 1), nil)
+      listed(subject, network, master, [b], 1)
+
+      assert {:error, :unknown_device} = E2eKeys.claim(subject, network.id, a.device.did, b.device.did)
+      assert E2eKeys.status(b.device).one_time_keys == 1
+    end
+  end
+
   describe "duplicates" do
     setup %{subject: subject, network: network, master: master} do
       {:ok, dev: device(subject, network, master)}

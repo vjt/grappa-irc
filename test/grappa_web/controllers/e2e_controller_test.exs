@@ -497,6 +497,37 @@ defmodule GrappaWeb.E2eControllerTest do
              )
     end
 
+    test "POST /e2e/devices/:did/claim answers 200 with keys, 404 for a stranger's device, 409 for self",
+         %{conn: conn, vjt: vjt} do
+      network = bundle_network(vjt)
+      base = "/networks/#{network.slug}/e2e"
+      master = E2eFixtures.identity()
+      [a, b] = for _ <- 1..2, do: E2eFixtures.device(master)
+      %{"did" => a_did} = json_response(post(conn, "#{base}/devices", a.attrs), 200)
+      %{"did" => b_did} = json_response(post(conn, "#{base}/devices", b.attrs), 200)
+      _ = json_response(put(conn, "#{base}/list", E2eFixtures.list(master, 1, [a.attrs.ed25519, b.attrs.ed25519])), 200)
+
+      claim = "#{device_path(network, b_did)}/claim"
+      assert json_response(post(conn, claim, %{from_did: a_did}), 409) == %{"error" => "empty"}
+
+      key = key_body(b.identity)
+      _ = json_response(post(conn, "#{device_path(network, b_did)}/keys", %{one_time_keys: [key]}), 200)
+
+      assert %{"keys" => keys} = json_response(post(conn, claim, %{from_did: a_did}), 200)
+      assert %{"v" => 2, "devices" => [%{"id" => %{"ed25519" => ed}, "otk" => %{"key" => k}}]} = Jason.decode!(keys)
+      assert ed == b.attrs.ed25519
+      assert k == key["key"]
+      assert json_response(get(conn, "#{device_path(network, b_did)}/keys"), 200)["one_time_keys"] == 0
+
+      assert json_response(post(conn, claim, %{from_did: b_did}), 409) == %{"error" => "self"}
+
+      assert json_response(post(conn, "#{device_path(network, "AAAAAAAAAAA")}/claim", %{from_did: a_did}), 404) ==
+               %{"error" => "not_found"}
+
+      assert json_response(post(conn, claim, %{from_did: "AAAAAAAAAAA"}), 422) == %{"error" => "unknown_device"}
+      assert json_response(post(conn, claim, %{}), 400) == %{"error" => "bad_request"}
+    end
+
     test "DELETE drops a device the list does not name, freeing its room; a listed one is 409 listed_device",
          %{conn: conn, vjt: vjt} do
       network = bundle_network(vjt)
