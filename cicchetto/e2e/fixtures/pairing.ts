@@ -2,12 +2,9 @@
 // identity, the way a person pairs it: the holder shows the link in the
 // encrypted pane, the new browser opens it and shows a two-digit code, the
 // holder's user types it, the new browser confirms. For the specs that need
-// two devices of ONE account as their setup (S1's copies); the pairing's own
-// acceptance is `issue2430-pairing.spec.ts`.
-//
-// `newBrowserOf`, `joinWithLink`, `typeCode` and `awaitBundleOf` are the same
-// code as that spec's private helpers; it still keeps its own copies, which
-// should import from here instead.
+// two devices of ONE account as their setup (S1's copies), and for the
+// pairing's own acceptance, `issue2430-pairing.spec.ts`, which drives the
+// same steps one by one with its own assertions in between.
 
 import type { Browser, Page } from "@playwright/test";
 import { loginAs } from "./cicchettoPage";
