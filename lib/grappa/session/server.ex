@@ -8210,10 +8210,14 @@ defmodule Grappa.Session.Server do
   # One whole message into `device`'s queue, then pushed to the subject's
   # clients with the queue's id: a peer's (`queue_e2e_copy/4`) and an own
   # copy (`{:copy_e2e, …}`) alike, so the two cannot drift in shape. What a
-  # refusal means is the caller's. No changeset refusal is caught: the
-  # router hands over only a nick and a parsed frame, and the copy door only
-  # what `Session.copy_e2e/6` checked, so one would be a broken invariant,
-  # which should crash.
+  # refusal means is the caller's. No changeset refusal is caught, because
+  # neither path can produce one. A peer's row carries a sender the router
+  # already found to be a nick (`route_e2e`) and a parsed frame. An own
+  # copy carries the device, verb and payload `Session.copy_e2e/6` checked,
+  # and `state.nick`, which nothing validated (a UID forced on collision, a
+  # NICKLEN past 30), so `Entry` does not judge an own row's sender as a
+  # nick, only bounds it at a size no ircd's nick reaches. One would be a
+  # broken invariant, which should crash.
   @spec put_e2e_entry(t(), E2eKeys.Device.t(), E2eInbox.attrs()) ::
           {:ok, E2eInbox.Entry.t()} | {:error, :full | :gone | :db_unavailable}
   defp put_e2e_entry(state, device, attrs) do

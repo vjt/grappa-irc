@@ -16,7 +16,7 @@ defmodule Grappa.E2eInboxTest do
   alias Grappa.{E2eFixtures, E2eInbox, E2eKeys, Repo}
   alias Grappa.E2eInbox.Entry
   alias Grappa.E2eKeys.Device
-  alias Grappa.IRC.E2e
+  alias Grappa.IRC.{E2e, Identifier}
 
   # The sending device, as the frame named it.
   @from "If4x36FUomE"
@@ -123,6 +123,25 @@ defmodule Grappa.E2eInboxTest do
       assert {:error, %Ecto.Changeset{}} = E2eInbox.put(device, message("alice", :keyreq))
       assert {:error, %Ecto.Changeset{}} = E2eInbox.put(device, %{message("alice", :msg) | from_did: "not a did"})
       assert E2eInbox.list(device, 0) == []
+    end
+
+    test "an own row takes a sender the ircd forced, up to its bound; a peer row with it is refused",
+         %{device: device} do
+      # A TS6 UID, what solanum renames us to on a collision: not a nick.
+      forced = "0AAAAAAAB"
+      refute Identifier.valid_nick?(forced)
+
+      assert {:ok, %Entry{own: true, sender: ^forced}} = E2eInbox.put(device, own_message(forced, ~s({"v":2})))
+
+      assert {:error, %Ecto.Changeset{errors: errors}} = E2eInbox.put(device, message(forced, :msg))
+      assert Keyword.has_key?(errors, :sender)
+
+      at_bound = String.duplicate("a", Entry.max_own_sender_bytes())
+      assert {:ok, _} = E2eInbox.put(device, own_message(at_bound, ~s({"v":2})))
+
+      assert {:error, %Ecto.Changeset{errors: errors}} = E2eInbox.put(device, own_message(at_bound <> "a", ~s({"v":2})))
+      assert Keyword.has_key?(errors, :sender)
+      assert length(E2eInbox.list(device, 0)) == 2
     end
 
     test "a device that goes takes its queue with it", %{subject: subject, network: network, device: device} do
