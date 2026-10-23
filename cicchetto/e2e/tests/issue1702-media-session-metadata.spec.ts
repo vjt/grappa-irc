@@ -53,7 +53,8 @@
 // one runs after a login, a channel select and a rail interaction.
 //
 // The cure is to stub `window.fetch` ABOVE the worker instead, which is what
-// `addInitScript` below does. `serviceWorkers: "block"` was tried first and
+// `answerFetchInPage` below does (the shared fixture, which #666 uses too).
+// `serviceWorkers: "block"` was tried first and
 // REJECTED: cic then honestly raises "Service worker registration failed —
 // Offline mode and push notifications are unavailable", whose banner both
 // intercepts the rail click and means the spec would be exercising a degraded
@@ -62,6 +63,7 @@
 
 import { silentMp3 } from "../fixtures/bytes";
 import { loginAs, openRailMenu, selectChannel } from "../fixtures/cicchettoPage";
+import { answerFetchInPage } from "../fixtures/fetchInPage";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
@@ -86,7 +88,7 @@ const STATION_STREAM = "https://ice.somafm.com/groovesalad-128-mp3";
 // e2e stack's host would pin the assertion to one deployment.
 const STATION_LOGO_PATH = "/radio-logos/groovesalad.png";
 const STATION_SONGS = "https://api.somafm.com/songs/groovesalad.json";
-const SONGS_PREFIX = "https://api.somafm.com/songs/";
+const SONGS_URL = /^https:\/\/api\.somafm\.com\/songs\//;
 
 // The canned stream must outlast the transport step (d), or the clip ENDING
 // stops the element instead of the tap or the lock-screen pause. An MPEG-1
@@ -119,7 +121,6 @@ type Probe = {
   __msActions?: CapturedActions;
   __msCalls?: string[];
   __msRetained?: MediaSession;
-  __songsUrls?: string[];
 };
 
 test.setTimeout(90_000);
@@ -127,98 +128,92 @@ test.setTimeout(90_000);
 test("@webkit @touch #1702 — the lock screen is told the track, the station and the artwork", async ({
   page,
 }) => {
-  await page.addInitScript(
-    (seed: { prefix: string; title: string; artist: string; id: string }) => {
-      const w = window as unknown as Probe;
+  await page.addInitScript(() => {
+    const w = window as unknown as Probe;
 
-      // (1) Record what cic registers, and still call through so the real
-      // platform keeps whatever behaviour it has. `setActionHandler` has no
-      // getter, so recording at the boundary is the only way to reach the
-      // handlers — and invoking one later is what turns "it registered
-      // something" into "it registered something that works".
-      w.__msActions = {};
-      w.__msCalls = [];
-      const ms = navigator.mediaSession as MediaSession | undefined;
-      if (ms !== undefined) {
-        const original = ms.setActionHandler.bind(ms);
-        const spy = (
-          action: MediaSessionAction,
-          handler: MediaSessionActionHandler | null,
-        ): void => {
-          const map = w.__msActions as CapturedActions;
-          // The call LOG is kept alongside the live map so a failure can tell
-          // "never called" apart from "called, then cleared" — the two have
-          // completely different causes and the map alone cannot distinguish
-          // them.
-          (w.__msCalls as string[]).push(`${action}:${handler === null ? "null" : "fn"}`);
-          if (handler === null) delete map[action];
-          else map[action] = handler as () => void;
-          original(action, handler);
-        };
-        (spy as unknown as { __isSpy: boolean }).__isSpy = true;
-        Object.defineProperty(ms, "setActionHandler", {
-          value: spy,
-          writable: true,
-          configurable: true,
-        });
-
-        // 🔴 THIS LINE IS THE SPY. Without it the patch above is collected
-        // before the spec can read it back, and (d) fails with
-        // `calls=[none] spyStillInstalled=false mediaSessionPresent=true` —
-        // which reads exactly like a production fault and is not one.
-        //
-        // Measured in a two-arm probe on this same WebKit build (iPhone 15
-        // profile, ~250 MB of allocation churn between install and read-back):
-        //
-        //   retain nothing → spy=false own=false metadata="PIN" calls=[]
-        //   retain the obj → spy=true  own=true  metadata="PIN" calls=["play:fn"]
-        //
-        // `navigator.mediaSession` is `[SameObject]`, and JSC honours that by
-        // CACHING a wrapper — not by pinning one. `metadata` and
-        // `playbackState` are state on the platform object underneath and
-        // outlive the wrapper (hence "PIN" surviving in both arms, and hence
-        // (a)–(c) passing while (d) did not). A JS own property has nowhere to
-        // live but the wrapper, so once nothing in JS references it, the
-        // wrapper goes and the property with it, and the next read mints a
-        // clean one. Holding the object in a global is what makes the wrapper
-        // reachable, and it is why `window.fetch` — patched by the very same
-        // init script, on `window`, which is never collectible — never had this
-        // problem while the spy did.
-        //
-        // It is also the single explanation for BOTH earlier dead ends: a plain
-        // `ms.setActionHandler = fn` and an `Object.defineProperty` fail
-        // identically here, because neither survives losing the object it was
-        // written on. The write was never the variable.
-        //
-        // Production is not affected and is not being papered over: cic never
-        // patches the wrapper, it calls `setActionHandler` on it, and the
-        // handler is then held by the platform object — the same place the
-        // metadata that survived both arms lives. (Inferred from that
-        // measurement, not measured directly: no automation surface can fire a
-        // platform media action, which is the same device-check boundary this
-        // file's header already states.)
-        w.__msRetained = ms;
-      }
-
-      // (2) The now-playing feed, answered here rather than on the network.
-      // Everything else passes straight through to the real `fetch`, so cic's
-      // own API traffic is untouched.
-      w.__songsUrls = [];
-      const realFetch = window.fetch.bind(window);
-      window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-        const url =
-          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        if (!url.startsWith(seed.prefix)) return realFetch(input, init);
-
-        (w.__songsUrls as string[]).push(url);
-        return new Response(
-          JSON.stringify({ id: seed.id, songs: [{ artist: seed.artist, title: seed.title }] }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+    // (1) Record what cic registers, and still call through so the real
+    // platform keeps whatever behaviour it has. `setActionHandler` has no
+    // getter, so recording at the boundary is the only way to reach the
+    // handlers — and invoking one later is what turns "it registered
+    // something" into "it registered something that works".
+    w.__msActions = {};
+    w.__msCalls = [];
+    const ms = navigator.mediaSession as MediaSession | undefined;
+    if (ms !== undefined) {
+      const original = ms.setActionHandler.bind(ms);
+      const spy = (action: MediaSessionAction, handler: MediaSessionActionHandler | null): void => {
+        const map = w.__msActions as CapturedActions;
+        // The call LOG is kept alongside the live map so a failure can tell
+        // "never called" apart from "called, then cleared" — the two have
+        // completely different causes and the map alone cannot distinguish
+        // them.
+        (w.__msCalls as string[]).push(`${action}:${handler === null ? "null" : "fn"}`);
+        if (handler === null) delete map[action];
+        else map[action] = handler as () => void;
+        original(action, handler);
       };
-    },
-    { prefix: SONGS_PREFIX, title: TRACK_TITLE, artist: TRACK_ARTIST, id: STATION_ID },
-  );
+      (spy as unknown as { __isSpy: boolean }).__isSpy = true;
+      Object.defineProperty(ms, "setActionHandler", {
+        value: spy,
+        writable: true,
+        configurable: true,
+      });
+
+      // 🔴 THIS LINE IS THE SPY. Without it the patch above is collected
+      // before the spec can read it back, and (d) fails with
+      // `calls=[none] spyStillInstalled=false mediaSessionPresent=true` —
+      // which reads exactly like a production fault and is not one.
+      //
+      // Measured in a two-arm probe on this same WebKit build (iPhone 15
+      // profile, ~250 MB of allocation churn between install and read-back):
+      //
+      //   retain nothing → spy=false own=false metadata="PIN" calls=[]
+      //   retain the obj → spy=true  own=true  metadata="PIN" calls=["play:fn"]
+      //
+      // `navigator.mediaSession` is `[SameObject]`, and JSC honours that by
+      // CACHING a wrapper — not by pinning one. `metadata` and
+      // `playbackState` are state on the platform object underneath and
+      // outlive the wrapper (hence "PIN" surviving in both arms, and hence
+      // (a)–(c) passing while (d) did not). A JS own property has nowhere to
+      // live but the wrapper, so once nothing in JS references it, the
+      // wrapper goes and the property with it, and the next read mints a
+      // clean one. Holding the object in a global is what makes the wrapper
+      // reachable, and it is why `window.fetch` — patched by an init script
+      // too (it lived in this one until the stub moved to a shared fixture),
+      // on `window`, which is never collectible — never had this problem
+      // while the spy did.
+      //
+      // It is also the single explanation for BOTH earlier dead ends: a plain
+      // `ms.setActionHandler = fn` and an `Object.defineProperty` fail
+      // identically here, because neither survives losing the object it was
+      // written on. The write was never the variable.
+      //
+      // Production is not affected and is not being papered over: cic never
+      // patches the wrapper, it calls `setActionHandler` on it, and the
+      // handler is then held by the platform object — the same place the
+      // metadata that survived both arms lives. (Inferred from that
+      // measurement, not measured directly: no automation surface can fire a
+      // platform media action, which is the same device-check boundary this
+      // file's header already states.)
+      w.__msRetained = ms;
+    }
+  });
+
+  // (2) The now-playing feed, answered inside the page rather than on the
+  // network. Everything else passes straight through to the real `fetch`, so
+  // cic's own API traffic is untouched.
+  const songsUrls: string[] = [];
+  await answerFetchInPage(page, { url: SONGS_URL, method: null }, ({ url }) => {
+    songsUrls.push(url);
+    return {
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: STATION_ID,
+        songs: [{ artist: TRACK_ARTIST, title: TRACK_TITLE }],
+      }),
+    };
+  });
 
   // The stream DOES reach `page.route` (a media load the worker does not
   // mediate in a way that defeats interception), so it stays here — same
@@ -274,7 +269,6 @@ test("@webkit @touch #1702 — the lock screen is told the track, the station an
   // this pins WHERE it came from. #682's reason for not settling for a prefix
   // match — a change that stops requesting the station's real feed URL must
   // fail here rather than pass on a stub that answered something else.
-  const songsUrls = await page.evaluate(() => (window as unknown as Probe).__songsUrls ?? []);
   expect(songsUrls).toContain(STATION_SONGS);
 
   // #682 leaves the picker OPEN after tuning, deliberately — tuning is a
