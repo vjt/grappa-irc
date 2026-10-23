@@ -78,7 +78,15 @@ const { e2eClient } = await import("../lib/e2e/client");
 const { OUTQ_TTL_MS } = await import("../lib/e2e/engine");
 const { SAS_TIMEOUT_MS } = await import("../lib/e2e/sas");
 const { browserE2e } = await import("../lib/e2e/browser");
-const { accountSlot, replaceIdentity, syncIdentity } = await import("../lib/e2e/identity");
+const {
+  accountSlot,
+  addDevice,
+  completeJoin,
+  masterOf,
+  prepareJoin,
+  replaceIdentity,
+  syncIdentity,
+} = await import("../lib/e2e/identity");
 const chats = await import("../lib/encryptedChats");
 
 const ME = { kind: "user", id: "0b5e" };
@@ -940,6 +948,70 @@ describe("encrypted chats, an identity held elsewhere", () => {
       expect(api.listE2eDeviceInbox).not.toHaveBeenCalled();
       expect(chats.identityElsewhere(net.slug)).toBe(true);
     });
+  });
+});
+
+// 2430 S1: this browser is one of alice's devices, paired in from her first
+// one, which holds the master. That first device then pairs a third: this
+// page's record still holds the list before it, and the third device's copy
+// of a text it sent must not be lost for that.
+describe("encrypted chats, a copy from a device paired since this page loaded", () => {
+  /** A device of alice in a browser of its own, as a pairing from her first device `first` leaves it. */
+  async function paired(
+    first: ReturnType<typeof accountStore>,
+    into: ReturnType<typeof accountStore>,
+    slotHere: string,
+  ): Promise<void> {
+    const master = await masterOf(first, "first-slot");
+    if (master === null) throw new Error("the first device holds no master");
+    const joined = await prepareJoin(into, net.nick, slotHere, net.slug, master);
+    if (typeof joined === "string") throw new Error(`the join was refused: ${joined}`);
+    const signed = await addDevice(first, net.nick, "first-slot", net.slug, joined.id);
+    if (typeof signed === "string") throw new Error(`the master refused it: ${signed}`);
+    if (!(await completeJoin(into, net.nick, slotHere, net.slug, master, signed))) {
+      throw new Error("the device refused what the master signed");
+    }
+  }
+
+  it("the drain stops before it, the identity sync takes the newer list, and the copy reads as sent", async () => {
+    const first = accountStore(olm(), memoryVault(), memoryLock());
+    expect(await syncIdentity(first, net.nick, "first-slot", net.slug)).toBe("ready");
+    await paired(first, (await browserE2e()).accounts, slot());
+    const thirdAccounts = accountStore(olm(), memoryVault(), memoryLock());
+    await paired(first, thirdAccounts, "third-slot");
+    expect((await own()).list.devices).toHaveLength(2);
+    const b = await bob();
+    const third = e2eClient(
+      olm(),
+      thirdAccounts,
+      chatStore(memoryVault(), memoryLock()),
+      Date.now,
+      {
+        page: "third-page",
+        secrets: new Map(),
+        alive: async () => new Set(["third-page"]),
+      },
+    );
+    const thirdCtx = {
+      slot: "third-slot",
+      ownNick: net.nick,
+      frameBudgetBase: FRAME_BUDGET_BASE,
+      door: (did: string) => grappa.door(net.nick, did),
+      orders: () => "not-sent" as const,
+    };
+    // Bob's keys come on the third device's drain: its text goes to him, and
+    // is copied to alice's other two devices, this one among them.
+    await third.send(thirdCtx, "Bob", "from the third device");
+    await third.drain(thirdCtx);
+
+    await chats.drainE2e(net.slug);
+
+    expect((await own()).list.devices).toHaveLength(3);
+    expect((await held()).inbox).toEqual([]);
+    await chats.loadEncryptedChat(net.slug, "Bob");
+    expect(outStates()).toEqual([["from the third device", "sent", null]]);
+    await b.client.drain(b.ctx);
+    expect(await b.bodies()).toEqual(["from the third device"]);
   });
 });
 

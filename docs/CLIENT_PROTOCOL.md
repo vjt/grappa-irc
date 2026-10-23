@@ -943,7 +943,11 @@ session the claim opened, never the ciphertext the peer got. Copy a message
 only once grappa accepted it (the send door's 202): one that never left has
 nothing to copy. grappa fills these doors only for your own account, and is
 still not trusted for content: drop an `own` copy whose sending device is not
-on your own signed list, or whose signature does not verify.
+on your own signed list, or whose signature does not verify. One whose
+certificate your master signed for a list version past the one you hold
+comes from a device paired since you read your list: take the newer list
+(`GET /networks/:network_id/e2e/list`) and read the copy again before you
+drop it, or that device's first copies are lost.
 
 A copy waits in the sibling's queue like a peer's message, with three
 differences:

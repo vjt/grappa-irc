@@ -14,6 +14,7 @@ import {
   SIBLINGS_TTL_MS,
 } from "../lib/e2e/client";
 import { KEYREQ_RETRY_MS, LIST_TAG, OUTQ_TTL_MS } from "../lib/e2e/engine";
+import { syncIdentity } from "../lib/e2e/identity";
 import { ORDER_TAG, UNCONFIRMED } from "../lib/e2e/orders";
 import { SAS_TAG } from "../lib/e2e/sas";
 import { decodePayload } from "../lib/e2e/wire";
@@ -31,7 +32,7 @@ import {
   SLOT,
   World,
 } from "./helpers/e2eClients";
-import { FRAME_BUDGET_BASE } from "./helpers/e2eDevices";
+import { FRAME_BUDGET_BASE, SLUG } from "./helpers/e2eDevices";
 import { routeApi } from "./helpers/e2eGrappa";
 import { memoryLock, memoryVault } from "./helpers/e2eVault";
 import { olm } from "./helpers/olm";
@@ -96,7 +97,13 @@ describe("e2eClient", () => {
     expect(await states(a, "bob")).toEqual([["sent", null]]);
 
     const read = await b.client.drain(b.ctx);
-    expect(read).toEqual({ chats: ["alice"], pkmsgs: 1, waiting: false, unknownDevice: false });
+    expect(read).toEqual({
+      chats: ["alice"],
+      pkmsgs: 1,
+      waiting: false,
+      unknownDevice: false,
+      listBehind: false,
+    });
     expect(await rowsOf(b, "alice")).toEqual([
       expect.objectContaining({ kind: "in", nick: "alice", body: "hello", ed25519: alice.master }),
     ]);
@@ -308,7 +315,13 @@ describe("e2eClient", () => {
     w.now += OUTQ_TTL_MS;
     const ticked = await a.client.tick(a.ctx);
 
-    expect(ticked).toEqual({ chats: ["nobody"], pkmsgs: 0, waiting: false, unknownDevice: false });
+    expect(ticked).toEqual({
+      chats: ["nobody"],
+      pkmsgs: 0,
+      waiting: false,
+      unknownDevice: false,
+      listBehind: false,
+    });
     expect(await states(a, "nobody")).toEqual([["failed", "keys-timeout"]]);
   });
 
@@ -446,6 +459,7 @@ describe("e2eClient", () => {
       pkmsgs: 0,
       waiting: true,
       unknownDevice: false,
+      listBehind: false,
     });
 
     expect(await rowsOf(a, "bob")).toEqual([
@@ -473,6 +487,7 @@ describe("e2eClient", () => {
       pkmsgs: 0,
       waiting: true,
       unknownDevice: false,
+      listBehind: false,
     });
 
     expect(await rowsOf(a, "bob")).toEqual([
@@ -507,6 +522,7 @@ describe("e2eClient", () => {
       pkmsgs: 0,
       waiting: false,
       unknownDevice: false,
+      listBehind: false,
     });
 
     expect(await a.chats.chats(SLOT)).toEqual({});
@@ -1305,6 +1321,53 @@ describe("e2eClient, copies to our other devices", () => {
     await a2.client.drain(a2.ctx);
 
     expect(await bodies(a2, "bob")).toEqual(["hi alice", "two"]);
+  });
+
+  it("a copy from a device paired elsewhere stops the drain before it, and reads once the sync took the newer list", async () => {
+    const { w, a, a2, b } = await twoDevices();
+    await bobWrites({ a, a2, b });
+    // a pairs a third device: a2's page still holds the list before it.
+    const a3 = await w.pairDevice(a);
+    await a3.client.send(a3.ctx, "Bob", "from a3");
+    // Bob's keys come: the text goes, and is copied to a and a2.
+    await a3.client.drain(a3.ctx);
+    // Queued in a2's inbox behind the copy.
+    await b.client.send(b.ctx, "alice", "after");
+
+    const stopped = await a2.client.drain(a2.ctx);
+
+    // Nothing at or past the copy was read, acknowledged or skipped.
+    expect(stopped.listBehind).toBe(true);
+    expect(await bodies(a2, "bob")).toEqual(["hi alice"]);
+    expect((await inboxOf(w, a2)).map((m) => (m as { own: boolean }).own)).toEqual([true, false]);
+
+    // What `encryptedChats` does on that report: sync, then drain again.
+    expect(await syncIdentity(a2.accounts, "alice", SLOT, SLUG)).toBe("ready");
+    const read = await a2.client.drain(a2.ctx);
+
+    expect(read.listBehind).toBe(false);
+    expect(await bodies(a2, "bob")).toEqual(["hi alice", "from a3", "after"]);
+    expect(await inboxOf(w, a2)).toEqual([]);
+  });
+
+  it("a copy our list is still behind on the next drain is dropped, never stopped at twice", async () => {
+    const { w, a, a2, b } = await twoDevices();
+    await bobWrites({ a, a2, b });
+    const a3 = await w.pairDevice(a);
+    await a3.client.send(a3.ctx, "Bob", "from a3");
+    await a3.client.drain(a3.ctx);
+    expect((await a2.client.drain(a2.ctx)).listBehind).toBe(true);
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+
+    // No sync in between: our list is as far behind as it was.
+    const again = await a2.client.drain(a2.ctx);
+
+    expect(again.listBehind).toBe(false);
+    expect(debug.mock.calls).toContainEqual([
+      "[e2e] dropped a pkmsg from alice: sibling-list-behind",
+    ]);
+    expect(await bodies(a2, "bob")).toEqual(["hi alice"]);
+    expect(await inboxOf(w, a2)).toEqual([]);
   });
 
   it("an own item that is no pkmsg or msg is dropped on the copy path, never read as a peer's", async () => {
