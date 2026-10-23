@@ -5095,4 +5095,66 @@ describe("S1 sibling copies — send", () => {
       [keyOf(b.account)]: [{ peer: "carol", body: "two", at: alice.now }],
     });
   });
+
+  it("a sibling our own list drops is gone before setSiblings runs again: no copy reaches it, and what waited for it drops as sibling-gone", () => {
+    const alice = ownAccount("alice", 4);
+    const [a, b, c, d] = alice.devices as [OwnDevice, OwnDevice, OwnDevice, OwnDevice];
+    const all = alice.devices.map((x) => x.account);
+    const keysFor = (sibling: OwnDevice) =>
+      keysPayload({ master: alice.master, devices: [] }, 1, all, [
+        entryOf(sibling.account, alice.master),
+      ]);
+    const engine = () => engineFor(alice, a);
+    engine().setSiblings([b, c, d].map((x) => deviceBlock(x.account, keyOf(alice.master))));
+    engine().copy("bob", "one");
+    // b and d hold a session; c still waits for its keys.
+    engine().siblingKeys(b.own.did, keysFor(b));
+    engine().siblingKeys(d.own.did, keysFor(d));
+
+    // Our master's list moves on without b and c (a relist on another device,
+    // adopted here); nobody called setSiblings since.
+    a.own.list = signedList(alice.master, 2, [a.account, d.account]);
+    const res = engine().copy("carol", "two");
+
+    expect(res.events).toEqual([{ kind: "dropped", nick: "bob", reason: "sibling-gone" }]);
+    // The sibling it still names gets the copy.
+    expect(res.copies.map((x) => [x.to, opened(d.account, x.verb, x.payload).body])).toEqual([
+      [d.own.did, "two"],
+    ]);
+    expect(Object.keys(a.state.siblings)).toEqual([keyOf(d.account)]);
+    expect(a.state.sessions[curveOf(b.account)]).toBeUndefined();
+    expect(a.state.copyq).toEqual({});
+  });
+
+  it("siblingKeys opens nothing to a sibling our own list dropped, on a KEYS whose older list still names it", () => {
+    const alice = ownAccount("alice", 3);
+    const [a, b, c] = alice.devices as [OwnDevice, OwnDevice, OwnDevice];
+    const engine = () => engineFor(alice, a);
+    // Our master's list at version 1, validly signed, naming every device.
+    const older = (sibling: OwnDevice) =>
+      keysPayload(
+        { master: alice.master, devices: [] },
+        1,
+        [a.account, b.account, c.account],
+        [entryOf(sibling.account, alice.master)],
+      );
+    engine().setSiblings([b, c].map((x) => deviceBlock(x.account, keyOf(alice.master))));
+    engine().copy("bob", "one");
+    a.own.list = signedList(alice.master, 2, [a.account, c.account]);
+
+    expect(engine().siblingKeys(b.own.did, older(b))).toEqual({
+      events: [
+        { kind: "dropped", nick: "bob", reason: "sibling-gone" },
+        { kind: "dropped", nick: "alice", reason: "sibling-unknown", verb: "keys" },
+      ],
+      outbound: [],
+      copies: [],
+    });
+    expect(a.state.sessions[curveOf(b.account)]).toBeUndefined();
+    // The same older list opens a session to a sibling our list still names.
+    const res = engine().siblingKeys(c.own.did, older(c));
+    expect(res.copies.map((x) => [x.to, opened(c.account, x.verb, x.payload).body])).toEqual([
+      [c.own.did, "one"],
+    ]);
+  });
 });
