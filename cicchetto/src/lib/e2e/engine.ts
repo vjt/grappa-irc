@@ -1036,15 +1036,17 @@ export class Engine {
    * A peer's device bound to a sibling's curve (a claim from before the
    * sibling was known: `curveRefusal` refuses one since) is unbound with its
    * sessions, as a proof evicts a claim: our master's word on the curve is
-   * stronger still. A sibling no longer present goes with its sessions, and
-   * the copies waiting for its keys go unsent (`sibling-gone`).
+   * stronger still. A sibling no longer present is forgotten
+   * (`forgetSibling`). Our list can move without this being called again (a
+   * relist, a list adopted from another device), so every step that reaches a
+   * sibling asks it again (`listedSiblings`).
    */
   setSiblings(blocks: E2eKeysWireDevice[]): Result {
     const res = emptyResult();
     const siblings: Record<string, Sibling> = {};
     for (const block of blocks) {
       // Registered and not on our list (yet: a device being paired).
-      if (!this.own.list.devices.includes(block.ed25519)) continue;
+      if (!this.ourListNames(block.ed25519)) continue;
       const siblingDid = did(this.olm, block.ed25519);
       if (siblingDid === this.own.did) continue;
       if (!this.idSigned(block, this.own.master)) {
@@ -1055,12 +1057,32 @@ export class Engine {
       siblings[block.ed25519] = { did: siblingDid, curve25519: block.curve25519 };
     }
     for (const [ed25519, known] of Object.entries(this.state.siblings)) {
-      if (siblings[ed25519]?.curve25519 === known.curve25519) continue;
-      delete this.state.sessions[known.curve25519];
-      this.dropCopies(ed25519, "sibling-gone", res);
+      if (siblings[ed25519]?.curve25519 !== known.curve25519)
+        this.forgetSibling(ed25519, known, res);
     }
     this.state.siblings = siblings;
     return this.end(res);
+  }
+
+  /** Whether our master's list (`own.list`) names `ed25519`: the one word on who our siblings are. */
+  private ourListNames(ed25519: string): boolean {
+    return this.own.list.devices.includes(ed25519);
+  }
+
+  /** Our siblings that our list still names; one it no longer names is forgotten (`forgetSibling`). */
+  private listedSiblings(res: Result): [string, Sibling][] {
+    return Object.entries(this.state.siblings).filter(([ed25519, sibling]) => {
+      if (this.ourListNames(ed25519)) return true;
+      this.forgetSibling(ed25519, sibling, res);
+      return false;
+    });
+  }
+
+  /** Our sibling `ed25519` is no more: its sessions go, and the copies waiting for its keys go unsent (`sibling-gone`). */
+  private forgetSibling(ed25519: string, sibling: Sibling, res: Result): void {
+    delete this.state.siblings[ed25519];
+    delete this.state.sessions[sibling.curve25519];
+    this.dropCopies(ed25519, "sibling-gone", res);
   }
 
   /**
@@ -1074,7 +1096,7 @@ export class Engine {
    */
   copy(peer: string, body: string): CopyResult {
     const res: CopyResult = { ...emptyResult(), copies: [] };
-    for (const [ed25519, sibling] of Object.entries(this.state.siblings)) {
+    for (const [ed25519, sibling] of this.listedSiblings(res)) {
       const pending = [...this.liveCopies(ed25519, res), { peer, body, at: this.now() }];
       if (this.sessionsOf(sibling.curve25519).length > 0) {
         this.sendCopies(ed25519, sibling, pending, res);
@@ -1088,19 +1110,22 @@ export class Engine {
 
   /**
    * What claiming a key of our sibling `siblingDid` brought (grappa's claim
-   * door): its KEYS text, or null when none came. The KEYS opens a session to
-   * the sibling, unless it holds one, only if its master is ours, its list
-   * our master's own word (`validMasterList`) and naming the sibling, and its
-   * entry the very sibling `setSiblings` admitted, its id block signed under
-   * our master (S1) and its one-time key by the sibling (S2). Anything else
-   * is reported, from our own nick, and opens nothing. Then what waits for
-   * the sibling goes, in order, if it holds a session; else it goes unsent
-   * (`sibling-no-keys`): nothing would bring keys for it now. A did that
-   * names no sibling opens nothing either. Never throws on wire input.
+   * door): its KEYS text, or null when none came. Only a sibling our own list
+   * still names is one (`listedSiblings`): a list in the KEYS, however
+   * validly signed, never brings back one ours left out. The KEYS opens a
+   * session to the sibling, unless it holds one, only if its master is ours,
+   * its list our master's own word (`validMasterList`) and naming the
+   * sibling, and its entry the very sibling `setSiblings` admitted, its id
+   * block signed under our master (S1) and its one-time key by the sibling
+   * (S2). Anything else is reported, from our own nick, and opens nothing.
+   * Then what waits for the sibling goes, in order, if it holds a session;
+   * else it goes unsent (`sibling-no-keys`): nothing would bring keys for it
+   * now. A did that names no sibling opens nothing either. Never throws on
+   * wire input.
    */
   siblingKeys(siblingDid: string, keys: string | null): CopyResult {
     const res: CopyResult = { ...emptyResult(), copies: [] };
-    const found = Object.entries(this.state.siblings).find(([, s]) => s.did === siblingDid);
+    const found = this.listedSiblings(res).find(([, s]) => s.did === siblingDid);
     if (found === undefined) {
       if (keys !== null) {
         res.events.push({
@@ -1149,9 +1174,11 @@ export class Engine {
 
   /**
    * The entry of a claim's KEYS that opens a session to our sibling
-   * `ed25519`, or why none does: a master not ours, a list our master did not
-   * sign, no entry with the very keys `setSiblings` admitted or a list not
-   * naming it, a signature that fails (S1, S2).
+   * `ed25519`, one our own list names (`listedSiblings`), or why none does: a
+   * master not ours, a list our master did not sign, no entry with the very
+   * keys `setSiblings` admitted, a signature that fails (S1, S2). The KEYS's
+   * list must name the sibling too: our master's word, a newer one than ours
+   * maybe, can only take a sibling away here, never add one.
    */
   private siblingEntry(
     ed25519: string,
