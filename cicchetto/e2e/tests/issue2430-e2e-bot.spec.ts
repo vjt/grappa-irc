@@ -5,7 +5,8 @@
 // driven over HTTP (fixtures/e2eBot.ts, e2e-bot/control.py). Before any of
 // them can mean anything, the harness has to do what it claims on a real
 // bahamut:
-//   * it registers and comes up E2E-ready, with an identity key to pin;
+//   * it registers and comes up E2E-ready, with a master key to pin (wire
+//     v2: it vouches for the bot's devices);
 //   * its FIFO drives it, and what it does is SERVED by the ircd: a peer sees
 //     the JOIN it was told to make;
 //   * a stranger's private message never reaches its stream: DM_BLOCKED, no
@@ -14,7 +15,7 @@
 //     and finds them unwritable — root-owned, its README's posture — so
 //     E2E_PINS_WRITABLE never appears.
 // The cicchetto side (pins both ways, encrypted messages, the order
-// challenge) lands with grappa's slices c2 and e of issue 2430.
+// challenge) is issue2430-interop-bot.spec.ts.
 
 import { generateKeyPairSync } from "node:crypto";
 import { botCmd, botEvents, botPins, botWaitFor, test } from "../fixtures/e2eBot";
@@ -23,7 +24,7 @@ import { expect } from "../fixtures/test";
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-// A key that is nobody's: the peer is a plain IRC client and has none.
+// A master key that is nobody's: the peer is a plain IRC client and has none.
 const strangerKey = (): string =>
   Buffer.from(
     generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" }).x as string,
