@@ -4180,3 +4180,131 @@ tab just made. Short of these, only a page reload syncs the network again
 (`mountIdentitySync` syncs a slot once per page load). Copies of one's own
 sent messages to one's OTHER devices are built by neither MD-1 nor MD-2: a
 message is encrypted to the peer's devices only.
+<!-- entry #2430l -->
+
+---
+
+## 2026-10-23 — #2430: X1-crypto: completing a pairing
+
+A browser that holds an identity's master can now add a second browser of
+the same account. cic only: grappa's relay (X1, protocol 48) and device
+doors (MD-1, protocol 49) are unchanged, and the protocol stays 49. The
+wire of the channel is in CLIENT_PROTOCOL §4g ("What cicchetto puts on the
+channel"); the certificate form is `#2430k`'s and is not restated here.
+
+### Decisions
+
+- **D1, one direction.** The browser holding the identity shows the QR
+  (X1's creator, the ECIES inbound side); the new browser scans (the
+  joiner, the outbound side). That is what X1 built and what the elsewhere
+  screen already tells the user. The reverse is not built.
+- **D2, only the master's browser adds.** A paired, non-master browser
+  shows a hint instead of the button: the master key never leaves its
+  device (fork 2a).
+- **D3, the holder TYPES the code.** The new browser shows the 2-digit
+  code and the holder's user types it on the holder, which compares it
+  with its own. That is stronger than a "they match" tap: if someone else
+  joined first, the user has no code to type. The new browser's
+  confirmation is its "Pair this browser" tap, offered only once the
+  holder's offer has arrived, which proves the typed code matched. Nothing
+  is signed before both. Rev 2's "nothing is signed until the user
+  confirms, on both screens" holds.
+- **D4, coverage.** One pairing covers every network where the holder is
+  master (`session.master !== null`) and its identity syncs `ready`.
+  Networks whose list already holds 4 devices are reported, not offered;
+  the new browser skips networks where it is already listed under that
+  master. The result is shown per network.
+- **D5, the new device starts empty.** No pins, verifications or history
+  travel: the channel carries public keys and signatures only (fork 2a).
+  Accepted consequence: contacts are first-use on the new browser until
+  verified again there, and a bot's order challenge reaches it only after
+  the user pins that bot there (the O1 pin trigger, built in MD-2).
+- **D6, device account reuse.** The new browser reuses the slot's device
+  account when the record has no identity (`own === null`) AND grappa's
+  list does not hold its key; otherwise it starts over with a fresh
+  account and keeps only the trust it placed in others (`startOver`, the
+  reset `replaceIdentity` uses too). A reload mid-pairing therefore
+  re-registers the same key (grappa replaces it, no new row) instead of
+  leaking a device into the cap of 4. Amended below: `prepareJoin` also
+  refuses an offer whose master grappa no longer holds.
+
+### The sequence
+
+The joiner posts first. `hello` (joiner) → the holder's user types the
+code → `offer` (holder, once the typed code matched) → "Pair this
+browser" → `join` (joiner: it registered a device account per offered
+network, and sends the device blocks) → `signed` (holder: list at
+`ver + 1` plus the device's certificate, per network) → `done` (joiner,
+after it verified and kept them) → the holder closes the rendezvous.
+Every list and certificate the joiner receives is verified against the
+offered master (which `prepareJoin` re-checks with grappa) before it is
+kept; nothing the holder signs rests on the channel alone, the device's
+own signature over the master is checked first.
+
+### Cleanup rules
+
+- A wrong typed code: nothing is sent after `hello`, nothing is signed, the
+  holder closes, and the joiner (which registered nothing yet) shows the
+  ended copy.
+- The holder opens "add a device" again while a joiner is mid-flow: X1
+  closes the first rendezvous as `replaced`. The joiner ends, deletes a
+  device it registered and never got listed, and shows "replaced".
+- The holder's list moved under it (another device's put, or a second
+  add-device tab): `stale_list` re-syncs once and rebuilds; a retry never
+  puts a list that drops a device.
+- The new browser reloads after registering and before `signed`: the
+  channel is gone (ECIES cannot be pickled), and the next pairing
+  re-registers the same key (D6).
+
+### Rulings taken while building
+
+- `offerable`: the holder must know a network is `full` before it offers
+  it, so the offer carries `full` instead of a refusal after the join.
+- `prepareJoin` refuses an offer whose master grappa no longer holds:
+  another tab may have started a new identity between the offer and the
+  tap (D6 amended).
+- The holder's `done` carries the close reason when the new browser never
+  confirmed, and a failed send of `signed` does not close: the POST may
+  have landed.
+- The joiner reads the holder's refusal reason and shows it, instead of a
+  generic failure.
+- `pairingDeps` resolves only once the networks have loaded: before it,
+  the new browser could read `networks()` before the resource settled and
+  skip every offered network as missing.
+- A holder with nothing to offer (every network full, not its master, or
+  failed) sends no `offer`, shows each network's reason and closes, since
+  an empty offer posted then closed would race the joiner's fetch of it;
+  a joiner takes an `offer` of no network as nothing to pair, and says
+  "paired" only when some network was added or already paired.
+- `completeJoin` answers true once the device's place is stored (it is
+  listed and placed); a sync after it that fails or is not `ready` is
+  logged, and the next sync uploads the keys.
+- The slug checks (offered, joined, each once per network) live in the
+  session, not the screens.
+
+### Known limits, accepted
+
+- A device the holder listed whose `signed` was lost, whose pairing
+  closed while the holder was adding it, or whose new browser could not
+  keep what `signed` carried for that network (it leaves the network out
+  of `done`, and the holder reports it failed), stays listed with no keys
+  behind it until device management (X2) revokes it. A lost `done`
+  leaves no such device: the new browser had already taken its place and
+  uploads its keys.
+- A list put that succeeds after the holder's pairing has ended is not in
+  the results it shows, which were frozen at the end.
+- A new device starts with no pins or verifications (D5).
+- Only the master's browser adds (D2).
+- About 25 networks per pairing: `offer` and `signed` are one relay
+  message each, and the relay takes 16 KiB per message.
+
+### Not built here
+
+The reverse direction (the new device shows the QR), any transfer of trust,
+device labels, and the remedy for a full list (revoking a device, X2).
+
+### Test
+
+`issue2430-pairing.spec.ts`: two browsers of one user pair, a peer reads
+two devices and one line reaches both; and a wrong typed code adds
+nothing, ends the new browser, and leaves one device on grappa.
