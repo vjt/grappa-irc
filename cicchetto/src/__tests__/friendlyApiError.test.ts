@@ -22,6 +22,10 @@ const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknow
   { code: "stale_list", matches: /device list is out of date/i },
   { code: "listed_device", matches: /still on your device list/i },
   { code: "unknown_device", matches: /not registered on this network/i },
+  { code: "self", matches: /that is this device/i },
+  { code: "empty", matches: /no keys left/i },
+  { code: "gone", matches: /changed just now/i },
+  { code: "full", matches: /encrypted inbox is full/i },
   { code: "too_many_sessions", matches: /at the session limit for this network from this device/i },
   // visitor_cap_exceeded / user_cap_exceeded both wire to network_busy
   { code: "network_busy", matches: /this network is at capacity/i },

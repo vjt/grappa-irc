@@ -104,6 +104,7 @@ defmodule GrappaWeb.FallbackController do
            | :self
            | :empty
            | :gone
+           | :full
            | :invalid_mask
            | :invalid_text_pattern
            | :not_raster
@@ -359,10 +360,12 @@ defmodule GrappaWeb.FallbackController do
     |> json(%{error: "listed_device"})
   end
 
-  # issue 2430, S1 — a sibling's key claimed (`E2eKeys.claim/4`). 409, each
-  # its own token: `self` (a device never claims its own key), `empty` (the
+  # issue 2430, S1 — a sibling's key claimed (`E2eKeys.claim/4`), or a copy
+  # queued for it (`Session.copy_e2e/6`). 409, each its own token: `self` (a
+  # device never claims its own key, nor copies to itself), `empty` (the
   # sibling holds no key at all, so it is unreachable for now) and `gone`
-  # (its key was taken between the pick and the consume: ask again).
+  # (its key was taken between the pick and the consume: ask again; or the
+  # sibling was dropped before its copy went in).
   def call(conn, {:error, :self}) do
     conn
     |> put_status(:conflict)
@@ -379,6 +382,16 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:conflict)
     |> json(%{error: "gone"})
+  end
+
+  # issue 2430, S1 — the sibling's queue, or its share of the account's own
+  # copies, cannot take the copy (`Grappa.E2eInbox.put/2`). 413 like the
+  # other bounds a payload hits; its own token, because the remedy is not a
+  # smaller payload: the copy is simply missing on that device.
+  def call(conn, {:error, :full}) do
+    conn
+    |> put_status(:request_entity_too_large)
+    |> json(%{error: "full"})
   end
 
   # issue 2430, multi-device — a well-signed list naming a key no device of

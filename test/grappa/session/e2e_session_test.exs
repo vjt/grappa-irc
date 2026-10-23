@@ -87,7 +87,8 @@ defmodule Grappa.Session.E2eSessionTest do
                to_did: device.did,
                verb: :pkmsg,
                msgid: "q83vEjRWeJA",
-               payload: payload
+               payload: payload,
+               own: false
              }
 
       refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}, 100
@@ -412,7 +413,7 @@ defmodule Grappa.Session.E2eSessionTest do
       {server, pid, user, network} = connected_session()
       [device] = listed(user, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
-      fill_share!(device, "alice")
+      fill_share!(device, "alice", false)
 
       Enum.each(lines_from("alice", :msg, "q83vEjRWeJA", {@alice, device.did}, @small), &IRCServer.feed(server, &1))
       Enum.each(lines_from("alice", :msg, "BBBBBBBBBBB", {@alice, device.did}, @small), &IRCServer.feed(server, &1))
@@ -437,7 +438,7 @@ defmodule Grappa.Session.E2eSessionTest do
       {server, pid, user, network} = connected_session()
       [device] = listed(user, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
-      fill_share!(device, "alice")
+      fill_share!(device, "alice", false)
 
       Enum.each(lines_from("alice", :keys, "AAAAAAAAAAA", {"*", device.did}, @small), &IRCServer.feed(server, &1))
       Enum.each(lines_from("alice", :nack, "BBBBBBBBBBB", {@alice, device.did}, @small), &IRCServer.feed(server, &1))
@@ -820,6 +821,173 @@ defmodule Grappa.Session.E2eSessionTest do
     end
   end
 
+  # S1: a device copies what it sent to the subject's other listed devices
+  # (its siblings), through their queues and never through IRC.
+  describe "copies to the subject's other devices" do
+    test "copy_e2e queues an own copy in the sibling's inbox and pushes e2e_message with own: true" do
+      {server, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      sibling = add_listed_device!(subject, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      payload = payload(900)
+
+      assert {:ok, %E2eInbox.Entry{id: id, msgid: msgid}} =
+               Session.copy_e2e(subject, network.id, device.did, sibling.did, :pkmsg, payload)
+
+      # The session picked the msgid, as it does for a message to a peer.
+      assert E2e.msgid?(msgid)
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message} = event}, @wire_timeout
+
+      # Our own nick is the sender: the copy is ours, flagged as such.
+      assert event == %{
+               kind: :e2e_message,
+               id: id,
+               network: network.slug,
+               from: @nick,
+               from_did: device.did,
+               to_did: sibling.did,
+               verb: :pkmsg,
+               msgid: msgid,
+               payload: payload,
+               own: true
+             }
+
+      assert [%E2eInbox.Entry{id: ^id, own: true, sender: @nick, payload: ^payload}] = E2eInbox.list(sibling, 0)
+      assert E2eInbox.list(device, 0) == []
+
+      # Never on IRC, never stored.
+      _ = :sys.get_state(pid)
+      refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "E2E"))
+      assert rows(network) == 0
+    end
+
+    test "copy_e2e sends no OS push" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      sibling = add_listed_device!(subject, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      bypass = Bypass.open()
+      Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
+
+      {:ok, _} =
+        Push.create(subject, %{
+          endpoint: "http://localhost:#{bypass.port}/wp",
+          p256dh_key: @client_p256dh,
+          auth_key: @client_auth,
+          user_agent: "Mozilla/5.0 e2e-session-test"
+        })
+
+      test_pid = self()
+      handler = "e2e-copy-push-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler,
+        [:grappa, :push, :send, :stop],
+        fn _, _, meta, _ -> send(test_pid, {:pushed, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      for verb <- [:pkmsg, :msg] do
+        assert {:ok, _} = Session.copy_e2e(subject, network.id, device.did, sibling.did, verb, @small)
+      end
+
+      refute_receive {:pushed, _}, 500
+
+      # The same subscription does push for a peer's message: the silence
+      # above is the copy's, not the harness's.
+      Enum.each(lines_from("alice", :msg, "CCCCCCCCCCC", {@alice, device.did}, @small), &IRCServer.feed(server, &1))
+      assert_receive {:pushed, %{subject: {:user, _}}}, 2_000
+    end
+
+    test "copy_e2e refuses an unlisted target, the sender's own did, and a non-message verb" do
+      {_, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      sibling = add_listed_device!(subject, network)
+      %{device: pairing} = register_device!(subject, network)
+      someone_elses = add_listed_device!({:user, user_fixture().id}, network)
+      copy = &Session.copy_e2e(subject, network.id, &1, &2, &3, &4)
+
+      # Both ends are devices the subject's list names, and they differ.
+      for to <- [pairing.did, someone_elses.did, "AAAAAAAAAAA"] do
+        assert {:error, :not_found} = copy.(device.did, to, :msg, @small)
+      end
+
+      for from <- [pairing.did, someone_elses.did, "AAAAAAAAAAA"] do
+        assert {:error, :unknown_device} = copy.(from, sibling.did, :msg, @small)
+      end
+
+      assert {:error, :self} = copy.(device.did, device.did, :msg, @small)
+
+      # Only what a person wrote is copied, as compact JSON text the
+      # receiver can hold.
+      for verb <- [:keyreq, :keys, :nack, :offline] do
+        assert {:error, :bad_request} = copy.(device.did, sibling.did, verb, @small)
+      end
+
+      for bad <- ["", "café", ~s({"v": 2})] do
+        assert {:error, :bad_request} = copy.(device.did, sibling.did, :msg, bad)
+      end
+
+      huge = String.duplicate("A", E2e.max_payload_bytes() + 1)
+      assert {:error, :too_large} = copy.(device.did, sibling.did, :msg, huge)
+
+      for d <- [device, sibling, pairing, someone_elses], do: assert(E2eInbox.list(d, 0) == [])
+    end
+
+    test "with no session a copy is refused, not swallowed" do
+      user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      network = network_fixture()
+      [device, sibling] = identity!({:user, user.id}, network, 2)
+
+      assert {:error, :no_session} =
+               Session.copy_e2e({:user, user.id}, network.id, device.did, sibling.did, :msg, @small)
+
+      assert E2eInbox.list(sibling, 0) == []
+    end
+
+    test "a copy the sibling's queue refuses is refused to the caller, not pushed, and never told" do
+      {_, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      sibling = add_listed_device!(subject, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      fill_share!(sibling, @nick, true)
+
+      assert {:error, :full} = Session.copy_e2e(subject, network.id, device.did, sibling.did, :msg, @small)
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}, 100
+
+      # A refused copy is simply missing on that device: no notice, now or
+      # at any later sweep.
+      sweep(pid)
+      assert notices(network) == []
+    end
+
+    test "an own copy that expires writes no undeliverable row" do
+      {_, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      sibling = add_listed_device!(subject, network)
+
+      {:ok, copy} = Session.copy_e2e(subject, network.id, device.did, sibling.did, :msg, @small)
+      peer = put_entry!(sibling, "alice", :msg)
+      Enum.each([copy, peer], &age!(&1, E2eInbox.ttl_seconds() + 60))
+
+      sweep(pid)
+
+      # Both went; only the peer's is told, so the sweep did run.
+      assert E2eInbox.list(sibling, 0) == []
+
+      assert [%Message{channel: "alice", meta: %{e2e_undeliverable: 1, e2e_device: did}}] = notices(network)
+      assert did == sibling.did
+    end
+  end
+
   # The listed devices of the user on the network.
   defp listed(user, network), do: E2eKeys.listed_devices({:user, user.id}, network.id)
 
@@ -987,18 +1155,18 @@ defmodule Grappa.Session.E2eSessionTest do
     entry
   end
 
-  # Fills `sender`'s share of the device's queue to the byte, so their next
-  # message is refused while anybody else's still fits.
-  defp fill_share!(device, sender) do
+  # Fills `sender`'s share of the device's queue to the byte (the share of
+  # the subject's own copies when `own?`), so their next message is refused
+  # while anybody else's still fits.
+  defp fill_share!(device, sender, own?) do
     full = E2e.max_payload_bytes() + E2eInbox.row_overhead_bytes()
     rest = rem(E2eInbox.max_sender_bytes(), full)
     sizes = [rest | List.duplicate(full, div(E2eInbox.max_sender_bytes(), full))]
 
     Enum.each(sizes, fn size ->
       payload = String.duplicate("A", size - E2eInbox.row_overhead_bytes())
-
-      {:ok, _} =
-        E2eInbox.put(device, %{sender: sender, from_did: @alice, verb: :msg, msgid: "q83vEjRWeJA", payload: payload})
+      attrs = %{sender: sender, from_did: @alice, verb: :msg, msgid: "q83vEjRWeJA", payload: payload, own: own?}
+      {:ok, _} = E2eInbox.put(device, attrs)
     end)
   end
 

@@ -1123,6 +1123,9 @@ export const S_SessionWireDirectoryProgressPayload = {
   o: { kind: { l: "directory_progress" }, network: "s", count: "i" },
 } as const;
 
+// Grappa.Session.Wire.e2e_copied_payload/0
+export const S_SessionWireE2eCopiedPayload = { o: { id: "i", msgid: "s" } } as const;
+
 // Grappa.Session.Wire.e2e_drop_reason/0
 export const S_SessionWireE2eDropReason = { e: [...SESSION_WIRE_E2E_DROP_REASON] } as const;
 
@@ -1141,6 +1144,7 @@ export const S_SessionWireE2eMessagePayload = {
     verb: S_SessionWireE2eVerb,
     msgid: "s",
     payload: "s",
+    own: "b",
   },
 } as const;
 
@@ -1825,6 +1829,10 @@ export const S_ErrorTokensRestErrorToken = {
     { l: "stale_list" },
     { l: "unknown_device" },
     { l: "listed_device" },
+    { l: "self" },
+    { l: "empty" },
+    { l: "gone" },
+    { l: "full" },
     { l: "invalid_mask" },
     { l: "invalid_text_pattern" },
     { l: "not_raster" },

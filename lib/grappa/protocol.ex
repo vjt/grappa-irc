@@ -1312,7 +1312,30 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: no client outside this landing ever
   # spoke the old E2E shape, and every other door is untouched.
-  @protocol_version 49
+  #
+  # ---------------------------------------------------------------------------
+  # 50 — issue 2430 S1: a device's sent messages copied to its siblings
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `POST /networks/:network_id/e2e/devices/:did/claim` {from_did}
+  # (200 {keys}: one key of a sibling device, the KEYS v2 text restricted to
+  # it, so the sender can open an Olm session to its own other device, which
+  # never asks itself for keys over IRC), `POST .../e2e/devices/:did/copies`
+  # {from_did, verb, payload} (202 {id, msgid},
+  # `Session.Wire.e2e_copied_payload`: a copy queued in that sibling's inbox,
+  # never on IRC), `own` on `e2e_message` (true on such a copy, false on
+  # every peer message), and the error tokens `self`, `empty`, `gone` (409)
+  # and `full` (413). The copies share ONE sender bound in each queue,
+  # expire silently and raise no OS push. Bumped on the #1393d rule: a
+  # client that copies, or that reads `own` to show a copy as sent, cannot
+  # do it against a server predating the doors.
+  #
+  # Checked for a collision before claiming 50: origin/main carries 49, and
+  # the one open PR that edits this file (#2102) still carries 21.
+  #
+  # @min_protocol_version stays at 1: an older client never calls the doors,
+  # and ignores the new key.
+  @protocol_version 50
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1353,7 +1376,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 49
+  @spec version() :: 50
   def version, do: @protocol_version
 
   @doc """

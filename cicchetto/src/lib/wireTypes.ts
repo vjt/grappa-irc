@@ -1342,6 +1342,7 @@ export type SessionWireE2eMessagePayload = {
   verb: SessionWireE2eVerb;
   msgid: string;
   payload: string;
+  own: boolean;
 };
 
 export type SessionWireE2eInboxPayload = {
@@ -1349,6 +1350,11 @@ export type SessionWireE2eInboxPayload = {
 };
 
 export type SessionWireE2eSentPayload = {
+  msgid: string;
+};
+
+export type SessionWireE2eCopiedPayload = {
+  id: number;
   msgid: string;
 };
 
@@ -1868,6 +1874,10 @@ export const ERROR_TOKENS_REST_ERROR_TOKEN = [
   "stale_list",
   "unknown_device",
   "listed_device",
+  "self",
+  "empty",
+  "gone",
+  "full",
   "invalid_mask",
   "invalid_text_pattern",
   "not_raster",

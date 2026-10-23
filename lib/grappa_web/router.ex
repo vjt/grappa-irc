@@ -679,6 +679,7 @@ defmodule GrappaWeb.Router do
     get "/e2e/devices/:did/keys", E2eController, :keys
     post "/e2e/devices/:did/keys", E2eController, :upload_keys
     post "/e2e/devices/:did/claim", E2eController, :claim
+    post "/e2e/devices/:did/copies", E2eController, :copy
     put "/e2e/list", E2eController, :put_list
     get "/e2e/list", E2eController, :list
     delete "/e2e/keys", E2eController, :clear_keys

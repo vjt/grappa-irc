@@ -2020,6 +2020,22 @@ defmodule Grappa.Session.Server do
     {:reply, reply, state}
   end
 
+  # issue 2430 S1 — a copy of what one of the subject's devices sent, for
+  # another of them (`Session.copy_e2e/6` checked both). It is queued and
+  # pushed as a peer's message is (`put_e2e_entry/3`), flagged `own`, under
+  # our nick and a msgid picked here, and it never goes on IRC — so it
+  # needs no Client, and the no-Client refusal above does not list it. What
+  # differs is the refusal: the caller is answered, nothing is counted for
+  # the undeliverable notice (a copy refused is simply missing on that
+  # device), and no OS push goes out either way (it is our own text).
+  # (No @impl here — a continuation clause of handle_call/3, whose @impl
+  # rides the no-Client refusal clause above.)
+  def handle_call({:copy_e2e, from_did, %E2eKeys.Device{} = sibling, verb, payload}, _, state)
+      when is_binary(from_did) and is_atom(verb) and is_binary(payload) do
+    attrs = %{own: true, sender: state.nick, from_did: from_did, verb: verb, msgid: E2e.new_msgid(), payload: payload}
+    {:reply, put_e2e_entry(state, sibling, attrs), state}
+  end
+
   # #1225 — /notice outbound. Routing is #640's (echo keyed to the SOURCE
   # window, `dm_with: nil`, no `maybe_open_query_window`): a NOTICE opens no
   # window by convention, so the echo belongs where the operator typed it.
@@ -8170,9 +8186,8 @@ defmodule Grappa.Session.Server do
   defp queue_e2e_copy(from, message, device, {state, queued?}) do
     attrs = %{sender: from, from_did: message.from, verb: message.verb, msgid: message.msgid, payload: message.payload}
 
-    case E2eInbox.put(device, attrs) do
-      {:ok, entry} ->
-        :ok = Broadcaster.to_user(state, SessionWire.e2e_message(state.network_slug, device.did, entry))
+    case put_e2e_entry(state, device, attrs) do
+      {:ok, _} ->
         {state, true}
 
       # Debug: the sender decides how often a full queue refuses.
@@ -8185,12 +8200,30 @@ defmodule Grappa.Session.Server do
         {count_unqueued(state, from, device.did, message.verb), queued?}
 
       # Revoked or dropped since the list was read: nothing is owed to a
-      # device that is no longer there. (No changeset refusal is caught:
-      # the router hands over only a nick and a parsed frame, so one would
-      # be a broken invariant, which should crash.)
+      # device that is no longer there.
       {:error, :gone} ->
         Logger.debug("e2e message not queued: device gone", sender: from, e2e_device: device.did)
         {state, queued?}
+    end
+  end
+
+  # One whole message into `device`'s queue, then pushed to the subject's
+  # clients with the queue's id: a peer's (`queue_e2e_copy/4`) and an own
+  # copy (`{:copy_e2e, …}`) alike, so the two cannot drift in shape. What a
+  # refusal means is the caller's. No changeset refusal is caught: the
+  # router hands over only a nick and a parsed frame, and the copy door only
+  # what `Session.copy_e2e/6` checked, so one would be a broken invariant,
+  # which should crash.
+  @spec put_e2e_entry(t(), E2eKeys.Device.t(), E2eInbox.attrs()) ::
+          {:ok, E2eInbox.Entry.t()} | {:error, :full | :gone | :db_unavailable}
+  defp put_e2e_entry(state, device, attrs) do
+    case E2eInbox.put(device, attrs) do
+      {:ok, entry} ->
+        :ok = Broadcaster.to_user(state, SessionWire.e2e_message(state.network_slug, device.did, entry))
+        {:ok, entry}
+
+      {:error, reason} = refused when reason in [:full, :gone, :db_unavailable] ->
+        refused
     end
   end
 

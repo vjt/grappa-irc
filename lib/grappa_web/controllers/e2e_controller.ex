@@ -9,7 +9,9 @@ defmodule GrappaWeb.E2eController do
   it has read. It is never scrollback. The E2E identity grappa answers a
   peer's KEYREQ from (`Grappa.E2eKeys`) is a resource too: each device
   registers itself and uploads its own key bundle, the master's signed
-  device list is put and read, and the whole identity can be dropped.
+  device list is put and read, and the whole identity can be dropped. A
+  device copies what it sent to the account's other devices through their
+  queues, never IRC (`copy/2`), after claiming one key of each (`claim/2`).
 
   Same `:authn` + `ResolveNetwork` pipeline as every other
   `/networks/:network_id/*` route, so ownership is asserted the same way.
@@ -287,6 +289,37 @@ defmodule GrappaWeb.E2eController do
   end
 
   def claim(_, _), do: {:error, :bad_request}
+
+  @doc """
+  `POST /networks/:network_id/e2e/devices/:did/copies` — `{from_did, verb,
+  payload}`: a copy of a message the caller's device `from_did` just sent,
+  encrypted by that device to its sibling `did`, so the account's other
+  devices show what any of them sent. It goes into that sibling's queue
+  flagged `own`, under our nick and a msgid grappa picks, and is pushed as
+  an `e2e_message` with `own: true`; it never goes on IRC and raises no
+  OS notification. `verb` is `pkmsg` or `msg`, spelled as on the send
+  door; `payload` the compact JSON text, as there.
+
+  **202** `{id, msgid}`: the queue id of the copy and its msgid.
+
+  400 `bad_request` for another verb or a payload that is not compact JSON
+  text; 404 for a `did` the stored list does not name, or with no session
+  on the network (as a send); 409 `self` for the caller's own `did`, 409
+  `gone` when that device was dropped meanwhile; 413 `too_large` past 32
+  KiB, 413 `full` when the sibling's queue, or its share of the account's
+  own copies, cannot take it: that copy is then simply missing there, and
+  nobody is told later; 422 `unknown_device` when `from_did` is not listed.
+  """
+  @spec copy(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, Session.e2e_copy_error()}
+  def copy(conn, %{"did" => did, "from_did" => from_did, "verb" => verb, "payload" => payload})
+      when is_binary(did) and is_binary(from_did) and is_binary(verb) and is_binary(payload) do
+    with {:ok, verb} <- fetch(@verbs, verb),
+         {:ok, entry} <- Session.copy_e2e(subject(conn), conn.assigns.network.id, from_did, did, verb, payload) do
+      conn |> put_status(:accepted) |> json(SessionWire.e2e_copied(entry))
+    end
+  end
+
+  def copy(_, _), do: {:error, :bad_request}
 
   @doc """
   `DELETE /networks/:network_id/e2e/keys` — drops this subject's whole E2E

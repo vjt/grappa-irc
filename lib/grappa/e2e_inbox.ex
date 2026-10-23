@@ -71,13 +71,17 @@ defmodule Grappa.E2eInbox do
   # for them: they are the protocol talking to itself.
   @message_verbs [:pkmsg, :msg]
 
-  @typedoc "What `put/2` stores: one whole message, as the session reassembled it."
+  @typedoc """
+  What `put/2` stores: one whole message, as the session reassembled it,
+  or a copy of one the subject sent from another device (`own: true`).
+  """
   @type attrs :: %{
-          sender: String.t(),
-          from_did: E2e.address(),
-          verb: Entry.verb(),
-          msgid: String.t(),
-          payload: String.t()
+          required(:sender) => String.t(),
+          required(:from_did) => E2e.address(),
+          required(:verb) => Entry.verb(),
+          required(:msgid) => String.t(),
+          required(:payload) => String.t(),
+          optional(:own) => boolean()
         }
 
   @doc "Bytes one device's queue may hold, overhead included."

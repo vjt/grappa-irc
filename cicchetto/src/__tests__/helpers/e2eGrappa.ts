@@ -385,6 +385,7 @@ export class Grappa {
         verb: o.verb as ReceiveVerb,
         msgid,
         payload: o.payload,
+        own: false,
       });
     }
     return { msgid };
@@ -425,6 +426,7 @@ export class Grappa {
       verb: "keys",
       msgid: newMsgid(),
       payload,
+      own: false,
     });
   }
 }
