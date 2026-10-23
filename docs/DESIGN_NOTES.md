@@ -3981,3 +3981,202 @@ removals in the #1626 sense, which vjt ruled covered (2430 comment
 commit, d7d3d006f, postdates v1.5.14, the last tag; E2E ships in v1.6, and
 the freeze keeps it off every deployed grappa, so no row and no bundle
 exists to carry over.
+<!-- entry #2430k -->
+
+---
+
+## 2026-10-23 — #2430: one E2E identity, several devices — cicchetto's half (MD-2, wire v2)
+
+cic now speaks wire v2 against protocol 49: each browser is one device of
+a per-network identity whose master key lives on the device that made it,
+peers are trusted through their master, and one message carries one Olm
+body per peer device. The wire is the one `#2430j` (MD-1, grappa's half:
+storage, routing, the send door) cites, plus the base64url did amendment
+(6348464388); that entry is not restated here. irc-olm (MD-3) implements
+the same wire. MD-2 changes no server wire, so the protocol stays 49.
+`client.ts` runs every operation on the identity in the record, over that
+device's doors (`/e2e/devices/:did/…`): the drain reads only this device's
+inbox, and every payload leaves from its did.
+
+**The master is a second vodozemac `Account`.** Each device is an Olm
+account of its own; the master is one more, on the device that made the
+identity, used for `ed25519_key()` and `sign()` and nothing else (the
+list, each device's certificate). An `Account` already pickles, so the
+master is sealed in the same record as the device's account, and the
+binding never had to learn to export or import an Ed25519 keypair. It
+gains exactly two exports, `Session.has_received_message` and `sha256`
+(below), both pass-throughs to vodozemac and `sha2`, changed only through
+`scripts/wasm.sh`. `master` is null on any other device of the identity,
+and only the master's device can put the list back after grappa dropped
+it (`relist`, one version above the last); any other reads elsewhere.
+
+**Record v2, and a v1 record starts over.** One IndexedDB record per
+(subject, network) slot, sealed as before under the non-extractable
+AES-GCM key: the device's account, the master or null, the device's place
+(`OwnIdentity`: master key, certificate, `certVer`, the list it last put,
+its did) and the engine's `E2eState`, now `v: 2` (masters with their
+stored lists, devices, pins to masters). `parseRecord` refuses a v1 state,
+and a place without `certVer`, the way it refuses a damaged record: the
+slot starts over with a new account. No migration, because there is
+nothing to migrate to: a v1 record holds no master, so any v2 identity
+built from it would be a new key to every peer anyway, and no release
+carried E2E (`#2430j`'s flag day), so no identity in use is lost. The
+refusal is the damaged-record path that already existed, not a second
+one.
+
+**An identity is never replaced silently: the `elsewhere` state.** vjt's
+ruling 6344779758. v1's bundle sync DELETEd what grappa held whenever this
+browser made a new account. With several devices that is any second
+browser, or a wiped one, and the DELETE would take the identity from every
+other device and raise a key alarm at every contact, only because a page
+loaded. `identity.ts` replaces `bundleSync.ts`: `syncIdentity` runs under
+the slot's Web Lock and answers `ready` or `elsewhere`. No identity here
+and none on grappa: a new one (a master, this device registered and listed
+at version 1, its keys). An identity here that grappa lists this device
+in: its keys topped up. No identity here and one on grappa, or one here
+that grappa holds under another master or whose list leaves this device
+out: `elsewhere`, which writes nothing here and nothing on grappa beyond
+removing a device this sync registered and could not list. Two tabs
+serialise on the slot lock, and a sync already running on the page is
+joined; two browsers bootstrapping at once both register, one list put
+wins, and the other is refused `master_mismatch`, drops its device and
+reads `elsewhere`. Nothing runs on a network held elsewhere and nothing
+retries it (`identityElsewhere` in `encryptedChats.ts`): only the user
+moves it. `replaceIdentity`, the one path that makes a new master over one
+grappa holds, is reached only from the confirmed button below. It DELETEs
+(`DELETE …/e2e/keys`) before anything else, keeps the trust this device
+placed in others (masters, devices, pins, what was verified) and drops
+what was bound to the old device account.
+
+**The elsewhere pane.** In place of the keys and the SAS, the encrypted
+window says the identity lives on another device or was lost, and compose
+is shut. It offers pairing first: scan the code a device that holds the
+identity shows, or paste its link. A pasted link is loaded as a new
+document (`loadDocument`, `lib/documentNavigation.ts`), not routed in-app:
+solid-router mounts the new route before it pushes the URL, so an in-app
+navigate mounted `/pair` before the URL carried the code and `PairScan`
+read an empty fragment; a document load is the entry a camera scan takes.
+Then "start a new identity here", an `InlineConfirmButton` whose second
+tap names the three consequences: "every other device of this account
+loses this identity for this network, every contact sees a key alarm and
+must verify it again, and nothing encrypted to the old identity can be
+read here". It is disabled while one runs, since a second would delete
+the first; a failure says why and the button is offered again.
+
+**One message, one body per trusted device.** `send` encrypts once for
+each trusted device of the peer's master that holds a working session and
+groups the bodies by Olm kind: at most `MAX_DEVICES` bodies a message,
+never both kinds in one, `to` the device's did when it carries one body
+and `*` otherwise, one msgid each. A device the list names and the KEYS
+has no entry for (grappa had no key left for it) is simply not reachable
+yet: the message goes to the others and nothing fails. The message is
+sized against the network's published `frame_budget_base` before any
+session is stored, so a too-long one, or one with no budget yet, leaves
+every session where it was. Inbound, a `*` message whose `bodies` lack our
+did is for our other devices: dropped `not-for-us`, with no NACK. Every
+inner message names its sender's list version (`lv`); a decrypted `lv`
+above the list stored for that master asks the device for its list
+(`t:listreq`, answered by `t:list`, both on the reactive lane), and that
+traffic is never reported to the caller (`LIST_TAG`).
+
+**`has_received_message`, not a tracked pre-key state.** A pre-key body's
+inner message carries `fb`, binding the sending device to the receiving
+one, so the engine must know BEFORE it encrypts whether vodozemac will
+write a pre-key message. The session knows: until it has decrypted an
+answer it writes pre-key messages. Asking it was chosen over two others:
+encrypting twice (once to learn the kind, once with `fb`), and a flag in
+`E2eState`, a second copy of what the session holds, to be kept in step by
+hand on every decrypt. The engine checks the kind it got against the
+answer and throws on a mismatch, which is a bug and not wire input.
+
+**`sha256` in the binding.** A did and `fb` are cut from SHA-256. The
+engine is synchronous (`receive` and `send` return their result, built
+inside one locked operation) and WebCrypto's digest is not: going through
+it would make `receive`, `send` and the list check (`validMasterList`,
+which compares dids) asynchronous for one hash. vodozemac already depends
+on `sha2`, now pinned `=0.11.1` in the binding, so the export adds no npm
+dependency and no second hash implementation.
+
+**A NACK is acted on per device.** A message now reaches several devices,
+so a NACK is judged for the one that sent it: it counts only if our
+message of that msgid went to that very device (`Sent` records each device
+by did, with the session it went out on), and each device's NACK of it
+once, NACKs being unauthenticated. Never on another nick's word, never
+after a re-pin, never for a device its master no longer vouches for (no
+re-key, no re-send). The session it failed on goes; if it was the device's
+newest, the device is re-keyed, at most once per nick a minute however
+many devices NACK (`REKEY_INTERVAL_MS`), and a NACK while keys are already
+asked for joins them. The copy then goes again to that device alone (the
+spec's MAY), at most `MAX_SENDS` (2) sends in all. A copy that cannot go
+again fails the message only if nothing else of it went or waits: a
+message that reached another device keeps its row as sent. cic NACKs from
+its own did to the sending did, each undecryptable message its own NACK.
+
+**A device certificate binds the list version it was issued at
+(vjt's ruling A on 2430).** The master certifies each of its devices as
+`M.sign("irc-e2e:v2:dev:" + N + ":" + E)`, and a PKMSG's master block is
+`{"ed25519", "cert", "ver"}` with `ver` = N, judged as a list's `ver` is
+(`validVer`). N is the `ver` of the list the master puts that first
+includes the device: a bootstrapping device signs 1, and keeps that
+certificate when it lists itself again after grappa dropped its list. A
+device of a pinned master that the stored list leaves out is trusted on
+its certificate alone only while N is above the stored list's `ver` (0
+when none is stored) and that master never revoked the device; once a list
+with `ver` >= N that lacks it is accepted, it stops being trusted and its
+sessions are dropped. The verdict is read off the versions each time,
+never stored (`admitsUnlisted`). A certificate that verifies with N at or
+below the stored `ver` is dropped `stale-certificate`, told apart from one
+that does not verify (`bad-cert`) and from a KEYS entry, which carries no
+certificate (`unlisted-device`); none of them is NACKed. A master's
+trusted devices can therefore outnumber `MAX_DEVICES`: they are sent to in
+several messages of at most 4 bodies, one msgid each.
+
+**SAS v2 verifies the master.** The SAS record is keyed by the peer's
+master (`state.sas[M]`), and `sas.mac` carries `mmac`, a MAC over our
+master, beside v1's `mac` over the device key. Both must equal what we
+compute from the peer device and the pinned master; a wrong one fails the
+SAS (`mac-mismatch`), never an alarm. It still runs between one device on
+each side: the start goes to every device of the master, the first peer
+step naming the tx fixes the device, and a step of that tx from another
+device of the master is a debug drop. It settles only through a device
+the master still vouches for. `mmac` is computed over the master's public
+key, so a device without the master runs a SAS as well.
+
+**The fake grappa mirrors `answer/3`.** The engine, SAS, identity, client
+and chat-glue suites run real vodozemac accounts against
+`__tests__/helpers/e2eGrappa.ts`, grappa's E2E side of one network at
+protocol 49: devices, the signed list (verified; stale and mismatched
+masters refused), per-device bundles and queues, routing by `to`, and a
+KEYS composed as `Grappa.E2eKeys.answer/3` composes it (the list, then
+each listed device in the list's order with its oldest one-time key, or
+its fallback once none is left; a device with neither left out). It
+refuses what grappa refuses (`expires_at` off a control send, a fifth
+device, an empty ack), and `e2eFakeGrappa.test.ts` holds it against
+`answer/3` and `GrappaWeb.E2eController`'s refusals, so a client that
+gets the protocol wrong fails in vitest rather than first against a real
+server.
+`helpers/e2eDevices.ts` keeps how a device enrols, once.
+
+**The v1 tests went, rather than stay beside the v2 ones.** On vjt's
+instruction, a v1 test the v2 code superseded is deleted, not kept
+alongside its replacement: `e2eBundleSync.test.ts` went with
+`bundleSync.ts`, and the engine's v1 receive, NACK and recovery cases were
+rewritten as v2 tests or deleted where a v2 test covers them. v1 shapes
+survive only as inputs a v2 test refuses (a v1 record, a `v: 1` PKMSG).
+
+**Not built here.** Pairing completion does not clear the elsewhere flag
+yet: completing a pairing is the crypto half of X1, and
+`identitySynced(slug, "ready")` is the call it has to make. A tab never
+polls a network held elsewhere: it works the flag out again (the same
+joined `sync`) only on evidence, of four kinds. A message from another tab
+of this browser while the network is flagged (that tab may have started a
+new identity, or paired this browser). A 404 from this device's own doors,
+and a send refused `422 unknown_device`: grappa no longer holds the device,
+because another device replaced the identity or revoked this one, so these
+two set the flag on a page that had it clear. And the confirmed "start a
+new identity here", which syncs first and DELETEs only when the identity is
+still held elsewhere, so a stale flag cannot destroy the identity another
+tab just made. Short of these, only a page reload syncs the network again
+(`mountIdentitySync` syncs a slot once per page load). Copies of one's own
+sent messages to one's OTHER devices are built by neither MD-1 nor MD-2: a
+message is encrypted to the peer's devices only.
