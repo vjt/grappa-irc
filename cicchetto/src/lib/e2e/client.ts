@@ -501,10 +501,12 @@ export function e2eClient(
   // sibling with a session gets its copies at once. For one without, the
   // engine asks once (`sibling_keys_needed`): a key of it is claimed, and
   // what came, or null when grappa refused, goes to `siblingKeys`, which
-  // sends what waited or drops it. The state is stored before any copy
-  // leaves, as before any payload. A copy or a claim grappa refuses is
-  // logged, never tried again: no NACK ever names a copy, so a lost one is
-  // lost. Answers what its events change in the chats.
+  // encrypts what waited or drops it (it asks for nothing more). Then the
+  // state is stored, once, before any copy leaves, as before any payload: a
+  // tab that dies before it stored nothing, so its next copy asks again. A
+  // copy or a claim grappa refuses is logged, never tried again: no NACK
+  // ever names a copy, so a lost one is lost. Answers what its events change
+  // in the chats.
   async function copyOut(
     engine: Engine,
     persist: () => Promise<void>,
@@ -512,25 +514,21 @@ export function e2eClient(
     texts: Taken[],
   ): Promise<ChatChange[]> {
     if (texts.length === 0) return [];
-    const events = [...(await listSiblings(engine, door)).events];
-    let round: CopyResult[] = texts.map(({ nick, body }) => engine.copy(nick, body));
-    while (round.length > 0) {
-      const asked = round.flatMap((r) => r.events);
-      events.push(...asked);
-      await persist();
-      for (const copy of round.flatMap((r) => r.copies)) {
-        const id = await door.copy(copy.to, copy.verb, copy.payload);
-        if (typeof id !== "number") {
-          console.warn(`[e2e] grappa refused a ${copy.verb} copy to our device ${copy.to}: ${id}`);
-        }
-      }
-      round = [];
-      for (const e of asked) {
-        if (e.kind !== "sibling_keys_needed") continue;
-        round.push(engine.siblingKeys(e.did, await claim(door, e.did)));
+    const listed = await listSiblings(engine, door);
+    const copied: CopyResult[] = texts.map(({ nick, body }) => engine.copy(nick, body));
+    for (const e of copied.flatMap((r) => r.events)) {
+      if (e.kind === "sibling_keys_needed") {
+        copied.push(engine.siblingKeys(e.did, await claim(door, e.did)));
       }
     }
-    return changesFor(events, now(), null);
+    await persist();
+    for (const copy of copied.flatMap((r) => r.copies)) {
+      const id = await door.copy(copy.to, copy.verb, copy.payload);
+      if (typeof id !== "number") {
+        console.warn(`[e2e] grappa refused a ${copy.verb} copy to our device ${copy.to}: ${id}`);
+      }
+    }
+    return changesFor([...listed.events, ...copied.flatMap((r) => r.events)], now(), null);
   }
 
   // An operation on the slot's identity, which must exist already: its

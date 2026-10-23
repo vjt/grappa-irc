@@ -4463,9 +4463,6 @@ NACKed as an unseen curve, as today (R14).
   is already copied.
 - A copy waits at most `OUTQ_TTL_MS` for a sibling's keys; past it the
   copy is dropped `sibling-no-keys`, not re-asked until a pause.
-- A crash between the client's persist and its claim leaves that
-  sibling reading "already asked" while sends keep arriving less than 90 s
-  apart (Task 7 review, minor).
 - A pre-50 server fails the `e2e_message` schema on every item, since the
   generated schema requires `own`; harmless only because no release
   carried E2E before 50.
