@@ -34,7 +34,7 @@ defmodule Grappa.Session.E2eSessionTest do
   alias Grappa.Networks.{Credentials, SessionPlan}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Message
-  alias Grappa.Session.{E2eKeyAnswers, E2ePacer}
+  alias Grappa.Session.{Backoff, E2eKeyAnswers, E2ePacer}
 
   @nick "grappa-test"
 
@@ -938,6 +938,35 @@ defmodule Grappa.Session.E2eSessionTest do
       assert {:error, :too_large} = copy.(device.did, sibling.did, :msg, huge)
 
       for d <- [device, sibling, pairing, someone_elses], do: assert(E2eInbox.list(d, 0) == [])
+    end
+
+    test "a copy is queued while the session has no IRC Client (the reconnect backoff window)" do
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      subject = {:user, user.id}
+
+      {network, _} =
+        network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
+
+      _ = credential_fixture(user, network, %{})
+      [device, sibling] = identity!(subject, network, 2)
+
+      # Ladder at the cap: the Client spawn is deferred, so the session lives
+      # with `client: nil`, as between two reconnect attempts.
+      :ok = Backoff.reset(subject, network.id)
+      Enum.each(1..10, fn _ -> :ok = Backoff.record_failure(subject, network.id) end)
+      on_exit(fn -> Backoff.reset(subject, network.id) end)
+      pid = start_session!(user, network)
+
+      # The precondition: whatever needs the socket is refused right now.
+      assert {:error, :no_socket} = Session.send_privmsg(subject, network.id, "#test", "lost")
+
+      # A copy never goes on IRC, so it does not wait for the link.
+      assert {:ok, %E2eInbox.Entry{id: id}} =
+               Session.copy_e2e(subject, network.id, device.did, sibling.did, :msg, @small)
+
+      assert [%E2eInbox.Entry{id: ^id, own: true}] = E2eInbox.list(sibling, 0)
+      assert Process.alive?(pid)
     end
 
     test "with no session a copy is refused, not swallowed" do
