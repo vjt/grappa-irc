@@ -34,7 +34,14 @@
 // confirmed, starting a new one here (`replaceEncryptedIdentity`).
 
 import { createEffect, createSignal, onCleanup } from "solid-js";
-import { ApiError, ackE2eDeviceInbox, listE2eDeviceInbox, sendE2e } from "./api";
+import {
+  ApiError,
+  ackE2eDeviceInbox,
+  claimE2eDeviceKeys,
+  copyE2e,
+  listE2eDeviceInbox,
+  sendE2e,
+} from "./api";
 import { token } from "./auth";
 import { browserE2e } from "./e2e/browser";
 import type { Chat, ChatRow, DoorRefusal, SendDropped } from "./e2e/chatStore";
@@ -120,8 +127,12 @@ const doors =
         verb: m.verb,
         msgid: m.msgid,
         payload: m.payload,
+        own: m.own,
       })),
     ack: (ids) => ackE2eDeviceInbox(bearer, slug, did, ids),
+    claim: (to) => claimE2eDeviceKeys(bearer, slug, to, did).then((r) => r.keys, refusalOf),
+    copy: (to, verb, payload) =>
+      copyE2e(bearer, slug, to, { from_did: did, verb, payload }).then((r) => r.id, refusalOf),
     send: async (out) => {
       try {
         return await sendE2e(bearer, slug, {

@@ -62,6 +62,8 @@ export type InboxMessage = {
   verb: ReceiveVerb;
   msgid: string;
   payload: string;
+  /** A copy of a message one of this subject's other devices sent, not one a peer wrote. */
+  own: boolean;
 };
 
 /** grappa's E2E doors for one device of a subject on one network. */
@@ -71,6 +73,17 @@ export type Door = {
   ack(ids: number[]): Promise<void>;
   /** Never throws: a refusal, or a send that failed on the way, is an answer. */
   send(out: Outbound): Promise<{ msgid: string } | { refused: DoorRefusal }>;
+  /**
+   * The KEYS v2 text of a key of the sibling device `did` (consumed), for an
+   * Olm session to it. Never throws: no key to give is a refusal.
+   */
+  claim(did: string): Promise<string | DoorRefusal>;
+  /**
+   * Queue a copy of a message this device sent, encrypted to the sibling
+   * `toDid`: resolves to the copy's queue id. Never throws: a copy refused
+   * (the sibling's share is full) is simply missing there.
+   */
+  copy(toDid: string, verb: "pkmsg" | "msg", payload: string): Promise<number | DoorRefusal>;
 };
 
 export type E2eContext = {

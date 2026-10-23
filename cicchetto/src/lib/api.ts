@@ -34,6 +34,7 @@ import {
   narrowChannelListResponse,
   narrowCredentialResponse,
   narrowDirectoryPageResponse,
+  narrowE2eCopiedResponse,
   narrowE2eDevice,
   narrowE2eDevices,
   narrowE2eInboxResponse,
@@ -96,6 +97,7 @@ import type {
   SessionLogWireT,
   SessionWireBanlistBundlePayload,
   SessionWireBanlistEntry,
+  SessionWireE2eCopiedPayload,
   SessionWireE2eInboxPayload,
   SessionWireE2eMessagePayload,
   SessionWireE2eSendDroppedPayload,
@@ -2742,6 +2744,54 @@ export async function sendE2e(
   });
   if (!res.ok) throw await readError(res);
   return narrowE2eSentResponse(await res.json());
+}
+
+// issue 2430 S1: a key of this account's device `did`, for its sibling
+// `fromDid` to open an Olm session to it (the KEYS v2 text, restricted to
+// that one device; the key is consumed). Any refusal throws: the engine
+// reads "no key" off it, never a retry.
+export async function claimE2eDeviceKeys(
+  token: string,
+  networkSlug: string,
+  did: string,
+  fromDid: string,
+): Promise<{ keys: string }> {
+  const res = await fetch(`${e2eRoot(networkSlug)}/devices/${did}/claim`, {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify({ from_did: fromDid }),
+  });
+  if (!res.ok) throw await readError(res);
+  const body: unknown = await res.json();
+  if (
+    typeof body !== "object" ||
+    body === null ||
+    !("keys" in body) ||
+    typeof body.keys !== "string"
+  ) {
+    throw new Error("claim: unexpected response shape");
+  }
+  return { keys: body.keys };
+}
+
+// issue 2430 S1: a message this account's device `from_did` sent, encrypted
+// to its sibling `toDid`, queued there flagged own. Never on IRC; `verb` is
+// spelled as on the send door (pkmsg | msg). Like the send door, not through
+// `sendPipeline`: a refusal (413 `full`) is an answer, the copy is then
+// simply missing on that sibling.
+export async function copyE2e(
+  token: string,
+  networkSlug: string,
+  toDid: string,
+  out: { from_did: string; verb: SendVerb; payload: string },
+): Promise<SessionWireE2eCopiedPayload> {
+  const res = await fetch(`${e2eRoot(networkSlug)}/devices/${toDid}/copies`, {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify(out),
+  });
+  if (!res.ok) throw await readError(res);
+  return narrowE2eCopiedResponse(await res.json());
 }
 
 export async function listE2eDeviceInbox(

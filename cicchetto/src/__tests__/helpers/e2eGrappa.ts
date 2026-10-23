@@ -35,6 +35,7 @@ import type {
   E2eKeysWireDevice,
   E2eKeysWireDeviceList,
   E2eKeysWireStatus,
+  SessionWireE2eCopiedPayload,
   SessionWireE2eMessagePayload,
 } from "../../lib/wireTypes";
 import { olm } from "./olm";
@@ -52,6 +53,8 @@ export type E2eApi = Pick<
   | "listE2eDeviceInbox"
   | "ackE2eDeviceInbox"
   | "sendE2e"
+  | "claimE2eDeviceKeys"
+  | "copyE2e"
   | "clearE2eKeys"
 >;
 
@@ -79,6 +82,7 @@ export type DeviceMessage = {
   verb: ReceiveVerb;
   msgid: string;
   payload: string;
+  own: boolean;
 };
 
 /** The doors of one device. */
@@ -88,6 +92,10 @@ export type DeviceDoor = {
   ack(ids: number[]): Promise<void>;
   /** A refusal `refuse` names is an answer; what grappa itself refuses throws. */
   send(out: DoorSend): Promise<{ msgid: string } | { refused: DoorRefusal }>;
+  /** A refusal is an answer, as at the real door: the sibling's KEYS text, or why not. */
+  claim(did: string): Promise<string | DoorRefusal>;
+  /** A refusal is an answer, as at the real door: the copy's queue id, or why not. */
+  copy(toDid: string, verb: "pkmsg" | "msg", payload: string): Promise<number | DoorRefusal>;
 };
 
 type Queued = Omit<SessionWireE2eMessagePayload, "kind" | "network">;
@@ -105,6 +113,9 @@ const PRIORITIES = ["control", "reactive", "text"];
 const MAX_ONE_TIME_KEYS = 50;
 const MAX_DEVICES = 4;
 const MAX_PAYLOAD_BYTES = 32 * 1024;
+// `E2eInbox.max_sender_bytes/0` and `row_overhead_bytes/0`: a sender's share of one queue.
+const MAX_SENDER_BYTES = 1_048_576;
+const ROW_OVERHEAD_BYTES = 256;
 const PAGE = 100;
 
 /** How the send door answers each refusal: status, token. */
@@ -114,6 +125,13 @@ const REFUSED: Record<DoorRefusal, [number, string]> = {
   "too-late": [422, "too_late"],
   "unknown-device": [422, "unknown_device"],
   refused: [400, "bad_request"],
+};
+
+// What `encryptedChats.ts` makes of a door's refusal.
+const refusalOf = (err: unknown): DoorRefusal => {
+  if (!(err instanceof ApiError)) throw err;
+  if (err.status === 413) return "too-large";
+  return err.code === "unknown_device" ? "unknown-device" : "refused";
 };
 
 const badRequest = () => new ApiError(400, "bad_request");
@@ -209,6 +227,10 @@ export class Grappa {
         .slice(0, this.pageSize)
         .map((m) => ({ ...m, kind: "e2e_message" as const, network: slug })),
     }),
+    claimE2eDeviceKeys: async (nick, _slug, did, fromDid) => ({
+      keys: this.claim(nick, did, fromDid),
+    }),
+    copyE2e: async (nick, _slug, toDid, out) => this.copy(nick, toDid, out),
     ackE2eDeviceInbox: async (nick, _slug, did, ids) => this.ack(nick, did, ids),
     sendE2e: async (nick, _slug, out) => {
       const answer = this.send(nick, out);
@@ -231,12 +253,19 @@ export class Grappa {
           verb: m.verb,
           msgid: m.msgid,
           payload: m.payload,
+          own: m.own,
         })),
       ack: async (ids) => {
         if (this.failAck) throw new Error("ack refused");
         await this.api.ackE2eDeviceInbox(nick, "", did, ids);
       },
       send: async (out) => this.send(nick, out),
+      claim: (target) =>
+        this.api.claimE2eDeviceKeys(nick, "", target, did).then((r) => r.keys, refusalOf),
+      copy: (toDid, verb, payload) =>
+        this.api
+          .copyE2e(nick, "", toDid, { from_did: did, verb, payload })
+          .then((r) => r.id, refusalOf),
     };
   }
 
@@ -391,6 +420,73 @@ export class Grappa {
     return { msgid };
   }
 
+  // `E2eKeys.claim/4`: KEYS v2 restricted to the one sibling `did`, with its
+  // oldest one-time key (consumed) or its fallback key (kept), refusing in
+  // the order grappa does.
+  private claim(nick: string, did: string, fromDid: string): string {
+    if (did === fromDid) throw new ApiError(409, "self");
+    const list = this.subject(nick).list;
+    const listed = this.listed(nick);
+    if (list === null || !listed.some((d) => d.did === fromDid)) {
+      throw new ApiError(422, "unknown_device");
+    }
+    const device = listed.find((d) => d.did === did);
+    if (device === undefined) throw notFound();
+    const otk = device.otks.shift();
+    const key = otk ?? device.fallback;
+    if (key === null) throw new ApiError(409, "empty");
+    return encodePayload({
+      v: 2,
+      master: {
+        ed25519: list.master,
+        list: { ver: list.ver, devices: list.devices },
+        sig: list.sig,
+      },
+      devices: [
+        {
+          id: { curve25519: device.curve25519, ed25519: device.ed25519, sig: device.sig },
+          otk: { key: key.key, fallback: otk === undefined, sig: key.sig },
+        },
+      ],
+    });
+  }
+
+  // `E2eController.copy/2` and `Session.copy_e2e/6`: a copy goes into the
+  // sibling's queue flagged own, from the subject's own nick, and counts
+  // against ONE own share of that queue (payload plus row overhead).
+  private copy(
+    nick: string,
+    toDid: string,
+    o: { from_did: string; verb: string; payload: string },
+  ): SessionWireE2eCopiedPayload {
+    if (o.verb !== "pkmsg" && o.verb !== "msg") throw badRequest();
+    if (new TextEncoder().encode(o.payload).length > MAX_PAYLOAD_BYTES) {
+      throw new ApiError(413, "too_large");
+    }
+    if (!/^[\x21-\x7e]+$/.test(o.payload)) throw badRequest();
+    if (toDid === o.from_did) throw new ApiError(409, "self");
+    const listed = this.listed(nick);
+    if (!listed.some((d) => d.did === o.from_did)) throw new ApiError(422, "unknown_device");
+    const sibling = listed.find((d) => d.did === toDid);
+    if (sibling === undefined) throw notFound();
+    const cost = (m: { payload: string }) =>
+      new TextEncoder().encode(m.payload).length + ROW_OVERHEAD_BYTES;
+    const held = sibling.inbox.filter((m) => m.own).reduce((sum, m) => sum + cost(m), 0);
+    if (held + cost(o) > MAX_SENDER_BYTES) throw new ApiError(413, "full");
+    const entry = { id: this.nextId++, msgid: newMsgid() };
+    sibling.inbox.push({
+      id: entry.id,
+      from: nick,
+      from_did: o.from_did,
+      to_did: toDid,
+      verb: o.verb,
+      msgid: entry.msgid,
+      payload: o.payload,
+      own: true,
+    });
+    return entry;
+  }
+
   // `E2eKeys.answer/3` with `consume/1`: each listed device that still has a
   // key, its oldest one-time key (handed out once) or its fallback key (kept).
   private answer(by: string, o: DoorSend): void {
@@ -455,5 +551,9 @@ export function routeApi(api: E2eApi, grappaFor: (slug: string) => Grappa): void
     grappaFor(s).api.ackE2eDeviceInbox(t, s, d, ids),
   );
   vi.mocked(api.sendE2e).mockImplementation((t, s, o) => grappaFor(s).api.sendE2e(t, s, o));
+  vi.mocked(api.claimE2eDeviceKeys).mockImplementation((t, s, d, f) =>
+    grappaFor(s).api.claimE2eDeviceKeys(t, s, d, f),
+  );
+  vi.mocked(api.copyE2e).mockImplementation((t, s, d, o) => grappaFor(s).api.copyE2e(t, s, d, o));
   vi.mocked(api.clearE2eKeys).mockImplementation((t, s) => grappaFor(s).api.clearE2eKeys(t, s));
 }

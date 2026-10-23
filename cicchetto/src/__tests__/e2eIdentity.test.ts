@@ -30,6 +30,8 @@ vi.mock("../lib/api", async (importOriginal) => {
     ackE2eDeviceInbox: vi.fn(),
     sendE2e: vi.fn(),
     clearE2eKeys: vi.fn(),
+    claimE2eDeviceKeys: vi.fn(),
+    copyE2e: vi.fn(),
   };
 });
 
