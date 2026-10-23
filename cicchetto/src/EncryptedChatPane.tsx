@@ -2,6 +2,7 @@ import {
   type Component,
   createEffect,
   createMemo,
+  createResource,
   createSignal,
   For,
   Match,
@@ -9,6 +10,7 @@ import {
   Show,
   Switch,
 } from "solid-js";
+import AddDevicePanel from "./AddDevicePanel";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { ApiError } from "./lib/api";
 import { copyText } from "./lib/clipboard";
@@ -16,6 +18,7 @@ import { loadDocument } from "./lib/documentNavigation";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import type { ChatRow, OutFailure } from "./lib/e2e/chatStore";
 import { pairingUrl, parsePairFragment } from "./lib/e2e/pairing";
+import { holdsMasterHere } from "./lib/e2e/pairingDeps";
 import type { SasCancelReason, SasStep, SasView } from "./lib/e2e/sas";
 import { SAS_EMOJI } from "./lib/e2e/sasEmoji";
 import {
@@ -461,6 +464,24 @@ const EncryptedChatPane: Component<Props> = (props) => {
   const [pin, setPin] = createSignal("");
   const [pinError, setPinError] = createSignal<string | null>(null);
   const [copyError, setCopyError] = createSignal<string | null>(null);
+  const [adding, setAdding] = createSignal(false);
+  // Whether this browser holds the master: only it may add a device. Asked
+  // again when the key shown changes (a new identity, or a pairing, lands).
+  // Unknown (still asking, or no key yet: the sync that makes it is what
+  // settles whether this browser holds a master) offers neither the button
+  // nor the hint, so a real master never sees the hint first.
+  const [master] = createResource(
+    () => {
+      const key = ownKey(props.networkSlug);
+      return key === undefined ? false : ([props.networkSlug, key] as const);
+    },
+    ([slug]) =>
+      holdsMasterHere(slug).catch((err: unknown) => {
+        console.warn(`[e2e] could not tell whether this browser holds the master of ${slug}`, err);
+        return false;
+      }),
+  );
+  const answered = () => (ownKey(props.networkSlug) === undefined ? undefined : master());
   const [query, setQuery] = createSignal("");
   const [deleteArmed, setDeleteArmed] = createSignal(false);
   let list: HTMLOListElement | undefined;
@@ -600,6 +621,23 @@ const EncryptedChatPane: Component<Props> = (props) => {
               </button>
             </div>
             <Show when={copyError()}>{(message) => <div class="e2e-error">{message()}</div>}</Show>
+            <Show when={answered() === true}>
+              <Show when={!adding()} fallback={<AddDevicePanel onClose={() => setAdding(false)} />}>
+                <button
+                  type="button"
+                  class="e2e-copy"
+                  data-testid="e2e-add-device"
+                  onClick={() => setAdding(true)}
+                >
+                  add a device
+                </button>
+              </Show>
+            </Show>
+            <Show when={answered() === false}>
+              <div class="e2e-key-line" data-testid="e2e-add-device-hint">
+                Devices are added from the browser that started this identity.
+              </div>
+            </Show>
             <div class="e2e-key-line">
               {display()}'s key:{" "}
               <code class="e2e-key" data-testid="e2e-peer-key">

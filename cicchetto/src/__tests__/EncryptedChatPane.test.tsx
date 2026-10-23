@@ -35,6 +35,12 @@ const deleteEncryptedChat = vi.hoisted(() => vi.fn());
 const replaceEncryptedIdentity = vi.hoisted(() => vi.fn());
 const copyText = vi.hoisted(() => vi.fn());
 const loadDocument = vi.hoisted(() => vi.fn());
+const holdsMasterHere = vi.hoisted(() => vi.fn());
+const panel = vi.hoisted(() => ({
+  onClose: null as null | (() => void),
+  mounted: 0,
+  unmounted: 0,
+}));
 
 vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   trustOf: (await importOriginal<typeof import("../lib/encryptedChats")>()).trustOf,
@@ -51,7 +57,26 @@ vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   pinEncryptedKey,
   verifyEncrypted,
   deleteEncryptedChat,
+  pairedHere: vi.fn(),
 }));
+// Whether this browser holds the network's master, and the add-a-device
+// panel itself (its own tests drive it): the pane decides only what to offer.
+vi.mock("../lib/e2e/pairingDeps", () => ({ holdsMasterHere, pairingDeps: vi.fn() }));
+vi.mock("../AddDevicePanel", async () => {
+  const { onCleanup } = await import("solid-js");
+  return {
+    default: (props: { onClose: () => void }) => {
+      panel.onClose = props.onClose;
+      panel.mounted += 1;
+      onCleanup(() => {
+        panel.unmounted += 1;
+      });
+      const el = document.createElement("div");
+      el.dataset.testid = "add-device-panel";
+      return el;
+    },
+  };
+});
 vi.mock("../lib/documentVisibility", () => ({ isDocumentVisible: () => visible() }));
 vi.mock("../lib/clipboard", () => ({ copyText }));
 // jsdom implements no document navigation (and makes `location.assign`
@@ -78,6 +103,9 @@ beforeEach(() => {
     fn.mockResolvedValue(undefined);
   }
   pinEncryptedKey.mockResolvedValue("pinned");
+  holdsMasterHere.mockResolvedValue(true);
+  panel.mounted = 0;
+  panel.unmounted = 0;
   setChat({ nick: "Bob", open: true, unread: 0 });
   setRows([]);
   setTrust(null);
@@ -291,6 +319,47 @@ describe("EncryptedChatPane", () => {
     expect(screen.getByTestId("e2e-own-identity").textContent).toBe(OWN);
     fireEvent.click(screen.getByTestId("e2e-own-identity-copy"));
     expect(copyText).toHaveBeenCalledWith(OWN);
+  });
+
+  it("offers add a device only on the master's browser, and a hint elsewhere", async () => {
+    const view = renderPane();
+    expect(await screen.findByTestId("e2e-add-device")).toBeTruthy();
+    expect(holdsMasterHere).toHaveBeenCalledWith("azzurra");
+    expect(screen.queryByTestId("e2e-add-device-hint")).toBeNull();
+    view.unmount();
+
+    holdsMasterHere.mockResolvedValue(false);
+    renderPane();
+    const hint = await screen.findByTestId("e2e-add-device-hint");
+    expect(hint.textContent).toBe("Devices are added from the browser that started this identity.");
+    expect(screen.queryByTestId("e2e-add-device")).toBeNull();
+  });
+
+  it("shows neither the button nor the hint until there is a key to ask about, then the answer", async () => {
+    holdsMasterHere.mockResolvedValue(false);
+    setOwn(undefined);
+    renderPane();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(holdsMasterHere).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("e2e-add-device-hint")).toBeNull();
+    expect(screen.queryByTestId("e2e-add-device")).toBeNull();
+
+    setOwn(OWN);
+    expect(await screen.findByTestId("e2e-add-device-hint")).toBeTruthy();
+    expect(holdsMasterHere).toHaveBeenCalledWith("azzurra");
+  });
+
+  it("add a device opens the panel inline, and closing the panel removes it", async () => {
+    renderPane();
+    expect(screen.queryByTestId("add-device-panel")).toBeNull();
+    fireEvent.click(await screen.findByTestId("e2e-add-device"));
+    expect(screen.getByTestId("add-device-panel")).toBeTruthy();
+    expect(screen.queryByTestId("e2e-add-device")).toBeNull();
+
+    panel.onClose?.();
+    expect(screen.queryByTestId("add-device-panel")).toBeNull();
+    expect(panel.unmounted).toBe(1);
+    expect(screen.getByTestId("e2e-add-device")).toBeTruthy();
   });
 
   it("says why a copy failed", async () => {
