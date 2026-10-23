@@ -50,7 +50,9 @@ beforeEach(() => {
 describe("AddDeviceQr", () => {
   it("opens a rendezvous and shows its code as a QR and as a link", async () => {
     const onChannel = vi.fn();
-    render(() => <AddDeviceQr curve={CURVE} onChannel={onChannel} onMessage={vi.fn()} />);
+    render(() => (
+      <AddDeviceQr curve={CURVE} onChannel={onChannel} onMessage={vi.fn()} onClosed={vi.fn()} />
+    ));
     const qr = await screen.findByTestId("pair-qr");
     expect(qr.querySelector("svg")?.getAttribute("aria-label")).toBe("pairing QR code");
     expect(screen.getByTestId("pair-url").textContent).toBe(
@@ -62,28 +64,40 @@ describe("AddDeviceQr", () => {
   });
 
   it("counts down to the rendezvous's expiry", async () => {
-    render(() => <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={vi.fn()} />);
+    render(() => (
+      <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={vi.fn()} onClosed={vi.fn()} />
+    ));
     expect((await screen.findByTestId("pair-countdown")).textContent).toMatch(/[45]:\d\d/);
   });
 
   it("shows why an open failed", async () => {
     pairingHolder.openPairing.mockRejectedValue(new ApiError(429, "rate_limited"));
-    render(() => <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={vi.fn()} />);
+    render(() => (
+      <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={vi.fn()} onClosed={vi.fn()} />
+    ));
     expect(await screen.findByRole("alert")).toBeTruthy();
     expect(screen.queryByTestId("pair-qr")).toBeNull();
   });
 
-  it("drops the QR once the rendezvous is gone", async () => {
-    render(() => <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={vi.fn()} />);
+  // Why it ended is the caller's to say (AddDevicePanel): it alone knows
+  // what the pairing came to.
+  it("drops the QR once the rendezvous is gone, and tells its caller why", async () => {
+    const onClosed = vi.fn();
+    render(() => (
+      <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={vi.fn()} onClosed={onClosed} />
+    ));
     await screen.findByTestId("pair-qr");
-    pairingHolder.handlers?.onClosed("expired");
-    expect((await screen.findByTestId("pair-ended")).textContent).toContain("expired");
-    expect(screen.queryByTestId("pair-qr")).toBeNull();
+    pairingHolder.handlers?.onClosed("replaced");
+    expect(onClosed).toHaveBeenCalledExactlyOnceWith("replaced");
+    await waitFor(() => expect(screen.queryByTestId("pair-qr")).toBeNull());
+    expect(screen.queryByTestId("pair-ended")).toBeNull();
   });
 
   it("hands what the other side posts to onMessage", async () => {
     const onMessage = vi.fn();
-    render(() => <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={onMessage} />);
+    render(() => (
+      <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={onMessage} onClosed={vi.fn()} />
+    ));
     await screen.findByTestId("pair-qr");
     pairingHolder.handlers?.onMessage("b3BhcXVl");
     expect(onMessage).toHaveBeenCalledWith("b3BhcXVl");
@@ -93,7 +107,7 @@ describe("AddDeviceQr", () => {
     let resolve: (r: typeof rendezvous) => void = () => undefined;
     pairingHolder.openPairing.mockReturnValue(new Promise((r) => (resolve = r)));
     const { unmount } = render(() => (
-      <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={vi.fn()} />
+      <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={vi.fn()} onClosed={vi.fn()} />
     ));
     await waitFor(() => expect(pairingHolder.openPairing).toHaveBeenCalled());
     unmount();
@@ -103,7 +117,7 @@ describe("AddDeviceQr", () => {
 
   it("closes the rendezvous when it leaves the screen", async () => {
     const { unmount } = render(() => (
-      <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={vi.fn()} />
+      <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={vi.fn()} onClosed={vi.fn()} />
     ));
     await screen.findByTestId("pair-qr");
     unmount();

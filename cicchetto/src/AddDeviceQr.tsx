@@ -16,24 +16,20 @@ import { qrSvgWithLabel } from "./lib/qr";
 // (PairScan). The ephemeral key in the code is the caller's, from the ECIES
 // layer; this component only puts it in the code, holds the channel while
 // the code is on screen, and closes the rendezvous when it leaves the screen.
+// When the rendezvous ends it drops the QR and tells the caller why; saying
+// so is the caller's (AddDevicePanel), which knows what the pairing came to.
 
 type Stage =
   | { tag: "opening" }
   | { tag: "showing"; rendezvous: Rendezvous; url: string }
   | { tag: "failed"; message: string }
-  | { tag: "ended"; reason: CloseReason };
-
-const ENDED: Record<CloseReason, string> = {
-  closed: "The other device ended the pairing.",
-  expired: "The code expired. Start again to show a new one.",
-  replaced: "A newer pairing replaced this one.",
-  gone: "The pairing is no longer available. Start again to show a new code.",
-};
+  | { tag: "ended" };
 
 const AddDeviceQr: Component<{
   curve: string;
   onChannel: (channel: PairingChannel) => void;
   onMessage: (payload: string) => void;
+  onClosed: (reason: CloseReason) => void;
 }> = (props) => {
   const [stage, setStage] = createSignal<Stage>({ tag: "opening" });
   const [now, setNow] = createSignal(Date.now());
@@ -51,7 +47,10 @@ const AddDeviceQr: Component<{
       const rendezvous = await openPairing(t);
       channel = openChannel(t, rendezvous, {
         onMessage: props.onMessage,
-        onClosed: (reason) => setStage({ tag: "ended", reason }),
+        onClosed: (reason) => {
+          setStage({ tag: "ended" });
+          props.onClosed(reason);
+        },
       });
       // Left the screen while the open was in flight: the cleanup found no
       // channel to close, so this rendezvous would sit open for its whole TTL.
@@ -89,10 +88,6 @@ const AddDeviceQr: Component<{
     const s = stage();
     return s.tag === "failed" ? s : null;
   };
-  const ended = () => {
-    const s = stage();
-    return s.tag === "ended" ? s : null;
-  };
 
   return (
     <section class="add-device-qr">
@@ -125,7 +120,6 @@ const AddDeviceQr: Component<{
           </p>
         )}
       </Show>
-      <Show when={ended()}>{(s) => <p data-testid="pair-ended">{ENDED[s().reason]}</p>}</Show>
     </section>
   );
 };
