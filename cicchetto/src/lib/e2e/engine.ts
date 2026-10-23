@@ -321,6 +321,7 @@ export type DropReason =
   | "sibling-not-ours"
   | "sibling-bad-signature"
   | "sibling-unknown"
+  | "sibling-list-behind"
   | "sibling-undecryptable"
   | "sibling-not-a-copy";
 
@@ -1285,7 +1286,11 @@ export class Engine {
    * its device's S1 over its curve and our master, the frame's `from` that
    * device's did), and come from a device our list names; only then is a
    * session opened, its `fb` checked, and the sibling known by the curve the
-   * session proved. A MSG must come on the curve of such a sibling, from its
+   * session proved. A device our list does not name whose certificate is for
+   * a list version past ours is `sibling-list-behind`, not `sibling-unknown`:
+   * our master put it on a list we do not hold yet, so the caller syncs our
+   * identity and hands the copy in again; it is still not read until our own
+   * list names it. A MSG must come on the curve of such a sibling, from its
    * did. Every refusal is reported, from our own nick, and leaves no new
    * session; none is ever NACKed: a copy has no way back. Never throws on
    * wire input.
@@ -1331,7 +1336,7 @@ export class Engine {
       return;
     }
     if (!this.ourListNames(id.ed25519)) {
-      drop("sibling-unknown");
+      drop(pkmsg.master.ver > this.own.list.ver ? "sibling-list-behind" : "sibling-unknown");
       return;
     }
     const sessionId = rejecting(() => this.olm.pre_key_session_id(body));

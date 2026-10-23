@@ -5405,6 +5405,42 @@ describe("S1 sibling copies — receive", () => {
     expect(takesCopy(alice, a, c, copy).events).toEqual([copiedFrom(c, "bob", "hello")]);
   });
 
+  it("a copy from a device certified for a list newer than ours is held back sibling-list-behind, never read on our word", () => {
+    const alice = ownAccount("alice", 3);
+    const [a, b, c] = alice.devices as [OwnDevice, OwnDevice, OwnDevice];
+    // c joined at version 2, from another device: our list is still 1.
+    const joined = signedList(alice.master, 2, [a.account, b.account, c.account]);
+    c.own = {
+      ...c.own,
+      cert: alice.master.sign(certSigText(2, keyOf(c.account))),
+      certVer: 2,
+      list: joined,
+    };
+    a.own.list = signedList(alice.master, 1, [a.account, b.account]);
+    const copy = copyFor(alice, c, a, "bob", "hello");
+    const before = structuredClone(a.state);
+
+    // Our master's word on c, but for a list we do not hold yet: nothing is
+    // opened and nothing is admitted, and the caller can tell it apart.
+    expect(takesCopy(alice, a, c, copy)).toEqual({
+      events: [{ kind: "dropped", nick: "alice", reason: "sibling-list-behind", verb: "pkmsg" }],
+      outbound: [],
+    });
+    expect(a.state).toEqual(before);
+
+    // A list past c's certificate that leaves c out: c is unknown, as ever.
+    a.own.list = signedList(alice.master, 3, [a.account, b.account]);
+    expect(takesCopy(alice, a, c, copy)).toEqual({
+      events: [{ kind: "dropped", nick: "alice", reason: "sibling-unknown", verb: "pkmsg" }],
+      outbound: [],
+    });
+    expect(a.state).toEqual(before);
+
+    // The list c joined: the very copy is read.
+    a.own.list = joined;
+    expect(takesCopy(alice, a, c, copy).events).toEqual([copiedFrom(c, "bob", "hello")]);
+  });
+
   it("an MSG copy from a sibling our own list no longer names is dropped sibling-unknown, and the sibling forgotten", () => {
     const alice = ownAccount("alice", 2);
     const [a, b] = alice.devices as [OwnDevice, OwnDevice];

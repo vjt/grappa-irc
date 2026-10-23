@@ -37,6 +37,13 @@
 // written, and one past the stored watermark (`E2eState.inbox`) is skipped:
 // it is only acknowledged again. grappa's inbox ids never come back
 // (AUTOINCREMENT), so the watermark is enough.
+//
+// A drain stops BEFORE a copy from a sibling our own list does not name yet
+// but our master certified for a newer list (`sibling-list-behind`: paired
+// from another device since this page loaded): neither it nor anything past
+// it is read or acknowledged, and the report says so (`listBehind`) for the
+// caller to sync the identity and drain again. A drain that meets the same
+// copy again drops it as the engine reported it: it never stops twice.
 
 import { ApiError } from "../api";
 import type { E2eKeysWireDevice } from "../wireTypes";
@@ -172,11 +179,18 @@ export type E2eContext = {
  * What an operation changed: the chats it changed (folded nicks), how many
  * pre-key messages it opened (each spent a one-time key: time to refill the
  * bundle), whether something waits on the clock (time to tick, the engine's
- * own answer: `Engine.waitsOnTheClock`), and whether the send door refused a
+ * own answer: `Engine.waitsOnTheClock`), whether the send door refused a
  * payload as from a device grappa does not list (`unknown-device`: time to
- * sync, the identity moved).
+ * sync, the identity moved), and whether a drain stopped before a copy from a
+ * sibling our list is behind (time to sync, then drain again).
  */
-export type Report = { chats: string[]; pkmsgs: number; waiting: boolean; unknownDevice: boolean };
+export type Report = {
+  chats: string[];
+  pkmsgs: number;
+  waiting: boolean;
+  unknownDevice: boolean;
+  listBehind: boolean;
+};
 
 /** Who a nick is pinned to, as the user sees it: the master, and how many of its devices are trusted. */
 export type PeerTrust = { master: string; verified: boolean; devices: number };
@@ -248,6 +262,17 @@ export const SIBLINGS_TTL_MS = 60_000;
  * page, or a new list, lists them before its first copy.
  */
 const siblingsListed = new Map<string, number>();
+
+/**
+ * The inbox item a drain of each device (by Ed25519 key) last stopped before,
+ * our list behind the sibling that copied it: a page's own memory, so the
+ * drain after the sync reads that copy, or drops it, and never stops twice.
+ */
+const stoppedBefore = new Map<string, number>();
+
+/** The engine's word that our list is behind the sibling a copy came from (`Engine.receiveCopy`). */
+const listBehind = (e: E2eEvent): boolean =>
+  e.kind === "dropped" && e.reason === "sibling-list-behind";
 
 /** Every refusal a door answers: what a claim answers when it brings no KEYS text. */
 const REFUSALS: Record<DoorRefusal, true> = {
@@ -626,6 +651,7 @@ export function e2eClient(
       pkmsgs: 0,
       waiting: engine.waitsOnTheClock(),
       unknownDevice: sent.unknownDevice,
+      listBehind: false,
     };
   }
 
@@ -635,6 +661,7 @@ export function e2eClient(
         const touched = new Set<string>();
         let pkmsgs = 0;
         let unknownDevice = false;
+        let behind = false;
         let after = 0;
         for (;;) {
           const page = await door.inbox(after);
@@ -647,6 +674,23 @@ export function e2eClient(
             const res = m.own
               ? copyFrom(engine, m)
               : engine.receive(m.from, m.verb, m.msgid, m.fromDid, m.payload);
+            if (res.events.some(listBehind) && stoppedBefore.get(engine.deviceKey()) !== m.id) {
+              stoppedBefore.set(engine.deviceKey(), m.id);
+              console.debug(
+                `[e2e] a copy from our device ${m.fromDid} is for a newer list of ours: the drain stops before it`,
+              );
+              // What the check did on its way (a sibling our list dropped,
+              // forgotten) is kept; the copy itself waits in the inbox.
+              changes.push(
+                ...changesFor(
+                  res.events.filter((e) => !listBehind(e)),
+                  now(),
+                  m.id,
+                ),
+              );
+              behind = true;
+              break;
+            }
             if (m.verb === "pkmsg") pkmsgs += 1;
             changes.push(...changesFor(res.events, now(), m.id));
             outbound.push(...res.outbound);
@@ -672,7 +716,10 @@ export function e2eClient(
           unknownDevice ||= sent.unknownDevice;
           await persist();
           for (const key of await chats.apply(ctx.slot, sent.changes)) touched.add(key);
-          await door.ack(page.map((m) => m.id));
+          // Up to the watermark: all of the page, or what came before a stop.
+          const read = page.filter((m) => m.id <= state.inbox).map((m) => m.id);
+          if (read.length > 0) await door.ack(read);
+          if (behind) break;
           after = last.id;
         }
         const ticked = engine.tick();
@@ -691,6 +738,7 @@ export function e2eClient(
           pkmsgs,
           waiting: end.waiting,
           unknownDevice: unknownDevice || end.unknownDevice,
+          listBehind: behind,
         };
       }),
 
@@ -717,6 +765,7 @@ export function e2eClient(
           pkmsgs: 0,
           waiting: engine.waitsOnTheClock(),
           unknownDevice: sent.unknownDevice,
+          listBehind: false,
         };
       }),
 
@@ -745,6 +794,7 @@ export function e2eClient(
             pkmsgs: 0,
             waiting: engine.waitsOnTheClock(),
             unknownDevice: false,
+            listBehind: false,
           };
         }
         // A SAS never runs on a master the nick no longer has: one that ran

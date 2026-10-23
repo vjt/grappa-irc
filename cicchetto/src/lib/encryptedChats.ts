@@ -322,12 +322,14 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
   // Pre-key messages spent one-time keys: the sync refills the bundle. A
   // payload refused as from a device grappa does not list: the sync works out
-  // where the identity stands.
+  // where the identity stands. A drain stopped before a copy from a sibling
+  // our list is behind: the sync takes the newer list (`drainE2e` drains
+  // again).
   async function afterReport(slug: string, report: Report): Promise<void> {
     if (report.waiting) waiting.add(slug);
     else waiting.delete(slug);
     await changed(slug, report.chats);
-    if (report.pkmsgs > 0 || report.unknownDevice) await sync(slug);
+    if (report.pkmsgs > 0 || report.unknownDevice || report.listBehind) await sync(slug);
   }
 
   channel?.addEventListener("message", (event: MessageEvent<Changed>) => {
@@ -356,6 +358,9 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         drainAgain.delete(slug);
         const report = await run(slug, (client, ctx) => client.drain(ctx));
         await afterReport(slug, report);
+        // Stopped before a sibling's copy: the sync took our newer list, and
+        // the copy, with all past it, is read now.
+        if (report.listBehind) drainAgain.add(slug);
       } while (drainAgain.has(slug));
     })()
       .catch(unlessElsewhere)

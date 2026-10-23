@@ -4371,7 +4371,17 @@ crypto layer, only who is addressed.
   its key, never read from grappa's printed one. A sibling's FIRST
   verified PKMSG copy admits it (our list, S1 under our master, the curve
   proven by decryption), which is why receiving needs no device listing
-  of its own and the drain never re-lists on an unknown did. The listing
+  of its own. A copy from a device our list does not name yet, but whose
+  certificate our master signed for a list version past ours (paired from
+  another device since this page read the list), is `sibling-list-behind`:
+  the drain stops BEFORE it (neither it nor anything past it is read or
+  acknowledged), `encryptedChats` syncs the identity, which adopts the
+  newer list, and drains again; a copy our list is still behind the second
+  time is dropped, so a drain never stops twice on one item (a page map per
+  device). The check is not loosened: the copy is read only once our own
+  list names its device. Without this, every copy a new device sent into
+  the first drain of a page opened before its pairing was dropped
+  `sibling-unknown` and acknowledged, lost for good. The listing
   stays only where SENDING needs it: lazily before a page's first copy,
   then every 60 s (`SIBLINGS_TTL_MS`), kept in a module map because
   `encryptedChats.run` builds a new client per operation. The map is keyed
@@ -4403,14 +4413,15 @@ crypto layer, only who is addressed.
 
 ### The refusal set of `receiveCopy`
 
-The refusal set is not only the five sibling reasons (`sibling-not-ours`,
-`sibling-unknown`, `sibling-bad-signature`, `sibling-undecryptable`,
-`sibling-not-a-copy`), plus `sibling-gone` and `sibling-no-keys` on the
-send side. Because the PKMSG checks are shared with the peer path, a copy
+The refusal set is not only the sibling reasons (`sibling-not-ours`,
+`sibling-unknown`, `sibling-list-behind`, `sibling-bad-signature`,
+`sibling-undecryptable`, `sibling-not-a-copy`), plus `sibling-gone` and
+`sibling-no-keys` on the send side; `sibling-list-behind` is the one the
+client treats as "not yet" rather than "no" (S5). Because the PKMSG checks are shared with the peer path, a copy
 also refuses with the peer reasons `undecodable-payload`, `bad-payload`,
 `non-canonical-key`, `bad-from`, `not-for-us`, `undecodable-inner`,
 `inner-without-type` and `inner-key-mismatch`. Code against the set, not
-against "five". Every refusal happens before a session opens and leaves
+against a count. Every refusal happens before a session opens and leaves
 the engine state unchanged, except a post-decrypt refusal (a forward
 compatibility case): it keeps the id in `seen` and has spent the
 one-time key. An MSG on a sibling's curve handed in under a PEER nick is
@@ -4465,6 +4476,10 @@ NACKed as an unseen curve, as today (R14).
   is already copied.
 - A copy waits at most `OUTQ_TTL_MS` for a sibling's keys; past it the
   copy is dropped `sibling-no-keys`, not re-asked until a pause.
+- A drain stopped before a `sibling-list-behind` copy counts on the
+  identity sync that follows it. The page remembers the stop, not whether
+  that sync worked: if the sync fails, the next drain meets the copy a
+  second time and drops it.
 - A pre-50 server fails the `e2e_message` schema on every item, since the
   generated schema requires `own`; harmless only because no release
   carried E2E before 50.
