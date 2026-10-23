@@ -4378,7 +4378,9 @@ crypto layer, only who is addressed.
   by device key AND the version of our list: a list that moved (a device
   this one paired, one it dropped, one the identity sync adopted) is listed
   again at once, so a device paired here gets the very next copy instead
-  of waiting out the minute.
+  of waiting out the minute. An account whose list names this device
+  alone runs no copy step at all (`Engine.alone`): no listing, no store,
+  so a single-device account pays nothing for siblings it does not have.
 - **S6, no NACK on copies; a lost sibling session is an accepted gap.**
   Every copy drop is a log line (`{dropped, nick: ownNick, reason}`) and
   never an outbound entry, so a copy cannot set off a NACK ladder between

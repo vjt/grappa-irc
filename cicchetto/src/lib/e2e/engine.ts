@@ -505,6 +505,11 @@ export class Engine {
     return this.own.list.ver;
   }
 
+  /** Whether our master's list (`own.list`) names this device alone: no sibling to copy a text to. */
+  alone(): boolean {
+    return this.own.list.devices.every((ed25519) => ed25519 === this.deviceKey());
+  }
+
   /** This device's Curve25519 key: what a SAS binds besides the Ed25519 one. */
   curve(): string {
     return this.account.curve25519_key();
