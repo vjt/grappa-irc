@@ -186,6 +186,7 @@ describe("per-device inbox doors", () => {
     verb: "msg",
     msgid: "m1",
     payload: '{"v":2}',
+    own: false,
   };
 
   it("listE2eDeviceInbox GETs ?after= and returns the messages with from_did/to_did", async () => {

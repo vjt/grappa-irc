@@ -646,7 +646,7 @@ Check `protocol_version >= 28`. ⚠️ There is no 27 — the shape moved twice
 before this version was published, and the pin gate requires a number per
 move. Nothing ever spoke 27.
 
-### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46; network name v47; devices v49)
+### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46; network name v47; devices v49; copies to your other devices v50)
 
 An encrypted query is a conversation grappa carries and cannot read. The
 endpoints (cicchetto, or a bot using the shared Python package) run Olm via
@@ -659,7 +659,8 @@ fragments, and hands you one event per whole message and device:
 ```json
 {"kind": "e2e_message", "network": "azzurra", "id": 4711, "from": "vjt-claude",
  "from_did": "AaZaARRDyBk", "to_did": "BoBBoBBoBBo", "verb": "pkmsg",
- "msgid": "q83vEjRWeJA", "payload": "{\"v\":2,\"id\":{…},\"bodies\":{…}}"}
+ "msgid": "q83vEjRWeJA", "payload": "{\"v\":2,\"id\":{…},\"bodies\":{…}}",
+ "own": false}
 ```
 
 `payload` is the compact JSON text the peer sent, as a string, exactly as
@@ -667,7 +668,9 @@ the peer cut it, never parsed on the server. `verb` is one of `keys`,
 `pkmsg`, `msg`, `nack`. `from` is a routing hint only: pin the peer on its
 KEY, never its nick. `from_did` (v49) is the sending device, or `*` on a
 `keys` (it describes the whole user); `to_did` (v49) is the device of YOURS
-this copy is for.
+this copy is for. `own` (v50) is `false` on every message from a peer and
+`true` on a copy of a message one of YOUR other devices sent (see *Copies to
+your other devices* below): show it as sent, not received.
 
 **One identity, several devices (v49).** A subject holds one E2E identity
 per network: a master Ed25519 key, and up to **4** devices it vouches for.
@@ -759,7 +762,8 @@ encrypted messages that cannot be read here".
 A queued `pkmsg` or `msg` also raises a Web Push notification, once per
 message however many devices it was queued for, under the same
 private-message preferences and mute as a DM: the title is the peer's nick,
-the body "encrypted message", nothing else.
+the body "encrypted message", nothing else. A copy of your own message
+(`own: true`) never does.
 
 Sending:
 
@@ -923,12 +927,61 @@ or an entry that is not a key and a signature; 404 `not_found` for a `did`
 that is not one of your devices there; 413 `too_large` when the bundle
 would pass 50 one-time keys. Either way nothing is stored.
 
+**Copies to your other devices (v50).** What one of your devices sends a
+peer, your other listed devices (its siblings) should show too. IRC cannot
+carry that: a device never asks your own nick for keys, nor sends to it. So
+two doors act only inside your own account, never on IRC:
+
+| route | answer |
+|---|---|
+| `POST /networks/:network_id/e2e/devices/:did/claim` `{"from_did"}` | **200** `{"keys": "…"}` — one key of your sibling `did`, for your device `from_did` to open an Olm session to it: the KEYS v2 text a peer's KEYREQ is answered with, restricted to that one device (your signed list, its id block, and its oldest one-time key, or its fallback key once none is left). The key is consumed as on a KEYREQ |
+| `POST /networks/:network_id/e2e/devices/:did/copies` `{"from_did", "verb", "payload"}` | **202** `{"id": <id>, "msgid": "…"}` — a copy of a message `from_did` sent, queued in the inbox of your sibling `did` and pushed as an `e2e_message` with `own: true`, `from` your nick at send time and `from_did` the sending device. `id` is its queue id there, `msgid` one grappa picked |
+
+`verb` is `pkmsg` or `msg`, spelled as on the send door; `payload` is the
+compact JSON text your sending device encrypted to the sibling, with the
+session the claim opened, never the ciphertext the peer got. Copy a message
+only once grappa accepted it (the send door's 202): one that never left has
+nothing to copy. grappa fills these doors only for your own account, and is
+still not trusted for content: drop an `own` copy whose sending device is not
+on your own signed list, or whose signature does not verify.
+
+A copy waits in the sibling's queue like a peer's message, with three
+differences:
+
+- **one share**: every copy of your account in one device's queue counts as
+  ONE sender, so together they hold at most 1 MiB of it, whatever nick they
+  went out under; a peer's share and yours never eat each other, and both
+  count toward the 4 MiB;
+- **silent expiry**: a copy that waits past the 7 days goes with no
+  undeliverable row and no notice;
+- **no push**: a copy raises no Web Push notification.
+
+A copy the sibling's queue cannot take is answered 413 `full`, and is then
+simply MISSING on that device: nobody is told later, and you need not retry.
+A new device starts empty: copies apply from its pairing onward, with no
+backfill.
+
+Claim: 400 `bad_request` without a `from_did`; 404 `not_found` for a `did`
+your list does not name; 409 `self` for your own `did`, 409 `empty` when that
+device holds no key at all (unreachable until it uploads more), 409 `gone`
+when its key was taken between grappa's pick and the hand-out (ask again);
+422 `unknown_device` when `from_did` is not listed.
+
+Copy: 400 `bad_request` for another verb, a payload that is not compact JSON
+text, or a missing field; 404 `not_found` for a `did` your list does not
+name, or with no session on the network (as on the send door); 409 `self`
+when `did` is `from_did`, 409 `gone` when that device was dropped meanwhile;
+413 `too_large` for a payload over 32 KiB, 413 `full` as above; 422
+`unknown_device` when `from_did` is not listed; 503 `db_unavailable` when the
+database stays busy; 504 `session_timeout` if the session does not answer.
+
 Check `protocol_version >= 42`, `>= 43` for the offline queue and `id`,
 `>= 44` for the key bundle, `>= 46` for `expires_at`, `too_late` and
-`e2e_send_dropped`, `>= 47` for `network` on `isupport_changed`, and
-`>= 49` for devices: every route and field above that names one. A server
-between 42 and 47 speaks the v1 frame and the per-account shape, which no
-release ever carried; a v49 client does not talk E2E to it.
+`e2e_send_dropped`, `>= 47` for `network` on `isupport_changed`, `>= 49`
+for devices, and `>= 50` for the claim and copy doors and `own`: every
+route and field above that names one. A server between 42 and 47 speaks the
+v1 frame and the per-account shape, which no release ever carried; a v49
+client does not talk E2E to it.
 
 ### 4g. Pairing two devices of one account — the relay (issue 2430, v48)
 

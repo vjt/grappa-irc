@@ -53,22 +53,39 @@ defmodule GrappaWeb.E2eControllerTest do
   # there: one device, registered and listed. Every send names it as
   # `from`.
   defp live_network(vjt) do
-    {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-    {network, _} = network_with_server(port: port, slug: "azzurra-#{u()}")
-    _ = credential_fixture(vjt, network, %{nick: "grappa-test", autojoin_channels: []})
-    device = listed_device!(vjt, network)
-    pid = start_session_for(vjt, network)
-    :ok = IRCServer.await_handshake(server, 1_000)
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid, :normal, 1_000) end)
+    {server, network, [device]} = live_network(vjt, 1)
     {server, network, device}
   end
 
-  defp listed_device!(user, network) do
+  # The same with `n` devices, all listed: a copy goes from one to another.
+  defp live_network(vjt, n) do
+    {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+    {network, _} = network_with_server(port: port, slug: "azzurra-#{u()}")
+    _ = credential_fixture(vjt, network, %{nick: "grappa-test", autojoin_channels: []})
+    devices = listed_devices!(vjt, network, n)
+    pid = start_session_for(vjt, network)
+    :ok = IRCServer.await_handshake(server, 1_000)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid, :normal, 1_000) end)
+    {server, network, devices}
+  end
+
+  defp listed_device!(user, network), do: hd(listed_devices!(user, network, 1))
+
+  # `n` devices of `user` on `network`, registered and listed under one master.
+  defp listed_devices!(user, network, n) do
     master = E2eFixtures.identity()
-    %{attrs: attrs} = E2eFixtures.device(master)
-    {:ok, device} = E2eKeys.register_device({:user, user.id}, network.id, attrs)
-    {:ok, _} = E2eKeys.put_list({:user, user.id}, network.id, E2eFixtures.list(master, 1, [attrs.ed25519]))
-    device
+    attrs = for _ <- 1..n, do: E2eFixtures.device(master).attrs
+
+    devices =
+      Enum.map(attrs, fn a ->
+        {:ok, device} = E2eKeys.register_device({:user, user.id}, network.id, a)
+        device
+      end)
+
+    {:ok, _} =
+      E2eKeys.put_list({:user, user.id}, network.id, E2eFixtures.list(master, 1, Enum.map(attrs, & &1.ed25519)))
+
+    devices
   end
 
   describe "the send door" do
@@ -385,6 +402,90 @@ defmodule GrappaWeb.E2eControllerTest do
           ] do
         assert json_response(post(conn, path, body), 400) == %{"error" => "bad_request"}, inspect(body)
       end
+    end
+  end
+
+  # S1: a device copies what it sent to the account's other devices, into
+  # their queues and never onto IRC.
+  describe "the copy door" do
+    defp copies_path(network, device), do: "#{device_path(network, device.did)}/copies"
+
+    test "POST /e2e/devices/:did/copies answers 202 with the inbox id", %{conn: conn, vjt: vjt} do
+      {server, network, [a, b]} = live_network(vjt, 2)
+      body = %{from_did: a.did, verb: "pkmsg", payload: @payload}
+
+      assert %{"id" => id, "msgid" => msgid} = json_response(post(conn, copies_path(network, b), body), 202)
+      assert E2e.msgid?(msgid)
+
+      # The sibling's queue holds it, flagged own and sent under our nick,
+      # in the shape every e2e_message has.
+      assert [%{"id" => ^id, "msgid" => ^msgid, "own" => true} = item] =
+               json_response(get(conn, "#{device_path(network, b.did)}/inbox"), 200)["messages"]
+
+      assert {item["from"], item["from_did"], item["to_did"], item["verb"], item["payload"]} ==
+               {"grappa-test", a.did, b.did, "pkmsg", @payload}
+
+      assert json_response(get(conn, "#{device_path(network, a.did)}/inbox"), 200)["messages"] == []
+      refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "E2E"))
+    end
+
+    test "404 for a did the list does not name, 409 self, 422 an unlisted sender, 400 a non-message verb or a payload that is not JSON text, 413 too_large",
+         %{conn: conn, vjt: vjt} do
+      {_, network, [a, b]} = live_network(vjt, 2)
+      ok = %{from_did: a.did, verb: "msg", payload: @payload}
+
+      assert json_response(post(conn, "#{device_path(network, "AAAAAAAAAAA")}/copies", ok), 404) ==
+               %{"error" => "not_found"}
+
+      assert json_response(post(conn, copies_path(network, a), ok), 409) == %{"error" => "self"}
+
+      assert json_response(post(conn, copies_path(network, b), %{ok | from_did: "AAAAAAAAAAA"}), 422) ==
+               %{"error" => "unknown_device"}
+
+      for body <- [
+            %{ok | verb: "keyreq"},
+            %{ok | verb: "keys"},
+            %{ok | verb: "nack"},
+            %{ok | verb: "MSG"},
+            %{ok | payload: ""},
+            %{ok | payload: ~s({"v": 2})},
+            Map.delete(ok, :payload),
+            Map.delete(ok, :from_did),
+            %{ok | payload: 2}
+          ] do
+        assert json_response(post(conn, copies_path(network, b), body), 400) == %{"error" => "bad_request"},
+               inspect(body)
+      end
+
+      huge = String.duplicate("A", E2e.max_payload_bytes() + 1)
+
+      assert json_response(post(conn, copies_path(network, b), %{ok | payload: huge}), 413) ==
+               %{"error" => "too_large"}
+
+      assert E2eInbox.list(b, 0) == []
+    end
+
+    test "413 full once the sibling holds its share of own copies: the copy is simply missing there",
+         %{conn: conn, vjt: vjt} do
+      {_, network, [a, b]} = live_network(vjt, 2)
+      # Copies as big as the door takes: the share of own copies holds this
+      # many, and the next one is refused.
+      big = %{from_did: a.did, verb: "msg", payload: String.duplicate("A", E2e.max_payload_bytes())}
+      fits = div(E2eInbox.max_sender_bytes(), E2e.max_payload_bytes() + E2eInbox.row_overhead_bytes())
+
+      for _ <- 1..fits, do: assert(%{"id" => _} = json_response(post(conn, copies_path(network, b), big), 202))
+
+      assert json_response(post(conn, copies_path(network, b), big), 413) == %{"error" => "full"}
+      assert length(E2eInbox.list(b, 0)) == fits
+    end
+
+    test "with no session on the network a copy is a 404, like a send", %{conn: conn, vjt: vjt} do
+      network = idle_network(vjt)
+      [a, b] = listed_devices!(vjt, network, 2)
+      body = %{from_did: a.did, verb: "msg", payload: @payload}
+
+      assert json_response(post(conn, copies_path(network, b), body), 404) == %{"error" => "not_found"}
+      assert E2eInbox.list(b, 0) == []
     end
   end
 

@@ -354,7 +354,13 @@ let _socket: Socket | null = null;
 // the undeliverable meta. No release ever carried E2E, so the E2E client
 // moves to this shape in the same landing (MD-2) rather than speaking both;
 // nothing else here changed, so `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 49;
+//
+// 50 (issue 2430 S1) — a device's sent messages copied to its siblings:
+// `…/e2e/devices/:did/claim` and `…/e2e/devices/:did/copies`, `own` on
+// `e2e_message`, the tokens `self` / `empty` / `gone` / `full`. A pre-50
+// server answers the doors 404, which leaves a copy missing on the other
+// devices and nothing else, so `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 50;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

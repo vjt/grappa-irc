@@ -561,7 +561,10 @@ defmodule Grappa.Session.Wire do
   # master key. Wire v2 (multi-device): `from_did` is the sending device as
   # the frame named it (`*` on a KEYS, which describes a user), and
   # `to_did` the device whose queue the copy waits in, which is the only
-  # device that reads and acknowledges it.
+  # device that reads and acknowledges it. S1 (protocol 50): `own` is true
+  # on a copy of a message the subject itself sent from another of its
+  # devices (`from` is then our own nick, `from_did` our sending device),
+  # false on every message from a peer.
   @type e2e_message_payload :: %{
           kind: :e2e_message,
           id: pos_integer(),
@@ -571,7 +574,8 @@ defmodule Grappa.Session.Wire do
           to_did: String.t(),
           verb: e2e_verb(),
           msgid: String.t(),
-          payload: String.t()
+          payload: String.t(),
+          own: boolean()
         }
 
   @typedoc """
@@ -586,6 +590,13 @@ defmodule Grappa.Session.Wire do
   grappa named the message with, which a peer's `NACK` will name.
   """
   @type e2e_sent_payload :: %{msgid: String.t()}
+
+  @typedoc """
+  issue 2430 S1 — `POST /networks/:network_id/e2e/devices/:did/copies`
+  (202): the queue id the copy waits under in the sibling's inbox, and the
+  msgid grappa named it with.
+  """
+  @type e2e_copied_payload :: %{id: pos_integer(), msgid: String.t()}
 
   # issue 2430 — why an accepted outbound E2E message was dropped unsent:
   # an order's answer that could no longer be back by its `expires_at`, a
@@ -1643,7 +1654,9 @@ defmodule Grappa.Session.Wire do
   handles a pushed message and a fetched one alike. `id` is the queue's:
   the device acknowledges it, and tells a redelivery from a new message by
   it. `to_did` is the device whose queue the copy waits in: every client
-  of the subject hears the push, and a device takes only its own.
+  of the subject hears the push, and a device takes only its own. `own`
+  (S1) marks a copy of a message the subject sent from another of its own
+  devices, so the client shows it as sent, not received.
   """
   @spec e2e_message(String.t(), String.t(), E2eInbox.Entry.t()) :: e2e_message_payload()
   def e2e_message(network_slug, to_did, %E2eInbox.Entry{} = entry) when is_binary(network_slug) and is_binary(to_did) do
@@ -1656,7 +1669,8 @@ defmodule Grappa.Session.Wire do
       to_did: to_did,
       verb: entry.verb,
       msgid: entry.msgid,
-      payload: entry.payload
+      payload: entry.payload,
+      own: entry.own
     }
   end
 
@@ -1674,6 +1688,14 @@ defmodule Grappa.Session.Wire do
   @doc "issue 2430 — the send door's answer: the msgid grappa chose."
   @spec e2e_sent(String.t()) :: e2e_sent_payload()
   def e2e_sent(msgid) when is_binary(msgid), do: %{msgid: msgid}
+
+  @doc """
+  issue 2430 S1 — the copy door's answer: the queue id of the copy in the
+  sibling's inbox, and the msgid grappa chose for it.
+  """
+  @spec e2e_copied(E2eInbox.Entry.t()) :: e2e_copied_payload()
+  def e2e_copied(%E2eInbox.Entry{id: id, msgid: msgid}) when is_integer(id) and is_binary(msgid),
+    do: %{id: id, msgid: msgid}
 
   @doc """
   issue 2430 — an outbound end-to-end encrypted message the send door

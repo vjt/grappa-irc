@@ -133,7 +133,7 @@ defmodule Grappa.Session do
     # drifts. It is a pure module with no process or state behind it.
     exports: [NSInterceptor, Server, Wire]
 
-  alias Grappa.{E2eKeys, UserSettings}
+  alias Grappa.{E2eInbox, E2eKeys, UserSettings}
   alias Grappa.IRC.{AuthFSM, CTCP, E2e, Identifier, Ignore}
   alias Grappa.Session.{Deps, E2ePacer, FloodAllowance, ISupport, Server, Wire}
 
@@ -224,6 +224,22 @@ defmodule Grappa.Session do
           | :too_large
           | :rate_limited
           | :too_late
+
+  @typedoc """
+  issue 2430 S1 — every way `copy_e2e/6` refuses a copy, named once so its
+  REST door states the same set.
+  """
+  @type e2e_copy_error ::
+          :no_session
+          | :timeout
+          | :bad_request
+          | :too_large
+          | :self
+          | :unknown_device
+          | :not_found
+          | :full
+          | :gone
+          | :db_unavailable
 
   @typedoc """
   Per-channel member entry as returned by `list_members/3`. The
@@ -1103,6 +1119,72 @@ defmodule Grappa.Session do
   @spec deadline_ok?(E2e.verb(), E2ePacer.priority(), integer() | nil) :: boolean()
   defp deadline_ok?(_, _, nil), do: true
   defp deadline_ok?(verb, priority, expires_at), do: expires_at > 0 and priority == :control and verb in [:pkmsg, :msg]
+
+  @doc """
+  issue 2430 S1 — queues a copy of a message this subject just sent, for
+  another device of its own (a sibling), so every device of the account
+  shows what any of them sent.
+
+  `from_did` is the device that sent the message, `to_did` the sibling the
+  copy is for: both must be devices the subject's stored list names, and
+  they must differ. `verb` is `:pkmsg` or `:msg` (what a person wrote; the
+  client encrypted `payload` to the sibling), and `payload` is compact JSON
+  text no longer than `E2e.max_payload_bytes/0`, as on `send_e2e/8`.
+
+  The copy goes into the sibling's queue (`Grappa.E2eInbox`) flagged
+  `own`, under our nick at send time and a msgid the session picks, and is
+  pushed on the user topic as an `e2e_message` with `own: true`. It never
+  goes on IRC. Unlike a peer's message it raises no OS notification (it is
+  our own text), shares ONE sender bound with every other own copy, and
+  expires silently.
+
+  `{:ok, entry}` once it is queued. `{:error, :bad_request}` for another
+  verb or a payload that is not compact JSON text; `{:error, :too_large}`
+  past `E2e.max_payload_bytes/0`; `{:error, :self}` when both dids are the
+  same; `{:error, :unknown_device}` when `from_did` is not listed;
+  `{:error, :not_found}` when `to_did` is not; `{:error, :full}` when the
+  sibling's queue, or its share of own copies, cannot take it: the copy is
+  then simply missing on that device, and nobody is told later;
+  `{:error, :gone}` when the sibling was dropped meanwhile;
+  `{:error, :db_unavailable}`; `{:error, :no_session}` with no live session.
+  """
+  @spec copy_e2e(subject(), integer(), String.t(), String.t(), E2e.verb(), String.t()) ::
+          {:ok, E2eInbox.Entry.t()} | {:error, e2e_copy_error()}
+  def copy_e2e(subject, network_id, from_did, to_did, verb, payload)
+      when is_subject(subject) and is_integer(network_id) and is_binary(from_did) and is_binary(to_did) and
+             is_atom(verb) and is_binary(payload) do
+    with :ok <- validate_e2e_copy(from_did, to_did, verb, payload),
+         {:ok, sibling} <- sibling_device(subject, network_id, from_did, to_did) do
+      call_session(subject, network_id, {:copy_e2e, from_did, sibling, verb, payload})
+    end
+  end
+
+  # The checks that read nothing, first; the size before the shape, as on
+  # the send door.
+  @spec validate_e2e_copy(String.t(), String.t(), atom(), String.t()) ::
+          :ok | {:error, :bad_request | :too_large | :self}
+  defp validate_e2e_copy(from_did, to_did, verb, payload) do
+    cond do
+      byte_size(payload) > E2e.max_payload_bytes() -> {:error, :too_large}
+      not (E2eInbox.message_verb?(verb) and E2e.chunk?(payload)) -> {:error, :bad_request}
+      from_did == to_did -> {:error, :self}
+      true -> :ok
+    end
+  end
+
+  # Both ends of a copy are devices the subject's list names (one read of
+  # it): the sender, as on the send door, and the sibling the copy is for.
+  @spec sibling_device(subject(), integer(), String.t(), String.t()) ::
+          {:ok, E2eKeys.Device.t()} | {:error, :unknown_device | :not_found}
+  defp sibling_device(subject, network_id, from_did, to_did) do
+    listed = E2eKeys.listed_devices(subject, network_id)
+
+    case {Enum.any?(listed, &(&1.did == from_did)), Enum.find(listed, &(&1.did == to_did))} do
+      {false, _} -> {:error, :unknown_device}
+      {true, nil} -> {:error, :not_found}
+      {true, sibling} -> {:ok, sibling}
+    end
+  end
 
   @doc """
   #1225 — sends the operator's own outbound NOTICE (`/notice`) and self-echoes
