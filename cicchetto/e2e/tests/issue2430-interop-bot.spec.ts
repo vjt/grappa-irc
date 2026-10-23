@@ -9,10 +9,14 @@
 //   1. the cic user's nick is registered with NickServ, because the bot's
 //      trust layer 1 needs a 307 in its WHOIS, and the bot comes up trusting
 //      it;
-//   2. each side pins the other's key by hand: cic pastes the bot's key in
-//      the pane, the bot's operator writes cic's into its pins file;
-//   3. cic → bot, first contact: KEYREQ, KEYS, a pre-key message, and the
-//      bot shows the text as a TRUSTED encrypted message;
+//   2. each side pins the other's master key by hand, the bot's operator
+//      first: cic's pin sends a listreq at once (O1), behind a KEYREQ, and
+//      the bot answers no KEYREQ from a nick it has no pin for
+//      (E2E_DROPPED REASON=unpinned-nick); then cic pastes the bot's in the
+//      pane;
+//   3. cic → bot, first contact: KEYREQ, KEYS naming the bot's one device
+//      under its master, a pre-key message, and the bot shows the text as a
+//      TRUSTED encrypted message;
 //   4. bot → cic on the session that opened, shown in the query;
 //   5. a message longer than one IRC line, both ways: fragmented by one
 //      engine, reassembled by the other, paced by the bot without the ircd
@@ -32,6 +36,8 @@
 //     or shows as undecryptable, or the bot raises the key alarm.
 //   * A pin is not applied: cic's badge does not read verified, or the bot
 //     drops the message as from a key it did not pin.
+//   * The bot's KEYS do not name its device under its master in a shape
+//     cic reads: the pane does not count one device for it.
 //   * Reassembly or pacing breaks: the long message never shows, or the bot
 //     is disconnected by the ircd.
 //   * The two sides name the order differently (the network, the channel, the
@@ -65,6 +71,8 @@ const UNDER_WAY_BOUND = 46_000;
 // An order challenge lives 15 s (irc-olm CHALLENGE_TTL); the bot ends a held
 // line at its next tick past that, so its verdict is in well within 25 s.
 const ORDER_VERDICT = 25_000;
+// The bot reloads its pins file at a 1 s tick.
+const PINS_RELOAD = 15_000;
 
 // Azzurra's NickServ: 5–32 chars, and the confirmation mail carries the code
 // as `/msg NickServ AUTH <digits>` (registration-wizard-real.spec.ts).
@@ -74,9 +82,9 @@ const AUTH_CODE_RE = /AUTH (\d+)/;
 const WHOIS_ASK = 15_000;
 
 // The waits below, each at its bound, add up to about ten minutes (mail 45 s,
-// registration 30 s, the bot's start 45 s, VERIFIED 15 s, then the six
-// exchanges); they never all run to their bound, but the budget must not cut
-// one short.
+// registration 30 s, the bot's start 45 s, VERIFIED 15 s, the pin's load
+// 15 s, then the six exchanges); they never all run to their bound, but the
+// budget must not cut one short.
 const BUDGET = 720_000;
 
 // The cic subject, torn down by its fixture, so a timeout deletes it too (a
@@ -166,11 +174,13 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
     "VERIFIED",
   );
 
-  // 2. Pins, both ways, by hand.
+  // 2. Pins, both ways, by hand: the bot's first, loaded before cic's goes
+  //    (its ticker reloads the file once a second).
   await boot(page, cic.user);
   await equery(page, cic.nick, bot.nick);
-  await pin(page, bot.ed25519);
   await botPins({ [cic.nick]: await ownKey(page) });
+  await botWaitFor(/ E2E_PINS_LOADED N=1$/, bot.since, PINS_RELOAD, "cic's pin loaded");
+  await pin(page, bot.ed25519);
 
   // 3. cic → bot, first contact.
   const hello = "hello bot";
@@ -186,6 +196,8 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
     UNDER_WAY_BOUND,
     "cic's first message",
   );
+  // The keys cic took from the Python engine named the bot's one device.
+  await expect(page.getByTestId("e2e-peer-devices")).toContainText("1 device");
 
   // 4. bot → cic.
   const reply = "hello cic";
