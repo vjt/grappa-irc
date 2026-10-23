@@ -4373,8 +4373,12 @@ crypto layer, only who is addressed.
   proven by decryption), which is why receiving needs no device listing
   of its own and the drain never re-lists on an unknown did. The listing
   stays only where SENDING needs it: lazily before a page's first copy,
-  then every 60 s (`SIBLINGS_TTL_MS`), kept per device key in a module map
-  because `encryptedChats.run` builds a new client per operation.
+  then every 60 s (`SIBLINGS_TTL_MS`), kept in a module map because
+  `encryptedChats.run` builds a new client per operation. The map is keyed
+  by device key AND the version of our list: a list that moved (a device
+  this one paired, one it dropped, one the identity sync adopted) is listed
+  again at once, so a device paired here gets the very next copy instead
+  of waiting out the minute.
 - **S6, no NACK on copies; a lost sibling session is an accepted gap.**
   Every copy drop is a log line (`{dropped, nick: ownNick, reason}`) and
   never an outbound entry, so a copy cannot set off a NACK ladder between

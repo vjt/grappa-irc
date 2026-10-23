@@ -1180,22 +1180,42 @@ describe("e2eClient, copies to our other devices", () => {
     expect(await bodies(a2, "bob")).toEqual(["hi alice", "next"]);
   });
 
-  it("a device paired after the devices were listed gets copies once that listing is a minute old", async () => {
+  it("a device this one just paired gets the very next copy: a new list is listed again at once", async () => {
     const { w, a, a2, b } = await twoDevices();
     await bobWrites({ a, a2, b });
     await a.client.send(a.ctx, "Bob", "one");
     const a3 = await w.pairDevice(a);
+    const listings = vi.spyOn(w.grappa.api, "listE2eDevices");
+
+    // Well inside the minute a listing stands for: the list it was taken
+    // under is not the list a holds now.
+    await a.client.send(a.ctx, "Bob", "two");
+    await a.client.send(a.ctx, "Bob", "three");
+    await a2.client.drain(a2.ctx);
+    await a3.client.drain(a3.ctx);
+
+    expect(await bodies(a2, "bob")).toEqual(["hi alice", "one", "two", "three"]);
+    expect(await bodies(a3, "bob")).toEqual(["two", "three"]);
+    // Once for the new list, not once per text.
+    expect(listings).toHaveBeenCalledTimes(1);
+  });
+
+  it("the same list is listed again once its listing is a minute old", async () => {
+    const { w, a, a2, b } = await twoDevices();
+    await bobWrites({ a, a2, b });
+    await a.client.send(a.ctx, "Bob", "one");
+    const listings = vi.spyOn(w.grappa.api, "listE2eDevices");
 
     await a.client.send(a.ctx, "Bob", "two");
     w.now += SIBLINGS_TTL_MS;
     await a.client.send(a.ctx, "Bob", "three");
+    expect(listings).toHaveBeenCalledTimes(0);
     w.now += 1;
     await a.client.send(a.ctx, "Bob", "four");
-    await a2.client.drain(a2.ctx);
-    await a3.client.drain(a3.ctx);
 
+    expect(listings).toHaveBeenCalledTimes(1);
+    await a2.client.drain(a2.ctx);
     expect(await bodies(a2, "bob")).toEqual(["hi alice", "one", "two", "three", "four"]);
-    expect(await bodies(a3, "bob")).toEqual(["four"]);
   });
 
   it("a listing of the devices grappa refuses is logged with its cause, and the next copy lists them again", async () => {

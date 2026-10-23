@@ -236,14 +236,16 @@ export class IdentityElsewhereError extends Error {}
 
 /**
  * How long a listing of the account's devices (`Door.devices`) stands before
- * a copy lists them again: a device paired since gets the copies of the texts
- * sent once it is older.
+ * a copy lists them again, while our list stays the same: a list that moved
+ * (a device paired or dropped from this one, or adopted by the identity sync)
+ * is listed again at once.
  */
 export const SIBLINGS_TTL_MS = 60_000;
 
 /**
- * When this page last listed the siblings of each of its devices (by Ed25519
- * key): a page's own memory, so a new page lists them before its first copy.
+ * When this page last listed the siblings of each of its devices, by Ed25519
+ * key and the version of our list it held: a page's own memory, so a new
+ * page, or a new list, lists them before its first copy.
  */
 const siblingsListed = new Map<string, number>();
 
@@ -476,11 +478,12 @@ export function e2eClient(
   }
 
   // Our siblings as grappa lists the account's devices (`Engine.setSiblings`),
-  // when this page has not listed them for the device in `SIBLINGS_TTL_MS`.
+  // when this page has not listed them for the device, under the list it
+  // holds now, in `SIBLINGS_TTL_MS`.
   // A listing grappa refuses is logged and keeps the siblings known; the next
   // copy lists them again.
   async function listSiblings(engine: Engine, door: Door): Promise<Result> {
-    const key = engine.deviceKey();
+    const key = `${engine.deviceKey()} ${engine.listVersion()}`;
     const at = siblingsListed.get(key);
     if (at !== undefined && now() - at <= SIBLINGS_TTL_MS) return { events: [], outbound: [] };
     const devices = await door.devices();

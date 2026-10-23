@@ -500,6 +500,11 @@ export class Engine {
     return this.account.ed25519_key();
   }
 
+  /** The version of our master's list this device holds (`own.list`): it moves when a device joins or goes. */
+  listVersion(): number {
+    return this.own.list.ver;
+  }
+
   /** This device's Curve25519 key: what a SAS binds besides the Ed25519 one. */
   curve(): string {
     return this.account.curve25519_key();
