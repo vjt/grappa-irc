@@ -20,6 +20,10 @@
 // grappa may have moved the identity under the page: another tab says it
 // changed the network, this device's doors answer 404 or refuse it as a
 // device they do not list, or the user confirms a new identity.
+//
+// A second browser of the account joins an identity through a QR pairing
+// (X1-crypto): the doors each side goes through, per network, close this
+// module (`masterOf` to `abandonJoin`).
 
 import { createEffect } from "solid-js";
 import {
@@ -43,11 +47,20 @@ import {
   type OwnIdentity,
 } from "./accountStore";
 import { browserE2e } from "./browser";
-import { type E2eState, newState } from "./engine";
+import { newState } from "./engine";
 import { idBlock, topUp } from "./keyBundle";
 import { loadOlm } from "./olm";
+import { acceptSigned, issueDevice, type PairRefusal } from "./pairingMessages";
 import type { Account } from "./vodozemac/vodozemac_binding";
-import { certSigText, type IdBlock, listSigText, type SignedList, validMasterList } from "./wire";
+import {
+  certSigText,
+  did as didOf,
+  type IdBlock,
+  listSigText,
+  MAX_DEVICES,
+  type SignedList,
+  validMasterList,
+} from "./wire";
 
 /** What a sync found: this device speaks for the slot's identity, or grappa holds one it cannot speak for. */
 export type IdentityState = "ready" | "elsewhere";
@@ -178,10 +191,7 @@ export async function replaceIdentity(
 ): Promise<void> {
   await store.withAccount(slot, async (session) => {
     await clearE2eKeys(bearer, networkSlug);
-    session.account = session.newAccount();
-    session.master = null;
-    session.own = null;
-    Object.assign(session.state, trustOnly(session.state));
+    startOver(session);
     // The old identity is gone from grappa: so is it here, before anything
     // else can fail. A bootstrap that fails now leaves a record without an
     // identity, and the next sync makes a new one, never the old one again.
@@ -190,9 +200,15 @@ export async function replaceIdentity(
   });
 }
 
-// What a new identity keeps of the state: the trust placed in others.
-function trustOnly(state: E2eState): E2eState {
-  return { ...newState(), masters: state.masters, devices: state.devices, pins: state.pins };
+// A new device account in the session, and no identity: of the old one's
+// state only the trust placed in others stays (their masters and devices,
+// the pins). What a new identity starts from, and a new place in one.
+function startOver(session: AccountSession): void {
+  const { masters, devices, pins } = session.state;
+  session.account = session.newAccount();
+  session.master = null;
+  session.own = null;
+  Object.assign(session.state, { ...newState(), masters, devices, pins });
 }
 
 // A new identity for the session's device, while grappa holds no list: a
@@ -332,6 +348,235 @@ async function topUpKeys(
     await uploadE2eDeviceKeys(bearer, slug, did, upload);
   }
   session.account.mark_keys_as_published();
+}
+
+// ── Pairing (X1-crypto). The browser that holds an identity's master (the
+// holder) shows the QR; a new browser of the account (the joiner) scans it.
+// Once both users confirmed, the holder's master lists the joiner's device on
+// each network it is master of, and certifies it. These are the doors each
+// side goes through per network, around the channel, whose messages
+// `pairingMessages.ts` judges. The master never leaves the holder, and the
+// joiner starts empty: only public keys and signatures cross.
+
+// Carries what `peek` read out of an account session.
+class Peeked<T> extends Error {
+  constructor(readonly value: T) {
+    super("peeked");
+  }
+}
+
+// Reads the slot's record and stores nothing, not even a record for a slot
+// that has none: a session that throws stores nothing, so the answer leaves
+// in the throw.
+async function peek<T>(
+  store: AccountStore,
+  slot: string,
+  read: (session: AccountSession) => T,
+): Promise<T> {
+  try {
+    return await store.withAccount(slot, async (session) => {
+      throw new Peeked(read(session));
+    });
+  } catch (err) {
+    if (err instanceof Peeked) return err.value;
+    throw err;
+  }
+}
+
+/** The holder: the master's key when this browser holds the slot's master, else null. Stores nothing. */
+export function masterOf(store: AccountStore, slot: string): Promise<string | null> {
+  return peek(store, slot, ({ master }) => master?.ed25519_key() ?? null);
+}
+
+/**
+ * The holder: whether it can offer the network to a joiner, judged on the
+ * list after a sync, grappa's latest: the master's key; "full" when the list
+ * already names the four devices grappa allows; null when this browser holds
+ * no master for the slot (nothing is synced or stored then) or the sync does
+ * not answer "ready".
+ */
+export async function offerable(
+  store: AccountStore,
+  bearer: string,
+  slot: string,
+  slug: string,
+): Promise<{ master: string } | "full" | null> {
+  if ((await masterOf(store, slot)) === null) return null;
+  if ((await syncIdentity(store, bearer, slot, slug)) !== "ready") return null;
+  return peek(store, slot, ({ master, own }) => {
+    if (master === null || own === null) return null;
+    return own.list.devices.length >= MAX_DEVICES ? "full" : { master: master.ed25519_key() };
+  });
+}
+
+// One try of `addDevice` met a list on grappa above the one it signed over.
+const STALE = Symbol("stale_list");
+
+/**
+ * The holder: lists the joiner's device `id` on the network, at one version
+ * above the list grappa holds, and certifies it at that version
+ * (`issueDevice`, which first checks that the device vouches for this very
+ * master). After a sync, so the list grows from grappa's latest. A put refused
+ * as `stale_list` (another put landed between the sync and this one) syncs
+ * again, which takes that list, and signs the device in over it, once: a
+ * retry never puts a list that drops a device another put listed. Refusals:
+ * "failed" (no master here, the sync is not "ready", the id block does not
+ * vouch for the master, or grappa holds no such device), "paired", "full",
+ * and "list-changed" when the list moved under the retry too.
+ */
+export async function addDevice(
+  store: AccountStore,
+  bearer: string,
+  slot: string,
+  slug: string,
+  id: IdBlock,
+): Promise<{ cert: string; list: SignedList } | PairRefusal> {
+  const first = await listDevice(store, bearer, slot, slug, id);
+  if (first !== STALE) return first;
+  const retried = await listDevice(store, bearer, slot, slug, id);
+  return retried === STALE ? "list-changed" : retried;
+}
+
+async function listDevice(
+  store: AccountStore,
+  bearer: string,
+  slot: string,
+  slug: string,
+  id: IdBlock,
+): Promise<{ cert: string; list: SignedList } | PairRefusal | typeof STALE> {
+  if ((await syncIdentity(store, bearer, slot, slug)) !== "ready") return "failed";
+  const olm = await loadOlm();
+  return store.withAccount(slot, async (session) => {
+    const { master, own } = session;
+    if (master === null || own === null) return "failed";
+    const issued = issueDevice(olm, master, own, id);
+    if (issued === "failed") {
+      console.warn(`[e2e] the new device's id block does not vouch for this master on ${slug}`);
+    }
+    if (typeof issued === "string") return issued;
+    try {
+      await putE2eList(bearer, slug, { master: master.ed25519_key(), ...issued.list });
+    } catch (err) {
+      if (refusedAs(err, "stale_list")) return STALE;
+      if (!refusedAs(err, "unknown_device")) throw err;
+      // The joiner's device is not (or no longer) registered.
+      console.warn(
+        `[e2e] grappa refused the list with a new device on ${slug}: unknown_device`,
+        err,
+      );
+      return "failed";
+    }
+    session.own = { ...own, list: issued.list };
+    return issued;
+  });
+}
+
+/**
+ * The joiner: its device on the network, to be listed under `master` (the key
+ * the holder offered): the id block vouching for that master, and the did
+ * grappa registered it as. The slot's device account is kept only when the
+ * record holds no identity and grappa's list does not name its key, so a page
+ * reloaded mid-pairing registers the same key again, which grappa takes as
+ * the same device rather than one more of the subject's four; any other
+ * account starts over, keeping only the trust placed in others. The record is
+ * stored before the id block leaves. Refusals: "paired" (already listed under
+ * that master), "full" (grappa holds four devices), "failed" (grappa holds
+ * the list of another master, nothing touched; or the registration refused
+ * otherwise, logged).
+ */
+export function prepareJoin(
+  store: AccountStore,
+  bearer: string,
+  slot: string,
+  slug: string,
+  master: string,
+): Promise<{ id: IdBlock; did: string } | PairRefusal> {
+  return store.withAccount(slot, async (session) => {
+    const held = await getE2eList(bearer, slug);
+    // The identity was replaced since the offer, perhaps by this very browser
+    // in another tab: starting over here could drop the master grappa holds
+    // now, leaving its list to no browser. Only the user moves it.
+    if (held !== null && held.master !== master) {
+      console.warn(
+        `[e2e] grappa holds another master than the one offered on ${slug}: not paired there`,
+      );
+      return "failed";
+    }
+    const listed = held?.devices.includes(session.account.ed25519_key()) ?? false;
+    if (listed && session.own?.master === master) return "paired";
+    if (listed || session.own !== null) startOver(session);
+    const id = idBlock(session.account, master);
+    await session.persist();
+    try {
+      return { id, did: (await registerE2eDevice(bearer, slug, id)).did };
+    } catch (err) {
+      if (refusedAs(err, "too_many_devices")) return "full";
+      console.warn(`[e2e] could not register this device on ${slug} to pair it`, err);
+      return "failed";
+    }
+  });
+}
+
+/**
+ * The joiner: takes what the holder signed for its device on the network as
+ * its place in the identity, once `acceptSigned` holds it (a list `master`
+ * signed that names the device, and the master's certificate for it at that
+ * list's version). True once that place is stored: the device is listed and
+ * placed. The sync after it uploads the device's keys; one that throws or
+ * does not answer "ready" is logged and changes nothing of that, since the
+ * next sync (a reload, a reconnect) uploads them. False, nothing written,
+ * when the signatures do not hold.
+ */
+export async function completeJoin(
+  store: AccountStore,
+  bearer: string,
+  slot: string,
+  slug: string,
+  master: string,
+  signed: { cert: string; list: SignedList },
+): Promise<boolean> {
+  const olm = await loadOlm();
+  const placed = await store.withAccount(slot, async (session) => {
+    const device = session.account.ed25519_key();
+    const accepted = acceptSigned(olm, master, device, signed);
+    if (accepted === null) {
+      console.warn(`[e2e] the list or certificate the holder signed does not verify on ${slug}`);
+      return false;
+    }
+    session.own = { master, ...accepted, did: didOf(olm, device) };
+    return true;
+  });
+  if (!placed) return false;
+  try {
+    const state = await syncIdentity(store, bearer, slot, slug);
+    if (state !== "ready") {
+      console.warn(
+        `[e2e] the sync after pairing ${slug} answered ${state}; its keys go up at the next sync`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[e2e] the sync after pairing ${slug} failed; its keys go up at the next sync`,
+      err,
+    );
+  }
+  return true;
+}
+
+/**
+ * The joiner: drops its device `did` from grappa when the pairing ended before
+ * the holder listed it, so it holds none of the subject's four rooms. One gone
+ * already (`not_found`), or listed after all (`listed_device`: the holder's
+ * put went through), is left as it is; any other failure is logged, the
+ * device left behind.
+ */
+export async function abandonJoin(bearer: string, slug: string, did: string): Promise<void> {
+  try {
+    await removeE2eDevice(bearer, slug, did);
+  } catch (err) {
+    if (refusedAs(err, "not_found") || refusedAs(err, "listed_device")) return;
+    console.warn(`[e2e] could not drop the unpaired device ${did} on ${slug}`, err);
+  }
 }
 
 // Slots synced (or syncing) on this page. A failed sync leaves the set, so the

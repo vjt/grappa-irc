@@ -9,6 +9,8 @@ import { createRoot, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AccountStore } from "../lib/e2e/accountStore";
 import type { E2eState } from "../lib/e2e/engine";
+import type { Account } from "../lib/e2e/vodozemac/vodozemac_binding";
+import type { IdBlock } from "../lib/e2e/wire";
 import { Grappa, routeApi } from "./helpers/e2eGrappa";
 import { type MemoryVault, memoryLock, memoryVault } from "./helpers/e2eVault";
 import { olm } from "./helpers/olm";
@@ -54,9 +56,18 @@ const { Engine, newState } = await import("../lib/e2e/engine");
 const { idBlock } = await import("../lib/e2e/keyBundle");
 const { certSigText, decodePayload, did, encodePayload, listSigText, OTK_SIG_PREFIX } =
   await import("../lib/e2e/wire");
-const { accountSlot, mountIdentitySync, replaceIdentity, syncIdentity } = await import(
-  "../lib/e2e/identity"
-);
+const {
+  abandonJoin,
+  accountSlot,
+  addDevice,
+  completeJoin,
+  masterOf,
+  mountIdentitySync,
+  offerable,
+  prepareJoin,
+  replaceIdentity,
+  syncIdentity,
+} = await import("../lib/e2e/identity");
 
 /** The subject: the fake grappa's bearer is its nick. */
 const NICK = "alice";
@@ -120,20 +131,27 @@ const calls = (): string[] =>
 const uploads = () => vi.mocked(api.uploadE2eDeviceKeys).mock.calls.map((call) => call[3]);
 
 /**
- * The one-time keys the slot's sealed record holds unpublished, read off the
+ * What `read` finds in the account of the slot's sealed record, read off the
  * vault without its lock: what a crash at this moment would leave.
  */
-async function sealedKeys(vault: MemoryVault): Promise<string[] | undefined> {
+async function sealedAccount<T>(
+  vault: MemoryVault,
+  read: (account: Account) => T,
+): Promise<T | undefined> {
   const sealed = vault.records.get(SLOT);
   if (sealed === undefined) return undefined;
   const record = JSON.parse(await open(await vault.wrappingKey(), SLOT, sealed)) as {
     account: string;
   };
   const account = olm().Account.from_pickle(record.account);
-  const keys = account.one_time_keys();
+  const found = read(account);
   account.free();
-  return keys;
+  return found;
 }
+
+/** The one-time keys the slot's sealed record holds unpublished. */
+const sealedKeys = (vault: MemoryVault) =>
+  sealedAccount(vault, (account) => account.one_time_keys());
 
 /** A state with something in every field: what a device that chatted a while holds. */
 function lived(): E2eState {
@@ -837,6 +855,524 @@ describe("replaceIdentity", () => {
       masters: before.state.masters,
       devices: before.state.devices,
       pins: before.state.pins,
+    });
+  });
+});
+
+// The doors a QR pairing goes through, without the channel: the holder is the
+// browser that holds the master, the joiner the new browser of the account.
+describe("the pairing doors", () => {
+  /** A browser whose identity the sync made: it holds the master. */
+  async function holder(): Promise<{ vault: MemoryVault; store: AccountStore }> {
+    const made = browser();
+    expect(await sync(made.store)).toBe("ready");
+    return made;
+  }
+
+  /** The master key the holder's QR offers. */
+  async function offered(store: AccountStore): Promise<string> {
+    const M = await masterOf(store, SLOT);
+    if (M === null) throw new Error("no master here");
+    return M;
+  }
+
+  /** The joiner's device, registered under `M`: what its `join` carries. */
+  async function joined(store: AccountStore, M: string): Promise<{ id: IdBlock; did: string }> {
+    const prepared = await prepareJoin(store, NICK, SLOT, SLUG, M);
+    if (typeof prepared === "string") throw new Error(`the joiner refused: ${prepared}`);
+    return prepared;
+  }
+
+  /** What the holder signs for the joiner's `id`. */
+  async function signedFor(store: AccountStore, id: IdBlock) {
+    const signed = await addDevice(store, NICK, SLOT, SLUG, id);
+    if (typeof signed === "string") throw new Error(`the holder refused: ${signed}`);
+    return signed;
+  }
+
+  /** A whole pairing: the joiner listed by the holder's master, and ready. */
+  async function paired(holderStore: AccountStore, joinerStore: AccountStore) {
+    const M = await offered(holderStore);
+    const j = await joined(joinerStore, M);
+    const signed = await signedFor(holderStore, j.id);
+    expect(await completeJoin(joinerStore, NICK, SLOT, SLUG, M, signed)).toBe(true);
+    return { M, j, signed };
+  }
+
+  /** `n` devices of other browsers registered on grappa, each vouching for `M`: their keys. */
+  async function strangers(n: number, M: string): Promise<string[]> {
+    const keys: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const device = new (olm().Account)();
+      await grappa.api.registerE2eDevice(NICK, SLUG, idBlock(device, M));
+      keys.push(device.ed25519_key());
+      device.free();
+    }
+    return keys;
+  }
+
+  /** The list the holder's master signs at `ver` over `devices`, as grappa takes it. */
+  const listBy = (store: AccountStore, ver: number, devices: string[]) =>
+    store.withAccount(SLOT, async ({ master }) => {
+      if (master === null) throw new Error("no master here");
+      const sorted = [...devices].sort();
+      return {
+        master: master.ed25519_key(),
+        ver,
+        devices: sorted,
+        sig: master.sign(listSigText(ver, sorted)),
+      };
+    });
+
+  it("a pairing through the doors leaves the new device ready and listed, its certificate at the new ver", async () => {
+    const a = await holder();
+    const b = browser();
+
+    const M = await masterOf(a.store, SLOT);
+    if (M === null) throw new Error("no master here");
+    const j = await joined(b.store, M);
+    const signed = await signedFor(a.store, j.id);
+    expect(await completeJoin(b.store, NICK, SLOT, SLUG, M, signed)).toBe(true);
+    expect(await sync(b.store)).toBe("ready");
+
+    const [mineA, mineB] = [await stored(a.store), await stored(b.store)];
+    expect(M).toBe(mineA.M);
+    expect(j.id.ed25519).toBe(mineB.E);
+    const held = await grappa.api.getE2eList(NICK, SLUG);
+    expect(held).toEqual({
+      master: M,
+      ver: 2,
+      devices: [mineA.E, mineB.E].sort(),
+      sig: expect.any(String),
+    });
+    expect(mineB.M).toBeNull();
+    expect(mineB.own).toEqual({
+      master: M,
+      cert: signed.cert,
+      certVer: 2,
+      list: { ver: 2, devices: held?.devices, sig: held?.sig },
+      did: j.did,
+    });
+    expect(j.did).toBe(did(olm(), mineB.E));
+    expect(olm().verify_ed25519(M, certSigText(2, mineB.E), signed.cert)).toBe(true);
+    expect(mineA.own?.list).toEqual({ ver: 2, devices: held?.devices, sig: held?.sig });
+    // completeJoin's sync filled the new device's bundle.
+    expect(await grappa.api.getE2eDeviceKeys(NICK, SLUG, j.did)).toEqual({
+      one_time_keys: 50,
+      fallback: true,
+    });
+  });
+
+  // The channel cannot outlive the page: a reload between the registration
+  // and `signed` pairs again from the start, and must not leak a device into
+  // the subject's four rooms.
+  it("prepareJoin twice on one slot registers one device", async () => {
+    const a = await holder();
+    const M = await offered(a.store);
+    expect(await grappa.api.listE2eDevices(NICK, SLUG)).toHaveLength(1);
+    const b = browser();
+
+    const first = await joined(b.store, M);
+    expect(await grappa.api.listE2eDevices(NICK, SLUG)).toHaveLength(2);
+    // The page reloads before the holder signs: a new store over the same browser.
+    const second = await joined(accountStore(olm(), b.vault, memoryLock()), M);
+
+    expect(second).toEqual(first);
+    expect(await grappa.api.listE2eDevices(NICK, SLUG)).toHaveLength(2);
+  });
+
+  it("prepareJoin stores the device account before its id block leaves, so a reload registers the same key", async () => {
+    const a = await holder();
+    const M = await offered(a.store);
+    const b = browser();
+    let sealedAtRegister: string | undefined;
+    vi.mocked(api.registerE2eDevice).mockImplementationOnce(async (t, s, id) => {
+      sealedAtRegister = await sealedAccount(b.vault, (account) => account.ed25519_key());
+      return grappa.api.registerE2eDevice(t, s, id);
+    });
+
+    const j = await joined(b.store, M);
+
+    expect(sealedAtRegister).toBe(j.id.ed25519);
+  });
+
+  it("prepareJoin on a slot whose old identity grappa no longer lists makes a fresh account and keeps the pins", async () => {
+    const b = browser();
+    expect(await sync(b.store)).toBe("ready");
+    await b.store.withAccount(SLOT, async ({ state }) => {
+      Object.assign(state, lived());
+    });
+    const before = await stored(b.store);
+    // Replaced since: grappa dropped it, and another browser made the one it holds now.
+    await grappa.api.clearE2eKeys(NICK, SLUG);
+    const a = await holder();
+    const M = await offered(a.store);
+
+    const j = await joined(b.store, M);
+
+    const after = await stored(b.store);
+    expect(after.E).not.toBe(before.E);
+    expect(j.id.ed25519).toBe(after.E);
+    expect(after.M).toBeNull();
+    expect(after.own).toBeNull();
+    expect(after.state).toEqual({
+      ...newState(),
+      masters: before.state.masters,
+      devices: before.state.devices,
+      pins: before.state.pins,
+    });
+    expect((await grappa.api.listE2eDevices(NICK, SLUG)).map((d) => d.ed25519).sort()).toEqual(
+      [(await stored(a.store)).E, after.E].sort(),
+    );
+  });
+
+  // The holder's put went through and the page went before `signed` came:
+  // the key is listed, and the record holds no identity to speak for it.
+  it("prepareJoin with no identity but a listed key makes a fresh account", async () => {
+    const a = await holder();
+    const M = await offered(a.store);
+    const b = browser();
+    const first = await joined(b.store, M);
+    await signedFor(a.store, first.id);
+    vi.clearAllMocks();
+
+    const second = await joined(b.store, M);
+
+    expect(second.id.ed25519).not.toBe(first.id.ed25519);
+    expect(vi.mocked(api.registerE2eDevice).mock.calls.map((call) => call[2].ed25519)).toEqual([
+      second.id.ed25519,
+    ]);
+    expect((await stored(b.store)).E).toBe(second.id.ed25519);
+  });
+
+  // The joiner read the network elsewhere and got the holder's offer; in
+  // another tab its user then started a new identity there. Starting over
+  // now would drop the master grappa holds, leaving its list to no browser.
+  it("prepareJoin refuses an offer whose master grappa no longer holds, says why, and touches nothing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const a = await holder();
+    const M = await offered(a.store);
+    const b = browser();
+    await replaceIdentity(b.store, NICK, SLOT, SLUG);
+    const before = await stored(b.store);
+    const held = await grappa.api.getE2eList(NICK, SLUG);
+    expect(held?.master).toBe(before.M);
+    vi.clearAllMocks();
+
+    expect(await prepareJoin(b.store, NICK, SLOT, SLUG, M)).toBe("failed");
+
+    expect(warn).toHaveBeenCalledWith(
+      `[e2e] grappa holds another master than the one offered on ${SLUG}: not paired there`,
+    );
+    expect(calls()).toEqual(["GET list"]);
+    expect(await stored(b.store)).toEqual(before);
+    expect(await grappa.api.getE2eList(NICK, SLUG)).toEqual(held);
+  });
+
+  it("prepareJoin answers failed, and says why, when grappa refuses the registration otherwise", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const a = await holder();
+    const M = await offered(a.store);
+    const refused = new api.ApiError(503, "db_unavailable");
+    vi.mocked(api.registerE2eDevice).mockRejectedValueOnce(refused);
+
+    expect(await prepareJoin(browser().store, NICK, SLOT, SLUG, M)).toBe("failed");
+
+    expect(warn).toHaveBeenCalledWith(
+      `[e2e] could not register this device on ${SLUG} to pair it`,
+      refused,
+    );
+    expect(await grappa.api.listE2eDevices(NICK, SLUG)).toHaveLength(1);
+  });
+
+  it("prepareJoin answers paired on a device already listed under that master, and changes nothing", async () => {
+    const a = await holder();
+    const b = browser();
+    const { M } = await paired(a.store, b.store);
+    const before = await stored(b.store);
+    vi.clearAllMocks();
+
+    expect(await prepareJoin(b.store, NICK, SLOT, SLUG, M)).toBe("paired");
+
+    expect(calls()).toEqual(["GET list"]);
+    expect(await stored(b.store)).toEqual(before);
+  });
+
+  // No list-held orphan sweep here: the holder's list is held, and every
+  // device grappa holds may be one of its own.
+  it("prepareJoin answers full when grappa holds 4 devices, and drops none of them", async () => {
+    const a = await holder();
+    const M = await offered(a.store);
+    await strangers(3, M);
+    vi.clearAllMocks();
+
+    expect(await prepareJoin(browser().store, NICK, SLOT, SLUG, M)).toBe("full");
+
+    expect(calls()).toEqual(["GET list", "POST devices"]);
+    expect(await grappa.api.listE2eDevices(NICK, SLUG)).toHaveLength(4);
+  });
+
+  it("addDevice re-syncs once when another device put a list first, and keeps that device", async () => {
+    const a = await holder();
+    const M = await offered(a.store);
+    const j = await joined(browser().store, M);
+    const E = (await stored(a.store)).E;
+    const [third = ""] = await strangers(1, M);
+    const behind = await listBy(a.store, 2, [E, third]);
+    vi.clearAllMocks();
+    // Another device's put lands between the holder's sync and its own put.
+    vi.mocked(api.putE2eList).mockImplementationOnce(async (t, s, list) => {
+      await grappa.api.putE2eList(t, s, behind);
+      return grappa.api.putE2eList(t, s, list);
+    });
+
+    const signed = await addDevice(a.store, NICK, SLOT, SLUG, j.id);
+
+    const all = [E, j.id.ed25519, third].sort();
+    expect(signed).toEqual({
+      cert: expect.any(String),
+      list: { ver: 3, devices: all, sig: expect.any(String) },
+    });
+    expect(api.putE2eList).toHaveBeenCalledTimes(2);
+    expect(await grappa.api.getE2eList(NICK, SLUG)).toMatchObject({
+      master: M,
+      ver: 3,
+      devices: all,
+    });
+    expect((await stored(a.store)).own?.list.ver).toBe(3);
+    if (typeof signed === "string") throw new Error("refused");
+    expect(olm().verify_ed25519(M, certSigText(3, j.id.ed25519), signed.cert)).toBe(true);
+  });
+
+  it("addDevice answers list-changed when the list moves twice", async () => {
+    const a = await holder();
+    const M = await offered(a.store);
+    const j = await joined(browser().store, M);
+    const E = (await stored(a.store)).E;
+    const [third = "", fourth = ""] = await strangers(2, M);
+    const lists = [
+      await listBy(a.store, 2, [E, third]),
+      await listBy(a.store, 3, [E, third, fourth]),
+    ];
+    vi.clearAllMocks();
+    for (const behind of lists) {
+      vi.mocked(api.putE2eList).mockImplementationOnce(async (t, s, list) => {
+        await grappa.api.putE2eList(t, s, behind);
+        return grappa.api.putE2eList(t, s, list);
+      });
+    }
+
+    expect(await addDevice(a.store, NICK, SLOT, SLUG, j.id)).toBe("list-changed");
+
+    expect(api.putE2eList).toHaveBeenCalledTimes(2);
+    expect(await grappa.api.getE2eList(NICK, SLUG)).toEqual(lists[1]);
+  });
+
+  it("addDevice on a browser that is not the master answers failed and puts nothing", async () => {
+    const a = await holder();
+    const b = browser();
+    const { M } = await paired(a.store, b.store);
+    const j = await joined(browser().store, M);
+    vi.clearAllMocks();
+
+    expect(await addDevice(b.store, NICK, SLOT, SLUG, j.id)).toBe("failed");
+
+    expect(api.putE2eList).not.toHaveBeenCalled();
+    expect(await grappa.api.getE2eList(NICK, SLUG)).toMatchObject({ ver: 2 });
+  });
+
+  it("addDevice on a master whose identity grappa now holds under another answers failed and puts nothing", async () => {
+    const a = await holder();
+    const M = await offered(a.store);
+    const j = await joined(browser().store, M);
+    // Replaced since: grappa dropped it, and another browser made the one it holds now.
+    await grappa.api.clearE2eKeys(NICK, SLUG);
+    const now = await holder();
+    vi.clearAllMocks();
+
+    expect(await addDevice(a.store, NICK, SLOT, SLUG, j.id)).toBe("failed");
+
+    expect(api.putE2eList).not.toHaveBeenCalled();
+    expect(await grappa.api.getE2eList(NICK, SLUG)).toMatchObject({
+      master: (await stored(now.store)).M,
+      ver: 1,
+    });
+  });
+
+  it("addDevice answers failed, and says why, for a device grappa does not hold", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const a = await holder();
+    const M = await offered(a.store);
+    const before = await grappa.api.getE2eList(NICK, SLUG);
+    const unregistered = new (olm().Account)();
+    const id = idBlock(unregistered, M);
+    unregistered.free();
+
+    expect(await addDevice(a.store, NICK, SLOT, SLUG, id)).toBe("failed");
+
+    expect(warn).toHaveBeenCalledWith(
+      `[e2e] grappa refused the list with a new device on ${SLUG}: unknown_device`,
+      expect.objectContaining({ status: 422, code: "unknown_device" }),
+    );
+    expect(await grappa.api.getE2eList(NICK, SLUG)).toEqual(before);
+    expect((await stored(a.store)).own?.list.ver).toBe(1);
+  });
+
+  it("addDevice answers failed, and says why, for an id block that vouches for another master", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const a = await holder();
+    const before = await grappa.api.getE2eList(NICK, SLUG);
+    // grappa holds the device (it never checks S1); its S1 names another master.
+    const device = new (olm().Account)();
+    const id = idBlock(device, new (olm().Account)().ed25519_key());
+    device.free();
+    await grappa.api.registerE2eDevice(NICK, SLUG, id);
+    vi.clearAllMocks();
+
+    expect(await addDevice(a.store, NICK, SLOT, SLUG, id)).toBe("failed");
+
+    expect(warn).toHaveBeenCalledWith(
+      `[e2e] the new device's id block does not vouch for this master on ${SLUG}`,
+    );
+    expect(api.putE2eList).not.toHaveBeenCalled();
+    expect(await grappa.api.getE2eList(NICK, SLUG)).toEqual(before);
+  });
+
+  it("completeJoin refuses a certificate over another ver, says why, and writes nothing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const a = await holder();
+    const b = browser();
+    const M = await offered(a.store);
+    const j = await joined(b.store, M);
+    const signed = await signedFor(a.store, j.id);
+    const cert = await a.store.withAccount(
+      SLOT,
+      async ({ master }) => master?.sign(certSigText(signed.list.ver + 1, j.id.ed25519)) ?? "",
+    );
+    vi.clearAllMocks();
+
+    expect(await completeJoin(b.store, NICK, SLOT, SLUG, M, { ...signed, cert })).toBe(false);
+
+    expect(warn).toHaveBeenCalledWith(
+      `[e2e] the list or certificate the holder signed does not verify on ${SLUG}`,
+    );
+    expect((await stored(b.store)).own).toBeNull();
+    expect(calls()).toEqual([]);
+    // What the holder signed is taken.
+    expect(await completeJoin(b.store, NICK, SLOT, SLUG, M, signed)).toBe(true);
+  });
+
+  // Once the signatures hold and the place is stored, the device IS listed
+  // and placed: the sync after it only uploads keys, and the next sync (a
+  // reload, a reconnect) uploads them if this one does not.
+  it("completeJoin answers true once placed, though the sync after it fails or does not answer ready, and says so", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // The sync throws: grappa does not answer the key status.
+    {
+      const a = await holder();
+      const b = browser();
+      const M = await offered(a.store);
+      const j = await joined(b.store, M);
+      const signed = await signedFor(a.store, j.id);
+      const down = new api.ApiError(503, "db_unavailable");
+      vi.mocked(api.getE2eDeviceKeys).mockRejectedValueOnce(down);
+
+      expect(await completeJoin(b.store, NICK, SLOT, SLUG, M, signed)).toBe(true);
+
+      expect((await stored(b.store)).own).toMatchObject({ master: M, certVer: 2, did: j.did });
+      expect(warn).toHaveBeenCalledWith(
+        `[e2e] the sync after pairing ${SLUG} failed; its keys go up at the next sync`,
+        down,
+      );
+      // The next sync uploads them.
+      expect(await sync(b.store)).toBe("ready");
+      expect(await grappa.api.getE2eDeviceKeys(NICK, SLUG, j.did)).toEqual({
+        one_time_keys: 50,
+        fallback: true,
+      });
+    }
+    // The sync reads no list on grappa: "elsewhere".
+    {
+      grappa = new Grappa();
+      const a = await holder();
+      const b = browser();
+      const M = await offered(a.store);
+      const j = await joined(b.store, M);
+      const signed = await signedFor(a.store, j.id);
+      vi.mocked(api.getE2eList).mockResolvedValueOnce(null);
+
+      expect(await completeJoin(b.store, NICK, SLOT, SLUG, M, signed)).toBe(true);
+
+      expect((await stored(b.store)).own).toMatchObject({ master: M, certVer: 2, did: j.did });
+      expect(warn).toHaveBeenCalledWith(
+        `[e2e] the sync after pairing ${SLUG} answered elsewhere; its keys go up at the next sync`,
+      );
+    }
+  });
+
+  it("abandonJoin tolerates not_found and listed_device, and warns on anything else", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const a = await holder();
+    const M = await offered(a.store);
+    const j = await joined(browser().store, M);
+    const listed = (await stored(a.store)).own?.did ?? "";
+
+    // Registered and never listed: dropped.
+    await abandonJoin(NICK, SLUG, j.did);
+    expect((await grappa.api.listE2eDevices(NICK, SLUG)).map((d) => d.did)).toEqual([listed]);
+    // Gone already, and listed after all: nothing to drop.
+    await abandonJoin(NICK, SLUG, j.did);
+    await abandonJoin(NICK, SLUG, listed);
+    expect(warn).not.toHaveBeenCalled();
+    expect((await grappa.api.listE2eDevices(NICK, SLUG)).map((d) => d.did)).toEqual([listed]);
+
+    // A refusal grappa names, but not one of the two: logged.
+    const refused = new api.ApiError(503, "db_unavailable");
+    vi.mocked(api.removeE2eDevice).mockRejectedValueOnce(refused);
+    await abandonJoin(NICK, SLUG, j.did);
+    expect(warn).toHaveBeenCalledWith(
+      `[e2e] could not drop the unpaired device ${j.did} on ${SLUG}`,
+      refused,
+    );
+  });
+
+  it("offerable answers null on a browser without the master and stores no record", async () => {
+    const empty = browser();
+
+    expect(await offerable(empty.store, NICK, SLOT, SLUG)).toBeNull();
+
+    expect(empty.vault.records.size).toBe(0);
+    expect(calls()).toEqual([]);
+    // A device paired to the identity holds no master either.
+    const a = await holder();
+    const b = browser();
+    await paired(a.store, b.store);
+    expect(await offerable(b.store, NICK, SLOT, SLUG)).toBeNull();
+    // Nor does a master whose identity grappa now holds under another one.
+    await grappa.api.clearE2eKeys(NICK, SLUG);
+    await holder();
+    expect(await offerable(a.store, NICK, SLOT, SLUG)).toBeNull();
+  });
+
+  it("offerable answers full on a list of 4", async () => {
+    const a = await holder();
+    const M = await offered(a.store);
+    const others = await strangers(3, M);
+    // Put by another device: the record learns of it from offerable's sync.
+    await grappa.api.putE2eList(
+      NICK,
+      SLUG,
+      await listBy(a.store, 2, [(await stored(a.store)).E, ...others]),
+    );
+
+    expect(await offerable(a.store, NICK, SLOT, SLUG)).toBe("full");
+  });
+
+  it("offerable answers the master on a ready master browser", async () => {
+    const a = await holder();
+
+    expect(await offerable(a.store, NICK, SLOT, SLUG)).toEqual({
+      master: (await stored(a.store)).M,
     });
   });
 });

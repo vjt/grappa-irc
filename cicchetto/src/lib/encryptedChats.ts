@@ -289,10 +289,26 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     if (Object.values(identity.sas).some((view) => view !== null)) waiting.add(slug);
   }
 
+  // Tells this browser's other tabs that the network changed: its chats
+  // `touched`, or its identity.
+  function tellTabs(slug: string, slot: string, touched: readonly string[]): void {
+    const message: Changed = { slug, slot, chats: [...touched] };
+    channel?.postMessage(message);
+  }
+
   async function changed(slug: string, touched: readonly string[]): Promise<void> {
     await refresh(slug, touched);
-    const message: Changed = { slug, slot: contextFor(slug).slot, chats: [...touched] };
-    channel?.postMessage(message);
+    tellTabs(slug, contextFor(slug).slot, touched);
+  }
+
+  /**
+   * A pairing just made this browser a device of the network's identity
+   * (`completeJoin`): the network is ready here, and every other tab of this
+   * browser that holds it elsewhere syncs it again.
+   */
+  function pairedHere(slug: string, slot: string): void {
+    identitySynced(slug, "ready");
+    tellTabs(slug, slot, []);
   }
 
   // Pre-key messages spent one-time keys: the sync refills the bundle. A
@@ -528,6 +544,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     replaceEncryptedIdentity,
     identitySynced,
     identityElsewhere,
+    pairedHere,
     verifyEncrypted,
     encryptedSendDropped,
     encryptedChatsFor,
@@ -553,6 +570,7 @@ export const pinEncryptedKey = exports_.pinEncryptedKey;
 export const replaceEncryptedIdentity = exports_.replaceEncryptedIdentity;
 export const identitySynced = exports_.identitySynced;
 export const identityElsewhere = exports_.identityElsewhere;
+export const pairedHere = exports_.pairedHere;
 export const verifyEncrypted = exports_.verifyEncrypted;
 export const encryptedSendDropped = exports_.encryptedSendDropped;
 export const encryptedChatsFor = exports_.encryptedChatsFor;

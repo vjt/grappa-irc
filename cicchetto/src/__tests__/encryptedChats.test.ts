@@ -813,6 +813,21 @@ describe("encrypted chats, an identity held elsewhere", () => {
     expect(chats.identityElsewhere(net.slug)).toBe(false);
   });
 
+  it("pairedHere clears the elsewhere flag and tells the other tabs", async () => {
+    chats.identitySynced(net.slug, "elsewhere");
+    const other = new BroadcastChannel("grappa-e2e-chats");
+    const told: unknown[] = [];
+    other.addEventListener("message", (event) => told.push(event.data));
+    try {
+      chats.pairedHere(net.slug, slot());
+
+      expect(chats.identityElsewhere(net.slug)).toBe(false);
+      await vi.waitFor(() => expect(told).toEqual([{ slug: net.slug, slot: slot(), chats: [] }]));
+    } finally {
+      other.close();
+    }
+  });
+
   it("a new identity started here on the user's word replaces the one grappa held, and the network runs again", async () => {
     await madeElsewhere();
     const old = await grappa.api.getE2eList(net.nick, net.slug);
