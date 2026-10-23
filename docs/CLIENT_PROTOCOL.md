@@ -990,6 +990,48 @@ rendezvous ended while you missed the push saying so. `reason` is
 
 Check `protocol_version >= 48`.
 
+**What cicchetto puts on the channel (issue 2430, X1-crypto; no wire
+change, protocol stays 49).** grappa never reads this, and a client
+that wants to pair with cic needs it. Direction: the device that holds
+the identity opens the rendezvous and shows the QR (the ECIES inbound
+side); the new device scans it and joins (the outbound side), and posts
+first.
+
+- **ECIES.** Both sides build vodozemac's `Ecies::with_info` with the
+  info string `irc-e2e:v2:pair` and the digit mode `AllowLeadingZero`
+  (MSC4108). The check code is the 2-digit number both ends derive,
+  always shown as two digits (`07`, never `7`). The new device shows it;
+  the holder's user types it on the holder, and the holder compares it
+  with its own before it sends anything else.
+- **Payloads.** The joiner's first payload is vodozemac's
+  `InitialMessage.encode()` (`ciphertext|key`), which carries a `|` the
+  relay refuses, so it travels as base64url of its UTF-8, unpadded. Every
+  later payload, in both directions, is `Message.encode()` as it is
+  (unpadded standard base64).
+- **Plaintexts.** Compact JSON with `"v":1` and a `"t"` kind. A `network`
+  is the network SLUG. An unknown `t`, a `v` other than 1, or a missing or
+  ill-typed field ends the pairing as failed; unknown extra fields are
+  ignored. Five kinds, in this order:
+
+| From | `t` | Body (besides `v`, `t`) | When |
+|---|---|---|---|
+| joiner | `hello` | none | the initial plaintext |
+| holder | `offer` | `networks: [{network, master}]`, `full: [network…]` | after the typed code matched. `master` is the master Ed25519 key. `full` lists networks whose list already holds 4 devices; they are not offered |
+| joiner | `join` | `devices: [{network, id: {curve25519, ed25519, sig}}]`, `skipped: [{network, reason}]` | after the user taps "Pair this browser". `sig` is the device's own Ed25519 signature (S1, §4f) over `irc-e2e:v2:id:<curve25519>:<master>`, `master` being the offered master key |
+| holder | `signed` | `devices: [{network, cert, list: {ver, devices, sig}}]`, `refused: [{network, reason}]` | `list` is the master's signed list with the device added: `devices` sorted ascending, `sig` the list signature of §4f. `cert` is the device's certificate: the master's Ed25519 signature over `irc-e2e:v2:dev:<ver>:<ed25519>`, where `<ver>` is the `ver` of the `list` in the same entry and `<ed25519>` the device's key (`docs/DESIGN_NOTES.md` #2430k) |
+| joiner | `done` | `paired: [network…]` | after it verified and kept what `signed` carried; `paired` names the networks where it took its place, and a network the holder added that `paired` leaves out is reported failed by the holder; then the HOLDER closes the rendezvous |
+
+`reason` is one of `full`, `paired` (the device is already listed under
+that master), `list-changed` (the holder's list moved while it signed)
+or `failed`. The channel carries public keys and signatures only: no
+pins, verifications or history travel, and the new device starts with
+none. One `offer` or `signed` must stay under the relay's 16 KiB per
+message, which is about 25 networks per pairing. Nothing is signed
+before both sides confirmed: the holder by typing the code, the joiner by
+its tap. A holder with no network to offer sends no `offer` and closes
+the rendezvous; a joiner treats an `offer` with no network as nothing to
+pair.
+
 ---
 
 ## 5. Wire format
