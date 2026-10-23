@@ -20,6 +20,7 @@ import { vi } from "vitest";
 import type * as Api from "../../lib/api";
 import { ApiError } from "../../lib/api";
 import type { DoorRefusal } from "../../lib/e2e/chatStore";
+import { claimAnswer, copyAnswer, devicesAnswer } from "../../lib/e2e/client";
 import type { SignedKey } from "../../lib/e2e/keyBundle";
 import {
   base64Unpadded,
@@ -127,13 +128,6 @@ const REFUSED: Record<DoorRefusal, [number, string]> = {
   "too-late": [422, "too_late"],
   "unknown-device": [422, "unknown_device"],
   refused: [400, "bad_request"],
-};
-
-// What `encryptedChats.ts` makes of a door's refusal.
-const refusalOf = (err: unknown): DoorRefusal => {
-  if (!(err instanceof ApiError)) throw err;
-  if (err.status === 413) return "too-large";
-  return err.code === "unknown_device" ? "unknown-device" : "refused";
 };
 
 const badRequest = () => new ApiError(400, "bad_request");
@@ -262,13 +256,15 @@ export class Grappa {
         await this.api.ackE2eDeviceInbox(nick, "", did, ids);
       },
       send: async (out) => this.send(nick, out),
-      claim: (target) =>
-        this.api.claimE2eDeviceKeys(nick, "", target, did).then((r) => r.keys, refusalOf),
+      // The sibling doors answer as the real ones do (`client.ts`).
+      claim: (target) => claimAnswer(target, this.api.claimE2eDeviceKeys(nick, "", target, did)),
       copy: (toDid, verb, payload) =>
-        this.api
-          .copyE2e(nick, "", toDid, { from_did: did, verb, payload })
-          .then((r) => r.id, refusalOf),
-      devices: () => this.api.listE2eDevices(nick, "").catch(refusalOf),
+        copyAnswer(
+          toDid,
+          verb,
+          this.api.copyE2e(nick, "", toDid, { from_did: did, verb, payload }),
+        ),
+      devices: () => devicesAnswer(this.api.listE2eDevices(nick, "")),
     };
   }
 
