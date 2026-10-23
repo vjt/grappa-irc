@@ -124,6 +124,11 @@ export function fb(olm: Olm, fromE: string, toE: string): string {
   return base64Unpadded(olm.sha256(encoder.encode(`${BIND_PREFIX}${fromE}:${toE}`)).slice(0, 16));
 }
 
+/** The text a device signs for its id block (S1): its curve key, then the master it vouches for. */
+export function idSigText(curve25519: string, master: string): string {
+  return `${ID_SIG_PREFIX}${curve25519}:${master}`;
+}
+
 /** The text a master signs for a list: `N` in decimal, the keys in array order. */
 export function listSigText(ver: number, devices: string[]): string {
   return `${LIST_SIG_PREFIX}${ver}:${devices.join(",")}`;
