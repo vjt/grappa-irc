@@ -4336,20 +4336,24 @@ crypto layer, only who is addressed.
   were (the 176 existing engine tests pass untouched).
 - **S2, a claim door, not a KEYREQ over IRC.** A sibling's keys come from
   grappa (`POST …/e2e/devices/:did/claim`, `E2eKeys.claim/4`): the same
-  KEYS text, one one-time key consumed, as the peer path answers, minus
-  the IRC round trip. A KEYREQ to our own nick would need a live socket,
-  would go through the ircd and a bot-shaped responder, and would be
-  visible to the server as chat. Both devices are already listed under
-  one master on grappa, so the REST door is the shorter and quieter way.
-  The client never trusts what the door returns (S5).
-- **S3, one share, silent expiry, no push.** An own copy counts against ONE
-  share for the whole account (`own: true`, 1 MiB per device), apart from
-  every peer's share, so a chatty peer cannot starve our copies and a
-  burst of ours cannot starve a peer. `E2eInbox.expire/3` still deletes a
-  stale copy but reports it to nobody: no `undeliverable` row, no NACK, no
-  push (`Session.copy_e2e` never calls the push trigger). A copy is the
-  user's own text on the user's own screen; nothing is owed to a sender
-  who is the reader.
+  KEYS text, one one-time key consumed, as the peer path answers. Two
+  reasons. Keys never leave grappa except as a KEYS block, so the claim
+  door asks grappa for one key of one listed sibling. And an IRC KEYREQ
+  cannot reach a sibling at all: the engine refuses a KEYREQ to our own
+  nick (`refuse("own-nick")`), because grappa would answer it with our own
+  identity, which `checkMaster` refuses. The client never trusts what the
+  door returns (S5).
+- **S3, one share, silent expiry, no push.** The bounds are per RECEIVING
+  device: 4 MiB for a device's inbox (`E2eInbox.max_bytes/0`), 1 MiB for
+  one sender's share of it (`max_sender_bytes/0`). Inside each receiving
+  device's inbox, all of the account's own copies count as ONE 1 MiB
+  sender share, whatever nick they went out under and apart from every
+  peer's share; both still count toward that device's 4 MiB. So a chatty
+  peer cannot starve our copies and a burst of ours cannot starve a peer.
+  `E2eInbox.expire/3` still deletes a stale copy but reports it to nobody:
+  no `undeliverable` row, no NACK, no push (`Session.copy_e2e` never calls
+  the push trigger). A copy is the user's own text on the user's own
+  screen; nothing is owed to a sender who is the reader.
 - **S4, copy only after the 202.** The client builds a copy only once
   grappa answered 202 for the send door, and only for a text (not LIST,
   SAS or ORDER), once per text: the copy step sits in `flush`, the one
@@ -4375,7 +4379,8 @@ crypto layer, only who is addressed.
   Every copy drop is a log line (`{dropped, nick: ownNick, reason}`) and
   never an outbound entry, so a copy cannot set off a NACK ladder between
   two of our own devices. If a sibling loses its session, the copies to
-  it are lost; a lost state means a new device anyway (D5 below), and the
+  it are lost. The plan's ruling is that a lost state means a new device
+  anyway (D5 of "X1-crypto" above: a new device starts empty), and the
   first message it reads after that opens a fresh session. A retraction
   protocol for a convenience copy is the heavier mechanism the problem
   does not call for.
@@ -4392,7 +4397,7 @@ crypto layer, only who is addressed.
 
 ### The refusal set of `receiveCopy`
 
-It is not only the five sibling reasons (`sibling-not-ours`,
+The refusal set is not only the five sibling reasons (`sibling-not-ours`,
 `sibling-unknown`, `sibling-bad-signature`, `sibling-undecryptable`,
 `sibling-not-a-copy`), plus `sibling-gone` and `sibling-no-keys` on the
 send side. Because the PKMSG checks are shared with the peer path, a copy
@@ -4432,8 +4437,14 @@ NACKed as an unseen curve, as today (R14).
   expiry ignores them, cic ignores `from` on an own item). Judging it
   made a copy sent under an upstream-assigned UID nick crash
   `Session.Server` from a REST call, on every send.
-- `claim` and `copies` need `from_did` to be listed and distinct from the
-  target: self is 409 `self`, a target with no key is 409 `empty`.
+- Statuses per door. claim: 400 `bad_request` without `from_did`; 404
+  when the target is not in the stored list; 422 `unknown_device` when
+  `from_did` is not listed; 409 `self`; 409 `empty` (the target holds no
+  key); 409 `gone` (its key was taken between pick and consume, R2).
+  copies: 400 `bad_request` (another verb, or a payload that is not compact
+  JSON text); 404 (target not listed, or no live session, R6); 422
+  `unknown_device`; 409 `self`; 409 `gone` (the sibling was dropped from
+  the list meanwhile); 413 `too_large` past 32 KiB; 413 `full`.
 
 ### Known limits, accepted
 
