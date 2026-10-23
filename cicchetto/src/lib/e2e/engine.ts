@@ -29,7 +29,9 @@
 // this device sends, on a path of their own: they come from our master's
 // list, never from a pin, their curves are never bound to a nick, and their
 // keys come from grappa's claim door, never from a KEYREQ (`setSiblings`,
-// `copy`, `siblingKeys`). The peer path keeps refusing our own master.
+// `copy`, `siblingKeys`). What they copy to us is read on that path too
+// (`receiveCopy`), never on the peer path, which keeps refusing our own
+// master.
 //
 // State: ALL of it is `E2eState`, plain JSON the caller seals and stores with
 // the account, in one record, under the slot's lock — irc-olm's in-memory
@@ -66,6 +68,7 @@ import {
   type MessageVerb,
   OTK_SIG_PREFIX,
   PayloadError,
+  type PkmsgPayload,
   parseKeys,
   parseMasterList,
   parseMsg,
@@ -200,7 +203,10 @@ type Sent = {
   msg: Outgoing;
   at: number;
 };
-/** A sibling: another device on our own master's list, its did and its curve (`setSiblings`). */
+/**
+ * A sibling: another device on our own master's list, its did and its curve
+ * (`setSiblings`, or the first copy it sent us: `receiveCopy`).
+ */
 type Sibling = { did: string; curve25519: string };
 /** The copy of a text this device sent `peer`, waiting since `at` for a sibling's keys. */
 type WaitingCopy = { peer: string; body: string; at: number };
@@ -314,7 +320,9 @@ export type DropReason =
   | "sibling-no-keys"
   | "sibling-not-ours"
   | "sibling-bad-signature"
-  | "sibling-unknown";
+  | "sibling-unknown"
+  | "sibling-undecryptable"
+  | "sibling-not-a-copy";
 
 export type SendFailure =
   | "own-nick"
@@ -344,7 +352,8 @@ export type UndecryptableReason =
  * something of our own account's, and the nick of the chat for a copy to a
  * sibling that goes unsent. A `sibling_keys_needed` asks the caller to claim
  * a key of our sibling `did` (grappa's claim door) and hand what came, or
- * null, to `siblingKeys`.
+ * null, to `siblingKeys`. A `copied` is the text `body` our sibling `device`
+ * (its Ed25519 key) sent `peer`: plaintext too, never log it.
  */
 export type E2eEvent =
   | {
@@ -362,7 +371,8 @@ export type E2eEvent =
   | { kind: "send_queued"; nick: string; queued: number; tag: string }
   | { kind: "send_failed"; nick: string; reason: SendFailure; tags: string[] }
   | { kind: "rekeying"; nick: string; master: string; device: string }
-  | { kind: "sibling_keys_needed"; did: string };
+  | { kind: "sibling_keys_needed"; did: string }
+  | { kind: "copied"; peer: string; body: string; device: string };
 
 /**
  * A payload for grappa's send door, `from` this device's did `to` a did or
@@ -1033,10 +1043,7 @@ export class Engine {
    * device, and its id block is signed under our master (S1); its did is the
    * one its key gives, whatever grappa printed beside it. A device the list
    * names whose block fails its signature is reported: only a lie makes one.
-   * A peer's device bound to a sibling's curve (a claim from before the
-   * sibling was known: `curveRefusal` refuses one since) is unbound with its
-   * sessions, as a proof evicts a claim: our master's word on the curve is
-   * stronger still. A sibling no longer present is forgotten
+   * Each is admitted (`admit`). A sibling no longer present is forgotten
    * (`forgetSibling`). Our list can move without this being called again (a
    * relist, a list adopted from another device), so every step that reaches a
    * sibling asks it again (`listedSiblings`).
@@ -1053,8 +1060,7 @@ export class Engine {
         res.events.push({ kind: "dropped", nick: this.ownNick, reason: "sibling-bad-signature" });
         continue;
       }
-      this.evictClaimant(block.curve25519, block.ed25519);
-      siblings[block.ed25519] = { did: siblingDid, curve25519: block.curve25519 };
+      siblings[block.ed25519] = this.admit(block.ed25519, block.curve25519, siblingDid);
     }
     for (const [ed25519, known] of Object.entries(this.state.siblings)) {
       if (siblings[ed25519]?.curve25519 !== known.curve25519)
@@ -1062,6 +1068,19 @@ export class Engine {
     }
     this.state.siblings = siblings;
     return this.end(res);
+  }
+
+  /**
+   * The sibling of key `ed25519` on the curve `curve25519`, its did
+   * `siblingDid`. A peer's device bound to that curve (a claim from before
+   * the sibling was known: `curveRefusal` refuses one since) is unbound with
+   * its sessions, as a proof evicts a claim: our master's word on the curve
+   * is stronger still. Without that, a peer's session to the curve would sit
+   * among the sibling's, and a copy on it read as that peer's.
+   */
+  private admit(ed25519: string, curve25519: string, siblingDid: string): Sibling {
+    this.evictClaimant(curve25519, ed25519);
+    return { did: siblingDid, curve25519 };
   }
 
   /** Whether our master's list (`own.list`) names `ed25519`: the one word on who our siblings are. */
@@ -1244,6 +1263,141 @@ export class Engine {
     delete this.state.copyq[ed25519];
   }
 
+  /**
+   * A copy one of our siblings sent us, from its device `fromDid` (an item
+   * of grappa's inbox flagged `own`): a PKMSG or a MSG whose body for this
+   * device holds `{t:"copy", peer, body}`, the text that sibling sent `peer`.
+   * grappa can fill our inbox only on our own account's behalf, and is
+   * trusted with no content all the same: a copy is read only from a sibling
+   * our own list names now (`listedSiblings`, which forgets one it no longer
+   * names, whatever grappa lists). A PKMSG must present our master, pass the
+   * checks a peer's passes (`presented`: its certificate under our master,
+   * its device's S1 over its curve and our master, the frame's `from` that
+   * device's did), and come from a device our list names; only then is a
+   * session opened, its `fb` checked, and the sibling known by the curve the
+   * session proved. A MSG must come on the curve of such a sibling, from its
+   * did. Every refusal is reported, from our own nick, and leaves no new
+   * session; none is ever NACKed: a copy has no way back. Never throws on
+   * wire input.
+   */
+  receiveCopy(fromDid: string, verb: MessageVerb, payload: string): Result {
+    const res = emptyResult();
+    const siblings = this.listedSiblings(res);
+    const drop = (reason: DropReason): void => {
+      res.events.push({ kind: "dropped", nick: this.ownNick, reason, verb });
+    };
+    this.guarded(this.ownNick, verb, payload, res, (decoded) => {
+      if (verb === "pkmsg") this.onCopyPkmsg(fromDid, decoded, drop, res);
+      else this.onCopyMsg(fromDid, decoded, siblings, drop, res);
+    });
+    return this.end(res);
+  }
+
+  /**
+   * `receiveCopy`'s PKMSG: a sibling's first copy on a session it opens to
+   * us, or another one before it heard back on it, read on that session. The
+   * new session is kept, and the sibling known (`admit`), only once its copy
+   * is read: a body built for another pair of devices, or one that is no
+   * copy, leaves neither behind, its session's id only seen, as a peer's
+   * (`openInbound`). Every check before the session opens leaves nothing.
+   */
+  private onCopyPkmsg(
+    fromDid: string,
+    payload: Record<string, unknown>,
+    drop: (reason: DropReason) => void,
+    res: Result,
+  ): void {
+    const pkmsg = parsePkmsg(payload);
+    const { id } = pkmsg;
+    if (pkmsg.master.ed25519 !== this.own.master) {
+      drop("sibling-not-ours");
+      return;
+    }
+    const body = this.presented(fromDid, pkmsg);
+    if (typeof body === "string") {
+      drop(
+        body === "bad-cert" || body === "bad-identity-signature" ? "sibling-bad-signature" : body,
+      );
+      return;
+    }
+    if (!this.ourListNames(id.ed25519)) {
+      drop("sibling-unknown");
+      return;
+    }
+    const sessionId = rejecting(() => this.olm.pre_key_session_id(body));
+    const held = this.heldSession(id.curve25519, sessionId);
+    if (held !== undefined) {
+      const plaintext = this.decryptWith(id.curve25519, held, 0, body);
+      if (plaintext === undefined) drop("sibling-undecryptable");
+      else this.readCopy(id.ed25519, plaintext, true, res);
+      return;
+    }
+    const opened = this.openInbound(id.curve25519, body, sessionId);
+    if (typeof opened === "string") {
+      drop("sibling-undecryptable");
+      return;
+    }
+    const { session, plaintext } = opened;
+    try {
+      if (!this.readCopy(id.ed25519, plaintext, true, res)) return;
+      // Admitted first: it evicts a peer's claim on the curve with every
+      // session on it, which the new one must not be among.
+      this.state.siblings[id.ed25519] = this.admit(id.ed25519, id.curve25519, fromDid);
+      this.addSession(id.curve25519, session.pickle());
+    } finally {
+      session.free();
+    }
+  }
+
+  /** `receiveCopy`'s MSG: a copy on a session both ends used, on the curve of one of `siblings`. */
+  private onCopyMsg(
+    fromDid: string,
+    payload: Record<string, unknown>,
+    siblings: [string, Sibling][],
+    drop: (reason: DropReason) => void,
+    res: Result,
+  ): void {
+    const msg = parseMsg(payload);
+    const curve = rejecting(() => this.olm.canonical_curve25519(msg.ck));
+    const found = siblings.find(([, sibling]) => sibling.curve25519 === curve);
+    if (found === undefined) {
+      drop("sibling-unknown");
+      return;
+    }
+    const [ed25519, sibling] = found;
+    if (sibling.did !== fromDid) {
+      drop("bad-from");
+      return;
+    }
+    const mine = msg.bodies[this.own.did];
+    if (mine === undefined) {
+      drop("not-for-us");
+      return;
+    }
+    const plaintext = this.decryptAny(curve, unbase64(mine));
+    if (plaintext === undefined) drop("sibling-undecryptable");
+    else this.readCopy(ed25519, plaintext, false, res);
+  }
+
+  /**
+   * The copy in a body our sibling `device` encrypted to us, handed on as
+   * `copied`: its inner message (`inner`, which checks that a pre-key body's
+   * `fb` binds the sibling to this device) must be `{t:"copy", peer, body}`,
+   * with a non-empty `peer` and a string `body`. Anything else is reported,
+   * and the answer is false.
+   */
+  private readCopy(device: string, plaintext: Uint8Array, preKey: boolean, res: Result): boolean {
+    const inner = this.inner(this.ownNick, plaintext, preKey ? device : null, res);
+    if (inner === undefined) return false;
+    const { t, peer, body } = inner;
+    if (t !== "copy" || typeof peer !== "string" || peer === "" || typeof body !== "string") {
+      res.events.push({ kind: "dropped", nick: this.ownNick, reason: "sibling-not-a-copy" });
+      return false;
+    }
+    res.events.push({ kind: "copied", peer, body, device });
+    return true;
+  }
+
   // --- receiving ---------------------------------------------------------
 
   /**
@@ -1258,15 +1412,7 @@ export class Engine {
     payload: string,
   ): Result {
     const res = emptyResult();
-    let decoded: Record<string, unknown>;
-    try {
-      decoded = decodePayload(payload);
-    } catch (err) {
-      if (!(err instanceof PayloadError)) throw err;
-      res.events.push({ kind: "dropped", nick, reason: "undecodable-payload", verb });
-      return res;
-    }
-    try {
+    const read = this.guarded(nick, verb, payload, res, (decoded) => {
       switch (verb) {
         case "keys":
           this.onKeys(nick, decoded, res);
@@ -1281,14 +1427,38 @@ export class Engine {
           this.onNack(nick, fromDid, decoded, res);
           break;
       }
+    });
+    return read ? this.end(res) : res;
+  }
+
+  /**
+   * `step` on `payload`, a whole message grappa delivered, decoded; false
+   * when it does not decode (reported, from `nick`). A payload missing a
+   * field, or a key or body vodozemac refuses, is malformed input from the
+   * wire, never a reason to crash: reported too. Nothing else is caught.
+   */
+  private guarded(
+    nick: string,
+    verb: ReceiveVerb,
+    payload: string,
+    res: Result,
+    step: (decoded: Record<string, unknown>) => void,
+  ): boolean {
+    let decoded: Record<string, unknown>;
+    try {
+      decoded = decodePayload(payload);
     } catch (err) {
-      // A payload missing a field, or a key or body vodozemac refuses:
-      // malformed input from the wire, never a reason to crash. Nothing
-      // else is caught.
+      if (!(err instanceof PayloadError)) throw err;
+      res.events.push({ kind: "dropped", nick, reason: "undecodable-payload", verb });
+      return false;
+    }
+    try {
+      step(decoded);
+    } catch (err) {
       if (!(err instanceof PayloadError || err instanceof Rejected)) throw err;
       res.events.push({ kind: "dropped", nick, reason: "bad-payload", verb, detail: err.message });
     }
-    return this.end(res);
+    return true;
   }
 
   /**
@@ -1494,12 +1664,7 @@ export class Engine {
   /**
    * W "Receiver checks / PKMSG" as revision 2 amends it, in order: the first
    * check that fails decides.
-   * 1. Malformed: a key not in vodozemac's one spelling, or a frame whose
-   *    `from` is not the did of the device the id block names.
-   * 2. No body for this device: a `*` message to our other devices, never
-   *    ours, so it gets no NACK.
-   * 3. The certificate, under the master presented, over the list version it
-   *    names; 4. the device's S1 over its curve and that master. Both come
+   * 1-4. `presented`, which a sibling's copy passes too. Both signatures come
    *    before 5, `checkMaster`: no pin and no alarm ever comes from a block
    *    that fails its own signature.
    * 6. A revoked device, or one the stored list leaves out whose certificate
@@ -1522,31 +1687,15 @@ export class Engine {
     payload: Record<string, unknown>,
     res: Result,
   ): void {
-    const { id, master: block, bodies } = parsePkmsg(payload);
+    const pkmsg = parsePkmsg(payload);
+    const { id, master: block } = pkmsg;
     const master = block.ed25519;
     const drop = (reason: DropReason): void => {
       res.events.push({ kind: "dropped", nick, reason, verb: "pkmsg" });
     };
-    if (!this.canonical(id) || !this.ed25519Canonical(master)) {
-      drop("non-canonical-key");
-      return;
-    }
-    if (did(this.olm, id.ed25519) !== fromDid) {
-      drop("bad-from");
-      return;
-    }
-    const mine = bodies[this.own.did];
-    if (mine === undefined) {
-      drop("not-for-us");
-      return;
-    }
-    const body = unbase64(mine);
-    if (!this.sigOk(master, certSigText(block.ver, id.ed25519), block.cert)) {
-      drop("bad-cert");
-      return;
-    }
-    if (!this.idSigned(id, master)) {
-      drop("bad-identity-signature");
+    const body = this.presented(fromDid, pkmsg);
+    if (typeof body === "string") {
+      drop(body);
       return;
     }
     if (this.checkMaster(nick, master, res) === "alarm") return;
@@ -1558,39 +1707,27 @@ export class Engine {
     const sessionId = rejecting(() => this.olm.pre_key_session_id(body));
     // Bound, it is bound to this very curve (`curveRefusal`).
     const bound = this.state.devices[id.ed25519];
-    const held =
-      bound === undefined
-        ? undefined
-        : this.sessionsOf(id.curve25519).find((p) => this.sessionId(p) === sessionId);
+    const held = bound === undefined ? undefined : this.heldSession(id.curve25519, sessionId);
     if (bound !== undefined && held !== undefined) {
-      this.decryptOn(nick, msgid, fromDid, master, bound, held, 0, body, res);
-      return;
-    }
-    if (this.state.seen.includes(sessionId)) {
-      // A fallback-key PKMSG opens the same session again, and would deliver
-      // an old plaintext again; a NACK lets a peer that lost the session
-      // recover, and gives a replayer only a NACK for a msgid not its own.
-      res.events.push({ kind: "replayed", nick, sessionId });
-      this.undecryptable(nick, msgid, fromDid, "replayed-session", res);
-      return;
-    }
-    let created: ReturnType<Account["create_inbound_session"]>;
-    try {
-      created = rejecting(() => this.account.create_inbound_session(id.curve25519, body));
-    } catch (err) {
-      if (!(err instanceof Rejected)) throw err;
-      this.undecryptable(nick, msgid, fromDid, "session-creation", res);
-      return;
-    }
-    const session = created.take_session();
-    const plaintext = created.plaintext();
-    created.free();
-    if (session === undefined) throw new Error("an inbound session is taken once, here");
-    try {
-      this.state.seen.push(sessionId);
-      if (this.state.seen.length > SEEN_SESSIONS_MAX) {
-        this.state.seen.splice(0, this.state.seen.length - SEEN_SESSIONS_MAX);
+      const plaintext = this.decryptWith(id.curve25519, held, 0, body);
+      if (plaintext === undefined) {
+        this.undecryptable(nick, msgid, fromDid, "decryption-failed", res);
+        return;
       }
+      const inner = this.inner(nick, plaintext, id.ed25519, res);
+      if (inner !== undefined) this.deliver(nick, master, bound, inner, res);
+      return;
+    }
+    const opened = this.openInbound(id.curve25519, body, sessionId);
+    if (typeof opened === "string") {
+      // A NACK lets a peer that lost the session recover, and gives a
+      // replayer only a NACK for a msgid not its own.
+      if (opened === "replayed-session") res.events.push({ kind: "replayed", nick, sessionId });
+      this.undecryptable(nick, msgid, fromDid, opened, res);
+      return;
+    }
+    const { session, plaintext } = opened;
+    try {
       const inner = this.inner(nick, plaintext, id.ed25519, res);
       // Built for another pair of devices, or unreadable: the session goes.
       if (inner === undefined) return;
@@ -1649,12 +1786,14 @@ export class Engine {
       }
       // Nothing about the device moves before a decrypt succeeds: `ck` is
       // public, and anyone can put it on a line.
-      const pickles = this.sessionsOf(curve);
-      for (const pickle of [...pickles]) {
-        if (this.decryptOn(nick, msgid, fromDid, master, device, pickle, 1, body, res)) return;
+      const plaintext = this.decryptAny(curve, body);
+      if (plaintext === undefined) {
+        const reason = this.sessionsOf(curve).length === 0 ? "no-session" : "decryption-failed";
+        this.undecryptable(nick, msgid, fromDid, reason, res);
+        return;
       }
-      const reason = pickles.length === 0 ? "no-session" : "decryption-failed";
-      this.undecryptable(nick, msgid, fromDid, reason, res);
+      const inner = this.inner(nick, plaintext, null, res);
+      if (inner !== undefined) this.deliver(nick, master, device, inner, res);
       return;
     }
     if (Object.values(this.state.devices).some((d) => d.curve25519 === curve)) {
@@ -1664,21 +1803,87 @@ export class Engine {
     this.undecryptable(nick, msgid, fromDid, "no-session", res);
   }
 
-  // True once the session `pickle` of `device` (under `master`) decrypted
-  // `body`. A pre-key message that matched its session and does not decrypt
-  // is undecryptable here and now; a normal one lets the caller try the next
-  // session.
-  private decryptOn(
-    nick: string,
-    msgid: string,
+  /**
+   * The checks a PKMSG passes whoever wrote it, a peer or a sibling (W
+   * "Receiver checks / PKMSG" 1-4, in order): 1. both keys in vodozemac's one
+   * spelling, and the frame's `from` the did of the device the id block
+   * names; 2. a body for this device (none: a `*` message to our other
+   * devices, never ours, so it gets no NACK); 3. the certificate, under the
+   * master presented, over the list version it names; 4. the device's S1
+   * over its curve and that master. The body for this device, or the first
+   * check that fails.
+   */
+  private presented(
     fromDid: string,
-    master: string,
-    device: PeerDevice,
+    { id, master, bodies }: PkmsgPayload,
+  ):
+    | Uint8Array
+    | "non-canonical-key"
+    | "bad-from"
+    | "not-for-us"
+    | "bad-cert"
+    | "bad-identity-signature" {
+    if (!this.canonical(id) || !this.ed25519Canonical(master.ed25519)) return "non-canonical-key";
+    if (did(this.olm, id.ed25519) !== fromDid) return "bad-from";
+    const mine = bodies[this.own.did];
+    if (mine === undefined) return "not-for-us";
+    const body = unbase64(mine);
+    if (!this.sigOk(master.ed25519, certSigText(master.ver, id.ed25519), master.cert)) {
+      return "bad-cert";
+    }
+    if (!this.idSigned(id, master.ed25519)) return "bad-identity-signature";
+    return body;
+  }
+
+  /** The session to `curve` that a pre-key message of the session `sessionId` was written on, if one is held. */
+  private heldSession(curve: string, sessionId: string): string | undefined {
+    return this.sessionsOf(curve).find((p) => this.sessionId(p) === sessionId);
+  }
+
+  /**
+   * A new session from the pre-key message `body` (of the session
+   * `sessionId`) of the device of `curve`, and the plaintext it carried; or
+   * why none: its session was opened before (a fallback-key PKMSG opens the
+   * same session again, and would deliver an old plaintext again), or
+   * vodozemac cannot open it. Its id is seen from then on, whatever becomes
+   * of the session: the caller stores it, or not, and frees it.
+   */
+  private openInbound(
+    curve: string,
+    body: Uint8Array,
+    sessionId: string,
+  ): { session: Session; plaintext: Uint8Array } | "replayed-session" | "session-creation" {
+    if (this.state.seen.includes(sessionId)) return "replayed-session";
+    let created: ReturnType<Account["create_inbound_session"]>;
+    try {
+      created = rejecting(() => this.account.create_inbound_session(curve, body));
+    } catch (err) {
+      if (!(err instanceof Rejected)) throw err;
+      return "session-creation";
+    }
+    const session = created.take_session();
+    const plaintext = created.plaintext();
+    created.free();
+    if (session === undefined) throw new Error("an inbound session is taken once, here");
+    this.state.seen.push(sessionId);
+    if (this.state.seen.length > SEEN_SESSIONS_MAX) {
+      this.state.seen.splice(0, this.state.seen.length - SEEN_SESSIONS_MAX);
+    }
+    return { session, plaintext };
+  }
+
+  /**
+   * `body`, a message of `messageType`, decrypted on the session `pickle` to
+   * `curve`, which becomes the newest to it: the session the device just
+   * used is the one to answer on. Undefined when that session cannot, and
+   * then nothing moves.
+   */
+  private decryptWith(
+    curve: string,
     pickle: string,
     messageType: 0 | 1,
     body: Uint8Array,
-    res: Result,
-  ): boolean {
+  ): Uint8Array | undefined {
     const session = this.olm.Session.from_pickle(pickle);
     try {
       let plaintext: Uint8Array;
@@ -1686,19 +1891,23 @@ export class Engine {
         plaintext = rejecting(() => session.decrypt(messageType, body));
       } catch (err) {
         if (!(err instanceof Rejected)) throw err;
-        if (messageType === 0) this.undecryptable(nick, msgid, fromDid, "decryption-failed", res);
-        return messageType === 0;
+        return undefined;
       }
-      // The session the peer just used is the one to answer on.
-      const rest = this.sessionsOf(device.curve25519).filter((p) => p !== pickle);
-      this.state.sessions[device.curve25519] = [session.pickle(), ...rest];
-      const sender = messageType === 0 ? device.ed25519 : null;
-      const inner = this.inner(nick, plaintext, sender, res);
-      if (inner !== undefined) this.deliver(nick, master, device, inner, res);
-      return true;
+      const rest = this.sessionsOf(curve).filter((p) => p !== pickle);
+      this.state.sessions[curve] = [session.pickle(), ...rest];
+      return plaintext;
     } finally {
       session.free();
     }
+  }
+
+  /** A normal message `body` decrypted on the first session to `curve`, newest first, that can (`decryptWith`). */
+  private decryptAny(curve: string, body: Uint8Array): Uint8Array | undefined {
+    for (const pickle of [...this.sessionsOf(curve)]) {
+      const plaintext = this.decryptWith(curve, pickle, 1, body);
+      if (plaintext !== undefined) return plaintext;
+    }
+    return undefined;
   }
 
   /**
