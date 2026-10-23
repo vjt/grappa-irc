@@ -60,6 +60,17 @@ defmodule Grappa.E2eInboxTest do
     Enum.each(sizes, &put!(device, message(sender, :msg, payload_costing(&1))))
   end
 
+  defp own_message(sender, payload), do: Map.put(message(sender, :msg, payload), :own, true)
+
+  defp fill_own!(device, sender, bytes) do
+    full = E2e.max_payload_bytes() + E2eInbox.row_overhead_bytes()
+    rest = rem(bytes, full)
+    true = rest == 0 or rest > E2eInbox.row_overhead_bytes()
+
+    sizes = List.duplicate(full, div(bytes, full)) ++ if(rest > 0, do: [rest], else: [])
+    Enum.each(sizes, &put!(device, own_message(sender, payload_costing(&1))))
+  end
+
   setup do
     user = user_fixture()
     subject = {:user, user.id}
@@ -159,6 +170,47 @@ defmodule Grappa.E2eInboxTest do
 
       assert {:ok, _} = E2eInbox.put(other, message("alice", :msg, payload_costing(300)))
     end
+
+    test "own copies share one 1 MiB sender bound however the nick is spelled", %{device: device} do
+      full = E2e.max_payload_bytes() + E2eInbox.row_overhead_bytes()
+      share = E2eInbox.max_sender_bytes()
+
+      # Alternate spellings until less than a full row is left in the share.
+      for n <- 1..div(share, full) do
+        assert {:ok, _} =
+                 E2eInbox.put(device, own_message(if(rem(n, 2) == 0, do: "vjt", else: "VJT2"), payload_costing(full)))
+      end
+
+      rest = rem(share, full)
+      assert {:error, :full} = E2eInbox.put(device, own_message("vjt", payload_costing(rest + 1)))
+      assert {:ok, _} = E2eInbox.put(device, own_message("VJT2", payload_costing(rest)))
+      assert {:error, :full} = E2eInbox.put(device, own_message("vjt", payload_costing(300)))
+    end
+
+    test "own copies do not consume a peer's sender share", %{device: device} do
+      fill_own!(device, "vjt", E2eInbox.max_sender_bytes())
+      assert {:error, :full} = E2eInbox.put(device, own_message("vjt", payload_costing(300)))
+
+      assert {:ok, _} = E2eInbox.put(device, message("alice", :msg, payload_costing(300)))
+    end
+
+    test "a peer at its share does not block own copies", %{device: device} do
+      fill!(device, "alice", E2eInbox.max_sender_bytes())
+      assert {:error, :full} = E2eInbox.put(device, message("alice", :msg, payload_costing(300)))
+
+      assert {:ok, _} = E2eInbox.put(device, own_message("vjt", payload_costing(300)))
+    end
+
+    test "own and peer rows together are capped at 4 MiB", %{device: device} do
+      share = E2eInbox.max_sender_bytes()
+      peers = div(E2eInbox.max_bytes(), share) - 1
+
+      for n <- 1..peers, do: fill!(device, "peer#{n}", share)
+      fill_own!(device, "vjt", share)
+
+      assert {:error, :full} = E2eInbox.put(device, message("late", :msg, payload_costing(300)))
+      assert {:error, :full} = E2eInbox.put(device, own_message("vjt", payload_costing(300)))
+    end
   end
 
   describe "ack/2" do
@@ -221,6 +273,17 @@ defmodule Grappa.E2eInboxTest do
       Enum.each([keys, nack], &age!(&1, 120))
 
       assert {:ok, []} = E2eInbox.expire(subject, network.id, DateTime.utc_now())
+      assert E2eInbox.list(device, 0) == []
+    end
+
+    test "expire/3 deletes own rows but does not report them",
+         %{subject: subject, network: network, device: device} do
+      mine = put!(device, own_message("vjt", ~s({"v":2})))
+      theirs = put!(device, message("alice", :msg))
+      Enum.each([mine, theirs], &age!(&1, 120))
+
+      assert {:ok, [{"alice", did, 1}]} = E2eInbox.expire(subject, network.id, DateTime.utc_now())
+      assert did == device.did
       assert E2eInbox.list(device, 0) == []
     end
 

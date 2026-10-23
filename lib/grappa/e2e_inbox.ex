@@ -135,6 +135,9 @@ defmodule Grappa.E2eInbox do
   # Inside the transaction: the device is still there, the usage check,
   # then the insert, each refusal a rollback so the transaction answers
   # `{:error, reason}`. The two sums are one scan of the device's queue.
+  # The sender share is, for an own copy, every own row of the device
+  # (whatever nick it went out under: one share, so a nick change cannot
+  # widen the bound) and, for a peer, that peer's non-own rows by folded nick.
   @spec insert(Ecto.Changeset.t()) :: Entry.t()
   defp insert(changeset) do
     entry = Ecto.Changeset.apply_changes(changeset)
@@ -150,7 +153,10 @@ defmodule Grappa.E2eInbox do
         coalesce(
           sum(
             fragment(
-              "CASE WHEN ? = ? THEN ? + ? ELSE 0 END",
+              "CASE WHEN ? = ? AND (? OR ? = ?) THEN ? + ? ELSE 0 END",
+              e.own,
+              type(^entry.own, :boolean),
+              type(^entry.own, :boolean),
               Identifier.nick_fold(e.sender),
               ^folded,
               e.bytes,
@@ -239,6 +245,7 @@ defmodule Grappa.E2eInbox do
       expired
       |> join(:inner, [e], d in Device, on: d.id == e.device_id)
       |> order_by([e], asc: e.id)
+      |> where([e], not e.own)
       |> select([e, d], {e.sender, d.did, e.verb})
       |> Repo.all()
 
