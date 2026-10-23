@@ -443,30 +443,47 @@ defmodule Grappa.E2eKeys do
   one-time key is deleted, the fallback stays), since the payload goes
   straight to the caller and nowhere else.
 
-  `{:error, :same_device}` for the caller's own `did`; `{:error,
-  :unknown_device}` when `from_did` is not a device the stored list names;
-  `{:error, :not_found}` when `did` is not one the list names for this
-  subject; `{:error, :keyless_device}` when that device holds no key at
-  all; `{:error, :key_taken}` when its key was taken between the pick and
-  the consume (ask again); `{:error, :db_unavailable}` when the write lock
-  stays taken past the retry budget.
+  The pair is `sibling/4`'s refusals; then `{:error, :keyless_device}`
+  when that device holds no key at all; `{:error, :key_taken}` when its key
+  was taken between the pick and the consume (ask again); `{:error,
+  :db_unavailable}` when the write lock stays taken past the retry budget.
   """
   @spec claim(Subject.t(), integer(), String.t(), String.t()) ::
-          {:ok, String.t()}
-          | {:error, :same_device | :unknown_device | :not_found | :keyless_device | :key_taken | :db_unavailable}
+          {:ok, String.t()} | {:error, sibling_error() | :keyless_device | :key_taken | :db_unavailable}
   def claim({_, _} = subject, network_id, from_did, did)
       when is_integer(network_id) and is_binary(from_did) and is_binary(did) do
-    with :ok <- if(did == from_did, do: {:error, :same_device}, else: :ok),
-         %DeviceList{} = list <- Repo.one(list_query(subject, network_id)),
-         listed = listed(subject, network_id, list),
-         :ok <- if(Enum.any?(listed, &(&1.did == from_did)), do: :ok, else: {:error, :unknown_device}),
-         %Device{} = device <- Enum.find(listed, &(&1.did == did)) || {:error, :not_found},
+    with {:ok, list, device} <- sibling(subject, network_id, from_did, did),
          %Key{} = key <- next_key(device, :otk) || {:error, :keyless_device},
          :ok <- consume([key]) do
       {:ok, Jason.encode!(%{v: 2, master: master_block(list), devices: [entry_block({device, key})]})}
-    else
-      nil -> {:error, :unknown_device}
-      {:error, _} = err -> err
+    end
+  end
+
+  @typedoc "Why `sibling/4` refuses a pair of devices."
+  @type sibling_error :: :same_device | :unknown_device | :not_found
+
+  @doc """
+  issue 2430 S1 — the one rule both sibling doors apply, the claim
+  (`claim/4`) and the copy (`Grappa.Session.copy_e2e/6`): the device `did`
+  is a sibling of the device `from_did` when the two differ and the
+  subject's stored list names both. One read of the list.
+
+  `{:ok, list, device}`: the stored list and the sibling's device.
+  `{:error, :same_device}` when `did` is `from_did`, before anything is
+  read; `{:error, :unknown_device}` when the list does not name `from_did`
+  (or none is stored); `{:error, :not_found}` when it does not name `did`
+  for this subject.
+  """
+  @spec sibling(Subject.t(), integer(), String.t(), String.t()) ::
+          {:ok, DeviceList.t(), Device.t()} | {:error, sibling_error()}
+  def sibling({_, _} = subject, network_id, from_did, did)
+      when is_integer(network_id) and is_binary(from_did) and is_binary(did) do
+    with :ok <- if(did == from_did, do: {:error, :same_device}, else: :ok),
+         %DeviceList{} = list <- Repo.one(list_query(subject, network_id)) || {:error, :unknown_device},
+         listed = listed(subject, network_id, list),
+         true <- Enum.any?(listed, &(&1.did == from_did)) || {:error, :unknown_device},
+         %Device{} = device <- Enum.find(listed, &(&1.did == did)) || {:error, :not_found} do
+      {:ok, list, device}
     end
   end
 
