@@ -1216,6 +1216,9 @@ defmodule Grappa.Deploy.PreflightTest do
     # `20260522073826_add_archive_covering_indexes`, so it is HOT by the
     # classifier's own rule. Listed from reading that rule, before this test
     # had run against it.)
+    # (issue 2430 S1's `20261023162005_add_own_to_e2e_inbox` is one
+    # `alter table ... add` with a constant default, the `add_tls_verify_*`
+    # shape, so it deploys HOT. Added because this test failed on it.)
     @migrations_glob "priv/repo/migrations/*.exs"
     @expected_hot ~w(
       20260425000000_init
@@ -1260,6 +1263,7 @@ defmodule Grappa.Deploy.PreflightTest do
       20260829145052_create_peer_avatars
       20260919140437_add_detached_at_to_network_credentials
       20261015113204_add_messages_away_window_index
+      20261023162005_add_own_to_e2e_inbox
     )
 
     test "every migration on disk classifies, and the HOT set is exactly the pinned one" do
