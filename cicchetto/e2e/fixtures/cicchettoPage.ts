@@ -790,27 +790,32 @@ export async function awaitServerBundleHashPush(page: Page): Promise<void> {
 }
 
 // issue 2430 — resolves when the page's E2E key bundle upload for the network
-// succeeds: until then a peer's KEYREQ has nothing to be answered from. ARM IT
-// BEFORE the action that triggers the upload (login, reload), or it can miss.
+// succeeds (`POST .../e2e/devices/:did/keys`, one device's bundle): until then
+// a peer's KEYREQ has nothing to be answered from. ARM IT BEFORE the action
+// that triggers the upload (login, reload, starting a new identity), or it
+// can miss.
 export function e2eBundleUploaded(page: Page, networkSlug: string): Promise<Response> {
+  const route = new RegExp(`^/networks/${networkSlug}/e2e/devices/[^/]+/keys$`);
   return page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
-      new URL(response.url()).pathname === `/networks/${networkSlug}/e2e/keys` &&
+      route.test(new URL(response.url()).pathname) &&
       response.ok(),
   );
 }
 
-// issue 2430 — keeps the page from taking anything out of grappa's
-// encrypted-message inbox on the network: every inbox page it asks for comes
+// issue 2430 — keeps the page from taking anything out of its device's
+// encrypted-message inbox on grappa: every inbox page it asks for comes
 // back empty, so it never acknowledges, and so never removes, an entry. For
 // specs about grappa's QUEUE, which a logged-in cic would otherwise drain
 // within milliseconds of each arrival. Arm before login.
 export async function holdE2eInbox(page: Page, networkSlug: string): Promise<void> {
-  await page.route(new RegExp(`/networks/${networkSlug}/e2e/inbox(\\?|$)`), (route) =>
-    route.request().method() === "GET"
-      ? route.fulfill({ json: { messages: [] } })
-      : route.continue(),
+  await page.route(
+    new RegExp(`/networks/${networkSlug}/e2e/devices/[^/]+/inbox(\\?|$)`),
+    (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill({ json: { messages: [] } })
+        : route.continue(),
   );
 }
 

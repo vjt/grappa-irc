@@ -8,9 +8,9 @@
 // first use (unverified), Alice asks, Bob accepts, both see the same emoji,
 // both say they match, and each key reads verified on the other side. The
 // second is fork 7 (2430 comment 6339695571): Bob's browser forgets its
-// identity, so his nick speaks with a key Alice never pinned; she sees the
-// alarm, takes the new key unverified from the alarm itself, and verifies it
-// by the same comparison.
+// identity and he starts a new one, so his nick speaks with a master Alice
+// never pinned; she sees the alarm, takes the new key unverified from the
+// alarm itself, and verifies it by the same comparison.
 //
 // ## What makes this spec able to fail
 //
@@ -26,17 +26,16 @@
 //     not): the badge reads verified before any comparison.
 
 import type { Page } from "@playwright/test";
-import { e2eBundleUploaded } from "../fixtures/cicchettoPage";
 import {
   boot,
   equery,
   KEYS_TIMEOUT,
   ownKey,
   peerPage,
+  replaceIdentity,
   row,
   send,
 } from "../fixtures/encryptedQuery";
-import { NETWORK_SLUG } from "../fixtures/seedData";
 import { provisionPeerSubject, teardownSpecSubject } from "../fixtures/specSubject";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
@@ -147,12 +146,15 @@ test("a nick that speaks with a new key: the alarm takes it unverified, and comp
     const oldKey = await ownKey(peer.page);
     await expect(page.getByTestId("e2e-peer-key")).toHaveText(oldKey);
 
-    // Bob's browser forgets its identity: the next page makes a new one.
+    // Bob's browser forgets its identity. grappa still holds it, so the next
+    // page reads "elsewhere" and writes nothing; Bob starts a new identity
+    // here on purpose (the inline confirm), which drops the old one and makes
+    // a new master.
     await peer.page.evaluate(() => window.__cic_e2eResetForTests?.());
-    const uploaded = e2eBundleUploaded(peer.page, NETWORK_SLUG);
     await peer.page.reload();
-    await uploaded;
     await equery(peer.page, bob.nick, aliceNick);
+    await expect(peer.page.getByTestId("e2e-identity-elsewhere")).toBeVisible();
+    await replaceIdentity(peer.page);
     const newKey = await ownKey(peer.page);
     expect(newKey).not.toBe(oldKey);
 
