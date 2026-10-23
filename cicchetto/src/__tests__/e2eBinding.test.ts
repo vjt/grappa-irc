@@ -48,3 +48,74 @@ describe("vodozemac binding: sha256", () => {
     expect(hex(digest)).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
   });
 });
+
+describe("vodozemac binding: ecies", () => {
+  const INFO = "irc-e2e:v2:pair";
+  const utf8 = (s: string) => new TextEncoder().encode(s);
+  const text = (b: Uint8Array) => new TextDecoder().decode(b);
+
+  function taken<T>(c: T | undefined): T {
+    if (c === undefined) throw new Error("the channel was already taken");
+    return c;
+  }
+
+  function channel() {
+    const o = olm();
+    const g = new o.Ecies(INFO);
+    const gKey = g.public_key();
+    const out = new o.Ecies(INFO).establish_outbound_channel(gKey, utf8("hello"));
+    const message = out.message;
+    const s = taken(out.take_channel());
+    const inbound = g.establish_inbound_channel(message);
+    const plaintext = inbound.plaintext;
+    const gc = taken(inbound.take_channel());
+    return { s, gc, message, plaintext };
+  }
+
+  it("ecies: the two sides of a channel show the same check code and read each other's messages", () => {
+    const { s, gc, plaintext } = channel();
+    expect(text(plaintext)).toBe("hello");
+    expect(s.check_code()).toBe(gc.check_code());
+    expect(s.check_code()).toBeGreaterThanOrEqual(0);
+    expect(s.check_code()).toBeLessThanOrEqual(99);
+    expect(text(gc.decrypt(s.encrypt(utf8("to holder"))))).toBe("to holder");
+    expect(text(s.decrypt(gc.encrypt(utf8("to joiner"))))).toBe("to joiner");
+  });
+
+  it("ecies: another info string gives another check code or no channel", () => {
+    const o = olm();
+    const g = new o.Ecies("x");
+    const out = new o.Ecies(INFO).establish_outbound_channel(g.public_key(), utf8("hello"));
+    const sCode = taken(out.take_channel()).check_code();
+    let gCode: number | undefined;
+    try {
+      gCode = taken(g.establish_inbound_channel(out.message).take_channel()).check_code();
+    } catch {
+      gCode = undefined;
+    }
+    expect(gCode === undefined || gCode !== sCode).toBe(true);
+  });
+
+  it("ecies: a message decrypted twice fails the second time", () => {
+    const { s, gc } = channel();
+    const m = s.encrypt(utf8("once"));
+    expect(text(gc.decrypt(m))).toBe("once");
+    expect(() => gc.decrypt(m)).toThrow();
+  });
+
+  it('ecies: an initial message holds a "|" (the reason the relay payload is wrapped)', () => {
+    expect(channel().message.includes("|")).toBe(true);
+  });
+
+  it("ecies: a non-canonical peer key is refused", () => {
+    const o = olm();
+    expect(() =>
+      new o.Ecies(INFO).establish_outbound_channel("x".repeat(43), utf8("hi")),
+    ).toThrow();
+  });
+
+  it("ecies: a malformed initial message is refused", () => {
+    const o = olm();
+    expect(() => new o.Ecies(INFO).establish_inbound_channel("no-separator")).toThrow();
+  });
+});

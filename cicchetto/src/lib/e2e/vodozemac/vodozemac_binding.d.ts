@@ -71,6 +71,71 @@ export class Account {
 }
 
 /**
+ * One side of an ECIES channel before it exists (MSC4108 shape): an
+ * ephemeral Curve25519 key pair and the info string both sides must share.
+ * The secret half cannot be pickled, so a channel lives in the page that
+ * made it.
+ */
+export class Ecies {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Accepts the other side's initial message (`EciesOutbound.message`).
+     * Uses this object up, failed or not.
+     */
+    establish_inbound_channel(initial: string): EciesInbound;
+    /**
+     * Opens a channel to `their_key` with `plaintext` as the first message.
+     * Uses this object up, failed or not.
+     */
+    establish_outbound_channel(their_key: string, plaintext: Uint8Array): EciesOutbound;
+    /**
+     * A new ephemeral key pair under `info`.
+     */
+    constructor(info: string);
+    /**
+     * The public half, shown to the other side (in the QR).
+     */
+    public_key(): string;
+}
+
+/**
+ * What `Ecies::establish_inbound_channel` returns: the channel, taken once,
+ * and the plaintext of the initial message.
+ */
+export class EciesInbound {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * The channel; `undefined` once taken.
+     */
+    take_channel(): EstablishedEcies | undefined;
+    /**
+     * The plaintext of the initial message.
+     */
+    readonly plaintext: Uint8Array;
+}
+
+/**
+ * What `Ecies::establish_outbound_channel` returns: the channel, taken
+ * once, and the initial message to send (`ciphertext|key`).
+ */
+export class EciesOutbound {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * The channel; `undefined` once taken.
+     */
+    take_channel(): EstablishedEcies | undefined;
+    /**
+     * The initial message as vodozemac encodes it.
+     */
+    readonly message: string;
+}
+
+/**
  * An encrypted message: its Olm type and its bytes.
  */
 export class Encrypted {
@@ -85,6 +150,30 @@ export class Encrypted {
      * 0 for a pre-key message (sent as PKMSG), 1 for a normal one (MSG).
      */
     readonly message_type: number;
+}
+
+/**
+ * An ECIES channel both sides have established: the check code to compare
+ * out of band, and the messages.
+ */
+export class EstablishedEcies {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * The two-digit check code, 0 to 99 (a leading zero is allowed, so the
+     * caller renders it with two digits).
+     */
+    check_code(): number;
+    /**
+     * Decrypts a message from `encrypt`. Each message is read once and in
+     * order: a failed attempt may still have moved the counter.
+     */
+    decrypt(message: string): Uint8Array;
+    /**
+     * Encrypts `plaintext`; the message as vodozemac encodes it.
+     */
+    encrypt(plaintext: Uint8Array): string;
 }
 
 /**
@@ -216,7 +305,11 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_account_free: (a: number, b: number) => void;
+    readonly __wbg_ecies_free: (a: number, b: number) => void;
+    readonly __wbg_eciesinbound_free: (a: number, b: number) => void;
+    readonly __wbg_eciesoutbound_free: (a: number, b: number) => void;
     readonly __wbg_encrypted_free: (a: number, b: number) => void;
+    readonly __wbg_establishedecies_free: (a: number, b: number) => void;
     readonly __wbg_establishedsas_free: (a: number, b: number) => void;
     readonly __wbg_inboundsession_free: (a: number, b: number) => void;
     readonly __wbg_sas_free: (a: number, b: number) => void;
@@ -237,8 +330,19 @@ export interface InitOutput {
     readonly account_sign: (a: number, b: number, c: number, d: number) => void;
     readonly canonical_curve25519: (a: number, b: number, c: number) => void;
     readonly canonical_ed25519: (a: number, b: number, c: number) => void;
+    readonly ecies_establish_inbound_channel: (a: number, b: number, c: number, d: number) => void;
+    readonly ecies_establish_outbound_channel: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly ecies_new: (a: number, b: number) => number;
+    readonly ecies_public_key: (a: number, b: number) => void;
+    readonly eciesinbound_plaintext: (a: number, b: number) => void;
+    readonly eciesinbound_take_channel: (a: number) => number;
+    readonly eciesoutbound_message: (a: number, b: number) => void;
+    readonly eciesoutbound_take_channel: (a: number) => number;
     readonly encrypted_body: (a: number, b: number) => void;
     readonly encrypted_message_type: (a: number) => number;
+    readonly establishedecies_check_code: (a: number) => number;
+    readonly establishedecies_decrypt: (a: number, b: number, c: number, d: number) => void;
+    readonly establishedecies_encrypt: (a: number, b: number, c: number, d: number) => void;
     readonly establishedsas_calculate_mac: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly establishedsas_emoji_indices: (a: number, b: number, c: number, d: number) => void;
     readonly inboundsession_plaintext: (a: number, b: number) => void;

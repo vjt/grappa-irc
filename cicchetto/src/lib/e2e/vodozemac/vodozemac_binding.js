@@ -257,6 +257,210 @@ export class Account {
 if (Symbol.dispose) Account.prototype[Symbol.dispose] = Account.prototype.free;
 
 /**
+ * One side of an ECIES channel before it exists (MSC4108 shape): an
+ * ephemeral Curve25519 key pair and the info string both sides must share.
+ * The secret half cannot be pickled, so a channel lives in the page that
+ * made it.
+ */
+export class Ecies {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        EciesFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_ecies_free(ptr, 0);
+    }
+    /**
+     * Accepts the other side's initial message (`EciesOutbound.message`).
+     * Uses this object up, failed or not.
+     * @param {string} initial
+     * @returns {EciesInbound}
+     */
+    establish_inbound_channel(initial) {
+        try {
+            const ptr = this.__destroy_into_raw();
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(initial, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.ecies_establish_inbound_channel(retptr, ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return EciesInbound.__wrap(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Opens a channel to `their_key` with `plaintext` as the first message.
+     * Uses this object up, failed or not.
+     * @param {string} their_key
+     * @param {Uint8Array} plaintext
+     * @returns {EciesOutbound}
+     */
+    establish_outbound_channel(their_key, plaintext) {
+        try {
+            const ptr = this.__destroy_into_raw();
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(their_key, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passArray8ToWasm0(plaintext, wasm.__wbindgen_export2);
+            const len1 = WASM_VECTOR_LEN;
+            wasm.ecies_establish_outbound_channel(retptr, ptr, ptr0, len0, ptr1, len1);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return EciesOutbound.__wrap(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * A new ephemeral key pair under `info`.
+     * @param {string} info
+     */
+    constructor(info) {
+        const ptr0 = passStringToWasm0(info, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.ecies_new(ptr0, len0);
+        this.__wbg_ptr = ret;
+        EciesFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * The public half, shown to the other side (in the QR).
+     * @returns {string}
+     */
+    public_key() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.ecies_public_key(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred1_0, deferred1_1, 1);
+        }
+    }
+}
+if (Symbol.dispose) Ecies.prototype[Symbol.dispose] = Ecies.prototype.free;
+
+/**
+ * What `Ecies::establish_inbound_channel` returns: the channel, taken once,
+ * and the plaintext of the initial message.
+ */
+export class EciesInbound {
+    static __wrap(ptr) {
+        const obj = Object.create(EciesInbound.prototype);
+        obj.__wbg_ptr = ptr;
+        EciesInboundFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        EciesInboundFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_eciesinbound_free(ptr, 0);
+    }
+    /**
+     * The plaintext of the initial message.
+     * @returns {Uint8Array}
+     */
+    get plaintext() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.eciesinbound_plaintext(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v1 = getArrayU8FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * The channel; `undefined` once taken.
+     * @returns {EstablishedEcies | undefined}
+     */
+    take_channel() {
+        const ret = wasm.eciesinbound_take_channel(this.__wbg_ptr);
+        return ret === 0 ? undefined : EstablishedEcies.__wrap(ret);
+    }
+}
+if (Symbol.dispose) EciesInbound.prototype[Symbol.dispose] = EciesInbound.prototype.free;
+
+/**
+ * What `Ecies::establish_outbound_channel` returns: the channel, taken
+ * once, and the initial message to send (`ciphertext|key`).
+ */
+export class EciesOutbound {
+    static __wrap(ptr) {
+        const obj = Object.create(EciesOutbound.prototype);
+        obj.__wbg_ptr = ptr;
+        EciesOutboundFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        EciesOutboundFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_eciesoutbound_free(ptr, 0);
+    }
+    /**
+     * The initial message as vodozemac encodes it.
+     * @returns {string}
+     */
+    get message() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.eciesoutbound_message(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * The channel; `undefined` once taken.
+     * @returns {EstablishedEcies | undefined}
+     */
+    take_channel() {
+        const ret = wasm.eciesoutbound_take_channel(this.__wbg_ptr);
+        return ret === 0 ? undefined : EstablishedEcies.__wrap(ret);
+    }
+}
+if (Symbol.dispose) EciesOutbound.prototype[Symbol.dispose] = EciesOutbound.prototype.free;
+
+/**
  * An encrypted message: its Olm type and its bytes.
  */
 export class Encrypted {
@@ -303,6 +507,88 @@ export class Encrypted {
     }
 }
 if (Symbol.dispose) Encrypted.prototype[Symbol.dispose] = Encrypted.prototype.free;
+
+/**
+ * An ECIES channel both sides have established: the check code to compare
+ * out of band, and the messages.
+ */
+export class EstablishedEcies {
+    static __wrap(ptr) {
+        const obj = Object.create(EstablishedEcies.prototype);
+        obj.__wbg_ptr = ptr;
+        EstablishedEciesFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        EstablishedEciesFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_establishedecies_free(ptr, 0);
+    }
+    /**
+     * The two-digit check code, 0 to 99 (a leading zero is allowed, so the
+     * caller renders it with two digits).
+     * @returns {number}
+     */
+    check_code() {
+        const ret = wasm.establishedecies_check_code(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Decrypts a message from `encrypt`. Each message is read once and in
+     * order: a failed attempt may still have moved the counter.
+     * @param {string} message
+     * @returns {Uint8Array}
+     */
+    decrypt(message) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(message, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.establishedecies_decrypt(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
+            if (r3) {
+                throw takeObject(r2);
+            }
+            var v2 = getArrayU8FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            return v2;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Encrypts `plaintext`; the message as vodozemac encodes it.
+     * @param {Uint8Array} plaintext
+     * @returns {string}
+     */
+    encrypt(plaintext) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passArray8ToWasm0(plaintext, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.establishedecies_encrypt(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred2_0 = r0;
+            deferred2_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred2_0, deferred2_1, 1);
+        }
+    }
+}
+if (Symbol.dispose) EstablishedEcies.prototype[Symbol.dispose] = EstablishedEcies.prototype.free;
 
 /**
  * A SAS once the keys are exchanged: the emoji to compare, and the MACs.
@@ -808,9 +1094,21 @@ function __wbg_get_imports() {
 const AccountFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_account_free(ptr, 1));
+const EciesFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_ecies_free(ptr, 1));
+const EciesInboundFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_eciesinbound_free(ptr, 1));
+const EciesOutboundFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_eciesoutbound_free(ptr, 1));
 const EncryptedFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_encrypted_free(ptr, 1));
+const EstablishedEciesFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_establishedecies_free(ptr, 1));
 const EstablishedSasFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_establishedsas_free(ptr, 1));
