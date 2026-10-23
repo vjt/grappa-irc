@@ -10,6 +10,9 @@ defmodule Grappa.E2eInbox.Entry do
   payload. `sender` is the RAW nick, a routing hint only — the client pins
   the peer on its master key. `from_did` is the sending device as the
   frame named it, or `*` on a KEYS (it describes a user, not a device).
+  `own` marks a copy of a message the subject itself sent from another
+  device: its `sender` is our own nick at send time, and it is not mail
+  from a peer (it shares one sender bound and expires silently).
 
   The subject and the network are the device's: an entry has no subject
   columns of its own, and it goes when its device does. Public API lives
@@ -37,6 +40,7 @@ defmodule Grappa.E2eInbox.Entry do
           msgid: String.t() | nil,
           bytes: non_neg_integer() | nil,
           payload: String.t() | nil,
+          own: boolean(),
           inserted_at: DateTime.t() | nil
         }
 
@@ -49,6 +53,7 @@ defmodule Grappa.E2eInbox.Entry do
     field :msgid, :string
     field :bytes, :integer
     field :payload, :string
+    field :own, :boolean, default: false
 
     timestamps(type: :utc_datetime, updated_at: false)
   end
@@ -67,7 +72,7 @@ defmodule Grappa.E2eInbox.Entry do
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(entry, attrs) do
     entry
-    |> cast(attrs, [:device_id, :sender, :from_did, :verb, :msgid, :payload])
+    |> cast(attrs, [:device_id, :sender, :from_did, :verb, :msgid, :payload, :own])
     |> validate_required([:device_id, :sender, :from_did, :verb, :msgid, :payload])
     |> validate_change(:sender, fn :sender, nick ->
       if Identifier.valid_nick?(nick), do: [], else: [sender: "is not a nick"]
