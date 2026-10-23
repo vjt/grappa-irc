@@ -5,6 +5,10 @@
 //! (`scripts/wasm.sh`). Keys and signatures cross as vodozemac prints them:
 //! standard base64, unpadded.
 
+use vodozemac::ecies::{
+    Ecies as VodozemacEcies, EstablishedEcies as VodozemacEstablishedEcies, InitialMessage, Message as EciesMessage,
+};
+use vodozemac::hpke::DigitMode;
 use vodozemac::olm::{
     Account as OlmAccount, AccountPickle, OlmMessage, PreKeyMessage, Session as OlmSession, SessionConfig,
     SessionPickle,
@@ -240,6 +244,112 @@ impl EstablishedSas {
     /// The MAC of `input` under a key this secret derives under `info`.
     pub fn calculate_mac(&self, input: &str, info: &str) -> String {
         self.0.calculate_mac(input, info).to_base64()
+    }
+}
+
+/// One side of an ECIES channel before it exists (MSC4108 shape): an
+/// ephemeral Curve25519 key pair and the info string both sides must share.
+/// The secret half cannot be pickled, so a channel lives in the page that
+/// made it.
+#[wasm_bindgen]
+pub struct Ecies(VodozemacEcies);
+
+#[wasm_bindgen]
+impl Ecies {
+    /// A new ephemeral key pair under `info`.
+    #[wasm_bindgen(constructor)]
+    pub fn new(info: &str) -> Ecies {
+        Ecies(VodozemacEcies::with_info(info))
+    }
+
+    /// The public half, shown to the other side (in the QR).
+    pub fn public_key(&self) -> String {
+        self.0.public_key().to_base64()
+    }
+
+    /// Opens a channel to `their_key` with `plaintext` as the first message.
+    /// Uses this object up, failed or not.
+    pub fn establish_outbound_channel(self, their_key: &str, plaintext: &[u8]) -> Result<EciesOutbound, JsError> {
+        let created = self.0.establish_outbound_channel(curve25519(their_key)?, plaintext).map_err(err)?;
+        Ok(EciesOutbound { channel: Some(EstablishedEcies(created.ecies)), message: created.message.encode() })
+    }
+
+    /// Accepts the other side's initial message (`EciesOutbound.message`).
+    /// Uses this object up, failed or not.
+    pub fn establish_inbound_channel(self, initial: &str) -> Result<EciesInbound, JsError> {
+        let message = InitialMessage::decode(initial).map_err(err)?;
+        let created = self.0.establish_inbound_channel(&message).map_err(err)?;
+        Ok(EciesInbound { channel: Some(EstablishedEcies(created.ecies)), plaintext: created.message })
+    }
+}
+
+/// What `Ecies::establish_outbound_channel` returns: the channel, taken
+/// once, and the initial message to send (`ciphertext|key`).
+#[wasm_bindgen]
+pub struct EciesOutbound {
+    channel: Option<EstablishedEcies>,
+    message: String,
+}
+
+#[wasm_bindgen]
+impl EciesOutbound {
+    /// The channel; `undefined` once taken.
+    pub fn take_channel(&mut self) -> Option<EstablishedEcies> {
+        self.channel.take()
+    }
+
+    /// The initial message as vodozemac encodes it.
+    #[wasm_bindgen(getter)]
+    pub fn message(&self) -> String {
+        self.message.clone()
+    }
+}
+
+/// What `Ecies::establish_inbound_channel` returns: the channel, taken once,
+/// and the plaintext of the initial message.
+#[wasm_bindgen]
+pub struct EciesInbound {
+    channel: Option<EstablishedEcies>,
+    plaintext: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl EciesInbound {
+    /// The channel; `undefined` once taken.
+    pub fn take_channel(&mut self) -> Option<EstablishedEcies> {
+        self.channel.take()
+    }
+
+    /// The plaintext of the initial message.
+    #[wasm_bindgen(getter)]
+    pub fn plaintext(&self) -> Vec<u8> {
+        self.plaintext.clone()
+    }
+}
+
+/// An ECIES channel both sides have established: the check code to compare
+/// out of band, and the messages.
+#[wasm_bindgen]
+pub struct EstablishedEcies(VodozemacEstablishedEcies);
+
+#[wasm_bindgen]
+impl EstablishedEcies {
+    /// The two-digit check code, 0 to 99 (a leading zero is allowed, so the
+    /// caller renders it with two digits).
+    pub fn check_code(&self) -> u8 {
+        self.0.check_code().to_digit(DigitMode::AllowLeadingZero)
+    }
+
+    /// Encrypts `plaintext`; the message as vodozemac encodes it.
+    pub fn encrypt(&mut self, plaintext: &[u8]) -> String {
+        self.0.encrypt(plaintext).encode()
+    }
+
+    /// Decrypts a message from `encrypt`. Each message is read once and in
+    /// order: a failed attempt may still have moved the counter.
+    pub fn decrypt(&mut self, message: &str) -> Result<Vec<u8>, JsError> {
+        let message = EciesMessage::decode(message).map_err(err)?;
+        self.0.decrypt(&message).map_err(err)
     }
 }
 
