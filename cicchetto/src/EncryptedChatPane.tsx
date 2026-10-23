@@ -10,9 +10,12 @@ import {
   Switch,
 } from "solid-js";
 import InlineConfirmButton from "./InlineConfirmButton";
+import { ApiError } from "./lib/api";
 import { copyText } from "./lib/clipboard";
+import { loadDocument } from "./lib/documentNavigation";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import type { ChatRow, OutFailure } from "./lib/e2e/chatStore";
+import { pairingUrl, parsePairFragment } from "./lib/e2e/pairing";
 import type { SasCancelReason, SasStep, SasView } from "./lib/e2e/sas";
 import { SAS_EMOJI } from "./lib/e2e/sasEmoji";
 import {
@@ -21,15 +24,18 @@ import {
   encryptedRows,
   encryptedSas,
   encryptedTrust,
+  identityElsewhere,
   loadEncryptedChat,
   ownKey,
   pinEncryptedKey,
   readEncryptedChat,
+  replaceEncryptedIdentity,
   sendEncrypted,
   type Trust,
   trustOf,
   verifyEncrypted,
 } from "./lib/encryptedChats";
+import { friendlyApiError } from "./lib/friendlyApiError";
 import { formatTimestamp } from "./lib/timeFormat";
 import NickText from "./NickText";
 
@@ -51,6 +57,11 @@ import NickText from "./NickText";
 // unverified, to be verified that way (fork 7, 2430 comment 6339695571).
 // A key here is always a master: what a peer pins, whichever of its devices
 // writes (wire v2).
+//
+// An identity grappa holds and this browser cannot speak for is never
+// replaced silently (vjt 6344779758): the window says so, and offers pairing
+// this browser first, then, behind a confirmation that names what it
+// destroys, a new identity here. Nothing can be sent meanwhile.
 //
 // The chat lives only on this device, so its search does too (2430: "client
 // side only, no server index"): a filter over the rows the window already
@@ -116,11 +127,13 @@ const reasonText = (reason: string): string =>
 // `pinned` is the master the chat's nick is pinned to. An `in` row carries the
 // master whose device wrote it, which is not always that one: a message can
 // land in a nick's chat written under ANOTHER master (one kept from before the
-// nick was pinned to a new one). Such a row says so.
+// nick was pinned to a new one). Such a row says so. While the identity is
+// held elsewhere, the alarm offers no key to take: nothing could pin it.
 const EncryptedRow: Component<{
   row: ChatRow;
   peer: string;
   pinned: string | undefined;
+  elsewhere: boolean;
   onAccept: (key: string) => void;
 }> = (props) => (
   <li class="e2e-row" data-testid="e2e-row" data-row-kind={props.row.kind}>
@@ -172,7 +185,7 @@ const EncryptedRow: Component<{
             {row().nick} spoke with a key that is not the pinned one, and was ignored:{" "}
             <code class="e2e-key">{row().presented}</code>. If it is theirs, take it and verify it
             by comparing emoji, or pin the key they give you above.{" "}
-            <Show when={row().presented !== props.pinned}>
+            <Show when={!props.elsewhere && row().presented !== props.pinned}>
               <button
                 type="button"
                 class="e2e-sas-button"
@@ -232,6 +245,111 @@ const EncryptedRow: Component<{
 );
 
 const devicesText = (n: number): string => (n === 1 ? "1 device" : `${n} devices`);
+
+const REPLACE_CONFIRM =
+  "start a new identity anyway: every other device of this account loses this identity " +
+  "for this network, every contact sees a key alarm and must verify it again, and nothing " +
+  "encrypted to the old identity can be read here";
+
+// grappa holds this account's identity for the network and this browser
+// cannot speak for it: another device holds it, or the browser was wiped.
+// Pairing this browser with a device that holds it (X1) keeps every
+// contact's trust: that device shows a code, which the camera scans into
+// `/pair`, or whose link is pasted here and loaded there as a camera scan
+// would load it (`loadDocument`: `/pair` reads its code when it mounts). A
+// new identity is the other way out, behind a confirmation that says what it
+// destroys, and only one at a time: a second would delete the first.
+const IdentityElsewhere: Component<{ slug: string }> = (props) => {
+  const [code, setCode] = createSignal("");
+  const [pairError, setPairError] = createSignal<string | null>(null);
+  const [armed, setArmed] = createSignal(false);
+  const [replacing, setReplacing] = createSignal(false);
+  const [replaceError, setReplaceError] = createSignal<string | null>(null);
+
+  const pair = (event: SubmitEvent) => {
+    event.preventDefault();
+    const text = code().trim();
+    // The whole link, or the fragment that carries the code.
+    const found = parsePairFragment(text.includes("#") ? text.slice(text.indexOf("#")) : text);
+    if (found === null) {
+      setPairError("that is not a pairing link: paste the whole link the other device shows");
+      return;
+    }
+    setPairError(null);
+    loadDocument(pairingUrl(window.location.origin, found));
+  };
+
+  const replace = async () => {
+    setArmed(false);
+    setReplacing(true);
+    setReplaceError(null);
+    try {
+      await replaceEncryptedIdentity(props.slug);
+    } catch (err) {
+      console.warn(`[e2e] could not start a new identity on ${props.slug}`, err);
+      setReplaceError(
+        err instanceof ApiError
+          ? friendlyApiError(err)
+          : `could not start a new identity: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setReplacing(false);
+    }
+  };
+
+  return (
+    <div class="e2e-keys">
+      <p class="e2e-error" data-testid="e2e-identity-elsewhere">
+        this account's encryption identity for this network lives on another device, or was lost. To
+        use it here, pair this browser with a device that holds it.
+      </p>
+      <p class="muted">
+        on a device that holds it, open "add a device" and scan the code it shows with this device's
+        camera, or paste its link here:
+      </p>
+      <form class="e2e-pin" onSubmit={pair}>
+        <input
+          type="text"
+          class="e2e-pin-input"
+          data-testid="e2e-identity-pair-code"
+          placeholder="pairing link"
+          autocomplete="off"
+          spellcheck={false}
+          value={code()}
+          onInput={(event) => setCode(event.currentTarget.value)}
+        />
+        <button type="submit" class="e2e-pin-submit" data-testid="e2e-identity-pair-submit">
+          pair
+        </button>
+      </form>
+      <Show when={pairError()}>
+        {(message) => (
+          <div class="e2e-error" data-testid="e2e-identity-pair-error">
+            {message()}
+          </div>
+        )}
+      </Show>
+      <div class="e2e-tools">
+        <InlineConfirmButton
+          idleLabel="start a new identity here"
+          confirmLabel={REPLACE_CONFIRM}
+          armed={armed()}
+          onArm={() => setArmed(true)}
+          onConfirm={replace}
+          testId="e2e-identity-replace"
+          disabled={replacing()}
+        />
+      </div>
+      <Show when={replaceError()}>
+        {(message) => (
+          <div class="e2e-error" data-testid="e2e-identity-replace-error">
+            {message()}
+          </div>
+        )}
+      </Show>
+    </div>
+  );
+};
 
 // What the panel shows for a SAS, from the window's view of it.
 type SasPanelPhase = "waiting" | "asked" | "exchanging" | "compare" | "elsewhere" | "confirmed";
@@ -351,6 +469,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
   const rows = () => encryptedRows(props.networkSlug, props.nick) ?? [];
   const peerTrust = () => encryptedTrust(props.networkSlug, props.nick);
   const trust = () => trustOf(rows(), peerTrust());
+  const elsewhere = () => identityElsewhere(props.networkSlug);
 
   // While searching, only the messages that hold what was typed, in any case.
   const needle = () => query().trim().toLowerCase();
@@ -390,7 +509,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
   const send = (event: SubmitEvent) => {
     event.preventDefault();
     const body = draft();
-    if (body.trim() === "") return;
+    if (body.trim() === "" || elsewhere()) return;
     setDraft("");
     void sendEncrypted(props.networkSlug, props.nick, body).catch((err: unknown) => {
       console.warn(`[e2e] could not send to ${props.nick}`, err);
@@ -457,66 +576,68 @@ const EncryptedChatPane: Component<Props> = (props) => {
             {TRUST_LABEL[trust()]}
           </span>
         </div>
-        <SasPanel
-          view={encryptedSas(props.networkSlug, props.nick)}
-          peer={display()}
-          canStart={peerTrust()?.verified === false}
-          onStep={sasStep}
-        />
-        <div class="e2e-keys muted">
-          <div class="e2e-key-line">
-            your key:{" "}
-            <code class="e2e-key" data-testid="e2e-own-identity">
-              {ownKey(props.networkSlug) ?? "…"}
-            </code>
-            <button
-              type="button"
-              class="e2e-copy"
-              data-testid="e2e-own-identity-copy"
-              disabled={ownKey(props.networkSlug) === undefined}
-              onClick={() => void copyOwn()}
-            >
-              copy
-            </button>
-          </div>
-          <Show when={copyError()}>{(message) => <div class="e2e-error">{message()}</div>}</Show>
-          <div class="e2e-key-line">
-            {display()}'s key:{" "}
-            <code class="e2e-key" data-testid="e2e-peer-key">
-              {peerTrust()?.master ?? "none yet"}
-            </code>
-            <Show when={peerTrust()}>
-              {(peer) => (
-                <span class="e2e-peer-devices" data-testid="e2e-peer-devices">
-                  {" "}
-                  ({devicesText(peer().devices)})
-                </span>
+        <Show when={!elsewhere()} fallback={<IdentityElsewhere slug={props.networkSlug} />}>
+          <SasPanel
+            view={encryptedSas(props.networkSlug, props.nick)}
+            peer={display()}
+            canStart={peerTrust()?.verified === false}
+            onStep={sasStep}
+          />
+          <div class="e2e-keys muted">
+            <div class="e2e-key-line">
+              your key:{" "}
+              <code class="e2e-key" data-testid="e2e-own-identity">
+                {ownKey(props.networkSlug) ?? "…"}
+              </code>
+              <button
+                type="button"
+                class="e2e-copy"
+                data-testid="e2e-own-identity-copy"
+                disabled={ownKey(props.networkSlug) === undefined}
+                onClick={() => void copyOwn()}
+              >
+                copy
+              </button>
+            </div>
+            <Show when={copyError()}>{(message) => <div class="e2e-error">{message()}</div>}</Show>
+            <div class="e2e-key-line">
+              {display()}'s key:{" "}
+              <code class="e2e-key" data-testid="e2e-peer-key">
+                {peerTrust()?.master ?? "none yet"}
+              </code>
+              <Show when={peerTrust()}>
+                {(peer) => (
+                  <span class="e2e-peer-devices" data-testid="e2e-peer-devices">
+                    {" "}
+                    ({devicesText(peer().devices)})
+                  </span>
+                )}
+              </Show>
+            </div>
+            <form class="e2e-pin" onSubmit={(event) => void submitPin(event)}>
+              <input
+                type="text"
+                class="e2e-pin-input"
+                data-testid="e2e-pin-input"
+                placeholder={`pin ${display()}'s key (paste it)`}
+                autocomplete="off"
+                spellcheck={false}
+                value={pin()}
+                onInput={(event) => setPin(event.currentTarget.value)}
+              />
+              <button type="submit" class="e2e-pin-submit" data-testid="e2e-pin-submit">
+                pin
+              </button>
+            </form>
+            <Show when={pinError()}>
+              {(message) => (
+                <div class="e2e-error" data-testid="e2e-pin-error">
+                  {message()}
+                </div>
               )}
             </Show>
           </div>
-          <form class="e2e-pin" onSubmit={(event) => void submitPin(event)}>
-            <input
-              type="text"
-              class="e2e-pin-input"
-              data-testid="e2e-pin-input"
-              placeholder={`pin ${display()}'s key (paste it)`}
-              autocomplete="off"
-              spellcheck={false}
-              value={pin()}
-              onInput={(event) => setPin(event.currentTarget.value)}
-            />
-            <button type="submit" class="e2e-pin-submit" data-testid="e2e-pin-submit">
-              pin
-            </button>
-          </form>
-          <Show when={pinError()}>
-            {(message) => (
-              <div class="e2e-error" data-testid="e2e-pin-error">
-                {message()}
-              </div>
-            )}
-          </Show>
-        </div>
+        </Show>
         <div class="e2e-tools">
           <input
             type="search"
@@ -546,6 +667,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
             onConfirm={deleteChat}
             testId="e2e-delete-chat"
             extraClass="e2e-delete-chat"
+            disabled={elsewhere()}
           />
         </div>
       </header>
@@ -556,6 +678,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
               row={row}
               peer={display()}
               pinned={peerTrust()?.master}
+              elsewhere={elsewhere()}
               onAccept={acceptKey}
             />
           )}
@@ -568,10 +691,16 @@ const EncryptedChatPane: Component<Props> = (props) => {
           data-testid="e2e-compose-input"
           placeholder={`encrypted message to ${display()}`}
           autocomplete="off"
+          disabled={elsewhere()}
           value={draft()}
           onInput={(event) => setDraft(event.currentTarget.value)}
         />
-        <button type="submit" class="e2e-compose-send" data-testid="e2e-compose-send">
+        <button
+          type="submit"
+          class="e2e-compose-send"
+          data-testid="e2e-compose-send"
+          disabled={elsewhere()}
+        >
           send
         </button>
       </form>

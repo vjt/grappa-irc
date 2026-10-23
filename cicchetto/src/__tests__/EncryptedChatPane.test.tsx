@@ -1,16 +1,19 @@
+import { Route, Router } from "@solidjs/router";
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../lib/api";
 import type { Chat, ChatRow } from "../lib/e2e/chatStore";
 import type { PeerTrust } from "../lib/e2e/client";
 import type { SasView } from "../lib/e2e/sas";
 import { SAS_EMOJI } from "../lib/e2e/sasEmoji";
+import { friendlyApiError } from "../lib/friendlyApiError";
 
 // issue 2430 — the encrypted query pane. The chat glue (lib/encryptedChats)
 // is the boundary: its reads are signals here and its verbs are spies, so
 // these tests pin what the pane shows and which verb each control reaches.
-// `trustOf` stays the real one: the badge is its answer, not a copy of it.
-// A key is a master.
+// `trustOf` stays the real one: the badge is its answer, not a copy of it, as
+// do the pairing link helpers (`lib/e2e/pairing.ts`). A key is a master.
 
 const KEY = "J2bCqN5ukKUq1qDNgzWbn9GZ7xjzM2bA0f9yqkvq0Ss";
 const OWN = "7hPz0kdkCq0cH1L2oW9i3l0gq3uM8V8vxa5w8Kq2yYk";
@@ -21,6 +24,7 @@ const [trust, setTrust] = createSignal<PeerTrust | null>(null);
 const [own, setOwn] = createSignal<string | undefined>(undefined);
 const [visible, setVisible] = createSignal(true);
 const [sas, setSas] = createSignal<SasView | null>(null);
+const [elsewhere, setElsewhere] = createSignal(false);
 
 const loadEncryptedChat = vi.hoisted(() => vi.fn());
 const readEncryptedChat = vi.hoisted(() => vi.fn());
@@ -28,7 +32,9 @@ const sendEncrypted = vi.hoisted(() => vi.fn());
 const pinEncryptedKey = vi.hoisted(() => vi.fn());
 const verifyEncrypted = vi.hoisted(() => vi.fn());
 const deleteEncryptedChat = vi.hoisted(() => vi.fn());
+const replaceEncryptedIdentity = vi.hoisted(() => vi.fn());
 const copyText = vi.hoisted(() => vi.fn());
+const loadDocument = vi.hoisted(() => vi.fn());
 
 vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   trustOf: (await importOriginal<typeof import("../lib/encryptedChats")>()).trustOf,
@@ -37,6 +43,8 @@ vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   encryptedTrust: () => trust(),
   encryptedSas: () => sas(),
   ownKey: () => own(),
+  identityElsewhere: () => elsewhere(),
+  replaceEncryptedIdentity,
   loadEncryptedChat,
   readEncryptedChat,
   sendEncrypted,
@@ -46,8 +54,13 @@ vi.mock("../lib/encryptedChats", async (importOriginal) => ({
 }));
 vi.mock("../lib/documentVisibility", () => ({ isDocumentVisible: () => visible() }));
 vi.mock("../lib/clipboard", () => ({ copyText }));
+// jsdom implements no document navigation (and makes `location.assign`
+// unforgeable): the one-line seam is mocked, and a test below loads the URL
+// it was handed the way the browser would, as a fresh document.
+vi.mock("../lib/documentNavigation", () => ({ loadDocument }));
 
 const { default: EncryptedChatPane } = await import("../EncryptedChatPane");
+const { default: PairScan } = await import("../PairScan");
 
 const at = 1_700_000_000_000;
 
@@ -60,6 +73,7 @@ beforeEach(() => {
     copyText,
     verifyEncrypted,
     deleteEncryptedChat,
+    replaceEncryptedIdentity,
   ]) {
     fn.mockResolvedValue(undefined);
   }
@@ -70,6 +84,7 @@ beforeEach(() => {
   setOwn(OWN);
   setVisible(true);
   setSas(null);
+  setElsewhere(false);
 });
 
 const renderPane = () => render(() => <EncryptedChatPane networkSlug="azzurra" nick="bob" />);
@@ -376,5 +391,232 @@ describe("EncryptedChatPane", () => {
 
     setVisible(true);
     expect(readEncryptedChat).toHaveBeenCalledWith("azzurra", "bob");
+  });
+});
+
+// The account's identity for the network is held elsewhere (another device,
+// or a wiped browser): never replaced silently. The window says so, offers
+// pairing this browser first, then a new identity behind a confirmation that
+// names what it destroys; nothing can be sent meanwhile.
+describe("EncryptedChatPane, an identity held elsewhere", () => {
+  const LINK = `https://grappa.example/pair#pair=${"r".repeat(22)}.${"c".repeat(43)}`;
+
+  it("says the identity is held elsewhere, offers both ways out, and keeps compose shut", () => {
+    setTrust({ master: KEY, verified: false, devices: 1 });
+    setElsewhere(true);
+    renderPane();
+
+    expect(screen.getByTestId("e2e-identity-elsewhere").textContent).toContain(
+      "lives on another device, or was lost",
+    );
+    expect(screen.getByTestId("e2e-identity-pair-code")).toBeTruthy();
+    expect(screen.getByTestId("e2e-identity-pair-submit")).toBeTruthy();
+    expect(screen.getByTestId("e2e-identity-replace").textContent).toBe(
+      "start a new identity here",
+    );
+    // Nothing that needs the identity: no key to copy or pin, no SAS.
+    expect(screen.queryByTestId("e2e-own-identity")).toBeNull();
+    expect(screen.queryByTestId("e2e-pin-input")).toBeNull();
+    expect(screen.queryByTestId("e2e-sas-start")).toBeNull();
+    expect((screen.getByTestId("e2e-compose-input") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByTestId("e2e-compose-send") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("sends nothing while elsewhere, whatever was typed before", () => {
+    renderPane();
+    fireEvent.input(screen.getByTestId("e2e-compose-input"), { target: { value: "typed" } });
+    setElsewhere(true);
+
+    fireEvent.submit(screen.getByTestId("e2e-compose"));
+
+    expect(sendEncrypted).not.toHaveBeenCalled();
+  });
+
+  it("offers no control that needs the identity: the alarm's key cannot be taken, the chat cannot be deleted", () => {
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    setRows([{ kind: "key_alarm", id: "a", at, nick: "Bob", presented: OWN }]);
+    setElsewhere(true);
+    renderPane();
+    const remove = screen.getByTestId("e2e-delete-chat") as HTMLButtonElement;
+
+    expect(screen.queryByTestId("e2e-alarm-accept")).toBeNull();
+    expect(remove.disabled).toBe(true);
+    fireEvent.click(remove);
+    fireEvent.click(remove);
+    expect(deleteEncryptedChat).not.toHaveBeenCalled();
+
+    // Once the network reads ready again, both come back.
+    setElsewhere(false);
+    expect(screen.getByTestId("e2e-alarm-accept")).toBeTruthy();
+    expect(remove.disabled).toBe(false);
+  });
+
+  it.each([
+    ["the whole link", LINK],
+    ["its fragment", `#pair=${"r".repeat(22)}.${"c".repeat(43)}`],
+  ])("a pasted pairing link (%s) opens /pair with its code in the fragment", (_name, pasted) => {
+    setElsewhere(true);
+    renderPane();
+
+    fireEvent.input(screen.getByTestId("e2e-identity-pair-code"), {
+      target: { value: `  ${pasted}\n` },
+    });
+    fireEvent.click(screen.getByTestId("e2e-identity-pair-submit"));
+
+    expect(loadDocument.mock.calls).toEqual([
+      [`${window.location.origin}/pair#pair=${"r".repeat(22)}.${"c".repeat(43)}`],
+    ]);
+    expect(screen.queryByTestId("e2e-identity-pair-error")).toBeNull();
+  });
+
+  // Inside the app's router, as the pane really runs: an in-app route change
+  // to /pair mounts PairScan before the URL (and its fragment) is pushed, so
+  // PairScan finds no code. The link must load /pair as a new document, the
+  // entry a camera scan takes, where PairScan reads the code and scrubs it.
+  it("a pasted link loads /pair as a document, where PairScan reads the code and scrubs it", async () => {
+    window.history.replaceState(null, "", "/");
+    setElsewhere(true);
+    const app = render(() => (
+      <Router>
+        <Route path="/" component={() => <EncryptedChatPane networkSlug="azzurra" nick="bob" />} />
+        <Route path="/pair" component={PairScan} />
+      </Router>
+    ));
+    fireEvent.input(screen.getByTestId("e2e-identity-pair-code"), { target: { value: LINK } });
+    fireEvent.click(screen.getByTestId("e2e-identity-pair-submit"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // No route change in the app: the pane stays, and no PairScan came up.
+    expect(screen.queryByTestId("pair-invalid")).toBeNull();
+    expect(screen.getByTestId("e2e-identity-elsewhere")).toBeTruthy();
+    expect(window.location.pathname).toBe("/");
+    const [target] = loadDocument.mock.calls.map(([url]) => url as string);
+    expect(target).toBe(`${window.location.origin}/pair#pair=${"r".repeat(22)}.${"c".repeat(43)}`);
+
+    // The browser loads that URL as a new document.
+    app.unmount();
+    window.history.replaceState(null, "", target);
+    render(() => (
+      <Router>
+        <Route path="/pair" component={PairScan} />
+      </Router>
+    ));
+
+    // Logged out here, so it asks for a login; what matters is that it read a code.
+    expect(await screen.findByTestId("pair-login")).toBeTruthy();
+    expect(screen.queryByTestId("pair-invalid")).toBeNull();
+    expect(window.location.hash).toBe("");
+    window.history.replaceState(null, "", "/");
+  });
+
+  it.each([
+    ["not a link", "garbage"],
+    ["a link with no code", "https://grappa.example/pair"],
+    ["a code cut short", `#pair=${"r".repeat(22)}.${"c".repeat(42)}`],
+  ])("a paste that is %s says so and goes nowhere", (_name, pasted) => {
+    setElsewhere(true);
+    renderPane();
+
+    fireEvent.input(screen.getByTestId("e2e-identity-pair-code"), { target: { value: pasted } });
+    fireEvent.click(screen.getByTestId("e2e-identity-pair-submit"));
+
+    expect(screen.getByTestId("e2e-identity-pair-error").textContent).toContain(
+      "that is not a pairing link",
+    );
+    expect(loadDocument).not.toHaveBeenCalled();
+  });
+
+  it("a new identity takes two taps, the second naming what it destroys", () => {
+    setElsewhere(true);
+    renderPane();
+    const button = screen.getByTestId("e2e-identity-replace");
+
+    fireEvent.click(button);
+
+    expect(replaceEncryptedIdentity).not.toHaveBeenCalled();
+    const confirm = button.textContent ?? "";
+    expect(confirm).toContain("every other device of this account loses this identity");
+    expect(confirm).toContain("every contact sees a key alarm and must verify it again");
+    expect(confirm).toContain("nothing encrypted to the old identity can be read here");
+  });
+
+  it("confirmed, starts the new identity, and once the network reads ready, compose opens", async () => {
+    replaceEncryptedIdentity.mockImplementation(async () => {
+      setElsewhere(false);
+    });
+    setElsewhere(true);
+    renderPane();
+    const button = screen.getByTestId("e2e-identity-replace");
+
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(replaceEncryptedIdentity).toHaveBeenCalledWith("azzurra");
+    await vi.waitFor(() =>
+      expect((screen.getByTestId("e2e-compose-input") as HTMLInputElement).disabled).toBe(false),
+    );
+    expect(screen.queryByTestId("e2e-identity-elsewhere")).toBeNull();
+    expect(screen.getByTestId("e2e-own-identity").textContent).toBe(OWN);
+  });
+
+  it("a new identity cannot be asked for twice while one is being made", async () => {
+    let done: () => void = () => undefined;
+    replaceEncryptedIdentity.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          done = resolve;
+        }),
+    );
+    setElsewhere(true);
+    renderPane();
+    const button = screen.getByTestId("e2e-identity-replace") as HTMLButtonElement;
+
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(replaceEncryptedIdentity).toHaveBeenCalledTimes(1);
+    done();
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+  });
+
+  it("a new identity grappa refused says why, logs the cause, and is still offered", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const refused = new ApiError(503, "unavailable");
+    replaceEncryptedIdentity.mockRejectedValue(refused);
+    setElsewhere(true);
+    renderPane();
+    const button = screen.getByTestId("e2e-identity-replace");
+
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect((await screen.findByTestId("e2e-identity-replace-error")).textContent).toBe(
+      friendlyApiError(refused),
+    );
+    expect(warn).toHaveBeenCalledWith("[e2e] could not start a new identity on azzurra", refused);
+    expect(button.textContent).toBe("start a new identity here");
+    expect((screen.getByTestId("e2e-compose-send") as HTMLButtonElement).disabled).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("a new identity that failed on this device says what failed, not that the server is away", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const broken = new Error("the database is closing");
+    replaceEncryptedIdentity.mockRejectedValue(broken);
+    setElsewhere(true);
+    renderPane();
+    const button = screen.getByTestId("e2e-identity-replace");
+
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect((await screen.findByTestId("e2e-identity-replace-error")).textContent).toBe(
+      "could not start a new identity: the database is closing",
+    );
+    expect(warn).toHaveBeenCalledWith("[e2e] could not start a new identity on azzurra", broken);
+    warn.mockRestore();
   });
 });

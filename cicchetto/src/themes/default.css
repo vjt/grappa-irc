@@ -4880,7 +4880,9 @@ html.is-ios27-band .shell {
   cursor: pointer;
 }
 
-.e2e-copy:disabled {
+.e2e-copy:disabled,
+.e2e-compose-input:disabled,
+.e2e-compose-send:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
