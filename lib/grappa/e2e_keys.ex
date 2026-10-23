@@ -453,9 +453,18 @@ defmodule Grappa.E2eKeys do
   def claim({_, _} = subject, network_id, from_did, did)
       when is_integer(network_id) and is_binary(from_did) and is_binary(did) do
     with {:ok, list, device} <- sibling(subject, network_id, from_did, did),
-         %Key{} = key <- next_key(device, :otk) || {:error, :keyless_device},
+         {:ok, key} <- claimable_key(device),
          :ok <- consume([key]) do
       {:ok, Jason.encode!(%{v: 2, master: master_block(list), devices: [entry_block({device, key})]})}
+    end
+  end
+
+  # The key a claim hands out: the oldest one-time key, else the fallback.
+  @spec claimable_key(Device.t()) :: {:ok, Key.t()} | {:error, :keyless_device}
+  defp claimable_key(device) do
+    case next_key(device, :otk) do
+      %Key{} = key -> {:ok, key}
+      nil -> {:error, :keyless_device}
     end
   end
 
