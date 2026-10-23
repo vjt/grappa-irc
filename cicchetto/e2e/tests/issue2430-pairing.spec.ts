@@ -22,8 +22,7 @@
 //   * The device list on grappa is not the one pairing should leave: it holds
 //     one device after a pairing, or two after a refused one.
 
-import type { Browser, Page } from "@playwright/test";
-import { awaitServiceWorkerActive, loginAs } from "../fixtures/cicchettoPage";
+import { awaitServiceWorkerActive } from "../fixtures/cicchettoPage";
 import {
   boot,
   equery,
@@ -33,13 +32,8 @@ import {
   row,
   send,
 } from "../fixtures/encryptedQuery";
-import {
-  fetchE2eDevices,
-  fetchE2eKeys,
-  login,
-  type SeededUser,
-  soleE2eDevice,
-} from "../fixtures/grappaApi";
+import { fetchE2eDevices, soleE2eDevice } from "../fixtures/grappaApi";
+import { awaitBundleOf, joinWithLink, newBrowserOf, typeCode } from "../fixtures/pairing";
 import { NETWORK_SLUG } from "../fixtures/seedData";
 import { provisionPeerSubject, teardownSpecSubject } from "../fixtures/specSubject";
 import { expect, specNick, specUser, test } from "../fixtures/test";
@@ -47,59 +41,6 @@ import { expect, specNick, specUser, test } from "../fixtures/test";
 // The channel runs through grappa's relay and two engines: a step may take as
 // long as a key exchange does.
 const STEP = KEYS_TIMEOUT;
-
-// The same account logged in a second time: a new bearer, as a new browser
-// would get from the login form.
-async function secondLogin(user: SeededUser): Promise<SeededUser> {
-  const result = await login(user.identifier, user.password);
-  return { ...user, token: result.token, subjectJson: JSON.stringify(result.subject) };
-}
-
-// The holder shows the pairing link in the panel; the new browser opens it,
-// the way its OS camera would land it on `/pair`. Resolves with the code the
-// new browser shows.
-async function joinWithLink(holder: Page, joiner: Page): Promise<string> {
-  await holder.getByTestId("e2e-add-device").click();
-  const link = holder.getByTestId("pair-url");
-  await expect(link).toContainText("#pair=", { timeout: STEP });
-  const url = (await link.textContent())?.trim() ?? "";
-  expect(url).toMatch(/\/pair#pair=/);
-
-  await joiner.goto(url);
-  const shown = joiner.getByTestId("pair-check-code");
-  await expect(shown).toHaveText(/\d{2}\s*$/, { timeout: STEP });
-  const code = /(\d{2})\s*$/.exec((await shown.textContent()) ?? "")?.[1];
-  if (code === undefined) throw new Error("the new browser showed no two-digit code");
-  return code;
-}
-
-// How long the new device may take to upload its keys after it paired.
-const BUNDLE_TIMEOUT_MS = 30_000;
-
-// State, not an event: the new device is usable by a peer once its key bundle
-// holds one-time keys on grappa (a KEYREQ takes one of every listed device).
-async function awaitBundleOf(token: string, did: string): Promise<void> {
-  const deadline = Date.now() + BUNDLE_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    if ((await fetchE2eKeys(token, NETWORK_SLUG, did)).one_time_keys > 0) return;
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  throw new Error(
-    `awaitBundleOf: device ${did} never filled its key bundle within ${BUNDLE_TIMEOUT_MS}ms`,
-  );
-}
-
-async function typeCode(holder: Page, code: string): Promise<void> {
-  await holder.getByTestId("pair-code-input").fill(code);
-  await holder.getByTestId("pair-code-submit").click();
-}
-
-// A second context for the same user, logged in and on the shell.
-async function newBrowserOf(browser: Browser, user: SeededUser) {
-  const second = await peerPage(browser);
-  await loginAs(second.page, await secondLogin(user));
-  return second;
-}
 
 test("a second browser of one user pairs by QR: the peer sees two devices and one line reaches both", async ({
   page,
