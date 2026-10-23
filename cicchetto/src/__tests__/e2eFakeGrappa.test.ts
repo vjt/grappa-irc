@@ -371,3 +371,96 @@ describe("fake grappa v2: refusals", () => {
     ).rejects.toMatchObject({ status: 404 });
   });
 });
+
+describe("fake grappa v2: claim and copy to a sibling", () => {
+  it("the fake grappa's claim answers the sibling block and consumes the key, like grappa", async () => {
+    const grappa = new Grappa();
+    const bob = await identity(grappa, "Bob", 2);
+    const [d1, d2] = bob.devices as [Device, Device];
+    const k2 = keysOf(d2, 1, true);
+    await grappa.api.uploadE2eDeviceKeys("Bob", SLUG, d2.did, k2);
+
+    const { keys } = await grappa.api.claimE2eDeviceKeys("Bob", SLUG, d2.did, d1.did);
+
+    const otk = k2.one_time_keys[0] as { key: string; sig: string };
+    expect(JSON.parse(keys)).toEqual({
+      v: 2,
+      master: {
+        ed25519: bob.list.master,
+        list: { ver: 1, devices: bob.list.devices },
+        sig: bob.list.sig,
+      },
+      devices: [
+        {
+          id: idBlock(d2.account, bob.list.master),
+          otk: { key: otk.key, fallback: false, sig: otk.sig },
+        },
+      ],
+    });
+    // The one-time key went; the next claim is the fallback key, which stays.
+    expect(await grappa.api.getE2eDeviceKeys("Bob", SLUG, d2.did)).toEqual({
+      one_time_keys: 0,
+      fallback: true,
+    });
+    const again = JSON.parse(
+      (await grappa.api.claimE2eDeviceKeys("Bob", SLUG, d2.did, d1.did)).keys,
+    );
+    expect(again.devices[0].otk.fallback).toBe(true);
+
+    await expect(grappa.api.claimE2eDeviceKeys("Bob", SLUG, d1.did, d1.did)).rejects.toMatchObject({
+      status: 409,
+      code: "self",
+    });
+    await expect(grappa.api.claimE2eDeviceKeys("Bob", SLUG, d1.did, d2.did)).rejects.toMatchObject({
+      status: 409,
+      code: "empty",
+    });
+    await expect(
+      grappa.api.claimE2eDeviceKeys("Bob", SLUG, d2.did, "AAAAAAAAAAA"),
+    ).rejects.toMatchObject({ status: 422, code: "unknown_device" });
+    await expect(
+      grappa.api.claimE2eDeviceKeys("Bob", SLUG, "AAAAAAAAAAA", d1.did),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("a copy lands in the sibling's inbox flagged own and is refused past the own 1 MiB share", async () => {
+    const grappa = new Grappa();
+    const bob = await identity(grappa, "Bob", 2);
+    const [d1, d2] = bob.devices as [Device, Device];
+    const copy = (payload: string, verb: SendVerb = "msg") =>
+      grappa.api.copyE2e("Bob", SLUG, d2.did, { from_did: d1.did, verb, payload });
+
+    const first = await copy('{"v":2}');
+    const [item] = await keysFor(grappa, "Bob", d2.did);
+    expect(item).toMatchObject({
+      id: first.id,
+      kind: "e2e_message",
+      network: SLUG,
+      from: "Bob",
+      from_did: d1.did,
+      to_did: d2.did,
+      verb: "msg",
+      msgid: first.msgid,
+      payload: '{"v":2}',
+      own: true,
+    });
+
+    // The share counts the payload plus 256 bytes a row, whatever the nick.
+    const payload = "A".repeat(30_000);
+    const fits = Math.floor(1_048_576 / (payload.length + 256));
+    for (let i = 0; i < fits; i++) await copy(payload);
+    await expect(copy(payload)).rejects.toMatchObject({ status: 413, code: "full" });
+
+    await expect(copy('{"v":2}', "keyreq")).rejects.toMatchObject({ status: 400 });
+    await expect(
+      grappa.api.copyE2e("Bob", SLUG, d1.did, { from_did: d1.did, verb: "msg", payload: "x" }),
+    ).rejects.toMatchObject({ status: 409, code: "self" });
+    await expect(
+      grappa.api.copyE2e("Bob", SLUG, d2.did, {
+        from_did: "AAAAAAAAAAA",
+        verb: "msg",
+        payload: "x",
+      }),
+    ).rejects.toMatchObject({ status: 422, code: "unknown_device" });
+  });
+});

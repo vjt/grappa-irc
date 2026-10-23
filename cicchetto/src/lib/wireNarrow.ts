@@ -37,6 +37,7 @@ import {
   S_SessionLogWireListResult,
   S_SessionLogWireSessionsResult,
   S_SessionLogWireT,
+  S_SessionWireE2eCopiedPayload,
   S_SessionWireE2eInboxPayload,
   S_SessionWireE2eSentPayload,
   S_SessionWireMembersIndexPayload,
@@ -74,6 +75,7 @@ import type {
   SessionLogWireListResult,
   SessionLogWireSessionsResult,
   SessionLogWireT,
+  SessionWireE2eCopiedPayload,
   SessionWireE2eInboxPayload,
   SessionWireE2eSentPayload,
   SessionWireMembersIndexPayload,
@@ -965,6 +967,11 @@ export function narrowE2eInboxResponse(raw: unknown): SessionWireE2eInboxPayload
 /** `POST /networks/:slug/e2e/messages` (issue 2430): the msgid grappa chose. */
 export function narrowE2eSentResponse(raw: unknown): SessionWireE2eSentPayload {
   return narrowRest(S_SessionWireE2eSentPayload, raw, "encrypted send");
+}
+
+/** `POST /networks/:slug/e2e/devices/:did/copies` (issue 2430, S1): the queue id and msgid of the copy. */
+export function narrowE2eCopiedResponse(raw: unknown): SessionWireE2eCopiedPayload {
+  return narrowRest(S_SessionWireE2eCopiedPayload, raw, "encrypted copy");
 }
 
 /** `POST /e2e/pairings` and `POST /e2e/pairings/:id/join` (issue 2430, X1). */
