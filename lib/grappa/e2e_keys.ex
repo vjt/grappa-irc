@@ -432,6 +432,43 @@ defmodule Grappa.E2eKeys do
     end
   end
 
+  @doc """
+  One key of a sibling device, for the device `from_did` of the same
+  account to open an Olm session to it (S1, issue 2430: the copy of an
+  encrypted message a device sends to the account's other devices).
+
+  The payload is `answer/3`'s KEYS v2, restricted to the one device `did`:
+  the signed list, then that device's id block and its oldest one-time key,
+  or its fallback key when none is left. The key is consumed here (a
+  one-time key is deleted, the fallback stays), since the payload goes
+  straight to the caller and nowhere else.
+
+  `{:error, :self}` for the caller's own `did`; `{:error, :unknown_device}`
+  when `from_did` is not a device the stored list names; `{:error,
+  :not_found}` when `did` is not one the list names for this subject;
+  `{:error, :empty}` when that device holds no key at all; `{:error,
+  :gone}` when its key was taken between the pick and the consume (ask
+  again); `{:error, :db_unavailable}` when the write lock stays taken past
+  the retry budget.
+  """
+  @spec claim(Subject.t(), integer(), String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, :self | :unknown_device | :not_found | :empty | :gone | :db_unavailable}
+  def claim({_, _} = subject, network_id, from_did, did)
+      when is_integer(network_id) and is_binary(from_did) and is_binary(did) do
+    with :ok <- if(did == from_did, do: {:error, :self}, else: :ok),
+         %DeviceList{} = list <- Repo.one(list_query(subject, network_id)),
+         listed = listed(subject, network_id, list),
+         :ok <- if(Enum.any?(listed, &(&1.did == from_did)), do: :ok, else: {:error, :unknown_device}),
+         %Device{} = device <- Enum.find(listed, &(&1.did == did)) || {:error, :not_found},
+         %Key{} = key <- next_key(device, :otk) || {:error, :empty},
+         :ok <- consume([key]) do
+      {:ok, Jason.encode!(%{v: 2, master: master_block(list), devices: [entry_block({device, key})]})}
+    else
+      nil -> {:error, :unknown_device}
+      {:error, _} = err -> err
+    end
+  end
+
   # Listed devices in the list's own order, each with the key it hands out;
   # a device with none left is not in the answer, and so not reachable for
   # now.

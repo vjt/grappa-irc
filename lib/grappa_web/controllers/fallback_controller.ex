@@ -101,6 +101,9 @@ defmodule GrappaWeb.FallbackController do
            | :stale_list
            | :unknown_device
            | :listed_device
+           | :self
+           | :empty
+           | :gone
            | :invalid_mask
            | :invalid_text_pattern
            | :not_raster
@@ -354,6 +357,28 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:conflict)
     |> json(%{error: "listed_device"})
+  end
+
+  # issue 2430, S1 — a sibling's key claimed (`E2eKeys.claim/4`). 409, each
+  # its own token: `self` (a device never claims its own key), `empty` (the
+  # sibling holds no key at all, so it is unreachable for now) and `gone`
+  # (its key was taken between the pick and the consume: ask again).
+  def call(conn, {:error, :self}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "self"})
+  end
+
+  def call(conn, {:error, :empty}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "empty"})
+  end
+
+  def call(conn, {:error, :gone}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "gone"})
   end
 
   # issue 2430, multi-device — a well-signed list naming a key no device of
