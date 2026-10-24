@@ -4562,8 +4562,9 @@ request the page makes after login or a user action.
 **Report.** vjt, on IRCnet: nicks he `/ignore`d keep showing up. Relayed,
 not seen first-hand.
 
-**Measured before the fix.** `settings_respawn_test.exs` was run on
-`6279cebdd`, three reds:
+**Measured before the fix.** `settings_respawn_test.exs` was run against
+`6279cebdd`'s `lib/` (to rerun it, use `56676d226`: same `lib/`, plus the
+`await_respawn/3` helper the test needs). Three reds:
 
 - An ignore added to a live session no longer applies after a `:transient`
   restart: `senders == ["friend", "spambot"]`.
@@ -4618,8 +4619,26 @@ and five for a subject with one. Measured on 2026-10-24 with the
 `RefreshPlanCostTest` `self()` filter; not pinned. On the spawn door the
 queries moved rather than appeared, because the caller of
 `start_session/3` used to pay them. They are new on the restart door,
-which the backoff ladder already gates.
+and they run on EVERY supervisor restart. The backoff ladder does not gate
+them: its wait sits in `handle_continue({:start_client, _})`, after
+`init/1` returns, exactly like the nine `refresh_plan` reads before them.
+The only hard bound is the `SessionSupervisor` restart intensity
+(`max_restarts: 10_000` in 60 s), which is a failsafe, not a throttle. In
+practice a crash loop driven by the upstream link waits out the ladder
+before it can crash again; a loop that never reaches the link does not.
 
 **Not changed.** The live refreshes (`ignores_changed/3`, the auto-away
 bridge messages, the site-default fan-out) still keep a RUNNING session
-current. The fix only makes a restart come back on what they wrote.
+current; `show_peer_profiles` still has none, by design. The fix only
+makes a restart come back on what is stored.
+
+**Pinned:** `settings_respawn_test.exs` checks the restart door for all
+five settings and for the site default. It also feeds `init/1` a child
+spec that still carries the five keys as opts, the hot-deploy case, and
+asserts that the stored values win.
+
+**Open: the fix may not be what vjt saw.** The ignore filter drops only
+PRIVMSG and NOTICE (`EventRouter`). JOIN, PART, QUIT and NICK from an
+ignored nick still show, by design, and "ignored nicks keep showing up"
+fits that just as well. The restart bug is real and fixed here; whether it
+was the one he hit waits on the probe on the issue, or on asking him.

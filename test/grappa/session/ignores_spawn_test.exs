@@ -42,7 +42,7 @@ defmodule Grappa.Session.IgnoresSpawnTest do
            ] = :sys.get_state(pid).ignores
   end
 
-  # issue 2294 — the text half survives the SAME boundary. A stored pattern
+  # issue 2294 — the text half survives the SAME read. A stored pattern
   # that arrived uncompiled would be a per-line regex build on the inbound
   # hot path, which is exactly what #1984 took out of this feature.
   test "a stored text pattern arrives compiled too" do

@@ -11840,8 +11840,8 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
 
-      # Stored BEFORE the spawn: the value has to be read at the spawn
-      # boundary, not only by the live-refresh path.
+      # Stored BEFORE the spawn: the value has to be read when the session
+      # starts, not only by the live-refresh path.
       {:ok, _} =
         Grappa.UserSettings.put_auto_away_debounce_seconds(
           {:user, user.id},

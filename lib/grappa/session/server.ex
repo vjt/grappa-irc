@@ -1311,7 +1311,9 @@ defmodule Grappa.Session.Server do
       # never taken from
       # opts: a `:transient` restart replays the child spec cached at spawn,
       # so a value resolved into it came back stale after a crash (issue
-      # 2463). The live refreshes below keep a running session current.
+      # 2463). A running session is kept current by the live refreshes
+      # below — every setting here but `show_peer_profiles`, which has none
+      # by design (`UserSettings.get_show_peer_profiles/1`).
       auto_away_debounce_ms: auto_away_debounce_for(opts.subject),
       auto_away_reason: auto_away_reason_for(opts.subject),
       away_nick_suffix: UserSettings.get_away_nick_suffix(opts.subject),

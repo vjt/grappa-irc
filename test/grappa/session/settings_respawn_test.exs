@@ -17,13 +17,22 @@ defmodule Grappa.Session.SettingsRespawnTest do
   use Grappa.DataCase, async: false
   import Grappa.AuthFixtures
 
-  alias Grappa.IRC.Mask
+  alias Grappa.IRC.{Ignore, Mask}
   alias Grappa.{IRCServer, Scrollback, ServerSettings, Session, UserSettings}
-  alias Grappa.Networks.Servers
+  alias Grappa.Networks.{Credentials, Servers, SessionPlan}
   alias Grappa.PubSub.Topic
   alias Grappa.Session.AwayState
 
   @nick "grappa-test"
+
+  # The five values `store_settings/2` writes, as `settings/1` projects them.
+  @stored %{
+    ignores: ["spambot!*@*"],
+    auto_away_debounce_ms: 3_600_000,
+    auto_away_reason: "gone fishing",
+    away_nick_suffix: "-away",
+    show_peer_profiles: true
+  }
 
   defp setup_user_and_network(port) do
     user = user_fixture(name: "respawn-#{System.unique_integer([:positive])}")
@@ -116,22 +125,50 @@ defmodule Grappa.Session.SettingsRespawnTest do
              show_peer_profiles: false
            }
 
+    :ok = store_settings(user, network)
+    successor = crash_and_await_successor(subject, network.id, pid)
+
+    # One comparison, not five: a stale setting must not hide the others.
+    assert settings(:sys.get_state(successor)) == @stored
+  end
+
+  # A session that was live at a hot deploy keeps the child spec the OLD
+  # `start_session/3` built, with all five settings resolved into it. The
+  # restart door must read the DB and leave those keys alone, or its first
+  # crash after the deploy brings the stale values back.
+  test "settings left in the opts by a pre-2463 child spec are not read" do
+    {irc, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", @nick))
+    {user, network, _} = setup_user_and_network(port)
+    subject = {:user, user.id}
+    :ok = store_settings(user, network)
+
+    {:ok, stale_ignore} = Ignore.normalize("stale!*@*", nil, :ascii)
+    {:ok, plan} = SessionPlan.resolve(Credentials.get_credential!(user, network))
+
+    pre_2463_spec =
+      Map.merge(plan, %{
+        ignores: [stale_ignore],
+        auto_away_debounce_ms: 60_000,
+        auto_away_reason: "stale",
+        away_nick_suffix: "-stale",
+        show_peer_profiles: false
+      })
+
+    {:ok, pid} = Session.start_session(subject, network.id, pre_2463_spec)
+    on_exit(fn -> Session.stop_session(subject, network.id) end)
+    :ok = IRCServer.await_handshake(irc, 1_000)
+
+    assert settings(:sys.get_state(pid)) == @stored
+  end
+
+  defp store_settings(user, network) do
+    subject = {:user, user.id}
     {:ok, :added, _, _} = UserSettings.add_ignore(subject, network.slug, "spambot", nil, :ascii)
     {:ok, _} = UserSettings.put_auto_away_debounce_seconds(subject, 3_600, label(user))
     {:ok, _} = UserSettings.put_auto_away_reason(subject, "gone fishing", label(user))
     {:ok, _} = UserSettings.put_away_nick_suffix(subject, "-away", label(user))
     {:ok, _} = UserSettings.put_show_peer_profiles(subject, true)
-
-    successor = crash_and_await_successor(subject, network.id, pid)
-
-    # One comparison, not five: a stale setting must not hide the others.
-    assert settings(:sys.get_state(successor)) == %{
-             ignores: ["spambot!*@*"],
-             auto_away_debounce_ms: 3_600_000,
-             auto_away_reason: "gone fishing",
-             away_nick_suffix: "-away",
-             show_peer_profiles: true
-           }
+    :ok
   end
 
   defp settings(state) do
