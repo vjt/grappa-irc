@@ -135,7 +135,7 @@ defmodule Grappa.Session.AwayState do
   returning `nil`).
 
   Exposed as a function so the resolver
-  (`Grappa.Session.Server.auto_away_reason_for/1`) and the tests
+  (`Grappa.Session.Server.resolve_auto_away_reason/1`) and the tests
   reference one source of truth instead of restating the literal.
   """
   @spec auto_away_reason() :: String.t()

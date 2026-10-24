@@ -1,15 +1,10 @@
 defmodule Grappa.Session.IgnoresSpawnTest do
   @moduledoc """
-  #162 — the ignore list reaches a session at the SPAWN BOUNDARY
-  (`Grappa.Session.start_session/3`), compiled, and is re-synced compiled on
-  `ignores_changed/3`. Pinned end-to-end against the `Grappa.IRCServer` fake
-  because the wiring is one `Map.put_new_lazy` beside two siblings that had
-  no pin of their own — and because the first CI run showed what an
-  init-time read costs (`JoinSeedCostTest`): the assertion here is on the
-  spawned process's state, which is the same whether the read happened in
-  `init/1` or at the boundary, so a second assertion pins the boundary
-  itself — a caller-supplied `:ignores` wins, exactly as `auto_away_debounce_ms`
-  does.
+  #162 — the ignore list reaches a session compiled, read by
+  `Session.Server.init/1`, and is re-synced compiled on `ignores_changed/3`.
+  Pinned end-to-end against the `Grappa.IRCServer` fake. That the list also
+  survives a `:transient` restart is `Grappa.Session.SettingsRespawnTest`
+  (issue 2463).
 
   `async: false` for the same reason as `Grappa.Session.ServerTest`:
   `SessionRegistry` / `SessionSupervisor` are singletons.
@@ -19,7 +14,6 @@ defmodule Grappa.Session.IgnoresSpawnTest do
 
   alias Grappa.IRC.{Ignore, Mask}
   alias Grappa.{IRCServer, Session, UserSettings}
-  alias Grappa.Networks.{Credentials, SessionPlan}
 
   defp setup_user_and_network(port) do
     user = user_fixture(name: "ign-#{System.unique_integer([:positive])}")
@@ -64,21 +58,6 @@ defmodule Grappa.Session.IgnoresSpawnTest do
 
     assert [%Ignore.Compiled{mask: %Mask{source: "relay!*@*"}, text: %Regex{}}] =
              :sys.get_state(pid).ignores
-  end
-
-  test "a caller-supplied :ignores wins at the boundary, like its two siblings" do
-    {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-    {user, network, _} = setup_user_and_network(port)
-    subject = {:user, user.id}
-    {:ok, :added, _, _} = UserSettings.add_ignore(subject, network.slug, "stored", nil, :ascii)
-
-    {:ok, given} = Ignore.normalize("given!*@*", nil, :ascii)
-    {:ok, plan} = SessionPlan.resolve(Credentials.get_credential!(user, network))
-    {:ok, pid} = Session.start_session(subject, network.id, Map.put(plan, :ignores, [given]))
-    on_exit(fn -> Session.stop_session(subject, network.id) end)
-    :ok = IRCServer.await_handshake(server, 1_000)
-
-    assert [%Ignore.Compiled{mask: %Mask{source: "given!*@*"}}] = :sys.get_state(pid).ignores
   end
 
   test "ignores_changed/3 re-syncs the live session with the list compiled" do

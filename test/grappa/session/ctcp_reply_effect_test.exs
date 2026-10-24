@@ -43,7 +43,7 @@ defmodule Grappa.Session.CtcpReplyEffectTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{IRCServer, ServerSettings, Session}
+  alias Grappa.{IRCServer, ServerSettings, Session, UserSettings}
   alias Grappa.Networks.{Credentials, SessionPlan}
 
   # The nick `credential_fixture/3` gives the session, and therefore the
@@ -158,11 +158,9 @@ defmodule Grappa.Session.CtcpReplyEffectTest do
   #   * `:avatar` — set a real avatar on the credential first, through
   #     `Credentials.set_avatar/4` (a real `Grappa.Uploads` row on the
   #     test storage root), so the resolved plan carries a real URL.
-  #   * `:show_peer_profiles` — the M2 opt-in. Injected as a plan key
-  #     rather than a `user_settings` row because `Session.start_session/3`
-  #     reads it with `Map.put_new_lazy/3` precisely so a caller can
-  #     supply it, and unlike `:restored_avatar_url` it is NOT a plan key
-  #     the `refresh_plan` re-resolve overwrites.
+  #   * `:show_peer_profiles` — the M2 opt-in, stored the way production
+  #     stores it: `Session.Server.init/1` reads the setting itself, so an
+  #     opt would not reach it (issue 2463).
   defp connected_session(opts) do
     {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", @nick))
 
@@ -183,15 +181,13 @@ defmodule Grappa.Session.CtcpReplyEffectTest do
         )
     end
 
-    {:ok, resolved} = SessionPlan.resolve(Credentials.get_credential!(user, network))
-
-    plan =
-      case Keyword.fetch(opts, :show_peer_profiles) do
-        {:ok, value} -> Map.put(resolved, :show_peer_profiles, value)
-        :error -> resolved
-      end
-
     subject = {:user, user.id}
+
+    if Keyword.get(opts, :show_peer_profiles, false) do
+      {:ok, _} = UserSettings.put_show_peer_profiles(subject, true)
+    end
+
+    {:ok, plan} = SessionPlan.resolve(Credentials.get_credential!(user, network))
 
     {:ok, pid} = Session.start_session(subject, network.id, plan)
 

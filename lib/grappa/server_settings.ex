@@ -583,7 +583,7 @@ defmodule Grappa.ServerSettings do
   The site default a session on "no preference" waits: the stored value,
   else the boot fallback. `:disabled` when the admin switched it off. The
   ONE resolver — `Grappa.Session.Server.resolve_auto_away_debounce/1` reads
-  it for both the spawn boundary and the live preference refresh.
+  it for both session start and the live preference refresh.
   """
   @spec auto_away_default_ms() :: pos_integer() | :disabled
   def auto_away_default_ms do

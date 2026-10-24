@@ -53,6 +53,9 @@ defmodule Grappa.Session do
   `Grappa.SpawnOrchestrator` maps it to `{:ok, :ignored}` and
   `Bootstrap` counts it, so deferring the re-resolve to
   `handle_continue` would turn a reported failure into a silent death.
+  `init/1` reads the subject's settings there too (issue 2463), for the
+  first of those reasons: a restart must come back on what is stored,
+  not on what the cached child spec froze at spawn.
 
   Two consequences stay open. On the SPAWN door the re-resolve
   duplicates the resolution its caller performed microseconds earlier
@@ -133,7 +136,7 @@ defmodule Grappa.Session do
     # drifts. It is a pure module with no process or state behind it.
     exports: [NSInterceptor, Server, Wire]
 
-  alias Grappa.{E2eInbox, E2eKeys, UserSettings}
+  alias Grappa.{E2eInbox, E2eKeys}
   alias Grappa.IRC.{AuthFSM, CTCP, E2e, Identifier, Ignore}
   alias Grappa.Session.{Deps, E2ePacer, FloodAllowance, ISupport, Server, Wire}
 
@@ -359,30 +362,6 @@ defmodule Grappa.Session do
           # both-subjects, kept-in-sync-with-the-Server-twin shape as
           # `:restored_profile` above.
           optional(:restored_avatar_url) => String.t() | nil,
-          # issue 2150 — the text sent with the automatic AWAY, resolved at
-          # the spawn boundary below next to the window above. Kept in sync
-          # with the `Grappa.Session.Server.init_opts/0` twin.
-          optional(:auto_away_reason) => String.t(),
-          # #1894 — the suffix appended to the nick while that same auto-away
-          # is held, `nil` when the subject has not switched the rename on.
-          # Resolved at the spawn boundary below next to the reason. Kept in
-          # sync with the `Grappa.Session.Server.init_opts/0` twin.
-          optional(:away_nick_suffix) => UserSettings.away_nick_suffix(),
-          # M2 — the subject's `show_peer_profiles` opt-in (peer CTCP
-          # USERINFO/AVATAR queries), resolved at the spawn boundary below
-          # exactly like `auto_away_debounce_ms`. Kept in sync with the
-          # `Grappa.Session.Server.init_opts/0` twin.
-          optional(:show_peer_profiles) => boolean(),
-          # #162 / issue 2294 — the subject's `/ignore` entries on this
-          # network, decoded (`Grappa.IRC.Ignore` structs; the Server
-          # compiles them). Resolved at the spawn
-          # boundary below like the two above, and for a reason a respawn
-          # makes concrete: a `:transient` restart re-runs `init/1` with the
-          # SAME opts and does not re-run this boundary, so a read placed in
-          # `init/1` fires again on every crash — which is exactly what
-          # `JoinSeedCostTest` counted as a stray query inside a join storm.
-          # Kept in sync with the `Grappa.Session.Server.init_opts/0` twin.
-          optional(:ignores) => [Ignore.t()],
           # issue 2137 — REQUIRED, not optional. Both producers inject it and
           # `Grappa.Session.Deps.refresh!/2` refuses a plan without it, so the
           # typespec now says what the door enforces. It is also the one place
@@ -420,48 +399,12 @@ defmodule Grappa.Session do
       when is_subject(subject) and is_integer(network_id) and is_map(opts) do
     ^subject = Map.fetch!(opts, :subject)
 
-    # #671 — inject the auto-away debounce at the single spawn choke
-    # point (the CLAUDE.md start_link-opts pattern for a dynamically-
-    # spawned GenServer: boot reads env → persistent_term → the spawn
-    # boundary injects). `put_new` so a caller/test that already set the
-    # key (a substituted short window) wins.
-    #
-    # #348 — the value is now the SUBJECT's preference resolved over the
-    # site default (and `:disabled` when they switched auto-away off), so
-    # a session starts on the window its user chose. A subject with no
-    # preference resolves to the site default — since issue 2359 the
-    # admin-stored value, else the boot fallback.
-    # M2 — same choke point + `put_new_lazy` posture as the debounce
-    # above: the subject's `show_peer_profiles` opt-in resolved once at
-    # spawn, a substituted opts/test value still wins.
-    full_opts =
-      opts
-      |> Map.put(:network_id, network_id)
-      |> Map.put_new_lazy(:auto_away_debounce_ms, fn ->
-        Server.auto_away_debounce_for(subject)
-      end)
-      # issue 2150 — the TEXT that debounce eventually sends, resolved at
-      # the same choke point and with the same `put_new_lazy` posture. A
-      # subject with nothing stored resolves to the constant every session
-      # used before the setting existed, so the wire is unchanged for them.
-      |> Map.put_new_lazy(:auto_away_reason, fn ->
-        Server.auto_away_reason_for(subject)
-      end)
-      # #1894 — and the SUFFIX that same transition appends to the nick,
-      # read at the same choke point. `nil` for a subject who never set
-      # one, which is every subject until they do: the rename is off by
-      # default, so their sessions behave exactly as before.
-      |> Map.put_new_lazy(:away_nick_suffix, fn ->
-        UserSettings.get_away_nick_suffix(subject)
-      end)
-      |> Map.put_new_lazy(:show_peer_profiles, fn ->
-        UserSettings.get_show_peer_profiles(subject)
-      end)
-      # #162 — same choke point: the ignore list read ONCE at spawn, never in
-      # `init/1` (see the `:ignores` opt above for why a respawn cares).
-      |> Map.put_new_lazy(:ignores, fn ->
-        UserSettings.get_ignores(subject, Map.fetch!(opts, :network_slug))
-      end)
+    # The subject's settings (auto-away window / reason / nick suffix,
+    # `show_peer_profiles`, the `/ignore` list) are NOT resolved here:
+    # `Server.init/1` reads them on every start. Resolving them into these
+    # opts froze them into the child spec, so a `:transient` restart came
+    # back on the spawn-time values (issue 2463).
+    full_opts = Map.put(opts, :network_id, network_id)
 
     DynamicSupervisor.start_child(
       Grappa.SessionSupervisor,
@@ -490,13 +433,8 @@ defmodule Grappa.Session do
   whose user set their own delay is left exactly as it was, timer
   included. Fire-and-forget: the signal carries no value, because the
   value a session needs depends on a preference only the session's
-  subject owns.
-
-  ⚠️ Not durable across a `:transient` restart: the supervisor restarts a
-  crashed session with the child spec `start_session/3` built, so it comes
-  back on the window resolved at that ORIGINAL spawn until the next admin
-  save or a full stop/start. The same gap #348's live preference refresh
-  already has; see DESIGN_NOTES `#2359b`.
+  subject owns. A session that restarts later reads the stored value in
+  `init/1` (issue 2463), so it needs no signal.
   """
   @spec reapply_auto_away_site_default() :: :ok
   def reapply_auto_away_site_default do
@@ -2454,8 +2392,8 @@ defmodule Grappa.Session do
   @doc """
   #162 — pushes the current `/ignore` entry list to the live session for
   `(subject, network_id)` so the delivery filter picks it up immediately.
-  No live session is a normal `:ok`: the next spawn reads the list from
-  `UserSettings` at the spawn boundary (`start_session/3`).
+  No live session is a normal `:ok`: every session start, `:transient`
+  restarts included, reads the list from `UserSettings` in `init/1`.
   """
   @spec ignores_changed(subject(), integer(), [Ignore.t()]) :: :ok
   def ignores_changed(subject, network_id, entries)

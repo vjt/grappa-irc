@@ -459,36 +459,6 @@ defmodule Grappa.Session.Server do
           # issue 2253 bounded nick-reclaim delay — test seam. Production
           # omits it and inherits `@nick_reclaim_ms`.
           optional(:nick_reclaim_ms) => pos_integer(),
-          # #671 auto-away debounce window. Normally injected by
-          # `Grappa.Session.start_session/3`, which resolves the subject's
-          # #348 preference over the boot-resolved default; a test /
-          # integration env may substitute a short window. `:disabled` is
-          # the #348 OFF state — no debounce timer is ever armed.
-          optional(:auto_away_debounce_ms) => pos_integer() | :disabled,
-          # issue 2150 — the text this session sends when the debounce above
-          # fires. Injected by `Grappa.Session.start_session/3`, which
-          # resolves the subject's stored reason over
-          # `AwayState.auto_away_reason/0`; an omitted opt (test seam)
-          # defaults to that same constant, so a session built without the
-          # key behaves exactly as it did before the setting existed.
-          optional(:auto_away_reason) => String.t(),
-          # #1894 — the suffix this session appends to its nick when that
-          # same debounce fires. Injected by `Grappa.Session.start_session/3`
-          # from the subject's setting; an omitted opt (test seam) defaults
-          # to `nil`, which is the rename switched OFF and therefore the
-          # pre-#1894 behaviour byte for byte.
-          optional(:away_nick_suffix) => UserSettings.away_nick_suffix(),
-          # M2 — the subject's opt-in to peer CTCP USERINFO/AVATAR queries
-          # (source of the member-list gender badge). Normally injected by
-          # `Grappa.Session.start_session/3`, mirror of the debounce opt
-          # above; omitted opt (test seam) defaults to `false` — silent
-          # unless a test explicitly opts in.
-          optional(:show_peer_profiles) => boolean(),
-          # #162 / issue 2294 — stored `/ignore` entries, resolved at the
-          # spawn boundary (`Grappa.Session.start_session/3`); compiled in
-          # `init/1`. Kept in sync with the `Grappa.Session.start_session/3`
-          # opts twin.
-          optional(:ignores) => [Ignore.t()],
           # GH #189 — on-connect perform list + its `$oper_pass` secret,
           # decrypted plaintext from the credential (nil when unset). Run at 001
           # before the built-in identify and before autojoin. The `$nickserv_pass`
@@ -540,9 +510,9 @@ defmodule Grappa.Session.Server do
           # Presence in this map (even with `gender: nil`) means "already
           # queried this session" — the lazy-query trigger's dedup gate.
           peer_profile_cache: EventRouter.peer_profile_cache(),
-          # M2 — the subject's `show_peer_profiles` opt-in, resolved once
-          # at spawn (mirrors `auto_away_debounce_ms`). `false` means the
-          # lazy CTCP USERINFO/AVATAR query never fires for this session.
+          # M2 — the subject's `show_peer_profiles` opt-in, read by `init/1`
+          # (mirrors `auto_away_debounce_ms`). `false` means the lazy CTCP
+          # USERINFO/AVATAR query never fires for this session.
           show_peer_profiles: boolean(),
           # CP15 B1 + cluster #6 extraction: per-channel window state
           # bundle (states + failure_reasons + failure_numerics +
@@ -677,14 +647,13 @@ defmodule Grappa.Session.Server do
           profile: profile(),
           avatar_url: String.t() | nil,
           auto_away_timer: reference() | nil,
-          # #671 — the auto-away debounce window (ms), injected from
-          # `start_session/3` (the subject's #348 preference over the
-          # boot-resolved default; opts override in tests). `:disabled`
+          # #671 — the auto-away debounce window (ms), read by `init/1` (the
+          # subject's #348 preference over the site default). `:disabled`
           # (#348) means auto-away is off for this subject: the arm site
           # arms nothing rather than arming a very long timer.
           auto_away_debounce_ms: pos_integer() | :disabled,
-          # issue 2150 — the reason sent with the automatic `AWAY`, resolved
-          # at the spawn boundary next to the window above and re-tuned live
+          # issue 2150 — the reason sent with the automatic `AWAY`, read by
+          # `init/1` next to the window above and re-tuned live
           # by `{:auto_away_reason_changed, _}`. Always a binary: the
           # resolver substitutes `AwayState.auto_away_reason/0` when the
           # subject stored none, so no consumer has a nil case to handle.
@@ -1010,9 +979,9 @@ defmodule Grappa.Session.Server do
   `:disabled` passes through as the OFF state the arm site refuses to
   arm on; a seconds integer becomes milliseconds.
 
-  The single resolver for both entry points — the spawn boundary, which
-  reads the stored preference, and the live refresh, which is handed the
-  new one by the settings broadcast.
+  The single resolver for both entry points — `init/1`, which reads the
+  stored preference, and the live refresh, which is handed the new one by
+  the settings broadcast.
   """
   @spec resolve_auto_away_debounce(UserSettings.auto_away_debounce()) ::
           pos_integer() | :disabled
@@ -1022,14 +991,11 @@ defmodule Grappa.Session.Server do
   def resolve_auto_away_debounce(seconds) when is_integer(seconds) and seconds > 0,
     do: seconds * 1_000
 
-  @doc """
-  The auto-away window for `subject`: their #348 preference resolved
-  over the site default. Read at the spawn boundary
-  (`Grappa.Session.start_session/3`) so a session starts on the value
-  the user chose, not only on the one they choose next.
-  """
+  # The auto-away window for `subject`: their #348 preference resolved over
+  # the site default. Read by `init/1` so a session starts on the value the
+  # user chose, and by the site-default refresh.
   @spec auto_away_debounce_for(Grappa.Subject.t()) :: pos_integer() | :disabled
-  def auto_away_debounce_for({_, _} = subject) do
+  defp auto_away_debounce_for({_, _} = subject) do
     subject
     |> UserSettings.get_auto_away_debounce_seconds()
     |> resolve_auto_away_debounce()
@@ -1046,22 +1012,19 @@ defmodule Grappa.Session.Server do
   handled at the emit site, where a missed clause would send `AWAY :`.
 
   The single resolver for both entry points, mirroring
-  `resolve_auto_away_debounce/1`: the spawn boundary, which reads the
-  stored value, and the live refresh, which is handed the new one by the
-  settings broadcast.
+  `resolve_auto_away_debounce/1`: `init/1`, which reads the stored value,
+  and the live refresh, which is handed the new one by the settings
+  broadcast.
   """
   @spec resolve_auto_away_reason(UserSettings.leave_reason()) :: String.t()
   def resolve_auto_away_reason(nil), do: AwayState.auto_away_reason()
   def resolve_auto_away_reason(reason) when is_binary(reason), do: reason
 
-  @doc """
-  The auto-away reason for `subject`: their stored preference resolved
-  over the default. Read at the spawn boundary
-  (`Grappa.Session.start_session/3`), the twin of
-  `auto_away_debounce_for/1`.
-  """
+  # The auto-away reason for `subject`: their stored preference resolved
+  # over the default. Read by `init/1`, the twin of
+  # `auto_away_debounce_for/1`.
   @spec auto_away_reason_for(Grappa.Subject.t()) :: String.t()
-  def auto_away_reason_for({_, _} = subject) do
+  defp auto_away_reason_for({_, _} = subject) do
     subject
     |> UserSettings.get_auto_away_reason()
     |> resolve_auto_away_reason()
@@ -1113,6 +1076,13 @@ defmodule Grappa.Session.Server do
   # six in its own `resolve/1` plus these nine. Pinned per door in
   # `Grappa.Session.RefreshPlanCostTest`; #1410. Still unmeasured: the
   # wall-clock of the loop, and N on any real deployment.
+  #
+  # The subject's settings add SIX more (`user_settings` five times, plus
+  # `server_settings` for the site default when no preference is stored;
+  # five when one is), measured 2026-10-24 and not pinned. On the spawn
+  # door that cost was already paid, by `start_session/3`'s caller; issue
+  # 2463 moved it here so a `:transient` restart pays it too, which is what
+  # makes a restart come back on the stored values.
   @impl GenServer
   def init(opts) do
     :ok = Log.set_session_context(opts.subject_label, opts.network_slug)
@@ -1250,7 +1220,7 @@ defmodule Grappa.Session.Server do
       userhost_cache: %{},
       auto_reply_budget: AutoReplyBudget.new(System.monotonic_time(:millisecond)),
       peer_profile_cache: %{},
-      show_peer_profiles: Map.get(opts, :show_peer_profiles, false),
+      show_peer_profiles: UserSettings.get_show_peer_profiles(opts.subject),
       window_state: WindowState.new(),
       dcc_offers: DccOffers.new(),
       e2e_reassembly: E2eReassembly.new(),
@@ -1336,20 +1306,15 @@ defmodule Grappa.Session.Server do
       # ...}` — same shape as `profile` above.
       avatar_url: Map.get(opts, :restored_avatar_url),
       auto_away_timer: nil,
-      # #671 — debounce window from the spawn boundary
-      # (`start_session/3`); an explicit opt still wins so a unit test can
-      # substitute a short window without runtime config tricks. The
-      # fallback is the boot value, NOT the site resolver: that one reads
-      # the DB, and `init/1` re-runs on every `:transient` respawn.
-      auto_away_debounce_ms: Map.get_lazy(opts, :auto_away_debounce_ms, &ServerSettings.auto_away_fallback_ms/0),
-      # issue 2150 — same shape and same reason as the window above: the
-      # spawn boundary resolves the subject's stored reason, an explicit
-      # opt still wins for tests, and the fallback is the constant every
-      # session sent before the setting existed.
-      auto_away_reason: Map.get(opts, :auto_away_reason, AwayState.auto_away_reason()),
-      # #1894 — same shape again; the `nil` fallback is the rename OFF, so
-      # a session built without the key never touches its nick.
-      away_nick_suffix: Map.get(opts, :away_nick_suffix, nil),
+      # The subject's settings — these three, plus `show_peer_profiles` and
+      # `ignores` elsewhere in this map — are read HERE, on every start, and
+      # never taken from
+      # opts: a `:transient` restart replays the child spec cached at spawn,
+      # so a value resolved into it came back stale after a crash (issue
+      # 2463). The live refreshes below keep a running session current.
+      auto_away_debounce_ms: auto_away_debounce_for(opts.subject),
+      auto_away_reason: auto_away_reason_for(opts.subject),
+      away_nick_suffix: UserSettings.get_away_nick_suffix(opts.subject),
       # Never injectable: an away rename can only be outstanding because
       # THIS process sent one, so a fresh session has none by construction.
       away_nick_restore: nil,
@@ -1361,16 +1326,10 @@ defmodule Grappa.Session.Server do
       # #216: default capability table until 005 arrives — MODES/LINELEN
       # included since #1390.
       isupport: ISupport.default(),
-      # #162: /ignore masks, read at the SPAWN BOUNDARY (`start_session/3`,
-      # like `auto_away_debounce_ms` and `show_peer_profiles`) so the very
-      # first inbound line is filtered — an ignore set while the session was
-      # parked holds from the first message after reconnect. Not read here:
-      # a `:transient` respawn re-runs `init/1` and a query in it would fire
-      # on every crash (measured by `JoinSeedCostTest` as a stray read inside
-      # a join storm). Compiled ONCE here and on every `:ignores_changed`,
-      # never per message. Absent = a unit test built the Server directly
-      # (the boundary was bypassed), the same contract as its two siblings.
-      ignores: Ignore.compile_all(Map.get(opts, :ignores, [])),
+      # #162: /ignore masks, read with the settings above so the very first
+      # inbound line is filtered — after a reconnect AND after a crash.
+      # Compiled ONCE here and on every `:ignores_changed`, never per message.
+      ignores: Ignore.compile_all(UserSettings.get_ignores(opts.subject, opts.network_slug)),
       # #247: /notify presence map — seeded at the end-of-MOTD arm.
       presence: %{},
       presence_armed: false,
@@ -9237,7 +9196,7 @@ defmodule Grappa.Session.Server do
 
   # Set auto-away: only when not already `:away_explicit` (caller guards).
   # Issues `AWAY :<state.auto_away_reason>` upstream — the subject's own
-  # text since issue 2150, resolved at the spawn boundary over
+  # text since issue 2150, read by `init/1` over
   # `AwayState.auto_away_reason/0` and re-tuned live by
   # `{:auto_away_reason_changed, _}`.
   @spec set_auto_away_internal(t()) :: t()

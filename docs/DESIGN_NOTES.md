@@ -4553,3 +4553,73 @@ the red never reproduced locally.
 **Not migrated here.** The other `page.route` sites are left as they are,
 pending a decision: an audit at 75fcd75bb counted 43, and 17 of them stub a
 request the page makes after login or a user action.
+<!-- entry #2463 -->
+
+---
+
+## 2026-10-24 — issue 2463: `init/1` reads the subject's settings, so a crash no longer reverts them
+
+**Report.** vjt, on IRCnet: nicks he `/ignore`d keep showing up. Relayed,
+not seen first-hand.
+
+**Measured before the fix.** `settings_respawn_test.exs` was run on
+`6279cebdd`, three reds:
+
+- An ignore added to a live session no longer applies after a `:transient`
+  restart: `senders == ["friend", "spambot"]`.
+- All five settings that `start_session/3` resolved with
+  `Map.put_new_lazy` come back at their spawn-time values. The five are
+  `ignores`, `auto_away_debounce_ms`, `auto_away_reason`,
+  `away_nick_suffix` and `show_peer_profiles`.
+- A site-default change reverts the same way. This is the known gap
+  `#2359b` recorded.
+
+Prod was not measured (m42 is unreachable from the agent session), and
+whether vjt's session actually restarted is unknown. A read-only probe is
+on the issue.
+
+**Cause.** The five were resolved into the opts that `DynamicSupervisor`
+caches as the child spec. A restart re-runs `init/1` with those opts, and
+`refresh_plan` re-reads only the plan.
+
+**Decision.** `init/1` reads all five from the DB on every start, and none
+of them is an opt any more:
+
+- the five optional keys leave `Session.start_opts` and `Server.init_opts`;
+- `auto_away_debounce_for/1` and `auto_away_reason_for/1` become private,
+  because their one outside caller is gone.
+
+No production producer ever set these keys. The two tests that injected a
+value through the opts now store it the way production does. The
+settings belong to the subject, not to the network plan, so they stay out
+of both `refresh_plan` closures: one read site serves both subject kinds.
+
+Authority: vjt, by DM on 2026-10-24, analysis and fix as a freeze
+exception; the plan was approved by the orchestrator. This closes the
+`#2359b` gap, which that entry had left to a ruling.
+
+**Why the #162 placement no longer holds.** `3c5520a54` moved the ignore
+read out of `init/1` because `JoinSeedCostTest` counted every query in the
+VM, and a respawning session's read landed in its window. #2060
+(`8bbbf8ab6`) made that test count only the queries its own `$callers`
+chain caused, and a `Session.Server` carries `$callers: nil`. With the
+reads back in `init/1`, `JoinSeedCostTest` stays green.
+
+**Why no opt survives, not even as a test seam.** An opt that wins over
+the DB has the bug's shape: the opt is exactly what a restart replays. It
+also matters for hot deploys. A running session's cached child spec still
+carries the five keys the OLD `start_session/3` resolved, and an `init/1`
+that preferred them would bring those values back on the first crash
+after the deploy. Reading unconditionally ignores them.
+
+**Cost.** `init/1` makes six more queries for a subject with no stored
+auto-away preference (`user_settings` five times, `server_settings` once)
+and five for a subject with one. Measured on 2026-10-24 with the
+`RefreshPlanCostTest` `self()` filter; not pinned. On the spawn door the
+queries moved rather than appeared, because the caller of
+`start_session/3` used to pay them. They are new on the restart door,
+which the backoff ladder already gates.
+
+**Not changed.** The live refreshes (`ignores_changed/3`, the auto-away
+bridge messages, the site-default fan-out) still keep a RUNNING session
+current. The fix only makes a restart come back on what they wrote.

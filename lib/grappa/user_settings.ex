@@ -1508,7 +1508,7 @@ defmodule Grappa.UserSettings do
   `put_quit_part_reason/3`; errors land on `:auto_away_reason`.
 
   The extra surface is the point: this value is carried on live session
-  state (resolved once at spawn, like `auto_away_debounce_ms`), so a
+  state (read when the session starts, like `auto_away_debounce_ms`), so a
   write that only reached the other devices would leave every running
   session sending the old text until it restarts. The bridge term is what
   makes "a knob turned now applies now" true here — the same contract
@@ -1692,11 +1692,11 @@ defmodule Grappa.UserSettings do
 
   ## Two surfaces, like the auto-away reason
 
-  The value is carried on live session state (resolved once at spawn,
-  next to `auto_away_debounce_ms` and `auto_away_reason`), so a write that
-  only reached the subject's other devices would leave every running
-  session using the old suffix until it restarts. The bridge broadcast is
-  what makes "a knob turned now applies now" true.
+  The value is carried on live session state (read when the session
+  starts, next to `auto_away_debounce_ms` and `auto_away_reason`), so a
+  write that only reached the subject's other devices would leave every
+  running session using the old suffix until it restarts. The bridge
+  broadcast is what makes "a knob turned now applies now" true.
   """
   @spec put_away_nick_suffix(Subject.t(), term(), String.t()) ::
           {:ok, Settings.t()} | {:error, Ecto.Changeset.t() | :db_unavailable}

@@ -185,10 +185,10 @@ defmodule Grappa.Application do
     :ok = Grappa.Cic.Bundle.boot(cic_dist_root())
 
     # #671: resolve the auto-away debounce FALLBACK into `:persistent_term`
-    # so `Grappa.Session.start_session/3` can resolve every session's window
-    # lock-free (dynamic children have no static-child inject point; boot →
-    # persistent_term → spawn-boundary inject is the start_link-opts pattern
-    # for them). Prod sets no config key → the compile-time 600_000 default;
+    # so every `Session.Server.init/1` can resolve its window's fallback
+    # lock-free (dynamic children have no static-child inject point, so the
+    # boot value lives in persistent_term rather than in start_link opts).
+    # Prod sets no config key → the compile-time 600_000 default;
     # the integration env (config/dev.exs) sets it short. Owned by
     # `ServerSettings` since issue 2359: an admin-stored site default
     # overrides it at runtime, and this stays the value when none is stored.
