@@ -344,6 +344,42 @@ defmodule Grappa.AuthFixtures do
     ExUnit.Callbacks.on_exit(fn -> Grappa.Session.stop_session(subject, network_id) end)
   end
 
+  @respawn_attempts 400
+  @respawn_retry_ms 5
+
+  @doc """
+  Waits for the `:transient` restart that replaces `predecessor` under the
+  `(subject, network_id)` key and returns the successor's pid. Flunks after
+  `#{@respawn_attempts * @respawn_retry_ms}` ms — a restart that never came
+  means the scenario the caller is testing never happened.
+
+  Kill the predecessor only once it has drained its start-up work (a
+  `:sys.get_state/1` round-trip does it): a session killed while it holds
+  the sandbox's shared connection takes that connection down with it.
+  """
+  @spec await_respawn(Grappa.Session.subject(), integer(), pid()) :: pid()
+  def await_respawn(subject, network_id, predecessor) when is_pid(predecessor),
+    do: await_respawn(subject, network_id, predecessor, @respawn_attempts)
+
+  defp await_respawn(subject, network_id, predecessor, 0) do
+    ExUnit.Assertions.flunk(
+      "no :transient restart took over #{inspect(subject)}/#{network_id} within " <>
+        "#{@respawn_attempts * @respawn_retry_ms}ms of killing #{inspect(predecessor)} — " <>
+        "the scenario this test is about never happened"
+    )
+  end
+
+  defp await_respawn(subject, network_id, predecessor, attempts) do
+    case Grappa.Session.whereis(subject, network_id) do
+      pid when is_pid(pid) and pid != predecessor ->
+        pid
+
+      _ ->
+        Process.sleep(@respawn_retry_ms)
+        await_respawn(subject, network_id, predecessor, attempts - 1)
+    end
+  end
+
   @doc """
   Visitor-side counterpart to `setup_user_and_network/2` (in
   `server_test.exs`). Builds a network row + IRC-fake server endpoint

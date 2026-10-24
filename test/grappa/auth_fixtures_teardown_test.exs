@@ -25,9 +25,6 @@ defmodule Grappa.AuthFixturesTeardownTest do
 
   alias Grappa.{IRCServer, Session}
 
-  @respawn_attempts 400
-  @respawn_retry_ms 5
-
   test "the teardown the fixture registers frees a key a :transient restart refilled" do
     {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
     {visitor, network} = visitor_with_network(port)
@@ -60,7 +57,7 @@ defmodule Grappa.AuthFixturesTeardownTest do
     assert Session.whereis(subject, network.id) == spawned
 
     Process.exit(spawned, :kill)
-    successor = await_respawn(subject, network.id, spawned, @respawn_attempts)
+    successor = await_respawn(subject, network.id, spawned)
 
     refute Process.alive?(spawned)
     assert successor != spawned
@@ -74,24 +71,5 @@ defmodule Grappa.AuthFixturesTeardownTest do
              DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, spawned)
 
     assert Session.whereis(subject, network.id) == successor
-  end
-
-  defp await_respawn(subject, network_id, spawned, 0) do
-    flunk(
-      "no :transient restart took over #{inspect(subject)}/#{network_id} within " <>
-        "#{@respawn_attempts * @respawn_retry_ms}ms of killing #{inspect(spawned)} — " <>
-        "the scenario this test is about never happened"
-    )
-  end
-
-  defp await_respawn(subject, network_id, spawned, attempts) do
-    case Session.whereis(subject, network_id) do
-      pid when is_pid(pid) and pid != spawned ->
-        pid
-
-      _ ->
-        Process.sleep(@respawn_retry_ms)
-        await_respawn(subject, network_id, spawned, attempts - 1)
-    end
   end
 end
