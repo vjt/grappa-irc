@@ -4499,3 +4499,57 @@ by the receive tests), `e2eClient.test.ts` (whole clients paired through
 `pairDevice`), `encryptedChats.test.ts` (a copy from a device paired since
 the page loaded, through `drainE2e`'s sync and second drain). The
 real-browser spec is a separate commit.
+<!-- entry #666 -->
+
+---
+
+## 2026-10-24 — #666: a spec answers a page's fetch() inside the page, not on `page.route`
+
+**The rule.** An e2e spec that must answer, refuse or count a `fetch()` the
+page makes does it with `answerFetchInPage`
+(`cicchetto/e2e/fixtures/fetchInPage.ts`): a `window.fetch` wrapper put in by
+`addInitScript`, which hands matching requests to a callback that runs in the
+spec. `page.route` stays right for what does not call `fetch()`: media loads
+(`<audio>`, #682) and navigations.
+
+**Why: `page.route` has lost page fetches on both engines, measured.**
+
+- #1702, WebKit (`webkit-iphone-15`): with the now-playing feed on
+  `page.route`, the spec reached the real api.somafm.com. Its header puts
+  this down to cic's service worker; #1702 had stubbed `window.fetch` inline
+  ever since.
+- #666, Chromium, in CI only: `issue666-paste-resume` went red on main
+  75fcd75bb (run 40010143133) and on PR #2460 (run 40037443927), shard 2 both
+  times, at `expect(refused).toBe(true)`. The artefacts say all eight send
+  POSTs reached nginx and grappa, 201, none 429, and none reached the route
+  or the page's network trace. That trace stops showing page-level requests
+  right after the device-key upload and never resumes, with the same frame
+  and no navigation to the end of the test.
+
+**What did not reproduce, and so is not the cause as stated.** cic's worker
+does `skipWaiting` + `clients.claim`, and the first reading was that the
+claim blinds `page.route`. Measured on local Chromium, it does not:
+
+- with the old spec held until `navigator.serviceWorker.controller` was set,
+  the route still refused the fourth line, 3 runs of 3;
+- a probe firing a `fetch()` every 25 ms from document start, across a claim
+  at 323–399 ms, was seen by `page.route` and by `page.on("request")` every
+  time, 220 of 220, in 3 runs;
+- CI's own shard 2 (`scripts/integration.sh --shard=2/4`, old spec on main
+  e12b72378, the same #2430 specs ahead of #666) kept #666 green in 2 runs
+  of 2.
+
+The worker answers only the share-target POST itself; Workbox's routes are
+GET precache and navigations, so a REST call falls through to the network.
+Why Chromium lost the requests in CI is open: #2461.
+
+**What the wrapper buys regardless.** It sits in the page's own realm, above
+every network layer, so the answer does not depend on what Playwright sees
+below it. Both specs keep their assertions and timeouts. `#666 —` ×10 on
+chromium and `#1702` ×10 on each of `chromium-pixel-touch` and
+`webkit-iphone-15` ran green (30 of 30). There is no red-old/green-new pair:
+the red never reproduced locally.
+
+**Not migrated here.** The other `page.route` sites are left as they are,
+pending a decision: an audit at 75fcd75bb counted 43, and 17 of them stub a
+request the page makes after login or a user action.
