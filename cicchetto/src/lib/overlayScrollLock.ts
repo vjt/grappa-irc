@@ -1,6 +1,8 @@
-// Refcounted overlay scroll-lock — locks iOS scroll/rubber-band while
-// ANY mobile overlay is open (members drawer, settings drawer, archive
-// modal, image-upload privacy modal, admin pane on mobile).
+// Overlay scroll-lock + the shell touch guard. The refcounts mark ANY
+// mobile overlay open (members drawer, settings drawer, archive modal,
+// image-upload privacy modal, admin pane on mobile) with the
+// `overlay-open` class; the touchmove guard that stops iOS panning the
+// page is the Shell's, for its whole life (issue 2465, below).
 //
 // Why this exists (UX-6 bucket A, v1→v6, 2026-05-20).
 //
@@ -113,6 +115,9 @@ let shellLocks = 0;
 // only so a second Shell (a remount racing its predecessor's cleanup) cannot
 // detach the guard from under the first.
 let guardHolders = 0;
+// Bumped by `__resetForTest`, so a disposer handed out before a reset cannot
+// release a guard installed after it.
+let guardGeneration = 0;
 
 /** Holders of the `overlay-open` class, from BOTH populations. */
 function touchLockHolders(): number {
@@ -171,31 +176,34 @@ function applyClass(): void {
  *
  *   * a range input's thumb — WebKit moves it from its default touch handling,
  *     which a `preventDefault` skips;
+ *   * a media element's own controls — their scrubber is a range inside the
+ *     element's shadow tree, so the touch targets the `<video>`/`<audio>`;
  *   * a LIVE selection, in a text entry or in the document — the drag may be on
  *     a selection handle (#1205: Android handles that would not move once a
  *     touchmove was cancelled). A collapsed caret is not a selection.
  *
  * The price, accepted: while a selection is live, a drag that nothing scrolls
- * goes back to the platform, so the shell can pan for that long.
+ * goes back to the platform, so the shell — or, with an overlay open, the page
+ * under it — can pan for that long.
  */
 function consumesDragNatively(target: Element): boolean {
   if (target instanceof HTMLInputElement && target.type === "range") return true;
+  if (target instanceof HTMLMediaElement && target.controls) return true;
   if (isTextEntry(target) && target.selectionStart !== target.selectionEnd) return true;
   const selection = document.getSelection();
   return selection !== null && !selection.isCollapsed;
 }
 
 /**
- * Can `el` scroll a drag itself? It needs a scrolling overflow AND content past
- * its box on that axis. A text entry scrolls its own overflow whatever its
- * computed `overflow` reads (issue 2465: the compose textarea declares none),
- * so it is judged on the overflow alone.
+ * Can `el` scroll a drag itself? It needs a scrolling COMPUTED overflow AND
+ * content past its box on that axis. The compose textarea declares no overflow
+ * and still qualifies: Blink and WebKit compute a textarea's `visible` as
+ * `auto`, pinned on both engines by issue2465's e2e.
  */
 function scrollsNatively(el: Element): boolean {
   const cs = getComputedStyle(el);
-  const intrinsic = isTextEntry(el);
-  const scrollsY = intrinsic || cs.overflowY === "auto" || cs.overflowY === "scroll";
-  const scrollsX = intrinsic || cs.overflowX === "auto" || cs.overflowX === "scroll";
+  const scrollsY = cs.overflowY === "auto" || cs.overflowY === "scroll";
+  const scrollsX = cs.overflowX === "auto" || cs.overflowX === "scroll";
   return (
     (scrollsY && el.scrollHeight > el.clientHeight) || (scrollsX && el.scrollWidth > el.clientWidth)
   );
@@ -209,9 +217,16 @@ function scrollsNatively(el: Element): boolean {
  * bounce. Nothing to consume it → preventDefault → UIKit cannot claim the
  * gesture as a pan of the page.
  *
+ * ONE finger only. The pan this guards against is a one-finger drag; two
+ * fingers are a pinch, and iOS lets the user zoom whatever `user-scalable`
+ * says, for accessibility. Since issue 2465 the guard also runs in the desktop
+ * layout, where no `touch-action: none` blanket forbids the pinch, so
+ * cancelling it there would take that zoom away.
+ *
  * Exported only for vitest assertions.
  */
 export function handleTouchmove(e: TouchEvent): void {
+  if ((e.touches?.length ?? 0) > 1) return;
   const target = e.target;
   if (!(target instanceof Element)) return;
   if (consumesDragNatively(target)) return;
@@ -241,15 +256,20 @@ export function handleTouchmove(e: TouchEvent): void {
  * Login, share and pair render outside `Shell`, so their document scroll never
  * meets it. Every overlay mounts under `Shell`, so none lost the guard when the
  * counters stopped attaching it; they drive the `overlay-open` class alone now.
+ *
+ * Both layouts, not only `.shell-mobile`: an iPad in landscape runs the desktop
+ * layout under the same keyboard, and the overlays that used to arm the guard
+ * there open in the desktop layout too.
  */
 export function installShellTouchGuard(): () => void {
   guardHolders += 1;
   if (guardHolders === 1 && typeof document !== "undefined") {
     document.addEventListener("touchmove", handleTouchmove, { passive: false });
   }
+  const generation = guardGeneration;
   let disposed = false;
   return () => {
-    if (disposed) return;
+    if (disposed || generation !== guardGeneration) return;
     disposed = true;
     guardHolders = Math.max(0, guardHolders - 1);
     if (guardHolders === 0) detachGuard();
@@ -367,6 +387,7 @@ export function __resetForTest(): void {
   const el = root();
   if (el !== null) el.classList.remove(CLASS_NAME);
   guardHolders = 0;
+  guardGeneration += 1;
   detachGuard();
   escapeStack.length = 0;
 }
@@ -450,7 +471,7 @@ export function createOverlayLock(
 
 /**
  * #1199 — the NO-FREEZE variant of `createOverlayLock`: the SAME ordered ESC
- * stack, the same iOS touch lock, the same open/close/unmount edges — WITHOUT
+ * stack, the same `overlay-open` lock, the same open/close/unmount edges — WITHOUT
  * the covering-overlay refcount. Call from a component body:
  *
  *   createOverlayEscape(() => myBundle() !== undefined, dismissMyCard);

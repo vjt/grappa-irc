@@ -17,9 +17,10 @@
 //     with no overlay open the guard did not exist.
 //   * THE CONSUMER (chromium, untagged): a draft that OVERFLOWS keeps its native
 //     scroll. A REAL drag through chromium's input pipeline, hit-tested by the
-//     engine, and the textarea's own scrollTop moves. This is the arm the
-//     guard's "a textarea is a scroller" rule exists for: get it wrong and every
-//     long draft stops scrolling on touch.
+//     engine, and the textarea's own scrollTop moves. Get the guard's scroller
+//     test wrong and every long draft stops scrolling on touch.
+//   * THE ENGINE FACT (@webkit @touch): the textarea computes `overflow-y:
+//     auto`, which is what that scroller test reads — on WebKit too.
 //
 // NOT proven here, and not provable off-device: that UIKit no longer pans the
 // visual viewport. Chromium is not iOS, Playwright's webkit is not UIKit, and
@@ -99,8 +100,15 @@ test("issue2465 — a draft that OVERFLOWS keeps its native scroll under the gua
   const box = await ta.evaluate((el: HTMLTextAreaElement) => {
     el.scrollTop = Math.floor((el.scrollHeight - el.clientHeight) / 2);
     const r = el.getBoundingClientRect();
-    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    return {
+      x: Math.round(r.left + r.width / 2),
+      y: Math.round(r.top + r.height / 2),
+      overflowY: getComputedStyle(el).overflowY,
+    };
   });
+  // The guard's scroller test reads COMPUTED overflow; the textarea declares
+  // none, and qualifies only because the engine computes it as auto.
+  expect(box.overflowY).toBe("auto");
 
   // Finger UP across the box: the content scrolls toward the end, scrollTop grows.
   const drag = await dragScroller(page, COMPOSE, [
@@ -117,4 +125,19 @@ test("issue2465 — a draft that OVERFLOWS keeps its native scroll under the gua
   expect(drag.prevented).toBe(false);
   expect(drag.scrollTopAfter).toBeGreaterThan(drag.scrollTopBefore);
   await expect(ta).toHaveValue(longDraft); // no recall hijacked it
+});
+
+// The engine fact the guard's scroller test rests on, measured on BOTH touch
+// engines — WebKit is where the defect lives. The compose textarea declares no
+// `overflow`; Blink and WebKit compute a textarea's `visible` as `auto`, which
+// is what makes a long draft count as a scroller the guard stands aside for.
+// Lose it and every long draft stops scrolling on touch.
+test("@webkit @touch issue2465 — the compose textarea computes overflow-y: auto", async ({
+  page,
+}) => {
+  if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+  await loginAs(page, specUser());
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
+  const overflowY = await composeTextarea(page).evaluate((el) => getComputedStyle(el).overflowY);
+  expect(overflowY).toBe("auto");
 });

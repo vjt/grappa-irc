@@ -158,8 +158,8 @@ describe("#1772 in-flow surfaces arm the touch lock and do NOT freeze the pane",
 
     unmount();
 
-    // A stranded holder leaves the non-passive document `preventDefault`
-    // attached until a full reload — i.e. an iOS scroll frozen for good.
+    // A stranded holder leaves `overlay-open`, and its root `touch-action:
+    // none` chain, up until a full reload.
     expect(shellLockCount()).toBe(0);
     expect(touchLockArmed()).toBe(false);
   });

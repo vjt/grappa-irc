@@ -18,8 +18,8 @@
 //      - target inside a non-scrollable tree → preventDefault
 //      - target with overflow:auto but content NOT taller than
 //        container → STILL preventDefault (no actual scroll capability)
-//      - a textarea is a scroller whatever its computed overflow; a
-//        range thumb and a live selection are consumers too (2465)
+//      - a range thumb, a media element's own controls and a live
+//        selection are consumers too; a two-finger move is a pinch (2465)
 
 import { createMemo, createRoot, createSignal } from "solid-js";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -256,6 +256,17 @@ describe("the touch guard is the Shell's (issue 2465)", () => {
     expect(document.documentElement.classList.contains(CLASS)).toBe(true);
     expect(isListenerAttached()).toBe(false);
     expect(touchmove(makeEl()).defaultPrevented).toBe(false);
+  });
+
+  test("a disposer from before a test reset cannot release a guard installed after it", () => {
+    const stale = installShellTouchGuard();
+    __resetForTest();
+    const fresh = installShellTouchGuard();
+    stale();
+    expect(isListenerAttached()).toBe(true);
+    expect(touchmove(makeEl()).defaultPrevented).toBe(true);
+    fresh();
+    expect(isListenerAttached()).toBe(false);
   });
 
   test("two installs hold the guard until BOTH dispose; a double dispose cannot underflow", () => {
@@ -513,7 +524,10 @@ describe("handleTouchmove — preventDefault gating", () => {
   // runs for the Shell's whole life it meets them all the time, not only under
   // an open overlay, so each one is a drag it must leave to the platform.
   describe("issue 2465 — native consumers stand the guard down", () => {
+    // `overflow-y: auto` is what Blink and WebKit compute for a textarea (pinned
+    // on both engines by issue2465's e2e); jsdom computes nothing, so say it.
     const sized = <T extends HTMLElement>(el: T, clientH: number, scrollH: number): T => {
+      el.style.overflowY = "auto";
       Object.defineProperty(el, "scrollHeight", { value: scrollH, configurable: true });
       Object.defineProperty(el, "clientHeight", { value: clientH, configurable: true });
       return el;
@@ -538,18 +552,31 @@ describe("handleTouchmove — preventDefault gating", () => {
       expect(prevented(ta)).toBe(true);
     });
 
-    test("a textarea whose draft OVERFLOWS scrolls natively, whatever its computed overflow reads", () => {
-      const ta = hosted(sized(document.createElement("textarea"), 40, 200));
-      // The pre-state: nothing DECLARES an overflow on it, which is all the old
-      // walk ever looked at. A textarea scrolls its own overflow regardless.
-      expect(getComputedStyle(ta).overflowY).not.toMatch(/auto|scroll/);
-      expect(prevented(ta)).toBe(false);
-    });
-
     test("a range input keeps its thumb drag", () => {
       const range = hosted(document.createElement("input"));
       range.type = "range";
       expect(prevented(range)).toBe(false);
+    });
+
+    test("a media element's OWN controls keep their scrubber drag; without controls it is cancelled", () => {
+      const video = hosted(document.createElement("video"));
+      video.controls = true;
+      expect(prevented(video)).toBe(false);
+      video.controls = false;
+      expect(prevented(video)).toBe(true);
+    });
+
+    test("a TWO-finger move is left to the platform — a pinch is zoom, not a pan", () => {
+      const el = makeEl();
+      const pinch = fakeTouchEvent(el) as TouchEvent & { __prevented: boolean };
+      Object.defineProperty(pinch, "touches", { value: [{}, {}] });
+      handleTouchmove(pinch);
+      expect(pinch.__prevented).toBe(false);
+      // The contrast: the same element, one finger, is cancelled.
+      const drag = fakeTouchEvent(el) as TouchEvent & { __prevented: boolean };
+      Object.defineProperty(drag, "touches", { value: [{}] });
+      handleTouchmove(drag);
+      expect(drag.__prevented).toBe(true);
     });
 
     test("a text entry with a LIVE selection keeps the drag — it may be a handle (#1205)", () => {

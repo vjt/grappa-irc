@@ -9429,8 +9429,8 @@ html.is-ios27-band .shell {
      to reach, and `auto` (the value it had by omission) is precisely the
      iOS chrome-drag hole #1067 records for any untouched touchable surface.
      Defense-in-depth only: CSS alone has never stopped UIKit here (see
-     `lib/overlayScrollLock.ts`, v1-v3), and the menu now arms the JS touch
-     lock, which is the half that actually works. */
+     `lib/overlayScrollLock.ts`, v1-v3); the half that actually works is the
+     JS touch guard, which the Shell holds for its whole life (issue 2465). */
   touch-action: none;
 }
 

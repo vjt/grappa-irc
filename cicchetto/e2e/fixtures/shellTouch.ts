@@ -28,9 +28,13 @@ export type ScrollerDrag = {
   landsOnScroller: boolean;
   overflowPx: number;
   scrollTopBefore: number;
-  // What the window saw: every touchmove that reached it, and whether ANY was
+  // What the window saw: every touchmove that reached it, and whether any was
   // cancelled. A window listener runs after every document one, the guard's
-  // included, so it reads the final verdict.
+  // included, so it reads the final verdict — but only of the moves that were
+  // still CANCELABLE: once chromium starts scrolling, later moves arrive
+  // non-cancelable and the guard leaves them alone. The scrollTop delta is
+  // what carries "the browser kept it"; this field says nobody tried to stop
+  // it while it still could be stopped.
   moves: number;
   prevented: boolean;
   // Read once the drag (and any fling) has had its frames.
@@ -57,6 +61,8 @@ export async function dragScroller(page: Page, selector: string, pts: Pt[]): Pro
       // Reset per drag; the listener itself is bound once per page, or a second
       // drag would count every move twice.
       w.__shellTouchProbe = { moves: 0, prevented: false };
+      // …and the settle wait below starts with no memory of an earlier drag.
+      (window as unknown as { __lastTop?: number }).__lastTop = undefined;
       if (w.__shellTouchBound === undefined) {
         w.__shellTouchBound = true;
         window.addEventListener("touchmove", (e) => {

@@ -4679,15 +4679,33 @@ orchestrator's ruling: it fixes the reported surface and leaves the class.
 **Native consumers the walk had to learn**, because it now runs all the time
 rather than only under an overlay:
 
-- a text entry is a scroller whatever its computed `overflow` reads: the
-  compose textarea declares none, and the old walk keyed on the declaration;
 - a range input keeps its thumb drag: WebKit moves it from its default touch
   handling, which a `preventDefault` skips;
+- a media element with its own `controls` keeps its scrubber drag. The
+  scrubber is a range inside the element's shadow tree, so the touch targets
+  the `<video>` or `<audio>` itself;
 - a live selection, in a text entry or in the document, keeps the drag: it
   may be on a selection handle (#1205). A collapsed caret is not a selection.
 
+**A long draft is a scroller because of the ENGINE, not the walk.** The compose
+textarea declares no `overflow`, and the walk reads COMPUTED overflow. Blink and
+WebKit both compute a textarea's `visible` as `auto` (in their style adjuster),
+so an overflowing draft already counted as a scroller. A first cut special-cased
+text entries; review caught that the special case changed nothing for a
+textarea and only let drags through on inputs, so it was dropped. The engine
+fact is pinned on both touch engines by an `@webkit @touch` e2e. The unit tests
+set `overflow-y: auto` themselves, because jsdom computes nothing.
+
+**One finger only.** The pan is a one-finger drag. Two fingers are a pinch, and
+iOS lets the user zoom whatever `user-scalable` says, for accessibility. The
+guard runs in BOTH layouts (an iPad in landscape runs the desktop layout under
+the same keyboard, and the overlays that used to arm it open there too). In
+the desktop layout no `touch-action: none` blanket forbids the pinch, so
+cancelling it there would take that zoom away.
+
 **Price, accepted:** while a selection is live, a drag that nothing scrolls goes
-back to the platform, so the shell can pan for that long.
+back to the platform. That lets the shell pan, or, with an overlay open, the
+page under it, which the overlay-only guard never allowed.
 **Known gap, not addressed:** the walk is axis-agnostic, as v6 was. A focused
 input whose text overflows horizontally lets a vertical drag through.
 

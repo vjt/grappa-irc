@@ -918,8 +918,11 @@ describe("ComposeBox", () => {
     };
 
     // The draft's geometry, which jsdom never lays out: a fitting draft has
-    // scrollHeight === clientHeight, an overflowing one has more.
+    // scrollHeight === clientHeight, an overflowing one has more. And the
+    // overflow Blink and WebKit COMPUTE for a textarea (`auto`, pinned on both
+    // engines by issue2465's e2e), which jsdom does not compute at all.
     const sized = (ta: HTMLTextAreaElement, clientH: number, scrollH: number): void => {
+      ta.style.overflowY = "auto";
       Object.defineProperty(ta, "scrollHeight", { value: scrollH, configurable: true });
       Object.defineProperty(ta, "clientHeight", { value: clientH, configurable: true });
     };
