@@ -18,51 +18,13 @@
 import type { Page } from "@playwright/test";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
+import { dragScrollback, synthEdgeGesture } from "../fixtures/shellTouch";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
 // iPhone-15-ish portrait: narrow enough for isMobile() (max-width query).
 test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
-
-type Pt = { x: number; y: number };
-
-// Synthesize a touch gesture on `.shell-mobile`: touchstart at pts[0],
-// a touchmove per interior point, touchend at the last. Returns whether ANY
-// touchmove was preventDefaulted — dispatchEvent returns false iff a listener
-// called preventDefault (the claim signal, read exactly as issue123 does).
-async function synthEdgeGesture(page: Page, pts: Pt[]): Promise<{ prevented: boolean }> {
-  return await page.evaluate((points) => {
-    const root = document.querySelector(".shell-mobile");
-    if (!(root instanceof HTMLElement)) throw new Error(".shell-mobile not found");
-    const mk = (p: { x: number; y: number }) =>
-      new Touch({ identifier: 1, target: root, clientX: p.x, clientY: p.y });
-    const fire = (type: "touchstart" | "touchmove" | "touchend", p: { x: number; y: number }) => {
-      const t = mk(p);
-      const active = type === "touchend" ? [] : [t];
-      return root.dispatchEvent(
-        new TouchEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          touches: active,
-          targetTouches: active,
-          changedTouches: [t],
-        }),
-      );
-    };
-    const first = points[0];
-    const last = points[points.length - 1];
-    if (!first || !last) throw new Error("need at least a start and an end point");
-    fire("touchstart", first);
-    let prevented = false;
-    for (let i = 1; i < points.length - 1; i++) {
-      const p = points[i];
-      if (p && !fire("touchmove", p)) prevented = true;
-    }
-    fire("touchend", last);
-    return { prevented };
-  }, pts);
-}
 
 async function openChannel(page: Page): Promise<void> {
   if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
@@ -90,20 +52,34 @@ test("issue308 INC-A — right-edge left-swipe opens the members drawer", async 
 // is never claimed → never preventDefaulted → the browser owns the vertical
 // scroll, and no drawer opens. If this ever preventDefaults, native scroll is
 // broken — the single most important interaction (#308).
+//
+// issue 2465 — measured as a REAL drag (chromium hit-tests the finger and
+// scrolls the pane itself) instead of a TouchEvent dispatched on the shell
+// root: the root scrolls nothing, so "the browser keeps it" there was the
+// whole-shell pan the Shell's guard now cancels. What the constraint protects
+// is the scroll, so the scroll is what is asserted.
 test("issue308 INC-A — a vertical drag from the edge never hijacks scroll (no open, no preventDefault)", async ({
   page,
 }) => {
   await openChannel(page);
   const W = await page.evaluate(() => window.innerWidth);
 
-  const { prevented } = await synthEdgeGesture(page, [
+  const drag = await dragScrollback(page, [
     { x: W - 5, y: 200 },
     { x: W - 3, y: 300 },
     { x: W - 6, y: 430 },
     { x: W - 5, y: 520 },
   ]);
 
-  expect(prevented).toBe(false); // vertical was left entirely to the browser
+  // Pre-state: the finger lands on the pane, the pane can scroll, and it has
+  // room to scroll toward older rows (finger down → scrollTop decreases).
+  expect(drag.landsOnScroller).toBe(true);
+  expect(drag.overflowPx).toBeGreaterThan(400);
+  expect(drag.scrollTopBefore).toBeGreaterThan(200);
+  expect(drag.moves).toBeGreaterThan(0);
+
+  expect(drag.prevented).toBe(false); // vertical was left entirely to the browser
+  expect(drag.scrollTopAfter).toBeLessThan(drag.scrollTopBefore - 100); // …which scrolled it
   await expect(page.locator(".shell-members.open")).toHaveCount(0);
 });
 
