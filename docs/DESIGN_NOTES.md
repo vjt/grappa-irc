@@ -4642,3 +4642,78 @@ PRIVMSG and NOTICE (`EventRouter`). JOIN, PART, QUIT and NICK from an
 ignored nick still show, by design, and "ignored nicks keep showing up"
 fits that just as well. The restart bug is real and fixed here; whether it
 was the one he hit waits on the probe on the issue, or on asking him.
+<!-- entry #2465 -->
+
+---
+
+## 2026-10-25 — issue 2465: the shell touch guard is the Shell's, for its whole life
+
+Reported on Azzurra with a screen recording, confirmed by vjt: on an iPhone,
+installed PWA, keyboard open, a vertical swipe on a one-line compose draft
+panned the WHOLE app shell up, and it snapped back afterwards.
+
+**Root, read in the code (the pan itself is device-only).** The compose
+textarea is `touch-action: pan-y` so a long draft can scroll (#123), and
+ComposeBox only preventDefaults once `claimAxis` claims, past the 8px slop.
+The moves before the claim went to the browser. On a draft that fits there
+is nothing inside to take them, so UIKit panned the visual viewport, which
+can move by the keyboard's height. The textarea's own CSS comment had
+listed this as an accepted device risk.
+
+**The class.** A scroller that re-allows an axis it cannot scroll hands that
+drag to the page. #1772 (cards and the context menu) and the UX-6 v1-v3
+overlay failures are the same class. `overlayScrollLock`'s v6 handler already
+answers the question live — does anything under the finger scroll this? — but
+it attached only while an overlay held the lock. With nothing open, the CSS
+blanket `.shell-mobile { touch-action: none }` was all there was, and every
+`pan-y` scroller is a hole in it the moment its content fits.
+
+**Decision: `Shell` installs the guard for its whole life**
+(`installShellTouchGuard`, disposer on cleanup). The overlay counters now
+drive the `overlay-open` class alone. Every overlay mounts under `Shell`, so
+none of them lost the guard. Login, share and pair render outside `Shell` and
+keep their document scroll. A narrow alternative (ComposeBox cancels its own
+pre-claim moves when the draft fits) was offered and declined by the
+orchestrator's ruling: it fixes the reported surface and leaves the class.
+
+**Native consumers the walk had to learn**, because it now runs all the time
+rather than only under an overlay:
+
+- a text entry is a scroller whatever its computed `overflow` reads: the
+  compose textarea declares none, and the old walk keyed on the declaration;
+- a range input keeps its thumb drag: WebKit moves it from its default touch
+  handling, which a `preventDefault` skips;
+- a live selection, in a text entry or in the document, keeps the drag: it
+  may be on a selection handle (#1205). A collapsed caret is not a selection.
+
+**Price, accepted:** while a selection is live, a drag that nothing scrolls goes
+back to the platform, so the shell can pan for that long.
+**Known gap, not addressed:** the walk is axis-agnostic, as v6 was. A focused
+input whose text overflows horizontally lets a vertical drag through.
+
+**Two e2e specs changed and one added, none loosened.** `issue308-inc-a-edge-swipe-members`
+and `issue1041-left-edge-sidebar` dispatched their gestures on `.shell-mobile`
+itself and asserted that the browser kept the vertical drag. The shell root
+scrolls nothing, so that "kept by the browser" was this issue's pan, and the
+guard turned them red. The hard constraint they guard ("a vertical drag from
+the edge is never hijacked") is about the scroll, so it is now measured as a
+REAL drag through chromium's input pipeline over the seeded scrollback. The
+asserts are that the pane's `scrollTop` moved, that no move was cancelled,
+and that no drawer opened, after asserting that the finger lands on a pane
+that overflows. The dispatched helper the two specs carried verbatim is one
+fixture now (`e2e/fixtures/shellTouch.ts`) and targets the element under the
+start point. Over the overflowing pane the guard stands aside, so the claim
+tests' `prevented` is the edge directive's again rather than the guard's.
+That realism cost #1041's centre swipe its old target. A rightward swipe over a
+message row is #1067's reply, which claims it, and it quoted a seeded line the
+first time it ran. So that swipe now starts on a peer's JOIN row, which refuses
+the reply (#1156). Its `prevented === false` is unchanged, and it now also
+asserts that nothing was quoted. `issue1067-swipe-reply-message-menu` needed no
+change: the seeded pane overflows, so the guard never touches its rows.
+`issue2465-compose-short-draft-shell-pan` pins the wiring: with no overlay
+open, the first 2px move on a one-line draft is cancelled, and a long draft
+still scrolls under a real drag.
+
+**Not provable off-device:** that UIKit no longer pans the visual viewport.
+Chromium is not iOS and Playwright's webkit is not UIKit. That check is vjt's,
+on the phone, and the PR lists what to try.

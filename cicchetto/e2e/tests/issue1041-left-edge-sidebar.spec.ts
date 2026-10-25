@@ -14,7 +14,8 @@
 //     not iOS Safari. That part is vjt's on-device dogfood, declared as such —
 //     this spec does not cover it and must not be read as if it did.
 import type { Page } from "@playwright/test";
-import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import { composeTextarea, loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { dragScrollback, type Pt, synthEdgeGesture } from "../fixtures/shellTouch";
 import { expect, specNick, specUser, test } from "../fixtures/test";
@@ -140,19 +141,43 @@ test("issue1041 — a vertical drag from the left edge never hijacks scroll (no 
   await expect(page.locator(SIDEBAR)).toHaveCount(0);
 });
 
+// issue 2465 — the swipe now starts on what a finger at the centre would hit.
+// Over a message row a rightward swipe is #1067's reply, which claims it (it
+// quoted `seed line #186` the first time this ran against a message), so that
+// row cannot say whether the EDGE directive claimed. A JOIN row refuses the
+// reply (#1156), the seeded pane overflows so the Shell's guard stands aside,
+// and the edge directive is the one claimant left — which must not arm here.
 test("issue1041 — a rightward swipe from the CENTER does not mount the sidebar (zone separation)", async ({
   page,
 }) => {
+  if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
   await openChannel(page);
 
-  const { prevented } = await synthEdgeGesture(page, [
-    { x: 195, y: 400 },
-    { x: 275, y: 404 },
-    { x: 365, y: 408 },
-  ]);
+  // A unique nick per run: the e2e scrollback survives KEEP_STACK=1, and a
+  // static one would leave two join rows to choose between.
+  const peer = await IrcPeer.connect({ nick: `c1041${Date.now() % 1_000_000}` });
+  try {
+    await peer.join(CHANNEL);
+    const joinRow = page
+      .locator('[data-testid="scrollback-line"][data-kind="join"]')
+      .filter({ hasText: peer.nick });
+    await expect(joinRow).toHaveCount(1, { timeout: 10_000 });
+    const box = await joinRow.boundingBox();
+    if (box === null) throw new Error("join row has no box");
+    const y = Math.round(box.y + box.height / 2);
 
-  expect(prevented).toBe(false); // center gesture is not armed → never claims
-  await expect(page.locator(SIDEBAR)).toHaveCount(0);
+    const { prevented } = await synthEdgeGesture(page, [
+      { x: 195, y },
+      { x: 275, y: y + 4 },
+      { x: 365, y: y + 8 },
+    ]);
+
+    expect(prevented).toBe(false); // center gesture is not armed → never claims
+    await expect(page.locator(SIDEBAR)).toHaveCount(0);
+    await expect(composeTextarea(page)).toHaveValue(""); // and the reply refused it too
+  } finally {
+    await peer.disconnect("1041 centre witness done");
+  }
 });
 
 // An open overlay is a CHILD of `.shell-mobile`, so its touches still bubble to

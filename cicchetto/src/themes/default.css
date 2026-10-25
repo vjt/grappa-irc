@@ -5536,16 +5536,21 @@ html.is-ios27-band .shell {
      chrome gesture, but it also made a long draft unscrollable on touch.
      `pan-y` re-enables vertical scroll while still blocking pan-x / zoom /
      the double-drag chrome reveal. The swipe recall/tab gesture coexists:
-     ComposeBox's non-passive touchmove listener velocity-gates (isFastSwipe)
-     — a fast flick preventDefaults early (before iOS commits the pan) and
-     claims the gesture; a slow drag is left to this native pan-y scroll.
+     ComposeBox's non-passive touchmove listener claims (preventDefault) only
+     past the 8px slop and only once the draft has no room left in the drag's
+     direction (`claimAxis`); until then the drag is this native pan-y scroll.
+     (This line used to say a fast flick preventDefaults "before iOS commits
+     the pan". Since the #123 rework the claim keys off the scroll edge, not
+     speed, and arrives after the slop, which is how issue 2465 got through.)
      `overscroll-behavior: contain` stops a scroll past the draft's own
      limit from chaining to the shell / chrome (same guard as .scrollback /
      the UX-5 BO pan-y surfaces). Tap + focus + caret are pointer events,
-     unaffected. KNOWN device-test item (vjt): a SHORT non-overflowing draft
-     at pan-y may still fall through to iOS chrome-reveal on a slow vertical
-     drag (the .scrollback `none`↔`pan-y` overflow-toggle case) — accepted;
-     re-open with a JS overflow-toggle only if it bites on-device. */
+     unaffected. issue 2465 — the device risk this comment used to accept
+     (a SHORT draft that fits lets `pan-y` fall through on a vertical drag)
+     bit: with the keyboard up it panned the whole shell. `pan-y` STAYS, a
+     long draft needs it; what closes the hole is the Shell's touch guard
+     (`installShellTouchGuard`), which cancels a move the textarea cannot
+     scroll from the very first one, before ComposeBox's claim. */
   touch-action: pan-y;
   overscroll-behavior: contain;
 }
