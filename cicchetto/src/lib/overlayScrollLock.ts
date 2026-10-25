@@ -34,8 +34,15 @@
 //
 // Refcount semantics: multiple overlays can overlap during
 // transitions (archive opens before members closes). Each surface
-// pushes/pops; the document-level touchmove listener attaches when
-// the first overlay opens and detaches when the last closes.
+// pushes/pops; the `overlay-open` class lands when the first overlay
+// opens and goes when the last closes.
+//
+// issue 2465 — the document-level listener is NOT on that refcount any
+// more. `Shell` installs it for its whole life (`installShellTouchGuard`):
+// with nothing open, a vertical swipe on a one-line compose draft (a
+// `pan-y` scroller with nothing to scroll) went to UIKit, and with the
+// keyboard up that panned the whole shell. The rule the handler applies
+// is unchanged; WHEN it applies is what moved.
 //
 // `html.overlay-open` class remains as a CSS sentinel + the v3 CSS
 // lock chain (`html.overlay-open body/#root/#root>div { touch-action:
@@ -61,8 +68,9 @@
 //   shellLocks     — surfaces that want the shell immobile WITHOUT
 //                    covering the pane. Touch lock only.
 //
-// The class + the document listener key off the SUM: the touch lock is
-// one global thing, and either population arming it is enough.
+// The class keys off the SUM: the touch lock is one global thing, and
+// either population arming it is enough. (Until issue 2465 the document
+// listener keyed off the same sum; it is the Shell's now, see above.)
 //
 // Safe to arm the class for a NON-covering surface, measured rather than
 // assumed: on mobile the shell already carries `.shell-mobile {
@@ -74,10 +82,11 @@
 // exactly like `.rail-actions-menu` (#913) did.
 //
 // Test surface: pure module state + DOM side-effects. `__resetForTest()`
-// clears both counters + class + detaches the listener so vitest order
-// doesn't leak state across tests.
+// clears both counters + class + the guard so vitest order doesn't leak
+// state across tests.
 
 import { createEffect, createSignal, onCleanup } from "solid-js";
+import { isTextEntry } from "./keepKeyboard";
 
 const CLASS_NAME = "overlay-open";
 
@@ -87,21 +96,25 @@ const CLASS_NAME = "overlay-open";
 // plain-`let` read would let that memo go stale when an overlay opens/closes
 // and the pane would never freeze/thaw. The signal is module-scope (not owned
 // by any component) — same lifetime as the old `let count`; the getter reads
-// it, the mutators set it. iOS touch-lock semantics are unchanged (the class +
-// listener side-effects still key off the same numeric value).
+// it, the mutators set it. The class side-effect still keys off the same
+// numeric value.
 const [count, setCount] = createSignal(0);
 
 // #1772 — the non-covering half of the touch lock. A plain `let`, NOT a signal,
 // and deliberately so: nothing DERIVES from it. The covering count above is a
 // signal because `ScrollbackPane` reads it inside a memo (a stale read there
-// means a pane that never freezes); this one has exactly two consumers, the DOM
-// class and the document listener, and both are imperative side-effects applied
-// at the push/pop edges below. A signal would advertise a reactive contract that
-// no reader wants and that no test could hold anyone to.
+// means a pane that never freezes); this one has exactly one consumer, the DOM
+// class, an imperative side-effect applied at the push/pop edges below. A
+// signal would advertise a reactive contract that no reader wants and that no
+// test could hold anyone to.
 let shellLocks = 0;
-let listenerAttached = false;
 
-/** Holders of the iOS touch lock, from BOTH populations. */
+// issue 2465 — installs of the shell touch guard. A count rather than a flag
+// only so a second Shell (a remount racing its predecessor's cleanup) cannot
+// detach the guard from under the first.
+let guardHolders = 0;
+
+/** Holders of the `overlay-open` class, from BOTH populations. */
 function touchLockHolders(): number {
   return count() + shellLocks;
 }
@@ -153,54 +166,99 @@ function applyClass(): void {
 }
 
 /**
- * Re-derive both touch-lock side-effects from the current holder total. Called
- * from EVERY push/pop edge on either counter, so the class and the listener can
- * never disagree with the numbers — and so a new counter, if this ever grows a
- * third population, has one place to join rather than four.
+ * A drag the platform itself consumes, so cancelling it would break the very
+ * thing the user is doing:
+ *
+ *   * a range input's thumb — WebKit moves it from its default touch handling,
+ *     which a `preventDefault` skips;
+ *   * a LIVE selection, in a text entry or in the document — the drag may be on
+ *     a selection handle (#1205: Android handles that would not move once a
+ *     touchmove was cancelled). A collapsed caret is not a selection.
+ *
+ * The price, accepted: while a selection is live, a drag that nothing scrolls
+ * goes back to the platform, so the shell can pan for that long.
  */
-function syncTouchLock(): void {
-  applyClass();
-  if (touchLockHolders() > 0) attachListener();
-  else detachListener();
+function consumesDragNatively(target: Element): boolean {
+  if (target instanceof HTMLInputElement && target.type === "range") return true;
+  if (isTextEntry(target) && target.selectionStart !== target.selectionEnd) return true;
+  const selection = document.getSelection();
+  return selection !== null && !selection.isCollapsed;
 }
 
 /**
- * touchmove handler — preventDefault unless the gesture target has a
- * scrollable ancestor. Walks up from the target; for each ancestor
- * checks (a) is it scrollable in either axis (overflow: auto/scroll
- * AND scrollHeight > clientHeight OR scrollWidth > clientWidth)? If
- * yes at any level → let the gesture through (iOS native scroll +
- * bounce). If we reach <body> without finding a scrollable ancestor
- * → preventDefault → UIKit can't claim the gesture.
+ * Can `el` scroll a drag itself? It needs a scrolling overflow AND content past
+ * its box on that axis. A text entry scrolls its own overflow whatever its
+ * computed `overflow` reads (issue 2465: the compose textarea declares none),
+ * so it is judged on the overflow alone.
+ */
+function scrollsNatively(el: Element): boolean {
+  const cs = getComputedStyle(el);
+  const intrinsic = isTextEntry(el);
+  const scrollsY = intrinsic || cs.overflowY === "auto" || cs.overflowY === "scroll";
+  const scrollsX = intrinsic || cs.overflowX === "auto" || cs.overflowX === "scroll";
+  return (
+    (scrollsY && el.scrollHeight > el.clientHeight) || (scrollsX && el.scrollWidth > el.clientWidth)
+  );
+}
+
+/**
+ * touchmove handler — preventDefault unless something under the finger
+ * consumes the drag natively: a native drag control or a live selection
+ * (`consumesDragNatively`), or the target or any ancestor below <body> that can
+ * scroll it (`scrollsNatively`), in which case iOS keeps its native scroll and
+ * bounce. Nothing to consume it → preventDefault → UIKit cannot claim the
+ * gesture as a pan of the page.
  *
  * Exported only for vitest assertions.
  */
 export function handleTouchmove(e: TouchEvent): void {
-  const target = e.target as HTMLElement | null;
-  if (!target) return;
-  let cur: HTMLElement | null = target;
+  const target = e.target;
+  if (!(target instanceof Element)) return;
+  if (consumesDragNatively(target)) return;
+  let cur: Element | null = target;
   while (cur && cur !== document.body && cur !== document.documentElement) {
-    const cs = getComputedStyle(cur);
-    const canScrollY =
-      (cs.overflowY === "auto" || cs.overflowY === "scroll") && cur.scrollHeight > cur.clientHeight;
-    const canScrollX =
-      (cs.overflowX === "auto" || cs.overflowX === "scroll") && cur.scrollWidth > cur.clientWidth;
-    if (canScrollY || canScrollX) return;
+    if (scrollsNatively(cur)) return;
     cur = cur.parentElement;
   }
   if (e.cancelable) e.preventDefault();
 }
 
-function attachListener(): void {
-  if (listenerAttached || typeof document === "undefined") return;
-  document.addEventListener("touchmove", handleTouchmove, { passive: false });
-  listenerAttached = true;
+/**
+ * issue 2465 — install the touch guard for as long as the caller lives; returns
+ * the disposer. `Shell` is the caller, for its whole life: the shell is
+ * furniture with or without an overlay open.
+ *
+ * Until this issue the guard attached only while an overlay held the lock, and
+ * the shell was furniture only because `.shell-mobile { touch-action: none }`
+ * forbids the pan. That CSS stops at every scroller that re-allows an axis —
+ * the compose textarea is `pan-y` so a long draft can scroll — and a scroller
+ * whose content FITS consumes nothing, so the drag it re-allowed went to UIKit:
+ * with the keyboard up, a vertical swipe on a one-line draft panned the whole
+ * shell. That is the same class as #1772 and as the v1-v3 overlay failures —
+ * an axis permitted where nothing can scroll it — and this guard is the one
+ * place that knows, live, whether anything can.
+ *
+ * Login, share and pair render outside `Shell`, so their document scroll never
+ * meets it. Every overlay mounts under `Shell`, so none lost the guard when the
+ * counters stopped attaching it; they drive the `overlay-open` class alone now.
+ */
+export function installShellTouchGuard(): () => void {
+  guardHolders += 1;
+  if (guardHolders === 1 && typeof document !== "undefined") {
+    document.addEventListener("touchmove", handleTouchmove, { passive: false });
+  }
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    guardHolders = Math.max(0, guardHolders - 1);
+    if (guardHolders === 0) detachGuard();
+  };
 }
 
-function detachListener(): void {
-  if (!listenerAttached || typeof document === "undefined") return;
+function detachGuard(): void {
+  if (typeof document === "undefined") return;
   document.removeEventListener("touchmove", handleTouchmove);
-  listenerAttached = false;
 }
 
 /**
@@ -212,17 +270,17 @@ function detachListener(): void {
  */
 export function pushOverlay(_target: HTMLElement | null): void {
   setCount(count() + 1);
-  syncTouchLock();
+  applyClass();
 }
 
 /**
  * Pop an overlay off the lock stack. Pops below zero are clamped.
- * Detaches the touchmove listener when the last holder — of EITHER
- * population — drops off.
+ * Drops the `overlay-open` class when the last holder — of EITHER
+ * population — goes.
  */
 export function popOverlay(_target: HTMLElement | null): void {
   setCount(Math.max(0, count() - 1));
-  syncTouchLock();
+  applyClass();
 }
 
 /**
@@ -230,8 +288,8 @@ export function popOverlay(_target: HTMLElement | null): void {
  * "the shell must not move while I am open", said by a surface that does not
  * cover the scrollback pane. Pair with `popShellLock()`.
  *
- * Same global effect as `pushOverlay` (the `overlay-open` class + the
- * non-passive document `touchmove` handler) and a DIFFERENT population:
+ * Same global effect as `pushOverlay` (the `overlay-open` class) and a
+ * DIFFERENT population:
  * `overlayCount()` does not move, so the pane behind keeps scrolling, keeps
  * following the tail, and never freezes its snapshot.
  *
@@ -242,13 +300,13 @@ export function popOverlay(_target: HTMLElement | null): void {
  */
 export function pushShellLock(): void {
   shellLocks += 1;
-  syncTouchLock();
+  applyClass();
 }
 
 /** Release a shell lock. Pops below zero are clamped, as with `popOverlay`. */
 export function popShellLock(): void {
   shellLocks = Math.max(0, shellLocks - 1);
-  syncTouchLock();
+  applyClass();
 }
 
 /**
@@ -268,16 +326,16 @@ export function overlayCount(): number {
 
 /**
  * Current non-covering shell-lock count. Exposed for vitest assertions only —
- * production code has no business asking, since the two side-effects this
- * number drives are applied here.
+ * production code has no business asking, since the side-effect this number
+ * drives is applied here.
  */
 export function shellLockCount(): number {
   return shellLocks;
 }
 
-/** Whether the document-level touchmove listener is currently attached. */
+/** Whether the shell touch guard is currently installed. Exposed for vitest. */
 export function isListenerAttached(): boolean {
-  return listenerAttached;
+  return guardHolders > 0;
 }
 
 /**
@@ -302,13 +360,14 @@ export function overlayEscapeDepth(): number {
   return escapeStack.length;
 }
 
-/** Test reset — clears BOTH counters, the DOM class, the listener, the ESC stack. */
+/** Test reset — clears BOTH counters, the DOM class, the guard, the ESC stack. */
 export function __resetForTest(): void {
   setCount(0);
   shellLocks = 0;
   const el = root();
   if (el !== null) el.classList.remove(CLASS_NAME);
-  detachListener();
+  guardHolders = 0;
+  detachGuard();
   escapeStack.length = 0;
 }
 
@@ -330,9 +389,8 @@ export function __resetForTest(): void {
  * popOverlay (clamped at 0) BEFORE the queued push fires, and an
  * unconditional push would strand the refcount at 1 forever — no
  * later overlay cycle could drain it (popOverlay clamps), leaving the
- * `html.overlay-open` class + the non-passive document touchmove
- * preventDefault attached until full reload (permanent iOS
- * scroll-lock). Latent in the pre-extraction copies; fixed once here.
+ * `html.overlay-open` class up and `ScrollbackPane` frozen until full
+ * reload. Latent in the pre-extraction copies; fixed once here.
  *
  * #232 — optional `onEscape`: when supplied, the overlay ALSO joins the
  * ordered ESC-close stack for its open lifetime, so `runTopmostOverlayEscape`
@@ -413,6 +471,9 @@ export function createOverlayLock(
  * on an iPhone a drag with a whois card or a context menu open panned the whole
  * app shell. The shell is meant to be furniture. Now `pushShellLock` arms the
  * lock from the non-covering population and `overlayCount()` never moves.
+ * (issue 2465: the JS half of that lock, the document `touchmove` guard, has
+ * since moved to `Shell` for its whole life; what a surface arms here is the
+ * `overlay-open` class.)
  *
  * Membership of the one shared stack is the point, not an implementation
  * detail: it is what makes a modal opened over a card close FIRST. A private

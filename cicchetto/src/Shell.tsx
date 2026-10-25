@@ -45,7 +45,7 @@ import { openMembersPanel, toggleMembersPanel } from "./lib/mobilePanel";
 import { isNetworkParked } from "./lib/networkParked";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
 import { nickEquals } from "./lib/nickEquals";
-import { createOverlayLock, overlayCount } from "./lib/overlayScrollLock";
+import { createOverlayLock, installShellTouchGuard, overlayCount } from "./lib/overlayScrollLock";
 import {
   canonicalQueryNick,
   openQueryWindowState,
@@ -380,6 +380,14 @@ const Shell: Component = () => {
   // the exit transition, dropping only when the node actually goes away. No
   // onEscape — like the two above it is a scroll-lock-only drawer.
   createOverlayLock(() => isMobile() && sidebarMounted(), ".shell-mobile .shell-sidebar");
+
+  // issue 2465 — the touch guard is the Shell's, for the Shell's whole life:
+  // the shell is furniture with or without an overlay open. Until this issue
+  // the document `touchmove` guard attached only while an overlay held the
+  // lock, so with nothing open a vertical swipe on a one-line compose draft
+  // went to UIKit and, with the iOS keyboard up, panned the whole shell. See
+  // `installShellTouchGuard` for the rule it applies.
+  onCleanup(installShellTouchGuard());
 
   // UX-4 bucket N — admin pane lifecycle is now selection-driven.
   // `selectedChannel.kind === "admin"` is the SINGLE source of truth

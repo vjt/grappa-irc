@@ -2288,3 +2288,44 @@ describe("issue 2430 — one encrypted pane per encrypted window", () => {
     },
   );
 });
+
+// issue 2465 — iOS, keyboard open: a vertical swipe on a short compose draft
+// panned the whole app shell. The non-passive document `touchmove` guard that
+// cancels a move nothing can scroll used to attach only while an OVERLAY held
+// the lock, so with nothing open it was simply not there. It is the Shell's
+// now, for the Shell's whole life — measured here with no overlay open at all.
+describe("issue 2465 — the Shell holds the touch guard for its whole life", () => {
+  const touchmove = (target: Element): Event => {
+    const e = new Event("touchmove", { bubbles: true, cancelable: true });
+    target.dispatchEvent(e);
+    return e;
+  };
+
+  it.each([
+    [true, ".shell-mobile"],
+    [false, ".shell-main"],
+  ])(
+    "mobile=%s: a move nothing can scroll is cancelled with NO overlay open",
+    (mobile, selector) => {
+      resetOverlay();
+      mobileState.value = mobile;
+      const { container } = render(() => <Shell />);
+      const target = container.querySelector(selector);
+      expect(target).not.toBeNull();
+      // The pre-state the whole case rests on: no surface holds the lock.
+      expect(overlayCount()).toBe(0);
+      expect(document.documentElement.classList.contains("overlay-open")).toBe(false);
+      expect(touchmove(target as Element).defaultPrevented).toBe(true);
+    },
+  );
+
+  it("unmounting the Shell takes the guard with it", () => {
+    resetOverlay();
+    const { unmount } = render(() => <Shell />);
+    unmount();
+    const outside = document.createElement("div");
+    document.body.appendChild(outside);
+    expect(touchmove(outside).defaultPrevented).toBe(false);
+    outside.remove();
+  });
+});

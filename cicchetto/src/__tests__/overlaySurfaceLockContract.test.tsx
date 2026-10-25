@@ -4,12 +4,7 @@ import ContextMenu, { type ContextMenuItem } from "../ContextMenu";
 import LusersCard from "../LusersCard";
 import type { WhoisBundle, WhoReply, WhoUser } from "../lib/api";
 import { applyLusersBundle, markLusersRequested } from "../lib/lusersBundle";
-import {
-  __resetForTest,
-  isListenerAttached,
-  overlayCount,
-  shellLockCount,
-} from "../lib/overlayScrollLock";
+import { __resetForTest, overlayCount, shellLockCount } from "../lib/overlayScrollLock";
 import { setSelectedChannel } from "../lib/selection";
 import { dismissWhoModal, setWhoReply } from "../lib/whoModal";
 import { setWhowasBundle } from "../lib/whowasCard";
@@ -26,11 +21,11 @@ import WhowasCard from "../WhowasCard";
 //
 // The two axes are now two counters, and every surface is pinned against BOTH:
 //
-//   * TOUCH LOCK — `html.overlay-open` + the non-passive document `touchmove`
-//     handler that preventDefaults a gesture with no scrollable ancestor. This
-//     is the only thing that stops UIKit claiming the drag as a page pan
-//     (overlayScrollLock's v1-v6 history: CSS alone never did). EVERY
-//     dismissable surface wants it.
+//   * TOUCH LOCK — `html.overlay-open` and the root `touch-action: none`
+//     chain it switches on. EVERY dismissable surface wants it. (issue 2465:
+//     the non-passive document `touchmove` handler that used to come with it
+//     is the Shell's now, installed for the Shell's whole life, so it is no
+//     longer something a surface can arm or forget to arm.)
 //   * FREEZE — `overlayCount()`, the covering-overlay count `ScrollbackPane`
 //     derives `isOverlayFrozen()` from (and `globalPaste` / `Shell`'s swipe
 //     guard read as "something is covering the shell"). Only a surface that
@@ -42,7 +37,7 @@ import WhowasCard from "../WhowasCard";
 // "no freeze" would pass just as happily on a build that had lost the freeze
 // everywhere.
 //
-// jsdom sees the class, the listener and the counts; it does NOT see the iOS
+// jsdom sees the class and the counts; it does NOT see the iOS
 // gesture. The felt result on a real iPhone is a device-dogfood item — see the
 // PR body and `feedback_playwright_webkit_not_ios_scroll`: Playwright's webkit
 // does not reproduce UIScrollView's gesture model either, so no gate we run can
@@ -51,8 +46,7 @@ import WhowasCard from "../WhowasCard";
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
-const touchLockArmed = (): boolean =>
-  isListenerAttached() && document.documentElement.classList.contains("overlay-open");
+const touchLockArmed = (): boolean => document.documentElement.classList.contains("overlay-open");
 
 const WHOIS_BUNDLE: WhoisBundle = {
   network: "azzurra",

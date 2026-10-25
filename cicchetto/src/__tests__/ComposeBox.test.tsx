@@ -149,6 +149,9 @@ import {
   dismissConfirm,
 } from "../lib/confirmDialog";
 import { diagLog } from "../lib/diagLog";
+// issue 2465 — the REAL shell touch guard, installed here exactly as Shell
+// installs it: the cure for the reported pan lives there, not in ComposeBox.
+import { installShellTouchGuard } from "../lib/overlayScrollLock";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -890,6 +893,79 @@ describe("ComposeBox", () => {
       const move = dragRight(ta);
       expect(move.defaultPrevented).toBe(true);
       expect(compose.tabComplete).toHaveBeenCalled();
+    });
+  });
+
+  // issue 2465 — iOS, keyboard open: a vertical swipe on a ONE-LINE draft
+  // panned the whole app shell. ComposeBox only preventDefaults once
+  // `claimAxis` claims, past the 8px slop, and the textarea is `pan-y`, so the
+  // moves before the claim went to the browser — and with the draft fitting,
+  // nothing inside could take them, so UIKit panned the visual viewport.
+  //
+  // What is measured is the contract the cure rests on: under the shell guard,
+  // the FIRST touchmove — 2px, far under the slop, before any claim — is
+  // cancelled on a draft that fits, and left alone where the textarea really
+  // can scroll or a selection is live. jsdom has no UIScrollView: the felt
+  // result is a device item (`feedback_playwright_webkit_not_ios_scroll`).
+  describe("issue 2465 — under the shell guard, a short draft's FIRST move is cancelled", () => {
+    let disposeGuard: () => void = () => {};
+
+    const composerWith = async (draft: string): Promise<HTMLTextAreaElement> => {
+      const compose = await import("../lib/compose");
+      vi.mocked(compose.getDraft).mockReturnValue(draft);
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      return screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+    };
+
+    // The draft's geometry, which jsdom never lays out: a fitting draft has
+    // scrollHeight === clientHeight, an overflowing one has more.
+    const sized = (ta: HTMLTextAreaElement, clientH: number, scrollH: number): void => {
+      Object.defineProperty(ta, "scrollHeight", { value: scrollH, configurable: true });
+      Object.defineProperty(ta, "clientHeight", { value: clientH, configurable: true });
+    };
+
+    // touchstart, then ONE touchmove 2px up: under DRAG_SLOP_PX, so nothing
+    // has claimed. Returns that first move.
+    const firstMove = (ta: HTMLTextAreaElement): Event => {
+      fireTouch(ta, "touchstart", { clientX: 100, clientY: 300 });
+      return fireTouch(ta, "touchmove", { clientX: 100, clientY: 298 });
+    };
+
+    beforeEach(() => {
+      disposeGuard = installShellTouchGuard();
+    });
+
+    afterEach(async () => {
+      disposeGuard();
+      const compose = await import("../lib/compose");
+      vi.mocked(compose.getDraft).mockReturnValue("");
+    });
+
+    it("a one-line draft that FITS: the first move is cancelled, before any claim", async () => {
+      const ta = await composerWith("hello");
+      sized(ta, 40, 40);
+      expect(firstMove(ta).defaultPrevented).toBe(true);
+    });
+
+    it("the same move WITHOUT the guard is not cancelled — the compose alone leaves it, which was the bug", async () => {
+      disposeGuard();
+      const ta = await composerWith("hello");
+      sized(ta, 40, 40);
+      expect(firstMove(ta).defaultPrevented).toBe(false);
+    });
+
+    it("a draft that OVERFLOWS keeps its native scroll: the first move is left alone", async () => {
+      const ta = await composerWith("a long draft that wraps well past one row");
+      sized(ta, 40, 200);
+      expect(firstMove(ta).defaultPrevented).toBe(false);
+    });
+
+    it("a LIVE selection in a fitting draft keeps the move — it may be a handle drag (#1205)", async () => {
+      const ta = await composerWith("hello world");
+      sized(ta, 40, 40);
+      ta.setSelectionRange(0, 5);
+      expect(ta.selectionStart).not.toBe(ta.selectionEnd);
+      expect(firstMove(ta).defaultPrevented).toBe(false);
     });
   });
 

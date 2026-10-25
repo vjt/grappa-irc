@@ -6,16 +6,20 @@
 // Three behavioral surfaces:
 //   1. Refcount + DOM class side-effect — push/pop pairing, nested,
 //      below-zero clamp. (Carryover from v1-v5.)
-//   2. Listener lifecycle — attaches on first push, detaches on last
-//      pop. (New in v6 — replaces body-scroll-lock attach/detach.)
-//   3. handleTouchmove behavior — preventDefault unless gesture
-//      target has a scrollable ancestor. Tests cover:
+//   2. Listener lifecycle — the Shell installs the guard for its whole
+//      life (issue 2465). It used to attach on the first overlay push
+//      and detach on the last pop, which left the shell pannable with
+//      nothing open.
+//   3. handleTouchmove behavior — preventDefault unless something under
+//      the finger consumes the drag natively. Tests cover:
 //      - target inside a scrollable element → no preventDefault
 //      - target inside a non-scrollable element with scrollable
 //        ancestor higher up → no preventDefault
 //      - target inside a non-scrollable tree → preventDefault
 //      - target with overflow:auto but content NOT taller than
 //        container → STILL preventDefault (no actual scroll capability)
+//      - a textarea is a scroller whatever its computed overflow; a
+//        range thumb and a live selection are consumers too (2465)
 
 import { createMemo, createRoot, createSignal } from "solid-js";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -24,6 +28,7 @@ import {
   createOverlayEscape,
   createOverlayLock,
   handleTouchmove,
+  installShellTouchGuard,
   isListenerAttached,
   overlayCount,
   overlayEscapeDepth,
@@ -157,11 +162,10 @@ describe("overlayScrollLock refcount + class", () => {
 // These pin the arithmetic; which SURFACES land in which population is pinned
 // in overlaySurfaceLockContract.test.ts.
 describe("overlayScrollLock — the shell lock is a second population (#1772)", () => {
-  test("a shell lock arms the class + listener without moving overlayCount", () => {
+  test("a shell lock arms the class without moving overlayCount", () => {
     pushShellLock();
     expect(shellLockCount()).toBe(1);
     expect(document.documentElement.classList.contains(CLASS)).toBe(true);
-    expect(isListenerAttached()).toBe(true);
     // The freeze axis is untouched — this is the whole point of the split.
     expect(overlayCount()).toBe(0);
   });
@@ -174,11 +178,9 @@ describe("overlayScrollLock — the shell lock is a second population (#1772)", 
     popOverlay(null); // the covering half goes; the shell lock still holds
     expect(overlayCount()).toBe(0);
     expect(document.documentElement.classList.contains(CLASS)).toBe(true);
-    expect(isListenerAttached()).toBe(true);
 
     popShellLock();
     expect(document.documentElement.classList.contains(CLASS)).toBe(false);
-    expect(isListenerAttached()).toBe(false);
   });
 
   test("the covering half can drop last and still hold the lock meanwhile", () => {
@@ -188,11 +190,9 @@ describe("overlayScrollLock — the shell lock is a second population (#1772)", 
     popShellLock();
     expect(shellLockCount()).toBe(0);
     expect(document.documentElement.classList.contains(CLASS)).toBe(true);
-    expect(isListenerAttached()).toBe(true);
 
     popOverlay(null);
     expect(document.documentElement.classList.contains(CLASS)).toBe(false);
-    expect(isListenerAttached()).toBe(false);
   });
 
   test("popping a shell lock below zero is clamped", () => {
@@ -223,22 +223,49 @@ describe("overlayScrollLock — the shell lock is a second population (#1772)", 
   });
 });
 
-describe("overlayScrollLock listener lifecycle", () => {
-  test("listener attaches on first push, detaches on last pop", () => {
-    expect(isListenerAttached()).toBe(false);
-    pushOverlay(makeEl());
-    expect(isListenerAttached()).toBe(true);
-    popOverlay(null);
-    expect(isListenerAttached()).toBe(false);
+// issue 2465 — the touch guard belongs to the SHELL, for its whole life. It
+// used to attach only while an overlay held the lock, so with nothing open a
+// drag that no scroller could take went to UIKit, which panned the whole shell
+// under the iOS keyboard (the compose box, a short draft, a vertical swipe).
+// The counters above now drive the `overlay-open` class alone.
+describe("the touch guard is the Shell's (issue 2465)", () => {
+  const touchmove = (target: Element): Event => {
+    const e = new Event("touchmove", { bubbles: true, cancelable: true });
+    target.dispatchEvent(e);
+    return e;
+  };
+
+  test("with NO overlay open, an installed guard cancels a move nothing can scroll", () => {
+    const dispose = installShellTouchGuard();
+    expect(overlayCount()).toBe(0);
+    expect(shellLockCount()).toBe(0);
+    expect(touchmove(makeEl()).defaultPrevented).toBe(true);
+    dispose();
   });
 
-  test("listener stays attached across nested pushes until last pop", () => {
+  test("disposing the guard stops cancelling", () => {
+    const dispose = installShellTouchGuard();
+    dispose();
+    expect(isListenerAttached()).toBe(false);
+    expect(touchmove(makeEl()).defaultPrevented).toBe(false);
+  });
+
+  test("an overlay no longer attaches it — the population counters drive the class only", () => {
     pushOverlay(makeEl());
-    pushOverlay(makeEl());
+    pushShellLock();
+    expect(document.documentElement.classList.contains(CLASS)).toBe(true);
+    expect(isListenerAttached()).toBe(false);
+    expect(touchmove(makeEl()).defaultPrevented).toBe(false);
+  });
+
+  test("two installs hold the guard until BOTH dispose; a double dispose cannot underflow", () => {
+    const first = installShellTouchGuard();
+    const second = installShellTouchGuard();
+    first();
+    first(); // a stale second call must not release the other holder
     expect(isListenerAttached()).toBe(true);
-    popOverlay(null);
-    expect(isListenerAttached()).toBe(true);
-    popOverlay(null);
+    expect(touchmove(makeEl()).defaultPrevented).toBe(true);
+    second();
     expect(isListenerAttached()).toBe(false);
   });
 });
@@ -339,14 +366,12 @@ describe("overlay escape-only registration (#1199)", () => {
       // …and the touch-lock axis is armed, which is the whole of #1772.
       expect(shellLockCount()).toBe(1);
       expect(document.documentElement.classList.contains(CLASS)).toBe(true);
-      expect(isListenerAttached()).toBe(true);
 
       expect(runTopmostOverlayEscape()).toBe(true);
       await flush();
       expect(open()).toBe(false);
       expect(overlayEscapeDepth()).toBe(0);
       expect(shellLockCount()).toBe(0);
-      expect(isListenerAttached()).toBe(false);
       dispose();
     });
   });
@@ -375,9 +400,9 @@ describe("overlay escape-only registration (#1199)", () => {
   // #1772 — the ESC registration and the shell lock share ONE lifecycle, so
   // the two structures cannot drift. Asserted on the SAME edges as above, on
   // the lock axis: a shell lock stranded by a close-then-teardown leaves the
-  // non-passive document `preventDefault` attached until a full page reload —
-  // i.e. an iOS scroll frozen for good, the exact hazard `createOverlayLock`'s
-  // deferred-push re-check exists to avoid on the covering side.
+  // `overlay-open` class, and its root `touch-action: none` chain, up until a
+  // full page reload — the same leak `createOverlayLock`'s deferred-push
+  // re-check exists to avoid on the covering side.
   test("the shell lock follows the same open / close / unmount edges", async () => {
     await createRoot(async (dispose) => {
       const [open, setOpen] = createSignal(true);
@@ -388,14 +413,12 @@ describe("overlay escape-only registration (#1199)", () => {
       setOpen(false);
       await flush();
       expect(shellLockCount()).toBe(0);
-      expect(isListenerAttached()).toBe(false);
 
       setOpen(true); // re-opened, then torn down while still open
       await flush();
       expect(shellLockCount()).toBe(1);
       dispose();
       expect(shellLockCount()).toBe(0);
-      expect(isListenerAttached()).toBe(false);
       expect(document.documentElement.classList.contains(CLASS)).toBe(false);
     });
   });
@@ -485,5 +508,74 @@ describe("handleTouchmove — preventDefault gating", () => {
     const e = fakeTouchEvent(el) as TouchEvent & { __prevented: boolean };
     handleTouchmove(e);
     expect(e.__prevented).toBe(true);
+  });
+  // issue 2465 — the consumers the v6 walk did not know about. Once the guard
+  // runs for the Shell's whole life it meets them all the time, not only under
+  // an open overlay, so each one is a drag it must leave to the platform.
+  describe("issue 2465 — native consumers stand the guard down", () => {
+    const sized = <T extends HTMLElement>(el: T, clientH: number, scrollH: number): T => {
+      Object.defineProperty(el, "scrollHeight", { value: scrollH, configurable: true });
+      Object.defineProperty(el, "clientHeight", { value: clientH, configurable: true });
+      return el;
+    };
+    // Hosted in a DIV so the shared afterEach above takes it away.
+    const hosted = <T extends HTMLElement>(el: T): T => {
+      makeEl().appendChild(el);
+      return el;
+    };
+    const prevented = (target: HTMLElement): boolean => {
+      const e = fakeTouchEvent(target) as TouchEvent & { __prevented: boolean };
+      handleTouchmove(e);
+      return e.__prevented;
+    };
+
+    afterEach(() => {
+      document.getSelection()?.removeAllRanges();
+    });
+
+    test("a textarea whose draft FITS is cancelled — the compose box of the report", () => {
+      const ta = hosted(sized(document.createElement("textarea"), 40, 40));
+      expect(prevented(ta)).toBe(true);
+    });
+
+    test("a textarea whose draft OVERFLOWS scrolls natively, whatever its computed overflow reads", () => {
+      const ta = hosted(sized(document.createElement("textarea"), 40, 200));
+      // The pre-state: nothing DECLARES an overflow on it, which is all the old
+      // walk ever looked at. A textarea scrolls its own overflow regardless.
+      expect(getComputedStyle(ta).overflowY).not.toMatch(/auto|scroll/);
+      expect(prevented(ta)).toBe(false);
+    });
+
+    test("a range input keeps its thumb drag", () => {
+      const range = hosted(document.createElement("input"));
+      range.type = "range";
+      expect(prevented(range)).toBe(false);
+    });
+
+    test("a text entry with a LIVE selection keeps the drag — it may be a handle (#1205)", () => {
+      const ta = hosted(sized(document.createElement("textarea"), 40, 40));
+      ta.value = "hello world";
+      ta.setSelectionRange(0, 5);
+      expect(ta.selectionStart).not.toBe(ta.selectionEnd);
+      expect(prevented(ta)).toBe(false);
+    });
+
+    test("a COLLAPSED caret is no selection — the short draft is still cancelled", () => {
+      const ta = hosted(sized(document.createElement("textarea"), 40, 40));
+      ta.value = "hello world";
+      ta.setSelectionRange(5, 5);
+      expect(ta.selectionStart).toBe(ta.selectionEnd);
+      expect(prevented(ta)).toBe(true);
+    });
+
+    test("a live selection in the document stands the guard down", () => {
+      const host = makeEl();
+      host.textContent = "a line of scrollback";
+      const range = document.createRange();
+      range.selectNodeContents(host);
+      document.getSelection()?.addRange(range);
+      expect(document.getSelection()?.isCollapsed).toBe(false);
+      expect(prevented(host)).toBe(false);
+    });
   });
 });
