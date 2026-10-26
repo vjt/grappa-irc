@@ -1366,7 +1366,7 @@ jobs:
         # dry-run's guarantee, and it stays a property of the credentials, not of
         # a flag someone could flip by mistake.
         if: ${{ github.event_name == 'push' || env.IMAGE_REPAIR == 'true' }}
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1564,7 +1564,7 @@ jobs:
         # of a public package would mostly work and would fail on the day the
         # package turns private or the unauthenticated rate limit bites, which
         # is a failure with nothing to do with the release under test.
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
