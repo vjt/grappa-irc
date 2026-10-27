@@ -1410,12 +1410,18 @@ never truncated: it loaded the whole window, however large.
 
 `mentions_bundle.messages` carries nothing from a conversation muted in
 `notification_prefs.muted_targets`: the same mutes, keyed the same way,
-that keep push notifications quiet. A DM is muted by its peer's key. A
-mute whose `until` has passed counts as lifted. The payload shape is
-unchanged, so `protocol_version` did not move. A server from before this
-fix includes muted conversations, and a client that filters them out
-itself gets the same result from both, so keeping the filter does no
-harm.
+that keep push notifications quiet. A row with `dm_with` is muted by its
+peer's key, and any other row by its `channel`'s. The mutes are read when
+the user comes back, not as each message arrived. So a mute whose `until`
+passed during the away counts as lifted, and its mentions are in the
+bundle.
+
+The payload shape is unchanged, so `protocol_version` did not move. A
+server from before this fix includes muted conversations. A client that
+filters them out itself, with the same keys, ends up with the same rows
+from either server, so keeping the filter does no harm. One difference
+remains: when every mention was muted, a new server sends no bundle,
+while an old one sends a bundle that the filter empties.
 
 ## 6. Rate limiting & flood protection (#630)
 

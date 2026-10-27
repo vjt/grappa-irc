@@ -5055,7 +5055,27 @@ none), and the key carries the network (#1038). The door reads prefs
 through `UserSettings.get_notification_prefs/1`, so an elapsed snooze
 counts as unmuted, as it does everywhere else. The broadcast gate reads
 the list after the mute: an away whose only mentions were muted
-announces nothing, the same as an away with no mention.
+announces nothing, the same as an away with no mention, unless it is also
+`truncated` (issue 2419), which still goes out with `messages: []`.
+
+**Going public made the predicate answer for every row.** The private
+step read the DM peer off `sender`. That is the peer only on an inbound
+row; on an outbound one it is us. It never mattered, because `own_row?/2`
+ran first. The code review of this branch caught it once the function was
+public: `muted?/3` now reads `dm_with`, which holds the peer in both
+directions (`Scrollback.dm_peer/4`) and is byte-identical to `sender` on
+every inbound row. So nothing that reached it before changes. cic's
+`conversationKey` in `pushTriggers.ts` still reads `sender`. It is private
+and asked only after `isOwnRow`, the same guard the server step had, so it
+was left alone and no cic bundle ships with this fix.
+
+**The mutes are read at the return, not as each row arrived.** The door
+reads prefs once, when the user comes back. Push read them per message.
+So the bundle is not a replay of what push suppressed. A snooze that ran
+out during the away lets its mentions into the bundle, although push kept
+them quiet. A mute set during the away keeps out mentions that push may
+already have delivered. For a "what did I miss" summary this is the
+reading that matches what the user wants silenced now.
 
 **The mute is applied at the door, not in `Mentions`.** Two reasons.
 `Mentions.mention_row?/3`, the row rule, answers "is this a mention",
@@ -5075,11 +5095,22 @@ too. Excluding muted conversations in SQL would need a second spelling of
 the rule (folded channel list plus a `dm_with` fold for DM peers), and
 that would be one more reading to drift from push.
 
+**Known edge, accepted:** a private NOTICE from a muted peer can still
+reach the bundle. When no query window is open for the peer,
+`EventRouter.open_query_or_server/2` files the NOTICE under `$server`
+with no `dm_with`, so the mute it is checked against is `$server`'s, not
+the peer's. That follows the per-window model, which stores the row
+where it is shown. Push never sees a NOTICE, so the two doors still
+agree. With the query open, the row is keyed on the peer and dropped.
+
 Tests: two `Session.Server` cases on the back-from-away door. The first
 covers four conversations, each mentioning the nick: unmuted, muted
 channel, muted DM peer, elapsed snooze. The bundle must carry the first
 and the last. The second is an all-muted away, which must not broadcast.
 Each assert was read red against a mutant of its own: the DM target
 keyed on `channel`, the gate reading the pre-mute list, and the reader
-not dropping elapsed mutes. No wire change: the bundle keeps its shape
-and loses rows, so `protocol_version` stays.
+not dropping elapsed mutes. `muted?/3` is also pinned on its own in
+`triggers_test.exs`: an outbound DM muted by its peer (red against the
+`sender` reading), a muted NOTICE, and a raw-cased peer that matches the
+folded key on its own network only. No wire change: the bundle keeps its
+shape and loses rows, so `protocol_version` stays.
