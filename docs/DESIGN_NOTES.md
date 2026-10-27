@@ -4735,3 +4735,78 @@ still scrolls under a real drag.
 **Not provable off-device:** that UIKit no longer pans the visual viewport.
 Chromium is not iOS and Playwright's webkit is not UIKit. That check is vjt's,
 on the phone, and the PR lists what to try.
+<!-- entry #2468 -->
+
+---
+
+## 2026-10-27 — #2468: the media viewer takes the file out — download, share, long-press
+
+A user on Azzurra could not forward a picture someone had posted: the
+viewer offered only "open in browser", and on iOS a long-press on the
+image did nothing. vjt's ruling on the issue (2026-10-25, three steps):
+a **Download** button next to "open in browser", a **Share** button next
+to Download (Web Share API, the file where `canShare({files})` allows it,
+the URL otherwise), and the native long-press menu on the image too.
+
+**Why the long-press menu was missing.** The touch policy in
+`default.css` puts `-webkit-touch-callout: none` on `html` under
+`(pointer: coarse)`. The property inherits, and the viewer is not built
+on `.modal-backdrop`, so issue 2394's modal re-enable never reached its
+`<img>`. The gestures were not the cause: the image's touchstart
+listeners are passive, and touchmove is claimed only by a two-finger
+pinch or a vertical dismiss drag, neither of which a still finger
+produces. The cure re-enables the callout on `.media-viewer-media--zoomable`
+alone: no `user-select` (an image has no text, and its menu asks for
+nothing else, so keepKeyboard's surface list does not change) and nothing
+on the header controls, where a callout would be a link preview over a
+tap target. Chrome on Android never had the kill (Blink does not
+implement the property). **Not device-verified on either platform**: no
+Playwright engine renders a native callout, so the rule is pinned at
+source in `touchSelectionPolicy.test.ts` and the menu is the device's
+call.
+
+**Download is the AudioMiniPlayer anchor**, `download=""`: it forces a
+save over the upload route's `inline` disposition and keeps the server's
+filename. **Same-origin only**, because the attribute is ignored on a
+cross-origin href and the anchor would then navigate out of the app (the
+#682 reason, here written as the gate rather than inferred). A cross-host
+image (#1240) keeps the long-press menu and a shared link instead. No
+`target`: a download is not a navigation. Whether iOS standalone honours
+the attribute is not device-verified; the mini-player ships the same
+anchor in the same PWA.
+
+**Share fetches the bytes on the tap, not on open.** For an image the
+element has just loaded them, so the request is a cache hit, while a
+prefetch on open would pull a whole video on every open for a share that
+is rarely made. The price is the user-activation window: `navigator.share`
+must run inside it and the fetch spends part of it. Several seconds on
+Chromium and WebKit is nothing to a cached image, but a large video on a
+slow link can outlast it, and the platform then refuses the share. The
+refusal is named on the status line, never eaten. A cross-origin href is
+**never fetched** (`connect-src` is not widened to `https:`; the 1889
+probe rule) and goes out as a link; a fetch that fails or answers non-2xx
+degrades to the link too. An AbortError is a dismissed sheet, or a viewer
+closed mid-fetch (`lib/mediaShare.ts` rethrows the abort so no sheet
+opens over a viewer that is gone), and says nothing. The check is
+`instanceof DOMException`, not `Error`: jsdom's `DOMException` does not
+descend from the realm's `Error` (measured, the first cut of the test
+failed on exactly that). The button renders only where `navigator.share`
+exists, so desktop Linux Chrome shows none.
+
+**On a confirmed-gone upload** both verbs go with "open in browser", for
+issue 1889's reason: each would hand the reader the route's JSON.
+
+**Two helpers moved so each question has one answer.** `isSameOrigin`
+from `mediaAvailability.ts` into `mediaLink.ts`: download, share and the
+1889 probe ask it for the same CSP reason. `canNativeShare` from
+`ShareSessionModal.tsx` into `platform.ts`: one feature-detect for both
+share doors. The copy status line became the header verbs' line
+(`.media-viewer-action-status`); a share that worked adds nothing to it,
+because the platform's sheet is its own confirmation.
+
+e2e: `issue2468-viewer-download-share.spec.ts` saves a real download
+and compares its bytes with what the route serves, records the share
+payload through a page stub (no engine renders a sheet) and checks the
+File's name, type and size against the served upload, and on the two
+phone projects checks every header control is wholly on screen.
+Client-only, no wire change: the cic bundle.
