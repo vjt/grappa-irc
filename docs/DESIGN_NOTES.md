@@ -5030,3 +5030,56 @@ focus is on `body` afterwards, rather than on the compose or the paperclip;
 the upload landing after the pick is a journey check only. Positive control:
 with the cure reverted the spec went red on the `body` poll, after its
 pre-state assertions, and the page snapshot showed the compose `[active]`.
+<!-- entry #2427 -->
+
+---
+
+## 2026-10-27 — #2427: the away mentions bundle honours the mute
+
+Lucy on Azzurra (and Sythos on Cordiale): muting a channel stopped its
+push notifications, but the "N messages in M channels" bundle shown on
+return from away still listed that channel's highlights. Every client
+consuming the bundle showed it, because the cause was on the server:
+`Mentions.aggregate_mentions/6` never read `muted_targets`, while
+`Push.Triggers.should_notify?/5` puts the mute ahead of every reason to
+notify, a mention included (#866 Q2).
+
+**One predicate, both doors.** The mute step was private to
+`Push.Triggers`; it is now the public `Push.Triggers.muted?/3`, and the
+bundle door (`Session.Server`'s `maybe_broadcast_mentions_bundle/1`)
+rejects every row it answers `true` for. Reusing the predicate, rather
+than restating it, is what keeps the two doors from reading the mute
+differently: the DM target is the PEER (an inbound DM is stored at
+`channel = <own nick>`, so a channel-keyed reading would mute every DM or
+none), and the key carries the network (#1038). The door reads prefs
+through `UserSettings.get_notification_prefs/1`, so an elapsed snooze
+counts as unmuted, as it does everywhere else. The broadcast gate reads
+the list after the mute: an away whose only mentions were muted
+announces nothing, the same as an away with no mention.
+
+**The mute is applied at the door, not in `Mentions`.** Two reasons.
+`Mentions.mention_row?/3`, the row rule, answers "is this a mention",
+and the per-window badge (`WindowCounts`) shares it: that badge keeps
+counting a muted window's mentions on purpose, and cic dims it (#1077).
+That settles the issue's open question about the per-window badge. It
+counts, deliberately, because a badge is something the user looks at,
+while the push and the bundle are pushed at them. The second reason is
+structural: `Mentions` cannot reach the mute anyway, because `Push`
+depends on `Mentions` and the reverse edge would be a Boundary cycle.
+
+**Known limit, accepted:** muted rows still count toward the bundle's
+20,000-row scan cap (issue 2419), because they are loaded before they are
+dropped. A muted channel busy enough to fill the cap during one away
+makes the bundle `truncated`, which it would have been without the mute
+too. Excluding muted conversations in SQL would need a second spelling of
+the rule (folded channel list plus a `dm_with` fold for DM peers), and
+that would be one more reading to drift from push.
+
+Tests: two `Session.Server` cases on the back-from-away door. The first
+covers four conversations, each mentioning the nick: unmuted, muted
+channel, muted DM peer, elapsed snooze. The bundle must carry the first
+and the last. The second is an all-muted away, which must not broadcast.
+Each assert was read red against a mutant of its own: the DM target
+keyed on `channel`, the gate reading the pre-mute list, and the reader
+not dropping elapsed mutes. No wire change: the bundle keeps its shape
+and loses rows, so `protocol_version` stays.

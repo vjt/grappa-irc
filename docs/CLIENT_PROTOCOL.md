@@ -1406,6 +1406,17 @@ must stop assuming it.
 **Absent** means the server predates v41; read it as `false`. Such a server
 never truncated: it loaded the whole window, however large.
 
+### 5k. The away bundle leaves muted conversations out (issue 2427)
+
+`mentions_bundle.messages` carries nothing from a conversation muted in
+`notification_prefs.muted_targets`: the same mutes, keyed the same way,
+that keep push notifications quiet. A DM is muted by its peer's key. A
+mute whose `until` has passed counts as lifted. The payload shape is
+unchanged, so `protocol_version` did not move. A server from before this
+fix includes muted conversations, and a client that filters them out
+itself gets the same result from both, so keeping the filter does no
+harm.
+
 ## 6. Rate limiting & flood protection (#630)
 
 grappa applies a **coarse per-subject inbound budget** across BOTH doors —
