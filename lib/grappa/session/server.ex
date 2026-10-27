@@ -9650,6 +9650,15 @@ defmodule Grappa.Session.Server do
   # Only runs for user sessions (not visitors); silently skips when
   # `started_at` is nil (present state — should not happen in normal flow
   # but guards against double-unset edge cases).
+  #
+  # issue 2427 — a muted conversation contributes nothing, through the push
+  # path's own `PushTriggers.muted?/3` and the prefs reader that drops elapsed
+  # snoozes. The mute is applied HERE, not inside `Mentions.aggregate_mentions/6`:
+  # "is this row a mention" is the row rule the per-window badge shares, and
+  # that badge deliberately keeps counting a muted window (cic dims it, #1077).
+  # The broadcast gate reads the list after the mute, so an away whose only
+  # mentions were muted announces nothing. Muted rows still count toward the
+  # scan cap: they are loaded before they are dropped.
   @spec maybe_broadcast_mentions_bundle(t()) :: :ok
   defp maybe_broadcast_mentions_bundle(%{subject: {:user, user_id}} = state)
        when is_binary(user_id) do
@@ -9661,8 +9670,9 @@ defmodule Grappa.Session.Server do
         away_start_ms = DateTime.to_unix(started_at, :millisecond)
         away_end_ms = System.system_time(:millisecond)
         watchlist = UserSettings.get_highlight_patterns({:user, user_id})
+        prefs = UserSettings.get_notification_prefs({:user, user_id})
 
-        %{messages: messages, truncated: truncated} =
+        %{messages: mentions, truncated: truncated} =
           Mentions.aggregate_mentions(
             user_id,
             state.network_id,
@@ -9671,6 +9681,8 @@ defmodule Grappa.Session.Server do
             watchlist,
             state.nick
           )
+
+        messages = Enum.reject(mentions, &PushTriggers.muted?(&1, state.network_slug, prefs))
 
         # issue 2419 — a truncated window broadcasts even with no match in
         # the part that was scanned: its older part may still hold mentions,

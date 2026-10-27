@@ -204,6 +204,12 @@ defmodule Grappa.Mentions do
   not a mention, your own line naming yourself is not one either, and the
   away bundle must agree with the badge that counted it. Both exclusions
   arrive through the shared `mention_row?/3`.
+
+  The per-conversation MUTE is not applied here (issue 2427). The away door
+  in `Session.Server` drops muted conversations on top of this result,
+  through `Push.Triggers.muted?/3`, the predicate the push path uses. A
+  mention in a muted room is still a mention: the per-window badge shares
+  the row rule above and keeps counting it on purpose (cic dims it, #1077).
   """
   @spec aggregate_mentions(
           Ecto.UUID.t(),

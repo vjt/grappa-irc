@@ -49,6 +49,10 @@ defmodule Grappa.Push.Triggers do
        `UserSettings.get_notification_prefs/1`, so this predicate stays pure
        and needs no clock.
 
+       The step is the public `muted?/3`, and the back-from-away mentions
+       bundle asks the same function (issue 2427): one mute, every door
+       that interrupts the user.
+
   Otherwise returns `true` for one of three reasons:
 
     1. **DM** (`Message.dm?/1` — the row carries `dm_with`; issue 1365):
@@ -471,6 +475,45 @@ defmodule Grappa.Push.Triggers do
     not muted_target?(network_slug, nick, prefs) and dm_from?(nick, prefs)
   end
 
+  @doc """
+  Returns `true` when the CONVERSATION `message` belongs to is muted on
+  `network_slug` in `prefs.muted_targets` (#866, network-keyed by #1038).
+  Pure.
+
+  The one per-conversation mute rule. `should_notify?/5` asks it for the
+  push and for the icon badge `Push.BadgeCount` folds through it, and the
+  back-from-away mentions bundle asks it too (issue 2427), so a muted room
+  cannot stay silent on one door and resurface on another.
+
+  The TARGET is the conversation, NOT the row's `channel` field. An inbound
+  DM is persisted with `channel = <own nick at receipt>`, so keying on
+  `channel` would make one "mute vjt" entry silence every DM the operator
+  ever receives, while "mute alice" silenced nothing. So: the channel for a
+  channel row, the PEER for a DM.
+
+  #1038 — the target alone is not the key. `Identifier.channel_key/2`
+  composes it with the network the row arrived on, because the same channel
+  name (and the same nick) on two networks is two conversations. That
+  builder applies the same `canonical_target/1` fold `UserSettings` applies
+  at write, so the string compared here is byte-identical to the one stored.
+
+  A stored BARE key can never match: it has no separator, so no composite
+  this function builds can equal it. That is the intended failure direction
+  — a mute the migration missed goes LOUD, it does not silence every
+  network the way the pre-#1038 key did.
+
+  `until` is deliberately not consulted. Expiry belongs to the READER
+  (`UserSettings.get_notification_prefs/1`, Q3), which is what keeps this
+  predicate pure and the shared truth-table free of a `now` column — and
+  why `prefs` must come from that reader, never from the raw column.
+  """
+  @spec muted?(Message.t(), network_slug :: String.t(), prefs()) :: boolean()
+  def muted?(%Message{channel: channel, sender: sender} = message, network_slug, prefs)
+      when is_binary(network_slug) and is_map(prefs) do
+    is_binary(channel) and is_binary(sender) and
+      muted_target?(network_slug, if(Message.dm?(message), do: sender, else: channel), prefs)
+  end
+
   # ---------------------------------------------------------------------------
   # Private
   # ---------------------------------------------------------------------------
@@ -574,35 +617,6 @@ defmodule Grappa.Push.Triggers do
   end
 
   defp own_row?(_, _), do: false
-
-  # #866 — is this row's CONVERSATION muted? Network-keyed since #1038.
-  #
-  # The TARGET is the conversation, NOT the row's `channel` field. An inbound
-  # DM is persisted with `channel = <own nick at receipt>`, so keying on `channel` would
-  # make one "mute vjt" entry silence every DM the operator ever receives,
-  # while "mute alice" silenced nothing. So: the channel for a channel row,
-  # the PEER for a DM.
-  #
-  # #1038 — the target alone is not the key. `Identifier.channel_key/2`
-  # composes it with the network the row arrived on, because the same channel
-  # name (and the same nick) on two networks is two conversations. That
-  # builder applies the same `canonical_target/1` fold `UserSettings` applies
-  # at write, so the string compared here is byte-identical to the one stored.
-  #
-  # A stored BARE key can never match: it has no separator, so no composite
-  # this function builds can equal it. That is the intended failure direction
-  # — a mute the migration missed goes LOUD, it does not silence every
-  # network the way the pre-#1038 key did.
-  #
-  # `until` is deliberately not consulted. Expiry belongs to the READER
-  # (`UserSettings.get_notification_prefs/1`, Q3), which is what keeps this
-  # predicate pure and the shared truth-table free of a `now` column.
-  defp muted?(%Message{channel: channel, sender: sender} = message, network_slug, prefs)
-       when is_binary(channel) and is_binary(sender) and is_binary(network_slug) do
-    muted_target?(network_slug, if(Message.dm?(message), do: sender, else: channel), prefs)
-  end
-
-  defp muted?(_, _, _), do: false
 
   # The mute on one conversation — a channel, or a peer's nick for a DM —
   # keyed per network. Shared by the row path and the encrypted path.
