@@ -1615,9 +1615,9 @@ describe("ComposeBox", () => {
 
     // issue 2467 — on iOS the file panel takes the keyboard without blurring
     // the compose, and keepKeyboard releases the focus on the click that opens
-    // it. That click is `pickerInput.click()`; a `showPicker()` would open the
-    // same panel with NO click event and quietly bring the stale focus back,
-    // so the door is pinned here, from the compose side.
+    // it. The spy test above pins that the paperclip goes through
+    // `pickerInput.click()`; this one runs the real listener through the real
+    // paperclip, so the release is shown on the compose itself.
     it("iOS: tapping the paperclip with the compose focused leaves the compose unfocused — 2467", () => {
       const ua = vi
         .spyOn(navigator, "userAgent", "get")

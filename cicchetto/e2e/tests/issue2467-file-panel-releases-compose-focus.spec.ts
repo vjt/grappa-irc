@@ -5,15 +5,16 @@
 // compose row came back up under the keyboard's accessory bar. WebKit's file
 // panel resigns the web view's first responder when its attach menu shows,
 // without blurring the element, and keepKeyboard's mousedown arm had held the
-// compose focused across the paperclip tap. So the next tap on the compose was
-// a REFOCUS of an already-focused element, not the fresh focus every tap
-// before the upload had been. What a page can do about it is release the focus
-// on the click that opens the panel, and that release is what this measures,
-// on a real engine, together with the panel still opening after it.
+// compose focused across the paperclip tap. So the compose was left focused
+// with no keyboard under it, and the keyboard then came back without the fresh
+// focus every earlier appearance had started from. What a page can do about it
+// is release the focus on the click that opens the panel, and that release is
+// what this measures, on a real engine, together with the panel still opening
+// after it.
 //
 // 🔴 WHAT THIS SPEC IS NOT: it does not see the accessory bar, the keyboard or
-// UIKit's refocus path. No project here has them: chromium is not iOS, and
-// Playwright's webkit is not UIKit. That half is checked on the phone.
+// how the keyboard comes back. No project here has them: chromium is not iOS,
+// and Playwright's webkit is not UIKit. That half is checked on the phone.
 //
 // Why `chromium-pixel-touch` with an iPhone user agent, and not
 // `webkit-iphone-15`: the release sits behind isIos(), and the stale focus
@@ -26,9 +27,10 @@
 // did not take reads as red, not as a pass.
 
 import { TINY_PNG_HEX } from "../fixtures/bytes";
-import { composeTextarea, loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
+import { composeTextarea, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
+import { mediaScrollbackRow } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
@@ -70,14 +72,13 @@ test("@touch issue 2467 — tapping the paperclip opens the file panel and leave
     })
     .toBe(true);
 
-  // The rest of the reported journey: the upload lands, and a tap on the
-  // compose takes the focus again.
+  // The pick still reaches the upload after the release: the chooser's files
+  // arrive on the input's `change` and the row lands. A journey check, not
+  // evidence for the release itself.
   await chooser.setFiles({
     name: "issue2467.png",
     mimeType: "image/png",
     buffer: Buffer.from(TINY_PNG_HEX, "hex"),
   });
-  await expect(scrollbackLine(page, "privmsg", "📸").first()).toBeVisible({ timeout: 15_000 });
-  await ta.tap();
-  await expect(ta).toBeFocused();
+  await mediaScrollbackRow(page, "📸", ".png");
 });

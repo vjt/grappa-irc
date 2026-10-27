@@ -355,11 +355,10 @@ describe("keepKeyboard — installKeyboardPreserve", () => {
 
   // issue 2467 — the native file panel takes the keyboard on iOS, so it must
   // not leave a focus behind. WebKit's file panel resigns the web view's first
-  // responder once its attach menu is up (and again when it presents the photo
-  // picker) WITHOUT blurring the element, and the mousedown arm above is what
-  // had held the compose focused across the paperclip tap. The compose stayed
-  // `document.activeElement` with no keyboard under it, and the next tap on it
-  // reached WebKit as a refocus of the same element instead of a fresh focus.
+  // responder once its attach menu is up WITHOUT blurring the element, and the
+  // mousedown arm above is what had held the compose focused across the
+  // paperclip tap. The compose stayed `document.activeElement` with no keyboard
+  // under it, and the keyboard came back later without a fresh focus.
   describe("issue 2467 — a file input's activation releases the text-entry focus", () => {
     let compose: HTMLTextAreaElement;
     let picker: HTMLInputElement;

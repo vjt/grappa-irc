@@ -258,14 +258,15 @@ function handleMouseDown(e: MouseEvent): void {
 
 // issue 2467: the file panel takes the keyboard, so a file input's activation
 // lets the focus go with it. WebKit's file panel resigns the web view's first
-// responder as soon as its attach menu is up, and again when it presents the
-// photo picker (WKFileUploadPanel.mm), but it never blurs the element. The
-// mousedown arm above had held the compose focused across the paperclip tap,
-// so the compose stayed `document.activeElement` with no keyboard under it.
-// The next tap on it then reached WebKit as a refocus of an already-focused
-// element instead of a fresh focus, and after an upload the compose row came
-// back up under the keyboard's accessory bar. Blurring here makes that tap a
-// fresh focus again, the same as before any upload.
+// responder as soon as its attach menu is up (WKFileUploadPanel.mm), but it
+// never blurs the element. The mousedown arm above had held the compose
+// focused across the paperclip tap, so the compose stayed
+// `document.activeElement` with no keyboard under it. The keyboard then came
+// back, when the panel was dismissed or on the next tap, with no new focus:
+// WebKit does not report a focus on the element it already holds. Every
+// earlier keyboard had started from one, and after an upload the compose row
+// came back up under the keyboard's accessory bar. Blurring here makes the
+// next tap a fresh focus again, the same as before any upload.
 //
 // The keyboard itself cannot be kept across the attach menu: that resign is
 // unconditional in WebKit and nothing a page can cancel.
