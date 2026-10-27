@@ -4938,3 +4938,95 @@ event narrows differently. `min_protocol_version` stays 1.
 - Not run locally: shottino's `test_commands`, which pins
   `WIRE_PROTOCOL_VERSION` to `lib/grappa/protocol.ex`. It does not build on
   the darwin host (`SOCK_CLOEXEC`, `mkdtemp`); both ends move to 51 here.
+<!-- entry #2467 -->
+
+---
+
+## 2026-10-27 — issue 2467: the click that opens the file panel lets go of the compose focus
+
+Reported by vjt with one screenshot (iPhone, `#grappa`, keyboard up): after a
+file upload the compose row sat under the keyboard's accessory bar (the
+floating `^` `v` `✓`), visible only at its two edges. vjt sees the bar only
+after an upload. A second report rides the same issue: tapping the paperclip
+closes the keyboard, and vjt expected it to stay up.
+
+**What the WebKit source says (read on WebKit main, not measured on a
+device).**
+
+- `WKFileUploadPanel` resigns the web view's first responder once its attach
+  menu has finished showing (`willDisplayMenuForConfiguration`). The compose's
+  `accept` includes images, so the panel shows that menu. Nothing a page
+  controls gates the resign, so the second report cannot be fixed from cic:
+  the keyboard goes whenever the attach menu shows. (The panel's other resign,
+  in `_presentFullscreenViewController`, is skipped for pickers opened from
+  the menu, so it does not apply here.)
+- Resigning first responder does not blur the element.
+  `endEditingAndUpdateFocusAppearanceWithReason` blurs only on an explicit
+  keyboard dismissal or on Done, so the DOM focus stays where it was.
+- When the panel is dismissed, `fileUploadPanelDidDismiss` makes the web view
+  first responder again if nothing else is, which can bring the keyboard back
+  for the element still focused, with no tap.
+- A tap on the element that is already focused sends no new focus to the UI
+  process: `WebPage::elementDidFocus` returns early while
+  `m_isShowingInputViewForFocusedElement` holds, and a resign does not clear
+  it. So no new input session is created and the host's
+  `willStartInputSession` is not called. A fresh focus does both.
+- On an iPhone a textarea always asks for the accessory bar
+  (`_elementTypeRequiresAccessoryView`), and the host app may suppress it per
+  input session (`accessoryViewShouldNotShow`). What Safari decides there is
+  closed source, so why the bar is absent before an upload cannot be read.
+
+**What cic did.** keepKeyboard's mousedown arm cancels the focus shift of a tap
+on any control while a text entry is focused, the paperclip included. On iOS
+the compose therefore stayed focused across the paperclip tap, the panel took
+the keyboard, and the compose was left focused with no keyboard under it.
+After the upload the keyboard came back either through the panel's dismissal
+or through a tap WebKit treats as no new focus. Before the upload, every
+keyboard had started from a fresh focus.
+
+**Decision.** keepKeyboard gains a capture `click` listener: on iOS, a click on
+an `<input type="file">` blurs the focused text entry. The panel takes the
+keyboard anyway, so nothing visible is lost. What goes is the
+focused-without-keyboard state: nothing is focused when the panel closes, and
+the next tap on the compose is a fresh focus, as before any upload. A menu the
+user cancels is covered as well, because the blur comes before the menu
+shows; a blur on the input's `change` would miss it, since no `change` fires
+on a cancel.
+
+- It lives in keepKeyboard, not in ComposeBox, because that module made the
+  stale focus and owns the keyboard policy. The #508 `<select>` carve-out
+  reasons the same way: a native picker that takes the keyboard gets the
+  focus shift.
+- It listens for the `click` on the input, not the `mousedown` on the proxy,
+  because that click is the one event every door to the panel fires:
+  ComposeBox's `pickerInput.click()`, the theme editor's `<label>`, the
+  settings avatar input. `showPicker()` would open the panel without a click
+  event; the ComposeBox spy test pins the paperclip to `.click()`.
+- iOS only, like the rest of the module: keepKeyboard holds no focus anywhere
+  else, and the panel and the bar are WebKit-iOS's.
+
+**Price, accepted.** The keyboard now drops at the tap, from the blur, rather
+than once the menu has appeared. It no longer comes back by itself when the
+panel closes; a tap on the compose brings it. On an iPad with a hardware
+keyboard the compose is not focused after a pick, and the next keystroke goes
+through Shell's off-compose printable-key handler.
+
+**The causal link is inferred.** Which state change brings the bar over the
+compose row is closed-source UIKit or Safari behaviour. What the source shows
+is that the keyboard's return after the panel skips the focus path every
+earlier keyboard took, and that the blur restores that path. If the bar still
+covers the compose after this ships, the next suspect is the viewport height
+cic writes, not the focus path. The device checks are in the PR.
+
+**Tests.** Unit: the release on the picker's programmatic click and on a
+label's forwarded click, a control that opens no panel keeping the focus,
+desktop untouched, the click not cancelled, and the release through the real
+paperclip in ComposeBox. Four mutants (no iOS gate, no file-type check, a
+cancelled click, no install), each killed by its own test. The e2e
+`issue2467-file-panel-releases-compose-focus` runs on `chromium-pixel-touch`
+with an iPhone user agent, because a `tap()` on `webkit-iphone-15` fires no
+mousedown and no click (#1831). It asserts that the panel opens and that the
+focus is on `body` afterwards, rather than on the compose or the paperclip;
+the upload landing after the pick is a journey check only. Positive control:
+with the cure reverted the spec went red on the `body` poll, after its
+pre-state assertions, and the page snapshot showed the compose `[active]`.
