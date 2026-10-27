@@ -294,7 +294,16 @@ defmodule Grappa.Networks.Credentials.AdminWire do
   @spec index_payload([t()]) :: index_payload()
   def index_payload(rows) when is_list(rows), do: %{credentials: rows}
 
+  @doc """
+  The `session_error` token of a spawn refusal: the tag, with any payload
+  dropped (`{:network_circuit_open, 29}` → `:network_circuit_open`).
+
+  Public since #2474 because the `connection_state_reason` written when a
+  restart is refused names the refusal with the same token, so the operator
+  console and the user's network row say the same word — and cic renders
+  that reason verbatim, where an inspected Elixir term has no business.
+  """
   @spec error_tag(spawn_error() | {spawn_error(), term()}) :: spawn_error()
-  defp error_tag({tag, _}) when is_atom(tag), do: tag
-  defp error_tag(tag) when is_atom(tag), do: tag
+  def error_tag({tag, _}) when is_atom(tag), do: tag
+  def error_tag(tag) when is_atom(tag), do: tag
 end

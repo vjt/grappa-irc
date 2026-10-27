@@ -1120,12 +1120,13 @@ defmodule Grappa.Networks do
   not bring back. The automatic twin of `disconnect/2`.
 
   Reached when a server-side restart (an edit that has to re-register
-  upstream) got its teardown done and its respawn refused: admission cap,
-  open circuit, no enabled server. Before this verb the row went on reading
-  `:connected` with no `Session.Server` behind it, so the UI said CONNECTED,
-  every `POST /messages` 404'd, and nothing walked it back short of a manual
-  toggle or a reboot. `:parked` is the truthful rest (down, and staying down
-  until somebody connects it) and it is where the UI offers that connect.
+  upstream) got its teardown done and its respawn refused: an admission cap,
+  an open circuit, a start that failed. Before this verb the row went on
+  reading `:connected` with no `Session.Server` behind it, so the UI said
+  CONNECTED, every `POST /messages` 404'd, and nothing walked it back short
+  of a manual toggle or a reboot. `:parked` is the truthful rest (down, and
+  staying down until somebody connects it) and it is where the UI offers
+  that connect.
 
   `:connected | :failing → :parked`, writing `reason` and broadcasting the
   transition. A session still registered is stopped first (`QUIT
@@ -1154,7 +1155,7 @@ defmodule Grappa.Networks do
   def mark_parked(%Credential{connection_state: state} = cred, reason)
       when state in [:parked, :failed] and is_binary(reason) do
     :ok = Session.stop_session(subject_of(cred), cred.network_id, reason)
-    {:ok, cred}
+    {:ok, preload_credential_assocs(cred)}
   end
 
   # REV-B / H6: see `connect/1` fallthrough rationale.

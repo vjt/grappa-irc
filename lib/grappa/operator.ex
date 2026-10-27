@@ -117,8 +117,14 @@ defmodule Grappa.Operator do
   share it, because they share the spawn core. Each arm is documented on
   `connect_credential/1`.
   """
-  @type spawn_error ::
-          :resolve_failed | :not_found | Admission.capacity_error() | {:start_failed, term()}
+  @type spawn_error :: :resolve_failed | restart_error()
+
+  @typedoc """
+  Why `update_credential/3`'s restart did not come back. `spawn_error/0`
+  minus `:resolve_failed`: with no plan to restart INTO, the running session
+  is left alone rather than stopped.
+  """
+  @type restart_error :: :not_found | Admission.capacity_error() | {:start_failed, term()}
 
   @doc """
   Synchronously terminate the visitor's `Session.Server` (if any) and
@@ -907,16 +913,25 @@ defmodule Grappa.Operator do
   the admission → spawn core boot uses, so an edit and a bind cannot drift.
   """
   @spec update_credential(User.t(), Networks.Network.t(), map()) ::
-          {:ok, Credential.t(), :left_alone | :spawned | {:stopped, spawn_error()}}
+          {:ok, Credential.t(), :left_alone | :spawned | {:stopped, restart_error()}}
           | {:error, :not_found | Ecto.Changeset.t()}
   def update_credential(%User{} = user, %Networks.Network{} = network, attrs) when is_map(attrs) do
     with {:ok, updated} <- Credentials.update_credential(user, network, attrs) do
-      if auth_touching?(attrs) and Session.whereis({:user, user.id}, network.id) != nil do
-        restart_credential(updated)
-      else
-        {:ok, updated, :left_alone}
-      end
+      if restartable?(updated, attrs),
+        do: restart_credential(updated),
+        else: {:ok, updated, :left_alone}
     end
+  end
+
+  # An auth-touching change, against a session the row says should be up AND
+  # that is. A `:parked` / `:failed` row with a live pid is the divergence a
+  # connect or a disconnect in flight opens (the U-0 window): restarting
+  # through it could strand a session behind a row that says down, or park
+  # one a connect is about to promote.
+  @spec restartable?(Credential.t(), map()) :: boolean()
+  defp restartable?(%Credential{connection_state: state, user_id: user_id, network_id: network_id}, attrs) do
+    auth_touching?(attrs) and state in [:connected, :failing] and
+      Session.whereis({:user, user_id}, network_id) != nil
   end
 
   # The fields spent at registration and never again. The rest either reach
@@ -929,15 +944,39 @@ defmodule Grappa.Operator do
   end
 
   @spec restart_credential(Credential.t()) ::
-          {:ok, Credential.t(), :spawned | {:stopped, spawn_error()}}
-  defp restart_credential(%Credential{user_id: user_id, network_id: network_id} = credential) do
-    with {:ok, plan} <- resolve_user_plan(credential),
-         :ok <- bounce_user({:user, user_id}, network_id, plan) do
-      {:ok, credential, :spawned}
-    else
-      # Unbound mid-restart (`Session.Server.init/1` → `:ignore`): there is
-      # no row left to park.
+          {:ok, Credential.t(), :left_alone | :spawned | {:stopped, restart_error()}}
+  defp restart_credential(%Credential{} = credential) do
+    case resolve_user_plan(credential) do
+      {:ok, plan} ->
+        bounce_credential(credential, plan)
+
+      # Nothing to restart INTO (no enabled server, or the user row is gone):
+      # the running session is left as it is, as the identity door leaves it,
+      # rather than torn down for a successor that cannot come.
+      # `resolve_user_plan/1` has logged why.
+      {:error, :resolve_failed} ->
+        {:ok, credential, :left_alone}
+    end
+  end
+
+  @spec bounce_credential(Credential.t(), Session.start_opts()) ::
+          {:ok, Credential.t(), :spawned | {:stopped, restart_error()}}
+  defp bounce_credential(%Credential{user_id: user_id, network_id: network_id} = credential, plan) do
+    case bounce_user({:user, user_id}, network_id, plan) do
+      :ok ->
+        {:ok, credential, :spawned}
+
+      # `Session.Server.init/1` answered `:ignore`: the credential was unbound
+      # mid-restart, or a static-mapping hold refused the egress and is
+      # marking the row `:failed` itself (#543). Either way the row is not
+      # this verb's to park, and parking it would race that `:failed` write
+      # (`mark_failed/2` refuses a `:parked` row).
       {:error, :not_found} ->
+        Logger.warning(
+          "admin credential update: restart ignored by the session " <>
+            "(user_id=#{user_id} network_id=#{network_id})"
+        )
+
         {:ok, credential, {:stopped, :not_found}}
 
       {:error, reason} ->
@@ -947,7 +986,10 @@ defmodule Grappa.Operator do
         )
 
         {:ok, parked} =
-          Networks.mark_parked(credential, "credentials changed; restart refused: #{inspect(reason)}")
+          Networks.mark_parked(
+            credential,
+            "credentials changed; restart refused: #{Credentials.AdminWire.error_tag(reason)}"
+          )
 
         {:ok, parked, {:stopped, reason}}
     end

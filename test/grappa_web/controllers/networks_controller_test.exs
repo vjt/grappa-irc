@@ -943,7 +943,7 @@ defmodule GrappaWeb.NetworksControllerTest do
       {:ok, cred} = Credentials.get_credential(vjt, network)
       assert cred.realname == "Real Name"
       assert cred.connection_state == :parked
-      assert cred.connection_state_reason =~ "network_circuit_open"
+      assert cred.connection_state_reason == "identity changed; restart refused: network_circuit_open"
     end
 
     test "404 when the caller holds no credential on the network (authz)", %{conn: conn} do

@@ -147,7 +147,13 @@ defmodule Grappa.SpawnOrchestrator do
   `stop_session/3` + a context reconnect helper; F6 promotes the pair to
   this shared verb (retiring the #152-deferred user-side reconnect
   wrapper: a future registered-user cic self-service editor thin-wraps
-  THIS verb instead of re-inlining the pair).
+  THIS verb instead of re-inlining the pair). That editor is now
+  `GrappaWeb.NetworksController`'s `/identity` + `/password` doors, and
+  the admin credential edit (`Grappa.Operator.update_credential/3`, #2474)
+  is the second caller: a password or auth method is spent at
+  registration too. Both park the row when the respawn is refused
+  (`Grappa.Networks.mark_parked/2`) — this verb stops the session before
+  it asks admission, so a refusal leaves nothing running.
 
   **`reconnect/5` is NOT `spawn/4` with teardown bolted on** — they
   encode two DISTINCT intents (CLAUDE.md "reuse the verbs, not the

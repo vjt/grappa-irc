@@ -850,9 +850,17 @@ defmodule GrappaWeb.NetworksController do
         {:ok, _, _} ->
           credential
 
-        # Unbound mid-bounce (`Session.Server.init/1` → `:ignore`): no row
-        # left to park.
+        # `Session.Server.init/1` answered `:ignore`: the credential was
+        # unbound mid-bounce, or a static-mapping hold refused the egress and
+        # is marking the row `:failed` itself (#543). Not this door's row to
+        # park; parking it would race that `:failed` write.
         {:ok, :ignored} ->
+          Logger.warning(
+            "PATCH /identity: reconnect ignored by the session (identity persisted) " <>
+              inspect(session_subject),
+            network_id: network_id
+          )
+
           credential
 
         {:error, reason} ->
@@ -864,7 +872,10 @@ defmodule GrappaWeb.NetworksController do
           )
 
           {:ok, parked} =
-            Networks.mark_parked(credential, "identity changed; restart refused: #{inspect(reason)}")
+            Networks.mark_parked(
+              credential,
+              "identity changed; restart refused: #{Credentials.AdminWire.error_tag(reason)}"
+            )
 
           parked
       end

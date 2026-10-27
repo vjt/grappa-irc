@@ -881,6 +881,7 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
       assert is_pid(Session.whereis({:user, target_user.id}, network.id))
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(target_user.name))
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
       :ok = AdmissionStateHelpers.open_circuit!(network.id)
 
       {body, log} =
@@ -894,10 +895,13 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
       # The one wrong option the issue names: `:connected` with no pid.
       assert body["connection_state"] == "parked"
 
-      assert {:ok, %Credential{connection_state: :parked, connection_state_reason: reason}} =
-               Credentials.get_credential(target_user, network)
-
-      assert reason =~ "network_circuit_open"
+      # The token the console shows, never an inspected Elixir term: cic
+      # renders this reason on the user's network row verbatim.
+      assert {:ok,
+              %Credential{
+                connection_state: :parked,
+                connection_state_reason: "credentials changed; restart refused: network_circuit_open"
+              }} = Credentials.get_credential(target_user, network)
 
       slug = network.slug
 
@@ -909,6 +913,14 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
                          to: :parked,
                          network_slug: ^slug
                        }
+                     },
+                     1_000
+
+      user_id = target_user.id
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       payload: %{kind: :credential_updated, user_id: ^user_id, session_action: :stopped}
                      },
                      1_000
 

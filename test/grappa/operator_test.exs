@@ -14,6 +14,7 @@ defmodule Grappa.OperatorTest do
   use Grappa.DataCase, async: false
 
   import ExUnit.CaptureIO
+  import ExUnit.CaptureLog
   import Grappa.AuthFixtures
 
   alias Grappa.Accounts.User
@@ -754,6 +755,42 @@ defmodule Grappa.OperatorTest do
       assert is_pid(new_pid)
       assert new_pid != old_pid
       assert reload_credential(cred).connection_state == :failing
+    end
+
+    test "nothing to restart INTO leaves the running session alone" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, cred} = user_with_credential(port, %{auth_method: :auto, password: "old-pw"})
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      # The only server disabled under a live session: no plan resolves, so a
+      # stop would only buy a successor that cannot come.
+      [endpoint] = Grappa.Networks.Servers.list_servers(network)
+      {:ok, _} = Grappa.Networks.Servers.update_server(endpoint, %{enabled: false})
+
+      {result, log} = with_log(fn -> Operator.update_credential(user, network, %{password: "rotated"}) end)
+
+      assert {:ok, _, :left_alone} = result
+      assert log =~ "session plan resolve failed"
+      assert Session.whereis({:user, user.id}, network.id) == pid
+      assert reload_credential(cred).connection_state == :connected
+    end
+
+    test "a live session behind a row that says down is not restarted" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, cred} = user_with_credential(port, %{auth_method: :auto, password: "old-pw"})
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      # The U-0 window of a connect in flight: the session is up, the row is
+      # still `:parked`. Restarting through it could strand a session behind a
+      # row that says down, or park one the connect is about to promote.
+      cred |> Ecto.Changeset.change(connection_state: :parked) |> Repo.update!()
+
+      assert {:ok, %Credential{connection_state: :parked}, :left_alone} =
+               Operator.update_credential(user, network, %{password: "rotated"})
+
+      assert Session.whereis({:user, user.id}, network.id) == pid
     end
   end
 

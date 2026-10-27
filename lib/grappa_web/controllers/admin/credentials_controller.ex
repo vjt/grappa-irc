@@ -110,8 +110,8 @@ defmodule GrappaWeb.Admin.CredentialsController do
   `autojoin_channels`, `nick`, `sasl_user`, `realname`, `auth_method`,
   `auth_command_template`, `password` (admin-panel bucket 3 — extended
   from the M-6 narrow whitelist to support password rotation +
-  auth_method swap with fresh password, both through the
-  session-lifecycle wrapper).
+  auth_method swap with fresh password). Both restart a live session
+  through `Operator.update_credential/3` (#2474).
   """
   @spec update(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :not_found | :bad_request | Ecto.Changeset.t()}

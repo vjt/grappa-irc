@@ -324,6 +324,21 @@ defmodule Grappa.Networks.ConnectionStateTest do
 
       refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :connection_state_changed}}, 100
     end
+
+    test "idempotent arm still stops a session the row disagrees with" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, fresh} = user_with_credential(port, %{})
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      ref = Process.monitor(pid)
+      cred = set_state(fresh, :parked, "user wants out")
+
+      assert {:ok, %Credential{connection_state: :parked}} = Networks.mark_parked(cred, "restart refused")
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 2_000
+      assert Session.whereis({:user, user.id}, network.id) == nil
+      assert reload_credential(cred).connection_state_reason == "user wants out"
+    end
   end
 
   # #1675 — the non-terminal half of the pair. `mark_failed/2` above stops
