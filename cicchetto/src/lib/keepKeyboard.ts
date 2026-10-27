@@ -256,11 +256,37 @@ function handleMouseDown(e: MouseEvent): void {
   e.preventDefault();
 }
 
+// issue 2467: the file panel takes the keyboard, so a file input's activation
+// lets the focus go with it. WebKit's file panel resigns the web view's first
+// responder as soon as its attach menu is up, and again when it presents the
+// photo picker (WKFileUploadPanel.mm), but it never blurs the element. The
+// mousedown arm above had held the compose focused across the paperclip tap,
+// so the compose stayed `document.activeElement` with no keyboard under it.
+// The next tap on it then reached WebKit as a refocus of an already-focused
+// element instead of a fresh focus, and after an upload the compose row came
+// back up under the keyboard's accessory bar. Blurring here makes that tap a
+// fresh focus again, the same as before any upload.
+//
+// The keyboard itself cannot be kept across the attach menu: that resign is
+// unconditional in WebKit and nothing a page can cancel.
+//
+// `click`, not `mousedown`: the tap lands on a proxy (ComposeBox's paperclip,
+// a <label>), and the click on the input itself is the one event every door
+// to the panel goes through: the programmatic `.click()`, a label's forwarded
+// click, a tap on a visible file input. `showPicker()` would bypass it.
+function handleClick(e: MouseEvent): void {
+  if (!isIos()) return;
+  if (!(e.target instanceof HTMLInputElement) || e.target.type !== "file") return;
+  const active = document.activeElement;
+  if (isTextEntry(active)) active.blur();
+}
+
 export function installKeyboardPreserve(
   target: Document | undefined = typeof document !== "undefined" ? document : undefined,
 ): void {
   if (!target) return;
   target.addEventListener("mousedown", handleMouseDown, { capture: true });
+  target.addEventListener("click", handleClick, { capture: true });
   // Passive: we only READ the timestamp, never preventDefault a touch — that
   // would block scroll/pan and the native selection gesture (the same reason
   // the header hooks mousedown, not pointerdown). The scrollback's OWN touch
