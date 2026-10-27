@@ -4876,10 +4876,28 @@ whose respawn does not happen leaves `:connected` with nothing behind it.
   `reconnect/5` under a new admission flow, `:admin_credential_update`. On
   success the row is not written, so a `:failing` row stays `:failing` until
   the successor's 001 (#1675).
+- The restart is gated on the ROW as well as the pid: only a `:connected |
+  :failing` row with a live session is bounced. A `:parked` / `:failed` row
+  with a pid behind it is the divergence a connect or disconnect in flight
+  opens (the U-0 window); restarting through it could strand a session
+  behind a row that says down, or park one a connect is about to promote.
+- No plan to restart INTO (no enabled server, user row gone) answers
+  `:left_alone` and touches nothing: the running session keeps running, as
+  the identity door leaves it. Tearing it down for a successor that cannot
+  come would manufacture the very outage this fixes.
 - A refused restart PARKS. `Networks.mark_parked/2` is the automatic twin of
   `disconnect/2`: it stops any session still registered, moves `:connected |
   :failing → :parked`, broadcasts, and KEEPS the persisted away (GH #417: an
-  automatic park). Idempotent on `:parked` and `:failed`.
+  automatic park). Idempotent on `:parked` and `:failed`, but the stop still
+  runs there: column and pid are separate truths. The reason reads
+  `credentials changed; restart refused: <token>`, the same token the
+  console's `session_error` carries (`AdminWire.error_tag/1`), never an
+  `inspect/1` of the term.
+- `:ignored` from the spawn (`Session.Server.init/1` answering `:ignore`)
+  is NOT a refusal and does NOT park: it means the credential was unbound
+  mid-restart, or a static-mapping hold (#543) refused the egress and is
+  writing `:failed` itself, which a `:parked` row would make
+  `mark_failed/2` refuse. Reported as `{:stopped, :not_found}` and logged.
 - The identity/password door's bounce parks on a refusal through the same
   verb, and its reply renders the parked row.
 - `update_credential_with_session_lifecycle/3` is deleted (its matrix tests
@@ -4906,6 +4924,14 @@ event narrows differently. `min_protocol_version` stays 1.
   `sasl_user` is spent at registration too and does not restart; neither do
   `ident` / `realname` / `nick` through the admin PATCH (the identity door
   does). Widening it changes behaviour the issue did not ask about.
+  `auth_command_template` does not restart either, and needs no restart
+  today: it is stored and validated but no session code reads it (grep of
+  `lib/`), so there is nothing live for an edit to miss.
+- `Operator.terminate_session/4` (M-9a, the admin "terminate") still
+  leaves a `:connected` row with no pid, on purpose: its contract is "does
+  NOT touch the DB row". It is the one known exception to the class above,
+  a deliberate operator act rather than a restart that did not happen, and
+  this entry does not reopen it.
 - A row already `:connected` with no pid when the edit lands (the wedge an
   older build left behind) gets `:left_alone`: there is no live session to
   restart.
