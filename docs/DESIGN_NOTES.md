@@ -4834,3 +4834,81 @@ phone projects checks every header control is wholly on screen — on the
 text viewer, the widest header there is (copy, open in browser, download,
 share, ✕).
 Client-only, no wire change: the cic bundle.
+<!-- entry #2474 -->
+
+---
+
+## 2026-10-27 — issue 2474: an admin credential edit restarts the live session, and a refused restart parks the row
+
+**Report.** A self-hosted 1.5.14 instance (docker), from its operator via
+the issue, not seen first-hand: an admin `PATCH /admin/credentials` set up
+NickServ auth on a user's network at 03:09:47Z, the session stopped 5 ms
+later (`reason=:shutdown clean=true`), and nothing followed for ~51 minutes.
+The UI said `connected`, the admin view said the BEAM had no pid, the
+channel list was empty and JOINs 404'd. A manual toggle at 05:00:30Z
+brought it back.
+
+**Measured before the fix**, by the new tests run against `014b30806`'s
+`lib/`:
+
+- The PATCH answers `session_action: "stopped"`, `connection_state:
+  "connected"`, `live_state: null`: the reported row, field for field.
+- No successor ever dials: a second fake server, swapped in as the
+  network's endpoint, sees no `PASS`.
+- `PATCH /networks/:id/identity` against a live session with the circuit
+  open logs `reconnect failed (identity persisted)` and leaves the row
+  `connected` with no pid.
+
+Prod was not measured.
+
+**Cause.** `Credentials.update_credential_with_session_lifecycle/3` stopped
+the session on a `password` / `auth_method` change, and its doc said so: "We
+do NOT auto-respawn the killed session". Nothing wrote the row. The identity
+door's bounce (`SpawnOrchestrator.reconnect/5`, shared with `PATCH
+/networks/:id/password`) does respawn, but on a refused respawn it only
+logged. Same row, same wedge. Both are one class: a server-initiated stop
+whose respawn does not happen leaves `:connected` with nothing behind it.
+
+**Decision.** The issue offered respawn or park. Both, in that order:
+
+- The admin edit RESTARTS a live session. `Grappa.Operator.update_credential/3`,
+  the twin of #1163's `connect_credential/1`, bounces it through
+  `reconnect/5` under a new admission flow, `:admin_credential_update`. On
+  success the row is not written, so a `:failing` row stays `:failing` until
+  the successor's 001 (#1675).
+- A refused restart PARKS. `Networks.mark_parked/2` is the automatic twin of
+  `disconnect/2`: it stops any session still registered, moves `:connected |
+  :failing → :parked`, broadcasts, and KEEPS the persisted away (GH #417: an
+  automatic park). Idempotent on `:parked` and `:failed`.
+- The identity/password door's bounce parks on a refusal through the same
+  verb, and its reply renders the parked row.
+- `update_credential_with_session_lifecycle/3` is deleted (its matrix tests
+  moved to `OperatorTest`), and `AdminWire.with_session_action/2` +
+  `with_bind_outcome/2` became one `with_session_outcome/2`.
+
+Respawn, and not park alone, because of vjt's comment on the issue: "a user
+enabling NickServ for the first time is exactly the person least likely to
+know they must toggle the network afterwards". Park alone still makes them
+toggle. `:parked` for the refusal, and not `:failed`, because `:failed` is the
+upstream's terminal verdict (k-line, permanent SASL) and an admission refusal
+is not the upstream's; #1163's refused bind already rests at `:parked`.
+
+**Wire.** Protocol 51. `spawned` joins `credential_updated.session_action`,
+and `admin_credential_update` joins the admission flow that `capacity_reject`
+names. The PATCH reply now carries `spawned` (restarted), `stopped` plus
+`session_error` (refused, row parked) or `left_alone`; all three values and
+`session_error` were already declared on cic's credential type, so only the
+event narrows differently. `min_protocol_version` stays 1.
+
+**Not done / known limits.**
+
+- The fields that trigger a restart stay `password` + `auth_method`.
+  `sasl_user` is spent at registration too and does not restart; neither do
+  `ident` / `realname` / `nick` through the admin PATCH (the identity door
+  does). Widening it changes behaviour the issue did not ask about.
+- A row already `:connected` with no pid when the edit lands (the wedge an
+  older build left behind) gets `:left_alone`: there is no live session to
+  restart.
+- Not run locally: shottino's `test_commands`, which pins
+  `WIRE_PROTOCOL_VERSION` to `lib/grappa/protocol.ex`. It does not build on
+  the darwin host (`SOCK_CLOEXEC`, `mkdtemp`); both ends move to 51 here.
