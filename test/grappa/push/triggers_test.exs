@@ -386,6 +386,35 @@ defmodule Grappa.Push.TriggersTest do
     end
   end
 
+  describe "muted?/3 — the one mute rule, asked directly (issue 2427)" do
+    # Public since the away bundle asks it too, so it is pinned here on its
+    # own, without the steps `should_notify?/5` runs ahead of it.
+    defp mute(key), do: prefs(muted_targets: %{key => %{"until" => nil}})
+
+    test "an OUTBOUND DM row is muted by its peer, not by our own nick" do
+      # `sender` is us and `dm_with` is the peer (`Scrollback.dm_peer/4`), so
+      # a rule reading `sender` asks about our self window instead.
+      out = msg(channel: "alice", sender: "vjt", dm_with: "alice", body: "ping")
+
+      assert Triggers.muted?(out, "azzurra", mute("azzurra alice"))
+      refute Triggers.muted?(out, "azzurra", mute("azzurra vjt"))
+    end
+
+    test "the kind does not matter: a NOTICE in a muted channel is muted" do
+      # The bundle carries notices, push never does; the mute must not care.
+      m = msg(channel: "#linux", sender: "alice", kind: :notice, body: "vjt: ping")
+
+      assert Triggers.muted?(m, "azzurra", mute("azzurra #linux"))
+    end
+
+    test "a raw-cased peer matches the folded key, on its own network only" do
+      m = msg(channel: "vjt", sender: "Mallory", dm_with: "Mallory", body: "vjt: ping")
+
+      assert Triggers.muted?(m, "azzurra", mute("azzurra mallory"))
+      refute Triggers.muted?(m, "libera", mute("azzurra mallory"))
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # evaluate_and_dispatch/2 — end-to-end with Bypass + real subscription
   # ---------------------------------------------------------------------------
