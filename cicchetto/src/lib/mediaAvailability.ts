@@ -51,6 +51,10 @@
 // in permanent scrollback) and then re-roots; `'self'` is scheme + host + port,
 // so host equality would admit a probe the CSP then refuses. The near-miss is
 // exactly the kind of reuse that would look right and fail in production only.
+// issue 2468 moved the check itself into `mediaLink.isSameOrigin`: the viewer's
+// download and share verbs ask the same question for the same CSP reason.
+
+import { isSameOrigin } from "./mediaLink";
 
 /**
  * What the server said about a media URL that failed to load.
@@ -94,13 +98,5 @@ export async function probeMediaAvailability(
     return response.status === 404 ? "gone" : "unknown";
   } catch {
     return "unknown";
-  }
-}
-
-function isSameOrigin(href: string, origin: string): boolean {
-  try {
-    return new URL(href).origin === origin;
-  } catch {
-    return false;
   }
 }

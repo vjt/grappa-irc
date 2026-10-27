@@ -11,6 +11,8 @@ import {
 import { copyText } from "./lib/clipboard";
 import { errorMessage } from "./lib/friendlyApiError";
 import { probeMediaAvailability } from "./lib/mediaAvailability";
+import { isSameOrigin } from "./lib/mediaLink";
+import { mediaShareData } from "./lib/mediaShare";
 import { closeMediaViewer, type MediaViewerState, mediaViewerState } from "./lib/mediaViewer";
 import { bindDismissGesture, type DismissDirections } from "./lib/mediaViewerGesture";
 import { createOverlayLock } from "./lib/overlayScrollLock";
@@ -24,7 +26,7 @@ import {
   type Size,
   toggleZoom,
 } from "./lib/pinchZoom";
-import { maybeEscapePwaClick } from "./lib/platform";
+import { canNativeShare, maybeEscapePwaClick } from "./lib/platform";
 import { fetchTextResource, TEXT_VIEW_MAX_BYTES, type TextResource } from "./lib/textResource";
 
 // In-app media viewer modal — media-link cluster (2026-06-11).
@@ -635,7 +637,11 @@ const MediaViewerBody: Component<{
 // the status line. `truncated` is deliberately NOT a member — it already lives
 // on the fetched resource, and a second copy of it here would be a parallel
 // structure to keep in step (CLAUDE.md: derive, don't duplicate).
-type CopyOutcome = { kind: "idle" } | { kind: "copied" } | { kind: "failed"; message: string };
+//
+// issue 2468 — a refused SHARE lands on the same line through `failed`, so the
+// set became the header verbs' outcome rather than copy's alone. A share that
+// WORKED adds no arm: the platform's sheet is its own confirmation.
+type ActionOutcome = { kind: "idle" } | { kind: "copied" } | { kind: "failed"; message: string };
 
 // #1438 — the modal is centered by a CSS `transform: translate(-50%, -50%)`,
 // and an inline transform REPLACES that declaration wholesale. The drag offset
@@ -684,7 +690,7 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
   // button exists only once there is a resource to take, and the status line
   // says what the last attempt did.
   const [textSource, setTextSource] = createSignal<TextResource | undefined>(undefined);
-  const [copyOutcome, setCopyOutcome] = createSignal<CopyOutcome>({ kind: "idle" });
+  const [actionOutcome, setActionOutcome] = createSignal<ActionOutcome>({ kind: "idle" });
 
   // issue 1889 — has the body's probe confirmed the upload is gone? A signal
   // because the header RENDERS from it, and fresh per open like everything
@@ -704,9 +710,37 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
       // never part of this value. Reading the DOM instead is the bug this
       // whole control is written around.
       await copyText(loaded.lines.join("\n"));
-      setCopyOutcome({ kind: "copied" });
+      setActionOutcome({ kind: "copied" });
     } catch (value) {
-      setCopyOutcome({ kind: "failed", message: errorMessage(value) });
+      setActionOutcome({ kind: "failed", message: errorMessage(value) });
+    }
+  };
+
+  // issue 2468 — cancels a share's fetch when the viewer closes under it, so a
+  // sheet cannot open over a viewer that is gone (lib/mediaShare.ts rethrows
+  // the abort, and it lands in the AbortError arm below). Fresh per open, with
+  // the rest of this component.
+  const abort = new AbortController();
+  onCleanup(() => {
+    abort.abort();
+  });
+
+  // AbortError is the reader dismissing the sheet (or the viewer closing
+  // mid-fetch) — a choice, not a failure, and it says nothing. Every OTHER
+  // rejection is named on the status line: a share that silently does nothing
+  // is the inert control issue 1839 refused for copy, and the likeliest one
+  // here is real — the user-activation window running out on a slow fetch.
+  const shareMedia = async (): Promise<void> => {
+    try {
+      await navigator.share(
+        await mediaShareData(props.state.href, window.location.origin, abort.signal),
+      );
+    } catch (value) {
+      // `DOMException`, not `Error`: both doors reject with one, and jsdom's
+      // does not descend from the realm's `Error`, so an `Error` test there
+      // would let a cancelled sheet through as a failure.
+      if (value instanceof DOMException && value.name === "AbortError") return;
+      setActionOutcome({ kind: "failed", message: errorMessage(value) });
     }
   };
 
@@ -731,8 +765,8 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
   // No timer clears it. A confirmation that evaporates is a truncation warning
   // the reader can miss, and the state dies with the modal anyway — the keyed
   // <Show> remounts this component per open.
-  const copyStatus = (): string | undefined => {
-    const outcome = copyOutcome();
+  const actionStatus = (): string | undefined => {
+    const outcome = actionOutcome();
     if (outcome.kind === "idle") return undefined;
     if (outcome.kind === "failed") return outcome.message;
     return textSource()?.truncated === true
@@ -801,9 +835,9 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
       >
         <div class="media-viewer-header">
           {/* The take-it-away verbs are grouped so the ✕ keeps the far edge
-              whether or not the copy control is there — with three flat
-              children `space-between` would push "open in browser" to the
-              middle on the text arm and nowhere else. */}
+              whichever of them a given open carries — with flat children
+              `space-between` would spread them across the header and park
+              "open in browser" in the middle. */}
           <div class="media-viewer-header-actions">
             <Show when={textSource() !== undefined}>
               <button type="button" class="media-viewer-copy" onClick={() => void copySource()}>
@@ -836,6 +870,29 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
               >
                 open in browser
               </a>
+              {/* issue 2468 — download and share sit under the same `gone`
+                  gate, for the same reason: on a confirmed 404 both would hand
+                  the reader the route's JSON instead of a file.
+
+                  Download is the AudioMiniPlayer anchor: `download=""` forces a
+                  save over the server's `inline` disposition and keeps the
+                  server's filename. Same-origin only, because the attribute is
+                  IGNORED on a cross-origin href and the anchor would then
+                  navigate the operator out of the app — a cross-host image
+                  keeps the long-press menu and the share link instead. No
+                  `target`: a download is not a navigation. */}
+              <Show when={isSameOrigin(props.state.href, window.location.origin)}>
+                <a href={props.state.href} download="" class="media-viewer-download">
+                  download
+                </a>
+              </Show>
+              {/* Only where the Web Share API exists (the ShareSessionModal
+                  rule, one feature-detect for both doors). */}
+              <Show when={canNativeShare()}>
+                <button type="button" class="media-viewer-share" onClick={() => void shareMedia()}>
+                  share
+                </button>
+              </Show>
             </Show>
           </div>
           <button
@@ -851,9 +908,9 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
             present region would need `display: none` while idle not to reserve
             a row, which takes it out of the accessibility tree anyway — so the
             pre-mount buys nothing and costs a permanently-empty node. */}
-        <Show when={copyStatus()}>
+        <Show when={actionStatus()}>
           {(message) => (
-            <p class="muted media-viewer-copy-status" role="status">
+            <p class="muted media-viewer-action-status" role="status">
               {message()}
             </p>
           )}

@@ -933,6 +933,28 @@ html.is-ios body {
     -webkit-user-select: none;
     user-select: none;
   }
+
+  /* issue 2468 — the media viewer's picture gets the platform's long-press
+     menu back (Copy / Save to Photos / Share on iOS). The blanket kill above
+     set `-webkit-touch-callout: none` on `html`, it inherits, and the viewer is
+     NOT built on `.modal-backdrop`, so issue 2394's modal re-enable never
+     reached it: a long-press on the image did nothing at all.
+
+     The CALLOUT only. An image carries no text, and its menu asks for nothing
+     else, so this re-enables no selection and stays out of keepKeyboard's
+     surface list. Scoped to the zoomable <img>, not to the modal: on the
+     header controls the callout would be a link preview over a tap target.
+
+     WebKit-only, like every callout rule here. Chrome on Android never had the
+     kill (Blink does not implement the property), so its own image menu was
+     never suppressed. NOT device-verified on either platform: no Playwright
+     engine renders a native callout. The gestures that share this image do not
+     stand in the way — its touchstart listeners are passive, and touchmove is
+     claimed only by a two-finger pinch or a vertical dismiss drag, neither of
+     which a still finger produces. */
+  html .media-viewer-media--zoomable {
+    -webkit-touch-callout: default;
+  }
 }
 
 /* UX-6 bucket A (2026-05-20) — overlay scroll-lock sentinel. The class
@@ -14833,15 +14855,20 @@ button.home-pane-network-title:hover .home-pane-network-slug {
   gap: 1rem;
 }
 
-.media-viewer-open-external {
+/* issue 2468 — download is an anchor too (`download=""`), so it reads as the
+   sibling of "open in browser" it sits beside. */
+.media-viewer-open-external,
+.media-viewer-download {
   color: var(--accent);
   font-size: 0.9rem;
 }
 
 /* Reads as the sibling of the "open in browser" link, because that is what it
-   is: the second way to take the file out of the viewer. A <button> and not an
-   anchor — it performs an action rather than going anywhere. */
-.media-viewer-copy {
+   is: another way to take the file out of the viewer. A <button> and not an
+   anchor — it performs an action rather than going anywhere. Share (issue
+   2468) is the same kind of control. */
+.media-viewer-copy,
+.media-viewer-share {
   background: transparent;
   border: none;
   padding: 0;
@@ -14852,11 +14879,12 @@ button.home-pane-network-title:hover .home-pane-network-slug {
 }
 
 /* What the LAST copy put on the clipboard — a full file, a slice cut at
-   TEXT_VIEW_MAX_BYTES, or the reason the write failed. Its own band between
-   the header and the body: the pane's truncation banner speaks about what is
-   on SCREEN, this one about what left the modal, and the two must not read as
-   one line. Colour comes from the shared .muted utility. */
-.media-viewer-copy-status {
+   TEXT_VIEW_MAX_BYTES, or the reason the write failed — and, since issue 2468,
+   why a share was refused. Its own band between the header and the body: the
+   pane's truncation banner speaks about what is on SCREEN, this one about what
+   left the modal, and the two must not read as one line. Colour comes from the
+   shared .muted utility. */
+.media-viewer-action-status {
   flex: none;
   margin: 0;
   padding: 0.25rem 1rem 0.5rem;

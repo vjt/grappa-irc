@@ -214,6 +214,14 @@ export function isCoarsePointer(): boolean {
   return window.matchMedia("(pointer: coarse)").matches;
 }
 
+// Web Share API feature-detect, read live and guarded for the jsdom path where
+// `navigator.share` is absent. One answer for both share doors — the session
+// link (ShareSessionModal) and, since issue 2468, the media viewer's file — so
+// a platform cannot offer one share sheet and hide the other.
+export function canNativeShare(): boolean {
+  return typeof navigator !== "undefined" && typeof navigator.share === "function";
+}
+
 // iOS-standalone escape hatch for same-origin links (media viewer
 // dogfood bug, 2026-06-11): in-scope navigation ignores target=_blank,
 // so a same-origin anchor can NEVER leave the PWA by itself. The

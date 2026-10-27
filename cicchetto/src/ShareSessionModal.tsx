@@ -10,6 +10,7 @@ import {
 import { mintShareToken } from "./lib/api";
 import { token } from "./lib/auth";
 import { createOverlayLock } from "./lib/overlayScrollLock";
+import { canNativeShare } from "./lib/platform";
 import { qrSvg } from "./lib/qr";
 import { closeShareModal, SHARE_SESSION_LABEL, shareModalOpen } from "./lib/shareModal";
 
@@ -30,12 +31,6 @@ import { closeShareModal, SHARE_SESSION_LABEL, shareModalOpen } from "./lib/shar
 // SECURITY: the share URL is a signed, single-use, short-TTL credential.
 // Closing DISCARDS it (a token left on screen leaks to anyone watching) and
 // re-opening mints a fresh one — mirrors the #335 sub-page's mount lifecycle.
-
-// Web Share API feature-detect. Stubbable in tests. Guarded for the
-// non-browser/jsdom path where `navigator.share` is absent.
-function canNativeShare(): boolean {
-  return typeof navigator !== "undefined" && typeof navigator.share === "function";
-}
 
 const ShareSessionModal: Component = () => {
   const [shareUrl, setShareUrl] = createSignal<string | null>(null);
