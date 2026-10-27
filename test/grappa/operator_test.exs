@@ -13,8 +13,7 @@ defmodule Grappa.OperatorTest do
   """
   use Grappa.DataCase, async: false
 
-  import ExUnit.CaptureIO
-  import ExUnit.CaptureLog
+  import ExUnit.{CaptureIO, CaptureLog}
   import Grappa.AuthFixtures
 
   alias Grappa.Accounts.User
