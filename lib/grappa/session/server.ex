@@ -9657,8 +9657,11 @@ defmodule Grappa.Session.Server do
   # "is this row a mention" is the row rule the per-window badge shares, and
   # that badge deliberately keeps counting a muted window (cic dims it, #1077).
   # The broadcast gate reads the list after the mute, so an away whose only
-  # mentions were muted announces nothing. Muted rows still count toward the
-  # scan cap: they are loaded before they are dropped.
+  # mentions were muted announces nothing unless it is also truncated. Muted
+  # rows still count toward the scan cap: they are loaded before they are
+  # dropped. The mutes are read ONCE, at the return, not as each row arrived:
+  # a snooze that ran out during the away lets its mentions in, and a mute set
+  # during the away keeps out mentions push may already have delivered.
   @spec maybe_broadcast_mentions_bundle(t()) :: :ok
   defp maybe_broadcast_mentions_bundle(%{subject: {:user, user_id}} = state)
        when is_binary(user_id) do

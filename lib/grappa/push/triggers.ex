@@ -489,7 +489,11 @@ defmodule Grappa.Push.Triggers do
   DM is persisted with `channel = <own nick at receipt>`, so keying on
   `channel` would make one "mute vjt" entry silence every DM the operator
   ever receives, while "mute alice" silenced nothing. So: the channel for a
-  channel row, the PEER for a DM.
+  channel row, the PEER for a DM — read off `dm_with`, which holds the peer
+  in BOTH directions (`Scrollback.dm_peer/4`). `sender` is the peer only on
+  an inbound row; on an outbound one it is us. The private predecessor read
+  `sender` and got away with it only because `own_row?/2` ran first, and
+  cic's private `conversationKey` still does, behind the same guard.
 
   #1038 — the target alone is not the key. `Identifier.channel_key/2`
   composes it with the network the row arrived on, because the same channel
@@ -508,10 +512,9 @@ defmodule Grappa.Push.Triggers do
   why `prefs` must come from that reader, never from the raw column.
   """
   @spec muted?(Message.t(), network_slug :: String.t(), prefs()) :: boolean()
-  def muted?(%Message{channel: channel, sender: sender} = message, network_slug, prefs)
+  def muted?(%Message{channel: channel, dm_with: dm_with} = message, network_slug, prefs)
       when is_binary(network_slug) and is_map(prefs) do
-    is_binary(channel) and is_binary(sender) and
-      muted_target?(network_slug, if(Message.dm?(message), do: sender, else: channel), prefs)
+    muted_target?(network_slug, if(Message.dm?(message), do: dm_with, else: channel), prefs)
   end
 
   # ---------------------------------------------------------------------------
