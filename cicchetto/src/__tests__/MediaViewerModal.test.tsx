@@ -1149,13 +1149,23 @@ describe("MediaViewerModal — download + share (issue 2468)", () => {
   });
 
   it("opens no share sheet once the viewer has closed under the fetch", async () => {
-    // A fetch that honours its signal, the way the platform's does, and never
-    // answers on its own: the viewer closing is the only way out of it.
+    // A fetch that honours its signal, the way the platform's does, AND
+    // answers on its own a tick later. Both halves matter: a stub that only
+    // ever settled on abort would hang forever with the abort unwired, and the
+    // test would pass for a viewer that never cancels anything.
     vi.stubGlobal(
       "fetch",
       (_href: string, init: { signal: AbortSignal }) =>
-        new Promise((_resolve, reject) => {
+        new Promise((resolve, reject) => {
+          const answer = setTimeout(() => {
+            resolve({
+              ok: true,
+              status: 200,
+              blob: () => Promise.resolve(new Blob([PNG_BYTES], { type: "image/png" })),
+            });
+          }, 0);
           init.signal.addEventListener("abort", () => {
+            clearTimeout(answer);
             reject(new DOMException("aborted", "AbortError"));
           });
         }),
@@ -1166,9 +1176,9 @@ describe("MediaViewerModal — download + share (issue 2468)", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
     closeMediaViewer();
-    // Let the abort's rejection run through every await between it and the
-    // share call it must not reach.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Past the tick the fetch would have answered on, and past every await
+    // between that answer and the share call it must not reach.
+    await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(share).not.toHaveBeenCalled();
   });
@@ -1188,14 +1198,89 @@ describe("MediaViewerModal — download + share (issue 2468)", () => {
   });
 
   it("names a refused share instead of failing inert", async () => {
-    stubServedImage();
+    // A LINK share, so there is nothing smaller to fall back to: the refusal
+    // is reported as the platform worded it.
     stubShare(() => Promise.reject(new DOMException("share refused", "NotAllowedError")));
     const { container } = render(() => <MediaViewerModal />);
-    openMediaViewer(OWN_IMAGE_URL, "image");
+    openMediaViewer(FOREIGN_IMAGE_URL, "image");
 
     await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
 
     await waitFor(() => expect(actionStatus(container)?.textContent).toMatch(/share refused/));
+  });
+
+  it("offers the link on the next tap once the platform refuses the FILE", async () => {
+    // Chromium's `canShare` says yes to any safe file name and its browser
+    // process then refuses an off-list type with NotAllowedError — after the
+    // activation is spent, so the link cannot go out in the same tap.
+    const fetchMock = stubServedImage();
+    const share = stubShare();
+    share.mockImplementationOnce(() =>
+      Promise.reject(new DOMException("Permission denied", "NotAllowedError")),
+    );
+    const { container } = render(() => <MediaViewerModal />);
+    openMediaViewer(OWN_IMAGE_URL, "image");
+
+    await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+    await waitFor(() =>
+      expect(actionStatus(container)?.textContent).toMatch(/tap share again to send the link/),
+    );
+    expect(share.mock.calls[0]?.[0]?.files).toHaveLength(1);
+
+    await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(2));
+    expect(share.mock.calls[1]?.[0]).toEqual({ url: OWN_IMAGE_URL });
+    // The link needs no bytes: the second tap does not fetch again.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(actionStatus(container)).toBeNull());
+  });
+
+  it("clears an earlier refusal when a later share goes through", async () => {
+    const share = stubShare();
+    share.mockImplementationOnce(() =>
+      Promise.reject(new DOMException("busy", "InvalidStateError")),
+    );
+    const { container } = render(() => <MediaViewerModal />);
+    openMediaViewer(FOREIGN_IMAGE_URL, "image");
+
+    await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+    await waitFor(() => expect(actionStatus(container)?.textContent).toMatch(/busy/));
+
+    await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(actionStatus(container)).toBeNull());
+  });
+
+  it("drops a second tap while the first share is still open", async () => {
+    // The sheet is up and has not answered. A second call would be refused by
+    // the platform as a share already in progress — and reported as a failure.
+    const share = stubShare(() => new Promise<void>(() => undefined));
+    const { container } = render(() => <MediaViewerModal />);
+    openMediaViewer(FOREIGN_IMAGE_URL, "image");
+
+    await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+    await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(share).toHaveBeenCalledTimes(1);
+    expect(actionStatus(container)).toBeNull();
+  });
+
+  it("does not fetch the bytes where the platform has no canShare to accept them", async () => {
+    // `share` without `canShare`: there is no way to say yes to a file, so the
+    // download would only spend the activation window before the link went out.
+    const fetchMock = stubServedImage();
+    const share = vi.fn<(data: ShareData) => Promise<void>>(() => Promise.resolve());
+    defineOnNavigator("share", share);
+    render(() => <MediaViewerModal />);
+    openMediaViewer(OWN_IMAGE_URL, "image");
+
+    await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+    expect(share.mock.calls[0]?.[0]).toEqual({ url: OWN_IMAGE_URL });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("takes download and share away once the upload is known gone", async () => {
