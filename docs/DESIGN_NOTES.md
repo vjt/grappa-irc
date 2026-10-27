@@ -4752,10 +4752,13 @@ the URL otherwise), and the native long-press menu on the image too.
 `default.css` puts `-webkit-touch-callout: none` on `html` under
 `(pointer: coarse)`. The property inherits, and the viewer is not built
 on `.modal-backdrop`, so issue 2394's modal re-enable never reached its
-`<img>`. The gestures were not the cause: the image's touchstart
-listeners are passive, and touchmove is claimed only by a two-finger
-pinch or a vertical dismiss drag, neither of which a still finger
-produces. The cure re-enables the callout on `.media-viewer-media--zoomable`
+`<img>`. The gestures were not the cause: nothing on the way to the
+image cancels a touchstart (its listeners and the dismiss gesture's are
+passive), and every touchmove claim — the two-finger pinch, the vertical
+dismiss drag, and the Shell's document `touchmove` guard (issue 2465,
+attached while the viewer was open even before that issue, through the
+overlay lock) — needs a finger that moves, which a long-press is not.
+The cure re-enables the callout on `.media-viewer-media--zoomable`
 alone: no `user-select` (an image has no text, and its menu asks for
 nothing else, so keepKeyboard's surface list does not change) and nothing
 on the header controls, where a callout would be a link preview over a

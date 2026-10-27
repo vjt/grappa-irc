@@ -949,9 +949,11 @@ html.is-ios body {
      kill (Blink does not implement the property), so its own image menu was
      never suppressed. NOT device-verified on either platform: no Playwright
      engine renders a native callout. The gestures that share this image do not
-     stand in the way — its touchstart listeners are passive, and touchmove is
-     claimed only by a two-finger pinch or a vertical dismiss drag, neither of
-     which a still finger produces. */
+     stand in the way: nothing on the way to it cancels a touchstart (its own
+     listeners and the dismiss gesture's are passive), and every touchmove
+     claim — the two-finger pinch, the vertical dismiss drag, and the Shell's
+     document guard from issue 2465 — needs a finger that MOVES, which a
+     long-press is not. */
   html .media-viewer-media--zoomable {
     -webkit-touch-callout: default;
   }
