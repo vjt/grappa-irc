@@ -725,22 +725,58 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
     abort.abort();
   });
 
+  // Plain mutables, like `scale` above: nothing renders from either, and both
+  // die with the open. `sharing` drops a second tap while the first is still
+  // fetching or showing its sheet — the platform would refuse it as a share
+  // already in progress, and that is not a failure worth a sentence.
+  // `linkOnly` is set once the platform has refused the FILE (see below).
+  let sharing = false;
+  let linkOnly = false;
+
   // AbortError is the reader dismissing the sheet (or the viewer closing
   // mid-fetch) — a choice, not a failure, and it says nothing. Every OTHER
   // rejection is named on the status line: a share that silently does nothing
-  // is the inert control issue 1839 refused for copy, and the likeliest one
-  // here is real — the user-activation window running out on a slow fetch.
+  // is the inert control issue 1839 refused for copy.
+  //
+  // A `NotAllowedError` on a FILE share is the one rejection with a way out.
+  // It is the platform refusing that file (Chromium's type allowlist, measured
+  // in lib/mediaShare.ts) or the activation window running out on a slow
+  // fetch, and either way the activation is spent, so the link cannot follow
+  // in the same tap. The next tap in this open shares the link instead, and
+  // the line says so — the URL fallback vjt's ruling promises, one tap later.
+  //
+  // `DOMException`, not `Error`, in both tests: both doors reject with one,
+  // and jsdom's does not descend from the realm's `Error`, so an `Error` test
+  // there would let a cancelled sheet through as a failure.
   const shareMedia = async (): Promise<void> => {
+    if (sharing) return;
+    sharing = true;
+    // A new attempt starts with a clean line: an earlier refusal sitting under
+    // a share that then worked would report a failure that is over.
+    setActionOutcome({ kind: "idle" });
+    let data: ShareData | undefined;
     try {
-      await navigator.share(
-        await mediaShareData(props.state.href, window.location.origin, abort.signal),
-      );
+      data = linkOnly
+        ? { url: props.state.href }
+        : await mediaShareData(props.state.href, window.location.origin, abort.signal);
+      await navigator.share(data);
     } catch (value) {
-      // `DOMException`, not `Error`: both doors reject with one, and jsdom's
-      // does not descend from the realm's `Error`, so an `Error` test there
-      // would let a cancelled sheet through as a failure.
       if (value instanceof DOMException && value.name === "AbortError") return;
+      if (
+        data?.files !== undefined &&
+        value instanceof DOMException &&
+        value.name === "NotAllowedError"
+      ) {
+        linkOnly = true;
+        setActionOutcome({
+          kind: "failed",
+          message: "this file could not be shared — tap share again to send the link",
+        });
+        return;
+      }
       setActionOutcome({ kind: "failed", message: errorMessage(value) });
+    } finally {
+      sharing = false;
     }
   };
 

@@ -15,8 +15,18 @@
 // rarely made. The cost is the user-activation window: `navigator.share` must
 // run within it, and the fetch spends part of it. Chromium and WebKit grant
 // several seconds, which a cached image never comes near, but a large video on
-// a slow link can outlast it and the share is then refused — the viewer names
-// that refusal rather than eating it. NOT device-verified.
+// a slow link can outlast it and the share is then refused. NOT device-verified.
+//
+// `canShare({ files })` saying yes is NOT the platform agreeing to the file.
+// Measured in Chromium's source: Blink's `canShare` checks only that the name
+// is a safe base name, and the browser process then refuses anything whose
+// extension OR type is off its own allowlist (`share_service_impl.cc`) with
+// `NotAllowedError` — `.mov`, `.apng`, `.aac`, `.md` and every legacy
+// extensionless `/uploads/<slug>` among what the viewer admits. That list is
+// Chromium's and changes without telling us; Safari keeps none like it. So
+// cic copies neither: the viewer answers a refused FILE by offering the link
+// on the next tap (the refusal has already spent the user activation, so the
+// fallback cannot run in the same one). See MediaViewerModal's `shareMedia`.
 
 import { isSameOrigin } from "./mediaLink";
 
@@ -44,15 +54,17 @@ export async function mediaShareData(
   origin: string,
   signal: AbortSignal,
 ): Promise<ShareData> {
-  const file = isSameOrigin(href, origin) ? await fetchFile(href, signal) : undefined;
   // `canShare` is feature-detected separately from `share`: the session-link
   // door never needed it, and an engine with `share` but no `canShare` has no
-  // way to say yes to a file.
-  const filesAccepted =
-    file !== undefined &&
-    typeof navigator.canShare === "function" &&
-    navigator.canShare({ files: [file] });
-  return filesAccepted ? { files: [file] } : { url: href };
+  // way to say yes to a file. Asked BEFORE the fetch, so such an engine does
+  // not spend the activation window downloading bytes it will throw away.
+  if (typeof navigator.canShare !== "function" || !isSameOrigin(href, origin)) {
+    return { url: href };
+  }
+  const file = await fetchFile(href, signal);
+  return file !== undefined && navigator.canShare({ files: [file] })
+    ? { files: [file] }
+    : { url: href };
 }
 
 async function fetchFile(href: string, signal: AbortSignal): Promise<File | undefined> {
