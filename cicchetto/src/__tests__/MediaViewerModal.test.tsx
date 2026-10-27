@@ -1112,7 +1112,17 @@ describe("MediaViewerModal — download + share (issue 2468)", () => {
   });
 
   it("falls back to the link when the bytes cannot be fetched", async () => {
-    vi.stubGlobal("fetch", () => Promise.resolve({ ok: false, status: 404 }));
+    // A REAL 404 has a body — the route's JSON — so a payload that ignored the
+    // status would share `{"error":"not_found"}` as the file. Without a body
+    // this would pass on the fetch's own failure and never test the status.
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve({
+        ok: false,
+        status: 404,
+        blob: () =>
+          Promise.resolve(new Blob(['{"error":"not_found"}'], { type: "application/json" })),
+      }),
+    );
     const share = stubShare();
     render(() => <MediaViewerModal />);
     openMediaViewer(OWN_IMAGE_URL, "image");
@@ -1136,6 +1146,31 @@ describe("MediaViewerModal — download + share (issue 2468)", () => {
     await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
     expect(share.mock.calls[0]?.[0]).toEqual({ url: FOREIGN_IMAGE_URL });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("opens no share sheet once the viewer has closed under the fetch", async () => {
+    // A fetch that honours its signal, the way the platform's does, and never
+    // answers on its own: the viewer closing is the only way out of it.
+    vi.stubGlobal(
+      "fetch",
+      (_href: string, init: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => {
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        }),
+    );
+    const share = stubShare();
+    render(() => <MediaViewerModal />);
+    openMediaViewer(OWN_IMAGE_URL, "image");
+
+    await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+    closeMediaViewer();
+    // Let the abort's rejection run through every await between it and the
+    // share call it must not reach.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(share).not.toHaveBeenCalled();
   });
 
   it("says nothing when the reader dismisses the share sheet", async () => {
