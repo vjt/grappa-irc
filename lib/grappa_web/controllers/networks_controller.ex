@@ -209,8 +209,7 @@ defmodule GrappaWeb.NetworksController do
       # lives ONLY on the `(subject, network)` credential now, and login
       # resolves it credential-first. The per-network door is the single
       # write path for BOTH subjects.
-      :ok = live_apply_identity(subject, network, updated_cred)
-      render(conn, :update, credential: updated_cred)
+      render(conn, :update, credential: live_apply_identity(subject, network, updated_cred))
     end
   end
 
@@ -387,8 +386,7 @@ defmodule GrappaWeb.NetworksController do
     with {:ok, password} <- parse_password(params),
          {:ok, credential} <- fetch_credential(subject, network),
          {:ok, updated} <- Credentials.update_credential_password(credential, password) do
-      :ok = live_apply_identity(subject, network, updated)
-      render(conn, :update, credential: updated)
+      render(conn, :update, credential: live_apply_identity(subject, network, updated))
     end
   end
 
@@ -828,10 +826,15 @@ defmodule GrappaWeb.NetworksController do
   # LIVE session via `SpawnOrchestrator.reconnect/5` so the new
   # ident/realname/nick re-register on a fresh USER line. The `whereis`
   # guard keeps it to an already-live session (a parked/no-session edit
-  # persists only). Failures are logged, never surfaced — the identity is
-  # saved regardless of the bounce (mirrors `Visitors.maybe_reconnect_after_identity/1`).
+  # persists only). The identity is saved whatever the bounce does.
+  #
+  # #2474 — a REFUSED bounce parks the row (`Networks.mark_parked/2`) and
+  # the parked row is what this returns, so the reply renders it. The
+  # bounce had already stopped the session, and logging the refusal used
+  # to be all this did: the row went on reading `:connected` with nothing
+  # behind it, the wedge the admin credential edit had too.
   @spec live_apply_identity(GrappaWeb.Subject.t(), Grappa.Networks.Network.t(), Credential.t()) ::
-          :ok
+          Credential.t()
   defp live_apply_identity(subject, %{id: network_id} = network, credential) do
     session_subject = Subject.to_session(subject)
 
@@ -845,21 +848,30 @@ defmodule GrappaWeb.NetworksController do
              "applying identity change"
            ) do
         {:ok, _, _} ->
-          :ok
+          credential
 
-        other ->
+        # Unbound mid-bounce (`Session.Server.init/1` → `:ignore`): no row
+        # left to park.
+        {:ok, :ignored} ->
+          credential
+
+        {:error, reason} ->
           Logger.warning(
-            "PATCH /identity: reconnect failed (identity persisted) #{inspect(session_subject)}",
+            "PATCH /identity: reconnect refused, network parked (identity persisted) " <>
+              inspect(session_subject),
             network_id: network_id,
-            error: inspect(other)
+            error: inspect(reason)
           )
 
-          :ok
+          {:ok, parked} =
+            Networks.mark_parked(credential, "identity changed; restart refused: #{inspect(reason)}")
+
+          parked
       end
     else
       # No live session (parked / never connected) or unresolvable plan —
       # persist-only; the next spawn reads the new identity.
-      _ -> :ok
+      _ -> credential
     end
   end
 

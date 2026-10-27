@@ -33,6 +33,7 @@ defmodule GrappaWeb.NetworksControllerTest do
   """
   use GrappaWeb.ConnCase, async: false
 
+  import ExUnit.CaptureLog
   import Grappa.AuthFixtures
 
   alias Grappa.Admission.NetworkCircuit
@@ -907,6 +908,42 @@ defmodule GrappaWeb.NetworksControllerTest do
         |> patch("/networks/#{slug}/identity", %{nick: "9bad"})
 
       assert json_response(conn, 422)
+    end
+
+    # #2474 — the same wedge as the admin credential edit: the bounce stopped
+    # the session, the respawn was refused, and the row went on reading
+    # `:connected` with nothing behind it. The identity is still saved; the
+    # row now says the network is down, which is where cic offers the connect.
+    test "a refused live-apply bounce parks the row instead of leaving it :connected", %{conn: conn} do
+      vjt = user_fixture(name: "vjt-idpark-#{u()}")
+      session = session_fixture(vjt)
+      slug = "net-idpark-#{u()}"
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {network, _} = network_with_server(port: port, slug: slug)
+      _ = credential_fixture(vjt, network, %{nick: "vjt-irc", autojoin_channels: []})
+
+      _ = start_session_for(vjt, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = open_circuit(network.id)
+
+      {conn, _} =
+        with_log(fn ->
+          conn
+          |> put_bearer(session.id)
+          |> put_req_header("content-type", "application/json")
+          |> patch("/networks/#{slug}/identity", %{realname: "Real Name"})
+        end)
+
+      body = json_response(conn, 200)
+      assert body["realname"] == "Real Name"
+      assert body["connection_state"] == "parked"
+
+      refute Session.whereis({:user, vjt.id}, network.id)
+
+      {:ok, cred} = Credentials.get_credential(vjt, network)
+      assert cred.realname == "Real Name"
+      assert cred.connection_state == :parked
+      assert cred.connection_state_reason =~ "network_circuit_open"
     end
 
     test "404 when the caller holds no credential on the network (authz)", %{conn: conn} do
