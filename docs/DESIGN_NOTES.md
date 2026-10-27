@@ -4781,11 +4781,30 @@ prefetch on open would pull a whole video on every open for a share that
 is rarely made. The price is the user-activation window: `navigator.share`
 must run inside it and the fetch spends part of it. Several seconds on
 Chromium and WebKit is nothing to a cached image, but a large video on a
-slow link can outlast it, and the platform then refuses the share. The
-refusal is named on the status line, never eaten. A cross-origin href is
-**never fetched** (`connect-src` is not widened to `https:`; the 1889
-probe rule) and goes out as a link; a fetch that fails or answers non-2xx
-degrades to the link too. An AbortError is a dismissed sheet, or a viewer
+slow link can outlast it, and the platform then refuses the share. A
+cross-origin href is **never fetched** (`connect-src` is not widened to
+`https:`; the 1889 probe rule) and goes out as a link; a fetch that fails
+or answers non-2xx degrades to the link too, and an engine with `share`
+but no `canShare` gets the link without the fetch.
+
+**`canShare({files})` saying yes is not the platform agreeing to the
+file** — measured in Chromium's source, not assumed. Blink's `canShare`
+checks only that the name is a safe base name
+(`navigator_share.cc`); the browser process then refuses anything whose
+extension OR type is off its allowlist (`share_service_impl.cc`) with
+`NotAllowedError`, and among what the viewer admits that is `.mov`,
+`.apng`, `.aac`, `.md`, `.m4v` by type, and every legacy extensionless
+`/uploads/<slug>`. Copying that list into cic was rejected: it is
+Chromium's, it changes without telling us, Safari keeps none like it, and
+an intersection would cost iOS the file share of an iPhone `.mov`.
+Instead a `NotAllowedError` on a FILE share (that refusal, or the
+activation window running out on a slow fetch) puts "tap share again to
+send the link" on the status line, and the next tap in that open shares
+the link: the refusal has already spent the activation, so the fallback
+cannot run in the same tap. Any other refusal is named as the platform
+worded it, never eaten; a new attempt clears the line first, and a second
+tap while a share is still open is dropped rather than reported as the
+platform's "already in progress". An AbortError is a dismissed sheet, or a viewer
 closed mid-fetch (`lib/mediaShare.ts` rethrows the abort so no sheet
 opens over a viewer that is gone), and says nothing. The check is
 `instanceof DOMException`, not `Error`: jsdom's `DOMException` does not
@@ -4808,5 +4827,7 @@ e2e: `issue2468-viewer-download-share.spec.ts` saves a real download
 and compares its bytes with what the route serves, records the share
 payload through a page stub (no engine renders a sheet) and checks the
 File's name, type and size against the served upload, and on the two
-phone projects checks every header control is wholly on screen.
+phone projects checks every header control is wholly on screen — on the
+text viewer, the widest header there is (copy, open in browser, download,
+share, ✕).
 Client-only, no wire change: the cic bundle.
