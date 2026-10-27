@@ -26,8 +26,10 @@
 //     native callout, so what the menu then offers is the device's call.
 //
 // The second test is the phone layout: the header now carries up to five
-// controls, and a modal capped at 92vw on a 412px screen is where they would
-// first stop fitting.
+// controls, and a modal capped at 92vw on a 393px screen is where they would
+// first stop fitting. Five is the TEXT viewer (copy + open in browser +
+// download + share + ✕), so that is the open the test measures; an image
+// carries one fewer.
 
 import { readFile } from "node:fs/promises";
 import type { Page } from "@playwright/test";
@@ -35,6 +37,7 @@ import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { closeMediaViewer, openMediaViewer, uploadImageAndGetLink } from "../fixtures/mediaViewer";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
+import { mediaScrollbackRow, uploadViaPicker } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
@@ -117,12 +120,26 @@ test("issue2468 @touch @webkit — every header control fits on a phone screen",
   await loginAs(page, specUser());
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 
-  const { link } = await uploadImageAndGetLink(page, "issue2468-phone.png");
+  const { slug } = await uploadViaPicker(
+    page,
+    {
+      name: "issue2468-phone.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("forward me\n", "utf8"),
+    },
+    { postTimeout: 10_000 },
+  );
+  const { link } = await mediaScrollbackRow(page, "📄", slug);
   const viewer = await openMediaViewer(page, link);
+  // `copy` appears only once the source has arrived — wait for the widest
+  // header there is before measuring it.
+  const copy = viewer.getByRole("button", { name: /^copy$/i });
+  await expect(copy).toBeVisible();
 
   // Whole, not merely touching the viewport: a control half off the edge of a
   // phone is one the reader cannot reliably hit.
   for (const control of [
+    copy,
     viewer.getByRole("link", { name: /open in browser/i }),
     viewer.getByRole("link", { name: /^download$/i }),
     viewer.getByRole("button", { name: /^share$/i }),
