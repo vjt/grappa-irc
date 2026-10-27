@@ -352,4 +352,79 @@ describe("keepKeyboard — installKeyboardPreserve", () => {
     (document.activeElement as HTMLElement | null)?.blur();
     expect(mousedownDefaultPrevented(chrome)).toBe(false);
   });
+
+  // issue 2467 — the native file panel takes the keyboard on iOS, so it must
+  // not leave a focus behind. WebKit's file panel resigns the web view's first
+  // responder once its attach menu is up (and again when it presents the photo
+  // picker) WITHOUT blurring the element, and the mousedown arm above is what
+  // had held the compose focused across the paperclip tap. The compose stayed
+  // `document.activeElement` with no keyboard under it, and the next tap on it
+  // reached WebKit as a refocus of the same element instead of a fresh focus.
+  describe("issue 2467 — a file input's activation releases the text-entry focus", () => {
+    let compose: HTMLTextAreaElement;
+    let picker: HTMLInputElement;
+
+    beforeEach(() => {
+      compose = document.createElement("textarea");
+      // ComposeBox's shape: a hidden picker, opened by a proxy button's `.click()`.
+      picker = document.createElement("input");
+      picker.type = "file";
+      picker.hidden = true;
+      document.body.append(compose, picker);
+    });
+
+    it("iOS: the picker's programmatic click leaves no text entry focused", () => {
+      stubUserAgent(IPHONE_UA);
+      compose.focus();
+      expect(document.activeElement).toBe(compose);
+      picker.click();
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    it("iOS: the release does not cancel the activation (the click reaches the picker un-prevented)", () => {
+      stubUserAgent(IPHONE_UA);
+      compose.focus();
+      let reached = false;
+      picker.addEventListener("click", () => {
+        reached = true;
+      });
+      const e = new MouseEvent("click", { bubbles: true, cancelable: true });
+      picker.dispatchEvent(e);
+      expect(reached).toBe(true);
+      expect(e.defaultPrevented).toBe(false);
+    });
+
+    it("iOS: a click a <label> forwards to its file input releases it too (the theme editor's door)", () => {
+      stubUserAgent(IPHONE_UA);
+      const label = document.createElement("label");
+      const caption = document.createElement("span");
+      caption.textContent = "upload image";
+      const visible = document.createElement("input");
+      visible.type = "file";
+      label.append(caption, visible);
+      document.body.append(label);
+      compose.focus();
+      caption.click();
+      expect(document.activeElement).not.toBe(compose);
+    });
+
+    it("iOS: a click on a control that opens no file panel keeps the focus", () => {
+      stubUserAgent(IPHONE_UA);
+      const button = document.createElement("button");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      document.body.append(button, checkbox);
+      compose.focus();
+      button.click();
+      checkbox.click();
+      expect(document.activeElement).toBe(compose);
+    });
+
+    it("desktop: a file input's activation leaves the focus where it is", () => {
+      stubUserAgent(DESKTOP_UA);
+      compose.focus();
+      picker.click();
+      expect(document.activeElement).toBe(compose);
+    });
+  });
 });

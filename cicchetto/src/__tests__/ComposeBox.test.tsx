@@ -149,6 +149,9 @@ import {
   dismissConfirm,
 } from "../lib/confirmDialog";
 import { diagLog } from "../lib/diagLog";
+// issue 2467 — the REAL keyboard-preserve listeners, installed as main.tsx
+// installs them: the focus release the paperclip relies on lives there.
+import { installKeyboardPreserve } from "../lib/keepKeyboard";
 // issue 2465 — the REAL shell touch guard, installed here exactly as Shell
 // installs it: the cure for the reported pan lives there, not in ComposeBox.
 import { installShellTouchGuard } from "../lib/overlayScrollLock";
@@ -1608,6 +1611,30 @@ describe("ComposeBox", () => {
       const btn = screen.getByRole("button", { name: /upload file/i });
       fireEvent.click(btn);
       expect(clickSpy).toHaveBeenCalled();
+    });
+
+    // issue 2467 — on iOS the file panel takes the keyboard without blurring
+    // the compose, and keepKeyboard releases the focus on the click that opens
+    // it. That click is `pickerInput.click()`; a `showPicker()` would open the
+    // same panel with NO click event and quietly bring the stale focus back,
+    // so the door is pinned here, from the compose side.
+    it("iOS: tapping the paperclip with the compose focused leaves the compose unfocused — 2467", () => {
+      const ua = vi
+        .spyOn(navigator, "userAgent", "get")
+        .mockReturnValue(
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        );
+      try {
+        installKeyboardPreserve();
+        render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+        const ta = screen.getByRole("textbox", { name: /compose message/i });
+        ta.focus();
+        expect(document.activeElement).toBe(ta);
+        fireEvent.click(screen.getByRole("button", { name: /upload file/i }));
+        expect(document.activeElement).not.toBe(ta);
+      } finally {
+        ua.mockRestore();
+      }
     });
 
     it("does not render a separate mobile-camera input — iOS Safari's picker exposes 'Take Photo' on the single image button", () => {
