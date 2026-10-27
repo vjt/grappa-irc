@@ -76,6 +76,7 @@ defmodule Grappa.Admission do
           | :patch_network_connect
           | :visitor_reconnect
           | :admin_credential_bind
+          | :admin_credential_update
 
   @type capacity_input :: %{
           network_id: integer(),
@@ -205,6 +206,7 @@ defmodule Grappa.Admission do
   defp subject_kind_for_flow(:bootstrap_user), do: :user
   defp subject_kind_for_flow(:patch_network_connect), do: :user
   defp subject_kind_for_flow(:admin_credential_bind), do: :user
+  defp subject_kind_for_flow(:admin_credential_update), do: :user
 
   defp check_circuit(network_id) do
     case NetworkCircuit.check(network_id) do

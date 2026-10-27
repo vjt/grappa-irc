@@ -489,6 +489,11 @@ defmodule Grappa.AdminEvents.WireTest do
       assert event.session_action == :stopped
     end
 
+    test ":spawned session action (#2474 — the edit restarted the session)" do
+      event = Wire.credential_updated("u-uuid", "alice", 7, "azzurra", :spawned, "a", "vjt")
+      assert event.session_action == :spawned
+    end
+
     test "rejects unknown session_action" do
       assert_raise FunctionClauseError, fn ->
         Wire.credential_updated("u-uuid", "alice", 7, "azzurra", :restarted, "a", "vjt")

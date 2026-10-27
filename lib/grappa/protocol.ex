@@ -1337,7 +1337,28 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: an older client never calls the doors,
   # and ignores the new key.
-  @protocol_version 50
+  #
+  # ---------------------------------------------------------------------------
+  # 51 — issue 2474: an admin credential edit restarts the live session
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `spawned` to `credential_updated`'s `session_action` on the admin
+  # events topic (an auth-touching `PATCH /admin/credentials/...` against a
+  # live session now restarts it rather than only stopping it), and
+  # `admin_credential_update` to the admission `flow` that `capacity_reject`
+  # names (the restart is admitted under its own tag, not the bind's). The
+  # PATCH reply already declared both `spawned` and `session_error`; it now
+  # carries them, `stopped` meaning a refused restart with the row parked.
+  # Bumped on the #1393d rule: a client that renders `spawned` for an edit
+  # cannot get it from a server predating the restart.
+  #
+  # Checked for a collision before claiming 51: origin/main carries 50, and
+  # the one open PR that edits this file (#2102) still carries 21.
+  #
+  # @min_protocol_version stays at 1: an older admin console drops an event
+  # whose `session_action` it does not know and reads the reply's raw token,
+  # and nothing a non-admin client sees changed.
+  @protocol_version 51
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1378,7 +1399,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 50
+  @spec version() :: 51
   def version, do: @protocol_version
 
   @doc """

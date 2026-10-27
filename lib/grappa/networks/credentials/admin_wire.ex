@@ -107,18 +107,20 @@ defmodule Grappa.Networks.Credentials.AdminWire do
   union that omits half the values the field can carry.
 
   PATCH (admin-panel bucket 3 — the credential update against any running
-  session):
+  session; `Grappa.Operator.update_credential/3`):
 
     * `:left_alone` — no live session, OR the change set didn't include
       `:password` / `:auth_method` (cosmetic-only fields like autojoin or
       realname). Operator sees no behavior change. Also covers the
       "auth-touching change against a parked / unbootstrapped credential"
-      case: there's nothing to stop, so the wire is honest and uniform.
-    * `:stopped` — change set included `:password` / `:auth_method`, AND
-      a live session existed. `Session.stop_session/2` killed it; operator
-      must `/connect` to bring it back under the new creds. We don't
-      auto-respawn — the `POST /networks/:slug/connect` verb is
-      the operator-facing path that re-runs admission + spawn.
+      case: there's nothing to restart, so the wire is honest and uniform.
+    * `:spawned` — change set included `:password` / `:auth_method`, AND a
+      live session existed: it was restarted (#2474) and its successor is
+      running under the new credential. `session_error` is `nil`.
+    * `:stopped` — the same restart, refused: the session is gone, the row
+      is `:parked`, and `session_error` names the refusal. Before #2474
+      this was the only outcome of an auth-touching edit, with no respawn
+      and the row left reading `:connected`.
 
   POST (#1163 — the bind that dials):
 
@@ -127,8 +129,9 @@ defmodule Grappa.Networks.Credentials.AdminWire do
     * `:not_spawned` — the row was created and left `:parked`;
       `session_error` names the refusal.
 
-  A consumer keys off the endpoint it called: the two pairs are disjoint
-  and neither verb can emit the other's values.
+  `:spawned` means the same thing from either verb: a session is running
+  that read this row. `:stopped` (PATCH) and `:not_spawned` (POST) stay
+  apart because the first says a running session was taken down.
   """
   @type session_action :: :left_alone | :stopped | :spawned | :not_spawned
 
@@ -234,10 +237,10 @@ defmodule Grappa.Networks.Credentials.AdminWire do
   end
 
   @typedoc """
-  #1163 — the `session_error` value space: why a bind did not dial.
-  `nil` when it did.
+  #1163 — the `session_error` value space: why a bind did not dial, or
+  (#2474) why an edit's restart did not come back. `nil` when it did.
 
-  These are `Grappa.Operator.connect_credential/1`'s error union with the
+  These are `Grappa.Operator.spawn_error/0` with the
   payloads dropped (a `{:network_circuit_open, retry_after}` renders as
   `:network_circuit_open`) — spelled out rather than aliased because
   `Grappa.Networks` must not depend on `Grappa.Admission`. Runtime tag
@@ -255,26 +258,16 @@ defmodule Grappa.Networks.Credentials.AdminWire do
           | :start_failed
 
   @doc """
-  Attaches a `session_action:` field to a credential JSON map (the
-  bucket-3 PUT response shape). Defined here, not at the controller,
-  so the wire-shape evolution stays in one place.
-  """
-  @spec with_session_action(t(), session_action()) :: map()
-  def with_session_action(%{} = json, action)
-      when action in [:left_alone, :stopped] do
-    Map.put(json, :session_action, action)
-  end
+  Attaches `session_action:` + `session_error:` to the reply of an admin
+  verb that can move the session: the PATCH (`:left_alone`, `:spawned` or
+  `{:stopped, reason}`) and, since #1163, the POST bind (`:spawned` or
+  `{:not_spawned, reason}`). One renderer for both, so the key pair keeps
+  one shape.
 
-  @doc """
-  #1163 — attaches `session_action:` + `session_error:` to the POST bind
-  response. Sibling of `with_session_action/2` on the same key: both
-  answer "what happened to the session because of this admin verb", for
-  the two verbs that can move it.
-
-  `session_error` is `nil` on `:spawned`, so the operator reads one
-  field to tell "bound and connected" from "bound, and here is why it is
-  not dialling" — the alternative (a 201 that says nothing) is the
-  silent-swallow this endpoint shipped before #1163.
+  `session_error` is `nil` unless the action is a refusal, so the operator
+  reads one field to tell "the session is running" from "and here is why
+  it is not": the alternative, a 2xx that says nothing, is the
+  silent-swallow both endpoints shipped before (#1163, #2474).
 
   The outcome argument is spelled INLINE, deliberately: a named public
   type in a `*Wire` module is a wire CONTRACT — `mix grappa.gen_wire_types`
@@ -283,14 +276,18 @@ defmodule Grappa.Networks.Credentials.AdminWire do
   renderer; naming it shipped cic a `["not_spawned", …]` array type for a
   payload the wire never carries.
   """
-  @spec with_bind_outcome(t(), :spawned | {:not_spawned, spawn_error() | {spawn_error(), term()}}) ::
-          map()
-  def with_bind_outcome(%{} = json, :spawned) do
-    Map.merge(json, %{session_action: :spawned, session_error: nil})
+  @spec with_session_outcome(
+          t(),
+          :left_alone
+          | :spawned
+          | {:stopped | :not_spawned, spawn_error() | {spawn_error(), term()}}
+        ) :: map()
+  def with_session_outcome(%{} = json, action) when action in [:left_alone, :spawned] do
+    Map.merge(json, %{session_action: action, session_error: nil})
   end
 
-  def with_bind_outcome(%{} = json, {:not_spawned, reason}) do
-    Map.merge(json, %{session_action: :not_spawned, session_error: error_tag(reason)})
+  def with_session_outcome(%{} = json, {action, reason}) when action in [:stopped, :not_spawned] do
+    Map.merge(json, %{session_action: action, session_error: error_tag(reason)})
   end
 
   @doc "Wraps the rendered rows as the `GET /admin/credentials` envelope."

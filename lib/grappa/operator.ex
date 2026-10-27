@@ -111,6 +111,15 @@ defmodule Grappa.Operator do
   """
   @type actor :: nil | {String.t(), String.t()}
 
+  @typedoc """
+  Why an admin door could not bring a user session up:
+  `connect_credential/1` (the bind) and `update_credential/3` (the restart)
+  share it, because they share the spawn core. Each arm is documented on
+  `connect_credential/1`.
+  """
+  @type spawn_error ::
+          :resolve_failed | :not_found | Admission.capacity_error() | {:start_failed, term()}
+
   @doc """
   Synchronously terminate the visitor's `Session.Server` (if any) and
   delete the DB row. CASCADE wipes `messages`,
@@ -811,9 +820,7 @@ defmodule Grappa.Operator do
     * `Admission.capacity_error()` / `{:start_failed, term()}` — verbatim
       from `SpawnOrchestrator.spawn/4`.
   """
-  @spec connect_credential(Credential.t()) ::
-          {:ok, Credential.t()}
-          | {:error, :resolve_failed | :not_found | Admission.capacity_error() | {:start_failed, term()}}
+  @spec connect_credential(Credential.t()) :: {:ok, Credential.t()} | {:error, spawn_error()}
   def connect_credential(%Credential{user_id: user_id, network_id: network_id} = credential)
       when is_binary(user_id) do
     with {:ok, plan} <- resolve_user_plan(credential),
@@ -834,7 +841,7 @@ defmodule Grappa.Operator do
 
       {:error, reason} ->
         Logger.warning(
-          "admin bind: user session plan resolve failed " <>
+          "admin credential: user session plan resolve failed " <>
             "(user_id=#{credential.user_id} network_id=#{credential.network_id} " <>
             "reason=#{inspect(reason)})"
         )
@@ -861,6 +868,106 @@ defmodule Grappa.Operator do
     }
 
     case SpawnOrchestrator.spawn(subject, network_id, plan, capacity_input) do
+      {:ok, :spawned, _} -> :ok
+      {:ok, :already_started, _} -> :ok
+      {:ok, :ignored} -> {:error, :not_found}
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc """
+  #2474: the admin credential edit
+  (`PATCH /admin/credentials/:user_id/:network_id`), together with what it
+  does to the live session.
+
+  A change to `:password` or `:auth_method` cannot reach a session that is
+  already up: those bytes are spent once, at registration. So against a LIVE
+  session it RESTARTS it, through the `SpawnOrchestrator.reconnect/5` bounce
+  (QUIT, stop, then admission → spawn under the row just written). Any other
+  change, or no live session, leaves the session alone and the next spawn
+  reads the row.
+
+  The third element says what became of the session:
+
+    * `:left_alone` — nothing to restart.
+    * `:spawned` — bounced, and the successor runs under the new
+      credential. The row is NOT written: it keeps what the old session left
+      in it and the successor corrects it from there (`mark_registered/1` at
+      001, `mark_failed/2` on a rejection), so a `:failing` row is never
+      promoted to a registration nobody has seen (#1675).
+    * `{:stopped, reason}` — the session is gone and could not be brought
+      back. The row is `:parked` (`Networks.mark_parked/2`) with the refusal
+      as its reason, and the parked row is the one returned.
+
+  Before #2474 this verb stopped the session and stopped there, leaving the
+  row `:connected` with no `Session.Server` behind it: the UI read
+  CONNECTED, the admin view said no pid, every `POST /messages` 404'd and
+  nothing ever respawned it. The restart is `connect_credential/1`'s twin
+  (#1163, the bind that dials): both admin doors bring a session up through
+  the admission → spawn core boot uses, so an edit and a bind cannot drift.
+  """
+  @spec update_credential(User.t(), Networks.Network.t(), map()) ::
+          {:ok, Credential.t(), :left_alone | :spawned | {:stopped, spawn_error()}}
+          | {:error, :not_found | Ecto.Changeset.t()}
+  def update_credential(%User{} = user, %Networks.Network{} = network, attrs) when is_map(attrs) do
+    with {:ok, updated} <- Credentials.update_credential(user, network, attrs) do
+      if auth_touching?(attrs) and Session.whereis({:user, user.id}, network.id) != nil do
+        restart_credential(updated)
+      else
+        {:ok, updated, :left_alone}
+      end
+    end
+  end
+
+  # The fields spent at registration and never again. The rest either reach
+  # the live session on their own (autojoin, on the next JOIN) or are read on
+  # the next spawn.
+  @spec auth_touching?(map()) :: boolean()
+  defp auth_touching?(attrs) do
+    keys = attrs |> Map.keys() |> Enum.map(&to_string/1)
+    "password" in keys or "auth_method" in keys
+  end
+
+  @spec restart_credential(Credential.t()) ::
+          {:ok, Credential.t(), :spawned | {:stopped, spawn_error()}}
+  defp restart_credential(%Credential{user_id: user_id, network_id: network_id} = credential) do
+    with {:ok, plan} <- resolve_user_plan(credential),
+         :ok <- bounce_user({:user, user_id}, network_id, plan) do
+      {:ok, credential, :spawned}
+    else
+      # Unbound mid-restart (`Session.Server.init/1` → `:ignore`): there is
+      # no row left to park.
+      {:error, :not_found} ->
+        {:ok, credential, {:stopped, :not_found}}
+
+      {:error, reason} ->
+        Logger.warning(
+          "admin credential update: restart refused " <>
+            "(user_id=#{user_id} network_id=#{network_id} reason=#{inspect(reason)})"
+        )
+
+        {:ok, parked} =
+          Networks.mark_parked(credential, "credentials changed; restart refused: #{inspect(reason)}")
+
+        {:ok, parked, {:stopped, reason}}
+    end
+  end
+
+  # The bounce twin of `spawn_user_bind/3`. `SpawnOrchestrator.reconnect/5`
+  # stops the live session before it spawns, so the slot is free and a clean
+  # run answers `:spawned`; `:already_started` means a concurrent connect won
+  # the slot, and that session read the row this edit had already committed.
+  @spec bounce_user(Session.subject(), integer(), Session.start_opts()) ::
+          :ok | {:error, :not_found | Admission.capacity_error() | {:start_failed, term()}}
+  defp bounce_user(subject, network_id, plan) do
+    capacity_input = %{
+      network_id: network_id,
+      source_ip: nil,
+      flow: :admin_credential_update,
+      requesting_subject: subject
+    }
+
+    case SpawnOrchestrator.reconnect(subject, network_id, plan, capacity_input, "credentials changed") do
       {:ok, :spawned, _} -> :ok
       {:ok, :already_started, _} -> :ok
       {:ok, :ignored} -> {:error, :not_found}

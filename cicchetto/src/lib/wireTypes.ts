@@ -12,6 +12,7 @@ export const ADMISSION_FLOW = [
   "patch_network_connect",
   "visitor_reconnect",
   "admin_credential_bind",
+  "admin_credential_update",
 ] as const;
 export type AdmissionFlow = (typeof ADMISSION_FLOW)[number];
 
@@ -468,7 +469,7 @@ export type AdminEventsWireCredentialUpdatedEvent = {
   user_name: string;
   network_id: number;
   network_slug: string;
-  session_action: "left_alone" | "stopped";
+  session_action: "left_alone" | "spawned" | "stopped";
   actor_user_id: string;
   actor_user_name: string;
   at: string;

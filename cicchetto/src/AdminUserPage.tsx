@@ -66,8 +66,10 @@ import type { IRCAuthFSMAuthMethod } from "./lib/wireTypes";
 //
 // `session_action` is per-SECTION state, never a toast (vjt: a toast
 // throws away four values). It carries all four — `spawned` /
-// `not_spawned` from the POST, `left_alone` / `stopped` from the PATCH —
-// plus `session_error`, the only field that says why a bind did not dial.
+// `not_spawned` from the POST, `left_alone` / `spawned` / `stopped` from
+// the PATCH (#2474: an auth edit restarts a live session) — plus
+// `session_error`, the only field that says why a bind did not dial or a
+// restart did not come back.
 //
 // Raw wire tokens on purpose, per the operator-console policy
 // (AdminSettingsTab lines 33-35, #943): the operator reads the same

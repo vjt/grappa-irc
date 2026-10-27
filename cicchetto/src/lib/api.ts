@@ -3846,10 +3846,11 @@ export async function adminDeleteFeaturedChannel(
 export type AdminCredential = NetworksCredentialsAdminWireT & {
   // Present on PUT responses only; index/GET shape excludes it.
   session_action?: NetworksCredentialsAdminWireSessionAction;
-  // #1158 — the POST reply's sibling key: `null` on `spawned`, the refusal
-  // tag on `not_spawned` (`AdminWire.with_spawn_outcome/2`). The server has
-  // always sent it; nothing declared it here, so the one field that says WHY
-  // a bind did not dial could not be read at all.
+  // #1158 — the sibling key: `null` unless the action is a refusal, then its
+  // tag — `not_spawned` on the POST, `stopped` on the PATCH since #2474
+  // (`AdminWire.with_session_outcome/2`). The server has always sent it on
+  // the POST; nothing declared it here, so the one field that says WHY a
+  // bind did not dial could not be read at all.
   session_error?: NetworksCredentialsAdminWireSpawnError | null;
 };
 

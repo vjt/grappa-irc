@@ -123,54 +123,6 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
-  Admin-panel bucket 3 (A-2) — wraps `update_credential/3` with a
-  side-effect decision: if the change set includes `:password` or
-  `:auth_method`, AND a live `Session.Server` exists for
-  `{:user, user.id} × network.id`, kill it via `Session.stop_session/2`
-  so the next reconnect picks up the new credential bytes. Returns
-  the updated credential plus a `session_action:` discriminator the
-  caller surfaces to the operator.
-
-  Cosmetic-only attrs (autojoin, realname) leave the live session
-  alone — the next outbound JOIN will pick up the new autojoin list
-  on next reconnect; mid-flight there's nothing to apply.
-
-  We do NOT auto-respawn the killed session. Operator goes through
-  the `POST /networks/:slug/connect` verb (or the cic equivalent)
-  to re-spawn under the new creds — same path as a manual `/connect`.
-  Keeps this verb single-purpose and avoids smuggling admission +
-  spawn machinery into a credentials-edit boundary.
-  """
-  @spec update_credential_with_session_lifecycle(User.t(), Network.t(), map()) ::
-          {:ok, Credential.t(), :left_alone | :stopped}
-          | {:error, :not_found | Ecto.Changeset.t()}
-  def update_credential_with_session_lifecycle(%User{} = user, %Network{} = network, attrs)
-      when is_map(attrs) do
-    with {:ok, updated} <- update_credential(user, network, attrs) do
-      action = classify_session_action(user, network, attrs)
-      maybe_stop_session(user, network, action)
-      {:ok, updated, action}
-    end
-  end
-
-  defp classify_session_action(%User{id: uid}, %Network{id: nid}, attrs) do
-    keys = attrs |> Map.keys() |> Enum.map(&to_string/1)
-    auth_touching? = "password" in keys or "auth_method" in keys
-
-    cond do
-      not auth_touching? -> :left_alone
-      Session.whereis({:user, uid}, nid) == nil -> :left_alone
-      true -> :stopped
-    end
-  end
-
-  defp maybe_stop_session(_, _, :left_alone), do: :ok
-
-  defp maybe_stop_session(%User{id: uid}, %Network{id: nid}, :stopped) do
-    :ok = Session.stop_session({:user, uid}, nid, "credentials changed")
-  end
-
-  @doc """
   #211 phase 4c — remove `channel_name` from a VISITOR credential's
   PER-NETWORK `last_joined_channels` rejoin list (keyed on `(visitor_id,
   network_id)`).

@@ -1237,6 +1237,21 @@ describe("narrowAdminEvent — bucket 4 mutation kinds", () => {
     expect(narrowAdminEvent(ev)).toEqual(ev);
   });
 
+  it("credential_updated — :spawned session_action passes (#2474 — the edit restarted the session)", () => {
+    const ev = {
+      kind: "credential_updated",
+      user_id: "u",
+      user_name: "n",
+      network_id: 7,
+      network_slug: "azzurra",
+      session_action: "spawned",
+      actor_user_id: "a",
+      actor_user_name: "v",
+      at: "t",
+    };
+    expect(narrowAdminEvent(ev)).toEqual(ev);
+  });
+
   it("credential_unbound — valid passes", () => {
     const ev = {
       kind: "credential_unbound",

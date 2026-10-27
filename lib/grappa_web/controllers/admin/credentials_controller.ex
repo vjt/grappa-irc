@@ -35,6 +35,12 @@ defmodule GrappaWeb.Admin.CredentialsController do
   surfaces the validation error cleanly rather than gating
   controller-side.
 
+  A `password` / `auth_method` edit against a LIVE session restarts it
+  under the new credential (#2474, `Operator.update_credential/3`); the
+  reply's `session_action` + `session_error` say whether it came back,
+  and a refused restart leaves the row `:parked`, never `:connected`
+  with no session.
+
   Returns `200 OK` with the updated row in the same shape as one
   GET row. `404 not_found` on unknown user_id / network_id / binding;
   `422 validation_failed` on bad changeset; `400 bad_request` on
@@ -115,9 +121,8 @@ defmodule GrappaWeb.Admin.CredentialsController do
          {:ok, attrs} <- update_attrs(params),
          {:ok, user} <- fetch_user(user_id),
          {:ok, network} <- fetch_network(network_id),
-         {:ok, updated, action} <-
-           Credentials.update_credential_with_session_lifecycle(user, network, attrs) do
-      :ok = emit_credential_updated(user, network, action, conn)
+         {:ok, updated, outcome} <- Operator.update_credential(user, network, attrs) do
+      :ok = emit_credential_updated(user, network, session_action(outcome), conn)
       live = LiveIntrospection.lookup_session({:user, updated.user_id}, updated.network_id)
       touch = user_touch(updated.user_id)
 
@@ -125,10 +130,14 @@ defmodule GrappaWeb.Admin.CredentialsController do
         conn,
         updated
         |> AdminWire.credential_to_admin_json(live, touch.last_seen_at, touch.ip, user.name)
-        |> AdminWire.with_session_action(action)
+        |> AdminWire.with_session_outcome(outcome)
       )
     end
   end
+
+  # The admin event carries the action alone; the refusal rides the reply.
+  defp session_action({:stopped, _}), do: :stopped
+  defp session_action(action) when action in [:left_alone, :spawned], do: action
 
   @doc """
   Admin-panel bucket 3 — POST /admin/credentials. Strict-create bind.
@@ -162,7 +171,7 @@ defmodule GrappaWeb.Admin.CredentialsController do
       |> json(
         cred
         |> AdminWire.credential_to_admin_json(live, touch.last_seen_at, touch.ip, user.name)
-        |> AdminWire.with_bind_outcome(outcome)
+        |> AdminWire.with_session_outcome(outcome)
       )
     end
   end
@@ -332,8 +341,8 @@ defmodule GrappaWeb.Admin.CredentialsController do
 
   # PATCH whitelist (admin-panel bucket 3 extension): adds `password`
   # and `auth_command_template` to the pre-existing M-6 set. Password
-  # changes route through `update_credential_with_session_lifecycle/3`
-  # which kills the live session per A-2.
+  # changes route through `Operator.update_credential/3`, which restarts
+  # the live session under the new credential (#2474).
   #
   # `server_pass` is ABSENT DELIBERATELY (issue 2107), not forgotten. Adding it
   # would open a new write door for a secret, which is a security-surface

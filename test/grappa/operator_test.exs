@@ -18,7 +18,7 @@ defmodule Grappa.OperatorTest do
 
   alias Grappa.Accounts.User
   alias Grappa.{AdmissionStateHelpers, DbLatency, IRCServer, Operator, Session}
-  alias Grappa.Networks.Credential
+  alias Grappa.Networks.{Credential, Credentials}
   alias Grappa.Visitors.Visitor
 
   @db_latency_handler_id "grappa-db-latency"
@@ -691,6 +691,69 @@ defmodule Grappa.OperatorTest do
 
       assert {:error, :not_found} =
                Operator.reconnect_session({:visitor, visitor.id}, 999_999_999)
+    end
+  end
+
+  # #2474 — the admin credential edit and what it does to the live session.
+  # The HTTP door (`PATCH /admin/credentials/:user_id/:network_id`) is driven
+  # end to end in `GrappaWeb.Admin.CredentialsControllerTest`; these pin the
+  # decision matrix and the row property the door does not look at.
+  describe "update_credential/3 (#2474)" do
+    setup do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, cred} =
+        Credentials.bind_credential(user, net, %{nick: "vjt", password: "old-pw", auth_method: :auto})
+
+      {:ok, user: user, net: net, cred: cred}
+    end
+
+    test "cosmetic-only attrs → :left_alone (no auth touching)", %{user: user, net: net} do
+      assert {:ok, %Credential{realname: "Marcello"}, :left_alone} =
+               Operator.update_credential(user, net, %{realname: "Marcello"})
+    end
+
+    test "autojoin change → :left_alone", %{user: user, net: net} do
+      assert {:ok, _, :left_alone} = Operator.update_credential(user, net, %{autojoin_channels: ["#smoke"]})
+    end
+
+    test "password change without live session → :left_alone (nothing to restart)", %{user: user, net: net} do
+      assert {:ok, _, :left_alone} = Operator.update_credential(user, net, %{password: "rotated"})
+      refute Session.whereis({:user, user.id}, net.id)
+    end
+
+    test "auth_method change with fresh password without live session → :left_alone",
+         %{user: user, net: net} do
+      assert {:ok, %Credential{auth_method: :sasl}, :left_alone} =
+               Operator.update_credential(user, net, %{auth_method: :sasl, password: "sasl-pw"})
+    end
+
+    test "returns :not_found when (user, net) is not bound" do
+      assert {:error, :not_found} = Operator.update_credential(user_fixture(), network_fixture(), %{nick: "x"})
+    end
+
+    test "validation error surfaces as changeset (no session effect)", %{user: user, net: net} do
+      assert {:error, %Ecto.Changeset{}} = Operator.update_credential(user, net, %{nick: "bad nick"})
+    end
+
+    test "a live session is restarted, and the row is left as the old session left it" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, cred} = user_with_credential(port, %{auth_method: :auto, password: "old-pw"})
+      old_pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      # Not registered upstream: the restart must not promote that to a claim
+      # of registration (#1675), only the successor's 001 may.
+      {:ok, _} = Grappa.Networks.mark_failing(cred, "connection refused")
+
+      assert {:ok, %Credential{connection_state: :failing}, :spawned} =
+               Operator.update_credential(user, network, %{password: "rotated"})
+
+      new_pid = Session.whereis({:user, user.id}, network.id)
+      assert is_pid(new_pid)
+      assert new_pid != old_pid
+      assert reload_credential(cred).connection_state == :failing
     end
   end
 

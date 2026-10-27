@@ -24,7 +24,7 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
 
   alias Grappa.{Accounts, AdmissionStateHelpers, Bootstrap, IRCServer, Networks, Session}
   alias Grappa.Bootstrap.Result
-  alias Grappa.Networks.{Credential, Credentials}
+  alias Grappa.Networks.{Credential, Credentials, Servers}
   alias Grappa.PubSub.Topic
 
   setup do
@@ -730,6 +730,16 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
     result
   end
 
+  defp edit(conn, target_user, network, attrs) do
+    session = admin_session()
+
+    conn
+    |> put_bearer(session.id)
+    |> put_req_header("content-type", "application/json")
+    |> patch("/admin/credentials/#{target_user.id}/#{network.id}", Jason.encode!(attrs))
+    |> json_response(200)
+  end
+
   defp bind(conn, target_user, network, nick) do
     session = admin_session()
 
@@ -816,6 +826,113 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
       body = json_response(conn, 200)
       assert body["auth_method"] == "sasl"
       assert body["session_action"] == "left_alone"
+    end
+  end
+
+  # #2474 — an auth-touching edit against a LIVE session restarts it under
+  # the new credential. Before, the verb stopped the session and stopped
+  # there: the row kept reading `:connected` with no `Session.Server` behind
+  # it, the UI said CONNECTED, the admin view said no pid, and nothing ever
+  # brought it back short of a manual toggle.
+  describe "PATCH password / auth_method against a live session (#2474)" do
+    test "200 + the session restarts and dials with the new credential", %{conn: conn} do
+      {first, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {network, server} = network_with_server(port: port, slug: "edit-restart-#{uniq()}")
+      target_user = user_fixture(name: "edit-restart-#{uniq()}")
+      stop_session_on_exit(target_user, network)
+
+      assert %{"session_action" => "spawned"} = bind(conn, target_user, network, "vjt")
+      assert {:ok, _} = IRCServer.wait_for_line(first, &String.starts_with?(&1, "NICK"), 5_000)
+      old_pid = Session.whereis({:user, target_user.id}, network.id)
+      old_ref = Process.monitor(old_pid)
+
+      # The successor dials a second fake, so the lines it sends are its own
+      # and cannot be read off the first connection's buffer.
+      {second, second_port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {:ok, _} = Servers.update_server(server, %{port: second_port})
+
+      body = edit(conn, target_user, network, %{auth_method: "auto", password: "rotated-pw"})
+
+      assert_receive {:DOWN, ^old_ref, :process, ^old_pid, _}, 1_000
+
+      assert {:ok, "PASS rotated-pw\r\n"} =
+               IRCServer.wait_for_line(second, &String.starts_with?(&1, "PASS"), 5_000)
+
+      new_pid = Session.whereis({:user, target_user.id}, network.id)
+      assert is_pid(new_pid)
+      assert new_pid != old_pid
+
+      assert body["session_action"] == "spawned"
+      assert body["session_error"] == nil
+      assert body["live_state"] != nil
+      assert body["connection_state"] == "connected"
+
+      assert {:ok, %Credential{connection_state: :connected}} =
+               Credentials.get_credential(target_user, network)
+    end
+
+    test "200 + a refused restart parks the row and names the refusal", %{conn: conn} do
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {network, _} = network_with_server(port: port, slug: "edit-refused-#{uniq()}")
+      target_user = user_fixture(name: "edit-refused-#{uniq()}")
+      stop_session_on_exit(target_user, network)
+
+      assert %{"session_action" => "spawned"} = bind(conn, target_user, network, "vjt")
+      assert is_pid(Session.whereis({:user, target_user.id}, network.id))
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(target_user.name))
+      :ok = AdmissionStateHelpers.open_circuit!(network.id)
+
+      {body, log} =
+        with_log(fn -> edit(conn, target_user, network, %{auth_method: "auto", password: "rotated-pw"}) end)
+
+      refute Session.whereis({:user, target_user.id}, network.id)
+
+      assert body["session_action"] == "stopped"
+      assert body["session_error"] == "network_circuit_open"
+      assert body["live_state"] == nil
+      # The one wrong option the issue names: `:connected` with no pid.
+      assert body["connection_state"] == "parked"
+
+      assert {:ok, %Credential{connection_state: :parked, connection_state_reason: reason}} =
+               Credentials.get_credential(target_user, network)
+
+      assert reason =~ "network_circuit_open"
+
+      slug = network.slug
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :connection_state_changed,
+                         from: :connected,
+                         to: :parked,
+                         network_slug: ^slug
+                       }
+                     },
+                     1_000
+
+      assert log =~ "restart refused"
+    end
+
+    test "the admin event says what became of the session", %{conn: conn} do
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {network, _} = network_with_server(port: port, slug: "edit-event-#{uniq()}")
+      target_user = user_fixture(name: "edit-event-#{uniq()}")
+      stop_session_on_exit(target_user, network)
+
+      assert %{"session_action" => "spawned"} = bind(conn, target_user, network, "vjt")
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+      user_id = target_user.id
+
+      assert %{"session_action" => "spawned"} =
+               edit(conn, target_user, network, %{auth_method: "auto", password: "rotated-pw"})
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       payload: %{kind: :credential_updated, user_id: ^user_id, session_action: :spawned}
+                     },
+                     1_000
     end
   end
 

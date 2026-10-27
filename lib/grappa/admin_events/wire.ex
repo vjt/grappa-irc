@@ -389,7 +389,7 @@ defmodule Grappa.AdminEvents.Wire do
           user_name: String.t(),
           network_id: integer(),
           network_slug: String.t(),
-          session_action: :left_alone | :stopped,
+          session_action: :left_alone | :spawned | :stopped,
           actor_user_id: String.t(),
           actor_user_name: String.t(),
           at: String.t()
@@ -1196,7 +1196,7 @@ defmodule Grappa.AdminEvents.Wire do
           String.t(),
           integer(),
           String.t(),
-          :left_alone | :stopped,
+          :left_alone | :spawned | :stopped,
           String.t(),
           String.t()
         ) :: credential_updated_event()
@@ -1211,7 +1211,7 @@ defmodule Grappa.AdminEvents.Wire do
       )
       when is_binary(user_id) and is_binary(user_name) and is_integer(network_id) and
              is_binary(network_slug) and network_slug != "" and
-             session_action in [:left_alone, :stopped] do
+             session_action in [:left_alone, :spawned, :stopped] do
     :ok = validate_admin_actor(actor_user_id, actor_user_name)
 
     %{

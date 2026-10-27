@@ -181,7 +181,7 @@ export const S_AdminEventsWireCredentialUpdatedEvent = {
     user_name: "s",
     network_id: "i",
     network_slug: "s",
-    session_action: { e: ["left_alone", "stopped"] },
+    session_action: { e: ["left_alone", "spawned", "stopped"] },
     actor_user_id: "s",
     actor_user_name: "s",
     at: "s",

@@ -364,7 +364,13 @@ let _socket: Socket | null = null;
 // message reads there at all. Harmless only because no release carried E2E
 // before 50 (DESIGN_NOTES #2430m, known limits); nothing outside E2E
 // changed, so `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 50;
+//
+// 51 (issue 2474) — `spawned` on the admin `credential_updated` event (an
+// auth-touching credential edit restarts the live session) and the
+// `admin_credential_update` admission flow on `capacity_reject`. Admin
+// console only, rendered as raw tokens, so `MIN_SERVER_PROTOCOL_VERSION`
+// stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 51;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //
