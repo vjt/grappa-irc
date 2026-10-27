@@ -12890,6 +12890,110 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
+
+    # issue 2427 — the away bundle honours the per-conversation mute the push
+    # path honours, through the same predicate. Four conversations, each
+    # mentioning the session's nick during the away: an unmuted channel, a
+    # muted channel, a muted DM peer and a channel whose mute has elapsed.
+    # The DM row carries `channel = <own nick>`, so only a rule keyed on the
+    # PEER drops it; the elapsed snooze is dropped only by a door that reads
+    # the mutes through `get_notification_prefs/1`.
+    test "unset_explicit_away leaves muted conversations out of mentions_bundle" do
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
+      {user, network, _} = setup_user_and_network(port)
+      own_nick = "grappa-test"
+
+      {:ok, _} =
+        put_all_muted({:user, user.id}, %{
+          Identifier.channel_key(network.slug, "#muted") => %{"until" => nil},
+          Identifier.channel_key(network.slug, "mallory") => %{"until" => nil},
+          Identifier.channel_key(network.slug, "#snoozed") => %{"until" => 1}
+        })
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      :ok = Session.set_explicit_away({:user, user.id}, network.id, "lunch")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :"), 1_000)
+
+      now = System.system_time(:millisecond)
+
+      for {channel, sender, dm_with} <- [
+            {"#grappa", "alice", nil},
+            {"#muted", "bob", nil},
+            {own_nick, "mallory", "mallory"},
+            {"#snoozed", "carol", nil}
+          ] do
+        {:ok, _} =
+          Grappa.ScrollbackHelpers.insert(%{
+            user_id: user.id,
+            network_id: network.id,
+            channel: channel,
+            server_time: now,
+            kind: :privmsg,
+            sender: sender,
+            dm_with: dm_with,
+            body: "hey #{own_nick}, you around?"
+          })
+      end
+
+      :ok = Session.unset_explicit_away({:user, user.id}, network.id)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "AWAY\r\n"), 1_000)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :mentions_bundle, messages: messages, truncated: false}
+                     },
+                     1_000
+
+      assert messages |> Enum.map(& &1.sender) |> Enum.sort() == ["alice", "carol"]
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # issue 2427 — the broadcast gate reads the bundle AFTER the mute: an away
+    # whose only mention sits in a muted channel announces nothing, exactly
+    # like an away with no mention at all.
+    test "unset_explicit_away does NOT broadcast mentions_bundle when every match is muted" do
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
+      {user, network, _} = setup_user_and_network(port)
+      own_nick = "grappa-test"
+
+      {:ok, _} =
+        put_all_muted({:user, user.id}, %{
+          Identifier.channel_key(network.slug, "#muted") => %{"until" => nil}
+        })
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      :ok = Session.set_explicit_away({:user, user.id}, network.id, "brb")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :"), 1_000)
+
+      {:ok, _} =
+        Grappa.ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: "#muted",
+          server_time: System.system_time(:millisecond),
+          kind: :privmsg,
+          sender: "bob",
+          body: "hey #{own_nick}, you around?"
+        })
+
+      :ok = Session.unset_explicit_away({:user, user.id}, network.id)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "AWAY\r\n"), 1_000)
+
+      refute_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :mentions_bundle}}, 300
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 
   # ---------------------------------------------------------------------------
