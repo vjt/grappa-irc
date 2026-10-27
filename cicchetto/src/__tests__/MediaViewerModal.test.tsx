@@ -980,3 +980,205 @@ describe("MediaViewerModal — copy the source (issue 1839)", () => {
     expect(screen.queryByRole("button", { name: /^copy$/i })).toBeNull();
   });
 });
+
+// issue 2468 — a picture someone posted could not be forwarded from a phone:
+// the viewer had no way to take the FILE out, only the "open in browser" detour.
+// vjt's ruling adds two verbs beside that anchor, Download and Share, and the
+// native long-press menu on the image (a stylesheet rule — pinned at source in
+// touchSelectionPolicy.test.ts, because jsdom applies no stylesheet).
+describe("MediaViewerModal — download + share (issue 2468)", () => {
+  // Both verbs are same-origin gated, so the href has to BE same-origin to
+  // reach them. Built from the live origin, the issue 1889 suite's reasoning.
+  const OWN_IMAGE_URL = `${window.location.origin}/uploads/abcdefghijklmnopqrstuvwxyz.png`;
+  const OWN_VIDEO_URL = `${window.location.origin}/uploads/zyxwvutsrqponmlkjihgfedcba.mp4`;
+  const FOREIGN_IMAGE_URL = "https://elsewhere.example/uploads/pic.png";
+  const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+  const restoreNavigator: Array<() => void> = [];
+
+  const defineOnNavigator = (key: "share" | "canShare", value: unknown): void => {
+    const original = Object.getOwnPropertyDescriptor(navigator, key);
+    Object.defineProperty(navigator, key, { value, configurable: true });
+    restoreNavigator.push(() => {
+      if (original === undefined) Reflect.deleteProperty(navigator, key);
+      else Object.defineProperty(navigator, key, original);
+    });
+  };
+
+  const stubShare = (
+    respond: () => Promise<void> = () => Promise.resolve(),
+    canShareFiles = true,
+  ): Mock<(data: ShareData) => Promise<void>> => {
+    const share = vi.fn<(data: ShareData) => Promise<void>>(respond);
+    defineOnNavigator("share", share);
+    defineOnNavigator("canShare", (data: ShareData) => data.files === undefined || canShareFiles);
+    return share;
+  };
+
+  // The served bytes, as the upload route answers them.
+  const stubServedImage = (): Mock => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        blob: () => Promise.resolve(new Blob([PNG_BYTES], { type: "image/png" })),
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  };
+
+  const actionStatus = (container: HTMLElement): Element | null =>
+    container.querySelector(".media-viewer-action-status");
+
+  afterEach(() => {
+    for (const restore of restoreNavigator.splice(0)) restore();
+    vi.unstubAllGlobals();
+  });
+
+  it("offers a download anchor for an own upload, beside 'open in browser'", () => {
+    render(() => <MediaViewerModal />);
+    openMediaViewer(OWN_IMAGE_URL, "image");
+
+    const download = screen.getByRole("link", { name: /^download$/i });
+    expect(download.getAttribute("href")).toBe(OWN_IMAGE_URL);
+    // Empty on purpose (the AudioMiniPlayer precedent): the save takes the
+    // server's own filename, and cic has nothing better on the wire.
+    expect(download.getAttribute("download")).toBe("");
+    // A download is not a navigation. With `target=_blank` some engines open
+    // an empty tab for it, and on iOS standalone a tab is the PWA itself.
+    expect(download.hasAttribute("target")).toBe(false);
+    expect(screen.getByRole("link", { name: /open in browser/i })).not.toBeNull();
+  });
+
+  it("offers it on a video too — the header is shared chrome", () => {
+    render(() => <MediaViewerModal />);
+    openMediaViewer(OWN_VIDEO_URL, "video");
+    expect(screen.getByRole("link", { name: /^download$/i }).getAttribute("href")).toBe(
+      OWN_VIDEO_URL,
+    );
+  });
+
+  it("offers NO download on a cross-host link — `download` is ignored there and would navigate out", () => {
+    render(() => <MediaViewerModal />);
+    openMediaViewer(FOREIGN_IMAGE_URL, "image");
+    expect(screen.queryByRole("link", { name: /^download$/i })).toBeNull();
+    // The control is the anchor beside it: the header did render.
+    expect(screen.getByRole("link", { name: /open in browser/i })).not.toBeNull();
+  });
+
+  it("offers share only where the Web Share API exists", () => {
+    render(() => <MediaViewerModal />);
+    openMediaViewer(OWN_IMAGE_URL, "image");
+    expect(screen.queryByRole("button", { name: /^share$/i })).toBeNull();
+    closeMediaViewer();
+
+    stubShare();
+    openMediaViewer(OWN_IMAGE_URL, "image");
+    expect(screen.getByRole("button", { name: /^share$/i })).not.toBeNull();
+  });
+
+  it("shares the FILE of an own upload where the platform accepts files", async () => {
+    const fetchMock = stubServedImage();
+    const share = stubShare();
+    render(() => <MediaViewerModal />);
+    openMediaViewer(OWN_IMAGE_URL, "image");
+
+    await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(OWN_IMAGE_URL);
+    const data = share.mock.calls[0]?.[0];
+    expect(data?.url).toBeUndefined();
+    const file = data?.files?.[0];
+    expect(data?.files).toHaveLength(1);
+    // Named after the link's last segment so the receiving app sees a `.png`,
+    // typed from what the server served, and the bytes are the served bytes.
+    expect(file?.name).toBe("abcdefghijklmnopqrstuvwxyz.png");
+    expect(file?.type).toBe("image/png");
+    expect(file?.size).toBe(PNG_BYTES.byteLength);
+  });
+
+  it("falls back to the link where the platform refuses the file", async () => {
+    stubServedImage();
+    const share = stubShare(() => Promise.resolve(), false);
+    render(() => <MediaViewerModal />);
+    openMediaViewer(OWN_IMAGE_URL, "image");
+
+    await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+    expect(share.mock.calls[0]?.[0]).toEqual({ url: OWN_IMAGE_URL });
+  });
+
+  it("falls back to the link when the bytes cannot be fetched", async () => {
+    vi.stubGlobal("fetch", () => Promise.resolve({ ok: false, status: 404 }));
+    const share = stubShare();
+    render(() => <MediaViewerModal />);
+    openMediaViewer(OWN_IMAGE_URL, "image");
+
+    await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+    expect(share.mock.calls[0]?.[0]).toEqual({ url: OWN_IMAGE_URL });
+  });
+
+  it("shares a cross-host link by URL without fetching it — connect-src would refuse the request", async () => {
+    // Not merely "falls back": the request must not be ISSUED, because a
+    // blocked fetch is a securitypolicyviolation (the issue 1889 probe rule).
+    const fetchMock = stubServedImage();
+    const share = stubShare();
+    render(() => <MediaViewerModal />);
+    openMediaViewer(FOREIGN_IMAGE_URL, "image");
+
+    await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+    expect(share.mock.calls[0]?.[0]).toEqual({ url: FOREIGN_IMAGE_URL });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("says nothing when the reader dismisses the share sheet", async () => {
+    stubServedImage();
+    const share = stubShare(() => Promise.reject(new DOMException("cancelled", "AbortError")));
+    const { container } = render(() => <MediaViewerModal />);
+    openMediaViewer(OWN_IMAGE_URL, "image");
+
+    await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+
+    await waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+    // Flush the rejection before asserting the absence of what it would write.
+    await Promise.resolve();
+    expect(actionStatus(container)).toBeNull();
+  });
+
+  it("names a refused share instead of failing inert", async () => {
+    stubServedImage();
+    stubShare(() => Promise.reject(new DOMException("share refused", "NotAllowedError")));
+    const { container } = render(() => <MediaViewerModal />);
+    openMediaViewer(OWN_IMAGE_URL, "image");
+
+    await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
+
+    await waitFor(() => expect(actionStatus(container)?.textContent).toMatch(/share refused/));
+  });
+
+  it("takes download and share away once the upload is known gone", async () => {
+    // Same reasoning as 'open in browser' above: both would hand the reader
+    // the route's `{"error":"not_found"}` instead of a file.
+    vi.stubGlobal("fetch", () => Promise.resolve({ status: 404 }));
+    stubShare();
+    const { container } = render(() => <MediaViewerModal />);
+    openMediaViewer(OWN_IMAGE_URL, "image");
+    expect(screen.getByRole("link", { name: /^download$/i })).not.toBeNull();
+    expect(screen.getByRole("button", { name: /^share$/i })).not.toBeNull();
+
+    container.querySelector("img")?.dispatchEvent(new Event("error"));
+
+    await waitFor(() => {
+      expect(screen.queryByText(/gone/i)).not.toBeNull();
+    });
+    expect(screen.queryByRole("link", { name: /^download$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^share$/i })).toBeNull();
+  });
+});

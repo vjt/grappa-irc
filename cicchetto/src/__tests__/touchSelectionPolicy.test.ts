@@ -65,6 +65,10 @@ const POLICY = [
   { selector: "html .scrollback-invite-join", declares: /user-select:\s*none/ },
   { selector: "html .admin-tab-panel", declares: /user-select:\s*text/ },
   { selector: "html .admin-tab-panel button", declares: /user-select:\s*none/ },
+  // issue 2468 — the viewer's image gets the platform's long-press menu back
+  // (Copy / Save to Photos / Share on iOS). The callout only, no user-select:
+  // an image carries no text to select, and the image menu needs nothing else.
+  { selector: "html .media-viewer-media--zoomable", declares: /-webkit-touch-callout:\s*default/ },
 ] as const;
 
 const coarse = () => coarsePointerBlocks().join("\n");
