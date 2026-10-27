@@ -262,6 +262,70 @@ defmodule Grappa.Networks.ConnectionStateTest do
     end
   end
 
+  # #2474 — the server parks a row whose session it stopped and could not
+  # bring back. The away half (it is kept, unlike `disconnect/2`) lives in
+  # `Grappa.Networks.AwayTest` beside the rest of #417.
+  describe "mark_parked/2" do
+    test "from :connected with live session: terminates session, transitions :parked, broadcasts" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, cred} = user_with_credential(port, %{})
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      ref = Process.monitor(pid)
+
+      assert {:ok, updated} = Networks.mark_parked(cred, "restart refused")
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 2_000
+      assert Session.whereis({:user, user.id}, network.id) == nil
+
+      assert updated.connection_state == :parked
+      assert updated.connection_state_reason == "restart refused"
+      assert reload_credential(cred).connection_state == :parked
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :connection_state_changed,
+                         from: :connected,
+                         to: :parked,
+                         reason: "restart refused"
+                       }
+                     },
+                     500
+    end
+
+    test "from :failing: parks it, so a backoff ladder cannot outlive the park" do
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {_, _, fresh} = user_with_credential(port, %{})
+      cred = set_state(fresh, :failing, "connection refused")
+
+      assert {:ok, %Credential{connection_state: :parked}} = Networks.mark_parked(cred, "restart refused")
+      assert reload_credential(cred).connection_state == :parked
+    end
+
+    test "idempotent on :parked and :failed: row unchanged, no broadcast" do
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, _, fresh} = user_with_credential(port, %{})
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      for {state, reason} <- [parked: "user wants out", failed: "k-line: trial"] do
+        cred = set_state(fresh, state, reason)
+
+        assert {:ok, %Credential{connection_state: ^state}} = Networks.mark_parked(cred, "restart refused")
+
+        reloaded = reload_credential(cred)
+        assert reloaded.connection_state == state
+        assert reloaded.connection_state_reason == reason
+      end
+
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :connection_state_changed}}, 100
+    end
+  end
+
   # #1675 — the non-terminal half of the pair. `mark_failed/2` above stops
   # the session and is terminal; these two say "the link is not registered"
   # / "it is" WITHOUT touching the session, so the reconnect ladder keeps

@@ -110,11 +110,12 @@ defmodule Grappa.Networks.AwayTest do
 
   describe "away lifecycle across connection-state transitions (#417 park-clear)" do
     # Ruling (vjt): a DELIBERATE park clears the away; an AUTOMATIC one keeps
-    # it. The two paths are structurally distinct — `Networks.disconnect/2`
-    # (the manual /disconnect + /quit + operator-CLI path, its only two
-    # callers) sets :parked, while automatic transient drops stay :connected
-    # and hard failures go :failed via `mark_failed/2`. So the clear lives in
-    # disconnect/2 alone; nothing else touches the away columns.
+    # it. The paths are structurally distinct — `Networks.disconnect/2` (the
+    # manual /disconnect + /quit + operator-CLI path) sets :parked, while
+    # automatic transient drops stay :connected, hard failures go :failed via
+    # `mark_failed/2`, and a server restart that cannot respawn goes :parked
+    # via `mark_parked/2` (#2474). So the clear lives in disconnect/2 alone;
+    # nothing else touches the away columns.
     test "manual disconnect (/disconnect, /quit) clears the persisted away" do
       {_, _, cred} = user_with_credential(6667, %{})
       :ok = Credentials.update_away(cred.user_id, cred.network_id, "lunch", DateTime.utc_now())
@@ -141,6 +142,21 @@ defmodule Grappa.Networks.AwayTest do
 
       # A hard upstream failure is not user intent — the away survives in the
       # DB so a later recovery (/connect → restore → re-send) resumes it.
+      reloaded = reload_credential(cred)
+      assert reloaded.away_reason == "brb"
+      assert reloaded.away_since == since
+    end
+
+    test "automatic mark_parked (a refused server restart, #2474) PRESERVES the persisted away" do
+      {_, _, cred} = user_with_credential(6667, %{})
+      since = DateTime.utc_now()
+      :ok = Credentials.update_away(cred.user_id, cred.network_id, "brb", since)
+
+      assert {:ok, updated} = Networks.mark_parked(cred, "credentials changed; restart refused")
+      assert updated.connection_state == :parked
+
+      # Same :parked as a manual disconnect, but nobody chose this teardown:
+      # the away waits for the reconnect that restores and re-sends it.
       reloaded = reload_credential(cred)
       assert reloaded.away_reason == "brb"
       assert reloaded.away_since == since

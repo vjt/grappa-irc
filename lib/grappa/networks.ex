@@ -1116,6 +1116,52 @@ defmodule Grappa.Networks do
     do: raise(ArgumentError, "Networks.disconnect: unhandled connection_state #{inspect(other)}")
 
   @doc """
+  #2474: the SERVER parks a credential whose session it stopped and could
+  not bring back. The automatic twin of `disconnect/2`.
+
+  Reached when a server-side restart (an edit that has to re-register
+  upstream) got its teardown done and its respawn refused: admission cap,
+  open circuit, no enabled server. Before this verb the row went on reading
+  `:connected` with no `Session.Server` behind it, so the UI said CONNECTED,
+  every `POST /messages` 404'd, and nothing walked it back short of a manual
+  toggle or a reboot. `:parked` is the truthful rest (down, and staying down
+  until somebody connects it) and it is where the UI offers that connect.
+
+  `:connected | :failing → :parked`, writing `reason` and broadcasting the
+  transition. A session still registered is stopped first (`QUIT
+  :<reason>`), so the post-condition is `disconnect/2`'s: no session behind a
+  parked row. Idempotent on `:parked` and `:failed`, with no write and no
+  broadcast: both already read as down, and `:failed` carries a terminal
+  cause the operator must see (#1985) that this would overwrite. The stop
+  still runs on those two arms, for the reason `detach/2` gives: the column
+  and the live pid are separate truths and can disagree.
+
+  It differs from `disconnect/2` on one count, on purpose: the persisted
+  away survives. GH #417 clears it on a DELIBERATE park and keeps it on an
+  automatic one, and nobody chose this teardown.
+  """
+  @spec mark_parked(Credential.t(), String.t()) :: {:ok, Credential.t()}
+  def mark_parked(%Credential{connection_state: from} = cred, reason)
+      when from in [:connected, :failing] and is_binary(reason) do
+    cred = preload_credential_assocs(cred)
+    :ok = Session.stop_session(subject_of(cred), cred.network_id, reason)
+
+    updated = transition!(cred, :parked, reason)
+    broadcast_state_change(updated, from, :parked, reason)
+    {:ok, updated}
+  end
+
+  def mark_parked(%Credential{connection_state: state} = cred, reason)
+      when state in [:parked, :failed] and is_binary(reason) do
+    :ok = Session.stop_session(subject_of(cred), cred.network_id, reason)
+    {:ok, cred}
+  end
+
+  # REV-B / H6: see `connect/1` fallthrough rationale.
+  def mark_parked(%Credential{connection_state: other}, _),
+    do: raise(ArgumentError, "Networks.mark_parked: unhandled connection_state #{inspect(other)}")
+
+  @doc """
   issue 2219 — DETACHES a credential: the subject stops holding this
   binding, and every field they authored survives for the day they put
   it back.
@@ -1558,10 +1604,11 @@ defmodule Grappa.Networks do
   # `disconnect/2`, whose only callers are NetworksController's user-driven
   # disconnect + Operator's CLI verb — both deliberate) drops it. Automatic
   # paths never reach here: a transient backoff/crash/network loss stays
-  # `:connected` (the session reconnects and re-asserts the away at 001), and
-  # a hard upstream failure goes `:failed` via `mark_failed/2`, which does NOT
-  # clear — so a recovering row resumes its away. USER-only: visitor away is
-  # never persisted, so there is nothing to clear.
+  # `:connected` (the session reconnects and re-asserts the away at 001), a
+  # hard upstream failure goes `:failed` via `mark_failed/2`, and a refused
+  # server restart goes `:parked` via `mark_parked/2` (#2474). Neither of
+  # those two clears, so a recovering row resumes its away. USER-only:
+  # visitor away is never persisted, so there is nothing to clear.
   #
   # Routes through `Credentials.update_away/4` (a FRESH `Repo.get_by` + null),
   # NOT a changeset on the passed struct: a caller could pass a `cred` whose
