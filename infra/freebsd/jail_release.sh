@@ -3,10 +3,10 @@
 # jail, with /usr/local/etc/grappa/grappa.env sourced first.
 #
 # Invoke from m42 host:
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/jail_release.sh version
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/jail_release.sh eval 'Grappa.Release.migrate()'
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/jail_release.sh daemon
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/jail_release.sh stop
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_release.sh version
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_release.sh eval 'Grappa.Release.migrate()'
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_release.sh daemon
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_release.sh stop
 
 set -eu
 

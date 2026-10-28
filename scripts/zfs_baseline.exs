@@ -35,7 +35,7 @@
 #
 # RUN ON THE LIVE m42 NODE (see docs/OPERATIONS.md "Drive the LIVE node"):
 #   scp scripts/zfs_baseline.exs into the jail at /tmp/zfs_baseline.exs, then:
-#     jexec grappa-new su -l grappa -c 'set -a; . /usr/local/etc/grappa/grappa.env; set +a;
+#     jexec grappa su -l grappa -c 'set -a; . /usr/local/etc/grappa/grappa.env; set +a;
 #       /home/grappa/grappa/_build/prod/rel/grappa/bin/grappa rpc \
 #         "Code.eval_file(~s(/tmp/zfs_baseline.exs))"'
 #

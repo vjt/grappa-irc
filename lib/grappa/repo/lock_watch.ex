@@ -71,13 +71,13 @@ defmodule Grappa.Repo.LockWatch do
   🔴 A holder past `stall_threshold_ms` used to be reported only **with at
   least one waiter queued behind it**, on the reasoning that a
   slow-but-uncontended transaction is not a stall. **Measured in prod on
-  2026-09-06 (jail `grappa-new`, 1.5.0), that gate is not a contention test at
-  all.** The watch table has ONE producer, so the only writers it can see are
-  the rare tail of this system's write load; every autocommit writer queued
-  behind that holder is invisible to it. Nine stall episodes that day produced
-  **two** announcements while holding, and five closed carrying
-  `NEVER announced while it held` — each of them with the holder's pid and
-  write path already in hand (`Vhosts.record_client_source/2`,
+  2026-09-06 (jail `grappa-new` (now `grappa`), 1.5.0), that gate is not a
+  contention test at all.** The watch table has ONE producer, so the only
+  writers it can see are the rare tail of this system's write load; every
+  autocommit writer queued behind that holder is invisible to it. Nine stall
+  episodes that day produced **two** announcements while holding, and five
+  closed carrying `NEVER announced while it held` — each of them with the
+  holder's pid and write path already in hand (`Vhosts.record_client_source/2`,
   `Session.Server.init/1`), printed only at release, i.e. exactly when the
   operator no longer needs it.
 
@@ -137,13 +137,14 @@ defmodule Grappa.Repo.LockWatch do
 
   🔴 That closing bracket used to require `reported?: true`, which made it
   useless in the one case it is now for. **Measured in prod on 2026-09-01
-  (grappa 1.4.1, jail `grappa-new`): a 31 s freeze — no request served, on any
-  network — with this observer ARMED (`enabled: true` in `config/config.exs`,
-  overridden nowhere) and not one line of its own between 12:06:57.328 and
-  12:07:28.554.** Whatever kept the detection pass from speaking, the episode
-  then closed in TOTAL silence too: no log line, no telemetry, no ring row.
-  An instrument whose silence means both *"nothing happened"* and *"something
-  happened and I could not say so"* has stopped reporting.
+  (grappa 1.4.1, jail `grappa-new` (now `grappa`)): a 31 s freeze — no
+  request served, on any network — with this observer ARMED (`enabled: true`
+  in `config/config.exs`, overridden nowhere) and not one line of its own
+  between 12:06:57.328 and 12:07:28.554.** Whatever kept the detection pass
+  from speaking, the episode then closed in TOTAL silence too: no log line, no
+  telemetry, no ring row. An instrument whose silence means both *"nothing
+  happened"* and *"something happened and I could not say so"* has stopped
+  reporting.
 
   So a hold past `stall_threshold_ms` now brackets whether or not it was ever
   announced, and the line SAYS which — an announced episode has an opening

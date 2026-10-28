@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Host-side one-command deploy to the m42 bastille jail.
 #
-# Wraps `ssh m42` + `sudo bastille cmd grappa-new <jail script>`; the jail-side
+# Wraps `ssh m42` + `sudo bastille cmd grappa <jail script>`; the jail-side
 # scripts live in infra/freebsd/. Runnable from anywhere with ssh access to
 # m42 (workstation, repo checkout, CI).
 #

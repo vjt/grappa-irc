@@ -2,9 +2,9 @@
 # Run `mix <args>` as the grappa user inside the bastille jail.
 #
 # Invoke from m42 host:
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/jail_mix.sh deps.get --only prod
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/jail_mix.sh compile --warnings-as-errors
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/jail_mix.sh release --overwrite
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_mix.sh deps.get --only prod
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_mix.sh compile --warnings-as-errors
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_mix.sh release --overwrite
 #
 # `MIX_OS_CONCURRENCY_LOCK=0` because jail /tmp cannot take the cross-uid
 # hard links mix uses as a build lock; safe while deploy runs are

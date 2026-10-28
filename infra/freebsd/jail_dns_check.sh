@@ -2,7 +2,7 @@
 # DNS smoke check from inside the BEAM (the OS resolver may work
 # while Erlang's :inet_res still has a stale cache).
 #
-# Usage: sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/jail_dns_check.sh <hostname>
+# Usage: sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_dns_check.sh <hostname>
 
 set -eu
 

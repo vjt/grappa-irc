@@ -4,7 +4,7 @@
 # pkg has no bun port).
 #
 # Usage:
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/jail_cic_build.sh
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_cic_build.sh
 #
 # Output: /home/grappa/grappa/runtime/cicchetto-dist/ (vite bundle),
 # served by the BEAM via Plug.Static — no nginx in the jail. The path is

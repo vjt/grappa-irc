@@ -99,7 +99,7 @@ defmodule GrappaWeb.AdminController do
       docker exec grappa curl -fsS -X POST http://localhost:4000/admin/reload
 
       # Bastille jail
-      sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/deploy.sh
+      sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/deploy.sh
 
       # Native Linux/systemd
       infra/linux/deploy.sh

@@ -10,7 +10,7 @@
 # Why: docs/OPERATIONS.md § "The FreeBSD jail rails (infra/freebsd/)" (#646).
 #
 # Invoke by hand (fresh jail, or after editing the wrapper in place):
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/jail_install_source_alias.sh
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_install_source_alias.sh
 
 set -eu
 

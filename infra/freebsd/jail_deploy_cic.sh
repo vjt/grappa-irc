@@ -4,7 +4,7 @@
 #
 # Run inside the jail as ROOT (jail_cic_build.sh drops to grappa via
 # su -l; the curl runs as root against loopback):
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/jail_deploy_cic.sh
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_deploy_cic.sh
 #
 # What it does (mirrors scripts/deploy-cic.sh for Docker):
 #   1. git pull --ff-only (no separate jail_git_pull.sh step needed)

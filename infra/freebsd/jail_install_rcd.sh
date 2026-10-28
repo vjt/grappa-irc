@@ -8,7 +8,7 @@
 #                                jail_install_source_alias.sh, #646)
 #
 # Invoke from m42 host:
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/jail_install_rcd.sh
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_install_rcd.sh
 #
 # Idempotent — re-run after `git pull` to refresh the rc.d scripts.
 

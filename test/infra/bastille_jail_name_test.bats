@@ -5,9 +5,11 @@
 #
 # The bug this exists to stop: `scripts/deploy-m42.sh` defaulted JAIL to
 # `grappa`, and `infra/freebsd/deploy.sh` built its restart hint on the same
-# name — the hint printed when the daemon is GONE. The jail is called
-# `grappa-new`; `grappa` is its host.hostname. So the line an operator pastes
-# to bring production back addressed a jail that does not exist.
+# name — the hint printed when the daemon is GONE. The jail was then called
+# `grappa-new`; `grappa` was its host.hostname. So the line an operator pastes
+# to bring production back addressed a jail that did not exist. (#2481 has
+# since renamed the jail `grappa`, so today the two agree — by coincidence,
+# not by construction.)
 #
 # `infra/lib/bastille_jail.sh` is the one place the name is written for the
 # consumers that COMPUTE with it. The ~30 remaining spellings are usage

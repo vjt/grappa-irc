@@ -63,7 +63,7 @@ defmodule GrappaWeb.Router do
 
   # Admin pipeline — direct-peer gate. Used by `POST /admin/reload`
   # (CP23 cluster `code-reload` B3). Reachable ONLY from `docker exec
-  # grappa curl ...` / `bastille cmd grappa-new curl ...` inside the box:
+  # grappa curl ...` / `bastille cmd grappa curl ...` inside the box:
   # since #485 every nginx substrate forwards `/admin/*` unfiltered, so
   # this plug is the gate — and it keys on the transport peer, not on the
   # resolved client IP. See `GrappaWeb.Plugs.LoopbackOnly`.

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Run a sqlite UPDATE/INSERT against the prod DB as the grappa user.
 # Usage:
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/jail_db_write.sh "UPDATE ..."
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_db_write.sh "UPDATE ..."
 
 set -eu
 

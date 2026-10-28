@@ -35,7 +35,7 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxy do
   curls from the container also hit loopback — same rule applies.
 
   The first row covers the operator's healthcheck/admin-poke shape:
-  `sudo bastille cmd grappa-new curl http://127.0.0.1:4000/admin/reload`
+  `sudo bastille cmd grappa curl http://127.0.0.1:4000/admin/reload`
   (or `docker exec grappa curl ...`) — loopback peer, no proxy
   headers, trust the peer. This row is ALSO the shape
   `Plugs.LoopbackOnly` gates on — but it gates on the predicate below,

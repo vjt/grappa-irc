@@ -6,7 +6,7 @@ defmodule GrappaWeb.Plugs.LoopbackOnly do
   Used to gate the admin reload endpoint (`POST /admin/reload`) so it's
   only callable from inside the running container / jail — `docker exec
   grappa curl -X POST http://localhost:4000/admin/reload` (or
-  `bastille cmd grappa-new ...`). **This gate is now the primary defense
+  `bastille cmd grappa ...`). **This gate is now the primary defense
   (GH #485).**
   Since #485 every nginx substrate is a dumb reverse proxy that forwards
   `/admin/*` unfiltered (the old proxy allowlist was deleted with the
@@ -39,7 +39,7 @@ defmodule GrappaWeb.Plugs.LoopbackOnly do
   the transport peer was loopback AND the request carried no forwarded
   header. That is a property of the TRANSPORT — nothing a caller can put
   in a header produces it — and it is exactly the operator shape this
-  gate exists for (`sudo bastille cmd grappa-new curl
+  gate exists for (`sudo bastille cmd grappa curl
   http://127.0.0.1:4000/admin/reload`, `docker exec grappa curl ...`).
   Every deploy path that pokes these routes uses exactly that shape.
   A request that came through any proxy this project ships carries a

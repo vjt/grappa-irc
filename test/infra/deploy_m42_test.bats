@@ -189,8 +189,9 @@ EOF
 
 # --- #2022: the default addresses a jail that EXISTS -------------------------
 #
-# `JAIL` defaulted to `grappa`, which is the jail's host.hostname, not its
-# bastille NAME (`grappa-new`) — so an unoverridden run addressed nothing.
+# `JAIL` defaulted to `grappa`, which was then the jail's host.hostname, not
+# its bastille NAME (`grappa-new`, renamed `grappa` by #2481) — so an
+# unoverridden run addressed nothing.
 # These two pin the default itself and the recovery line, because the second
 # is read while production is down and a wrong jail there costs an outage.
 

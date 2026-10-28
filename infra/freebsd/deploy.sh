@@ -2,9 +2,9 @@
 # Grappa native FreeBSD deploy — preflight-driven hot-vs-cold dispatcher.
 #
 # Run inside the jail as ROOT (the rc.d restart on the cold path needs it):
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/deploy.sh
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/deploy.sh --force-hot
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/deploy.sh --force-cold
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/deploy.sh
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/deploy.sh --force-hot
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/deploy.sh --force-cold
 #
 # A thin consumer of the shared deploy algorithm in
 # `infra/lib/deploy_common.sh`: this file sets config, flips the feature
@@ -197,7 +197,7 @@ substrate_restart() {
 
 	# --defer-restart: BEAM stopped and the new release + rc.d wrappers
 	# staged, but deliberately no start, no healthcheck and no marker —
-	# the host's single `bastille restart grappa-new` completes the deploy.
+	# the host's single `bastille restart grappa` completes the deploy.
 	# Why: docs/OPERATIONS.md § "The FreeBSD jail rails (infra/freebsd/)".
 	if [ "${DEFER}" -eq 1 ]; then
 		deploy_log "--defer-restart: BEAM stopped, new release+rc.d wrappers staged; host must bastille-restart ${BASTILLE_JAIL} to boot it (marker NOT written)"

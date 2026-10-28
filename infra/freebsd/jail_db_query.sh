@@ -1,7 +1,7 @@
 #!/bin/sh
 # Run an arbitrary sqlite3 query against the prod DB as grappa user.
 # Usage:
-#   sudo bastille cmd grappa-new /home/grappa/grappa/infra/freebsd/jail_db_query.sh "SELECT ..."
+#   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_db_query.sh "SELECT ..."
 
 set -eu
 
