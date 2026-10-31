@@ -369,6 +369,46 @@ defmodule Grappa.Push.PayloadTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # build_invite/3 — an inbound INVITE (issue 2487)
+  # ---------------------------------------------------------------------------
+
+  describe "build_invite/3" do
+    test "spells the invite the way the in-app banner does, with the network below" do
+      payload = Payload.build_invite("#sniffo", "alice", "azzurra")
+
+      # cic's invite banner reads "<inviter> is inviting you to <channel>".
+      # One event, one spelling: the lock screen says what the banner says.
+      assert payload.title == "alice is inviting you to #sniffo"
+      assert payload.body == "on azzurra"
+    end
+
+    test "coalesces with, and opens, the same window as a message in that channel" do
+      chan = Payload.build(msg(channel: "#sniffo", sender: "bob", body: "hi"), "azzurra")
+
+      payload = Payload.build_invite("#sniffo", "alice", "azzurra")
+
+      assert payload.tag == chan.tag
+      assert payload.url == chan.url
+    end
+
+    test "the title is de-formatted, the tag and url keep the channel key as stored" do
+      # A channel name can carry `\x03` (see the moduledoc), so the composed
+      # title is projected like every other rendered field.
+      channel = "#" <> @color <> "04red"
+      payload = Payload.build_invite(channel, "alice", "azzurra")
+
+      assert payload.title == "alice is inviting you to #red"
+      assert payload.tag == "azzurra:" <> channel
+    end
+
+    test "badge is OMITTED — the INVITE row is an event, not unread content" do
+      payload = Payload.build_invite("#sniffo", "alice", "azzurra")
+
+      assert Enum.sort(Map.keys(payload)) == [:body, :tag, :title, :url]
+    end
+  end
+
   describe "build_presence/3 — tag disjointness from message tags" do
     # The collision this guards is a function of the nick and channel
     # GRAMMARS, not of one example: a bare-nick presence tag would equal the

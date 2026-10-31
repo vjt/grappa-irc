@@ -385,3 +385,85 @@ Tracked here until resolved in the README or an issue.
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
 - Implementation scheduling ("I'll do X next week") — that belongs on the issue tracker, not in-repo.
 - Anything that belongs in `CONTRIBUTING.md` or a future issue template — to be added when the project moves past spec-only.
+<!-- entry #2487 -->
+
+---
+
+## 2026-11-01 — #2487: an inbound INVITE notifies, unless the channel is muted
+
+vjt's requirement (TG voice, 2026-10-31): an INVITE must reach the user
+through the normal notification path, not only through cic's in-app
+banner (#902), and the invited channel's mute applies to invites too.
+Until now an INVITE produced the banner and a `:server_event` row, and the
+row is outside `Message.notify_kinds/0` on purpose, so nothing pushed.
+
+**The notification rides the branch that opens the banner.**
+`Session.Server.admit_invited/3` broadcasts `window_invited` and, in the
+same branch, calls `Push.Triggers.dispatch_invite/3` when the window was not
+already `:invited`. So an INVITE pushes exactly when it OPENS an `:invited`
+window. Three INVITEs never get that far and so never push: one to a channel already `:joined` or
+`:pending` (`apply_invited/3` returns first), the ChanServ relay of our
+own gated JOIN (#116, the router turns it into `{:rejoin_invited, _}`),
+and one the invited-window ceiling turns away (#1404). The alternative,
+pushing from the `{:invited, _, _}` effect arm before the state check, was
+rejected: an invitation into a room the user is sitting in is noise, and a
+flood past the ceiling would have reached the lock screen even though the
+ceiling exists to bound what a stranger can create.
+
+**No preference, one gate.** `should_notify_invite?/3` reads only the
+channel's per-network mute (`muted_targets`, the same `muted_target?/3`
+the message and e2e paths use). None of the existing toggles was ever a
+statement about invitations: an invite is neither a channel message nor a
+DM, and borrowing `channel_mentions` or `private_messages_all` would make
+a toggle mean two things. The mute is the right gate because it names the
+room. The mute is the CHANNEL's: a muted inviter does not silence an
+invite into an unmuted channel, which is the issue's wording and the
+reading pinned by the predicate tests. After the gate, the shared #182
+foreground check and its issue-2067 suppression report, as for the other
+three classes.
+
+**The payload copies the banner.** `Payload.build_invite/3`: title
+`"<inviter> is inviting you to <channel>"` (cic's banner says exactly
+that, and "one event, one spelling" is the presence precedent), body
+`"on <network>"`, the composed title projected through
+`MircFormat.plain_text/1` because a channel name can carry `\x03`. `tag`
+and `url` are the ones `build/2` writes for a message in that channel, as
+`build_e2e/2` reuses the DM ones: once the invite is accepted the
+channel's own banners replace it rather than stacking under it, and a tap
+opens the channel, where the INVITE row and its [Join] are. No badge,
+because nothing counts the INVITE row as unread. Same payload shape, so
+no service-worker change and no wire change.
+
+**A repeat INVITE re-affirms the banner and pushes nothing.** The first
+cut pushed on every re-affirm, and the code review of this branch named
+what that costs: the banner is still up, the push says nothing new, and a
+stranger re-inviting in a loop could fire one push per INVITE, forever,
+across up to 64 windows (#1404's ceiling). The state is already there to
+derive the answer from, so `maybe_push_invite/3` reads it before
+`set_invited/3` writes it: absent, `:failed`, `:kicked` or `:parked` push;
+`:invited` does not. A decline clears the state, so the next invite after
+it pushes again. The price, accepted: an invite whose first push was
+withheld (a device on screen) or muted stays silent when re-sent after the
+user walked away or unmuted. The banner still carries it.
+
+**Apply:** a new trigger class is a `dispatch_*` in `Push.Triggers` with
+a pure `should_notify_*?` beside it, called from where the session already
+decides the user-visible event, never from a second place that decides it
+again. Its mute, if the event names a conversation, goes through
+`muted_target?/3`.
+
+Tests: `payload_test.exs` (copy literals, tag/url equal to a channel
+message's, the `\x03` projection, no badge); `triggers_test.exs` (the
+predicate with every message trigger off, the mute on one network only
+and folded, a mute on another conversation; the dispatcher pushing, staying
+silent when muted, withholding with the report when a device is visible);
+`session/invite_push_test.exs` end to end off the fake ircd (the push
+DECRYPTED as a browser would, through `Grappa.PushReceiver`, now shared with
+`wire_format_test.exs`, and compared with literals — which pins which
+argument went where, a swap no other test could see; a repeat INVITE pushes
+nothing; muted channel opens the banner and pushes nothing; joined channel
+pushes nothing; past the ceiling pushes nothing). Each negative was read red
+against a mutant of its own: the mute gate removed (3 reds, one per layer),
+any mute silencing every invite (2), the joined/pending branch pushing (1),
+the ceiling's refusal branch pushing (1), the re-affirm pushing (1), and
+`channel` and `inviter` swapped on their way into the payload (1).

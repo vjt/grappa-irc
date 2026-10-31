@@ -1000,6 +1000,105 @@ defmodule Grappa.Push.TriggersTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # issue 2487 — a FOURTH trigger class: an inbound INVITE. Not a row the
+  # message path reads (the INVITE row is a `:server_event`, outside
+  # `notify_kinds/0`), and no preference of its own: vjt's requirement is
+  # that an invite notifies, and that the invited channel's mute silences it.
+  # ---------------------------------------------------------------------------
+
+  describe "should_notify_invite?/3 — pure predicate" do
+    test "notifies with no message trigger on at all — an invite has no pref of its own" do
+      silent =
+        prefs(
+          channel_messages_all: false,
+          channel_messages_only: [],
+          channel_mentions: false,
+          private_messages_all: false,
+          private_messages_only: []
+        )
+
+      assert Triggers.should_notify_invite?("#secret", @slug, silent)
+      assert Triggers.should_notify_invite?("#secret", @slug, default_prefs())
+    end
+
+    test "a muted channel stays silent, on that network only, folded like the mute key" do
+      muted = prefs(muted_targets: %{Identifier.channel_key("azzurra", "#secret") => %{"until" => nil}})
+
+      refute Triggers.should_notify_invite?("#Secret", "azzurra", muted)
+      assert Triggers.should_notify_invite?("#Secret", "libera", muted)
+    end
+
+    test "it is the CHANNEL's mute that applies, not a mute on some other conversation" do
+      muted = prefs(muted_targets: %{Identifier.channel_key("azzurra", "#other") => %{"until" => nil}})
+
+      assert Triggers.should_notify_invite?("#secret", "azzurra", muted)
+    end
+  end
+
+  describe "dispatch_invite/3 — gates" do
+    setup do
+      :ok = WSPresence.reset_for_test()
+      bypass = Bypass.open()
+      {:ok, bypass: bypass, endpoint: "http://localhost:#{bypass.port}/wp"}
+    end
+
+    test "an invite to an unmuted channel with no visible device pushes", %{bypass: bypass, endpoint: endpoint} do
+      attach_telemetry([[:grappa, :push, :send, :start], [:grappa, :push, :send, :stop]])
+      Bypass.expect(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
+
+      user = user_fixture()
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
+
+      assert :ok = Triggers.dispatch_invite("#secret", "alice", presence_ctx(subject, user.name))
+
+      assert_receive {:telemetry, [:grappa, :push, :send, :start], %{count: 1}, %{subject: ^subject}}, 2_000
+      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{subject: ^subject}}, 2_000
+    end
+
+    test "an invite to a muted channel sends nothing and reports nothing withheld", %{
+      bypass: bypass,
+      endpoint: endpoint
+    } do
+      attach_telemetry([[:grappa, :push, :send, :start], [:grappa, :push, :suppressed]])
+      Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 500, "should-not-happen") end)
+
+      user = user_fixture()
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
+
+      :ok =
+        with_presence_prefs(subject,
+          muted_targets: %{Identifier.channel_key("azzurra", "#secret") => %{"until" => nil}}
+        )
+
+      assert :ok = Triggers.dispatch_invite("#secret", "alice", presence_ctx(subject, user.name))
+
+      refute_receive {:telemetry, _, _, _}, 300
+    end
+
+    test "a visible device withholds it, and says so", %{bypass: bypass, endpoint: endpoint} do
+      attach_telemetry([[:grappa, :push, :send, :start], [:grappa, :push, :suppressed]])
+      Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 500, "should-not-happen") end)
+
+      user = user_fixture()
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
+
+      device = spawn(fn -> Process.sleep(:infinity) end)
+      :ok = WSPresence.register(user.name, device)
+      :ok = WSPresence.set_visibility(user.name, device, true)
+
+      assert :ok = Triggers.dispatch_invite("#secret", "alice", presence_ctx(subject, user.name))
+
+      assert_receive {:telemetry, [:grappa, :push, :suppressed], %{count: 1}, %{reason: :foreground_visible}}, 2_000
+      refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 300
+
+      Process.exit(device, :kill)
+    end
+  end
+
   defp presence_ctx(subject, label) do
     %{subject: subject, subject_label: label, network_slug: "azzurra", own_nick: "vjt"}
   end

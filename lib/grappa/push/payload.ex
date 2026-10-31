@@ -72,6 +72,10 @@ defmodule Grappa.Push.Payload do
   hard-wired to a `%Scrollback.Message{}`, and a presence transition has no
   row, no sender and no body. It is also PURE in all three arguments — no
   `subject`, no badge count, no DB (see the badge note below).
+  `build_e2e/2` (issue 2430) and `build_invite/3` (issue 2487) are its
+  siblings for the other two classes that do not notify from a content row:
+  an encrypted message has no row at all, and an INVITE's row is a
+  `:server_event`.
 
   ## Tag — OS-level dedup key
 
@@ -234,6 +238,33 @@ defmodule Grappa.Push.Payload do
       body: "encrypted message",
       tag: "#{network_slug}:#{nick}",
       url: build_url(network_slug, nick)
+    }
+  end
+
+  @doc """
+  Builds a notification payload for an inbound INVITE to `channel` from
+  `inviter` on `network_slug` (issue 2487).
+
+  Pure function of its three arguments. The copy is the in-app banner's —
+  `"<inviter> is inviting you to <channel>"` — so the lock screen says what
+  cic says for the same event, and the network rides in the body as it does
+  for a presence flip. The composed title is projected like `build/2`'s,
+  because the channel half can carry formatting bytes.
+
+  `tag` and `url` are the ones `build/2` writes for a message in `channel`:
+  once the invite is accepted, the channel's own banners replace the stale
+  invite rather than stacking under it, and a tap opens the channel, where
+  the INVITE row and its [Join] are. No badge: the INVITE row is a
+  `:server_event`, which nothing counts as unread.
+  """
+  @spec build_invite(channel :: String.t(), inviter :: String.t(), network_slug :: String.t()) :: t()
+  def build_invite(channel, inviter, network_slug)
+      when is_binary(channel) and is_binary(inviter) and is_binary(network_slug) do
+    %{
+      title: MircFormat.plain_text("#{inviter} is inviting you to #{channel}"),
+      body: "on #{network_slug}",
+      tag: "#{network_slug}:#{channel}",
+      url: build_url(network_slug, channel)
     }
   end
 
