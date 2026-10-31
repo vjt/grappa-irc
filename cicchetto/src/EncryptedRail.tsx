@@ -100,6 +100,24 @@ export const CHECK_REASON: Record<CheckFailure, string> = {
   unverified: "their key is not verified here",
 };
 
+/**
+ * How a check reads: passed, failed, or not answered HERE. A bot encrypts its
+ * challenge to every device of the account and the send log is the device's
+ * (#2430w2c), so a line typed on a sibling device reads `not-sent` here, every
+ * time, and this device cannot tell it from a line someone else put out in
+ * the user's nick: no red alarm over it (DESIGN_NOTES #2485).
+ */
+export type CheckLook = "passed" | "unanswered" | "failed";
+
+export const checkLook = (check: IdentityCheck): CheckLook =>
+  check.passed ? "passed" : check.reason === "not-sent" ? "unanswered" : "failed";
+
+export const CHECK_LOOK: Record<CheckLook, { glyph: string; label: string }> = {
+  passed: { glyph: "✓", label: "passed" },
+  unanswered: { glyph: "–", label: "not answered here" },
+  failed: { glyph: "✗", label: "failed" },
+};
+
 const devicesText = (n: number): string => (n === 1 ? "1 device" : `${n} devices`);
 
 /** Where a challenged line was said: a channel, or a private message to the bot. */
@@ -306,8 +324,8 @@ const EncryptedRail: Component<Props> = (props) => {
                   data-passed={c().passed ? "true" : "false"}
                   data-reason={c().reason ?? ""}
                 >
-                  <span class={c().passed ? "e2e-check-passed" : "e2e-check-failed"}>
-                    {c().passed ? "passed" : "failed"}
+                  <span class={`e2e-check-${checkLook(c())}`}>
+                    {CHECK_LOOK[checkLook(c())].label}
                   </span>
                   , {formatDateTime(c().at)}, {checkPlace(c(), props.networkSlug)}
                   <Show when={c().reason}>
