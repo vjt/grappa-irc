@@ -10,10 +10,11 @@ defmodule Grappa.Push.Triggers do
   after a successful `Scrollback.persist_event/1` for a `:privmsg` or
   `:action` row — it owns the post-persist obligations (#369 A3), which is
   why the call moved off `Session.Server`'s `apply_effects/2` `:persist`
-  arm. `dispatch_presence/4` and `dispatch_e2e/2` are the Push entry
-  points `Session.Server` still calls directly: a presence transition and
-  an end-to-end encrypted message persist no row, so there is nothing for
-  `Persistor` to be the guardian of.
+  arm. `dispatch_presence/4`, `dispatch_e2e/2` and `dispatch_invite/3` are
+  the Push entry points `Session.Server` still calls directly: a presence
+  transition and an end-to-end encrypted message persist no row, and an
+  INVITE's row is a `:server_event` the message path never reads, so there
+  is nothing for `Persistor` to be the guardian of.
 
   Both calls are fire-and-forget — Triggers hands the work to
   `Grappa.TaskSupervisor` so the hot path stays sub-millisecond and Sender
@@ -98,6 +99,21 @@ defmodule Grappa.Push.Triggers do
   as what it is to the user: a private message from a nick. The mute
   first, then the private-message prefs (`should_notify_e2e?/3`, sharing
   their helpers with the row path); the payload says who and nothing else.
+
+  ## The fourth trigger class — inbound INVITEs (issue 2487)
+
+  An INVITE persists a row, but a `:server_event` one — outside
+  `Message.notify_kinds/0`, deliberately, so it never moves the unread
+  badge — and so it arrives through `dispatch_invite/3`, called by
+  `Session.Server` where it opens the `:invited` window. Only there: an
+  INVITE to a channel already joined or mid-JOIN opens no banner, and one
+  the invited-window ceiling turns away opens none either, so neither
+  notifies. The banner and the notification are one event.
+
+  There is no preference for it (vjt's requirement: an invite notifies).
+  The one gate is the invited CHANNEL's mute (`should_notify_invite?/3`):
+  "I silenced this room" covers an invitation into it as well as what is
+  said there. Then the foreground gate, as for the other three.
 
   #395 — the kind gate reads `Message.notify_kinds/0` (a subset of
   `Message.content_kinds/0`, derived from ONE projection declaration) via
@@ -385,6 +401,33 @@ defmodule Grappa.Push.Triggers do
     :ok
   end
 
+  @doc """
+  Dispatches the Web Push for an inbound INVITE to `channel` from `inviter`
+  (issue 2487) — the fourth trigger class.
+
+  Same fire-and-forget shape and foreground gate as the three above. The
+  caller decides WHICH invites reach here (the ones that open an `:invited`
+  window); this function decides whether that one pushes, by the channel's
+  mute alone (`should_notify_invite?/3`).
+  """
+  @spec dispatch_invite(String.t(), String.t(), ctx()) :: :ok
+  def dispatch_invite(channel, inviter, ctx) when is_binary(channel) and is_binary(inviter) and is_map(ctx) do
+    %{subject: subject, subject_label: subject_label, network_slug: network_slug} = ctx
+
+    # Discarded, not matched: same reason as the dispatchers above.
+    _ =
+      Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
+        prefs = UserSettings.get_notification_prefs(subject)
+
+        if should_notify_invite?(channel, network_slug, prefs) and
+             not foreground_visible?(subject, subject_label, network_slug) do
+          Push.Sender.send_to_subject(subject, Payload.build_invite(channel, inviter, network_slug))
+        end
+      end)
+
+    :ok
+  end
+
   # ---------------------------------------------------------------------------
   # Public — pure predicate (testable in isolation)
   # ---------------------------------------------------------------------------
@@ -473,6 +516,21 @@ defmodule Grappa.Push.Triggers do
   def should_notify_e2e?(nick, network_slug, prefs)
       when is_binary(nick) and is_binary(network_slug) and is_map(prefs) do
     not muted_target?(network_slug, nick, prefs) and dm_from?(nick, prefs)
+  end
+
+  @doc """
+  Returns `true` when an inbound INVITE to `channel`, received on
+  `network_slug`, should push, given `prefs` (issue 2487). Pure.
+
+  The channel's per-network mute is the whole test. No message preference
+  is read: an invite is neither a channel message nor a DM, and none of the
+  existing toggles was ever a statement about invitations. The mute is,
+  because it names the room.
+  """
+  @spec should_notify_invite?(String.t(), String.t(), prefs()) :: boolean()
+  def should_notify_invite?(channel, network_slug, prefs)
+      when is_binary(channel) and is_binary(network_slug) and is_map(prefs) do
+    not muted_target?(network_slug, channel, prefs)
   end
 
   @doc """
@@ -622,7 +680,8 @@ defmodule Grappa.Push.Triggers do
   defp own_row?(_, _), do: false
 
   # The mute on one conversation — a channel, or a peer's nick for a DM —
-  # keyed per network. Shared by the row path and the encrypted path.
+  # keyed per network. Shared by the row path, the encrypted path and the
+  # invite path.
   defp muted_target?(network_slug, target, prefs),
     do: Map.has_key?(Map.get(prefs, :muted_targets, %{}), Identifier.channel_key(network_slug, target))
 

@@ -7458,6 +7458,11 @@ defmodule Grappa.Session.Server do
   # volume is bounded by whatever rate the upstream lets a sender INVITE at,
   # rotates, and is the only trace the operator gets that invitations are
   # being turned away.
+  #
+  # issue 2487 — the OS notification rides the SAME branch as the banner, so
+  # an invite pushes only when it opens an `:invited` window: never for a
+  # channel already joined or mid-JOIN (`apply_invited/3` returns before
+  # reaching here), never for one the ceiling turns away.
   @spec admit_invited(t(), String.t(), String.t()) :: t()
   defp admit_invited(state, channel, inviter) do
     if WindowState.invite_admissible?(state.window_state, channel) do
@@ -7465,6 +7470,8 @@ defmodule Grappa.Session.Server do
         state,
         SessionWire.window_invited(state.network_slug, channel, inviter)
       )
+
+      :ok = maybe_push_invite(state, channel, inviter)
 
       %{state | window_state: WindowState.set_invited(state.window_state, channel, inviter)}
     else
@@ -7474,6 +7481,26 @@ defmodule Grappa.Session.Server do
       )
 
       state
+    end
+  end
+
+  # issue 2487 — read BEFORE `set_invited/3`, so it sees the state the INVITE
+  # arrived on. A repeat INVITE to a window still `:invited` re-affirms the
+  # banner but pushes nothing: the banner is already up and the push carries
+  # nothing it did not. Decline clears the state, so the next invite after it
+  # pushes again. The mute and the foreground gate live in Triggers, as for
+  # every other class.
+  @spec maybe_push_invite(t(), String.t(), String.t()) :: :ok
+  defp maybe_push_invite(state, channel, inviter) do
+    if WindowState.state_of(state.window_state, channel) == :invited do
+      :ok
+    else
+      PushTriggers.dispatch_invite(channel, inviter, %{
+        subject: state.subject,
+        subject_label: state.subject_label,
+        network_slug: state.network_slug,
+        own_nick: state.nick
+      })
     end
   end
 

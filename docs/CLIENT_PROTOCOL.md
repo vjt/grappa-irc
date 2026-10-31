@@ -1093,6 +1093,25 @@ its tap. A holder with no network to offer sends no `offer` and closes
 the rendezvous; a joiner treats an `offer` with no network as nothing to
 pair.
 
+### 4h. An inbound INVITE raises a Web Push notification (issue 2487)
+
+An INVITE that opens an `:invited` window — the first `window_invited` for
+that channel — also raises a Web Push notification, unless the invited
+channel is muted in `notification_prefs.muted_targets` (keyed like every
+other channel mute, network included). No other preference gates it. An
+INVITE that opens no window raises none: to a channel you are already in
+or joining, the ChanServ relay of an invite you asked for, one past the
+invited-window ceiling, or a repeat INVITE to a window still waiting on an
+answer (its `window_invited` re-affirms the banner; declining clears it, so
+the next invite pushes again). The usual foreground rule applies: while one of
+your devices reports the app on screen, the push is withheld and the
+banner is the notification.
+
+The payload is the ordinary one: title `"<inviter> is inviting you to
+<channel>"`, body `"on <network>"`, no `badge`, and the `tag` and `url` a
+message in that channel would carry. A service worker needs no change.
+Nothing on the WebSocket moved, so `protocol_version` did not either.
+
 ---
 
 ## 5. Wire format
