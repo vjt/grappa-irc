@@ -29,6 +29,12 @@
 //      challenges it the same way, cic never sent it and stays silent, and
 //      the bot refuses it once the challenge expires.
 //
+// issue 2485 — neither answer (6's ACK, 7's silence) shows as a row in any
+// window: no plaintext query with the bot opens, the encrypted chat gains no
+// row and no unread. What the user sees instead is the last identity check,
+// a ✓ then a ✗ in the encrypted window's top bar, and where, when and why in
+// the rail.
+//
 // ## What makes this spec able to fail
 //
 //   * The two engines disagree on the framing, the inner message, the key
@@ -44,11 +50,19 @@
 //     line's hash) or cic does not answer: the order cic sent comes out
 //     UNTRUSTED no-ack. cic confirms a line it did not send: the REST one
 //     comes out CONFIRMED.
+//   * A challenge leaves a trace in a window (a query with the bot, a row or
+//     an unread in the encrypted chat), or the identity check does not follow
+//     it: the chip and the rail do not read passed, then failed for not-sent.
 //
 // Timeouts are the 2430 bounds, never sleeps: KEYS within 32 s of a KEYREQ,
 // a message under way within 46 s, an order challenge answered within 15 s.
 
-import { composeSend, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
+import {
+  composeSend,
+  selectChannel,
+  sidebarMessageBadge,
+  sidebarWindow,
+} from "../fixtures/cicchettoPage";
 import { botCmd, botEvents, botPins, test as botTest, botWaitFor } from "../fixtures/e2eBot";
 import { boot, e2eWindow, equery, ownKey, pin, row, send } from "../fixtures/encryptedQuery";
 import { joinChannel, sendPrivmsg } from "../fixtures/grappaApi";
@@ -197,7 +211,7 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
     "cic's first message",
   );
   // The keys cic took from the Python engine named the bot's one device.
-  await expect(page.getByTestId("e2e-peer-devices")).toContainText("1 device");
+  await expect(page.getByTestId("e2e-peer-devices")).toHaveText("1 device");
 
   // 4. bot → cic.
   const reply = "hello cic";
@@ -217,6 +231,11 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
   const longIn = longBody("bot");
   await botCmd(`ESAY ${cic.nick} ${longIn}`);
   await expect(row(page, "in", longIn)).toHaveCount(1, { timeout: UNDER_WAY_BOUND });
+
+  // What the encrypted chat shows before any challenge: the four messages.
+  const messages = page.getByTestId("e2e-row");
+  await expect(messages).toHaveCount(4);
+  await expect(page.getByTestId("e2e-check-chip")).toHaveCount(0);
 
   // Both in one channel. The bot has to be there before an order is said,
   // or it never hears it.
@@ -248,6 +267,20 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
   );
   expect(confirmed.line).toMatch(/ MSG TRUSTED CONFIRMED=1 /);
 
+  // The ACK wrote nothing anywhere: no query with the bot, no unread on the
+  // encrypted chat, the same four messages in it. The check says it passed.
+  const encrypted = sidebarWindow(page, NETWORK_SLUG, e2eWindow(bot.nick));
+  await expect(sidebarWindow(page, NETWORK_SLUG, bot.nick)).toHaveCount(0);
+  await expect(sidebarMessageBadge(page, NETWORK_SLUG, e2eWindow(bot.nick))).toHaveCount(0);
+  await encrypted.locator("button").first().click();
+  await expect(page.getByTestId("e2e-pane")).toBeVisible();
+  const chip = page.getByTestId("e2e-pane").locator("header").getByTestId("e2e-check-chip");
+  const check = page.getByTestId("e2e-rail").getByTestId("e2e-identity-check");
+  await expect(chip).toHaveAttribute("data-passed", "true");
+  await expect(check).toHaveAttribute("data-passed", "true");
+  await expect(check).toContainText(`${chan} on `);
+  await expect(messages).toHaveCount(4);
+
   // 7. An order in cic's nick that cic did not send: another client of
   //    the same user, as far as cic can tell. Challenged the same way,
   //    never ACKed, refused when the challenge expires.
@@ -266,6 +299,14 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
     "the verdict on the REST order",
   );
   expect(refused.line).toMatch(/ MSG UNTRUSTED WHY=no-ack /);
+
+  // cic's silence wrote nothing either; the check says it failed, and why.
+  await expect(chip).toHaveAttribute("data-passed", "false");
+  await expect(check).toHaveAttribute("data-reason", "not-sent");
+  await expect(check).toContainText(`${chan} on `);
+  await expect(messages).toHaveCount(4);
+  await expect(sidebarWindow(page, NETWORK_SLUG, bot.nick)).toHaveCount(0);
+  await expect(sidebarMessageBadge(page, NETWORK_SLUG, e2eWindow(bot.nick))).toHaveCount(0);
 
   // Nothing went wrong on the bot's side along the way, and the window the
   // absences are read over holds the whole exchange.

@@ -20,10 +20,14 @@
 //     holds the secret, the commitment check): a side never reaches the
 //     comparison.
 //   * A match does not verify, or the MACs disagree: the badge never reads
-//     verified, and there is no verified row.
+//     verified, and the rail does not say the comparison matched.
 //   * The alarm cannot be answered: no button, or the badge stays on alarm
 //     once the key is taken. Taking a key verifies it (fork 7 says it must
 //     not): the badge reads verified before any comparison.
+//
+// issue 2485 — the comparison starts from the rail and runs as a dialog over
+// the chat body; the key events it records are the rail's state, never chat
+// rows; the alarm is the chat's step card until it is answered.
 
 import type { Page } from "@playwright/test";
 import {
@@ -65,12 +69,11 @@ async function compareEmoji(
   bobKey: string,
   askedWithin: number,
 ): Promise<void> {
-  await alice.getByTestId("e2e-sas-start").click();
+  await alice.getByTestId("e2e-rail").getByTestId("e2e-sas-start").click();
   await phase(alice, "waiting", KEYS_TIMEOUT);
-  await expect(row(alice, "sas_asked", "you asked")).toHaveCount(1);
 
   await phase(bob, "asked", askedWithin);
-  await expect(row(bob, "sas_asked", "asked to compare emoji with you")).toHaveCount(1);
+  await expect(bob.getByTestId("e2e-sas")).toContainText("asks to compare emoji with you");
   await bob.getByTestId("e2e-sas-accept").click();
 
   await phase(alice, "compare", KEYS_TIMEOUT);
@@ -90,7 +93,8 @@ async function compareEmoji(
     await expect(trust(page)).toHaveAttribute("data-trust", "verified", {
       timeout: KEYS_TIMEOUT,
     });
-    await expect(row(page, "verified", key)).toHaveCount(1);
+    await expect(page.getByTestId("e2e-peer-key")).toHaveText(key);
+    await expect(page.getByTestId("e2e-rail-comparison")).toHaveText("matched");
     await expect(page.getByTestId("e2e-sas")).toHaveCount(0);
     await expect(page.getByTestId("e2e-sas-start")).toHaveCount(0);
   }
@@ -158,19 +162,21 @@ test("a nick that speaks with a new key: the alarm takes it unverified, and comp
     const newKey = await ownKey(peer.page);
     expect(newKey).not.toBe(oldKey);
 
-    // What the new key writes is ignored, and shown as an alarm.
+    // What the new key writes is ignored, and shown as an alarm: the chat's
+    // step until it is answered, the ignored key in the rail.
     const again = "sono sempre io, browser nuovo";
     await send(peer.page, again);
-    const alarm = row(page, "key_alarm", newKey);
-    await expect(alarm).toHaveCount(1, { timeout: KEYS_TIMEOUT });
+    const step = page.getByTestId("e2e-step");
+    await expect(step).toHaveAttribute("data-step", "alarm", { timeout: KEYS_TIMEOUT });
+    await expect(page.getByTestId("e2e-rail-alarm-key")).toHaveText(newKey);
     await expect(row(page, "in", again)).toHaveCount(0);
     await expect(trust(page)).toHaveAttribute("data-trust", "alarm");
 
-    // Alice takes the new key from the alarm: written to now, not verified.
-    await alarm.getByTestId("e2e-alarm-accept").click();
-    await expect(row(page, "accepted", newKey)).toHaveCount(1);
+    // Alice takes the new key from the step: written to now, not verified.
+    await step.getByTestId("e2e-alarm-accept").click();
     await expect(page.getByTestId("e2e-peer-key")).toHaveText(newKey);
     await expect(trust(page)).toHaveAttribute("data-trust", "unverified");
+    await expect(page.getByTestId("e2e-step")).toHaveCount(0);
     await expect(page.getByTestId("e2e-alarm-accept")).toHaveCount(0);
 
     // Alice asked for Bob's old key moments ago, and the comparison needs

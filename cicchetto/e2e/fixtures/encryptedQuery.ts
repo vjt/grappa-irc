@@ -1,6 +1,6 @@
 // issue 2430 — the encrypted query, driven the way a person drives it: log
 // in and wait for the key bundle, open the query with `/equery`, read our own
-// key off the pane, pin a key by hand, send. Shared by the specs that put two
+// key off the rail (issue 2485: the keys live there), pin a key by hand, send. Shared by the specs that put two
 // people (two browser contexts, two grappa users) in one encrypted query.
 
 import type { Browser, Page } from "@playwright/test";
@@ -42,7 +42,7 @@ export async function equery(page: Page, ownNick: string, nick: string): Promise
   );
 }
 
-/** Our identity's MASTER Ed25519 key (what a peer pins), as the pane shows it. */
+/** Our identity's MASTER Ed25519 key (what a peer pins), as the rail shows it. */
 export async function ownKey(page: Page): Promise<string> {
   const key = page.getByTestId("e2e-own-identity");
   await expect(key).toHaveText(/^[A-Za-z0-9+/]{43}$/);
@@ -66,7 +66,7 @@ export async function replaceIdentity(page: Page): Promise<void> {
   await expect(page.getByTestId("e2e-identity-elsewhere")).toHaveCount(0);
 }
 
-/** Pastes `key` as the peer's and pins it: verified. */
+/** Pastes `key` as the peer's in the rail's pin form and pins it: verified. */
 export async function pin(page: Page, key: string): Promise<void> {
   await page.getByTestId("e2e-pin-input").fill(key);
   await page.getByTestId("e2e-pin-submit").click();
