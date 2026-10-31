@@ -45,7 +45,7 @@ import {
 } from "./api";
 import { token } from "./auth";
 import { browserE2e } from "./e2e/browser";
-import type { Chat, ChatRow, SendDropped } from "./e2e/chatStore";
+import { type Chat, type ChatRow, isMessage, type SendDropped } from "./e2e/chatStore";
 import {
   claimAnswer,
   copyAnswer,
@@ -431,10 +431,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     await changed(slug, await run(slug, (client, ctx) => client.deleteChat(ctx, nick)));
   }
 
-  /** Whether the chat with `nick` keeps any row on this device: what its close asks about. */
-  async function encryptedChatHasRows(slug: string, nick: string): Promise<boolean> {
+  /** Whether the chat with `nick` keeps any message on this device: what its close asks about. */
+  async function encryptedChatHasMessages(slug: string, nick: string): Promise<boolean> {
     const { chats } = await browserE2e();
-    return (await chats.rows(contextFor(slug).slot, nick)).length > 0;
+    return (await chats.rows(contextFor(slug).slot, nick)).some(isMessage);
   }
 
   async function readEncryptedChat(slug: string, nick: string): Promise<void> {
@@ -526,8 +526,13 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
   const ownKey = (slug: string): string | undefined => ownKeyBySlug()[slug];
 
+  // None while the identity is elsewhere: nothing runs on the network, and
+  // the window's dialog over the card that leads out of that state would
+  // leave it unreachable. A refresh that finds the identity elsewhere stops
+  // before the SAS, so the view kept is the one from before: it is back,
+  // as it was, when the identity is.
   const encryptedSas = (slug: string, nick: string): SasView | null =>
-    sasByChat()[chatId(slug, nick)] ?? null;
+    identityElsewhere(slug) ? null : (sasByChat()[chatId(slug, nick)] ?? null);
 
   /**
    * Drains each network's inbox once per login, as the network list brings
@@ -560,7 +565,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     openEncryptedChat,
     closeEncryptedChat,
     deleteEncryptedChat,
-    encryptedChatHasRows,
+    encryptedChatHasMessages,
     readEncryptedChat,
     sendEncrypted,
     pinEncryptedKey,
@@ -586,7 +591,7 @@ export const loadEncryptedChat = exports_.loadEncryptedChat;
 export const openEncryptedChat = exports_.openEncryptedChat;
 export const closeEncryptedChat = exports_.closeEncryptedChat;
 export const deleteEncryptedChat = exports_.deleteEncryptedChat;
-export const encryptedChatHasRows = exports_.encryptedChatHasRows;
+export const encryptedChatHasMessages = exports_.encryptedChatHasMessages;
 export const readEncryptedChat = exports_.readEncryptedChat;
 export const sendEncrypted = exports_.sendEncrypted;
 export const pinEncryptedKey = exports_.pinEncryptedKey;

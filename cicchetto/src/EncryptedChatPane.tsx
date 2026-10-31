@@ -7,6 +7,7 @@ import {
   type JSX,
   Match,
   on,
+  onMount,
   Show,
   Switch,
 } from "solid-js";
@@ -24,7 +25,7 @@ import { requestConfirm } from "./lib/confirmDialog";
 import { formatDateTime } from "./lib/dateFormat";
 import { loadDocument } from "./lib/documentNavigation";
 import { isDocumentVisible } from "./lib/documentVisibility";
-import type { ChatRow, IdentityCheck, OutFailure } from "./lib/e2e/chatStore";
+import { type IdentityCheck, isMessage, type Message, type OutFailure } from "./lib/e2e/chatStore";
 import { pairingUrl, parsePairFragment } from "./lib/e2e/pairing";
 import type { SasStep, SasView } from "./lib/e2e/sas";
 import { SAS_EMOJI } from "./lib/e2e/sasEmoji";
@@ -90,7 +91,7 @@ import NickText from "./NickText";
 // The chat lives only on this device, so its search does too (2430: "client
 // side only, no server index"): a filter over the messages the window
 // already holds decrypted, at most `CHAT_ROWS_MAX`. The shredder asks first,
-// as the window's × does when the chat keeps rows.
+// as the window's × does when the chat keeps messages.
 
 type Props = {
   networkSlug: string;
@@ -109,6 +110,12 @@ type Props = {
    * (itself empty while the window bar is in flow); desktop passes `null`.
    */
   windowsOpener: JSX.Element;
+  /**
+   * Called each time the emoji comparison's dialog opens, or `null`. Mobile
+   * passes the drawer's close: the rail is a drawer OVER the pane there, and
+   * the dialog opens behind it. Desktop passes `null`: its rail is beside.
+   */
+  onDialogOpen: (() => void) | null;
 };
 
 const FAILURE_LABEL: Record<OutFailure, string> = {
@@ -136,12 +143,6 @@ const FAILURE_LABEL: Record<OutFailure, string> = {
   "send-failed": "the connection failed while sending it",
   "session-ended": "the connection to the network ended before it went",
 };
-
-/** The rows the chat body shows: messages, and the one that stands in for a message lost. */
-type Message = Extract<ChatRow, { kind: "in" | "out" | "undecryptable" }>;
-
-const isMessage = (row: ChatRow): row is Message =>
-  row.kind === "in" || row.kind === "out" || row.kind === "undecryptable";
 
 // `pinned` is the master the chat's nick is pinned to. An `in` row carries the
 // master whose device wrote it, which is not always that one: a message can
@@ -332,10 +333,16 @@ function sasPhase(view: SasView): SasPhase {
 // what the user can do about it, modal-like over the chat body (vjt: no
 // message goes until it is over). A bot never answers a request (irc-olm
 // drops SAS), so the wait says what to do instead.
+//
+// Modal over the BODY only: the top bar and the rail stay usable (the wait
+// sends the user to the rail's pin form), so it is no `aria-modal` dialog,
+// which would tell assistive tech the rail is out of reach. It takes the
+// focus when it opens, which the compose line it makes inert would drop.
 const SasDialog: Component<{
   view: SasView;
   peer: string;
   onStep: (step: SasStep) => void;
+  onOpen: (() => void) | null;
 }> = (props) => {
   const button = (step: SasStep, label: string) => (
     <button
@@ -348,11 +355,17 @@ const SasDialog: Component<{
     </button>
   );
   const phase = () => sasPhase(props.view);
+  let dialog: HTMLDivElement | undefined;
+  onMount(() => {
+    dialog?.focus();
+    props.onOpen?.();
+  });
   return (
     <div
+      ref={dialog}
       class="e2e-sas-modal"
       role="dialog"
-      aria-modal="true"
+      tabindex="-1"
       aria-labelledby="e2e-sas-title"
       data-testid="e2e-sas"
       data-phase={phase()}
@@ -690,6 +703,12 @@ const EncryptedChatPane: Component<Props> = (props) => {
                             take the new key (not verified)
                           </button>
                         </div>
+                        <PinForm
+                          networkSlug={props.networkSlug}
+                          nick={props.nick}
+                          display={display()}
+                          testId="e2e-alarm-pin"
+                        />
                       </>
                     )}
                   </Match>
@@ -734,8 +753,15 @@ const EncryptedChatPane: Component<Props> = (props) => {
             </button>
           </form>
         </div>
-        <Show when={!elsewhere() && sas()}>
-          {(view) => <SasDialog view={view()} peer={display()} onStep={sasStep} />}
+        <Show when={sas()}>
+          {(view) => (
+            <SasDialog
+              view={view()}
+              peer={display()}
+              onStep={sasStep}
+              onOpen={props.onDialogOpen}
+            />
+          )}
         </Show>
       </div>
     </div>

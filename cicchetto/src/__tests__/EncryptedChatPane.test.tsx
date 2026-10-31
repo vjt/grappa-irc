@@ -9,6 +9,7 @@ import type { PeerTrust } from "../lib/e2e/client";
 import type { SasView } from "../lib/e2e/sas";
 import { SAS_EMOJI } from "../lib/e2e/sasEmoji";
 import { friendlyApiError } from "../lib/friendlyApiError";
+import { ruleBody, themeCss } from "./helpers/themeCss";
 
 // issue 2430 — the encrypted query window: the pane, and since issue 2485 its
 // technical half in the right rail (EncryptedRail), rendered side by side as
@@ -123,7 +124,13 @@ beforeEach(() => {
 });
 
 const Pane = () => (
-  <EncryptedChatPane networkSlug="azzurra" nick="bob" windowsOpener={null} railOpener={null} />
+  <EncryptedChatPane
+    networkSlug="azzurra"
+    nick="bob"
+    windowsOpener={null}
+    railOpener={null}
+    onDialogOpen={null}
+  />
 );
 
 // The window as Shell mounts it on desktop: the pane, and the rail beside it.
@@ -276,6 +283,23 @@ describe("EncryptedChatPane, the key-exchange step", () => {
     expect(within("e2e-step").dataset.step).toBe("no-key");
   });
 
+  it("an open alarm: the card pins the key they give you, verified, as the rail does", async () => {
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    setRows([{ kind: "key_alarm", id: "a", at, nick: "Bob", presented: OWN }]);
+    renderPane();
+
+    const input = within("e2e-step").querySelector<HTMLInputElement>(
+      "[data-testid='e2e-alarm-pin-input']",
+    );
+    expect(input).not.toBeNull();
+    fireEvent.input(input as HTMLInputElement, { target: { value: KEY } });
+    fireEvent.click(screen.getByTestId("e2e-alarm-pin-submit"));
+
+    await vi.waitFor(() =>
+      expect(pinEncryptedKey).toHaveBeenCalledWith("azzurra", "bob", KEY, true),
+    );
+  });
+
   it("an open alarm: the card and the rail both take the new key, unverified, until it is answered", () => {
     setTrust({ master: KEY, verified: true, devices: 1 });
     setRows([{ kind: "key_alarm", id: "a", at, nick: "Bob", presented: OWN }]);
@@ -283,6 +307,13 @@ describe("EncryptedChatPane, the key-exchange step", () => {
     expect(within("e2e-step").dataset.step).toBe("alarm");
     expect(within("e2e-step").textContent).not.toContain(OWN);
     expect(screen.getByTestId("e2e-rail-alarm-key").textContent).toBe(OWN);
+    // Red as an alarm: a rule of its own, after `.e2e-key`'s colour it beats
+    // at the same specificity (jsdom applies no stylesheet: read the sheet).
+    expect(screen.getByTestId("e2e-rail-alarm-key").classList.contains("e2e-key-alarm")).toBe(true);
+    expect(ruleBody(".e2e-key-alarm")).toMatch(/color:\s*var\(--error/);
+    expect(themeCss.indexOf("\n.e2e-key-alarm {")).toBeGreaterThan(
+      themeCss.indexOf("\n.e2e-key {"),
+    );
 
     fireEvent.click(screen.getByTestId("e2e-alarm-accept"));
     expect(pinEncryptedKey).toHaveBeenCalledWith("azzurra", "bob", OWN, false);
@@ -357,9 +388,14 @@ describe("EncryptedChatPane, the emoji comparison", () => {
     const content = screen.getByTestId("e2e-compose").parentElement as HTMLElement;
     expect(content.inert).toBe(false);
 
+    input.focus();
     setSas(view({ role: "b", phase: "asked", here: false }));
     const dialog = screen.getByRole("dialog");
-    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    // Scoped to the pane: the top bar and the rail stay usable (the wait
+    // says to pin a key in the rail), so it claims no modality over them,
+    // and the focus the inert compose line loses moves into it.
+    expect(dialog.hasAttribute("aria-modal")).toBe(false);
+    expect(document.activeElement).toBe(dialog);
     expect(dialog.textContent).toContain("compare emoji with Bob");
     expect(within("e2e-pane").querySelector(".e2e-body")?.contains(dialog)).toBe(true);
     expect(content.inert).toBe(true);
@@ -423,6 +459,24 @@ describe("EncryptedChatPane, the emoji comparison", () => {
     renderPane();
     expect(screen.getByTestId("e2e-rail-comparison").textContent).toBe(text);
   });
+
+  it.each([
+    ["taken off an alarm", { kind: "accepted", id: "p", at, nick: "Bob", ed25519: OWN }],
+    ["pinned by hand", { kind: "pinned", id: "p", at, nick: "Bob", ed25519: OWN }],
+  ] as [string, ChatRow][])(
+    "a key %s since says nothing of the last comparison: it was the old key's",
+    (_how, chosen) => {
+      setTrust({ master: OWN, verified: false, devices: 1 });
+      setRows([
+        { kind: "sas_asked", id: "a", at, nick: "Bob", by: "you" },
+        { kind: "verified", id: "v", at, nick: "Bob", ed25519: KEY },
+        { kind: "key_alarm", id: "k", at, nick: "Bob", presented: OWN },
+        chosen,
+      ]);
+      renderPane();
+      expect(screen.queryByTestId("e2e-rail-comparison")).toBeNull();
+    },
+  );
 });
 
 // issue 2485 — the bot's order challenges are answered without a row; what
@@ -560,6 +614,22 @@ describe("EncryptedChatPane, the rail", () => {
     expect(screen.queryByTestId("e2e-pin-error")).toBeNull();
   });
 
+  it("a pin that fails says what failed, logs the cause, and keeps what was pasted", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    pinEncryptedKey.mockRejectedValue(new Error("the network is gone"));
+    renderPane();
+    const input = screen.getByTestId("e2e-pin-input") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: KEY } });
+    fireEvent.click(screen.getByTestId("e2e-pin-submit"));
+
+    expect((await screen.findByTestId("e2e-pin-error")).textContent).toContain(
+      "the network is gone",
+    );
+    expect(input.value).toBe(KEY);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it.each([
     ["bad-key", "that is not an Ed25519 key"],
     ["own-key", "that is your own key"],
@@ -652,11 +722,38 @@ describe("EncryptedChatPane, compose and the chat's tools", () => {
         nick="bob"
         windowsOpener={<button type="button" data-testid="windows-door" />}
         railOpener={<button type="button" data-testid="rail-door" />}
+        onDialogOpen={null}
       />
     ));
     const bar = screen.getByTestId("e2e-pane").querySelector(".e2e-header-main") as HTMLElement;
     expect(bar.firstElementChild?.getAttribute("data-testid")).toBe("windows-door");
     expect(bar.lastElementChild?.getAttribute("data-testid")).toBe("rail-door");
+  });
+
+  // Mobile: the rail is a drawer over the pane, and the dialog opens behind
+  // it (started from the rail, or asked by the peer while it is up).
+  it("says each time the emoji comparison's dialog opens", () => {
+    const opened = vi.fn();
+    render(() => (
+      <EncryptedChatPane
+        networkSlug="azzurra"
+        nick="bob"
+        windowsOpener={null}
+        railOpener={null}
+        onDialogOpen={opened}
+      />
+    ));
+    expect(opened).not.toHaveBeenCalled();
+
+    setSas({ role: "b", phase: "asked", confirmed: false, here: false, emoji: null });
+    expect(opened).toHaveBeenCalledTimes(1);
+    // A step of the same comparison is no new dialog.
+    setSas({ role: "b", phase: "accepted", confirmed: false, here: true, emoji: null });
+    expect(opened).toHaveBeenCalledTimes(1);
+
+    setSas(null);
+    setSas({ role: "a", phase: "started", confirmed: false, here: true, emoji: null });
+    expect(opened).toHaveBeenCalledTimes(2);
   });
 
   it("marks what arrives read while the page is visible, and not while it is hidden", () => {
@@ -840,13 +937,6 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     );
     expect(screen.queryByTestId("e2e-identity-elsewhere")).toBeNull();
     expect(screen.getByTestId("e2e-own-identity").textContent).toBe(OWN);
-  });
-
-  it("an emoji comparison under way shows no dialog while the identity is elsewhere", () => {
-    setSas({ role: "b", phase: "asked", confirmed: false, here: false, emoji: null });
-    setElsewhere(true);
-    renderPane();
-    expect(screen.queryByTestId("e2e-sas")).toBeNull();
   });
 
   it("a new identity cannot be asked for twice while one is being made", async () => {

@@ -194,6 +194,14 @@ describe("issue 2160 — the windowed-pane leading clearance", () => {
     );
     const float = nestedRuleBodies(".shell-chrome .topic-bar-windows-opener").join("\n");
     expect(float).toMatch(new RegExp(`var\\(${TOKEN}\\)`));
+    // issue 2485 — the encrypted window's top bar hosts the same leading ☰
+    // as its first child on mobile, and the rail's ☰ as its last.
+    expect(ruleBody(".e2e-header")).toMatch(
+      new RegExp(`padding-inline-start:\\s*var\\(${TOKEN}\\)`),
+    );
+    expect(ruleBody(".e2e-header")).toMatch(
+      /padding:\s*var\(--pane-chrome-inset-block\) var\(--pane-chrome-inset-inline\)/,
+    );
   });
 
   it("leaves the trailing edge on the #1039 pair, so the ☰ corner does not move", () => {

@@ -6,14 +6,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const openEncryptedChat = vi.hoisted(() => vi.fn());
 const closeEncryptedChat = vi.hoisted(() => vi.fn());
 const deleteEncryptedChat = vi.hoisted(() => vi.fn());
-const encryptedChatHasRows = vi.hoisted(() => vi.fn());
+const encryptedChatHasMessages = vi.hoisted(() => vi.fn());
 const setSelectedChannel = vi.hoisted(() => vi.fn());
 
 vi.mock("../lib/encryptedChats", () => ({
   openEncryptedChat,
   closeEncryptedChat,
   deleteEncryptedChat,
-  encryptedChatHasRows,
+  encryptedChatHasMessages,
 }));
 vi.mock("../lib/selection", () => ({ setSelectedChannel, selectedChannel: () => null }));
 
@@ -29,9 +29,9 @@ beforeEach(() => {
   deleteEncryptedChat.mockResolvedValue(undefined);
 });
 
-// The × with a chat that has rows: the question it asks.
+// The × with a chat that has messages: the question it asks.
 async function asked() {
-  encryptedChatHasRows.mockResolvedValue(true);
+  encryptedChatHasMessages.mockResolvedValue(true);
   closeEncryptedWindow("azzurra", "Bob");
   await vi.waitFor(() => expect(confirmRequest()).not.toBeNull());
   return confirmRequest();
@@ -60,21 +60,21 @@ describe("openEncryptedWindow", () => {
 });
 
 describe("closeEncryptedWindow", () => {
-  it("closes a chat with no rows without asking; a failure is said, not thrown at the click", async () => {
+  it("closes a chat with no messages without asking; a failure is said, not thrown at the click", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    encryptedChatHasRows.mockResolvedValue(false);
+    encryptedChatHasMessages.mockResolvedValue(false);
     closeEncryptedChat.mockRejectedValue(new Error("nope"));
 
     closeEncryptedWindow("azzurra", "Bob");
 
     await vi.waitFor(() => expect(warn).toHaveBeenCalled());
-    expect(encryptedChatHasRows).toHaveBeenCalledWith("azzurra", "Bob");
+    expect(encryptedChatHasMessages).toHaveBeenCalledWith("azzurra", "Bob");
     expect(closeEncryptedChat).toHaveBeenCalledWith("azzurra", "Bob");
     expect(confirmRequest()).toBeNull();
     warn.mockRestore();
   });
 
-  it("asks about a chat with rows, Cancel first: delete them (the red yes), or keep them", async () => {
+  it("asks about a chat with messages, Cancel first: delete them (the red yes), or keep them", async () => {
     const req = await asked();
 
     expect(req).toMatchObject({

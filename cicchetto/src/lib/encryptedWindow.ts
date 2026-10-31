@@ -4,19 +4,21 @@
 // (`encryptedChats.ts`); the window is named `$e2e:<nick>` (`windowKinds.ts`).
 // Focus after a close is the selection close-watcher's, as for a query.
 //
-// The × asks first when the chat keeps rows (2430: "on closing an encrypted
+// The × asks first when the chat keeps messages (2430: "on closing an encrypted
 // query: delete or keep the messages"). Delete is the affirmative, red like
 // every destructive yes in cic, and deletes them here and in every tab; Keep
 // is the third door (#816), the plain close that hides the chat and keeps
 // its rows for `/equery`. Cancel is the default answer (#195). A chat with
-// nothing in it closes without a question that has nothing to keep or delete.
+// no message closes without a question that has nothing to keep or delete:
+// the key's history it may hold is the rail's state (issue 2485), not
+// something the user reads as messages.
 
 import { requestConfirm } from "./confirmDialog";
 import { fold } from "./e2e/wire";
 import {
   closeEncryptedChat,
   deleteEncryptedChat,
-  encryptedChatHasRows,
+  encryptedChatHasMessages,
   openEncryptedChat,
 } from "./encryptedChats";
 import { selectedChannel, setSelectedChannel } from "./selection";
@@ -42,8 +44,8 @@ export function closeEncryptedWindow(networkSlug: string, nick: string): void {
       `close the encrypted chat with ${nick} on ${networkSlug}`,
     );
   said(
-    encryptedChatHasRows(networkSlug, nick).then((rows) => {
-      if (!rows) return close();
+    encryptedChatHasMessages(networkSlug, nick).then((messages) => {
+      if (!messages) return close();
       requestConfirm({
         title: "Close encrypted query",
         body:

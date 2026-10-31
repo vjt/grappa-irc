@@ -4,6 +4,7 @@ import { isChannelName } from "./lib/chantypes";
 import { copyText } from "./lib/clipboard";
 import { formatDateTime } from "./lib/dateFormat";
 import type { ChatRow, CheckFailure, IdentityCheck } from "./lib/e2e/chatStore";
+import type { PinOutcome } from "./lib/e2e/engine";
 import { UNCONFIRMED } from "./lib/e2e/orders";
 import { holdsMasterHere } from "./lib/e2e/pairingDeps";
 import type { SasCancelReason } from "./lib/e2e/sas";
@@ -20,6 +21,7 @@ import {
   trustOf,
   verifyEncrypted,
 } from "./lib/encryptedChats";
+import { errorMessage } from "./lib/friendlyApiError";
 import { chantypesForNetwork } from "./lib/isupport";
 import { networkBySlug } from "./lib/networks";
 
@@ -74,10 +76,15 @@ const SAS_REASON: Record<SasCancelReason, string> = {
 const reasonText = (reason: string): string =>
   (SAS_REASON as Record<string, string | undefined>)[reason] ?? `"${reason}"`;
 
-/** How the last emoji comparison ended, from the rows that record it; null when none did. */
+/**
+ * How the last emoji comparison of the key now pinned ended, from the rows
+ * that record it; null when none did. A key chosen since (pinned, or taken
+ * off an alarm) ends the search: what came before was about the old one.
+ */
 export function lastComparison(rows: readonly ChatRow[]): string | null {
   for (let i = rows.length - 1; i >= 0; i--) {
     const row = rows[i];
+    if (row?.kind === "pinned" || row?.kind === "accepted") return null;
     if (row?.kind === "verified") return "matched";
     if (row?.kind === "sas_cancelled") {
       const who = row.by === "you" ? "stopped" : "stopped by them";
@@ -119,7 +126,14 @@ export const PinForm: Component<{
     event.preventDefault();
     const key = pin().trim();
     if (key === "") return;
-    const result = await pinEncryptedKey(props.networkSlug, props.nick, key, true);
+    let result: PinOutcome;
+    try {
+      result = await pinEncryptedKey(props.networkSlug, props.nick, key, true);
+    } catch (err) {
+      console.warn(`[e2e] could not pin a key to ${props.nick}`, err);
+      setError(`could not pin the key: ${errorMessage(err)}`);
+      return;
+    }
     if (result === "pinned") {
       setPin("");
       setError(null);
@@ -260,7 +274,7 @@ const EncryptedRail: Component<Props> = (props) => {
               <>
                 <dt>ignored key</dt>
                 <dd>
-                  <code class="e2e-key e2e-row-alarm" data-testid="e2e-rail-alarm-key">
+                  <code class="e2e-key e2e-key-alarm" data-testid="e2e-rail-alarm-key">
                     {key()}
                   </code>
                 </dd>

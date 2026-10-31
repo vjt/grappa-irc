@@ -10,7 +10,10 @@
 //     window itself, a dialog over the chat body, nothing sent until it ends.
 //
 // One flow walks all three: before the exchange, after it (keys taken on
-// first use: unverified), and after an emoji comparison (verified).
+// first use: unverified), and after an emoji comparison (verified). A second,
+// on a phone, walks the one path a phone changes: the rail is a drawer OVER
+// the pane, reached from the top bar's ☰, and the comparison it starts opens
+// its dialog in the pane behind it, so the drawer has to go.
 //
 // ## What makes this spec able to fail
 //
@@ -22,6 +25,8 @@
 //     action missing from the rail's sections.
 //   * The comparison runs anywhere but over the chat body, or leaves the body
 //     usable while it runs.
+//   * On a phone: the top bar hosts no door to the rail, or the drawer stays
+//     over the dialog the rail's "verify" opened.
 
 import type { Page } from "@playwright/test";
 import {
@@ -169,6 +174,55 @@ test("the encrypted window: key steps in the chat until the exchange is done, se
     await send(page, after);
     await expect(row(peer.page, "in", after)).toHaveCount(1, { timeout: KEYS_TIMEOUT });
     await bodyIsClean(peer.page, keys);
+  } finally {
+    await peer.context.close();
+    await teardownSpecSubject(bob);
+  }
+});
+
+test("@touch on a phone, the encrypted window's top bar opens the rail, and the comparison it starts closes the drawer over the dialog", async ({
+  page,
+  browser,
+}, testInfo) => {
+  test.slow();
+  const alice = specUser();
+  const aliceNick = specNick();
+  const bob = await provisionPeerSubject(testInfo, "bob");
+  const peer = await peerPage(browser);
+  try {
+    await boot(page, alice);
+    await boot(peer.page, bob.user);
+    await equery(page, aliceNick, bob.nick);
+    await equery(peer.page, bob.nick, aliceNick);
+
+    // Keys taken on first use: a pinned key, not verified, so the rail
+    // offers the comparison.
+    const hello = "ciao bob, dal telefono";
+    await send(page, hello);
+    await expect(row(peer.page, "in", hello)).toHaveCount(1, { timeout: KEYS_TIMEOUT });
+    const reply = "ricevuto";
+    await send(peer.page, reply);
+    await expect(row(page, "in", reply)).toHaveCount(1, { timeout: KEYS_TIMEOUT });
+
+    // The rail's door is the top bar's last control: the floating ☰ would
+    // land on the shredder.
+    const drawer = page.locator(".shell-members.open");
+    await expect(drawer).toHaveCount(0);
+    await topBar(page).locator(".topic-bar-hamburger").tap();
+    await expect(drawer).toHaveCount(1);
+    const start = rail(page).getByTestId("e2e-sas-start");
+    await expect(start).toBeVisible();
+
+    // The comparison opens over the chat body, behind the drawer: the drawer
+    // goes, and the dialog is what the phone shows.
+    await start.tap();
+    const dialog = body(page).getByRole("dialog");
+    await expect(dialog).toHaveAttribute("data-phase", "waiting", { timeout: KEYS_TIMEOUT });
+    await expect(drawer).toHaveCount(0);
+    await expect(dialog).toBeVisible();
+    await expect(body(peer.page).getByRole("dialog")).toHaveAttribute("data-phase", "asked", {
+      timeout: KEYS_TIMEOUT,
+    });
   } finally {
     await peer.context.close();
     await teardownSpecSubject(bob);
