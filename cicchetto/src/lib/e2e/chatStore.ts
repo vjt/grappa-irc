@@ -17,6 +17,7 @@
 
 import { type Lock, open, type Sealed, seal, type Vault } from "./accountStore";
 import type { SendFailure } from "./engine";
+import type { OrderVerdict } from "./orders";
 import { fold } from "./wire";
 
 /** Where an outgoing message is: waiting for keys, handed to grappa, accepted, or not. */
@@ -65,17 +66,40 @@ export type ChatRow =
   /** A SAS matched on both sides: this key is verified. */
   | { kind: "verified"; id: string; at: number; nick: string; ed25519: string };
 
-export type Chat = { nick: string; open: boolean; unread: number };
+/** Why an order challenge went unanswered: the peer's key is not verified, or the send log's verdict. */
+export type CheckFailure = "unverified" | Exclude<OrderVerdict, "confirmed">;
+
+/**
+ * The last order challenge a bot sent on this chat (issue 2485): when it
+ * came, the network and channel it named (its 005 `NETWORK=` and the raw
+ * PRIVMSG target, the bot's own nick for a private message), and whether
+ * this cic answered it. It is never a row: an answer is invisible, and only
+ * this signal says the bot checked.
+ */
+export type IdentityCheck = {
+  at: number;
+  network: string;
+  channel: string;
+  passed: boolean;
+  reason: CheckFailure | null;
+};
+
+/** `check` is absent until a bot first challenges an order here. */
+export type Chat = { nick: string; open: boolean; unread: number; check?: IdentityCheck };
 
 /**
  * `add` writes a row unless one with its id is there already, and opens the
  * chat (a new message reopens a closed one, as a query window does). `out`
  * moves an outgoing row along, and changes nothing if the row is not there,
  * nor once the row is sent and the change would take it back (`backwards`).
+ * `check` keeps the chat's last identity check and nothing else: it neither
+ * opens the chat nor counts as unread, and a nick with no chat gets a closed
+ * one to keep it on.
  */
 export type ChatChange =
   | { op: "add"; nick: string; row: ChatRow; unread: boolean }
-  | { op: "out"; nick: string; id: string; state: OutState; reason: OutFailure | null };
+  | { op: "out"; nick: string; id: string; state: OutState; reason: OutFailure | null }
+  | { op: "check"; nick: string; check: IdentityCheck };
 
 /** Rows kept per chat; the oldest go first. */
 export const CHAT_ROWS_MAX = 1000;
@@ -95,7 +119,13 @@ export type ChatStore = {
   read(slot: string, nick: string): Promise<void>;
 };
 
-type IndexEntry = { id: string; nick: string; open: boolean; unread: number };
+type IndexEntry = {
+  id: string;
+  nick: string;
+  open: boolean;
+  unread: number;
+  check?: IdentityCheck;
+};
 type ChatIndex = { v: 1; chats: Record<string, IndexEntry> };
 type ChatRecord = { v: 1; rows: ChatRow[] };
 
@@ -144,11 +174,11 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
     });
   }
 
-  function entry(index: ChatIndex, nick: string): IndexEntry {
+  function entry(index: ChatIndex, nick: string, open: boolean): IndexEntry {
     const key = fold(nick);
     const found = index.chats[key];
     if (found !== undefined) return found;
-    const created = { id: crypto.randomUUID(), nick, open: true, unread: 0 };
+    const created = { id: crypto.randomUUID(), nick, open, unread: 0 };
     index.chats[key] = created;
     return created;
   }
@@ -159,7 +189,7 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
       return Object.fromEntries(
         Object.entries(index.chats).map(([key, e]) => [
           key,
-          { nick: e.nick, open: e.open, unread: e.unread },
+          { nick: e.nick, open: e.open, unread: e.unread, check: e.check },
         ]),
       );
     },
@@ -179,9 +209,9 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
         const touched: string[] = [];
         for (const [key, own] of byChat) {
           // An `out` alone never creates a chat: its row would not be there.
-          if (index.chats[key] === undefined && !own.some((c) => c.op === "add")) continue;
+          if (index.chats[key] === undefined && own.every((c) => c.op === "out")) continue;
           const first = own[0] as ChatChange;
-          const chat = entry(index, first.nick);
+          const chat = entry(index, first.nick, first.op === "add");
           let rows = await loadRows(chat.id);
           for (const change of own) {
             if (change.op === "add") {
@@ -189,6 +219,8 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
               rows.push(change.row);
               chat.open = true;
               if (change.unread) chat.unread += 1;
+            } else if (change.op === "check") {
+              chat.check = change.check;
             } else {
               rows = rows.map((r) =>
                 r.kind === "out" && r.id === change.id && !backwards(r.state, change.state)
@@ -208,7 +240,7 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
 
     open: (slot, nick) =>
       withIndex(slot, async (index) => {
-        const chat = entry(index, nick);
+        const chat = entry(index, nick, true);
         chat.open = true;
         chat.nick = nick;
       }),

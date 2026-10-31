@@ -3,7 +3,13 @@
 // and the lock are the in-memory twins of IndexedDB and Web Locks; the
 // sealing is the real AES-GCM.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CHAT_ROWS_MAX, type ChatChange, type ChatRow, chatStore } from "../lib/e2e/chatStore";
+import {
+  CHAT_ROWS_MAX,
+  type ChatChange,
+  type ChatRow,
+  chatStore,
+  type IdentityCheck,
+} from "../lib/e2e/chatStore";
 import { memoryLock, memoryVault } from "./helpers/e2eVault";
 
 const SLOT = "user:0b5e:1";
@@ -125,6 +131,50 @@ describe("chatStore", () => {
     await chats.read(SLOT, "bob");
     expect((await chats.chats(SLOT)).bob?.unread).toBe(0);
     expect(await chats.rows(SLOT, "bob")).toHaveLength(2);
+  });
+
+  it("keeps the last identity check on the chat: no row, no unread, a closed chat stays closed", async () => {
+    const chats = chatStore(memoryVault(), memoryLock());
+    await chats.apply(SLOT, [add("Bob", inRow("in:1:0", "one"))]);
+    await chats.close(SLOT, "bob");
+    const first: IdentityCheck = {
+      at: 10,
+      network: "AzzurraNet",
+      channel: "#grappa",
+      passed: true,
+      reason: null,
+    };
+    const second: IdentityCheck = { ...first, at: 20, passed: false, reason: "not-sent" };
+
+    const touched = await chats.apply(SLOT, [{ op: "check", nick: "BOB", check: first }]);
+    await chats.apply(SLOT, [{ op: "check", nick: "bob", check: second }]);
+
+    expect(touched).toEqual(["bob"]);
+    expect((await chats.chats(SLOT)).bob).toEqual({
+      nick: "Bob",
+      open: false,
+      unread: 1,
+      check: second,
+    });
+    expect((await chats.rows(SLOT, "bob")).map((r) => r.id)).toEqual(["in:1:0"]);
+  });
+
+  it("keeps an identity check from a nick with no chat on a closed, empty one", async () => {
+    const chats = chatStore(memoryVault(), memoryLock());
+    const check: IdentityCheck = {
+      at: 10,
+      network: "AzzurraNet",
+      channel: "#grappa",
+      passed: true,
+      reason: null,
+    };
+
+    await chats.apply(SLOT, [{ op: "check", nick: "Bob", check }]);
+
+    expect(await chats.chats(SLOT)).toEqual({
+      bob: { nick: "Bob", open: false, unread: 0, check },
+    });
+    expect(await chats.rows(SLOT, "bob")).toEqual([]);
   });
 
   it("opens an empty chat, under the nick as typed", async () => {

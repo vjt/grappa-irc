@@ -797,6 +797,70 @@ describe("e2eClient, order challenges", () => {
     expect(await rowsOf(a, "Bob")).toEqual(rows);
   });
 
+  it("keeps each challenge as the chat's last identity check, passed or not and why, with no row and no unread", async () => {
+    const { w, a, b } = await verifiedPair();
+    await a.chats.read(SLOT, "Bob");
+    const rows = await rowsOf(a, "Bob");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const checkOf = async () => (await a.chats.chats(SLOT)).bob;
+
+    await sent(w, a, LINE);
+    w.now += 2_000;
+    await inject(w, b, "alice", await chal(w, LINE));
+    const confirmed = await a.client.drain(a.ctx);
+
+    expect(confirmed.chats).toContain("bob");
+    expect(await checkOf()).toEqual(
+      expect.objectContaining({
+        unread: 0,
+        check: { at: w.now, network: "AzzurraNet", channel: "#grappa", passed: true, reason: null },
+      }),
+    );
+
+    w.now += 3_000;
+    await inject(w, b, "alice", { ...(await chal(w, "Bob: not mine")), channel: "#other" });
+    await a.client.drain(a.ctx);
+
+    expect(warn).toHaveBeenCalledWith(
+      `[e2e] order challenge from Bob not confirmed: ${UNCONFIRMED["not-sent"]}`,
+    );
+    expect(await checkOf()).toEqual(
+      expect.objectContaining({
+        unread: 0,
+        check: {
+          at: w.now,
+          network: "AzzurraNet",
+          channel: "#other",
+          passed: false,
+          reason: "not-sent",
+        },
+      }),
+    );
+    expect(await rowsOf(a, "Bob")).toEqual(rows);
+  });
+
+  it("a challenge on a session it has not verified is a failed identity check; a malformed one is none", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    await sent(w, a, LINE);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+
+    await inject(w, b, "alice", { ...(await chal(w, LINE)), nonce: "" });
+    await a.client.drain(a.ctx);
+    expect((await a.chats.chats(SLOT)).bob?.check).toBeUndefined();
+
+    await inject(w, b, "alice", await chal(w, LINE));
+    await a.client.drain(a.ctx);
+    expect((await a.chats.chats(SLOT)).bob?.check).toEqual({
+      at: w.now,
+      network: "AzzurraNet",
+      channel: "#grappa",
+      passed: false,
+      reason: "unverified",
+    });
+  });
+
   it("ACKs only to the device the CHAL came from, of a master with two", async () => {
     const { w, a, b } = await pair();
     const b2 = await w.pairDevice(b);
