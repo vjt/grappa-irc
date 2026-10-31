@@ -924,6 +924,7 @@ const Shell: Component = () => {
                       nick={w.nick}
                       windowsOpener={null}
                       railOpener={null}
+                      onDialogOpen={null}
                     />
                   )}
                 </Match>
@@ -1250,7 +1251,11 @@ const Shell: Component = () => {
               </Match>
               <Match when={encryptedWindow()} keyed>
                 {/* issue 2430 — the encrypted query pane on mobile. issue 2485
-                  — its top bar hosts the rail's ☰, as MentionsWindow does. */}
+                  — its top bar hosts the rail's ☰, as MentionsWindow does,
+                  and the emoji comparison's dialog, which opens in the pane
+                  behind the drawer (the rail's "verify" starts it, or the
+                  peer asks while the drawer is up), closes the drawer, as the
+                  rail's refresh does for the table behind it. */}
                 {(w) => (
                   <EncryptedChatPane
                     networkSlug={w.networkSlug}
@@ -1264,6 +1269,7 @@ const Shell: Component = () => {
                         railLabel="open actions"
                       />
                     }
+                    onDialogOpen={() => setMembersOpen(false)}
                   />
                 )}
               </Match>

@@ -451,6 +451,28 @@ describe("encrypted chats", () => {
     expect(chats.trustOf(rows, chats.encryptedTrust(net.slug, "Bob"))).toBe("verified");
   });
 
+  // issue 2485 — the window's dialog and its inert body read this one
+  // accessor: a comparison left over from before the identity went elsewhere
+  // must not cover the card that is the only way out of that state.
+  it("an emoji comparison reads as none while the identity is elsewhere, and is back once it is not", async () => {
+    await chats.drainE2e(net.slug);
+    const b = await bob();
+    await b.client.send(b.ctx, net.nick, "ciao alice");
+    await b.client.drain(b.ctx);
+    await chats.drainE2e(net.slug);
+    await chats.loadEncryptedChat(net.slug, "Bob");
+    await chats.verifyEncrypted(net.slug, "Bob", "start");
+    expect(chats.encryptedSas(net.slug, "Bob")).not.toBeNull();
+
+    chats.identitySynced(net.slug, "elsewhere");
+    expect(chats.encryptedSas(net.slug, "Bob")).toBeNull();
+
+    chats.identitySynced(net.slug, "ready");
+    expect(chats.encryptedSas(net.slug, "Bob")).toEqual(
+      expect.objectContaining({ role: "a", phase: "started" }),
+    );
+  });
+
   it("refuses a pin that is not a key, or is our own master, and writes nothing", async () => {
     await chats.drainE2e(net.slug);
     await chats.loadEncryptedChat(net.slug, "Bob");
@@ -705,6 +727,17 @@ describe("encrypted chats", () => {
     }
   });
 
+  // issue 2485 — the × asks about deleting MESSAGES: a chat that holds only
+  // the key's history (the rail's state) has none to delete or keep.
+  it("a chat that holds only a pinned key has no messages for the × to ask about", async () => {
+    await chats.drainE2e(net.slug);
+    const b = await bob();
+
+    expect(await chats.pinEncryptedKey(net.slug, "Bob", await b.master(), true)).toBe("pinned");
+
+    expect(await chats.encryptedChatHasMessages(net.slug, "bob")).toBe(false);
+  });
+
   it("deletes Bob's chat: its rows go in every tab, the badge's pin stays, a new message starts over", async () => {
     await chats.drainE2e(net.slug);
     const b = await bob();
@@ -713,7 +746,7 @@ describe("encrypted chats", () => {
     await chats.drainE2e(net.slug);
     await chats.loadEncryptedChat(net.slug, "Bob");
     const pinned = chats.encryptedTrust(net.slug, "Bob");
-    expect(await chats.encryptedChatHasRows(net.slug, "bob")).toBe(true);
+    expect(await chats.encryptedChatHasMessages(net.slug, "bob")).toBe(true);
     const other = new BroadcastChannel("grappa-e2e-chats");
     const told: unknown[] = [];
     other.addEventListener("message", (event) => told.push(event.data));
@@ -723,7 +756,7 @@ describe("encrypted chats", () => {
       expect(chats.encryptedChatsFor(net.slug)).toEqual([]);
       expect(chats.encryptedChat(net.slug, "Bob")).toBeUndefined();
       expect(chats.encryptedRows(net.slug, "Bob")).toEqual([]);
-      expect(await chats.encryptedChatHasRows(net.slug, "bob")).toBe(false);
+      expect(await chats.encryptedChatHasMessages(net.slug, "bob")).toBe(false);
       expect(chats.encryptedTrust(net.slug, "Bob")).toEqual(pinned);
       await vi.waitFor(() =>
         expect(told).toEqual([{ slug: net.slug, slot: slot(), chats: ["bob"] }]),

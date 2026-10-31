@@ -66,6 +66,22 @@ export type ChatRow =
   /** A SAS matched on both sides: this key is verified. */
   | { kind: "verified"; id: string; at: number; nick: string; ed25519: string };
 
+/** The rows the chat body lists: messages, and the one that stands in for a message lost. */
+export type Message = Extract<ChatRow, { kind: "in" | "out" | "undecryptable" }>;
+
+export const isMessage = (row: ChatRow): row is Message =>
+  row.kind === "in" || row.kind === "out" || row.kind === "undecryptable";
+
+/**
+ * Whether the chat window shows the row (issue 2485): a message, a key alarm
+ * (the step card), or the peer asking to compare emoji (the dialog). Only
+ * these open a closed chat or count as unread. The rest record the key's
+ * standing, which the rail shows: a row nobody will see must not badge a
+ * window, nor reopen one on an empty body.
+ */
+const shown = (row: ChatRow): boolean =>
+  isMessage(row) || row.kind === "key_alarm" || (row.kind === "sas_asked" && row.by === "peer");
+
 /** Why an order challenge went unanswered: the peer's key is not verified, or the send log's verdict. */
 export type CheckFailure = "unverified" | Exclude<OrderVerdict, "confirmed">;
 
@@ -88,8 +104,9 @@ export type IdentityCheck = {
 export type Chat = { nick: string; open: boolean; unread: number; check?: IdentityCheck };
 
 /**
- * `add` writes a row unless one with its id is there already, and opens the
- * chat (a new message reopens a closed one, as a query window does). `out`
+ * `add` writes a row unless one with its id is there already; a row the
+ * window shows (`shown`) opens the chat (a new message reopens a closed one,
+ * as a query window does) and counts if `unread`, the others do neither. `out`
  * moves an outgoing row along, and changes nothing if the row is not there,
  * nor once the row is sent and the change would take it back (`backwards`).
  * `check` keeps the chat's last identity check and nothing else: it neither
@@ -211,12 +228,15 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
           // An `out` alone never creates a chat: its row would not be there.
           if (index.chats[key] === undefined && own.every((c) => c.op === "out")) continue;
           const first = own[0] as ChatChange;
-          const chat = entry(index, first.nick, first.op === "add");
-          let rows = await loadRows(chat.id);
+          const chat = entry(index, first.nick, first.op === "add" && shown(first.row));
+          // A check lives on the index: the rows are not read, nor sealed again.
+          const rowsChange = own.some((c) => c.op !== "check");
+          let rows = rowsChange ? await loadRows(chat.id) : [];
           for (const change of own) {
             if (change.op === "add") {
               if (rows.some((r) => r.id === change.row.id)) continue;
               rows.push(change.row);
+              if (!shown(change.row)) continue;
               chat.open = true;
               if (change.unread) chat.unread += 1;
             } else if (change.op === "check") {
@@ -229,10 +249,12 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
               );
             }
           }
-          await store(chatKey(chat.id), {
-            v: 1,
-            rows: rows.slice(Math.max(0, rows.length - CHAT_ROWS_MAX)),
-          });
+          if (rowsChange) {
+            await store(chatKey(chat.id), {
+              v: 1,
+              rows: rows.slice(Math.max(0, rows.length - CHAT_ROWS_MAX)),
+            });
+          }
           touched.push(key);
         }
         return touched;

@@ -133,6 +133,80 @@ describe("chatStore", () => {
     expect(await chats.rows(SLOT, "bob")).toHaveLength(2);
   });
 
+  // issue 2485 — the window shows messages, an alarm's step card and a peer's
+  // request to compare emoji; the rest of the key's history is the rail's
+  // state, and a row nobody will see must not open a chat or badge it.
+  it("a row the window does not show neither reopens a closed chat nor counts as unread", async () => {
+    const chats = chatStore(memoryVault(), memoryLock());
+    await chats.apply(SLOT, [add("Bob", inRow("in:1:0", "one"))]);
+    await chats.close(SLOT, "bob");
+
+    await chats.apply(SLOT, [
+      add("bob", { kind: "sas_cancelled", id: "s1", at: 2, nick: "bob", by: "peer", reason: "x" }),
+      add("bob", { kind: "sas_asked", id: "s2", at: 3, nick: "bob", by: "you" }, false),
+      add("bob", { kind: "verified", id: "s3", at: 4, nick: "bob", ed25519: KEY }, false),
+      add("bob", { kind: "pinned", id: "p1", at: 5, nick: "bob", ed25519: KEY }, false),
+      add("bob", { kind: "accepted", id: "p2", at: 6, nick: "bob", ed25519: KEY }, false),
+    ]);
+
+    expect((await chats.chats(SLOT)).bob).toEqual({ nick: "Bob", open: false, unread: 1 });
+    expect(await chats.rows(SLOT, "bob")).toHaveLength(6);
+  });
+
+  it("a peer's request to compare emoji and a key alarm reopen a closed chat and count", async () => {
+    const chats = chatStore(memoryVault(), memoryLock());
+    await chats.apply(SLOT, [add("Bob", inRow("in:1:0", "one"))]);
+    await chats.close(SLOT, "bob");
+
+    await chats.apply(SLOT, [
+      add("bob", { kind: "sas_asked", id: "s1", at: 2, nick: "bob", by: "peer" }),
+    ]);
+    expect((await chats.chats(SLOT)).bob).toEqual({ nick: "Bob", open: true, unread: 2 });
+
+    await chats.close(SLOT, "bob");
+    await chats.apply(SLOT, [
+      add("bob", { kind: "key_alarm", id: "a1", at: 3, nick: "bob", presented: KEY }),
+    ]);
+    expect((await chats.chats(SLOT)).bob).toEqual({ nick: "Bob", open: true, unread: 3 });
+  });
+
+  it("a row the window does not show, for a nick with no chat, keeps it on a closed one", async () => {
+    const chats = chatStore(memoryVault(), memoryLock());
+
+    await chats.apply(SLOT, [
+      add("Bob", {
+        kind: "sas_cancelled",
+        id: "s1",
+        at: 2,
+        nick: "Bob",
+        by: "you",
+        reason: "timeout",
+      }),
+    ]);
+
+    expect(await chats.chats(SLOT)).toEqual({ bob: { nick: "Bob", open: false, unread: 0 } });
+  });
+
+  it("an identity check alone leaves the chat's sealed rows as they were", async () => {
+    const vault = memoryVault();
+    const chats = chatStore(vault, memoryLock());
+    await chats.apply(SLOT, [add("Bob", inRow("in:1:0", "one"))]);
+    const before = new Map(vault.records);
+
+    const check: IdentityCheck = {
+      at: 10,
+      network: "AzzurraNet",
+      channel: "#grappa",
+      passed: true,
+      reason: null,
+    };
+    await chats.apply(SLOT, [{ op: "check", nick: "bob", check }]);
+
+    // The index is sealed again (it holds the check); the record of rows is not.
+    const changed = [...vault.records].filter(([key, sealed]) => before.get(key) !== sealed);
+    expect(changed.map(([key]) => key)).toEqual([`index:${SLOT}`]);
+  });
+
   it("keeps the last identity check on the chat: no row, no unread, a closed chat stays closed", async () => {
     const chats = chatStore(memoryVault(), memoryLock());
     await chats.apply(SLOT, [add("Bob", inRow("in:1:0", "one"))]);

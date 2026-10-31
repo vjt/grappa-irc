@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
+import { createSignal, type JSX } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeAudio, playAudio } from "../lib/audioPlayer";
 import { setShowBottomBar } from "../lib/showBottomBar";
@@ -200,11 +200,34 @@ vi.mock("../lib/networks", () => ({
 // issue 2430 — the encrypted pane as a bare input: what the tests below ask
 // is whether Shell gives each encrypted window a pane of its own, and an
 // uncontrolled input keeps whatever was typed in it for as long as it lives.
-vi.mock("../EncryptedChatPane", () => ({
-  default: (props: { networkSlug: string; nick: string }) => (
-    <input data-testid="e2e-pane-stub" data-slug={props.networkSlug} data-nick={props.nick} />
-  ),
-}));
+// issue 2485 — and what Shell hands it: the two doors it hosts on mobile, and
+// what happens when its emoji comparison's dialog opens (a stub button stands
+// in for the dialog opening).
+vi.mock("../EncryptedChatPane", async () => {
+  const { Show } = await import("solid-js");
+  return {
+    default: (props: {
+      networkSlug: string;
+      nick: string;
+      windowsOpener: JSX.Element;
+      railOpener: JSX.Element;
+      onDialogOpen: (() => void) | null;
+    }) => (
+      <>
+        <input data-testid="e2e-pane-stub" data-slug={props.networkSlug} data-nick={props.nick} />
+        <div data-testid="e2e-pane-stub-bar">
+          {props.windowsOpener}
+          {props.railOpener}
+        </div>
+        <Show when={props.onDialogOpen}>
+          {(open) => (
+            <button type="button" data-testid="e2e-pane-stub-dialog" onClick={() => open()()} />
+          )}
+        </Show>
+      </>
+    ),
+  };
+});
 
 vi.mock("../lib/railWhois", () => ({
   requestRailWhois: () => {},
@@ -2255,6 +2278,47 @@ describe("#1766 — the mobile window bar is opt-out, and the ☰ ships with the
 // every encrypted window its own pane, so a switch is a fresh mount rather
 // than the same pane re-pointed at another peer, which would send Bob's draft
 // to Carol, or pin Bob's pasted key to Carol as verified.
+// issue 2485 — `encrypted` is the fifth kind kept out of the mobile
+// `.shell-chrome` float, with mentions' remedy: its top bar hosts the rail's
+// door (the float would land on the shredder). And the emoji comparison's
+// dialog opens in the pane, BEHIND the mobile drawer: the drawer goes.
+describe("issue 2485 — the encrypted window's chrome", () => {
+  const selectBob = () =>
+    selectionState.setSelSig({
+      networkSlug: "freenode",
+      channelName: encryptedWindowName("Bob"),
+      kind: "encrypted",
+    });
+
+  it("mobile: no .shell-chrome row, the pane hosts the rail door, and its dialog closes the drawer", async () => {
+    mobileState.value = true;
+    selectBob();
+    const { container } = render(() => <Shell />);
+    await waitFor(() => expect(screen.getByTestId("e2e-pane-stub")).toBeTruthy());
+    expect(container.querySelector(".shell-chrome")).toBeNull();
+
+    const door = screen
+      .getByTestId("e2e-pane-stub-bar")
+      .querySelector<HTMLButtonElement>(".topic-bar-hamburger");
+    expect(door).not.toBeNull();
+    expect(container.querySelector(".shell-members.open")).toBeNull();
+    door?.click();
+    await waitFor(() => expect(container.querySelector(".shell-members.open")).not.toBeNull());
+
+    fireEvent.click(screen.getByTestId("e2e-pane-stub-dialog"));
+    await waitFor(() => expect(container.querySelector(".shell-members.open")).toBeNull());
+  });
+
+  it("desktop: no door in the pane and nothing to close, the rail is permanent", async () => {
+    mobileState.value = false;
+    selectBob();
+    render(() => <Shell />);
+    await waitFor(() => expect(screen.getByTestId("e2e-pane-stub")).toBeTruthy());
+    expect(screen.getByTestId("e2e-pane-stub-bar").children).toHaveLength(0);
+    expect(screen.queryByTestId("e2e-pane-stub-dialog")).toBeNull();
+  });
+});
+
 describe("issue 2430 — one encrypted pane per encrypted window", () => {
   it.each([false, true])(
     "another chat, or the same nick on another network, mounts a fresh pane; the same window keeps it (mobile: %s)",

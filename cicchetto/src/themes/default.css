@@ -4810,7 +4810,11 @@ html.is-ios27-band .shell {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  padding: 0.5rem 1rem;
+  /* On mobile the bar hosts both doors: the window list's `#` first and the
+     rail's ☰ last. So it reads the tokens the other ☰ hosts read (#1039),
+     and the leading side clears iPadOS's pill in a windowed pane (#2160). */
+  padding: var(--pane-chrome-inset-block) var(--pane-chrome-inset-inline);
+  padding-inline-start: var(--pane-chrome-inset-inline-start);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -4889,6 +4893,12 @@ html.is-ios27-band .shell {
 .e2e-key {
   word-break: break-all;
   color: var(--fg);
+}
+
+/* The rail's "ignored key": a key, and an alarm. After `.e2e-key`, which it
+   must win against at the same specificity. */
+.e2e-key-alarm {
+  color: var(--error, #e06c75);
 }
 
 .e2e-pin {

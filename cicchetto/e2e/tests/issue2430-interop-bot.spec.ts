@@ -283,7 +283,10 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
 
   // 7. An order in cic's nick that cic did not send: another client of
   //    the same user, as far as cic can tell. Challenged the same way,
-  //    never ACKed, refused when the challenge expires.
+  //    never ACKed, refused when the challenge expires. Read from the
+  //    channel, as step 6 was: a focused encrypted pane marks what lands in
+  //    it read at once, and "no unread" would then prove nothing.
+  await selectChannel(page, NETWORK_SLUG, chan, { ownNick: cic.nick });
   const forged = `${bot.nick}: not from cic`;
   await sendPrivmsg(cic.user.token, NETWORK_SLUG, chan, forged);
   await botWaitFor(
@@ -301,12 +304,14 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
   expect(refused.line).toMatch(/ MSG UNTRUSTED WHY=no-ack /);
 
   // cic's silence wrote nothing either; the check says it failed, and why.
+  await expect(sidebarWindow(page, NETWORK_SLUG, bot.nick)).toHaveCount(0);
+  await expect(sidebarMessageBadge(page, NETWORK_SLUG, e2eWindow(bot.nick))).toHaveCount(0);
+  await encrypted.locator("button").first().click();
+  await expect(page.getByTestId("e2e-pane")).toBeVisible();
   await expect(chip).toHaveAttribute("data-passed", "false");
   await expect(check).toHaveAttribute("data-reason", "not-sent");
   await expect(check).toContainText(`${chan} on `);
   await expect(messages).toHaveCount(4);
-  await expect(sidebarWindow(page, NETWORK_SLUG, bot.nick)).toHaveCount(0);
-  await expect(sidebarMessageBadge(page, NETWORK_SLUG, e2eWindow(bot.nick))).toHaveCount(0);
 
   // Nothing went wrong on the bot's side along the way, and the window the
   // absences are read over holds the whole exchange.
