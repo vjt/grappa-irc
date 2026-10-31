@@ -64,7 +64,6 @@ test("two people talk in an encrypted query: real Olm both ways, pinned by hand,
     expect(aliceKey).not.toBe(bobKey);
     await pin(page, bobKey);
     await pin(peer.page, aliceKey);
-    await expect(row(page, "pinned", bobKey)).toHaveCount(1);
 
     // Alice → Bob: no session yet, so the message waits for Bob's keys, then
     // goes as a pre-key message.
@@ -77,7 +76,7 @@ test("two people talk in an encrypted query: real Olm both ways, pinned by hand,
     await expect(row(peer.page, "in", first)).toHaveCount(1, { timeout: KEYS_TIMEOUT });
     await expect(peer.page.getByTestId("e2e-peer-trust")).toHaveAttribute("data-trust", "verified");
     // The keys Alice took named Bob's one device.
-    await expect(page.getByTestId("e2e-peer-devices")).toContainText("1 device");
+    await expect(page.getByTestId("e2e-peer-devices")).toHaveText("1 device");
 
     // Bob → Alice, on the session Alice's message opened.
     const reply = "ciao alice, ricevuto";

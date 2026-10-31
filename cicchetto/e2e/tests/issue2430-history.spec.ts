@@ -1,6 +1,8 @@
 // issue 2430 slice f — an encrypted chat's history, which lives only on the
 // device (2430 "cicchetto side"): the window searches it, its × asks whether
-// to keep or delete it, and "delete this chat" deletes it for good. Two
+// to keep or delete it, and "delete this chat" deletes it for good. issue
+// 2485 — search and delete are the top bar's magnifier and shredder, and the
+// shredder asks first, in the dialog the × uses. Two
 // browsers, two grappa users, two real vodozemac engines, one real ircd;
 // grappa holds none of these rows, so everything here is cic's IndexedDB.
 //
@@ -86,7 +88,9 @@ test("an encrypted chat's history: searched in the window, kept or deleted on cl
     await expect(row(page, "in", "which CODES?")).toHaveCount(1, { timeout: KEYS_TIMEOUT });
     await expect(rows).toHaveCount(4);
 
-    // The search: any case, the messages only, counted; Esc shows all again.
+    // The search, behind the magnifier: any case, the messages only, counted;
+    // Esc closes it and shows all again.
+    await page.getByTestId("e2e-search-toggle").click();
     const search = page.getByTestId("e2e-search-input");
     await search.fill("codes");
     await expect(rows).toHaveCount(2);
@@ -94,7 +98,7 @@ test("an encrypted chat's history: searched in the window, kept or deleted on cl
     await expect(row(page, "in", "which CODES?")).toHaveCount(1);
     await expect(page.getByTestId("e2e-search-count")).toHaveText("2 of 4 messages");
     await search.press("Escape");
-    await expect(search).toHaveValue("");
+    await expect(search).toHaveCount(0);
     await expect(rows).toHaveCount(4);
     await expect(page.getByTestId("e2e-search-count")).toHaveCount(0);
 
@@ -125,16 +129,15 @@ test("an encrypted chat's history: searched in the window, kept or deleted on cl
     await expect(row(page, "in", "still there?")).toHaveCount(1, { timeout: KEYS_TIMEOUT });
     await expect(rows).toHaveCount(1);
 
-    // "Delete this chat" takes two taps; a reload then reads IndexedDB again
-    // and finds nothing. After the reload the window has no copy of its own
-    // until the chat is read, and a read writes the rows before the trust:
-    // once the peer's key shows, the empty list is what IndexedDB holds.
-    const del = page.getByTestId("e2e-delete-chat");
-    await del.click();
-    await expect(del).toHaveText("really delete?");
+    // The shredder asks first; a reload then reads IndexedDB again and finds
+    // nothing. After the reload the window has no copy of its own until the
+    // chat is read, and a read writes the rows before the trust: once the
+    // peer's key shows, the empty list is what IndexedDB holds.
+    await page.getByTestId("e2e-delete-chat").click();
+    await expect(confirmModalBody(page)).toContainText(bob.nick);
     await expect(rows).toHaveCount(1);
     expect(await chatRecords(page)).toBe(2);
-    await del.click();
+    await confirmModalYes(page);
     await expect(window_).toHaveCount(0);
     await expect.poll(() => chatRecords(page)).toBe(1);
     await page.reload();
