@@ -492,3 +492,126 @@ case (no push, no banner, no window, no row, then a non-ignored INVITE on
 the same session gets all of it). Mutants: `:invite` dropped from the guard
 (2 reds, router and session), the `body_of/1` INVITE clause dropped (1, the
 targeted-entry case).
+<!-- entry #2485 -->
+
+---
+
+## 2026-11-01 — #2485: the encrypted window keeps key machinery in the rail, and an order challenge shows only as the last identity check
+
+vjt's requirements for taking E2E queries (#2430) to production: the chat
+window shows only what finishing the key exchange needs, the top bar only the
+peer's verification, and everything technical moves to the right rail, laid
+out like a settings page. An order challenge (the bot's `CHAL` inside the
+session) must stay invisible. What the user sees instead is a "last identity
+check" signal. Four layout points were open, and vjt ruled on them (TG,
+2026-10-31, recorded on the issue, comment 6550206757):
+
+1. **The key exchange is done** once the peer's nick has a pinned key (taken
+   on first use, or pasted by hand) and no key alarm is open, verified or
+   not. Verification is not a chat step. It is the top bar's state. Until
+   the exchange is done, the chat body shows one step card, the first that
+   applies: identity held elsewhere, alarm, no key yet.
+2. **The emoji comparison runs in the chat window, modal-like**, not in the
+   top bar: a dialog over the chat body, with the body `inert` beneath it
+   ("tanto fino a che quello non è completo non si scambiano messaggi"). It
+   is started from the rail. Modal over the BODY only: the top bar and the
+   rail stay usable (the wait tells the user to pin a bot's key in the rail),
+   so it carries no `aria-modal`, which would tell assistive tech the rail
+   is out of reach, and it takes the focus the inert compose line drops.
+3. **Search and "delete this chat" are top-bar buttons**, a magnifier and
+   a shredder, not rail entries. The shredder asks in the same confirm
+   dialog the window's × uses, which replaced the inline two-tap button.
+4. **An identity held on another device is a card in the chat**, both ways
+   out included (pair this browser, start a new identity). The destructive
+   one keeps its inline confirmation that names what it destroys.
+
+**The key events stay in the store; only what the window shows counts.** The
+key events the chat used to list as rows (`pinned`, `accepted`, `sas_asked`,
+`sas_cancelled`, `verified`, `key_alarm`) are still written. The badge reads
+them through `trustOf`/`openAlarm`, and the rail shows them as state
+("ignored key", "last emoji comparison", the latter only for the key pinned
+NOW: a key pinned or taken since ends the search). The body renders only
+`in`, `out` and `undecryptable`. The last one stands in for a lost message
+and is not machinery. A message written under another master keeps a compact
+⚠ with the key in its label. Hiding rows had three readers to follow, each
+of which used to treat every row as visible: the unread count, the reopening
+of a closed chat, and the ×'s question. So the store's `add` now opens a
+chat and counts a row only when the window shows it (`chatStore` `shown`):
+a message, a key alarm (the step card), or the peer asking to compare (the
+dialog: a closed chat must come back for it, or the user never sees the
+request). The rest are written and do neither, so a peer's cancel no longer
+badges a window that has nothing new to show, nor our own 10-minute timeout
+reopens one on an empty body. The × asks only about messages
+(`encryptedChatHasMessages`, formerly `encryptedChatHasRows`): a chat that
+holds only a pinned key closes without "delete the messages?".
+
+**The last identity check lives on the chat's index entry.** It is sealed
+like the rest of the index. A `check` change never opens the chat and never
+counts as unread. It is not kept in memory: the CHAL is answered inside
+whichever tab drains the inbox, and the index is what the other tabs already
+re-read on the chats BroadcastChannel, so the signal reaches the tab the
+user is looking at and survives a reload. A nick whose chat was deleted gets
+a closed, empty entry to keep it on, and a batch of checks alone seals the
+index again but never the chat's rows. A malformed CHAL names nothing and
+leaves no check. `passed` is cic's answer, not the bot's verdict: an ACK
+grappa then refuses still reads passed. A check that failed carries the
+reason (`unverified`, or the send log's verdict), worded by the same
+`UNCONFIRMED` strings the console uses.
+
+**This reverses #2430w2d's "no visible warning for a CHAL cic cannot
+confirm", on the issue's own words** ("last identity check (when, on which
+network/channel, passed or failed)"). The argument there still bites, and it
+is recorded rather than answered: the answer is THIS device's. A bot
+encrypts its CHAL to every device of the master, and the send log is the
+device's (#2430w2c), so on an account with two browsers an order typed on
+one shows ✓ there and ✗ `not-sent` on the other, every time, and the other
+cannot tell that from a line someone else put out in the user's nick. A
+neutral "not answered here" for `not-sent` is the alternative put to vjt.
+
+**Mobile:** the top bar ends in the shredder, which is exactly the corner
+the floating `.shell-chrome` ☰ covers (#1050's collision). So `encrypted` is
+the fifth kind excluded from that float, with mentions' remedy: the pane
+hosts the rail's ☰ as its last child and the `#` window-list door as its
+first. It has no ✕ to leave by, so #1766's argument for the left door holds.
+Hosting the `#` door first, the bar reads the `--pane-chrome-inset-*`
+tokens like the other ☰ hosts (#1039), the leading side clearing iPadOS's
+pill in a windowed pane (#2160). The rail is a drawer OVER the pane there,
+and the comparison's dialog opens in the pane behind it, whether the rail's
+"verify" started it or the peer asked while the drawer was up: the pane says
+when its dialog opens (`onDialogOpen`, `null` on desktop) and Shell closes
+the drawer, as the rail's refresh does for the table behind it.
+
+**No dialog over the way out.** While the network's identity is elsewhere,
+`encryptedSas` answers none: a refresh that finds the identity elsewhere
+stops before the SAS, so the view it kept is the one from before, and a
+dialog drawn from it would make the body inert over the card that is the
+only way out of that state. The pane's dialog, its inert body and its send
+guard read that one accessor, and the view comes back as it was once the
+identity is here again.
+
+**Duplicated doors, on purpose:** the "no key yet" card carries its own pin
+form and copy button, and the alarm card its own "take the new key" and pin
+form (ruling 1: "take the new key or pin the one they give you"). The
+rail carries the same verbs. On mobile the rail is a drawer, so a step card
+that only pointed there would make finishing the exchange a hunt. Each pair
+is one verb (`PinForm`, `CopyOwnKey`, `acceptAlarmKey`) told apart by test
+id.
+
+Tests: unit tests for the store (`check` change, which rows open and count,
+a check never resealing rows), the client (passed, the not-sent and
+unverified failures, malformed = none, no row, no unread), the chat glue
+(no SAS while elsewhere, no messages in a pinned-only chat), the window
+(pane and rail rendered side by side as Shell mounts them), RailContext's
+encrypted arm, and Shell's mobile chrome (the pane's door opens the drawer,
+its dialog closes it; desktop gets neither). Each new assertion was read red
+against a mutant of its own: rows unfiltered, the dialog without `inert` or
+without the focus, the SAS read while elsewhere, every row counted for the
+×, the bar's literal padding, the alarm key's rule ahead of `.e2e-key`'s.
+e2e: `issue2485-encrypted-layout.spec.ts` walks bullets 1-3 between two
+people (before the exchange, after it on first use, after a comparison), and
+on `@touch` the phone's path (the bar's ☰ opens the rail, the comparison it
+starts closes the drawer over the dialog). `issue2430-interop-bot.spec.ts`
+covers bullet 4 against the real irc-olm bot, each check read with the
+channel focused so "no unread" can fail: no query window, no row, no unread,
+and the chip and rail reading passed, then failed for `not-sent`. The 2430
+specs follow the moved controls.
