@@ -1193,6 +1193,7 @@ export type SettingsSection =
   | "display"
   | "push"
   | "watchlists"
+  | "ignores"
   | "aliases"
   | "perform"
   | "vhost"

@@ -15450,9 +15450,17 @@ audio.media-viewer-media {
   opacity: 0.5;
 }
 
+/* issue 2484 — a flex item does not shrink below its min-content width, and a
+   mask (`*!*@azzurra=….ch`) or a pattern has no break opportunity in it, so
+   the cell grew past the row and carried the × off the panel, at a different
+   x per row. `anywhere` and NOT `break-word`: only `anywhere` counts its
+   breaks in min-content, so it alone lets the cell shrink (a `min-width: 0`
+   beside it was measured to change nothing). The × keeps one trailing
+   column, vertically centred by the row's align-items. */
 .watchlists-keyword {
   flex: 1;
   font-family: var(--font-mono);
+  overflow-wrap: anywhere;
 }
 
 .watchlists-remove {
