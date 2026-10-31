@@ -48,13 +48,7 @@
 import { ApiError } from "../api";
 import type { E2eKeysWireDevice } from "../wireTypes";
 import type { AccountStore } from "./accountStore";
-import type {
-  ChatChange,
-  ChatStore,
-  CheckFailure,
-  DoorRefusal,
-  SendDropped,
-} from "./chatStore";
+import type { ChatChange, ChatStore, CheckFailure, DoorRefusal, SendDropped } from "./chatStore";
 import {
   type CopyResult,
   type E2eEvent,

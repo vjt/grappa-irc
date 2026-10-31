@@ -85,17 +85,26 @@ export type Trust = "verified" | "unverified" | "alarm";
 const ANSWERS_ALARM = new Set<ChatRow["kind"]>(["pinned", "accepted", "verified"]);
 
 /**
- * The badge: an alarm since the user last chose or checked the key (pinned
- * it, took it, verified it by SAS) is an alarm: a new key spoke for the nick
- * and was ignored. Otherwise the pinned key's own standing. No key yet reads
- * as unverified.
+ * The key of the alarm still open: the newest alarm since the user last
+ * chose or checked the key (pinned it, took it, verified it by SAS), else
+ * null. A new key spoke for the nick and was ignored; issue 2485 makes it a
+ * step the chat shows until the user answers it.
  */
-export function trustOf(rows: readonly ChatRow[], peer: PeerTrust | null): Trust {
+export function openAlarm(rows: readonly ChatRow[]): string | null {
   for (let i = rows.length - 1; i >= 0; i--) {
     const row = rows[i];
-    if (row?.kind === "key_alarm") return "alarm";
+    if (row?.kind === "key_alarm") return row.presented;
     if (row !== undefined && ANSWERS_ALARM.has(row.kind)) break;
   }
+  return null;
+}
+
+/**
+ * The badge: an open alarm (`openAlarm`) is an alarm. Otherwise the pinned
+ * key's own standing. No key yet reads as unverified.
+ */
+export function trustOf(rows: readonly ChatRow[], peer: PeerTrust | null): Trust {
+  if (openAlarm(rows) !== null) return "alarm";
   return peer?.verified === true ? "verified" : "unverified";
 }
 

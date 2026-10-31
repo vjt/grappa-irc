@@ -3,17 +3,21 @@ import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../lib/api";
-import type { Chat, ChatRow } from "../lib/e2e/chatStore";
+import { acceptConfirm, confirmRequest, dismissConfirm } from "../lib/confirmDialog";
+import type { Chat, ChatRow, IdentityCheck } from "../lib/e2e/chatStore";
 import type { PeerTrust } from "../lib/e2e/client";
 import type { SasView } from "../lib/e2e/sas";
 import { SAS_EMOJI } from "../lib/e2e/sasEmoji";
 import { friendlyApiError } from "../lib/friendlyApiError";
 
-// issue 2430 — the encrypted query pane. The chat glue (lib/encryptedChats)
-// is the boundary: its reads are signals here and its verbs are spies, so
-// these tests pin what the pane shows and which verb each control reaches.
-// `trustOf` stays the real one: the badge is its answer, not a copy of it, as
-// do the pairing link helpers (`lib/e2e/pairing.ts`). A key is a master.
+// issue 2430 — the encrypted query window: the pane, and since issue 2485 its
+// technical half in the right rail (EncryptedRail), rendered side by side as
+// Shell mounts them. The chat glue (lib/encryptedChats) is the boundary: its
+// reads are signals here and its verbs are spies, so these tests pin what the
+// window shows where, and which verb each control reaches. `trustOf` and
+// `openAlarm` stay the real ones: the badge and the step are their answers,
+// not copies of them, as do the pairing link helpers (`lib/e2e/pairing.ts`).
+// A key is a master.
 
 const KEY = "J2bCqN5ukKUq1qDNgzWbn9GZ7xjzM2bA0f9yqkvq0Ss";
 const OWN = "7hPz0kdkCq0cH1L2oW9i3l0gq3uM8V8vxa5w8Kq2yYk";
@@ -44,6 +48,7 @@ const panel = vi.hoisted(() => ({
 
 vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   trustOf: (await importOriginal<typeof import("../lib/encryptedChats")>()).trustOf,
+  openAlarm: (await importOriginal<typeof import("../lib/encryptedChats")>()).openAlarm,
   encryptedChat: () => chat(),
   encryptedRows: () => rows(),
   encryptedTrust: () => trust(),
@@ -85,6 +90,7 @@ vi.mock("../lib/clipboard", () => ({ copyText }));
 vi.mock("../lib/documentNavigation", () => ({ loadDocument }));
 
 const { default: EncryptedChatPane } = await import("../EncryptedChatPane");
+const { default: EncryptedRail } = await import("../EncryptedRail");
 const { default: PairScan } = await import("../PairScan");
 
 const at = 1_700_000_000_000;
@@ -113,9 +119,23 @@ beforeEach(() => {
   setVisible(true);
   setSas(null);
   setElsewhere(false);
+  dismissConfirm();
 });
 
-const renderPane = () => render(() => <EncryptedChatPane networkSlug="azzurra" nick="bob" />);
+const Pane = () => (
+  <EncryptedChatPane networkSlug="azzurra" nick="bob" windowsOpener={null} railOpener={null} />
+);
+
+// The window as Shell mounts it on desktop: the pane, and the rail beside it.
+const renderPane = () =>
+  render(() => (
+    <>
+      <Pane />
+      <EncryptedRail networkSlug="azzurra" nick="bob" />
+    </>
+  ));
+
+const within = (testId: string) => screen.getByTestId(testId);
 
 describe("EncryptedChatPane", () => {
   it("loads the chat it shows, and names the peer as the chat spells it", () => {
@@ -130,20 +150,40 @@ describe("EncryptedChatPane", () => {
     renderPane();
     const badge = screen.getByTestId("e2e-peer-trust");
     expect(badge.dataset.trust).toBe("unverified");
+    expect(badge.textContent).toBe("not verified");
 
     setTrust({ master: KEY, verified: true, devices: 1 });
     setRows([{ kind: "pinned", id: "p", at, nick: "Bob", ed25519: KEY }]);
     expect(badge.dataset.trust).toBe("verified");
-    expect(screen.getByTestId("e2e-peer-key").textContent).toBe(KEY);
+    expect(screen.getByTestId("e2e-rail-trust").dataset.trust).toBe("verified");
 
     setRows([
       { kind: "pinned", id: "p", at, nick: "Bob", ed25519: KEY },
       { kind: "key_alarm", id: "a", at, nick: "Bob", presented: OWN },
     ]);
     expect(badge.dataset.trust).toBe("alarm");
+    expect(badge.textContent).toBe("key changed");
   });
 
-  it("shows every row kind, each marked encrypted", () => {
+  it("the top bar is verification only: no key, no pin form, no device, no comparison button", () => {
+    setTrust({ master: KEY, verified: false, devices: 2 });
+    setRows([{ kind: "accepted", id: "p", at, nick: "Bob", ed25519: KEY }]);
+    renderPane();
+    const bar = screen.getByTestId("e2e-pane").querySelector("header") as HTMLElement;
+
+    expect(bar.textContent).not.toContain(KEY);
+    expect(bar.textContent).not.toContain(OWN);
+    expect(bar.querySelector("input")).toBeNull();
+    expect(bar.querySelector("[data-testid=e2e-sas-start]")).toBeNull();
+    expect(bar.querySelector("[data-testid=e2e-sas]")).toBeNull();
+    // What it does carry: the badge and the chat's two tools.
+    expect(bar.querySelector("[data-testid=e2e-peer-trust]")).not.toBeNull();
+    expect(bar.querySelector("[data-testid=e2e-search-toggle]")).not.toBeNull();
+    expect(bar.querySelector("[data-testid=e2e-delete-chat]")).not.toBeNull();
+  });
+
+  it("shows the messages, each marked encrypted, and none of the key events the store keeps", () => {
+    setTrust({ master: KEY, verified: true, devices: 1 });
     setRows([
       { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "ciao" },
       { kind: "out", id: "2", at, body: "waiting", state: "queued", reason: null },
@@ -169,14 +209,6 @@ describe("EncryptedChatPane", () => {
       "out",
       "out",
       "undecryptable",
-      "key_alarm",
-      "pinned",
-      "accepted",
-      "sas_asked",
-      "sas_asked",
-      "sas_cancelled",
-      "sas_cancelled",
-      "verified",
     ]);
     for (const row of shown) expect(row.querySelector(".encrypted-marker")).not.toBeNull();
     expect(shown[0]?.textContent).toContain("ciao");
@@ -189,38 +221,101 @@ describe("EncryptedChatPane", () => {
     expect(shown[5]?.textContent).toContain(
       "Bob sent you an encrypted message that cannot be read here",
     );
-    expect(shown[6]?.textContent).toContain(OWN);
-    expect(shown[7]?.textContent).toContain(`you pinned Bob to ${KEY}`);
-    expect(shown[8]?.textContent).toContain(`you took ${KEY} as Bob's key, not verified`);
-    expect(shown[9]?.textContent).toContain("you asked Bob to compare emoji");
-    expect(shown[10]?.textContent).toContain("Bob asked to compare emoji with you");
-    expect(shown[11]?.textContent).toContain(
-      "the emoji comparison stopped: no answer in 10 minutes",
-    );
-    expect(shown[12]?.textContent).toContain('Bob stopped the emoji comparison: "its own words"');
-    expect(shown[13]?.textContent).toContain(`you verified Bob's key ${KEY} by comparing emoji`);
+    const list = screen.getByTestId("e2e-pane").querySelector(".e2e-rows") as HTMLElement;
+    expect(list.textContent).not.toContain(KEY);
+    expect(list.textContent).not.toContain(OWN);
+    // The exchange is done (a pinned key, the alarm answered): no step either.
+    expect(screen.queryByTestId("e2e-step")).toBeNull();
   });
 
-  it("the alarm offers to take the new key, unverified, until it is the pinned one", () => {
+  it("a message written with another key than the nick's pinned one is marked, the key in its label", () => {
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    setRows([
+      { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "from the pinned key" },
+      { kind: "in", id: "2", at, nick: "Bob", ed25519: OWN, body: "from another" },
+    ]);
+    renderPane();
+    const [pinned, other] = screen.getAllByTestId("e2e-row");
+    expect(pinned?.querySelector("[data-testid=e2e-row-other-key]")).toBeNull();
+    expect(
+      other?.querySelector("[data-testid=e2e-row-other-key]")?.getAttribute("aria-label"),
+    ).toBe(`written with another key: ${OWN}`);
+  });
+});
+
+// The key exchange is done once the nick has a pinned key and no alarm is
+// open, verified or not (vjt's ruling 1). Until then the chat body shows the
+// one step still needed, and only that.
+describe("EncryptedChatPane, the key-exchange step", () => {
+  it("no key yet: says what to do, pins a pasted key and copies ours from the card", async () => {
+    renderPane();
+    const step = within("e2e-step");
+    expect(step.dataset.step).toBe("no-key");
+    expect(step.textContent).toContain("no keys exchanged with Bob yet");
+
+    const input = screen.getByTestId("e2e-step-pin-input") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: ` ${KEY} ` } });
+    fireEvent.click(screen.getByTestId("e2e-step-pin-submit"));
+    await vi.waitFor(() => expect(input.value).toBe(""));
+    expect(pinEncryptedKey).toHaveBeenCalledWith("azzurra", "bob", KEY, true);
+
+    fireEvent.click(screen.getByTestId("e2e-step-copy"));
+    expect(copyText).toHaveBeenCalledWith(OWN);
+
+    // Pinned, taken on first use or by hand: done, verified or not.
+    setTrust({ master: KEY, verified: false, devices: 1 });
+    expect(screen.queryByTestId("e2e-step")).toBeNull();
+  });
+
+  it("shows no step before the chat is loaded: a pinned peer never flashes as one with no key", () => {
+    setRows(undefined);
+    renderPane();
+    expect(screen.queryByTestId("e2e-step")).toBeNull();
+
+    setRows([]);
+    expect(within("e2e-step").dataset.step).toBe("no-key");
+  });
+
+  it("an open alarm: the card and the rail both take the new key, unverified, until it is answered", () => {
     setTrust({ master: KEY, verified: true, devices: 1 });
     setRows([{ kind: "key_alarm", id: "a", at, nick: "Bob", presented: OWN }]);
     renderPane();
+    expect(within("e2e-step").dataset.step).toBe("alarm");
+    expect(within("e2e-step").textContent).not.toContain(OWN);
+    expect(screen.getByTestId("e2e-rail-alarm-key").textContent).toBe(OWN);
 
     fireEvent.click(screen.getByTestId("e2e-alarm-accept"));
     expect(pinEncryptedKey).toHaveBeenCalledWith("azzurra", "bob", OWN, false);
+    fireEvent.click(screen.getByTestId("e2e-rail-alarm-accept"));
+    expect(pinEncryptedKey).toHaveBeenCalledTimes(2);
 
+    setRows([
+      { kind: "key_alarm", id: "a", at, nick: "Bob", presented: OWN },
+      { kind: "accepted", id: "b", at, nick: "Bob", ed25519: OWN },
+    ]);
     setTrust({ master: OWN, verified: false, devices: 1 });
+    expect(screen.queryByTestId("e2e-step")).toBeNull();
     expect(screen.queryByTestId("e2e-alarm-accept")).toBeNull();
+    expect(screen.queryByTestId("e2e-rail-alarm-accept")).toBeNull();
   });
+});
 
-  it("offers an emoji comparison for a key not verified, and none for a verified key or no key", () => {
+// The emoji comparison runs in the chat window, modal-like (vjt's ruling 2):
+// started from the rail, it covers the body, and nothing is sent until it ends.
+describe("EncryptedChatPane, the emoji comparison", () => {
+  it("is offered in the rail for a pinned key not verified, never for no key, a verified key or an open alarm", () => {
     renderPane();
     expect(screen.queryByTestId("e2e-sas-start")).toBeNull();
 
     setTrust({ master: KEY, verified: false, devices: 1 });
     fireEvent.click(screen.getByTestId("e2e-sas-start"));
     expect(verifyEncrypted).toHaveBeenCalledWith("azzurra", "bob", "start");
+    expect(within("e2e-rail").contains(screen.getByTestId("e2e-sas-start"))).toBe(true);
 
+    setRows([{ kind: "key_alarm", id: "a", at, nick: "Bob", presented: OWN }]);
+    expect(screen.queryByTestId("e2e-sas-start")).toBeNull();
+
+    setRows([]);
     setTrust({ master: KEY, verified: true, devices: 1 });
     expect(screen.queryByTestId("e2e-sas-start")).toBeNull();
   });
@@ -245,16 +340,41 @@ describe("EncryptedChatPane", () => {
     setTrust({ master: KEY, verified: false, devices: 1 });
     setSas(shown);
     renderPane();
-    const panel = screen.getByTestId("e2e-sas");
-    expect(panel.dataset.phase).toBe(phase);
-    expect(panel.textContent).toContain(text);
+    const dialog = screen.getByTestId("e2e-sas");
+    expect(dialog.dataset.phase).toBe(phase);
+    expect(dialog.textContent).toContain(text);
     expect(screen.queryByTestId("e2e-sas-start")).toBeNull();
 
     fireEvent.click(screen.getByTestId("e2e-sas-cancel"));
     expect(verifyEncrypted).toHaveBeenCalledWith("azzurra", "bob", "cancel");
   });
 
-  it("a request is accepted from the panel", () => {
+  it("covers the chat body as a dialog: the body is inert and nothing is sent until it ends", () => {
+    setTrust({ master: KEY, verified: false, devices: 1 });
+    renderPane();
+    const input = screen.getByTestId("e2e-compose-input") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "not yet" } });
+    const content = screen.getByTestId("e2e-compose").parentElement as HTMLElement;
+    expect(content.inert).toBe(false);
+
+    setSas(view({ role: "b", phase: "asked", here: false }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.textContent).toContain("compare emoji with Bob");
+    expect(within("e2e-pane").querySelector(".e2e-body")?.contains(dialog)).toBe(true);
+    expect(content.inert).toBe(true);
+    fireEvent.submit(screen.getByTestId("e2e-compose"));
+    expect(sendEncrypted).not.toHaveBeenCalled();
+
+    // Over: the draft is still there, and goes.
+    setSas(null);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(content.inert).toBe(false);
+    fireEvent.submit(screen.getByTestId("e2e-compose"));
+    expect(sendEncrypted).toHaveBeenCalledWith("azzurra", "bob", "not yet");
+  });
+
+  it("a request is accepted from the dialog", () => {
     setSas(view({ role: "b", phase: "asked", here: false }));
     renderPane();
     fireEvent.click(screen.getByTestId("e2e-sas-accept"));
@@ -287,20 +407,78 @@ describe("EncryptedChatPane", () => {
     expect(screen.queryByTestId("e2e-sas-match")).toBeNull();
   });
 
-  it("a message written with another key than the nick's pinned one says so", () => {
-    setTrust({ master: KEY, verified: true, devices: 1 });
-    setRows([
-      { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "from the pinned key" },
-      { kind: "in", id: "2", at, nick: "Bob", ed25519: OWN, body: "from another" },
-    ]);
+  it.each([
+    [{ kind: "verified", id: "v", at, nick: "Bob", ed25519: KEY }, "matched"],
+    [
+      { kind: "sas_cancelled", id: "c", at, nick: "Bob", by: "you", reason: "mismatch" },
+      "stopped: the emoji did not match",
+    ],
+    [
+      { kind: "sas_cancelled", id: "c", at, nick: "Bob", by: "peer", reason: "its own words" },
+      'stopped by them: "its own words"',
+    ],
+  ] as [ChatRow, string][])("the rail says how the last comparison ended (%o)", (last, text) => {
+    setTrust({ master: KEY, verified: false, devices: 1 });
+    setRows([{ kind: "sas_asked", id: "a", at, nick: "Bob", by: "you" }, last]);
     renderPane();
-    const [pinned, other] = screen.getAllByTestId("e2e-row");
-    expect(pinned?.querySelector("[data-testid=e2e-row-other-key]")).toBeNull();
-    expect(other?.querySelector("[data-testid=e2e-row-other-key]")?.textContent).toBe(
-      `written with another key: ${OWN}`,
-    );
+    expect(screen.getByTestId("e2e-rail-comparison").textContent).toBe(text);
+  });
+});
+
+// issue 2485 — the bot's order challenges are answered without a row; what
+// the user sees is the last identity check, compact in the top bar and in
+// full in the rail.
+describe("EncryptedChatPane, the last identity check", () => {
+  const passed: IdentityCheck = {
+    at: Date.now(),
+    network: "AzzurraNet",
+    channel: "#grappa",
+    passed: true,
+    reason: null,
+  };
+
+  it("shows none until a bot first challenges an order", () => {
+    renderPane();
+    expect(screen.queryByTestId("e2e-check-chip")).toBeNull();
+    expect(screen.queryByTestId("e2e-identity-check")).toBeNull();
   });
 
+  it("a passed check: a ✓ in the top bar, and where and when in the rail", () => {
+    setChat({ nick: "Bob", open: true, unread: 0, check: passed });
+    renderPane();
+    const chip = screen.getByTestId("e2e-check-chip");
+    expect(chip.dataset.passed).toBe("true");
+    expect(chip.textContent).toContain("✓");
+    expect(chip.getAttribute("title")).toContain("passed");
+    expect(chip.getAttribute("title")).toContain("#grappa on AzzurraNet");
+
+    const full = screen.getByTestId("e2e-identity-check");
+    expect(full.dataset.passed).toBe("true");
+    expect(full.textContent).toContain("passed");
+    expect(full.textContent).toContain("#grappa on AzzurraNet");
+  });
+
+  it("a failed check says why, and a private message to the bot reads as one", () => {
+    setChat({
+      nick: "Bob",
+      open: true,
+      unread: 0,
+      check: { ...passed, channel: "Bob", passed: false, reason: "not-sent" },
+    });
+    renderPane();
+    const chip = screen.getByTestId("e2e-check-chip");
+    expect(chip.dataset.passed).toBe("false");
+    expect(chip.textContent).toContain("✗");
+
+    const full = screen.getByTestId("e2e-identity-check");
+    expect(full.dataset.reason).toBe("not-sent");
+    expect(full.textContent).toContain("failed");
+    expect(full.textContent).toContain("a private message on AzzurraNet");
+    expect(full.textContent).toContain("this cic sent no such line there in the last 15 s");
+  });
+});
+
+describe("EncryptedChatPane, the rail", () => {
   it("shows the master the peer's nick is pinned to, and how many of its devices are trusted", () => {
     renderPane();
     expect(screen.getByTestId("e2e-peer-key").textContent).toBe("none yet");
@@ -308,10 +486,11 @@ describe("EncryptedChatPane", () => {
 
     setTrust({ master: KEY, verified: false, devices: 2 });
     expect(screen.getByTestId("e2e-peer-key").textContent).toBe(KEY);
-    expect(screen.getByTestId("e2e-peer-devices").textContent).toBe(" (2 devices)");
+    expect(screen.getByTestId("e2e-peer-devices").textContent).toBe("2 devices");
 
     setTrust({ master: KEY, verified: false, devices: 1 });
-    expect(screen.getByTestId("e2e-peer-devices").textContent).toBe(" (1 device)");
+    expect(screen.getByTestId("e2e-peer-devices").textContent).toBe("1 device");
+    expect(within("e2e-rail").contains(screen.getByTestId("e2e-peer-key"))).toBe(true);
   });
 
   it("shows our own key, our master, and copies it", async () => {
@@ -372,6 +551,7 @@ describe("EncryptedChatPane", () => {
   it("pins the pasted key, trimmed, and clears the field", async () => {
     renderPane();
     const input = screen.getByTestId("e2e-pin-input") as HTMLInputElement;
+    expect(within("e2e-rail").contains(input)).toBe(true);
     fireEvent.input(input, { target: { value: `  ${KEY}\n` } });
     fireEvent.click(screen.getByTestId("e2e-pin-submit"));
 
@@ -393,7 +573,9 @@ describe("EncryptedChatPane", () => {
     expect((await screen.findByTestId("e2e-pin-error")).textContent).toContain(message);
     expect(input.value).toBe("garbage");
   });
+});
 
+describe("EncryptedChatPane, compose and the chat's tools", () => {
   it("sends what was typed through the encrypted door and keeps no draft", () => {
     renderPane();
     const input = screen.getByTestId("e2e-compose-input") as HTMLInputElement;
@@ -411,7 +593,8 @@ describe("EncryptedChatPane", () => {
     expect(sendEncrypted).not.toHaveBeenCalled();
   });
 
-  it("searches the messages as typed, any case, notices hidden, counted; Esc shows all again", () => {
+  it("the magnifier opens a search over the messages, any case, counted; Esc closes it and shows all", () => {
+    setTrust({ master: KEY, verified: true, devices: 1 });
     setRows([
       { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "Ciao, the CODES are ready" },
       { kind: "out", id: "2", at, body: "which codes?", state: "sent", reason: null },
@@ -420,8 +603,13 @@ describe("EncryptedChatPane", () => {
       { kind: "undecryptable", id: "5", at, nick: "Bob" },
     ]);
     renderPane();
-    const input = screen.getByTestId("e2e-search-input") as HTMLInputElement;
     const shown = () => screen.getAllByTestId("e2e-row").map((r) => r.dataset.rowKind);
+    expect(screen.queryByTestId("e2e-search-input")).toBeNull();
+
+    const toggle = screen.getByTestId("e2e-search-toggle");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    const input = screen.getByTestId("e2e-search-input") as HTMLInputElement;
     expect(screen.queryByTestId("e2e-search-count")).toBeNull();
 
     fireEvent.input(input, { target: { value: " codes " } });
@@ -433,23 +621,42 @@ describe("EncryptedChatPane", () => {
     expect(screen.getByTestId("e2e-search-count").textContent).toBe("0 of 3 messages");
 
     fireEvent.keyDown(input, { key: "Escape" });
-    expect(input.value).toBe("");
-    expect(shown()).toEqual(["in", "out", "pinned", "in", "undecryptable"]);
-    expect(screen.queryByTestId("e2e-search-count")).toBeNull();
+    expect(screen.queryByTestId("e2e-search-input")).toBeNull();
+    expect(shown()).toEqual(["in", "out", "in", "undecryptable"]);
+
+    // Opened again, it starts empty.
+    fireEvent.click(toggle);
+    expect((screen.getByTestId("e2e-search-input") as HTMLInputElement).value).toBe("");
   });
 
-  it("deletes the chat on the second tap only: the first arms the button", () => {
+  it("the shredder asks first, and deletes the chat only on the dialog's yes", () => {
     renderPane();
-    const button = screen.getByTestId("e2e-delete-chat");
-    expect(button.textContent).toBe("delete this chat");
+    const shredder = screen.getByTestId("e2e-delete-chat");
+    expect(shredder.getAttribute("aria-label")).toBe("delete the chat with Bob");
 
-    fireEvent.click(button);
-    expect(button.textContent).toBe("really delete?");
+    fireEvent.click(shredder);
+    const asked = confirmRequest();
+    expect(asked?.title).toBe("Delete encrypted chat");
+    expect(asked?.body).toContain("Delete the messages with Bob on this device?");
+    expect(asked?.defaultButton).toBe("cancel");
     expect(deleteEncryptedChat).not.toHaveBeenCalled();
 
-    fireEvent.click(button);
+    acceptConfirm();
     expect(deleteEncryptedChat).toHaveBeenCalledWith("azzurra", "bob");
-    expect(button.textContent).toBe("delete this chat");
+  });
+
+  it("hosts the rail's door and the window list's at the ends of the bar", () => {
+    render(() => (
+      <EncryptedChatPane
+        networkSlug="azzurra"
+        nick="bob"
+        windowsOpener={<button type="button" data-testid="windows-door" />}
+        railOpener={<button type="button" data-testid="rail-door" />}
+      />
+    ));
+    const bar = screen.getByTestId("e2e-pane").querySelector(".e2e-header-main") as HTMLElement;
+    expect(bar.firstElementChild?.getAttribute("data-testid")).toBe("windows-door");
+    expect(bar.lastElementChild?.getAttribute("data-testid")).toBe("rail-door");
   });
 
   it("marks what arrives read while the page is visible, and not while it is hidden", () => {
@@ -464,9 +671,10 @@ describe("EncryptedChatPane", () => {
 });
 
 // The account's identity for the network is held elsewhere (another device,
-// or a wiped browser): never replaced silently. The window says so, offers
-// pairing this browser first, then a new identity behind a confirmation that
-// names what it destroys; nothing can be sent meanwhile.
+// or a wiped browser): never replaced silently. A card in the chat says so
+// (vjt's ruling 4), offers pairing this browser first, then a new identity
+// behind a confirmation that names what it destroys; nothing can be sent
+// meanwhile, and the rail can act on nothing.
 describe("EncryptedChatPane, an identity held elsewhere", () => {
   const LINK = `https://grappa.example/pair#pair=${"r".repeat(22)}.${"c".repeat(43)}`;
 
@@ -478,6 +686,9 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     expect(screen.getByTestId("e2e-identity-elsewhere").textContent).toContain(
       "lives on another device, or was lost",
     );
+    expect(within("e2e-step").dataset.step).toBe("elsewhere");
+    expect(within("e2e-step").contains(screen.getByTestId("e2e-identity-replace"))).toBe(true);
+    expect(screen.getByTestId("e2e-rail-elsewhere")).toBeTruthy();
     expect(screen.getByTestId("e2e-identity-pair-code")).toBeTruthy();
     expect(screen.getByTestId("e2e-identity-pair-submit")).toBeTruthy();
     expect(screen.getByTestId("e2e-identity-replace").textContent).toBe(
@@ -486,6 +697,7 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     // Nothing that needs the identity: no key to copy or pin, no SAS.
     expect(screen.queryByTestId("e2e-own-identity")).toBeNull();
     expect(screen.queryByTestId("e2e-pin-input")).toBeNull();
+    expect(screen.queryByTestId("e2e-step-pin-input")).toBeNull();
     expect(screen.queryByTestId("e2e-sas-start")).toBeNull();
     expect((screen.getByTestId("e2e-compose-input") as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByTestId("e2e-compose-send") as HTMLButtonElement).disabled).toBe(true);
@@ -509,14 +721,16 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     const remove = screen.getByTestId("e2e-delete-chat") as HTMLButtonElement;
 
     expect(screen.queryByTestId("e2e-alarm-accept")).toBeNull();
+    expect(screen.queryByTestId("e2e-rail-alarm-accept")).toBeNull();
     expect(remove.disabled).toBe(true);
     fireEvent.click(remove);
-    fireEvent.click(remove);
+    expect(confirmRequest()).toBeNull();
     expect(deleteEncryptedChat).not.toHaveBeenCalled();
 
-    // Once the network reads ready again, both come back.
+    // Once the network reads ready again, they come back.
     setElsewhere(false);
     expect(screen.getByTestId("e2e-alarm-accept")).toBeTruthy();
+    expect(screen.getByTestId("e2e-rail-alarm-accept")).toBeTruthy();
     expect(remove.disabled).toBe(false);
   });
 
@@ -547,7 +761,7 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     setElsewhere(true);
     const app = render(() => (
       <Router>
-        <Route path="/" component={() => <EncryptedChatPane networkSlug="azzurra" nick="bob" />} />
+        <Route path="/" component={Pane} />
         <Route path="/pair" component={PairScan} />
       </Router>
     ));
@@ -626,6 +840,13 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     );
     expect(screen.queryByTestId("e2e-identity-elsewhere")).toBeNull();
     expect(screen.getByTestId("e2e-own-identity").textContent).toBe(OWN);
+  });
+
+  it("an emoji comparison under way shows no dialog while the identity is elsewhere", () => {
+    setSas({ role: "b", phase: "asked", confirmed: false, here: false, emoji: null });
+    setElsewhere(true);
+    renderPane();
+    expect(screen.queryByTestId("e2e-sas")).toBeNull();
   });
 
   it("a new identity cannot be asked for twice while one is being made", async () => {

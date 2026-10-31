@@ -2,24 +2,31 @@ import {
   type Component,
   createEffect,
   createMemo,
-  createResource,
   createSignal,
   For,
+  type JSX,
   Match,
   on,
   Show,
   Switch,
 } from "solid-js";
-import AddDevicePanel from "./AddDevicePanel";
+import {
+  acceptAlarmKey,
+  CHECK_REASON,
+  CopyOwnKey,
+  checkPlace,
+  PinForm,
+  TRUST_LABEL,
+} from "./EncryptedRail";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { ApiError } from "./lib/api";
-import { copyText } from "./lib/clipboard";
+import { requestConfirm } from "./lib/confirmDialog";
+import { formatDateTime } from "./lib/dateFormat";
 import { loadDocument } from "./lib/documentNavigation";
 import { isDocumentVisible } from "./lib/documentVisibility";
-import type { ChatRow, OutFailure } from "./lib/e2e/chatStore";
+import type { ChatRow, IdentityCheck, OutFailure } from "./lib/e2e/chatStore";
 import { pairingUrl, parsePairFragment } from "./lib/e2e/pairing";
-import { holdsMasterHere } from "./lib/e2e/pairingDeps";
-import type { SasCancelReason, SasStep, SasView } from "./lib/e2e/sas";
+import type { SasStep, SasView } from "./lib/e2e/sas";
 import { SAS_EMOJI } from "./lib/e2e/sasEmoji";
 import {
   deleteEncryptedChat,
@@ -29,12 +36,10 @@ import {
   encryptedTrust,
   identityElsewhere,
   loadEncryptedChat,
-  ownKey,
-  pinEncryptedKey,
+  openAlarm,
   readEncryptedChat,
   replaceEncryptedIdentity,
   sendEncrypted,
-  type Trust,
   trustOf,
   verifyEncrypted,
 } from "./lib/encryptedChats";
@@ -43,8 +48,7 @@ import { formatTimestamp } from "./lib/timeFormat";
 import NickText from "./NickText";
 
 // issue 2430 — the encrypted query window (kind "encrypted"): the rows of the
-// device's chat with one peer, who the peer's nick is pinned to, our own key,
-// and a compose line that sends only through Olm.
+// device's chat with one peer, and a compose line that sends only through Olm.
 //
 // Not ScrollbackPane + ComposeBox, on purpose. ScrollbackPane is coupled to
 // grappa's scrollback (fetches, cursors, paging) and these rows never touch
@@ -53,30 +57,58 @@ import NickText from "./NickText";
 // compose line keeps nothing once the message is handed to the engine, and
 // takes no slash commands (everything typed goes to the peer, encrypted).
 //
+// issue 2485 (vjt's rulings, DESIGN_NOTES #2485) split the window three ways:
+//   * the TOP BAR is the peer's verification only: verified or not (or the
+//     key changed), the last identity check a bot made, compact, and two
+//     buttons for the chat itself, a magnifier (search) and a shredder
+//     (delete this chat);
+//   * the CHAT BODY holds messages, and while the key exchange is not done,
+//     the one step still needed, as a card: an identity held on another
+//     device (pair this browser, or start a new identity), a key alarm (take
+//     the new key), or no key yet (send, or paste the bot's key and give it
+//     ours). The exchange is done once the nick has a pinned key and no alarm
+//     is open, verified or not: verification is the top bar's state. The
+//     emoji comparison runs here too, modal-like over the body, and nothing
+//     can be sent until it ends;
+//   * everything technical (keys, devices, pins, the comparison's start, the
+//     check in full) is the right rail's (`EncryptedRail`). The key events the
+//     chat used to list as rows (pinned, taken, compared, alarmed) stay in the
+//     store, where the badge reads them, and show only as the rail's state.
+//
 // Bots are pinned by hand (2430 ruling 6253162964): the user reads the bot's
-// master key off the bot and pastes it here; our own master is shown,
-// copyable, for the other direction. People verify each other by comparing
-// emoji (SAS, `lib/e2e/sas.ts`); a key the alarm showed can be taken
-// unverified, to be verified that way (fork 7, 2430 comment 6339695571).
-// A key here is always a master: what a peer pins, whichever of its devices
-// writes (wire v2).
+// master key off the bot and pastes it; our own master is copied for the
+// other direction. People verify each other by comparing emoji (SAS,
+// `lib/e2e/sas.ts`); a key the alarm showed can be taken unverified, to be
+// verified that way (fork 7, 2430 comment 6339695571). A key here is always a
+// master: what a peer pins, whichever of its devices writes (wire v2).
 //
 // An identity grappa holds and this browser cannot speak for is never
-// replaced silently (vjt 6344779758): the window says so, and offers pairing
+// replaced silently (vjt 6344779758): the card says so, and offers pairing
 // this browser first, then, behind a confirmation that names what it
 // destroys, a new identity here. Nothing can be sent meanwhile.
 //
 // The chat lives only on this device, so its search does too (2430: "client
-// side only, no server index"): a filter over the rows the window already
-// holds decrypted, at most `CHAT_ROWS_MAX`. "Delete this chat" takes two
-// taps, on the same button the archive deletes grappa's DM history with.
+// side only, no server index"): a filter over the messages the window
+// already holds decrypted, at most `CHAT_ROWS_MAX`. The shredder asks first,
+// as the window's × does when the chat keeps rows.
 
-type Props = { networkSlug: string; nick: string };
-
-const TRUST_LABEL: Record<Trust, string> = {
-  verified: "verified",
-  unverified: "not verified",
-  alarm: "key changed",
+type Props = {
+  networkSlug: string;
+  nick: string;
+  /**
+   * The rail's ☰ as the bar's LAST child, or `null`. Mobile passes it: the
+   * floating `.shell-chrome` ☰ would land on the shredder, the bar's
+   * top-right corner (#1050's collision), so the bar hosts the door itself,
+   * as MentionsWindow does (issue 2333). Desktop passes `null`: its rail is
+   * permanent. Required, by the argument `PaneTopBar`'s slots make.
+   */
+  railOpener: JSX.Element;
+  /**
+   * The left `#` door to the window list (#1766), or `null`: the bar's FIRST
+   * child, for the same reason. Mobile passes Shell's `windowsRailOpener()`
+   * (itself empty while the window bar is in flow); desktop passes `null`.
+   */
+  windowsOpener: JSX.Element;
 };
 
 const FAILURE_LABEL: Record<OutFailure, string> = {
@@ -105,40 +137,17 @@ const FAILURE_LABEL: Record<OutFailure, string> = {
   "session-ended": "the connection to the network ended before it went",
 };
 
-const PIN_ERROR: Record<"bad-key" | "own-key", string> = {
-  "bad-key": "that is not an Ed25519 key (43 characters of base64)",
-  "own-key": "that is your own key",
-};
+/** The rows the chat body shows: messages, and the one that stands in for a message lost. */
+type Message = Extract<ChatRow, { kind: "in" | "out" | "undecryptable" }>;
 
-const SAS_REASON: Record<SasCancelReason, string> = {
-  user: "cancelled",
-  mismatch: "the emoji did not match",
-  timeout: "no answer in 10 minutes",
-  "unexpected-message": "a step came out of order",
-  "commitment-mismatch": "a key was not the one promised",
-  "mac-mismatch": "the confirmation did not match",
-  "key-changed": "the nick was pinned to another key",
-  "page-gone": "the page running it was closed or reloaded",
-  "bad-key": "a key could not be used",
-};
-
-// A reason that is not one of ours is the peer's own words: quoted, so
-// that it does not read as cic's.
-const reasonText = (reason: string): string =>
-  (SAS_REASON as Record<string, string | undefined>)[reason] ?? `"${reason}"`;
+const isMessage = (row: ChatRow): row is Message =>
+  row.kind === "in" || row.kind === "out" || row.kind === "undecryptable";
 
 // `pinned` is the master the chat's nick is pinned to. An `in` row carries the
 // master whose device wrote it, which is not always that one: a message can
 // land in a nick's chat written under ANOTHER master (one kept from before the
-// nick was pinned to a new one). Such a row says so. While the identity is
-// held elsewhere, the alarm offers no key to take: nothing could pin it.
-const EncryptedRow: Component<{
-  row: ChatRow;
-  peer: string;
-  pinned: string | undefined;
-  elsewhere: boolean;
-  onAccept: (key: string) => void;
-}> = (props) => (
+// nick was pinned to a new one). Such a row is marked, the key in its title.
+const EncryptedRow: Component<{ row: Message; pinned: string | undefined }> = (props) => (
   <li class="e2e-row" data-testid="e2e-row" data-row-kind={props.row.kind}>
     <span class="e2e-row-time scrollback-time">{formatTimestamp(props.row.at)}</span>
     <span class="encrypted-marker" aria-hidden="true">
@@ -151,8 +160,14 @@ const EncryptedRow: Component<{
             <NickText nick={row().nick} extraClass="e2e-row-nick" />
             <span class="e2e-row-body">{row().body}</span>
             <Show when={props.pinned !== undefined && row().ed25519 !== props.pinned}>
-              <span class="e2e-row-notice e2e-row-alarm" data-testid="e2e-row-other-key">
-                written with another key: <code class="e2e-key">{row().ed25519}</code>
+              <span
+                class="e2e-row-alarm"
+                data-testid="e2e-row-other-key"
+                role="img"
+                aria-label={`written with another key: ${row().ed25519}`}
+                title={`written with another key: ${row().ed25519}`}
+              >
+                ⚠
               </span>
             </Show>
           </>
@@ -182,72 +197,9 @@ const EncryptedRow: Component<{
           </span>
         )}
       </Match>
-      <Match when={props.row.kind === "key_alarm" && props.row}>
-        {(row) => (
-          <span class="e2e-row-notice e2e-row-alarm">
-            {row().nick} spoke with a key that is not the pinned one, and was ignored:{" "}
-            <code class="e2e-key">{row().presented}</code>. If it is theirs, take it and verify it
-            by comparing emoji, or pin the key they give you above.{" "}
-            <Show when={!props.elsewhere && row().presented !== props.pinned}>
-              <button
-                type="button"
-                class="e2e-sas-button"
-                data-testid="e2e-alarm-accept"
-                onClick={() => props.onAccept(row().presented)}
-              >
-                take this key (not verified)
-              </button>
-            </Show>
-          </span>
-        )}
-      </Match>
-      <Match when={props.row.kind === "pinned" && props.row}>
-        {(row) => (
-          <span class="e2e-row-notice">
-            you pinned {props.peer} to <code class="e2e-key">{row().ed25519}</code>
-          </span>
-        )}
-      </Match>
-      <Match when={props.row.kind === "accepted" && props.row}>
-        {(row) => (
-          <span class="e2e-row-notice">
-            you took <code class="e2e-key">{row().ed25519}</code> as {props.peer}'s key, not
-            verified: compare emoji to verify it
-          </span>
-        )}
-      </Match>
-      <Match when={props.row.kind === "sas_asked" && props.row}>
-        {(row) => (
-          <span class="e2e-row-notice">
-            {row().by === "you"
-              ? `you asked ${props.peer} to compare emoji`
-              : `${props.peer} asked to compare emoji with you`}
-          </span>
-        )}
-      </Match>
-      <Match when={props.row.kind === "sas_cancelled" && props.row}>
-        {(row) => (
-          <span class="e2e-row-notice">
-            {row().by === "you"
-              ? "the emoji comparison stopped"
-              : `${props.peer} stopped the emoji comparison`}
-            : {reasonText(row().reason)}
-          </span>
-        )}
-      </Match>
-      <Match when={props.row.kind === "verified" && props.row}>
-        {(row) => (
-          <span class="e2e-row-notice">
-            you verified {props.peer}'s key <code class="e2e-key">{row().ed25519}</code> by
-            comparing emoji
-          </span>
-        )}
-      </Match>
     </Switch>
   </li>
 );
-
-const devicesText = (n: number): string => (n === 1 ? "1 device" : `${n} devices`);
 
 const REPLACE_CONFIRM =
   "start a new identity anyway: every other device of this account loses this identity " +
@@ -301,7 +253,7 @@ const IdentityElsewhere: Component<{ slug: string }> = (props) => {
   };
 
   return (
-    <div class="e2e-keys">
+    <>
       <p class="e2e-error" data-testid="e2e-identity-elsewhere">
         this account's encryption identity for this network lives on another device, or was lost. To
         use it here, pair this browser with a device that holds it.
@@ -332,7 +284,7 @@ const IdentityElsewhere: Component<{ slug: string }> = (props) => {
           </div>
         )}
       </Show>
-      <div class="e2e-tools">
+      <div class="e2e-step-actions">
         <InlineConfirmButton
           idleLabel="start a new identity here"
           confirmLabel={REPLACE_CONFIRM}
@@ -350,14 +302,17 @@ const IdentityElsewhere: Component<{ slug: string }> = (props) => {
           </div>
         )}
       </Show>
-    </div>
+    </>
   );
 };
 
-// What the panel shows for a SAS, from the window's view of it.
-type SasPanelPhase = "waiting" | "asked" | "exchanging" | "compare" | "elsewhere" | "confirmed";
+/** The one step the key exchange still needs, or null once it is done. */
+type Step = "elsewhere" | "alarm" | "no-key";
 
-function panelPhase(view: SasView): SasPanelPhase {
+// What the dialog shows for a SAS, from the window's view of it.
+type SasPhase = "waiting" | "asked" | "exchanging" | "compare" | "elsewhere" | "confirmed";
+
+function sasPhase(view: SasView): SasPhase {
   switch (view.phase) {
     case "started":
     case "keyed":
@@ -373,13 +328,13 @@ function panelPhase(view: SasView): SasPanelPhase {
   }
 }
 
-// The SAS with the peer: a button to start one, or where it stands with what
-// the user can do about it. A bot never answers a request (irc-olm drops
-// SAS), so the wait says what to do instead.
-const SasPanel: Component<{
-  view: SasView | null;
+// The emoji comparison with the peer, while one runs: where it stands and
+// what the user can do about it, modal-like over the chat body (vjt: no
+// message goes until it is over). A bot never answers a request (irc-olm
+// drops SAS), so the wait says what to do instead.
+const SasDialog: Component<{
+  view: SasView;
   peer: string;
-  canStart: boolean;
   onStep: (step: SasStep) => void;
 }> = (props) => {
   const button = (step: SasStep, label: string) => (
@@ -392,114 +347,141 @@ const SasPanel: Component<{
       {label}
     </button>
   );
+  const phase = () => sasPhase(props.view);
   return (
-    <Show
-      when={props.view}
-      fallback={
-        <Show when={props.canStart}>
-          <div class="e2e-sas">{button("start", "verify by comparing emoji")}</div>
-        </Show>
-      }
+    <div
+      class="e2e-sas-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="e2e-sas-title"
+      data-testid="e2e-sas"
+      data-phase={phase()}
     >
-      {(view) => (
-        <div class="e2e-sas" data-testid="e2e-sas" data-phase={panelPhase(view())}>
-          <Switch>
-            <Match when={panelPhase(view()) === "waiting"}>
-              <span>
-                waiting for {props.peer} to accept the emoji comparison. A bot never answers: pin
-                the key it prints instead.
-              </span>
-              {button("cancel", "cancel")}
-            </Match>
-            <Match when={panelPhase(view()) === "asked"}>
-              <span>{props.peer} asks to compare emoji with you.</span>
+      <div class="e2e-sas">
+        <h3 class="e2e-sas-title" id="e2e-sas-title">
+          compare emoji with {props.peer}
+        </h3>
+        <Switch>
+          <Match when={phase() === "waiting"}>
+            <p>
+              waiting for {props.peer} to accept the emoji comparison. A bot never answers: pin the
+              key it prints instead.
+            </p>
+            <div class="e2e-step-actions">{button("cancel", "cancel")}</div>
+          </Match>
+          <Match when={phase() === "asked"}>
+            <p>{props.peer} asks to compare emoji with you.</p>
+            <div class="e2e-step-actions">
               {button("accept", "accept")}
               {button("cancel", "decline")}
-            </Match>
-            <Match when={panelPhase(view()) === "exchanging"}>
-              <span>exchanging keys with {props.peer}…</span>
-              {button("cancel", "cancel")}
-            </Match>
-            <Match when={panelPhase(view()) === "elsewhere"}>
-              <span>the emoji comparison is open in another tab.</span>
-              {button("cancel", "cancel")}
-            </Match>
-            <Match when={panelPhase(view()) === "confirmed"}>
-              <span>waiting for {props.peer} to confirm the emoji…</span>
-              {button("cancel", "cancel")}
-            </Match>
-            <Match when={panelPhase(view()) === "compare"}>
-              <span>
-                does {props.peer} see these emoji, in this order? Compare them out of band (voice,
-                in person).
-              </span>
-              <ol class="e2e-sas-emoji-list">
-                <For each={view().emoji ?? []}>
-                  {(index) => (
-                    <li class="e2e-sas-emoji" data-testid="e2e-sas-emoji" data-index={index}>
-                      <span class="e2e-sas-glyph" aria-hidden="true">
-                        {SAS_EMOJI[index]?.[0]}
-                      </span>
-                      <span>{SAS_EMOJI[index]?.[1]}</span>
-                    </li>
-                  )}
-                </For>
-              </ol>
+            </div>
+          </Match>
+          <Match when={phase() === "exchanging"}>
+            <p>exchanging keys with {props.peer}…</p>
+            <div class="e2e-step-actions">{button("cancel", "cancel")}</div>
+          </Match>
+          <Match when={phase() === "elsewhere"}>
+            <p>the emoji comparison is open in another tab.</p>
+            <div class="e2e-step-actions">{button("cancel", "cancel")}</div>
+          </Match>
+          <Match when={phase() === "confirmed"}>
+            <p>waiting for {props.peer} to confirm the emoji…</p>
+            <div class="e2e-step-actions">{button("cancel", "cancel")}</div>
+          </Match>
+          <Match when={phase() === "compare"}>
+            <p>
+              does {props.peer} see these emoji, in this order? Compare them out of band (voice, in
+              person).
+            </p>
+            <ol class="e2e-sas-emoji-list">
+              <For each={props.view.emoji ?? []}>
+                {(index) => (
+                  <li class="e2e-sas-emoji" data-testid="e2e-sas-emoji" data-index={index}>
+                    <span class="e2e-sas-glyph" aria-hidden="true">
+                      {SAS_EMOJI[index]?.[0]}
+                    </span>
+                    <span>{SAS_EMOJI[index]?.[1]}</span>
+                  </li>
+                )}
+              </For>
+            </ol>
+            <div class="e2e-step-actions">
               {button("match", "they match")}
               {button("mismatch", "they don't match")}
-            </Match>
-          </Switch>
-        </div>
-      )}
-    </Show>
+            </div>
+          </Match>
+        </Switch>
+      </div>
+    </div>
   );
 };
 
-// The messages, in and out: what a search looks through and counts.
-const messageBody = (row: ChatRow): string | null =>
-  row.kind === "in" || row.kind === "out" ? row.body : null;
+/** The check's moment, compact: the time today, the date and time before. */
+function checkWhen(at: number): string {
+  const day = new Date(at);
+  return day.toDateString() === new Date().toDateString()
+    ? formatTimestamp(at)
+    : formatDateTime(at);
+}
+
+/** The last identity check, as the top bar's compact signal; the rail says it in full. */
+const CheckChip: Component<{ check: IdentityCheck; slug: string }> = (props) => {
+  const detail = () =>
+    `last identity check: ${props.check.passed ? "passed" : "failed"}, ` +
+    `${formatDateTime(props.check.at)}, ${checkPlace(props.check, props.slug)}` +
+    (props.check.reason === null ? "" : ` (${CHECK_REASON[props.check.reason]})`);
+  return (
+    <span
+      class={`e2e-check-chip ${props.check.passed ? "e2e-check-passed" : "e2e-check-failed"}`}
+      data-testid="e2e-check-chip"
+      data-passed={props.check.passed ? "true" : "false"}
+      title={detail()}
+      aria-label={detail()}
+      role="img"
+    >
+      {props.check.passed ? "✓" : "✗"} id check {checkWhen(props.check.at)}
+    </span>
+  );
+};
 
 const EncryptedChatPane: Component<Props> = (props) => {
   const [draft, setDraft] = createSignal("");
-  const [pin, setPin] = createSignal("");
-  const [pinError, setPinError] = createSignal<string | null>(null);
-  const [copyError, setCopyError] = createSignal<string | null>(null);
-  const [adding, setAdding] = createSignal(false);
-  // Whether this browser holds the master: only it may add a device. Asked
-  // again when the key shown changes (a new identity, or a pairing, lands).
-  // Unknown (still asking, or no key yet: the sync that makes it is what
-  // settles whether this browser holds a master) offers neither the button
-  // nor the hint, so a real master never sees the hint first.
-  const [master] = createResource(
-    () => {
-      const key = ownKey(props.networkSlug);
-      return key === undefined ? false : ([props.networkSlug, key] as const);
-    },
-    ([slug]) =>
-      holdsMasterHere(slug).catch((err: unknown) => {
-        console.warn(`[e2e] could not tell whether this browser holds the master of ${slug}`, err);
-        return false;
-      }),
-  );
-  const answered = () => (ownKey(props.networkSlug) === undefined ? undefined : master());
+  const [searching, setSearching] = createSignal(false);
   const [query, setQuery] = createSignal("");
-  const [deleteArmed, setDeleteArmed] = createSignal(false);
   let list: HTMLOListElement | undefined;
+  let searchInput: HTMLInputElement | undefined;
 
   const display = () => encryptedChat(props.networkSlug, props.nick)?.nick ?? props.nick;
+  const loaded = () => encryptedRows(props.networkSlug, props.nick) !== undefined;
   const rows = () => encryptedRows(props.networkSlug, props.nick) ?? [];
   const peerTrust = () => encryptedTrust(props.networkSlug, props.nick);
   const trust = () => trustOf(rows(), peerTrust());
+  const alarm = () => openAlarm(rows());
   const elsewhere = () => identityElsewhere(props.networkSlug);
+  const sas = () => encryptedSas(props.networkSlug, props.nick);
+  const check = () => encryptedChat(props.networkSlug, props.nick)?.check;
+
+  // The step still needed, read once the chat is loaded (before, a pinned
+  // peer would flash as one with no key).
+  const step = (): Step | null => {
+    if (elsewhere()) return "elsewhere";
+    if (!loaded()) return null;
+    if (alarm() !== null) return "alarm";
+    if (peerTrust() === null) return "no-key";
+    return null;
+  };
 
   // While searching, only the messages that hold what was typed, in any case.
-  const needle = () => query().trim().toLowerCase();
-  const messages = () => rows().filter((row) => messageBody(row) !== null);
+  const needle = () => (searching() ? query().trim().toLowerCase() : "");
+  const messages = createMemo(() => rows().filter(isMessage));
   const shown = createMemo(() => {
     const n = needle();
-    if (n === "") return rows();
-    return messages().filter((row) => messageBody(row)?.toLowerCase().includes(n));
+    if (n === "") return messages();
+    return messages().filter(
+      (row) => row.kind !== "undecryptable" && row.body.toLowerCase().includes(n),
+    );
   });
+  const messageCount = () => messages().filter((row) => row.kind !== "undecryptable").length;
 
   createEffect(
     on(
@@ -530,61 +512,52 @@ const EncryptedChatPane: Component<Props> = (props) => {
   const send = (event: SubmitEvent) => {
     event.preventDefault();
     const body = draft();
-    if (body.trim() === "" || elsewhere()) return;
+    if (body.trim() === "" || elsewhere() || sas() !== null) return;
     setDraft("");
     void sendEncrypted(props.networkSlug, props.nick, body).catch((err: unknown) => {
       console.warn(`[e2e] could not send to ${props.nick}`, err);
     });
   };
 
-  const submitPin = async (event: SubmitEvent) => {
-    event.preventDefault();
-    const key = pin().trim();
-    if (key === "") return;
-    const result = await pinEncryptedKey(props.networkSlug, props.nick, key, true);
-    if (result === "pinned") {
-      setPin("");
-      setPinError(null);
-    } else {
-      setPinError(PIN_ERROR[result]);
-    }
-  };
-
-  const acceptKey = (key: string) => {
-    void pinEncryptedKey(props.networkSlug, props.nick, key, false).catch((err: unknown) => {
-      console.warn(`[e2e] could not take the new key of ${props.nick}`, err);
+  const sasStep = (s: SasStep) => {
+    void verifyEncrypted(props.networkSlug, props.nick, s).catch((err: unknown) => {
+      console.warn(`[e2e] could not ${s} the emoji comparison with ${props.nick}`, err);
     });
   };
 
-  const sasStep = (step: SasStep) => {
-    void verifyEncrypted(props.networkSlug, props.nick, step).catch((err: unknown) => {
-      console.warn(`[e2e] could not ${step} the emoji comparison with ${props.nick}`, err);
-    });
+  const toggleSearch = () => {
+    const open = !searching();
+    setSearching(open);
+    if (!open) setQuery("");
+    else queueMicrotask(() => searchInput?.focus());
   };
 
   // The window goes with the chat: the close-watcher moves focus, as after a close.
-  const deleteChat = () => {
-    setDeleteArmed(false);
-    void deleteEncryptedChat(props.networkSlug, props.nick).catch((err: unknown) => {
-      console.warn(`[e2e] could not delete the encrypted chat with ${props.nick}`, err);
+  const shred = () =>
+    requestConfirm({
+      title: "Delete encrypted chat",
+      body:
+        `Delete the messages with ${display()} on this device? ` +
+        `Deleted messages cannot be brought back: grappa never had them. ` +
+        `The key ${display()} is pinned to stays.`,
+      confirmLabel: "Delete",
+      onConfirm: () => {
+        void deleteEncryptedChat(props.networkSlug, props.nick).catch((err: unknown) => {
+          console.warn(`[e2e] could not delete the encrypted chat with ${props.nick}`, err);
+        });
+      },
+      alternative: null,
+      attachments: null,
+      choice: null,
+      toggle: null,
+      defaultButton: "cancel",
     });
-  };
-
-  const copyOwn = async () => {
-    const own = ownKey(props.networkSlug);
-    if (own === undefined) return;
-    setCopyError(null);
-    try {
-      await copyText(own);
-    } catch (err) {
-      setCopyError(err instanceof Error ? err.message : String(err));
-    }
-  };
 
   return (
     <div class="e2e-pane" data-testid="e2e-pane">
       <header class="e2e-header">
         <div class="e2e-header-main">
+          {props.windowsOpener}
           <span class="encrypted-marker" aria-hidden="true">
             🔒
           </span>
@@ -596,152 +569,175 @@ const EncryptedChatPane: Component<Props> = (props) => {
           >
             {TRUST_LABEL[trust()]}
           </span>
-        </div>
-        <Show when={!elsewhere()} fallback={<IdentityElsewhere slug={props.networkSlug} />}>
-          <SasPanel
-            view={encryptedSas(props.networkSlug, props.nick)}
-            peer={display()}
-            canStart={peerTrust()?.verified === false}
-            onStep={sasStep}
-          />
-          <div class="e2e-keys muted">
-            <div class="e2e-key-line">
-              your key:{" "}
-              <code class="e2e-key" data-testid="e2e-own-identity">
-                {ownKey(props.networkSlug) ?? "…"}
-              </code>
-              <button
-                type="button"
-                class="e2e-copy"
-                data-testid="e2e-own-identity-copy"
-                disabled={ownKey(props.networkSlug) === undefined}
-                onClick={() => void copyOwn()}
+          <Show when={check()}>{(c) => <CheckChip check={c()} slug={props.networkSlug} />}</Show>
+          <span class="e2e-header-tools">
+            <button
+              type="button"
+              class="shell-chrome-btn e2e-tool"
+              classList={{ active: searching() }}
+              data-testid="e2e-search-toggle"
+              aria-label={`search the chat with ${display()}`}
+              aria-pressed={searching()}
+              title="search this chat"
+              onClick={toggleSearch}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
               >
-                copy
-              </button>
-            </div>
-            <Show when={copyError()}>{(message) => <div class="e2e-error">{message()}</div>}</Show>
-            <Show when={answered() === true}>
-              <Show when={!adding()} fallback={<AddDevicePanel onClose={() => setAdding(false)} />}>
-                <button
-                  type="button"
-                  class="e2e-copy"
-                  data-testid="e2e-add-device"
-                  onClick={() => setAdding(true)}
-                >
-                  add a device
-                </button>
-              </Show>
-            </Show>
-            <Show when={answered() === false}>
-              <div class="e2e-key-line" data-testid="e2e-add-device-hint">
-                Devices are added from the browser that started this identity.
-              </div>
-            </Show>
-            <div class="e2e-key-line">
-              {display()}'s key:{" "}
-              <code class="e2e-key" data-testid="e2e-peer-key">
-                {peerTrust()?.master ?? "none yet"}
-              </code>
-              <Show when={peerTrust()}>
-                {(peer) => (
-                  <span class="e2e-peer-devices" data-testid="e2e-peer-devices">
-                    {" "}
-                    ({devicesText(peer().devices)})
-                  </span>
-                )}
-              </Show>
-            </div>
-            <form class="e2e-pin" onSubmit={(event) => void submitPin(event)}>
-              <input
-                type="text"
-                class="e2e-pin-input"
-                data-testid="e2e-pin-input"
-                placeholder={`pin ${display()}'s key (paste it)`}
-                autocomplete="off"
-                spellcheck={false}
-                value={pin()}
-                onInput={(event) => setPin(event.currentTarget.value)}
-              />
-              <button type="submit" class="e2e-pin-submit" data-testid="e2e-pin-submit">
-                pin
-              </button>
-            </form>
-            <Show when={pinError()}>
-              {(message) => (
-                <div class="e2e-error" data-testid="e2e-pin-error">
-                  {message()}
-                </div>
-              )}
+                <circle cx="11" cy="11" r="7" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="shell-chrome-btn e2e-tool"
+              data-testid="e2e-delete-chat"
+              aria-label={`delete the chat with ${display()}`}
+              title="delete this chat"
+              disabled={elsewhere()}
+              onClick={shred}
+            >
+              {/* A shredder: the sheet going in, the strips coming out. */}
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M7 10V3h10v7" />
+                <rect x="3" y="10" width="18" height="5" rx="1" />
+                <line x1="7" y1="15" x2="7" y2="21" />
+                <line x1="10.5" y1="15" x2="10.5" y2="21" />
+                <line x1="13.5" y1="15" x2="13.5" y2="21" />
+                <line x1="17" y1="15" x2="17" y2="21" />
+              </svg>
+            </button>
+          </span>
+          {props.railOpener}
+        </div>
+        <Show when={searching()}>
+          <div class="e2e-search">
+            <input
+              ref={searchInput}
+              type="search"
+              class="e2e-search-input"
+              data-testid="e2e-search-input"
+              aria-label={`search the chat with ${display()}`}
+              placeholder="search this chat"
+              autocomplete="off"
+              value={query()}
+              onInput={(event) => setQuery(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                event.preventDefault();
+                toggleSearch();
+              }}
+            />
+            <Show when={needle() !== ""}>
+              <span
+                class="e2e-search-count muted"
+                data-testid="e2e-search-count"
+                aria-live="polite"
+              >
+                {shown().length} of {messageCount()} messages
+              </span>
             </Show>
           </div>
         </Show>
-        <div class="e2e-tools">
-          <input
-            type="search"
-            class="e2e-search-input"
-            data-testid="e2e-search-input"
-            aria-label={`search the chat with ${display()}`}
-            placeholder="search this chat"
-            autocomplete="off"
-            value={query()}
-            onInput={(event) => setQuery(event.currentTarget.value)}
-            onKeyDown={(event) => {
-              if (event.key !== "Escape") return;
-              event.preventDefault();
-              setQuery("");
-            }}
-          />
-          <Show when={needle() !== ""}>
-            <span class="e2e-search-count muted" data-testid="e2e-search-count" aria-live="polite">
-              {shown().length} of {messages().length} messages
-            </span>
-          </Show>
-          <InlineConfirmButton
-            idleLabel="delete this chat"
-            confirmLabel="really delete?"
-            armed={deleteArmed()}
-            onArm={() => setDeleteArmed(true)}
-            onConfirm={deleteChat}
-            testId="e2e-delete-chat"
-            extraClass="e2e-delete-chat"
-            disabled={elsewhere()}
-          />
-        </div>
       </header>
-      <ol class="e2e-rows" ref={list}>
-        <For each={shown()}>
-          {(row) => (
-            <EncryptedRow
-              row={row}
-              peer={display()}
-              pinned={peerTrust()?.master}
-              elsewhere={elsewhere()}
-              onAccept={acceptKey}
+      <div class="e2e-body">
+        <div class="e2e-body-content" inert={sas() !== null}>
+          <ol class="e2e-rows" ref={list}>
+            <For each={shown()}>
+              {(row) => <EncryptedRow row={row} pinned={peerTrust()?.master} />}
+            </For>
+          </ol>
+          <Show when={step()}>
+            {(s) => (
+              <section class="e2e-step" data-testid="e2e-step" data-step={s()}>
+                <Switch>
+                  <Match when={s() === "elsewhere"}>
+                    <IdentityElsewhere slug={props.networkSlug} />
+                  </Match>
+                  <Match when={s() === "alarm" && alarm()}>
+                    {(key) => (
+                      <>
+                        <p class="e2e-error">
+                          {display()} wrote with a key that is not the one pinned, and it was
+                          ignored. If they changed it, take the new key and compare emoji to verify
+                          it; otherwise pin the key they give you.
+                        </p>
+                        <div class="e2e-step-actions">
+                          <button
+                            type="button"
+                            class="e2e-sas-button"
+                            data-testid="e2e-alarm-accept"
+                            onClick={() => acceptAlarmKey(props.networkSlug, props.nick, key())}
+                          >
+                            take the new key (not verified)
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </Match>
+                  <Match when={s() === "no-key"}>
+                    <p>
+                      no keys exchanged with {display()} yet. Send a message: a person's key is
+                      taken when they answer. A bot answers only once its key is pinned here, and
+                      yours there: paste the key it prints, and give its operator yours.
+                    </p>
+                    <PinForm
+                      networkSlug={props.networkSlug}
+                      nick={props.nick}
+                      display={display()}
+                      testId="e2e-step-pin"
+                    />
+                    <div class="e2e-step-actions">
+                      <CopyOwnKey networkSlug={props.networkSlug} testId="e2e-step-copy" />
+                    </div>
+                  </Match>
+                </Switch>
+              </section>
+            )}
+          </Show>
+          <form class="e2e-compose" data-testid="e2e-compose" onSubmit={send}>
+            <input
+              type="text"
+              class="e2e-compose-input"
+              data-testid="e2e-compose-input"
+              placeholder={`encrypted message to ${display()}`}
+              autocomplete="off"
+              disabled={elsewhere()}
+              value={draft()}
+              onInput={(event) => setDraft(event.currentTarget.value)}
             />
-          )}
-        </For>
-      </ol>
-      <form class="e2e-compose" data-testid="e2e-compose" onSubmit={send}>
-        <input
-          type="text"
-          class="e2e-compose-input"
-          data-testid="e2e-compose-input"
-          placeholder={`encrypted message to ${display()}`}
-          autocomplete="off"
-          disabled={elsewhere()}
-          value={draft()}
-          onInput={(event) => setDraft(event.currentTarget.value)}
-        />
-        <button
-          type="submit"
-          class="e2e-compose-send"
-          data-testid="e2e-compose-send"
-          disabled={elsewhere()}
-        >
-          send
-        </button>
-      </form>
+            <button
+              type="submit"
+              class="e2e-compose-send"
+              data-testid="e2e-compose-send"
+              disabled={elsewhere()}
+            >
+              send
+            </button>
+          </form>
+        </div>
+        <Show when={!elsewhere() && sas()}>
+          {(view) => <SasDialog view={view()} peer={display()} onStep={sasStep} />}
+        </Show>
+      </div>
     </div>
   );
 };

@@ -36,6 +36,7 @@ import { channelKey } from "./lib/channelKey";
 import { getDraft, tabComplete } from "./lib/compose";
 import { appendToCompose } from "./lib/composeAppend";
 import { placeCaretInView } from "./lib/composeCaret";
+import { focusedEncryptedWindow, sameEncryptedWindow } from "./lib/encryptedWindow";
 import { casemappingForNetwork } from "./lib/isupport";
 import { requestJumpToMessage } from "./lib/jumpToMessageCommand";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
@@ -62,12 +63,7 @@ import { windowBarInFlow } from "./lib/showBottomBar";
 import { isMobile } from "./lib/theme";
 import { bindEdgeGesture } from "./lib/touchGesture";
 import { loadUploadConfirmEnabled, loadUploadTtlSeconds } from "./lib/uploadOrchestrator";
-import {
-  encryptedWindowPeer,
-  HOME_WINDOW_NAME,
-  HOME_WINDOW_SLUG,
-  kindHasScrollback,
-} from "./lib/windowKinds";
+import { HOME_WINDOW_NAME, HOME_WINDOW_SLUG, kindHasScrollback } from "./lib/windowKinds";
 import { isActiveChannelJoined } from "./lib/windowState";
 import MediaViewerModal from "./MediaViewerModal";
 import MembersPane from "./MembersPane";
@@ -327,20 +323,11 @@ const Shell: Component = () => {
   // branch begins mounting, no concurrent owner-tree mutation.
   const isAdminPaneVisible = createMemo(() => selectedChannel()?.kind === "admin" && isAdmin());
   const selKind = createMemo(() => selectedChannel()?.kind ?? null);
-  // issue 2430 — the focused encrypted window (its network and peer), else
-  // null. A new value only when the window changes: the panes below are
-  // KEYED on it, so each encrypted window gets a pane of its own and none of
-  // a chat's state (a draft, a key being pasted, a search) follows into the
-  // next one, where it would be sent or pinned to the wrong peer.
-  const encryptedWindow = createMemo(
-    () => {
-      const sel = selectedChannel();
-      const peer = sel?.kind === "encrypted" ? encryptedWindowPeer(sel.channelName) : null;
-      return sel && peer !== null ? { networkSlug: sel.networkSlug, nick: peer } : null;
-    },
-    null,
-    { equals: (a, b) => a?.networkSlug === b?.networkSlug && a?.nick === b?.nick },
-  );
+  // issue 2430 — the focused encrypted window (`focusedEncryptedWindow` says
+  // why the panes below are KEYED on it).
+  const encryptedWindow = createMemo(focusedEncryptedWindow, null, {
+    equals: sameEncryptedWindow,
+  });
 
   // UX-6 bucket A — refcounted overlay scroll-lock for the two
   // Shell-owned mobile overlays (members drawer + AdminPane). The
@@ -931,7 +918,14 @@ const Shell: Component = () => {
                   {/* issue 2430 — an encrypted query: its own pane and its
                     own compose line (EncryptedChatPane.tsx says why neither
                     is the scrollback pair). No MembersPane. */}
-                  {(w) => <EncryptedChatPane networkSlug={w.networkSlug} nick={w.nick} />}
+                  {(w) => (
+                    <EncryptedChatPane
+                      networkSlug={w.networkSlug}
+                      nick={w.nick}
+                      windowsOpener={null}
+                      railOpener={null}
+                    />
+                  )}
                 </Match>
               </Switch>
             </section>
@@ -1131,11 +1125,17 @@ const Shell: Component = () => {
               `PaneTopBarRailOpener` AdminPane does, inline before the ✕. No
               left `#` door there, on admin's argument: the ✕ exits to a window
               that carries one. */}
+            {/* issue 2485 — `encrypted` is the fifth, with mentions' remedy:
+              the encrypted pane's top bar ends in the shredder, the corner
+              the float would cover, so the pane hosts the ☰ as its last
+              child, and the left `#` door as its first (it has no ✕ to
+              leave by, so #1766's argument for that door holds here). */}
             <Show
               when={
                 selKind() !== "channel" &&
                 selKind() !== "list" &&
                 selKind() !== "mentions" &&
+                selKind() !== "encrypted" &&
                 !isAdminPaneVisible()
               }
             >
@@ -1249,8 +1249,23 @@ const Shell: Component = () => {
                 <DirectoryPane networkSlug={selectedChannel()?.networkSlug ?? ""} />
               </Match>
               <Match when={encryptedWindow()} keyed>
-                {/* issue 2430 — the encrypted query pane on mobile. */}
-                {(w) => <EncryptedChatPane networkSlug={w.networkSlug} nick={w.nick} />}
+                {/* issue 2430 — the encrypted query pane on mobile. issue 2485
+                  — its top bar hosts the rail's ☰, as MentionsWindow does. */}
+                {(w) => (
+                  <EncryptedChatPane
+                    networkSlug={w.networkSlug}
+                    nick={w.nick}
+                    windowsOpener={windowsRailOpener()}
+                    railOpener={
+                      <PaneTopBarRailOpener
+                        onOpenRail={() =>
+                          toggleMembersPanel({ membersOpen, setMembersOpen, setSettingsOpen })
+                        }
+                        railLabel="open actions"
+                      />
+                    }
+                  />
+                )}
               </Match>
             </Switch>
           </section>

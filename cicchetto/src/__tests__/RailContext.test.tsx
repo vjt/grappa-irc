@@ -34,6 +34,24 @@ vi.mock("../lib/networks", () => ({
   networkBySlug: (slug: string) => networkBySlugMock(slug),
 }));
 
+// issue 2485 — the encrypted window's rail is its own component (its tests
+// live with the pane's): here only which window it is mounted for, and that
+// each window gets a fresh one.
+const encryptedRailMounts = vi.hoisted(() => [] as string[]);
+vi.mock("../EncryptedRail", async () => {
+  const { onCleanup } = await import("solid-js");
+  return {
+    default: (props: { networkSlug: string; nick: string }) => {
+      encryptedRailMounts.push(`${props.networkSlug} ${props.nick}`);
+      onCleanup(() => encryptedRailMounts.push(`gone ${props.nick}`));
+      const el = document.createElement("div");
+      el.dataset.testid = "e2e-rail";
+      el.textContent = props.nick;
+      return el;
+    },
+  };
+});
+
 vi.mock("../lib/railWhois", () => ({
   requestRailWhois: (slug: string, nick: string) => requestRailWhoisMock(slug, nick),
   railWhoisFor: (slug: string, nick: string) => railWhoisForMock(slug, nick),
@@ -241,6 +259,22 @@ describe("RailContext whois fetch is gated on the card being on screen (#782)", 
     await setSelected(sel("query", "alice2"));
     expect(requestRailWhoisMock).toHaveBeenCalledWith("libera", "alice");
     expect(requestRailWhoisMock).toHaveBeenCalledWith("libera", "alice2");
+  });
+
+  it("mounts the encrypted rail on an encrypted window, a fresh one per peer, and asks no WHOIS", async () => {
+    encryptedRailMounts.length = 0;
+    await renderContainer(true);
+    await setSelected(sel("encrypted", "$e2e:Bob"));
+    expect(screen.getByTestId("e2e-rail").textContent).toBe("Bob");
+    expect(screen.queryByTestId("rail-query-context")).toBeNull();
+
+    await setSelected(sel("encrypted", "$e2e:carol"));
+    expect(screen.getByTestId("e2e-rail").textContent).toBe("carol");
+    expect(encryptedRailMounts).toEqual(["libera Bob", "gone Bob", "libera carol"]);
+
+    await setSelected(sel("channel", "#italia"));
+    expect(screen.queryByTestId("e2e-rail")).toBeNull();
+    expect(requestRailWhoisMock).not.toHaveBeenCalled();
   });
 
   it("issues NO WHOIS for a non-query window, however visible the rail is", async () => {
