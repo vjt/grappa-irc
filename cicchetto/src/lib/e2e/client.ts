@@ -48,7 +48,13 @@
 import { ApiError } from "../api";
 import type { E2eKeysWireDevice } from "../wireTypes";
 import type { AccountStore } from "./accountStore";
-import type { ChatChange, ChatStore, DoorRefusal, SendDropped } from "./chatStore";
+import type {
+  ChatChange,
+  ChatStore,
+  CheckFailure,
+  DoorRefusal,
+  SendDropped,
+} from "./chatStore";
 import {
   type CopyResult,
   type E2eEvent,
@@ -600,33 +606,47 @@ export function e2eClient(
   // the nick that spoke, so a CHAL for a line this cic never sent is someone
   // giving orders in the user's name, or one of the fail-closed cases
   // (`orders.ts`); either way the bot refuses the order.
+  //
+  // Either way the chat keeps it as its last identity check (issue 2485), the
+  // one trace of a challenge the user sees; a malformed one names nothing to
+  // keep. `passed` is this cic's answer, not the bot's verdict: an ACK grappa
+  // then refuses (`rowlessLost`) still reads passed.
   function answer(
     ctx: E2eContext,
     engine: Engine,
     received: Extract<E2eEvent, { kind: "received" }>,
-  ): Result {
+  ): { result: Result; check: ChatChange | null } {
     const { nick } = received;
     const chal = parseChallenge(received.inner);
     if (chal === null) {
       console.debug(`[e2e] dropped a malformed order challenge from ${nick}`);
-      return { events: [], outbound: [] };
+      return { result: { events: [], outbound: [] }, check: null };
     }
+    const at = now();
+    const checked = (reason: CheckFailure | null): ChatChange => ({
+      op: "check",
+      nick,
+      check: { at, network: chal.network, channel: chal.channel, passed: reason === null, reason },
+    });
     if (!received.verified) {
       console.warn(`[e2e] order challenge from ${nick} not confirmed: their key is not verified`);
-      return { events: [], outbound: [] };
+      return { result: { events: [], outbound: [] }, check: checked("unverified") };
     }
-    const verdict = ctx.orders(chal, nick, now());
+    const verdict = ctx.orders(chal, nick, at);
     if (verdict !== "confirmed") {
       console.warn(`[e2e] order challenge from ${nick} not confirmed: ${UNCONFIRMED[verdict]}`);
-      return { events: [], outbound: [] };
+      return { result: { events: [], outbound: [] }, check: checked(verdict) };
     }
-    return engine.send(
-      nick,
-      { t: "ack", nonce: chal.nonce },
-      ORDER_TAG,
-      chal.expiresAt,
-      received.device,
-    );
+    return {
+      result: engine.send(
+        nick,
+        { t: "ack", nonce: chal.nonce },
+        ORDER_TAG,
+        chal.expiresAt,
+        received.device,
+      ),
+      check: checked(null),
+    };
   }
 
   // Steps 2–4 for what an operation made: `changes` and what the verifier
@@ -699,7 +719,8 @@ export function e2eClient(
               if (isSas(e.inner)) {
                 await verifier.receive(e.nick, e.master, e.device, e.inner, `in:${m.id}:${i}`);
               } else if (e.inner.t === "chal") {
-                const acked = answer(ctx, engine, e);
+                const { result: acked, check } = answer(ctx, engine, e);
+                if (check !== null) changes.push(check);
                 changes.push(...changesFor(acked.events, now(), null));
                 outbound.push(...acked.outbound);
               }
