@@ -76,3 +76,24 @@ export function encryptedWindowSelected(networkSlug: string, key: string): boole
   const peer = encryptedWindowPeer(sel.channelName);
   return peer !== null && fold(peer) === key;
 }
+
+/** An encrypted window: its network and the peer, spelled as the window's name has it. */
+export type EncryptedWindow = { networkSlug: string; nick: string };
+
+/**
+ * The focused encrypted window, else null. Shell's pane and RailContext's
+ * rail are both KEYED on it (memoised with `sameEncryptedWindow`), so each
+ * encrypted window gets a pane and a rail of its own and none of a chat's
+ * state (a draft, a key being pasted, a search) follows into the next one,
+ * where it would be sent or pinned to the wrong peer.
+ */
+export function focusedEncryptedWindow(): EncryptedWindow | null {
+  const sel = selectedChannel();
+  const peer = sel?.kind === "encrypted" ? encryptedWindowPeer(sel.channelName) : null;
+  return sel && peer !== null ? { networkSlug: sel.networkSlug, nick: peer } : null;
+}
+
+export const sameEncryptedWindow = (
+  a: EncryptedWindow | null,
+  b: EncryptedWindow | null,
+): boolean => a?.networkSlug === b?.networkSlug && a?.nick === b?.nick;

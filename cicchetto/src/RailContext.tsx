@@ -1,6 +1,7 @@
 import {
   type Component,
   createEffect,
+  createMemo,
   createSignal,
   Match,
   on,
@@ -8,6 +9,8 @@ import {
   Show,
   Switch,
 } from "solid-js";
+import EncryptedRail from "./EncryptedRail";
+import { focusedEncryptedWindow, sameEncryptedWindow } from "./lib/encryptedWindow";
 import { networkBySlug } from "./lib/networks";
 import { railWhoisFor, requestRailWhois } from "./lib/railWhois";
 import { selectedChannel } from "./lib/selection";
@@ -28,6 +31,9 @@ import WhoisCard from "./WhoisCard";
 //              It fetches the bundle when the card is ON SCREEN and the cache
 //              has nothing for that nick (#782 — see the `onScreen` contract
 //              below).
+//   * encrypted → the encrypted query's technical half (issue 2485,
+//              `EncryptedRail`): keys, trust, devices, the pin form and the
+//              last identity check, which the chat window no longer shows.
 // It renders NOTHING for kinds with no context content (channel already has
 // the MembersPane above; home/admin/list/mentions have none). Built as a
 // container, not a hardcoded server card, so the rail is the per-kind
@@ -75,6 +81,8 @@ const RailContext: Component<Props> = (props) => {
   onCleanup(() => clearInterval(timer));
 
   const sel = () => selectedChannel();
+  // issue 2485 — keyed on the window, as Shell keys the pane.
+  const encrypted = createMemo(focusedEncryptedWindow, null, { equals: sameEncryptedWindow });
 
   // Fetch-on-visible. The key composes BOTH halves of "showing a nick we may
   // not have" — the identity on display and whether it is on display at all —
@@ -117,6 +125,9 @@ const RailContext: Component<Props> = (props) => {
           <h3 class="rail-query-heading">private conversation with {sel()?.channelName}</h3>
           <WhoisCard bundle={railWhoisFor(sel()?.networkSlug ?? "", sel()?.channelName ?? "")} />
         </div>
+      </Match>
+      <Match when={encrypted()} keyed>
+        {(w) => <EncryptedRail networkSlug={w.networkSlug} nick={w.nick} />}
       </Match>
     </Switch>
   );

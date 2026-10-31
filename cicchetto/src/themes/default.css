@@ -4788,9 +4788,12 @@ html.is-ios27-band .shell {
 }
 
 /* issue 2430 — the encrypted query pane (EncryptedChatPane.tsx). Its own
-   layout, on the mentions window's frame: a fixed header (peer, trust, the
-   two keys and the pin form), a scrolling row list, and a compose line that
-   mirrors the compose box without being one. */
+   layout, on the mentions window's frame: a fixed top bar, a scrolling row
+   list, and a compose line that mirrors the compose box without being one.
+   issue 2485 — the top bar is the peer's verification only (trust, the last
+   identity check, the magnifier and the shredder); the keys moved to the
+   rail (`.rail-e2e`), and the body carries the key-exchange step card and
+   the emoji comparison's modal-like dialog. */
 .e2e-pane {
   display: flex;
   flex-direction: column;
@@ -4807,15 +4810,53 @@ html.is-ios27-band .shell {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  padding: 0.75rem 1rem;
+  padding: 0.5rem 1rem;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 
 .e2e-header-main {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
+}
+
+/* The chat's two tools, pushed to the far end of the bar; the rail's ☰ (on
+   mobile) follows them as the bar's last child. They wear the chrome
+   buttons' base (`.shell-chrome-btn`, the #305 tap floor); the glyph is a
+   line drawing sized to the chrome icon token, in `currentColor`. */
+.e2e-header-tools {
+  display: flex;
+  gap: 0.25rem;
+  margin-left: auto;
+}
+
+.e2e-tool svg {
+  width: 1em;
+  height: 1em;
+}
+
+.e2e-tool.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.e2e-tool:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.e2e-check-chip {
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.e2e-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85em;
 }
 
 .e2e-heading {
@@ -4843,13 +4884,6 @@ html.is-ios27-band .shell {
   color: var(--error, #e06c75);
 }
 
-.e2e-keys {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.85em;
-}
-
 /* A key is 43 characters with no break opportunity: let it wrap anywhere
    rather than widen the pane on a phone. */
 .e2e-key {
@@ -4875,19 +4909,47 @@ html.is-ios27-band .shell {
   border: 1px solid var(--border);
 }
 
-/* issue 2430 slice f — the chat's own tools: a search over the rows it
-   holds, how many messages match, and "delete this chat" (the archive's
-   two-tap button) at the far end. */
-.e2e-tools {
+/* issue 2485 — the body: the rows, the key-exchange step card and the
+   compose line, with the emoji comparison's dialog over all three while one
+   runs (`inert` underneath, so nothing there takes focus or a send). */
+.e2e-body {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.85em;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
-.e2e-delete-chat {
-  margin-left: auto;
+.e2e-body-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The one step the key exchange still needs: a card between the messages
+   and the compose line, framed like the rail's cards. */
+.e2e-step {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0 1rem 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  background: var(--bg-alt);
+  font-size: 0.85em;
+  flex-shrink: 0;
+}
+
+.e2e-step p {
+  margin: 0;
+}
+
+.e2e-step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 .e2e-copy,
@@ -4913,13 +4975,39 @@ html.is-ios27-band .shell {
 
 /* issue 2430 slice d — the SAS panel: where the emoji comparison stands,
    with its buttons, and while comparing the 7 emoji, each over its name, in
-   a row that wraps on a phone. */
+   a row that wraps on a phone. issue 2485 — a dialog over the chat body
+   (vjt: "tipo modale"), the body dimmed beneath it. */
+.e2e-sas-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+}
+
 .e2e-sas {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  flex-direction: column;
   gap: 0.5rem;
+  max-width: 32rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  background: var(--bg-alt);
   font-size: 0.85em;
+}
+
+.e2e-sas p,
+.e2e-sas-title {
+  margin: 0;
+}
+
+.e2e-sas-title {
+  font-size: 1.1em;
 }
 
 .e2e-sas-emoji-list {
@@ -12779,7 +12867,8 @@ html.is-ios27-band .shell {
    `flex: 0 0 auto` so it takes only its content height and the sibling
    `.rail-actions` drawer still floors the rail (margin-top:auto), never
    pushed off-screen on a phone. */
-.rail-server-info {
+.rail-server-info,
+.rail-e2e-section {
   flex: 0 0 auto;
   /* #1737 — the horizontal half of this margin was the rail inset spelled a
      fourth way (as MARGIN, where its siblings used padding); it lives on
@@ -12818,23 +12907,27 @@ html.is-ios27-band .shell {
 
    Row gap is uniform across the grid, so a stacked pair needs its own
    separation or every row reads equidistant: the label opens a group. */
-.rail-server-info-fields {
+.rail-server-info-fields,
+.rail-e2e-fields {
   display: grid;
   grid-template-columns: 1fr;
   gap: 0.15rem 0.75rem;
   margin: 0;
 }
 
-.rail-server-info-fields dt {
+.rail-server-info-fields dt,
+.rail-e2e-fields dt {
   color: var(--muted);
   text-align: left;
 }
 
-.rail-server-info-fields dt:not(:first-of-type) {
+.rail-server-info-fields dt:not(:first-of-type),
+.rail-e2e-fields dt:not(:first-of-type) {
   margin-top: 0.4rem;
 }
 
-.rail-server-info-fields dd {
+.rail-server-info-fields dd,
+.rail-e2e-fields dd {
   margin: 0;
   word-break: break-word;
 }
@@ -12858,7 +12951,8 @@ html.is-ios27-band .shell {
    `.rail-actions` launcher was pushed below the fold — under the keyboard on
    mobile, where the column height tracks `--viewport-height`. Same class as
    #500 and #962: a flex child with no shrink contract in a bounded column. */
-.rail-query-context {
+.rail-query-context,
+.rail-e2e {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -12885,11 +12979,14 @@ html.is-ios27-band .shell {
    MORE specific than `.shell-mobile .shell-members .rail-query-context *`. */
 @media (max-width: 768px) {
   .shell-mobile .shell-members .rail-query-context,
-  .shell-mobile .shell-members .rail-query-context * {
+  .shell-mobile .shell-members .rail-query-context *,
+  .shell-mobile .shell-members .rail-e2e,
+  .shell-mobile .shell-members .rail-e2e * {
     touch-action: pan-y;
   }
 
-  .shell-mobile .shell-members .rail-query-context {
+  .shell-mobile .shell-members .rail-query-context,
+  .shell-mobile .shell-members .rail-e2e {
     overscroll-behavior: contain;
   }
 }
@@ -12944,6 +13041,37 @@ html.is-ios27-band .shell {
   padding-block: 0.25rem;
   text-transform: uppercase;
   word-break: break-word;
+}
+
+/* issue 2485 — the encrypted query's rail (EncryptedRail.tsx), laid out
+   like a settings page: each section is a rail card (the server-info card's
+   frame, shared above) with a heading, the stacked label-over-value `<dl>`
+   every rail list uses (#857), and its actions under it, one per row so a
+   button never squeezes a key in the capped rail track (#605). */
+.rail-e2e-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.rail-e2e-section-heading {
+  margin: 0;
+  font-size: inherit;
+  font-weight: bold;
+  color: var(--accent);
+  word-break: break-all;
+}
+
+.rail-e2e-hint {
+  margin: 0;
+}
+
+.e2e-check-passed {
+  color: var(--accent);
+}
+
+.e2e-check-failed {
+  color: var(--error, #e06c75);
 }
 
 .lusers-card {
