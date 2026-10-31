@@ -560,13 +560,20 @@ reason (`unverified`, or the send log's verdict), worded by the same
 
 **This reverses #2430w2d's "no visible warning for a CHAL cic cannot
 confirm", on the issue's own words** ("last identity check (when, on which
-network/channel, passed or failed)"). The argument there still bites, and it
-is recorded rather than answered: the answer is THIS device's. A bot
+network/channel, passed or failed)"). The argument there still bites for
+one verdict, because the answer is THIS device's. A bot
 encrypts its CHAL to every device of the master, and the send log is the
 device's (#2430w2c), so on an account with two browsers an order typed on
-one shows ✓ there and ✗ `not-sent` on the other, every time, and the other
-cannot tell that from a line someone else put out in the user's nick. A
-neutral "not answered here" for `not-sent` is the alternative put to vjt.
+one shows ✓ there and `not-sent` on the other, every time, and the other
+cannot tell that from a line someone else put out in the user's nick. So
+`not-sent` reads "not answered here", grey with a "–", and the red ✗ stays
+for the verdicts that are about the challenge itself (another network, no
+network name, expired, a PM to someone else, an unverified key). vjt's
+ruling (TG, 2026-11-01, issue comment 6550752584): "b - risposto altrove o
+similari". The label is "not answered here" rather than "answered
+elsewhere": this device cannot know a sibling answered, and `not-sent` also
+covers the line someone else put out in the user's nick, which is what the
+check is there to show.
 
 **Mobile:** the top bar ends in the shredder, which is exactly the corner
 the floating `.shell-chrome` ☰ covers (#1050's collision). So `encrypted` is
@@ -613,5 +620,6 @@ on `@touch` the phone's path (the bar's ☰ opens the rail, the comparison it
 starts closes the drawer over the dialog). `issue2430-interop-bot.spec.ts`
 covers bullet 4 against the real irc-olm bot, each check read with the
 channel focused so "no unread" can fail: no query window, no row, no unread,
-and the chip and rail reading passed, then failed for `not-sent`. The 2430
+and the chip and rail reading passed, then not answered here for
+`not-sent`. The 2430
 specs follow the moved controls.

@@ -13084,6 +13084,11 @@ html.is-ios27-band .shell {
   color: var(--error, #e06c75);
 }
 
+/* Not answered HERE: what a sibling device's orders look like (#2485). */
+.e2e-check-unanswered {
+  color: var(--muted);
+}
+
 .lusers-card {
   margin: 0.25rem 0.5rem 0.5rem 0.5rem;
   padding: 0.5rem 0.75rem;

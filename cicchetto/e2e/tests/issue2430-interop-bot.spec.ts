@@ -303,12 +303,15 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
   );
   expect(refused.line).toMatch(/ MSG UNTRUSTED WHY=no-ack /);
 
-  // cic's silence wrote nothing either; the check says it failed, and why.
+  // cic's silence wrote nothing either; the check says why it went
+  // unanswered: not by this device, which is no red alarm (a sibling device's
+  // orders read the same here, DESIGN_NOTES #2485).
   await expect(sidebarWindow(page, NETWORK_SLUG, bot.nick)).toHaveCount(0);
   await expect(sidebarMessageBadge(page, NETWORK_SLUG, e2eWindow(bot.nick))).toHaveCount(0);
   await encrypted.locator("button").first().click();
   await expect(page.getByTestId("e2e-pane")).toBeVisible();
   await expect(chip).toHaveAttribute("data-passed", "false");
+  await expect(chip).toHaveClass(/\be2e-check-unanswered\b/);
   await expect(check).toHaveAttribute("data-reason", "not-sent");
   await expect(check).toContainText(`${chan} on `);
   await expect(messages).toHaveCount(4);

@@ -13,8 +13,10 @@ import {
 } from "solid-js";
 import {
   acceptAlarmKey,
+  CHECK_LOOK,
   CHECK_REASON,
   CopyOwnKey,
+  checkLook,
   checkPlace,
   PinForm,
   TRUST_LABEL,
@@ -439,20 +441,21 @@ function checkWhen(at: number): string {
 
 /** The last identity check, as the top bar's compact signal; the rail says it in full. */
 const CheckChip: Component<{ check: IdentityCheck; slug: string }> = (props) => {
+  const look = () => checkLook(props.check);
   const detail = () =>
-    `last identity check: ${props.check.passed ? "passed" : "failed"}, ` +
+    `last identity check: ${CHECK_LOOK[look()].label}, ` +
     `${formatDateTime(props.check.at)}, ${checkPlace(props.check, props.slug)}` +
     (props.check.reason === null ? "" : ` (${CHECK_REASON[props.check.reason]})`);
   return (
     <span
-      class={`e2e-check-chip ${props.check.passed ? "e2e-check-passed" : "e2e-check-failed"}`}
+      class={`e2e-check-chip e2e-check-${look()}`}
       data-testid="e2e-check-chip"
       data-passed={props.check.passed ? "true" : "false"}
       title={detail()}
       aria-label={detail()}
       role="img"
     >
-      {props.check.passed ? "✓" : "✗"} id check {checkWhen(props.check.at)}
+      {CHECK_LOOK[look()].glyph} id check {checkWhen(props.check.at)}
     </span>
   );
 };

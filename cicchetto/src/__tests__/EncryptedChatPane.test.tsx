@@ -512,7 +512,30 @@ describe("EncryptedChatPane, the last identity check", () => {
     expect(full.textContent).toContain("#grappa on AzzurraNet");
   });
 
-  it("a failed check says why, and a private message to the bot reads as one", () => {
+  it("a failed check is red and says why", () => {
+    setChat({
+      nick: "Bob",
+      open: true,
+      unread: 0,
+      check: { ...passed, passed: false, reason: "other-network" },
+    });
+    renderPane();
+    const chip = screen.getByTestId("e2e-check-chip");
+    expect(chip.dataset.passed).toBe("false");
+    expect(chip.textContent).toContain("✗");
+    expect(chip.classList.contains("e2e-check-failed")).toBe(true);
+    expect(chip.getAttribute("title")).toContain("failed");
+
+    const full = screen.getByTestId("e2e-identity-check");
+    expect(full.dataset.reason).toBe("other-network");
+    expect(full.textContent).toContain("failed");
+    expect(full.textContent).toContain("it names another network");
+  });
+
+  // A bot encrypts its challenge to every device of the account, and the send
+  // log is the device's: a line typed on a sibling device reads `not-sent`
+  // here, every time. Not answered HERE, then, and no red alarm over it.
+  it("a line this device did not send reads as not answered here, not as a failure", () => {
     setChat({
       nick: "Bob",
       open: true,
@@ -522,11 +545,16 @@ describe("EncryptedChatPane, the last identity check", () => {
     renderPane();
     const chip = screen.getByTestId("e2e-check-chip");
     expect(chip.dataset.passed).toBe("false");
-    expect(chip.textContent).toContain("✗");
+    expect(chip.textContent).not.toContain("✗");
+    expect(chip.classList.contains("e2e-check-failed")).toBe(false);
+    expect(chip.classList.contains("e2e-check-unanswered")).toBe(true);
+    expect(chip.getAttribute("title")).toContain("not answered here");
 
     const full = screen.getByTestId("e2e-identity-check");
     expect(full.dataset.reason).toBe("not-sent");
-    expect(full.textContent).toContain("failed");
+    expect(full.textContent).toContain("not answered here");
+    expect(full.textContent).not.toContain("failed");
+    expect(full.querySelector(".e2e-check-failed")).toBeNull();
     expect(full.textContent).toContain("a private message on AzzurraNet");
     expect(full.textContent).toContain("this cic sent no such line there in the last 15 s");
   });
