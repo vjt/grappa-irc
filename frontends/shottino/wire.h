@@ -53,13 +53,14 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v51 -> v52 (issue 2491): an `e2e_message` NACK may now come
- * from `*`, a peer's grappa saying a message reached none of its user's
- * devices. A terminal speaks no E2E, so nothing it reads changed.
+ * Last read, v52 -> v53 (issue 2486): the encrypted-chat requests, a
+ * REST resource under `/e2e/requests` and two user-topic events,
+ * `e2e_request` and `e2e_request_gone`. A terminal speaks no E2E and
+ * ignores an event kind it does not know, so nothing it reads changed.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 52
+#define WIRE_PROTOCOL_VERSION 53
 
 #include <stdbool.h>
 #include <stddef.h>

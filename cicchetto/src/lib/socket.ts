@@ -375,7 +375,15 @@ let _socket: Socket | null = null;
 // reached none of its user's listed devices. A pre-52 server drops such a
 // message without a word, so the sender simply never hears; nothing breaks,
 // and `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 52;
+//
+// 53 (issue 2486) — asking a peer to start an encrypted chat:
+// `…/e2e/requests` (list, ask, accept, refuse, dismiss), the user-topic
+// `e2e_request` / `e2e_request_gone`, the tokens `request_state` and
+// `requests_full`. A pre-53 server answers the doors 404, which the ask
+// reports as a failure, and never pushes a request, so the banner simply
+// never shows; nothing outside E2E changed, so
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 53;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

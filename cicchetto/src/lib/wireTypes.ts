@@ -679,6 +679,50 @@ export type WireE2ePairingEvent =
   | E2ePairingWireE2ePairingMessagePayload
   | E2ePairingWireE2ePairingClosedPayload;
 
+// === Grappa.E2eRequests.Wire ===
+
+export const E2E_REQUESTS_WIRE_WIRE_STATE = [
+  "incoming",
+  "outgoing",
+  "accepted",
+  "refused",
+  "expired",
+] as const;
+export type E2eRequestsWireWireState = (typeof E2E_REQUESTS_WIRE_WIRE_STATE)[number];
+
+export type E2eRequestsWireRequest = {
+  id: number;
+  peer: string;
+  state: E2eRequestsWireWireState;
+  payload: string | null;
+  at: string;
+  expires_at: string | null;
+};
+
+export type E2eRequestsWireRequestsResponse = {
+  requests: E2eRequestsWireRequest[];
+};
+
+export type E2eRequestsWireRequestResponse = {
+  request: E2eRequestsWireRequest;
+};
+
+export type E2eRequestsWireE2eRequestPayload = {
+  kind: "e2e_request";
+  network: string;
+  request: E2eRequestsWireRequest;
+};
+
+export type E2eRequestsWireE2eRequestGonePayload = {
+  kind: "e2e_request_gone";
+  network: string;
+  id: number;
+};
+
+export type WireE2eRequestsEvent =
+  | E2eRequestsWireE2eRequestPayload
+  | E2eRequestsWireE2eRequestGonePayload;
+
 // === Grappa.LiveIntrospection.AdminWire ===
 
 export type LiveIntrospectionAdminWireLiveStateJson = {
@@ -1884,6 +1928,8 @@ export const ERROR_TOKENS_REST_ERROR_TOKEN = [
   "key_taken",
   "removed_device",
   "inbox_full",
+  "request_state",
+  "requests_full",
   "invalid_mask",
   "invalid_text_pattern",
   "not_raster",

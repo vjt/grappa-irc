@@ -479,6 +479,15 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // 413 — the sibling's encrypted inbox (or its share of this account's
       // own copies) is full; the copy is simply missing there.
       return "That device's encrypted inbox is full.";
+    case "request_state":
+      // issue 2486 — 409: the encrypted-chat request is no longer in the
+      // state the action needs (already answered, cancelled, or one this
+      // account must answer rather than dismiss).
+      return "That encrypted chat request has changed meanwhile.";
+    case "requests_full":
+      // issue 2486 — 429: too many encrypted chat requests are open on
+      // this network; a pending one lapses after 24 hours.
+      return "Too many encrypted chat requests are open on this network. Dismiss one, or wait for one to expire.";
     case "pairing_already_joined":
       // issue 2430 X1 — 409: another device already scanned this pairing
       // code. A code pairs one device; the other screen can show a new one.
