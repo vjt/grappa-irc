@@ -342,6 +342,19 @@ describe("encrypted chat requests", () => {
     },
   );
 
+  it("answerE2eRequest refuses with no body at all when given no line", async () => {
+    const f = stub(202, { msgid: "Zm9vYmFyMDE" });
+    expect(await api.answerE2eRequest("tok", "azzurra", 7, "refuse", null)).toEqual({
+      msgid: "Zm9vYmFyMDE",
+    });
+    expect(sent(f)).toEqual({
+      url: "/networks/azzurra/e2e/requests/7/refuse",
+      method: "POST",
+      body: undefined,
+    });
+    expect((f.mock.calls[0] as [string, RequestInit])[1]).not.toHaveProperty("body");
+  });
+
   it("answerE2eRequest surfaces 409 request_state as a token", async () => {
     stub(409, { error: "request_state" });
     await expect(api.answerE2eRequest("tok", "azzurra", 7, "accept", line)).rejects.toMatchObject({

@@ -2857,19 +2857,21 @@ export async function askE2eRequest(
   return narrowE2eRequestResponse(await res.json()).request;
 }
 
-// Answers the peer's waiting request `id`; the request goes. 409
+// Answers the peer's waiting request `id`; the request goes. An accept
+// needs the `line` (it starts the key exchange: 400 without); a refuse may
+// go with none (null), and grappa then says no for the user. 409
 // `request_state` for one not waiting for this account's answer.
 export async function answerE2eRequest(
   token: string,
   networkSlug: string,
   id: number,
   answer: "accept" | "refuse",
-  line: E2eConsentLine,
+  line: E2eConsentLine | null,
 ): Promise<SessionWireE2eSentPayload> {
   const res = await fetch(`${e2eRoot(networkSlug)}/requests/${id}/${answer}`, {
     method: "POST",
     headers: buildHeaders(token),
-    body: JSON.stringify(line),
+    ...(line === null ? {} : { body: JSON.stringify(line) }),
   });
   if (!res.ok) throw await readError(res);
   return narrowE2eSentResponse(await res.json());

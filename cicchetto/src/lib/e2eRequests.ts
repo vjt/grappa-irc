@@ -258,12 +258,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     }
   }
 
-  /** Refuses the peer's request, with the dedicated REFUSE: the peer is told. */
+  /**
+   * Refuses the peer's request, with the dedicated REFUSE: the peer is told.
+   * It goes with no line, so grappa says no for the user (vjt's ruling R2):
+   * refusing never creates an encryption identity, and works from a device
+   * whose identity lives elsewhere.
+   */
   async function refuseEncryptedChat(slug: string, request: E2eRequest): Promise<void> {
     const t = bearer();
-    const line = await consentLine(slug);
-    if (identityMoved(t)) return;
-    await door(slug, t, answerE2eRequest(t, slug, request.id, "refuse", line));
+    await door(slug, t, answerE2eRequest(t, slug, request.id, "refuse", null));
     if (identityMoved(t)) return;
     drop(slug, request.id);
   }
