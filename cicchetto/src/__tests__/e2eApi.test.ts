@@ -319,10 +319,10 @@ describe("encrypted chat requests", () => {
     });
   });
 
-  it("askE2eRequest surfaces 429 requests_full as a token", async () => {
-    stub(429, { error: "requests_full" });
+  it("askE2eRequest surfaces 422 requests_full as a token", async () => {
+    stub(422, { error: "requests_full" });
     await expect(api.askE2eRequest("tok", "azzurra", "Bob", line)).rejects.toMatchObject({
-      status: 429,
+      status: 422,
       code: "requests_full",
     });
   });

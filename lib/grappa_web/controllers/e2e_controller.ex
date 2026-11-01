@@ -380,9 +380,9 @@ defmodule GrappaWeb.E2eController do
   outside the rule; 400 `invalid_line` for a CR/LF/NUL in `target`; 422
   `unknown_device`; 413 `too_large` when the network's LINELEN cannot
   frame the line; 429 `rate_limited` when the peer's or the connection's
-  queue cannot take the line; 429 `requests_full` past 32 requests this
-  subject started here (dismiss some); the send door's 404, 502, 503 and
-  504 otherwise.
+  queue cannot take the line; 422 `requests_full` past 32 requests this
+  subject started here (they never lapse: dismiss some); the send door's
+  404, 502, 503 and 504 otherwise.
   """
   @spec ask(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, Session.e2e_consent_error()}
   def ask(conn, %{"target" => target, "from" => from, "payload" => payload})

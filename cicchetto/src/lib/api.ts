@@ -2841,7 +2841,7 @@ export async function listE2eRequests(
 export type E2eConsentLine = { from: string; payload: string };
 
 // Asks `target`; or, when `target`'s own request waits, answers it yes (the
-// request then reads `accepted`). 429 `requests_full`, 429 `rate_limited`.
+// request then reads `accepted`). 422 `requests_full`, 429 `rate_limited`.
 export async function askE2eRequest(
   token: string,
   networkSlug: string,

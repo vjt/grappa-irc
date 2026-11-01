@@ -485,9 +485,10 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // account must answer rather than dismiss).
       return "That encrypted chat request has changed meanwhile.";
     case "requests_full":
-      // issue 2486 — 429: too many encrypted chat requests are open on
-      // this network; a pending one lapses after 24 hours.
-      return "Too many encrypted chat requests are open on this network. Dismiss one, or wait for one to expire.";
+      // issue 2486 — 422: too many encrypted chat requests are open on
+      // this network. Ours never lapse (an expired one stays until it is
+      // retried or dismissed), so only a dismissal frees a room.
+      return "Too many encrypted chat requests are open on this network. Dismiss one first.";
     case "pairing_already_joined":
       // issue 2430 X1 — 409: another device already scanned this pairing
       // code. A code pairs one device; the other screen can show a new one.

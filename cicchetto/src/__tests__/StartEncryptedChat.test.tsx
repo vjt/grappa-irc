@@ -118,7 +118,7 @@ describe("StartEncryptedChat", () => {
   });
 
   it("the query switched to another peer starts clean: no error and no asking held from the last", async () => {
-    askEncryptedChat.mockRejectedValueOnce(new ApiError(429, "requests_full"));
+    askEncryptedChat.mockRejectedValueOnce(new ApiError(422, "requests_full"));
     askEncryptedChat.mockReturnValueOnce(new Promise(() => undefined));
     const [peer, setPeer] = createSignal("Bob");
     render(() => <StartEncryptedChat networkSlug="azzurra" peer={peer()} />);
@@ -138,7 +138,7 @@ describe("StartEncryptedChat", () => {
   });
 
   it("an asking grappa refuses is said under the button", async () => {
-    const refusal = new ApiError(429, "requests_full");
+    const refusal = new ApiError(422, "requests_full");
     askEncryptedChat.mockRejectedValue(refusal);
     show();
     button().click();

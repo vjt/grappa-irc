@@ -1391,7 +1391,7 @@ defmodule Grappa.Protocol do
   # the request shape `{id, peer, state, payload, at, expires_at}`
   # (`E2eRequests.Wire`); the user-topic events `e2e_request` and
   # `e2e_request_gone`; the error tokens `request_state` (409) and
-  # `requests_full` (429); and an OS push for a fresh incoming request. On
+  # `requests_full` (422); and an OS push for a fresh incoming request. On
   # IRC, four E2E verbs, REQUEST, ACCEPT, REFUSE and CANCEL, `did → *`,
   # which grappa keeps as the request's state and never queues. Bumped on
   # the #1393d rule: a client that asks, or shows a peer's asking, cannot

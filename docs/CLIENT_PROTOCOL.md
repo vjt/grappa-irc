@@ -1205,10 +1205,11 @@ accept or a refuse of a request that is not waiting for YOUR answer, and
 for a `DELETE` of one that is (answer it instead); 413 `too_large` when the
 network's `LINELEN` is too short to frame the line; 429 `rate_limited` when
 the pacer cannot take the line (§4f; consent rides the reactive lane);
-429 `requests_full` when a side is at its cap of **32** per network (the
-peers': `incoming`; yours: `outgoing`, `accepted`, `refused`), which comes
-back as pending requests lapse or you dismiss some; 502, 503 and 504 as at
-the send door. Past the cap a peer's new `REQUEST` is dropped.
+422 `requests_full` when a side is at its cap of **32** per network (the
+peers': `incoming` still within its deadline; yours: `outgoing`, `expired`,
+`accepted`, `refused`). Yours never lapse, so only dismissing one frees a
+room: retrying later changes nothing. 502, 503 and 504 as at the send
+door. Past the cap a peer's new `REQUEST` is dropped.
 
 **The pushes.** On the user topic, to every device of the account:
 
