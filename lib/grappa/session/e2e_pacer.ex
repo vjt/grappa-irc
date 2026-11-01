@@ -260,6 +260,18 @@ defmodule Grappa.Session.E2ePacer do
   @spec max_queued() :: 128
   def max_queued, do: @max_queued
 
+  @doc """
+  Whether grappa may queue a line of its own that no client asked for (the
+  NACK of a message none of the subject's listed devices could read, issue
+  2491): only while the connection's urgent and reactive lines fill less
+  than half of `max_queued/0`. Peers draw those lines at will and at any
+  hour, so they must never take the room the user's own orders need, which
+  is why KEYS answers have a budget of their own too
+  (`Grappa.Session.E2eKeyAnswers`).
+  """
+  @spec spare_room?(t()) :: boolean()
+  def spare_room?(%__MODULE__{} = pacer), do: queued(pacer) < div(@max_queued, 2)
+
   @doc "Bank the queued text of the whole connection may cost."
   @spec max_backlog_ms() :: 480_000
   def max_backlog_ms, do: @max_backlog_ms

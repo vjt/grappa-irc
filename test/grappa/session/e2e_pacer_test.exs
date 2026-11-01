@@ -155,6 +155,26 @@ defmodule Grappa.Session.E2ePacerTest do
 
       assert {:ok, _, _, _, _} = enqueue(chatty, keyreq("carol", "k", [2_000]), 0, @held)
     end
+
+    # issue 2491: grappa's NACK of a message no listed device could read is
+    # drawn by peers at will, so it stops at half the connection's room.
+    test "grappa may queue a line of its own only while urgent and reactive lines fill under half the connection's room" do
+      lane = E2ePacer.max_lane_lines()
+      half = div(E2ePacer.max_queued(), 2)
+      assert E2ePacer.spare_room?(E2ePacer.new())
+
+      one_short =
+        E2ePacer.new()
+        |> held!(nack("mal1", "a", List.duplicate(2_000, lane)))
+        |> held!(nack("mal2", "b", List.duplicate(2_000, half - lane - 1)))
+
+      assert E2ePacer.spare_room?(one_short)
+      # The user's own orders count too.
+      full = held!(one_short, urgent("vjt", "u", [2_000]))
+      refute E2ePacer.spare_room?(full)
+      # And what is left is theirs.
+      assert {:ok, _, _, _, _} = enqueue(full, keyreq("carol", "k", List.duplicate(2_000, lane)), 0, @held)
+    end
   end
 
   describe "by message, in three lanes" do

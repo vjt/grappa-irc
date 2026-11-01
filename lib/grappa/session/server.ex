@@ -8177,35 +8177,47 @@ defmodule Grappa.Session.Server do
   # The NACK speaks for the user, so it goes from `*` (`E2e.addressed?/3`)
   # to the device that wrote, with irc-olm's NACK payload naming the
   # message. It is REACTIVE, like a client's NACK: what the peer drew from
-  # us. Nothing else bounds it, and nothing else needs to: the pacer's
-  # per-peer and per-connection reactive caps refuse past them, and every
-  # NACK costs its sender a whole message. A refusal is logged at debug
-  # (the sender decides how often it fires) and the sender is not told,
-  # as with any line it draws past those caps.
+  # us. Peers draw it at will, client or no client, and the connection's
+  # 128 urgent and reactive lines are shared with the user's own orders: a
+  # few nicks writing junk to a device we do not list would fill them, and
+  # every order the user answers would be refused. So it is queued only
+  # while those lines fill under half of that room
+  # (`E2ePacer.spare_room?/1`), on top of the 32 lines each peer's
+  # REACTIVE lane holds; KEYS answers are bounded for the same reason
+  # (`E2eKeyAnswers`). A refusal is logged at debug (the sender decides
+  # how often it fires) and the sender is not told, as with any line it
+  # draws past a cap. A NACK is no Olm message, so a refusal leaves no gap
+  # to keep, and the pacer it hands back is let go.
   #
-  # Known wart: a NACK still waiting when the session ends is announced
-  # like any other drop (`drop_e2e_pending/1`), an `e2e_send_dropped` for
-  # a msgid no client sent; a client ignores a drop it holds no send for.
+  # Known wart: a NACK still waiting when the session ends
+  # (`drop_e2e_pending/1`), or one whose line fails to go out
+  # (`send_e2e_releases/2`), is announced like any other drop: an
+  # `e2e_send_dropped` for a msgid no client sent. A client ignores a drop
+  # it holds no send for.
   @spec nack_unreadable(t(), String.t(), E2eReassembly.message()) :: t()
   defp nack_unreadable(state, from, %{msgid: ref, from: did, to: to}) do
     now = System.monotonic_time(:millisecond)
     msgid = E2e.new_msgid()
     message = %{msgid: msgid, verb: :nack, lane: :reactive, deadline_ms: nil}
 
-    with {:ok, lines} <- e2e_lines(state, from, :nack, msgid, {"*", did}, Jason.encode!(%{v: 2, ref: ref})),
+    with :ok <- spare_room(state),
+         {:ok, lines} <- e2e_lines(state, from, :nack, msgid, {"*", did}, Jason.encode!(%{v: 2, ref: ref})),
          {:ok, releases, lost, pacer, wait} <- pace_e2e(state, from, message, lines, now) do
       Logger.debug("e2e message reached no listed device: answered with a NACK", sender: from, e2e_device: to)
       commit_paced(state, releases, lost, pacer, wait)
     else
-      {:error, reason, pacer} ->
+      {:error, reason, _} ->
         Logger.debug("e2e message reached no listed device: NACK refused", sender: from, reason: reason)
-        %{state | e2e_pacer: pacer}
+        state
 
       {:error, reason} ->
         Logger.debug("e2e message reached no listed device: NACK refused", sender: from, reason: reason)
         state
     end
   end
+
+  @spec spare_room(t()) :: :ok | {:error, :no_spare_room}
+  defp spare_room(state), do: if(E2ePacer.spare_room?(state.e2e_pacer), do: :ok, else: {:error, :no_spare_room})
 
   @spec e2e_recipients(t(), E2e.address()) :: [E2eKeys.Device.t()]
   defp e2e_recipients(state, to) do
