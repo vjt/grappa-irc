@@ -430,8 +430,9 @@ defmodule GrappaWeb.E2eController do
   `DELETE /networks/:network_id/e2e/requests/:id` — dismisses a request
   (issue 2486). One we asked that is still pending is CANCELLED: `CANCEL`
   goes from the device of the body's `{from, payload}`, so the peer's
-  banner goes too. An expired one, or an answer (`accepted`, `refused`)
-  the client has shown, just goes, and needs no body. **204**; every
+  banner goes too. An expired one, an answer (`accepted`, `refused`) the
+  client has shown, or an incoming one past its deadline, just goes, and
+  needs no body. **204**; every
   device hears `e2e_request_gone`.
 
   409 `request_state` for a request waiting for OUR answer (that one is

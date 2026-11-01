@@ -1189,7 +1189,7 @@ it.
 | `POST /networks/:network_id/e2e/requests` `{"target", "from", "payload"}` | **202** `{"request": request}`. `REQUEST` goes to `target`, and the request reads `outgoing` with a fresh 24 h deadline (asking again, after an expiry or after a refusal is a new request). When `target`'s own request is waiting, `ACCEPT` goes instead and the request reads `accepted` (see *Crossings*) |
 | `POST /networks/:network_id/e2e/requests/:id/accept` `{"from", "payload"}` | **202** `{"msgid": "…"}`. `ACCEPT` goes to the peer and the request goes |
 | `POST /networks/:network_id/e2e/requests/:id/refuse` `{"from", "payload"}` | **202** `{"msgid": "…"}`. `REFUSE` goes to the peer and the request goes |
-| `DELETE /networks/:network_id/e2e/requests/:id` `{"from", "payload"}`? | **204**. A live `outgoing` request is CANCELLED: `CANCEL` goes to the peer, so their banner goes too, and the body is required for it. An `expired` request or an answer just goes, and needs no body |
+| `DELETE /networks/:network_id/e2e/requests/:id` `{"from", "payload"}`? | **204**. A live `outgoing` request is CANCELLED: `CANCEL` goes to the peer, so their banner goes too, and the body is required for it. An `expired` request, an answer, or an `incoming` one past its deadline just goes, and needs no body |
 
 `from` is the sending device's `did`, and must be LISTED, as at the send
 door. The request is written only once the pacer has taken the line, in
@@ -1198,8 +1198,9 @@ for a target that is not a nick, a `from` that is not a did, a payload
 outside the rule, or a `DELETE` of a live `outgoing` request without its
 `{from, payload}` (both or neither); 400 `invalid_line` for a CR, LF or NUL
 in `target`; 422 `unknown_device` for an unlisted `from`; 404 `not_found`
-for an id that is not yours there, an `incoming` request past its
-deadline, or no session (every route but `GET`); 409 `request_state` for an
+for an id that is not yours there, an accept or a refuse of an `incoming`
+request past its deadline (a `DELETE` of one just drops it: 204), or no
+session (every route but `GET`); 409 `request_state` for an
 accept or a refuse of a request that is not waiting for YOUR answer, and
 for a `DELETE` of one that is (answer it instead); 413 `too_large` when the
 network's `LINELEN` is too short to frame the line; 429 `rate_limited` when
