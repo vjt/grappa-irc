@@ -41,7 +41,8 @@ defmodule Grappa.IRC.E2e do
       MSG `did → did` or `did → *` (one message carrying a body for each of
       several devices), NACK `did → did`, or `* → did` when grappa answers
       for the user that a message reached none of its listed devices
-      (issue 2491).
+      (issue 2491), and the four consent verbs of issue 2486 (REQUEST,
+      ACCEPT, REFUSE, CANCEL) `did → *`.
     * `chunk` is a NON-EMPTY slice of the payload's compact JSON text, so
       printable ASCII without a space (`chunk?/1`). It is no longer base64:
       v2 dropped the outer encoding, which cost a third of every line. The
@@ -65,8 +66,18 @@ defmodule Grappa.IRC.E2e do
   The E2E verbs, closed. Draft 7 also listed `OFFLINE`; vjt dropped it
   (2430, 2026-10-18 19:3x: no sender-side notice of any kind), so a line
   carrying it is malformed here.
+
+  REQUEST, ACCEPT, REFUSE and CANCEL (issue 2486) ask for an encrypted
+  chat and answer the asking: consent, not transport (`consent_verbs/0`).
   """
-  @type verb :: :keyreq | :keys | :pkmsg | :msg | :nack
+  @type verb :: :keyreq | :keys | :pkmsg | :msg | :nack | consent_verb()
+
+  @typedoc """
+  The verbs of the consent to an encrypted chat (issue 2486): "I would like
+  to", yes, no, and "I no longer ask". They carry no key and no message;
+  `Grappa.E2eRequests` keeps the state they drive, by the verb alone.
+  """
+  @type consent_verb :: :request | :accept | :refuse | :cancel
 
   @typedoc "A frame address: a device id (`did?/1`), or `*`."
   @type address :: String.t()
@@ -76,8 +87,14 @@ defmodule Grappa.IRC.E2e do
     "KEYS" => :keys,
     "PKMSG" => :pkmsg,
     "MSG" => :msg,
-    "NACK" => :nack
+    "NACK" => :nack,
+    "REQUEST" => :request,
+    "ACCEPT" => :accept,
+    "REFUSE" => :refuse,
+    "CANCEL" => :cancel
   }
+
+  @consent_verbs [:request, :accept, :refuse, :cancel]
 
   @wire_verbs Map.new(@verbs, fn {wire, verb} -> {verb, wire} end)
 
@@ -88,6 +105,14 @@ defmodule Grappa.IRC.E2e do
   @doc "Every verb. For validators that need the closed set."
   @spec verbs() :: [verb(), ...]
   def verbs, do: Map.values(@verbs)
+
+  @doc "The consent verbs (issue 2486), apart from the transport's."
+  @spec consent_verbs() :: [consent_verb(), ...]
+  def consent_verbs, do: @consent_verbs
+
+  @doc "True iff `verb` is one of `consent_verbs/0`."
+  @spec consent_verb?(term()) :: boolean()
+  def consent_verb?(verb), do: verb in @consent_verbs
 
   @doc "The most fragments one logical message may span."
   @spec max_fragments() :: 64
@@ -197,11 +222,13 @@ defmodule Grappa.IRC.E2e do
   asked, PKMSG and MSG from a device to a device or to several (`*`), NACK
   from a device to a device, or from the user to a device: grappa's answer
   to a message none of the user's listed devices could have read (issue
-  2491). The one table, for the parser and the send door alike; the door
-  also wants `from` to be a did, since only grappa speaks for the user.
+  2491), and the consent verbs from a device to the user (issue 2486):
+  consent belongs to the person, and the asker does not know the peer's
+  devices yet. The one table, for the parser and the send door alike; the
+  door also wants `from` to be a did, since only grappa speaks for the user.
   """
   @spec addressed?(verb(), term(), term()) :: boolean()
-  def addressed?(:keyreq, from, "*"), do: did?(from)
+  def addressed?(verb, from, "*") when verb in [:keyreq | @consent_verbs], do: did?(from)
   def addressed?(verb, "*", to) when verb in [:keys, :nack], do: did?(to)
   def addressed?(verb, from, "*") when verb in [:pkmsg, :msg], do: did?(from)
   def addressed?(verb, from, to) when verb in [:pkmsg, :msg, :nack], do: did?(from) and did?(to)

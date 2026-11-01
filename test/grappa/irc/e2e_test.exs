@@ -64,7 +64,13 @@ defmodule Grappa.IRC.E2eTest do
             {"NACK", :nack, @alice, @bob},
             # grappa speaking for the user: the message reached none of its
             # listed devices (issue 2491).
-            {"NACK", :nack, "*", @alice}
+            {"NACK", :nack, "*", @alice},
+            # issue 2486: the consent to an encrypted chat belongs to the
+            # person, so all four go from a device to the user.
+            {"REQUEST", :request, @alice, "*"},
+            {"ACCEPT", :accept, @alice, "*"},
+            {"REFUSE", :refuse, @alice, "*"},
+            {"CANCEL", :cancel, @alice, "*"}
           ] do
         assert {:ok, %Fragment{verb: ^verb, from: ^from, to: ^to}} =
                  E2e.parse("\x01E2E #{wire} q83vEjRWeJA 1/1 #{from} #{to} #{@keyreq_payload}\x01")
@@ -88,6 +94,16 @@ defmodule Grappa.IRC.E2eTest do
             {"MSG", "*", "*"},
             {"NACK", @alice, "*"},
             {"NACK", "*", "*"},
+            # Consent goes from a device to the user, never to a device and
+            # never from the user (issue 2486).
+            {"REQUEST", @alice, @bob},
+            {"REQUEST", "*", "*"},
+            {"ACCEPT", @alice, @bob},
+            {"ACCEPT", "*", @bob},
+            {"REFUSE", @alice, @bob},
+            {"REFUSE", "*", "*"},
+            {"CANCEL", @alice, @bob},
+            {"CANCEL", "*", @alice},
             # A did is exactly 11 base64url characters, unpadded and
             # canonical: the standard alphabet's `+` and `/` are not a did.
             {"MSG", "If4x36FUom", @bob},
@@ -161,6 +177,19 @@ defmodule Grappa.IRC.E2eTest do
       refute E2e.addressed?(:nack, @alice, "*")
       refute E2e.addressed?(:keys, @alice, @bob)
       refute E2e.addressed?(:msg, 1, @bob)
+
+      for verb <- [:request, :accept, :refuse, :cancel] do
+        assert E2e.addressed?(verb, @alice, "*")
+        refute E2e.addressed?(verb, @alice, @bob)
+        refute E2e.addressed?(verb, "*", "*")
+      end
+    end
+
+    test "the consent verbs are the four of issue 2486, apart from the transport's" do
+      assert Enum.sort(E2e.consent_verbs()) == [:accept, :cancel, :refuse, :request]
+      assert MapSet.subset?(MapSet.new(E2e.consent_verbs()), MapSet.new(E2e.verbs()))
+      assert Enum.all?(E2e.consent_verbs(), &E2e.consent_verb?/1)
+      refute Enum.any?([:keyreq, :keys, :pkmsg, :msg, :nack], &E2e.consent_verb?/1)
     end
   end
 

@@ -95,6 +95,9 @@ defmodule Grappa.Session do
       Grappa.E2eInbox,
       # issue 2430 — `Session.Server` answers a KEYREQ from the hosted bundle.
       Grappa.E2eKeys,
+      # issue 2486 — `Session.Server` keeps the consent to an encrypted chat
+      # (REQUEST/ACCEPT/REFUSE/CANCEL) and sweeps the requests that lapsed.
+      Grappa.E2eRequests,
       Grappa.IRC,
       Grappa.Log,
       Grappa.Mentions,
@@ -136,7 +139,7 @@ defmodule Grappa.Session do
     # drifts. It is a pure module with no process or state behind it.
     exports: [NSInterceptor, Server, Wire]
 
-  alias Grappa.{E2eInbox, E2eKeys}
+  alias Grappa.{E2eInbox, E2eKeys, E2eRequests}
   alias Grappa.IRC.{AuthFSM, CTCP, E2e, Identifier, Ignore}
   alias Grappa.Session.{Deps, E2ePacer, FloodAllowance, ISupport, Server, Wire}
 
@@ -227,6 +230,24 @@ defmodule Grappa.Session do
           | :too_large
           | :rate_limited
           | :too_late
+
+  @typedoc """
+  issue 2486 — every way the consent doors (`ask_e2e/5`, `answer_e2e/6`,
+  `dismiss_e2e/4`) refuse, named once so their REST door states the same
+  set.
+  """
+  @type e2e_consent_error ::
+          :no_session
+          | :no_socket
+          | :timeout
+          | :invalid_line
+          | :bad_request
+          | :unknown_device
+          | :not_found
+          | :conflict
+          | :rate_limited
+          | :requests_full
+          | :db_unavailable
 
   @typedoc """
   issue 2430 S1 — every way `copy_e2e/6` refuses a copy, named once so its
@@ -1111,6 +1132,108 @@ defmodule Grappa.Session do
       true -> :ok
     end
   end
+
+  @doc """
+  issue 2486 — asks `target` (a nick) to start an end-to-end encrypted
+  chat, from the subject's device `from`; or, when `target`'s own request
+  is waiting, answers it yes (`Grappa.E2eRequests.ask/3`: our request is
+  our consent).
+
+  `payload` is the client's and opaque: compact JSON text of at most
+  `Grappa.E2eRequests.Request.max_payload_bytes/0` (the proposal is the
+  sender's master key, as a hint), which grappa never parses. The session
+  sends REQUEST (or ACCEPT) from `from` to `*` in the pacer's REACTIVE
+  lane, and writes the row only once the pacer has taken the line, in the
+  same call: a refused send leaves no state behind. Every device of the
+  account hears the `e2e_request` push.
+
+  `{:ok, request}` with the row as it now stands: `outgoing` with a fresh
+  24 h deadline, or `accepted` on a crossing. `{:error, :invalid_line}`
+  for a CR/LF/NUL in `target`; `{:error, :bad_request}` for a target that
+  is not a nick, a `from` that is not a did, or a payload outside the rule;
+  `{:error, :unknown_device}` when `from` is not a listed device;
+  `{:error, :rate_limited}` when the pacer cannot take the line;
+  `{:error, :requests_full}` past `Grappa.E2eRequests.max_rows/0`
+  requests we started; `{:error, :db_unavailable}`; `{:error, :no_socket}`
+  while upstream is down; `{:error, :no_session}` with no live session.
+  """
+  @spec ask_e2e(subject(), integer(), String.t(), String.t(), String.t()) ::
+          {:ok, E2eRequests.Request.t()} | {:error, e2e_consent_error()}
+  def ask_e2e(subject, network_id, target, from, payload)
+      when is_subject(subject) and is_integer(network_id) and is_binary(target) and is_binary(from) and
+             is_binary(payload) do
+    with :ok <- validate_consent_target(target),
+         :ok <- validate_consent_line(from, payload),
+         :ok <- listed_device(subject, network_id, from) do
+      call_session(subject, network_id, {:e2e_ask, target, from, payload})
+    end
+  end
+
+  @doc """
+  issue 2486 — accepts or refuses the peer's waiting request `id`: ACCEPT
+  or REFUSE goes from the subject's device `from` to `*`, and the row goes
+  (`e2e_request_gone` on the user topic). The accepting client then opens
+  the encrypted chat and fetches the peer's keys itself: grappa never
+  starts a KEYREQ on anyone's behalf.
+
+  `{:ok, msgid}` once the pacer has taken the line. `{:error, :not_found}`
+  for an id that is not this subject's here, or a request past its
+  deadline; `{:error, :conflict}` for a request that is not waiting for an
+  answer (one we asked, or an answer); the rest as `ask_e2e/5`.
+  """
+  @spec answer_e2e(subject(), integer(), integer(), :accept | :refuse, String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, e2e_consent_error()}
+  def answer_e2e(subject, network_id, id, answer, from, payload)
+      when is_subject(subject) and is_integer(network_id) and is_integer(id) and answer in [:accept, :refuse] and
+             is_binary(from) and is_binary(payload) do
+    with :ok <- validate_consent_line(from, payload),
+         :ok <- listed_device(subject, network_id, from) do
+      call_session(subject, network_id, {:e2e_answer, id, answer, from, payload})
+    end
+  end
+
+  @doc """
+  issue 2486 — dismisses request `id`. A live request we asked is
+  CANCELLED: CANCEL goes from the device of `line` (`{from, payload}`) to
+  `*`, so the peer's banner goes as well, and the row goes once the pacer
+  has taken the line. An expired request, an answer (`accepted`,
+  `refused`) or a lapsed incoming one just goes, and `line` may be `nil`.
+  Either way every device hears `e2e_request_gone`.
+
+  `:ok`. `{:error, :conflict}` for a live incoming request (it is answered,
+  not dismissed); `{:error, :bad_request}` when a CANCEL is due and `line`
+  is `nil`, or `line` is outside the rule; `{:error, :not_found}` for an
+  id that is not this subject's here; the rest as `ask_e2e/5`.
+  """
+  @spec dismiss_e2e(subject(), integer(), integer(), {String.t(), String.t()} | nil) ::
+          :ok | {:error, e2e_consent_error()}
+  def dismiss_e2e(subject, network_id, id, nil) when is_subject(subject) and is_integer(network_id) and is_integer(id),
+    do: call_session(subject, network_id, {:e2e_dismiss, id, nil})
+
+  def dismiss_e2e(subject, network_id, id, {from, payload} = line)
+      when is_subject(subject) and is_integer(network_id) and is_integer(id) and is_binary(from) and
+             is_binary(payload) do
+    with :ok <- validate_consent_line(from, payload),
+         :ok <- listed_device(subject, network_id, from) do
+      call_session(subject, network_id, {:e2e_dismiss, id, line})
+    end
+  end
+
+  # The peer of a consent line: one IRC token, and a nick.
+  @spec validate_consent_target(String.t()) :: :ok | {:error, :invalid_line | :bad_request}
+  defp validate_consent_target(target) do
+    cond do
+      not Identifier.safe_line_token?(target) -> {:error, :invalid_line}
+      Identifier.valid_nick?(target) -> :ok
+      true -> {:error, :bad_request}
+    end
+  end
+
+  # A consent line goes from a device (`*` speaks for the user, and only
+  # grappa does), and carries what `E2eRequests.payload?/1` takes.
+  @spec validate_consent_line(String.t(), String.t()) :: :ok | {:error, :bad_request}
+  defp validate_consent_line(from, payload),
+    do: if(E2e.did?(from) and E2eRequests.payload?(payload), do: :ok, else: {:error, :bad_request})
 
   @doc """
   #1225 — sends the operator's own outbound NOTICE (`/notice`) and self-echoes
