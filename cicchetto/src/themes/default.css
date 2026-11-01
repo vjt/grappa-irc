@@ -5290,12 +5290,23 @@ html.is-ios27-band .shell {
   }
 }
 
-.scrollback-far-behind {
+/* issue 2486 — the pinned top band of `.scrollback-pane`: the asking to start
+   an encrypted chat (`.e2e-request-banner`), then the far-behind bar, stacked
+   in a column so neither covers the other. The band owns the position the
+   far-behind bar used to hold on its own: container-anchored, one z-index
+   below the #133 overlay, and out of `.scrollback`'s `scrollHeight`. Empty,
+   it is zero pixels tall and intercepts nothing. */
+.scrollback-pinned {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   z-index: 4;
+  display: flex;
+  flex-direction: column;
+}
+
+.scrollback-far-behind {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -5333,6 +5344,101 @@ html.is-ios27-band .shell {
   font-size: 1.2em;
   line-height: 1;
   cursor: pointer;
+}
+
+/* issue 2486 — the banner over a query, for the asking to start an encrypted
+   chat: the peer's (Accept / Reject) and ours (waiting, answered, expired).
+   The invite banner's green (`.error-banner-info`), because vjt asked for
+   "the usual green banner, like the invite"; it lives in the pinned band
+   above, over the query it is about, not in the app-wide stack. */
+.e2e-request-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.25rem 0.5rem 0.25rem 1rem;
+  background: #2a6;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+/* The same yielding slot as `.error-banner-message` (issue 2128): a long nick
+   must not push the buttons off a phone's edge. */
+.e2e-request-banner-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.e2e-request-banner-action {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0.25rem 0.75rem;
+  background: rgba(0, 0, 0, 0.25);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.e2e-request-banner-action:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.e2e-request-banner-action:disabled,
+.e2e-request-banner-dismiss:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* A 44px box like every banner × (#459): absolute px, not rem. */
+.e2e-request-banner-dismiss {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  background: transparent;
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.e2e-request-banner-error {
+  flex: 1 0 100%;
+  font-weight: bold;
+}
+
+.e2e-request-banner-spinner {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 0.4em;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  vertical-align: -0.1em;
+  animation: e2e-request-spin 0.9s linear infinite;
+}
+
+@keyframes e2e-request-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .e2e-request-banner-spinner {
+    animation: none;
+  }
 }
 
 /* #280 — floating action stack at the lower-right of `.scrollback-pane`.
