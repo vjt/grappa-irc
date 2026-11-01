@@ -83,13 +83,21 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   >({});
   /** Accepted requests being opened here: the push and a fetch may both bring one. */
   const opening = new Set<string>();
+  /** Per network, how many changes the mirror has taken in: a fetch can tell one landed while it was out. */
+  const changes = new Map<string, number>();
 
   onIdentityChange(() => {
     setRequestsBySlug({});
     opening.clear();
+    changes.clear();
   });
 
+  function changed(slug: string): void {
+    changes.set(slug, (changes.get(slug) ?? 0) + 1);
+  }
+
   function put(slug: string, request: E2eRequest): void {
+    changed(slug);
     setRequestsBySlug((prev) => ({
       ...prev,
       [slug]: { ...(prev[slug] ?? {}), [request.id]: request },
@@ -98,6 +106,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   }
 
   function drop(slug: string, id: number): void {
+    changed(slug);
     setRequestsBySlug((prev) => {
       if (prev[slug]?.[id] === undefined) return prev;
       const { [id]: _gone, ...rest } = prev[slug];
@@ -117,9 +126,16 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     return found;
   }
 
-  /** Reads the network's requests again; what grappa lists replaces what was held. */
+  /**
+   * Reads the network's requests again; what grappa lists replaces what was
+   * held. A change that landed while the read was out (a push, a door's
+   * answer) may be newer than what was read, so then the network is read
+   * again.
+   */
   async function loadE2eRequests(slug: string): Promise<void> {
+    const before = changes.get(slug) ?? 0;
     const listed = await listE2eRequests(bearer(), slug);
+    if ((changes.get(slug) ?? 0) !== before) return loadE2eRequests(slug);
     setRequestsBySlug((prev) => ({
       ...prev,
       [slug]: Object.fromEntries(listed.map((request) => [request.id, request])),
@@ -176,6 +192,19 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     }
   }
 
+  // A door grappa answers 404 or 409 says the request moved under this
+  // device: answered or withdrawn elsewhere, or in another state now (a 404
+  // may also be no session, which a read tells apart). The mirror reads the
+  // network again, and the refusal still reaches the caller.
+  async function door<T>(slug: string, work: Promise<T>): Promise<T> {
+    try {
+      return await work;
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 404 || err.status === 409)) loadEvery([slug]);
+      throw err;
+    }
+  }
+
   /** Asks `nick`, or retries an expired asking; a request of theirs waiting is answered yes. */
   async function askEncryptedChat(slug: string, nick: string): Promise<void> {
     put(slug, await askE2eRequest(bearer(), slug, nick, await consentLine(slug)));
@@ -183,7 +212,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
   /** Accepts the peer's request: the chat opens here, and its keys are asked for. */
   async function acceptEncryptedChat(slug: string, request: E2eRequest): Promise<void> {
-    await answerE2eRequest(bearer(), slug, request.id, "accept", await consentLine(slug));
+    await door(
+      slug,
+      answerE2eRequest(bearer(), slug, request.id, "accept", await consentLine(slug)),
+    );
     drop(slug, request.id);
     await openEncryptedWindow(slug, request.peer);
     await askEncryptedKeys(slug, request.peer);
@@ -191,7 +223,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
   /** Refuses the peer's request, with the dedicated REFUSE: the peer is told. */
   async function refuseEncryptedChat(slug: string, request: E2eRequest): Promise<void> {
-    await answerE2eRequest(bearer(), slug, request.id, "refuse", await consentLine(slug));
+    await door(
+      slug,
+      answerE2eRequest(bearer(), slug, request.id, "refuse", await consentLine(slug)),
+    );
     drop(slug, request.id);
   }
 
@@ -203,7 +238,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
    */
   async function dismissEncryptedChatRequest(slug: string, request: E2eRequest): Promise<void> {
     const line = request.state === "outgoing" ? await consentLine(slug) : null;
-    await dismissE2eRequest(bearer(), slug, request.id, line);
+    await door(slug, dismissE2eRequest(bearer(), slug, request.id, line));
     drop(slug, request.id);
   }
 

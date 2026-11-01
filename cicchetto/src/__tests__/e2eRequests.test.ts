@@ -127,6 +127,41 @@ describe("the mirror", () => {
     expect(store.e2eRequestWith(`${slug}-other`, "Bob")).toEqual(elsewhere);
   });
 
+  // A fetch whose answer is held until `change` has run, then the next read.
+  async function fetchAcross(
+    first: E2eRequestsWireRequest[],
+    next: E2eRequestsWireRequest[],
+    change: () => void,
+  ): Promise<void> {
+    let answer: (listed: E2eRequestsWireRequest[]) => void = () => undefined;
+    listE2eRequests.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    listE2eRequests.mockResolvedValueOnce(next);
+    const loading = store.loadE2eRequests(slug);
+    change();
+    answer(first);
+    await loading;
+  }
+
+  it("a request gone while a fetch is out is not brought back by it: the network is read again", async () => {
+    const answered = req({});
+    store.putE2eRequest(slug, answered);
+
+    // Another device answered it; the read was taken before.
+    await fetchAcross([answered], [], () => store.dropE2eRequest(slug, answered.id));
+
+    expect(listE2eRequests).toHaveBeenCalledTimes(2);
+    expect(store.e2eRequestWith(slug, "Bob")).toBeUndefined();
+  });
+
+  it("a request asked while a fetch is out is not wiped by it: the network is read again", async () => {
+    const asked = req({});
+
+    await fetchAcross([], [asked], () => store.putE2eRequest(slug, asked));
+
+    expect(listE2eRequests).toHaveBeenCalledTimes(2);
+    expect(store.e2eRequestWith(slug, "Bob")).toEqual(asked);
+  });
+
   it("a push that the request is gone drops it, and only it", () => {
     const bob = req({});
     const carol = req({ peer: "Carol" });
@@ -250,16 +285,44 @@ describe("the doors", () => {
     expect(store.e2eRequestWith(slug, "Bob")).toBeUndefined();
   });
 
-  it("an accept grappa refuses opens nothing and keeps the request", async () => {
+  it("an accept grappa cannot send opens nothing and keeps the request", async () => {
     const incoming = req({ state: "incoming" });
     store.putE2eRequest(slug, incoming);
-    answerE2eRequest.mockRejectedValue(new ApiError(409, "request_state"));
+    answerE2eRequest.mockRejectedValue(new ApiError(429, "rate_limited"));
 
-    await expect(store.acceptEncryptedChat(slug, incoming)).rejects.toThrow("409");
+    await expect(store.acceptEncryptedChat(slug, incoming)).rejects.toThrow("429");
 
     expect(openEncryptedWindow).not.toHaveBeenCalled();
     expect(askEncryptedKeys).not.toHaveBeenCalled();
+    expect(listE2eRequests).not.toHaveBeenCalled();
     expect(store.e2eRequestWith(slug, "Bob")).toEqual(incoming);
+  });
+
+  it("a door grappa answers 404 or 409 reads the network again, and still says why", async () => {
+    const doors = [
+      ["accept", "incoming", new ApiError(404, "not_found")],
+      ["refuse", "incoming", new ApiError(409, "request_state")],
+      ["dismiss", "outgoing", new ApiError(404, "not_found")],
+    ] as const;
+    for (const [door, state, refusal] of doors) {
+      const request = req({ state });
+      store.putE2eRequest(slug, request);
+      (door === "dismiss" ? dismissE2eRequest : answerE2eRequest).mockRejectedValueOnce(refusal);
+      // Answered or withdrawn elsewhere: grappa lists it no more.
+      listE2eRequests.mockResolvedValueOnce([]);
+
+      const work =
+        door === "accept"
+          ? store.acceptEncryptedChat(slug, request)
+          : door === "refuse"
+            ? store.refuseEncryptedChat(slug, request)
+            : store.dismissEncryptedChatRequest(slug, request);
+
+      await expect(work).rejects.toBe(refusal);
+      await vi.waitFor(() => expect(store.e2eRequestWith(slug, "Bob")).toBeUndefined());
+    }
+    expect(listE2eRequests).toHaveBeenCalledTimes(3);
+    expect(openEncryptedWindow).not.toHaveBeenCalled();
   });
 
   it("refusing answers no with a line, and opens nothing", async () => {
