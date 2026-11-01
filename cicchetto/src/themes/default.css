@@ -4966,6 +4966,7 @@ html.is-ios27-band .shell {
 .e2e-pin-submit,
 .e2e-compose-send,
 .e2e-sas-button,
+.e2e-request-card-action,
 .rail-encrypted-chat-button {
   background: var(--accent);
   color: var(--bg);
@@ -4980,6 +4981,8 @@ html.is-ios27-band .shell {
 .e2e-copy:disabled,
 .e2e-compose-input:disabled,
 .e2e-compose-send:disabled,
+.e2e-request-card-action:disabled,
+.e2e-request-card-dismiss:disabled,
 .rail-encrypted-chat-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -5348,11 +5351,12 @@ html.is-ios27-band .shell {
   cursor: pointer;
 }
 
-/* issue 2486 — the banner over a query, for the asking to start an encrypted
-   chat: the peer's (Accept / Reject) and ours (waiting, answered, expired).
-   The invite banner's green (`.error-banner-info`), because vjt asked for
-   "the usual green banner, like the invite"; it lives in the pinned band
-   above, over the query it is about, not in the app-wide stack. */
+/* issue 2486 — the banner over a query, for the peer's asking to start an
+   encrypted chat (Accept / Reject); ours is a card in the chat
+   (`.e2e-request-card`, vjt's ruling R4). The invite banner's green
+   (`.error-banner-info`), because vjt asked for "the usual green banner,
+   like the invite"; it lives in the pinned band above, over the query it is
+   about, not in the app-wide stack. */
 .e2e-request-banner {
   display: flex;
   flex-wrap: wrap;
@@ -5392,26 +5396,9 @@ html.is-ios27-band .shell {
   background: rgba(0, 0, 0, 0.4);
 }
 
-.e2e-request-banner-action:disabled,
-.e2e-request-banner-dismiss:disabled {
+.e2e-request-banner-action:disabled {
   opacity: 0.6;
   cursor: default;
-}
-
-/* A 44px box like every banner × (#459): absolute px, not rem. */
-.e2e-request-banner-dismiss {
-  flex: 0 0 auto;
-  width: 44px;
-  height: 44px;
-  padding: 0;
-  background: transparent;
-  color: #fff;
-  border: none;
-  border-radius: 3px;
-  font-family: inherit;
-  font-size: 1.25rem;
-  line-height: 1;
-  cursor: pointer;
 }
 
 .e2e-request-banner-error {
@@ -5419,13 +5406,79 @@ html.is-ios27-band .shell {
   font-weight: bold;
 }
 
-.e2e-request-banner-spinner {
+/* issue 2486 — on a phone the pinned band runs under the floated ☰
+   (`.shell-chrome`, z 41, #985) in the pane's top-right corner, and under
+   the left `#` door in the top-left one while the window bar is off
+   (#1766). Measured before this rule (webkit-iphone-15, 393 wide: ☰ at
+   x 331–379, y 7–55; chromium-pixel-touch, 412 wide: x 350–398): Accept and
+   Reject wrap below the text and were never covered, but the first line of
+   the text ran under the ☰. So the banner pads the side a float sits on by
+   the float's box and its inset on both sides, for as long as that float
+   is mounted: `:has()` reads the mount, so a window with no float (a
+   channel's TopicBar hosts its ☰ in flow, a desktop never floats one) keeps
+   the full width. Pinned by `issue2486-banner-clears-the-float.spec.ts`. */
+.shell-main:has(> .shell-chrome .shell-chrome-rail-opener) .e2e-request-banner {
+  padding-right: calc(var(--chrome-tap-min) + 2 * var(--pane-chrome-inset-inline));
+}
+
+.shell-main:has(> .shell-chrome .topic-bar-windows-opener) .e2e-request-banner {
+  padding-left: calc(
+    var(--pane-chrome-inset-inline-start) +
+    var(--chrome-tap-min) +
+    var(--pane-chrome-inset-inline)
+  );
+}
+
+/* issue 2486 — our asking to start an encrypted chat, a card in the query's
+   timeline (vjt's ruling R4), in #2485's step-card frame (`.e2e-step`): the
+   same kind of fact, where the key exchange stands. It is a row of the
+   scrollback here, so it takes the rows' inset rather than the step card's
+   margin in the encrypted pane's column. */
+.e2e-request-card {
+  margin: 0.25rem 0.5rem;
+}
+
+.e2e-request-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+/* The yielding slot of `.e2e-request-banner-text`: a long nick must not push
+   the × off a phone's edge. */
+.e2e-request-card-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: center;
+  overflow-wrap: anywhere;
+}
+
+/* A 44px box like every card × (#459): `--tap-min`, absolute px, not rem. */
+.e2e-request-card-dismiss {
+  flex: 0 0 auto;
+  width: var(--tap-min);
+  height: var(--tap-min);
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  font-family: inherit;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.e2e-request-card-dismiss:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.e2e-request-card-spinner {
   display: inline-block;
   width: 0.8em;
   height: 0.8em;
   margin-right: 0.4em;
-  border: 2px solid rgba(255, 255, 255, 0.4);
-  border-top-color: #fff;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
   border-radius: 50%;
   vertical-align: -0.1em;
   animation: e2e-request-spin 0.9s linear infinite;
@@ -5438,7 +5491,7 @@ html.is-ios27-band .shell {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .e2e-request-banner-spinner {
+  .e2e-request-card-spinner {
     animation: none;
   }
 }

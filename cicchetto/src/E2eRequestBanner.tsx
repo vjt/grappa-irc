@@ -1,22 +1,14 @@
-import { type Component, createSignal, Match, Show, Switch } from "solid-js";
-import {
-  acceptEncryptedChat,
-  askEncryptedChat,
-  createRequestView,
-  dismissEncryptedChatRequest,
-  openAcceptedChat,
-  refuseEncryptedChat,
-} from "./lib/e2eRequests";
+import { type Component, createSignal, Show } from "solid-js";
+import { acceptEncryptedChat, createRequestView, refuseEncryptedChat } from "./lib/e2eRequests";
 import { errorMessage } from "./lib/friendlyApiError";
 import NickText from "./NickText";
 
-// issue 2486 — the asking to start an encrypted chat, over the plaintext
-// query with the peer (vjt's ruling: the banner need not be encrypted). Both
-// sides read it here: the peer's asking with Accept / Reject, and our own
-// asking while it waits (Cancel), once answered, or once it went 24 h
-// unanswered (Retry). What it shows is grappa's request, mirrored
-// (`lib/e2eRequests.ts`); every button is a door, and the banner changes
-// when grappa says so, on every device.
+// issue 2486 — the peer's asking to start an encrypted chat, over the
+// plaintext query with them (vjt's ruling: the banner need not be encrypted),
+// with Accept / Reject. Only the peer's asking: ours, waiting or answered,
+// is a card in the chat (`E2eRequestCard`, ruling R4). What it shows is
+// grappa's request, mirrored (`lib/e2eRequests.ts`); both buttons are doors,
+// and the banner goes when grappa says so, on every device.
 //
 // The deadline is read here as well as on grappa (`createRequestView`).
 
@@ -41,9 +33,13 @@ const Banner: Component<Props> = (props) => {
     () => props.networkSlug,
     () => props.peer,
   );
+  const incoming = () => {
+    const v = view();
+    return v?.kind === "incoming" ? v : null;
+  };
 
   // A failure is said in the banner, never thrown at the click. While a door
-  // runs every button is disabled, so a second click sends nothing.
+  // runs both buttons are disabled, so a second click sends nothing.
   const act = (work: () => Promise<void>) => () => {
     setBusy(true);
     setError(null);
@@ -53,97 +49,30 @@ const Banner: Component<Props> = (props) => {
   };
 
   return (
-    <Show when={view()}>
+    <Show when={incoming()}>
       {(v) => (
-        <div class="e2e-request-banner" data-testid="e2e-request-banner" data-state={v().kind}>
+        <div class="e2e-request-banner" data-testid="e2e-request-banner" data-state="incoming">
           <span class="e2e-request-banner-text">
-            <Switch>
-              <Match when={v().kind === "incoming"}>
-                <NickText nick={props.peer} /> would like to start an encrypted chat with you.
-              </Match>
-              <Match when={v().kind === "pending"}>
-                <span class="e2e-request-banner-spinner" aria-hidden="true" />
-                Waiting for <NickText nick={props.peer} /> to accept the encrypted chat.
-              </Match>
-              <Match when={v().kind === "accepted"}>
-                <NickText nick={props.peer} /> accepted the encrypted chat.
-              </Match>
-              <Match when={v().kind === "refused"}>
-                <NickText nick={props.peer} /> refused the encrypted chat.
-              </Match>
-              <Match when={v().kind === "expired"}>
-                <NickText nick={props.peer} /> did not answer the encrypted chat request within 24
-                hours.
-              </Match>
-            </Switch>
+            <NickText nick={props.peer} /> would like to start an encrypted chat with you.
           </span>
-          <Switch>
-            <Match when={v().kind === "incoming"}>
-              <button
-                type="button"
-                class="e2e-request-banner-action"
-                data-testid="e2e-request-accept"
-                disabled={busy()}
-                onClick={act(() => acceptEncryptedChat(props.networkSlug, v().request))}
-              >
-                Accept
-              </button>
-              <button
-                type="button"
-                class="e2e-request-banner-action"
-                data-testid="e2e-request-reject"
-                disabled={busy()}
-                onClick={act(() => refuseEncryptedChat(props.networkSlug, v().request))}
-              >
-                Reject
-              </button>
-            </Match>
-            <Match when={v().kind === "pending"}>
-              <button
-                type="button"
-                class="e2e-request-banner-action"
-                data-testid="e2e-request-cancel"
-                disabled={busy()}
-                onClick={act(() => dismissEncryptedChatRequest(props.networkSlug, v().request))}
-              >
-                Cancel
-              </button>
-            </Match>
-            <Match when={v().kind === "accepted"}>
-              <button
-                type="button"
-                class="e2e-request-banner-action"
-                data-testid="e2e-request-open"
-                disabled={busy()}
-                onClick={act(() => openAcceptedChat(props.networkSlug, v().request))}
-              >
-                Open
-              </button>
-            </Match>
-            <Match when={v().kind === "expired"}>
-              <button
-                type="button"
-                class="e2e-request-banner-action"
-                data-testid="e2e-request-retry"
-                disabled={busy()}
-                onClick={act(() => askEncryptedChat(props.networkSlug, props.peer))}
-              >
-                Retry
-              </button>
-            </Match>
-          </Switch>
-          <Show when={v().kind !== "incoming" && v().kind !== "pending"}>
-            <button
-              type="button"
-              class="e2e-request-banner-dismiss"
-              data-testid="e2e-request-dismiss"
-              aria-label="Dismiss the encrypted chat request"
-              disabled={busy()}
-              onClick={act(() => dismissEncryptedChatRequest(props.networkSlug, v().request))}
-            >
-              ×
-            </button>
-          </Show>
+          <button
+            type="button"
+            class="e2e-request-banner-action"
+            data-testid="e2e-request-accept"
+            disabled={busy()}
+            onClick={act(() => acceptEncryptedChat(props.networkSlug, v().request))}
+          >
+            Accept
+          </button>
+          <button
+            type="button"
+            class="e2e-request-banner-action"
+            data-testid="e2e-request-reject"
+            disabled={busy()}
+            onClick={act(() => refuseEncryptedChat(props.networkSlug, v().request))}
+          >
+            Reject
+          </button>
           <Show when={error()}>
             {(message) => (
               <span class="e2e-request-banner-error" data-testid="e2e-request-error" role="alert">
