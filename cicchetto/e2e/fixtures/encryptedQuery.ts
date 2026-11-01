@@ -1,7 +1,8 @@
 // issue 2430 — the encrypted query, driven the way a person drives it: log
 // in and wait for the key bundle, open the query with `/equery`, read our own
-// key off the rail (issue 2485: the keys live there), pin a key by hand, send. Shared by the specs that put two
-// people (two browser contexts, two grappa users) in one encrypted query.
+// key off the rail (issue 2485: the keys live there), pin a key by hand, send,
+// compare emoji. Shared by the specs that put two people (two browser
+// contexts, two grappa users) in one encrypted query.
 
 import type { Browser, Page } from "@playwright/test";
 import {
@@ -17,6 +18,12 @@ import { expect } from "./test";
 
 /** How long a message may wait for the peer's keys, and a reply for the drain. */
 export const KEYS_TIMEOUT = 30_000;
+
+// grappa answers a nick's KEYREQ at most once per 30 s (`E2eKeyAnswers`) and
+// drops the rest without a word; cic asks again after its own 30 s
+// (`KEYREQ_RETRY_MS`, lib/e2e/engine.ts). A request for keys right after
+// another one to the same nick may wait that long before it is answered.
+export const AFTER_A_REASK = 30_000 + KEYS_TIMEOUT;
 
 /** The sidebar window of the encrypted query with `nick`. */
 export const e2eWindow = (nick: string) => `$e2e:${nick}`;
@@ -83,6 +90,58 @@ export async function send(page: Page, body: string): Promise<void> {
 /** The rows of `kind` in the open encrypted query, that read `text`. */
 export const row = (page: Page, kind: string, text: string) =>
   page.locator(`[data-testid="e2e-row"][data-row-kind="${kind}"]`, { hasText: text });
+
+/** The window's trust badge: verified, unverified, or alarm (`data-trust`). */
+export const trust = (page: Page) => page.getByTestId("e2e-peer-trust");
+
+const phase = (page: Page, value: string, timeout: number) =>
+  expect(page.getByTestId("e2e-sas")).toHaveAttribute("data-phase", value, { timeout });
+
+const emoji = (page: Page): Promise<(string | null)[]> =>
+  page
+    .getByTestId("e2e-sas-emoji")
+    .evaluateAll((els) => els.map((el) => el.getAttribute("data-index")));
+
+// Alice asks, Bob accepts, both compare the same 7 emoji and both say they
+// match: each one's key reads verified on the other side. The request
+// reaches Bob within `askedWithin`.
+export async function compareEmoji(
+  alice: Page,
+  bob: Page,
+  aliceKey: string,
+  bobKey: string,
+  askedWithin: number,
+): Promise<void> {
+  await alice.getByTestId("e2e-rail").getByTestId("e2e-sas-start").click();
+  await phase(alice, "waiting", KEYS_TIMEOUT);
+
+  await phase(bob, "asked", askedWithin);
+  await expect(bob.getByTestId("e2e-sas")).toContainText("asks to compare emoji with you");
+  await bob.getByTestId("e2e-sas-accept").click();
+
+  await phase(alice, "compare", KEYS_TIMEOUT);
+  await phase(bob, "compare", KEYS_TIMEOUT);
+  const seenByAlice = await emoji(alice);
+  expect(seenByAlice).toHaveLength(7);
+  expect(await emoji(bob)).toEqual(seenByAlice);
+
+  await alice.getByTestId("e2e-sas-match").click();
+  await phase(alice, "confirmed", KEYS_TIMEOUT);
+  await bob.getByTestId("e2e-sas-match").click();
+
+  for (const [page, key] of [
+    [alice, bobKey],
+    [bob, aliceKey],
+  ] as const) {
+    await expect(trust(page)).toHaveAttribute("data-trust", "verified", {
+      timeout: KEYS_TIMEOUT,
+    });
+    await expect(page.getByTestId("e2e-peer-key")).toHaveText(key);
+    await expect(page.getByTestId("e2e-rail-comparison")).toHaveText("matched");
+    await expect(page.getByTestId("e2e-sas")).toHaveCount(0);
+    await expect(page.getByTestId("e2e-sas-start")).toHaveCount(0);
+  }
+}
 
 /** A second browser context, for the peer: another person's browser. */
 export async function peerPage(browser: Browser) {
