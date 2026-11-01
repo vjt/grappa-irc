@@ -1394,7 +1394,9 @@ defmodule Grappa.Protocol do
   # `requests_full` (422); and an OS push for a fresh incoming request. On
   # IRC, four E2E verbs, REQUEST, ACCEPT, REFUSE and CANCEL, `did → *`,
   # which grappa keeps as the request's state and never queues, plus
-  # ACCEPT `* → did` when grappa answers a REQUEST for the user. Bumped on
+  # ACCEPT and REFUSE `* → did` when grappa answers a REQUEST for the user
+  # (a REQUEST that meets the user's consent; a refuse sent with no body,
+  # which needs no device of the user's). Bumped on
   # the #1393d rule: a client that asks, or shows a peer's asking, cannot
   # do it against a server predating the resource.
   #

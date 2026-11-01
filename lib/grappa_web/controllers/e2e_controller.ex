@@ -400,31 +400,34 @@ defmodule GrappaWeb.E2eController do
   device `from`, the request goes (every device hears
   `e2e_request_gone`), and the client opens the encrypted chat and fetches
   the peer's keys itself: grappa never starts a `KEYREQ` for anyone.
-  **202** `{msgid}`. 404 `not_found` for an id that is not this subject's
-  here, or a request past its deadline; 409 `request_state` for one that is not
-  waiting for an answer; the rest as `ask/2`.
+  **202** `{msgid}`. 400 `bad_request` without the body: accepting starts
+  the key exchange, so it needs a listed device. 404 `not_found` for an id
+  that is not this subject's here, or a request past its deadline; 409
+  `request_state` for one that is not waiting for an answer; the rest as
+  `ask/2`.
   """
   @spec accept(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, Session.e2e_consent_error()}
   def accept(conn, params), do: answer(conn, params, :accept)
 
   @doc """
-  `POST /networks/:network_id/e2e/requests/:id/refuse` — `{from, payload}`:
-  refuses the peer's waiting request (issue 2486), with the dedicated
-  `REFUSE`, so the requester is told. Answers as `accept/2`.
+  `POST /networks/:network_id/e2e/requests/:id/refuse` — `{from, payload}`
+  or no body: refuses the peer's waiting request (issue 2486), with the
+  dedicated `REFUSE`, so the requester is told. Without a body (vjt's
+  ruling R2) the `REFUSE` goes from `*`, grappa for the user, to the device
+  the request came from, so saying no needs no encryption identity; with
+  one, from that listed device. Answers as `accept/2`.
   """
   @spec refuse(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, Session.e2e_consent_error()}
   def refuse(conn, params), do: answer(conn, params, :refuse)
 
   @spec answer(Plug.Conn.t(), map(), :accept | :refuse) :: Plug.Conn.t() | {:error, Session.e2e_consent_error()}
-  defp answer(conn, %{"id" => id, "from" => from, "payload" => payload}, verb)
-       when is_binary(from) and is_binary(payload) do
+  defp answer(conn, %{"id" => id} = params, verb) do
     with {:ok, id} <- request_id(id),
-         {:ok, msgid} <- Session.answer_e2e(subject(conn), conn.assigns.network.id, id, verb, from, payload) do
+         {:ok, line} <- consent_line(params),
+         {:ok, msgid} <- Session.answer_e2e(subject(conn), conn.assigns.network.id, id, verb, line) do
       conn |> put_status(:accepted) |> json(SessionWire.e2e_sent(msgid))
     end
   end
-
-  defp answer(_, _, _), do: {:error, :bad_request}
 
   @doc """
   `DELETE /networks/:network_id/e2e/requests/:id` — dismisses a request
@@ -444,7 +447,7 @@ defmodule GrappaWeb.E2eController do
   @spec dismiss(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, Session.e2e_consent_error()}
   def dismiss(conn, %{"id" => id} = params) do
     with {:ok, id} <- request_id(id),
-         {:ok, line} <- cancel_line(params),
+         {:ok, line} <- consent_line(params),
          :ok <- Session.dismiss_e2e(subject(conn), conn.assigns.network.id, id, line) do
       send_resp(conn, :no_content, "")
     end
@@ -497,14 +500,16 @@ defmodule GrappaWeb.E2eController do
 
   defp cursor(_), do: {:error, :bad_request}
 
-  # The CANCEL's device and payload, when the body carries them; both or
-  # neither.
-  @spec cancel_line(map()) :: {:ok, {String.t(), String.t()} | nil} | {:error, :bad_request}
-  defp cancel_line(%{"from" => from, "payload" => payload}) when is_binary(from) and is_binary(payload),
+  # A consent line's device and payload (an answer's, a CANCEL's), when the
+  # body carries them; both or neither.
+  @spec consent_line(map()) :: {:ok, {String.t(), String.t()} | nil} | {:error, :bad_request}
+  defp consent_line(%{"from" => from, "payload" => payload}) when is_binary(from) and is_binary(payload),
     do: {:ok, {from, payload}}
 
-  defp cancel_line(params) when is_map_key(params, "from") or is_map_key(params, "payload"), do: {:error, :bad_request}
-  defp cancel_line(_), do: {:ok, nil}
+  defp consent_line(params) when is_map_key(params, "from") or is_map_key(params, "payload"),
+    do: {:error, :bad_request}
+
+  defp consent_line(_), do: {:ok, nil}
 
   # A request id from the path: a positive integer the id column can hold.
   @spec request_id(String.t()) :: {:ok, pos_integer()} | {:error, :not_found}

@@ -1142,8 +1142,8 @@ client sends a `keyreq`, §4f) and are pinned and checked as any key is
 **On IRC.** Four verbs in the §4f frame, from a device to `*` (the
 user): consent belongs to the person, and the asker does not know the
 peer's devices yet. The one other addressing is grappa's own: when it
-answers for the user (see *Crossings*), `ACCEPT` goes from `*` to the
-device that asked.
+answers for the user, `ACCEPT` and `REFUSE` go from `*` to the device
+that asked (see *Crossings*, and a refuse without a body below).
 
 | verb | means |
 |---|---|
@@ -1190,15 +1190,17 @@ it.
 | `GET /networks/:network_id/e2e/requests` | **200** `{"requests": [request…]}`, oldest first, as of now. A read of the table: it answers with no session too |
 | `POST /networks/:network_id/e2e/requests` `{"target", "from", "payload"}` | **202** `{"request": request}`. `REQUEST` goes to `target`, and the request reads `outgoing` with a fresh 24 h deadline (asking again, after an expiry or after a refusal is a new request). When `target`'s own request is waiting, `ACCEPT` goes instead and the request reads `accepted` (see *Crossings*) |
 | `POST /networks/:network_id/e2e/requests/:id/accept` `{"from", "payload"}` | **202** `{"msgid": "…"}`. `ACCEPT` goes to the peer and the request goes |
-| `POST /networks/:network_id/e2e/requests/:id/refuse` `{"from", "payload"}` | **202** `{"msgid": "…"}`. `REFUSE` goes to the peer and the request goes |
+| `POST /networks/:network_id/e2e/requests/:id/refuse` `{"from", "payload"}`? | **202** `{"msgid": "…"}`. `REFUSE` goes to the peer and the request goes. Without a body grappa sends it from `*`, for you, to the device the request came from, with payload `{"v":2}`: saying no needs no encryption identity |
 | `DELETE /networks/:network_id/e2e/requests/:id` `{"from", "payload"}`? | **204**. A live `outgoing` request is CANCELLED: `CANCEL` goes to the peer, so their banner goes too, and the body is required for it. An `expired` request, an answer, or an `incoming` one past its deadline just goes, and needs no body |
 
 `from` is the sending device's `did`, and must be LISTED, as at the send
 door. The request is written only once the pacer has taken the line, in
 the same call: a refused send leaves no state behind. 400 `bad_request`
 for a target that is not a nick, a `from` that is not a did, a payload
-outside the rule, or a `DELETE` of a live `outgoing` request without its
-`{from, payload}` (both or neither); 400 `invalid_line` for a CR, LF or NUL
+outside the rule, an accept without its `{from, payload}` (it starts the
+key exchange, so it needs a listed device), or a `DELETE` of a live
+`outgoing` request without one (both or neither, on every route); 400
+`invalid_line` for a CR, LF or NUL
 in `target`; 422 `unknown_device` for an unlisted `from`; 404 `not_found`
 for an id that is not yours there, an accept or a refuse of an `incoming`
 request past its deadline (a `DELETE` of one just drops it: 204), or no

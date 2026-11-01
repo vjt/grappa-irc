@@ -813,6 +813,25 @@ defmodule GrappaWeb.E2eControllerTest do
                %{"error" => "not_found"}
     end
 
+    test "refuse needs no body: REFUSE goes from the user to the device that asked; accept does need one",
+         %{conn: conn, vjt: vjt} do
+      {server, network, device} = live_network(vjt)
+      now = DateTime.utc_now()
+      alice = incoming!(vjt, network, "alice", now)
+      path = "#{requests_path(network)}/#{alice.id}"
+
+      assert json_response(post(conn, "#{path}/accept"), 400) == %{"error" => "bad_request"}
+      # Half a line is malformed: both or neither.
+      for body <- [%{from: device.did}, %{payload: @payload}] do
+        assert json_response(post(conn, "#{path}/refuse", body), 400) == %{"error" => "bad_request"}, inspect(body)
+      end
+
+      assert %{"msgid" => no} = json_response(post(conn, "#{path}/refuse"), 202)
+      assert {:ok, sent} = IRCServer.wait_for_line(server, &String.contains?(&1, no), @consent_timeout)
+      assert sent == ~s(PRIVMSG alice :\x01E2E REFUSE #{no} 1/1 * #{@alice} {"v":2}\x01\r\n)
+      assert json_response(get(conn, requests_path(network)), 200) == %{"requests" => []}
+    end
+
     test "DELETE cancels a live request we asked with CANCEL on the wire, and drops an answer or an expired one with no body",
          %{conn: conn, vjt: vjt} do
       {server, network, device} = live_network(vjt)
@@ -938,7 +957,7 @@ defmodule GrappaWeb.E2eControllerTest do
   # A request held straight in the table, as the session leaves it once
   # the peer's REQUEST arrived at `at`.
   defp incoming!(user, network, peer, at) do
-    {:none, plan} = E2eRequests.inbound(nil, :request, peer, @payload, at)
+    {:none, plan} = E2eRequests.inbound(nil, :request, peer, {@alice, @payload}, at)
     commit!(user, network, plan, at)
   end
 
@@ -950,7 +969,7 @@ defmodule GrappaWeb.E2eControllerTest do
 
   # The peer's answer to `request`, arrived at `at`.
   defp answered!(request, user, network, verb, at) do
-    {:none, plan} = E2eRequests.inbound(request, verb, request.peer, @payload, at)
+    {:none, plan} = E2eRequests.inbound(request, verb, request.peer, {@alice, @payload}, at)
     commit!(user, network, plan, at)
   end
 

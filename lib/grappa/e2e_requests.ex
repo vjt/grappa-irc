@@ -43,7 +43,7 @@ defmodule Grappa.E2eRequests do
   | anything else          | ACCEPT/REFUSE/CANCEL   | dropped: nobody asked       |
   | `incoming`             | user asks that peer    | `accepted` + ACCEPT sent: our request is our consent |
   | anything else          | user asks              | `outgoing` + REQUEST sent (a fresh deadline) |
-  | `incoming`             | user accepts / refuses | gone + ACCEPT / REFUSE sent |
+  | `incoming`             | user accepts / refuses | gone + ACCEPT / REFUSE sent (a REFUSE from `*` without a device) |
   | `outgoing`             | user dismisses         | gone + CANCEL sent          |
   | expired / `accepted` / `refused` / lapsed incoming | user dismisses | gone |
 
@@ -56,6 +56,12 @@ defmodule Grappa.E2eRequests do
   never reached them. An expired asking is no consent. An ACCEPT is never
   answered, so on a crossing each side drops the other's as unsolicited
   and the exchange cannot loop.
+
+  The row keeps the device the peer's latest line came from
+  (`Request.peer_device`): a REFUSE the user gives without a device of
+  its own goes there, from `*` (vjt's ruling R2), so saying no never needs
+  an encryption identity. Asking afresh forgets it; asking a peer whose
+  request waits keeps it.
 
   ## Bounds that keep strangers out
 
@@ -105,14 +111,22 @@ defmodule Grappa.E2eRequests do
   @type drop_reason :: :unsolicited | :already_accepted
 
   @typedoc """
-  What a transition does to the table, planned without touching it;
-  `commit/4` carries it out. A `:put` names the row it replaces (or `nil`),
-  the peer as spelled on this event, the state, and the payload.
+  What a `:put` writes: the peer as spelled on this event, the state, the
+  payload, and the device of the peer's latest line (`Request.peer_device`).
   """
-  @type plan ::
-          {:put, Request.t() | nil, String.t(), Request.state(), String.t() | nil}
-          | {:delete, Request.t()}
-          | {:drop, drop_reason()}
+  @type put :: %{
+          peer: String.t(),
+          state: Request.state(),
+          payload: String.t() | nil,
+          peer_device: E2e.address() | nil
+        }
+
+  @typedoc """
+  What a transition does to the table, planned without touching it;
+  `commit/4` carries it out. A `:put` names the row it replaces (or `nil`)
+  and what it writes.
+  """
+  @type plan :: {:put, Request.t() | nil, put()} | {:delete, Request.t()} | {:drop, drop_reason()}
 
   @typedoc """
   What `commit/4` did. A `:put` says whether the request is FRESH: an
@@ -183,37 +197,49 @@ defmodule Grappa.E2eRequests do
   Plans what an inbound consent line from `peer` does, given the row the
   subject holds with that peer (or `nil`), and whether grappa answers it
   ACCEPT for the user: a REQUEST that meets our consent, our live
-  `outgoing` request or an `accepted` row. Pure. `payload` is the line's,
-  already checked (`E2e.chunk?/1`, at most `Request.max_payload_bytes/0`).
+  `outgoing` request or an `accepted` row. Pure. The line is the device it
+  came from (the frame's `from`) and its payload, already checked
+  (`E2e.chunk?/1`, at most `Request.max_payload_bytes/0`).
   """
-  @spec inbound(Request.t() | nil, E2e.consent_verb(), String.t(), String.t(), DateTime.t()) ::
+  @spec inbound(Request.t() | nil, E2e.consent_verb(), String.t(), {E2e.address(), String.t()}, DateTime.t()) ::
           {:accept | :none, plan()}
-  def inbound(row, verb, peer, payload, %DateTime{} = now) when is_binary(peer) and is_binary(payload) do
-    case {verb, phase(row, now)} do
-      {:request, :incoming} -> {:none, {:put, row, peer, :incoming, payload}}
-      {:request, :outgoing} -> {:accept, {:put, row, peer, :accepted, payload}}
-      {:request, :accepted} -> {:accept, {:drop, :already_accepted}}
-      {:request, _} -> {:none, {:put, row, peer, :incoming, payload}}
-      {:accept, :outgoing} -> {:none, {:put, row, peer, :accepted, payload}}
-      {:refuse, :outgoing} -> {:none, {:put, row, peer, :refused, payload}}
-      {:cancel, phase} when phase in [:incoming, :lapsed] -> {:none, {:delete, row}}
-      {_, _} -> {:none, {:drop, :unsolicited}}
-    end
+  def inbound(row, verb, peer, {device, payload}, %DateTime{} = now)
+      when is_binary(peer) and is_binary(device) and is_binary(payload) do
+    to = fn state -> {:put, row, %{peer: peer, state: state, payload: payload, peer_device: device}} end
+    transition(verb, phase(row, now), row, to)
   end
+
+  # The inbound table: the verb, the row's phase, and `to`, which writes the
+  # row in a state with the line's peer, payload and device. A REQUEST on
+  # anything but our consent (a live `incoming` asking again included) is
+  # their asking afresh.
+  @spec transition(E2e.consent_verb(), phase() | nil, Request.t() | nil, (Request.state() -> plan())) ::
+          {:accept | :none, plan()}
+  defp transition(:request, :outgoing, _, to), do: {:accept, to.(:accepted)}
+  defp transition(:request, :accepted, _, _), do: {:accept, {:drop, :already_accepted}}
+  defp transition(:request, _, _, to), do: {:none, to.(:incoming)}
+  defp transition(:accept, :outgoing, _, to), do: {:none, to.(:accepted)}
+  defp transition(:refuse, :outgoing, _, to), do: {:none, to.(:refused)}
+  defp transition(:cancel, phase, row, _) when phase in [:incoming, :lapsed], do: {:none, {:delete, row}}
+  defp transition(_, _, _, _), do: {:none, {:drop, :unsolicited}}
 
   @doc """
   Plans the user asking `peer` for an encrypted chat. Pure. A live
   `incoming` request from that peer is their consent, so asking answers it:
   ACCEPT goes out and the row reads `accepted`, as when their REQUEST meets
-  our `outgoing`. Otherwise REQUEST goes out and the row reads `outgoing`
-  with a fresh deadline: asking again, or after an expiry or a refusal, is
-  a new request.
+  our `outgoing`, and keeps the device their asking came from. Otherwise
+  REQUEST goes out and the row reads `outgoing` with a fresh deadline and
+  no line of theirs: asking again, or after an expiry or a refusal, is a
+  new request.
   """
   @spec ask(Request.t() | nil, String.t(), DateTime.t()) :: {:request | :accept, plan()}
   def ask(row, peer, %DateTime{} = now) when is_binary(peer) do
     case phase(row, now) do
-      :incoming -> {:accept, {:put, row, peer, :accepted, row.payload}}
-      _ -> {:request, {:put, row, peer, :outgoing, nil}}
+      :incoming ->
+        {:accept, {:put, row, %{peer: peer, state: :accepted, payload: row.payload, peer_device: row.peer_device}}}
+
+      _ ->
+        {:request, {:put, row, %{peer: peer, state: :outgoing, payload: nil, peer_device: nil}}}
     end
   end
 
@@ -268,7 +294,7 @@ defmodule Grappa.E2eRequests do
     end
   end
 
-  def commit({_, _} = subject, network_id, {:put, row, peer, state, payload}, %DateTime{} = now)
+  def commit({_, _} = subject, network_id, {:put, row, %{state: state} = attrs}, %DateTime{} = now)
       when is_integer(network_id) do
     at = DateTime.truncate(now, :second)
     fresh? = state == :incoming and phase(row, now) != :incoming
@@ -276,10 +302,7 @@ defmodule Grappa.E2eRequests do
     changeset =
       Request.changeset(
         row || %Request{inserted_at: at},
-        Subject.put_subject_id(
-          %{network_id: network_id, peer: peer, state: state, payload: payload, updated_at: at},
-          subject
-        )
+        Subject.put_subject_id(Map.merge(attrs, %{network_id: network_id, updated_at: at}), subject)
       )
 
     case Repo.BusyRetry.run(fn -> put_transaction(subject, network_id, {row, state, changeset}, now) end) do
