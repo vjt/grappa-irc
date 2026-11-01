@@ -446,6 +446,25 @@ it pushes again. The price, accepted: an invite whose first push was
 withheld (a device on screen) or muted stays silent when re-sent after the
 user walked away or unmuted. The banner still carries it.
 
+**An ignored inviter's INVITE disappears entirely (vjt's ruling (b)).**
+#162 ruled that an ignored sender produces no push, at a time when only
+content verbs pushed, and its filter (`EventRouter.ignored?/2`) covered
+PRIVMSG and NOTICE alone. So an ignored nick's INVITE opened the banner and
+landed its row, and this issue would have let it reach the lock screen too.
+Two readings were put to vjt: (a) withhold only the push, (b) treat the
+INVITE like the ignored person's chatter. He ruled (b), inside this issue:
+no push, no `window_invited`, no `:invited` window, no scrollback row. The
+cure is one atom, `:invite` in `ignored?/2`'s guard, so the INVITE is
+dropped at the head of `route/2` and none of the three can happen, by
+construction rather than by three gates. The #162 exclusions carry over
+unchanged: services never match (the #116 ChanServ relay of our own
+gated JOIN is safe), nor do we ourselves. One thing had to be decided
+with it: an INVITE says nothing, and the text its trailing param would
+supply is the CHANNEL, so `body_of/1` returns `""` for it. A targeted
+entry (issue 2294, mask plus text glob) therefore never drops an
+invitation: "ignore what X says about #foo" must not eat X's invitation to
+#foo. Only a pattern-less entry, the whole person, does.
+
 **Apply:** a new trigger class is a `dispatch_*` in `Push.Triggers` with
 a pure `should_notify_*?` beside it, called from where the session already
 decides the user-visible event, never from a second place that decides it
@@ -466,4 +485,10 @@ pushes nothing; past the ceiling pushes nothing). Each negative was read red
 against a mutant of its own: the mute gate removed (3 reds, one per layer),
 any mute silencing every invite (2), the joined/pending branch pushing (1),
 the ceiling's refusal branch pushing (1), the re-affirm pushing (1), and
-`channel` and `inviter` swapped on their way into the payload (1).
+`channel` and `inviter` swapped on their way into the payload (1). The ignore half: `event_router_test.exs` (an ignored INVITE yields no
+effect at all; a non-ignored one still persists and opens; a targeted
+entry whose glob matches the channel name drops nothing) and one session
+case (no push, no banner, no window, no row, then a non-ignored INVITE on
+the same session gets all of it). Mutants: `:invite` dropped from the guard
+(2 reds, router and session), the `body_of/1` INVITE clause dropped (1, the
+targeted-entry case).

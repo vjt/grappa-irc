@@ -7997,6 +7997,30 @@ defmodule Grappa.Session.EventRouterTest do
       assert {:cont, _, [{:persist, :privmsg, _}]} = EventRouter.route(privmsg, base_state())
     end
 
+    # issue 2487, vjt's ruling (b): an INVITE from an ignored user disappears
+    # ENTIRELY — no row, no `:invited` window (so no banner), and so no push.
+    test "an INVITE from an ignored nick disappears — no row, no window, no effects at all" do
+      invite = msg(:invite, ["vjt", "#Secret"], {:nick, "spambot", "u", "h"})
+      assert {:cont, _, []} = EventRouter.route(invite, ignoring(["spambot!*@*"]))
+    end
+
+    test "the same INVITE from a nick nobody ignores still lands its row and opens the window" do
+      invite = msg(:invite, ["vjt", "#Secret"], {:nick, "spambot", "u", "h"})
+
+      assert {:cont, _, [{:persist, :server_event, _}, {:invited, "#secret", "spambot"}]} =
+               EventRouter.route(invite, ignoring(["someoneelse!*@*"]))
+    end
+
+    # An INVITE says nothing: its second param is the CHANNEL, which a text
+    # glob must never read as speech. A TARGETED entry ignores what a person
+    # SAYS, so it leaves their invitations alone; only the whole person goes.
+    test "a TARGETED entry never drops an INVITE, even when its glob matches the channel name" do
+      invite = msg(:invite, ["vjt", "#secret"], {:nick, "spambot", "u", "h"})
+
+      assert {:cont, _, [{:persist, :server_event, _}, {:invited, "#secret", "spambot"}]} =
+               EventRouter.route(invite, ignoring([{"spambot!*@*", "*secret*"}]))
+    end
+
     # -----------------------------------------------------------------------
     # issue 2294 — the OPTIONAL text pattern. The reported case is a relay
     # bot: one mask, many authors, the real one inside the body.

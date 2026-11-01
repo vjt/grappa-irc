@@ -460,6 +460,11 @@ defmodule Grappa.Session.EventRouter do
   #     verbs (JOIN/PART/QUIT/NICK) are not dropped: the issue lists them as
   #     "optionally", and they are already governed by the presence filter.
   #     Dropping a JOIN here would also desync the members map.
+  #   * …and INVITE (issue 2487, vjt's ruling (b)). Once an INVITE could
+  #     push, an ignored user could reach the lock screen through it, so it
+  #     disappears like their chatter: no row, no `:invited` window (so no
+  #     banner), no push. It says nothing, so only a pattern-less entry (the
+  #     whole person) drops it — see `body_of/1`.
   #   * Never our own lines (own_nick) — an ignore on a mask that happens to
   #     match yourself must not silence you to yourself.
   #   * Never a services or server sender (`Mentions.mentionable_sender?/1`,
@@ -475,7 +480,7 @@ defmodule Grappa.Session.EventRouter do
   # cannot fire on it while a pattern-less one still can — the `""` fallback
   # is what makes that true rather than an accident of `nil` reaching a regex.
   @spec ignored?(Message.t(), state()) :: boolean()
-  defp ignored?(%Message{command: cmd} = msg, state) when cmd in [:privmsg, :notice] do
+  defp ignored?(%Message{command: cmd} = msg, state) when cmd in [:privmsg, :notice, :invite] do
     case {Map.get(state, :ignores, []), Message.sender_origin(msg)} do
       {[], _} ->
         false
@@ -497,7 +502,13 @@ defmodule Grappa.Session.EventRouter do
   # use (`do_route/2`'s :privmsg head), never `List.last/1`, which on a
   # one-param line would hand the TARGET to the text matcher as if it were
   # what somebody said.
+  #
+  # An INVITE's second param is the CHANNEL, not speech (issue 2487): read as
+  # text it would let "ignore what X says about #foo" eat X's invitation to
+  # #foo. A targeted entry is about what a person SAYS, so it cannot fire on
+  # an INVITE; a pattern-less one still does.
   @spec body_of(Message.t()) :: String.t()
+  defp body_of(%Message{command: :invite}), do: ""
   defp body_of(%Message{params: [_, body | _]}) when is_binary(body), do: body
   defp body_of(%Message{}), do: ""
 
