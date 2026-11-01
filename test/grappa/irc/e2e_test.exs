@@ -61,7 +61,10 @@ defmodule Grappa.IRC.E2eTest do
             {"PKMSG", :pkmsg, @alice, "*"},
             {"MSG", :msg, @alice, @bob},
             {"MSG", :msg, @alice, "*"},
-            {"NACK", :nack, @alice, @bob}
+            {"NACK", :nack, @alice, @bob},
+            # grappa speaking for the user: the message reached none of its
+            # listed devices (issue 2491).
+            {"NACK", :nack, "*", @alice}
           ] do
         assert {:ok, %Fragment{verb: ^verb, from: ^from, to: ^to}} =
                  E2e.parse("\x01E2E #{wire} q83vEjRWeJA 1/1 #{from} #{to} #{@keyreq_payload}\x01")
@@ -84,7 +87,7 @@ defmodule Grappa.IRC.E2eTest do
             {"PKMSG", "*", @bob},
             {"MSG", "*", "*"},
             {"NACK", @alice, "*"},
-            {"NACK", "*", @bob},
+            {"NACK", "*", "*"},
             # A did is exactly 11 base64url characters, unpadded and
             # canonical: the standard alphabet's `+` and `/` are not a did.
             {"MSG", "If4x36FUom", @bob},
@@ -154,6 +157,7 @@ defmodule Grappa.IRC.E2eTest do
     test "the table the parser enforces is the one the send door asks" do
       assert E2e.addressed?(:keyreq, @alice, "*")
       assert E2e.addressed?(:pkmsg, @alice, "*")
+      assert E2e.addressed?(:nack, "*", @bob)
       refute E2e.addressed?(:nack, @alice, "*")
       refute E2e.addressed?(:keys, @alice, @bob)
       refute E2e.addressed?(:msg, 1, @bob)
@@ -226,7 +230,8 @@ defmodule Grappa.IRC.E2eTest do
                   {:keys, "*", @bob},
                   {:pkmsg, @alice, @bob},
                   {:msg, @alice, "*"},
-                  {:nack, @bob, @alice}
+                  {:nack, @bob, @alice},
+                  {:nack, "*", @alice}
                 ])
             ) do
         payload = json_text(bytes)

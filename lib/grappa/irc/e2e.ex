@@ -39,7 +39,9 @@ defmodule Grappa.IRC.E2e do
       of the base64url alphabet) or `*`, in the closed combinations
       `addressed?/3` allows: KEYREQ `did → *`, KEYS `* → did`, PKMSG and
       MSG `did → did` or `did → *` (one message carrying a body for each of
-      several devices), NACK `did → did`.
+      several devices), NACK `did → did`, or `* → did` when grappa answers
+      for the user that a message reached none of its listed devices
+      (issue 2491).
     * `chunk` is a NON-EMPTY slice of the payload's compact JSON text, so
       printable ASCII without a space (`chunk?/1`). It is no longer base64:
       v2 dropped the outer encoding, which cost a third of every line. The
@@ -193,12 +195,14 @@ defmodule Grappa.IRC.E2e do
   True iff `from → to` is an addressing `verb` may carry (wire v2): KEYREQ
   from a device to the user (`*`), KEYS from the user to the device that
   asked, PKMSG and MSG from a device to a device or to several (`*`), NACK
-  from a device to a device. The one table, for the parser and the send
-  door alike.
+  from a device to a device, or from the user to a device: grappa's answer
+  to a message none of the user's listed devices could have read (issue
+  2491). The one table, for the parser and the send door alike; the door
+  also wants `from` to be a did, since only grappa speaks for the user.
   """
   @spec addressed?(verb(), term(), term()) :: boolean()
   def addressed?(:keyreq, from, "*"), do: did?(from)
-  def addressed?(:keys, "*", to), do: did?(to)
+  def addressed?(verb, "*", to) when verb in [:keys, :nack], do: did?(to)
   def addressed?(verb, from, "*") when verb in [:pkmsg, :msg], do: did?(from)
   def addressed?(verb, from, to) when verb in [:pkmsg, :msg, :nack], do: did?(from) and did?(to)
   def addressed?(_, _, _), do: false

@@ -8146,13 +8146,23 @@ defmodule Grappa.Session.Server do
   end
 
   # Wire v2: a message goes to the queue of the device its `to` names, or of
-  # every listed device on `*` (it then carries a body for each). A `to`
-  # naming no listed device is dropped at debug, nothing said to the
-  # sender: it may be a revoked device, or one the sender guessed. Each
+  # every listed device on `*` (it then carries a body for each). Each
   # queued copy is pushed with its device; the OS notification goes once
   # per message, however many devices got it.
+  #
+  # issue 2491: a PKMSG or MSG that reaches no listed device is answered
+  # with a NACK (`nack_unreadable/3`), where 2430 dropped it without a
+  # word: its device was revoked, the user moved to another server and a
+  # new device, or the subject has no identity here at all, and in every
+  # case the sender would otherwise trust a message nobody can read. A
+  # NACK or a KEYS that reaches nobody is dropped at debug: neither is a
+  # message a device failed to read, and two grappas answering each
+  # other's NACKs would never stop.
   defp deliver_e2e(state, from, %{verb: verb, to: to} = message) do
     case e2e_recipients(state, to) do
+      [] when verb in [:pkmsg, :msg] ->
+        nack_unreadable(state, from, message)
+
       [] ->
         Logger.debug("e2e message dropped: no listed device", sender: from, e2e_device: to)
         state
@@ -8160,6 +8170,39 @@ defmodule Grappa.Session.Server do
       devices ->
         {state, queued?} = Enum.reduce(devices, {state, false}, &queue_e2e_copy(from, message, &1, &2))
         :ok = if queued?, do: maybe_push_e2e(state, verb, from), else: :ok
+        state
+    end
+  end
+
+  # The NACK speaks for the user, so it goes from `*` (`E2e.addressed?/3`)
+  # to the device that wrote, with irc-olm's NACK payload naming the
+  # message. It is REACTIVE, like a client's NACK: what the peer drew from
+  # us. Nothing else bounds it, and nothing else needs to: the pacer's
+  # per-peer and per-connection reactive caps refuse past them, and every
+  # NACK costs its sender a whole message. A refusal is logged at debug
+  # (the sender decides how often it fires) and the sender is not told,
+  # as with any line it draws past those caps.
+  #
+  # Known wart: a NACK still waiting when the session ends is announced
+  # like any other drop (`drop_e2e_pending/1`), an `e2e_send_dropped` for
+  # a msgid no client sent; a client ignores a drop it holds no send for.
+  @spec nack_unreadable(t(), String.t(), E2eReassembly.message()) :: t()
+  defp nack_unreadable(state, from, %{msgid: ref, from: did, to: to}) do
+    now = System.monotonic_time(:millisecond)
+    msgid = E2e.new_msgid()
+    message = %{msgid: msgid, verb: :nack, lane: :reactive, deadline_ms: nil}
+
+    with {:ok, lines} <- e2e_lines(state, from, :nack, msgid, {"*", did}, Jason.encode!(%{v: 2, ref: ref})),
+         {:ok, releases, lost, pacer, wait} <- pace_e2e(state, from, message, lines, now) do
+      Logger.debug("e2e message reached no listed device: answered with a NACK", sender: from, e2e_device: to)
+      commit_paced(state, releases, lost, pacer, wait)
+    else
+      {:error, reason, pacer} ->
+        Logger.debug("e2e message reached no listed device: NACK refused", sender: from, reason: reason)
+        %{state | e2e_pacer: pacer}
+
+      {:error, reason} ->
+        Logger.debug("e2e message reached no listed device: NACK refused", sender: from, reason: reason)
         state
     end
   end

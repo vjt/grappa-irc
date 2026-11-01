@@ -55,6 +55,10 @@ defmodule Grappa.Session.E2eSessionTest do
   # it. Only a failing test waits this long.
   @keys_timeout 60_000
 
+  # grappa's NACK waits on the fake-lag bank like any line, and right after
+  # the handshake the bank still holds the registration's cost.
+  @nack_timeout 10_000
+
   # Compact JSON text, what a v2 frame carries; big enough to need several
   # lines on a 512-byte wire.
   defp payload(bytes), do: ~s({"v":2,"body":"#{Base.encode64(:crypto.strong_rand_bytes(bytes))}"})
@@ -117,15 +121,22 @@ defmodule Grappa.Session.E2eSessionTest do
       assert E2eInbox.list(pairing, 0) == []
     end
 
-    test "a message to a device that is not listed is dropped and the session carries on" do
+    # issue 2491: the sender learns that its message reached none of the
+    # devices the subject lists (a peer that moved, a new identity), or it
+    # never learns: the device it wrote to is not there to NACK.
+    test "a message that reaches no listed device is answered with a NACK from *, naming it, and is not queued" do
       {server, pid, user, network} = connected_session()
       subject = {:user, user.id}
       [device] = listed(user, network)
       %{device: pairing} = register_device!(subject, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
-      for to <- [pairing.did, "AAAAAAAAAAA"] do
-        Enum.each(lines_from("alice", :msg, E2e.new_msgid(), {@alice, to}, @small), &IRCServer.feed(server, &1))
+      for {verb, to} <- [{:msg, pairing.did}, {:pkmsg, "AAAAAAAAAAA"}] do
+        msgid = E2e.new_msgid()
+        Enum.each(lines_from("alice", verb, msgid, {@alice, to}, @small), &IRCServer.feed(server, &1))
+
+        {:ok, line} = IRCServer.wait_for_line(server, &nack_of?(&1, "alice", msgid), @nack_timeout)
+        assert %{from: "*", to: @alice} = fragment_to(line, "alice")
       end
 
       # A good line last: once ITS event arrives, every line before it has
@@ -137,6 +148,53 @@ defmodule Grappa.Session.E2eSessionTest do
       assert Process.alive?(pid)
       assert E2eInbox.list(pairing, 0) == []
       assert [_] = E2eInbox.list(device, 0)
+    end
+
+    test "a subject with no listed device NACKs a message to it the same way" do
+      {server, pid, _, _} = connected_session(0)
+      msgid = E2e.new_msgid()
+
+      Enum.each(lines_from("alice", :pkmsg, msgid, {@alice, "*"}, @small), &IRCServer.feed(server, &1))
+
+      assert {:ok, _} = IRCServer.wait_for_line(server, &nack_of?(&1, "alice", msgid), @nack_timeout)
+      assert Process.alive?(pid)
+    end
+
+    # A NACK answering a NACK, or a KEYS nobody can read, would loop
+    # between two grappas: neither is a message a device could not decrypt.
+    test "a NACK or a KEYS that reaches no listed device gets no NACK back" do
+      {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      for {verb, addresses} <- [{:nack, {@alice, "AAAAAAAAAAA"}}, {:nack, {"*", "AAAAAAAAAAA"}}, {:keys, {"*", "AAAAAAAAAAA"}}] do
+        Enum.each(lines_from("alice", verb, E2e.new_msgid(), addresses, @small), &IRCServer.feed(server, &1))
+      end
+
+      Enum.each(lines_from("alice", :msg, "q83vEjRWeJA", {@alice, device.did}, @small), &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, msgid: "q83vEjRWeJA"}}, @wire_timeout
+
+      # Read in the pacer, not on the wire: a NACK waits there on the bank
+      # long after the sync line is through.
+      assert E2ePacer.pending(:sys.get_state(pid).e2e_pacer) == []
+      refute Enum.any?(IRCServer.sent_lines(server), &match?(%{verb: :nack}, fragment_to(&1, "alice")))
+    end
+
+    test "a peer grappa's NACK from * reaches the device it names, from_did *" do
+      {server, _, user, network} = connected_session()
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      nack = ~s({"ref":"q83vEjRWeJA","v":2})
+
+      Enum.each(lines_from("alice", :nack, "Zm9vYmFyYmE", {"*", device.did}, nack), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :e2e_message, verb: :nack, from_did: "*", to_did: to, payload: ^nack}
+                     },
+                     @wire_timeout
+
+      assert to == device.did
+      assert [%E2eInbox.Entry{from_did: "*", verb: :nack}] = E2eInbox.list(device, 0)
     end
 
     test "malformed, channel and NOTICE E2E lines are dropped and the session survives" do
@@ -771,6 +829,9 @@ defmodule Grappa.Session.E2eSessionTest do
       # The frame's addressing table, at the door.
       assert {:error, :bad_request} = send.("alice", :keyreq, :control, {mine, @alice}, @small, nil)
       assert {:error, :bad_request} = send.("alice", :nack, :text, {mine, "*"}, @small, nil)
+      # `*` speaks for the user, and only grappa does: a client sends from a
+      # device, so this is refused at the door, not as an unknown device.
+      assert {:error, :bad_request} = send.("alice", :nack, :text, {"*", @alice}, @small, nil)
       assert {:error, :bad_request} = send.("alice", :msg, :text, {"*", @alice}, @small, nil)
       assert {:error, :bad_request} = send.("alice", :msg, :text, {"short", @alice}, @small, nil)
 
@@ -1045,8 +1106,9 @@ defmodule Grappa.Session.E2eSessionTest do
     device
   end
 
-  # A subject's E2E identity on a network: `n` devices, all listed.
-  defp identity!(subject, network, n), do: for(_ <- 1..n, do: add_listed_device!(subject, network))
+  # A subject's E2E identity on a network: `n` devices, all listed. The
+  # step keeps `1..0` empty instead of counting down.
+  defp identity!(subject, network, n), do: for(_ <- 1..n//1, do: add_listed_device!(subject, network))
 
   # One master per (subject, network), made on first use.
   defp master_of(subject, network) do
@@ -1117,6 +1179,15 @@ defmodule Grappa.Session.E2eSessionTest do
       fragment
     else
       _ -> nil
+    end
+  end
+
+  # Whether `line` is grappa's NACK to `nick` of the message `ref`: one
+  # line, the payload irc-olm's NACK carries.
+  defp nack_of?(line, nick, ref) do
+    case fragment_to(line, nick) do
+      %{verb: :nack, index: 1, total: 1, chunk: chunk} -> Jason.decode(chunk) == {:ok, %{"ref" => ref, "v" => 2}}
+      _ -> false
     end
   end
 
@@ -1227,7 +1298,11 @@ defmodule Grappa.Session.E2eSessionTest do
 
   # A live session for a fresh user whose E2E identity on the network is
   # one listed device.
-  defp connected_session do
+  defp connected_session, do: connected_session(1)
+
+  # The same with `devices` listed devices; with none, the subject has no
+  # E2E identity on the network at all.
+  defp connected_session(devices) do
     {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", @nick))
 
     user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
@@ -1236,7 +1311,7 @@ defmodule Grappa.Session.E2eSessionTest do
       network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
 
     _ = credential_fixture(user, network, %{})
-    _ = identity!({:user, user.id}, network, 1)
+    _ = identity!({:user, user.id}, network, devices)
 
     pid = start_session!(user, network)
     :ok = IRCServer.await_handshake(server, @wire_timeout)
