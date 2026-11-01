@@ -10,7 +10,7 @@ defmodule Grappa.E2eRequests.Request do
   (`t:state/0`): `incoming` (the peer asked us), `outgoing` (we asked the
   peer), `accepted` and `refused` (the peer's answer to our asking, kept
   until a client has shown it). `expired` is derived, never stored
-  (`Grappa.E2eRequests.live?/2`).
+  (`Grappa.E2eRequests.expired?/2`).
 
   `updated_at` is the instant the row entered its state. For a pending row
   that is when the REQUEST went out or arrived, which is what the 24 h

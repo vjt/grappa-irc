@@ -865,6 +865,9 @@ defmodule GrappaWeb.E2eControllerTest do
       assert json_response(post(conn, "#{path}/#{asked.id}/accept", line), 409) == %{"error" => "request_state"}
       assert json_response(post(conn, "#{path}/#{asked.id}/refuse", line), 409) == %{"error" => "request_state"}
       assert json_response(post(conn, "#{path}/#{lapsed.id}/accept", line), 404) == %{"error" => "not_found"}
+      assert json_response(post(conn, "#{path}/#{lapsed.id}/refuse", line), 404) == %{"error" => "not_found"}
+      # Nobody answers a lapsed request, but dismissing it just drops it.
+      assert response(delete(conn, "#{path}/#{lapsed.id}"), 204) == ""
 
       for id <- ["abc", "0", "-1", "1.5", "9223372036854775808", "#{theirs.id}"] do
         assert json_response(post(conn, "#{path}/#{id}/accept", line), 404) == %{"error" => "not_found"}, id

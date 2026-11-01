@@ -8513,9 +8513,11 @@ defmodule Grappa.Session.Server do
   # until the user retries or dismisses it.
   @spec sweep_e2e_requests(t()) :: t()
   defp sweep_e2e_requests(state) do
-    case E2eRequests.expire(state.subject, state.network_id, DateTime.utc_now()) do
+    now = DateTime.utc_now()
+
+    case E2eRequests.expire(state.subject, state.network_id, now) do
       {:ok, lapsed} ->
-        Enum.each(lapsed, &announce_e2e_request(state, {:delete, &1}, nil))
+        Enum.each(lapsed, &announce_e2e_request(state, {:delete, &1}, now))
 
       {:error, :db_unavailable} ->
         Logger.warning("e2e request sweep skipped: database unavailable")
