@@ -661,14 +661,32 @@ for `:nack`, one table for the parser and the send door.
   dropped at debug: neither is a message a device failed to read, and two
   grappas NACKing each other's NACKs would never stop.
 - **A client can never send from `*`.** The send door now also wants
-  `E2e.did?(from)`, so a NACK from `*` through REST is a 400. Without it the
-  table change would have let any client speak as "the user's grappa".
-- **No new bound.** The pacer's per-peer and per-connection reactive caps
-  are the only limit, and they are enough: each NACK costs its sender a whole
-  message. A refusal is logged at debug and the sender is not told, like any
-  line it draws past those caps.
-- **Known wart.** A grappa NACK still in the pacer when the session ends is
-  announced like every other drop (`drop_e2e_pending/1`): an
+  `E2e.did?(from)`, so a NACK from `*` through REST is a 400. It was never
+  open: the door also wants `from` to be a listed device of the subject
+  (`listed_device/3`), and a stored did is derived from its key, so never
+  `*`, which made the answer `unknown_device`. The check gives the right
+  answer for a request that is malformed rather than about an unknown
+  device, and it keeps the door's rule readable at the door.
+- **Half the connection's room, no more.** Peers draw these NACKs at will,
+  client or no client, and the pacer's REACTIVE budgets only rank: what
+  refuses is the connection's 128 urgent and reactive lines, shared with the
+  user's own orders. A few nicks writing junk to a device nobody lists
+  would fill them, 32 lines per nick's lane, and every KEYREQ and CHAL
+  answer of the user's would come back 429 until they drained. That is the
+  argument the orchestrator ruled on for KEYS answers (#2430i), so the NACK
+  gets the same kind of answer, derived instead of kept:
+  `E2ePacer.spare_room?/1` reads the queue the pacer already holds, and a
+  grappa NACK is queued only while urgent and reactive lines fill under
+  half of `max_queued/0`. No new state, so the struct does not change. A
+  per-nick interval, as KEYS have, was the alternative and is worse here:
+  cic shows the card off the newest line out, so a throttled tail of an
+  honest burst would hide it. A refusal is logged at debug and the sender
+  is not told, like any line it draws past a cap; the pacer the refusal
+  hands back is let go, as the KEYREQ arm does, since a NACK is no Olm
+  message and leaves no gap to keep.
+- **Known wart.** A grappa NACK still in the pacer when the session ends
+  (`drop_e2e_pending/1`), or one whose line fails to go out
+  (`send_e2e_releases/2`), is announced like every other drop: an
   `e2e_send_dropped` for a msgid no client sent. A client ignores a drop it
   holds no send for, which cic does.
 
@@ -684,19 +702,37 @@ which is true here.
 
 On the sending side `onNack` keeps dropping a NACK from a device the message
 did not go to, except when `unreadableBy` says it means "nobody can read
-this": from `*`, or from a did we never bound, and only from the nick the
-message went to. A NACK from a device bound under the master the message went
-to is still dropped, because it can say nothing about the devices that did
-get it. The message is reported lost with reason `unreadable` ("none of the
-peer's devices can read it"). Nothing is re-sent and nothing re-keys.
+this": from `*`, or from a did that is neither bound under the master the
+message went to nor named by that master's stored list, and only from the
+nick the message went to. A device of that master is dropped, bound or only
+listed, because it reads its OWN list, which can lag the devices the message
+did go to (review finding: a long-lived tab synced at load NACKs a `*`
+message holding bodies for the two devices paired since, and the sender
+used to throw away the record proving they got it). A copy for a listed,
+unbound device already waits for its keys. What remains is a double lag,
+accepted: the sender's view of the list and the receiving device's both
+older than the devices the message reached. The message is reported lost
+with reason `unreadable` ("none of the peer's devices can read it") once
+nothing else of it is pending: a message of two payloads (a MSG to one
+device, a PKMSG to another) is told of only when both are NACKed. Nothing is
+re-sent and nothing re-keys.
 
 The pane's step card reads `unreadable` with an "ask for their keys again"
 button. `Engine.rekey(nick)` marks the pinned master's trusted devices as
 re-keying, records `keysAsked` and sends a KEYREQ under the usual budget.
 `tick` asks again until `OUTQ_TTL_MS`, then reports `keys_unanswered`. The
 KEYS is judged like any other: the pinned master answering opens fresh
-sessions (`keys_renewed`), and another master is the key alarm, answered
-from the same card as before and verified by SAS.
+sessions (`keys_renewed`, written only when one opened: a KEYS whose entries
+are all refused is `keys_unanswered`), and another master is the key alarm,
+answered from the same card as before and verified by SAS. A KEYS carrying
+our own master raises no alarm row, so it ends the wait unanswered too.
+
+Known, and left as they are: a KEYS that lands after the 90 s give-up
+opens its sessions but writes no renewed row, so the card keeps saying no
+keys came, and its "ask again" recovers it; `startOver` (a new identity of
+our own) drops `keysAsked` as it drops the queue, the same class; and
+`rekey` asks even on a dead link, while the card only ever appears after a
+NACK, that is with a live upstream.
 
 ### irc-olm diverges, by design
 
@@ -717,16 +753,21 @@ Tests: `e2e_test.exs` for the table (a NACK `* → did` parses and is
 addressed). `e2e_session_test.exs` covers the NACK of a message that reaches
 no listed device, and of one to a subject with no device at all; no NACK back
 for a NACK or a KEYS that reaches nobody; a peer grappa's NACK from `*`
-relayed with `from_did: "*"`; and the door's 400 on a client NACK from `*`.
-grappa's NACK waits on the post-handshake fake-lag bank, about 5 s, hence
-`@nack_timeout`. cic unit tests cover the engine
-(`notForUs` both ways, `unreadableBy` from `*`, from a never-bound did and
-from another nick, `rekey` renewed, the alarm and unanswered), the
-client and chat glue, and the pane's three cards. Assertions were read red
-against mutants: 3 on the server (the `[]` guard, the door's `did?`, the
-payload's ref) and 16 in cic. e2e: `issue2491-moved-peer.spec.ts` walks the
-whole path between two browsers. Bob starts a new identity, Alice's line
-reads not sent with the unreadable card and her pin unchanged, then her
-re-key goes through the alarm and the emoji, and her next line reaches Bob's
-new device. It was read red against a server that drops instead of NACKing
-(the `[]` guard narrowed to `:nack`): Alice's line stayed `sent`.
+relayed with `from_did: "*"`; the door's 400 on a client NACK from `*`; and
+the half-room gate (three nicks would queue 96 NACK lines, 64 at most do),
+which has a pacer test of its own. grappa's NACK waits on the post-handshake
+fake-lag bank, about 5 s, hence `@nack_timeout`. cic unit tests cover the
+engine (`notForUs` both ways; `unreadableBy` from `*`, from a never-bound
+did, from another nick, and from a listed but unbound device, which keeps
+the message; a two-payload message told of once; `rekey` renewed, the alarm,
+a KEYS that opens nothing and one carrying our own master), the client and
+chat glue, and the pane's three cards. Assertions were read red against
+mutants: 5 on the server (the `[]` guard, the door's `did?`, the payload's
+ref, the half-room gate bypassed, its threshold at the full 128) and 20 in
+cic, the 4 added after the review each red on its own test alone. e2e:
+`issue2491-moved-peer.spec.ts` walks the whole path between two browsers.
+Bob starts a new identity, Alice's line reads not sent with the unreadable
+card and her pin unchanged, then her re-key goes through the alarm and the
+emoji, and her next line reaches Bob's new device. It was read red against a
+server that drops instead of NACKing (the `[]` guard narrowed to `:nack`):
+Alice's line stayed `sent`.
