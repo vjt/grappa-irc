@@ -784,7 +784,10 @@ Sending:
 `from` is the sending device's `did`, and must be LISTED; `to` is the
 peer's device or `*`, in the combinations the frame allows: `keyreq` goes
 to `*`, `pkmsg` and `msg` to one device or to `*` (one message, one body per
-device), `nack` to one device. `payload` is the compact JSON text you built
+device), `nack` to one device. The four consent verbs of v53 (`REQUEST`,
+`ACCEPT`, `REFUSE`, `CANCEL`) do not go through this door: they move a
+request, and the requests resource sends them (§4i). `payload` is the
+compact JSON text you built
 (printable ASCII, no space: there is no outer base64 any more). grappa picks
 the msgid (a peer's `NACK` names it), cuts the lines against the worst-case
 relayed prefix, and paces them by two rules from bahamut's source:
@@ -1121,6 +1124,138 @@ The payload is the ordinary one: title `"<inviter> is inviting you to
 <channel>"`, body `"on <network>"`, no `badge`, and the `tag` and `url` a
 message in that channel would carry. A service worker needs no change.
 Nothing on the WebSocket moved, so `protocol_version` did not either.
+
+### 4i. Asking a peer to start an encrypted chat (issue 2486, v53)
+
+Until v53 an encrypted query started with a key fetch and nothing before
+it: the peer learned of it from the first encrypted message. v53 puts an
+ASKING in front, and grappa holds it, so neither user has to be online
+when the other acts: a peer can accept while the requester's browser is
+closed, and the requester finds the answer when it comes back.
+
+The asking is CONSENT, not trust. Accepting says the user is willing to
+talk encrypted with that nick; the keys still come the usual way (the
+client sends a `keyreq`, §4f) and are pinned and checked as any key is
+(trust on first use, the key-change alarm, the SAS). grappa never sends a
+`KEYREQ` for anyone.
+
+**On IRC.** Four verbs in the §4f frame, all from a device to `*` (the
+user): consent belongs to the person, and the asker does not know the
+peer's devices yet.
+
+| verb | means |
+|---|---|
+| `REQUEST` | "I would like to start an encrypted chat" |
+| `ACCEPT` | yes, to the peer's `REQUEST` |
+| `REFUSE` | no, to the peer's `REQUEST` |
+| `CANCEL` | "I no longer ask" |
+
+The payload is compact JSON text of at most 1 KiB, opaque to grappa
+(cicchetto sends `{"v":2,"master":"<its master key>"}`, a hint, never a
+proof). grappa reads the VERB alone. A consent line is never queued in a
+device's inbox and never pushed as `e2e_message`: it moves the request
+below, and that is all it does.
+
+**The request.** One per peer and network, whoever asked; the peer is a
+nick, folded like every nick key.
+
+```json
+{"id": 12, "peer": "alice", "state": "incoming", "payload": "{\"v\":2,…}",
+ "at": "2026-11-01T14:00:00Z", "expires_at": "2026-11-02T14:00:00Z"}
+```
+
+| `state` | means | `payload` |
+|---|---|---|
+| `incoming` | the peer asked you, and waits for your answer | theirs |
+| `outgoing` | you asked the peer | `null`: grappa keeps no copy of what you sent |
+| `accepted` / `refused` | the peer's answer to your asking | theirs |
+| `expired` | your `outgoing` request passed its deadline unanswered | `null` |
+
+`at` is when the request entered its state; `expires_at` is 24 h after
+that on a pending request (`incoming`, `outgoing`, `expired`) and `null` on
+an answer. **`expired` is derived, never stored**: no timer has to fire for
+it to be right, and it stays until you ask again or dismiss it. An
+`incoming` request past its deadline is no longer listed, and grappa
+withdraws it within the hour (`e2e_request_gone`); hide it yourself at
+`expires_at`. An answer (`accepted`, `refused`) has no deadline: it waits
+until a client dismisses it, because an offline requester must still see
+it.
+
+**The routes.**
+
+| route | answer |
+|---|---|
+| `GET /networks/:network_id/e2e/requests` | **200** `{"requests": [request…]}`, oldest first, as of now. A read of the table: it answers with no session too |
+| `POST /networks/:network_id/e2e/requests` `{"target", "from", "payload"}` | **202** `{"request": request}`. `REQUEST` goes to `target`, and the request reads `outgoing` with a fresh 24 h deadline (asking again, after an expiry or after a refusal is a new request). When `target`'s own request is waiting, `ACCEPT` goes instead and the request reads `accepted` (see *Crossings*) |
+| `POST /networks/:network_id/e2e/requests/:id/accept` `{"from", "payload"}` | **202** `{"msgid": "…"}`. `ACCEPT` goes to the peer and the request goes |
+| `POST /networks/:network_id/e2e/requests/:id/refuse` `{"from", "payload"}` | **202** `{"msgid": "…"}`. `REFUSE` goes to the peer and the request goes |
+| `DELETE /networks/:network_id/e2e/requests/:id` `{"from", "payload"}`? | **204**. A live `outgoing` request is CANCELLED: `CANCEL` goes to the peer, so their banner goes too, and the body is required for it. An `expired` request or an answer just goes, and needs no body |
+
+`from` is the sending device's `did`, and must be LISTED, as at the send
+door. The request is written only once the pacer has taken the line, in
+the same call: a refused send leaves no state behind. 400 `bad_request`
+for a target that is not a nick, a `from` that is not a did, a payload
+outside the rule, or a `DELETE` of a live `outgoing` request without its
+`{from, payload}` (both or neither); 400 `invalid_line` for a CR, LF or NUL
+in `target`; 422 `unknown_device` for an unlisted `from`; 404 `not_found`
+for an id that is not yours there, an `incoming` request past its
+deadline, or no session (every route but `GET`); 409 `request_state` for an
+accept or a refuse of a request that is not waiting for YOUR answer, and
+for a `DELETE` of one that is (answer it instead); 429 `rate_limited` when
+the pacer cannot take the line (§4f; consent rides the reactive lane);
+429 `requests_full` when a side is at its cap of **32** per network (the
+peers': `incoming`; yours: `outgoing`, `accepted`, `refused`), which comes
+back as pending requests lapse or you dismiss some; 502, 503 and 504 as at
+the send door. Past the cap a peer's new `REQUEST` is dropped.
+
+**The pushes.** On the user topic, to every device of the account:
+
+```json
+{"kind": "e2e_request", "network": "azzurra", "request": {"id": 12, …}}
+{"kind": "e2e_request_gone", "network": "azzurra", "id": 12}
+```
+
+`e2e_request` on a new request or a change of state: your asking, a peer's
+`REQUEST`, the peer's answer, a crossing, and a peer asking again while
+waiting (which refreshes the deadline). `e2e_request_gone` when it goes:
+accepted, refused or dismissed on any device, cancelled by the peer, or
+withdrawn past its deadline. A push is not replayed: `GET` on every
+(re)connect.
+
+A FRESH `incoming` request (none before, or one that had lapsed or changed
+state) also raises a Web Push notification, under the same private-message
+preferences and mute as an encrypted message: the title is the peer's
+nick, the body "would like to start an encrypted chat". It opens the
+plaintext query with the peer as well, where the asking is shown; so does
+a `refused` answer, since the requester may have closed that query during
+a long wait. A refreshed request neither pushes nor opens anything again.
+
+**Crossings.** Two users who ask each other both end at `accepted`: each
+request is the other's consent. Your `REQUEST` meeting their `outgoing`,
+or their `REQUEST` meeting yours, turns it `accepted`, and so does asking
+a peer whose request is waiting (`ACCEPT` goes, not `REQUEST`). A
+`REQUEST` on an `accepted` request is dropped: consent is already given.
+A `REQUEST` after a refusal or an expiry is a new `incoming` request. A
+late `ACCEPT` or `REFUSE`, past your deadline, finds an `expired` request
+and is dropped; so is any `ACCEPT`, `REFUSE` or `CANCEL` nobody asked
+for.
+
+**What a client does next.** On `accepted` (from `GET` or the push), open
+the encrypted chat, fetch the peer's keys yourself, then `DELETE` the
+request. On your own accept's 202, the same: open the chat and fetch the
+keys. On `refused`, show it, and `DELETE` once shown.
+
+**Known limits.** There is no delivery receipt: a 202 means grappa's
+pacer took the line, and IRC never confirms (a peer offline, or a nick
+nobody holds, simply lets the request lapse after 24 h). A line dropped
+after it was taken (the session ended, the write failed) raises
+`e2e_send_dropped` with its msgid, which only accept's and refuse's 202
+name; the request stays as written. Requests are keyed by nick: a rename
+moves nothing, and a request made under the old nick stays there and
+lapses, the price a renamed peer's query window pays too. Consent carries
+no trust: grappa verifies nothing in the payload.
+
+Check `protocol_version >= 53`.
 
 ---
 
@@ -1820,6 +1955,8 @@ forever.
 | `e2e_message` | user | one whole end-to-end encrypted message for one of your devices (`to_did`, v49): from a peer, or, with `own: true` (v50), a copy of one your other device sent; payload never decoded; queued until that device acks (§4f) |
 | `e2e_pairing_closed` | user | a pairing rendezvous is gone: `closed` by a side, `expired`, or `replaced` by a newer open (§4g, v48) |
 | `e2e_pairing_message` | user | a side posted message `seq` on a pairing rendezvous; no payload, fetch it (§4g, v48) |
+| `e2e_request` | user | a request to start an encrypted chat was made or changed state: yours, a peer's, the peer's answer (§4i, v53) |
+| `e2e_request_gone` | user | that request is gone: answered, dismissed, cancelled by the peer, or withdrawn past its deadline (§4i, v53) |
 | `e2e_send_dropped` | user | an outbound end-to-end encrypted message accepted by the send door and dropped unsent: `late`, `send_failed` or `session_ended` (§4f, v46) |
 | `invite_ack` | user | 341 RPL_INVITING — an INVITE you sent was accepted by the ircd |
 | `isupport_changed` | user | the network's 005 capability set (§5c, §5) |
