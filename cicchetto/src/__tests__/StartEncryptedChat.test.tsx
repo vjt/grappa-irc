@@ -1,4 +1,5 @@
 import { render, screen } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // issue 2486 — the query rail's one button to an encrypted chat. The
@@ -114,6 +115,26 @@ describe("StartEncryptedChat", () => {
     answer();
     await vi.waitFor(() => expect(button().disabled).toBe(false));
     expect(askEncryptedChat).toHaveBeenCalledTimes(1);
+  });
+
+  it("the query switched to another peer starts clean: no error and no asking held from the last", async () => {
+    askEncryptedChat.mockRejectedValueOnce(new ApiError(429, "requests_full"));
+    askEncryptedChat.mockReturnValueOnce(new Promise(() => undefined));
+    const [peer, setPeer] = createSignal("Bob");
+    render(() => <StartEncryptedChat networkSlug="azzurra" peer={peer()} />);
+
+    button().click();
+    acceptConfirm();
+    await vi.waitFor(() =>
+      expect(screen.queryByTestId("rail-start-encrypted-chat-error")).not.toBeNull(),
+    );
+    setPeer("Carol");
+    expect(screen.queryByTestId("rail-start-encrypted-chat-error")).toBeNull();
+
+    button().click();
+    acceptConfirm();
+    setPeer("Dave");
+    expect(button().disabled).toBe(false);
   });
 
   it("an asking grappa refuses is said under the button", async () => {

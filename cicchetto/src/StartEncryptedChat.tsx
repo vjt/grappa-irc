@@ -24,7 +24,16 @@ export type Props = {
   peer: string;
 };
 
-const StartEncryptedChat: Component<Props> = (props) => {
+// One button per (network, peer): the rail stays mounted across window
+// switches, and an asking still out for one peer, or its error, must not
+// carry over to the next.
+const StartEncryptedChat: Component<Props> = (props) => (
+  <Show when={`${props.networkSlug} ${props.peer}`} keyed>
+    <Button networkSlug={props.networkSlug} peer={props.peer} />
+  </Show>
+);
+
+const Button: Component<Props> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
   // Our asking on its way: until grappa answers, the banner has nothing to show.
   const [asking, setAsking] = createSignal(false);
