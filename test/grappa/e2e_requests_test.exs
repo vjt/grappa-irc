@@ -198,7 +198,15 @@ defmodule Grappa.E2eRequestsTest do
   describe "bounds" do
     test "a new nick's REQUEST past #{E2eRequests.max_rows()} incoming rows is refused; a refresh still lands",
          ctx do
+      # A row on our side that a REQUEST would move to theirs takes a room there.
+      {:request, _} = ask!(ctx, "turncoat", ctx.now)
+      {:put, %Request{state: :refused}, false} = inbound!(ctx, "turncoat", :refuse, ctx.now)
+
       for i <- 1..E2eRequests.max_rows(), do: {:put, _, true} = inbound!(ctx, "asker#{i}", :request, ctx.now)
+
+      turncoat = E2eRequests.inbound(row(ctx, "turncoat"), :request, "turncoat", @payload, ctx.now)
+      assert {:error, :full} = E2eRequests.commit(ctx.subject, ctx.network.id, turncoat, ctx.now)
+      assert %Request{state: :refused} = row(ctx, "turncoat")
 
       plan = E2eRequests.inbound(nil, :request, "onemore", @payload, ctx.now)
       assert {:error, :full} = E2eRequests.commit(ctx.subject, ctx.network.id, plan, ctx.now)
