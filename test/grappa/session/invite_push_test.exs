@@ -13,7 +13,9 @@ defmodule Grappa.Session.InvitePushTest do
       pushes nothing — the mute applies to invites too;
     * an INVITE to a channel the subject is already IN opens no banner and
       pushes nothing — the notification and the banner are one event;
-    * likewise an INVITE the invited-window ceiling turns away.
+    * likewise an INVITE the invited-window ceiling turns away;
+    * an INVITE from a user the subject ignores disappears entirely — no
+      push, no banner, no window, no row (vjt's ruling (b) on this issue).
 
   The positive case decrypts the vendor POST the way a browser would
   (`Grappa.PushReceiver`), so it pins the payload a REAL dispatch built —
@@ -28,7 +30,7 @@ defmodule Grappa.Session.InvitePushTest do
   import Grappa.AuthFixtures
 
   alias Grappa.IRC.Identifier
-  alias Grappa.{IRCServer, PushReceiver, UserSettings, WSPresence}
+  alias Grappa.{IRCServer, PushReceiver, Scrollback, SessionStateHelpers, UserSettings, WSPresence}
   alias Grappa.PubSub.Topic
   alias Grappa.Session.WindowState
 
@@ -176,6 +178,41 @@ defmodule Grappa.Session.InvitePushTest do
     assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :window_invited, channel: "#secret"}}, 1_000
 
     refute_receive {:telemetry, _, _, _}, 500
+
+    :ok = GenServer.stop(pid, :normal, 1_000)
+  end
+
+  test "an INVITE from an ignored user disappears: no push, no banner, no window, no row", %{
+    bypass: bypass,
+    endpoint: endpoint
+  } do
+    # vjt's ruling (b) on this issue: the whole person is ignored, so their
+    # invitation leaves no trace at all — not only no push.
+    attach_telemetry([[:grappa, :push, :send, :start], [:grappa, :push, :suppressed]])
+    Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
+
+    {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+    {user, network, subject, _} = subscribed_session(port, endpoint)
+    {:ok, :added, _, _} = UserSettings.add_ignore(subject, network.slug, "spambot", nil, :ascii)
+    :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+    pid = start_session_for(user, network)
+    :ok = IRCServer.await_handshake(server, 1_000)
+
+    IRCServer.feed(server, ":SpamBot!u@h INVITE grappa-test :#secret\r\n")
+    :ok = flush(server)
+
+    refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :window_invited}}
+    window_state = pid |> SessionStateHelpers.fetch() |> SessionStateHelpers.window_state()
+    refute WindowState.state_of(window_state, "#secret")
+    assert Scrollback.fetch(subject, network.id, "#secret", nil, 10, nil, false) == []
+    refute_receive {:telemetry, _, _, _}, 500
+
+    # The pre-state, proven on the same session: someone NOT ignored still
+    # gets the whole invite.
+    IRCServer.feed(server, ":someguy!u@h INVITE grappa-test :#secret\r\n")
+    assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :window_invited, channel: "#secret"}}, 1_000
+    assert_receive {:telemetry, [:grappa, :push, :send, :start], %{count: 1}, %{subject: ^subject}}, 2_000
 
     :ok = GenServer.stop(pid, :normal, 1_000)
   end
