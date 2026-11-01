@@ -25,7 +25,16 @@ export type Props = {
   peer: string;
 };
 
-const E2eRequestBanner: Component<Props> = (props) => {
+// One banner per (network, peer): the pane hosting it stays mounted across
+// window switches, and a door still out for one peer, or its error, must not
+// carry over to the next.
+const E2eRequestBanner: Component<Props> = (props) => (
+  <Show when={`${props.networkSlug} ${props.peer}`} keyed>
+    <Banner networkSlug={props.networkSlug} peer={props.peer} />
+  </Show>
+);
+
+const Banner: Component<Props> = (props) => {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const view = createRequestView(

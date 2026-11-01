@@ -1,4 +1,5 @@
 import { render, screen } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { E2eRequestsWireRequest } from "../lib/wireTypes";
 
@@ -188,6 +189,25 @@ describe("E2eRequestBanner", () => {
 
     expect(acceptEncryptedChat).toHaveBeenCalledTimes(1);
     expect(refuseEncryptedChat).not.toHaveBeenCalled();
+  });
+
+  it("the query switched to another peer starts clean: no error and no door held from the last", async () => {
+    acceptEncryptedChat.mockRejectedValueOnce(new ApiError(409, "request_state"));
+    refuseEncryptedChat.mockReturnValueOnce(new Promise(() => undefined));
+    hold({ state: "incoming" });
+    hold({ state: "incoming", peer: "Carol" });
+    hold({ state: "incoming", peer: "Dave" });
+    const [peer, setPeer] = createSignal("bob");
+    render(() => <E2eRequestBanner networkSlug={slug} peer={peer()} />);
+
+    screen.getByTestId("e2e-request-accept").click();
+    await vi.waitFor(() => expect(screen.queryByTestId("e2e-request-error")).not.toBeNull());
+    setPeer("carol");
+    expect(screen.queryByTestId("e2e-request-error")).toBeNull();
+
+    screen.getByTestId("e2e-request-reject").click();
+    setPeer("dave");
+    expect((screen.getByTestId("e2e-request-accept") as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("the peer's asking goes at its deadline, without waiting for grappa", () => {
