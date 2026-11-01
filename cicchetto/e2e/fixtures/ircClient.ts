@@ -427,7 +427,7 @@ export class IrcPeer {
   // the sender, by ruling.
   e2eSend(
     targetNick: string,
-    verb: "KEYREQ" | "KEYS" | "PKMSG" | "MSG" | "NACK",
+    verb: "KEYREQ" | "KEYS" | "PKMSG" | "MSG" | "NACK" | "REQUEST" | "ACCEPT" | "REFUSE" | "CANCEL",
     msgid: string,
     from: string,
     to: string,
@@ -474,6 +474,26 @@ export class IrcPeer {
       };
       this.client.on("raw", handler);
     });
+  }
+
+  // issue 2486 — every PRIVMSG and NOTICE `fromNick` sends this peer, from
+  // now on, as wire lines without their source prefix (`PRIVMSG me :…`), in
+  // arrival order. What a client that speaks no E2E sees of an asking, and
+  // the only window there is on what the other side emits: a CTCP VERSION
+  // probe, or anything else, lands here as surely as the asking itself.
+  // `stop` detaches the listener.
+  recordFrom(fromNick: string): { lines: () => string[]; stop: () => void } {
+    const seen: string[] = [];
+    const line = /^(?:@\S+ )?:([^!\s]+)!\S+ ((?:PRIVMSG|NOTICE) .*)$/;
+    const handler = (event: { line: string; from_server: boolean }) => {
+      const m = event.from_server ? line.exec(stripEol(event.line)) : null;
+      if (m && m[1]?.toLowerCase() === fromNick.toLowerCase()) seen.push(m[2] ?? "");
+    };
+    this.client.on("raw", handler);
+    return {
+      lines: () => [...seen],
+      stop: () => this.client.removeListener("raw", handler),
+    };
   }
 
   // Set channel modes. Resolves once upstream echoes the MODE event for
