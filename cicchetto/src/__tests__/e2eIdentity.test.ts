@@ -231,6 +231,7 @@ function lived(): E2eState {
     },
     siblings: { "E-sib": { did: "AbZbARRDyBk", curve25519: "K-sib" } },
     copyq: { "E-sib": [{ peer: "bob", body: "hi", at: 1 }] },
+    keysAsked: { bob: { nick: "bob", at: 1 } },
   };
 }
 

@@ -2441,8 +2441,9 @@ describe("a PKMSG (W receiver checks, in order)", () => {
     const [device] = bob.devices as [Account];
     const pkmsg = written(a, bob, device, text("for your other devices"), "one-time");
     const body = (pkmsg.bodies as Record<string, string>)[a.own.did] ?? "";
-    // A `*` message to two devices of ours that are not this one.
+    // A `*` message to two devices our list names that are not this one.
     const [laptop, phone] = peerWith(2).devices as [Account, Account];
+    a.own.list.devices = [...a.own.list.devices, keyOf(laptop), keyOf(phone)].sort();
     pkmsg.bodies = { [didOf(laptop)]: body, [didOf(phone)]: body };
 
     const res = takes(a, "bob", "pkmsg", didOf(device), pkmsg, newMsgid());
@@ -2450,6 +2451,27 @@ describe("a PKMSG (W receiver checks, in order)", () => {
     expect(res).toEqual({
       events: [{ kind: "dropped", nick: "bob", reason: "not-for-us", verb: "pkmsg" }],
       outbound: [],
+    });
+    expect(a.state).toEqual(newState());
+  });
+
+  // issue 2491: the sender wrote to devices this account no longer has (it
+  // started over, or moved here), and only a NACK tells it nobody reads.
+  it("NACKs a message for none of the devices our list names as undecryptable: no pin, no session", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    const pkmsg = written(a, bob, device, text("for a device you no longer have"), "one-time");
+    const body = (pkmsg.bodies as Record<string, string>)[a.own.did] ?? "";
+    const [gone, other] = peerWith(2).devices as [Account, Account];
+    pkmsg.bodies = { [didOf(gone)]: body, [didOf(other)]: body };
+    const msgid = newMsgid();
+
+    const res = takes(a, "bob", "pkmsg", didOf(device), pkmsg, msgid);
+
+    expect(res).toEqual({
+      events: [{ kind: "undecryptable", nick: "bob", msgid, reason: "not-for-our-devices" }],
+      outbound: [nackOf(a, "bob", didOf(device), msgid)],
     });
     expect(a.state).toEqual(newState());
   });
@@ -3112,13 +3134,14 @@ describe("a MSG (W receiver checks, in order)", () => {
     });
   });
 
-  it("drops a MSG with no body for this device without a word back, and no session moves", () => {
+  it("drops a MSG with no body for this device but one for our phone without a word back, and no session moves", () => {
     const a = me("alice");
     const bob = peerWith(1);
     const [device] = bob.devices as [Account];
     talking(a, "bob", bob, device);
     const msg = msgFrom(a, device, JSON.stringify(text("for your phone")));
     const [phone] = peerWith(1).devices as [Account];
+    a.own.list.devices = [...a.own.list.devices, keyOf(phone)].sort();
     msg.bodies = { [didOf(phone)]: (msg.bodies as Record<string, string>)[a.own.did] ?? "" };
     const sessions = structuredClone(a.state.sessions);
 
@@ -3127,6 +3150,26 @@ describe("a MSG (W receiver checks, in order)", () => {
     expect(res).toEqual({
       events: [{ kind: "dropped", nick: "bob", reason: "not-for-us", verb: "msg" }],
       outbound: [],
+    });
+    expect(a.state.sessions).toEqual(sessions);
+  });
+
+  it("NACKs a MSG with a body for none of the devices our list names as undecryptable, and no session moves", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    talking(a, "bob", bob, device);
+    const msg = msgFrom(a, device, JSON.stringify(text("for the device you had")));
+    const [gone] = peerWith(1).devices as [Account];
+    msg.bodies = { [didOf(gone)]: (msg.bodies as Record<string, string>)[a.own.did] ?? "" };
+    const sessions = structuredClone(a.state.sessions);
+    const msgid = newMsgid();
+
+    const res = takes(a, "bob", "msg", didOf(device), msg, msgid);
+
+    expect(res).toEqual({
+      events: [{ kind: "undecryptable", nick: "bob", msgid, reason: "not-for-our-devices" }],
+      outbound: [nackOf(a, "bob", didOf(device), msgid)],
     });
     expect(a.state.sessions).toEqual(sessions);
   });
@@ -3803,6 +3846,165 @@ describe("a NACK, and what its device became since", () => {
     trust(engineOf(a)).applyList(keyOf(bob.master), listOf(2, [kept]));
 
     expect(a.state.rekeying).toEqual({});
+  });
+});
+
+// --- issue 2491: a message none of the nick's devices can read ----------------
+//
+// The peer's grappa NACKs from `*` a message that named no device it lists for
+// the user, and a cic of the peer NACKs one with no body for any device of its
+// own list: the peer moved, or started over. The sender is told, and does
+// nothing else: the user decides whether to ask for keys again (`rekey`).
+
+/** The NACK of our `msgid` the peer's grappa sends from `*` for `nick`: what `side` makes of it. */
+const nackFromGrappa = (side: Me, nick: string, msgid: string | undefined): Result =>
+  takes(side, nick, "nack", "*", { v: 2, ref: msgid ?? "bm90LW91cnM" }, newMsgid());
+
+describe("a message none of the nick's devices can read (issue 2491)", () => {
+  it("fails a message the peer's grappa NACKs from * as unreadable, once: no KEYREQ, no re-key, no re-send, the session stays", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    knownPeer(a, "bob", bob, 1);
+    const [msgid] = named(a, sends(a, "bob", "hello", null));
+    const sessions = structuredClone(a.state.sessions);
+
+    expect(nackFromGrappa(a, "Bob", msgid)).toEqual({
+      events: [{ kind: "send_failed", nick: "Bob", reason: "unreadable", tags: ["hello"] }],
+      outbound: [],
+    });
+    expect(a.state.sessions).toEqual(sessions);
+    expect(a.state.rekeying).toEqual({});
+    expect(a.state.rekeyAt).toEqual({});
+    expect(a.state.outq).toEqual({});
+    expect(a.state.sent).toEqual([]);
+    // Its devices NACK it too, one by one: the user hears of it once.
+    expect(nackBy(a, "bob", peerWith(1).devices[0] as Account, msgid)).toEqual({
+      events: [{ kind: "dropped", nick: "bob", reason: "unknown-nack-ref", verb: "nack" }],
+      outbound: [],
+    });
+  });
+
+  it("fails it as unreadable on the NACK of a device never bound: the peer's new identity found no body for any device of its own", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    knownPeer(a, "bob", bob, 1);
+    const [msgid] = named(a, sends(a, "bob", "hello", null));
+    const [elsewhere] = peerWith(1).devices as [Account];
+
+    expect(nackBy(a, "bob", elsewhere, msgid)).toEqual({
+      events: [{ kind: "send_failed", nick: "bob", reason: "unreadable", tags: ["hello"] }],
+      outbound: [],
+    });
+    expect(a.state.rekeying).toEqual({});
+  });
+
+  it("keeps the message on such a NACK from another nick than it went to", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    knownPeer(a, "bob", bob, 1);
+    const [msgid] = named(a, sends(a, "bob", "hello", null));
+    const unknown = { kind: "dropped", nick: "carol", reason: "unknown-nack-ref", verb: "nack" };
+
+    expect(nackFromGrappa(a, "carol", msgid)).toEqual({ events: [unknown], outbound: [] });
+    expect(nackBy(a, "carol", peerWith(1).devices[0] as Account, msgid)).toEqual({
+      events: [unknown],
+      outbound: [],
+    });
+    // Still there for the nick it went to.
+    expect(nackFromGrappa(a, "bob", msgid).events).toEqual([
+      { kind: "send_failed", nick: "bob", reason: "unreadable", tags: ["hello"] },
+    ]);
+  });
+
+  it("asks for keys when the user says so, writing nothing more on the pinned master's devices until a KEYS opens fresh sessions", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    knownPeer(a, "bob", bob, 1);
+    const old = sessionTo(a, device);
+
+    expect(record(a, engineOf(a).rekey("Bob"))).toEqual({
+      events: [{ kind: "keys_asked", nick: "Bob" }],
+      outbound: [keyreqOf(a, "Bob")],
+    });
+    expect(a.state.rekeying).toEqual({ [keyOf(device)]: true });
+    expect(sessionTo(a, device)).toBe(old);
+    expect(engineOf(a).waitsOnTheClock()).toBe(true);
+    // A text meanwhile waits for the keys: the device it would go to reads nothing.
+    expect(sends(a, "bob", "meanwhile", null)).toEqual({
+      events: [{ kind: "send_queued", nick: "bob", queued: 1, tag: "meanwhile" }],
+      outbound: [],
+    });
+
+    const keys = keysFrom(a, "bob", bob, 1, bob.devices, [device]);
+
+    expect(keys.events).toEqual([{ kind: "keys_renewed", nick: "bob" }]);
+    expect(sessionTo(a, device)).not.toBe(old);
+    expect(keys.outbound.map((o) => [o.verb, o.to, o.tag])).toEqual([
+      ["pkmsg", didOf(device), "meanwhile"],
+    ]);
+    expect(opened(device, "pkmsg", keys.outbound[0]?.payload ?? "").body).toBe("meanwhile");
+    expect(a.state.keysAsked).toEqual({});
+    expect(a.state.rekeying).toEqual({});
+  });
+
+  it("takes a KEYS of another master after the user asked as the key alarm: nothing renewed, the pin stays", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    knownPeer(a, "bob", bob, 1);
+    record(a, engineOf(a).rekey("bob"));
+    const elsewhere = peerWith(1);
+
+    const keys = keysFrom(a, "bob", elsewhere, 1, elsewhere.devices, elsewhere.devices);
+
+    expect(keys.events).toEqual([
+      {
+        kind: "key_alarm",
+        nick: "bob",
+        pinned: keyOf(bob.master),
+        presented: keyOf(elsewhere.master),
+      },
+    ]);
+    expect(a.state.pins.bob).toBe(keyOf(bob.master));
+    expect(a.state.keysAsked).toEqual({});
+  });
+
+  it("asks again under the budget while the answer is due, and reports the keys unanswered past OUTQ_TTL_MS", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    knownPeer(a, "bob", bob, 1);
+    record(a, engineOf(a).rekey("bob"));
+
+    a.now += KEYREQ_RETRY_MS - 1;
+    expect(record(a, engineOf(a).tick())).toEqual({ events: [], outbound: [] });
+    a.now += 1;
+    expect(record(a, engineOf(a).tick())).toEqual({
+      events: [],
+      outbound: [keyreqOf(a, "bob")],
+    });
+    a.now += OUTQ_TTL_MS - KEYREQ_RETRY_MS - 1;
+    expect(record(a, engineOf(a).tick()).events).toEqual([]);
+    a.now += 1;
+    expect(record(a, engineOf(a).tick())).toEqual({
+      events: [{ kind: "keys_unanswered", nick: "bob" }],
+      outbound: [],
+    });
+    expect(a.state.keysAsked).toEqual({});
+    expect(engineOf(a).waitsOnTheClock()).toBe(false);
+  });
+
+  it("forgets the keys asked for with the chat, and asks our own nick for nothing", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    knownPeer(a, "bob", bob, 1);
+    record(a, engineOf(a).rekey("bob"));
+
+    engineOf(a).forget("Bob");
+
+    expect(a.state.keysAsked).toEqual({});
+    const before = structuredClone(a.state);
+    expect(engineOf(a).rekey("Alice")).toEqual({ events: [], outbound: [] });
+    expect(a.state).toEqual(before);
   });
 });
 

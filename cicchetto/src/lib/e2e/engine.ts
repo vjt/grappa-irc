@@ -266,6 +266,12 @@ export type E2eState = {
   siblings: Record<string, Sibling>;
   /** Sibling Ed25519 key → the copies waiting for its keys, oldest first. */
   copyq: Record<string, WaitingCopy[]>;
+  /**
+   * Folded nick → the nick and when the user asked it for its keys again
+   * (`rekey`, issue 2491): its answer is due, and `tick` asks again until it
+   * comes or `OUTQ_TTL_MS` passes.
+   */
+  keysAsked: Record<string, { nick: string; at: number }>;
 };
 
 export function newState(): E2eState {
@@ -290,6 +296,7 @@ export function newState(): E2eState {
     sas: {},
     siblings: {},
     copyq: {},
+    keysAsked: {},
   };
 }
 
@@ -337,13 +344,15 @@ export type SendFailure =
   | "unpinned-key"
   | "repinned"
   | "resend-failed"
-  | "rekey-throttled";
+  | "rekey-throttled"
+  | "unreadable";
 
 export type UndecryptableReason =
   | "replayed-session"
   | "session-creation"
   | "no-session"
-  | "decryption-failed";
+  | "decryption-failed"
+  | "not-for-our-devices";
 
 /**
  * What happened. `inner` is plaintext: never log it. A `received` names the
@@ -354,7 +363,11 @@ export type UndecryptableReason =
  * sibling that goes unsent. A `sibling_keys_needed` asks the caller to claim
  * a key of our sibling `did` (grappa's claim door) and hand what came, or
  * null, to `siblingKeys`. A `copied` is the text `body` our sibling `device`
- * (its Ed25519 key) sent `peer`: plaintext too, never log it.
+ * (its Ed25519 key) sent `peer`: plaintext too, never log it. A
+ * `keys_asked` says the user asked `nick` for its keys again (`rekey`); a
+ * `keys_renewed` that the pinned master answered with fresh sessions, a
+ * `keys_unanswered` that nothing answered in `OUTQ_TTL_MS`. Another master
+ * answering is the `key_alarm`.
  */
 export type E2eEvent =
   | {
@@ -372,6 +385,9 @@ export type E2eEvent =
   | { kind: "send_queued"; nick: string; queued: number; tag: string }
   | { kind: "send_failed"; nick: string; reason: SendFailure; tags: string[] }
   | { kind: "rekeying"; nick: string; master: string; device: string }
+  | { kind: "keys_asked"; nick: string }
+  | { kind: "keys_renewed"; nick: string }
+  | { kind: "keys_unanswered"; nick: string }
   | { kind: "sibling_keys_needed"; did: string }
   | { kind: "copied"; peer: string; body: string; device: string };
 
@@ -697,12 +713,14 @@ export class Engine {
    * The user deleted the chat with `nick`: what the engine still holds of it
    * in the clear goes too. A message waiting for keys is never sent, nor is a
    * copy of one waiting for a sibling's keys, and a NACK for a sent one finds
-   * nothing to re-send (`unknown-nack-ref`). Trust stays: the pin, the
-   * verification and the sessions.
+   * nothing to re-send (`unknown-nack-ref`). Keys asked for again (`rekey`)
+   * are no longer waited for. Trust stays: the pin, the verification and the
+   * sessions.
    */
   forget(nick: string): void {
     const key = fold(nick);
     delete this.state.outq[key];
+    delete this.state.keysAsked[key];
     this.state.sent = this.state.sent.filter((s) => fold(s.nick) !== key);
     for (const [ed25519, waiting] of Object.entries(this.state.copyq)) {
       const rest = waiting.filter((c) => fold(c.peer) !== key);
@@ -721,6 +739,34 @@ export class Engine {
   dropped(msgid: string): { nick: string; tag: string } | undefined {
     const record = this.state.sent.find((s) => s.msgid === msgid);
     return record === undefined ? undefined : this.discard(record.ref);
+  }
+
+  /**
+   * The user asks `nick` for its keys again (issue 2491), after a message
+   * reached none of its devices (`unreadable`). Only the user starts this,
+   * never a NACK: the nick may be held by someone else now, and an impostor's
+   * keys must reach the user as the key alarm, not slip in behind a re-key.
+   * The trusted devices of the master pinned to it are not written to again
+   * until a KEYS opens fresh sessions (`rekeying`: their sessions stay), so a
+   * text sent meanwhile waits for the keys rather than going where nobody
+   * reads it. The KEYREQ goes under the budget (`maybeKeyreq`), and `tick`
+   * asks again while the answer is due. The KEYS is judged as any other: the
+   * pinned master's opens fresh sessions (`keys_renewed`), another master's is
+   * the alarm, and none in `OUTQ_TTL_MS` is `keys_unanswered`. Our own nick
+   * has no keys to ask for: nothing happens.
+   */
+  rekey(nick: string): Result {
+    const res = emptyResult();
+    const key = fold(nick);
+    if (key === fold(this.ownNick)) return res;
+    const master = this.state.pins[key];
+    for (const device of master === undefined ? [] : this.trustedDevices(master)) {
+      this.state.rekeying[device.ed25519] = true;
+    }
+    this.state.keysAsked[key] = { nick, at: this.now() };
+    res.events.push({ kind: "keys_asked", nick });
+    this.maybeKeyreq(nick, res);
+    return this.end(res);
   }
 
   /**
@@ -1500,8 +1546,11 @@ export class Engine {
       return;
     }
     const master = keys.master.ed25519;
-    // The KEYREQ is answered; its budget stands (`maybeKeyreq`).
+    // The KEYREQ is answered; its budget stands (`maybeKeyreq`). So are keys
+    // the user asked for again (`rekey`), whichever master answered.
     delete this.state.keysAwaited[key];
+    const asked = this.state.keysAsked[key] !== undefined;
+    delete this.state.keysAsked[key];
     if (this.checkMaster(nick, master, res) === "alarm") {
       const queue = this.liveQueue(key);
       delete this.state.outq[key];
@@ -1520,6 +1569,7 @@ export class Engine {
       this.openSession(nick, master, entry, res);
     }
     this.flush(nick, master, res);
+    if (asked) res.events.push({ kind: "keys_renewed", nick });
   }
 
   /**
@@ -1681,7 +1731,8 @@ export class Engine {
    * check that fails decides.
    * 1-4. `presented`, which a sibling's copy passes too. Both signatures come
    *    before 5, `checkMaster`: no pin and no alarm ever comes from a block
-   *    that fails its own signature.
+   *    that fails its own signature. One with no body for this device is
+   *    `notForUs`'s.
    * 6. A revoked device, or one the stored list leaves out whose certificate
    *    names a version that list has reached (`standing`, its S1 good by
    *    now): dropped with no NACK and no alarm (rule 5).
@@ -1709,6 +1760,10 @@ export class Engine {
       res.events.push({ kind: "dropped", nick, reason, verb: "pkmsg" });
     };
     const body = this.presented(fromDid, pkmsg);
+    if (body === "not-for-us") {
+      this.notForUs(nick, msgid, fromDid, "pkmsg", pkmsg.bodies, res);
+      return;
+    }
     if (typeof body === "string") {
       drop(body);
       return;
@@ -1756,8 +1811,8 @@ export class Engine {
   }
 
   /**
-   * W "Receiver checks / MSG", after the body for this device (none: a `*`
-   * message to our other devices, never NACKed). 2. A curve the master pinned
+   * W "Receiver checks / MSG", after the body for this device (none:
+   * `notForUs`). 2. A curve the master pinned
    * to the nick revoked: dropped with no NACK. 3. The curve of a trusted
    * device of that master: the frame's `from` must be its did, and what its
    * sessions cannot read is NACKed. 4. A curve bound under another master:
@@ -1780,7 +1835,7 @@ export class Engine {
     };
     const mine = msg.bodies[this.own.did];
     if (mine === undefined) {
-      drop("not-for-us");
+      this.notForUs(nick, msgid, fromDid, "msg", msg.bodies, res);
       return;
     }
     const body = unbase64(mine);
@@ -1822,11 +1877,11 @@ export class Engine {
    * The checks a PKMSG passes whoever wrote it, a peer or a sibling (W
    * "Receiver checks / PKMSG" 1-4, in order): 1. both keys in vodozemac's one
    * spelling, and the frame's `from` the did of the device the id block
-   * names; 2. a body for this device (none: a `*` message to our other
-   * devices, never ours, so it gets no NACK); 3. the certificate, under the
-   * master presented, over the list version it names; 4. the device's S1
-   * over its curve and that master. The body for this device, or the first
-   * check that fails.
+   * names; 2. a body for this device (none: `not-for-us`, which a peer's
+   * PKMSG takes to `notForUs` and a sibling's copy drops); 3. the
+   * certificate, under the master presented, over the list version it names;
+   * 4. the device's S1 over its curve and that master. The body for this
+   * device, or the first check that fails.
    */
   private presented(
     fromDid: string,
@@ -1848,6 +1903,31 @@ export class Engine {
     }
     if (!this.idSigned(id, master.ed25519)) return "bad-identity-signature";
     return body;
+  }
+
+  /**
+   * A PKMSG or MSG from `nick` with no body for this device (issue 2491). One
+   * with a body for another device our list names is for our other devices
+   * (a `*` message), and is dropped without a word: that device reads it.
+   * One with a body for none of them went to devices this account does not
+   * have (it started over, or moved here from another server), and is NACKed
+   * as undecryptable: without a word back the sender trusts a message nobody
+   * reads. A list of ours that lags a device just added NACKs one written to
+   * that device too: the sender is told it went unread, which it did here.
+   */
+  private notForUs(
+    nick: string,
+    msgid: string,
+    fromDid: string,
+    verb: MessageVerb,
+    bodies: Record<string, string>,
+    res: Result,
+  ): void {
+    if (this.own.list.devices.some((ed25519) => bodies[did(this.olm, ed25519)] !== undefined)) {
+      res.events.push({ kind: "dropped", nick, reason: "not-for-us", verb });
+      return;
+    }
+    this.undecryptable(nick, msgid, fromDid, "not-for-our-devices", res);
   }
 
   /** The session to `curve` that a pre-key message of the session `sessionId` was written on, if one is held. */
@@ -2085,6 +2165,12 @@ export class Engine {
    * to that device alone, on its newest session or once the keys come. A copy
    * that cannot go again, a disowned device's included, is `lost`: the
    * message is reported only if nothing else of it is pending.
+   *
+   * A NACK from a device the message did not go to is dropped, except one
+   * saying none of the nick's devices could read it (`unreadableBy`, issue
+   * 2491): the message is `unreadable`, and nothing more. No re-key and no
+   * re-send: the user decides whether to ask for keys again (`rekey`). A
+   * second such NACK of it finds nothing (`unknown-nack-ref`).
    */
   private onNack(
     nick: string,
@@ -2098,9 +2184,18 @@ export class Engine {
     const { ref } = parseNack(payload);
     this.trimSent();
     const sent = this.state.sent.find((s) => s.msgid === ref);
-    const body = sent?.devices[fromDid];
-    if (sent === undefined || body === undefined) {
+    if (sent === undefined) {
       drop("unknown-nack-ref");
+      return;
+    }
+    const body = sent.devices[fromDid];
+    if (body === undefined) {
+      if (!this.unreadableBy(nick, fromDid, sent)) {
+        drop("unknown-nack-ref");
+        return;
+      }
+      this.state.sent = this.state.sent.filter((s) => s !== sent);
+      this.lost(nick, "unreadable", [sent.msg]);
       return;
     }
     delete sent.devices[fromDid];
@@ -2168,6 +2263,23 @@ export class Engine {
   }
 
   /**
+   * Whether the NACK of `sent` from `nick`'s `fromDid`, a device it did not
+   * go to, says that none of the nick's devices can read it (issue 2491):
+   * grappa's from `*`, for a message that named no device it lists for the
+   * user (the peer moved, or started over), or a device we never bound, which
+   * found no body for any device of its own list (a new identity). Only from
+   * the nick it went to; and never from a device bound under the master it
+   * went to, which can tell us nothing of the devices the message did go to.
+   */
+  private unreadableBy(nick: string, fromDid: string, sent: Sent): boolean {
+    if (fold(sent.nick) !== fold(nick)) return false;
+    if (fromDid === "*") return true;
+    return !Object.values(this.state.devices).some(
+      (device) => device.master === sent.master && device.did === fromDid,
+    );
+  }
+
+  /**
    * Whether keys are being asked of the folded nick `key`: a KEYREQ went
    * within the retry and no KEYS answered it, or a re-key started since the
    * last KEYREQ, whose own waits out the budget (`rekeyDue`). A NACK then
@@ -2230,8 +2342,9 @@ export class Engine {
    * Reports queued messages that waited too long for keys, and copies that
    * waited too long for a sibling's (`liveCopies`), asks again for keys
    * (`KEYREQ_RETRY_MS`) where something waits that reached no device or a
-   * re-key's KEYREQ is due, sends the list asks held back (`askList`), and
-   * forgets old plaintexts.
+   * re-key's KEYREQ is due, sends the list asks held back (`askList`), asks
+   * again for keys the user asked for (`rekey`) or reports them unanswered,
+   * and forgets old plaintexts.
    */
   tick(): Result {
     const res = emptyResult();
@@ -2247,6 +2360,16 @@ export class Engine {
     }
     for (const ed25519 of Object.keys(this.state.copyq)) this.liveCopies(ed25519, res);
     for (const nick of Object.values(this.state.listreqHeld)) this.askList(nick, res);
+    // Keys the user asked for again (`rekey`): asked again under the budget
+    // until a KEYS answers, and given up on as the queue gives up on keys.
+    for (const [key, asked] of Object.entries(this.state.keysAsked)) {
+      if (this.now() - asked.at < OUTQ_TTL_MS) {
+        this.maybeKeyreq(asked.nick, res);
+        continue;
+      }
+      delete this.state.keysAsked[key];
+      res.events.push({ kind: "keys_unanswered", nick: asked.nick });
+    }
     return this.end(res);
   }
 
@@ -2254,14 +2377,16 @@ export class Engine {
    * Whether `tick` has something to do, so the caller must come back: a
    * message waiting for keys (a re-key whose KEYREQ is due among them, since
    * its re-send waits in the queue too), a copy waiting for a sibling's, a
-   * list ask held back, or a SAS (`sas.ts`), whose time runs out. Forgetting
-   * old plaintexts waits for the next call of any kind.
+   * list ask held back, keys the user asked for again (`rekey`), or a SAS
+   * (`sas.ts`), whose time runs out. Forgetting old plaintexts waits for the
+   * next call of any kind.
    */
   waitsOnTheClock(): boolean {
     return (
       Object.keys(this.state.outq).length > 0 ||
       Object.keys(this.state.copyq).length > 0 ||
       Object.keys(this.state.listreqHeld).length > 0 ||
+      Object.keys(this.state.keysAsked).length > 0 ||
       Object.keys(this.state.sas).length > 0
     );
   }

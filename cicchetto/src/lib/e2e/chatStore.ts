@@ -64,7 +64,20 @@ export type ChatRow =
       reason: string;
     }
   /** A SAS matched on both sides: this key is verified. */
-  | { kind: "verified"; id: string; at: number; nick: string; ed25519: string };
+  | { kind: "verified"; id: string; at: number; nick: string; ed25519: string }
+  /**
+   * The user asked the peer for its keys again (issue 2491), after a message
+   * none of its devices could read, and what came of it: still waiting, fresh
+   * sessions under the pinned key, or no answer. The chat's step card reads
+   * it (`unreadableStep`); a key alarm is its own row.
+   */
+  | {
+      kind: "rekey";
+      id: string;
+      at: number;
+      nick: string;
+      phase: "asked" | "renewed" | "unanswered";
+    };
 
 /** The rows the chat body lists: messages, and the one that stands in for a message lost. */
 export type Message = Extract<ChatRow, { kind: "in" | "out" | "undecryptable" }>;

@@ -11,6 +11,7 @@
 import { createRoot, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OwnIdentity } from "../lib/e2e/accountStore";
+import type { ChatRow, OutFailure, OutState } from "../lib/e2e/chatStore";
 import { IdentityElsewhereError } from "../lib/e2e/client";
 import { Engine } from "../lib/e2e/engine";
 import { sendLog, subjectKey } from "../lib/e2e/orders";
@@ -230,6 +231,21 @@ describe("encrypted chats", () => {
     expect(outStates()).toEqual([["ciao bob", "sent", null]]);
     await b.client.drain(b.ctx);
     expect(await b.bodies()).toEqual(["ciao bob"]);
+  });
+
+  it("asking Bob for his keys again shows the wait as his chat's step, and badges nothing", async () => {
+    await chats.drainE2e(net.slug);
+    await bob();
+    await chats.openEncryptedChat(net.slug, "Bob");
+    await chats.loadEncryptedChat(net.slug, "Bob");
+    await chats.sendEncrypted(net.slug, "Bob", "ciao bob");
+    await chats.drainE2e(net.slug);
+    expect(chats.unreadableStep(chats.encryptedRows(net.slug, "Bob") ?? [])).toBeNull();
+
+    await chats.rekeyEncrypted(net.slug, "Bob");
+
+    expect(chats.unreadableStep(chats.encryptedRows(net.slug, "Bob") ?? [])).toBe("rekey-asked");
+    expect(chats.encryptedChatsFor(net.slug)).toEqual([{ key: "bob", nick: "Bob", unread: 0 }]);
   });
 
   it("a message while grappa has published no line size for the network fails at once, and asks for nothing", async () => {
@@ -1045,6 +1061,64 @@ describe("encrypted chats, a copy from a device paired since this page loaded", 
     expect(outStates()).toEqual([["from the third device", "sent", null]]);
     await b.client.drain(b.ctx);
     expect(await b.bodies()).toEqual(["from the third device"]);
+  });
+});
+
+describe("unreadableStep", () => {
+  const out = (state: OutState, reason: OutFailure | null): ChatRow => ({
+    kind: "out",
+    id: "o",
+    at: 0,
+    body: "x",
+    state,
+    reason,
+  });
+  const rekey = (phase: "asked" | "renewed" | "unanswered"): ChatRow => ({
+    kind: "rekey",
+    id: "r",
+    at: 0,
+    nick: "Bob",
+    phase,
+  });
+  const unreadable = out("failed", "unreadable");
+  const key = "k".repeat(43);
+
+  it("is no step with no message out, or with one that went or failed for another reason", () => {
+    expect(chats.unreadableStep([])).toBeNull();
+    expect(chats.unreadableStep([out("sent", null)])).toBeNull();
+    expect(chats.unreadableStep([out("failed", "keys-timeout")])).toBeNull();
+  });
+
+  it("the last message out failed unreadable: a comparison or a message unread here since says nothing of it", () => {
+    expect(chats.unreadableStep([unreadable])).toBe("unreadable");
+    expect(
+      chats.unreadableStep([
+        unreadable,
+        { kind: "sas_asked", id: "s", at: 0, nick: "Bob", by: "you" },
+        { kind: "sas_cancelled", id: "c", at: 0, nick: "Bob", by: "peer", reason: "timeout" },
+        { kind: "undecryptable", id: "u", at: 0, nick: "Bob" },
+      ]),
+    ).toBe("unreadable");
+  });
+
+  it("keys asked for again wait, then go unanswered; fresh sessions end it", () => {
+    expect(chats.unreadableStep([unreadable, rekey("asked")])).toBe("rekey-asked");
+    expect(chats.unreadableStep([unreadable, rekey("asked"), rekey("unanswered")])).toBe(
+      "rekey-unanswered",
+    );
+    expect(chats.unreadableStep([unreadable, rekey("asked"), rekey("renewed")])).toBeNull();
+  });
+
+  it.each<ChatRow>([
+    { kind: "out", id: "n", at: 0, body: "y", state: "sending", reason: null },
+    { kind: "in", id: "i", at: 0, nick: "Bob", ed25519: key, body: "hi" },
+    { kind: "key_alarm", id: "a", at: 0, nick: "Bob", presented: key },
+    { kind: "pinned", id: "p", at: 0, nick: "Bob", ed25519: key },
+    { kind: "accepted", id: "t", at: 0, nick: "Bob", ed25519: key },
+    { kind: "verified", id: "v", at: 0, nick: "Bob", ed25519: key },
+  ])("a newer $kind row settles it", (row) => {
+    expect(chats.unreadableStep([unreadable, row])).toBeNull();
+    expect(chats.unreadableStep([unreadable, rekey("unanswered"), row])).toBeNull();
   });
 });
 

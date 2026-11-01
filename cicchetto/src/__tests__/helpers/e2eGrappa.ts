@@ -8,8 +8,10 @@
 //
 // Per nick: its devices (oldest first), the list its master put, and each
 // device's key bundle and offline queue. A send is routed by `to`: a did is
-// that listed device of the target, `*` every listed one, and anything else
-// is dropped without a word, as grappa drops it. A KEYREQ is answered as
+// that listed device of the target, `*` every listed one. A PKMSG or MSG that
+// reaches none is answered with a NACK from `*` to the device that sent it, as
+// grappa answers it (issue 2491); anything else that reaches none is dropped
+// without a word. A KEYREQ is answered as
 // `Grappa.E2eKeys.answer/3` composes KEYS: the list, then each listed device
 // in the list's order with its oldest one-time key, or its fallback key once
 // none is left (a device with neither is left out), `from` `*` to the asking
@@ -403,8 +405,10 @@ export class Grappa {
       if (!this.unanswered(o)) this.answer(by, o);
       return { msgid };
     }
+    let reached = false;
     for (const device of this.listed(o.target)) {
       if (o.to !== "*" && o.to !== device.did) continue;
+      reached = true;
       device.inbox.push({
         id: this.nextId++,
         from: by,
@@ -413,6 +417,19 @@ export class Grappa {
         verb: o.verb as ReceiveVerb,
         msgid,
         payload: o.payload,
+        own: false,
+      });
+    }
+    // grappa's own NACK (`Session.Server`'s `nack_unreadable/3`), not a send.
+    if (!reached && (o.verb === "pkmsg" || o.verb === "msg")) {
+      this.device(by, o.from).inbox.push({
+        id: this.nextId++,
+        from: o.target,
+        from_did: "*",
+        to_did: o.from,
+        verb: "nack",
+        msgid: newMsgid(),
+        payload: encodePayload({ ref: msgid, v: 2 }),
         own: false,
       });
     }
