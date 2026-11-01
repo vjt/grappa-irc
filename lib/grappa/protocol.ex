@@ -1379,7 +1379,32 @@ defmodule Grappa.Protocol do
   # @min_protocol_version stays at 1: an older client takes the NACK for one
   # whose ref it does not know and drops it, which is what it did with the
   # silence before.
-  @protocol_version 52
+  #
+  # ---------------------------------------------------------------------------
+  # 53 — issue 2486: asking a peer to start an encrypted chat
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: the requests resource, `GET` and `POST
+  # /networks/:network_id/e2e/requests` (200 {requests}, 202 {request}),
+  # `POST .../e2e/requests/:id/accept` and `.../refuse` (202 {msgid},
+  # `Session.Wire.e2e_sent`) and `DELETE .../e2e/requests/:id` (204), over
+  # the request shape `{id, peer, state, payload, at, expires_at}`
+  # (`E2eRequests.Wire`); the user-topic events `e2e_request` and
+  # `e2e_request_gone`; the error tokens `request_state` (409) and
+  # `requests_full` (429); and an OS push for a fresh incoming request. On
+  # IRC, four E2E verbs, REQUEST, ACCEPT, REFUSE and CANCEL, `did → *`,
+  # which grappa keeps as the request's state and never queues. Bumped on
+  # the #1393d rule: a client that asks, or shows a peer's asking, cannot
+  # do it against a server predating the resource.
+  #
+  # Checked for a collision before claiming 53: origin/main carries 52, and
+  # no open PR edits this file.
+  #
+  # @min_protocol_version stays at 1: an older client never calls the
+  # routes and drops the two events, whose kinds it does not know. What it
+  # does see is the push for a peer's request, which opens the plaintext
+  # query, where the asking cannot be answered from that client.
+  @protocol_version 53
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1420,7 +1445,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 52
+  @spec version() :: 53
   def version, do: @protocol_version
 
   @doc """

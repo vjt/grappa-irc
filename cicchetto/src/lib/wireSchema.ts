@@ -17,6 +17,7 @@ import {
   CHANNEL_DIRECTORY_STATUS,
   E2E_PAIRING_WIRE_CLOSE_REASON,
   E2E_PAIRING_WIRE_SIDE,
+  E2E_REQUESTS_WIRE_WIRE_STATE,
   ERROR_TOKENS_SHARED_ERROR_TOKEN,
   IRCAUTH_FSMAUTH_METHOD,
   IRCIDENTIFIER_CASEMAPPING,
@@ -593,6 +594,41 @@ export const S_E2ePairingWireRendezvous = {
 // Grappa.E2ePairing.Wire.rendezvous_response/0
 export const S_E2ePairingWireRendezvousResponse = {
   o: { rendezvous: S_E2ePairingWireRendezvous },
+} as const;
+
+// Grappa.E2eRequests.Wire.e2e_request_gone_payload/0
+export const S_E2eRequestsWireE2eRequestGonePayload = {
+  o: { kind: { l: "e2e_request_gone" }, network: "s", id: "i" },
+} as const;
+
+// Grappa.E2eRequests.Wire.wire_state/0
+export const S_E2eRequestsWireWireState = { e: [...E2E_REQUESTS_WIRE_WIRE_STATE] } as const;
+
+// Grappa.E2eRequests.Wire.request/0
+export const S_E2eRequestsWireRequest = {
+  o: {
+    id: "i",
+    peer: "s",
+    state: S_E2eRequestsWireWireState,
+    payload: { u: ["s", "z"] },
+    at: "s",
+    expires_at: { u: ["s", "z"] },
+  },
+} as const;
+
+// Grappa.E2eRequests.Wire.e2e_request_payload/0
+export const S_E2eRequestsWireE2eRequestPayload = {
+  o: { kind: { l: "e2e_request" }, network: "s", request: S_E2eRequestsWireRequest },
+} as const;
+
+// Grappa.E2eRequests.Wire.request_response/0
+export const S_E2eRequestsWireRequestResponse = {
+  o: { request: S_E2eRequestsWireRequest },
+} as const;
+
+// Grappa.E2eRequests.Wire.requests_response/0
+export const S_E2eRequestsWireRequestsResponse = {
+  o: { requests: { a: S_E2eRequestsWireRequest } },
 } as const;
 
 // Grappa.IRC.AuthFSM.auth_method/0
@@ -1837,6 +1873,8 @@ export const S_ErrorTokensRestErrorToken = {
     { l: "key_taken" },
     { l: "removed_device" },
     { l: "inbox_full" },
+    { l: "request_state" },
+    { l: "requests_full" },
     { l: "invalid_mask" },
     { l: "invalid_text_pattern" },
     { l: "not_raster" },

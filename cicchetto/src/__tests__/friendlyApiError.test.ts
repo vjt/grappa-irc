@@ -27,6 +27,8 @@ const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknow
   { code: "key_taken", matches: /key was taken just now/i },
   { code: "removed_device", matches: /just removed from your account/i },
   { code: "inbox_full", matches: /encrypted inbox is full/i },
+  { code: "request_state", matches: /encrypted chat request has changed/i },
+  { code: "requests_full", matches: /too many encrypted chat requests/i },
   { code: "too_many_sessions", matches: /at the session limit for this network from this device/i },
   // visitor_cap_exceeded / user_cap_exceeded both wire to network_busy
   { code: "network_busy", matches: /this network is at capacity/i },
