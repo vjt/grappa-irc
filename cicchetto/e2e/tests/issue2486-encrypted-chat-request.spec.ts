@@ -13,7 +13,10 @@
 //   (c) the peer may accept while the requester's browser is closed: the
 //       requester comes back to the encrypted chat, and both sides hold the
 //       other's key;
-//   (d) a refusal reaches the requester, live and after being away.
+//   (d) a refusal reaches the requester, live and after being away;
+//   (f) grappa answers for the user, from `*`: a REQUEST that meets our
+//       asking draws an ACCEPT (ruling R1), and Reject sends a REFUSE that
+//       needs no device of the user's (R2).
 //
 // ## What makes this spec able to fail
 //
@@ -28,8 +31,12 @@
 //   * Cancel does not reach the peer: their banner stays.
 //   * An answer given while the requester is away is lost, or never acted
 //     on: no encrypted window comes back, or a side holds no key ("none
-//     yet"), or the request outlives its job (the banner is still up).
+//     yet"), or the request outlives its job (its card is still there).
 //   * A refusal is shown only to a connected requester, or not at all.
+//   * A REQUEST meeting our asking goes unanswered, or is answered from a
+//     device rather than for the user, or to anyone but the device that
+//     asked; a Reject goes from a device, or to anyone but the device that
+//     asked: the record's addresses say so.
 
 import { randomBytes } from "node:crypto";
 import type { Browser, BrowserContext, Page } from "@playwright/test";
@@ -51,7 +58,10 @@ import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { provisionPeerSubject, teardownSpecSubject } from "../fixtures/specSubject";
 import { expect, specLiveNick, specNick, specUser, test } from "../fixtures/test";
 
+// The peer's asking is a banner over the query; ours, waiting or answered, is
+// a card in the query's timeline (vjt's ruling R4).
 const banner = (page: Page) => page.getByTestId("e2e-request-banner");
+const card = (page: Page) => page.getByTestId("e2e-request-card");
 const railButton = (page: Page) => page.getByTestId("rail-start-encrypted-chat");
 
 /** A browser of its own, for one person: closing its page is closing the browser, its storage stays. */
@@ -73,12 +83,12 @@ async function focusQuery(page: Page, nick: string): Promise<void> {
   await selectChannel(page, NETWORK_SLUG, nick, { awaitWsReady: false });
 }
 
-/** The rail's button, the confirm, Ask: our asking then waits, on the banner and on the button. */
+/** The rail's button, the confirm, Ask: our asking then waits, on its card and on the button. */
 async function ask(page: Page): Promise<void> {
   await railButton(page).click();
   await expect(confirmModal(page)).toBeVisible();
   await confirmModalYes(page);
-  await expect(banner(page)).toHaveAttribute("data-state", "pending", { timeout: KEYS_TIMEOUT });
+  await expect(card(page)).toHaveAttribute("data-state", "pending", { timeout: KEYS_TIMEOUT });
   await expect(railButton(page)).toBeDisabled();
 }
 
@@ -133,7 +143,7 @@ test("(a, e) the rail asks only once confirmed, with one E2E REQUEST and no CTCP
     await expect(confirmModalBody(me.page)).toContainText("24 hours");
     await confirmModalCancel(me.page);
     await expect(confirmModal(me.page)).toHaveCount(0);
-    await expect(banner(me.page)).toHaveCount(0);
+    await expect(card(me.page)).toHaveCount(0);
     expect(posts).toEqual([]);
 
     // Ask: one POST, and one line on the wire.
@@ -156,9 +166,9 @@ test("(a, e) the rail asks only once confirmed, with one E2E REQUEST and no CTCP
     expect(request?.payload).toMatch(CONSENT_PAYLOAD);
     expect(record.lines().filter((l) => l.includes("VERSION"))).toEqual([]);
 
-    // Cancel on the banner: the CANCEL goes, from the same device.
+    // Cancel on the card: the CANCEL goes, from the same device.
     await me.page.getByTestId("e2e-request-cancel").click();
-    await expect(banner(me.page)).toHaveCount(0);
+    await expect(card(me.page)).toHaveCount(0);
     await expect(railButton(me.page)).toBeEnabled();
     await expect.poll(() => record.lines().length, { timeout: KEYS_TIMEOUT }).toBe(3);
     const cancel = heard(record.lines()[2] ?? "");
@@ -258,13 +268,13 @@ test("(b) our asking survives a reload, and Cancel withdraws it on both sides", 
     // grappa holds the asking, not the page.
     await loginAs(a.page, alice);
     await focusQuery(a.page, bob.nick);
-    await expect(banner(a.page)).toHaveAttribute("data-state", "pending", {
+    await expect(card(a.page)).toHaveAttribute("data-state", "pending", {
       timeout: KEYS_TIMEOUT,
     });
     await expect(railButton(a.page)).toBeDisabled();
 
     await a.page.getByTestId("e2e-request-cancel").click();
-    await expect(banner(a.page)).toHaveCount(0);
+    await expect(card(a.page)).toHaveCount(0);
     await expect(railButton(a.page)).toBeEnabled();
     // The CANCEL reached Bob: his banner goes too.
     await expect(banner(b.page)).toHaveCount(0, { timeout: KEYS_TIMEOUT });
@@ -312,10 +322,10 @@ test("(c) accepted while the requester's browser is closed: she comes back to th
     // ... and Bob holds hers.
     await expect(b.page.getByTestId("e2e-peer-key")).toHaveText(await ownKey(back));
 
-    // The request did its job and went: no banner over the plaintext query.
+    // The request did its job and went: no card in the plaintext query.
     await focusQuery(back, bob.nick);
     await expect(back.getByTestId("scrollback-pinned")).toBeAttached();
-    await expect(banner(back)).toHaveCount(0);
+    await expect(card(back)).toHaveCount(0);
     await expect(railButton(back)).toBeEnabled();
   } finally {
     await a.context.close();
@@ -343,12 +353,12 @@ test("(d) a refusal reaches the requester, live and after being away", async ({
     await focusQuery(b.page, await specLiveNick());
     await b.page.getByTestId("e2e-request-reject").click();
     await expect(banner(b.page)).toHaveCount(0);
-    await expect(banner(a.page)).toHaveAttribute("data-state", "refused", {
+    await expect(card(a.page)).toHaveAttribute("data-state", "refused", {
       timeout: KEYS_TIMEOUT,
     });
-    await expect(banner(a.page)).toContainText(`${bob.nick} refused the encrypted chat`);
+    await expect(card(a.page)).toContainText(`${bob.nick} refused the encrypted chat`);
     await a.page.getByTestId("e2e-request-dismiss").click();
-    await expect(banner(a.page)).toHaveCount(0);
+    await expect(card(a.page)).toHaveCount(0);
 
     // Away: Alice asks again and closes her browser; Bob refuses again.
     await ask(a.page);
@@ -361,18 +371,91 @@ test("(d) a refusal reaches the requester, live and after being away", async ({
 
     const back = await comeBack(a.context, alice);
     await focusQuery(back, bob.nick);
-    await expect(banner(back)).toHaveAttribute("data-state", "refused", { timeout: KEYS_TIMEOUT });
+    await expect(card(back)).toHaveAttribute("data-state", "refused", { timeout: KEYS_TIMEOUT });
     await back.getByTestId("e2e-request-dismiss").click();
-    await expect(banner(back)).toHaveCount(0);
+    await expect(card(back)).toHaveCount(0);
 
     // Dismissed on grappa, not just here.
     await loginAs(back, alice);
     await focusQuery(back, bob.nick);
     await expect(back.getByTestId("scrollback-pinned")).toBeAttached();
-    await expect(banner(back)).toHaveCount(0);
+    await expect(card(back)).toHaveCount(0);
   } finally {
     await a.context.close();
     await b.context.close();
     await teardownSpecSubject(bob);
+  }
+});
+
+test("(f) grappa answers for the user: our asking meets theirs with ACCEPT from *, and Reject is a REFUSE from *", async ({
+  browser,
+}) => {
+  test.slow();
+  const alice = specUser();
+  const aliceNick = specNick();
+  const me = await browserFor(browser);
+  const peer = await IrcPeer.connect({ nick: `i2486-${randomBytes(2).toString("hex")}` });
+  // A device of the peer's, its id as cicchetto mints one, and a msgid.
+  const did = () => randomBytes(8).toString("base64url");
+  const msgid = () => randomBytes(8).toString("base64").replace(/=+$/, "");
+  const master = randomBytes(32).toString("base64").replace(/=+$/, "");
+  try {
+    await boot(me.page, alice);
+    await openQuery(me.page, aliceNick, peer.nick);
+    const live = await specLiveNick();
+    const record = peer.recordFrom(live);
+
+    await ask(me.page);
+    await expect.poll(() => record.lines().length, { timeout: KEYS_TIMEOUT }).toBe(1);
+    const request = heard(record.lines()[0] ?? "");
+    expect(request).toMatchObject({ verb: "REQUEST", to: "*" });
+
+    // The peer asks back from one of its devices: the crossing. grappa
+    // answers that REQUEST itself, to the device that sent it, while the
+    // asking turns accepted and this device opens the encrypted chat and
+    // asks for the keys (urgent lane, so either line may come first).
+    const crossing = did();
+    peer.e2eSend(live, "REQUEST", msgid(), crossing, "*", `{"v":2,"master":"${master}"}`);
+    await expect(me.page.getByTestId("e2e-pane")).toBeVisible({ timeout: KEYS_TIMEOUT });
+    await expect.poll(() => record.lines().length, { timeout: KEYS_TIMEOUT }).toBe(3);
+    const answered = record.lines().slice(1, 3).map(heard);
+    expect(answered.map((l) => l.verb).sort()).toEqual(["ACCEPT", "KEYREQ"]);
+    expect(answered.find((l) => l.verb === "ACCEPT")).toEqual({
+      verb: "ACCEPT",
+      from: "*",
+      to: crossing,
+      payload: '{"v":2}',
+    });
+    expect(answered.find((l) => l.verb === "KEYREQ")).toMatchObject({
+      from: request.from,
+      to: "*",
+    });
+
+    // The accepted asking did its job and went, so the next REQUEST is a new
+    // one: from another device of theirs, the banner over the query.
+    await focusQuery(me.page, peer.nick);
+    await expect(card(me.page)).toHaveCount(0, { timeout: KEYS_TIMEOUT });
+    const second = did();
+    peer.e2eSend(live, "REQUEST", msgid(), second, "*", `{"v":2,"master":"${master}"}`);
+    await expect(banner(me.page)).toHaveAttribute("data-state", "incoming", {
+      timeout: KEYS_TIMEOUT,
+    });
+    await me.page.getByTestId("e2e-request-reject").click();
+    await expect(banner(me.page)).toHaveCount(0);
+
+    // Then the barrier, as in (a, e): nothing else went.
+    await expect.poll(() => record.lines().length, { timeout: KEYS_TIMEOUT }).toBe(4);
+    await waitForQueryWindowReady(me.page, NETWORK_SLUG, peer.nick);
+    const barrier = `barrier ${randomBytes(3).toString("hex")}`;
+    await composeSend(me.page, barrier);
+    await expect.poll(() => record.lines().length, { timeout: KEYS_TIMEOUT }).toBe(5);
+    const [refuse, last] = record.lines().slice(3).map(heard);
+    expect(refuse).toEqual({ verb: "REFUSE", from: "*", to: second, payload: '{"v":2}' });
+    expect(last).toEqual({ verb: "text", from: "", to: "", payload: barrier });
+    expect(record.lines().filter((l) => l.includes("VERSION"))).toEqual([]);
+    record.stop();
+  } finally {
+    await peer.disconnect("issue2486 (f) done");
+    await me.context.close();
   }
 });
