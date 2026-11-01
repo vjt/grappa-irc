@@ -3969,6 +3969,69 @@ describe("a message none of the nick's devices can read (issue 2491)", () => {
     expect(a.state.keysAsked).toEqual({});
   });
 
+  it("tells of a message of two payloads only once the grappa NACKs both: the other device may read its own", () => {
+    const a = me("alice");
+    const bob = peerWith(2);
+    const [answered, silent] = bob.devices as [Account, Account];
+    listedPeer(a, "bob", bob, 1);
+    bind(a, bob.master, answered);
+    const [first] = engineOf(a).send("bob", text("hi"), "hi", null, keyOf(answered)).outbound;
+    opened(answered, "pkmsg", first?.payload ?? "");
+    answers(a, answered);
+    bind(a, bob.master, silent);
+    const res = sends(a, "bob", "both", null);
+    expect(res.outbound.map((o) => o.verb)).toEqual(["msg", "pkmsg"]);
+    const [msg, pkmsg] = named(a, res);
+
+    expect(nackFromGrappa(a, "bob", msg)).toEqual({ events: [], outbound: [] });
+    expect(nackFromGrappa(a, "bob", pkmsg)).toEqual({
+      events: [{ kind: "send_failed", nick: "bob", reason: "unreadable", tags: ["both"] }],
+      outbound: [],
+    });
+  });
+
+  it("keeps the message on the NACK of a device the master's list names but we never bound: it reads its own list, not the message's devices", () => {
+    const a = me("alice");
+    const bob = peerWith(2);
+    const [bound, unbound] = bob.devices as [Account, Account];
+    listedPeer(a, "bob", bob, 1);
+    bind(a, bob.master, bound);
+    // To the bound device now; the other one waits for keys.
+    const [msgid] = named(a, sends(a, "bob", "hello", null));
+
+    expect(nackBy(a, "bob", unbound, msgid)).toEqual({
+      events: [{ kind: "dropped", nick: "bob", reason: "unknown-nack-ref", verb: "nack" }],
+      outbound: [],
+    });
+    expect(a.state.sent.map((s) => s.msgid)).toEqual([msgid]);
+  });
+
+  it("says the keys asked for again went unanswered when the pinned master's KEYS opens no session", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    knownPeer(a, "bob", bob, 1);
+    record(a, engineOf(a).rekey("bob"));
+
+    expect(keysFrom(a, "bob", bob, 1, bob.devices, []).events).toEqual([
+      { kind: "keys_unanswered", nick: "bob" },
+    ]);
+    expect(a.state.keysAsked).toEqual({});
+  });
+
+  it("says the keys asked for again went unanswered when the answer carries our own identity, which raises no alarm to answer", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    knownPeer(a, "bob", bob, 1);
+    record(a, engineOf(a).rekey("bob"));
+    const ours = { master: a.master, devices: [a.account] };
+
+    expect(keysFrom(a, "bob", ours, 1, ours.devices, ours.devices).events).toEqual([
+      { kind: "dropped", nick: "bob", reason: "own-identity" },
+      { kind: "keys_unanswered", nick: "bob" },
+    ]);
+    expect(a.state.pins.bob).toBe(keyOf(bob.master));
+  });
+
   it("asks again under the budget while the answer is due, and reports the keys unanswered past OUTQ_TTL_MS", () => {
     const a = me("alice");
     const bob = peerWith(1);

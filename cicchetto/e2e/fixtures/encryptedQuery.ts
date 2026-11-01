@@ -19,8 +19,8 @@ import { expect } from "./test";
 /** How long a message may wait for the peer's keys, and a reply for the drain. */
 export const KEYS_TIMEOUT = 30_000;
 
-// grappa answers a nick's KEYREQ at most once per 30 s (`E2eKeyAnswers`) and
-// drops the rest without a word; cic asks again after its own 30 s
+// grappa answers a nick's KEYREQ at most once per 15 s (`E2eKeyAnswers`) and
+// drops the rest without a word; cic asks again only after its own 30 s
 // (`KEYREQ_RETRY_MS`, lib/e2e/engine.ts). A request for keys right after
 // another one to the same nick may wait that long before it is answered.
 export const AFTER_A_REASK = 30_000 + KEYS_TIMEOUT;
