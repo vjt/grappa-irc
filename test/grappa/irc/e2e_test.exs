@@ -70,7 +70,10 @@ defmodule Grappa.IRC.E2eTest do
             {"REQUEST", :request, @alice, "*"},
             {"ACCEPT", :accept, @alice, "*"},
             {"REFUSE", :refuse, @alice, "*"},
-            {"CANCEL", :cancel, @alice, "*"}
+            {"CANCEL", :cancel, @alice, "*"},
+            # grappa speaking for the user: a REQUEST met the user's
+            # consent, answered to the device that asked (issue 2486 R1).
+            {"ACCEPT", :accept, "*", @alice}
           ] do
         assert {:ok, %Fragment{verb: ^verb, from: ^from, to: ^to}} =
                  E2e.parse("\x01E2E #{wire} q83vEjRWeJA 1/1 #{from} #{to} #{@keyreq_payload}\x01")
@@ -94,12 +97,14 @@ defmodule Grappa.IRC.E2eTest do
             {"MSG", "*", "*"},
             {"NACK", @alice, "*"},
             {"NACK", "*", "*"},
-            # Consent goes from a device to the user, never to a device and
-            # never from the user (issue 2486).
+            # Consent goes from a device to the user, never to a device; it
+            # goes from the user only when grappa answers for it (issue
+            # 2486), and nobody asks or cancels for the user.
             {"REQUEST", @alice, @bob},
             {"REQUEST", "*", "*"},
+            {"REQUEST", "*", @bob},
             {"ACCEPT", @alice, @bob},
-            {"ACCEPT", "*", @bob},
+            {"ACCEPT", "*", "*"},
             {"REFUSE", @alice, @bob},
             {"REFUSE", "*", "*"},
             {"CANCEL", @alice, @bob},
@@ -183,6 +188,12 @@ defmodule Grappa.IRC.E2eTest do
         refute E2e.addressed?(verb, @alice, @bob)
         refute E2e.addressed?(verb, "*", "*")
       end
+
+      # grappa answers a REQUEST for the user, to the device that asked
+      # (issue 2486 R1); nobody asks or cancels for the user.
+      assert E2e.addressed?(:accept, "*", @bob)
+      refute E2e.addressed?(:request, "*", @bob)
+      refute E2e.addressed?(:cancel, "*", @bob)
     end
 
     test "the consent verbs are the four of issue 2486, apart from the transport's" do

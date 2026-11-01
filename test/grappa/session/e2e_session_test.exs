@@ -1247,6 +1247,89 @@ defmodule Grappa.Session.E2eSessionTest do
       assert %{verb: :accept} = await_consent(server, "alice", :accept)
     end
 
+    test "a peer's REQUEST that meets our consent is answered ACCEPT from the user to the device that asked; an ACCEPT, or an expired asking, is not answered" do
+      {server, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      # At an empty bank a line let go is written before the call returns.
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "MODE "), 1_000)
+      stub = failing_client(pid, "nobody")
+      :sys.replace_state(pid, &%{&1 | client: stub})
+
+      # Our live asking: their REQUEST is their consent, and they hear ours
+      # even if our REQUEST never reached them.
+      {:ok, %Request{id: alice}} = Session.ask_e2e(subject, network.id, "alice", device.did, @hint)
+      assert_received {:wrote, "PRIVMSG alice :\x01E2E REQUEST " <> _}
+      Enum.each(consent_from("alice", :request, @hint), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :e2e_request, request: %{id: ^alice, state: :accepted}}
+                     },
+                     @wire_timeout
+
+      assert_receive {:wrote, line}, @wire_timeout
+      assert %{verb: :accept, from: "*", to: @alice, chunk: ~s({"v":2})} = fragment_to(line, "alice")
+
+      # Already accepted: the row stays, and the ACCEPT goes again.
+      Enum.each(consent_from("alice", :request, @hint), &IRCServer.feed(server, &1))
+      assert_receive {:wrote, line}, @wire_timeout
+      assert %{verb: :accept, from: "*", to: @alice} = fragment_to(line, "alice")
+      assert %Request{id: ^alice, state: :accepted} = E2eRequests.for_peer(subject, network.id, "alice")
+
+      # An ACCEPT moves our asking and draws nothing back.
+      {:ok, %Request{id: bob}} = Session.ask_e2e(subject, network.id, "bob", device.did, @hint)
+      assert_received {:wrote, "PRIVMSG bob :\x01E2E REQUEST " <> _}
+      Enum.each(consent_from("bob", :accept, @hint), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{id: ^bob, state: :accepted}}},
+                     @wire_timeout
+
+      _ = :sys.get_state(pid)
+      refute_received {:wrote, _}
+
+      # An expired asking is no consent: a fresh incoming request, unanswered.
+      {:ok, %Request{id: carol}} = Session.ask_e2e(subject, network.id, "carol", device.did, @hint)
+      assert_received {:wrote, "PRIVMSG carol :\x01E2E REQUEST " <> _}
+      age_request!(carol, E2eRequests.ttl_seconds() + 60)
+      Enum.each(consent_from("carol", :request, @hint), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :e2e_request, request: %{id: ^carol, state: :incoming}}
+                     },
+                     @wire_timeout
+
+      _ = :sys.get_state(pid)
+      refute_received {:wrote, _}
+    end
+
+    test "an ACCEPT the pacer cannot take is let go: the row still moves and the session carries on" do
+      {server, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      {:ok, %Request{id: alice}} = Session.ask_e2e(subject, network.id, "alice", device.did, @hint)
+
+      send = fn ->
+        Session.send_e2e(subject, network.id, "alice", :msg, :reactive, {device.did, @alice}, @small, nil)
+      end
+
+      assert Enum.find(1..(E2ePacer.max_lane_lines() + 10), fn _ -> send.() == {:error, :rate_limited} end),
+             "alice's reactive lane never filled"
+
+      Enum.each(consent_from("alice", :request, @hint), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :e2e_request, request: %{id: ^alice, state: :accepted}}
+                     },
+                     @wire_timeout
+
+      refute E2ePacer.waiting?(:sys.get_state(pid).e2e_pacer, "alice", :accept)
+      assert Process.alive?(pid)
+    end
+
     test "dismissing cancels our live request on the wire; an answer just goes; a waiting request is answered, not dismissed" do
       {server, _, user, network} = connected_session()
       subject = {:user, user.id}

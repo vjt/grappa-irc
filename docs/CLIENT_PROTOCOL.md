@@ -1139,9 +1139,11 @@ client sends a `keyreq`, §4f) and are pinned and checked as any key is
 (trust on first use, the key-change alarm, the SAS). grappa never sends a
 `KEYREQ` for anyone.
 
-**On IRC.** Four verbs in the §4f frame, all from a device to `*` (the
+**On IRC.** Four verbs in the §4f frame, from a device to `*` (the
 user): consent belongs to the person, and the asker does not know the
-peer's devices yet.
+peer's devices yet. The one other addressing is grappa's own: when it
+answers for the user (see *Crossings*), `ACCEPT` goes from `*` to the
+device that asked.
 
 | verb | means |
 |---|---|
@@ -1237,11 +1239,16 @@ a long wait. A refreshed request neither pushes nor opens anything again.
 request is the other's consent. Your `REQUEST` meeting their `outgoing`,
 or their `REQUEST` meeting yours, turns it `accepted`, and so does asking
 a peer whose request is waiting (`ACCEPT` goes, not `REQUEST`). A
-`REQUEST` on an `accepted` request is dropped: consent is already given.
-A `REQUEST` after a refusal or an expiry is a new `incoming` request. A
-late `ACCEPT` or `REFUSE`, past your deadline, finds an `expired` request
-and is dropped; so is any `ACCEPT`, `REFUSE` or `CANCEL` nobody asked
-for.
+`REQUEST` on an `accepted` request leaves it as it is: consent is already
+given. Either way grappa answers that `REQUEST` itself, with one `ACCEPT`
+from `*` (it speaks for you, as with its `NACK`) to the device that asked,
+payload `{"v":2}`: the peer hears your consent even if your own `REQUEST`
+never reached them. Best effort: the request moves even when the pacer
+cannot take the answer. An `ACCEPT` is never answered, so two grappas
+cannot answer each other. A `REQUEST` after a refusal or an expiry is a
+new `incoming` request, and is not answered. A late `ACCEPT` or `REFUSE`,
+past your deadline, finds an `expired` request and is dropped; so is any
+`ACCEPT`, `REFUSE` or `CANCEL` nobody asked for.
 
 **What a client does next.** On `accepted` (from `GET` or the push), open
 the encrypted chat, fetch the peer's keys yourself, then `DELETE` the

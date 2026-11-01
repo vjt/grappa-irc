@@ -12,6 +12,7 @@ defmodule Grappa.E2eRequestsTest do
 
   alias Grappa.E2eRequests
   alias Grappa.E2eRequests.{Request, Wire}
+  alias Grappa.IRC.E2e
 
   # The master-key hint the proposal puts in every consent payload.
   @payload ~s({"v":2,"master":"m4st3rK3yHintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"})
@@ -23,10 +24,8 @@ defmodule Grappa.E2eRequestsTest do
   # Plans and commits one inbound line from `peer`, as the session does.
   defp inbound!(ctx, peer, verb, now) do
     row = E2eRequests.for_peer(ctx.subject, ctx.network.id, peer)
-
-    {:ok, outcome} =
-      E2eRequests.commit(ctx.subject, ctx.network.id, E2eRequests.inbound(row, verb, peer, @payload, now), now)
-
+    {_, plan} = E2eRequests.inbound(row, verb, peer, @payload, now)
+    {:ok, outcome} = E2eRequests.commit(ctx.subject, ctx.network.id, plan, now)
     outcome
   end
 
@@ -83,6 +82,25 @@ defmodule Grappa.E2eRequestsTest do
       {:put, %Request{state: :accepted}, false} = inbound!(ctx, "bob", :accept, ctx.now)
       assert {:drop, :already_accepted} = inbound!(ctx, "bob", :request, ctx.now)
       assert %Request{state: :accepted} = row(ctx, "bob")
+    end
+
+    test "is answered ACCEPT only when it meets our consent: our live asking, or an acceptance", ctx do
+      past = DateTime.add(ctx.now, -E2eRequests.ttl_seconds() - 1, :second)
+      {:request, _} = ask!(ctx, "live", ctx.now)
+      {:request, _} = ask!(ctx, "late", past)
+      {:request, _} = ask!(ctx, "yes", ctx.now)
+      {:put, _, false} = inbound!(ctx, "yes", :accept, ctx.now)
+      {:request, _} = ask!(ctx, "no", ctx.now)
+      {:put, _, false} = inbound!(ctx, "no", :refuse, ctx.now)
+      {:put, _, true} = inbound!(ctx, "waiting", :request, ctx.now)
+      {:put, _, true} = inbound!(ctx, "lapsed", :request, past)
+
+      # An ACCEPT is never answered, so two grappas cannot answer each other.
+      for peer <- ["stranger", "live", "late", "yes", "no", "waiting", "lapsed"], verb <- E2e.consent_verbs() do
+        {reply, _} = E2eRequests.inbound(row(ctx, peer), verb, peer, @payload, ctx.now)
+        expected = if {peer, verb} in [{"live", :request}, {"yes", :request}], do: :accept, else: :none
+        assert reply == expected, inspect({peer, verb})
+      end
     end
   end
 
@@ -204,11 +222,11 @@ defmodule Grappa.E2eRequestsTest do
 
       for i <- 1..E2eRequests.max_rows(), do: {:put, _, true} = inbound!(ctx, "asker#{i}", :request, ctx.now)
 
-      turncoat = E2eRequests.inbound(row(ctx, "turncoat"), :request, "turncoat", @payload, ctx.now)
+      {:none, turncoat} = E2eRequests.inbound(row(ctx, "turncoat"), :request, "turncoat", @payload, ctx.now)
       assert {:error, :requests_full} = E2eRequests.commit(ctx.subject, ctx.network.id, turncoat, ctx.now)
       assert %Request{state: :refused} = row(ctx, "turncoat")
 
-      plan = E2eRequests.inbound(nil, :request, "onemore", @payload, ctx.now)
+      {:none, plan} = E2eRequests.inbound(nil, :request, "onemore", @payload, ctx.now)
       assert {:error, :requests_full} = E2eRequests.commit(ctx.subject, ctx.network.id, plan, ctx.now)
       assert row(ctx, "onemore") == nil
 

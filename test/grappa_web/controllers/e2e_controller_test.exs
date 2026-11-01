@@ -937,8 +937,10 @@ defmodule GrappaWeb.E2eControllerTest do
 
   # A request held straight in the table, as the session leaves it once
   # the peer's REQUEST arrived at `at`.
-  defp incoming!(user, network, peer, at),
-    do: commit!(user, network, E2eRequests.inbound(nil, :request, peer, @payload, at), at)
+  defp incoming!(user, network, peer, at) do
+    {:none, plan} = E2eRequests.inbound(nil, :request, peer, @payload, at)
+    commit!(user, network, plan, at)
+  end
 
   # The same once the user asked `peer` at `at`.
   defp outgoing!(user, network, peer, at) do
@@ -947,8 +949,10 @@ defmodule GrappaWeb.E2eControllerTest do
   end
 
   # The peer's answer to `request`, arrived at `at`.
-  defp answered!(request, user, network, verb, at),
-    do: commit!(user, network, E2eRequests.inbound(request, verb, request.peer, @payload, at), at)
+  defp answered!(request, user, network, verb, at) do
+    {:none, plan} = E2eRequests.inbound(request, verb, request.peer, @payload, at)
+    commit!(user, network, plan, at)
+  end
 
   defp commit!(user, network, plan, at) do
     {:ok, {:put, request, _}} = E2eRequests.commit({:user, user.id}, network.id, plan, at)
