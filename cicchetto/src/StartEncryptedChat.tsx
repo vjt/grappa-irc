@@ -8,7 +8,7 @@ import { errorMessage } from "./lib/friendlyApiError";
 // or lie, so the asking itself is the probe. The confirm says, before
 // anything is sent, what the peer needs to answer and how long the asking
 // waits. Our asking still waiting is the banner's to cancel, so the button
-// says so rather than asking twice.
+// says so rather than asking twice, and holds while the asking is on its way.
 
 /** How the confirm words the asking: what it needs from the peer, and the 24 h it waits. */
 export function startEncryptedChatBody(nick: string): string {
@@ -26,6 +26,8 @@ export type Props = {
 
 const StartEncryptedChat: Component<Props> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
+  // Our asking on its way: until grappa answers, the banner has nothing to show.
+  const [asking, setAsking] = createSignal(false);
 
   const view = createRequestView(
     () => props.networkSlug,
@@ -39,10 +41,12 @@ const StartEncryptedChat: Component<Props> = (props) => {
       title: "Start encrypted chat",
       body: startEncryptedChatBody(props.peer),
       confirmLabel: "Ask",
-      onConfirm: () =>
-        void askEncryptedChat(props.networkSlug, props.peer).catch((err: unknown) =>
-          setError(errorMessage(err)),
-        ),
+      onConfirm: () => {
+        setAsking(true);
+        void askEncryptedChat(props.networkSlug, props.peer)
+          .catch((err: unknown) => setError(errorMessage(err)))
+          .finally(() => setAsking(false));
+      },
       alternative: null,
       attachments: null,
       choice: null,
@@ -57,7 +61,7 @@ const StartEncryptedChat: Component<Props> = (props) => {
         type="button"
         class="rail-encrypted-chat-button"
         data-testid="rail-start-encrypted-chat"
-        disabled={pending()}
+        disabled={pending() || asking()}
         onClick={ask}
       >
         {pending() ? "encrypted chat requested" : "start encrypted chat"}
