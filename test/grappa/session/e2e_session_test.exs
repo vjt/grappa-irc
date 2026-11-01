@@ -167,7 +167,11 @@ defmodule Grappa.Session.E2eSessionTest do
       [device] = listed(user, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
-      for {verb, addresses} <- [{:nack, {@alice, "AAAAAAAAAAA"}}, {:nack, {"*", "AAAAAAAAAAA"}}, {:keys, {"*", "AAAAAAAAAAA"}}] do
+      for {verb, addresses} <- [
+            {:nack, {@alice, "AAAAAAAAAAA"}},
+            {:nack, {"*", "AAAAAAAAAAA"}},
+            {:keys, {"*", "AAAAAAAAAAA"}}
+          ] do
         Enum.each(lines_from("alice", verb, E2e.new_msgid(), addresses, @small), &IRCServer.feed(server, &1))
       end
 
