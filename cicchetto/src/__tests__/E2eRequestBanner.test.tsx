@@ -150,13 +150,18 @@ describe("E2eRequestBanner", () => {
     expect(screen.getByTestId("e2e-request-dismiss")).not.toBeNull();
   });
 
-  it("an accepted request still held offers to open the chat", () => {
+  it("an accepted request still held offers to open the chat, or to dismiss it with the ×", async () => {
     const request = hold({ state: "accepted", expires_at: null });
     show();
 
     expect(banner()?.dataset.state).toBe("accepted");
     screen.getByTestId("e2e-request-open").click();
     expect(openAcceptedChat).toHaveBeenCalledWith(slug, request);
+    // An identity held on another device never opens here: the × lets it go.
+    const dismiss = screen.getByTestId("e2e-request-dismiss") as HTMLButtonElement;
+    await vi.waitFor(() => expect(dismiss.disabled).toBe(false));
+    dismiss.click();
+    expect(dismissEncryptedChatRequest).toHaveBeenCalledWith(slug, request);
   });
 
   it("a door that fails says why in the banner, and the buttons work again", async () => {

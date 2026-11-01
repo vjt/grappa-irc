@@ -123,7 +123,7 @@ const E2eRequestBanner: Component<Props> = (props) => {
               </button>
             </Match>
           </Switch>
-          <Show when={v().kind === "refused" || v().kind === "expired"}>
+          <Show when={v().kind !== "incoming" && v().kind !== "pending"}>
             <button
               type="button"
               class="e2e-request-banner-dismiss"

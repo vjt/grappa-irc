@@ -102,7 +102,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       ...prev,
       [slug]: { ...(prev[slug] ?? {}), [request.id]: request },
     }));
-    if (request.state === "accepted") void openAccepted(slug, request);
+    if (request.state === "accepted") openArrived(slug, request);
   }
 
   function drop(slug: string, id: number): void {
@@ -141,7 +141,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       [slug]: Object.fromEntries(listed.map((request) => [request.id, request])),
     }));
     for (const request of listed) {
-      if (request.state === "accepted") void openAccepted(slug, request);
+      if (request.state === "accepted") openArrived(slug, request);
     }
   }
 
@@ -158,7 +158,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     loadEvery((networks() ?? []).map((network) => network.slug));
   }
 
-  /** The peer accepted: open the chat, ask for its keys, then the request has done its job. */
+  /**
+   * The peer accepted: open the chat, ask for its keys, then the request has
+   * done its job. Throws what failed: the banner's Open says it.
+   */
   async function openAccepted(slug: string, request: E2eRequest): Promise<void> {
     const id = `${slug} ${request.id}`;
     if (opening.has(id)) return;
@@ -181,15 +184,20 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         if (!(err instanceof ApiError && err.status === 404)) throw err;
       }
       drop(slug, request.id);
-    } catch (err) {
-      // The banner keeps offering to open it.
+    } finally {
+      opening.delete(id);
+    }
+  }
+
+  // An accepted request grappa brought (a push, a fetch) opens on its own; a
+  // failure is warned, and the banner keeps offering Open.
+  function openArrived(slug: string, request: E2eRequest): void {
+    openAccepted(slug, request).catch((err: unknown) => {
       console.warn(
         `[e2e] could not open the encrypted chat ${request.peer} accepted on ${slug}`,
         err,
       );
-    } finally {
-      opening.delete(id);
-    }
+    });
   }
 
   // A door grappa answers 404 or 409 says the request moved under this
@@ -210,15 +218,24 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     put(slug, await askE2eRequest(bearer(), slug, nick, await consentLine(slug)));
   }
 
-  /** Accepts the peer's request: the chat opens here, and its keys are asked for. */
+  /**
+   * Accepts the peer's request: the chat opens here, and its keys are asked
+   * for. Once grappa took the yes the request is gone, and its banner with
+   * it, so what fails after is warned: the chat recovers on its own, its
+   * first line asking the peer's keys.
+   */
   async function acceptEncryptedChat(slug: string, request: E2eRequest): Promise<void> {
     await door(
       slug,
       answerE2eRequest(bearer(), slug, request.id, "accept", await consentLine(slug)),
     );
     drop(slug, request.id);
-    await openEncryptedWindow(slug, request.peer);
-    await askEncryptedKeys(slug, request.peer);
+    try {
+      await openEncryptedWindow(slug, request.peer);
+      await askEncryptedKeys(slug, request.peer);
+    } catch (err) {
+      console.warn(`[e2e] accepted ${request.peer} on ${slug}, but the chat did not open`, err);
+    }
   }
 
   /** Refuses the peer's request, with the dedicated REFUSE: the peer is told. */

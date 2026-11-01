@@ -229,6 +229,20 @@ describe("an accepted request", () => {
     warn.mockRestore();
   });
 
+  it("Open, from the banner, says what failed once the automatic attempt has", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const failure = new Error("IndexedDB is gone");
+    openEncryptedChat.mockRejectedValue(failure);
+    const accepted = req({ state: "accepted", expires_at: null });
+    store.putE2eRequest(slug, accepted);
+    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+
+    await expect(store.openAcceptedChat(slug, accepted)).rejects.toBe(failure);
+
+    expect(store.e2eRequestWith(slug, "Bob")).toEqual(accepted);
+    warn.mockRestore();
+  });
+
   it("moves the focus only from the query with that peer, where the user asked", async () => {
     setSelected({ networkSlug: slug, channelName: "bob", kind: "query" });
 
@@ -283,6 +297,21 @@ describe("the doors", () => {
     expect(openEncryptedWindow).toHaveBeenCalledWith(slug, "Bob");
     expect(askEncryptedKeys).toHaveBeenCalledWith(slug, "Bob");
     expect(store.e2eRequestWith(slug, "Bob")).toBeUndefined();
+  });
+
+  it("accepting: what fails once grappa took the yes is warned, not thrown, for the request is gone", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const incoming = req({ state: "incoming" });
+    store.putE2eRequest(slug, incoming);
+    answerE2eRequest.mockResolvedValue({ msgid: "m1" });
+    askEncryptedKeys.mockRejectedValue(new ApiError(429, "rate_limited"));
+
+    await expect(store.acceptEncryptedChat(slug, incoming)).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalled();
+    expect(openEncryptedWindow).toHaveBeenCalledWith(slug, "Bob");
+    expect(store.e2eRequestWith(slug, "Bob")).toBeUndefined();
+    warn.mockRestore();
   });
 
   it("an accept grappa cannot send opens nothing and keeps the request", async () => {
