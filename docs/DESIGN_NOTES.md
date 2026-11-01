@@ -771,3 +771,247 @@ card and her pin unchanged, then her re-key goes through the alarm and the
 emoji, and her next line reaches Bob's new device. It was read red against a
 server that drops instead of NACKing (the `[]` guard narrowed to `:nack`):
 Alice's line stayed `sent`.
+<!-- entry #2486 -->
+
+---
+
+## 2026-11-02 — #2486: asking a peer to start an encrypted chat, with grappa holding the asking
+
+vjt's requirement: one button in a query's rail starts an encrypted chat,
+behind a confirm that says what the peer needs, with no CTCP VERSION probe.
+His ruling on the design (issue comments 6556578954, 6556875039 and the
+answers in 6556851327, approved in 6556976295): grappa is the intermediary
+(design B), the asking is persisted server-side so the two clients never
+have to be online together, CANCEL reaches the peer, the banner lives in the
+plaintext query, and a pending request expires after 24 h for everyone,
+with Retry. His rulings R1–R4 on the review (comment 6564501129) are folded
+in below; the design as built is update C (comment 6564547637).
+
+The key exchange already completed with nobody online: grappa answers a
+KEYREQ from the uploaded bundles (§4f) and PKMSG/MSG wait in each device's
+offline queue. What was missing was CONSENT, and that is all this adds.
+Keys, sessions, TOFU and the SAS are unchanged, and grappa still never sends
+a KEYREQ for anyone: each cicchetto fetches the peer's keys itself once the
+chat is agreed.
+
+### The wire: four verbs in the §4f frame, protocol 53
+
+`REQUEST`, `ACCEPT`, `REFUSE` and `CANCEL`, each from a device to `*`:
+consent belongs to the person, and the asker does not know the peer's
+devices yet. The one other addressing is grappa's own, `ACCEPT` and
+`REFUSE` from `*` to a device, when it answers for the user (R1, R2 below).
+The payload is opaque compact JSON of at most 1 KiB (cicchetto sends
+`{"v":2,"master":…}`, a hint, never a proof; grappa's own answers carry
+`{"v":2}`), and `E2eRequests.payload?/1` is the one rule for the send door
+and the inbound line alike. grappa reads the verb alone. A consent line is
+never queued in a device inbox and never pushed as `e2e_message`. It rides
+the reactive lane, and takes it from `E2ePacer.lane/2` like every other
+verb. It first did not: the send path hard-coded `:reactive` while `lane/2`
+carried the four verbs too, and nothing ever asked `lane/2` about them, so a
+mutant moving them to `:urgent` there killed nothing. The session now asks
+`lane(verb, :text)`, the table is the one place the lane is decided, and the
+pacer test pins the four verbs reactive whatever the priority.
+
+### Storage: one row per (subject, network, folded peer)
+
+`e2e_requests`, one row per peer whoever asked, keyed on the folded nick
+like `query_windows.target_nick` (a rename moves nothing, CLAUDE.md issue
+1365: a request made under the old nick stays there and lapses). Four
+stored states, `incoming | outgoing | accepted | refused`. **`expired` is
+derived, never stored**: a pending row lapses 24 h after `updated_at`, and
+every transition writes `updated_at` explicitly, so asking again moves the
+clock even when nothing else in the row changes. On the wire an
+`outgoing` row past its deadline reads `expired` and stays until it is
+retried or dismissed; an `incoming` one past its deadline is unlisted, and
+the session's hourly sweep deletes it and pushes `e2e_request_gone`.
+`peer_device` keeps the `from` of the peer's latest line on the row (R2),
+never on the wire.
+
+The transitions are planned by pure functions (`inbound/5`, `ask/3`,
+`answer/2`, `dismiss/2`) and carried out by `commit/4` only once the pacer
+has taken the line, in the same call: a refused send leaves no state.
+
+### vjt's rulings on the review
+
+* **R1: a REQUEST that meets our consent is answered ACCEPT, from `*`, to
+  the device that sent it.** Our consent is our live `outgoing` row (it
+  turns `accepted`, as before) or an `accepted` row (it stays; it used to
+  be a silent drop). The review found the hole: a REQUEST of ours that
+  never reached the peer (they were off IRC, their side was full, their
+  database did not answer) left their crossing REQUEST unanswered for
+  24 h while our side read `accepted`. `inbound/5` now says whether to
+  answer, `{:accept | :none, plan}`, the shape `ask/3` and `dismiss/2`
+  already had; the session answers only after the row is written, best
+  effort (a pacer refusal is logged, the row moves anyway). An expired
+  `outgoing` is no consent: a fresh `incoming`, unanswered. An `ACCEPT` is
+  never answered, so on a true crossing each grappa drops the other's as
+  unsolicited and the exchange cannot loop. grappa speaking for the user is
+  now one helper, `speak_for_user/5`, shared with issue 2491's NACK: the
+  same spare-room guard, lane, pacing and commit.
+* **R2: refusing needs no encryption identity.** A refuse with no body
+  sends `REFUSE` from `*` to the device the stored incoming request came
+  from (`peer_device`), payload `{"v":2}`; cicchetto always refuses that
+  way, so saying no never creates an identity and works from a device whose
+  identity lives elsewhere. A body still works as before (from that listed
+  device to `*`). Accepting still needs a listed device: it starts the key
+  exchange, so 400 without one. The row keeps the device of the peer's
+  LATEST line: their next REQUEST from another device is the one answered;
+  asking afresh forgets it; asking a peer whose request waits keeps it.
+  The column went into the branch's own migration, edited in place: it has
+  never shipped.
+* **R3: a full side is 422, not 429.** The first cut answered 429 on the
+  argument that pending rows lapse with time. That holds only for the
+  peers' side, and the user can only hit ours, whose rows never lapse (an
+  expired asking stays until retried or dismissed, an answer until shown):
+  only a dismissal frees a room, so "retry later" was the wrong signal.
+  While fixing it, the cap on the peers' side stopped counting an
+  `incoming` row past its deadline, which kept a new nick out for up to the
+  hour before the sweep deleted it.
+* **R4: our asking is a card in the query's timeline; the banner is the
+  peer's asking only.** See cicchetto below.
+
+### Where this departs from the approved design
+
+* **Both crossings land on `accepted` and keep the row.** The design had
+  "user asks a peer whose request waits" delete the row after sending
+  ACCEPT. It now reads `accepted` like the other crossing, so the asker's
+  client handles both the same way (open the chat, fetch the keys, dismiss)
+  and an offline device of the account still sees the outcome.
+* **The cap is 32 per SIDE, not 32 incoming.** Theirs is `incoming` within
+  its deadline; ours is `outgoing` (expired included), `accepted` and
+  `refused`. Room is checked when a row is new or changes side: their
+  `incoming` that our ask turns `accepted` needs a room on ours, our
+  `refused` that their new REQUEST turns `incoming` one on theirs.
+* **Transitions the design left open:** a REQUEST on an `accepted` row is
+  answered ACCEPT and changes nothing (R1); a REQUEST on a `refused` or
+  expired row is a fresh `incoming`; CANCEL deletes a lapsed `incoming`
+  too; an accept or refuse of a lapsed row is 404, of any other state 409
+  `request_state`; dismissing a live `incoming` is 409 (answer it), a live
+  `outgoing` sends CANCEL and so needs `{from, payload}`, anything else is
+  just deleted.
+* **A `refused` answer also opens the plaintext query**, as a fresh
+  `incoming` does: the requester may have closed it during a long wait.
+* accept and refuse answer **202 `{msgid}`**, the ask **202 `{request}`**.
+
+**Known wart:** a consent line dropped after the pacer took it (the session
+ended, the write failed) raises `e2e_send_dropped` with a msgid that only
+accept's and refuse's 202 carry; the ask's 202 names the request, not the
+line. The request stays as written.
+
+### cicchetto
+
+* **The banner is the peer's asking only, pinned, not in flow.** It sits in
+  a `.scrollback-pinned` band at the top of the pane together with the
+  far-behind bar, which used to hold that container-anchored position
+  alone: a column, so the two stack, out of `.scrollback`'s scrollHeight,
+  so a request arriving never moves the reader, and zero pixels tall when
+  empty. Green like the invite banner, per vjt. **On a phone it keeps clear
+  of the floating ☰** (`.shell-chrome`, z 41): measured before the rule on
+  webkit-iphone-15 (393 wide, ☰ at x 331–379, y 7–55) and
+  chromium-pixel-touch (412 wide, x 350–398), Accept and Reject wrap below
+  the text and were never covered, but the first line of the text ran
+  under the ☰. The banner pads the side a float sits on by the float's box
+  plus its inset on both sides, for as long as that float is mounted
+  (`:has()` reads the mount, so a channel, whose TopicBar hosts its ☰ in
+  flow, and a desktop keep the full width), and pads the leading side too
+  when the left `#` door floats (window bar off).
+  `issue2486-banner-clears-the-float.spec.ts` (`@webkit @touch`, three
+  arms: bare, wallpaper theme, window bar off) pins it: the text's box
+  meets neither float's, and Accept and Reject are the topmost element at
+  their own centres. Positive controls: the trailing rule deleted, the
+  text assertion goes red in all three arms on both projects (6/6); the
+  leading one deleted, in the window-bar-off arm alone (2/2).
+* **Our asking is ONE card in the query's timeline** (`E2eRequestCard`),
+  a presentational row woven by its `at` like the invite acknowledgements
+  and the `/topic` answer, so it never counts as unread and never moves
+  the read cursor. It changes in place: pending (spinner, Cancel), refused
+  (×), expired (Retry, ×; the expiry is derived, so it reads where the
+  asking was made), accepted (normally never seen, because the chat opens
+  by itself and the request is dismissed; if that failed, Open and ×).
+  **Pending as a card is w2's reading, flagged in update C:** the ruling
+  names the outcomes as cards and the incoming as the only banner, and
+  does not say where our waiting asking goes. One card that changes state
+  reads better than a banner that turns into a card once answered.
+* **`accepted` is handled without a click**: the chat opens, the keys are
+  asked for (`Engine.askKeys`, a KEYREQ under the existing budget that,
+  unlike `rekey`, renews no session and writes no step), then the request is
+  dismissed. The focus moves only when the user is in the query with that
+  peer, where they asked; anywhere else the encrypted window just appears.
+  A 404 on that dismissal is another device of the account getting there
+  first.
+* **A KEYS now names its chat in the drain's report.** Test-first found it:
+  a KEYS that pins on first use emits no event, so the drain named no chat
+  and the window read "none yet" until a message came. Every first KEYS used
+  to arrive behind a message whose state change named the chat; `askKeys`
+  is the first KEYS with nothing behind it.
+* The client keeps its own clock on the deadline (`createRequestView`), one
+  wake-up at `expires_at`, read afresh whenever the request changes, and a
+  wake-up never reads as before the deadline it woke for.
+
+### The branch's code review
+
+Two read-only reviewers, one per half. Taken, each test-first:
+
+* **Server.** A REQUEST crossing a REQUEST of ours that never arrived (R1);
+  the 429 that promised room which never comes back, and a lapsed incoming
+  holding a room (R3); a refused ask must write no REQUEST, which a refute
+  on the fake server's lines could NOT say: right after registration its
+  fake-lag bank is full, so even a line let go too early waits on a timer,
+  and the state holding it is the one the refusal throws away. Measured:
+  with the pacer committed BEFORE the row, the controller test with such a
+  refute stayed green; the session test with the stub client whose bank
+  reads empty went red. A LINELEN too short to frame a byte crashed the
+  session on a `WithClauseError` (the caller read `no_session`): an
+  upstream must not take a session down through a REST call, so
+  `:too_large` is a refusal now (413). Three nits (a moduledoc citing a
+  function that never existed, a spec the sweep broke, a 404 §4i claimed
+  for a DELETE that answers 204).
+* **cicchetto.** A fetch overwrote pushes that landed while it was out (a
+  per-network change count now makes such a fetch read again), and a 404
+  or 409 from a door left the request as held (it reads again); opening an
+  accepted chat swallowed its failure and its view had no × (cic finding
+  3), and a failure after Accept landed in an unmounted banner (4); the
+  banner and the rail button kept one peer's busy and error state across a
+  switch to another (each keys itself on network and peer); a door that
+  outlived a logout wrote into the new account (`identityMoved` after
+  every await); the view's `now` went stale; and a second click while the
+  POST was out sent a second REQUEST.
+* **Rejected: a database write inside a 5 s session call** (a write-lock
+  stall turns a 504 while the session still moves the row). True, and
+  shared by every session call that writes; not this slice's to fix.
+* **Ruled by vjt:** R1–R4 above (the unanswered crossing, refusing
+  without an identity, the status, where our outcomes go). The ☰
+  covering the banner on a phone (cic finding 2) was measured and fixed on
+  the banner, the one element R4 left pinned there.
+
+### Tests
+
+Server: the context's transition table, the cap, the sweep and the wire; the
+session's four doors and four inbound verbs on the fake IRC server; the
+controller's five routes; the parser's four verbs and the two `* → did`
+answers. Mutation, every batch from a green baseline: context 19/19, session
+S1–S17 (S8 survived and exposed the dead lane clause, now killed by the
+pacer test), push 2/2, parser 3/3, controller C1–C8 each killed by the test
+named for it; the review fixes each killed by the test written for them (the
+room count's cutoff 3/3, the empty-bank refute, LINELEN 1/1); R1 11/11; R2
+10/10, and `speak_for_user/5` without its spare-room guard turns exactly one
+test red, the NACK's own half-room test (the ACCEPT path shares the guard,
+written once). cic: about 45 mutants over the store, the banner, the rail
+button, the engine, the client and the user topic, all killed; the review
+fixes each killed (the mirror's change count 6/6, the `identityMoved` guards
+every one, now 13 since a refusal awaits nothing before its door, the keyed
+components 3/3); R2 2/2; R4: the card 15/15, the banner 2/2, the pane 4/6,
+three of them killed only by tests written after they survived (a refused
+card's empty actions row, Cancel's hold while a door runs, the peer's asking
+hiding "no messages yet" in the empty query grappa opens). Two survive: the
+pane's query gate is equivalent (no window but a query is named with a
+nick), and `rowTime`'s case for the card is dead with the three beside it:
+since #162's single pass sorted by `at`, an ephemeral row already woven is
+never later than the next, so no ephemeral time decides a place (all four
+removed: 382/382 green). Left for its own change. e2e:
+`issue2486-encrypted-chat-request.spec.ts`, one test per acceptance bullet,
+a bare IRC client reading the wire for "nothing before the confirm" and "no
+CTCP VERSION" in both directions, and (f) grappa answering for the user,
+`ACCEPT * → <the crossing device>` and `REFUSE * → <the asking device>`,
+both `{"v":2}`; `issue2486-banner-clears-the-float.spec.ts` on the two touch
+projects.
