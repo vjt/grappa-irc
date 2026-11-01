@@ -8414,6 +8414,11 @@ defmodule Grappa.Session.Server do
   # names no priority gets: no client chooses it. A consent line is no Olm message, so a refusal
   # leaves no gap to keep and the pacer it hands back is let go.
   #
+  # A payload of at most 1 KiB fits 64 lines at any sane LINELEN, but a
+  # network may advertise any positive one, and one too short to frame a
+  # byte answers `:too_large` (an upstream must not crash the session). The
+  # pacer's `:too_late` is not listed: a consent line has no deadline.
+  #
   # Known wart, as for grappa's own NACK (issue 2491): a line still waiting
   # when the session ends, or one that fails to go out, is announced like
   # any other drop, an `e2e_send_dropped` naming a msgid only an answer's
@@ -8425,7 +8430,9 @@ defmodule Grappa.Session.Server do
           {E2e.address(), String.t()},
           E2eRequests.plan(),
           DateTime.t()
-        ) :: {:ok, String.t(), E2eRequests.outcome(), t()} | {:error, :rate_limited | :requests_full | :db_unavailable}
+        ) ::
+          {:ok, String.t(), E2eRequests.outcome(), t()}
+          | {:error, :too_large | :rate_limited | :requests_full | :db_unavailable}
   defp send_consent(state, target, verb, {from, payload}, plan, now) do
     msgid = E2e.new_msgid()
     message = %{msgid: msgid, verb: verb, lane: E2ePacer.lane(verb, :text), deadline_ms: nil}
@@ -8439,7 +8446,7 @@ defmodule Grappa.Session.Server do
       {:ok, msgid, outcome, state}
     else
       {:error, :queue_full, _} -> {:error, :rate_limited}
-      {:error, reason} when reason in [:requests_full, :db_unavailable] -> {:error, reason}
+      {:error, reason} when reason in [:too_large, :requests_full, :db_unavailable] -> {:error, reason}
     end
   end
 
@@ -8453,7 +8460,9 @@ defmodule Grappa.Session.Server do
           E2eRequests.plan(),
           {E2e.address(), String.t()} | nil,
           DateTime.t()
-        ) :: {:ok, t()} | {:error, :bad_request | :no_socket | :rate_limited | :requests_full | :db_unavailable}
+        ) ::
+          {:ok, t()}
+          | {:error, :bad_request | :no_socket | :too_large | :rate_limited | :requests_full | :db_unavailable}
   defp dismiss_e2e_request(state, _, :none, plan, _, now) do
     with {:ok, outcome} <- E2eRequests.commit(state.subject, state.network_id, plan, now) do
       :ok = announce_e2e_request(state, outcome, now)

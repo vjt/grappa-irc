@@ -245,6 +245,7 @@ defmodule Grappa.Session do
           | :unknown_device
           | :not_found
           | :request_state
+          | :too_large
           | :rate_limited
           | :requests_full
           | :db_unavailable
@@ -1152,6 +1153,7 @@ defmodule Grappa.Session do
   for a CR/LF/NUL in `target`; `{:error, :bad_request}` for a target that
   is not a nick, a `from` that is not a did, or a payload outside the rule;
   `{:error, :unknown_device}` when `from` is not a listed device;
+  `{:error, :too_large}` when the network's LINELEN cannot frame the line;
   `{:error, :rate_limited}` when the pacer cannot take the line;
   `{:error, :requests_full}` past `Grappa.E2eRequests.max_rows/0`
   requests we started; `{:error, :db_unavailable}`; `{:error, :no_socket}`

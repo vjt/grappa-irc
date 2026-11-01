@@ -1201,7 +1201,8 @@ in `target`; 422 `unknown_device` for an unlisted `from`; 404 `not_found`
 for an id that is not yours there, an `incoming` request past its
 deadline, or no session (every route but `GET`); 409 `request_state` for an
 accept or a refuse of a request that is not waiting for YOUR answer, and
-for a `DELETE` of one that is (answer it instead); 429 `rate_limited` when
+for a `DELETE` of one that is (answer it instead); 413 `too_large` when the
+network's `LINELEN` is too short to frame the line; 429 `rate_limited` when
 the pacer cannot take the line (§4f; consent rides the reactive lane);
 429 `requests_full` when a side is at its cap of **32** per network (the
 peers': `incoming`; yours: `outgoing`, `accepted`, `refused`), which comes
