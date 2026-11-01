@@ -1275,7 +1275,7 @@ defmodule Grappa.Session.E2eSessionTest do
       assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{peer: "carol", id: carol}}},
                      @wire_timeout
 
-      assert {:error, :conflict} = Session.dismiss_e2e(subject, network.id, carol, {device.did, @hint})
+      assert {:error, :request_state} = Session.dismiss_e2e(subject, network.id, carol, {device.did, @hint})
     end
 
     test "a line the pacer cannot take leaves no row behind" do

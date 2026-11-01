@@ -244,7 +244,7 @@ defmodule Grappa.Session do
           | :bad_request
           | :unknown_device
           | :not_found
-          | :conflict
+          | :request_state
           | :rate_limited
           | :requests_full
           | :db_unavailable
@@ -1178,7 +1178,7 @@ defmodule Grappa.Session do
 
   `{:ok, msgid}` once the pacer has taken the line. `{:error, :not_found}`
   for an id that is not this subject's here, or a request past its
-  deadline; `{:error, :conflict}` for a request that is not waiting for an
+  deadline; `{:error, :request_state}` for a request that is not waiting for an
   answer (one we asked, or an answer); the rest as `ask_e2e/5`.
   """
   @spec answer_e2e(subject(), integer(), integer(), :accept | :refuse, String.t(), String.t()) ::
@@ -1200,7 +1200,7 @@ defmodule Grappa.Session do
   `refused`) or a lapsed incoming one just goes, and `line` may be `nil`.
   Either way every device hears `e2e_request_gone`.
 
-  `:ok`. `{:error, :conflict}` for a live incoming request (it is answered,
+  `:ok`. `{:error, :request_state}` for a live incoming request (it is answered,
   not dismissed); `{:error, :bad_request}` when a CANCEL is due and `line`
   is `nil`, or `line` is outside the rule; `{:error, :not_found}` for an
   id that is not this subject's here; the rest as `ask_e2e/5`.

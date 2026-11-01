@@ -106,6 +106,8 @@ defmodule GrappaWeb.FallbackController do
            | :key_taken
            | :removed_device
            | :inbox_full
+           | :request_state
+           | :requests_full
            | :invalid_mask
            | :invalid_text_pattern
            | :not_raster
@@ -400,6 +402,28 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:request_entity_too_large)
     |> json(%{error: "inbox_full"})
+  end
+
+  # issue 2486 — an encrypted-chat request asked to move in a way its state
+  # does not allow: an answer to one that is not waiting for an answer, or
+  # the dismissal of an incoming one still waiting (that one is answered,
+  # not dropped). 409 like the other state conflicts, with its own token:
+  # the client re-reads the requests instead of retrying.
+  def call(conn, {:error, :request_state}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "request_state"})
+  end
+
+  # issue 2486 — one side of the subject's encrypted-chat requests on the
+  # network is at its cap (`Grappa.E2eRequests`). 429 and not 422 like
+  # `:list_full`: a pending request lapses on its own after 24 h, so the
+  # room comes back with time as well as by dismissing one. Its own token,
+  # because `rate_limited` means the line itself could not leave.
+  def call(conn, {:error, :requests_full}) do
+    conn
+    |> put_status(:too_many_requests)
+    |> json(%{error: "requests_full"})
   end
 
   # issue 2430, multi-device — a well-signed list naming a key no device of
