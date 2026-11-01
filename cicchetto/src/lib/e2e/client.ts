@@ -202,6 +202,11 @@ export type E2eClient = {
   send(ctx: E2eContext, nick: string, body: string): Promise<Report>;
   /** Reports messages that waited too long for keys, and sends what waited on the clock. */
   tick(ctx: E2eContext): Promise<Report>;
+  /**
+   * Asks `nick` for its keys again (`Engine.rekey`): the user's answer to a
+   * message none of its devices could read (issue 2491).
+   */
+  rekey(ctx: E2eContext, nick: string): Promise<Report>;
   /** Pins `master` to `nick` by hand (`Engine.pin`); a pin is written to their chat. */
   pin(
     ctx: E2eContext,
@@ -288,6 +293,13 @@ const isRefusal = (answer: string): answer is DoorRefusal => Object.hasOwn(REFUS
 /** A text grappa took a payload of for the first time: what our siblings get a copy of. */
 type Taken = { nick: string; body: string };
 
+/** What a step of keys asked for again (`Engine.rekey`) writes to the chat. */
+const REKEY_PHASE = {
+  keys_asked: "asked",
+  keys_renewed: "renewed",
+  keys_unanswered: "unanswered",
+} as const;
+
 /** The chat changes `events` make; rows from the inbox message `inbox` get ids derived from it. */
 function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatChange[] {
   const changes: ChatChange[] = [];
@@ -372,6 +384,24 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
             },
           });
         }
+        break;
+      case "keys_asked":
+      case "keys_renewed":
+      case "keys_unanswered":
+        // Read by the chat's step card, never listed: it neither opens the
+        // chat nor counts as unread.
+        changes.push({
+          op: "add",
+          nick: e.nick,
+          unread: false,
+          row: {
+            kind: "rekey",
+            id: inbox === null ? crypto.randomUUID() : id,
+            at,
+            nick: e.nick,
+            phase: REKEY_PHASE[e.kind],
+          },
+        });
         break;
       case "sibling_keys_needed":
         // `copyOut` claims a key of the sibling, and hands it to the engine.
@@ -796,6 +826,20 @@ export function e2eClient(
           door,
           changesFor(ticked.events, now(), null),
           ticked.outbound,
+        );
+      }),
+
+    rekey: (ctx, nick) =>
+      withEngine(ctx, async (engine, persist, verifier, door) => {
+        const res = engine.rekey(nick);
+        return finish(
+          ctx,
+          engine,
+          verifier,
+          persist,
+          door,
+          changesFor(res.events, now(), null),
+          res.outbound,
         );
       }),
 

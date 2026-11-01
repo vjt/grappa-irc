@@ -99,6 +99,44 @@ export function openAlarm(rows: readonly ChatRow[]): string | null {
   return null;
 }
 
+/** Where a message the peer could not read stands (issue 2491): the chat's step card. */
+export type UnreadableStep = "unreadable" | "rekey-asked" | "rekey-unanswered";
+
+/**
+ * The step a message the peer could not read leaves, read off the newest
+ * rows (issue 2491): the last message out failed `unreadable` and nothing was
+ * done since ("unreadable"), keys asked for again and still due
+ * ("rekey-asked"), or never answered ("rekey-unanswered"); else null. Whatever
+ * newer settles it ends it: any other message out, one read from the peer,
+ * fresh sessions under the pinned key, a key alarm (a step of its own), a key
+ * pinned, taken or verified. A comparison under way and a message that could
+ * not be read here say nothing about it.
+ */
+export function unreadableStep(rows: readonly ChatRow[]): UnreadableStep | null {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i];
+    if (row === undefined) continue;
+    switch (row.kind) {
+      case "out":
+        return row.state === "failed" && row.reason === "unreadable" ? "unreadable" : null;
+      case "rekey":
+        if (row.phase === "asked") return "rekey-asked";
+        return row.phase === "unanswered" ? "rekey-unanswered" : null;
+      case "sas_asked":
+      case "sas_cancelled":
+      case "undecryptable":
+        continue;
+      case "in":
+      case "key_alarm":
+      case "pinned":
+      case "accepted":
+      case "verified":
+        return null;
+    }
+  }
+  return null;
+}
+
 /**
  * The badge: an open alarm (`openAlarm`) is an alarm. Otherwise the pinned
  * key's own standing. No key yet reads as unverified.
@@ -449,6 +487,12 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     await afterReport(slug, report);
   }
 
+  /** Asks `nick` for its keys again: the user's answer to a message none of its devices could read (issue 2491). */
+  async function rekeyEncrypted(slug: string, nick: string): Promise<void> {
+    const report = await run(slug, (client, ctx) => client.rekey(ctx, nick));
+    await afterReport(slug, report);
+  }
+
   /** Pins the master `key` to `nick`: `verified` when pasted, not when taken off the alarm. */
   async function pinEncryptedKey(
     slug: string,
@@ -568,6 +612,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     encryptedChatHasMessages,
     readEncryptedChat,
     sendEncrypted,
+    rekeyEncrypted,
     pinEncryptedKey,
     replaceEncryptedIdentity,
     identitySynced,
@@ -594,6 +639,7 @@ export const deleteEncryptedChat = exports_.deleteEncryptedChat;
 export const encryptedChatHasMessages = exports_.encryptedChatHasMessages;
 export const readEncryptedChat = exports_.readEncryptedChat;
 export const sendEncrypted = exports_.sendEncrypted;
+export const rekeyEncrypted = exports_.rekeyEncrypted;
 export const pinEncryptedKey = exports_.pinEncryptedKey;
 export const replaceEncryptedIdentity = exports_.replaceEncryptedIdentity;
 export const identitySynced = exports_.identitySynced;

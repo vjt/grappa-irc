@@ -41,9 +41,12 @@ import {
   loadEncryptedChat,
   openAlarm,
   readEncryptedChat,
+  rekeyEncrypted,
   replaceEncryptedIdentity,
   sendEncrypted,
   trustOf,
+  type UnreadableStep,
+  unreadableStep,
   verifyEncrypted,
 } from "./lib/encryptedChats";
 import { friendlyApiError } from "./lib/friendlyApiError";
@@ -70,7 +73,10 @@ import NickText from "./NickText";
 //     device (pair this browser, or start a new identity), a key alarm (take
 //     the new key), or no key yet (send, or paste the bot's key and give it
 //     ours). The exchange is done once the nick has a pinned key and no alarm
-//     is open, verified or not: verification is the top bar's state. The
+//     is open, verified or not: verification is the top bar's state. A
+//     message none of the peer's devices could read leaves a card too (issue
+//     2491): asking for their keys again is the user's choice, never made
+//     for them, and the compose line stays usable meanwhile. The
 //     emoji comparison runs here too, modal-like over the body, and nothing
 //     can be sent until it ends;
 //   * everything technical (keys, devices, pins, the comparison's start, the
@@ -133,6 +139,7 @@ const FAILURE_LABEL: Record<OutFailure, string> = {
   repinned: "the peer was pinned to another key",
   "resend-failed": "it could not be sent again",
   "rekey-throttled": "a new session was started too recently",
+  unreadable: "none of the peer's devices can read it",
   "rate-limited": "grappa's queue for this peer is full",
   "too-large": "it is too large",
   // `too-late` and `late` only happen to a payload with a deadline, and only
@@ -309,8 +316,12 @@ const IdentityElsewhere: Component<{ slug: string }> = (props) => {
   );
 };
 
-/** The one step the key exchange still needs, or null once it is done. */
-type Step = "elsewhere" | "alarm" | "no-key";
+/**
+ * The one step the key exchange still needs, or null once it is done: the
+ * three above, or, once it is done, a message the peer could not read
+ * (`unreadableStep`, issue 2491), which leaves the compose line usable.
+ */
+type Step = "elsewhere" | "alarm" | "no-key" | UnreadableStep;
 
 // What the dialog shows for a SAS, from the window's view of it.
 type SasPhase = "waiting" | "asked" | "exchanging" | "compare" | "elsewhere" | "confirmed";
@@ -484,7 +495,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
     if (!loaded()) return null;
     if (alarm() !== null) return "alarm";
     if (peerTrust() === null) return "no-key";
-    return null;
+    return unreadableStep(rows());
   };
 
   // While searching, only the messages that hold what was typed, in any case.
@@ -532,6 +543,14 @@ const EncryptedChatPane: Component<Props> = (props) => {
     setDraft("");
     void sendEncrypted(props.networkSlug, props.nick, body).catch((err: unknown) => {
       console.warn(`[e2e] could not send to ${props.nick}`, err);
+    });
+  };
+
+  // The user's choice, never the engine's (issue 2491): the nick may be
+  // someone else's now, and their key then comes as the alarm.
+  const rekey = () => {
+    void rekeyEncrypted(props.networkSlug, props.nick).catch((err: unknown) => {
+      console.warn(`[e2e] could not ask ${props.nick} for their keys again`, err);
     });
   };
 
@@ -729,6 +748,44 @@ const EncryptedChatPane: Component<Props> = (props) => {
                     />
                     <div class="e2e-step-actions">
                       <CopyOwnKey networkSlug={props.networkSlug} testId="e2e-step-copy" />
+                    </div>
+                  </Match>
+                  <Match when={s() === "unreadable"}>
+                    <p class="e2e-error">
+                      {display()} could not read your last message: none of the devices it was
+                      encrypted to is theirs any more. They may have moved to another server or
+                      started a new encryption identity, or someone else may be using the nick. Ask
+                      for their keys again to start a new key exchange: if their key changed, you
+                      will be asked to check it.
+                    </p>
+                    <div class="e2e-step-actions">
+                      <button
+                        type="button"
+                        class="e2e-sas-button"
+                        data-testid="e2e-rekey"
+                        onClick={rekey}
+                      >
+                        ask for their keys again
+                      </button>
+                    </div>
+                  </Match>
+                  <Match when={s() === "rekey-asked"}>
+                    <p>waiting for {display()}'s keys…</p>
+                  </Match>
+                  <Match when={s() === "rekey-unanswered"}>
+                    <p>
+                      {display()} sent no keys: they may have no encryption identity where they are
+                      now, or they are not on IRC. You can ask again later.
+                    </p>
+                    <div class="e2e-step-actions">
+                      <button
+                        type="button"
+                        class="e2e-sas-button"
+                        data-testid="e2e-rekey"
+                        onClick={rekey}
+                      >
+                        ask again
+                      </button>
                     </div>
                   </Match>
                 </Switch>

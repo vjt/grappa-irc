@@ -447,6 +447,62 @@ describe("e2eClient", () => {
     expect(await bodies(a, "bob")).not.toContain("it's me, honest");
   });
 
+  // issue 2491: grappa NACKs from `*` a message that names none of the devices
+  // it lists for the peer; the user, never the client, asks for keys again.
+  it("tells the sender a message none of the peer's devices can read, does nothing more, and on the user's word asks for keys: a new master is the alarm", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    // Bob starts a new identity in another browser: grappa lists only its device.
+    const b2 = await w.rejoin("Bob");
+
+    await a.client.send(a.ctx, "bob", "still there?");
+    await a.client.drain(a.ctx);
+
+    expect(await states(a, "bob")).toEqual([
+      ["sent", null],
+      ["failed", "unreadable"],
+    ]);
+    // No re-key and no KEYREQ of its own, however long it waits.
+    const sent = w.grappa.sends.length;
+    w.now += KEYREQ_RETRY_MS;
+    expect((await a.client.tick(a.ctx)).waiting).toBe(false);
+    expect(w.grappa.sends).toHaveLength(sent);
+
+    const asked = await a.client.rekey(a.ctx, "bob");
+
+    expect(asked.waiting).toBe(true);
+    expect(sendsBy(w, "alice").at(-1)).toEqual(["keyreq", "*", undefined]);
+    expect((await rowsOf(a, "bob")).at(-1)).toEqual(
+      expect.objectContaining({ kind: "rekey", nick: "bob", phase: "asked" }),
+    );
+    expect((await a.chats.chats(SLOT)).bob?.unread).toBe(1);
+
+    await a.client.drain(a.ctx);
+
+    const rows = await rowsOf(a, "bob");
+    expect(rows.map((r) => r.kind).slice(-2)).toEqual(["rekey", "key_alarm"]);
+    expect(rows.at(-1)).toEqual(
+      expect.objectContaining({ kind: "key_alarm", presented: (await ownOf(b2)).master }),
+    );
+  });
+
+  it("says the keys asked for again never came, once they waited as long as a message waits for keys", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    w.grappa.unanswered = () => true;
+    w.now += KEYREQ_RETRY_MS;
+    await a.client.rekey(a.ctx, "bob");
+
+    w.now += OUTQ_TTL_MS;
+    const ticked = await a.client.tick(a.ctx);
+
+    expect(ticked.waiting).toBe(false);
+    expect((await rowsOf(a, "bob")).filter((r) => r.kind === "rekey")).toEqual([
+      expect.objectContaining({ phase: "asked" }),
+      expect.objectContaining({ phase: "unanswered" }),
+    ]);
+  });
+
   it("pins a master by hand: the chat says so, the identity reads verified, and our own key is our master", async () => {
     const { a, b } = await pair();
     const bob = await ownOf(b);

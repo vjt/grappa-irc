@@ -15,8 +15,8 @@ import { ruleBody, themeCss } from "./helpers/themeCss";
 // technical half in the right rail (EncryptedRail), rendered side by side as
 // Shell mounts them. The chat glue (lib/encryptedChats) is the boundary: its
 // reads are signals here and its verbs are spies, so these tests pin what the
-// window shows where, and which verb each control reaches. `trustOf` and
-// `openAlarm` stay the real ones: the badge and the step are their answers,
+// window shows where, and which verb each control reaches. `trustOf`,
+// `openAlarm` and `unreadableStep` stay the real ones: the badge and the step are their answers,
 // not copies of them, as do the pairing link helpers (`lib/e2e/pairing.ts`).
 // A key is a master.
 
@@ -38,6 +38,7 @@ const pinEncryptedKey = vi.hoisted(() => vi.fn());
 const verifyEncrypted = vi.hoisted(() => vi.fn());
 const deleteEncryptedChat = vi.hoisted(() => vi.fn());
 const replaceEncryptedIdentity = vi.hoisted(() => vi.fn());
+const rekeyEncrypted = vi.hoisted(() => vi.fn());
 const copyText = vi.hoisted(() => vi.fn());
 const loadDocument = vi.hoisted(() => vi.fn());
 const holdsMasterHere = vi.hoisted(() => vi.fn());
@@ -50,6 +51,7 @@ const panel = vi.hoisted(() => ({
 vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   trustOf: (await importOriginal<typeof import("../lib/encryptedChats")>()).trustOf,
   openAlarm: (await importOriginal<typeof import("../lib/encryptedChats")>()).openAlarm,
+  unreadableStep: (await importOriginal<typeof import("../lib/encryptedChats")>()).unreadableStep,
   encryptedChat: () => chat(),
   encryptedRows: () => rows(),
   encryptedTrust: () => trust(),
@@ -63,6 +65,7 @@ vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   pinEncryptedKey,
   verifyEncrypted,
   deleteEncryptedChat,
+  rekeyEncrypted,
   pairedHere: vi.fn(),
 }));
 // Whether this browser holds the network's master, and the add-a-device
@@ -106,6 +109,7 @@ beforeEach(() => {
     verifyEncrypted,
     deleteEncryptedChat,
     replaceEncryptedIdentity,
+    rekeyEncrypted,
   ]) {
     fn.mockResolvedValue(undefined);
   }
@@ -328,6 +332,77 @@ describe("EncryptedChatPane, the key-exchange step", () => {
     expect(screen.queryByTestId("e2e-step")).toBeNull();
     expect(screen.queryByTestId("e2e-alarm-accept")).toBeNull();
     expect(screen.queryByTestId("e2e-rail-alarm-accept")).toBeNull();
+  });
+});
+
+// issue 2491: a message none of the peer's devices could read leaves a card,
+// and asking for their keys again is the user's tap, never the window's.
+describe("EncryptedChatPane, a message the peer could not read", () => {
+  const unreadable: ChatRow = {
+    kind: "out",
+    id: "o",
+    at,
+    body: "still there?",
+    state: "failed",
+    reason: "unreadable",
+  };
+  const rekey = (phase: "asked" | "renewed" | "unanswered"): ChatRow => ({
+    kind: "rekey",
+    id: `r-${phase}`,
+    at,
+    nick: "Bob",
+    phase,
+  });
+
+  beforeEach(() => {
+    setTrust({ master: KEY, verified: true, devices: 1 });
+  });
+
+  it("says why on the row, and the card says what may have happened and asks for their keys only on a tap", () => {
+    setRows([unreadable]);
+    renderPane();
+
+    expect(within("e2e-row-state").textContent).toBe(
+      "not sent: none of the peer's devices can read it",
+    );
+    const step = within("e2e-step");
+    expect(step.dataset.step).toBe("unreadable");
+    expect(step.textContent).toContain("Bob could not read your last message");
+    expect(step.textContent).toContain("someone else may be using the nick");
+    expect(rekeyEncrypted).not.toHaveBeenCalled();
+    // The compose line stays usable.
+    expect((screen.getByTestId("e2e-compose-input") as HTMLInputElement).disabled).toBe(false);
+
+    fireEvent.click(screen.getByTestId("e2e-rekey"));
+
+    expect(rekeyEncrypted).toHaveBeenCalledWith("azzurra", "bob");
+  });
+
+  it("waits for the keys with no button, says when none came and offers to ask again, and goes once they did", () => {
+    setRows([unreadable, rekey("asked")]);
+    renderPane();
+    expect(within("e2e-step").dataset.step).toBe("rekey-asked");
+    expect(within("e2e-step").textContent).toBe("waiting for Bob's keys…");
+    expect(screen.queryByTestId("e2e-rekey")).toBeNull();
+
+    setRows([unreadable, rekey("asked"), rekey("unanswered")]);
+    expect(within("e2e-step").dataset.step).toBe("rekey-unanswered");
+    expect(within("e2e-step").textContent).toContain("Bob sent no keys");
+    fireEvent.click(screen.getByTestId("e2e-rekey"));
+    expect(rekeyEncrypted).toHaveBeenCalledWith("azzurra", "bob");
+
+    setRows([unreadable, rekey("asked"), rekey("renewed")]);
+    expect(screen.queryByTestId("e2e-step")).toBeNull();
+  });
+
+  it("gives way to the key alarm their new key raises", () => {
+    setRows([
+      unreadable,
+      rekey("asked"),
+      { kind: "key_alarm", id: "a", at, nick: "Bob", presented: OWN },
+    ]);
+    renderPane();
+    expect(within("e2e-step").dataset.step).toBe("alarm");
   });
 });
 
