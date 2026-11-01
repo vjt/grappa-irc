@@ -973,11 +973,12 @@ defmodule Grappa.Session do
   `{:error, :invalid_line}` for a CR/LF/NUL in `target`;
   `{:error, :bad_request}` for a target that is not a nick, a verb outside
   `e2e_send_verbs/0`, a priority outside `e2e_priorities/0`, addresses the
-  verb may not carry, a payload that is not compact JSON text, or an
-  `expires_at` that is not positive or rides anything but a `:control` MSG
-  or PKMSG; `{:error, :unknown_device}` when `from` names no device of the
-  subject's stored list; `{:error, :too_large}` past
-  `E2e.max_payload_bytes/0` or when the payload needs more than 64 lines;
+  verb may not carry or a `from` that is not a did, a payload that is not
+  compact JSON text, or an `expires_at` that is not positive or rides
+  anything but a `:control` MSG or PKMSG; `{:error, :unknown_device}` when
+  `from` names no device of the subject's stored list;
+  `{:error, :too_large}` past `E2e.max_payload_bytes/0` or when the payload
+  needs more than 64 lines;
   `{:error, :rate_limited}` when the peer's queue (32 text messages, 32
   lines in each of the urgent and reactive lanes) or the connection's (128
   urgent and reactive lines, 480 s of text) cannot take it whole;
@@ -1028,8 +1029,11 @@ defmodule Grappa.Session do
         {:error, :bad_request}
 
       # `addressed?/3` takes any term, so it is also what judges the
-      # addresses' type.
-      Identifier.valid_nick?(target) and E2e.addressed?(verb, from, to) and E2e.chunk?(payload) ->
+      # addresses' type. A client always sends from a device: `*` speaks for
+      # the user, and only grappa does (KEYS, and the NACK of a message no
+      # listed device could read).
+      Identifier.valid_nick?(target) and E2e.did?(from) and E2e.addressed?(verb, from, to) and
+          E2e.chunk?(payload) ->
         :ok
 
       true ->
