@@ -392,6 +392,183 @@ describe("the doors", () => {
   );
 });
 
+describe("the account changing while a door is out", () => {
+  // A promise resolved by hand, for the await that spans the change.
+  function held<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+    let resolve: (value: T) => void = () => undefined;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  }
+
+  it("a fetch answered after it writes nothing and reads nothing more", async () => {
+    const answer = held<E2eRequestsWireRequest[]>();
+    listE2eRequests.mockReturnValueOnce(answer.promise);
+
+    const loading = store.loadE2eRequests(slug);
+    setBearer("tok2");
+    answer.resolve([req({ state: "accepted", expires_at: null })]);
+    await loading;
+
+    expect(store.e2eRequestWith(slug, "Bob")).toBeUndefined();
+    expect(listE2eRequests).toHaveBeenCalledTimes(1);
+    expect(openEncryptedChat).not.toHaveBeenCalled();
+  });
+
+  it("an asking answered after it holds nothing", async () => {
+    const answer = held<E2eRequestsWireRequest>();
+    askE2eRequest.mockReturnValueOnce(answer.promise);
+
+    const asking = store.askEncryptedChat(slug, "Bob");
+    await vi.waitFor(() => expect(askE2eRequest).toHaveBeenCalled());
+    setBearer("tok2");
+    answer.resolve(req({}));
+    await asking;
+
+    expect(store.e2eRequestWith(slug, "Bob")).toBeUndefined();
+  });
+
+  it("an accept whose line comes after it sends nothing", async () => {
+    const device = held<{ did: string; master: string }>();
+    encryptedDevice.mockReturnValueOnce(device.promise);
+    const incoming = req({ state: "incoming" });
+    store.putE2eRequest(slug, incoming);
+
+    const accepting = store.acceptEncryptedChat(slug, incoming);
+    setBearer("tok2");
+    device.resolve({ did: "dev-1", master: "M4ST3R" });
+    await accepting;
+
+    expect(answerE2eRequest).not.toHaveBeenCalled();
+  });
+
+  it("an accept answered after it opens nothing and asks no keys", async () => {
+    const answer = held<{ msgid: string }>();
+    answerE2eRequest.mockReturnValueOnce(answer.promise);
+    const incoming = req({ state: "incoming" });
+    store.putE2eRequest(slug, incoming);
+
+    const accepting = store.acceptEncryptedChat(slug, incoming);
+    await vi.waitFor(() => expect(answerE2eRequest).toHaveBeenCalled());
+    setBearer("tok2");
+    answer.resolve({ msgid: "m1" });
+    await accepting;
+
+    expect(openEncryptedWindow).not.toHaveBeenCalled();
+    expect(askEncryptedKeys).not.toHaveBeenCalled();
+  });
+
+  // Each await a request follows: the request must not go once the account changed.
+  const before = [
+    ["asking", "its line", () => encryptedDevice, () => askE2eRequest],
+    ["refusing", "its line", () => encryptedDevice, () => answerE2eRequest],
+    ["cancelling", "its line", () => encryptedDevice, () => dismissE2eRequest],
+    ["accepting", "the window", () => openEncryptedWindow, () => askEncryptedKeys],
+  ] as const;
+  it.each(before)("%s sends nothing when %s comes after it", async (verb, _, awaited, next) => {
+    const wait = held<unknown>();
+    awaited().mockReturnValueOnce(wait.promise);
+    answerE2eRequest.mockResolvedValue({ msgid: "m1" });
+    const request = req({ state: verb === "cancelling" ? "outgoing" : "incoming" });
+    store.putE2eRequest(slug, request);
+
+    const work =
+      verb === "asking"
+        ? store.askEncryptedChat(slug, "Bob")
+        : verb === "refusing"
+          ? store.refuseEncryptedChat(slug, request)
+          : verb === "cancelling"
+            ? store.dismissEncryptedChatRequest(slug, request)
+            : store.acceptEncryptedChat(slug, request);
+    await vi.waitFor(() => expect(awaited()).toHaveBeenCalled());
+    setBearer("tok2");
+    wait.resolve(awaited() === encryptedDevice ? { did: "dev-1", master: "M4ST3R" } : undefined);
+    await work;
+
+    expect(next()).not.toHaveBeenCalled();
+  });
+
+  it("an accepted chat whose keys are asked after it dismisses nothing", async () => {
+    const asked = held<undefined>();
+    askEncryptedKeys.mockReturnValueOnce(asked.promise);
+
+    store.putE2eRequest(slug, req({ state: "accepted", expires_at: null }));
+    await vi.waitFor(() => expect(askEncryptedKeys).toHaveBeenCalled());
+    setBearer("tok2");
+    asked.resolve(undefined);
+    await vi.waitFor(() => expect(askEncryptedKeys).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(dismissE2eRequest).not.toHaveBeenCalled();
+  });
+
+  // The last await before a drop: a drop of the old account counts as a
+  // change, and would send a fetch of the new one back to read again.
+  const lastly = [
+    ["refusing", () => answerE2eRequest, "incoming"],
+    ["cancelling", () => dismissE2eRequest, "outgoing"],
+    ["opening an accepted chat", () => dismissE2eRequest, "accepted"],
+  ] as const;
+  it.each(lastly)(
+    "%s answered after it leaves the new account's fetch alone",
+    async (verb, awaited, state) => {
+      const answer = held<unknown>();
+      awaited().mockReturnValueOnce(answer.promise);
+      const request = req({ state, expires_at: state === "accepted" ? null : DEADLINE });
+
+      store.putE2eRequest(slug, request);
+      const work =
+        verb === "refusing"
+          ? store.refuseEncryptedChat(slug, request)
+          : verb === "cancelling"
+            ? store.dismissEncryptedChatRequest(slug, request)
+            : Promise.resolve();
+      await vi.waitFor(() => expect(awaited()).toHaveBeenCalled());
+      setBearer("tok2");
+      const read = held<E2eRequestsWireRequest[]>();
+      listE2eRequests.mockReturnValueOnce(read.promise);
+      const loading = store.loadE2eRequests(slug);
+      answer.resolve(verb === "refusing" ? { msgid: "m1" } : undefined);
+      await work;
+      await Promise.resolve();
+      read.resolve([]);
+      await loading;
+
+      expect(listE2eRequests).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("a door refused 404 after it reads nothing again", async () => {
+    let refuse: (err: unknown) => void = () => undefined;
+    answerE2eRequest.mockReturnValueOnce(new Promise((_, reject) => (refuse = reject)));
+    const incoming = req({ state: "incoming" });
+    store.putE2eRequest(slug, incoming);
+
+    const refusing = store.refuseEncryptedChat(slug, incoming);
+    await vi.waitFor(() => expect(answerE2eRequest).toHaveBeenCalled());
+    setBearer("tok2");
+    refuse(new ApiError(404, "not_found"));
+    await expect(refusing).rejects.toThrow("404");
+
+    expect(listE2eRequests).not.toHaveBeenCalled();
+  });
+
+  it("an accepted chat opened after it asks no keys and dismisses nothing", async () => {
+    const opened = held<undefined>();
+    openEncryptedChat.mockReturnValueOnce(opened.promise);
+
+    store.putE2eRequest(slug, req({ state: "accepted", expires_at: null }));
+    await vi.waitFor(() => expect(openEncryptedChat).toHaveBeenCalled());
+    setBearer("tok2");
+    opened.resolve(undefined);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(askEncryptedKeys).not.toHaveBeenCalled();
+    expect(dismissE2eRequest).not.toHaveBeenCalled();
+  });
+});
+
 describe("loading", () => {
   it("every (re)join reads every network's requests", async () => {
     setList([{ slug }, { slug: `${slug}-b` }]);
