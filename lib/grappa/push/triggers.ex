@@ -10,9 +10,10 @@ defmodule Grappa.Push.Triggers do
   after a successful `Scrollback.persist_event/1` for a `:privmsg` or
   `:action` row — it owns the post-persist obligations (#369 A3), which is
   why the call moved off `Session.Server`'s `apply_effects/2` `:persist`
-  arm. `dispatch_presence/4`, `dispatch_e2e/2` and `dispatch_invite/3` are
-  the Push entry points `Session.Server` still calls directly: a presence
-  transition and an end-to-end encrypted message persist no row, and an
+  arm. `dispatch_presence/4`, `dispatch_e2e/2`, `dispatch_e2e_request/2`
+  and `dispatch_invite/3` are the Push entry points `Session.Server` still
+  calls directly: a presence transition, an end-to-end encrypted message
+  and a request to start an encrypted chat persist no row, and an
   INVITE's row is a `:server_event` the message path never reads, so there
   is nothing for `Persistor` to be the guardian of.
 
@@ -100,6 +101,9 @@ defmodule Grappa.Push.Triggers do
   as what it is to the user: a private message from a nick. The mute
   first, then the private-message prefs (`should_notify_e2e?/3`, sharing
   their helpers with the row path); the payload says who and nothing else.
+  A request to start an encrypted chat (issue 2486, `dispatch_e2e_request/2`)
+  is gated the same way, for the same reason: it is a private approach from
+  a nick, and a muted nick's request is stored but raises nothing.
 
   ## The fourth trigger class — inbound INVITEs (issue 2487)
 
@@ -343,6 +347,25 @@ defmodule Grappa.Push.Triggers do
       ctx,
       &should_notify_e2e?(nick, ctx.network_slug, &1),
       fn -> Payload.build_e2e(nick, ctx.network_slug) end
+    )
+  end
+
+  @doc """
+  Dispatches the Web Push for a NEW request from `nick` to start an
+  end-to-end encrypted chat (issue 2486). A refreshed request is not
+  dispatched again: the caller decides which requests are new.
+
+  Same shape and gate as `dispatch_e2e/2` (`should_notify_e2e?/3`): the
+  request is a private approach from a nick, so the private-message prefs
+  and the mute decide. The payload (`Payload.build_e2e_request/2`) says
+  who is asking.
+  """
+  @spec dispatch_e2e_request(String.t(), ctx()) :: :ok
+  def dispatch_e2e_request(nick, ctx) when is_binary(nick) and is_map(ctx) do
+    dispatch(
+      ctx,
+      &should_notify_e2e?(nick, ctx.network_slug, &1),
+      fn -> Payload.build_e2e_request(nick, ctx.network_slug) end
     )
   end
 

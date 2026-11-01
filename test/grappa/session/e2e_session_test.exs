@@ -29,7 +29,8 @@ defmodule Grappa.Session.E2eSessionTest do
   import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.{E2eFixtures, E2eInbox, E2eKeys, IRCServer, Push, QueryWindows, Repo, Session}
+  alias Grappa.{E2eFixtures, E2eInbox, E2eKeys, E2eRequests, IRCServer, Push, QueryWindows, Repo, Session}
+  alias Grappa.E2eRequests.Request
   alias Grappa.IRC.{Client, E2e, LineSplit}
   alias Grappa.Networks.{Credentials, SessionPlan}
   alias Grappa.PubSub.Topic
@@ -1106,8 +1107,292 @@ defmodule Grappa.Session.E2eSessionTest do
     end
   end
 
+  describe "encrypted-chat requests (issue 2486)" do
+    # grappa's own lines wait on the connection's fake-lag bank, which the
+    # registration has just filled.
+    @consent_timeout 15_000
+
+    # The master-key hint the proposal puts in every consent payload.
+    @hint ~s({"v":2,"master":"m4st3rK3yHintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"})
+
+    test "a stranger's REQUEST is kept, opens the plaintext query, pushes once, and is never queued or stored; again, it only refreshes" do
+      {server, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      push_telemetry!(user)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      refute QueryWindows.open?(subject, network.id, "alice")
+
+      Enum.each(consent_from("alice", :request, @hint), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, network: slug, request: request}},
+                     @wire_timeout
+
+      assert slug == network.slug
+      assert %{peer: "alice", state: :incoming, payload: @hint, expires_at: deadline} = request
+      assert is_binary(deadline)
+      assert QueryWindows.open?(subject, network.id, "alice")
+      assert_receive {:pushed, %{subject: ^subject}}, 2_000
+
+      Enum.each(consent_from("ALICE", :request, @hint), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{id: id, state: :incoming}}},
+                     @wire_timeout
+
+      assert id == request.id
+      refute_receive {:pushed, _}, 500
+
+      assert E2eInbox.list(device, 0) == []
+      assert rows(network) == 0
+      assert Process.alive?(pid)
+    end
+
+    test "a line nobody asked for, or a payload outside the rule, changes nothing and the session carries on" do
+      {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      for verb <- [:accept, :refuse, :cancel],
+          do: Enum.each(consent_from("bob", verb, @hint), &IRCServer.feed(server, &1))
+
+      big = ~s({"v":2,"pad":"#{String.duplicate("A", Request.max_payload_bytes())}"})
+      Enum.each(consent_from("carol", :request, big), &IRCServer.feed(server, &1))
+
+      # A good line last: once ITS event arrives, every line before it has
+      # been through the session.
+      Enum.each(consent_from("alice", :request, @hint), &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{peer: "alice"}}}, @wire_timeout
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request}}
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request_gone}}
+
+      assert [%Request{peer: "alice"}] = E2eRequests.list({:user, user.id}, network.id, DateTime.utc_now())
+      assert E2eInbox.list(device, 0) == []
+      assert Process.alive?(pid)
+    end
+
+    test "asking sends REQUEST from the device to the user and holds it outgoing; the peer's ACCEPT, then a REFUSE elsewhere, reach every device" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      assert {:ok, %Request{id: id, state: :outgoing, peer: "Alice"}} =
+               Session.ask_e2e(subject, network.id, "Alice", device.did, @hint)
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{id: ^id, state: :outgoing}}},
+                     @wire_timeout
+
+      assert %{verb: :request, from: from, to: "*", chunk: @hint} = await_consent(server, "Alice", :request)
+      assert from == device.did
+      # Asking opens no window: the user asked from the one they were in.
+      refute QueryWindows.open?(subject, network.id, "alice")
+
+      Enum.each(consent_from("alice", :accept, @hint), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :e2e_request, request: %{id: ^id, state: :accepted, expires_at: nil}}
+                     },
+                     @wire_timeout
+
+      {:ok, %Request{id: bob}} = Session.ask_e2e(subject, network.id, "bob", device.did, @hint)
+      _ = await_consent(server, "bob", :request)
+      Enum.each(consent_from("bob", :refuse, @hint), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{id: ^bob, state: :refused}}},
+                     @wire_timeout
+
+      # The refusal is shown in the plaintext query, which the requester may
+      # have closed during a long wait.
+      assert QueryWindows.open?(subject, network.id, "bob")
+    end
+
+    test "accepting the waiting request sends ACCEPT and the row goes on every device; refusing sends REFUSE" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      for nick <- ["alice", "bob"], do: Enum.each(consent_from(nick, :request, @hint), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{peer: "alice", id: alice}}},
+                     @wire_timeout
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{peer: "bob", id: bob}}},
+                     @wire_timeout
+
+      assert {:ok, msgid} = Session.answer_e2e(subject, network.id, alice, :accept, device.did, @hint)
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request_gone, id: ^alice}}, @wire_timeout
+      assert %{verb: :accept, msgid: ^msgid, to: "*"} = await_consent(server, "alice", :accept)
+
+      assert {:ok, _} = Session.answer_e2e(subject, network.id, bob, :refuse, device.did, @hint)
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request_gone, id: ^bob}}, @wire_timeout
+      assert %{verb: :refuse} = await_consent(server, "bob", :refuse)
+
+      assert E2eRequests.list(subject, network.id, DateTime.utc_now()) == []
+      assert {:error, :not_found} = Session.answer_e2e(subject, network.id, alice, :accept, device.did, @hint)
+    end
+
+    test "asking a peer whose request is waiting answers it: ACCEPT goes and the row reads accepted" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      Enum.each(consent_from("alice", :request, @hint), &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{id: id}}}, @wire_timeout
+
+      assert {:ok, %Request{id: ^id, state: :accepted}} =
+               Session.ask_e2e(subject, network.id, "alice", device.did, @hint)
+
+      assert %{verb: :accept} = await_consent(server, "alice", :accept)
+    end
+
+    test "dismissing cancels our live request on the wire; an answer just goes; a waiting request is answered, not dismissed" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      {:ok, %Request{id: alice}} = Session.ask_e2e(subject, network.id, "alice", device.did, @hint)
+      assert {:error, :bad_request} = Session.dismiss_e2e(subject, network.id, alice, nil)
+      assert :ok = Session.dismiss_e2e(subject, network.id, alice, {device.did, @hint})
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request_gone, id: ^alice}}, @wire_timeout
+      assert %{verb: :cancel, to: "*"} = await_consent(server, "alice", :cancel)
+
+      {:ok, %Request{id: bob}} = Session.ask_e2e(subject, network.id, "bob", device.did, @hint)
+      _ = await_consent(server, "bob", :request)
+      Enum.each(consent_from("bob", :accept, @hint), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{id: ^bob, state: :accepted}}},
+                     @wire_timeout
+
+      assert :ok = Session.dismiss_e2e(subject, network.id, bob, nil)
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request_gone, id: ^bob}}, @wire_timeout
+      refute Enum.any?(IRCServer.sent_lines(server), &match?(%{verb: :cancel}, fragment_to(&1, "bob")))
+
+      Enum.each(consent_from("carol", :request, @hint), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{peer: "carol", id: carol}}},
+                     @wire_timeout
+
+      assert {:error, :conflict} = Session.dismiss_e2e(subject, network.id, carol, {device.did, @hint})
+    end
+
+    test "a line the pacer cannot take leaves no row behind" do
+      {_, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+
+      send = fn ->
+        Session.send_e2e(subject, network.id, "alice", :msg, :reactive, {device.did, @alice}, @small, nil)
+      end
+
+      assert Enum.find(1..(E2ePacer.max_lane_lines() + 10), fn _ -> send.() == {:error, :rate_limited} end),
+             "alice's reactive lane never filled"
+
+      assert {:error, :rate_limited} = Session.ask_e2e(subject, network.id, "alice", device.did, @hint)
+      assert E2eRequests.for_peer(subject, network.id, "alice") == nil
+    end
+
+    test "the doors refuse what is not a nick, a line outside the rule, an unlisted device, an unknown id, and no session" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      %{device: pairing} = register_device!(subject, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      assert {:error, :invalid_line} = Session.ask_e2e(subject, network.id, "al\r\nice", device.did, @hint)
+      assert {:error, :bad_request} = Session.ask_e2e(subject, network.id, "#chan", device.did, @hint)
+      assert {:error, :bad_request} = Session.ask_e2e(subject, network.id, "alice", "*", @hint)
+      assert {:error, :bad_request} = Session.ask_e2e(subject, network.id, "alice", device.did, ~s({"v": 2}))
+
+      big = String.duplicate("A", Request.max_payload_bytes() + 1)
+      assert {:error, :bad_request} = Session.ask_e2e(subject, network.id, "alice", device.did, big)
+      assert {:error, :unknown_device} = Session.ask_e2e(subject, network.id, "alice", pairing.did, @hint)
+      assert E2eRequests.list(subject, network.id, DateTime.utc_now()) == []
+
+      Enum.each(consent_from("alice", :request, @hint), &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{id: id}}}, @wire_timeout
+
+      assert {:error, :not_found} = Session.dismiss_e2e(subject, network.id, id + 1_000, nil)
+
+      # Another subject reaches no request of this one: it has a session of
+      # its own, or none, never this one.
+      other = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      [theirs] = identity!({:user, other.id}, network, 1)
+      assert {:error, :no_session} = Session.answer_e2e({:user, other.id}, network.id, id, :accept, theirs.did, @hint)
+
+      :ok = Session.stop_session(subject, network.id)
+      assert {:error, :no_session} = Session.ask_e2e(subject, network.id, "alice", device.did, @hint)
+      assert {:error, :no_session} = Session.dismiss_e2e(subject, network.id, id, nil)
+    end
+
+    test "the sweep withdraws an incoming request past its deadline from every device; an expired one we asked stays" do
+      {server, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      Enum.each(consent_from("alice", :request, @hint), &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{id: alice}}}, @wire_timeout
+      {:ok, %Request{id: bob}} = Session.ask_e2e(subject, network.id, "bob", device.did, @hint)
+
+      age_request!(alice, E2eRequests.ttl_seconds() + 60)
+      age_request!(bob, E2eRequests.ttl_seconds() + 60)
+      sweep(pid)
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request_gone, id: ^alice}}, @wire_timeout
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request_gone}}, 200
+      assert [%Request{id: ^bob} = expired] = E2eRequests.list(subject, network.id, DateTime.utc_now())
+      assert E2eRequests.expired?(expired, DateTime.utc_now())
+    end
+  end
+
   # The listed devices of the user on the network.
   defp listed(user, network), do: E2eKeys.listed_devices({:user, user.id}, network.id)
+
+  # A consent line from `nick`'s device to the user (issue 2486).
+  defp consent_from(nick, verb, payload), do: lines_from(nick, verb, E2e.new_msgid(), {@alice, "*"}, payload)
+
+  # The consent line of `verb` grappa sent `nick`, once it is on the wire.
+  defp await_consent(server, nick, verb) do
+    {:ok, line} = IRCServer.wait_for_line(server, &match?(%{verb: ^verb}, fragment_to(&1, nick)), @consent_timeout)
+    fragment_to(line, nick)
+  end
+
+  defp age_request!(id, seconds) do
+    at = DateTime.truncate(DateTime.add(DateTime.utc_now(), -seconds, :second), :second)
+    {1, _} = Request |> where([r], r.id == ^id) |> Repo.update_all(set: [updated_at: at])
+    :ok
+  end
+
+  # A push subscription for `user` on a stub endpoint, and every push sent
+  # reported to the test as `{:pushed, meta}`.
+  defp push_telemetry!(user) do
+    bypass = Bypass.open()
+    Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
+
+    {:ok, _} =
+      Push.create({:user, user.id}, %{
+        endpoint: "http://localhost:#{bypass.port}/wp",
+        p256dh_key: @client_p256dh,
+        auth_key: @client_auth,
+        user_agent: "Mozilla/5.0 e2e-session-test"
+      })
+
+    test_pid = self()
+    handler = "e2e-push-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:grappa, :push, :send, :stop],
+      fn _, _, meta, _ -> send(test_pid, {:pushed, meta}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+    :ok
+  end
 
   # A registered device, not listed: one being paired. Its signing identity
   # rides in the process dictionary, so a test can upload keys for it.

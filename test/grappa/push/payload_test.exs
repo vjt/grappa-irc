@@ -370,6 +370,28 @@ defmodule Grappa.Push.PayloadTest do
   end
 
   # ---------------------------------------------------------------------------
+  # build_e2e_request/2 — a request to start an encrypted chat (issue 2486)
+  # ---------------------------------------------------------------------------
+
+  describe "build_e2e_request/2" do
+    test "says who is asking, in the design's words, and opens the plaintext query where the banner is" do
+      dm =
+        Payload.build(
+          %Message{channel: "vjt", dm_with: "Alice", sender: "Alice", kind: :privmsg, body: "hi"},
+          "azzurra"
+        )
+
+      payload = Payload.build_e2e_request("Alice", "azzurra")
+
+      assert payload.title == "Alice"
+      assert payload.body == "would like to start an encrypted chat"
+      assert payload.tag == dm.tag
+      assert payload.url == dm.url
+      assert Enum.sort(Map.keys(payload)) == [:body, :tag, :title, :url]
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # build_invite/3 — an inbound INVITE (issue 2487)
   # ---------------------------------------------------------------------------
 

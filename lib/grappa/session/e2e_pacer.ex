@@ -321,12 +321,15 @@ defmodule Grappa.Session.E2ePacer do
   def ack_margin_ms, do: @ack_margin_ms
 
   @doc """
-  The lane for a message of `verb` with the client's `priority`: KEYS and
-  NACK are REACTIVE and KEYREQ URGENT whatever it says; a MSG/PKMSG is
-  URGENT when `:control`, REACTIVE when `:reactive`, TEXT when `:text`.
+  The lane for a message of `verb` with the client's `priority`: KEYS,
+  NACK and the four consent verbs (issue 2486: one short line each) are
+  REACTIVE and KEYREQ URGENT whatever it says; a MSG/PKMSG is URGENT when
+  `:control`, REACTIVE when `:reactive`, TEXT when `:text`.
   """
   @spec lane(E2e.verb(), priority()) :: lane()
-  def lane(verb, priority) when verb in [:keys, :nack] and priority in @priorities, do: :reactive
+  def lane(verb, priority) when verb in [:keys, :nack, :request, :accept, :refuse, :cancel] and priority in @priorities,
+    do: :reactive
+
   def lane(:keyreq, priority) when priority in @priorities, do: :urgent
   def lane(verb, :control) when verb in [:pkmsg, :msg], do: :urgent
   def lane(verb, :reactive) when verb in [:pkmsg, :msg], do: :reactive

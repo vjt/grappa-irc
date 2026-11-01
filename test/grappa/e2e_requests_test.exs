@@ -205,11 +205,11 @@ defmodule Grappa.E2eRequestsTest do
       for i <- 1..E2eRequests.max_rows(), do: {:put, _, true} = inbound!(ctx, "asker#{i}", :request, ctx.now)
 
       turncoat = E2eRequests.inbound(row(ctx, "turncoat"), :request, "turncoat", @payload, ctx.now)
-      assert {:error, :full} = E2eRequests.commit(ctx.subject, ctx.network.id, turncoat, ctx.now)
+      assert {:error, :requests_full} = E2eRequests.commit(ctx.subject, ctx.network.id, turncoat, ctx.now)
       assert %Request{state: :refused} = row(ctx, "turncoat")
 
       plan = E2eRequests.inbound(nil, :request, "onemore", @payload, ctx.now)
-      assert {:error, :full} = E2eRequests.commit(ctx.subject, ctx.network.id, plan, ctx.now)
+      assert {:error, :requests_full} = E2eRequests.commit(ctx.subject, ctx.network.id, plan, ctx.now)
       assert row(ctx, "onemore") == nil
 
       assert {:put, %Request{state: :incoming}, false} = inbound!(ctx, "asker1", :request, ctx.now)
@@ -225,7 +225,7 @@ defmodule Grappa.E2eRequestsTest do
       {:put, %Request{state: :refused}, false} = inbound!(ctx, "answered", :refuse, ctx.now)
 
       {:request, plan} = E2eRequests.ask(nil, "onemore", ctx.now)
-      assert {:error, :full} = E2eRequests.commit(ctx.subject, ctx.network.id, plan, ctx.now)
+      assert {:error, :requests_full} = E2eRequests.commit(ctx.subject, ctx.network.id, plan, ctx.now)
 
       assert {:request, {:put, %Request{state: :outgoing}, false}} = ask!(ctx, "peer1", ctx.now)
 

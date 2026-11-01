@@ -942,6 +942,32 @@ defmodule Grappa.Push.TriggersTest do
     end
   end
 
+  describe "dispatch_e2e_request/2 — the private-message gates (issue 2486)" do
+    setup do
+      :ok = WSPresence.reset_for_test()
+      bypass = Bypass.open()
+      {:ok, bypass: bypass, endpoint: "http://localhost:#{bypass.port}/wp"}
+    end
+
+    test "a request from a nick the private-message prefs let through pushes; with the pref off nothing goes",
+         %{bypass: bypass, endpoint: endpoint} do
+      attach_telemetry([[:grappa, :push, :send, :start]])
+      Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
+
+      user = user_fixture()
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
+
+      :ok = with_presence_prefs(subject, private_messages_all: false)
+      assert :ok = Triggers.dispatch_e2e_request("alice", presence_ctx(subject, user.name))
+      refute_receive {:telemetry, _, _, _}, 300
+
+      :ok = with_presence_prefs(subject, private_messages_all: true)
+      assert :ok = Triggers.dispatch_e2e_request("alice", presence_ctx(subject, user.name))
+      assert_receive {:telemetry, [:grappa, :push, :send, :start], %{count: 1}, %{subject: ^subject}}, 2_000
+    end
+  end
+
   describe "dispatch_e2e/2 — gates" do
     setup do
       :ok = WSPresence.reset_for_test()

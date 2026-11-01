@@ -88,6 +88,7 @@ defmodule Grappa.Session.Server do
     Dcc,
     E2eInbox,
     E2eKeys,
+    E2eRequests,
     Log,
     Mentions,
     QueryWindows,
@@ -99,6 +100,8 @@ defmodule Grappa.Session.Server do
   }
 
   alias Grappa.Dcc.{Policy, Report, Transfer}
+  alias Grappa.E2eRequests.Request, as: E2eRequest
+  alias Grappa.E2eRequests.Wire, as: E2eRequestsWire
   alias Grappa.IRC.{AuthFSM, Client, CTCP, E2e, Identifier, Ignore, LineSplit, Message}
   alias Grappa.IRC.DCC.Offer
   alias Grappa.Net.SourceAliasManager
@@ -209,7 +212,10 @@ defmodule Grappa.Session.Server do
   # issue 2430 — how often the session sweeps its offline queue
   # (`Grappa.E2eInbox`): drops what waited past the TTL and tells the
   # recipient. Hourly against a 7-day TTL, so a notice lands at most an hour
-  # late; the first sweep runs at init.
+  # late; the first sweep runs at init. Issue 2486 hangs the sweep of the
+  # incoming encrypted-chat requests past their 24 h on the same tick: cic
+  # hides a banner at its deadline without waiting for it, so an hour late
+  # only leaves the row in the table a little longer.
   @e2e_inbox_sweep_ms 60 * 60 * 1_000
 
   # #347 — deferred-autojoin fallback for `:nickserv_identify`. NickServ
@@ -1927,7 +1933,15 @@ defmodule Grappa.Session.Server do
   #     the wrong guess as often as keeping it.
   @impl GenServer
   def handle_call(request, _, %{client: nil} = state)
-      when elem(request, 0) in [:send_privmsg, :send_ctcp, :send_notice, :send_statusmsg, :send_e2e] do
+      when elem(request, 0) in [
+             :send_privmsg,
+             :send_ctcp,
+             :send_notice,
+             :send_statusmsg,
+             :send_e2e,
+             :e2e_ask,
+             :e2e_answer
+           ] do
     {:reply, {:error, :no_socket}, state}
   end
 
@@ -1995,6 +2009,53 @@ defmodule Grappa.Session.Server do
       when is_binary(from_did) and is_atom(verb) and is_binary(payload) do
     attrs = %{own: true, sender: state.nick, from_did: from_did, verb: verb, msgid: E2e.new_msgid(), payload: payload}
     {:reply, put_e2e_entry(state, sibling, attrs), state}
+  end
+
+  # issue 2486 — the user asks a peer for an encrypted chat
+  # (`Session.ask_e2e/5`), or answers the peer's waiting request by asking
+  # back. The line goes before the row (`send_consent/6`).
+  # (No @impl here — a continuation clause of handle_call/3, whose @impl
+  # rides the no-Client refusal clause above, which lists this request.)
+  def handle_call({:e2e_ask, target, from, payload}, _, state)
+      when is_binary(target) and is_binary(from) and is_binary(payload) do
+    now = DateTime.utc_now()
+    {verb, plan} = state.subject |> E2eRequests.for_peer(state.network_id, target) |> E2eRequests.ask(target, now)
+
+    case send_consent(state, target, verb, {from, payload}, plan, now) do
+      {:ok, _, {:put, request, _}, state} -> {:reply, {:ok, request}, state}
+      {:error, _} = refused -> {:reply, refused, state}
+    end
+  end
+
+  # issue 2486 — the user accepts or refuses the peer's waiting request
+  # (`Session.answer_e2e/6`). Listed in the no-Client refusal above.
+  def handle_call({:e2e_answer, id, answer, from, payload}, _, state)
+      when is_integer(id) and answer in [:accept, :refuse] and is_binary(from) and is_binary(payload) do
+    now = DateTime.utc_now()
+
+    with {:ok, row} <- fetch_e2e_request(state, id),
+         {:ok, plan} <- E2eRequests.answer(row, now),
+         {:ok, msgid, _, state} <- send_consent(state, row.peer, answer, {from, payload}, plan, now) do
+      {:reply, {:ok, msgid}, state}
+    else
+      {:error, _} = refused -> {:reply, refused, state}
+    end
+  end
+
+  # issue 2486 — the user dismisses a request (`Session.dismiss_e2e/4`). NOT
+  # in the no-Client refusal above: only a CANCEL needs a socket, and
+  # dismissing an answer or an expired request must work while upstream is
+  # down.
+  def handle_call({:e2e_dismiss, id, line}, _, state) when is_integer(id) do
+    now = DateTime.utc_now()
+
+    with {:ok, row} <- fetch_e2e_request(state, id),
+         {kind, plan} when kind in [:cancel, :none] <- E2eRequests.dismiss(row, now),
+         {:ok, state} <- dismiss_e2e_request(state, row, kind, plan, line, now) do
+      {:reply, :ok, state}
+    else
+      {:error, _} = refused -> {:reply, refused, state}
+    end
   end
 
   # #1225 — /notice outbound. Routing is #640's (echo keyed to the SOURCE
@@ -3955,14 +4016,15 @@ defmodule Grappa.Session.Server do
     {:noreply, commit_paced(state, releases, lost, pacer, wait)}
   end
 
-  # issue 2430 — the offline queue's sweep (`sweep_e2e_inbox/1`): first at
-  # init, then hourly. A tick sent from outside (the dev/test expiry door)
-  # re-arms the timer like the timer's own.
+  # issue 2430 — the offline queue's sweep (`sweep_e2e_inbox/1`), and since
+  # issue 2486 the lapsed incoming requests' (`sweep_e2e_requests/1`): first
+  # at init, then hourly. A tick sent from outside (the dev/test expiry
+  # door) re-arms the timer like the timer's own.
   def handle_info(:e2e_inbox_sweep, state) do
     _ = if state.e2e_inbox_timer, do: Process.cancel_timer(state.e2e_inbox_timer)
     timer = Process.send_after(self(), :e2e_inbox_sweep, @e2e_inbox_sweep_ms)
 
-    {:noreply, sweep_e2e_inbox(%{state | e2e_inbox_timer: timer})}
+    {:noreply, %{state | e2e_inbox_timer: timer} |> sweep_e2e_inbox() |> sweep_e2e_requests()}
   end
 
   # issue 2430 — frees the memory of E2E messages that will never complete.
@@ -8145,6 +8207,33 @@ defmodule Grappa.Session.Server do
     end
   end
 
+  # issue 2486 — a consent line moves the subject's request with that peer
+  # (`Grappa.E2eRequests`), by its verb alone, and is NEVER queued in
+  # `E2eInbox`: the inbox is per-device ciphertext, consent belongs to the
+  # subject. A line nobody asked for, a payload outside the rule or a side
+  # already full changes nothing and is logged at debug (the sender decides
+  # how often that fires); a database that does not answer, at warning.
+  defp deliver_e2e(state, from, %{verb: verb, payload: payload})
+       when verb in [:request, :accept, :refuse, :cancel] do
+    now = DateTime.utc_now()
+
+    case receive_consent(state, from, verb, payload, now) do
+      {:ok, {:drop, reason}} ->
+        Logger.debug("e2e #{verb} dropped", sender: from, reason: reason)
+
+      {:ok, outcome} ->
+        announce_e2e_request(state, outcome, now)
+
+      {:error, :db_unavailable} ->
+        Logger.warning("e2e #{verb} dropped: database unavailable", sender: from)
+
+      {:error, reason} ->
+        Logger.debug("e2e #{verb} dropped", sender: from, reason: reason)
+    end
+
+    state
+  end
+
   # Wire v2: a message goes to the queue of the device its `to` names, or of
   # every listed device on `*` (it then carries a body for each). Each
   # queued copy is pushed with its device; the OS notification goes once
@@ -8286,15 +8375,143 @@ defmodule Grappa.Session.Server do
   @spec maybe_push_e2e(t(), E2eInbox.Entry.verb(), String.t()) :: :ok
   defp maybe_push_e2e(state, verb, sender) do
     if E2eInbox.message_verb?(verb) do
-      PushTriggers.dispatch_e2e(sender, %{
-        subject: state.subject,
-        subject_label: state.subject_label,
-        network_slug: state.network_slug,
-        own_nick: state.nick
-      })
+      PushTriggers.dispatch_e2e(sender, e2e_push_ctx(state))
     else
       :ok
     end
+  end
+
+  # The context the push triggers gate on, for every E2E trigger.
+  @spec e2e_push_ctx(t()) :: map()
+  defp e2e_push_ctx(state),
+    do: %{
+      subject: state.subject,
+      subject_label: state.subject_label,
+      network_slug: state.network_slug,
+      own_nick: state.nick
+    }
+
+  # issue 2486 — plans and commits what an inbound consent line does. The
+  # payload rule is the send door's (`E2eRequests.payload?/1`).
+  @spec receive_consent(t(), String.t(), E2e.consent_verb(), String.t(), DateTime.t()) ::
+          {:ok, E2eRequests.outcome()} | {:error, :bad_payload | :requests_full | :db_unavailable}
+  defp receive_consent(state, from, verb, payload, now) do
+    if E2eRequests.payload?(payload) do
+      row = E2eRequests.for_peer(state.subject, state.network_id, from)
+      E2eRequests.commit(state.subject, state.network_id, E2eRequests.inbound(row, verb, from, payload, now), now)
+    else
+      {:error, :bad_payload}
+    end
+  end
+
+  # issue 2486 — one consent line from the subject's device to `*`, and the
+  # row it moves. The pacer takes the line first (pure: nothing is sent and
+  # the state is untouched), the row is written next, and only then is the
+  # pacer committed and the line released. A refusal at either step leaves
+  # no state behind, and a row always matches a line the session took. The
+  # lane is REACTIVE (`E2ePacer.lane/2`): one short line, ahead of text
+  # within the budgets. A consent line is no Olm message, so a refusal
+  # leaves no gap to keep and the pacer it hands back is let go.
+  #
+  # Known wart, as for grappa's own NACK (issue 2491): a line still waiting
+  # when the session ends, or one that fails to go out, is announced like
+  # any other drop, an `e2e_send_dropped` naming a msgid only an answer's
+  # 202 carried. The row stays as written; the user cancels or asks again.
+  @spec send_consent(
+          t(),
+          String.t(),
+          E2e.consent_verb(),
+          {E2e.address(), String.t()},
+          E2eRequests.plan(),
+          DateTime.t()
+        ) :: {:ok, String.t(), E2eRequests.outcome(), t()} | {:error, :rate_limited | :requests_full | :db_unavailable}
+  defp send_consent(state, target, verb, {from, payload}, plan, now) do
+    msgid = E2e.new_msgid()
+    message = %{msgid: msgid, verb: verb, lane: :reactive, deadline_ms: nil}
+
+    with {:ok, lines} <- e2e_lines(state, target, verb, msgid, {from, "*"}, payload),
+         {:ok, releases, lost, pacer, wait} <-
+           pace_e2e(state, target, message, lines, System.monotonic_time(:millisecond)),
+         {:ok, outcome} <- E2eRequests.commit(state.subject, state.network_id, plan, now) do
+      state = commit_paced(state, releases, lost, pacer, wait)
+      :ok = announce_e2e_request(state, outcome, now)
+      {:ok, msgid, outcome, state}
+    else
+      {:error, :queue_full, _} -> {:error, :rate_limited}
+      {:error, reason} when reason in [:requests_full, :db_unavailable] -> {:error, reason}
+    end
+  end
+
+  # issue 2486 — what a dismissal sends: nothing for an answer, an expired
+  # request or a lapsed one; a CANCEL for a live request we asked, which
+  # needs the device's line and a socket.
+  @spec dismiss_e2e_request(
+          t(),
+          E2eRequest.t(),
+          :cancel | :none,
+          E2eRequests.plan(),
+          {E2e.address(), String.t()} | nil,
+          DateTime.t()
+        ) :: {:ok, t()} | {:error, :bad_request | :no_socket | :rate_limited | :requests_full | :db_unavailable}
+  defp dismiss_e2e_request(state, _, :none, plan, _, now) do
+    with {:ok, outcome} <- E2eRequests.commit(state.subject, state.network_id, plan, now) do
+      :ok = announce_e2e_request(state, outcome, now)
+      {:ok, state}
+    end
+  end
+
+  defp dismiss_e2e_request(_, _, :cancel, _, nil, _), do: {:error, :bad_request}
+  defp dismiss_e2e_request(%{client: nil}, _, :cancel, _, _, _), do: {:error, :no_socket}
+
+  defp dismiss_e2e_request(state, row, :cancel, plan, line, now) do
+    with {:ok, _, _, state} <- send_consent(state, row.peer, :cancel, line, plan, now), do: {:ok, state}
+  end
+
+  @spec fetch_e2e_request(t(), integer()) :: {:ok, E2eRequest.t()} | {:error, :not_found}
+  defp fetch_e2e_request(state, id) do
+    case E2eRequests.get(state.subject, state.network_id, id) do
+      %E2eRequest{} = row -> {:ok, row}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  # issue 2486 — every change of a request reaches every device of the
+  # account on the user topic. A FRESH incoming request (the user has not
+  # been told about it yet) first opens the plaintext query, where its
+  # banner lives, so every device has the window; it is pushed like a
+  # private message, under the same prefs and mute (a muted nick's request
+  # is still stored, as a muted DM is). A refusal opens the query as well:
+  # that is where it is shown, and the requester may have closed it during
+  # a long wait.
+  @spec announce_e2e_request(t(), E2eRequests.outcome(), DateTime.t()) :: :ok
+  defp announce_e2e_request(state, {:put, request, fresh?}, now) do
+    :ok =
+      if fresh? or request.state == :refused, do: maybe_open_query_window(state, %{channel: request.peer}), else: :ok
+
+    :ok = Broadcaster.to_user(state, E2eRequestsWire.request_payload(state.network_slug, request, now))
+    if fresh?, do: PushTriggers.dispatch_e2e_request(request.peer, e2e_push_ctx(state)), else: :ok
+  end
+
+  defp announce_e2e_request(state, {:delete, request}, _),
+    do: :ok = Broadcaster.to_user(state, E2eRequestsWire.gone_payload(state.network_slug, request))
+
+  defp announce_e2e_request(_, {:drop, _}, _), do: :ok
+
+  # issue 2486 — on the inbox sweep's tick: deletes the incoming requests
+  # past their deadline and tells every device the banner is gone. An
+  # outgoing one past its deadline stays (it reads `expired`, with Riprova)
+  # until the user retries or dismisses it.
+  @spec sweep_e2e_requests(t()) :: t()
+  defp sweep_e2e_requests(state) do
+    case E2eRequests.expire(state.subject, state.network_id, DateTime.utc_now()) do
+      {:ok, lapsed} ->
+        Enum.each(lapsed, &announce_e2e_request(state, {:delete, &1}, nil))
+
+      {:error, :db_unavailable} ->
+        Logger.warning("e2e request sweep skipped: database unavailable")
+    end
+
+    state
   end
 
   # A refused PKMSG or MSG is counted for the recipient's notice, per

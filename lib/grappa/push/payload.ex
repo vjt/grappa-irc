@@ -72,9 +72,10 @@ defmodule Grappa.Push.Payload do
   hard-wired to a `%Scrollback.Message{}`, and a presence transition has no
   row, no sender and no body. It is also PURE in all three arguments — no
   `subject`, no badge count, no DB (see the badge note below).
-  `build_e2e/2` (issue 2430) and `build_invite/3` (issue 2487) are its
-  siblings for the other two classes that do not notify from a content row:
-  an encrypted message has no row at all, and an INVITE's row is a
+  `build_e2e/2` (issue 2430), `build_e2e_request/2` (issue 2486) and
+  `build_invite/3` (issue 2487) are its siblings for the other classes that
+  do not notify from a content row: an encrypted message and a request to
+  start an encrypted chat have no row at all, and an INVITE's row is a
   `:server_event`.
 
   ## Tag — OS-level dedup key
@@ -232,10 +233,26 @@ defmodule Grappa.Push.Payload do
   counts it as unread.
   """
   @spec build_e2e(nick :: String.t(), network_slug :: String.t()) :: t()
-  def build_e2e(nick, network_slug) when is_binary(nick) and is_binary(network_slug) do
+  def build_e2e(nick, network_slug) when is_binary(nick) and is_binary(network_slug),
+    do: e2e_payload(nick, network_slug, "encrypted message")
+
+  @doc """
+  Builds a notification payload for a request from `nick` on
+  `network_slug` to start an end-to-end encrypted chat (issue 2486).
+
+  Pure, and shaped like `build_e2e/2`: the nick on top, what arrived below
+  ("would like to start an encrypted chat", the design's wording). `tag`
+  and `url` are the same DM ones, so a tap opens the plaintext query, where
+  the request's banner is.
+  """
+  @spec build_e2e_request(nick :: String.t(), network_slug :: String.t()) :: t()
+  def build_e2e_request(nick, network_slug) when is_binary(nick) and is_binary(network_slug),
+    do: e2e_payload(nick, network_slug, "would like to start an encrypted chat")
+
+  defp e2e_payload(nick, network_slug, body) do
     %{
       title: MircFormat.plain_text(nick),
-      body: "encrypted message",
+      body: body,
       tag: "#{network_slug}:#{nick}",
       url: build_url(network_slug, nick)
     }

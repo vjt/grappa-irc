@@ -238,12 +238,13 @@ defmodule Grappa.E2eRequests do
   @doc """
   Carries out `plan` for `subject` on `network_id`, at `now`.
 
-  `{:error, :full}` when a `:put` would start a row on a side that already
+  `{:error, :requests_full}` when a `:put` would start a row on a side that already
   has `max_rows/0` (the check and the write are one transaction);
   `{:error, :db_unavailable}` when the write lock stays taken past the
   retry budget. A `:drop` touches nothing.
   """
-  @spec commit(Subject.t(), integer(), plan(), DateTime.t()) :: {:ok, outcome()} | {:error, :full | :db_unavailable}
+  @spec commit(Subject.t(), integer(), plan(), DateTime.t()) ::
+          {:ok, outcome()} | {:error, :requests_full | :db_unavailable}
   def commit({_, _}, network_id, {:drop, reason}, _) when is_integer(network_id), do: {:ok, {:drop, reason}}
 
   def commit({_, _} = subject, network_id, {:delete, %Request{id: id} = row}, _) when is_integer(network_id) do
@@ -276,7 +277,7 @@ defmodule Grappa.E2eRequests do
   end
 
   @spec put_transaction(Subject.t(), integer(), Request.t() | nil, Request.state(), Ecto.Changeset.t()) ::
-          {:ok, Request.t()} | {:error, :full}
+          {:ok, Request.t()} | {:error, :requests_full}
   defp put_transaction(subject, network_id, row, state, changeset),
     do: Repo.immediate_transaction(fn -> put(subject, network_id, row, state, changeset) end)
 
@@ -288,7 +289,7 @@ defmodule Grappa.E2eRequests do
     side = side(state)
 
     if (is_nil(row) or side(row.state) != side) and count(subject, network_id, side) >= @max_rows,
-      do: Repo.rollback(:full),
+      do: Repo.rollback(:requests_full),
       else: Repo.insert_or_update!(changeset)
   end
 
