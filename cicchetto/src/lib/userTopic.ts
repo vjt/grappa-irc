@@ -14,6 +14,7 @@ import { channelKey } from "./channelKey";
 import { holdDccOffer, resolveDccOffer } from "./dccOffers";
 import { diagPush } from "./diagLog";
 import { catchUpPairings, deliverPairingEvent } from "./e2e/pairing";
+import { dropE2eRequest, putE2eRequest, reloadE2eRequests } from "./e2eRequests";
 import { drainE2e, drainEveryNetwork, encryptedSendDropped } from "./encryptedChats";
 import { setSeveredForFlood } from "./floodSever";
 import { refreshHighlights } from "./highlightList";
@@ -84,6 +85,8 @@ import { narrowIsupportChanged, narrowWindowStateEvent } from "./wireNarrow";
 import {
   S_E2ePairingWireE2ePairingClosedPayload,
   S_E2ePairingWireE2ePairingMessagePayload,
+  S_E2eRequestsWireE2eRequestGonePayload,
+  S_E2eRequestsWireE2eRequestPayload,
   S_NetworksWireConnectionStateEvent,
   S_NetworksWireNetworkAttachedEvent,
   S_NetworksWireNetworkDetachedEvent,
@@ -527,6 +530,12 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       return validate(S_E2ePairingWireE2ePairingMessagePayload, r);
     case "e2e_pairing_closed":
       return validate(S_E2ePairingWireE2ePairingClosedPayload, r);
+    case "e2e_request":
+      // issue 2486 (protocol 53) — a request to start an encrypted chat was
+      // made or changed state; the dispatch arm below mirrors it.
+      return validate(S_E2eRequestsWireE2eRequestPayload, r);
+    case "e2e_request_gone":
+      return validate(S_E2eRequestsWireE2eRequestGonePayload, r);
     case "names_reply":
       // #140 — /names roster bundle. A malformed member element drops the
       // whole payload rather than rendering a half-typed row, which is the
@@ -971,6 +980,10 @@ moduleRoot(() => {
       // issue 2430 X1 — the same for a pairing channel: its doorbells are
       // not replayed either, and a handshake would wait out the TTL.
       catchUpPairings();
+      // issue 2486 — and for the requests to start an encrypted chat: a
+      // peer's asking, or the answer to ours, that came while no cic was
+      // connected is waiting on grappa, and no push re-announces it.
+      reloadE2eRequests();
     });
     channel.on("event", (raw: unknown) => {
       const payload = narrowUserEvent(raw);
@@ -1308,6 +1321,16 @@ moduleRoot(() => {
           // rendezvous, if any; every device of the account hears both
           // (lib/e2e/pairing.ts).
           deliverPairingEvent(payload);
+          return;
+
+        case "e2e_request":
+          // issue 2486 — every device of the account mirrors it; an
+          // `accepted` one opens the encrypted chat here (lib/e2eRequests.ts).
+          putE2eRequest(payload.network, payload.request);
+          return;
+
+        case "e2e_request_gone":
+          dropE2eRequest(payload.network, payload.id);
           return;
 
         case "names_reply": {

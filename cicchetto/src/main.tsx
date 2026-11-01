@@ -27,6 +27,7 @@ import { diagPush } from "./lib/diagLog";
 import { mountDisplayPrefsSync } from "./lib/displayPrefs";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { mountIdentitySync } from "./lib/e2e/identity";
+import { mountE2eRequests } from "./lib/e2eRequests";
 import { identitySynced, mountEncryptedChats } from "./lib/encryptedChats";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { installGlobalPaste } from "./lib/globalPaste";
@@ -128,6 +129,9 @@ moduleRoot(() => mountDisplayPrefsSync());
 // token effects above.
 moduleRoot(() => mountIdentitySync(identitySynced));
 moduleRoot(() => mountEncryptedChats());
+// Issue 2486 — read each network's requests to start an encrypted chat as
+// the network list brings it; the user topic's (re)join reads them again.
+moduleRoot(() => mountE2eRequests());
 
 // PWA icon badge foreground reconcile (#badge-orphan, 2026-06-21) — the
 // SW push path (door #1) writes `setAppBadge` directly off-signal while

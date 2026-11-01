@@ -105,7 +105,8 @@ async function askForKeys(label: string, target: string): Promise<Keys> {
 
 // `METHOD route` of every request the page makes to this network's E2E
 // doors, the device in a route written as `:did`: the identity's and the
-// bundle's, and the queue's own traffic (inbox, its ack, the send door).
+// bundle's, the queue's own traffic (inbox, its ack, the send door), and
+// the encrypted-chat requests' (issue 2486, read on every login).
 function e2eCalls(page: Page): string[] {
   const calls: string[] = [];
   const prefix = `/networks/${NETWORK_SLUG}/e2e`;
@@ -119,9 +120,13 @@ function e2eCalls(page: Page): string[] {
 }
 
 // The identity's and the bundle's calls alone, in the order a sync makes
-// them: the queue's traffic (inbox, ack, send) is not the identity's.
+// them: the queue's traffic (inbox, ack, send) is not the identity's, nor
+// is the asking to start an encrypted chat (`/requests`), which is consent.
 const identityOnly = (calls: string[]): string[] =>
-  calls.filter((call) => !call.includes("/inbox") && !call.endsWith(" /messages"));
+  calls.filter(
+    (call) =>
+      !call.includes("/inbox") && !call.endsWith(" /messages") && !call.includes(" /requests"),
+  );
 
 // The calls that write, on any E2E door: a wiped browser makes none of them.
 const writes = (calls: string[]): string[] => calls.filter((call) => !call.startsWith("GET "));

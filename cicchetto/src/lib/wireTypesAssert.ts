@@ -118,6 +118,8 @@ import type {
   CicWireBundleHashPayload,
   E2ePairingWireE2ePairingClosedPayload,
   E2ePairingWireE2ePairingMessagePayload,
+  E2eRequestsWireE2eRequestGonePayload,
+  E2eRequestsWireE2eRequestPayload,
   MeJSONMeJson,
   NetworksCredentialAuthMethod,
   NetworksCredentialGender,
@@ -398,6 +400,10 @@ type CrossModuleArm = {
   // payloads, out of the Session walk's reach like the two above.
   e2e_pairing_message: E2ePairingWireE2ePairingMessagePayload;
   e2e_pairing_closed: E2ePairingWireE2ePairingClosedPayload;
+  // issue 2486 — the requests to start an encrypted chat. `Grappa.E2eRequests.Wire`
+  // payloads, out of the Session walk's reach like the pairing pair above.
+  e2e_request: E2eRequestsWireE2eRequestPayload;
+  e2e_request_gone: E2eRequestsWireE2eRequestGonePayload;
   bundle_hash: CicWireBundleHashPayload;
   // Two generated types carry `kind: "web_session_severed"` with different
   // shapes — `AdminEventsWireWebSessionSeveredEvent` (admin topic, five

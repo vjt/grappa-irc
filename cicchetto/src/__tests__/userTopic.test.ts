@@ -171,6 +171,12 @@ vi.mock("../lib/e2e/pairing", () => ({
   deliverPairingEvent: vi.fn(),
 }));
 
+vi.mock("../lib/e2eRequests", () => ({
+  putE2eRequest: vi.fn(),
+  dropE2eRequest: vi.fn(),
+  reloadE2eRequests: vi.fn(),
+}));
+
 vi.mock("../lib/encryptedChats", () => ({
   drainE2e: vi.fn(async () => undefined),
   drainEveryNetwork: vi.fn(),
@@ -229,16 +235,19 @@ describe("userTopic", () => {
   // issue 2430 — pushes are not replayed, so every (re)join re-fetches what
   // a push would have announced: the offline E2E inbox and, X1, every live
   // pairing channel (a handshake whose doorbell was lost waits out the TTL).
-  it("on every join catches up the E2E inbox and the pairing channels", async () => {
+  it("on every join catches up the E2E inbox, the pairing channels and the encrypted chat requests", async () => {
     const socket = await import("../lib/socket");
     const pairing = await import("../lib/e2e/pairing");
     const chats = await import("../lib/encryptedChats");
+    const requests = await import("../lib/e2eRequests");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const onJoinOk = vi.mocked(socket.joinUser).mock.calls[0]?.[1] as () => void;
     onJoinOk();
     onJoinOk();
     expect(pairing.catchUpPairings).toHaveBeenCalledTimes(2);
     expect(chats.drainEveryNetwork).toHaveBeenCalledTimes(2);
+    // issue 2486 — and the requests to start an encrypted chat.
+    expect(requests.reloadE2eRequests).toHaveBeenCalledTimes(2);
     // The join also hydrates three settings lists, which fail here on the
     // stubbed socket and fetch and warn: let them settle before restoring.
     await new Promise((r) => setTimeout(r, 10));
@@ -357,6 +366,35 @@ describe("userTopic", () => {
     vi.mocked(pairing.deliverPairingEvent).mockClear();
     channelMock.fireEvent({ kind: "e2e_pairing_closed", rendezvous_id: "x", reason: "bored" });
     expect(pairing.deliverPairingEvent).not.toHaveBeenCalled();
+  });
+
+  // issue 2486 — a request to start an encrypted chat, and its going.
+  it("hands e2e_request and e2e_request_gone to the requests mirror, by network", async () => {
+    const requests = await import("../lib/e2eRequests");
+    const request = {
+      id: 7,
+      peer: "Bob",
+      state: "incoming",
+      payload: '{"v":2,"master":"M4ST3R"}',
+      at: "2026-11-01T12:00:00Z",
+      expires_at: "2026-11-02T12:00:00Z",
+    };
+    channelMock.fireEvent({ kind: "e2e_request", network: "azzurra", request });
+    channelMock.fireEvent({ kind: "e2e_request_gone", network: "azzurra", id: 7 });
+    expect(requests.putE2eRequest).toHaveBeenCalledWith("azzurra", request);
+    expect(requests.dropE2eRequest).toHaveBeenCalledWith("azzurra", 7);
+  });
+
+  it("drops a request push of the wrong shape before the mirror sees it", async () => {
+    const requests = await import("../lib/e2eRequests");
+    channelMock.fireEvent({
+      kind: "e2e_request",
+      network: "azzurra",
+      request: { id: 7, peer: "Bob", state: "pondering", payload: null, at: "x", expires_at: null },
+    });
+    channelMock.fireEvent({ kind: "e2e_request_gone", network: "azzurra", id: "7" });
+    expect(requests.putE2eRequest).not.toHaveBeenCalled();
+    expect(requests.dropE2eRequest).not.toHaveBeenCalled();
   });
 
   // BUG1-FIX: own_nick_changed event updates network nick in memory.
