@@ -243,10 +243,11 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
 /**
  * The view of the request with `peer` on the network, kept true across its
- * deadline: one wake-up at `expires_at`, re-armed whenever the request
- * changes, so an incoming asking stops showing and ours reads expired the
- * moment the deadline passes, without waiting for grappa's sweep or the next
- * fetch. For a component (it owns an effect).
+ * deadline: read as of the moment the request changes (one may arrive
+ * already past its deadline here), then one wake-up at `expires_at`, so an
+ * incoming asking stops showing and ours reads expired the moment the
+ * deadline passes, without waiting for grappa's sweep or the next fetch.
+ * For a component (it owns an effect).
  */
 export function createRequestView(
   networkSlug: () => string,
@@ -256,10 +257,13 @@ export function createRequestView(
   const request = () => exports_.e2eRequestWith(networkSlug(), peer());
   createEffect(() => {
     const at = request()?.expires_at;
+    setNow(Date.now());
     if (at == null) return;
-    const wait = Date.parse(at) - Date.now();
+    const deadline = Date.parse(at);
+    const wait = deadline - Date.now();
     if (wait <= 0) return;
-    const timer = setTimeout(() => setNow(Date.now()), wait);
+    // Never read as before the deadline it woke up for.
+    const timer = setTimeout(() => setNow(Math.max(Date.now(), deadline)), wait);
     onCleanup(() => clearTimeout(timer));
   });
   return () => requestView(request(), now());

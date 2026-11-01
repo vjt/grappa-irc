@@ -196,6 +196,26 @@ describe("E2eRequestBanner", () => {
     expect(banner()).toBeNull();
   });
 
+  it("a request that arrives already past its deadline here reads expired at once", () => {
+    show();
+    // The clock moves on while nothing is shown, then a fetch brings our asking.
+    vi.setSystemTime(T0 + 25 * HOUR);
+    hold({});
+
+    expect(banner()?.dataset.state).toBe("expired");
+  });
+
+  it("our asking reads expired when its wake-up comes, on a wall clock a hair behind the timers", () => {
+    hold({});
+    show();
+    // Shifts the wall clock alone: the wake-up still comes 24 h after it was armed.
+    vi.setSystemTime(T0 - 5);
+
+    vi.advanceTimersByTime(24 * HOUR);
+
+    expect(banner()?.dataset.state).toBe("expired");
+  });
+
   it("our asking reads expired at its deadline", () => {
     hold({});
     show();
