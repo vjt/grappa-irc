@@ -189,6 +189,17 @@ describe("RailContext query context (#606)", () => {
     expect(screen.getByTestId("whois-card").textContent).toContain("AliceAcct");
   });
 
+  // issue 2486 — the one door to an encrypted chat with the peer.
+  it("offers to start an encrypted chat with the selected peer, and only on a query", async () => {
+    await setSelected(sel("query", "alice"));
+    await renderContainer(true);
+    const ctx = screen.getByTestId("rail-query-context");
+    expect(ctx.querySelector("[data-testid='rail-start-encrypted-chat']")).not.toBeNull();
+
+    await setSelected(sel("channel", "#italia"));
+    expect(screen.queryByTestId("rail-start-encrypted-chat")).toBeNull();
+  });
+
   it("renders the heading but no WhoisCard when no rail bundle exists yet", async () => {
     railWhoisForMock.mockReturnValue(undefined);
     await setSelected(sel("query", "alice"));
