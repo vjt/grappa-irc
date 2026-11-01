@@ -176,7 +176,8 @@ export type E2eContext = {
 };
 
 /**
- * What an operation changed: the chats it changed (folded nicks), how many
+ * What an operation changed: the chats it changed (folded nicks), with the
+ * nick of every KEYS read (it may move a chat's trust without a row), how many
  * pre-key messages it opened (each spent a one-time key: time to refill the
  * bundle), whether something waits on the clock (time to tick, the engine's
  * own answer: `Engine.waitsOnTheClock`), whether the send door refused a
@@ -207,6 +208,16 @@ export type E2eClient = {
    * message none of its devices could read (issue 2491).
    */
   rekey(ctx: E2eContext, nick: string): Promise<Report>;
+  /**
+   * Asks `nick` for its keys (`Engine.askKeys`): an encrypted chat with it
+   * was just agreed (issue 2486).
+   */
+  askKeys(ctx: E2eContext, nick: string): Promise<Report>;
+  /**
+   * This device on the network: its did and our master key, what a consent
+   * line goes from and names as a hint (issue 2486).
+   */
+  device(ctx: E2eContext): Promise<{ did: string; master: string }>;
   /** Pins `master` to `nick` by hand (`Engine.pin`); a pin is written to their chat. */
   pin(
     ctx: E2eContext,
@@ -736,6 +747,11 @@ export function e2eClient(
               break;
             }
             if (m.verb === "pkmsg") pkmsgs += 1;
+            // A KEYS may pin the nick's master on first use, or change its
+            // devices, and writes no row when it does: its chat reads its
+            // trust again all the same (issue 2486, keys asked before any
+            // message).
+            if (m.verb === "keys") touched.add(fold(m.from));
             changes.push(...changesFor(res.events, now(), m.id));
             outbound.push(...res.outbound);
             for (const [i, e] of res.events.entries()) {
@@ -842,6 +858,23 @@ export function e2eClient(
           res.outbound,
         );
       }),
+
+    askKeys: (ctx, nick) =>
+      withEngine(ctx, async (engine, persist, verifier, door) => {
+        const res = engine.askKeys(nick);
+        return finish(
+          ctx,
+          engine,
+          verifier,
+          persist,
+          door,
+          changesFor(res.events, now(), null),
+          res.outbound,
+        );
+      }),
+
+    device: (ctx) =>
+      withEngine(ctx, async (engine) => ({ did: engine.deviceId(), master: engine.fingerprint() })),
 
     pin: (ctx, nick, master, verified) =>
       withEngine(ctx, async (engine, persist, verifier, door) => {
