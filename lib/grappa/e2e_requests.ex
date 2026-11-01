@@ -36,8 +36,8 @@ defmodule Grappa.E2eRequests do
   |------------------------|------------------------|-----------------------------|
   | none / expired / lapsed incoming / refused | REQUEST arrives | `incoming` (fresh: told) |
   | `incoming`             | REQUEST arrives        | `incoming`, refreshed, not told again |
-  | `outgoing`             | REQUEST arrives        | `accepted`: their request is their consent |
-  | `accepted`             | REQUEST arrives        | dropped: consent is already given |
+  | `outgoing`             | REQUEST arrives        | `accepted` + ACCEPT answered: their request is their consent |
+  | `accepted`             | REQUEST arrives        | stays + ACCEPT answered: consent is already given |
   | `outgoing`             | ACCEPT / REFUSE arrives | `accepted` / `refused`     |
   | (lapsed) `incoming`    | CANCEL arrives         | gone                        |
   | anything else          | ACCEPT/REFUSE/CANCEL   | dropped: nobody asked       |
@@ -49,6 +49,13 @@ defmodule Grappa.E2eRequests do
 
   A late ACCEPT or REFUSE (past our deadline) finds an expired row and is
   dropped: nobody is asking any more.
+
+  "ACCEPT answered" (vjt's ruling R1): a REQUEST that meets our consent is
+  answered by grappa itself, one ACCEPT from `*` (it speaks for the user)
+  to the device that asked, so the peer hears it even if our own REQUEST
+  never reached them. An expired asking is no consent. An ACCEPT is never
+  answered, so on a crossing each side drops the other's as unsolicited
+  and the exchange cannot loop.
 
   ## Bounds that keep strangers out
 
@@ -174,20 +181,23 @@ defmodule Grappa.E2eRequests do
 
   @doc """
   Plans what an inbound consent line from `peer` does, given the row the
-  subject holds with that peer (or `nil`). Pure. `payload` is the line's,
+  subject holds with that peer (or `nil`), and whether grappa answers it
+  ACCEPT for the user: a REQUEST that meets our consent, our live
+  `outgoing` request or an `accepted` row. Pure. `payload` is the line's,
   already checked (`E2e.chunk?/1`, at most `Request.max_payload_bytes/0`).
   """
-  @spec inbound(Request.t() | nil, E2e.consent_verb(), String.t(), String.t(), DateTime.t()) :: plan()
+  @spec inbound(Request.t() | nil, E2e.consent_verb(), String.t(), String.t(), DateTime.t()) ::
+          {:accept | :none, plan()}
   def inbound(row, verb, peer, payload, %DateTime{} = now) when is_binary(peer) and is_binary(payload) do
     case {verb, phase(row, now)} do
-      {:request, :incoming} -> {:put, row, peer, :incoming, payload}
-      {:request, :outgoing} -> {:put, row, peer, :accepted, payload}
-      {:request, :accepted} -> {:drop, :already_accepted}
-      {:request, _} -> {:put, row, peer, :incoming, payload}
-      {:accept, :outgoing} -> {:put, row, peer, :accepted, payload}
-      {:refuse, :outgoing} -> {:put, row, peer, :refused, payload}
-      {:cancel, phase} when phase in [:incoming, :lapsed] -> {:delete, row}
-      {_, _} -> {:drop, :unsolicited}
+      {:request, :incoming} -> {:none, {:put, row, peer, :incoming, payload}}
+      {:request, :outgoing} -> {:accept, {:put, row, peer, :accepted, payload}}
+      {:request, :accepted} -> {:accept, {:drop, :already_accepted}}
+      {:request, _} -> {:none, {:put, row, peer, :incoming, payload}}
+      {:accept, :outgoing} -> {:none, {:put, row, peer, :accepted, payload}}
+      {:refuse, :outgoing} -> {:none, {:put, row, peer, :refused, payload}}
+      {:cancel, phase} when phase in [:incoming, :lapsed] -> {:none, {:delete, row}}
+      {_, _} -> {:none, {:drop, :unsolicited}}
     end
   end
 

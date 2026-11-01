@@ -8213,25 +8213,30 @@ defmodule Grappa.Session.Server do
   # subject. A line nobody asked for, a payload outside the rule or a side
   # already full changes nothing and is logged at debug (the sender decides
   # how often that fires); a database that does not answer, at warning.
-  defp deliver_e2e(state, from, %{verb: verb, payload: payload})
+  # A REQUEST that meets our consent is answered ACCEPT once the row is
+  # written (`reply_consent/4`): a row that could not be written answers
+  # nothing.
+  defp deliver_e2e(state, from, %{verb: verb, from: did, payload: payload})
        when verb in [:request, :accept, :refuse, :cancel] do
     now = DateTime.utc_now()
 
     case receive_consent(state, from, verb, payload, now) do
-      {:ok, {:drop, reason}} ->
+      {:ok, reply, {:drop, reason}} ->
         Logger.debug("e2e #{verb} dropped", sender: from, reason: reason)
+        reply_consent(state, from, did, reply)
 
-      {:ok, outcome} ->
-        announce_e2e_request(state, outcome, now)
+      {:ok, reply, outcome} ->
+        :ok = announce_e2e_request(state, outcome, now)
+        reply_consent(state, from, did, reply)
 
       {:error, :db_unavailable} ->
         Logger.warning("e2e #{verb} dropped: database unavailable", sender: from)
+        state
 
       {:error, reason} ->
         Logger.debug("e2e #{verb} dropped", sender: from, reason: reason)
+        state
     end
-
-    state
   end
 
   # Wire v2: a message goes to the queue of the device its `to` names, or of
@@ -8264,44 +8269,77 @@ defmodule Grappa.Session.Server do
   end
 
   # The NACK speaks for the user, so it goes from `*` (`E2e.addressed?/3`)
-  # to the device that wrote, with irc-olm's NACK payload naming the
-  # message. It is REACTIVE, like a client's NACK: what the peer drew from
-  # us. Peers draw it at will, client or no client, and the connection's
-  # 128 urgent and reactive lines are shared with the user's own orders: a
-  # few nicks writing junk to a device we do not list would fill them, and
-  # every order the user answers would be refused. So it is queued only
-  # while those lines fill under half of that room
-  # (`E2ePacer.spare_room?/1`), on top of the 32 lines each peer's
-  # REACTIVE lane holds; KEYS answers are bounded for the same reason
-  # (`E2eKeyAnswers`). A refusal is logged at debug (the sender decides
-  # how often it fires) and the sender is not told, as with any line it
-  # draws past a cap. A NACK is no Olm message, so a refusal leaves no gap
-  # to keep, and the pacer it hands back is let go.
-  #
-  # Known wart: a NACK still waiting when the session ends
-  # (`drop_e2e_pending/1`), or one whose line fails to go out
-  # (`send_e2e_releases/2`), is announced like any other drop: an
-  # `e2e_send_dropped` for a msgid no client sent. A client ignores a drop
-  # it holds no send for.
+  # to the device that wrote (`speak_for_user/5`), with irc-olm's NACK
+  # payload naming the message. A refusal is logged at debug (the sender
+  # decides how often it fires) and the sender is not told, as with any
+  # line it draws past a cap.
   @spec nack_unreadable(t(), String.t(), E2eReassembly.message()) :: t()
   defp nack_unreadable(state, from, %{msgid: ref, from: did, to: to}) do
-    now = System.monotonic_time(:millisecond)
-    msgid = E2e.new_msgid()
-    message = %{msgid: msgid, verb: :nack, lane: :reactive, deadline_ms: nil}
-
-    with :ok <- spare_room(state),
-         {:ok, lines} <- e2e_lines(state, from, :nack, msgid, {"*", did}, Jason.encode!(%{v: 2, ref: ref})),
-         {:ok, releases, lost, pacer, wait} <- pace_e2e(state, from, message, lines, now) do
-      Logger.debug("e2e message reached no listed device: answered with a NACK", sender: from, e2e_device: to)
-      commit_paced(state, releases, lost, pacer, wait)
-    else
-      {:error, reason, _} ->
-        Logger.debug("e2e message reached no listed device: NACK refused", sender: from, reason: reason)
+    case speak_for_user(state, from, :nack, did, Jason.encode!(%{v: 2, ref: ref})) do
+      {:ok, state} ->
+        Logger.debug("e2e message reached no listed device: answered with a NACK", sender: from, e2e_device: to)
         state
 
       {:error, reason} ->
         Logger.debug("e2e message reached no listed device: NACK refused", sender: from, reason: reason)
         state
+    end
+  end
+
+  # issue 2486 R1 (vjt's ruling) — a REQUEST that met our consent is
+  # answered ACCEPT by grappa, for the user (`speak_for_user/5`), to the
+  # device that asked, with the version alone for payload: grappa holds
+  # no master key to hint. The peer hears our consent even if our own
+  # REQUEST never reached them. Best effort: the row has already moved,
+  # and a refusal is logged at debug (the sender decides how often it
+  # fires); the peer asks again, or the client's own ACCEPT closes the gap.
+  @spec reply_consent(t(), String.t(), E2e.address(), :accept | :none) :: t()
+  defp reply_consent(state, _, _, :none), do: state
+
+  defp reply_consent(state, from, did, :accept) do
+    case speak_for_user(state, from, :accept, did, Jason.encode!(%{v: 2})) do
+      {:ok, state} ->
+        state
+
+      {:error, reason} ->
+        Logger.debug("e2e REQUEST not answered ACCEPT", sender: from, reason: reason)
+        state
+    end
+  end
+
+  # One line grappa sends for the user, from `*` (`E2e.addressed?/3`) to
+  # the device `did` of `nick`: what a peer drew from us, the NACK of a
+  # message no listed device could read (issue 2491) or the ACCEPT that
+  # answers a REQUEST we consent to (issue 2486). It is REACTIVE
+  # (`E2ePacer.lane/2`). Peers draw it at will, client or no client, and
+  # the connection's 128 urgent and reactive lines are shared with the
+  # user's own orders: a few nicks writing junk would fill them, and every
+  # order the user answers would be refused. So it is queued only while
+  # those lines fill under half of that room (`E2ePacer.spare_room?/1`),
+  # on top of the 32 lines each peer's REACTIVE lane holds; KEYS answers
+  # are bounded for the same reason (`E2eKeyAnswers`). Neither line is an
+  # Olm message, so a refusal leaves no gap to keep, and the pacer it hands
+  # back is let go.
+  #
+  # Known wart: a line still waiting when the session ends
+  # (`drop_e2e_pending/1`), or one that fails to go out
+  # (`send_e2e_releases/2`), is announced like any other drop: an
+  # `e2e_send_dropped` for a msgid no client sent. A client ignores a drop
+  # it holds no send for.
+  @spec speak_for_user(t(), String.t(), :nack | :accept, String.t(), String.t()) ::
+          {:ok, t()} | {:error, :no_spare_room | :too_large | :queue_full | :too_late}
+  defp speak_for_user(state, nick, verb, did, payload) do
+    now = System.monotonic_time(:millisecond)
+    msgid = E2e.new_msgid()
+    message = %{msgid: msgid, verb: verb, lane: E2ePacer.lane(verb, :text), deadline_ms: nil}
+
+    with :ok <- spare_room(state),
+         {:ok, lines} <- e2e_lines(state, nick, verb, msgid, {"*", did}, payload),
+         {:ok, releases, lost, pacer, wait} <- pace_e2e(state, nick, message, lines, now) do
+      {:ok, commit_paced(state, releases, lost, pacer, wait)}
+    else
+      {:error, reason, _} -> {:error, reason}
+      {:error, _} = refused -> refused
     end
   end
 
@@ -8391,14 +8429,16 @@ defmodule Grappa.Session.Server do
       own_nick: state.nick
     }
 
-  # issue 2486 — plans and commits what an inbound consent line does. The
-  # payload rule is the send door's (`E2eRequests.payload?/1`).
+  # issue 2486 — plans and commits what an inbound consent line does, and
+  # says whether grappa answers it ACCEPT. The payload rule is the send
+  # door's (`E2eRequests.payload?/1`).
   @spec receive_consent(t(), String.t(), E2e.consent_verb(), String.t(), DateTime.t()) ::
-          {:ok, E2eRequests.outcome()} | {:error, :bad_payload | :requests_full | :db_unavailable}
+          {:ok, :accept | :none, E2eRequests.outcome()} | {:error, :bad_payload | :requests_full | :db_unavailable}
   defp receive_consent(state, from, verb, payload, now) do
     if E2eRequests.payload?(payload) do
       row = E2eRequests.for_peer(state.subject, state.network_id, from)
-      E2eRequests.commit(state.subject, state.network_id, E2eRequests.inbound(row, verb, from, payload, now), now)
+      {reply, plan} = E2eRequests.inbound(row, verb, from, payload, now)
+      with {:ok, outcome} <- E2eRequests.commit(state.subject, state.network_id, plan, now), do: {:ok, reply, outcome}
     else
       {:error, :bad_payload}
     end
