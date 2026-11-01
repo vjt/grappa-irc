@@ -378,7 +378,8 @@ defmodule GrappaWeb.E2eController do
   JSON text of at most 1 KiB (opaque to grappa). 400 `bad_request` for a
   target that is not a nick, a `from` that is not a device id, or a payload
   outside the rule; 400 `invalid_line` for a CR/LF/NUL in `target`; 422
-  `unknown_device`; 429 `rate_limited` when the peer's or the connection's
+  `unknown_device`; 413 `too_large` when the network's LINELEN cannot
+  frame the line; 429 `rate_limited` when the peer's or the connection's
   queue cannot take the line; 429 `requests_full` past 32 requests this
   subject started here (dismiss some); the send door's 404, 502, 503 and
   504 otherwise.

@@ -1294,6 +1294,19 @@ defmodule Grappa.Session.E2eSessionTest do
       assert E2eRequests.for_peer(subject, network.id, "alice") == nil
     end
 
+    test "a LINELEN too short to frame a consent line refuses it as too large, writes no row, and the session carries on" do
+      {_, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+
+      # A network may advertise any positive LINELEN; this one frames no byte.
+      :sys.replace_state(pid, &%{&1 | isupport: %{&1.isupport | linelen: 16}})
+
+      assert {:error, :too_large} = Session.ask_e2e(subject, network.id, "alice", device.did, @hint)
+      assert E2eRequests.for_peer(subject, network.id, "alice") == nil
+      assert Process.alive?(pid)
+    end
+
     test "an ask past the requests we started is refused, and its REQUEST is not written, even at an empty bank" do
       {server, pid, user, network} = connected_session()
       subject = {:user, user.id}
