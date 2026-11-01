@@ -53,13 +53,13 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v50 -> v51 (issue 2474): `spawned` on the admin events'
- * `credential_updated` and a new admission flow tag on `capacity_reject`.
- * A terminal never subscribes to admin events, so nothing it reads changed.
+ * Last read, v51 -> v52 (issue 2491): an `e2e_message` NACK may now come
+ * from `*`, a peer's grappa saying a message reached none of its user's
+ * devices. A terminal speaks no E2E, so nothing it reads changed.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 51
+#define WIRE_PROTOCOL_VERSION 52
 
 #include <stdbool.h>
 #include <stddef.h>

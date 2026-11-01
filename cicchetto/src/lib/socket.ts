@@ -370,7 +370,12 @@ let _socket: Socket | null = null;
 // `admin_credential_update` admission flow on `capacity_reject`. Admin
 // console only, rendered as raw tokens, so `MIN_SERVER_PROTOCOL_VERSION`
 // stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 51;
+//
+// 52 (issue 2491) — a NACK from `*`: the peer's grappa says a message
+// reached none of its user's listed devices. A pre-52 server drops such a
+// message without a word, so the sender simply never hears; nothing breaks,
+// and `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 52;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //
