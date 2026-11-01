@@ -29,9 +29,10 @@
 // the chat body; the key events it records are the rail's state, never chat
 // rows; the alarm is the chat's step card until it is answered.
 
-import type { Page } from "@playwright/test";
 import {
+  AFTER_A_REASK,
   boot,
+  compareEmoji,
   equery,
   KEYS_TIMEOUT,
   ownKey,
@@ -39,66 +40,10 @@ import {
   replaceIdentity,
   row,
   send,
+  trust,
 } from "../fixtures/encryptedQuery";
 import { provisionPeerSubject, teardownSpecSubject } from "../fixtures/specSubject";
 import { expect, specNick, specUser, test } from "../fixtures/test";
-
-// grappa answers a nick's KEYREQ at most once per 30 s (`E2eKeyAnswers`) and
-// drops the rest without a word; cic asks again after its own 30 s
-// (`KEYREQ_RETRY_MS`, lib/e2e/engine.ts). A request for keys right after
-// another one to the same nick may wait that long before it is answered.
-const AFTER_A_REASK = 30_000 + KEYS_TIMEOUT;
-
-const trust = (page: Page) => page.getByTestId("e2e-peer-trust");
-
-const phase = (page: Page, value: string, timeout: number) =>
-  expect(page.getByTestId("e2e-sas")).toHaveAttribute("data-phase", value, { timeout });
-
-const emoji = (page: Page): Promise<(string | null)[]> =>
-  page
-    .getByTestId("e2e-sas-emoji")
-    .evaluateAll((els) => els.map((el) => el.getAttribute("data-index")));
-
-// Alice asks, Bob accepts, both compare the same 7 emoji and both say they
-// match: each one's key reads verified on the other side. The request
-// reaches Bob within `askedWithin`.
-async function compareEmoji(
-  alice: Page,
-  bob: Page,
-  aliceKey: string,
-  bobKey: string,
-  askedWithin: number,
-): Promise<void> {
-  await alice.getByTestId("e2e-rail").getByTestId("e2e-sas-start").click();
-  await phase(alice, "waiting", KEYS_TIMEOUT);
-
-  await phase(bob, "asked", askedWithin);
-  await expect(bob.getByTestId("e2e-sas")).toContainText("asks to compare emoji with you");
-  await bob.getByTestId("e2e-sas-accept").click();
-
-  await phase(alice, "compare", KEYS_TIMEOUT);
-  await phase(bob, "compare", KEYS_TIMEOUT);
-  const seenByAlice = await emoji(alice);
-  expect(seenByAlice).toHaveLength(7);
-  expect(await emoji(bob)).toEqual(seenByAlice);
-
-  await alice.getByTestId("e2e-sas-match").click();
-  await phase(alice, "confirmed", KEYS_TIMEOUT);
-  await bob.getByTestId("e2e-sas-match").click();
-
-  for (const [page, key] of [
-    [alice, bobKey],
-    [bob, aliceKey],
-  ] as const) {
-    await expect(trust(page)).toHaveAttribute("data-trust", "verified", {
-      timeout: KEYS_TIMEOUT,
-    });
-    await expect(page.getByTestId("e2e-peer-key")).toHaveText(key);
-    await expect(page.getByTestId("e2e-rail-comparison")).toHaveText("matched");
-    await expect(page.getByTestId("e2e-sas")).toHaveCount(0);
-    await expect(page.getByTestId("e2e-sas-start")).toHaveCount(0);
-  }
-}
 
 test("two people compare 7 emoji: the same on both sides, and a match verifies each key on the other", async ({
   page,
