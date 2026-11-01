@@ -1,0 +1,76 @@
+import { type Component, createSignal, Show } from "solid-js";
+import { requestConfirm } from "./lib/confirmDialog";
+import { askEncryptedChat, createRequestView } from "./lib/e2eRequests";
+import { errorMessage } from "./lib/friendlyApiError";
+
+// issue 2486 — the one button in a query's rail that asks the peer to start
+// an encrypted chat. No settings and no probe first: CTCP VERSION can be off
+// or lie, so the asking itself is the probe. The confirm says, before
+// anything is sent, what the peer needs to answer and how long the asking
+// waits. Our asking still waiting is the banner's to cancel, so the button
+// says so rather than asking twice.
+
+/** How the confirm words the asking: what it needs from the peer, and the 24 h it waits. */
+export function startEncryptedChatBody(nick: string): string {
+  return (
+    `Ask ${nick} to start an encrypted chat? ${nick} can answer only from cicchetto, ` +
+    `or another client that speaks grappa's encrypted chats. Without an answer ` +
+    `within 24 hours the request expires.`
+  );
+}
+
+export type Props = {
+  networkSlug: string;
+  peer: string;
+};
+
+const StartEncryptedChat: Component<Props> = (props) => {
+  const [error, setError] = createSignal<string | null>(null);
+
+  const view = createRequestView(
+    () => props.networkSlug,
+    () => props.peer,
+  );
+  const pending = () => view()?.kind === "pending";
+
+  const ask = () => {
+    setError(null);
+    requestConfirm({
+      title: "Start encrypted chat",
+      body: startEncryptedChatBody(props.peer),
+      confirmLabel: "Ask",
+      onConfirm: () =>
+        void askEncryptedChat(props.networkSlug, props.peer).catch((err: unknown) =>
+          setError(errorMessage(err)),
+        ),
+      alternative: null,
+      attachments: null,
+      choice: null,
+      toggle: null,
+      defaultButton: "cancel",
+    });
+  };
+
+  return (
+    <div class="rail-encrypted-chat">
+      <button
+        type="button"
+        class="rail-encrypted-chat-button"
+        data-testid="rail-start-encrypted-chat"
+        disabled={pending()}
+        onClick={ask}
+      >
+        {pending() ? "encrypted chat requested" : "start encrypted chat"}
+      </button>
+      <Show when={error()}>
+        {(message) => (
+          <div class="e2e-error" data-testid="rail-start-encrypted-chat-error" role="alert">
+            {message()}
+          </div>
+        )}
+      </Show>
+    </div>
+  );
+};
+
+export default StartEncryptedChat;

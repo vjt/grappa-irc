@@ -4965,7 +4965,8 @@ html.is-ios27-band .shell {
 .e2e-copy,
 .e2e-pin-submit,
 .e2e-compose-send,
-.e2e-sas-button {
+.e2e-sas-button,
+.rail-encrypted-chat-button {
   background: var(--accent);
   color: var(--bg);
   border: none;
@@ -4978,7 +4979,8 @@ html.is-ios27-band .shell {
 
 .e2e-copy:disabled,
 .e2e-compose-input:disabled,
-.e2e-compose-send:disabled {
+.e2e-compose-send:disabled,
+.rail-encrypted-chat-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -13050,6 +13052,16 @@ html.is-ios27-band .shell {
 
 .rail-server-info-glyph {
   font-size: 0.8rem;
+}
+
+/* issue 2486 — the query rail's button that asks the peer to start an
+   encrypted chat: full width under the heading, the e2e buttons' look. */
+.rail-encrypted-chat {
+  margin: 0.25rem 0 0.75rem;
+}
+
+.rail-encrypted-chat-button {
+  width: 100%;
 }
 
 /* #606 — query-window rail context: heading + reused WhoisCard. The card

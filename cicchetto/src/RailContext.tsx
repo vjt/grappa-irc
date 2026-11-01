@@ -15,6 +15,7 @@ import { networkBySlug } from "./lib/networks";
 import { railWhoisFor, requestRailWhois } from "./lib/railWhois";
 import { selectedChannel } from "./lib/selection";
 import ServerInfoCard from "./ServerInfoCard";
+import StartEncryptedChat from "./StartEncryptedChat";
 import WhoisCard from "./WhoisCard";
 
 // #474 — the rail's GENERIC per-window-kind context surface. Mounted as a
@@ -23,7 +24,9 @@ import WhoisCard from "./WhoisCard";
 // grafts the matching context content:
 //   * server → ServerInfoCard (connection facts already in the store)
 //   * query  → the query context (#606, the deferred half of #474): a
-//              heading + a WHOIS card for the conversation partner. The card
+//              heading, the button that asks the peer to start an encrypted
+//              chat (issue 2486), and a WHOIS card for the conversation
+//              partner. The card
 //              REUSES the same `WhoisCard` presentation as the scrollback
 //              overlay but is fed by the per-nick `railWhois` cache (NOT the
 //              single-slot `whoisCard` store the user-issued /whois owns) and
@@ -123,6 +126,11 @@ const RailContext: Component<Props> = (props) => {
               the query is open re-labels the heading — #373 swaps
               selectedChannel in place on a rename. */}
           <h3 class="rail-query-heading">private conversation with {sel()?.channelName}</h3>
+          {/* issue 2486 — the one door to an encrypted chat with this peer. */}
+          <StartEncryptedChat
+            networkSlug={sel()?.networkSlug ?? ""}
+            peer={sel()?.channelName ?? ""}
+          />
           <WhoisCard bundle={railWhoisFor(sel()?.networkSlug ?? "", sel()?.channelName ?? "")} />
         </div>
       </Match>
