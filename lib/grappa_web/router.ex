@@ -683,6 +683,14 @@ defmodule GrappaWeb.Router do
     put "/e2e/list", E2eController, :put_list
     get "/e2e/list", E2eController, :list
     delete "/e2e/keys", E2eController, :clear_keys
+    # issue 2486 — asking a peer to start an encrypted chat, and the
+    # answer. An `:id` route resolves the request inside the subject and the
+    # network, so another subject's is a 404.
+    get "/e2e/requests", E2eController, :requests
+    post "/e2e/requests", E2eController, :ask
+    post "/e2e/requests/:id/accept", E2eController, :accept
+    post "/e2e/requests/:id/refuse", E2eController, :refuse
+    delete "/e2e/requests/:id", E2eController, :dismiss
 
     get "/dcc_offers", DccOffersController, :index
     post "/dcc_offers/:offer_id/accept", DccOffersController, :accept

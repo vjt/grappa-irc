@@ -208,28 +208,28 @@ defmodule Grappa.E2eRequests do
   @doc """
   Plans the user accepting or refusing `row`. Pure. Only a live `incoming`
   request is answered, and the row goes. `{:error, :not_found}` for one
-  past its deadline (it is no longer listed), `{:error, :conflict}` for any
+  past its deadline (it is no longer listed), `{:error, :request_state}` for any
   other state.
   """
-  @spec answer(Request.t(), DateTime.t()) :: {:ok, plan()} | {:error, :not_found | :conflict}
+  @spec answer(Request.t(), DateTime.t()) :: {:ok, plan()} | {:error, :not_found | :request_state}
   def answer(%Request{} = row, %DateTime{} = now) do
     case phase(row, now) do
       :incoming -> {:ok, {:delete, row}}
       :lapsed -> {:error, :not_found}
-      _ -> {:error, :conflict}
+      _ -> {:error, :request_state}
     end
   end
 
   @doc """
   Plans the user dismissing `row`. Pure. A live `outgoing` request is
   cancelled (CANCEL goes out, so the peer's banner goes too); an expired
-  one, an answer or a lapsed `incoming` one just goes. `{:error, :conflict}`
+  one, an answer or a lapsed `incoming` one just goes. `{:error, :request_state}`
   for a live `incoming` request: that one is answered, not dismissed.
   """
-  @spec dismiss(Request.t(), DateTime.t()) :: {:cancel | :none, plan()} | {:error, :conflict}
+  @spec dismiss(Request.t(), DateTime.t()) :: {:cancel | :none, plan()} | {:error, :request_state}
   def dismiss(%Request{} = row, %DateTime{} = now) do
     case phase(row, now) do
-      :incoming -> {:error, :conflict}
+      :incoming -> {:error, :request_state}
       :outgoing -> {:cancel, {:delete, row}}
       _ -> {:none, {:delete, row}}
     end

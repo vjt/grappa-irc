@@ -120,6 +120,12 @@ defmodule GrappaWeb.ErrorTokens do
           | :key_taken
           | :removed_device
           | :inbox_full
+          # issue 2486 — 409: an encrypted-chat request whose state does
+          # not allow the move (answering one not waiting, dismissing an
+          # incoming one still waiting); 429: one side of the requests at
+          # its cap (`E2eController` `ask/2`, `accept/2`, `dismiss/2`).
+          | :request_state
+          | :requests_full
           # #162 — 422: a `/ignore` mask that `Grappa.IRC.Mask.normalize/1`
           # rejects (empty, whitespace, CRLF, bad `nick!user@host` order).
           | :invalid_mask

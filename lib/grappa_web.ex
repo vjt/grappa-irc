@@ -46,6 +46,10 @@ defmodule GrappaWeb do
         # issue 2430 X1 — the pairing relay's REST door (`E2ePairingController`);
         # its `Wire` comes with it as an export.
         Grappa.E2ePairing,
+        # issue 2486 — the requests to start an encrypted chat, a REST
+        # resource (`E2eController.requests/2` and siblings); its `Wire`
+        # comes with it as an export.
+        Grappa.E2eRequests,
         Grappa.Health,
         Grappa.HotReload,
         Grappa.IRC,

@@ -170,7 +170,7 @@ defmodule Grappa.E2eRequestsTest do
       assert {:error, :not_found} = E2eRequests.answer(incoming, past_deadline(ctx.now))
 
       {:request, {:put, outgoing, false}} = ask!(ctx, "bob", ctx.now)
-      assert {:error, :conflict} = E2eRequests.answer(outgoing, ctx.now)
+      assert {:error, :request_state} = E2eRequests.answer(outgoing, ctx.now)
     end
 
     test "a live outgoing request is cancelled; an expired one, an answer or a lapsed incoming one just goes", ctx do
@@ -182,7 +182,7 @@ defmodule Grappa.E2eRequestsTest do
       assert {:none, {:delete, ^accepted}} = E2eRequests.dismiss(accepted, ctx.now)
 
       {:put, incoming, true} = inbound!(ctx, "bob", :request, ctx.now)
-      assert {:error, :conflict} = E2eRequests.dismiss(incoming, ctx.now)
+      assert {:error, :request_state} = E2eRequests.dismiss(incoming, ctx.now)
       assert {:none, {:delete, ^incoming}} = E2eRequests.dismiss(incoming, past_deadline(ctx.now))
     end
 

@@ -19,8 +19,9 @@ defmodule GrappaWeb.E2eControllerTest do
   import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.{E2eFixtures, E2eInbox, E2eKeys, IRCServer, Repo, Session}
+  alias Grappa.{E2eFixtures, E2eInbox, E2eKeys, E2eRequests, IRCServer, Repo, Session}
   alias Grappa.E2eKeys.DeviceList
+  alias Grappa.E2eRequests.Request
   alias Grappa.IRC.E2e
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Message
@@ -739,5 +740,215 @@ defmodule GrappaWeb.E2eControllerTest do
       assert json_response(get(conn, "/networks/#{network.slug}/e2e/devices"), 200) == %{"devices" => []}
       assert [_] = E2eKeys.devices({:user, other.id}, network.id)
     end
+  end
+
+  describe "requests to start an encrypted chat (issue 2486)" do
+    # grappa's own lines wait on the connection's fake-lag bank, which the
+    # registration has just filled; consent rides the reactive lane.
+    @consent_timeout 15_000
+
+    test "GET lists them as of now, oldest first, with no session: an expired one we asked reads expired, a lapsed incoming one is gone",
+         %{conn: conn, vjt: vjt} do
+      {network, _} = network_with_server(port: unique_port(), slug: "idle-#{u()}")
+      _ = credential_fixture(vjt, network, %{nick: "grappa-test", autojoin_channels: []})
+      now = DateTime.utc_now()
+      long_ago = DateTime.add(now, -(E2eRequests.ttl_seconds() + 60), :second)
+
+      alice = incoming!(vjt, network, "alice", now)
+      bob = outgoing!(vjt, network, "Bob", long_ago)
+      _ = incoming!(vjt, network, "carol", long_ago)
+      dave = vjt |> outgoing!(network, "dave", now) |> answered!(vjt, network, :refuse, now)
+
+      assert %{"requests" => [a, b, d]} = json_response(get(conn, requests_path(network)), 200)
+
+      assert %{"id" => id, "peer" => "alice", "state" => "incoming", "payload" => @payload, "at" => at} = a
+      assert id == alice.id
+      assert DateTime.diff(instant(a["expires_at"]), instant(at)) == E2eRequests.ttl_seconds()
+      assert Map.keys(a) == ~w(at expires_at id payload peer state)
+
+      assert %{"peer" => "Bob", "state" => "expired", "payload" => nil, "expires_at" => expires_at} = b
+      assert b["id"] == bob.id
+      assert DateTime.before?(instant(expires_at), now)
+
+      assert %{"peer" => "dave", "state" => "refused", "payload" => @payload, "expires_at" => nil} = d
+      assert d["id"] == dave.id
+    end
+
+    test "POST asks: 202 with the request outgoing for 24 h, and REQUEST goes from the device to the user",
+         %{conn: conn, vjt: vjt} do
+      {server, network, device} = live_network(vjt)
+      body = %{target: "alice", from: device.did, payload: @payload}
+
+      assert %{"request" => %{"id" => id, "peer" => "alice", "state" => "outgoing", "payload" => nil} = request} =
+               json_response(post(conn, requests_path(network), body), 202)
+
+      assert DateTime.diff(instant(request["expires_at"]), instant(request["at"])) == E2eRequests.ttl_seconds()
+
+      assert {:ok, line} = IRCServer.wait_for_line(server, &String.contains?(&1, "E2E REQUEST "), @consent_timeout)
+      assert [_, msgid] = Regex.run(~r/^PRIVMSG alice :\x01E2E REQUEST (\S+) 1\/1 /, line)
+      assert line == "PRIVMSG alice :\x01E2E REQUEST #{msgid} 1/1 #{device.did} * #{@payload}\x01\r\n"
+
+      assert %{"requests" => [%{"id" => ^id}]} = json_response(get(conn, requests_path(network)), 200)
+    end
+
+    test "accept and refuse answer 202 with the msgid, the line goes to the peer, and the request goes",
+         %{conn: conn, vjt: vjt} do
+      {server, network, device} = live_network(vjt)
+      now = DateTime.utc_now()
+      alice = incoming!(vjt, network, "alice", now)
+      bob = incoming!(vjt, network, "bob", now)
+      line = %{from: device.did, payload: @payload}
+
+      assert %{"msgid" => yes} = json_response(post(conn, "#{requests_path(network)}/#{alice.id}/accept", line), 202)
+      assert {:ok, sent} = IRCServer.wait_for_line(server, &String.contains?(&1, yes), @consent_timeout)
+      assert sent == "PRIVMSG alice :\x01E2E ACCEPT #{yes} 1/1 #{device.did} * #{@payload}\x01\r\n"
+
+      assert %{"msgid" => no} = json_response(post(conn, "#{requests_path(network)}/#{bob.id}/refuse", line), 202)
+      assert {:ok, sent} = IRCServer.wait_for_line(server, &String.contains?(&1, no), @consent_timeout)
+      assert sent == "PRIVMSG bob :\x01E2E REFUSE #{no} 1/1 #{device.did} * #{@payload}\x01\r\n"
+
+      assert json_response(get(conn, requests_path(network)), 200) == %{"requests" => []}
+
+      assert json_response(post(conn, "#{requests_path(network)}/#{alice.id}/accept", line), 404) ==
+               %{"error" => "not_found"}
+    end
+
+    test "DELETE cancels a live request we asked with CANCEL on the wire, and drops an answer or an expired one with no body",
+         %{conn: conn, vjt: vjt} do
+      {server, network, device} = live_network(vjt)
+      now = DateTime.utc_now()
+      long_ago = DateTime.add(now, -(E2eRequests.ttl_seconds() + 60), :second)
+      line = %{from: device.did, payload: @payload}
+      alice = outgoing!(vjt, network, "alice", now)
+      bob = vjt |> outgoing!(network, "bob", now) |> answered!(vjt, network, :accept, now)
+      carol = outgoing!(vjt, network, "carol", long_ago)
+
+      # A CANCEL is due, so its line must come: whole, or not at all.
+      for body <- [%{}, %{from: device.did}, %{payload: @payload}, %{line | payload: ~s({"v": 2})}] do
+        assert json_response(delete(conn, "#{requests_path(network)}/#{alice.id}", body), 400) ==
+                 %{"error" => "bad_request"},
+               inspect(body)
+      end
+
+      assert response(delete(conn, "#{requests_path(network)}/#{alice.id}", line), 204) == ""
+      assert {:ok, sent} = IRCServer.wait_for_line(server, &String.contains?(&1, "E2E CANCEL "), @consent_timeout)
+      assert [_, msgid] = Regex.run(~r/^PRIVMSG alice :\x01E2E CANCEL (\S+) 1\/1 /, sent)
+      assert sent == "PRIVMSG alice :\x01E2E CANCEL #{msgid} 1/1 #{device.did} * #{@payload}\x01\r\n"
+
+      # Half a line is malformed even where no CANCEL is due.
+      assert json_response(delete(conn, "#{requests_path(network)}/#{bob.id}", %{from: device.did}), 400) ==
+               %{"error" => "bad_request"}
+
+      assert response(delete(conn, "#{requests_path(network)}/#{bob.id}"), 204) == ""
+      assert response(delete(conn, "#{requests_path(network)}/#{carol.id}"), 204) == ""
+      assert json_response(get(conn, requests_path(network)), 200) == %{"requests" => []}
+      refute Enum.any?(IRCServer.sent_lines(server), &(&1 =~ ~r/^PRIVMSG (bob|carol) :\x01E2E CANCEL /))
+    end
+
+    test "409 request_state for a request in a state the move does not fit; 404 for a lapsed one, a bad id, another subject's",
+         %{conn: conn, vjt: vjt} do
+      {_, network, device} = live_network(vjt)
+      now = DateTime.utc_now()
+      long_ago = DateTime.add(now, -(E2eRequests.ttl_seconds() + 60), :second)
+      line = %{from: device.did, payload: @payload}
+      path = requests_path(network)
+
+      waiting = incoming!(vjt, network, "alice", now)
+      asked = outgoing!(vjt, network, "bob", now)
+      lapsed = incoming!(vjt, network, "carol", long_ago)
+
+      other = user_fixture(name: "other-#{u()}")
+      _ = credential_fixture(other, network, %{nick: "someone", autojoin_channels: []})
+      theirs = incoming!(other, network, "dave", now)
+
+      assert json_response(delete(conn, "#{path}/#{waiting.id}", line), 409) == %{"error" => "request_state"}
+      assert json_response(post(conn, "#{path}/#{asked.id}/accept", line), 409) == %{"error" => "request_state"}
+      assert json_response(post(conn, "#{path}/#{asked.id}/refuse", line), 409) == %{"error" => "request_state"}
+      assert json_response(post(conn, "#{path}/#{lapsed.id}/accept", line), 404) == %{"error" => "not_found"}
+
+      for id <- ["abc", "0", "-1", "1.5", "9223372036854775808", "#{theirs.id}"] do
+        assert json_response(post(conn, "#{path}/#{id}/accept", line), 404) == %{"error" => "not_found"}, id
+        assert json_response(post(conn, "#{path}/#{id}/refuse", line), 404) == %{"error" => "not_found"}, id
+        assert json_response(delete(conn, "#{path}/#{id}"), 404) == %{"error" => "not_found"}, id
+      end
+
+      assert E2eRequests.get({:user, other.id}, network.id, theirs.id)
+    end
+
+    test "400 for a target that is not a nick, a body outside the rule; 422 for an unlisted device; 404 with no session",
+         %{conn: conn, vjt: vjt} do
+      {_, network, device} = live_network(vjt)
+      path = requests_path(network)
+      ok = %{target: "alice", from: device.did, payload: @payload}
+      waiting = incoming!(vjt, network, "bob", DateTime.utc_now())
+
+      for body <- [
+            %{ok | target: "#italia"},
+            %{ok | from: "*"},
+            %{ok | from: "short"},
+            %{ok | payload: ~s({"v": 2})},
+            %{ok | payload: ~s({"v":2,"pad":"#{String.duplicate("A", Request.max_payload_bytes())}"})},
+            %{ok | payload: 42},
+            Map.delete(ok, :target),
+            Map.delete(ok, :from),
+            Map.delete(ok, :payload)
+          ] do
+        assert json_response(post(conn, path, body), 400) == %{"error" => "bad_request"}, inspect(body)
+      end
+
+      assert json_response(post(conn, path, %{ok | target: "al\r\nice"}), 400) == %{"error" => "invalid_line"}
+
+      for body <- [%{from: device.did}, %{payload: @payload}, %{from: "*", payload: @payload}] do
+        assert json_response(post(conn, "#{path}/#{waiting.id}/accept", body), 400) == %{"error" => "bad_request"},
+               inspect(body)
+      end
+
+      %{attrs: attrs} = E2eFixtures.device(E2eFixtures.identity())
+      {:ok, pairing} = E2eKeys.register_device({:user, vjt.id}, network.id, attrs)
+      line = %{from: pairing.did, payload: @payload}
+      assert json_response(post(conn, path, %{ok | from: pairing.did}), 422) == %{"error" => "unknown_device"}
+      assert json_response(post(conn, "#{path}/#{waiting.id}/accept", line), 422) == %{"error" => "unknown_device"}
+      assert E2eRequests.list({:user, vjt.id}, network.id, DateTime.utc_now()) == [waiting]
+
+      :ok = Session.stop_session({:user, vjt.id}, network.id)
+      assert json_response(post(conn, path, ok), 404) == %{"error" => "not_found"}
+    end
+
+    test "429 requests_full past the requests this subject started, and no request is written", %{conn: conn, vjt: vjt} do
+      {_, network, device} = live_network(vjt)
+      now = DateTime.utc_now()
+      for n <- 1..E2eRequests.max_rows(), do: outgoing!(vjt, network, "peer#{n}", now)
+
+      body = %{target: "alice", from: device.did, payload: @payload}
+      assert json_response(post(conn, requests_path(network), body), 429) == %{"error" => "requests_full"}
+      assert E2eRequests.for_peer({:user, vjt.id}, network.id, "alice") == nil
+    end
+  end
+
+  defp requests_path(network), do: "/networks/#{network.slug}/e2e/requests"
+
+  defp instant(iso8601) do
+    {:ok, at, 0} = DateTime.from_iso8601(iso8601)
+    at
+  end
+
+  # A request held straight in the table, as the session leaves it once
+  # the peer's REQUEST arrived at `at`.
+  defp incoming!(user, network, peer, at),
+    do: commit!(user, network, E2eRequests.inbound(nil, :request, peer, @payload, at), at)
+
+  # The same once the user asked `peer` at `at`.
+  defp outgoing!(user, network, peer, at) do
+    {:request, plan} = E2eRequests.ask(nil, peer, at)
+    commit!(user, network, plan, at)
+  end
+
+  # The peer's answer to `request`, arrived at `at`.
+  defp answered!(request, user, network, verb, at),
+    do: commit!(user, network, E2eRequests.inbound(request, verb, request.peer, @payload, at), at)
+
+  defp commit!(user, network, plan, at) do
+    {:ok, {:put, request, _}} = E2eRequests.commit({:user, user.id}, network.id, plan, at)
+    request
   end
 end

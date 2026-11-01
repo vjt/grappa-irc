@@ -12,14 +12,19 @@ defmodule GrappaWeb.E2eController do
   device list is put and read, and the whole identity can be dropped. A
   device copies what it sent to the account's other devices through their
   queues, never IRC (`copy/2`), after claiming one key of each (`claim/2`).
+  Asking a peer to start an encrypted chat, and the answer, is a resource
+  too (`Grappa.E2eRequests`, issue 2486): the asking is the consent the
+  key exchange itself never asked for, kept until it is answered, it
+  lapses, or a client has shown the answer (`requests/2` and siblings).
 
   Same `:authn` + `ResolveNetwork` pipeline as every other
   `/networks/:network_id/*` route, so ownership is asserted the same way.
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{E2eInbox, E2eKeys, Session}
+  alias Grappa.{E2eInbox, E2eKeys, E2eRequests, Session}
   alias Grappa.E2eKeys.Wire, as: E2eKeysWire
+  alias Grappa.E2eRequests.Wire, as: E2eRequestsWire
   alias Grappa.Session.Wire, as: SessionWire
   alias GrappaWeb.Subject
 
@@ -344,6 +349,105 @@ defmodule GrappaWeb.E2eController do
     end
   end
 
+  @doc """
+  `GET /networks/:network_id/e2e/requests` — the requests to start an
+  encrypted chat between this subject and its peers here (issue 2486),
+  oldest first, each as of now: `state` reads `expired` for one we asked
+  that is past its deadline, and an incoming one past its deadline is not
+  listed. A read of the table, so it answers with no session too.
+  """
+  @spec requests(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def requests(conn, _) do
+    now = DateTime.utc_now()
+    requests = E2eRequests.list(subject(conn), conn.assigns.network.id, now)
+    json(conn, E2eRequestsWire.requests_response(requests, now))
+  end
+
+  @doc """
+  `POST /networks/:network_id/e2e/requests` — `{target, from, payload}`:
+  asks `target` to start an encrypted chat (issue 2486). grappa sends
+  `REQUEST` from the device `from` to the peer, or `ACCEPT` when that
+  peer's own request is waiting (their request is their consent, and so is
+  ours). **202** `{request}`: the request as it now stands, `outgoing` with
+  a fresh 24 h deadline (asking again, or after an expiry or a refusal,
+  sends a new `REQUEST`), or `accepted` on that crossing. The row is
+  written only once the line was accepted for sending, so a refusal leaves
+  nothing behind.
+
+  `from` must be a listed device of this subject here, `payload` compact
+  JSON text of at most 1 KiB (opaque to grappa). 400 `bad_request` for a
+  target that is not a nick, a `from` that is not a device id, or a payload
+  outside the rule; 400 `invalid_line` for a CR/LF/NUL in `target`; 422
+  `unknown_device`; 429 `rate_limited` when the peer's or the connection's
+  queue cannot take the line; 429 `requests_full` past 32 requests this
+  subject started here (dismiss some); the send door's 404, 502, 503 and
+  504 otherwise.
+  """
+  @spec ask(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, Session.e2e_consent_error()}
+  def ask(conn, %{"target" => target, "from" => from, "payload" => payload})
+      when is_binary(target) and is_binary(from) and is_binary(payload) do
+    with {:ok, request} <- Session.ask_e2e(subject(conn), conn.assigns.network.id, target, from, payload) do
+      conn |> put_status(:accepted) |> json(E2eRequestsWire.request_response(request, DateTime.utc_now()))
+    end
+  end
+
+  def ask(_, _), do: {:error, :bad_request}
+
+  @doc """
+  `POST /networks/:network_id/e2e/requests/:id/accept` — `{from, payload}`:
+  accepts the peer's waiting request (issue 2486). `ACCEPT` goes from the
+  device `from`, the request goes (every device hears
+  `e2e_request_gone`), and the client opens the encrypted chat and fetches
+  the peer's keys itself: grappa never starts a `KEYREQ` for anyone.
+  **202** `{msgid}`. 404 `not_found` for an id that is not this subject's
+  here, or a request past its deadline; 409 `request_state` for one that is not
+  waiting for an answer; the rest as `ask/2`.
+  """
+  @spec accept(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, Session.e2e_consent_error()}
+  def accept(conn, params), do: answer(conn, params, :accept)
+
+  @doc """
+  `POST /networks/:network_id/e2e/requests/:id/refuse` — `{from, payload}`:
+  refuses the peer's waiting request (issue 2486), with the dedicated
+  `REFUSE`, so the requester is told. Answers as `accept/2`.
+  """
+  @spec refuse(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, Session.e2e_consent_error()}
+  def refuse(conn, params), do: answer(conn, params, :refuse)
+
+  @spec answer(Plug.Conn.t(), map(), :accept | :refuse) :: Plug.Conn.t() | {:error, Session.e2e_consent_error()}
+  defp answer(conn, %{"id" => id, "from" => from, "payload" => payload}, verb)
+       when is_binary(from) and is_binary(payload) do
+    with {:ok, id} <- request_id(id),
+         {:ok, msgid} <- Session.answer_e2e(subject(conn), conn.assigns.network.id, id, verb, from, payload) do
+      conn |> put_status(:accepted) |> json(SessionWire.e2e_sent(msgid))
+    end
+  end
+
+  defp answer(_, _, _), do: {:error, :bad_request}
+
+  @doc """
+  `DELETE /networks/:network_id/e2e/requests/:id` — dismisses a request
+  (issue 2486). One we asked that is still pending is CANCELLED: `CANCEL`
+  goes from the device of the body's `{from, payload}`, so the peer's
+  banner goes too. An expired one, or an answer (`accepted`, `refused`)
+  the client has shown, just goes, and needs no body. **204**; every
+  device hears `e2e_request_gone`.
+
+  409 `request_state` for a request waiting for OUR answer (that one is
+  accepted or refused); 400 `bad_request` when a `CANCEL` is due and the
+  body has no `{from, payload}`, or it is outside the rule; 404
+  `not_found` for an id that is not this subject's here; the rest as
+  `ask/2`.
+  """
+  @spec dismiss(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, Session.e2e_consent_error()}
+  def dismiss(conn, %{"id" => id} = params) do
+    with {:ok, id} <- request_id(id),
+         {:ok, line} <- cancel_line(params),
+         :ok <- Session.dismiss_e2e(subject(conn), conn.assigns.network.id, id, line) do
+      send_resp(conn, :no_content, "")
+    end
+  end
+
   @spec subject(Plug.Conn.t()) :: Grappa.Subject.t()
   defp subject(conn), do: Subject.to_session(conn.assigns.current_subject)
 
@@ -390,6 +494,24 @@ defmodule GrappaWeb.E2eController do
   end
 
   defp cursor(_), do: {:error, :bad_request}
+
+  # The CANCEL's device and payload, when the body carries them; both or
+  # neither.
+  @spec cancel_line(map()) :: {:ok, {String.t(), String.t()} | nil} | {:error, :bad_request}
+  defp cancel_line(%{"from" => from, "payload" => payload}) when is_binary(from) and is_binary(payload),
+    do: {:ok, {from, payload}}
+
+  defp cancel_line(params) when is_map_key(params, "from") or is_map_key(params, "payload"), do: {:error, :bad_request}
+  defp cancel_line(_), do: {:ok, nil}
+
+  # A request id from the path: a positive integer the id column can hold.
+  @spec request_id(String.t()) :: {:ok, pos_integer()} | {:error, :not_found}
+  defp request_id(value) do
+    case Integer.parse(value) do
+      {n, ""} when n > 0 and n <= @max_id -> {:ok, n}
+      _ -> {:error, :not_found}
+    end
+  end
 
   # The wire spells closed sets lowercase; anything else is a 400.
   @spec fetch(%{String.t() => atom()}, term()) :: {:ok, atom()} | {:error, :bad_request}
