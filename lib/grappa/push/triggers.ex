@@ -16,10 +16,11 @@ defmodule Grappa.Push.Triggers do
   INVITE's row is a `:server_event` the message path never reads, so there
   is nothing for `Persistor` to be the guardian of.
 
-  Both calls are fire-and-forget — Triggers hands the work to
-  `Grappa.TaskSupervisor` so the hot path stays sub-millisecond and Sender
-  failures don't bleed into the mailbox. Detached but supervised: the
-  worker is visible and its crash is a report, not a disappearance.
+  Every dispatcher is fire-and-forget, through ONE private body
+  (`dispatch/3`) — Triggers hands the work to `Grappa.TaskSupervisor` so
+  the hot path stays sub-millisecond and Sender failures don't bleed into
+  the mailbox. Detached but supervised: the worker is visible and its
+  crash is a report, not a disappearance.
 
   ## Decision logic — `should_notify?/5`
 
@@ -136,7 +137,7 @@ defmodule Grappa.Push.Triggers do
 
   ## Withholding is an event, not an absence (issue 2067)
 
-  Both dispatch paths end in the same `#182` foreground gate, and until
+  Every dispatch path ends in the same `#182` foreground gate, and until
   issue 2067 that gate skipped the fan-out in silence. A WITHHELD push
   and a push that never triggered therefore looked identical from
   outside — an operator with no notification on their phone and an empty
@@ -144,13 +145,13 @@ defmodule Grappa.Push.Triggers do
   the foreground" from "the trigger never fired", which is precisely the
   pair a live debugging session has to separate first.
 
-  So the suppressing answer reports, on both doors and through ONE
+  So the suppressing answer reports, on every door and through ONE
   reporter (`report_suppressed/2`):
 
     * `[:grappa, :push, :suppressed]` — measurements `%{count: 1}`,
       metadata `%{subject: Grappa.Subject.t(), network_slug:
-      String.t(), reason: t:suppression_reason/0}`. Emitted from the
-      message path and the presence path alike; ONE event, because two
+      String.t(), reason: t:suppression_reason/0}`. Emitted by every
+      trigger class alike; ONE event, because two
       spellings of the same withholding would have to be added together
       before they answered anything.
     * a `Logger.info` `push.trigger suppressed` line carrying `reason:`,
@@ -186,7 +187,7 @@ defmodule Grappa.Push.Triggers do
   wanted; the pref is what sets the rate, and it is worth knowing which
   one you have set before reading the volume.
 
-  The gate is the SECOND conjunct of the `and` at both call sites and
+  The gate is the SECOND conjunct of the `and` in `dispatch/3` and
   must stay there. Short-circuiting means a message the prefs never
   matched never reaches the gate and so can never be counted as
   suppressed — that ordering IS the distinction this section exists to
@@ -284,46 +285,15 @@ defmodule Grappa.Push.Triggers do
   @spec evaluate_and_dispatch(Message.t(), ctx()) :: :ok
   def evaluate_and_dispatch(%Message{kind: kind} = message, ctx)
       when kind in @notify_kinds and is_map(ctx) do
-    %{
-      subject: subject,
-      subject_label: subject_label,
-      network_slug: network_slug,
-      own_nick: own_nick
-    } = ctx
+    %{subject: subject, network_slug: network_slug, own_nick: own_nick} = ctx
 
-    # Discarded, not matched: a supervisor can refuse to start a child,
-    # and a strict match would turn a skipped notification into a crash
-    # on the session hot path the day a ceiling is configured.
-    _ =
-      Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
-        prefs = UserSettings.get_notification_prefs(subject)
-        patterns = UserSettings.get_highlight_patterns(subject)
-
-        # #182 — foreground-suppression gate. `should_notify?/5` stays a
-        # PURE predicate (no IO); the visibility check reads WSPresence
-        # GenServer state, so it is a SEPARATE explicit step here. If ANY
-        # of the subject's devices reports the PWA is on-screen, skip the
-        # ENTIRE fan-out to ALL of that subject's subscriptions. This is
-        # PER-USER (cross-device) suppression, NOT the old SW gate's
-        # per-device parity — the server has no push-endpoint→socket-pid
-        # mapping, so it can't suppress selectively. Moved server-side
-        # because the SW's `clients.matchAll` is unreliable on iOS
-        # (root cause of #182). Read RAW (no debounce) so a mention landing
-        # right after you background still delivers. Deliver-leaning: an
-        # unreported/backgrounded device reads `:hidden`, so this never
-        # suppresses to a device that hasn't claimed the foreground.
-        #
-        # issue 2067 — the gate now REPORTS when it withholds. It stays the
-        # second conjunct so a message the prefs never matched short-circuits
-        # away before reaching it and cannot be miscounted as suppressed.
-        if should_notify?(message, network_slug, own_nick, prefs, patterns) and
-             not foreground_visible?(subject, subject_label, network_slug) do
-          payload = build_payload(message, network_slug, subject)
-          Push.Sender.send_to_subject(subject, payload)
-        end
-      end)
-
-    :ok
+    dispatch(
+      ctx,
+      fn prefs ->
+        should_notify?(message, network_slug, own_nick, prefs, UserSettings.get_highlight_patterns(subject))
+      end,
+      fn -> build_payload(message, network_slug, subject) end
+    )
   end
 
   def evaluate_and_dispatch(%Message{}, _), do: :ok
@@ -331,8 +301,9 @@ defmodule Grappa.Push.Triggers do
   @doc """
   Dispatches the Web Push for one `/notify` presence report (#378).
 
-  Same fire-and-forget shape as `evaluate_and_dispatch/2`: supervised
-  task, always `:ok`, no `try/rescue` (the no-silent-drops contract above).
+  Same fire-and-forget shape as `evaluate_and_dispatch/2` (`dispatch/3`):
+  supervised task, always `:ok`, no `try/rescue` (the no-silent-drops
+  contract above).
 
   A baseline (`:initial`) short-circuits in the FUNCTION HEAD, before the
   Task spawn — that is the whole point of splitting the clause rather than
@@ -347,28 +318,11 @@ defmodule Grappa.Push.Triggers do
   @spec dispatch_presence(String.t(), :online | :offline, presence_kind(), ctx()) :: :ok
   def dispatch_presence(nick, presence, :transition, ctx)
       when is_binary(nick) and presence in [:online, :offline] and is_map(ctx) do
-    %{subject: subject, subject_label: subject_label, network_slug: network_slug} = ctx
-
-    # Discarded, not matched: a supervisor can refuse to start a child,
-    # and a strict match would turn a skipped notification into a crash
-    # on the session hot path the day a ceiling is configured.
-    _ =
-      Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
-        prefs = UserSettings.get_notification_prefs(subject)
-
-        # #182 — the same foreground-suppression gate as the message path,
-        # and for the same reason it is a SEPARATE step: the pure predicate
-        # stays free of IO. If ANY device has the PWA on-screen, the in-app
-        # presence toast IS the notification and the push is skipped — and
-        # since issue 2067 it says so, through the SAME reporter as the
-        # message path rather than a second event of its own.
-        if should_notify_presence?(presence, prefs) and
-             not foreground_visible?(subject, subject_label, network_slug) do
-          Push.Sender.send_to_subject(subject, Payload.build_presence(nick, presence, network_slug))
-        end
-      end)
-
-    :ok
+    dispatch(
+      ctx,
+      &should_notify_presence?(presence, &1),
+      fn -> Payload.build_presence(nick, presence, ctx.network_slug) end
+    )
   end
 
   def dispatch_presence(_, _, :initial, _), do: :ok
@@ -377,55 +331,37 @@ defmodule Grappa.Push.Triggers do
   Dispatches the Web Push for an end-to-end encrypted message from `nick`
   (issue 2430) — the third trigger class.
 
-  Same fire-and-forget shape as the two above, and the same foreground
-  gate. The message is never a row and grappa cannot read it, so it is
-  gated as what it is to the user — a private message from a nick — by
-  `should_notify_e2e?/3`, and the payload says only who sent it
+  Same fire-and-forget shape and foreground gate as the two above
+  (`dispatch/3`). The message is never a row and grappa cannot read it, so
+  it is gated as what it is to the user — a private message from a nick —
+  by `should_notify_e2e?/3`, and the payload says only who sent it
   (`Payload.build_e2e/2`).
   """
   @spec dispatch_e2e(String.t(), ctx()) :: :ok
   def dispatch_e2e(nick, ctx) when is_binary(nick) and is_map(ctx) do
-    %{subject: subject, subject_label: subject_label, network_slug: network_slug} = ctx
-
-    # Discarded, not matched: same reason as the two dispatchers above.
-    _ =
-      Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
-        prefs = UserSettings.get_notification_prefs(subject)
-
-        if should_notify_e2e?(nick, network_slug, prefs) and
-             not foreground_visible?(subject, subject_label, network_slug) do
-          Push.Sender.send_to_subject(subject, Payload.build_e2e(nick, network_slug))
-        end
-      end)
-
-    :ok
+    dispatch(
+      ctx,
+      &should_notify_e2e?(nick, ctx.network_slug, &1),
+      fn -> Payload.build_e2e(nick, ctx.network_slug) end
+    )
   end
 
   @doc """
   Dispatches the Web Push for an inbound INVITE to `channel` from `inviter`
   (issue 2487) — the fourth trigger class.
 
-  Same fire-and-forget shape and foreground gate as the three above. The
-  caller decides WHICH invites reach here (the ones that open an `:invited`
-  window); this function decides whether that one pushes, by the channel's
-  mute alone (`should_notify_invite?/3`).
+  Same fire-and-forget shape and foreground gate as the three above
+  (`dispatch/3`). The caller decides WHICH invites reach here (the ones
+  that open an `:invited` window); this function decides whether that one
+  pushes, by the channel's mute alone (`should_notify_invite?/3`).
   """
   @spec dispatch_invite(String.t(), String.t(), ctx()) :: :ok
   def dispatch_invite(channel, inviter, ctx) when is_binary(channel) and is_binary(inviter) and is_map(ctx) do
-    %{subject: subject, subject_label: subject_label, network_slug: network_slug} = ctx
-
-    # Discarded, not matched: same reason as the dispatchers above.
-    _ =
-      Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
-        prefs = UserSettings.get_notification_prefs(subject)
-
-        if should_notify_invite?(channel, network_slug, prefs) and
-             not foreground_visible?(subject, subject_label, network_slug) do
-          Push.Sender.send_to_subject(subject, Payload.build_invite(channel, inviter, network_slug))
-        end
-      end)
-
-    :ok
+    dispatch(
+      ctx,
+      &should_notify_invite?(channel, ctx.network_slug, &1),
+      fn -> Payload.build_invite(channel, inviter, ctx.network_slug) end
+    )
   end
 
   # ---------------------------------------------------------------------------
@@ -579,6 +515,46 @@ defmodule Grappa.Push.Triggers do
   # Private
   # ---------------------------------------------------------------------------
 
+  # The one dispatcher body every trigger class shares. `notify?` is the
+  # class's pure predicate, applied to the prefs read inside the Task;
+  # `payload` builds what is sent, and runs only once both gates said yes.
+  @spec dispatch(ctx(), (prefs() -> boolean()), (-> Payload.t())) :: :ok
+  defp dispatch(ctx, notify?, payload) do
+    %{subject: subject, subject_label: subject_label, network_slug: network_slug} = ctx
+
+    # Discarded, not matched: a supervisor can refuse to start a child,
+    # and a strict match would turn a skipped notification into a crash
+    # on the session hot path the day a ceiling is configured.
+    _ =
+      Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
+        prefs = UserSettings.get_notification_prefs(subject)
+
+        # #182 — foreground-suppression gate. The predicate stays PURE (no
+        # IO); the visibility check reads WSPresence GenServer state, so it
+        # is a SEPARATE explicit step here. If ANY of the subject's devices
+        # reports the PWA is on-screen, skip the ENTIRE fan-out to ALL of
+        # that subject's subscriptions: the in-app surface (the message, the
+        # presence toast, the invite banner) IS the notification. This is
+        # PER-USER (cross-device) suppression, NOT the old SW gate's
+        # per-device parity — the server has no push-endpoint→socket-pid
+        # mapping, so it can't suppress selectively. Moved server-side
+        # because the SW's `clients.matchAll` is unreliable on iOS (root
+        # cause of #182). Read RAW (no debounce) so a mention landing right
+        # after you background still delivers. Deliver-leaning: an
+        # unreported/backgrounded device reads `:hidden`, so this never
+        # suppresses to a device that hasn't claimed the foreground.
+        #
+        # issue 2067 — the gate REPORTS when it withholds. It stays the
+        # second conjunct so an event the prefs never matched short-circuits
+        # away before reaching it and cannot be miscounted as suppressed.
+        if notify?.(prefs) and not foreground_visible?(subject, subject_label, network_slug) do
+          Push.Sender.send_to_subject(subject, payload.())
+        end
+      end)
+
+    :ok
+  end
+
   # The #182 gate, plus the report issue 2067 was filed for. Reads exactly
   # what it used to (`WSPresence.any_visible?/1`, RAW, no debounce) and
   # returns the same boolean; the only new thing is that the SUPPRESSING
@@ -588,9 +564,9 @@ defmodule Grappa.Push.Triggers do
   # there `Push.Sender`'s own start/stop telemetry is the record — reporting
   # here as well would count every delivery twice, once as a near-miss.
   #
-  # Both call sites reach this through the same `not …` they always had, so
-  # the reading at the `if` is unchanged and the gate keeps its position as
-  # the second conjunct (see the moduledoc: that ordering is what separates
+  # `dispatch/3` reaches this through the same `not …` the call sites always
+  # had, so the reading at the `if` is unchanged and the gate keeps its
+  # position as the second conjunct (see the moduledoc: that ordering is what separates
   # "withheld" from "never triggered").
   @spec foreground_visible?(Subject.t(), String.t(), String.t()) :: boolean()
   defp foreground_visible?(subject, subject_label, network_slug) do
@@ -603,8 +579,8 @@ defmodule Grappa.Push.Triggers do
   end
 
   # Both doors on one withholding: the counter an exporter aggregates, and
-  # the line an operator greps. ONE function so the message path and the
-  # presence path can never drift into two spellings of the same event.
+  # the line an operator greps. ONE function so no two trigger classes can
+  # drift into two spellings of the same event.
   #
   # Logger FIRST, counter second, and that order is load-bearing rather than
   # stylistic: anything that observes the counter — the test that pins this
@@ -618,11 +594,12 @@ defmodule Grappa.Push.Triggers do
   # FORMAT time, so a new one would compile, fire, and still print bare —
   # and editing `config/*.exs` would additionally turn a hot deploy cold.
   #
-  # `:network` and not `:channel`, even though the message path knows the
-  # channel and the key is allowlisted too: this reporter serves BOTH doors
-  # and the presence one has no channel, so taking it would either split the
-  # reporter in two or make it print an empty field half the time. The
-  # network is the one context both doors carry, and on a multi-network
+  # `:network` and not `:channel`, even though the message and invite paths
+  # know a channel and the key is allowlisted too: this reporter serves every
+  # trigger class, and the presence and e2e ones have no channel, so taking
+  # it would either split the reporter or make it print an empty field for
+  # half of them. The network is the one context every door carries, and on
+  # a multi-network
   # bouncer it is what turns "something was withheld" into "something was
   # withheld on azzurra".
   @spec report_suppressed(Subject.t(), String.t(), suppression_reason()) :: :ok
