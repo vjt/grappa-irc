@@ -646,7 +646,7 @@ Check `protocol_version >= 28`. ⚠️ There is no 27 — the shape moved twice
 before this version was published, and the pin gate requires a number per
 move. Nothing ever spoke 27.
 
-### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46; network name v47; devices v49; copies to your other devices v50)
+### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46; network name v47; devices v49; copies to your other devices v50; NACK from `*` v52)
 
 An encrypted query is a conversation grappa carries and cannot read. The
 endpoints (cicchetto, or a bot using the shared Python package) run Olm via
@@ -666,11 +666,20 @@ fragments, and hands you one event per whole message and device:
 `payload` is the compact JSON text the peer sent, as a string, exactly as
 the peer cut it, never parsed on the server. `verb` is one of `keys`,
 `pkmsg`, `msg`, `nack`. `from` is a routing hint only: pin the peer on its
-KEY, never its nick. `from_did` (v49) is the sending device, or `*` on a
-`keys` (it describes the whole user); `to_did` (v49) is the device of YOURS
-this copy is for. `own` (v50) is `false` on every message from a peer and
-`true` on a copy of a message one of YOUR other devices sent (see *Copies to
-your other devices* below): show it as sent, not received.
+KEY, never its nick. `from_did` (v49) is the sending device, or `*` when
+the peer's grappa speaks for the whole user: on a `keys`, and (v52, issue
+2491) on a `nack` saying that a `pkmsg` or `msg` of yours reached NONE of
+the devices the peer lists. The device you wrote to was revoked, or the
+peer started over with a new identity or moved to another server, or
+someone else holds the nick now. Its payload is any NACK's,
+`{"ref": <msgid>, "v": 2}`. Tell your user that the peer cannot read that
+message, and do NOT re-key on your own: the nick's new holder may be an
+impostor. Let the user decide whether to ask for keys again, then take
+the KEYS as any key change (trust on first use, the key alarm, SAS).
+`to_did` (v49) is the device of YOURS this copy is for. `own` (v50) is
+`false` on every message from a peer and `true` on a copy of a message one
+of YOUR other devices sent (see *Copies to your other devices* below): show
+it as sent, not received.
 
 **One identity, several devices (v49).** A subject holds one E2E identity
 per network: a master Ed25519 key, and up to **4** devices it vouches for.

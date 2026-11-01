@@ -1358,7 +1358,28 @@ defmodule Grappa.Protocol do
   # @min_protocol_version stays at 1: an older admin console drops an event
   # whose `session_action` it does not know and reads the reply's raw token,
   # and nothing a non-admin client sees changed.
-  @protocol_version 51
+  #
+  # ---------------------------------------------------------------------------
+  # 52 — issue 2491: a NACK from `*` for a message no listed device can read
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `e2e_message` with `verb: nack` and `from_did: "*"`. A peer's
+  # grappa answers a PKMSG or MSG whose `to` names none of its user's listed
+  # devices (revoked, a new identity, a move to another server) with a NACK
+  # from `*` instead of dropping it, so the sender learns the peer cannot
+  # read; `*` was until now a `keys`-only sender. No field and no key is
+  # new, so the generated shape and its digest do not move. Bumped on the
+  # #1393d rule all the same: a client that tells its user "the peer cannot
+  # read this" on that NACK cannot get it from a server predating it.
+  #
+  # Checked for a collision before claiming 52: origin/main carries 51, and
+  # the one open PR that edits this file's neighbourhood (#2411) still
+  # carries 40 and does not touch it.
+  #
+  # @min_protocol_version stays at 1: an older client takes the NACK for one
+  # whose ref it does not know and drops it, which is what it did with the
+  # silence before.
+  @protocol_version 52
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1399,7 +1420,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 51
+  @spec version() :: 52
   def version, do: @protocol_version
 
   @doc """
