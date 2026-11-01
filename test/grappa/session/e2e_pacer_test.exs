@@ -12,11 +12,14 @@ defmodule Grappa.Session.E2ePacerTest do
   @held 10_000
 
   describe "lane/2" do
-    test "KEYS and NACK are reactive and KEYREQ urgent whatever the client says; a MSG/PKMSG is what it says" do
+    test "KEYS, NACK and the consent verbs are reactive and KEYREQ urgent whatever the client says; a MSG/PKMSG is what it says" do
       for priority <- [:control, :reactive, :text] do
         assert E2ePacer.lane(:keys, priority) == :reactive
         assert E2ePacer.lane(:nack, priority) == :reactive
         assert E2ePacer.lane(:keyreq, priority) == :urgent
+
+        # issue 2486: one short line each, answering or asking a person.
+        for verb <- [:request, :accept, :refuse, :cancel], do: assert(E2ePacer.lane(verb, priority) == :reactive)
       end
 
       for verb <- [:pkmsg, :msg] do
