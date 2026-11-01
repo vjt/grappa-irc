@@ -160,6 +160,30 @@ defmodule Grappa.Session.E2eSessionTest do
       assert Process.alive?(pid)
     end
 
+    # Peers draw these NACKs at will: a few nicks writing junk to a device
+    # nobody lists must not fill the room the user's own orders need.
+    test "NACKs of messages no listed device can read stop at half the connection's urgent and reactive room" do
+      {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      lane = E2ePacer.max_lane_lines()
+
+      for nick <- ["mal1", "mal2", "mal3"], _ <- 1..lane do
+        Enum.each(
+          lines_from(nick, :pkmsg, E2e.new_msgid(), {@alice, "AAAAAAAAAAA"}, @small),
+          &IRCServer.feed(server, &1)
+        )
+      end
+
+      Enum.each(lines_from("alice", :msg, "q83vEjRWeJA", {@alice, device.did}, @small), &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, msgid: "q83vEjRWeJA"}}, @wire_timeout
+
+      # Each nick's lane holds 32, so three would queue 96 lines.
+      waiting = :sys.get_state(pid).e2e_pacer |> E2ePacer.pending() |> length()
+      assert waiting > lane
+      assert waiting <= div(E2ePacer.max_queued(), 2)
+    end
+
     # A NACK answering a NACK, or a KEYS nobody can read, would loop
     # between two grappas: neither is a message a device could not decrypt.
     test "a NACK or a KEYS that reaches no listed device gets no NACK back" do
