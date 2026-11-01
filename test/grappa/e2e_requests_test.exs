@@ -218,6 +218,15 @@ defmodule Grappa.E2eRequestsTest do
       assert {:request, {:put, %Request{state: :outgoing}, false}} = ask!(ctx, "someone", ctx.now)
     end
 
+    test "an incoming request past its deadline takes no room, swept or not", ctx do
+      for i <- 1..E2eRequests.max_rows(), do: {:put, _, true} = inbound!(ctx, "asker#{i}", :request, ctx.now)
+
+      # Not listed any more, and the hourly sweep has not run yet.
+      later = past_deadline(ctx.now)
+      assert E2eRequests.list(ctx.subject, ctx.network.id, later) == []
+      assert {:put, %Request{state: :incoming}, true} = inbound!(ctx, "newcomer", :request, later)
+    end
+
     test "past #{E2eRequests.max_rows()} rows we started, a new ask is refused; asking again is not", ctx do
       for i <- 1..(E2eRequests.max_rows() - 1), do: {:request, _} = ask!(ctx, "peer#{i}", ctx.now)
       # An answer still counts as ours until it is shown.
@@ -226,6 +235,11 @@ defmodule Grappa.E2eRequestsTest do
 
       {:request, plan} = E2eRequests.ask(nil, "onemore", ctx.now)
       assert {:error, :requests_full} = E2eRequests.commit(ctx.subject, ctx.network.id, plan, ctx.now)
+
+      # Ours never lapse: past every deadline the room is still taken.
+      later = past_deadline(ctx.now)
+      {:request, again} = E2eRequests.ask(nil, "onemore", later)
+      assert {:error, :requests_full} = E2eRequests.commit(ctx.subject, ctx.network.id, again, later)
 
       assert {:request, {:put, %Request{state: :outgoing}, false}} = ask!(ctx, "peer1", ctx.now)
 

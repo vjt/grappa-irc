@@ -52,9 +52,11 @@ defmodule Grappa.E2eRequests do
 
   ## Bounds that keep strangers out
 
-  At most `max_rows/0` rows the peers started (`incoming`) and as many we
-  started (`outgoing`, `accepted`, `refused`) per subject and network; past
-  that a new nick's REQUEST is dropped, and a new ask refused. One row per
+  At most `max_rows/0` rows the peers started (`incoming`, and one past its
+  deadline takes no room, swept or not) and as many we started
+  (`outgoing`, `accepted`, `refused`) per subject and network; past that a
+  new nick's REQUEST is dropped, and a new ask refused. Ours never lapse:
+  only a dismissal frees a room on our side. One row per
   folded peer, so a nick that asks again refreshes its row. A payload is at
   most `Request.max_payload_bytes/0`.
 
@@ -270,32 +272,50 @@ defmodule Grappa.E2eRequests do
         )
       )
 
-    case Repo.BusyRetry.run(fn -> put_transaction(subject, network_id, row, state, changeset) end) do
+    case Repo.BusyRetry.run(fn -> put_transaction(subject, network_id, {row, state, changeset}, now) end) do
       {:ok, request} -> {:ok, {:put, request, fresh?}}
       {:error, _} = err -> err
     end
   end
 
-  @spec put_transaction(Subject.t(), integer(), Request.t() | nil, Request.state(), Ecto.Changeset.t()) ::
-          {:ok, Request.t()} | {:error, :requests_full}
-  defp put_transaction(subject, network_id, row, state, changeset),
-    do: Repo.immediate_transaction(fn -> put(subject, network_id, row, state, changeset) end)
+  @spec put_transaction(
+          Subject.t(),
+          integer(),
+          {Request.t() | nil, Request.state(), Ecto.Changeset.t()},
+          DateTime.t()
+        ) :: {:ok, Request.t()} | {:error, :requests_full}
+  defp put_transaction(subject, network_id, write, now),
+    do: Repo.immediate_transaction(fn -> put(subject, network_id, write, now) end)
 
   # Inside the transaction: the room check when the row starts on a side it
   # was not on, then the write. A changeset error is a broken invariant (the
   # session checked the peer and the payload), so it raises.
-  @spec put(Subject.t(), integer(), Request.t() | nil, Request.state(), Ecto.Changeset.t()) :: Request.t()
-  defp put(subject, network_id, row, state, changeset) do
+  @spec put(Subject.t(), integer(), {Request.t() | nil, Request.state(), Ecto.Changeset.t()}, DateTime.t()) ::
+          Request.t()
+  defp put(subject, network_id, {row, state, changeset}, now) do
     side = side(state)
 
-    if (is_nil(row) or side(row.state) != side) and count(subject, network_id, side) >= @max_rows,
+    if (is_nil(row) or side(row.state) != side) and count(subject, network_id, side, now) >= @max_rows,
       do: Repo.rollback(:requests_full),
       else: Repo.insert_or_update!(changeset)
   end
 
-  @spec count(Subject.t(), integer(), [Request.state()]) :: non_neg_integer()
-  defp count(subject, network_id, states),
-    do: subject |> partition(network_id) |> where([r], r.state in ^states) |> select([r], count(r.id)) |> Repo.one()
+  # The rows taking a room on `side` at `now`. An incoming row past its
+  # deadline takes none: it is listed no more, and the sweep deletes it
+  # within the hour. Ours keep theirs until dismissed.
+  @spec count(Subject.t(), integer(), [Request.state()], DateTime.t()) :: non_neg_integer()
+  defp count(subject, network_id, @theirs, now) do
+    cutoff = DateTime.add(now, -@ttl_seconds, :second)
+
+    subject
+    |> partition(network_id)
+    |> where([r], r.state in ^@theirs and r.updated_at > ^cutoff)
+    |> select([r], count(r.id))
+    |> Repo.one()
+  end
+
+  defp count(subject, network_id, @ours, _),
+    do: subject |> partition(network_id) |> where([r], r.state in ^@ours) |> select([r], count(r.id)) |> Repo.one()
 
   @doc """
   Deletes the `incoming` requests of `subject` on `network_id` past their
