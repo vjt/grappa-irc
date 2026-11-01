@@ -2021,21 +2021,22 @@ defmodule Grappa.Session.Server do
     now = DateTime.utc_now()
     {verb, plan} = state.subject |> E2eRequests.for_peer(state.network_id, target) |> E2eRequests.ask(target, now)
 
-    case send_consent(state, target, verb, {from, payload}, plan, now) do
+    case send_consent(state, target, verb, user_line({from, payload}), plan, now) do
       {:ok, _, {:put, request, _}, state} -> {:reply, {:ok, request}, state}
       {:error, _} = refused -> {:reply, refused, state}
     end
   end
 
   # issue 2486 — the user accepts or refuses the peer's waiting request
-  # (`Session.answer_e2e/6`). Listed in the no-Client refusal above.
-  def handle_call({:e2e_answer, id, answer, from, payload}, _, state)
-      when is_integer(id) and answer in [:accept, :refuse] and is_binary(from) and is_binary(payload) do
+  # (`Session.answer_e2e/5`), a refusal with or without a device's line
+  # (`answer_line/2`). Listed in the no-Client refusal above.
+  def handle_call({:e2e_answer, id, answer, line}, _, state)
+      when is_integer(id) and (answer == :refuse or (answer == :accept and is_tuple(line))) do
     now = DateTime.utc_now()
 
     with {:ok, row} <- fetch_e2e_request(state, id),
          {:ok, plan} <- E2eRequests.answer(row, now),
-         {:ok, msgid, _, state} <- send_consent(state, row.peer, answer, {from, payload}, plan, now) do
+         {:ok, msgid, _, state} <- send_consent(state, row.peer, answer, answer_line(row, line), plan, now) do
       {:reply, {:ok, msgid}, state}
     else
       {:error, _} = refused -> {:reply, refused, state}
@@ -8220,7 +8221,7 @@ defmodule Grappa.Session.Server do
        when verb in [:request, :accept, :refuse, :cancel] do
     now = DateTime.utc_now()
 
-    case receive_consent(state, from, verb, payload, now) do
+    case receive_consent(state, from, verb, {did, payload}, now) do
       {:ok, reply, {:drop, reason}} ->
         Logger.debug("e2e #{verb} dropped", sender: from, reason: reason)
         reply_consent(state, from, did, reply)
@@ -8432,20 +8433,20 @@ defmodule Grappa.Session.Server do
   # issue 2486 — plans and commits what an inbound consent line does, and
   # says whether grappa answers it ACCEPT. The payload rule is the send
   # door's (`E2eRequests.payload?/1`).
-  @spec receive_consent(t(), String.t(), E2e.consent_verb(), String.t(), DateTime.t()) ::
+  @spec receive_consent(t(), String.t(), E2e.consent_verb(), {E2e.address(), String.t()}, DateTime.t()) ::
           {:ok, :accept | :none, E2eRequests.outcome()} | {:error, :bad_payload | :requests_full | :db_unavailable}
-  defp receive_consent(state, from, verb, payload, now) do
+  defp receive_consent(state, from, verb, {did, payload}, now) do
     if E2eRequests.payload?(payload) do
       row = E2eRequests.for_peer(state.subject, state.network_id, from)
-      {reply, plan} = E2eRequests.inbound(row, verb, from, payload, now)
+      {reply, plan} = E2eRequests.inbound(row, verb, from, {did, payload}, now)
       with {:ok, outcome} <- E2eRequests.commit(state.subject, state.network_id, plan, now), do: {:ok, reply, outcome}
     else
       {:error, :bad_payload}
     end
   end
 
-  # issue 2486 — one consent line from the subject's device to `*`, and the
-  # row it moves. The pacer takes the line first (pure: nothing is sent and
+  # issue 2486 — one consent line the user gives (`user_line/1`,
+  # `answer_line/2`), and the row it moves. The pacer takes the line first (pure: nothing is sent and
   # the state is untouched), the row is written next, and only then is the
   # pacer committed and the line released. A refusal at either step leaves
   # no state behind, and a row always matches a line the session took. The
@@ -8463,21 +8464,16 @@ defmodule Grappa.Session.Server do
   # when the session ends, or one that fails to go out, is announced like
   # any other drop, an `e2e_send_dropped` naming a msgid only an answer's
   # 202 carried. The row stays as written; the user cancels or asks again.
-  @spec send_consent(
-          t(),
-          String.t(),
-          E2e.consent_verb(),
-          {E2e.address(), String.t()},
-          E2eRequests.plan(),
-          DateTime.t()
-        ) ::
+  @typep consent_line :: {{E2e.address(), E2e.address()}, String.t()}
+
+  @spec send_consent(t(), String.t(), E2e.consent_verb(), consent_line(), E2eRequests.plan(), DateTime.t()) ::
           {:ok, String.t(), E2eRequests.outcome(), t()}
           | {:error, :too_large | :rate_limited | :requests_full | :db_unavailable}
-  defp send_consent(state, target, verb, {from, payload}, plan, now) do
+  defp send_consent(state, target, verb, {addresses, payload}, plan, now) do
     msgid = E2e.new_msgid()
     message = %{msgid: msgid, verb: verb, lane: E2ePacer.lane(verb, :text), deadline_ms: nil}
 
-    with {:ok, lines} <- e2e_lines(state, target, verb, msgid, {from, "*"}, payload),
+    with {:ok, lines} <- e2e_lines(state, target, verb, msgid, addresses, payload),
          {:ok, releases, lost, pacer, wait} <-
            pace_e2e(state, target, message, lines, System.monotonic_time(:millisecond)),
          {:ok, outcome} <- E2eRequests.commit(state.subject, state.network_id, plan, now) do
@@ -8489,6 +8485,21 @@ defmodule Grappa.Session.Server do
       {:error, reason} when reason in [:too_large, :requests_full, :db_unavailable] -> {:error, reason}
     end
   end
+
+  # issue 2486 — a consent line from one of the subject's devices: to `*`,
+  # the peer's user, since the asker does not know the peer's devices.
+  @spec user_line({E2e.address(), String.t()}) :: consent_line()
+  defp user_line({from, payload}), do: {{from, "*"}, payload}
+
+  # issue 2486 R2 (vjt's ruling) — an answer's line: from the device the
+  # client named; or, with none (a REFUSE: cicchetto never creates an
+  # identity just to say no), from grappa for the user, `*`, to the device
+  # the peer's asking came from (`peer_device`: on an incoming request
+  # always a did, since only a device sends a REQUEST), with the version
+  # alone for payload.
+  @spec answer_line(E2eRequest.t(), {E2e.address(), String.t()} | nil) :: consent_line()
+  defp answer_line(%E2eRequest{peer_device: device}, nil), do: {{"*", device}, Jason.encode!(%{v: 2})}
+  defp answer_line(_, line), do: user_line(line)
 
   # issue 2486 — what a dismissal sends: nothing for an answer, an expired
   # request or a lapsed one; a CANCEL for a live request we asked, which
@@ -8514,7 +8525,7 @@ defmodule Grappa.Session.Server do
   defp dismiss_e2e_request(%{client: nil}, _, :cancel, _, _, _), do: {:error, :no_socket}
 
   defp dismiss_e2e_request(state, row, :cancel, plan, line, now) do
-    with {:ok, _, _, state} <- send_consent(state, row.peer, :cancel, line, plan, now), do: {:ok, state}
+    with {:ok, _, _, state} <- send_consent(state, row.peer, :cancel, user_line(line), plan, now), do: {:ok, state}
   end
 
   @spec fetch_e2e_request(t(), integer()) :: {:ok, E2eRequest.t()} | {:error, :not_found}

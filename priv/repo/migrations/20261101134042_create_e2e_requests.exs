@@ -14,6 +14,10 @@ defmodule Grappa.Repo.Migrations.CreateE2eRequests do
   # `updated_at` is when the row entered its state: for a pending row the
   # instant the REQUEST went out or arrived, which the 24 h deadline counts
   # from. `payload` is the peer's latest, opaque (grappa never parses it).
+  # `peer_device` is the `from` of the peer's latest consent line on the row
+  # (a device id, or `*` when their grappa answered for them), where grappa
+  # sends a REFUSE the user gives without a device of its own (vjt's ruling
+  # R2); NULL until a line of theirs stands. Never on the wire.
   #
   # Raw SQL for the table body, like the other e2e tables: the subject XOR
   # and the state set are CHECK constraints. `AUTOINCREMENT` because a
@@ -35,6 +39,7 @@ defmodule Grappa.Repo.Migrations.CreateE2eRequests do
       "peer" TEXT NOT NULL,
       "state" TEXT NOT NULL,
       "payload" TEXT NULL,
+      "peer_device" TEXT NULL,
       "inserted_at" TEXT NOT NULL,
       "updated_at" TEXT NOT NULL,
       CONSTRAINT "e2e_requests_subject_xor" CHECK ((user_id IS NULL) <> (visitor_id IS NULL)),

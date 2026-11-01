@@ -17,14 +17,20 @@ defmodule Grappa.E2eRequestsTest do
   # The master-key hint the proposal puts in every consent payload.
   @payload ~s({"v":2,"master":"m4st3rK3yHintAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"})
 
+  # The device a peer's line comes from, and another of theirs.
+  @did "AaZaARRDyBk"
+  @other "BoBBoBBoBBo"
+
   setup do
     {:ok, subject: {:user, user_fixture().id}, network: network_fixture(), now: DateTime.utc_now()}
   end
 
   # Plans and commits one inbound line from `peer`, as the session does.
-  defp inbound!(ctx, peer, verb, now) do
+  defp inbound!(ctx, peer, verb, now), do: inbound!(ctx, peer, verb, now, @did)
+
+  defp inbound!(ctx, peer, verb, now, device) do
     row = E2eRequests.for_peer(ctx.subject, ctx.network.id, peer)
-    {_, plan} = E2eRequests.inbound(row, verb, peer, @payload, now)
+    {_, plan} = E2eRequests.inbound(row, verb, peer, {device, @payload}, now)
     {:ok, outcome} = E2eRequests.commit(ctx.subject, ctx.network.id, plan, now)
     outcome
   end
@@ -97,7 +103,7 @@ defmodule Grappa.E2eRequestsTest do
 
       # An ACCEPT is never answered, so two grappas cannot answer each other.
       for peer <- ["stranger", "live", "late", "yes", "no", "waiting", "lapsed"], verb <- E2e.consent_verbs() do
-        {reply, _} = E2eRequests.inbound(row(ctx, peer), verb, peer, @payload, ctx.now)
+        {reply, _} = E2eRequests.inbound(row(ctx, peer), verb, peer, {@did, @payload}, ctx.now)
         expected = if {peer, verb} in [{"live", :request}, {"yes", :request}], do: :accept, else: :none
         assert reply == expected, inspect({peer, verb})
       end
@@ -222,11 +228,11 @@ defmodule Grappa.E2eRequestsTest do
 
       for i <- 1..E2eRequests.max_rows(), do: {:put, _, true} = inbound!(ctx, "asker#{i}", :request, ctx.now)
 
-      {:none, turncoat} = E2eRequests.inbound(row(ctx, "turncoat"), :request, "turncoat", @payload, ctx.now)
+      {:none, turncoat} = E2eRequests.inbound(row(ctx, "turncoat"), :request, "turncoat", {@did, @payload}, ctx.now)
       assert {:error, :requests_full} = E2eRequests.commit(ctx.subject, ctx.network.id, turncoat, ctx.now)
       assert %Request{state: :refused} = row(ctx, "turncoat")
 
-      {:none, plan} = E2eRequests.inbound(nil, :request, "onemore", @payload, ctx.now)
+      {:none, plan} = E2eRequests.inbound(nil, :request, "onemore", {@did, @payload}, ctx.now)
       assert {:error, :requests_full} = E2eRequests.commit(ctx.subject, ctx.network.id, plan, ctx.now)
       assert row(ctx, "onemore") == nil
 
@@ -272,6 +278,48 @@ defmodule Grappa.E2eRequestsTest do
       refute E2eRequests.payload?("")
       refute E2eRequests.payload?(~s({"v": 2}))
       refute E2eRequests.payload?(nil)
+    end
+  end
+
+  describe "the peer's device" do
+    test "is the `from` of the peer's latest line on the row; asking afresh forgets it, answering their asking keeps it",
+         ctx do
+      assert {:put, %Request{peer_device: @did}, true} = inbound!(ctx, "alice", :request, ctx.now)
+      # Their next REQUEST came from another device of theirs: that one is answered now.
+      assert {:put, %Request{peer_device: @other}, false} = inbound!(ctx, "alice", :request, ctx.now, @other)
+      # Our asking answers theirs: the row keeps where their asking came from.
+      assert {:accept, {:put, %Request{state: :accepted, peer_device: @other}, false}} = ask!(ctx, "alice", ctx.now)
+
+      # Asking afresh, after their asking lapsed: no line of theirs stands.
+      past = DateTime.add(ctx.now, -E2eRequests.ttl_seconds() - 1, :second)
+      {:put, %Request{peer_device: @did}, true} = inbound!(ctx, "bob", :request, past)
+      assert {:request, {:put, %Request{state: :outgoing, peer_device: nil}, false}} = ask!(ctx, "bob", ctx.now)
+
+      # An answer grappa gave for them, from `*`, is kept as such.
+      assert {:put, %Request{state: :accepted, peer_device: "*"}, false} = inbound!(ctx, "bob", :accept, ctx.now, "*")
+      {:request, _} = ask!(ctx, "carol", ctx.now)
+
+      assert {:put, %Request{state: :refused, peer_device: @other}, false} =
+               inbound!(ctx, "carol", :refuse, ctx.now, @other)
+    end
+
+    test "is a device id or `*`, or nothing", ctx do
+      attrs = %{
+        user_id: elem(ctx.subject, 1),
+        network_id: ctx.network.id,
+        peer: "alice",
+        state: :incoming,
+        inserted_at: ctx.now,
+        updated_at: ctx.now
+      }
+
+      for device <- [@did, "*", nil],
+          do: assert(Request.changeset(%Request{}, Map.put(attrs, :peer_device, device)).valid?, inspect(device))
+
+      for device <- ["short", "/Uw/z3+OAsk", "**"] do
+        changeset = Request.changeset(%Request{}, Map.put(attrs, :peer_device, device))
+        assert %{peer_device: [_]} = errors_on(changeset), device
+      end
     end
   end
 

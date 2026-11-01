@@ -232,7 +232,7 @@ defmodule Grappa.Session do
           | :too_late
 
   @typedoc """
-  issue 2486 — every way the consent doors (`ask_e2e/5`, `answer_e2e/6`,
+  issue 2486 — every way the consent doors (`ask_e2e/5`, `answer_e2e/5`,
   `dismiss_e2e/4`) refuse, named once so their REST door states the same
   set.
   """
@@ -1173,24 +1173,39 @@ defmodule Grappa.Session do
 
   @doc """
   issue 2486 — accepts or refuses the peer's waiting request `id`: ACCEPT
-  or REFUSE goes from the subject's device `from` to `*`, and the row goes
-  (`e2e_request_gone` on the user topic). The accepting client then opens
-  the encrypted chat and fetches the peer's keys itself: grappa never
-  starts a KEYREQ on anyone's behalf.
+  or REFUSE goes from the subject's device of `line` (`{from, payload}`)
+  to `*`, and the row goes (`e2e_request_gone` on the user topic). The
+  accepting client then opens the encrypted chat and fetches the peer's
+  keys itself: grappa never starts a KEYREQ on anyone's behalf.
+
+  A refusal needs no device (vjt's ruling R2): with `line` `nil` the
+  REFUSE goes from `*`, grappa for the user, to the device the peer's
+  latest REQUEST came from, with the version alone for payload, so saying
+  no never needs an encryption identity. Accepting starts the key
+  exchange, so it needs a listed device: `{:error, :bad_request}` without
+  one.
 
   `{:ok, msgid}` once the pacer has taken the line. `{:error, :not_found}`
   for an id that is not this subject's here, or a request past its
   deadline; `{:error, :request_state}` for a request that is not waiting for an
   answer (one we asked, or an answer); the rest as `ask_e2e/5`.
   """
-  @spec answer_e2e(subject(), integer(), integer(), :accept | :refuse, String.t(), String.t()) ::
+  @spec answer_e2e(subject(), integer(), integer(), :accept | :refuse, {String.t(), String.t()} | nil) ::
           {:ok, String.t()} | {:error, e2e_consent_error()}
-  def answer_e2e(subject, network_id, id, answer, from, payload)
+  def answer_e2e(subject, network_id, id, :refuse, nil)
+      when is_subject(subject) and is_integer(network_id) and is_integer(id),
+      do: call_session(subject, network_id, {:e2e_answer, id, :refuse, nil})
+
+  def answer_e2e(subject, network_id, id, :accept, nil)
+      when is_subject(subject) and is_integer(network_id) and is_integer(id),
+      do: {:error, :bad_request}
+
+  def answer_e2e(subject, network_id, id, answer, {from, payload} = line)
       when is_subject(subject) and is_integer(network_id) and is_integer(id) and answer in [:accept, :refuse] and
              is_binary(from) and is_binary(payload) do
     with :ok <- validate_consent_line(from, payload),
          :ok <- listed_device(subject, network_id, from) do
-      call_session(subject, network_id, {:e2e_answer, id, answer, from, payload})
+      call_session(subject, network_id, {:e2e_answer, id, answer, line})
     end
   end
 

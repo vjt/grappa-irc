@@ -1220,16 +1220,39 @@ defmodule Grappa.Session.E2eSessionTest do
       assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{peer: "bob", id: bob}}},
                      @wire_timeout
 
-      assert {:ok, msgid} = Session.answer_e2e(subject, network.id, alice, :accept, device.did, @hint)
+      assert {:ok, msgid} = Session.answer_e2e(subject, network.id, alice, :accept, {device.did, @hint})
       assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request_gone, id: ^alice}}, @wire_timeout
       assert %{verb: :accept, msgid: ^msgid, to: "*"} = await_consent(server, "alice", :accept)
 
-      assert {:ok, _} = Session.answer_e2e(subject, network.id, bob, :refuse, device.did, @hint)
+      assert {:ok, _} = Session.answer_e2e(subject, network.id, bob, :refuse, {device.did, @hint})
       assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request_gone, id: ^bob}}, @wire_timeout
       assert %{verb: :refuse} = await_consent(server, "bob", :refuse)
 
       assert E2eRequests.list(subject, network.id, DateTime.utc_now()) == []
-      assert {:error, :not_found} = Session.answer_e2e(subject, network.id, alice, :accept, device.did, @hint)
+      assert {:error, :not_found} = Session.answer_e2e(subject, network.id, alice, :accept, {device.did, @hint})
+    end
+
+    test "refusing with no line says no for the user: REFUSE goes from `*` to the device of their latest REQUEST" do
+      {server, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      # At an empty bank a line let go is written before the call returns.
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "MODE "), 1_000)
+      stub = failing_client(pid, "nobody")
+      :sys.replace_state(pid, &%{&1 | client: stub})
+
+      Enum.each(consent_from("alice", :request, @hint), &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{id: id}}}, @wire_timeout
+      # They asked again from another device: that one is told.
+      Enum.each(lines_from("alice", :request, E2e.new_msgid(), {@bob, "*"}, @hint), &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{id: ^id}}}, @wire_timeout
+
+      assert {:error, :bad_request} = Session.answer_e2e(subject, network.id, id, :accept, nil)
+      assert {:ok, msgid} = Session.answer_e2e(subject, network.id, id, :refuse, nil)
+      assert_received {:wrote, line}
+      assert %{verb: :refuse, msgid: ^msgid, from: "*", to: @bob, chunk: ~s({"v":2})} = fragment_to(line, "alice")
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request_gone, id: ^id}}, @wire_timeout
     end
 
     test "asking a peer whose request is waiting answers it: ACCEPT goes and the row reads accepted" do
@@ -1443,7 +1466,7 @@ defmodule Grappa.Session.E2eSessionTest do
       # its own, or none, never this one.
       other = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
       [theirs] = identity!({:user, other.id}, network, 1)
-      assert {:error, :no_session} = Session.answer_e2e({:user, other.id}, network.id, id, :accept, theirs.did, @hint)
+      assert {:error, :no_session} = Session.answer_e2e({:user, other.id}, network.id, id, :accept, {theirs.did, @hint})
 
       :ok = Session.stop_session(subject, network.id)
       assert {:error, :no_session} = Session.ask_e2e(subject, network.id, "alice", device.did, @hint)

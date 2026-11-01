@@ -42,8 +42,8 @@ defmodule Grappa.IRC.E2e do
       several devices), NACK `did → did`, or `* → did` when grappa answers
       for the user that a message reached none of its listed devices
       (issue 2491), and the four consent verbs of issue 2486 (REQUEST,
-      ACCEPT, REFUSE, CANCEL) `did → *`, or ACCEPT `* → did` when grappa
-      answers a REQUEST for the user.
+      ACCEPT, REFUSE, CANCEL) `did → *`, or ACCEPT and REFUSE `* → did`
+      when grappa answers a REQUEST for the user.
     * `chunk` is a NON-EMPTY slice of the payload's compact JSON text, so
       printable ASCII without a space (`chunk?/1`). It is no longer base64:
       v2 dropped the outer encoding, which cost a third of every line. The
@@ -225,14 +225,15 @@ defmodule Grappa.IRC.E2e do
   to a message none of the user's listed devices could have read (issue
   2491), and the consent verbs from a device to the user (issue 2486):
   consent belongs to the person, and the asker does not know the peer's
-  devices yet; or ACCEPT from the user to a device, when grappa answers a
-  REQUEST the user already consents to (vjt's ruling R1). The one table,
-  for the parser and the send door alike; the door also wants `from` to be
-  a did, since only grappa speaks for the user.
+  devices yet; or ACCEPT and REFUSE from the user to a device, when grappa
+  answers a REQUEST for the user: one the user already consents to (vjt's
+  ruling R1), or one the user refuses with no device of its own (R2). The
+  one table, for the parser and the send door alike; the door also wants
+  `from` to be a did, since only grappa speaks for the user.
   """
   @spec addressed?(verb(), term(), term()) :: boolean()
   def addressed?(verb, from, "*") when verb in [:keyreq | @consent_verbs], do: did?(from)
-  def addressed?(verb, "*", to) when verb in [:keys, :nack, :accept], do: did?(to)
+  def addressed?(verb, "*", to) when verb in [:keys, :nack, :accept, :refuse], do: did?(to)
   def addressed?(verb, from, "*") when verb in [:pkmsg, :msg], do: did?(from)
   def addressed?(verb, from, to) when verb in [:pkmsg, :msg, :nack], do: did?(from) and did?(to)
   def addressed?(_, _, _), do: false
