@@ -1093,6 +1093,9 @@ defmodule Grappa.IRC.IdentifierTest do
     # it carries its own copy of the fold literal and needs its own pin.
     @folded_name_migration "priv/repo/migrations/20260815210238_add_folded_name_index_to_users.exs"
 
+    # #2486 — the consent-request table keys its peer on the same fold.
+    @folded_peer_migration "priv/repo/migrations/20261101134042_create_e2e_requests.exs"
+
     # Pre-#525 migrations legitimately embed the rfc1459 four-replace fold
     # (correct when written; #525 supersedes their LIVE indexes). The
     # re-fold migration's own down/0 restores the rfc1459 indexes as its
@@ -1134,6 +1137,17 @@ defmodule Grappa.IRC.IdentifierTest do
 
       assert String.contains?(source, expected),
              "#{@folded_name_migration} is missing #{expected}"
+    end
+
+    test "the #2486 folded-peer index embeds the ASCII fold from nick_fold_sql/1" do
+      source = File.read!(@folded_peer_migration)
+
+      # The attribute line, for the reason the #1353 pin above gives: the
+      # migration names `lower(peer)` in prose too.
+      expected = ~s(@folded_peer "#{Identifier.nick_fold_sql("peer")}")
+
+      assert String.contains?(source, expected),
+             "#{@folded_peer_migration} is missing #{expected}"
     end
 
     test "no migration newer than the #525 re-fold reintroduces the rfc1459 fold" do

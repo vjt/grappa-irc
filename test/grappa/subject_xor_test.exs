@@ -34,6 +34,7 @@ defmodule Grappa.SubjectXorTest do
   alias Grappa.Dcc.SpoolFile
   alias Grappa.E2eKeys.Device, as: E2eDevice
   alias Grappa.E2eKeys.DeviceList, as: E2eDeviceList
+  alias Grappa.E2eRequests.Request, as: E2eRequest
   alias Grappa.Networks.Credential
   alias Grappa.Notify.Entry, as: NotifyEntry
   alias Grappa.Push.Subscription
@@ -51,7 +52,7 @@ defmodule Grappa.SubjectXorTest do
   @missing_subject "must set user_id or visitor_id"
   @mutually_exclusive "user_id and visitor_id are mutually exclusive"
 
-  # {schema, its subject-bearing changeset}. Thirteen spell it `changeset/2`;
+  # {schema, its subject-bearing changeset}. Fourteen spell it `changeset/2`;
   # `Uploads.Upload` splits insert from soft-delete and only the former
   # casts the subject FKs, and `Dcc.SpoolFile` (issue 2089) has only an
   # insert — a spooled file is written once and hard-deleted, never
@@ -70,6 +71,7 @@ defmodule Grappa.SubjectXorTest do
     {Credential, :changeset},
     {E2eDeviceList, :changeset},
     {E2eDevice, :changeset},
+    {E2eRequest, :changeset},
     {Upload, :insert_changeset},
     {SpoolFile, :insert_changeset}
   ]
