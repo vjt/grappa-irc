@@ -416,13 +416,15 @@ defmodule GrappaWeb.FallbackController do
   end
 
   # issue 2486 — one side of the subject's encrypted-chat requests on the
-  # network is at its cap (`Grappa.E2eRequests`). 429 and not 422 like
-  # `:list_full`: a pending request lapses on its own after 24 h, so the
-  # room comes back with time as well as by dismissing one. Its own token,
-  # because `rate_limited` means the line itself could not leave.
+  # network is at its cap (`Grappa.E2eRequests`). 422 like `:list_full`
+  # (vjt's ruling R3): the rows we started never lapse, an expired asking
+  # stays until it is retried or dismissed and an answer until it is shown,
+  # so only a dismissal frees a room and "retry later" would be the wrong
+  # signal. Its own token, because `rate_limited` means the line itself
+  # could not leave.
   def call(conn, {:error, :requests_full}) do
     conn
-    |> put_status(:too_many_requests)
+    |> put_status(:unprocessable_entity)
     |> json(%{error: "requests_full"})
   end
 

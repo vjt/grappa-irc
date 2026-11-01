@@ -917,13 +917,13 @@ defmodule GrappaWeb.E2eControllerTest do
       assert json_response(post(conn, path, ok), 404) == %{"error" => "not_found"}
     end
 
-    test "429 requests_full past the requests this subject started, and no request is written", %{conn: conn, vjt: vjt} do
+    test "422 requests_full past the requests this subject started, and no request is written", %{conn: conn, vjt: vjt} do
       {_, network, device} = live_network(vjt)
       now = DateTime.utc_now()
       for n <- 1..E2eRequests.max_rows(), do: outgoing!(vjt, network, "peer#{n}", now)
 
       body = %{target: "alice", from: device.did, payload: @payload}
-      assert json_response(post(conn, requests_path(network), body), 429) == %{"error" => "requests_full"}
+      assert json_response(post(conn, requests_path(network), body), 422) == %{"error" => "requests_full"}
       assert E2eRequests.for_peer({:user, vjt.id}, network.id, "alice") == nil
     end
   end

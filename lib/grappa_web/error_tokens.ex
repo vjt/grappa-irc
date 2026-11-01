@@ -122,7 +122,7 @@ defmodule GrappaWeb.ErrorTokens do
           | :inbox_full
           # issue 2486 — 409: an encrypted-chat request whose state does
           # not allow the move (answering one not waiting, dismissing an
-          # incoming one still waiting); 429: one side of the requests at
+          # incoming one still waiting); 422: one side of the requests at
           # its cap (`E2eController` `ask/2`, `accept/2`, `dismiss/2`).
           | :request_state
           | :requests_full
