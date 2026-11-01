@@ -30,6 +30,7 @@ import { token } from "./auth";
 import { fold } from "./e2e/wire";
 import { askEncryptedKeys, encryptedDevice, openEncryptedChat } from "./encryptedChats";
 import { openEncryptedWindow } from "./encryptedWindow";
+import { identityMoved } from "./identityMoved";
 import { identityScopedStore } from "./identityScopedStore";
 import { networks } from "./networks";
 import { selectedChannel } from "./selection";
@@ -131,10 +132,16 @@ const exports_ = identityScopedStore((onIdentityChange) => {
    * held. A change that landed while the read was out (a push, a door's
    * answer) may be newer than what was read, so then the network is read
    * again.
+   *
+   * Every verb here captures the bearer at entry and does nothing more once
+   * the account changed under one of its awaits: not one request, not one
+   * write (`identityMoved`).
    */
   async function loadE2eRequests(slug: string): Promise<void> {
+    const t = bearer();
     const before = changes.get(slug) ?? 0;
-    const listed = await listE2eRequests(bearer(), slug);
+    const listed = await listE2eRequests(t, slug);
+    if (identityMoved(t)) return;
     if ((changes.get(slug) ?? 0) !== before) return loadE2eRequests(slug);
     setRequestsBySlug((prev) => ({
       ...prev,
@@ -166,6 +173,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     const id = `${slug} ${request.id}`;
     if (opening.has(id)) return;
     opening.add(id);
+    const t = bearer();
     try {
       // Focus moves only from the query with that peer, where the user asked:
       // anywhere else the encrypted window just appears.
@@ -176,13 +184,16 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         fold(sel.channelName) === fold(request.peer);
       if (here) await openEncryptedWindow(slug, request.peer);
       else await openEncryptedChat(slug, request.peer);
+      if (identityMoved(t)) return;
       await askEncryptedKeys(slug, request.peer);
+      if (identityMoved(t)) return;
       try {
-        await dismissE2eRequest(bearer(), slug, request.id, null);
+        await dismissE2eRequest(t, slug, request.id, null);
       } catch (err) {
         // Another device of the account got there first.
         if (!(err instanceof ApiError && err.status === 404)) throw err;
       }
+      if (identityMoved(t)) return;
       drop(slug, request.id);
     } finally {
       opening.delete(id);
@@ -203,19 +214,26 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   // A door grappa answers 404 or 409 says the request moved under this
   // device: answered or withdrawn elsewhere, or in another state now (a 404
   // may also be no session, which a read tells apart). The mirror reads the
-  // network again, and the refusal still reaches the caller.
-  async function door<T>(slug: string, work: Promise<T>): Promise<T> {
+  // network again, unless the account changed meanwhile, and the refusal
+  // still reaches the caller.
+  async function door<T>(slug: string, t: string, work: Promise<T>): Promise<T> {
     try {
       return await work;
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 404 || err.status === 409)) loadEvery([slug]);
+      const moved = err instanceof ApiError && (err.status === 404 || err.status === 409);
+      if (moved && !identityMoved(t)) loadEvery([slug]);
       throw err;
     }
   }
 
   /** Asks `nick`, or retries an expired asking; a request of theirs waiting is answered yes. */
   async function askEncryptedChat(slug: string, nick: string): Promise<void> {
-    put(slug, await askE2eRequest(bearer(), slug, nick, await consentLine(slug)));
+    const t = bearer();
+    const line = await consentLine(slug);
+    if (identityMoved(t)) return;
+    const request = await askE2eRequest(t, slug, nick, line);
+    if (identityMoved(t)) return;
+    put(slug, request);
   }
 
   /**
@@ -225,13 +243,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
    * first line asking the peer's keys.
    */
   async function acceptEncryptedChat(slug: string, request: E2eRequest): Promise<void> {
-    await door(
-      slug,
-      answerE2eRequest(bearer(), slug, request.id, "accept", await consentLine(slug)),
-    );
+    const t = bearer();
+    const line = await consentLine(slug);
+    if (identityMoved(t)) return;
+    await door(slug, t, answerE2eRequest(t, slug, request.id, "accept", line));
+    if (identityMoved(t)) return;
     drop(slug, request.id);
     try {
       await openEncryptedWindow(slug, request.peer);
+      if (identityMoved(t)) return;
       await askEncryptedKeys(slug, request.peer);
     } catch (err) {
       console.warn(`[e2e] accepted ${request.peer} on ${slug}, but the chat did not open`, err);
@@ -240,10 +260,11 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
   /** Refuses the peer's request, with the dedicated REFUSE: the peer is told. */
   async function refuseEncryptedChat(slug: string, request: E2eRequest): Promise<void> {
-    await door(
-      slug,
-      answerE2eRequest(bearer(), slug, request.id, "refuse", await consentLine(slug)),
-    );
+    const t = bearer();
+    const line = await consentLine(slug);
+    if (identityMoved(t)) return;
+    await door(slug, t, answerE2eRequest(t, slug, request.id, "refuse", line));
+    if (identityMoved(t)) return;
     drop(slug, request.id);
   }
 
@@ -254,8 +275,11 @@ const exports_ = identityScopedStore((onIdentityChange) => {
    * stored state is `outgoing`.
    */
   async function dismissEncryptedChatRequest(slug: string, request: E2eRequest): Promise<void> {
+    const t = bearer();
     const line = request.state === "outgoing" ? await consentLine(slug) : null;
-    await door(slug, dismissE2eRequest(bearer(), slug, request.id, line));
+    if (identityMoved(t)) return;
+    await door(slug, t, dismissE2eRequest(t, slug, request.id, line));
+    if (identityMoved(t)) return;
     drop(slug, request.id);
   }
 

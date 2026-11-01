@@ -34,7 +34,8 @@ import { token } from "./auth";
 //   * `scrollback.ts`   (#788) — eleven awaits, refusing a stale REQUEST;
 //   * `networks.ts`     (#818) — the `/me` hydrate side-effects;
 //   * `displayPrefs.ts`         — the login-reconcile apply + seed-up PUT;
-//   * `customTheme.ts`          — the active-theme paint + boot-cache write.
+//   * `customTheme.ts`          — the active-theme paint + boot-cache write;
+//   * `e2eRequests.ts`  (2486)  — every consent door and the requests fetch.
 // A fifth await site that captures the token adopts it unchanged; a site that
 // needs a VARIANT of the comparison has found a domain boundary, and that is
 // worth saying out loud rather than parameterising this.
