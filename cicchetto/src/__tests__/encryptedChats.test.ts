@@ -248,6 +248,30 @@ describe("encrypted chats", () => {
     expect(chats.encryptedChatsFor(net.slug)).toEqual([{ key: "bob", nick: "Bob", unread: 0 }]);
   });
 
+  it("asking Bob's keys for a chat just agreed pins his master before any message, and writes no row (issue 2486)", async () => {
+    await chats.drainE2e(net.slug);
+    const b = await bob();
+    await chats.openEncryptedChat(net.slug, "Bob");
+    await chats.loadEncryptedChat(net.slug, "Bob");
+
+    await chats.askEncryptedKeys(net.slug, "Bob");
+    await chats.drainE2e(net.slug); // the KEYS grappa answered with
+
+    expect(chats.encryptedTrust(net.slug, "Bob")).toEqual({
+      master: await b.master(),
+      verified: false,
+      devices: 1,
+    });
+    expect(chats.encryptedRows(net.slug, "Bob")).toEqual([]);
+  });
+
+  it("names this device and our master: what a consent line goes from (issue 2486)", async () => {
+    await chats.drainE2e(net.slug);
+    const { did, master } = await own();
+
+    expect(await chats.encryptedDevice(net.slug)).toEqual({ did, master });
+  });
+
   it("a message while grappa has published no line size for the network fails at once, and asks for nothing", async () => {
     await chats.drainE2e(net.slug);
     await bob();

@@ -503,6 +503,33 @@ describe("e2eClient", () => {
     ]);
   });
 
+  it("asks the keys of a peer an encrypted chat was just agreed with: no row, and the KEYS that answers pins its master on first use (issue 2486)", async () => {
+    const { w, a, b } = await pair();
+    const bob = await ownOf(b);
+
+    await a.client.askKeys(a.ctx, "Bob");
+
+    expect(sendsBy(w, "alice")).toEqual([["keyreq", "*", undefined]]);
+    expect(await rowsOf(a, "bob")).toEqual([]);
+
+    // The KEYS writes no row, and still names the chat: its trust moved.
+    expect((await a.client.drain(a.ctx)).chats).toEqual(["bob"]);
+
+    expect((await a.client.identity(a.ctx, ["bob"])).peers.bob).toEqual({
+      master: bob.master,
+      verified: false,
+      devices: 1,
+    });
+    expect(await rowsOf(a, "bob")).toEqual([]);
+  });
+
+  it("names this device and our master: what a consent line goes from (issue 2486)", async () => {
+    const { a } = await pair();
+    const alice = await ownOf(a);
+
+    expect(await a.client.device(a.ctx)).toEqual({ did: alice.did, master: alice.master });
+  });
+
   it("pins a master by hand: the chat says so, the identity reads verified, and our own key is our master", async () => {
     const { a, b } = await pair();
     const bob = await ownOf(b);

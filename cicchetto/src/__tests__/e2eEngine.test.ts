@@ -6046,3 +6046,54 @@ describe("S1 sibling copies — receive", () => {
     expect(takesCopy(alice, a, b, later).events).toEqual([copiedFrom(b, "dave", "three")]);
   });
 });
+
+// issue 2486 — the user and the peer just agreed to an encrypted chat: each
+// side asks the other's keys before the first message rather than on it.
+describe("keys asked for a chat just agreed (issue 2486)", () => {
+  it("sends a KEYREQ and writes nothing to the chat: no re-key, no step, no event", () => {
+    const a = me("alice");
+
+    expect(record(a, engineOf(a).askKeys("Bob"))).toEqual({
+      events: [],
+      outbound: [keyreqOf(a, "Bob")],
+    });
+    expect(a.state.keysAwaited).toEqual({ bob: true });
+    expect(a.state.keysAsked).toEqual({});
+    expect(a.state.rekeying).toEqual({});
+  });
+
+  it("pins the master the KEYS brings on first use, unverified, with sessions to its devices", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    record(a, engineOf(a).askKeys("bob"));
+
+    const keys = keysFrom(a, "bob", bob, 1, bob.devices, bob.devices);
+
+    expect(keys.events.filter((e) => e.kind === "dropped")).toEqual([]);
+    expect(engineOf(a).pinned("bob")).toEqual({
+      master: keyOf(bob.master),
+      verified: false,
+      devices: 1,
+    });
+    expect(a.state.sessions[device.curve25519_key()]).toHaveLength(1);
+    expect(a.state.keysAwaited).toEqual({});
+  });
+
+  it("asks under the KEYREQ budget: a second ask inside it sends nothing", () => {
+    const a = me("alice");
+    record(a, engineOf(a).askKeys("bob"));
+
+    expect(record(a, engineOf(a).askKeys("BOB")).outbound).toEqual([]);
+
+    a.now += KEYREQ_RETRY_MS;
+    expect(record(a, engineOf(a).askKeys("bob")).outbound).toEqual([keyreqOf(a, "bob")]);
+  });
+
+  it("asks our own nick nothing: we hold our keys", () => {
+    const a = me("alice");
+
+    expect(record(a, engineOf(a).askKeys("ALICE"))).toEqual({ events: [], outbound: [] });
+    expect(a.state.keysAwaited).toEqual({});
+  });
+});

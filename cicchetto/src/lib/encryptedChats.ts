@@ -493,6 +493,17 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     await afterReport(slug, report);
   }
 
+  /** Asks `nick` for its keys: the encrypted chat with it was just agreed (issue 2486). */
+  async function askEncryptedKeys(slug: string, nick: string): Promise<void> {
+    const report = await run(slug, (client, ctx) => client.askKeys(ctx, nick));
+    await afterReport(slug, report);
+  }
+
+  /** This device on the network, its did and our master key: what a consent line goes from (issue 2486). */
+  function encryptedDevice(slug: string): Promise<{ did: string; master: string }> {
+    return run(slug, (client, ctx) => client.device(ctx));
+  }
+
   /** Pins the master `key` to `nick`: `verified` when pasted, not when taken off the alarm. */
   async function pinEncryptedKey(
     slug: string,
@@ -613,6 +624,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     readEncryptedChat,
     sendEncrypted,
     rekeyEncrypted,
+    askEncryptedKeys,
+    encryptedDevice,
     pinEncryptedKey,
     replaceEncryptedIdentity,
     identitySynced,
@@ -640,6 +653,8 @@ export const encryptedChatHasMessages = exports_.encryptedChatHasMessages;
 export const readEncryptedChat = exports_.readEncryptedChat;
 export const sendEncrypted = exports_.sendEncrypted;
 export const rekeyEncrypted = exports_.rekeyEncrypted;
+export const askEncryptedKeys = exports_.askEncryptedKeys;
+export const encryptedDevice = exports_.encryptedDevice;
 export const pinEncryptedKey = exports_.pinEncryptedKey;
 export const replaceEncryptedIdentity = exports_.replaceEncryptedIdentity;
 export const identitySynced = exports_.identitySynced;

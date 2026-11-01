@@ -518,6 +518,11 @@ export class Engine {
     return this.account.ed25519_key();
   }
 
+  /** This device's did, as grappa derived it: the `from` of every line it sends. */
+  deviceId(): string {
+    return this.own.did;
+  }
+
   /** The version of our master's list this device holds (`own.list`): it moves when a device joins or goes. */
   listVersion(): number {
     return this.own.list.ver;
@@ -767,6 +772,21 @@ export class Engine {
     this.state.keysAsked[key] = { nick, at: this.now() };
     res.events.push({ kind: "keys_asked", nick });
     this.maybeKeyreq(nick, res);
+    return this.end(res);
+  }
+
+  /**
+   * Asks `nick` for its keys (issue 2486): the user and the peer have just
+   * agreed to an encrypted chat, so each side fetches the other's keys and
+   * pins them before the first message rather than on it. A KEYREQ under the
+   * budget (`maybeKeyreq`); the KEYS is judged as any other, pinned on first
+   * use, or the key alarm when another master is pinned to the nick. Unlike
+   * `rekey` it renews no session and writes no step to the chat: nothing
+   * failed. Our own nick has no keys to ask for: nothing happens.
+   */
+  askKeys(nick: string): Result {
+    const res = emptyResult();
+    if (fold(nick) !== fold(this.ownNick)) this.maybeKeyreq(nick, res);
     return this.end(res);
   }
 
