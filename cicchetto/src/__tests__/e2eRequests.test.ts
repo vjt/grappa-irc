@@ -354,14 +354,15 @@ describe("the doors", () => {
     expect(openEncryptedWindow).not.toHaveBeenCalled();
   });
 
-  it("refusing answers no with a line, and opens nothing", async () => {
+  it("refusing answers no with no line, so it needs no identity, and opens nothing", async () => {
     const incoming = req({ state: "incoming" });
     store.putE2eRequest(slug, incoming);
     answerE2eRequest.mockResolvedValue({ msgid: "m1" });
 
     await store.refuseEncryptedChat(slug, incoming);
 
-    expect(answerE2eRequest).toHaveBeenCalledWith("tok", slug, incoming.id, "refuse", LINE);
+    expect(answerE2eRequest).toHaveBeenCalledWith("tok", slug, incoming.id, "refuse", null);
+    expect(encryptedDevice).not.toHaveBeenCalled();
     expect(openEncryptedWindow).not.toHaveBeenCalled();
     expect(openEncryptedChat).not.toHaveBeenCalled();
     expect(store.e2eRequestWith(slug, "Bob")).toBeUndefined();
@@ -460,7 +461,6 @@ describe("the account changing while a door is out", () => {
   // Each await a request follows: the request must not go once the account changed.
   const before = [
     ["asking", "its line", () => encryptedDevice, () => askE2eRequest],
-    ["refusing", "its line", () => encryptedDevice, () => answerE2eRequest],
     ["cancelling", "its line", () => encryptedDevice, () => dismissE2eRequest],
     ["accepting", "the window", () => openEncryptedWindow, () => askEncryptedKeys],
   ] as const;
@@ -474,11 +474,9 @@ describe("the account changing while a door is out", () => {
     const work =
       verb === "asking"
         ? store.askEncryptedChat(slug, "Bob")
-        : verb === "refusing"
-          ? store.refuseEncryptedChat(slug, request)
-          : verb === "cancelling"
-            ? store.dismissEncryptedChatRequest(slug, request)
-            : store.acceptEncryptedChat(slug, request);
+        : verb === "cancelling"
+          ? store.dismissEncryptedChatRequest(slug, request)
+          : store.acceptEncryptedChat(slug, request);
     await vi.waitFor(() => expect(awaited()).toHaveBeenCalled());
     setBearer("tok2");
     wait.resolve(awaited() === encryptedDevice ? { did: "dev-1", master: "M4ST3R" } : undefined);
