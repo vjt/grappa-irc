@@ -318,6 +318,8 @@ import { seedTopic } from "../lib/channelTopic";
 // #1914 — the REAL `/topic` answer store, for the same reason: the pane is
 // its only reader, and what these tests assert IS that it reads it.
 import { appendCommandOutput } from "../lib/commandOutput";
+// issue 2486 — the REAL requests mirror: the card row is derived from it.
+import { dropE2eRequest, putE2eRequest } from "../lib/e2eRequests";
 // #1302 — the REAL ISUPPORT store (not mocked): the badge derives its level
 // names from the network's own PREFIX, so what these tests seed here IS the
 // input the derivation reads. Network id 1 is what the mocked
@@ -340,6 +342,7 @@ import {
 import { requestScrollToBottom } from "../lib/scrollToBottomCommand";
 import { appendTopicShow } from "../lib/topicShow";
 import { dismissWhoisCard, setWhoisBundle } from "../lib/whoisCard";
+import type { E2eRequestsWireRequest } from "../lib/wireTypes";
 import ScrollbackPane, {
   resetAutoFocusedJoinsForTest,
   samePlainData,
@@ -7764,6 +7767,140 @@ describe("#162 command output rows", () => {
     expect(screen.getByTestId("command-output-line")).toHaveTextContent(
       "Unignore: removed spambot!*@*",
     );
+  });
+});
+
+// issue 2486 — our asking to start an encrypted chat is a card in the query's
+// timeline (vjt's ruling R4), woven at the request's `at` like the other
+// presentational rows. Own peer per test: the requests mirror is a module
+// singleton, emptied only by an identity rotation, so each test drops what it
+// put.
+describe("issue 2486 encrypted-chat request card", () => {
+  let n = 0;
+  let held: E2eRequestsWireRequest[] = [];
+  const freshPeer = (): string => {
+    n += 1;
+    return `peer2486x${n}`;
+  };
+  const keyFor = (peer: string) => `freenode ${peer}` as ChannelKey;
+  const msg = (peer: string, id: number, server_time: number): ScrollbackMessage => ({
+    id,
+    network: "freenode",
+    channel: peer,
+    server_time,
+    kind: "privmsg",
+    sender: peer,
+    body: `line ${id}`,
+    meta: {},
+  });
+  const hold = (
+    peer: string,
+    state: "incoming" | "outgoing" | "refused",
+    at: number,
+  ): E2eRequestsWireRequest => {
+    const request: E2eRequestsWireRequest = {
+      id: 2486_000 + n * 10 + held.length,
+      peer,
+      state,
+      payload: null,
+      at: new Date(at).toISOString(),
+      expires_at: state === "refused" ? null : new Date(Date.now() + 86_400_000).toISOString(),
+    };
+    held.push(request);
+    putE2eRequest("freenode", request);
+    return request;
+  };
+  // What the pane renders, in order: message rows by id, the card by its state.
+  const order = (): string[] =>
+    Array.from(
+      document.querySelectorAll(
+        '[data-testid="scrollback-line"], [data-testid="e2e-request-card"]',
+      ),
+    ).map((el) =>
+      el.getAttribute("data-testid") === "e2e-request-card"
+        ? `card:${el.getAttribute("data-state")}`
+        : `msg:${el.getAttribute("data-msg-id")}`,
+    );
+  const mount = (peer: string, kind: "query" | "channel" = "query") =>
+    render(() => <ScrollbackPane networkSlug="freenode" channelName={peer} kind={kind} />);
+
+  beforeEach(() => {
+    setUserNick("vjt");
+    mockMembersByChannel.mockReturnValue({});
+  });
+
+  afterEach(() => {
+    for (const request of held) dropE2eRequest("freenode", request.id);
+    held = [];
+  });
+
+  it("sits in the timeline at the request's `at`, between the lines before and after it", () => {
+    const peer = freshPeer();
+    hold(peer, "outgoing", 2_000);
+    setScrollback({ [keyFor(peer)]: [msg(peer, 1, 1_000), msg(peer, 2, 3_000)] });
+    mount(peer);
+
+    expect(order()).toEqual(["msg:1", "card:pending", "msg:2"]);
+  });
+
+  it("moves to where its new state began: an answer reads where it came", () => {
+    const peer = freshPeer();
+    const request = hold(peer, "outgoing", 2_000);
+    setScrollback({ [keyFor(peer)]: [msg(peer, 1, 1_000), msg(peer, 2, 3_000)] });
+    mount(peer);
+
+    putE2eRequest("freenode", {
+      ...request,
+      state: "refused",
+      at: new Date(4_000).toISOString(),
+      expires_at: null,
+    });
+
+    expect(order()).toEqual(["msg:1", "msg:2", "card:refused"]);
+  });
+
+  it("the peer's asking weaves no card: it is the pinned banner's", () => {
+    const peer = freshPeer();
+    hold(peer, "incoming", 2_000);
+    setScrollback({ [keyFor(peer)]: [msg(peer, 1, 1_000)] });
+    mount(peer);
+
+    expect(order()).toEqual(["msg:1"]);
+    expect(screen.getByTestId("e2e-request-banner")).toBeInTheDocument();
+  });
+
+  // grappa opens the query when the peer asks, so it is usually empty: the
+  // peer's asking must leave "no messages yet" standing under its banner.
+  it("the peer's asking in an empty query leaves it empty", () => {
+    const peer = freshPeer();
+    hold(peer, "incoming", 2_000);
+    setScrollback({ [keyFor(peer)]: [] });
+    mount(peer);
+
+    expect(screen.getByText("no messages yet")).toBeInTheDocument();
+    expect(screen.getByTestId("e2e-request-banner")).toBeInTheDocument();
+  });
+
+  // Asking is done from the rail of a query that may hold nothing yet; the
+  // early return for "nothing to show" must not swallow the card.
+  it("renders in a query with no messages at all", () => {
+    const peer = freshPeer();
+    hold(peer, "outgoing", 2_000);
+    setScrollback({ [keyFor(peer)]: [] });
+    mount(peer);
+
+    expect(order()).toEqual(["card:pending"]);
+  });
+
+  it("is presentational: no scrollback-line testid and no message id", () => {
+    const peer = freshPeer();
+    hold(peer, "refused", 2_000);
+    setScrollback({ [keyFor(peer)]: [msg(peer, 1, 1_000)] });
+    mount(peer);
+
+    const card = screen.getByTestId("e2e-request-card");
+    expect(card.closest("[data-msg-id]")).toBeNull();
+    expect(card.closest('[data-testid="scrollback-line"]')).toBeNull();
   });
 });
 

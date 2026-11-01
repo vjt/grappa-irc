@@ -12,6 +12,7 @@ import {
 } from "solid-js";
 import { isDiagEnabled } from "./DiagFloat";
 import E2eRequestBanner from "./E2eRequestBanner";
+import E2eRequestCard from "./E2eRequestCard";
 import LusersCard from "./LusersCard";
 import { isContentKind, ownNickForNetwork, type ScrollbackMessage } from "./lib/api";
 import { casemappingForSlug, sigilRankForSlug } from "./lib/casemapping";
@@ -33,6 +34,7 @@ import { formatDayLabel } from "./lib/dateFormat";
 import { type DaySeparatorSighting, pillDayAt, placeOf, topBandRootMargin } from "./lib/dayPill";
 import { diagPush } from "./lib/diagLog";
 import { isDocumentVisible } from "./lib/documentVisibility";
+import { e2eRequestWith } from "./lib/e2eRequests";
 import { highlightPatterns } from "./lib/highlightList";
 import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { chantypesForNetwork, prefixForNetwork } from "./lib/isupport";
@@ -1304,9 +1306,10 @@ type MessageRow = { type: "message"; msg: ScrollbackMessage };
 // subsequent server-message arrivals (vjt prod report). Interleaving
 // by wallclock `at` (epoch ms, same unit as ScrollbackMessage's
 // server_time) puts each ack at its arrival position in the timeline.
-// The three EPHEMERAL row kinds (invite-ack, `/topic` answer, verb answer)
-// carry their wallclock `at`: the weave below anchors a later one on an
-// earlier one exactly as it anchors on a message (#162 ordering fix).
+// The EPHEMERAL row kinds (invite-ack, `/topic` answer, verb answer, and
+// issue 2486's encrypted-chat card) carry their wallclock `at`: the weave
+// below anchors a later one on an earlier one exactly as it anchors on a
+// message (#162 ordering fix).
 type InviteAckRow = {
   type: "invite-ack";
   entry: InviteAckEntry;
@@ -1338,6 +1341,13 @@ type CommandOutputRow = {
   id: string;
   at: number;
 };
+// issue 2486 — our asking to start an encrypted chat with the query's peer
+// (vjt's ruling R4: a card in the chat, not a banner). A fourth EPHEMERAL
+// row: string id, so never in the unread/cursor math, and woven at the
+// request's `at`, the instant it entered its stored state (an expiry is
+// derived, so it reads in place). What the card says is `E2eRequestCard`'s,
+// read from the requests mirror: the row carries only where it sits.
+type E2eRequestRow = { type: "e2e-request"; id: string; at: number };
 type Row =
   | SeparatorRow
   | UnreadMarkerRow
@@ -1345,7 +1355,8 @@ type Row =
   | InviteAckRow
   | TopicRow
   | TopicShowRow
-  | CommandOutputRow;
+  | CommandOutputRow
+  | E2eRequestRow;
 
 /**
  * The wallclock a row can be anchored on when weaving ephemeral rows into
@@ -1361,6 +1372,7 @@ function rowTime(row: Row | undefined): number | null {
     case "invite-ack":
     case "topic-show":
     case "command-output":
+    case "e2e-request":
       return row.at;
     default:
       return null;
@@ -1969,11 +1981,18 @@ const ScrollbackPane: Component<Props> = (props) => {
     const topicShowEntries: TopicShowEntry[] = topicShowByWindow()[key()] ?? [];
     // #162 — the plain-text verb answers for THIS window, same keying rule.
     const commandOutputEntries: CommandOutputEntry[] = commandOutputByWindow()[key()] ?? [];
+    // issue 2486 — our asking to the query's peer, as a card in its timeline.
+    // The peer's asking is the pinned banner's, so an incoming one weaves
+    // nothing here.
+    const request =
+      props.kind === "query" ? e2eRequestWith(props.networkSlug, props.channelName) : undefined;
+    const requestCard = request !== undefined && request.state !== "incoming" ? request : null;
     if (
       msgs.length === 0 &&
       inviteAckEntries.length === 0 &&
       topicShowEntries.length === 0 &&
-      commandOutputEntries.length === 0
+      commandOutputEntries.length === 0 &&
+      requestCard === null
     )
       return [];
     // Freeze contract: read the FROZEN snapshot, not live getReadCursor.
@@ -2161,8 +2180,9 @@ const ScrollbackPane: Component<Props> = (props) => {
       }
     }
     // Weave the EPHEMERAL rows — invite-acks (2026-06-01), `/topic` answers
-    // (#1914), verb answers (#162) — into the timeline by wallclock `at` vs
-    // message `server_time`, in ONE pass ascending by `(at, ts)`. They skip
+    // (#1914), verb answers (#162), our encrypted-chat asking (issue 2486) —
+    // into the timeline by wallclock `at` vs message `server_time`, in ONE
+    // pass ascending by `(at, ts)`. They skip
     // the unread-marker / day-separator logic on purpose: operator-action
     // echoes, not server-persisted rows.
     //
@@ -2212,6 +2232,16 @@ const ScrollbackPane: Component<Props> = (props) => {
           id: `command-output-${entry.ts}`,
           at: entry.at,
         },
+      });
+    }
+    if (requestCard !== null) {
+      // The request id is the tiebreak: one card per window, so it only
+      // orders the card against another store's row in the same millisecond.
+      const at = Date.parse(requestCard.at);
+      ephemeral.push({
+        at,
+        ts: requestCard.id,
+        row: { type: "e2e-request", id: `e2e-request-${requestCard.id}`, at },
       });
     }
     ephemeral.sort((a, b) => a.at - b.at || a.ts - b.ts);
@@ -4600,8 +4630,9 @@ const ScrollbackPane: Component<Props> = (props) => {
           and accept the tail as read (nothing else can advance the cursor
           while this is up — see `setCursorIfAdvances`). */}
       {/* issue 2486 — the pinned top band, a column so its two bars stack
-          instead of covering each other: the asking to start an encrypted
-          chat over a query (`E2eRequestBanner`), then the far-behind bar.
+          instead of covering each other: the peer's asking to start an
+          encrypted chat over a query (`E2eRequestBanner`; ours is a card in
+          the timeline, `E2eRequestCard`), then the far-behind bar.
           Container-anchored like the #133 overlay for the same reason the
           far-behind bar is (above): out of `.scrollback`'s `scrollHeight`, so
           a request arriving never moves the reader. */}
@@ -4845,6 +4876,9 @@ const ScrollbackPane: Component<Props> = (props) => {
                     <span class="scrollback-body">{row.text}</span>
                   </div>
                 );
+              }
+              if (row.type === "e2e-request") {
+                return <E2eRequestCard networkSlug={props.networkSlug} peer={props.channelName} />;
               }
               if (row.type === "topic-show") {
                 // #1914 — the `/topic` answer. Wears the join line's classes on

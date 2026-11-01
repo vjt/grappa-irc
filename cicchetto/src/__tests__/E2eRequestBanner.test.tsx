@@ -3,26 +3,20 @@ import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { E2eRequestsWireRequest } from "../lib/wireTypes";
 
-// issue 2486 — the banner over the plaintext query with the peer. The
-// requests mirror is real (it is what the banner reads, deadline included);
-// its doors are spies, and so is everything an accepted request would reach.
+// issue 2486 — the banner over the plaintext query with the peer, for the
+// peer's asking only (vjt's ruling R4: ours is a card in the chat,
+// `E2eRequestCard.test.tsx`). The requests mirror is real (it is what the
+// banner reads, deadline included); its doors are spies.
 
 const acceptEncryptedChat = vi.hoisted(() => vi.fn());
 const refuseEncryptedChat = vi.hoisted(() => vi.fn());
-const dismissEncryptedChatRequest = vi.hoisted(() => vi.fn());
-const askEncryptedChat = vi.hoisted(() => vi.fn());
-const openAcceptedChat = vi.hoisted(() => vi.fn());
 
 vi.mock("../lib/e2eRequests", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/e2eRequests")>()),
   acceptEncryptedChat,
   refuseEncryptedChat,
-  dismissEncryptedChatRequest,
-  askEncryptedChat,
-  openAcceptedChat,
 }));
-// What the store reaches on its own (an accepted request opens the chat):
-// held open here, so an accepted request stays on the banner.
+// What the store reaches on its own (an accepted request opens the chat).
 vi.mock("../lib/encryptedChats", () => ({
   askEncryptedKeys: vi.fn(),
   encryptedDevice: vi.fn(),
@@ -69,13 +63,7 @@ beforeEach(() => {
   vi.setSystemTime(T0);
   netCount += 1;
   slug = `net${netCount}`;
-  for (const verb of [
-    acceptEncryptedChat,
-    refuseEncryptedChat,
-    dismissEncryptedChatRequest,
-    askEncryptedChat,
-    openAcceptedChat,
-  ]) {
+  for (const verb of [acceptEncryptedChat, refuseEncryptedChat]) {
     verb.mockReset();
     verb.mockResolvedValue(undefined);
   }
@@ -115,54 +103,6 @@ describe("E2eRequestBanner", () => {
 
     expect(refuseEncryptedChat).toHaveBeenCalledWith(slug, request);
     expect(acceptEncryptedChat).not.toHaveBeenCalled();
-  });
-
-  it("our asking waits with a spinner, and Cancel withdraws it", () => {
-    const request = hold({});
-    const { container } = show();
-
-    expect(banner()?.dataset.state).toBe("pending");
-    expect(banner()?.textContent).toContain("Waiting for bob to accept the encrypted chat");
-    expect(container.querySelector(".e2e-request-banner-spinner")).not.toBeNull();
-    expect(screen.queryByTestId("e2e-request-dismiss")).toBeNull();
-    screen.getByTestId("e2e-request-cancel").click();
-    expect(dismissEncryptedChatRequest).toHaveBeenCalledWith(slug, request);
-  });
-
-  it("a refusal is said, and dismissed with the ×; there is nothing to retry", () => {
-    const request = hold({ state: "refused", expires_at: null });
-    show();
-
-    expect(banner()?.dataset.state).toBe("refused");
-    expect(banner()?.textContent).toContain("bob refused the encrypted chat");
-    expect(screen.queryByTestId("e2e-request-retry")).toBeNull();
-    screen.getByTestId("e2e-request-dismiss").click();
-    expect(dismissEncryptedChatRequest).toHaveBeenCalledWith(slug, request);
-  });
-
-  it("our asking unanswered for 24 hours offers Retry, which asks again", () => {
-    hold({ expires_at: new Date(T0 - HOUR).toISOString() });
-    show();
-
-    expect(banner()?.dataset.state).toBe("expired");
-    expect(banner()?.textContent).toContain("did not answer the encrypted chat request within");
-    screen.getByTestId("e2e-request-retry").click();
-    expect(askEncryptedChat).toHaveBeenCalledWith(slug, "bob");
-    expect(screen.getByTestId("e2e-request-dismiss")).not.toBeNull();
-  });
-
-  it("an accepted request still held offers to open the chat, or to dismiss it with the ×", async () => {
-    const request = hold({ state: "accepted", expires_at: null });
-    show();
-
-    expect(banner()?.dataset.state).toBe("accepted");
-    screen.getByTestId("e2e-request-open").click();
-    expect(openAcceptedChat).toHaveBeenCalledWith(slug, request);
-    // An identity held on another device never opens here: the × lets it go.
-    const dismiss = screen.getByTestId("e2e-request-dismiss") as HTMLButtonElement;
-    await vi.waitFor(() => expect(dismiss.disabled).toBe(false));
-    dismiss.click();
-    expect(dismissEncryptedChatRequest).toHaveBeenCalledWith(slug, request);
   });
 
   it("a door that fails says why in the banner, and the buttons work again", async () => {
@@ -221,33 +161,17 @@ describe("E2eRequestBanner", () => {
     expect(banner()).toBeNull();
   });
 
-  it("a request that arrives already past its deadline here reads expired at once", () => {
-    show();
-    // The clock moves on while nothing is shown, then a fetch brings our asking.
-    vi.setSystemTime(T0 + 25 * HOUR);
+  it("our own asking, waiting or answered, is no banner: it is a card in the chat", () => {
     hold({});
+    hold({ peer: "Carol", state: "refused", expires_at: null });
+    hold({ peer: "Dave", expires_at: new Date(T0 - HOUR).toISOString() });
+    const [peer, setPeer] = createSignal("bob");
+    render(() => <E2eRequestBanner networkSlug={slug} peer={peer()} />);
 
-    expect(banner()?.dataset.state).toBe("expired");
-  });
-
-  it("our asking reads expired when its wake-up comes, on a wall clock a hair behind the timers", () => {
-    hold({});
-    show();
-    // Shifts the wall clock alone: the wake-up still comes 24 h after it was armed.
-    vi.setSystemTime(T0 - 5);
-
-    vi.advanceTimersByTime(24 * HOUR);
-
-    expect(banner()?.dataset.state).toBe("expired");
-  });
-
-  it("our asking reads expired at its deadline", () => {
-    hold({});
-    show();
-
-    vi.advanceTimersByTime(24 * HOUR);
-
-    expect(banner()?.dataset.state).toBe("expired");
-    expect(screen.getByTestId("e2e-request-retry")).not.toBeNull();
+    expect(banner()).toBeNull();
+    setPeer("carol");
+    expect(banner()).toBeNull();
+    setPeer("dave");
+    expect(banner()).toBeNull();
   });
 });
