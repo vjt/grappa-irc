@@ -8409,8 +8409,9 @@ defmodule Grappa.Session.Server do
   # the state is untouched), the row is written next, and only then is the
   # pacer committed and the line released. A refusal at either step leaves
   # no state behind, and a row always matches a line the session took. The
-  # lane is REACTIVE (`E2ePacer.lane/2`): one short line, ahead of text
-  # within the budgets. A consent line is no Olm message, so a refusal
+  # lane is the verb's (`E2ePacer.lane/2`, REACTIVE: one short line, ahead
+  # of text within the budgets), asked with `:text`, what a client that
+  # names no priority gets: no client chooses it. A consent line is no Olm message, so a refusal
   # leaves no gap to keep and the pacer it hands back is let go.
   #
   # Known wart, as for grappa's own NACK (issue 2491): a line still waiting
@@ -8427,7 +8428,7 @@ defmodule Grappa.Session.Server do
         ) :: {:ok, String.t(), E2eRequests.outcome(), t()} | {:error, :rate_limited | :requests_full | :db_unavailable}
   defp send_consent(state, target, verb, {from, payload}, plan, now) do
     msgid = E2e.new_msgid()
-    message = %{msgid: msgid, verb: verb, lane: :reactive, deadline_ms: nil}
+    message = %{msgid: msgid, verb: verb, lane: E2ePacer.lane(verb, :text), deadline_ms: nil}
 
     with {:ok, lines} <- e2e_lines(state, target, verb, msgid, {from, "*"}, payload),
          {:ok, releases, lost, pacer, wait} <-
