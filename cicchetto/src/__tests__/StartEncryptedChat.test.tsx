@@ -100,6 +100,22 @@ describe("StartEncryptedChat", () => {
     expect(button().textContent).toBe("encrypted chat requested");
   });
 
+  it("while the asking is on its way the button cannot ask again, and can once grappa answered", async () => {
+    let answer: () => void = () => undefined;
+    askEncryptedChat.mockReturnValueOnce(new Promise<void>((resolve) => (answer = resolve)));
+    show();
+    button().click();
+    acceptConfirm();
+
+    expect(button().disabled).toBe(true);
+    button().click();
+    expect(confirmRequest()).toBeNull();
+
+    answer();
+    await vi.waitFor(() => expect(button().disabled).toBe(false));
+    expect(askEncryptedChat).toHaveBeenCalledTimes(1);
+  });
+
   it("an asking grappa refuses is said under the button", async () => {
     const refusal = new ApiError(429, "requests_full");
     askEncryptedChat.mockRejectedValue(refusal);
