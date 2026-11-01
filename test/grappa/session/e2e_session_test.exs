@@ -1294,6 +1294,33 @@ defmodule Grappa.Session.E2eSessionTest do
       assert E2eRequests.for_peer(subject, network.id, "alice") == nil
     end
 
+    test "an ask past the requests we started is refused, and its REQUEST is not written, even at an empty bank" do
+      {server, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      now = DateTime.utc_now()
+
+      for n <- 1..E2eRequests.max_rows() do
+        {:request, plan} = E2eRequests.ask(nil, "peer#{n}", now)
+        {:ok, _} = E2eRequests.commit(subject, network.id, plan, now)
+      end
+
+      # Registration's own last write must be done before the client is
+      # swapped. At an empty bank a line let go is written before the call
+      # returns.
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "MODE "), 1_000)
+      stub = failing_client(pid, "nobody")
+      :sys.replace_state(pid, &%{&1 | client: stub})
+
+      assert {:error, :requests_full} = Session.ask_e2e(subject, network.id, "alice", device.did, @hint)
+      refute_received {:wrote, _}
+      assert E2eRequests.for_peer(subject, network.id, "alice") == nil
+
+      # Asking a peer already asked takes no new room, and its line is written at once.
+      assert {:ok, %Request{state: :outgoing}} = Session.ask_e2e(subject, network.id, "peer1", device.did, @hint)
+      assert_received {:wrote, "PRIVMSG peer1 :\x01E2E REQUEST " <> _}
+    end
+
     test "the doors refuse what is not a nick, a line outside the rule, an unlisted device, an unknown id, and no session" do
       {server, _, user, network} = connected_session()
       subject = {:user, user.id}
