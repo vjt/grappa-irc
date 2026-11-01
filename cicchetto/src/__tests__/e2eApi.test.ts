@@ -285,3 +285,86 @@ describe("clearE2eKeys", () => {
     expect(sent(f)).toMatchObject({ url: "/networks/azzurra/e2e/keys", method: "DELETE" });
   });
 });
+
+// issue 2486 (protocol 53) — the requests to start an encrypted chat.
+describe("encrypted chat requests", () => {
+  const request = {
+    id: 7,
+    peer: "Bob",
+    state: "outgoing",
+    payload: null,
+    at: "2026-11-01T12:00:00Z",
+    expires_at: "2026-11-02T12:00:00Z",
+  };
+  const line = { from: DID, payload: '{"v":2,"master":"M"}' };
+
+  it("listE2eRequests GETs and unwraps the requests array", async () => {
+    const f = stub(200, { requests: [request] });
+    expect(await api.listE2eRequests("tok", "azzurra")).toEqual([request]);
+    expect(sent(f)).toMatchObject({ url: "/networks/azzurra/e2e/requests", method: "GET" });
+  });
+
+  it("listE2eRequests rejects a request in a state the wire does not name", async () => {
+    stub(200, { requests: [{ ...request, state: "pondering" }] });
+    await expect(api.listE2eRequests("tok", "azzurra")).rejects.toBeInstanceOf(WireShapeError);
+  });
+
+  it("askE2eRequest POSTs the target beside the line and returns the request", async () => {
+    const f = stub(202, { request });
+    expect(await api.askE2eRequest("tok", "azzurra", "Bob", line)).toEqual(request);
+    expect(sent(f)).toEqual({
+      url: "/networks/azzurra/e2e/requests",
+      method: "POST",
+      body: { target: "Bob", ...line },
+    });
+  });
+
+  it("askE2eRequest surfaces 429 requests_full as a token", async () => {
+    stub(429, { error: "requests_full" });
+    await expect(api.askE2eRequest("tok", "azzurra", "Bob", line)).rejects.toMatchObject({
+      status: 429,
+      code: "requests_full",
+    });
+  });
+
+  it.each(["accept", "refuse"] as const)(
+    "answerE2eRequest POSTs the line to the %s door of the request",
+    async (answer) => {
+      const f = stub(202, { msgid: "Zm9vYmFyMDE" });
+      expect(await api.answerE2eRequest("tok", "azzurra", 7, answer, line)).toEqual({
+        msgid: "Zm9vYmFyMDE",
+      });
+      expect(sent(f)).toEqual({
+        url: `/networks/azzurra/e2e/requests/7/${answer}`,
+        method: "POST",
+        body: line,
+      });
+    },
+  );
+
+  it("answerE2eRequest surfaces 409 request_state as a token", async () => {
+    stub(409, { error: "request_state" });
+    await expect(api.answerE2eRequest("tok", "azzurra", 7, "accept", line)).rejects.toMatchObject({
+      status: 409,
+      code: "request_state",
+    });
+  });
+
+  it("dismissE2eRequest DELETEs with the line a CANCEL goes as, or with no body at all", async () => {
+    const f = stub(204, null);
+    await api.dismissE2eRequest("tok", "azzurra", 7, line);
+    expect(sent(f)).toEqual({
+      url: "/networks/azzurra/e2e/requests/7",
+      method: "DELETE",
+      body: line,
+    });
+
+    const g = stub(204, null);
+    await api.dismissE2eRequest("tok", "azzurra", 7, null);
+    expect(sent(g)).toEqual({
+      url: "/networks/azzurra/e2e/requests/7",
+      method: "DELETE",
+      body: undefined,
+    });
+  });
+});

@@ -41,6 +41,8 @@ import {
   narrowE2eInboxResponse,
   narrowE2eKeysStatus,
   narrowE2eList,
+  narrowE2eRequestResponse,
+  narrowE2eRequests,
   narrowE2eSentResponse,
   narrowFeaturedChannelsResponse,
   narrowMembersIndexResponse,
@@ -67,6 +69,9 @@ import type {
   E2eKeysWireStatus,
   E2ePairingWireE2ePairingClosedPayload,
   E2ePairingWireE2ePairingMessagePayload,
+  E2eRequestsWireE2eRequestGonePayload,
+  E2eRequestsWireE2eRequestPayload,
+  E2eRequestsWireRequest,
   LiveIntrospectionAdminWireT,
   NetworksAdminWireT,
   NetworksCredentialConnectionState,
@@ -1309,6 +1314,11 @@ export type WireUserEvent =
   // gone. lib/e2e/pairing.ts is their only reader. Generated shape verbatim.
   | E2ePairingWireE2ePairingMessagePayload
   | E2ePairingWireE2ePairingClosedPayload
+  // issue 2486 (protocol 53) — a request to start an encrypted chat was
+  // made or changed state, or it is gone. lib/e2eRequests.ts is their only
+  // reader. Generated shape verbatim.
+  | E2eRequestsWireE2eRequestPayload
+  | E2eRequestsWireE2eRequestGonePayload
   | ({ kind: "names_reply" } & NamesReply)
   | ({ kind: "who_reply" } & WhoReply)
   | ({ kind: "server_reply" } & ServerReply)
@@ -2811,6 +2821,72 @@ export async function ackE2eDeviceInbox(
     method: "POST",
     headers: buildHeaders(token),
     body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+// issue 2486 — the requests to start an encrypted chat with a peer, and the
+// answers to ours (`GrappaWeb.E2eController.requests/2` and siblings). A read
+// of the table, so the listing answers with no session too.
+export async function listE2eRequests(
+  token: string,
+  networkSlug: string,
+): Promise<E2eRequestsWireRequest[]> {
+  const res = await fetch(`${e2eRoot(networkSlug)}/requests`, { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  return narrowE2eRequests(await res.json()).requests;
+}
+
+/** What every consent line carries: this device, and the opaque payload. */
+export type E2eConsentLine = { from: string; payload: string };
+
+// Asks `target`; or, when `target`'s own request waits, answers it yes (the
+// request then reads `accepted`). 429 `requests_full`, 429 `rate_limited`.
+export async function askE2eRequest(
+  token: string,
+  networkSlug: string,
+  target: string,
+  line: E2eConsentLine,
+): Promise<E2eRequestsWireRequest> {
+  const res = await fetch(`${e2eRoot(networkSlug)}/requests`, {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify({ target, ...line }),
+  });
+  if (!res.ok) throw await readError(res);
+  return narrowE2eRequestResponse(await res.json()).request;
+}
+
+// Answers the peer's waiting request `id`; the request goes. 409
+// `request_state` for one not waiting for this account's answer.
+export async function answerE2eRequest(
+  token: string,
+  networkSlug: string,
+  id: number,
+  answer: "accept" | "refuse",
+  line: E2eConsentLine,
+): Promise<SessionWireE2eSentPayload> {
+  const res = await fetch(`${e2eRoot(networkSlug)}/requests/${id}/${answer}`, {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify(line),
+  });
+  if (!res.ok) throw await readError(res);
+  return narrowE2eSentResponse(await res.json());
+}
+
+// Dismisses request `id`: a live one we asked is CANCELLED, which needs the
+// `line` its CANCEL goes as; an answer or an expired one needs none (null).
+export async function dismissE2eRequest(
+  token: string,
+  networkSlug: string,
+  id: number,
+  line: E2eConsentLine | null,
+): Promise<void> {
+  const res = await fetch(`${e2eRoot(networkSlug)}/requests/${id}`, {
+    method: "DELETE",
+    headers: buildHeaders(token),
+    ...(line === null ? {} : { body: JSON.stringify(line) }),
   });
   if (!res.ok) throw await readError(res);
 }

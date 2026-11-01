@@ -24,6 +24,8 @@ import {
   S_E2ePairingWireMessageResponse,
   S_E2ePairingWireMessagesResponse,
   S_E2ePairingWireRendezvousResponse,
+  S_E2eRequestsWireRequestResponse,
+  S_E2eRequestsWireRequestsResponse,
   S_LiveIntrospectionAdminWireIndexPayload,
   S_MeJSONMeJson,
   S_NetworksFeaturedChannelsAdminWireIndexPayload,
@@ -62,6 +64,8 @@ import type {
   E2ePairingWireMessageResponse,
   E2ePairingWireMessagesResponse,
   E2ePairingWireRendezvousResponse,
+  E2eRequestsWireRequestResponse,
+  E2eRequestsWireRequestsResponse,
   LiveIntrospectionAdminWireIndexPayload,
   MeJSONMeJson,
   NetworksFeaturedChannelsAdminWireIndexPayload,
@@ -979,6 +983,16 @@ export function narrowE2eClaimedResponse(raw: unknown): E2eKeysWireClaimed {
 /** `POST /networks/:slug/e2e/devices/:did/copies` (issue 2430, S1): the queue id and msgid of the copy. */
 export function narrowE2eCopiedResponse(raw: unknown): SessionWireE2eCopiedPayload {
   return narrowRest(S_SessionWireE2eCopiedPayload, raw, "encrypted copy");
+}
+
+/** `GET /networks/:slug/e2e/requests` (issue 2486): the requests to start an encrypted chat. */
+export function narrowE2eRequests(raw: unknown): E2eRequestsWireRequestsResponse {
+  return narrowRest(S_E2eRequestsWireRequestsResponse, raw, "encrypted chat requests");
+}
+
+/** `POST /networks/:slug/e2e/requests` (issue 2486): the request as it now stands. */
+export function narrowE2eRequestResponse(raw: unknown): E2eRequestsWireRequestResponse {
+  return narrowRest(S_E2eRequestsWireRequestResponse, raw, "encrypted chat request");
 }
 
 /** `POST /e2e/pairings` and `POST /e2e/pairings/:id/join` (issue 2430, X1). */
