@@ -623,3 +623,110 @@ channel focused so "no unread" can fail: no query window, no row, no unread,
 and the chip and rail reading passed, then not answered here for
 `not-sent`. The 2430
 specs follow the moved controls.
+<!-- entry #2491 -->
+
+---
+
+## 2026-11-01 — #2491: a message no device of the peer can read is NACKed, and the re-key is the user's
+
+R has an encrypted query with A, keyed to A's device d1. A starts a new
+identity, or moves to another grappa and a new device. R writes: the message
+names d1, which A's grappa no longer lists. Until now `deliver_e2e/3` dropped
+it at debug, A's cic dropped a `*` message with no body for it as
+not-for-us, and `onNack` only acted on a NACK from the device a message went
+to, which is gone. R saw the line as sent and never learned that nobody could
+read it. That was the 2430 ruling of 2026-10-18 ("no sender-side notice",
+2026-10 archive, *What the client sends*) doing what it said.
+
+**vjt's ruling (issue body, 2026-11-01) lifts it for this one case:** the
+side that cannot decrypt because no key matches MUST NACK instead of dropping
+in silence, and the re-key is NOT automatic. The sender's cic tells the user
+that the peer cannot read, and the user decides whether to start a new key
+exchange. The nick may be held by an impostor, so cic never re-keys on its
+own. Once the user asks, the existing flow applies: trust on first use, the
+key alarm, SAS. The rest of 2430's silence stands: no delivered, expired or
+undeliverable notice, no `OFFLINE`.
+
+### grappa: a NACK from `*`
+
+`deliver_e2e/3` answers a PKMSG or MSG whose `to` reaches none of the user's
+listed devices with `nack_unreadable/3`: a NACK from `*` to the device that
+wrote, payload `{"ref": <msgid>, "v": 2}` (irc-olm's NACK shape), on the
+REACTIVE lane like a client's NACK. `*` speaks for the user, as it does on a
+KEYS: grappa is the one that knows the list, and the message did not reach
+any device that could speak for itself. `E2e.addressed?/3` gains `* → did`
+for `:nack`, one table for the parser and the send door.
+
+- **Only PKMSG and MSG.** A NACK or a KEYS that reaches nobody is still
+  dropped at debug: neither is a message a device failed to read, and two
+  grappas NACKing each other's NACKs would never stop.
+- **A client can never send from `*`.** The send door now also wants
+  `E2e.did?(from)`, so a NACK from `*` through REST is a 400. Without it the
+  table change would have let any client speak as "the user's grappa".
+- **No new bound.** The pacer's per-peer and per-connection reactive caps
+  are the only limit, and they are enough: each NACK costs its sender a whole
+  message. A refusal is logged at debug and the sender is not told, like any
+  line it draws past those caps.
+- **Known wart.** A grappa NACK still in the pacer when the session ends is
+  announced like every other drop (`drop_e2e_pending/1`): an
+  `e2e_send_dropped` for a msgid no client sent. A client ignores a drop it
+  holds no send for, which cic does.
+
+### cic: NACK when none of OUR devices has a body
+
+A PKMSG or MSG with no body for this device goes to `notForUs`. If a device
+of our own list has a body, the message is for a sibling (a `*` message) and
+is dropped as before. If none does, it went to devices this account does not
+have, and it is NACKed as undecryptable (`not-for-our-devices`). Caveat,
+accepted: a list of ours that lags a device just added NACKs a message
+written to that device too. The sender is told the message went unread,
+which is true here.
+
+On the sending side `onNack` keeps dropping a NACK from a device the message
+did not go to, except when `unreadableBy` says it means "nobody can read
+this": from `*`, or from a did we never bound, and only from the nick the
+message went to. A NACK from a device bound under the master the message went
+to is still dropped, because it can say nothing about the devices that did
+get it. The message is reported lost with reason `unreadable` ("none of the
+peer's devices can read it"). Nothing is re-sent and nothing re-keys.
+
+The pane's step card reads `unreadable` with an "ask for their keys again"
+button. `Engine.rekey(nick)` marks the pinned master's trusted devices as
+re-keying, records `keysAsked` and sends a KEYREQ under the usual budget.
+`tick` asks again until `OUTQ_TTL_MS`, then reports `keys_unanswered`. The
+KEYS is judged like any other: the pinned master answering opens fresh
+sessions (`keys_renewed`), and another master is the key alarm, answered
+from the same card as before and verified by SAS.
+
+### irc-olm diverges, by design
+
+irc-olm's framing table (`framing.py` `ADDRESSES`, at the 1606c85 the e2e bot
+runs) allows NACK `did → did` only. Its `parse` returns `None` for a NACK
+from `*`, so a bot drops it as malformed and is never told. That is the
+"unknown is never fatal" rule doing its job, not a break. A bot that wants
+the notice needs the table change on its side.
+
+### Protocol 52
+
+No field is new, so the wire digest does not move. The number moves on the
+#1393d rule: a client that tells its user "the peer cannot read this" cannot
+get it from an older server. `min_protocol_version` stays at 1, since an
+older client drops a NACK whose ref it does not know.
+
+Tests: `e2e_test.exs` for the table (a NACK `* → did` parses and is
+addressed). `e2e_session_test.exs` covers the NACK of a message that reaches
+no listed device, and of one to a subject with no device at all; no NACK back
+for a NACK or a KEYS that reaches nobody; a peer grappa's NACK from `*`
+relayed with `from_did: "*"`; and the door's 400 on a client NACK from `*`.
+grappa's NACK waits on the post-handshake fake-lag bank, about 5 s, hence
+`@nack_timeout`. cic unit tests cover the engine
+(`notForUs` both ways, `unreadableBy` from `*`, from a never-bound did and
+from another nick, `rekey` renewed, the alarm and unanswered), the
+client and chat glue, and the pane's three cards. Assertions were read red
+against mutants: 3 on the server (the `[]` guard, the door's `did?`, the
+payload's ref) and 16 in cic. e2e: `issue2491-moved-peer.spec.ts` walks the
+whole path between two browsers. Bob starts a new identity, Alice's line
+reads not sent with the unreadable card and her pin unchanged, then her
+re-key goes through the alarm and the emoji, and her next line reaches Bob's
+new device. It was read red against a server that drops instead of NACKing
+(the `[]` guard narrowed to `:nack`): Alice's line stayed `sent`.
