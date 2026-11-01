@@ -11,6 +11,7 @@ import {
   Show,
 } from "solid-js";
 import { isDiagEnabled } from "./DiagFloat";
+import E2eRequestBanner from "./E2eRequestBanner";
 import LusersCard from "./LusersCard";
 import { isContentKind, ownNickForNetwork, type ScrollbackMessage } from "./lib/api";
 import { casemappingForSlug, sigilRankForSlug } from "./lib/casemapping";
@@ -4598,29 +4599,40 @@ const ScrollbackPane: Component<Props> = (props) => {
           Two exits, both explicit: jump back into the region, or dismiss it
           and accept the tail as read (nothing else can advance the cursor
           while this is up — see `setCursorIfAdvances`). */}
-      <Show when={farBehindByChannel()[key()]}>
-        {(far) => (
-          <div class="scrollback-far-behind" data-testid="far-behind-bar">
-            <button
-              type="button"
-              class="scrollback-far-behind-jump"
-              data-testid="far-behind-jump"
-              onClick={jumpToUnreadGesture}
-            >
-              {far().missed} unread — jump back
-            </button>
-            <button
-              type="button"
-              class="scrollback-far-behind-dismiss"
-              data-testid="far-behind-dismiss"
-              aria-label={dismissFarBehindLabel}
-              onClick={dismissFarBehindGesture}
-            >
-              ×
-            </button>
-          </div>
-        )}
-      </Show>
+      {/* issue 2486 — the pinned top band, a column so its two bars stack
+          instead of covering each other: the asking to start an encrypted
+          chat over a query (`E2eRequestBanner`), then the far-behind bar.
+          Container-anchored like the #133 overlay for the same reason the
+          far-behind bar is (above): out of `.scrollback`'s `scrollHeight`, so
+          a request arriving never moves the reader. */}
+      <div class="scrollback-pinned" data-testid="scrollback-pinned">
+        <Show when={props.kind === "query"}>
+          <E2eRequestBanner networkSlug={props.networkSlug} peer={props.channelName} />
+        </Show>
+        <Show when={farBehindByChannel()[key()]}>
+          {(far) => (
+            <div class="scrollback-far-behind" data-testid="far-behind-bar">
+              <button
+                type="button"
+                class="scrollback-far-behind-jump"
+                data-testid="far-behind-jump"
+                onClick={jumpToUnreadGesture}
+              >
+                {far().missed} unread — jump back
+              </button>
+              <button
+                type="button"
+                class="scrollback-far-behind-dismiss"
+                data-testid="far-behind-dismiss"
+                aria-label={dismissFarBehindLabel}
+                onClick={dismissFarBehindGesture}
+              >
+                ×
+              </button>
+            </div>
+          )}
+        </Show>
+      </div>
       {/* #1094 — the older-page fetch affordance. Before this the pane had no
           loading state at all on this path: the operator scrolled to the top,
           a request went out, and for the whole round trip the pane was
