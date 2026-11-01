@@ -366,7 +366,8 @@ export type UndecryptableReason =
  * (its Ed25519 key) sent `peer`: plaintext too, never log it. A
  * `keys_asked` says the user asked `nick` for its keys again (`rekey`); a
  * `keys_renewed` that the pinned master answered with fresh sessions, a
- * `keys_unanswered` that nothing answered in `OUTQ_TTL_MS`. Another master
+ * `keys_unanswered` that nothing answered in `OUTQ_TTL_MS`, or that the
+ * answer opened no session or carried our own identity. Another master
  * answering is the `key_alarm`.
  */
 export type E2eEvent =
@@ -752,8 +753,8 @@ export class Engine {
    * reads it. The KEYREQ goes under the budget (`maybeKeyreq`), and `tick`
    * asks again while the answer is due. The KEYS is judged as any other: the
    * pinned master's opens fresh sessions (`keys_renewed`), another master's is
-   * the alarm, and none in `OUTQ_TTL_MS` is `keys_unanswered`. Our own nick
-   * has no keys to ask for: nothing happens.
+   * the alarm; one that opens none, ours, or none in `OUTQ_TTL_MS` is
+   * `keys_unanswered`. Our own nick has no keys to ask for: nothing happens.
    */
   rekey(nick: string): Result {
     const res = emptyResult();
@@ -1463,7 +1464,9 @@ export class Engine {
 
   /**
    * A whole message grappa delivered from `nick`'s device `fromDid` (the
-   * frame's `from`: a did, `*` on a KEYS). Never throws on wire input.
+   * frame's `from`: a did, or `*` when the peer's grappa speaks for the user:
+   * on a KEYS, and on the NACK of a message none of its devices could read).
+   * Never throws on wire input.
    */
   receive(
     nick: string,
@@ -1559,17 +1562,21 @@ export class Engine {
         "key-mismatch",
         queue.map((q) => q.msg),
       );
+      // Another master is the key alarm, which the user answers. Our own
+      // raises none: the keys asked for went unanswered.
+      if (asked && master === this.own.master) res.events.push({ kind: "keys_unanswered", nick });
       return;
     }
     this.applyList(master, keys.master.list);
     const judged = new Set<string>();
+    let opened = false;
     for (const entry of keys.devices) {
       if (judged.has(entry.id.ed25519)) continue;
       judged.add(entry.id.ed25519);
-      this.openSession(nick, master, entry, res);
+      opened = this.openSession(nick, master, entry, res) || opened;
     }
     this.flush(nick, master, res);
-    if (asked) res.events.push({ kind: "keys_renewed", nick });
+    if (asked) res.events.push({ kind: opened ? "keys_renewed" : "keys_unanswered", nick });
   }
 
   /**
@@ -1613,9 +1620,9 @@ export class Engine {
    * key (S2). A usable device with no working session gets one: none, or only
    * ones it NACKed the newest of (W "Sending"; irc-olm's `_ready`). It is
    * bound only once it has it (an id block only claims its curve). A skipped
-   * entry is reported.
+   * entry is reported. True when a session was opened.
    */
-  private openSession(nick: string, master: string, entry: KeysEntry, res: Result): void {
+  private openSession(nick: string, master: string, entry: KeysEntry, res: Result): boolean {
     const { id } = entry;
     const reason =
       this.refusal(master, id) ??
@@ -1623,12 +1630,12 @@ export class Engine {
       (this.otkSigned(entry) ? undefined : "bad-otk-signature");
     if (reason !== undefined) {
       res.events.push({ kind: "dropped", nick, reason, verb: "keys" });
-      return;
+      return false;
     }
     if (this.state.rekeying[id.ed25519] !== true && this.sessionsOf(id.curve25519).length > 0) {
-      return;
+      return false;
     }
-    if (!this.outboundSession(nick, entry, res)) return;
+    if (!this.outboundSession(nick, entry, res)) return false;
     delete this.state.rekeying[id.ed25519];
     const known = this.state.devices[id.ed25519];
     this.state.devices[id.ed25519] = {
@@ -1639,6 +1646,7 @@ export class Engine {
       proven: known?.proven ?? false,
       certVer: known?.certVer ?? null,
     };
+    return true;
   }
 
   /**
@@ -1732,7 +1740,8 @@ export class Engine {
    * 1-4. `presented`, which a sibling's copy passes too. Both signatures come
    *    before 5, `checkMaster`: no pin and no alarm ever comes from a block
    *    that fails its own signature. One with no body for this device is
-   *    `notForUs`'s.
+   *    `notForUs`'s, which reads no revocation: a NACK says only what a
+   *    peer's grappa says from `*` too, that no device here can read it.
    * 6. A revoked device, or one the stored list leaves out whose certificate
    *    names a version that list has reached (`standing`, its S1 good by
    *    now): dropped with no NACK and no alarm (rule 5).
@@ -1812,7 +1821,7 @@ export class Engine {
 
   /**
    * W "Receiver checks / MSG", after the body for this device (none:
-   * `notForUs`). 2. A curve the master pinned
+   * `notForUs`, before the revocation check). 2. A curve the master pinned
    * to the nick revoked: dropped with no NACK. 3. The curve of a trusted
    * device of that master: the frame's `from` must be its did, and what its
    * sessions cannot read is NACKed. 4. A curve bound under another master:
@@ -2268,14 +2277,19 @@ export class Engine {
    * grappa's from `*`, for a message that named no device it lists for the
    * user (the peer moved, or started over), or a device we never bound, which
    * found no body for any device of its own list (a new identity). Only from
-   * the nick it went to; and never from a device bound under the master it
-   * went to, which can tell us nothing of the devices the message did go to.
+   * the nick it went to; and never from a device of the master it went to,
+   * bound under it or named by its stored list: that one reads its own list,
+   * which may lag the devices the message did go to, and tells us nothing of
+   * them (a copy for it waits for its keys anyway).
    */
   private unreadableBy(nick: string, fromDid: string, sent: Sent): boolean {
     if (fold(sent.nick) !== fold(nick)) return false;
     if (fromDid === "*") return true;
-    return !Object.values(this.state.devices).some(
-      (device) => device.master === sent.master && device.did === fromDid,
+    const listed = this.state.masters[sent.master]?.devices ?? [];
+    return !(
+      Object.values(this.state.devices).some(
+        (device) => device.master === sent.master && device.did === fromDid,
+      ) || listed.some((ed25519) => did(this.olm, ed25519) === fromDid)
     );
   }
 
@@ -2305,9 +2319,10 @@ export class Engine {
    * Reports it, and NACKs it from this device to the one it came from: every
    * such message gets its own NACK, since the sender re-sends what is NACKed
    * and a message without one is lost without a word. Only a message of the
-   * master pinned to the nick, or on a curve never seen, gets here: one
-   * presenting another master is the alarm (PKMSG check 5), one on a curve
-   * bound under another master is dropped (MSG check 4). A device's curve and
+   * master pinned to the nick, or on a curve never seen, gets here, or one
+   * with a body for none of our devices (`notForUs`, issue 2491), whoever
+   * wrote it: one presenting another master is the alarm (PKMSG check 5), one
+   * on a curve bound under another master is dropped (MSG check 4). A device's curve and
    * id block are public, and anyone can put them on a line, but the NACK goes
    * back to the nick it came from, and only a sender that holds the keys acts
    * on it.
