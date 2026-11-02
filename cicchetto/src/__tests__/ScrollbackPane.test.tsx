@@ -157,6 +157,9 @@ vi.mock("../lib/scrollback", () => ({
   // Wrapped, not passed by reference: `vi.mock` is hoisted above the spy
   // declarations, so the factory may only DEFER to them.
   jumpToUnread: (slug: string, name: string) => jumpToUnreadSpy(slug, name),
+  // issue 2333 — the mention tap's jump. Never requested here (its own suite
+  // is jumpToMessage.test.ts), but grappa's source names it (issue 2512).
+  jumpToMessage: vi.fn(() => Promise.resolve(false)),
   dismissFarBehind: (slug: string, name: string) => dismissFarBehindSpy(slug, name),
 }));
 
@@ -334,6 +337,9 @@ import {
   LARGE_CHANNEL_THRESHOLD,
   setChannelPresencePref,
 } from "../lib/presenceFilter";
+// issue 2512 — the pane draws whichever source it is handed; grappa's is the
+// one every window but an encrypted query has, built on the mocks above.
+import { grappaScrollback, type ScrollbackSource } from "../lib/scrollbackSource";
 // #310 — the #243 re-tap command signal. NOT mocked (real module): driving
 // it exercises the SAME `scrollToBottomGesture` the floating scroll-to-bottom
 // button's onClick invokes, so the unit test can prove the shared gesture
@@ -343,12 +349,20 @@ import { requestScrollToBottom } from "../lib/scrollToBottomCommand";
 import { appendTopicShow } from "../lib/topicShow";
 import { dismissWhoisCard, setWhoisBundle } from "../lib/whoisCard";
 import type { E2eRequestsWireRequest } from "../lib/wireTypes";
-import ScrollbackPane, {
+import SourcedPane, {
+  type Props as PaneProps,
   resetAutoFocusedJoinsForTest,
   samePlainData,
   shouldLockScrollGate,
   shouldRescueUnderfillLoadOlder,
 } from "../ScrollbackPane";
+
+// issue 2512 — the pane draws whichever source it is handed. Every test here
+// but the last block draws grappa's scrollback, the source Shell hands both
+// mounts: `ScrollbackPane` below is the pane with that source.
+const ScrollbackPane = (props: Omit<PaneProps, "source">) => (
+  <SourcedPane source={grappaScrollback} {...props} />
+);
 
 const fixture: ScrollbackMessage[] = [
   {
@@ -8251,5 +8265,85 @@ describe("samePlainData — the rows() guard's comparator (issue 2418)", () => {
 
   it("reads an array and an object with the same index keys as changed", () => {
     expect(samePlainData(["x"], { 0: "x" })).toBe(false);
+  });
+});
+
+// issue 2512 — a source that holds every line itself: the encrypted query's
+// (`EncryptedChatPane`), whose messages live on the device. The pane reads its
+// lines and read state from the source it is handed, gives the reader's
+// progress back to it, draws what it adds to a line, and has no history to
+// page in: nothing reaches grappa's scrollback or its read cursor.
+describe("issue 2512 — a source that holds every line", () => {
+  const name = "$e2e:bob";
+  const line = (id: number, body: string): ScrollbackMessage => ({
+    id,
+    network: "freenode",
+    channel: name,
+    server_time: 1_700_000_000_000 + id * 1_000,
+    kind: "privmsg",
+    sender: "bob",
+    body,
+    meta: {},
+  });
+  const deviceSource = (): ScrollbackSource & { read: ReturnType<typeof vi.fn> } => {
+    const read = vi.fn();
+    return {
+      read,
+      messages: (key) =>
+        key === `freenode ${name}` ? [line(1, "uno"), line(2, "due")] : undefined,
+      getReadCursor: () => 1,
+      setCursorIfAdvances: (slug, channel, id) => read(slug, channel, id),
+      ownSendSubmitted: () => null,
+      lastOwnSend: () => null,
+      history: null,
+      slots: (msg) => ({
+        marker: <span data-testid="source-marker" />,
+        trailer: <span data-testid="source-trailer">{msg.body}</span>,
+      }),
+    };
+  };
+  const renderDevice = (source: ScrollbackSource) =>
+    render(() => (
+      <SourcedPane source={source} networkSlug="freenode" channelName={name} kind="encrypted" />
+    ));
+
+  it("draws the source's lines with what it adds to each, the unread marker where its cursor says", async () => {
+    renderDevice(deviceSource());
+    const lines = screen.getAllByTestId("scrollback-line");
+    expect(lines.map((l) => l.querySelector(".scrollback-body")?.textContent)).toEqual([
+      "uno",
+      "due",
+    ]);
+    expect(lines.map((l) => l.querySelector("[data-testid=source-trailer]")?.textContent)).toEqual([
+      "uno",
+      "due",
+    ]);
+    expect(lines.every((l) => l.querySelector("[data-testid=source-marker]") !== null)).toBe(true);
+    expect(screen.getByTestId("unread-marker").nextElementSibling).toBe(lines[1]);
+  });
+
+  it("gives the reader's progress to the source, never to grappa's cursor", async () => {
+    const source = deviceSource();
+    renderDevice(source);
+    await waitFor(() => expect(source.read).toHaveBeenCalledWith("freenode", name, 2), {
+      timeout: 2_000,
+    });
+    expect(mockSetCursorIfAdvances).not.toHaveBeenCalled();
+  });
+
+  it("pages nothing: no older page at the top, no catch-up on the way back to the tab", async () => {
+    renderDevice(deviceSource());
+    const list = screen.getByTestId("scrollback");
+    list.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    list.scrollTop = 0;
+    list.dispatchEvent(new Event("scroll"));
+    setDocVisible(false);
+    setDocVisible(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(loadMore).not.toHaveBeenCalled();
+    expect(loadNewer).not.toHaveBeenCalled();
+    const scrollback = await import("../lib/scrollback");
+    expect(scrollback.refreshScrollback).not.toHaveBeenCalled();
   });
 });

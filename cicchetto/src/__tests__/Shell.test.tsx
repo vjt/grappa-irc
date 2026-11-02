@@ -247,6 +247,9 @@ vi.mock("../lib/selection", () => ({
   messagesUnread: () => ({}),
   eventsUnread: () => ({}),
   applySeedEnvelope: vi.fn(),
+  // issue 2512 — grappa's source (`lib/scrollbackSource.ts`) hands the pane
+  // the read cursor's forward-only setter.
+  setCursorIfAdvances: vi.fn(),
 }));
 
 vi.mock("../lib/scrollback", () => ({
@@ -274,6 +277,10 @@ vi.mock("../lib/scrollback", () => ({
   isLoadingOlder: () => false,
   jumpToUnread: vi.fn(() => Promise.resolve(true)),
   dismissFarBehind: vi.fn(),
+  // issue 2512 — grappa's source (`lib/scrollbackSource.ts`, which Shell hands
+  // the pane) names every verb the pane can reach, these two among them.
+  refreshScrollback: vi.fn(() => Promise.resolve()),
+  jumpToMessage: vi.fn(() => Promise.resolve(false)),
 }));
 
 vi.mock("../lib/members", () => ({
