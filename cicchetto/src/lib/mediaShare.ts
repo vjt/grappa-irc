@@ -1,9 +1,12 @@
-// Media share payload — issue 2468.
+// Media share payload and flow — issue 2468; since issue 2501 shared by the
+// media viewer and the audio mini player.
 //
 // Pure module (no SolidJS; the DOM only through `fetch`, `File` and
-// `navigator.canShare`) — the `mediaAvailability.ts` / `textResource.ts`
-// separation: this owns WHAT goes to the Web Share API, `MediaViewerModal.tsx`
-// owns the button, the call and what the reader is told.
+// `navigator.share` / `canShare`) — the `mediaAvailability.ts` /
+// `textResource.ts` separation: this owns WHAT goes to the Web Share API and
+// how one control's taps play out (`createMediaSharer`); the components own
+// the button and where the reader is told (`MediaViewerModal.tsx` on its
+// status line, `AudioMiniPlayer.tsx` in a toast).
 //
 // vjt's ruling on the issue: share the FILE where `canShare({ files })` allows
 // it, the URL otherwise. The file is what the report was about — forwarding a
@@ -24,9 +27,9 @@
 // `NotAllowedError` — `.mov`, `.apng`, `.aac`, `.md` and every legacy
 // extensionless `/uploads/<slug>` among what the viewer admits. That list is
 // Chromium's and changes without telling us; Safari keeps none like it. So
-// cic copies neither: the viewer answers a refused FILE by offering the link
-// on the next tap (the refusal has already spent the user activation, so the
-// fallback cannot run in the same one). See MediaViewerModal's `shareMedia`.
+// cic copies neither: a refused FILE is answered by offering the link on the
+// next tap (the refusal has already spent the user activation, so the
+// fallback cannot run in the same one). See `createMediaSharer`.
 
 import { isSameOrigin } from "./mediaLink";
 
@@ -65,6 +68,81 @@ export async function mediaShareData(
   return file !== undefined && navigator.canShare({ files: [file] })
     ? { files: [file] }
     : { url: href };
+}
+
+/**
+ * One share control's taps. Returns `"busy"` for a tap that lands while the
+ * previous share is still fetching or showing its sheet (the platform would
+ * refuse it as a share already in progress, which is not a failure worth a
+ * sentence); otherwise the settled attempt: `null` when there is nothing to
+ * tell the reader, or the sentence to show.
+ */
+export type MediaSharer = (
+  href: string,
+  origin: string,
+  signal: AbortSignal,
+) => Promise<string | null> | "busy";
+
+/**
+ * The share flow, issue 2468's, lifted out of the media viewer in issue 2501
+ * so the mini player runs the same one.
+ *
+ * AbortError is the reader dismissing the sheet (or the caller aborting
+ * mid-fetch because its control is gone) — a choice, not a failure, and it says
+ * nothing. Every OTHER rejection is named: a share that silently does nothing
+ * is the inert control issue 1839 refused for copy.
+ *
+ * A `NotAllowedError` on a FILE share is the one rejection with a way out. It
+ * is the platform refusing that file (Chromium's type allowlist, above) or the
+ * activation window running out on a slow fetch, and either way the
+ * activation is spent, so the link cannot follow in the same tap. The next tap
+ * on the SAME href shares the link instead, and the sentence says so — the URL
+ * fallback vjt's ruling promises, one tap later. Keyed on the href rather than
+ * held as a flag because the mini player outlives every source it plays; for
+ * the viewer, which is built per open, the two are the same.
+ *
+ * `DOMException`, not `Error`, in both tests: both doors reject with one, and
+ * jsdom's does not descend from the realm's `Error`, so an `Error` test there
+ * would let a cancelled sheet through as a failure.
+ *
+ * @param describe renders any other rejection as the sentence to show —
+ *   `errorMessage` at both call sites, injected so this module stays pure.
+ */
+export function createMediaSharer(describe: (error: unknown) => string): MediaSharer {
+  let sharing = false;
+  let refusedFile: string | undefined;
+
+  const attempt = async (
+    href: string,
+    origin: string,
+    signal: AbortSignal,
+  ): Promise<string | null> => {
+    let data: ShareData | undefined;
+    try {
+      data = href === refusedFile ? { url: href } : await mediaShareData(href, origin, signal);
+      await navigator.share(data);
+      return null;
+    } catch (value) {
+      if (value instanceof DOMException && value.name === "AbortError") return null;
+      if (
+        data?.files !== undefined &&
+        value instanceof DOMException &&
+        value.name === "NotAllowedError"
+      ) {
+        refusedFile = href;
+        return "this file could not be shared — tap share again to send the link";
+      }
+      return describe(value);
+    } finally {
+      sharing = false;
+    }
+  };
+
+  return (href, origin, signal) => {
+    if (sharing) return "busy";
+    sharing = true;
+    return attempt(href, origin, signal);
+  };
 }
 
 async function fetchFile(href: string, signal: AbortSignal): Promise<File | undefined> {

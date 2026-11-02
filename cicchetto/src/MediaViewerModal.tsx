@@ -12,7 +12,7 @@ import {
 import { copyText } from "./lib/clipboard";
 import { errorMessage } from "./lib/friendlyApiError";
 import { probeMediaAvailability } from "./lib/mediaAvailability";
-import { mediaShareData } from "./lib/mediaShare";
+import { createMediaSharer } from "./lib/mediaShare";
 import { closeMediaViewer, type MediaViewerState, mediaViewerState } from "./lib/mediaViewer";
 import { bindViewerFrame } from "./lib/mediaViewerFrame";
 import { bindDismissGesture, type DismissDirections } from "./lib/mediaViewerGesture";
@@ -726,59 +726,20 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
     abort.abort();
   });
 
-  // Plain mutables, like `scale` above: nothing renders from either, and both
-  // die with the open. `sharing` drops a second tap while the first is still
-  // fetching or showing its sheet — the platform would refuse it as a share
-  // already in progress, and that is not a failure worth a sentence.
-  // `linkOnly` is set once the platform has refused the FILE (see below).
-  let sharing = false;
-  let linkOnly = false;
-
-  // AbortError is the reader dismissing the sheet (or the viewer closing
-  // mid-fetch) — a choice, not a failure, and it says nothing. Every OTHER
-  // rejection is named on the status line: a share that silently does nothing
-  // is the inert control issue 1839 refused for copy.
-  //
-  // A `NotAllowedError` on a FILE share is the one rejection with a way out.
-  // It is the platform refusing that file (Chromium's type allowlist, measured
-  // in lib/mediaShare.ts) or the activation window running out on a slow
-  // fetch, and either way the activation is spent, so the link cannot follow
-  // in the same tap. The next tap in this open shares the link instead, and
-  // the line says so — the URL fallback vjt's ruling promises, one tap later.
-  //
-  // `DOMException`, not `Error`, in both tests: both doors reject with one,
-  // and jsdom's does not descend from the realm's `Error`, so an `Error` test
-  // there would let a cancelled sheet through as a failure.
+  // The share flow is lib/mediaShare.ts's (`createMediaSharer`, shared with
+  // the mini player since issue 2501): a tap while one is running is dropped, a
+  // dismissed sheet says nothing, a refused FILE turns the next tap into the
+  // link. Built per open with the rest of this component, so what it remembers
+  // dies with the open. What stays here is where the reader is told.
+  const share = createMediaSharer(errorMessage);
   const shareMedia = async (): Promise<void> => {
-    if (sharing) return;
-    sharing = true;
+    const attempt = share(props.state.href, window.location.origin, abort.signal);
+    if (attempt === "busy") return;
     // A new attempt starts with a clean line: an earlier refusal sitting under
     // a share that then worked would report a failure that is over.
     setActionOutcome({ kind: "idle" });
-    let data: ShareData | undefined;
-    try {
-      data = linkOnly
-        ? { url: props.state.href }
-        : await mediaShareData(props.state.href, window.location.origin, abort.signal);
-      await navigator.share(data);
-    } catch (value) {
-      if (value instanceof DOMException && value.name === "AbortError") return;
-      if (
-        data?.files !== undefined &&
-        value instanceof DOMException &&
-        value.name === "NotAllowedError"
-      ) {
-        linkOnly = true;
-        setActionOutcome({
-          kind: "failed",
-          message: "this file could not be shared — tap share again to send the link",
-        });
-        return;
-      }
-      setActionOutcome({ kind: "failed", message: errorMessage(value) });
-    } finally {
-      sharing = false;
-    }
+    const failure = await attempt;
+    if (failure !== null) setActionOutcome({ kind: "failed", message: failure });
   };
 
   // The ONE feedback channel, and it always speaks.
