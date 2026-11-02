@@ -1365,15 +1365,28 @@ a little larger than "open in browser" was. Keep the `gone()` gate and the
   `isSameOrigin` gate in `MediaViewerModal` that only it needed, and the
   `download` clauses in `isSameOrigin`'s and `mediaAvailability`'s notes,
   which now speak of fetches and share alone. The #2468 comment beside share
-  says why there is no download. On desktop the picture keeps its own
-  context menu and "open in browser" keeps its tab.
+  says why there is no download. Where there is no Web Share (desktop
+  Firefox, Linux Chromium) the header now has no save verb at all: the
+  picture keeps its own context menu and "open in browser" keeps its tab.
 * **One rule for the verbs:** `.media-viewer-open-external`,
   `.media-viewer-copy`, `.media-viewer-share` take `font: inherit`, then
   `font-size: var(--font-size)` and `text-decoration: underline`; the two
   buttons keep a rule of their own that strips them to their text. `font:
-  inherit` comes first so a `<button>` takes the anchor's family, weight
-  and line height rather than the UA's, and the underline is stated because
-  a button has none to inherit.
+  inherit` comes first so a `<button>` takes the weight and line height the
+  anchor inherits rather than the UA's (the family it already inherited,
+  through `font-family: inherit`), and the underline is stated because a
+  button has none to inherit.
+* **The "smaller" is not diagnosed.** Before this change the two controls
+  already computed to the same size, 0.9rem each (12.6px at the default), so
+  what read smaller on the iPhone was not a computed font-size difference,
+  and nothing here identifies what it was. The difference on main that the
+  e2e arms below did measure is the underline. The fix is not verified on a
+  device.
+* **Not touched, the same mechanism:** `AudioMiniPlayer`'s ⬇
+  (`a.audio-mini-player-download`, `download=""`) is the anchor the viewer's
+  download was copied from, and on an iOS PWA it very likely dead-ends the
+  same way (not verified on a device). The ruling covers the viewer only;
+  named here so it is not rediscovered as new.
 * **Choices the ruling did not make**, declared:
   * **The size is `--font-size`** (14px at the default), up from 0.9rem
     (12.6px): "a little larger" read as the step up to the size the rest of
@@ -1393,8 +1406,29 @@ uploads. e2e: `issue2468-viewer-download-share.spec.ts` is renamed
 `issue2468-viewer-share.spec.ts` and loses its download leg; two tests
 (desktop chromium, and iPhone 15 + Pixel 7) read the computed look of "open
 in browser" and share: equal font size, both underlined, larger than 0.9 of
-the root size, and nothing carrying `download`. The text viewer's phone test
-holds copy to the same look. Before comparing, each look test reads the
-share button's author styles (transparent, borderless), so a computed-style
-read that fell back to UA defaults on the iPhone engine (#963) fails rather
-than comparing two default boxes.
+the root size, the same colour, family, weight and line height, and nothing
+carrying `download`. The text viewer's phone test holds copy to the same
+look. A computed-style read that fell back to defaults on the iPhone engine
+(#963) fails at the underline, since a UA button has none and neither has
+the initial value, so no separate calibration is kept.
+
+e2e arms, `--grep "issue2468|issue2501"`, 6 tests over chromium,
+chromium-pixel-touch and webkit-iphone-15, each arm's bundle checked in the
+served dist by its content-hashed CSS and the rule body:
+
+* **A**, the branch's first three commits on `60f67c7b2`, before the rebase
+  onto #2500: 6 passed.
+* **B**, main's `default.css` under the branch's component: 5 failed, every
+  one at the underline (share's `textDecorationLine` is `none`); the 2468
+  share test stayed green.
+* **C**, the branch with only `font-size` back to 0.9rem: 5 failed, every
+  one at the step up, `> 12.6` against `12.6`. Both engines read the old rule
+  back as exactly 12.6px, so the strict `>` on the 0.9 × 14 boundary is not
+  vacuous.
+
+The arms ran before the review added the colour, family, weight and line
+height comparison, which sits after the asserts B and C stopped at, and
+dropped the calibration; that comparison has no red arm. Main's component
+was not run in e2e: its download anchor is pinned red-before-fix by the unit
+test, and in e2e it would stop every test at the download count, before any
+look assertion.
