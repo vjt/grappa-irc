@@ -702,6 +702,13 @@ describe("EncryptedChatPane, the last identity check", () => {
 });
 
 describe("EncryptedChatPane, the rail", () => {
+  // issue 2499 — the key sections mount inside the query context, whose
+  // heading names the conversation: one of their own would read twice.
+  it("carries no heading of its own: the query context it mounts in has one", () => {
+    renderPane();
+    expect(within("e2e-rail").querySelector(".rail-query-heading")).toBeNull();
+  });
+
   it("shows the master the peer's nick is pinned to, and how many of its devices are trusted", () => {
     renderPane();
     expect(screen.getByTestId("e2e-peer-key").textContent).toBe("none yet");

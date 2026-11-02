@@ -45,8 +45,9 @@ import { networkBySlug } from "./lib/networks";
 //
 // Mounted by RailContext, keyed on the window, so a key half pasted for one
 // peer never follows into another peer's rail and gets pinned there. Issue
-// 2499: it mounts inside the query context, under the peer's WHOIS card, as
-// an addition to the query rail and not a replacement for it.
+// 2499: it mounts inside the query context, as an addition to the query rail
+// and not a replacement for it: under the context's heading, which names the
+// conversation (so none here), and above the peer's WHOIS card.
 
 type Props = { networkSlug: string; nick: string };
 
@@ -269,7 +270,6 @@ const EncryptedRail: Component<Props> = (props) => {
 
   return (
     <div class="rail-e2e selectable-text" data-testid="e2e-rail">
-      <h3 class="rail-query-heading">encrypted conversation with {display()}</h3>
       <section class="rail-e2e-section" data-testid="e2e-rail-peer">
         <h4 class="rail-e2e-section-heading">{display()}</h4>
         <dl class="rail-e2e-fields">
