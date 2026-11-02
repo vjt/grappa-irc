@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { createSignal, Show } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { closeMediaViewer, mediaViewerState, openMediaViewer } from "../lib/mediaViewer";
+import { FRAME_TOP_VAR } from "../lib/mediaViewerFrame";
 import {
   __resetForTest,
   overlayCount,
@@ -703,37 +705,54 @@ describe("MediaViewerModal — native pan for the zoomed image (#1805)", () => {
 
 // issue 2500 — the viewer lays out only BELOW the pane's top bar. Which edge is
 // read in which window is pinned in mediaViewerFrame.test.ts; this pins that
-// the viewer actually hands that number to its stylesheet, on every arm, from
-// the first frame. The placement itself is the e2e's to observe: jsdom applies
+// the viewer actually hands that number to its stylesheet, and from the shell
+// it is mounted in. The placement itself is the e2e's to observe: jsdom applies
 // no stylesheet.
 describe("MediaViewerModal — clears the pane's top bar (issue 2500)", () => {
-  const BAR_BOTTOM = 122;
+  const stubRect =
+    (top: number, bottom: number) =>
+    (el: HTMLElement): void => {
+      el.getBoundingClientRect = () => ({ top, bottom }) as DOMRect;
+    };
 
-  beforeEach(() => {
-    const pane = document.createElement("section");
-    pane.className = "shell-main";
-    pane.getBoundingClientRect = () => ({ top: 59, bottom: 659 }) as DOMRect;
-    const bar = document.createElement("div");
-    bar.className = "topic-bar";
-    bar.getBoundingClientRect = () => ({ top: 59, bottom: BAR_BOTTOM }) as DOMRect;
-    pane.append(bar);
-    document.body.append(pane);
-  });
+  // The shape Shell renders in both branches: the viewer mounted at the
+  // shell's root, BEFORE the pane that carries the bar.
+  const shell = (barBottom: number) => (
+    <div class="shell">
+      <MediaViewerModal />
+      <section class="shell-main" ref={stubRect(59, 659)}>
+        <div class="topic-bar" ref={stubRect(59, barBottom)} />
+      </section>
+    </div>
+  );
 
-  afterEach(() => {
-    document.querySelector(".shell-main")?.remove();
-  });
+  const frameTop = (): string => screen.getByRole("dialog").style.getPropertyValue(FRAME_TOP_VAR);
 
   it.each([
     ["image", IMAGE_URL],
     ["video", VIDEO_URL],
     ["audio", IMAGE_URL],
   ] as const)("publishes the bar's bottom edge as the frame's top on the %s arm", (kind, url) => {
-    render(() => <MediaViewerModal />);
+    render(() => shell(122));
     openMediaViewer(url, kind);
-    expect(screen.getByRole("dialog").style.getPropertyValue("--media-viewer-top")).toBe(
-      `${BAR_BOTTOM}px`,
-    );
+    expect(frameTop()).toBe("122px");
+  });
+
+  // A rotation across the mobile breakpoint swaps Shell's whole branch with the
+  // viewer open. Solid builds the new branch, refs and all, while the old one
+  // is still in the document, so a viewer that measured from its ref would read
+  // the bar that is about to go.
+  it("measures the shell it is mounted in when the shell is swapped under an open viewer", () => {
+    const [mobile, setMobile] = createSignal(true);
+    render(() => (
+      <Show when={mobile()} fallback={shell(96)}>
+        {shell(122)}
+      </Show>
+    ));
+    openMediaViewer(IMAGE_URL, "image");
+    expect(frameTop()).toBe("122px");
+    setMobile(false);
+    expect(frameTop()).toBe("96px");
   });
 });
 

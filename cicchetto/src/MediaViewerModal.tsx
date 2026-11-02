@@ -5,6 +5,7 @@ import {
   createSignal,
   Match,
   onCleanup,
+  onMount,
   Show,
   Switch,
 } from "solid-js";
@@ -850,6 +851,22 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
     onCleanup(dispose);
   };
 
+  // issue 2500 — the viewer lays out below the pane's top bar, never under it
+  // (lib/mediaViewerFrame.ts). Written on the dialog and not on the backdrop:
+  // the backdrop still dims the whole screen.
+  //
+  // On MOUNT and not in the ref, and that is the fix for a measurement of the
+  // wrong shell. A rotation across the mobile breakpoint swaps Shell's whole
+  // branch with the viewer still open, and Solid creates the new branch —
+  // running every ref in it — while the OLD branch is still in the document:
+  // a ref-time measurement reads the shell that is about to go. `onMount` runs
+  // once the new nodes are in, and still before the browser paints, so the
+  // first frame is in place either way.
+  let modal: HTMLDivElement | undefined;
+  onMount(() => {
+    if (modal !== undefined) onCleanup(bindViewerFrame(modal));
+  });
+
   return (
     <>
       <button
@@ -861,11 +878,8 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
       />
       <div
         ref={(el) => {
+          modal = el;
           bindDismiss(el);
-          // issue 2500 — the viewer lays out below the pane's top bar, never
-          // under it (lib/mediaViewerFrame.ts). On the dialog and not on the
-          // backdrop: the backdrop still dims the whole screen.
-          onCleanup(bindViewerFrame(el));
         }}
         role="dialog"
         aria-modal="true"

@@ -7,16 +7,18 @@
 // BOTTOM EDGE of the bar that carries the channel name, the top of the picture
 // never sits under it, and it may run on past the bottom of the screen.
 //
-// THE DISCRIMINATING INPUT IS THE SAFE-AREA INSET, and without it this spec is
-// green on the broken build. Playwright resolves `env(safe-area-inset-top)` to
-// 0 on every engine, and at 0 the old layout happened to clear the bar: the
-// viewer centred itself in the whole viewport with an 8rem allowance around
-// the picture, which is about one bar's height. On the device the shell is
-// padded down by the inset (~59px on a current iPhone) and the bar moves down
-// with it, while the old viewer, which knew nothing of either, stayed where it
-// was. So the inset is stubbed through `--safe-area-inset-top`, the token every
-// safe-area rule in the sheet reads (the #913 / #1751 / #2190 idiom), and that
-// stub is the device condition, not a convenience.
+// THE DISCRIMINATING INPUT IS THE SAFE-AREA INSET. Playwright resolves
+// `env(safe-area-inset-top)` to 0 on every engine, and at 0 the old layout
+// happened to clear the bar with the PICTURE: the viewer centred itself in the
+// whole viewport with an 8rem allowance around the picture, about one bar's
+// height, so the picture assertion below is green on the broken build without
+// the stub (only the viewer's own header went under the bar there, on a
+// phone). On the device the shell is padded down by the inset (~59px on a
+// current iPhone) and the bar moves down with it, while the old viewer, which
+// knew nothing of either, stayed where it was. So the inset is stubbed through
+// `--safe-area-inset-top`, the token every safe-area rule in the sheet reads
+// (the #913 / #1751 / #2190 idiom), and that stub is the device condition, not
+// a convenience.
 //
 // THE SECOND INPUT IS THE SHAPE: an image with the viewport's own aspect ratio,
 // as the issue asks. On a phone in portrait that picture is bound by the height
@@ -26,7 +28,9 @@
 // WHAT IS PROVEN: on the iPhone 15 and Pixel 7 projects (the mobile shell) and
 // on desktop chromium (the desktop shell, which an installed iPad PWA runs and
 // which carries the same inset), the picture AND the viewer's own header sit
-// wholly below the bar's bottom edge, and the picture is still on screen.
+// wholly below the bar's bottom edge, and the picture is still on screen. On
+// the phones, also that the viewer FOLLOWS the line while open: the inset grows
+// under it, the bar moves down, and the viewer moves with it.
 //
 // NOT PROVEN HERE: the real inset a device reports, the iOS 27 compositor band
 // (issue 2190) stacked on top of it, and how either looks. Both only push the
@@ -46,14 +50,25 @@ const CHANNEL = AUTOJOIN_CHANNELS[0];
 // where it lands on the phone.
 const STUB_INSET = 59;
 
+// A second, larger inset for the follow-the-line step. The growth has to be
+// more than the viewer's own margin above the header (~32px), or a viewer that
+// never re-measured would still clear the moved bar and the step would pass
+// on a frame frozen at open.
+const GROWN_INSET = STUB_INSET + 60;
+
+// `:root:root` (0,2,0) so the stub wins on specificity whatever order the
+// bundler injected the sheet in — the #913 spec's reasoning. A later tag at the
+// same specificity wins on source order, which is what the second call relies on.
+async function stubInset(page: Page, px: number): Promise<void> {
+  await page.addStyleTag({ content: `:root:root { --safe-area-inset-top: ${px}px; }` });
+}
+
 async function openScreenShapedImage(page: Page, fileName: string) {
   if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
   await loginAs(page, specUser());
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 
-  // `:root:root` (0,2,0) so the stub wins on specificity whatever order the
-  // bundler injected the sheet in — the #913 spec's reasoning.
-  await page.addStyleTag({ content: `:root:root { --safe-area-inset-top: ${STUB_INSET}px; }` });
+  await stubInset(page, STUB_INSET);
 
   const viewport = page.viewportSize();
   if (viewport === null) throw new Error("no viewport");
@@ -89,13 +104,13 @@ async function geometry(page: Page) {
   });
 }
 
-async function expectViewerBelowTheBar(page: Page): Promise<void> {
+async function expectViewerBelowTheBar(page: Page, inset: number): Promise<void> {
   const g = await geometry(page);
 
   // Premise 1 — the stub reached the shell, so the bar sits where the device
   // puts it. Without this the assertions below measure the Playwright layout,
-  // where the old code passes too.
-  expect(g.bar.top).toBeGreaterThan(STUB_INSET - 1);
+  // where the old code passes the picture assertion too.
+  expect(g.bar.top).toBeGreaterThan(inset - 1);
   // Premise 2 — the picture is the tall case: well over half the screen high,
   // so its top edge is the viewer's vertical layout and not slack around a
   // small picture.
@@ -116,7 +131,20 @@ test("@webkit @touch issue2500 — a screen-shaped picture opens below the chann
 }) => {
   test.slow();
   await openScreenShapedImage(page, "issue2500-phone.png");
-  await expectViewerBelowTheBar(page);
+  await expectViewerBelowTheBar(page, STUB_INSET);
+
+  // The line moves while the viewer is open — a rotation's padding change, a
+  // topic wrapping the bar — and the viewer must follow it rather than keep
+  // the edge it measured at open. Polled, because the re-measure lands on the
+  // engine's next ResizeObserver delivery, not synchronously with the tag.
+  await stubInset(page, GROWN_INSET);
+  await expect
+    .poll(async () => {
+      const g = await geometry(page);
+      return g.dialog.top >= g.bar.bottom && g.bar.top > GROWN_INSET - 1;
+    })
+    .toBe(true);
+  await expectViewerBelowTheBar(page, GROWN_INSET);
 });
 
 test("issue2500 — the desktop shell, which an installed iPad runs, clears the bar too", async ({
@@ -124,5 +152,5 @@ test("issue2500 — the desktop shell, which an installed iPad runs, clears the 
 }) => {
   test.slow();
   await openScreenShapedImage(page, "issue2500-desktop.png");
-  await expectViewerBelowTheBar(page);
+  await expectViewerBelowTheBar(page, STUB_INSET);
 });

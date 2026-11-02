@@ -20,17 +20,17 @@ const rect = (top: number, bottom: number): DOMRect =>
   }) as DOMRect;
 
 // A `.shell-main` whose top sits at `paneTop` — the shell's safe-area padding
-// already applied, as on an installed iOS PWA — optionally carrying a top bar
-// whose bottom edge sits at `barBottom`.
-const mountPane = (paneTop: number, barBottom?: number): void => {
+// already applied, as on an installed iOS PWA — carrying a top band of class
+// `bar.className` whose bottom edge sits at `bar.bottom`, or no band at all.
+const mountPane = (paneTop: number, bar: { className: string; bottom: number } | null): void => {
   const pane = document.createElement("section");
   pane.className = "shell-main";
   pane.getBoundingClientRect = () => rect(paneTop, paneTop + 600);
-  if (barBottom !== undefined) {
-    const bar = document.createElement("div");
-    bar.className = "topic-bar";
-    bar.getBoundingClientRect = () => rect(barBottom - 63, barBottom);
-    pane.append(bar);
+  if (bar !== null) {
+    const band = document.createElement("div");
+    band.className = bar.className;
+    band.getBoundingClientRect = () => rect(bar.bottom - 63, bar.bottom);
+    pane.append(band);
   }
   document.body.append(pane);
 };
@@ -40,20 +40,25 @@ afterEach(() => {
 });
 
 describe("viewerFrameTop (issue 2500)", () => {
-  it("starts the frame at the bottom edge of the pane's top bar", () => {
-    mountPane(59, 122);
-    expect(viewerFrameTop()).toBe(122);
-  });
+  // The channel bar (and the admin console's) is `PaneTopBar`; the mentions
+  // window and the encrypted query carry headers of their own.
+  it.each(["topic-bar", "mentions-header", "e2e-header"])(
+    "starts the frame at the bottom edge of the pane's top band (.%s)",
+    (barClass) => {
+      mountPane(59, { className: barClass, bottom: 122 });
+      expect(viewerFrameTop()).toBe(122);
+    },
+  );
 
   it("starts it at the pane's own top in a window with no bar, which still clears the inset", () => {
-    mountPane(59);
+    mountPane(59, null);
     expect(viewerFrameTop()).toBe(59);
   });
 
   it("never starts above the pane, even when the bar has scrolled out of it", () => {
     // The admin pane scrolls with its bar inside it, so the bar's bottom edge
     // can sit above the pane's top. The frame must not follow it up there.
-    mountPane(59, 20);
+    mountPane(59, { className: "topic-bar", bottom: 20 });
     expect(viewerFrameTop()).toBe(59);
   });
 
