@@ -53,14 +53,15 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v52 -> v53 (issue 2486): the encrypted-chat requests, a
- * REST resource under `/e2e/requests` and two user-topic events,
- * `e2e_request` and `e2e_request_gone`. A terminal speaks no E2E and
- * ignores an event kind it does not know, so nothing it reads changed.
+ * Last read, v53 -> v54 (issue 2497): the user-topic event
+ * `no_such_nick`, a 401 naming a nick, for the encrypted query that keeps
+ * no scrollback. The 401 is still the `notice` row a terminal already
+ * shows, and an event kind it does not know is ignored, so nothing it
+ * reads changed.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 53
+#define WIRE_PROTOCOL_VERSION 54
 
 #include <stdbool.h>
 #include <stddef.h>

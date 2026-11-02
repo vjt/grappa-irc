@@ -1258,8 +1258,11 @@ request. On your own accept's 202, the same: open the chat and fetch the
 keys. On `refused`, show it, and `DELETE` once shown.
 
 **Known limits.** There is no delivery receipt: a 202 means grappa's
-pacer took the line, and IRC never confirms (a peer offline, or a nick
-nobody holds, simply lets the request lapse after 24 h). A line dropped
+pacer took the line, and IRC never confirms (a peer whose client is away
+behind a bouncer simply lets the request lapse after 24 h). The one answer
+IRC does give is a 401 for a nick nobody holds: from v54 it ends your live
+`outgoing` request (`e2e_request_gone`) and pushes `no_such_nick` (§4j);
+before v54 that request waited out its 24 h too. A line dropped
 after it was taken (the session ended, the write failed) raises
 `e2e_send_dropped` with its msgid, which only accept's and refuse's 202
 name; the request stays as written. Requests are keyed by nick: a rename
@@ -1268,6 +1271,33 @@ lapses, the price a renamed peer's query window pays too. Consent carries
 no trust: grappa verifies nothing in the payload.
 
 Check `protocol_version >= 53`.
+
+### 4j. A nick that is not on the network (issue 2497, v54)
+
+When the ircd answers something sent to a nick with 401 ERR_NOSUCHNICK,
+grappa keeps the 401 as a `notice` row where it always did: in the open
+query with that nick, or on `$server` when none is open (§5a's #640 gate,
+which never opens a window for a reply). A window grappa holds no row
+for, the encrypted query, which lives in your client only, used to hear
+nothing: its message waited for keys that could not come. From v54 the
+fact itself is pushed on the user topic:
+
+```json
+{"kind": "no_such_nick", "network": "azzurra", "nick": "ghost"}
+```
+
+`nick` is the spelling the 401 carries (RAW: fold it before you compare).
+It comes for every 401 that names a nick, whatever was sent: a PRIVMSG, a
+CTCP, an E2E line (§4f), a consent line (§4i). It does not come for a 401
+naming a channel, nor for the 401 a `/whois` folds into its
+`whois_bundle`. The 401 does not say which line it answers, so do not
+fail a message a device of the peer already took: fail what still waits
+for the nick's keys, and stop asking it for keys. The same 401 ends your
+live `outgoing` request to start an encrypted chat with that nick
+(`e2e_request_gone`, §4i): nobody got the `REQUEST`. A peer's request and
+an answer stay.
+
+Check `protocol_version >= 54`.
 
 ---
 
@@ -1983,6 +2013,7 @@ forever.
 | `names_reply` | requester | `/NAMES` answer |
 | `network_attached` | user | the subject re-attached a network binding (§4e) |
 | `network_detached` | user | the subject hid a network binding (§4e) |
+| `no_such_nick` | user | upstream answered something sent to `nick` with 401 ERR_NOSUCHNICK: the nick is not on the network (§4j, v54) |
 | `notify_list` | user | the subject's notify / watch list |
 | `own_nick_changed` | user | our own nick changed — carries `network_id`, not a slug |
 | `peer_away` | user | a peer's away text |
