@@ -694,7 +694,16 @@ defmodule Grappa.Session.E2eSessionTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.channel(user.name, network.slug, "$server"))
 
       assert {:ok, msgid} =
-               Session.send_e2e({:user, user.id}, network.id, "Ghost", :keyreq, :control, {device.did, "*"}, @small, nil)
+               Session.send_e2e(
+                 {:user, user.id},
+                 network.id,
+                 "Ghost",
+                 :keyreq,
+                 :control,
+                 {device.did, "*"},
+                 @small,
+                 nil
+               )
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, msgid), 10_000)
       IRCServer.feed(server, ":irc 401 #{@nick} Ghost :No such nick/channel\r\n")
@@ -704,7 +713,9 @@ defmodule Grappa.Session.E2eSessionTest do
 
       assert slug == network.slug
 
-      assert_receive %Phoenix.Socket.Broadcast{payload: %{message: %{channel: "$server", body: "No such nick/channel"}}},
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{message: %{channel: "$server", body: "No such nick/channel"}}
+                     },
                      @wire_timeout
 
       refute QueryWindows.open?({:user, user.id}, network.id, "ghost")
@@ -1548,7 +1559,10 @@ defmodule Grappa.Session.E2eSessionTest do
       {:ok, %Request{id: bob}} = Session.ask_e2e(subject, network.id, "bob", device.did, @hint)
       _ = await_consent(server, "bob", :request)
       Enum.each(consent_from("bob", :accept, @hint), &IRCServer.feed(server, &1))
-      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{state: :accepted}}}, @wire_timeout
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{state: :accepted}}},
+                     @wire_timeout
+
       {:ok, %Request{id: carol}} = Session.ask_e2e(subject, network.id, "carol", device.did, @hint)
       age_request!(carol, E2eRequests.ttl_seconds() + 60)
 
