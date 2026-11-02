@@ -10,16 +10,20 @@ import {
   playbackFailure,
   playerHidden,
   rememberResumePoint,
+  reportAudioShareFailure,
   reportPlaybackFailure,
   resumePoint,
 } from "./lib/audioPlayer";
+import { errorMessage } from "./lib/friendlyApiError";
 import {
   applyMediaSession,
   mediaSessionMetadata,
   setMediaSessionHandlers,
   setMediaSessionPlaybackState,
 } from "./lib/mediaSession";
+import { createMediaSharer } from "./lib/mediaShare";
 import { nowPlayingLabel } from "./lib/nowPlaying";
+import { canNativeShare } from "./lib/platform";
 
 // Docked audio mini-player (GH #115) — a slim transport bar pinned BELOW
 // the compose box (#1701: between it and the mobile bottom bar; it used to
@@ -293,6 +297,34 @@ const AudioMiniPlayer: Component = () => {
     audioEl.currentTime = Number(e.currentTarget.value);
   };
 
+  // issue 2501 — share, where the ⬇ download was: vjt's ruling, the media
+  // viewer's flow (lib/mediaShare.ts) at a second door. The fetch dies with the
+  // source it was for, so closing the bar or tuning another source mid-fetch
+  // opens no sheet for a track that is gone: the viewer's rule for a viewer
+  // that is gone, with a controller per source because this component outlives
+  // them. A failure is told in a toast; the bar has no line to say it on.
+  const share = createMediaSharer(errorMessage);
+  let shareAbort = new AbortController();
+  createEffect(
+    on(
+      activeAudio,
+      () => {
+        shareAbort.abort();
+        shareAbort = new AbortController();
+      },
+      { defer: true },
+    ),
+  );
+  onCleanup(() => {
+    shareAbort.abort();
+  });
+  const shareSource = async (href: string): Promise<void> => {
+    const attempt = share(href, window.location.origin, shareAbort.signal);
+    if (attempt === "busy") return;
+    const failure = await attempt;
+    if (failure !== null) reportAudioShareFailure(failure);
+  };
+
   return (
     <>
       {/* biome-ignore lint/a11y/useMediaCaption: plays arbitrary user-uploaded
@@ -461,40 +493,43 @@ const AudioMiniPlayer: Component = () => {
                     </span>
                   </Show>
                 </Show>
-                {/* Same-origin download: the `download` attribute forces a save
-              (overriding the server's `inline` Content-Disposition) and
-              inherits the server-sent filename — cic has no filename on the
-              wire (slug only), so no `download` value is set.
-              #682 — gated OFF for a live source, for two independent reasons
-              either of which is sufficient: the resource has no end, so the
-              save never completes; and `download` is ignored outright on a
-              cross-origin href, so the anchor would navigate the operator out
-              of the app instead of saving anything.
+                {/* issue 2501 — SHARE, where a same-origin `download=""` anchor
+              was. On an iOS PWA that anchor opened a preview the app could not
+              be left from (the media viewer's, reported there, and this one is
+              the anchor the viewer's copied); vjt ruled share at both doors.
+              The FILE where the platform takes it, the link otherwise (see
+              lib/mediaShare.ts); only where the Web Share API exists, the one
+              feature-detect every share door uses. Where it does not (desktop
+              Firefox, Linux Chromium) the bar offers no save.
+              #682 — gated OFF for a live source, kept from the download: a
+              source with no end is no file to hand over.
               #1744 — LIFTED OUT of the file readout above, and it is the one
               piece of chrome a failure does NOT take away. The two were one
               <Show> only because they share a predicate, and that merge made
               this case unsayable: an upload the browser cannot DECODE is
-              exactly the upload the operator wants to SAVE and open elsewhere.
-              This anchor is not a claim about playback — it is the remedy for
-              the notice standing beside it.
-              ⚠️ Still gated on `live()` and therefore still wrong in one
-              corner, unchanged from before this issue: a STREAM that failed
-              before metadata has a finite `duration` of 0, so it is not live as
-              far as this predicate can tell, and the anchor renders on an
-              endless cross-origin href. The honest gate is same-origin, which
-              is #682's own second reason spelled as a test rather than
-              inferred from the first — out of scope here, and named so it is
-              not rediscovered as new. */}
-                <Show when={!live()}>
-                  <a
-                    class="audio-mini-player-download"
-                    data-testid="audio-mini-player-download"
-                    href={activeAudio()?.href}
-                    download=""
-                    aria-label="download"
+              exactly the upload the operator wants to hand to something that
+              can. This control is not a claim about playback — it is the
+              remedy for the notice standing beside it.
+              ⚠️ Still gated on `live()` and therefore still loose in one
+              corner: a STREAM that failed before metadata has a finite
+              `duration` of 0, so it is not live as far as this predicate can
+              tell, and share renders on an endless href. On a cross-origin
+              stream (the curated stations are) that shares the link and
+              fetches nothing; the anchor used to navigate the operator out of
+              the app there instead. */}
+                <Show when={!live() && canNativeShare()}>
+                  <button
+                    type="button"
+                    class="audio-mini-player-share"
+                    data-testid="audio-mini-player-share"
+                    onClick={() => {
+                      const source = activeAudio();
+                      if (source !== null) void shareSource(source.href);
+                    }}
+                    aria-label="share"
                   >
-                    ⬇
-                  </a>
+                    ⤴
+                  </button>
                 </Show>
                 {/* #1697 — HIDE, beside the ✕ and never merged with it. The ✕ is the
               STOP verb, and on a phone it is the only reachable one while the
