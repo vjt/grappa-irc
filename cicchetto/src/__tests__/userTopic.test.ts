@@ -181,6 +181,7 @@ vi.mock("../lib/encryptedChats", () => ({
   drainE2e: vi.fn(async () => undefined),
   drainEveryNetwork: vi.fn(),
   encryptedSendDropped: vi.fn(async () => undefined),
+  encryptedPeerAbsent: vi.fn(async () => undefined),
 }));
 
 vi.mock("../lib/supportedUmodes", () => ({
@@ -339,6 +340,13 @@ describe("userTopic", () => {
       reason: "late",
     });
     expect(encrypted.encryptedSendDropped).toHaveBeenCalledWith("azzurra", "Zm9vYmFyMDE", "late");
+  });
+
+  // issue 2497 — a 401 named a nick: what waits for its keys fails now.
+  it("hands no_such_nick to the encrypted chats, by network and nick", async () => {
+    const encrypted = await import("../lib/encryptedChats");
+    channelMock.fireEvent({ kind: "no_such_nick", network: "azzurra", nick: "Ghost" });
+    expect(encrypted.encryptedPeerAbsent).toHaveBeenCalledWith("azzurra", "Ghost");
   });
 
   // issue 2430 X1 — the pairing relay's two pushes go to the pairing channel.

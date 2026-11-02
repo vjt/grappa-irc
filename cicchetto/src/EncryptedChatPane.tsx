@@ -153,6 +153,7 @@ const FAILURE_LABEL: Record<OutFailure, string> = {
   "resend-failed": "it could not be sent again",
   "rekey-throttled": "a new session was started too recently",
   unreadable: "none of the peer's devices can read it",
+  "no-such-nick": "there is no such nick on the network",
   "rate-limited": "grappa's queue for this peer is full",
   "too-large": "it is too large",
   // `too-late` and `late` only happen to a payload with a deadline, and only

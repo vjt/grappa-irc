@@ -170,10 +170,11 @@ async function bob() {
   return { client, ctx, bodies, master, inject };
 }
 
-const outStates = () =>
-  (chats.encryptedRows(net.slug, "Bob") ?? []).flatMap((r) =>
+const outStatesOf = (nick: string) =>
+  (chats.encryptedRows(net.slug, nick) ?? []).flatMap((r) =>
     r.kind === "out" ? [[r.body, r.state, r.reason]] : [],
   );
+const outStates = () => outStatesOf("Bob");
 
 describe("encrypted chats", () => {
   it("a slot with no account makes its identity first (only the sync makes one), then drains this device's inbox", async () => {
@@ -403,6 +404,25 @@ describe("encrypted chats", () => {
       expect(outStates()).toEqual([["ciao bob", "failed", shown]]);
     },
   );
+
+  it("a message to a nick grappa says is not on the network turns failed at once (issue 2497)", async () => {
+    await chats.drainE2e(net.slug);
+    await chats.openEncryptedChat(net.slug, "Ghost");
+    await chats.loadEncryptedChat(net.slug, "Ghost");
+    await chats.sendEncrypted(net.slug, "Ghost", "anyone?");
+    expect(outStatesOf("Ghost")).toEqual([["anyone?", "queued", null]]);
+
+    await chats.encryptedPeerAbsent(net.slug, "ghost");
+
+    expect(outStatesOf("Ghost")).toEqual([["anyone?", "failed", "no-such-nick"]]);
+  });
+
+  it("a nick not on the network, with nothing waiting, opens no store and makes no identity (issue 2497)", async () => {
+    await chats.encryptedPeerAbsent(net.slug, "ghost");
+
+    expect(api.putE2eList).not.toHaveBeenCalled();
+    expect(api.listE2eDeviceInbox).not.toHaveBeenCalled();
+  });
 
   it("pins Bob's master by hand: the pin is shown and the badge reads verified", async () => {
     await chats.drainE2e(net.slug);

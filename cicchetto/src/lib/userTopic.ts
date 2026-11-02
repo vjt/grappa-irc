@@ -15,7 +15,12 @@ import { holdDccOffer, resolveDccOffer } from "./dccOffers";
 import { diagPush } from "./diagLog";
 import { catchUpPairings, deliverPairingEvent } from "./e2e/pairing";
 import { dropE2eRequest, putE2eRequest, reloadE2eRequests } from "./e2eRequests";
-import { drainE2e, drainEveryNetwork, encryptedSendDropped } from "./encryptedChats";
+import {
+  drainE2e,
+  drainEveryNetwork,
+  encryptedPeerAbsent,
+  encryptedSendDropped,
+} from "./encryptedChats";
 import { setSeveredForFlood } from "./floodSever";
 import { refreshHighlights } from "./highlightList";
 import { patchHomeNetwork } from "./home";
@@ -110,6 +115,7 @@ import {
   S_SessionWireLinksBundlePayload,
   S_SessionWireMentionsBundlePayload,
   S_SessionWireNamesReplyPayload,
+  S_SessionWireNoSuchNickPayload,
   S_SessionWireOwnNickChangedPayload,
   S_SessionWirePeerAwayPayload,
   S_SessionWirePresenceChangedPayload,
@@ -667,6 +673,10 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // `peer:` field; banner renders inline at the top of the
       // peer's DM scrollback when that window is selected.
       return validate(S_SessionWirePeerAwayPayload, r);
+    case "no_such_nick":
+      // issue 2497 (protocol 54) — a 401 named a nick; the dispatch arm below
+      // hands it to the encrypted chats.
+      return validate(S_SessionWireNoSuchNickPayload, r);
     case "lusers_bundle": {
       // P-0d — LUSERS bundle. All counts are integer-or-null (253
       // RPL_LUSERUNKNOWN is optional; defensive nullability covers
@@ -1394,6 +1404,18 @@ moduleRoot(() => {
             http_host_aliases: payload.http_host_aliases,
             auto_away: payload.auto_away,
           });
+          return;
+
+        case "no_such_nick":
+          // issue 2497 — the nick is not on the network: a message waiting
+          // for its keys fails now (encryptedChats.ts). The 401 itself is a
+          // row in the open query, or on $server, like any numeric.
+          void encryptedPeerAbsent(payload.network, payload.nick).catch((err: unknown) =>
+            console.warn(
+              `[userTopic] could not end the wait for ${payload.nick}'s keys on ${payload.network}`,
+              err,
+            ),
+          );
           return;
 
         case "peer_away":
