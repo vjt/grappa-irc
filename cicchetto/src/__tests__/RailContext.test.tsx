@@ -160,8 +160,9 @@ describe("RailContext query context (#606)", () => {
     await setSelected(sel("query", "alice"));
     await renderContainer(true);
     const ctx = screen.getByTestId("rail-query-context");
-    expect(ctx.textContent).toContain("private conversation with");
-    expect(ctx.textContent).toContain("alice");
+    expect(ctx.querySelector(".rail-query-heading")?.textContent).toBe(
+      "private conversation with alice",
+    );
     // The server-info card is NOT what a query renders.
     expect(screen.queryByTestId("rail-server-info")).toBeNull();
   });
@@ -191,10 +192,18 @@ describe("RailContext query context (#606)", () => {
 
   // issue 2486 — the one door to an encrypted chat with the peer.
   it("offers to start an encrypted chat with the selected peer, and only on a query", async () => {
+    railWhoisForMock.mockReturnValue({
+      target: "alice",
+      account: "AliceAcct",
+    } as unknown as WhoisBundle);
     await setSelected(sel("query", "alice"));
     await renderContainer(true);
     const ctx = screen.getByTestId("rail-query-context");
-    expect(ctx.querySelector("[data-testid='rail-start-encrypted-chat']")).not.toBeNull();
+    const door = ctx.querySelector("[data-testid='rail-start-encrypted-chat']") as Element;
+    expect(door).not.toBeNull();
+    // Above the card, which fills in when the WHOIS answers (issue 2499).
+    const card = ctx.querySelector("[data-testid='whois-card']") as Element;
+    expect(door.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     await setSelected(sel("channel", "#italia"));
     expect(screen.queryByTestId("rail-start-encrypted-chat")).toBeNull();
@@ -285,13 +294,17 @@ describe("RailContext whois fetch is gated on the card being on screen (#782)", 
     await renderContainer(true);
     await setSelected(sel("encrypted", "$e2e:Bob"));
     const ctx = screen.getByTestId("rail-query-context");
-    expect(ctx.querySelector(".rail-query-heading")?.textContent).toContain("Bob");
+    // One heading, the query context's, saying what kind of conversation it is.
+    const headings = ctx.querySelectorAll(".rail-query-heading");
+    expect(headings).toHaveLength(1);
+    expect(headings[0]?.textContent).toBe("encrypted conversation with Bob");
     const card = ctx.querySelector("[data-testid='whois-card']") as Element;
     const keys = ctx.querySelector("[data-testid='e2e-rail']") as Element;
     expect(card.textContent).toContain("BobAcct");
     expect(keys.textContent).toBe("Bob");
-    // The person first, the keys after.
-    expect(card.compareDocumentPosition(keys) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The key controls above the card, where a plain query has its door: the
+    // card fills in when the WHOIS answers, and must not push them down then.
+    expect(keys.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // Already encrypted: no door to ask for an encrypted chat.
     expect(ctx.querySelector("[data-testid='rail-start-encrypted-chat']")).toBeNull();
     expect(requestRailWhoisMock).toHaveBeenCalledWith("libera", "Bob");
