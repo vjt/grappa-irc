@@ -15181,26 +15181,36 @@ button.home-pane-network-title:hover .home-pane-network-slug {
   gap: 1rem;
 }
 
-/* issue 2468 — download is an anchor too (`download=""`), so it reads as the
-   sibling of "open in browser" it sits beside. */
+/* issue 2501 — the header's take-it-away verbs wear ONE look: "open in
+   browser" (an anchor), share and copy (buttons). vjt's ruling, on an iPhone
+   where share read smaller than the link beside it and had no underline: the
+   same size, both underlined, both a little larger than the link was.
+
+   The size is `--font-size`, the app's text size and the ✕'s beside them,
+   where the link was 0.9rem: "a little larger" taken as the step up to the
+   size the rest of the app's text is read at, not as a new number. `font:
+   inherit` first, so a <button> takes the anchor's family, weight and line
+   height instead of the UA's; the underline is stated rather than left to the
+   UA, because a <button> has none of its own. Copy is not named in the
+   ruling; it is the same kind of control in the same row, and a third look
+   beside two matched ones would be the same complaint again. */
 .media-viewer-open-external,
-.media-viewer-download {
+.media-viewer-copy,
+.media-viewer-share {
   color: var(--accent);
-  font-size: 0.9rem;
+  font: inherit;
+  font-size: var(--font-size);
+  text-decoration: underline;
 }
 
-/* Reads as the sibling of the "open in browser" link, because that is what it
-   is: another way to take the file out of the viewer. A <button> and not an
-   anchor — it performs an action rather than going anywhere. Share (issue
-   2468) is the same kind of control. */
+/* The two <button>s, stripped back to their text. Buttons and not anchors
+   because they perform an action rather than going anywhere, and nothing
+   about that difference should show. */
 .media-viewer-copy,
 .media-viewer-share {
   background: transparent;
   border: none;
   padding: 0;
-  color: var(--accent);
-  font-family: inherit;
-  font-size: 0.9rem;
   cursor: pointer;
 }
 

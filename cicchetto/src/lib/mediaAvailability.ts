@@ -52,7 +52,7 @@
 // so host equality would admit a probe the CSP then refuses. The near-miss is
 // exactly the kind of reuse that would look right and fail in production only.
 // issue 2468 moved the check itself into `mediaLink.isSameOrigin`: the viewer's
-// download and share verbs ask the same question for the same CSP reason.
+// share verb asks the same question for the same CSP reason.
 
 import { isSameOrigin } from "./mediaLink";
 

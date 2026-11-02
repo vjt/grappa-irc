@@ -1038,12 +1038,13 @@ describe("MediaViewerModal — copy the source (issue 1839)", () => {
 
 // issue 2468 — a picture someone posted could not be forwarded from a phone:
 // the viewer had no way to take the FILE out, only the "open in browser" detour.
-// vjt's ruling adds two verbs beside that anchor, Download and Share, and the
+// vjt's ruling added two verbs beside that anchor, Download and Share, and the
 // native long-press menu on the image (a stylesheet rule — pinned at source in
-// touchSelectionPolicy.test.ts, because jsdom applies no stylesheet).
-describe("MediaViewerModal — download + share (issue 2468)", () => {
-  // Both verbs are same-origin gated, so the href has to BE same-origin to
-  // reach them. Built from the live origin, the issue 1889 suite's reasoning.
+// touchSelectionPolicy.test.ts, because jsdom applies no stylesheet). Issue
+// 2501 took Download back out: on an iOS PWA it was a dead end.
+describe("MediaViewerModal — share (issues 2468, 2501)", () => {
+  // Sharing the FILE is same-origin gated, so the href has to BE same-origin to
+  // reach it. Built from the live origin, the issue 1889 suite's reasoning.
   const OWN_IMAGE_URL = `${window.location.origin}/uploads/abcdefghijklmnopqrstuvwxyz.png`;
   const OWN_VIDEO_URL = `${window.location.origin}/uploads/zyxwvutsrqponmlkjihgfedcba.mp4`;
   const FOREIGN_IMAGE_URL = "https://elsewhere.example/uploads/pic.png";
@@ -1091,35 +1092,22 @@ describe("MediaViewerModal — download + share (issue 2468)", () => {
     vi.unstubAllGlobals();
   });
 
-  it("offers a download anchor for an own upload, beside 'open in browser'", () => {
-    render(() => <MediaViewerModal />);
-    openMediaViewer(OWN_IMAGE_URL, "image");
-
-    const download = screen.getByRole("link", { name: /^download$/i });
-    expect(download.getAttribute("href")).toBe(OWN_IMAGE_URL);
-    // Empty on purpose (the AudioMiniPlayer precedent): the save takes the
-    // server's own filename, and cic has nothing better on the wire.
-    expect(download.getAttribute("download")).toBe("");
-    // A download is not a navigation. With `target=_blank` some engines open
-    // an empty tab for it, and on iOS standalone a tab is the PWA itself.
-    expect(download.hasAttribute("target")).toBe(false);
+  // issue 2501 — the download anchor is gone, on every arm and every origin. On
+  // an iOS PWA it opened a preview window the app could not be left from;
+  // share covers the need (the iOS sheet carries "Save Image").
+  it.each([
+    ["an own image", OWN_IMAGE_URL, "image"],
+    ["an own video", OWN_VIDEO_URL, "video"],
+    ["a cross-host image", FOREIGN_IMAGE_URL, "image"],
+  ] as const)("offers no download control on %s", (_label, url, kind) => {
+    stubShare();
+    const { container } = render(() => <MediaViewerModal />);
+    openMediaViewer(url, kind);
+    expect(screen.queryByRole("link", { name: /download/i })).toBeNull();
+    expect(container.querySelector("[download]")).toBeNull();
+    // The control: the header did render, with the two verbs that stay.
     expect(screen.getByRole("link", { name: /open in browser/i })).not.toBeNull();
-  });
-
-  it("offers it on a video too — the header is shared chrome", () => {
-    render(() => <MediaViewerModal />);
-    openMediaViewer(OWN_VIDEO_URL, "video");
-    expect(screen.getByRole("link", { name: /^download$/i }).getAttribute("href")).toBe(
-      OWN_VIDEO_URL,
-    );
-  });
-
-  it("offers NO download on a cross-host link — `download` is ignored there and would navigate out", () => {
-    render(() => <MediaViewerModal />);
-    openMediaViewer(FOREIGN_IMAGE_URL, "image");
-    expect(screen.queryByRole("link", { name: /^download$/i })).toBeNull();
-    // The control is the anchor beside it: the header did render.
-    expect(screen.getByRole("link", { name: /open in browser/i })).not.toBeNull();
+    expect(screen.getByRole("button", { name: /^share$/i })).not.toBeNull();
   });
 
   it("offers share only where the Web Share API exists", () => {
@@ -1338,14 +1326,13 @@ describe("MediaViewerModal — download + share (issue 2468)", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("takes download and share away once the upload is known gone", async () => {
-    // Same reasoning as 'open in browser' above: both would hand the reader
-    // the route's `{"error":"not_found"}` instead of a file.
+  it("takes share away once the upload is known gone", async () => {
+    // Same reasoning as 'open in browser' above: it would hand the reader the
+    // route's `{"error":"not_found"}` instead of a file.
     vi.stubGlobal("fetch", () => Promise.resolve({ status: 404 }));
     stubShare();
     const { container } = render(() => <MediaViewerModal />);
     openMediaViewer(OWN_IMAGE_URL, "image");
-    expect(screen.getByRole("link", { name: /^download$/i })).not.toBeNull();
     expect(screen.getByRole("button", { name: /^share$/i })).not.toBeNull();
 
     container.querySelector("img")?.dispatchEvent(new Event("error"));
@@ -1353,7 +1340,6 @@ describe("MediaViewerModal — download + share (issue 2468)", () => {
     await waitFor(() => {
       expect(screen.queryByText(/gone/i)).not.toBeNull();
     });
-    expect(screen.queryByRole("link", { name: /^download$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /^share$/i })).toBeNull();
   });
 });
