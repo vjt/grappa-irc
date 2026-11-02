@@ -1049,15 +1049,24 @@ variant or a decoration of that renderer, never a parallel layout.
   rename of our own every earlier outgoing line shows the new nick, where a
   scrollback row keeps the sender it was written under. Accepted: giving
   the sealed device rows a sender is a chat-store format change, not this
-  slice.
+  slice. While the nick is unknown no line is drawn, rather than an
+  outgoing one naming nobody.
 * **The line's controls came with it.** The nick on a line is the
-  scrollback's button, so it does here what it does there: a click opens
-  the query with the nick, a right click the nick's menu (its verbs answer
-  in the plain query with the peer; we hold no modes in a query).
-  `createLineActions` builds that set once for both panes: ScrollbackPane's
-  three handlers and its menu state, moved, not copied. Noted for vjt, as a
-  choice made rather than ruled: a click on the peer's nick in the
-  encrypted window lands in the PLAINTEXT query with them.
+  scrollback's button, so it does here what it does in any query: a right
+  click opens the nick's menu (its verbs answer in the plain query with the
+  peer; we hold no modes in a query), and a click opens the nick's query,
+  except the peer's own. In any query a click on the peer lands in the
+  window already open, and here that window is the encrypted one, so the
+  click stays put: a first cut that opened the nick's query sent a click on
+  the peer to the PLAINTEXT query, compose box and all. The menu's Query
+  item stays the deliberate way there. `createLineActions` builds the set
+  once for both panes, ScrollbackPane's three handlers and its menu state
+  moved rather than copied, and takes the network id from the pane.
+* **The "2486 outcome cards" the ruling lists needed nothing here.** Our
+  asking's card (`E2eRequestCard`) is already a row of the plaintext
+  query's scrollback, woven at the request's `at`, and never shows in the
+  encrypted pane; the pane's own cards are the key-exchange steps, which
+  are cards and not rows.
 * **What stays the pane's:** the list that holds the lines (`.e2e-rows`,
   given the scrollback's padding and line height, but not the `.scrollback`
   class, which carries the scroll gate and the touch-selection rules
@@ -1066,6 +1075,14 @@ variant or a decoration of that renderer, never a parallel layout.
 * **Deleted with the row:** `EncryptedRow`, its `<ol>`/`<li>`, and the CSS
   that only it wore (`.e2e-row`, `.e2e-row-own`, `.e2e-row-notice`,
   `.e2e-row-state`, the last now the global `.muted`).
+* **Why the code still grew** (about +100 lines of source, CSS −14): the
+  row was a self-contained 55 lines with dead nicks; what replaced it is the
+  adapter onto the shared line, the two slots and the `LineMessage` type,
+  and the line actions, now one exported factory where they were private
+  to ScrollbackPane. The parallel layout is gone; the growth is the
+  behaviour the encrypted lines gained (a nick that opens a query, the nick
+  menu, mention highlight) and the seams that let one renderer serve two
+  panes.
 
 ### Tests
 
@@ -1073,7 +1090,10 @@ Unit: the pane's messages are `scrollback-line`s, each read as its kind and
 the nick it names (ours as the network's nick, never "you"), with the time
 `formatTime` gives, the lock, the delivery state, and the undeliverable
 wording; the search and the other-key ⚠ read the same lines. They were run
-red before the change, three failing on the missing lines. e2e:
+red before the change, three failing on the missing lines. The peer-click
+rule and the unknown-nick gate each have a test, and each test is the one
+its mutant turns red (the peer check removed; the gate passed a blank
+nick). e2e:
 `issue2498-encrypted-lines.spec.ts` holds a long encrypted line, on both
 sides, against a channel line of ours: the same computed box (display,
 white-space, font, line height), `<ournick>` as sender, and the body's
