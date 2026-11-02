@@ -44,7 +44,9 @@ import { networkBySlug } from "./lib/networks";
 // is elsewhere, nothing here can act: no key could be pinned or verified.
 //
 // Mounted by RailContext, keyed on the window, so a key half pasted for one
-// peer never follows into another peer's rail and gets pinned there.
+// peer never follows into another peer's rail and gets pinned there. Issue
+// 2499: it mounts inside the query context, under the peer's WHOIS card, as
+// an addition to the query rail and not a replacement for it.
 
 type Props = { networkSlug: string; nick: string };
 

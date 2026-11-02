@@ -13117,9 +13117,10 @@ html.is-ios27-band .shell {
    grew the column past its own height, and the `margin-top: auto`
    `.rail-actions` launcher was pushed below the fold — under the keyboard on
    mobile, where the column height tracks `--viewport-height`. Same class as
-   #500 and #962: a flex child with no shrink contract in a bounded column. */
-.rail-query-context,
-.rail-e2e {
+   #500 and #962: a flex child with no shrink contract in a bounded column.
+   issue 2499 — an encrypted query's key sections (`.rail-e2e`) render INSIDE
+   this context, under the peer's WHOIS card, so this is their scroller too. */
+.rail-query-context {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -13146,14 +13147,11 @@ html.is-ios27-band .shell {
    MORE specific than `.shell-mobile .shell-members .rail-query-context *`. */
 @media (max-width: 768px) {
   .shell-mobile .shell-members .rail-query-context,
-  .shell-mobile .shell-members .rail-query-context *,
-  .shell-mobile .shell-members .rail-e2e,
-  .shell-mobile .shell-members .rail-e2e * {
+  .shell-mobile .shell-members .rail-query-context * {
     touch-action: pan-y;
   }
 
-  .shell-mobile .shell-members .rail-query-context,
-  .shell-mobile .shell-members .rail-e2e {
+  .shell-mobile .shell-members .rail-query-context {
     overscroll-behavior: contain;
   }
 }

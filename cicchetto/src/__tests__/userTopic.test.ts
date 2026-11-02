@@ -502,6 +502,22 @@ describe("userTopic", () => {
       expect(railWhois.ingestRailWhois).toHaveBeenCalledTimes(1);
     });
 
+    // issue 2499 — an encrypted query's rail shows its peer's card too.
+    it("routes a source:user bundle to BOTH when an encrypted window shows that nick", async () => {
+      const selection = await import("../lib/selection");
+      const { encryptedWindowName } = await import("../lib/windowKinds");
+      const whoisCard = await import("../lib/whoisCard");
+      const railWhois = await import("../lib/railWhois");
+      vi.mocked(selection.selectedChannel).mockReturnValue({
+        networkSlug: "azzurra",
+        channelName: encryptedWindowName("Alice"),
+        kind: "encrypted",
+      });
+      channelMock.fireEvent(whoisBundleEvent({ source: "user" }));
+      expect(whoisCard.setWhoisBundle).toHaveBeenCalledTimes(1);
+      expect(railWhois.ingestRailWhois).toHaveBeenCalledTimes(1);
+    });
+
     it("does NOT refresh the rail from a user bundle for a DIFFERENT shown nick", async () => {
       const selection = await import("../lib/selection");
       const whoisCard = await import("../lib/whoisCard");
