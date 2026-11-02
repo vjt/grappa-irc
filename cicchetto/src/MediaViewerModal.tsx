@@ -935,7 +935,9 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
                   opened a preview window the reader could not leave: the app
                   was stuck there. Share covers what it was for — the iOS sheet
                   carries "Save Image" — and the picture keeps its own
-                  long-press menu.
+                  long-press menu. Where there is no Web Share (desktop
+                  Firefox, Linux Chromium) the header has no save verb now:
+                  the picture's context menu and "open in browser" remain.
 
                   Only where the Web Share API exists (the ShareSessionModal
                   rule, one feature-detect for both doors). */}

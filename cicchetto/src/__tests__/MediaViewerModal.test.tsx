@@ -1312,7 +1312,7 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
 
   it("does not fetch the bytes where the platform has no canShare to accept them", async () => {
     // `share` without `canShare`: there is no way to say yes to a file, so the
-    // download would only spend the activation window before the link went out.
+    // fetch would only spend the activation window before the link went out.
     const fetchMock = stubServedImage();
     const share = vi.fn<(data: ShareData) => Promise<void>>(() => Promise.resolve());
     defineOnNavigator("share", share);
