@@ -52,6 +52,7 @@ import {
   openQueryWindowState,
   queryWindowsByNetwork,
 } from "./lib/queryWindows";
+import { grappaScrollback } from "./lib/scrollbackSource";
 import {
   closeToPreviousWindow,
   selectedChannel,
@@ -867,6 +868,7 @@ const Shell: Component = () => {
                       networkSlug={selectedChannel()?.networkSlug ?? ""}
                       channelName={selectedChannel()?.channelName ?? ""}
                       kind={(selKind() as "channel" | "query" | "server") ?? "channel"}
+                      source={grappaScrollback}
                     />
                     <ComposeBox
                       networkSlug={selectedChannel()?.networkSlug ?? ""}
@@ -1202,6 +1204,7 @@ const Shell: Component = () => {
                     networkSlug={selectedChannel()?.networkSlug ?? ""}
                     channelName={selectedChannel()?.channelName ?? ""}
                     kind={(selKind() as "channel" | "query" | "server") ?? "channel"}
+                    source={grappaScrollback}
                   />
                   <ComposeBox
                     networkSlug={selectedChannel()?.networkSlug ?? ""}

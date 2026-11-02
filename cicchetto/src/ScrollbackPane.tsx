@@ -62,31 +62,17 @@ import {
   trailingHiddenAdvanceTarget,
 } from "./lib/presenceFilter";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
-import { getReadCursor } from "./lib/readCursor";
 import { setReadingAtTailKey } from "./lib/readingAtTail";
 import { replyQuote, replyToMessage } from "./lib/replyQuote";
 import { isSettled, nextFollowMode, resolveIntent, type ScrollIntent } from "./lib/scrollAuthority";
-import {
-  dismissFarBehind,
-  farBehindByChannel,
-  isLoadingOlder,
-  jumpToMessage,
-  jumpToUnread,
-  lastOwnSend,
-  loadMore as loadMoreScrollback,
-  loadNewer as loadNewerScrollback,
-  measuredUnreadByChannel,
-  ownSendSubmitted,
-  refreshScrollback,
-  scrollbackByChannel,
-} from "./lib/scrollback";
+import type { ScrollbackSource } from "./lib/scrollbackSource";
 import {
   LOAD_MORE_THRESHOLD_PX,
   SCROLL_BOTTOM_THRESHOLD_PX,
   TAIL_SUBPIXEL_PX,
 } from "./lib/scrollThresholds";
 import { scrollToBottomRequest } from "./lib/scrollToBottomCommand";
-import { setCursorIfAdvances, setSelectedChannel } from "./lib/selection";
+import { setSelectedChannel } from "./lib/selection";
 import type { Point } from "./lib/swipe";
 import { isMobile } from "./lib/theme";
 import { formatTimestamp } from "./lib/timeFormat";
@@ -176,11 +162,17 @@ import WhowasCard from "./WhowasCard";
 // .scrollback-highlight class. The watchlist is own nick ∪ the custom
 // /hilight keyword list (highlightList.ts), mirroring the server SSOT
 // `Grappa.Mentions.mention_row?/3`; issue 1481 added the own-row conjunct.
+//
+// issue 2512 — the lines come from `source` (`lib/scrollbackSource.ts`):
+// grappa's scrollback for every channel, query and $server window, the
+// device's chat for an encrypted query. Everything above is the pane's and
+// holds for both; an encrypted query just has no server history to page in.
 
 export type Props = {
   networkSlug: string;
   channelName: string;
   kind: WindowKind;
+  source: ScrollbackSource;
 };
 
 // UX-8 (b): scroll-settle debounce — fire the cursor update 500ms after
@@ -1547,7 +1539,7 @@ const ScrollbackPane: Component<Props> = (props) => {
     if (!listRef) return;
     const id = lastFullyVisibleRowId(listRef);
     if (id === null) return;
-    setCursorIfAdvances(props.networkSlug, props.channelName, id);
+    props.source.setCursorIfAdvances(props.networkSlug, props.channelName, id);
   };
   // UX-8 (b): scroll-settle debounce timer. Plain let — pure mutation,
   // no Solid reactivity. Cleared on the next scroll event; fires once
@@ -1819,7 +1811,7 @@ const ScrollbackPane: Component<Props> = (props) => {
   };
 
   const key = () => channelKey(props.networkSlug, props.channelName);
-  const messages = () => scrollbackByChannel()[key()];
+  const messages = () => props.source.messages(key());
 
   // ---------------------------------------------------------------------
   // issue 2304 — the floating date pill. Names the day of the rows at the
@@ -2136,7 +2128,13 @@ const ScrollbackPane: Component<Props> = (props) => {
     // label back to the fetch page.
     const unreadLabel =
       cursor !== null && sessionTop !== null
-        ? unreadMessagesAfter(msgs, cursor, sessionTop, measuredUnreadByChannel()[key()], unreadCtx)
+        ? unreadMessagesAfter(
+            msgs,
+            cursor,
+            sessionTop,
+            props.source.history?.measuredUnread(key()),
+            unreadCtx,
+          )
         : 0;
     // Only inject the marker if there are unread messages AND some read messages
     // to show as context above it. When all messages are unread, put the marker
@@ -2153,7 +2151,7 @@ const ScrollbackPane: Component<Props> = (props) => {
       cursor !== null &&
       sessionTop !== null &&
       unreadCount > 0 &&
-      farBehindByChannel()[key()] === undefined;
+      props.source.history?.farBehind(key()) === undefined;
     const result: Row[] = [];
     let prevTime: number | null = null;
     let markerInjected = false;
@@ -3163,7 +3161,7 @@ const ScrollbackPane: Component<Props> = (props) => {
       if (prevKey === undefined || prevKey === newKey) return;
       const decoded = decodeChannelKey(prevKey);
       if (decoded !== null) {
-        if (farBehindByChannel()[prevKey]) {
+        if (props.source.history?.farBehind(prevKey)) {
           // #1019 — walking away from a far-behind window IS the bar's ×.
           // The cursor is FROZEN here (#693), so the settle below would be a
           // silent no-op and the operator would carry a stuck badge until they
@@ -3179,14 +3177,14 @@ const ScrollbackPane: Component<Props> = (props) => {
           // The pane has already moved on; the sibling activation effect owns
           // the arriving window's marker, and a later return re-latches from
           // the cursor this dismiss just advanced.
-          dismissFarBehind(decoded.slug, decoded.name);
+          props.source.history.dismissFarBehind(decoded.slug, decoded.name);
         } else {
           const snapshotted = visibleTailSnapshot.get(prevKey);
-          const prevMsgs = scrollbackByChannel()[prevKey];
+          const prevMsgs = props.source.messages(prevKey);
           const storeTail =
             prevMsgs && prevMsgs.length > 0 ? (prevMsgs[prevMsgs.length - 1]?.id ?? null) : null;
           const id = snapshotted ?? storeTail;
-          if (id !== null) setCursorIfAdvances(decoded.slug, decoded.name, id);
+          if (id !== null) props.source.setCursorIfAdvances(decoded.slug, decoded.name, id);
         }
       }
       // Free the snapshot for the leaving key — we won't visit this
@@ -3263,7 +3261,7 @@ const ScrollbackPane: Component<Props> = (props) => {
         // point to the arriving window here (same reason the leave-arm above
         // decodes `prevKey` for the LEAVING window). A `null` cursor (cold,
         // unhydrated) is picked up by the cold-latch effect below.
-        setMarkerCursorId(getReadCursor(props.networkSlug, props.channelName));
+        setMarkerCursorId(props.source.getReadCursor(props.networkSlug, props.channelName));
         // Deliberate channel-SWITCH → jump to the frozen divider if this
         // window has unread; else the tail. Latch so the post-switch catch-up
         // refresh / late cursor hydration re-asserts the jump instead of
@@ -3331,7 +3329,7 @@ const ScrollbackPane: Component<Props> = (props) => {
         // geometry. This pane only mounts for `kindHasScrollback` windows
         // (Shell.tsx `<Match>`), so `props` is always a real /messages
         // channel — no synthetic-window 404.
-        void refreshScrollback(props.networkSlug, props.channelName);
+        void props.source.history?.refreshScrollback(props.networkSlug, props.channelName);
         // #535 — gate the resume scroll on the follow-state that was in effect
         // when the document hid. `followMode()` (#608: the follow INTENT, not
         // the geometric `atBottomNow`) turns false ONLY on a real operator
@@ -3387,7 +3385,7 @@ const ScrollbackPane: Component<Props> = (props) => {
   // (post-resolve, below) — the #580 split is preserved.
   createEffect(
     on(
-      ownSendSubmitted,
+      () => props.source.ownSendSubmitted(),
       (sent) => {
         if (sent !== key()) return;
         setMarkerActivationPending(false);
@@ -3412,10 +3410,10 @@ const ScrollbackPane: Component<Props> = (props) => {
   // effects own the mount-time baseline.
   createEffect(
     on(
-      lastOwnSend,
+      () => props.source.lastOwnSend(),
       (sent) => {
         if (sent !== key()) return;
-        setMarkerCursorId(getReadCursor(props.networkSlug, props.channelName));
+        setMarkerCursorId(props.source.getReadCursor(props.networkSlug, props.channelName));
       },
       { defer: true },
     ),
@@ -3563,11 +3561,11 @@ const ScrollbackPane: Component<Props> = (props) => {
       const rowsNow = messages();
       if (!rowsNow || rowsNow.length === 0) return;
       const mc = (membersByChannel()[key()] ?? []).length;
-      const cursorNow = getReadCursor(props.networkSlug, props.channelName) ?? 0;
+      const cursorNow = props.source.getReadCursor(props.networkSlug, props.channelName) ?? 0;
       const target = trailingHiddenAdvanceTarget(rowsNow, cursorNow, (row) =>
         presenceRowVisible(key(), mc, row),
       );
-      setCursorIfAdvances(props.networkSlug, props.channelName, target);
+      props.source.setCursorIfAdvances(props.networkSlug, props.channelName, target);
     }, PRESENCE_CURSOR_SETTLE_MS);
   });
   onCleanup(() => {
@@ -3618,7 +3616,7 @@ const ScrollbackPane: Component<Props> = (props) => {
   // applyReadCursorSet echo landed first). Acceptable; flagged for honesty.
   createEffect(() => {
     if (markerCursorId() !== null) return;
-    const c = getReadCursor(props.networkSlug, props.channelName);
+    const c = props.source.getReadCursor(props.networkSlug, props.channelName);
     if (c === null) return;
     setMarkerCursorId(c);
   });
@@ -4221,13 +4219,14 @@ const ScrollbackPane: Component<Props> = (props) => {
   // WAS and dragged the pane out from under them by the difference (vjt, from
   // the field, on the ordinary scroll-to-top gesture). See `PrependCommitSeam`.
   const maybeLoadOlder = (): void => {
-    if (!listRef) return;
+    const history = props.source.history;
+    if (!listRef || history === null) return;
     if (listRef.scrollTop > LOAD_MORE_THRESHOLD_PX) return;
     // See the length-effect for how an active marker activation is kept from
     // yanking this (it re-asserts ONLY when a marker exists; a no-marker latch
     // falls through to the followMode tail-follow, which preserves here because the
     // operator scrolled UP).
-    void loadMoreScrollback(props.networkSlug, props.channelName, () => {
+    void history.loadMore(props.networkSlug, props.channelName, () => {
       // Re-read the ref rather than closing over the one the guard above
       // proved: this runs a round trip later and the pane can have unmounted.
       const list = listRef;
@@ -4404,7 +4403,7 @@ const ScrollbackPane: Component<Props> = (props) => {
       // to this boundary already clears the latch via the input gate; loadNewer
       // fetches only in the #156 >200-unread anchored case, where the length-
       // effect's preserve (followMode=false in the 50–200px band) still holds.
-      void loadNewerScrollback(props.networkSlug, props.channelName);
+      void props.source.history?.loadNewer(props.networkSlug, props.channelName);
     }
 
     // BUGHUNT-2: scroll-settle gated on recent operator input.
@@ -4594,6 +4593,8 @@ const ScrollbackPane: Component<Props> = (props) => {
   // function for exactly the reason the dismiss below is: the latch arming is
   // the half a direct caller of `scrollback.jumpToUnread` would forget.
   const jumpToUnreadGesture = () => {
+    const history = props.source.history;
+    if (history === null) return;
     // Arm the EXISTING marker-activation latch (#168) before the swap:
     // clearing the far-behind flag re-injects the divider, and the rows-change
     // that lands the anchor region is exactly the content change that latch
@@ -4603,7 +4604,7 @@ const ScrollbackPane: Component<Props> = (props) => {
     // can't yank a later unrelated rows() change.
     setJumpTargetId(null);
     setMarkerActivationPending(true);
-    void jumpToUnread(props.networkSlug, props.channelName).then((jumped) => {
+    void history.jumpToUnread(props.networkSlug, props.channelName).then((jumped) => {
       if (!jumped) setMarkerActivationPending(false);
     });
   };
@@ -4630,12 +4631,14 @@ const ScrollbackPane: Component<Props> = (props) => {
   let servedJumpNonce = 0;
   createEffect(
     on([jumpToMessageRequest, key], ([req, k]) => {
+      const history = props.source.history;
       if (req === null || req.key !== k || req.nonce === servedJumpNonce) return;
+      if (history === null) return;
       servedJumpNonce = req.nonce;
       setJumpTargetId(req.id);
       setMarkerActivationPending(true);
       setFollowMode(false);
-      void jumpToMessage(props.networkSlug, props.channelName, req.id).then((landed) => {
+      void history.jumpToMessage(props.networkSlug, props.channelName, req.id).then((landed) => {
         if (servedJumpNonce !== req.nonce) return;
         if (!landed) setJumpTargetId(null);
         applyActivation("marker-or-tail", false);
@@ -4648,7 +4651,8 @@ const ScrollbackPane: Component<Props> = (props) => {
     // explicit "I've read to here" gesture — the same class as the
     // send-relatch — so it is one of the few things allowed to move the
     // freeze mid-session.
-    const readTo = dismissFarBehind(props.networkSlug, props.channelName);
+    const readTo =
+      props.source.history?.dismissFarBehind(props.networkSlug, props.channelName) ?? null;
     if (readTo !== null) setMarkerCursorId(readTo);
   };
 
@@ -4720,7 +4724,7 @@ const ScrollbackPane: Component<Props> = (props) => {
         <Show when={props.kind === "query"}>
           <E2eRequestBanner networkSlug={props.networkSlug} peer={props.channelName} />
         </Show>
-        <Show when={farBehindByChannel()[key()]}>
+        <Show when={props.source.history?.farBehind(key())}>
           {(far) => (
             <div class="scrollback-far-behind" data-testid="far-behind-bar">
               <button
@@ -4767,7 +4771,7 @@ const ScrollbackPane: Component<Props> = (props) => {
           the scroll list on mount, shifting the reader's anchor"). The one
           thing an in-flow slot buys — reserving the space the page will fill —
           it does not actually buy: a ring is ~18px and a page is ~1000. */}
-      <Show when={isLoadingOlder(props.networkSlug, props.channelName)}>
+      <Show when={props.source.history?.isLoadingOlder(props.networkSlug, props.channelName)}>
         <div
           class="scrollback-loading-older"
           data-testid="scrollback-loading-older"
@@ -4993,6 +4997,7 @@ const ScrollbackPane: Component<Props> = (props) => {
                   </div>
                 );
               }
+              const slots = props.source.slots(row.msg);
               return (
                 <ScrollbackLine
                   msg={row.msg}
@@ -5001,8 +5006,8 @@ const ScrollbackPane: Component<Props> = (props) => {
                   onNickClick={lineActions.onNickClick}
                   onNickContextMenu={lineActions.onNickContextMenu}
                   onJoinChannel={lineActions.onJoinChannel}
-                  marker={null}
-                  trailer={null}
+                  marker={slots.marker}
+                  trailer={slots.trailer}
                 />
               );
             }}
