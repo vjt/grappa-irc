@@ -11,6 +11,7 @@ import {
   Show,
   Switch,
 } from "solid-js";
+import ComposeBox from "./ComposeBox";
 import {
   acceptAlarmKey,
   CHECK_LOOK,
@@ -22,13 +23,18 @@ import {
   TRUST_LABEL,
 } from "./EncryptedRail";
 import InlineConfirmButton from "./InlineConfirmButton";
-import { ApiError } from "./lib/api";
-import { casemappingForSlug } from "./lib/casemapping";
+import { ApiError, type ScrollbackMessage } from "./lib/api";
+import { channelKey } from "./lib/channelKey";
 import { requestConfirm } from "./lib/confirmDialog";
 import { formatDateTime } from "./lib/dateFormat";
 import { loadDocument } from "./lib/documentNavigation";
-import { isDocumentVisible } from "./lib/documentVisibility";
-import { type IdentityCheck, isMessage, type Message, type OutFailure } from "./lib/e2e/chatStore";
+import {
+  countsAsUnread,
+  type IdentityCheck,
+  isMessage,
+  type Message,
+  type OutFailure,
+} from "./lib/e2e/chatStore";
 import { pairingUrl, parsePairFragment } from "./lib/e2e/pairing";
 import type { SasStep, SasView } from "./lib/e2e/sas";
 import { SAS_EMOJI } from "./lib/e2e/sasEmoji";
@@ -37,38 +43,44 @@ import {
   encryptedChat,
   encryptedRows,
   encryptedSas,
+  encryptedSendSubmitted,
   encryptedTrust,
   identityElsewhere,
+  lastEncryptedSend,
   loadEncryptedChat,
   openAlarm,
   readEncryptedChat,
   rekeyEncrypted,
   replaceEncryptedIdentity,
-  sendEncrypted,
   trustOf,
   type UnreadableStep,
   unreadableStep,
   verifyEncrypted,
 } from "./lib/encryptedChats";
 import { friendlyApiError } from "./lib/friendlyApiError";
-import { networkIdBySlug } from "./lib/networks";
-import { nickEquals } from "./lib/nickEquals";
+import type { ScrollbackSource } from "./lib/scrollbackSource";
 import { formatTimestamp } from "./lib/timeFormat";
+import { encryptedWindowName } from "./lib/windowKinds";
 import NickText from "./NickText";
-import { createLineActions, type LineMessage, ScrollbackLine } from "./ScrollbackPane";
+import ScrollbackPane from "./ScrollbackPane";
 
 // issue 2430 — the encrypted query window (kind "encrypted"): the rows of the
 // device's chat with one peer, and a compose line that sends only through Olm.
 //
-// Not ScrollbackPane + ComposeBox, on purpose. ScrollbackPane is coupled to
-// grappa's scrollback (fetches, cursors, paging) and these rows never touch
-// grappa. ComposeBox keeps drafts and history, and a plaintext draft kept at
-// rest is exactly what an encrypted query must not leave behind: this
-// compose line keeps nothing once the message is handed to the engine, and
-// takes no slash commands (everything typed goes to the peer, encrypted).
-// The LINES are the scrollback's, though (issue 2498, vjt's ruling: one
-// renderer): each message renders through `ScrollbackLine`, so a change to
-// how a message reads lands here too.
+// issue 2512 (vjt: reuse, do not reimplement) — the body is ScrollbackPane +
+// ComposeBox, the pair every chat window has, so the scroll, where the window
+// opens, the unread marker, the floating buttons and the compose box's text
+// area (it wraps, it keeps a history) are theirs and nothing here copies them.
+// What is this window's own rides their seams. The pane draws the chat
+// through a `ScrollbackSource` (lib/scrollbackSource.ts) built below: the
+// messages numbered in the order this window first saw them, the read state
+// from the chat's unread count, and no server history to page in, since the
+// device holds every line. The compose box, in an encrypted window, sends what
+// was typed through Olm as one message with no slash command, never mirrors
+// the draft to storage, and keeps its history in this tab's memory only,
+// dropped with the chat (lib/compose.ts). Each line renders through the
+// scrollback's renderer (issue 2498, vjt's ruling: one renderer), with the
+// lock and the delivery state in its two slots.
 //
 // issue 2485 (vjt's rulings, DESIGN_NOTES #2485) split the window three ways:
 //   * the TOP BAR is the peer's verification only: verified or not (or the
@@ -171,8 +183,16 @@ const FAILURE_LABEL: Record<OutFailure, string> = {
 // the peer's by theirs, as in any query. A message that cannot be read here is
 // the line the scrollback draws for a peer's messages that cannot be read
 // (issue 2430's `e2e_undeliverable`), one of them: the same words, one place.
-function lineOf(row: Message, peer: string, ownNick: string): LineMessage {
-  const line = { id: row.id, channel: peer, server_time: row.at, meta: {} };
+// issue 2512 — `id` is the line's number in the window (`seq`), not the row's
+// own id, which is a string: the pane orders, marks and reads lines by id.
+function lineOf(
+  row: Message,
+  seq: number,
+  slug: string,
+  windowName: string,
+  ownNick: string,
+): ScrollbackMessage {
+  const line = { id: seq, network: slug, channel: windowName, server_time: row.at, meta: {} };
   switch (row.kind) {
     case "in":
       return { ...line, kind: "privmsg", sender: row.nick, body: row.body };
@@ -204,9 +224,9 @@ const Lock: Component = () => (
 // it, which is not always that one: a message can land in a nick's chat
 // written under ANOTHER master (one kept from before the nick was pinned to a
 // new one). Such a row is marked, the key in its title.
-const Trailer: Component<{ row: Message; pinned: string | undefined }> = (props) => (
+const Trailer: Component<{ row: Message | undefined; pinned: string | undefined }> = (props) => (
   <Switch>
-    <Match when={props.row.kind === "in" && props.row}>
+    <Match when={props.row?.kind === "in" && props.row}>
       {(row) => (
         <Show when={props.pinned !== undefined && row().ed25519 !== props.pinned}>
           {" "}
@@ -222,7 +242,7 @@ const Trailer: Component<{ row: Message; pinned: string | undefined }> = (props)
         </Show>
       )}
     </Match>
-    <Match when={props.row.kind === "out" && props.row}>
+    <Match when={props.row?.kind === "out" && props.row}>
       {(row) => (
         <>
           {" "}
@@ -502,10 +522,8 @@ const CheckChip: Component<{ check: IdentityCheck; slug: string }> = (props) => 
 };
 
 const EncryptedChatPane: Component<Props> = (props) => {
-  const [draft, setDraft] = createSignal("");
   const [searching, setSearching] = createSignal(false);
   const [query, setQuery] = createSignal("");
-  let list: HTMLDivElement | undefined;
   let searchInput: HTMLInputElement | undefined;
 
   const display = () => encryptedChat(props.networkSlug, props.nick)?.nick ?? props.nick;
@@ -517,6 +535,8 @@ const EncryptedChatPane: Component<Props> = (props) => {
   const elsewhere = () => identityElsewhere(props.networkSlug);
   const sas = () => encryptedSas(props.networkSlug, props.nick);
   const check = () => encryptedChat(props.networkSlug, props.nick)?.check;
+  const windowName = () => encryptedWindowName(props.nick);
+  const windowKey = () => channelKey(props.networkSlug, windowName());
 
   // The step still needed, read once the chat is loaded (before, a pinned
   // peer would flash as one with no key).
@@ -528,34 +548,92 @@ const EncryptedChatPane: Component<Props> = (props) => {
     return unreadableStep(rows());
   };
 
+  // issue 2512 — the window's lines, numbered in the order the window first
+  // sees them. The rows only grow at their end (a deleted chat starts over,
+  // past every number already given), so the numbers keep the chat's order.
+  // Undefined until the chat is loaded and our nick is known: an outgoing
+  // line would name nobody.
+  const seqById = new Map<string, number>();
+  const seqOf = (id: string): number => {
+    let seq = seqById.get(id);
+    if (seq === undefined) {
+      seq = seqById.size + 1;
+      seqById.set(id, seq);
+    }
+    return seq;
+  };
+  const lines = createMemo(() => {
+    const own = props.ownNick;
+    if (own === null || !loaded()) return undefined;
+    return rows()
+      .filter(isMessage)
+      .map((row) => ({
+        row,
+        msg: lineOf(row, seqOf(row.id), props.networkSlug, windowName(), own),
+      }));
+  });
+  const rowBySeq = createMemo(
+    () => new Map((lines() ?? []).map((line) => [line.msg.id, line.row])),
+  );
+
   // While searching, only the messages that hold what was typed, in any case.
   const needle = () => (searching() ? query().trim().toLowerCase() : "");
-  const messages = createMemo(() => rows().filter(isMessage));
   const shown = createMemo(() => {
+    const all = lines();
     const n = needle();
-    if (n === "") return messages();
-    return messages().filter(
-      (row) => row.kind !== "undecryptable" && row.body.toLowerCase().includes(n),
+    if (all === undefined || n === "") return all;
+    return all.filter(
+      ({ row }) => row.kind !== "undecryptable" && row.body.toLowerCase().includes(n),
     );
   });
-  const messageCount = () => messages().filter((row) => row.kind !== "undecryptable").length;
+  const shownMessages = createMemo(() => shown()?.map((line) => line.msg));
+  const messageCount = () =>
+    rows().filter((row) => isMessage(row) && row.kind !== "undecryptable").length;
 
-  // A nick on a line does what it does on any query's line (issue 2498): a
-  // right click opens the nick's menu, whose verbs answer in the plain query
-  // with the peer (a query has no modes of ours), and a click opens the
-  // nick's query, except the peer's own: in any query that click lands in
-  // the window already open, and here that is this one, never the plaintext
-  // query beside it.
-  const lineActions = createLineActions({
-    networkSlug: () => props.networkSlug,
-    networkId: () => networkIdBySlug(props.networkSlug),
-    channelName: display,
-    ownNick: () => props.ownNick,
-    ownModes: () => [],
-  });
-  const onNickClick = (nick: string): void => {
-    if (nickEquals(nick, display(), casemappingForSlug(props.networkSlug))) return;
-    lineActions.onNickClick(nick);
+  // The chat counts what is unread rather than keeping a cursor: the cursor
+  // is the last line before the last `unread` rows that count. A key event
+  // that counts (an alarm, the peer asking to compare emoji) is no line and
+  // marks none. Every line unread is 0, before the first.
+  const readCursor = (): number | null => {
+    if (lines() === undefined) return null;
+    const all = rows();
+    const unread = encryptedChat(props.networkSlug, props.nick)?.unread ?? 0;
+    let read = all.filter(countsAsUnread).length - unread;
+    let cursor = 0;
+    for (const row of all) {
+      if (countsAsUnread(row)) {
+        if (read <= 0) break;
+        read -= 1;
+      }
+      if (isMessage(row)) cursor = seqOf(row.id);
+    }
+    return cursor;
+  };
+
+  // Seen up to line `id`: once that is the last line, the chat is read, as a
+  // query is read at its tail.
+  const markRead = (id: number): void => {
+    const last = lines()?.at(-1)?.msg.id;
+    if (last === undefined || id < last) return;
+    void readEncryptedChat(props.networkSlug, props.nick).catch((err: unknown) => {
+      console.warn(`[e2e] could not mark the encrypted chat with ${props.nick} read`, err);
+    });
+  };
+
+  const ours = (slug: string, name: string): boolean => channelKey(slug, name) === windowKey();
+  const source: ScrollbackSource = {
+    messages: (key) => (key === windowKey() ? shownMessages() : undefined),
+    getReadCursor: (slug, name) => (ours(slug, name) ? readCursor() : null),
+    setCursorIfAdvances: (slug, name, id) => {
+      if (ours(slug, name)) markRead(id);
+    },
+    ownSendSubmitted: encryptedSendSubmitted,
+    lastOwnSend: lastEncryptedSend,
+    history: null,
+    slots: (msg) => ({
+      marker: <Lock />,
+      trailer: <Trailer row={rowBySeq().get(msg.id)} pinned={peerTrust()?.master} />,
+    }),
   };
 
   createEffect(
@@ -568,31 +646,6 @@ const EncryptedChatPane: Component<Props> = (props) => {
       },
     ),
   );
-
-  // Read while shown: what arrives in a window the user is looking at is read.
-  createEffect(() => {
-    const unread = encryptedChat(props.networkSlug, props.nick)?.unread ?? 0;
-    if (unread === 0 || !isDocumentVisible()) return;
-    void readEncryptedChat(props.networkSlug, props.nick).catch((err: unknown) => {
-      console.warn(`[e2e] could not mark the encrypted chat with ${props.nick} read`, err);
-    });
-  });
-
-  createEffect(
-    on(shown, () => {
-      if (list !== undefined) list.scrollTop = list.scrollHeight;
-    }),
-  );
-
-  const send = (event: SubmitEvent) => {
-    event.preventDefault();
-    const body = draft();
-    if (body.trim() === "" || elsewhere() || sas() !== null) return;
-    setDraft("");
-    void sendEncrypted(props.networkSlug, props.nick, body).catch((err: unknown) => {
-      console.warn(`[e2e] could not send to ${props.nick}`, err);
-    });
-  };
 
   // The user's choice, never the engine's (issue 2491): the nick may be
   // someone else's now, and their key then comes as the alarm.
@@ -615,7 +668,8 @@ const EncryptedChatPane: Component<Props> = (props) => {
     else queueMicrotask(() => searchInput?.focus());
   };
 
-  // The window goes with the chat: the close-watcher moves focus, as after a close.
+  // The window goes with the chat: the close-watcher moves focus, as after a
+  // close, and the compose store drops what was typed in it (issue 2512).
   const shred = () =>
     requestConfirm({
       title: "Delete encrypted chat",
@@ -735,7 +789,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
                 data-testid="e2e-search-count"
                 aria-live="polite"
               >
-                {shown().length} of {messageCount()} messages
+                {shown()?.length ?? 0} of {messageCount()} messages
               </span>
             </Show>
           </div>
@@ -743,29 +797,12 @@ const EncryptedChatPane: Component<Props> = (props) => {
       </header>
       <div class="e2e-body">
         <div class="e2e-body-content" inert={sas() !== null}>
-          <div class="e2e-rows" ref={list}>
-            <Show when={props.ownNick}>
-              {(own) => (
-                <For each={shown()}>
-                  {(row) => {
-                    const msg = createMemo(() => lineOf(row, display(), own()));
-                    return (
-                      <ScrollbackLine
-                        msg={msg()}
-                        userNick={own()}
-                        networkSlug={props.networkSlug}
-                        onNickClick={onNickClick}
-                        onNickContextMenu={lineActions.onNickContextMenu}
-                        onJoinChannel={lineActions.onJoinChannel}
-                        marker={<Lock />}
-                        trailer={<Trailer row={row} pinned={peerTrust()?.master} />}
-                      />
-                    );
-                  }}
-                </For>
-              )}
-            </Show>
-          </div>
+          <ScrollbackPane
+            networkSlug={props.networkSlug}
+            channelName={windowName()}
+            kind="encrypted"
+            source={source}
+          />
           <Show when={step()}>
             {(s) => (
               <section class="e2e-step" data-testid="e2e-step" data-step={s()}>
@@ -858,26 +895,11 @@ const EncryptedChatPane: Component<Props> = (props) => {
               </section>
             )}
           </Show>
-          <form class="e2e-compose" data-testid="e2e-compose" onSubmit={send}>
-            <input
-              type="text"
-              class="e2e-compose-input"
-              data-testid="e2e-compose-input"
-              placeholder={`encrypted message to ${display()}`}
-              autocomplete="off"
-              disabled={elsewhere()}
-              value={draft()}
-              onInput={(event) => setDraft(event.currentTarget.value)}
-            />
-            <button
-              type="submit"
-              class="e2e-compose-send"
-              data-testid="e2e-compose-send"
-              disabled={elsewhere()}
-            >
-              send
-            </button>
-          </form>
+          {/* Nothing goes while the identity is held elsewhere: the box stays,
+              with what was typed in it, out of reach until it is back. */}
+          <div class="e2e-compose" data-testid="e2e-compose" inert={elsewhere()}>
+            <ComposeBox networkSlug={props.networkSlug} channelName={windowName()} />
+          </div>
         </div>
         <Show when={sas()}>
           {(view) => (
@@ -890,7 +912,6 @@ const EncryptedChatPane: Component<Props> = (props) => {
           )}
         </Show>
       </div>
-      <lineActions.NickMenu />
     </div>
   );
 };

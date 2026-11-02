@@ -4798,15 +4798,15 @@ html.is-ios27-band .shell {
   overscroll-behavior: contain;
 }
 
-/* issue 2430 — the encrypted query pane (EncryptedChatPane.tsx). Its own
-   layout, on the mentions window's frame: a fixed top bar, a scrolling row
-   list, and a compose line that mirrors the compose box without being one.
+/* issue 2430 — the encrypted query pane (EncryptedChatPane.tsx), on the
+   mentions window's frame: a fixed top bar over a body.
    issue 2485 — the top bar is the peer's verification only (trust, the last
    identity check, the magnifier and the shredder); the keys moved to the
    rail (`.rail-e2e`), and the body carries the key-exchange step card and
    the emoji comparison's modal-like dialog.
-   issue 2498 — the rows are the scrollback's own lines (`.scrollback-line`,
-   one renderer); only the list that holds them is this pane's. */
+   issue 2512 — the body's list and compose line are the scrollback pane and
+   the compose box every chat window has (`.scrollback-pane`, `.compose-box`),
+   so their layout is theirs; nothing below restates it. */
 .e2e-pane {
   display: flex;
   flex-direction: column;
@@ -4920,8 +4920,7 @@ html.is-ios27-band .shell {
 }
 
 .e2e-pin-input,
-.e2e-search-input,
-.e2e-compose-input {
+.e2e-search-input {
   flex: 1;
   min-width: 0;
   padding: 0.5rem;
@@ -4977,7 +4976,6 @@ html.is-ios27-band .shell {
 
 .e2e-copy,
 .e2e-pin-submit,
-.e2e-compose-send,
 .e2e-sas-button,
 .e2e-request-card-action,
 .rail-encrypted-chat-button {
@@ -4992,8 +4990,6 @@ html.is-ios27-band .shell {
 }
 
 .e2e-copy:disabled,
-.e2e-compose-input:disabled,
-.e2e-compose-send:disabled,
 .e2e-request-card-action:disabled,
 .e2e-request-card-dismiss:disabled,
 .rail-encrypted-chat-button:disabled {
@@ -5060,28 +5056,15 @@ html.is-ios27-band .shell {
   line-height: 1.2;
 }
 
-/* The list of lines: the scrollback's padding and line height, scrolling on
-   its own between the top bar and the compose line. */
-.e2e-rows {
-  flex: 1 1 auto;
-  padding: 0.5rem 1rem;
-  line-height: var(--line-height);
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
-}
-
 .encrypted-marker {
   font-size: 0.8em;
 }
 
+/* The compose box's wrapper carries only `inert` (an identity held
+   elsewhere): no box of its own, so the compose box sits in the body's
+   column as it sits in the shell's. */
 .e2e-compose {
-  display: flex;
-  border-top: 1px solid var(--border);
-  padding: 0.5rem;
-  gap: 0.5rem;
-  background: var(--bg);
-  flex-shrink: 0;
+  display: contents;
 }
 
 .mentions-group {

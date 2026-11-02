@@ -1,14 +1,17 @@
 import { Route, Router } from "@solidjs/router";
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../lib/api";
+import { channelKey } from "../lib/channelKey";
+import { setDraft } from "../lib/compose";
 import { acceptConfirm, confirmRequest, dismissConfirm } from "../lib/confirmDialog";
 import type { Chat, ChatRow, IdentityCheck } from "../lib/e2e/chatStore";
 import type { PeerTrust } from "../lib/e2e/client";
 import type { SasView } from "../lib/e2e/sas";
 import { SAS_EMOJI } from "../lib/e2e/sasEmoji";
 import { friendlyApiError } from "../lib/friendlyApiError";
+import { pressAndClick } from "./helpers/pointerEvents";
 import { ruleBody, themeCss } from "./helpers/themeCss";
 
 // issue 2430 — the encrypted query window: the pane, and since issue 2485 its
@@ -43,6 +46,10 @@ const copyText = vi.hoisted(() => vi.fn());
 const loadDocument = vi.hoisted(() => vi.fn());
 const holdsMasterHere = vi.hoisted(() => vi.fn());
 const openQueryWindowState = vi.hoisted(() => vi.fn());
+const sendCtcpQuery = vi.hoisted(() => vi.fn(async () => undefined));
+const loadMore = vi.hoisted(() => vi.fn(async () => undefined));
+const loadNewer = vi.hoisted(() => vi.fn(async () => undefined));
+const refreshScrollback = vi.hoisted(() => vi.fn(async () => undefined));
 const panel = vi.hoisted(() => ({
   onClose: null as null | (() => void),
   mounted: 0,
@@ -68,7 +75,10 @@ vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   deleteEncryptedChat,
   rekeyEncrypted,
   pairedHere: vi.fn(),
-  // What the compose store follows (issue 2512); its own suite drives it.
+  // What the scrollback pane and the compose store follow (issue 2512); the
+  // tests that read them drive them through encryptedChats' own suite.
+  encryptedSendSubmitted: () => null,
+  lastEncryptedSend: () => null,
   encryptedChatDeleted: () => null,
 }));
 // Whether this browser holds the network's master, and the add-a-device
@@ -91,17 +101,45 @@ vi.mock("../AddDevicePanel", async () => {
 });
 vi.mock("../lib/documentVisibility", () => ({ isDocumentVisible: () => visible() }));
 // A nick's click opens its query (issue 2498): the network resolves, and the
-// query door is a spy, so a test reads which nick it opened, if any.
-vi.mock("../lib/networks", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../lib/networks")>()),
-  networkIdBySlug: () => 7,
-}));
+// query door is a spy, so a test reads which nick it opened, if any. The
+// network is a connected one, as the scrollback pane and the compose box
+// (issue 2512) find it in the list.
+vi.mock("../lib/networks", async (importOriginal) => {
+  const azzurra = {
+    kind: "user" as const,
+    id: 7,
+    slug: "azzurra",
+    nick: "alice",
+    connection_state: "connected" as const,
+    connection_state_reason: null,
+    connection_state_changed_at: null,
+    inserted_at: "",
+    updated_at: "",
+  };
+  return {
+    ...(await importOriginal<typeof import("../lib/networks")>()),
+    networks: () => [azzurra],
+    networkBySlug: (slug: string) => (slug === "azzurra" ? azzurra : undefined),
+    networkIdBySlug: () => 7,
+  };
+});
 vi.mock("../lib/queryWindows", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/queryWindows")>()),
   canonicalQueryNick: (_networkId: number, nick: string) => nick,
   openQueryWindowState,
 }));
 vi.mock("../lib/clipboard", () => ({ copyText }));
+// A nick menu's CTCP verb (issue 2512): a boundary spy, so a test reads which
+// window it answers in.
+vi.mock("../lib/ctcpQuery", () => ({ sendCtcpQuery }));
+// grappa's paging verbs (issue 2512): spies, so a test reads that the window
+// pages nothing from grappa's scrollback.
+vi.mock("../lib/scrollback", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/scrollback")>()),
+  loadMore,
+  loadNewer,
+  refreshScrollback,
+}));
 // jsdom implements no document navigation (and makes `location.assign`
 // unforgeable): the one-line seam is mocked, and a test below loads the URL
 // it was handed the way the browser would, as a fresh document.
@@ -140,6 +178,9 @@ beforeEach(() => {
   setSas(null);
   setElsewhere(false);
   dismissConfirm();
+  // The compose store is the app's one (issue 2512): each test starts on an
+  // empty draft for the window.
+  setDraft(channelKey("azzurra", "$e2e:bob"), "");
 });
 
 const Pane = () => (
@@ -174,13 +215,21 @@ const line = (row: HTMLElement) =>
   `${row.dataset.kind} ${row.querySelector(".scrollback-sender")?.textContent}`;
 const body = (row: HTMLElement | undefined) => row?.querySelector(".scrollback-body")?.textContent;
 
+// issue 2512 — the window's compose line is the compose box every window has,
+// and the scroll is the scrollback pane's.
+const composer = () =>
+  within("e2e-pane").querySelector("textarea[data-compose-input]") as HTMLTextAreaElement;
+const composeShut = () => (within("e2e-pane").querySelector(".e2e-compose") as HTMLElement).inert;
+const type = (text: string) => fireEvent.input(composer(), { target: { value: text } });
+const enter = () => fireEvent.keyDown(composer(), { key: "Enter" });
+
 describe("EncryptedChatPane", () => {
-  it("loads the chat it shows, and names the peer as the chat spells it", () => {
+  it("loads the chat it shows, names the peer as the chat spells it, and composes in the compose box", () => {
     renderPane();
     expect(loadEncryptedChat).toHaveBeenCalledWith("azzurra", "bob");
-    expect(screen.getByTestId("e2e-compose-input").getAttribute("placeholder")).toBe(
-      "encrypted message to Bob",
-    );
+    expect(within("e2e-pane").querySelector(".e2e-heading")?.textContent).toBe("Bob");
+    // The compose box names the window as it was opened, as a query's does.
+    expect(composer().getAttribute("placeholder")).toBe("encrypted message to bob");
   });
 
   it("the trust badge: not verified, then verified once pinned, then an alarm after it", () => {
@@ -267,7 +316,9 @@ describe("EncryptedChatPane", () => {
     expect(shown[5]?.textContent).toContain(
       "Bob sent you 1 encrypted message that cannot be read here",
     );
-    const list = screen.getByTestId("e2e-pane").querySelector(".e2e-rows") as HTMLElement;
+    // The scrollback pane's own list holds them (issue 2512).
+    const list = within("e2e-pane").querySelector("[data-testid=scrollback]") as HTMLElement;
+    expect(shown.every((row) => list.contains(row))).toBe(true);
     expect(list.textContent).not.toContain(KEY);
     expect(list.textContent).not.toContain(OWN);
     // The exchange is done (a pinned key, the alarm answered): no step either.
@@ -290,6 +341,22 @@ describe("EncryptedChatPane", () => {
 
     fireEvent.click(ours?.querySelector(".scrollback-sender") as HTMLElement);
     expect(openQueryWindowState).toHaveBeenCalledWith(7, "alice", expect.any(String));
+  });
+
+  // The window takes no command: anything typed there goes to the peer,
+  // encrypted. So a verb from a nick's menu answers in the plain query with
+  // the peer, as it would from any query window (issue 2498), never here.
+  it("a nick's menu answers in the plain query with the peer, never in the encrypted window", () => {
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    setRows([{ kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "ciao" }]);
+    renderPane();
+    fireEvent.contextMenu(lines()[0]?.querySelector(".scrollback-sender") as HTMLElement);
+    pressAndClick(screen.getByRole("button", { name: /^ctcp ▸$/i }));
+    pressAndClick(screen.getByRole("button", { name: /^version$/i }));
+
+    expect(sendCtcpQuery).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceChannel: "bob", targetNick: "Bob", verb: "VERSION" }),
+    );
   });
 
   it("draws no line while our nick is unknown: an outgoing one would name nobody", () => {
@@ -319,6 +386,142 @@ describe("EncryptedChatPane", () => {
     expect(
       other?.querySelector("[data-testid=e2e-row-other-key]")?.getAttribute("aria-label"),
     ).toBe(`written with another key: ${OWN}`);
+  });
+
+  // issue 2512 — the scrollback pane any query has: the window opens on the
+  // unread marker, and the chat is read once its last line has been seen with
+  // the page visible. The chat counts what is unread, so the marker sits
+  // after the line the count starts behind: a key event the badge counts (an
+  // alarm) is no line, and one it does not count (a pin) is passed over.
+  it("opens on the unread marker, and reads the chat once its last line is seen", async () => {
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    setChat({ nick: "Bob", open: true, unread: 3 });
+    setRows([
+      { kind: "pinned", id: "p", at, nick: "Bob", ed25519: KEY },
+      { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "uno" },
+      { kind: "in", id: "2", at, nick: "Bob", ed25519: KEY, body: "due" },
+      { kind: "in", id: "3", at, nick: "Bob", ed25519: KEY, body: "tre" },
+      { kind: "key_alarm", id: "a", at, nick: "Bob", presented: OWN },
+    ]);
+    renderPane();
+    const marker = within("e2e-pane").querySelector("[data-testid=unread-marker]") as HTMLElement;
+    expect(marker.textContent).toContain("2 unread messages");
+    expect(body(marker.nextElementSibling as HTMLElement)).toBe("due");
+
+    await waitFor(() => expect(readEncryptedChat).toHaveBeenCalledWith("azzurra", "bob"), {
+      timeout: 2_000,
+    });
+  });
+
+  // jsdom lays nothing out, so the window is read as a screen would show it:
+  // lines 100px tall in a 150px viewport, scrolled to `scrollTop`, which the
+  // pane cannot move (a phone's reader holds it).
+  const screenAt = (top: { value: number }) => {
+    const height = 100;
+    const lineIndex = (el: HTMLElement) =>
+      Array.from(
+        el.closest("[data-testid=scrollback]")?.querySelectorAll(".scrollback-line") ?? [],
+      ).indexOf(el);
+    const isList = (el: Element) => el.matches("[data-testid=scrollback]");
+    const define = (name: string, get: (el: HTMLElement) => number | undefined) => {
+      const native = Object.getOwnPropertyDescriptor(HTMLElement.prototype, name);
+      const inherited = Object.getOwnPropertyDescriptor(Element.prototype, name);
+      Object.defineProperty(HTMLElement.prototype, name, {
+        configurable: true,
+        get(this: HTMLElement) {
+          return get(this) ?? (native ?? inherited)?.get?.call(this);
+        },
+        set(this: HTMLElement, value: number) {
+          if (get(this) === undefined) (native ?? inherited)?.set?.call(this, value);
+        },
+      });
+      return () => {
+        if (native) Object.defineProperty(HTMLElement.prototype, name, native);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
+      };
+    };
+    const restores = [
+      define("offsetTop", (el) =>
+        el.classList.contains("scrollback-line") ? lineIndex(el) * height : undefined,
+      ),
+      define("offsetHeight", (el) =>
+        el.classList.contains("scrollback-line") ? height : undefined,
+      ),
+      define("clientHeight", (el) => (isList(el) ? 150 : undefined)),
+      define("scrollHeight", (el) =>
+        isList(el) ? el.querySelectorAll(".scrollback-line").length * height : undefined,
+      ),
+      define("scrollTop", (el) => (isList(el) ? top.value : undefined)),
+    ];
+    return () => {
+      for (const restore of restores) restore();
+    };
+  };
+
+  it("reads the chat once its last line has been seen, never while the reader is above it", async () => {
+    const top = { value: 0 };
+    const restore = screenAt(top);
+    try {
+      setChat({ nick: "Bob", open: true, unread: 3 });
+      setRows([
+        { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "uno" },
+        { kind: "in", id: "2", at, nick: "Bob", ed25519: KEY, body: "due" },
+        { kind: "in", id: "3", at, nick: "Bob", ed25519: KEY, body: "tre" },
+      ]);
+      renderPane();
+      const list = within("e2e-pane").querySelector("[data-testid=scrollback]") as HTMLElement;
+      // Seen: the first line only.
+      list.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      list.dispatchEvent(new Event("scroll"));
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      expect(readEncryptedChat).not.toHaveBeenCalled();
+
+      // Down to the last line.
+      top.value = 150;
+      list.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      list.dispatchEvent(new Event("scroll"));
+      await waitFor(() => expect(readEncryptedChat).toHaveBeenCalledWith("azzurra", "bob"), {
+        timeout: 2_000,
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  // The device holds every line of the chat and grappa's scrollback none:
+  // nothing in the window asks grappa for more, which would ask it for a
+  // window it has never heard of.
+  it("asks grappa's scrollback for nothing: no older page at the top, no catch-up on the way back", async () => {
+    setRows([
+      { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "uno" },
+      { kind: "in", id: "2", at, nick: "Bob", ed25519: KEY, body: "due" },
+    ]);
+    renderPane();
+    const list = within("e2e-pane").querySelector("[data-testid=scrollback]") as HTMLElement;
+    list.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    list.scrollTop = 0;
+    list.dispatchEvent(new Event("scroll"));
+    setVisible(false);
+    setVisible(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(loadMore).not.toHaveBeenCalled();
+    expect(loadNewer).not.toHaveBeenCalled();
+    expect(refreshScrollback).not.toHaveBeenCalled();
+  });
+
+  it("reads nothing while the page is hidden, and the chat once it shows", async () => {
+    setVisible(false);
+    setChat({ nick: "Bob", open: true, unread: 1 });
+    setRows([{ kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "ciao" }]);
+    renderPane();
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(readEncryptedChat).not.toHaveBeenCalled();
+
+    setVisible(true);
+    await waitFor(() => expect(readEncryptedChat).toHaveBeenCalledWith("azzurra", "bob"), {
+      timeout: 2_000,
+    });
   });
 });
 
@@ -439,7 +642,7 @@ describe("EncryptedChatPane, a message the peer could not read", () => {
     expect(step.textContent).toContain("someone else may be using the nick");
     expect(rekeyEncrypted).not.toHaveBeenCalled();
     // The compose line stays usable.
-    expect((screen.getByTestId("e2e-compose-input") as HTMLInputElement).disabled).toBe(false);
+    expect(composeShut()).toBe(false);
 
     fireEvent.click(screen.getByTestId("e2e-rekey"));
 
@@ -523,12 +726,13 @@ describe("EncryptedChatPane, the emoji comparison", () => {
     expect(verifyEncrypted).toHaveBeenCalledWith("azzurra", "bob", "cancel");
   });
 
-  it("covers the chat body as a dialog: the body is inert and nothing is sent until it ends", () => {
+  it("covers the chat body as a dialog: the body is inert and nothing is sent until it ends", async () => {
     setTrust({ master: KEY, verified: false, devices: 1 });
     renderPane();
-    const input = screen.getByTestId("e2e-compose-input") as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "not yet" } });
-    const content = screen.getByTestId("e2e-compose").parentElement as HTMLElement;
+    const input = composer();
+    type("not yet");
+    const content = within("e2e-pane").querySelector(".e2e-body-content") as HTMLElement;
+    expect(content.contains(input)).toBe(true);
     expect(content.inert).toBe(false);
 
     input.focus();
@@ -542,15 +746,14 @@ describe("EncryptedChatPane, the emoji comparison", () => {
     expect(dialog.textContent).toContain("compare emoji with Bob");
     expect(within("e2e-pane").querySelector(".e2e-body")?.contains(dialog)).toBe(true);
     expect(content.inert).toBe(true);
-    fireEvent.submit(screen.getByTestId("e2e-compose"));
-    expect(sendEncrypted).not.toHaveBeenCalled();
 
     // Over: the draft is still there, and goes.
     setSas(null);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(content.inert).toBe(false);
-    fireEvent.submit(screen.getByTestId("e2e-compose"));
-    expect(sendEncrypted).toHaveBeenCalledWith("azzurra", "bob", "not yet");
+    expect(input.value).toBe("not yet");
+    enter();
+    await waitFor(() => expect(sendEncrypted).toHaveBeenCalledWith("azzurra", "bob", "not yet"));
   });
 
   it("a request is accepted from the dialog", () => {
@@ -824,20 +1027,27 @@ describe("EncryptedChatPane, the rail", () => {
 });
 
 describe("EncryptedChatPane, compose and the chat's tools", () => {
-  it("sends what was typed through the encrypted door and keeps no draft", () => {
+  // issue 2512 — the compose box every window has: a text area that wraps a
+  // long line instead of scrolling it sideways, Enter sends, and what went is
+  // in the window's history for the up arrow.
+  it("sends what was typed through the encrypted door, and keeps it in the window's history", async () => {
     renderPane();
-    const input = screen.getByTestId("e2e-compose-input") as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "segreto" } });
-    fireEvent.click(screen.getByTestId("e2e-compose-send"));
+    const input = composer();
+    expect(input.tagName).toBe("TEXTAREA");
+    type("segreto");
+    enter();
 
-    expect(sendEncrypted).toHaveBeenCalledWith("azzurra", "bob", "segreto");
+    await waitFor(() => expect(sendEncrypted).toHaveBeenCalledWith("azzurra", "bob", "segreto"));
     expect(input.value).toBe("");
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    expect(input.value).toBe("segreto");
   });
 
-  it("sends nothing blank", () => {
+  it("sends nothing blank", async () => {
     renderPane();
-    fireEvent.input(screen.getByTestId("e2e-compose-input"), { target: { value: "   " } });
-    fireEvent.click(screen.getByTestId("e2e-compose-send"));
+    type("   ");
+    enter();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(sendEncrypted).not.toHaveBeenCalled();
   });
 
@@ -940,16 +1150,6 @@ describe("EncryptedChatPane, compose and the chat's tools", () => {
     setSas({ role: "a", phase: "started", confirmed: false, here: true, emoji: null });
     expect(opened).toHaveBeenCalledTimes(2);
   });
-
-  it("marks what arrives read while the page is visible, and not while it is hidden", () => {
-    setVisible(false);
-    setChat({ nick: "Bob", open: true, unread: 2 });
-    renderPane();
-    expect(readEncryptedChat).not.toHaveBeenCalled();
-
-    setVisible(true);
-    expect(readEncryptedChat).toHaveBeenCalledWith("azzurra", "bob");
-  });
 });
 
 // The account's identity for the network is held elsewhere (another device,
@@ -981,18 +1181,19 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     expect(screen.queryByTestId("e2e-pin-input")).toBeNull();
     expect(screen.queryByTestId("e2e-step-pin-input")).toBeNull();
     expect(screen.queryByTestId("e2e-sas-start")).toBeNull();
-    expect((screen.getByTestId("e2e-compose-input") as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByTestId("e2e-compose-send") as HTMLButtonElement).disabled).toBe(true);
+    expect(composeShut()).toBe(true);
   });
 
-  it("sends nothing while elsewhere, whatever was typed before", () => {
+  it("shuts the compose box on what was typed before, and opens it again once the network reads ready", () => {
     renderPane();
-    fireEvent.input(screen.getByTestId("e2e-compose-input"), { target: { value: "typed" } });
+    type("typed");
+    expect(composeShut()).toBe(false);
     setElsewhere(true);
 
-    fireEvent.submit(screen.getByTestId("e2e-compose"));
-
-    expect(sendEncrypted).not.toHaveBeenCalled();
+    expect(composeShut()).toBe(true);
+    expect(composer().value).toBe("typed");
+    setElsewhere(false);
+    expect(composeShut()).toBe(false);
   });
 
   it("offers no control that needs the identity: the alarm's key cannot be taken, the chat cannot be deleted", () => {
@@ -1117,9 +1318,7 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     fireEvent.click(button);
 
     expect(replaceEncryptedIdentity).toHaveBeenCalledWith("azzurra");
-    await vi.waitFor(() =>
-      expect((screen.getByTestId("e2e-compose-input") as HTMLInputElement).disabled).toBe(false),
-    );
+    await vi.waitFor(() => expect(composeShut()).toBe(false));
     expect(screen.queryByTestId("e2e-identity-elsewhere")).toBeNull();
     expect(screen.getByTestId("e2e-own-identity").textContent).toBe(OWN);
   });
@@ -1163,7 +1362,7 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     );
     expect(warn).toHaveBeenCalledWith("[e2e] could not start a new identity on azzurra", refused);
     expect(button.textContent).toBe("start a new identity here");
-    expect((screen.getByTestId("e2e-compose-send") as HTMLButtonElement).disabled).toBe(true);
+    expect(composeShut()).toBe(true);
     warn.mockRestore();
   });
 
