@@ -38,15 +38,18 @@ export async function boot(page: Page, user: SeededUser): Promise<void> {
   await awaitServiceWorkerActive(page);
 }
 
-/** Opens the encrypted query with `nick` from a channel's compose box. */
+/**
+ * Opens the encrypted query with `nick` from a channel's compose box. The
+ * window composes in the compose box every window has (issue 2512), named for
+ * the peer as typed.
+ */
 export async function equery(page: Page, ownNick: string, nick: string): Promise<void> {
   await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick });
-  await composeSend(page, `/equery ${nick}`, { expectUnmount: true });
+  // The channel's compose box gives way to the window's own, so the box never
+  // unmounts: the send settles as any other does.
+  await composeSend(page, `/equery ${nick}`);
   await expect(page.getByTestId("e2e-pane")).toBeVisible();
-  await expect(page.getByTestId("e2e-compose-input")).toHaveAttribute(
-    "placeholder",
-    `encrypted message to ${nick}`,
-  );
+  await expect(composer(page)).toHaveAttribute("placeholder", `encrypted message to ${nick}`);
 }
 
 /** Our identity's MASTER Ed25519 key (what a peer pins), as the rail shows it. */
@@ -81,10 +84,13 @@ export async function pin(page: Page, key: string): Promise<void> {
   await expect(page.getByTestId("e2e-peer-trust")).toHaveAttribute("data-trust", "verified");
 }
 
+/** The open encrypted query's compose box: the one every window has (issue 2512). */
+export const composer = (page: Page) =>
+  page.getByTestId("e2e-pane").locator(".compose-box textarea");
+
 export async function send(page: Page, body: string): Promise<void> {
-  await page.getByTestId("e2e-compose-input").fill(body);
-  await page.getByTestId("e2e-compose-input").press("Enter");
-  await expect(page.getByTestId("e2e-compose-input")).toHaveValue("");
+  await expect(composer(page)).toBeVisible();
+  await composeSend(page, body);
 }
 
 /** The open encrypted query's messages: the scrollback's own lines (issue 2498). */

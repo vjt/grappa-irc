@@ -219,7 +219,10 @@ test("after the test-only wipe the browser reads 'elsewhere' and writes nothing;
   await equery(page, nick, "i2430-nobody");
   await expect(page.getByTestId("e2e-identity-elsewhere")).toBeVisible();
   await expect(page.getByTestId("e2e-own-identity")).toHaveCount(0);
-  await expect(page.getByTestId("e2e-compose-input")).toBeDisabled();
+  // Nothing can be sent meanwhile: the compose box is out of reach (issue 2512).
+  await expect
+    .poll(() => page.getByTestId("e2e-compose").evaluate((el) => (el as HTMLElement).inert))
+    .toBe(true);
 
   // The primary way out is a pairing link: a paste that is not one is
   // refused where it was typed, and nothing is navigated or written.
