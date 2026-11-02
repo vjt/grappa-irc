@@ -4793,7 +4793,9 @@ html.is-ios27-band .shell {
    issue 2485 — the top bar is the peer's verification only (trust, the last
    identity check, the magnifier and the shredder); the keys moved to the
    rail (`.rail-e2e`), and the body carries the key-exchange step card and
-   the emoji comparison's modal-like dialog. */
+   the emoji comparison's modal-like dialog.
+   issue 2498 — the rows are the scrollback's own lines (`.scrollback-line`,
+   one renderer); only the list that holds them is this pane's. */
 .e2e-pane {
   display: flex;
   flex-direction: column;
@@ -5047,35 +5049,19 @@ html.is-ios27-band .shell {
   line-height: 1.2;
 }
 
+/* The list of lines: the scrollback's padding and line height, scrolling on
+   its own between the top bar and the compose line. */
 .e2e-rows {
   flex: 1 1 auto;
-  margin: 0;
   padding: 0.5rem 1rem;
-  list-style: none;
+  line-height: var(--line-height);
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
 }
 
-.e2e-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5em;
-  line-height: var(--line-height);
-  overflow-wrap: anywhere;
-}
-
 .encrypted-marker {
   font-size: 0.8em;
-}
-
-.e2e-row-own {
-  color: var(--accent);
-}
-
-.e2e-row-notice,
-.e2e-row-state {
-  color: var(--muted);
 }
 
 .e2e-compose {

@@ -922,6 +922,7 @@ const Shell: Component = () => {
                     <EncryptedChatPane
                       networkSlug={w.networkSlug}
                       nick={w.nick}
+                      ownNick={ownNickForSlug(w.networkSlug)}
                       windowsOpener={null}
                       railOpener={null}
                       onDialogOpen={null}
@@ -1260,6 +1261,7 @@ const Shell: Component = () => {
                   <EncryptedChatPane
                     networkSlug={w.networkSlug}
                     nick={w.nick}
+                    ownNick={ownNickForSlug(w.networkSlug)}
                     windowsOpener={windowsRailOpener()}
                     railOpener={
                       <PaneTopBarRailOpener
