@@ -1015,3 +1015,70 @@ CTCP VERSION" in both directions, and (f) grappa answering for the user,
 `ACCEPT * → <the crossing device>` and `REFUSE * → <the asking device>`,
 both `{"v":2}`; `issue2486-banner-clears-the-float.spec.ts` on the two touch
 projects.
+<!-- entry #2498 -->
+
+---
+
+## 2026-11-02 — #2498: the encrypted query's messages are the scrollback's lines
+
+vjt, on staging: the encrypted query (`EncryptedChatPane`) drew its rows with
+a layout of its own (`EncryptedRow`, a wrapping flex row): our nick read
+"you", and a body too long for the rest of the line dropped below the nick
+instead of flowing on beside it. Ruling: **one renderer.** The encrypted
+rows go through the scrollback's, so a change to how a message reads lands
+in every window at once, and what is specific to encryption becomes a
+variant or a decoration of that renderer, never a parallel layout.
+
+* **`ScrollbackLine` is exported, and it is the line.** Its input narrows
+  from the wire row to `LineMessage`: the six fields a line reads, and an id
+  of either store (the device's rows carry string ids, and only the
+  scrollback's own list logic reads `data-msg-id` as a number). The pane
+  maps its rows with `lineOf`: `in` and `out` are `privmsg` lines from the
+  peer and from us, and `undecryptable` is the variant the renderer already
+  had for encrypted messages that cannot be read, the `server_event` with
+  `meta.e2e_undeliverable` (#2430's offline-queue row), with a count of 1.
+  One wording in one place: the line now reads "sent you 1 encrypted
+  message that cannot be read here", where the bespoke row said "an
+  encrypted message".
+* **Two slots, both required:** `marker` beside the time (the lock) and
+  `trailer` after the body (an outgoing message's delivery state, an
+  incoming one's other-key ⚠). The scrollback passes `null` to both, said
+  at its call site, as `PaneTopBar`'s slots are.
+* **Our nick is the network's nick, read live** (`ownNickForSlug`, the
+  value MentionsWindow gets). An `out` row stores no sender, so after a
+  rename of our own every earlier outgoing line shows the new nick, where a
+  scrollback row keeps the sender it was written under. Accepted: giving
+  the sealed device rows a sender is a chat-store format change, not this
+  slice.
+* **The line's controls came with it.** The nick on a line is the
+  scrollback's button, so it does here what it does there: a click opens
+  the query with the nick, a right click the nick's menu (its verbs answer
+  in the plain query with the peer; we hold no modes in a query).
+  `createLineActions` builds that set once for both panes: ScrollbackPane's
+  three handlers and its menu state, moved, not copied. Noted for vjt, as a
+  choice made rather than ruled: a click on the peer's nick in the
+  encrypted window lands in the PLAINTEXT query with them.
+* **What stays the pane's:** the list that holds the lines (`.e2e-rows`,
+  given the scrollback's padding and line height, but not the `.scrollback`
+  class, which carries the scroll gate and the touch-selection rules
+  ScrollbackPane drives), the step cards, and the compose line, kept for
+  the reason its moduledoc gives.
+* **Deleted with the row:** `EncryptedRow`, its `<ol>`/`<li>`, and the CSS
+  that only it wore (`.e2e-row`, `.e2e-row-own`, `.e2e-row-notice`,
+  `.e2e-row-state`, the last now the global `.muted`).
+
+### Tests
+
+Unit: the pane's messages are `scrollback-line`s, each read as its kind and
+the nick it names (ours as the network's nick, never "you"), with the time
+`formatTime` gives, the lock, the delivery state, and the undeliverable
+wording; the search and the other-key ⚠ read the same lines. They were run
+red before the change, three failing on the missing lines. e2e:
+`issue2498-encrypted-lines.spec.ts` holds a long encrypted line, on both
+sides, against a channel line of ours: the same computed box (display,
+white-space, font, line height), `<ournick>` as sender, and the body's
+first line box beside the nick rather than a line below it, with the
+premise that the body spans two lines or more pinned. The encrypted
+fixture's `row(page, "in" | "out", text)` now finds `privmsg` lines in the
+pane, "out" being the ones that carry a delivery state; `data-row-kind`
+went with the row.
