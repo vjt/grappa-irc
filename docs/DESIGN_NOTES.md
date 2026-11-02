@@ -1528,3 +1528,134 @@ at the button's right padding. `$list` is mirrored and pinned in
 test of the cure. **Not run locally** (the stack lane was not free): the
 red is argued from the rule above, not seen, and CI's integration run is
 the spec's first.
+<!-- entry #2512 -->
+
+---
+
+## 2026-11-03 — #2512: the encrypted query is the scrollback pane and the compose box
+
+vjt's order on 2512: the encrypted query must REUSE `ScrollbackPane` and
+`ComposeBox`, not reimplement them, and two bugs were to vanish as a
+consequence: a chat reopened with more lines than fit did not land on its
+last line (reported from the iOS PWA), and the compose line did not wrap (it
+was an `<input type="text">`). Both were the window's own copies of what the
+pair already does: its list (`.e2e-rows`, a flex item with no
+`min-height: 0`, the very WebKit quirk UX-6 bucket D fixed on `.scrollback`)
+and its one-line compose. This reverses #2430's "not ScrollbackPane +
+ComposeBox, on purpose": the coupling it named is now a seam, and the
+plaintext-at-rest concern it named is handled inside the compose box.
+
+* **`ScrollbackSource` (`lib/scrollbackSource.ts`) is where a pane's lines
+  come from.** The pane reads every line, the read cursor and the own-send
+  signals through `props.source`, never from `lib/scrollback` directly.
+  `grappaScrollback` is grappa's, handed by Shell to both mounts; the
+  encrypted pane builds its own. The members keep grappa's verb names, so
+  the pane reads the same with either behind it.
+* **`history: null` means the source holds every line:** no older page at
+  the top, no newer page at the bottom, no catch-up refresh on the way back
+  to the tab, no far-behind region, no jump. The encrypted chat lives on the
+  device; a grappa `/messages` for `$e2e:<nick>` would ask for a window
+  grappa has never heard of (and a 4xx feeds fail2ban, grappa-irc#160).
+* **Lines are numbered in the window, in the order it first sees them.** The
+  device's rows carry string ids, and the pane orders, marks and reads by a
+  numeric id. A row's number never changes while the window lives, and the
+  rows only grow at their end (a deleted chat starts over, past every number
+  already given), so the numbers keep the chat's order. #2498's
+  `LineMessage` (a line with an id of either store) goes with them: the
+  line is a `ScrollbackMessage` again.
+* **Read state changes meaning: the chat is read at its tail, like any
+  window, not "while shown".** The chat store counts what is unread rather
+  than keeping a cursor, so the source derives one: the last line before the
+  last `unread` rows that count (`countsAsUnread`, now exported from the
+  chat store). A key event the badge counts (an alarm, the peer asking to
+  compare emoji) is no line and marks none; every line unread is cursor 0.
+  The pane's settle calls the source's `setCursorIfAdvances`, and the chat
+  is marked read only once that id is its last line: the count has no way to
+  record "read up to here", so a partial read records nothing and the badge
+  stays. The window opens on the unread marker, as a query does.
+* **A send reads the chat** (`sendEncrypted`), as a send reads any window,
+  and announces itself as grappa's sends do: `encryptedSendSubmitted` at
+  Enter, `lastEncryptedSend` once the chat is read, the two signals the
+  pane follows to the tail and re-latches its marker on.
+* **The compose box, in an encrypted window** (`lib/compose.ts`): everything
+  typed goes to the peer through Olm as ONE message, newlines and a leading
+  slash included, asked before any verb is parsed, so nothing typed there
+  can reach grappa's send door in clear; a failure that never reached the
+  engine hands the text back and logs why. The draft is never mirrored to
+  `sessionStorage` (#772's reload mirror): no plaintext at rest, and a
+  reload loses it, as the old line did. No frame-split preview: the engine
+  sizes the message and says "too long" on the row. The history the up
+  arrow walks lives in this tab's memory.
+* **A deleted chat takes its window's draft and history along**, or the up
+  arrow would bring back what the delete promised nobody could.
+  `deleteEncryptedChat` publishes the window (`encryptedChatDeleted`) and
+  the compose store drops it, so both doors (the shredder, the ×'s Delete)
+  and any later one are covered by construction. The doors could not do it
+  themselves: `compose` imports `commands/window`, which imports
+  `encryptedWindow`, so the × door importing `compose` is a cycle (biome's
+  `noImportCycles` said so). **Known gap:** another tab of the same browser
+  keeps its own in-memory history until it reloads; the BroadcastChannel
+  says a chat changed, not that it was deleted.
+* **No uploads.** The upload host is not end-to-end encrypted, so
+  `triggerUploads` refuses an encrypted window at the door every surface
+  shares (picker, paste, drop, the share target) and says why in the
+  compose box; the picker is not offered. The paste guard (#666's flood
+  confirm) is skipped there: a pasted block is one message, so there is no
+  burst, and the guard's way out, the block as a `.txt` upload, would put
+  the plaintext on the upload host.
+* **The nick menu answers in the plain query with the peer.** The pane's
+  menu targets the peer's query for an encrypted window: the encrypted one
+  takes no command, and a verb there (a CTCP, a ban) would otherwise aim at
+  `$e2e:<nick>`. A click on the peer's nick stays in the encrypted window
+  (#2498). The line controls are back inline in `ScrollbackPane`:
+  `createLineActions` (#2498) existed to share them with the encrypted pane,
+  which now IS a `ScrollbackPane`.
+* **The mobile next-active button is the pane's.** An encrypted window now
+  carries a `ScrollbackPane` and so its float stack's button; Shell's bare
+  mobile one is gated off for it too, so exactly one mounts. That likely
+  also cures what #2510 reports about the button's look in this window; not
+  claimed here.
+
+**Why the code ends where it does.** The window's own list, scroll effect,
+"read while shown" effect, draft, send and form go (with `.e2e-rows`, the
+compose-line CSS and the line-actions factory), and the pane gains
+everything the pair does that the copies never did: the unread marker, the
+floating buttons, a wrapping text area, history. Production code still ends
+about 150 lines up, in two places: the seam (76 lines, half of it the
+contract's own docs), and the encrypted window's rules at the compose box's
+doors (dispatch, the reload mirror, the frame preview, the delete, paste,
+upload, placeholder, picker; about 70) plus the signals they read (36).
+Those doors exist because the compose box has them; the bare input had none
+to guard.
+
+Tests: the pane's source seam (`ScrollbackPane.test`: a source holding
+every line is drawn with its slots, gets the reader's progress, and pages
+nothing); the encrypted pane (opens on the marker past a counted alarm and
+an uncounted pin, reads only once the last line is seen, pages nothing from
+grappa, the menu's CTCP answers in the plain query, the compose box sends,
+wraps and recalls); compose, paste, upload, placeholder, ComposeBox and
+encryptedChats each on their own rule. Every new rule read red against a
+mutant of its own, 17 of 17, each turning only its own tests red (the
+dispatch branch three, the paste guard two, the pane's null history a
+crash in its own test). e2e: `issue2512-encrypted-scrollback.spec.ts`, two
+browsers on the real ircd. Alice sends 16 messages long enough to wrap, leaves
+for a channel and comes back: a hit test at the top and the bottom of the last
+line must land on that line, and the first line out of sight is the premise.
+On desktop the compose box must be a text area that does not run sideways and
+grows to two lines on a draft the channel's box wraps. On both phones, with a
+plain query unread, there must be exactly one next-active button, inside
+`.scrollback-float-stack`. The spec reads only Alice's window, and only once
+grappa has taken every line ("sent"). The first draft waited for Bob to
+receive them and timed out, for two reasons that bind any encrypted spec:
+grappa's E2E pacer lets at most 3 lines reach one recipient in any 6 s, plus
+fake lag, so the peer's copies trail by minutes; and the engine holds at most
+16 messages waiting for keys (`OUTQ_MAX`), so the first line goes alone and
+the rest follow once the session exists. Its red arm at `60f67c7b2` (the
+window's own list and input, the spec's compose locator pointed at the old
+input): chromium red on the compose box (`INPUT`, running sideways),
+chromium-pixel-touch and webkit-iphone-15 red on the button (exactly one, the
+bare Shell one, outside the float stack). **The reopen read GREEN on all three
+projects on the old code, webkit-iphone-15 included.** Playwright's WebKit does
+not reproduce the iOS report, so that arm guards against a reopen that misses
+its last line where the bench can see one; it does not prove the reported bug
+cured. That cure is argued from the removed `.e2e-rows`, not measured.
