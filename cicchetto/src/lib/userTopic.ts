@@ -59,6 +59,7 @@ import { MAX_DURATION_SECONDS } from "./videoPolicy";
 import { patchWhoisAvatarUrl, setWhoisBundle } from "./whoisCard";
 import { setWhoReply } from "./whoModal";
 import { setWhowasBundle } from "./whowasCard";
+import { encryptedWindowPeer } from "./windowKinds";
 import {
   forceParted,
   setFailed,
@@ -162,16 +163,20 @@ import { validate } from "./wireValidate";
 
 // #606 — is the rail currently showing the query whose partner is `target`
 // on `network`? Used to decide whether a `source: user` whois_bundle (an
-// operator /whois) should ALSO refresh the rail card. `nickEquals` folds
+// operator /whois) should ALSO refresh the rail card. Issue 2499: an
+// encrypted query's rail shows its peer's card too. `nickEquals` folds
 // (#525/#1861) so a case-shift still matches. Read outside any reactive scope
 // (a channel event callback), so this is a plain current-value read.
 function railIsShowingNick(network: string, target: string): boolean {
   const sel = selectedChannel();
-  return (
-    sel?.kind === "query" &&
-    sel.networkSlug === network &&
-    nickEquals(sel.channelName, target, casemappingForSlug(network))
-  );
+  if (sel?.networkSlug !== network) return false;
+  const shown =
+    sel.kind === "query"
+      ? sel.channelName
+      : sel.kind === "encrypted"
+        ? encryptedWindowPeer(sel.channelName)
+        : null;
+  return shown !== null && nickEquals(shown, target, casemappingForSlug(network));
 }
 
 function parseWindowsMap(raw: Record<string, QueryWindowEntry[]>): Record<number, QueryWindow[]> {

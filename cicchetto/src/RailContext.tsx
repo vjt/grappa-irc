@@ -3,6 +3,7 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  type JSX,
   Match,
   on,
   onCleanup,
@@ -34,9 +35,13 @@ import WhoisCard from "./WhoisCard";
 //              It fetches the bundle when the card is ON SCREEN and the cache
 //              has nothing for that nick (#782 — see the `onScreen` contract
 //              below).
-//   * encrypted → the encrypted query's technical half (issue 2485,
+//   * encrypted → the same query context, its peer's WHOIS card included,
+//              PLUS the encrypted query's technical half (issue 2485,
 //              `EncryptedRail`): keys, trust, devices, the pin form and the
 //              last identity check, which the chat window no longer shows.
+//              Issue 2499 (vjt's ruling): an addition to the query rail,
+//              never a replacement for it; only the door to ask for an
+//              encrypted chat stays out, the window being one already.
 // It renders NOTHING for kinds with no context content (channel already has
 // the MembersPane above; home/admin/list/mentions have none). Built as a
 // container, not a hardcoded server card, so the rail is the per-kind
@@ -65,6 +70,29 @@ import WhoisCard from "./WhoisCard";
 
 const TICK_MS = 60_000;
 
+// The query context (#606), shared by a plain query and an encrypted one
+// (issue 2499): a heading and the peer's WHOIS card, with what each window
+// adds in two places, `door` under the heading (a plain query's way to ask
+// for an encrypted chat, issue 2486) and `keys` under the card (an encrypted
+// query's key sections). Required, as `PaneTopBar`'s slots are: a window
+// that adds nothing there says `null`.
+const QueryContext: Component<{
+  networkSlug: string;
+  nick: string;
+  door: JSX.Element;
+  keys: JSX.Element;
+}> = (props) => (
+  <div class="rail-query-context" data-testid="rail-query-context">
+    {/* Mirrors the MembersPane `<h3>members (n)</h3>` slot (uppercased by
+        CSS). A peer rename moves no window (issue 1365), so the heading
+        keeps the nick the window was opened under. */}
+    <h3 class="rail-query-heading">private conversation with {props.nick}</h3>
+    {props.door}
+    <WhoisCard bundle={railWhoisFor(props.networkSlug, props.nick)} />
+    {props.keys}
+  </div>
+);
+
 export type Props = {
   /** True when this rail is actually on screen — desktop rail: always; mobile
       drawer: only while open. Gates the WHOIS fetch (#782). */
@@ -89,8 +117,9 @@ const RailContext: Component<Props> = (props) => {
 
   // Fetch-on-visible. The key composes BOTH halves of "showing a nick we may
   // not have" — the identity on display and whether it is on display at all —
-  // so the effect fires on a query being selected while open, and on the drawer
-  // opening over an already-selected query. It does NOT fire when the drawer
+  // so the effect fires on a query (plain or, issue 2499, encrypted) being
+  // selected while open, and on the drawer opening over an already-selected
+  // one. It does NOT fire when the drawer
   // closes (key goes to null) nor on unrelated selection churn. The store
   // decides whether the ask costs an upstream command: a nick already known
   // short-circuits. A peer rename no longer swaps the selection (issue 1365),
@@ -100,9 +129,11 @@ const RailContext: Component<Props> = (props) => {
   createEffect(
     on(
       () => {
+        if (!props.onScreen) return null;
         const s = sel();
-        if (!props.onScreen || s?.kind !== "query") return null;
-        return `${s.networkSlug} ${s.channelName}`;
+        if (s?.kind === "query") return `${s.networkSlug} ${s.channelName}`;
+        const w = encrypted();
+        return w === null ? null : `${w.networkSlug} ${w.nick}`;
       },
       (key) => {
         if (key === null) return;
@@ -120,22 +151,28 @@ const RailContext: Component<Props> = (props) => {
         </Show>
       </Match>
       <Match when={sel()?.kind === "query"}>
-        <div class="rail-query-context" data-testid="rail-query-context">
-          {/* Mirrors the MembersPane `<h3>members (n)</h3>` slot (uppercased
-              by CSS). The nick reads live off selectedChannel, so a NICK while
-              the query is open re-labels the heading — #373 swaps
-              selectedChannel in place on a rename. */}
-          <h3 class="rail-query-heading">private conversation with {sel()?.channelName}</h3>
-          {/* issue 2486 — the one door to an encrypted chat with this peer. */}
-          <StartEncryptedChat
-            networkSlug={sel()?.networkSlug ?? ""}
-            peer={sel()?.channelName ?? ""}
-          />
-          <WhoisCard bundle={railWhoisFor(sel()?.networkSlug ?? "", sel()?.channelName ?? "")} />
-        </div>
+        <QueryContext
+          networkSlug={sel()?.networkSlug ?? ""}
+          nick={sel()?.channelName ?? ""}
+          door={
+            // issue 2486 — the one door to an encrypted chat with this peer.
+            <StartEncryptedChat
+              networkSlug={sel()?.networkSlug ?? ""}
+              peer={sel()?.channelName ?? ""}
+            />
+          }
+          keys={null}
+        />
       </Match>
       <Match when={encrypted()} keyed>
-        {(w) => <EncryptedRail networkSlug={w.networkSlug} nick={w.nick} />}
+        {(w) => (
+          <QueryContext
+            networkSlug={w.networkSlug}
+            nick={w.nick}
+            door={null}
+            keys={<EncryptedRail networkSlug={w.networkSlug} nick={w.nick} />}
+          />
+        )}
       </Match>
     </Switch>
   );

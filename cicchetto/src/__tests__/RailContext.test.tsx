@@ -272,20 +272,47 @@ describe("RailContext whois fetch is gated on the card being on screen (#782)", 
     expect(requestRailWhoisMock).toHaveBeenCalledWith("libera", "alice2");
   });
 
-  it("mounts the encrypted rail on an encrypted window, a fresh one per peer, and asks no WHOIS", async () => {
+  // issue 2499 (vjt's ruling): an encrypted query's rail is the query rail,
+  // WHOIS card and data path included, PLUS the key sections: an addition,
+  // never a replacement.
+  it("an encrypted window's rail is the query rail plus the key sections, a fresh one per peer", async () => {
     encryptedRailMounts.length = 0;
+    railWhoisForMock.mockImplementation((_slug, nick) =>
+      nick === "Bob"
+        ? ({ target: "Bob", account: "BobAcct" } as unknown as WhoisBundle)
+        : undefined,
+    );
     await renderContainer(true);
     await setSelected(sel("encrypted", "$e2e:Bob"));
-    expect(screen.getByTestId("e2e-rail").textContent).toBe("Bob");
-    expect(screen.queryByTestId("rail-query-context")).toBeNull();
+    const ctx = screen.getByTestId("rail-query-context");
+    expect(ctx.querySelector(".rail-query-heading")?.textContent).toContain("Bob");
+    const card = ctx.querySelector("[data-testid='whois-card']") as Element;
+    const keys = ctx.querySelector("[data-testid='e2e-rail']") as Element;
+    expect(card.textContent).toContain("BobAcct");
+    expect(keys.textContent).toBe("Bob");
+    // The person first, the keys after.
+    expect(card.compareDocumentPosition(keys) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Already encrypted: no door to ask for an encrypted chat.
+    expect(ctx.querySelector("[data-testid='rail-start-encrypted-chat']")).toBeNull();
+    expect(requestRailWhoisMock).toHaveBeenCalledWith("libera", "Bob");
 
     await setSelected(sel("encrypted", "$e2e:carol"));
     expect(screen.getByTestId("e2e-rail").textContent).toBe("carol");
     expect(encryptedRailMounts).toEqual(["libera Bob", "gone Bob", "libera carol"]);
+    expect(requestRailWhoisMock).toHaveBeenCalledWith("libera", "carol");
 
     await setSelected(sel("channel", "#italia"));
     expect(screen.queryByTestId("e2e-rail")).toBeNull();
+    expect(screen.queryByTestId("rail-query-context")).toBeNull();
+  });
+
+  it("issues NO WHOIS for an encrypted window while the rail is off screen", async () => {
+    await setSelected(sel("encrypted", "$e2e:Bob"));
+    await renderContainer(false);
     expect(requestRailWhoisMock).not.toHaveBeenCalled();
+    setOnScreen(true);
+    await Promise.resolve();
+    expect(requestRailWhoisMock).toHaveBeenCalledWith("libera", "Bob");
   });
 
   it("issues NO WHOIS for a non-query window, however visible the rail is", async () => {
