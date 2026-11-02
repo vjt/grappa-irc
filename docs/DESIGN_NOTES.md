@@ -1102,3 +1102,68 @@ premise that the body spans two lines or more pinned. The encrypted
 fixture's `row(page, "in" | "out", text)` now finds `privmsg` lines in the
 pane, "out" being the ones that carry a delivery state; `data-row-kind`
 went with the row.
+<!-- entry #2499 -->
+
+---
+
+## 2026-11-02 — #2499: an encrypted query's rail is the query rail plus its keys
+
+vjt, on staging: the right rail of an encrypted query (`EncryptedRail`,
+#2485) showed only the key and trust sections, and the peer's WHOIS card
+every plain query rail shows was gone. Ruling: **the WHOIS card belongs in
+the encrypted rail too.** The encrypted rail is the normal query rail, the
+same card through the same component and data path, PLUS the encrypted key
+sections: an addition, not a replacement, and no second card.
+
+* **One query context, one slot, the card last.** `RailContext` renders a
+  `QueryContext` for both windows: a heading, what the window adds, and
+  the peer's `WhoisCard`, fed by the per-nick `railWhois` cache (#606).
+  The heading is a required prop and says which conversation it is
+  ("private conversation with", "encrypted conversation with", the
+  wording #2485 shipped); `EncryptedRail` draws none of its own, or the
+  rail reads two. What the window adds is the one required `controls`
+  slot under the heading: the plain query's "start encrypted chat" button
+  (#2486), or the encrypted query's key sections. The door stays out of an
+  encrypted window, which already is one.
+* **The key controls above the card, a choice made in the slice and not
+  ruled.** The card renders nothing until the WHOIS answers, seconds after
+  the window is shown (the fake-lag cost below), so whatever sits under it
+  moves down by its height when it lands. A first cut with the keys under
+  the card moved verify, copy and the pin form just as the user reached
+  for them. Above the card they hold still, which is where the plain query
+  already kept its door. Noted for vjt.
+* **The data path follows the card.** The fetch stays the #782 rule, asked
+  only while the card is on screen and the cache has nothing for the nick,
+  and its key now covers an encrypted window's peer. A user's own `/whois`
+  for that nick refreshes the rail card as it does in a plain query. Both
+  read one `railPeer()` (`lib/railPeer.ts`), the one answer to which nick
+  the rail is showing, rather than the fetch key and `userTopic`'s
+  `railIsShowingNick` each deriving it.
+  The cost is the plain query's: one WHOIS per nick, which bahamut charges
+  against the same fake-lag bank as the user's next line (measured on #944
+  at about 2 s). Paid on purpose, as the ruling asks for the card.
+* **One scroller.** The key sections render inside `.rail-query-context`,
+  which owns the rail's scroll and its touch rules (#984), so the
+  `.rail-e2e` copies of those rules were dead and are gone. The WHOIS
+  fields stack in the rail, as they do in a plain query's
+  (`.rail-query-context .whois-card-fields`, #857).
+
+### Tests
+
+Unit: `RailContext` mounts the query context in an encrypted window, one
+heading saying "encrypted" and the key sections above the card, a fresh
+one per peer, no door, and asks the WHOIS for each peer; off screen it
+asks nothing and on screen it does. A plain query keeps its door above
+the card. `EncryptedRail` draws no heading. `userTopic` routes a user
+bundle for an encrypted window's peer into the rail cache. Each was seen
+red before its change. Mutants, each read red and restored: `railPeer`
+blind to encrypted windows turns three tests red (the two encrypted
+`RailContext` ones and `userTopic`'s); the card above the controls turns
+two (the plain query's order and the encrypted one's); the encrypted
+heading worded "private", and an `<h3>` put back in `EncryptedRail`, one
+each. The `RailContext` test that pinned "no query context and no WHOIS"
+in an encrypted window encoded the defect and was rewritten. e2e:
+`issue2499-encrypted-rail-whois.spec.ts` opens an encrypted query with a
+bare IRC peer and reads the rail: exactly one heading, saying encrypted;
+the card naming the peer, no ×, the rail's stacked fields; the key
+sections above the card; and no door.
