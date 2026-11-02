@@ -290,6 +290,21 @@ describe("EncryptedChatPane", () => {
     expect(openQueryWindowState).toHaveBeenCalledWith(7, "alice", expect.any(String));
   });
 
+  it("draws no line while our nick is unknown: an outgoing one would name nobody", () => {
+    setRows([{ kind: "out", id: "2", at, body: "ciao bob", state: "sent", reason: null }]);
+    render(() => (
+      <EncryptedChatPane
+        networkSlug="azzurra"
+        nick="bob"
+        ownNick={null}
+        windowsOpener={null}
+        railOpener={null}
+        onDialogOpen={null}
+      />
+    ));
+    expect(lines()).toEqual([]);
+  });
+
   it("a message written with another key than the nick's pinned one is marked, the key in its label", () => {
     setTrust({ master: KEY, verified: true, devices: 1 });
     setRows([
