@@ -4478,6 +4478,10 @@ defmodule Grappa.Session.Server do
         trailing = List.last(msg.params)
         sender = Message.sender_nick(msg)
 
+        # issue 2497 — read BEFORE the #640 gate below: the nick is absent
+        # whether its row lands in the open query or on $server.
+        :ok = maybe_no_such_nick(state, numeric_code, routing)
+
         # #640 — resolve a {:query, target} decision against actual window
         # existence: a numeric lands in an EXISTING conversation or on $server,
         # it never MINTS a query window (see resolve_numeric_query_window/2).
@@ -7816,6 +7820,31 @@ defmodule Grappa.Session.Server do
   end
 
   defp maybe_release_autojoin_on_401(state, _), do: state
+
+  # issue 2497 — a 401 ERR_NOSUCHNICK naming a nick: upstream says the nick
+  # is not on the network. The row is the routed path's (#640); this pushes
+  # the fact typed on the user topic for the window grappa holds no row for,
+  # the encrypted query, which otherwise waits 90 s for keys that cannot
+  # come, and it ends our live asking of that nick for an encrypted chat,
+  # which would otherwise wait out its 24 h deadline (`E2eRequests.absent/2`).
+  # A 401 naming a channel scans to {:channel, _} and is not one; a 401 a
+  # WHOIS absorbs never reaches the routed path, and its card says it.
+  @spec maybe_no_such_nick(t(), 1..999, NumericRouter.routing_decision()) :: :ok
+  defp maybe_no_such_nick(state, 401, {:query, nick}) when is_binary(nick) do
+    :ok = Broadcaster.to_user(state, SessionWire.no_such_nick(state.network_slug, nick))
+    now = DateTime.utc_now()
+    plan = E2eRequests.absent(E2eRequests.for_peer(state.subject, state.network_id, nick), now)
+
+    case E2eRequests.commit(state.subject, state.network_id, plan, now) do
+      {:ok, outcome} ->
+        announce_e2e_request(state, outcome, now)
+
+      {:error, reason} ->
+        Logger.warning("e2e request not ended on 401", sender: nick, reason: reason)
+    end
+  end
+
+  defp maybe_no_such_nick(_, _, _), do: :ok
 
   # The registration JOIN loop — records each JOIN in-flight (CP15 window-state
   # tracking) and tolerates transport loss / invalid names. Single source of

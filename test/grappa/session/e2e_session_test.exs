@@ -684,6 +684,32 @@ defmodule Grappa.Session.E2eSessionTest do
       assert rows(network) == 0
     end
 
+    # issue 2497 — the encrypted window lives in cicchetto only, so no query
+    # window is open for the nick and the 401 is filed under $server (#640).
+    # What reaches the window is the typed fact that the nick is not there.
+    test "a line to a nick that is not on the network: its 401 lands on $server and the user topic says the nick is absent" do
+      {server, _, user, network} = connected_session()
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.channel(user.name, network.slug, "$server"))
+
+      assert {:ok, msgid} =
+               Session.send_e2e({:user, user.id}, network.id, "Ghost", :keyreq, :control, {device.did, "*"}, @small, nil)
+
+      {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, msgid), 10_000)
+      IRCServer.feed(server, ":irc 401 #{@nick} Ghost :No such nick/channel\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :no_such_nick, network: slug, nick: "Ghost"}},
+                     @wire_timeout
+
+      assert slug == network.slug
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{message: %{channel: "$server", body: "No such nick/channel"}}},
+                     @wire_timeout
+
+      refute QueryWindows.open?({:user, user.id}, network.id, "ghost")
+    end
+
     test "a client that cannot answer holds the line instead of killing the session" do
       # The bank read is a call into the client, and the client stops
       # answering while it connects (up to 30 s per address) or sits on a
@@ -1491,6 +1517,48 @@ defmodule Grappa.Session.E2eSessionTest do
       refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request_gone}}, 200
       assert [%Request{id: ^bob} = expired] = E2eRequests.list(subject, network.id, DateTime.utc_now())
       assert E2eRequests.expired?(expired, DateTime.utc_now())
+    end
+
+    test "a 401 naming the peer we ask ends the asking on every device (issue 2497): the REQUEST reached nobody" do
+      {server, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      {:ok, %Request{id: id}} = Session.ask_e2e(subject, network.id, "Ghost", device.did, @hint)
+      _ = await_consent(server, "Ghost", :request)
+      IRCServer.feed(server, ":irc 401 #{@nick} Ghost :No such nick/channel\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request_gone, network: slug, id: ^id}},
+                     @wire_timeout
+
+      assert slug == network.slug
+      assert E2eRequests.for_peer(subject, network.id, "ghost") == nil
+      assert Process.alive?(pid)
+    end
+
+    test "a 401 leaves every request that is not our live asking: the peer's, an answer, an expired one" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      Enum.each(consent_from("alice", :request, @hint), &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{id: alice}}}, @wire_timeout
+      {:ok, %Request{id: bob}} = Session.ask_e2e(subject, network.id, "bob", device.did, @hint)
+      _ = await_consent(server, "bob", :request)
+      Enum.each(consent_from("bob", :accept, @hint), &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request, request: %{state: :accepted}}}, @wire_timeout
+      {:ok, %Request{id: carol}} = Session.ask_e2e(subject, network.id, "carol", device.did, @hint)
+      age_request!(carol, E2eRequests.ttl_seconds() + 60)
+
+      for nick <- ["alice", "bob", "carol"],
+          do: IRCServer.feed(server, ":irc 401 #{@nick} #{nick} :No such nick/channel\r\n")
+
+      # The last 401's own push: every 401 before it has been through the session.
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :no_such_nick, nick: "carol"}}, @wire_timeout
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request_gone}}
+      assert subject |> E2eRequests.list(network.id, DateTime.utc_now()) |> Enum.map(& &1.id) == [alice, bob, carol]
     end
   end
 

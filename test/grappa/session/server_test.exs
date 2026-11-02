@@ -14617,6 +14617,26 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    test "401 ERR_NOSUCHNICK naming a nick says so on the user topic; one naming a channel does not (issue 2497)" do
+      # A window that lives in cic only (the encrypted query) has no server
+      # window for the row to land in, so the fact itself is pushed, typed.
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, _} = setup_user_and_network(port)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      IRCServer.feed(server, ":irc.test.org 401 vjt #nowhere :No such nick/channel\r\n")
+      IRCServer.feed(server, ":irc.test.org 401 vjt Ghost :No such nick/channel\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :no_such_nick, network: slug, nick: "Ghost"}}, 1_000
+      assert slug == network.slug
+      # The channel's 401 went first, so it has been through the session.
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :no_such_nick}}
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "delegated numeric (372 MOTD) does NOT double-persist via the routing path" do
       # 372 is :delegated → existing MOTD handler in EventRouter persists it.
       # If the new routing path also persisted, we'd get two rows on $server.

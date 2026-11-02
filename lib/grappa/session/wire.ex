@@ -120,6 +120,7 @@ defmodule Grappa.Session.Wire do
           | :whois_bundle
           | :whois_avatar_ready
           | :peer_away
+          | :no_such_nick
           | :invite_ack
           | :lusers_bundle
           | :whowas_bundle
@@ -789,6 +790,21 @@ defmodule Grappa.Session.Wire do
           network: String.t(),
           peer: String.t(),
           message: String.t()
+        }
+
+  @typedoc """
+  issue 2497 — a 401 ERR_NOSUCHNICK naming a nick (protocol 54): upstream
+  says `nick` is not on the network, in answer to something sent to it.
+  The 401 itself is still a `:notice` row, in the open query with the nick
+  or on `$server` (#640); this push is for a window grappa holds no row
+  for, the encrypted query, which lives in cicchetto only. `nick` is the
+  RAW spelling the 401 carries. A 401 naming a channel is not one, and the
+  401 a WHOIS absorbs into its bundle is not pushed either: the card says it.
+  """
+  @type no_such_nick_payload :: %{
+          kind: :no_such_nick,
+          network: String.t(),
+          nick: String.t()
         }
 
   @typedoc """
@@ -1916,6 +1932,11 @@ defmodule Grappa.Session.Wire do
       when is_binary(network_slug) and is_binary(peer) and is_binary(message) do
     %{kind: :peer_away, network: network_slug, peer: peer, message: message}
   end
+
+  @doc "issue 2497 — the `no_such_nick` push; see the typedoc above."
+  @spec no_such_nick(String.t(), String.t()) :: no_such_nick_payload()
+  def no_such_nick(network_slug, nick) when is_binary(network_slug) and is_binary(nick),
+    do: %{kind: :no_such_nick, network: network_slug, nick: nick}
 
   @doc """
   P-0e + P-0f — 341 RPL_INVITING. Broadcast on `Topic.user/1` (P-0f
