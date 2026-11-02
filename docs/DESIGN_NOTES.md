@@ -1257,3 +1257,71 @@ at once with that reason, well inside the 90 s it used to wait, and (b) the
 asking ends (no card, the rail button free) with the 401 under it. Its red
 arm is the probe's own reading at `fa5c59ace`: the row still "waiting for
 keys" after 12 s, the card still pending after 10 s.
+<!-- entry #2500 -->
+
+---
+
+## 2026-11-02 — #2500: the media viewer lays out below the pane's top bar
+
+vjt, on an installed iPhone PWA: a very tall picture, the aspect ratio of
+the screen, opened in the media viewer with its top edge under the bar at
+the top of the window, where it could not be tapped. Ruling: the picture's
+height stops at the **bottom edge of the bar carrying the channel name**;
+its top never sits under that bar; it may run on past the bottom of the
+screen. Measure the bar, safe-area inset included, rather than hardcode it.
+
+* **Cause.** `.media-viewer-modal` centred itself in the WHOLE viewport
+  (`top: 50%`, cap `--viewport-height - 2rem`, media cap `- 8rem`). Under
+  `black-translucent` the viewport starts behind the status bar, above the
+  shell's safe-area padding and the bar the shell puts below it, so a
+  height-bound picture's top landed ~70px from the physical top: inside the
+  ~59px inset plus the bar. Playwright resolves `env()` to 0, and at 0 the
+  8rem allowance happened to clear the bar, which is why nothing caught it.
+* **The frame.** `lib/mediaViewerFrame.ts` measures, when the viewer opens,
+  the bottom edge of `.shell-main .topic-bar` (`PaneTopBar`'s band, so a
+  channel, the mentions window, an encrypted query and the admin console
+  are one selector) and writes it on the dialog as `--media-viewer-top`. The
+  sheet cuts `--media-viewer-frame` from `--viewport-height` below it, and
+  every size that spoke about the viewport speaks about the frame instead,
+  margins and allowances unchanged: the modal cap, the media cap and the
+  #2188 floor (which keeps that floor and the cap on one number, the
+  invariant its note states). `top` becomes `calc(50% + top / 2)`, the
+  middle of the frame, spelled so that with nothing to clear it is the old
+  `50%` to the pixel; the centring stays in `transform`, so the dismiss
+  drag, which restates it, needed no change.
+* **Measured, not a constant**, because the bar's edge already folds in the
+  inset, the iOS 27 band (#2190) and a topic that wraps, and JS cannot read
+  `env()` back out of the custom property (the #913 note). The measure is
+  taken synchronously at open, so the first frame is in place, and again on
+  a resize of the pane or the bar (a wrapping topic; a rotation that changes
+  the padding). `max(pane top, bar bottom)`: the admin console scrolls with
+  its bar inside it, and a bar scrolled away must not pull the frame up.
+* **Choices the ruling did not make**, declared:
+  * **Windows without a band** (a query, the server window) start the frame
+    at the pane's own top, which still clears the inset, where iOS takes the
+    touches. On a desktop browser that is 0: unchanged.
+  * **The desktop shell too.** The ruling names no platform, and the
+    installed iPad PWA runs the desktop shell with the same inset. On a
+    desktop browser the viewer now centres below the channel bar: a
+    screen-shaped picture loses about one bar of height.
+  * **The licence to run past the bottom is not taken.** It would mean
+    anchoring the viewer to the top of the frame instead of centring it,
+    which moves every picture that already fits. A tall picture therefore
+    stops a margin short of the bottom, as it did before.
+  * **The #2188 floor follows the frame**, so in a window with a bar the
+    box around a small picture is half the frame high, not half the screen.
+
+### Tests
+
+Unit: `mediaViewerFrame.test.ts` pins which edge is read in which window
+(bar, no bar, bar scrolled above the pane, no shell);
+`MediaViewerModal.test.tsx` that the image, video and audio arms all write
+the measured edge on the dialog; `mediaViewerSizeFloor.test.ts`'s pins
+moved from `--viewport-height` to the frame. e2e:
+`issue2500-viewer-clears-top-bar.spec.ts` stubs `--safe-area-inset-top` at
+59px (the device condition; the discriminating input, see Cause), uploads a
+picture with the viewport's aspect ratio, and asserts the picture and the
+viewer's header sit wholly below the bar's bottom edge and the picture stays
+on screen, on iPhone 15 and Pixel 7 and on desktop chromium. Not proven
+here: the inset a device really reports, the iOS 27 band on top of it, and
+the look; that leg is the device's.
