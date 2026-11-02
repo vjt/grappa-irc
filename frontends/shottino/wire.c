@@ -135,6 +135,7 @@ static const struct {
     {"directory_complete", WIRE_DIRECTORY_COMPLETE},
     {"directory_failed", WIRE_DIRECTORY_FAILED},
     {"away_nick_suffix_changed", WIRE_AWAY_NICK_SUFFIX_CHANGED},
+    {"no_such_nick", WIRE_NO_SUCH_NICK},
 };
 
 const char *wire_kind_name(wire_kind k) {
@@ -886,6 +887,11 @@ bool wire_narrow(const json_value *p, struct wire_event *ev) {
 
     case WIRE_AWAY_NICK_SUFFIX_CHANGED:
         if (!json_str_opt(p, "away_nick_suffix", &e.u.away_nick_suffix.suffix)) return false;
+        break;
+
+    case WIRE_NO_SUCH_NICK:
+        if (!json_str_req(p, "network", &e.u.no_such_nick.network)) return false;
+        if (!json_str_req(p, "nick", &e.u.no_such_nick.nick)) return false;
         break;
 
     case WIRE_UNKNOWN:

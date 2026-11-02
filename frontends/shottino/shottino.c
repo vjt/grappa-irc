@@ -8631,6 +8631,14 @@ static void handle_wire_event(struct app *app, const char *topic_network,
          * unrecognised-kind arm where a real gap would hide. */
         break;
 
+    case WIRE_NO_SUCH_NICK:
+        /* issue 2497. It is for the encrypted query, which keeps no
+         * scrollback and which a terminal does not have. The 401 itself
+         * is still a `notice` row, in the open query or on $server, and
+         * that row is rendered like any other; a second line here would
+         * say it twice. Dropped deliberately, as the avatar above. */
+        break;
+
     case WIRE_AUTO_AWAY_DEBOUNCE_CHANGED:
     case WIRE_AUTO_AWAY_REASON_CHANGED:
     case WIRE_QUIT_PART_REASON_CHANGED:
