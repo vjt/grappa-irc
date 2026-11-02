@@ -40,6 +40,7 @@ import {
 import { AUTOJOIN_CHANNELS, getSeededAdmin, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 import { mediaScrollbackRow, uploadViaPicker } from "../fixtures/uploadJourney";
+import { recordedShares, recordShares } from "../fixtures/webShare";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
@@ -86,6 +87,10 @@ test("🎵 upload link click opens the docked mini-player, NOT the modal (GH #11
   // (media-src 'self') without a securitypolicyviolation — the
   // _cspGuard fixture fails the spec otherwise. Audio is pass-through
   // server-side (no metadata strip), so a tiny labelled buffer uploads.
+  //
+  // issue 2501 — the bar's share needs a Web Share API to render at all, and
+  // this engine has none: install the recording one before the app boots.
+  await recordShares(page);
   const vjt = specUser();
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
@@ -155,12 +160,26 @@ test("🎵 upload link click opens the docked mini-player, NOT the modal (GH #11
   // the src wire-up; the _cspGuard proves the fetch was CSP-admitted.
   await expect(page.getByTestId("audio-mini-player-el")).toHaveAttribute("src", url);
 
-  // Download affordance: a same-origin `download` anchor at the served
-  // URL. Actually triggering the OS save dialog is out of e2e scope;
-  // the wired href + attribute is the contract.
-  const download = page.getByTestId("audio-mini-player-download");
-  await expect(download).toHaveAttribute("href", url);
-  await expect(download).toHaveAttribute("download", "");
+  // issue 2501 — share where the download anchor was (on an iOS PWA that
+  // anchor opened a preview the app could not be left from). Nothing on the
+  // bar saves by anchor any more, and share hands over the served FILE —
+  // fetched by the app itself, under the prod CSP — the same flow the media
+  // viewer's share runs.
+  await expect(player.locator("[download]")).toHaveCount(0);
+  const served = await page.request.get(url);
+  const servedBytes = await served.body();
+  expect(servedBytes.byteLength).toBeGreaterThan(0);
+  await player.getByTestId("audio-mini-player-share").click();
+  await expect.poll(() => recordedShares(page).then((calls) => calls.length)).toBe(1);
+  const [call] = await recordedShares(page);
+  expect(call?.url).toBeNull();
+  expect(call?.files).toEqual([
+    {
+      name: new URL(url).pathname.split("/").pop(),
+      type: served.headers()["content-type"],
+      size: servedBytes.byteLength,
+    },
+  ]);
 
   // Close dismisses the bar; cic stays on the channel, scrollback intact.
   await player.getByTestId("audio-mini-player-close").click();
