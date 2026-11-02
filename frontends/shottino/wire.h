@@ -55,9 +55,10 @@
  *
  * Last read, v53 -> v54 (issue 2497): the user-topic event
  * `no_such_nick`, a 401 naming a nick, for the encrypted query that keeps
- * no scrollback. The 401 is still the `notice` row a terminal already
- * shows, and an event kind it does not know is ignored, so nothing it
- * reads changed.
+ * no scrollback. The kind is NARROWED and dropped, not ignored: cicchetto
+ * narrows it, and test_commands requires every kind it narrows to be
+ * known here. A terminal has no encrypted query, and the 401 itself is
+ * still the `notice` row it already shows, so nothing it renders changed.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
@@ -178,7 +179,8 @@ typedef enum {
     WIRE_DIRECTORY_PROGRESS,
     WIRE_DIRECTORY_COMPLETE,
     WIRE_DIRECTORY_FAILED,
-    WIRE_AWAY_NICK_SUFFIX_CHANGED
+    WIRE_AWAY_NICK_SUFFIX_CHANGED,
+    WIRE_NO_SUCH_NICK
 } wire_kind;
 
 const char *wire_kind_name(wire_kind k);
@@ -616,6 +618,11 @@ struct wire_event {
              * same latitude every other nullable field in this file takes. */
             const char *suffix;
         } away_nick_suffix;
+
+        struct {
+            const char *network;
+            const char *nick; /* RAW, as the 401 carries it */
+        } no_such_nick;
     } u;
 };
 
