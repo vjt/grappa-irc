@@ -1549,7 +1549,7 @@ defmodule Grappa.Session.E2eSessionTest do
     end
 
     test "a 401 leaves every request that is not our live asking: the peer's, an answer, an expired one" do
-      {server, _, user, network} = connected_session()
+      {server, pid, user, network} = connected_session()
       subject = {:user, user.id}
       [device] = listed(user, network)
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
@@ -1569,8 +1569,11 @@ defmodule Grappa.Session.E2eSessionTest do
       for nick <- ["alice", "bob", "carol"],
           do: IRCServer.feed(server, ":irc 401 #{@nick} #{nick} :No such nick/channel\r\n")
 
-      # The last 401's own push: every 401 before it has been through the session.
+      # The last 401's own push, then a call behind it in the mailbox: the push
+      # goes out before that 401's request is committed, so the call is what
+      # says every 401 has been all the way through the session.
       assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :no_such_nick, nick: "carol"}}, @wire_timeout
+      _ = :sys.get_state(pid)
       refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_request_gone}}
       assert subject |> E2eRequests.list(network.id, DateTime.utc_now()) |> Enum.map(& &1.id) == [alice, bob, carol]
     end
