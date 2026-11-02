@@ -219,6 +219,31 @@ defmodule Grappa.E2eRequestsTest do
     end
   end
 
+  describe "absent/2 (issue 2497)" do
+    test "a 401 naming the peer ends our live outgoing request: nobody got the REQUEST", ctx do
+      {:request, {:put, outgoing, false}} = ask!(ctx, "ghost", ctx.now)
+
+      assert {:delete, ^outgoing} = E2eRequests.absent(outgoing, ctx.now)
+    end
+
+    test "and leaves everything else: nothing held, an expired asking, the peer's asking, an answer", ctx do
+      assert {:drop, :not_asking} = E2eRequests.absent(nil, ctx.now)
+
+      {:request, {:put, outgoing, false}} = ask!(ctx, "alice", ctx.now)
+      assert {:drop, :not_asking} = E2eRequests.absent(outgoing, past_deadline(ctx.now))
+
+      {:put, accepted, false} = inbound!(ctx, "alice", :accept, ctx.now)
+      assert {:drop, :not_asking} = E2eRequests.absent(accepted, ctx.now)
+
+      {:request, {:put, _, false}} = ask!(ctx, "carol", ctx.now)
+      {:put, refused, false} = inbound!(ctx, "carol", :refuse, ctx.now)
+      assert {:drop, :not_asking} = E2eRequests.absent(refused, ctx.now)
+
+      {:put, incoming, true} = inbound!(ctx, "bob", :request, ctx.now)
+      assert {:drop, :not_asking} = E2eRequests.absent(incoming, ctx.now)
+    end
+  end
+
   describe "bounds" do
     test "a new nick's REQUEST past #{E2eRequests.max_rows()} incoming rows is refused; a refresh still lands",
          ctx do
