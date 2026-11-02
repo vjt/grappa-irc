@@ -1323,6 +1323,8 @@ export type LineActions = {
 // the scrollback and the encrypted query: one set, built here.
 export function createLineActions(scope: {
   networkSlug: () => string;
+  /** The network's id, as the pane already derives it (the menu and the query door need it). */
+  networkId: () => number | undefined;
   /** The window the lines are in: the nick menu's verbs answer there. */
   channelName: () => string;
   ownNick: () => string | null;
@@ -1337,10 +1339,6 @@ export function createLineActions(scope: {
     y: number;
   } | null>(null);
 
-  // C7.6: networkId for UserContextMenu — derive from networks() by slug.
-  const networkId = (): number | undefined =>
-    networks()?.find((n) => n.slug === scope.networkSlug())?.id;
-
   return {
     // C7.6: left-click a nick → open query window + switch focus.
     // canonicalQueryNick wraps to keep the focus on an existing
@@ -1349,7 +1347,7 @@ export function createLineActions(scope: {
     // the originally-opened query window's casing (NickServ
     // GhostRECOVER, /nick foo → /nick FOO mid-conversation).
     onNickClick: (nick) => {
-      const nid = networkId();
+      const nid = scope.networkId();
       if (nid === undefined) return;
       const canonical = canonicalQueryNick(nid, nick);
       openQueryWindowState(nid, canonical, new Date().toISOString());
@@ -1385,7 +1383,7 @@ export function createLineActions(scope: {
         {(m) => (
           <UserContextMenu
             networkSlug={scope.networkSlug()}
-            networkId={networkId() ?? 0}
+            networkId={scope.networkId() ?? 0}
             channelName={scope.channelName()}
             targetNick={m().nick}
             targetHost={m().host}
@@ -1983,6 +1981,7 @@ const ScrollbackPane: Component<Props> = (props) => {
   // lines get (`createLineActions`).
   const lineActions = createLineActions({
     networkSlug: () => props.networkSlug,
+    networkId,
     channelName: () => props.channelName,
     ownNick: userNick,
     ownModes,

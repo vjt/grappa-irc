@@ -42,6 +42,7 @@ const rekeyEncrypted = vi.hoisted(() => vi.fn());
 const copyText = vi.hoisted(() => vi.fn());
 const loadDocument = vi.hoisted(() => vi.fn());
 const holdsMasterHere = vi.hoisted(() => vi.fn());
+const openQueryWindowState = vi.hoisted(() => vi.fn());
 const panel = vi.hoisted(() => ({
   onClose: null as null | (() => void),
   mounted: 0,
@@ -87,6 +88,17 @@ vi.mock("../AddDevicePanel", async () => {
   };
 });
 vi.mock("../lib/documentVisibility", () => ({ isDocumentVisible: () => visible() }));
+// A nick's click opens its query (issue 2498): the network resolves, and the
+// query door is a spy, so a test reads which nick it opened, if any.
+vi.mock("../lib/networks", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/networks")>()),
+  networkIdBySlug: () => 7,
+}));
+vi.mock("../lib/queryWindows", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/queryWindows")>()),
+  canonicalQueryNick: (_networkId: number, nick: string) => nick,
+  openQueryWindowState,
+}));
 vi.mock("../lib/clipboard", () => ({ copyText }));
 // jsdom implements no document navigation (and makes `location.assign`
 // unforgeable): the one-line seam is mocked, and a test below loads the URL
@@ -258,6 +270,24 @@ describe("EncryptedChatPane", () => {
     expect(list.textContent).not.toContain(OWN);
     // The exchange is done (a pinned key, the alarm answered): no step either.
     expect(screen.queryByTestId("e2e-step")).toBeNull();
+  });
+
+  // In any query a click on the peer's nick lands in the window already
+  // open; here that is this one, never the plaintext query beside it. Any
+  // other nick opens its query, as on every line.
+  it("a click on the peer's nick stays in the encrypted window; ours opens our query", () => {
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    setRows([
+      { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "ciao" },
+      { kind: "out", id: "2", at, body: "ciao bob", state: "sent", reason: null },
+    ]);
+    renderPane();
+    const [theirs, ours] = lines();
+    fireEvent.click(theirs?.querySelector(".scrollback-sender") as HTMLElement);
+    expect(openQueryWindowState).not.toHaveBeenCalled();
+
+    fireEvent.click(ours?.querySelector(".scrollback-sender") as HTMLElement);
+    expect(openQueryWindowState).toHaveBeenCalledWith(7, "alice", expect.any(String));
   });
 
   it("a message written with another key than the nick's pinned one is marked, the key in its label", () => {
