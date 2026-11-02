@@ -701,6 +701,42 @@ describe("MediaViewerModal — native pan for the zoomed image (#1805)", () => {
   });
 });
 
+// issue 2500 — the viewer lays out only BELOW the pane's top bar. Which edge is
+// read in which window is pinned in mediaViewerFrame.test.ts; this pins that
+// the viewer actually hands that number to its stylesheet, on every arm, from
+// the first frame. The placement itself is the e2e's to observe: jsdom applies
+// no stylesheet.
+describe("MediaViewerModal — clears the pane's top bar (issue 2500)", () => {
+  const BAR_BOTTOM = 122;
+
+  beforeEach(() => {
+    const pane = document.createElement("section");
+    pane.className = "shell-main";
+    pane.getBoundingClientRect = () => ({ top: 59, bottom: 659 }) as DOMRect;
+    const bar = document.createElement("div");
+    bar.className = "topic-bar";
+    bar.getBoundingClientRect = () => ({ top: 59, bottom: BAR_BOTTOM }) as DOMRect;
+    pane.append(bar);
+    document.body.append(pane);
+  });
+
+  afterEach(() => {
+    document.querySelector(".shell-main")?.remove();
+  });
+
+  it.each([
+    ["image", IMAGE_URL],
+    ["video", VIDEO_URL],
+    ["audio", IMAGE_URL],
+  ] as const)("publishes the bar's bottom edge as the frame's top on the %s arm", (kind, url) => {
+    render(() => <MediaViewerModal />);
+    openMediaViewer(url, kind);
+    expect(screen.getByRole("dialog").style.getPropertyValue("--media-viewer-top")).toBe(
+      `${BAR_BOTTOM}px`,
+    );
+  });
+});
+
 // #1764 — .txt / .md open as SOURCE in the same modal: monospace, line
 // numbers, no rendering of any kind (vjt, #sbiffo 2026-08-24: "nono nessun
 // rendering di gesu, assolutamente solo il sorgente txt e md"). The fetch/cap

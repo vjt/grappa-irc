@@ -14,6 +14,7 @@ import { probeMediaAvailability } from "./lib/mediaAvailability";
 import { isSameOrigin } from "./lib/mediaLink";
 import { mediaShareData } from "./lib/mediaShare";
 import { closeMediaViewer, type MediaViewerState, mediaViewerState } from "./lib/mediaViewer";
+import { bindViewerFrame } from "./lib/mediaViewerFrame";
 import { bindDismissGesture, type DismissDirections } from "./lib/mediaViewerGesture";
 import { createOverlayLock } from "./lib/overlayScrollLock";
 import {
@@ -859,7 +860,13 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
         onClick={closeMediaViewer}
       />
       <div
-        ref={bindDismiss}
+        ref={(el) => {
+          bindDismiss(el);
+          // issue 2500 — the viewer lays out below the pane's top bar, never
+          // under it (lib/mediaViewerFrame.ts). On the dialog and not on the
+          // backdrop: the backdrop still dims the whole screen.
+          onCleanup(bindViewerFrame(el));
+        }}
         role="dialog"
         aria-modal="true"
         aria-label="Media viewer"
