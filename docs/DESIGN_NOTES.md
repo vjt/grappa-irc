@@ -1202,13 +1202,21 @@ says it).
 
 **cic fails what waits for the nick's keys, and nothing else.** As
 `no-such-nick` ("not sent: there is no such nick on the network"), and it
-stops asking the nick for keys and gives up on keys the user asked for
-again. A message a device already took is not judged: the 401 does not say
-which line it answers, and failing a delivered message is the opposite lie.
-The glue acts only on a network with something waiting on the clock, the
-only one that can hold such a message, so any other 401 neither opens the
-encrypted store nor, on an account that never used E2E, runs the identity
-sync `run` falls back to.
+stops asking the nick for keys, drops the nick's KEYREQ budget (nobody
+answers a KEYREQ to a nick that is not there, so the next message asks at
+once and its own 401 fails it at once) and gives up on keys the user asked
+for again. A message a device already took is not judged, even while a copy
+of it waits for another device: the 401 does not say which line it answers,
+and failing a delivered message is the opposite lie.
+
+**The push overtakes the send, and the account lock is what orders them.**
+The 401 follows the KEYREQ's 202 by one ircd round trip, while the send that
+queued the message is still storing it. A first version gated the glue on
+`waiting`, which the send writes only when it returns: the review caught
+that the push was dropped there, and a unit test firing the push beside an
+unawaited send read the row "queued". No gate, then: like the other pushes
+(`e2e_send_dropped`), the step takes the account lock, so it runs once the
+send has stored what it queued.
 
 **The asking ends: our live `outgoing` request goes** (`E2eRequests.absent/2`,
 `e2e_request_gone` on every device). Deleted rather than a new stored state:
@@ -1230,17 +1238,20 @@ Tests: server, a real session over `IRCServer` (the KEYREQ's 401 lands on
 asking ends on its peer's 401 and every other request stays), the plan
 alone in `E2eRequestsTest`; cic, the engine (fails what waits, keeps
 another nick's queue and a delivered message, ends a re-key), the glue
-(a waiting message turns failed; with nothing waiting no store is opened
-and no identity made), the user topic arm, and the boundary census.
+(a waiting message turns failed, also when the push overtakes the send;
+with nothing waiting, nothing changes), the user topic arm, and the boundary
+census.
 Each read red against a mutant of its own. Server, 5 of 5: no push (3
 tests red), the asking not ended (1, its own), any 401 target pushed (1,
-the channel case), any row deleted (2, the plan and the session), and the
+the channel case), any row deleted (2, the plan and the session; an expired asking deleted
+is red in the session test too since it waits past the last commit), and the
 hook read AFTER the #640 gate (4: with no query window the push never
-fires, which is precisely the encrypted query). cic, 8 of 8: `absent` a
+fires, which is precisely the encrypted query). cic, 9 of 9: `absent` a
 no-op (3), the outq kept (3), `keysAwaited` kept (2), the re-key not ended
-(1), delivered messages failed too (1, its own), the glue's `waiting` gate
-removed (1, its own), the glue ticking instead (1), the user-topic arm
-dropped (1).
+(1), delivered messages failed too (1, its own), every waiting copy
+reported regardless of delivery (2, the partly delivered case among them),
+the `waiting` gate put back (1, the overtaking push), the glue ticking
+instead (1), the user-topic arm dropped (1).
 e2e: `issue2497-no-such-nick.spec.ts`, (a) the encrypted query's row fails
 at once with that reason, well inside the 90 s it used to wait, and (b) the
 asking ends (no card, the rail button free) with the 401 under it. Its red
