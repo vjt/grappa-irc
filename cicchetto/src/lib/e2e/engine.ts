@@ -796,8 +796,10 @@ export class Engine {
    * answered something sent to it, a KEYREQ most likely. No KEYS can come,
    * so what waits for its keys fails now (`no-such-nick`) rather than at
    * `OUTQ_TTL_MS`, nothing asks it for keys again, and keys the user asked
-   * for again (`rekey`) are unanswered. A message a device already has is
-   * not judged: the 401 does not say which line it answers.
+   * for again (`rekey`) are unanswered. Its KEYREQ budget goes too: nobody
+   * answers a KEYREQ to a nick that is not there, so the next message asks
+   * at once, and its own 401 fails it at once. A message a device already
+   * has is not judged: the 401 does not say which line it answers.
    */
   absent(nick: string): Result {
     const res = emptyResult();
@@ -805,6 +807,7 @@ export class Engine {
     const waiting = this.state.outq[key] ?? [];
     delete this.state.outq[key];
     delete this.state.keysAwaited[key];
+    delete this.state.keyreqSentAt[key];
     for (const q of waiting) this.lost(q.nick, "no-such-nick", [q.msg]);
     const asked = this.state.keysAsked[key];
     if (asked !== undefined) {
