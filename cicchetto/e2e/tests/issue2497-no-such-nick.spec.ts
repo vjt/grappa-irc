@@ -31,7 +31,7 @@ import {
   selectChannel,
   waitForQueryWindowReady,
 } from "../fixtures/cicchettoPage";
-import { boot, equery, KEYS_TIMEOUT, send } from "../fixtures/encryptedQuery";
+import { boot, equery, KEYS_TIMEOUT, row, send } from "../fixtures/encryptedQuery";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
@@ -51,7 +51,7 @@ test("(a) an encrypted message to a nick that is not on the network fails at onc
 
   await send(page, "anyone there?");
 
-  const state = page.getByTestId("e2e-row-state");
+  const state = row(page, "out", "anyone there?").getByTestId("e2e-row-state");
   await expect(state).toHaveAttribute("data-state", "failed", { timeout: KEYS_TIMEOUT });
   await expect(state).toHaveText("not sent: there is no such nick on the network");
 });
