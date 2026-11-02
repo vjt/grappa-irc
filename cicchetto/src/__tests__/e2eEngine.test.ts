@@ -6097,3 +6097,62 @@ describe("keys asked for a chat just agreed (issue 2486)", () => {
     expect(a.state.keysAwaited).toEqual({});
   });
 });
+
+describe("a nick grappa says is not on the network (issue 2497)", () => {
+  it("fails what waits for its keys at once, naming the messages, and asks it for keys no more", () => {
+    const a = me("alice");
+    record(a, engineOf(a).send("ghost", text("one"), "one", null, null));
+    record(a, engineOf(a).send("ghost", text("two"), "two", null, null));
+
+    expect(record(a, engineOf(a).absent("GHOST"))).toEqual({
+      events: [
+        { kind: "send_failed", nick: "ghost", reason: "no-such-nick", tags: ["one", "two"] },
+      ],
+      outbound: [],
+    });
+    expect(a.state.outq).toEqual({});
+    expect(a.state.keysAwaited).toEqual({});
+    expect(engineOf(a).waitsOnTheClock()).toBe(false);
+
+    a.now += KEYREQ_RETRY_MS;
+    expect(record(a, engineOf(a).tick()).outbound).toEqual([]);
+    a.now += OUTQ_TTL_MS;
+    record(a, engineOf(a).tick());
+    expect(failedOf(a)).toEqual([["no-such-nick", ["one", "two"]]]);
+  });
+
+  it("keeps what waits for another nick", () => {
+    const a = me("alice");
+    record(a, engineOf(a).send("ghost", text("lost"), "lost", null, null));
+    record(a, engineOf(a).send("carol", text("kept"), "kept", null, null));
+
+    record(a, engineOf(a).absent("ghost"));
+
+    expect(failedOf(a)).toEqual([["no-such-nick", ["lost"]]]);
+    expect(a.state.outq.carol).toHaveLength(1);
+    expect(a.state.keysAwaited).toEqual({ carol: true });
+  });
+
+  it("judges no message a device already has: the 401 does not say which line it answers", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    knownPeer(a, "bob", bob, 1);
+    named(a, sends(a, "bob", "hello", null));
+
+    expect(record(a, engineOf(a).absent("bob"))).toEqual({ events: [], outbound: [] });
+    expect(a.state.sent).toHaveLength(1);
+  });
+
+  it("gives up on keys the user asked for again, at once", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    knownPeer(a, "bob", bob, 1);
+    record(a, engineOf(a).rekey("bob"));
+
+    expect(record(a, engineOf(a).absent("Bob")).events).toEqual([
+      { kind: "keys_unanswered", nick: "bob" },
+    ]);
+    expect(a.state.keysAsked).toEqual({});
+    expect(engineOf(a).waitsOnTheClock()).toBe(false);
+  });
+});

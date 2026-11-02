@@ -345,7 +345,8 @@ export type SendFailure =
   | "repinned"
   | "resend-failed"
   | "rekey-throttled"
-  | "unreadable";
+  | "unreadable"
+  | "no-such-nick";
 
 export type UndecryptableReason =
   | "replayed-session"
@@ -787,6 +788,29 @@ export class Engine {
   askKeys(nick: string): Result {
     const res = emptyResult();
     if (fold(nick) !== fold(this.ownNick)) this.maybeKeyreq(nick, res);
+    return this.end(res);
+  }
+
+  /**
+   * grappa says `nick` is not on the network (issue 2497): an upstream 401
+   * answered something sent to it, a KEYREQ most likely. No KEYS can come,
+   * so what waits for its keys fails now (`no-such-nick`) rather than at
+   * `OUTQ_TTL_MS`, nothing asks it for keys again, and keys the user asked
+   * for again (`rekey`) are unanswered. A message a device already has is
+   * not judged: the 401 does not say which line it answers.
+   */
+  absent(nick: string): Result {
+    const res = emptyResult();
+    const key = fold(nick);
+    const waiting = this.state.outq[key] ?? [];
+    delete this.state.outq[key];
+    delete this.state.keysAwaited[key];
+    for (const q of waiting) this.lost(q.nick, "no-such-nick", [q.msg]);
+    const asked = this.state.keysAsked[key];
+    if (asked !== undefined) {
+      delete this.state.keysAsked[key];
+      res.events.push({ kind: "keys_unanswered", nick: asked.nick });
+    }
     return this.end(res);
   }
 

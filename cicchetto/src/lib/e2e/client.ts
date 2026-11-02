@@ -214,6 +214,11 @@ export type E2eClient = {
    */
   askKeys(ctx: E2eContext, nick: string): Promise<Report>;
   /**
+   * grappa says `nick` is not on the network (`Engine.absent`, issue 2497):
+   * what waits for its keys turns failed.
+   */
+  absent(ctx: E2eContext, nick: string): Promise<Report>;
+  /**
    * This device on the network: its did and our master key, what a consent
    * line goes from and names as a hint (issue 2486).
    */
@@ -710,6 +715,21 @@ export function e2eClient(
     };
   }
 
+  /** One engine step on a nick: its events written to the chats, its outbound sent. */
+  const step = (ctx: E2eContext, act: (engine: Engine) => Result): Promise<Report> =>
+    withEngine(ctx, async (engine, persist, verifier, door) => {
+      const res = act(engine);
+      return finish(
+        ctx,
+        engine,
+        verifier,
+        persist,
+        door,
+        changesFor(res.events, now(), null),
+        res.outbound,
+      );
+    });
+
   return {
     drain: (ctx) =>
       withEngine(ctx, async (engine, persist, verifier, door, state) => {
@@ -845,33 +865,11 @@ export function e2eClient(
         );
       }),
 
-    rekey: (ctx, nick) =>
-      withEngine(ctx, async (engine, persist, verifier, door) => {
-        const res = engine.rekey(nick);
-        return finish(
-          ctx,
-          engine,
-          verifier,
-          persist,
-          door,
-          changesFor(res.events, now(), null),
-          res.outbound,
-        );
-      }),
+    rekey: (ctx, nick) => step(ctx, (engine) => engine.rekey(nick)),
 
-    askKeys: (ctx, nick) =>
-      withEngine(ctx, async (engine, persist, verifier, door) => {
-        const res = engine.askKeys(nick);
-        return finish(
-          ctx,
-          engine,
-          verifier,
-          persist,
-          door,
-          changesFor(res.events, now(), null),
-          res.outbound,
-        );
-      }),
+    askKeys: (ctx, nick) => step(ctx, (engine) => engine.askKeys(nick)),
+
+    absent: (ctx, nick) => step(ctx, (engine) => engine.absent(nick)),
 
     device: (ctx) =>
       withEngine(ctx, async (engine) => ({ did: engine.deviceId(), master: engine.fingerprint() })),

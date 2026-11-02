@@ -564,6 +564,22 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     }
   }
 
+  /**
+   * grappa says `nick` is not on the network (`no_such_nick`, issue 2497):
+   * what waits for its keys turns failed now, not after `OUTQ_TTL_MS`. Only a
+   * network with something waiting on the clock can hold such a message, so
+   * every other 401 leaves the store unopened (and no identity is made for it).
+   */
+  async function encryptedPeerAbsent(slug: string, nick: string): Promise<void> {
+    if (!waiting.has(slug)) return;
+    try {
+      const report = await run(slug, (client, ctx) => client.absent(ctx, nick));
+      await afterReport(slug, report);
+    } catch (err) {
+      unlessElsewhere(err);
+    }
+  }
+
   /** The open encrypted chats of a network, in the order they were first opened. */
   const encryptedChatsFor = (slug: string): EncryptedChatEntry[] =>
     Object.entries(chatsBySlug()[slug] ?? {})
@@ -633,6 +649,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     pairedHere,
     verifyEncrypted,
     encryptedSendDropped,
+    encryptedPeerAbsent,
     encryptedChatsFor,
     encryptedChat,
     encryptedRows,
@@ -662,6 +679,7 @@ export const identityElsewhere = exports_.identityElsewhere;
 export const pairedHere = exports_.pairedHere;
 export const verifyEncrypted = exports_.verifyEncrypted;
 export const encryptedSendDropped = exports_.encryptedSendDropped;
+export const encryptedPeerAbsent = exports_.encryptedPeerAbsent;
 export const encryptedChatsFor = exports_.encryptedChatsFor;
 export const encryptedChat = exports_.encryptedChat;
 export const encryptedRows = exports_.encryptedRows;

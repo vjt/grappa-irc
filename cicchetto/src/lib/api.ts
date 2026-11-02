@@ -113,6 +113,7 @@ import type {
   SessionWireLinksEntry,
   SessionWireMentionsBundleMessage,
   SessionWireNamesReplyPayload,
+  SessionWireNoSuchNickPayload,
   SessionWireServerReplyPayload,
   SessionWireServerReplySource,
   SessionWireWhoisAvatarReadyPayload,
@@ -1319,6 +1320,10 @@ export type WireUserEvent =
   // reader. Generated shape verbatim.
   | E2eRequestsWireE2eRequestPayload
   | E2eRequestsWireE2eRequestGonePayload
+  // issue 2497 (protocol 54) — a 401 named a nick: it is not on the network.
+  // lib/encryptedChats.ts fails what waits for its keys. Generated shape
+  // verbatim.
+  | SessionWireNoSuchNickPayload
   | ({ kind: "names_reply" } & NamesReply)
   | ({ kind: "who_reply" } & WhoReply)
   | ({ kind: "server_reply" } & ServerReply)
