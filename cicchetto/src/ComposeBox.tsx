@@ -47,6 +47,7 @@ import {
   uploadBatch,
   uploadState,
 } from "./lib/uploadOrchestrator";
+import { encryptedWindowPeer } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
 import { NOT_JOINED_STATES } from "./lib/windowStateSets";
 
@@ -735,41 +736,45 @@ const ComposeBox: Component<Props> = (props) => {
           void doSubmit();
         }}
       >
-        <input
-          ref={pickerInput}
-          type="file"
-          multiple
-          accept={Object.values(activeHost().acceptedMimeTypes).flat().join(",")}
-          data-file-picker
-          hidden
-          onChange={onPickerChange}
-        />
-        <button
-          type="button"
-          class="compose-box-image-picker"
-          aria-label="upload file"
-          onClick={onPickerClick}
-          title="upload file"
-        >
-          {/* Paperclip icon (Feather) — inline SVG, theme-agnostic. A
-           * generic "attach" affordance: the picker accepts every
-           * category (image/video/document/audio), and iOS Safari's
-           * native picker still exposes "Take Photo" / "Choose File"
-           * on this single button — no separate capture input needed. */}
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
+        {/* issue 2512 — no picker in an encrypted query: it sends text only,
+            and the upload door refuses the window (uploadOrchestrator). */}
+        <Show when={encryptedWindowPeer(props.channelName) === null}>
+          <input
+            ref={pickerInput}
+            type="file"
+            multiple
+            accept={Object.values(activeHost().acceptedMimeTypes).flat().join(",")}
+            data-file-picker
+            hidden
+            onChange={onPickerChange}
+          />
+          <button
+            type="button"
+            class="compose-box-image-picker"
+            aria-label="upload file"
+            onClick={onPickerClick}
+            title="upload file"
           >
-            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-          </svg>
-        </button>
+            {/* Paperclip icon (Feather) — inline SVG, theme-agnostic. A
+             * generic "attach" affordance: the picker accepts every
+             * category (image/video/document/audio), and iOS Safari's
+             * native picker still exposes "Take Photo" / "Choose File"
+             * on this single button — no separate capture input needed. */}
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+            </svg>
+          </button>
+        </Show>
         <textarea
           ref={bindSwipe}
           value={getDraft(key())}

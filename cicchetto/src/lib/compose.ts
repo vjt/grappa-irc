@@ -3,7 +3,7 @@ import { aliases } from "./aliasList";
 import { ownNickForNetwork } from "./api";
 import { token } from "./auth";
 import { chantypesForSlug } from "./casemapping";
-import { type ChannelKey, channelKey } from "./channelKey";
+import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import type { CommandContext, DispatchOutcome, SubmitResult } from "./commands/context";
 import { fanOutCommand } from "./commands/fanout";
 import { watchlistCommand } from "./commands/highlight";
@@ -75,6 +75,7 @@ import {
   queryCommand,
 } from "./commands/window";
 import { documentTeardownEpoch, documentTornDownSince } from "./documentTeardown";
+import { encryptedChatDeleted, sendEncrypted } from "./encryptedChats";
 import { type FramePreview, framePreview } from "./frameBudget";
 import { friendlyError } from "./friendlyError";
 import { identityScopedStore } from "./identityScopedStore";
@@ -93,7 +94,7 @@ import { isServicesSender } from "./servicesSender";
 import { parseSlash } from "./slashCommands";
 import { peelStatusmsg } from "./statusmsg";
 import { type TabCycle, tabCompleteStep } from "./tabCompletion";
-import { SERVER_WINDOW_NAME } from "./windowKinds";
+import { encryptedWindowPeer, SERVER_WINDOW_NAME } from "./windowKinds";
 
 // Per-channel compose state. Owns:
 //   * `composeByChannel` — { draft, history, historyCursor } per key.
@@ -167,6 +168,10 @@ const empty = (): ComposeState => ({
 //
 // Only `draft` crosses. History, the history cursor and the #666 stashed
 // draft are in-session mechanics, not the thing the operator would miss.
+//
+// issue 2512 — and never an encrypted query's draft: it is plaintext meant to
+// leave this device only encrypted, and the mirror would keep it at rest in the
+// clear. A reload loses it, as the encrypted window's own line always did.
 const DRAFTS_KEY = "cicchetto.composeDrafts";
 
 // Boundary parse: these bytes can come from a different bundle version or a
@@ -194,7 +199,8 @@ const loadPersistedDrafts = (): Record<ChannelKey, ComposeState> => {
 const persistDrafts = (states: Record<ChannelKey, ComposeState>): void => {
   const drafts: Record<string, string> = {};
   for (const [key, state] of Object.entries(states)) {
-    if (state.draft !== "") drafts[key] = state.draft;
+    const encrypted = encryptedWindowPeer(decodeChannelKey(key as ChannelKey)?.name ?? "") !== null;
+    if (state.draft !== "" && !encrypted) drafts[key] = state.draft;
   }
   const keys = Object.keys(drafts);
   if (keys.length === 0) sessionStorage.removeItem(DRAFTS_KEY);
@@ -222,6 +228,9 @@ export const draftFramePreview = (
   budget: number | null,
 ): FramePreview | null => {
   if (budget === null) return null;
+  // issue 2512 — an encrypted query sends one encrypted message, sized by the
+  // E2E engine (which says "too long" on the row), never split as PRIVMSGs.
+  if (encryptedWindowPeer(target) !== null) return null;
   const cmd = parseSlash(draft, aliases());
   if (cmd.kind !== "privmsg" && cmd.kind !== "me") return null;
   if (target === SERVER_WINDOW_NAME && cmd.kind === "privmsg") return null;
@@ -248,6 +257,25 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   // what keeps #907's guarantee intact: the claim→prepare→first-write window
   // gains no new writer, and no await is introduced anywhere near it.
   createEffect(on(composeByChannel, persistDrafts, { defer: true }));
+
+  // issue 2512 — an encrypted chat deleted on this device takes what was typed
+  // in its window along, the draft and the history, or the up arrow would
+  // bring back what the delete promised nobody could. In this tab, where they
+  // live (the draft is never mirrored, above); another tab keeps its own until
+  // it reloads.
+  createEffect(
+    on(
+      encryptedChatDeleted,
+      (key) => {
+        if (key === null) return;
+        setComposeByChannel((prev) => {
+          const { [key]: _gone, ...rest } = prev;
+          return rest;
+        });
+      },
+      { defer: true },
+    ),
+  );
 
   // The compose door's tab-complete cycle (shape and rules: lib/tabCompletion).
   let tabCycle: TabCycle | null = null;
@@ -609,6 +637,23 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // a no-op regardless of session state, and the consumer (ComposeBox)
     // wants the same outcome whether or not a token is in play.
     if (cmd.kind === "empty") return { error: "empty" };
+
+    // issue 2512 — an encrypted query takes no command: everything typed in it
+    // goes to the peer, encrypted, as ONE message however many lines it holds
+    // (Olm carries the body whole, and a line renders its newlines). Asked
+    // before any verb is read, so nothing typed in that window can reach
+    // grappa's send door in clear. A failure here never reached the engine
+    // (which marks its own on the row): the pump hands the text back.
+    const peer = encryptedWindowPeer(submittedFrom);
+    if (peer !== null) {
+      try {
+        await sendEncrypted(networkSlug, peer, text);
+        return { ok: true };
+      } catch (e) {
+        console.warn(`[e2e] could not send to ${peer}`, e);
+        return { error: friendlyError(e) };
+      }
+    }
 
     // CP13 S9 — server-window only accepts slash-commands. The window
     // has no IRC target a PRIVMSG could go to. Plain text gets a friendly

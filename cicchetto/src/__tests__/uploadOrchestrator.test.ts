@@ -2164,3 +2164,26 @@ describe("the video-shrink switch with the confirm OFF (issue 2343)", () => {
     await awaitTranscodeStart(1);
   });
 });
+
+// issue 2512 — an encrypted query sends text, through Olm, and nothing else.
+// The upload host is not end-to-end encrypted: a file sent from there would
+// wait on it in clear for anyone holding the link, while only the link went
+// encrypted. So the one door every upload surface shares (the picker, a paste,
+// a drop, the OS share target) refuses it, before any notice or confirm, and
+// the compose box says why.
+describe("uploads from an encrypted query (issue 2512)", () => {
+  it("are refused at the door, and the window says why", () => {
+    const e2e = channelKey(slug, "$e2e:Bob");
+    triggerUploads(e2e, slug, "$e2e:Bob", [sampleImage()]);
+
+    expect(privacyModalState().open).toBe(false);
+    expect(confirmRequest()).toBeNull();
+    expect(pendingResolvers.length).toBe(0);
+    expect(uploadBatch(e2e)).toBeNull();
+    expect(uploadState(e2e)).toMatchObject({
+      filename: "screenshot.png",
+      error: "an encrypted chat sends text only: the upload host would keep this file unencrypted",
+    });
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+});

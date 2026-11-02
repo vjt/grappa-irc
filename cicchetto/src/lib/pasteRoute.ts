@@ -5,6 +5,7 @@ import { requestConfirm } from "./confirmDialog";
 import { dropUpload } from "./dropUpload";
 import { classifyPaste, PASTE_HARD_MESSAGE_LIMIT, pastedMessageCount } from "./pasteFlood";
 import { categoryOf } from "./uploadCategory";
+import { encryptedWindowPeer } from "./windowKinds";
 
 // Shared clipboard-paste routing — the file/text branching lifted out of
 // ComposeBox.onPaste so the textarea's own paste AND the boot-time global
@@ -213,7 +214,11 @@ function routeGuardedText(
   // Always the real count in both guarded arms, and ≥ 2 by construction, so
   // the plural is unconditional and needs no branch.
   const messages = pastedMessageCount(text);
-  switch (classifyPaste(text)) {
+  // issue 2512 — an encrypted query sends a pasted block as ONE message, so
+  // there is no burst to guard; and the guard's way out, the block as a text
+  // file, would put the plaintext on the upload host. It lands as typed text.
+  const guard = encryptedWindowPeer(channelName) === null ? classifyPaste(text) : "insert";
+  switch (guard) {
     case "confirm":
       e.preventDefault();
       requestConfirm({

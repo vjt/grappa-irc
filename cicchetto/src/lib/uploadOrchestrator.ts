@@ -25,6 +25,7 @@ import {
 // quality-review follow-up, landed with Task 7, 2026-06-09).
 import { MAX_DURATION_SECONDS, probeDuration } from "./videoPolicy";
 import { getVideoProcessingEnabled, VIDEO_PROCESSING_LABEL } from "./videoProcessing";
+import { encryptedWindowPeer } from "./windowKinds";
 
 // Upload orchestration — images cluster I-2 (2026-05-15), generalized
 // to video + document categories (uploads cluster Task 5, 2026-06-09;
@@ -915,6 +916,22 @@ export function triggerUploads(
   onDisplaced?: () => void,
 ): void {
   if (rawFiles.length === 0) return;
+  // issue 2512 — an encrypted query sends text, through Olm, and nothing else:
+  // the upload host is not end-to-end encrypted, so a file sent from there
+  // would wait on it in clear for anyone holding the link. Refused here, the
+  // door every surface shares (picker, paste, drop, the OS share target),
+  // before any notice or confirm, and said where the compose box says why.
+  const [first] = rawFiles;
+  if (encryptedWindowPeer(channelName) !== null && first !== undefined) {
+    setEntry(key, {
+      filename: first.name,
+      loaded: 0,
+      total: 0,
+      phase: "uploading",
+      error: "an encrypted chat sends text only: the upload host would keep this file unencrypted",
+    });
+    return;
+  }
   // Normalised BEFORE staging so the preview, the removal set and the queue
   // all describe the same files.
   const normalised: StagedFile[] = rawFiles.map((raw) => {
