@@ -15,12 +15,13 @@ import { allRules, ruleBody } from "./helpers/themeCss";
 // as a postage stamp. vjt, #grappa 2026-09-14 23:38 (height) and 23:39 (width).
 
 describe("media viewer — size floor (issue 2188)", () => {
-  it("floors the body's height at half the viewport, with the old value as fallback", () => {
+  it("floors the body's height at half the frame, with the old value as fallback", () => {
     // The `max(6rem, …)` arm is not decoration: it is what keeps the pre-2188
-    // spinner floor binding wherever the viewport half is smaller, so the
-    // change adds a floor and removes none.
+    // spinner floor binding wherever the frame half is smaller, so the change
+    // adds a floor and removes none. The frame is the viewport below the
+    // pane's top bar since issue 2500 — see the next test.
     expect(ruleBody(".media-viewer-body")).toMatch(
-      /min-height:\s*max\(\s*6rem\s*,\s*calc\(\s*var\(--viewport-height,\s*100dvh\)\s*\*\s*0\.5\s*\)\s*\)/,
+      /min-height:\s*max\(\s*6rem\s*,\s*calc\(\s*var\(--media-viewer-frame\)\s*\*\s*0\.5\s*\)\s*\)/,
     );
   });
 
@@ -33,14 +34,19 @@ describe("media viewer — size floor (issue 2188)", () => {
     );
   });
 
-  it("reads the floor off the SAME viewport variable the modal's cap reads", () => {
-    // The non-conflict argument depends on this: cap `viewport - 2rem`, header
-    // ~2.5rem, floor `viewport * 0.5`. Two different height sources (one
-    // `100dvh`, one keyboard-reactive) would make the arithmetic false the
-    // moment the software keyboard opens, which is exactly when the viewer is
-    // shortest.
-    expect(ruleBody(".media-viewer-modal")).toMatch(/max-height:[^;]*var\(--viewport-height,/);
-    expect(ruleBody(".media-viewer-body")).toMatch(/min-height:[^;]*var\(--viewport-height,/);
+  it("reads the floor off the SAME frame variable the modal's cap reads", () => {
+    // The non-conflict argument depends on this: cap `frame - 2rem`, header
+    // ~2.5rem, floor `frame * 0.5`. Two different height sources (one
+    // `100dvh`, one keyboard-reactive; or, since issue 2500, one cut below the
+    // top bar and one not) would make the arithmetic false exactly when the
+    // viewer is shortest.
+    expect(ruleBody(".media-viewer-modal")).toMatch(/max-height:[^;]*var\(--media-viewer-frame\)/);
+    expect(ruleBody(".media-viewer-body")).toMatch(/min-height:[^;]*var\(--media-viewer-frame\)/);
+    // And the frame is still the keyboard-reactive viewport, only cut short
+    // at the top.
+    expect(ruleBody(".media-viewer-modal")).toMatch(
+      /--media-viewer-frame:\s*calc\(\s*var\(--viewport-height,\s*100dvh\)\s*-\s*var\(--media-viewer-top,\s*0px\)\s*\)/,
+    );
   });
 
   // The NEGATIVE control, and the interpretation the issue made explicit: a

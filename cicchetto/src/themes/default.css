@@ -15095,14 +15095,35 @@ button.home-pane-network-title:hover .home-pane-network-slug {
 }
 
 .media-viewer-modal {
+  /* issue 2500 — the FRAME: the part of the screen below the pane's top bar,
+     which is all the viewer may lay itself out in. vjt's ruling, on a tall
+     picture that opened with its top under that bar on an iPhone PWA: the
+     picture stops at the bar's bottom edge and may run on past the bottom of
+     the screen. `--media-viewer-top` is that edge, MEASURED and written on
+     this element by lib/mediaViewerFrame.ts (safe-area inset, iOS 27 band and
+     a wrapped topic all included); 0px when unwritten, which is the old
+     whole-viewport frame exactly.
+
+     Every size below that used to speak about the viewport now speaks about
+     this frame instead, with its old margins and allowances unchanged, so the
+     only thing that moved is where the frame begins. The licence to run past
+     the bottom is NOT taken: using it means anchoring the viewer to the top of
+     the frame instead of centring it there, which would move every picture
+     that already fits, and that was not asked for. Keyboard-react cap, same
+     contract as .archive-modal: the frame is cut from `--viewport-height`. */
+  --media-viewer-frame: calc(var(--viewport-height, 100dvh) - var(--media-viewer-top, 0px));
   position: fixed;
-  top: 50%;
+  /* The middle of the frame rather than of the viewport. Spelled off `50%`
+     and not off `--media-viewer-frame`, so that with nothing to clear this is
+     the old `top: 50%` to the pixel. The centring itself stays in `transform`,
+     which the dismiss drag restates (MediaViewerModal's `draggedTransform`),
+     so the drag needed no change. */
+  top: calc(50% + var(--media-viewer-top, 0px) / 2);
   left: 50%;
   transform: translate(-50%, -50%);
   width: max-content;
   max-width: min(92vw, 72rem);
-  /* Keyboard-react viewport cap — same contract as .archive-modal. */
-  max-height: calc(var(--viewport-height, 100dvh) - 2rem);
+  max-height: calc(var(--media-viewer-frame) - 2rem);
   background: var(--bg);
   border: 1px solid var(--border);
   display: flex;
@@ -15225,11 +15246,12 @@ button.home-pane-network-title:hover .home-pane-network-slug {
      arrives); at `--font-size: 14px` that is 168×84px, which is a floor
      for a spinner and not for reading a picture.
 
-     Tied to `--viewport-height` — the keyboard-reactive shell height that
-     `.media-viewer-modal`'s max-height already reads — so the floor and
+     Tied to `--media-viewer-frame` — the keyboard-reactive frame that
+     `.media-viewer-modal`'s max-height already reads (issue 2500 cut it
+     from `--viewport-height` below the pane's top bar) — so the floor and
      the cap speak about one number instead of two that can disagree. The
-     cap is `viewport - 2rem` and the header is ~2.5rem, so a 50% floor
-     cannot fight it below a 144px viewport. Width is floored in ABSOLUTE
+     cap is `frame - 2rem` and the header is ~2.5rem, so a 50% floor
+     cannot fight it below a 144px frame. Width is floored in ABSOLUTE
      units instead: a bare 50vw would blow that same 40px image into a
      ~960px box on a desktop, which is not what the mobile report asks
      for. Both keep the old value as the `max()` fallback, so nothing
@@ -15250,7 +15272,7 @@ button.home-pane-network-title:hover .home-pane-network-slug {
      than special-cased, because a per-kind exception is a second shape to
      keep in step and the ruling is about the viewer. */
   min-width: max(12rem, min(50vw, 24rem));
-  min-height: max(6rem, calc(var(--viewport-height, 100dvh) * 0.5));
+  min-height: max(6rem, calc(var(--media-viewer-frame) * 0.5));
   /* hidden (was auto) so a pinch-zoomed image's scaled paint is CLIPPED to
      the viewer body — the #213 confinement. The media already fits via
      .media-viewer-media max-width/height, so `auto` never actually scrolled;
@@ -15296,8 +15318,12 @@ button.home-pane-network-title:hover .home-pane-network-slug {
 .media-viewer-media {
   display: block;
   max-width: 100%;
-  /* Header row (~2.5rem) + body padding + viewport margin. */
-  max-height: calc(var(--viewport-height, 100dvh) - 8rem);
+  /* Header row (~2.5rem) + body padding + the frame's margin. Of the frame
+     (issue 2500) and not of the viewport: a picture keeping its old height
+     would meet the modal's new cap, which squeezes the body around it, and
+     the zoom scroller would then overflow at fit and take the dismiss drag
+     (#1805). */
+  max-height: calc(var(--media-viewer-frame) - 8rem);
   object-fit: contain;
 }
 
