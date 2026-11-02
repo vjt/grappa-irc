@@ -52,6 +52,7 @@ import {
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { formatTimestamp } from "./lib/timeFormat";
 import NickText from "./NickText";
+import { createLineActions, type LineMessage, ScrollbackLine } from "./ScrollbackPane";
 
 // issue 2430 — the encrypted query window (kind "encrypted"): the rows of the
 // device's chat with one peer, and a compose line that sends only through Olm.
@@ -62,6 +63,9 @@ import NickText from "./NickText";
 // rest is exactly what an encrypted query must not leave behind: this
 // compose line keeps nothing once the message is handed to the engine, and
 // takes no slash commands (everything typed goes to the peer, encrypted).
+// The LINES are the scrollback's, though (issue 2498, vjt's ruling: one
+// renderer): each message renders through `ScrollbackLine`, so a change to
+// how a message reads lands here too.
 //
 // issue 2485 (vjt's rulings, DESIGN_NOTES #2485) split the window three ways:
 //   * the TOP BAR is the peer's verification only: verified or not (or the
@@ -104,6 +108,13 @@ import NickText from "./NickText";
 type Props = {
   networkSlug: string;
   nick: string;
+  /**
+   * Our nick on the network, as any query's lines name us (issue 2498): the
+   * sender of every outgoing line. `null` only while `/me` or the network
+   * list is not loaded, and no chat is open then: opening one needs the
+   * network's nick (`encryptedChats.ts`).
+   */
+  ownNick: string | null;
   /**
    * The rail's ☰ as the bar's LAST child, or `null`. Mobile passes it: the
    * floating `.shell-chrome` ☰ would land on the shredder, the bar's
@@ -153,62 +164,78 @@ const FAILURE_LABEL: Record<OutFailure, string> = {
   "session-ended": "the connection to the network ended before it went",
 };
 
-// `pinned` is the master the chat's nick is pinned to. An `in` row carries the
-// master whose device wrote it, which is not always that one: a message can
-// land in a nick's chat written under ANOTHER master (one kept from before the
-// nick was pinned to a new one). Such a row is marked, the key in its title.
-const EncryptedRow: Component<{ row: Message; pinned: string | undefined }> = (props) => (
-  <li class="e2e-row" data-testid="e2e-row" data-row-kind={props.row.kind}>
-    <span class="e2e-row-time scrollback-time">{formatTimestamp(props.row.at)}</span>
+// issue 2498 — a message as the scrollback's line. Ours is named by our nick,
+// the peer's by theirs, as in any query. A message that cannot be read here is
+// the line the scrollback draws for a peer's messages that cannot be read
+// (issue 2430's `e2e_undeliverable`), one of them: the same words, one place.
+function lineOf(row: Message, peer: string, ownNick: string): LineMessage {
+  const line = { id: row.id, channel: peer, server_time: row.at, meta: {} };
+  switch (row.kind) {
+    case "in":
+      return { ...line, kind: "privmsg", sender: row.nick, body: row.body };
+    case "out":
+      return { ...line, kind: "privmsg", sender: ownNick, body: row.body };
+    case "undecryptable":
+      return {
+        ...line,
+        kind: "server_event",
+        sender: row.nick,
+        body: null,
+        meta: { e2e_undeliverable: 1 },
+      };
+  }
+}
+
+/** The line's mark beside the time: every message here went encrypted. */
+const Lock: Component = () => (
+  <>
     <span class="encrypted-marker" aria-hidden="true">
       🔒
-    </span>
-    <Switch>
-      <Match when={props.row.kind === "in" && props.row}>
-        {(row) => (
-          <>
-            <NickText nick={row().nick} extraClass="e2e-row-nick" />
-            <span class="e2e-row-body">{row().body}</span>
-            <Show when={props.pinned !== undefined && row().ed25519 !== props.pinned}>
-              <span
-                class="e2e-row-alarm"
-                data-testid="e2e-row-other-key"
-                role="img"
-                aria-label={`written with another key: ${row().ed25519}`}
-                title={`written with another key: ${row().ed25519}`}
-              >
-                ⚠
-              </span>
-            </Show>
-          </>
-        )}
-      </Match>
-      <Match when={props.row.kind === "out" && props.row}>
-        {(row) => (
-          <>
-            <span class="e2e-row-nick e2e-row-own">you</span>
-            <span class="e2e-row-body">{row().body}</span>
-            <span class="e2e-row-state muted" data-testid="e2e-row-state" data-state={row().state}>
-              <Switch>
-                <Match when={row().state === "queued"}>waiting for keys</Match>
-                <Match when={row().state === "sending"}>sending</Match>
-                <Match when={row().state === "failed"}>
-                  not sent: {FAILURE_LABEL[row().reason ?? "refused"]}
-                </Match>
-              </Switch>
-            </span>
-          </>
-        )}
-      </Match>
-      <Match when={props.row.kind === "undecryptable" && props.row}>
-        {(row) => (
-          <span class="e2e-row-notice">
-            {row().nick} sent you an encrypted message that cannot be read here
+    </span>{" "}
+  </>
+);
+
+// What the line says after the body: where an outgoing message is, or that an
+// incoming one was written with another key. `pinned` is the master the
+// chat's nick is pinned to. An `in` row carries the master whose device wrote
+// it, which is not always that one: a message can land in a nick's chat
+// written under ANOTHER master (one kept from before the nick was pinned to a
+// new one). Such a row is marked, the key in its title.
+const Trailer: Component<{ row: Message; pinned: string | undefined }> = (props) => (
+  <Switch>
+    <Match when={props.row.kind === "in" && props.row}>
+      {(row) => (
+        <Show when={props.pinned !== undefined && row().ed25519 !== props.pinned}>
+          {" "}
+          <span
+            class="e2e-row-alarm"
+            data-testid="e2e-row-other-key"
+            role="img"
+            aria-label={`written with another key: ${row().ed25519}`}
+            title={`written with another key: ${row().ed25519}`}
+          >
+            ⚠
           </span>
-        )}
-      </Match>
-    </Switch>
-  </li>
+        </Show>
+      )}
+    </Match>
+    <Match when={props.row.kind === "out" && props.row}>
+      {(row) => (
+        <>
+          {" "}
+          <span class="muted" data-testid="e2e-row-state" data-state={row().state}>
+            <Switch>
+              <Match when={row().state === "queued"}>waiting for keys</Match>
+              <Match when={row().state === "sending"}>sending</Match>
+              <Match when={row().state === "failed"}>
+                not sent: {FAILURE_LABEL[row().reason ?? "refused"]}
+              </Match>
+            </Switch>
+          </span>
+        </>
+      )}
+    </Match>
+  </Switch>
 );
 
 const REPLACE_CONFIRM =
@@ -475,7 +502,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
   const [draft, setDraft] = createSignal("");
   const [searching, setSearching] = createSignal(false);
   const [query, setQuery] = createSignal("");
-  let list: HTMLOListElement | undefined;
+  let list: HTMLDivElement | undefined;
   let searchInput: HTMLInputElement | undefined;
 
   const display = () => encryptedChat(props.networkSlug, props.nick)?.nick ?? props.nick;
@@ -509,6 +536,16 @@ const EncryptedChatPane: Component<Props> = (props) => {
     );
   });
   const messageCount = () => messages().filter((row) => row.kind !== "undecryptable").length;
+
+  // A nick on a line does what it does on any query's line (issue 2498): a
+  // click opens the query with it, a right click the nick's menu, whose
+  // verbs answer in that query. A query has no modes of ours.
+  const lineActions = createLineActions({
+    networkSlug: () => props.networkSlug,
+    channelName: display,
+    ownNick: () => props.ownNick,
+    ownModes: () => [],
+  });
 
   createEffect(
     on(
@@ -695,11 +732,22 @@ const EncryptedChatPane: Component<Props> = (props) => {
       </header>
       <div class="e2e-body">
         <div class="e2e-body-content" inert={sas() !== null}>
-          <ol class="e2e-rows" ref={list}>
+          <div class="e2e-rows" ref={list}>
             <For each={shown()}>
-              {(row) => <EncryptedRow row={row} pinned={peerTrust()?.master} />}
+              {(row) => (
+                <ScrollbackLine
+                  msg={lineOf(row, display(), props.ownNick ?? "")}
+                  userNick={props.ownNick}
+                  networkSlug={props.networkSlug}
+                  onNickClick={lineActions.onNickClick}
+                  onNickContextMenu={lineActions.onNickContextMenu}
+                  onJoinChannel={lineActions.onJoinChannel}
+                  marker={<Lock />}
+                  trailer={<Trailer row={row} pinned={peerTrust()?.master} />}
+                />
+              )}
             </For>
-          </ol>
+          </div>
           <Show when={step()}>
             {(s) => (
               <section class="e2e-step" data-testid="e2e-step" data-step={s()}>
@@ -824,6 +872,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
           )}
         </Show>
       </div>
+      <lineActions.NickMenu />
     </div>
   );
 };

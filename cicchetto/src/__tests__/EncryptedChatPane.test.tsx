@@ -96,6 +96,7 @@ vi.mock("../lib/documentNavigation", () => ({ loadDocument }));
 const { default: EncryptedChatPane } = await import("../EncryptedChatPane");
 const { default: EncryptedRail } = await import("../EncryptedRail");
 const { default: PairScan } = await import("../PairScan");
+const { formatTime } = await import("../ScrollbackPane");
 
 const at = 1_700_000_000_000;
 
@@ -131,6 +132,7 @@ const Pane = () => (
   <EncryptedChatPane
     networkSlug="azzurra"
     nick="bob"
+    ownNick="alice"
     windowsOpener={null}
     railOpener={null}
     onDialogOpen={null}
@@ -147,6 +149,16 @@ const renderPane = () =>
   ));
 
 const within = (testId: string) => screen.getByTestId(testId);
+
+// The chat's messages, as the scrollback's lines (issue 2498): each read as
+// its kind and the nick it names, and its body.
+const lines = () =>
+  Array.from(
+    screen.getByTestId("e2e-pane").querySelectorAll<HTMLElement>("[data-testid=scrollback-line]"),
+  );
+const line = (row: HTMLElement) =>
+  `${row.dataset.kind} ${row.querySelector(".scrollback-sender")?.textContent}`;
+const body = (row: HTMLElement | undefined) => row?.querySelector(".scrollback-body")?.textContent;
 
 describe("EncryptedChatPane", () => {
   it("loads the chat it shows, and names the peer as the chat spells it", () => {
@@ -193,7 +205,12 @@ describe("EncryptedChatPane", () => {
     expect(bar.querySelector("[data-testid=e2e-delete-chat]")).not.toBeNull();
   });
 
-  it("shows the messages, each marked encrypted, and none of the key events the store keeps", () => {
+  // issue 2498 (vjt's ruling): one renderer. The messages are the scrollback's
+  // lines, as in any query: the time, `<nick>` with our own nick as the
+  // network knows it, the body on the same line. The encryption is the line's
+  // decoration (the lock, the delivery state), and a message that cannot be
+  // read is the line the scrollback draws for one.
+  it("shows the messages as the scrollback's lines, each marked encrypted, and none of the key events the store keeps", () => {
     setTrust({ master: KEY, verified: true, devices: 1 });
     setRows([
       { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "ciao" },
@@ -212,17 +229,21 @@ describe("EncryptedChatPane", () => {
       { kind: "verified", id: "13", at, nick: "Bob", ed25519: KEY },
     ]);
     renderPane();
-    const shown = screen.getAllByTestId("e2e-row");
-    expect(shown.map((r) => r.dataset.rowKind)).toEqual([
-      "in",
-      "out",
-      "out",
-      "out",
-      "out",
-      "undecryptable",
+    const shown = lines();
+    expect(shown.map(line)).toEqual([
+      "privmsg <Bob>",
+      "privmsg <alice>",
+      "privmsg <alice>",
+      "privmsg <alice>",
+      "privmsg <alice>",
+      "server_event Bob",
     ]);
-    for (const row of shown) expect(row.querySelector(".encrypted-marker")).not.toBeNull();
-    expect(shown[0]?.textContent).toContain("ciao");
+    for (const row of shown) {
+      expect(row.querySelector(".scrollback-time")?.textContent).toBe(formatTime(at));
+      expect(row.querySelector(".encrypted-marker")).not.toBeNull();
+    }
+    expect(body(shown[0])).toBe("ciao");
+    expect(body(shown[1])).toBe("waiting");
     expect(shown[1]?.textContent).toContain("waiting for keys");
     expect(shown[2]?.querySelector("[data-testid=e2e-row-state]")?.textContent).toBe("");
     expect(shown[3]?.textContent).toContain("not sent: grappa's queue for this peer is full");
@@ -230,7 +251,7 @@ describe("EncryptedChatPane", () => {
       "not sent: the network is not connected yet, so it could not be sized",
     );
     expect(shown[5]?.textContent).toContain(
-      "Bob sent you an encrypted message that cannot be read here",
+      "Bob sent you 1 encrypted message that cannot be read here",
     );
     const list = screen.getByTestId("e2e-pane").querySelector(".e2e-rows") as HTMLElement;
     expect(list.textContent).not.toContain(KEY);
@@ -246,7 +267,7 @@ describe("EncryptedChatPane", () => {
       { kind: "in", id: "2", at, nick: "Bob", ed25519: OWN, body: "from another" },
     ]);
     renderPane();
-    const [pinned, other] = screen.getAllByTestId("e2e-row");
+    const [pinned, other] = lines();
     expect(pinned?.querySelector("[data-testid=e2e-row-other-key]")).toBeNull();
     expect(
       other?.querySelector("[data-testid=e2e-row-other-key]")?.getAttribute("aria-label"),
@@ -776,7 +797,7 @@ describe("EncryptedChatPane, compose and the chat's tools", () => {
       { kind: "undecryptable", id: "5", at, nick: "Bob" },
     ]);
     renderPane();
-    const shown = () => screen.getAllByTestId("e2e-row").map((r) => r.dataset.rowKind);
+    const shown = () => lines().map(line);
     expect(screen.queryByTestId("e2e-search-input")).toBeNull();
 
     const toggle = screen.getByTestId("e2e-search-toggle");
@@ -786,16 +807,21 @@ describe("EncryptedChatPane, compose and the chat's tools", () => {
     expect(screen.queryByTestId("e2e-search-count")).toBeNull();
 
     fireEvent.input(input, { target: { value: " codes " } });
-    expect(shown()).toEqual(["in", "out"]);
+    expect(shown()).toEqual(["privmsg <Bob>", "privmsg <alice>"]);
     expect(screen.getByTestId("e2e-search-count").textContent).toBe("2 of 3 messages");
 
     fireEvent.input(input, { target: { value: "nothing like it" } });
-    expect(screen.queryAllByTestId("e2e-row")).toEqual([]);
+    expect(lines()).toEqual([]);
     expect(screen.getByTestId("e2e-search-count").textContent).toBe("0 of 3 messages");
 
     fireEvent.keyDown(input, { key: "Escape" });
     expect(screen.queryByTestId("e2e-search-input")).toBeNull();
-    expect(shown()).toEqual(["in", "out", "in", "undecryptable"]);
+    expect(shown()).toEqual([
+      "privmsg <Bob>",
+      "privmsg <alice>",
+      "privmsg <Bob>",
+      "server_event Bob",
+    ]);
 
     // Opened again, it starts empty.
     fireEvent.click(toggle);
@@ -823,6 +849,7 @@ describe("EncryptedChatPane, compose and the chat's tools", () => {
       <EncryptedChatPane
         networkSlug="azzurra"
         nick="bob"
+        ownNick="alice"
         windowsOpener={<button type="button" data-testid="windows-door" />}
         railOpener={<button type="button" data-testid="rail-door" />}
         onDialogOpen={null}
@@ -841,6 +868,7 @@ describe("EncryptedChatPane, compose and the chat's tools", () => {
       <EncryptedChatPane
         networkSlug="azzurra"
         nick="bob"
+        ownNick="alice"
         windowsOpener={null}
         railOpener={null}
         onDialogOpen={opened}

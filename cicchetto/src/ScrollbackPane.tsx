@@ -502,12 +502,24 @@ const scrollToTail = (list: HTMLDivElement): void => {
 // Framing follows irssi convention: PRIVMSG `<nick> body`, NOTICE
 // `-nick- body`, ACTION + presence/op kinds `* nick <verb> [target]`.
 
+/**
+ * issue 2498 — what one line reads: a scrollback row's fields, less the ones
+ * only the scrollback's own list needs, and an id from either store. The
+ * encrypted query (`EncryptedChatPane`) renders its messages through this
+ * same line (vjt's ruling: one renderer), and its ids are strings: its rows
+ * live on the device, never in grappa's scrollback.
+ */
+export type LineMessage = Pick<
+  ScrollbackMessage,
+  "channel" | "server_time" | "kind" | "sender" | "body" | "meta"
+> & { id: number | string };
+
 // `:part` / `:quit` / `:kick` carry their reason in `body` per
 // `Grappa.Scrollback.Meta`'s per-kind shape table ("body carries
 // reason"). The Meta allowlist intentionally has no `:reason` key —
 // review S29 closed the dead key on the server side, so a single
 // `body`-only lookup is the contract.
-const reasonOf = (msg: ScrollbackMessage): string | null => msg.body || null;
+const reasonOf = (msg: LineMessage): string | null => msg.body || null;
 
 // #142: render a reason / trailing as a parenthesized mIRC-formatted suffix
 // (" (reason)"), or nothing when absent. The paren chrome stays plain text;
@@ -529,7 +541,7 @@ const reasonSuffix = (reason: string | null): JSX.Element =>
 // persist meta (Grappa.Scrollback.Meta join/part/quit shape). Both keys
 // present or neither — a +x-cloaked prefix yields no mask, so this
 // returns "" and the line reads "* nick has joined" unchanged.
-const userhostSuffix = (msg: ScrollbackMessage): string => {
+const userhostSuffix = (msg: LineMessage): string => {
   const user = msg.meta.sender_user;
   const host = msg.meta.sender_host;
   return typeof user === "string" && typeof host === "string" ? ` [${user}@${host}]` : "";
@@ -539,10 +551,10 @@ const userhostSuffix = (msg: ScrollbackMessage): string => {
 // rows: `*!*@host` straight off the row, no USERHOST round-trip, and the only
 // host there is for a nick that has since QUIT. null on every other kind
 // (their meta carries no prefix) and when the meta carries no host at all.
-const isJoinPartQuit = (msg: ScrollbackMessage): boolean =>
+const isJoinPartQuit = (msg: LineMessage): boolean =>
   msg.kind === "join" || msg.kind === "part" || msg.kind === "quit";
 
-const presenceHost = (msg: ScrollbackMessage): string | null => {
+const presenceHost = (msg: LineMessage): string | null => {
   if (!isJoinPartQuit(msg)) return null;
   const host = msg.meta.sender_host;
   return typeof host === "string" ? host : null;
@@ -594,7 +606,7 @@ type RawEvent = { raw_verb?: string; raw_sender?: string; raw_params?: string[] 
 const stripCtcpDelim = (s: string): string => s.replaceAll("\u0001", "");
 const renderRawEvent = (
   raw: RawEvent,
-  msg: ScrollbackMessage,
+  msg: LineMessage,
   senderSpan: (nick: string) => JSX.Element,
   handlers: NickHandlers,
 ): JSX.Element => {
@@ -790,7 +802,7 @@ const statusmsgBadge = (
   );
 };
 
-const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element => {
+const renderBody = (msg: LineMessage, handlers: NickHandlers): JSX.Element => {
   // #648 — click-to-join affordance for a `#channel` in a CONTENT body. Passed
   // ONLY to the privmsg / notice / action MircBody calls below — the same set
   // the `.nick-clickable` sender affordance covers (#354), and the "user-typed
@@ -1232,13 +1244,21 @@ const PRESENCE_KINDS: ReadonlySet<ScrollbackMessage["kind"]> = new Set([
   "server_event",
 ]);
 
-const ScrollbackLine: Component<{
-  msg: ScrollbackMessage;
+// issue 2498 — the one renderer of a message line, the scrollback's and the
+// encrypted query's (vjt's ruling): a change to how a message reads lands in
+// both. What the encrypted query adds is decoration, in two slots the
+// scrollback leaves empty: `marker` beside the time (the lock), `trailer`
+// after the body (the delivery state, the other-key alarm). Required, as
+// `PaneTopBar`'s slots are: a slot nobody fills is `null`, said at the site.
+export const ScrollbackLine: Component<{
+  msg: LineMessage;
   userNick: string | null;
   networkSlug: string;
   onNickClick: (nick: string) => void;
   onNickContextMenu: (nick: string, host: string | null, e: MouseEvent) => void;
   onJoinChannel: (channel: string) => void;
+  marker: JSX.Element;
+  trailer: JSX.Element;
 }> = (props) => {
   // #370 — a mention is own nick ∪ custom highlight patterns; a privmsg
   // matching a /hilight word gets the exact `.scrollback-mention` treatment
@@ -1283,10 +1303,102 @@ const ScrollbackLine: Component<{
     >
       <span class="scrollback-time">{formatTime(props.msg.server_time)}</span>{" "}
       {statusmsgBadge(props.msg.meta, props.networkSlug)}
+      {props.marker}
       {renderBody(props.msg, handlers)}
+      {props.trailer}
     </div>
   );
 };
+
+/** What a line's controls do (`ScrollbackLine`'s handlers), and the nick menu they open. */
+export type LineActions = {
+  onNickClick: (nick: string) => void;
+  onNickContextMenu: (nick: string, host: string | null, e: MouseEvent) => void;
+  onJoinChannel: (channel: string) => void;
+  /** The nick's menu while it is open; the pane mounts it once. */
+  NickMenu: Component;
+};
+
+// issue 2498 — a line's controls do the same in every pane that draws lines,
+// the scrollback and the encrypted query: one set, built here.
+export function createLineActions(scope: {
+  networkSlug: () => string;
+  /** The window the lines are in: the nick menu's verbs answer there. */
+  channelName: () => string;
+  ownNick: () => string | null;
+  /** Our modes in that window, for the menu's op-gated items. */
+  ownModes: () => string[];
+}): LineActions {
+  // C7.6: context menu state — null when closed.
+  const [menu, setMenu] = createSignal<{
+    nick: string;
+    host: string | null;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  // C7.6: networkId for UserContextMenu — derive from networks() by slug.
+  const networkId = (): number | undefined =>
+    networks()?.find((n) => n.slug === scope.networkSlug())?.id;
+
+  return {
+    // C7.6: left-click a nick → open query window + switch focus.
+    // canonicalQueryNick wraps to keep the focus on an existing
+    // case-insensitive match (RFC 2812 §2.2); members-list nick is
+    // usually canonical already but the NAMES casing can drift from
+    // the originally-opened query window's casing (NickServ
+    // GhostRECOVER, /nick foo → /nick FOO mid-conversation).
+    onNickClick: (nick) => {
+      const nid = networkId();
+      if (nid === undefined) return;
+      const canonical = canonicalQueryNick(nid, nick);
+      openQueryWindowState(nid, canonical, new Date().toISOString());
+      setSelectedChannel({
+        networkSlug: scope.networkSlug(),
+        channelName: canonical,
+        kind: "query",
+      });
+    },
+
+    // C7.6: right-click a nick → show UserContextMenu at cursor.
+    onNickContextMenu: (nick, host, e) => {
+      e.preventDefault();
+      setMenu({ nick, host, x: e.clientX, y: e.clientY });
+    },
+
+    // No-silent-drops bucket 2: [Join] CTA in INVITE rows.
+    //
+    // #902 — the body moved to `channelJoin.acceptInvite`. It used to be a
+    // private copy of "postJoin then foreground the folded key" living here,
+    // closed over `props.networkSlug`; the invite BANNER needs the identical
+    // verb from outside any component, and two copies would have drifted. The
+    // shared one also keeps the #799 fold and adds the REST-failure log this
+    // copy lacked. Server-driven `:pending` origination still flows via
+    // record_in_flight_join; this only initiates.
+    //
+    // No +k key is passed (no UX surface for it on an invite; keyed-channel
+    // invites are rare and `/join #chan key` still works from compose).
+    onJoinChannel: (channel) => acceptInvite(scope.networkSlug(), channel),
+
+    NickMenu: () => (
+      <Show when={menu()}>
+        {(m) => (
+          <UserContextMenu
+            networkSlug={scope.networkSlug()}
+            networkId={networkId() ?? 0}
+            channelName={scope.channelName()}
+            targetNick={m().nick}
+            targetHost={m().host}
+            ownModes={scope.ownModes()}
+            ownNick={scope.ownNick()}
+            position={{ x: m().x, y: m().y }}
+            onClose={() => setMenu(null)}
+          />
+        )}
+      </Show>
+    ),
+  };
+}
 
 // C7.1: row types for the mixed separator+message rendering list.
 // issue 2304 — `at` is the instant the label was rendered FROM (the first
@@ -1686,10 +1798,6 @@ const ScrollbackPane: Component<Props> = (props) => {
   // hidden until a real row lands.
   const [sessionTopId, setSessionTopId] = createSignal<number | null>(null);
 
-  // C7.6: context menu state — null when closed.
-  type ContextMenuState = { targetNick: string; targetHost: string | null; x: number; y: number };
-  const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
-
   // #360 — mention-aware scroll-to-bottom badge. Holds the nearest-first ids
   // of mentions (own nick ∪ /hilight keywords, #370) currently below the fold
   // in THIS window; its length is the badge count, its head (`[0]`) the next
@@ -1871,41 +1979,14 @@ const ScrollbackPane: Component<Props> = (props) => {
     );
   };
 
-  // C7.6: left-click a nick → open query window + switch focus.
-  // canonicalQueryNick wraps to keep the focus on an existing
-  // case-insensitive match (RFC 2812 §2.2); members-list nick is
-  // usually canonical already but the NAMES casing can drift from
-  // the originally-opened query window's casing (NickServ
-  // GhostRECOVER, /nick foo → /nick FOO mid-conversation).
-  const handleNickClick = (nick: string): void => {
-    const nid = networkId();
-    if (nid === undefined) return;
-    const canonical = canonicalQueryNick(nid, nick);
-    openQueryWindowState(nid, canonical, new Date().toISOString());
-    setSelectedChannel({ networkSlug: props.networkSlug, channelName: canonical, kind: "query" });
-  };
-
-  // C7.6: right-click a nick → show UserContextMenu at cursor.
-  const handleNickContextMenu = (nick: string, host: string | null, e: MouseEvent): void => {
-    e.preventDefault();
-    setContextMenu({ targetNick: nick, targetHost: host, x: e.clientX, y: e.clientY });
-  };
-
-  // No-silent-drops bucket 2: [Join] CTA in INVITE rows.
-  //
-  // #902 — the body moved to `channelJoin.acceptInvite`. It used to be a
-  // private copy of "postJoin then foreground the folded key" living here,
-  // closed over `props.networkSlug`; the invite BANNER needs the identical
-  // verb from outside any component, and two copies would have drifted. The
-  // shared one also keeps the #799 fold and adds the REST-failure log this
-  // copy lacked. Server-driven `:pending` origination still flows via
-  // record_in_flight_join; this only initiates.
-  //
-  // No +k key is passed (no UX surface for it on an invite; keyed-channel
-  // invites are rare and `/join #chan key` still works from compose).
-  const handleJoinChannel = (channel: string): void => {
-    acceptInvite(props.networkSlug, channel);
-  };
+  // issue 2498 — the lines' controls, the same set the encrypted query's
+  // lines get (`createLineActions`).
+  const lineActions = createLineActions({
+    networkSlug: () => props.networkSlug,
+    channelName: () => props.channelName,
+    ownNick: userNick,
+    ownModes,
+  });
 
   // C7.1 + C7.3: Build a mixed list of (day-separator | unread-marker | message)
   // rows for rendering. Day-separator injected BETWEEN consecutive rows that
@@ -4918,9 +4999,11 @@ const ScrollbackPane: Component<Props> = (props) => {
                   msg={row.msg}
                   userNick={userNick()}
                   networkSlug={props.networkSlug}
-                  onNickClick={handleNickClick}
-                  onNickContextMenu={handleNickContextMenu}
-                  onJoinChannel={handleJoinChannel}
+                  onNickClick={lineActions.onNickClick}
+                  onNickContextMenu={lineActions.onNickContextMenu}
+                  onJoinChannel={lineActions.onJoinChannel}
+                  marker={null}
+                  trailer={null}
                 />
               );
             }}
@@ -4981,21 +5064,7 @@ const ScrollbackPane: Component<Props> = (props) => {
       {/* C7.6: nick right-click context menu. Rendered outside the scrollback
           div so it positions freely in the viewport. Closed by backdrop or
           Escape (handled inside UserContextMenu). */}
-      <Show when={contextMenu()}>
-        {(cm) => (
-          <UserContextMenu
-            networkSlug={props.networkSlug}
-            networkId={networkId() ?? 0}
-            channelName={props.channelName}
-            targetNick={cm().targetNick}
-            targetHost={cm().targetHost}
-            ownModes={ownModes()}
-            ownNick={userNick()}
-            position={{ x: cm().x, y: cm().y }}
-            onClose={() => setContextMenu(null)}
-          />
-        )}
-      </Show>
+      <lineActions.NickMenu />
       {/* #1067 — the long-press message menu. Self-gating: it reads its own
           open state off the store the gesture writes, so there is nothing to
           thread through here. */}
