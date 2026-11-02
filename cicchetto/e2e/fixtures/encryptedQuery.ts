@@ -87,9 +87,21 @@ export async function send(page: Page, body: string): Promise<void> {
   await expect(page.getByTestId("e2e-compose-input")).toHaveValue("");
 }
 
-/** The rows of `kind` in the open encrypted query, that read `text`. */
-export const row = (page: Page, kind: string, text: string) =>
-  page.locator(`[data-testid="e2e-row"][data-row-kind="${kind}"]`, { hasText: text });
+/** The open encrypted query's messages: the scrollback's own lines (issue 2498). */
+export const chatLines = (page: Page) =>
+  page.getByTestId("e2e-pane").getByTestId("scrollback-line");
+
+/**
+ * The messages in the open encrypted query that read `text`: ours ("out",
+ * the lines that carry a delivery state) or the peer's ("in").
+ */
+export const row = (page: Page, kind: "in" | "out", text: string) => {
+  const found = page
+    .getByTestId("e2e-pane")
+    .locator('[data-testid="scrollback-line"][data-kind="privmsg"]', { hasText: text });
+  const state = page.getByTestId("e2e-row-state");
+  return kind === "out" ? found.filter({ has: state }) : found.filter({ hasNot: state });
+};
 
 /** The window's trust badge: verified, unverified, or alarm (`data-trust`). */
 export const trust = (page: Page) => page.getByTestId("e2e-peer-trust");

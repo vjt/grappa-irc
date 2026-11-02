@@ -47,14 +47,15 @@ const rail = (page: Page) => page.getByTestId("e2e-rail");
 const trust = (page: Page) => page.getByTestId("e2e-peer-trust");
 
 // The chat body holds messages and nothing else of the E2E machinery: only
-// in/out rows, no step card, no master key anywhere in its text.
+// message lines (issue 2498: the scrollback's own), no step card, no master
+// key anywhere in its text.
 async function bodyIsClean(page: Page, keys: string[]): Promise<void> {
   await expect(body(page).getByTestId("e2e-step")).toHaveCount(0);
   const kinds = await body(page)
-    .getByTestId("e2e-row")
-    .evaluateAll((rows) => rows.map((r) => r.getAttribute("data-row-kind")));
+    .getByTestId("scrollback-line")
+    .evaluateAll((rows) => rows.map((r) => r.getAttribute("data-kind")));
   expect(kinds.length).toBeGreaterThan(0);
-  expect(kinds.filter((k) => k !== "in" && k !== "out")).toEqual([]);
+  expect(kinds.filter((k) => k !== "privmsg")).toEqual([]);
   const text = (await body(page).textContent()) ?? "";
   for (const key of keys) expect(text).not.toContain(key);
 }

@@ -29,6 +29,7 @@ import {
 } from "../fixtures/cicchettoPage";
 import {
   boot,
+  chatLines,
   e2eWindow,
   equery,
   KEYS_TIMEOUT,
@@ -68,7 +69,7 @@ test("an encrypted chat's history: searched in the window, kept or deleted on cl
   const aliceNick = specNick();
   const bob = await provisionPeerSubject(testInfo, "bob");
   const peer = await peerPage(browser);
-  const rows = page.getByTestId("e2e-row");
+  const rows = chatLines(page);
   try {
     await boot(page, alice);
     await boot(peer.page, bob.user);
