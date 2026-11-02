@@ -233,13 +233,12 @@ export function sameHostHref(
 }
 
 /**
- * Whether a viewer href is on the page ORIGIN — the question every fetch and
- * every `download` anchor in the viewer has to ask first, and a stricter one
- * than `sameHostUrl`'s host match. A `fetch` of anything else is refused by
- * `connect-src` (not widened to `https:`, see the moduledoc), and a `download`
- * attribute on anything else is ignored, so the anchor navigates instead.
- * An admitted alias host never reaches this answering false: `classifyMediaLink`
- * has already re-rooted it on the page origin. Unparseable → false.
+ * Whether a viewer href is on the page ORIGIN — the question every fetch in the
+ * viewer has to ask first, and a stricter one than `sameHostUrl`'s host match.
+ * A `fetch` of anything else is refused by `connect-src` (not widened to
+ * `https:`, see the moduledoc). An admitted alias host never reaches this
+ * answering false: `classifyMediaLink` has already re-rooted it on the page
+ * origin. Unparseable → false.
  */
 export function isSameOrigin(href: string, origin: string): boolean {
   try {

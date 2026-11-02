@@ -12,7 +12,6 @@ import {
 import { copyText } from "./lib/clipboard";
 import { errorMessage } from "./lib/friendlyApiError";
 import { probeMediaAvailability } from "./lib/mediaAvailability";
-import { isSameOrigin } from "./lib/mediaLink";
 import { mediaShareData } from "./lib/mediaShare";
 import { closeMediaViewer, type MediaViewerState, mediaViewerState } from "./lib/mediaViewer";
 import { bindViewerFrame } from "./lib/mediaViewerFrame";
@@ -927,23 +926,18 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
               >
                 open in browser
               </a>
-              {/* issue 2468 — download and share sit under the same `gone`
-                  gate, for the same reason: on a confirmed 404 both would hand
-                  the reader the route's JSON instead of a file.
+              {/* issue 2468 — share sits under the same `gone` gate, for the
+                  same reason: on a confirmed 404 it would hand the reader the
+                  route's JSON instead of a file.
 
-                  Download is the AudioMiniPlayer anchor: `download=""` forces a
-                  save over the server's `inline` disposition and keeps the
-                  server's filename. Same-origin only, because the attribute is
-                  IGNORED on a cross-origin href and the anchor would then
-                  navigate the operator out of the app — a cross-host image
-                  keeps the long-press menu and the share link instead. No
-                  `target`: a download is not a navigation. */}
-              <Show when={isSameOrigin(props.state.href, window.location.origin)}>
-                <a href={props.state.href} download="" class="media-viewer-download">
-                  download
-                </a>
-              </Show>
-              {/* Only where the Web Share API exists (the ShareSessionModal
+                  There is no download beside it any more (issue 2501, vjt's
+                  ruling). It was a `download=""` anchor, and on an iOS PWA it
+                  opened a preview window the reader could not leave: the app
+                  was stuck there. Share covers what it was for — the iOS sheet
+                  carries "Save Image" — and the picture keeps its own
+                  long-press menu.
+
+                  Only where the Web Share API exists (the ShareSessionModal
                   rule, one feature-detect for both doors). */}
               <Show when={canNativeShare()}>
                 <button type="button" class="media-viewer-share" onClick={() => void shareMedia()}>
