@@ -6143,6 +6143,32 @@ describe("a nick grappa says is not on the network (issue 2497)", () => {
     expect(a.state.sent).toHaveLength(1);
   });
 
+  it("judges no message a device already has even while a copy of it waits for another device", () => {
+    const a = me("alice");
+    const bob = peerWith(2);
+    const [d1] = bob.devices as [Account, Account];
+    talking(a, "bob", bob, d1);
+    // It reaches d1 and waits for the other device, which has no keys on grappa.
+    named(a, sends(a, "bob", "half", null));
+    expect(a.state.outq.bob).toHaveLength(1);
+
+    expect(record(a, engineOf(a).absent("bob"))).toEqual({ events: [], outbound: [] });
+    expect(a.state.outq).toEqual({});
+    a.now += OUTQ_TTL_MS;
+    record(a, engineOf(a).tick());
+    expect(failedOf(a)).toEqual([]);
+  });
+
+  it("lets the next message ask at once: nobody answers a KEYREQ to a nick that is not there", () => {
+    const a = me("alice");
+    record(a, engineOf(a).send("ghost", text("one"), "one", null, null));
+    record(a, engineOf(a).absent("ghost"));
+
+    expect(record(a, engineOf(a).send("ghost", text("two"), "two", null, null)).outbound).toEqual([
+      keyreqOf(a, "ghost"),
+    ]);
+  });
+
   it("gives up on keys the user asked for again, at once", () => {
     const a = me("alice");
     const bob = peerWith(1);

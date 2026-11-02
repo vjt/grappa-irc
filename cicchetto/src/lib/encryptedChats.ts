@@ -566,12 +566,13 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
   /**
    * grappa says `nick` is not on the network (`no_such_nick`, issue 2497):
-   * what waits for its keys turns failed now, not after `OUTQ_TTL_MS`. Only a
-   * network with something waiting on the clock can hold such a message, so
-   * every other 401 leaves the store unopened (and no identity is made for it).
+   * what waits for its keys turns failed now, not after `OUTQ_TTL_MS`. Never
+   * gated on `waiting`: the push follows the KEYREQ's 202 by one ircd round
+   * trip, while the send that queued the message is still storing it, so the
+   * set is not yet written. The account lock (`withEngine`) is what orders
+   * the two: this step runs once the send has stored what it queued.
    */
   async function encryptedPeerAbsent(slug: string, nick: string): Promise<void> {
-    if (!waiting.has(slug)) return;
     try {
       const report = await run(slug, (client, ctx) => client.absent(ctx, nick));
       await afterReport(slug, report);

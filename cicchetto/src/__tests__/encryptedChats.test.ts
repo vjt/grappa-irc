@@ -417,11 +417,27 @@ describe("encrypted chats", () => {
     expect(outStatesOf("Ghost")).toEqual([["anyone?", "failed", "no-such-nick"]]);
   });
 
-  it("a nick not on the network, with nothing waiting, opens no store and makes no identity (issue 2497)", async () => {
+  it("the push that overtakes the send still fails the message: the account lock orders them (issue 2497)", async () => {
+    await chats.drainE2e(net.slug);
+    await chats.openEncryptedChat(net.slug, "Ghost");
+    await chats.loadEncryptedChat(net.slug, "Ghost");
+
+    // The 401 follows the KEYREQ's 202 by one ircd round trip, while the send
+    // that queued the message is still storing it.
+    const sending = chats.sendEncrypted(net.slug, "Ghost", "anyone?");
+    const absent = chats.encryptedPeerAbsent(net.slug, "ghost");
+    await Promise.all([sending, absent]);
+
+    expect(outStatesOf("Ghost")).toEqual([["anyone?", "failed", "no-such-nick"]]);
+  });
+
+  it("a nick not on the network with nothing waiting for it changes nothing (issue 2497)", async () => {
+    await chats.drainE2e(net.slug);
+
     await chats.encryptedPeerAbsent(net.slug, "ghost");
 
-    expect(api.putE2eList).not.toHaveBeenCalled();
-    expect(api.listE2eDeviceInbox).not.toHaveBeenCalled();
+    expect(chats.encryptedChatsFor(net.slug)).toEqual([]);
+    expect(chats.encryptedChat(net.slug, "ghost")).toBeUndefined();
   });
 
   it("pins Bob's master by hand: the pin is shown and the badge reads verified", async () => {
