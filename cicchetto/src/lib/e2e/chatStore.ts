@@ -92,7 +92,7 @@ export const isMessage = (row: ChatRow): row is Message =>
  * standing, which the rail shows: a row nobody will see must not badge a
  * window, nor reopen one on an empty body.
  */
-const shown = (row: ChatRow): boolean =>
+export const countsAsUnread = (row: ChatRow): boolean =>
   isMessage(row) || row.kind === "key_alarm" || (row.kind === "sas_asked" && row.by === "peer");
 
 /** Why an order challenge went unanswered: the peer's key is not verified, or the send log's verdict. */
@@ -118,7 +118,7 @@ export type Chat = { nick: string; open: boolean; unread: number; check?: Identi
 
 /**
  * `add` writes a row unless one with its id is there already; a row the
- * window shows (`shown`) opens the chat (a new message reopens a closed one,
+ * window shows (`countsAsUnread`) opens the chat (a new message reopens a closed one,
  * as a query window does) and counts if `unread`, the others do neither. `out`
  * moves an outgoing row along, and changes nothing if the row is not there,
  * nor once the row is sent and the change would take it back (`backwards`).
@@ -241,7 +241,7 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
           // An `out` alone never creates a chat: its row would not be there.
           if (index.chats[key] === undefined && own.every((c) => c.op === "out")) continue;
           const first = own[0] as ChatChange;
-          const chat = entry(index, first.nick, first.op === "add" && shown(first.row));
+          const chat = entry(index, first.nick, first.op === "add" && countsAsUnread(first.row));
           // A check lives on the index: the rows are not read, nor sealed again.
           const rowsChange = own.some((c) => c.op !== "check");
           let rows = rowsChange ? await loadRows(chat.id) : [];
@@ -249,7 +249,7 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
             if (change.op === "add") {
               if (rows.some((r) => r.id === change.row.id)) continue;
               rows.push(change.row);
-              if (!shown(change.row)) continue;
+              if (!countsAsUnread(change.row)) continue;
               chat.open = true;
               if (change.unread) chat.unread += 1;
             } else if (change.op === "check") {

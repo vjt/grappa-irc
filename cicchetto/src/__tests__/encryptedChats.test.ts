@@ -10,12 +10,14 @@
 // (its own slug and slot) and a fresh grappa.
 import { createRoot, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { channelKey } from "../lib/channelKey";
 import type { OwnIdentity } from "../lib/e2e/accountStore";
 import type { ChatRow, OutFailure, OutState } from "../lib/e2e/chatStore";
 import { IdentityElsewhereError } from "../lib/e2e/client";
 import { Engine } from "../lib/e2e/engine";
 import { sendLog, subjectKey } from "../lib/e2e/orders";
 import { DEFAULT_ISUPPORT, seedIsupport } from "../lib/isupport";
+import { encryptedWindowName } from "../lib/windowKinds";
 import { FRAME_BUDGET_BASE } from "./helpers/e2eDevices";
 import { Grappa, routeApi } from "./helpers/e2eGrappa";
 import { memoryLock, memoryVault } from "./helpers/e2eVault";
@@ -217,6 +219,30 @@ describe("encrypted chats", () => {
         chats.encryptedTrust(net.slug, "Bob"),
       ),
     ).toBe("unverified");
+  });
+
+  // issue 2512 — the window an own send went from is told at once, at Enter,
+  // so it follows the send to its last line wherever the reader was; and a
+  // send reads the chat, as a send reads any window, which the window learns
+  // once the chat is read (its unread marker goes).
+  it("an own send tells its window at once, and reads the chat once queued", async () => {
+    await chats.drainE2e(net.slug);
+    const b = await bob();
+    await b.client.send(b.ctx, net.nick, "ciao alice");
+    await b.client.drain(b.ctx);
+    await chats.drainE2e(net.slug);
+    await chats.loadEncryptedChat(net.slug, "Bob");
+    expect(chats.encryptedChatsFor(net.slug)).toEqual([{ key: "bob", nick: "Bob", unread: 1 }]);
+    const window = channelKey(net.slug, encryptedWindowName("Bob"));
+
+    const sending = chats.sendEncrypted(net.slug, "Bob", "ciao bob");
+    expect(chats.encryptedSendSubmitted()).toBe(window);
+    expect(chats.lastEncryptedSend()).not.toBe(window);
+    await sending;
+
+    expect(outStates().map(([body]) => body)).toEqual(["ciao bob"]);
+    expect(chats.encryptedChatsFor(net.slug)).toEqual([{ key: "bob", nick: "Bob", unread: 0 }]);
+    expect(chats.lastEncryptedSend()).toBe(window);
   });
 
   it("a message to Bob waits for his keys, then goes, and he reads it", async () => {
@@ -814,6 +840,8 @@ describe("encrypted chats", () => {
     expect(await chats.encryptedChatHasMessages(net.slug, "bob")).toBe(false);
   });
 
+  // issue 2512 — and its window is named, so the compose store drops what was
+  // typed there (`lib/compose.ts`), whichever door deleted the chat.
   it("deletes Bob's chat: its rows go in every tab, the badge's pin stays, a new message starts over", async () => {
     await chats.drainE2e(net.slug);
     const b = await bob();
@@ -827,8 +855,10 @@ describe("encrypted chats", () => {
     const told: unknown[] = [];
     other.addEventListener("message", (event) => told.push(event.data));
     try {
+      expect(chats.encryptedChatDeleted()).toBeNull();
       await chats.deleteEncryptedChat(net.slug, "BOB");
 
+      expect(chats.encryptedChatDeleted()).toBe(channelKey(net.slug, encryptedWindowName("Bob")));
       expect(chats.encryptedChatsFor(net.slug)).toEqual([]);
       expect(chats.encryptedChat(net.slug, "Bob")).toBeUndefined();
       expect(chats.encryptedRows(net.slug, "Bob")).toEqual([]);

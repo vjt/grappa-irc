@@ -44,6 +44,7 @@ import {
   sendE2e,
 } from "./api";
 import { token } from "./auth";
+import { type ChannelKey, channelKey } from "./channelKey";
 import { browserE2e } from "./e2e/browser";
 import { type Chat, type ChatRow, isMessage, type SendDropped } from "./e2e/chatStore";
 import {
@@ -73,6 +74,7 @@ import {
   isupportForNetwork,
 } from "./isupport";
 import { networkBySlug, networks, user } from "./networks";
+import { encryptedWindowName } from "./windowKinds";
 import type { SessionWireE2eDropReason } from "./wireTypes";
 
 /** How often what waits on the clock is checked: messages waiting for keys (a minute), SASes (10). */
@@ -215,6 +217,24 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const [sasByChat, setSasByChat] = createSignal<Record<string, SasView | null>>({});
   /** Networks whose identity grappa holds and this browser cannot speak for. */
   const [elsewhereBySlug, setElsewhereBySlug] = createSignal<Record<string, true>>({});
+  // issue 2512 — the encrypted window an own send was submitted from, and the
+  // one whose chat it then read: what the window's scrollback pane follows and
+  // re-latches its unread marker on, as grappa's `ownSendSubmitted` and
+  // `lastOwnSend` say for every other window. Events, so a second send from the
+  // same window is news too.
+  const [encryptedSendSubmitted, setEncryptedSendSubmitted] = createSignal<ChannelKey | null>(
+    null,
+    { equals: false },
+  );
+  const [lastEncryptedSend, setLastEncryptedSend] = createSignal<ChannelKey | null>(null, {
+    equals: false,
+  });
+  // issue 2512 — the window of the chat this tab last deleted: the compose
+  // store drops what was typed there (`lib/compose.ts`), whichever door
+  // deleted it.
+  const [encryptedChatDeleted, setEncryptedChatDeleted] = createSignal<ChannelKey | null>(null, {
+    equals: false,
+  });
   /** Chats a window showed: kept current. Others are read when shown. */
   const loaded = new Set<string>();
   /** Networks with something waiting on the clock: messages waiting for keys, a SAS. */
@@ -229,6 +249,9 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     setOwnKeyBySlug({});
     setSasByChat({});
     setElsewhereBySlug({});
+    setEncryptedSendSubmitted(null);
+    setLastEncryptedSend(null);
+    setEncryptedChatDeleted(null);
     loaded.clear();
     waiting.clear();
     drainAgain.clear();
@@ -467,6 +490,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
    */
   async function deleteEncryptedChat(slug: string, nick: string): Promise<void> {
     await changed(slug, await run(slug, (client, ctx) => client.deleteChat(ctx, nick)));
+    setEncryptedChatDeleted(channelKey(slug, encryptedWindowName(nick)));
   }
 
   /** Whether the chat with `nick` keeps any message on this device: what its close asks about. */
@@ -482,9 +506,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     await changed(slug, [fold(nick)]);
   }
 
+  // An own send reads the chat, as a send reads any window: what is above it
+  // was seen by whoever wrote below it.
   async function sendEncrypted(slug: string, nick: string, body: string): Promise<void> {
+    const windowKey = channelKey(slug, encryptedWindowName(nick));
+    setEncryptedSendSubmitted(windowKey);
     const report = await run(slug, (client, ctx) => client.send(ctx, nick, body));
     await afterReport(slug, report);
+    await readEncryptedChat(slug, nick);
+    setLastEncryptedSend(windowKey);
   }
 
   /** Asks `nick` for its keys again: the user's answer to a message none of its devices could read (issue 2491). */
@@ -640,6 +670,9 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     encryptedChatHasMessages,
     readEncryptedChat,
     sendEncrypted,
+    encryptedSendSubmitted,
+    lastEncryptedSend,
+    encryptedChatDeleted,
     rekeyEncrypted,
     askEncryptedKeys,
     encryptedDevice,
@@ -670,6 +703,9 @@ export const deleteEncryptedChat = exports_.deleteEncryptedChat;
 export const encryptedChatHasMessages = exports_.encryptedChatHasMessages;
 export const readEncryptedChat = exports_.readEncryptedChat;
 export const sendEncrypted = exports_.sendEncrypted;
+export const encryptedSendSubmitted = exports_.encryptedSendSubmitted;
+export const lastEncryptedSend = exports_.lastEncryptedSend;
+export const encryptedChatDeleted = exports_.encryptedChatDeleted;
 export const rekeyEncrypted = exports_.rekeyEncrypted;
 export const askEncryptedKeys = exports_.askEncryptedKeys;
 export const encryptedDevice = exports_.encryptedDevice;
