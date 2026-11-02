@@ -107,8 +107,8 @@ defmodule Grappa.E2eRequests do
   @theirs [:incoming]
   @ours [:outgoing, :accepted, :refused]
 
-  @typedoc "Why an inbound line changed nothing."
-  @type drop_reason :: :unsolicited | :already_accepted
+  @typedoc "Why an inbound line, or a 401 naming the peer (`absent/2`), changed nothing."
+  @type drop_reason :: :unsolicited | :already_accepted | :not_asking
 
   @typedoc """
   What a `:put` writes: the peer as spelled on this event, the state, the
@@ -271,6 +271,21 @@ defmodule Grappa.E2eRequests do
       :outgoing -> {:cancel, {:delete, row}}
       _ -> {:none, {:delete, row}}
     end
+  end
+
+  @doc """
+  Plans what a 401 ERR_NOSUCHNICK naming the peer does to `row` (issue
+  2497). Pure. Our live `outgoing` request goes: the nick is not on the
+  network, so nobody got the REQUEST and nobody can answer it, and the card
+  would otherwise wait out the 24 h deadline. Everything else stays: an
+  expired asking already says nobody answered, the peer's asking and an
+  answer are theirs. The 401 does not say which line it answers, so a peer
+  who got the REQUEST and has since quit ends it too: on their return they
+  would ask afresh, or meet a nick taken by someone else.
+  """
+  @spec absent(Request.t() | nil, DateTime.t()) :: plan()
+  def absent(row, %DateTime{} = now) do
+    if phase(row, now) == :outgoing, do: {:delete, row}, else: {:drop, :not_asking}
   end
 
   @doc """
