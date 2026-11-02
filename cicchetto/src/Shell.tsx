@@ -917,9 +917,9 @@ const Shell: Component = () => {
                   <DirectoryPane networkSlug={selectedChannel()?.networkSlug ?? ""} />
                 </Match>
                 <Match when={encryptedWindow()} keyed>
-                  {/* issue 2430 — an encrypted query: its own pane and its
-                    own compose line (EncryptedChatPane.tsx says why neither
-                    is the scrollback pair). No MembersPane. */}
+                  {/* issue 2430 — an encrypted query: the scrollback pair
+                    inside a pane of its own, which reads the device's chat
+                    (issue 2512, EncryptedChatPane.tsx). No MembersPane. */}
                   {(w) => (
                     <EncryptedChatPane
                       networkSlug={w.networkSlug}
@@ -1307,8 +1307,10 @@ const Shell: Component = () => {
             admin), which have no pane to anchor to and no scroll-to-bottom
             to collide with, keeping the viewport-fixed placement.
             Mutually exclusive via `kindHasScrollback` so exactly one
-            mobile next-active mounts. Self-hides when nothing is unread. */}
-          <Show when={!kindHasScrollback(selKind())}>
+            mobile next-active mounts. Self-hides when nothing is unread.
+            issue 2512 — an encrypted query carries a ScrollbackPane too,
+            inside its own pane, and so the float stack's button: not here. */}
+          <Show when={!kindHasScrollback(selKind()) && selKind() !== "encrypted"}>
             <NextActiveButton variant="mobile" />
           </Show>
 
