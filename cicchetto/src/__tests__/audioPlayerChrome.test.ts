@@ -29,7 +29,7 @@ import { ruleBody, themeCss } from "./helpers/themeCss";
 
 describe("#1697 — the hide control shares the transport row's rule", () => {
   const GROUP =
-    ".audio-mini-player-toggle,\n.audio-mini-player-hide,\n.audio-mini-player-close,\n.audio-mini-player-download";
+    ".audio-mini-player-toggle,\n.audio-mini-player-hide,\n.audio-mini-player-close,\n.audio-mini-player-share";
 
   it("styles the hide control in the shared group, not in a copy of it", () => {
     // `ruleBody` throws on an absent rule, so a group that stopped naming the

@@ -5687,7 +5687,7 @@ html.is-ios27-band .shell {
 .audio-mini-player-toggle,
 .audio-mini-player-hide,
 .audio-mini-player-close,
-.audio-mini-player-download {
+.audio-mini-player-share {
   flex: none;
   min-width: 2.5rem;
   min-height: 2.5rem;
@@ -5695,15 +5695,6 @@ html.is-ios27-band .shell {
   color: var(--fg);
   border: 1px solid var(--border);
   cursor: pointer;
-}
-
-/* The download affordance is an anchor, not a button — restore the
-   button-like centering + drop the underline. */
-.audio-mini-player-download {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  text-decoration: none;
 }
 
 /* #682 — the source's name, when it has one (uploads have none and this

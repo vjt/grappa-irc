@@ -19,6 +19,7 @@
 
 import { createSignal } from "solid-js";
 import { identityScopedStore } from "./identityScopedStore";
+import { createToastQueue } from "./toasts";
 
 export type AudioPlayerState = {
   href: string;
@@ -271,3 +272,16 @@ export const {
   reportPlaybackFailure,
   clearPlaybackFailure,
 } = exports_;
+
+// issue 2501 — a share from the bar that failed. The media viewer says so on
+// its own status line; the bar is one row with no line to give, so the failure
+// rides the app's ONE toast surface, the way the message menu's copy failure
+// does (lib/messageMenu.ts). Failure only: a share that worked is answered by
+// the platform's sheet. Not identity-scoped: a toast expires on its own, and
+// it carries no source, so there is nothing of the previous identity in it.
+const shareFailures = createToastQueue<{ message: string }>();
+export const audioShareToasts = shareFailures.toasts;
+export const dismissAudioShareToast = shareFailures.dismiss;
+export function reportAudioShareFailure(message: string): void {
+  shareFailures.queue({ message });
+}

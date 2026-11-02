@@ -1,6 +1,11 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  audioShareToasts,
+  dismissAudioShareToast,
+  reportAudioShareFailure,
+} from "../lib/audioPlayer";
+import {
   BUNDLE_REFRESH_NOTICE_KEY,
   bundleRefreshToasts,
   dismissBundleRefreshToast,
@@ -40,6 +45,7 @@ beforeEach(() => {
   _setScheduleExpiryForTest(() => {});
   resetNotifyWatch();
   for (const t of bundleRefreshToasts()) dismissBundleRefreshToast(t.id);
+  for (const t of audioShareToasts()) dismissAudioShareToast(t.id);
 });
 
 describe("Toasts", () => {
@@ -74,6 +80,18 @@ describe("Toasts", () => {
     const { container } = render(() => <Toasts />);
     fireEvent.click(container.querySelector(".toast-error")!);
 
+    expect(container.querySelectorAll(".toast")).toHaveLength(0);
+  });
+
+  // issue 2501 — the mini player's share has no status line of its own, so a
+  // failure reaching this stack is the whole of its feedback.
+  it("renders a mini-player share failure with the error tone, and dismisses it", () => {
+    reportAudioShareFailure("share refused");
+
+    const { container } = render(() => <Toasts />);
+
+    expect(container.querySelectorAll(".toast-error")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: /share refused/ }));
     expect(container.querySelectorAll(".toast")).toHaveLength(0);
   });
 

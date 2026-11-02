@@ -58,8 +58,8 @@ describe("the docked player's text spans can shrink, and its controls cannot", (
   );
 
   it("keeps the transport controls unshrinkable, so ✕ never leaves the screen", () => {
-    // Grouped in one rule with the toggle, the hide chevron and the download
-    // anchor; asserted through the group rather than per-selector, because
+    // Grouped in one rule with the toggle, the hide chevron and share (the
+    // download anchor until issue 2501); asserted through the group rather than per-selector, because
     // that IS the shape and splitting it would let one member drift out
     // silently.
     //
@@ -71,7 +71,7 @@ describe("the docked player's text spans can shrink, and its controls cannot", (
     // a rule that no longer existed — which is the whole reason this guard
     // reads the group and not one member of it.
     const body = soleRuleBody(
-      ".audio-mini-player-toggle,\n.audio-mini-player-hide,\n.audio-mini-player-close,\n.audio-mini-player-download",
+      ".audio-mini-player-toggle,\n.audio-mini-player-hide,\n.audio-mini-player-close,\n.audio-mini-player-share",
     );
     expect(body).toMatch(/flex:\s*none/);
   });

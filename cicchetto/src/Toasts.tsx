@@ -1,4 +1,5 @@
 import { type Component, For, type JSX, onMount } from "solid-js";
+import { audioShareToasts, dismissAudioShareToast } from "./lib/audioPlayer";
 import { bootBundleHashAccessor, bootBundleVersionAccessor } from "./lib/bundleHash";
 import {
   announceAppliedBundleRefresh,
@@ -132,6 +133,16 @@ const Toasts: Component = () => {
       <For each={opsMenuToasts()}>
         {(toast) => (
           <ToastRow tone="error" icon="!" onDismiss={() => dismissOpsMenuToast(toast.id)}>
+            <span class="toast-text">{toast.message}</span>
+          </ToastRow>
+        )}
+      </For>
+      {/* issue 2501 — a share from the audio mini player failed. The media
+          viewer says so on its own status line; the bar has none, and a share
+          that silently does nothing is the inert control issue 1839 refused. */}
+      <For each={audioShareToasts()}>
+        {(toast) => (
+          <ToastRow tone="error" icon="!" onDismiss={() => dismissAudioShareToast(toast.id)}>
             <span class="toast-text">{toast.message}</span>
           </ToastRow>
         )}
