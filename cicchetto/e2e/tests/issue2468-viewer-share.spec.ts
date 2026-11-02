@@ -43,40 +43,15 @@
 // fitting. Four is the TEXT viewer (copy + open in browser + share + ✕), so
 // that is the open the test measures; an image carries one fewer.
 
-import type { Locator, Page } from "@playwright/test";
+import type { Locator } from "@playwright/test";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { closeMediaViewer, openMediaViewer, uploadImageAndGetLink } from "../fixtures/mediaViewer";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 import { mediaScrollbackRow, uploadViaPicker } from "../fixtures/uploadJourney";
+import { recordedShares, recordShares } from "../fixtures/webShare";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
-
-type RecordedShare = { url: string | null; files: { name: string; type: string; size: number }[] };
-
-// Installed BEFORE the app boots, so the viewer's feature-detect sees an API
-// that exists. Records a serialisable digest of each call: a File does not
-// survive `page.evaluate`'s structured clone back to the runner.
-async function recordShares(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    const calls: RecordedShare[] = [];
-    Object.assign(window, { __e2eShares: calls });
-    Object.defineProperty(navigator, "share", {
-      configurable: true,
-      value: (data: ShareData): Promise<void> => {
-        calls.push({
-          url: data.url ?? null,
-          files: (data.files ?? []).map((f) => ({ name: f.name, type: f.type, size: f.size })),
-        });
-        return Promise.resolve();
-      },
-    });
-    Object.defineProperty(navigator, "canShare", { configurable: true, value: () => true });
-  });
-}
-
-const recordedShares = (page: Page): Promise<RecordedShare[]> =>
-  page.evaluate(() => (window as unknown as { __e2eShares: RecordedShare[] }).__e2eShares);
 
 test("issue2468 — share hands over the file itself", async ({ page }) => {
   await recordShares(page);
