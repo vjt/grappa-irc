@@ -1157,6 +1157,7 @@ export const SESSION_WIRE_WIRE_EVENT_KIND = [
   "whois_bundle",
   "whois_avatar_ready",
   "peer_away",
+  "no_such_nick",
   "invite_ack",
   "lusers_bundle",
   "whowas_bundle",
@@ -1509,6 +1510,12 @@ export type SessionWirePeerAwayPayload = {
   message: string;
 };
 
+export type SessionWireNoSuchNickPayload = {
+  kind: "no_such_nick";
+  network: string;
+  nick: string;
+};
+
 export type SessionWireInviteAckPayload = {
   kind: "invite_ack";
   network: string;
@@ -1673,6 +1680,7 @@ export type WireSessionEvent =
   | SessionWireMentionsBundlePayload
   | SessionWireWhoisBundlePayload
   | SessionWirePeerAwayPayload
+  | SessionWireNoSuchNickPayload
   | SessionWireInviteAckPayload
   | SessionWireLusersBundlePayload
   | SessionWireWhowasBundlePayload

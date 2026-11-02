@@ -383,7 +383,12 @@ let _socket: Socket | null = null;
 // reports as a failure, and never pushes a request, so the banner simply
 // never shows; nothing outside E2E changed, so
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 53;
+//
+// 54 (issue 2497) — `no_such_nick` on the user topic: a 401 named a nick, and
+// a message waiting for its keys fails at once (`encryptedPeerAbsent`). A
+// pre-54 server never pushes it, so such a message waits out its own 90 s and
+// fails "no keys came", as before; `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 54;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

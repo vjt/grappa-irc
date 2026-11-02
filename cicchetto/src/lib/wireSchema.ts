@@ -1366,6 +1366,11 @@ export const S_SessionWireNamesReplyPayload = {
   },
 } as const;
 
+// Grappa.Session.Wire.no_such_nick_payload/0
+export const S_SessionWireNoSuchNickPayload = {
+  o: { kind: { l: "no_such_nick" }, network: "s", nick: "s" },
+} as const;
+
 // Grappa.Session.Wire.own_nick_changed_payload/0
 export const S_SessionWireOwnNickChangedPayload = {
   o: { kind: { l: "own_nick_changed" }, network_id: "i", nick: "s" },

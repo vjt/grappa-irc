@@ -1407,7 +1407,28 @@ defmodule Grappa.Protocol do
   # routes and drops the two events, whose kinds it does not know. What it
   # does see is the push for a peer's request, which opens the plaintext
   # query, where the asking cannot be answered from that client.
-  @protocol_version 53
+  #
+  # ---------------------------------------------------------------------------
+  # 54 — issue 2497: a nick that is not on the network
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: the user-topic event `no_such_nick` `{network, nick}`
+  # (`Session.Wire.no_such_nick/2`), pushed for every 401 ERR_NOSUCHNICK
+  # the router resolves to a nick, whatever was sent to it. The 401 stays a
+  # `:notice` row where #640 put it (the open query, else `$server`); the
+  # push is for the window grappa holds no row for, the encrypted query,
+  # whose message waited 90 s for keys that could not come. The same 401
+  # now ends a live `outgoing` request to start an encrypted chat with that
+  # nick (`e2e_request_gone`, an event v53 already carries). Bumped on the
+  # #1393d rule: a client that fails a message on that push cannot get it
+  # from a server predating it.
+  #
+  # Checked for a collision before claiming 54: origin/main carries 53, and
+  # no open PR edits this file.
+  #
+  # @min_protocol_version stays at 1: an older client drops an event kind it
+  # does not know, and sees the request go as it sees any other go.
+  @protocol_version 54
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1448,7 +1469,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 53
+  @spec version() :: 54
   def version, do: @protocol_version
 
   @doc """
