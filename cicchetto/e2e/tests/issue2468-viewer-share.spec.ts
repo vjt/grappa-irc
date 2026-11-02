@@ -12,7 +12,9 @@
 // already carries "Save Image". Its other half is the LOOK: "open in browser"
 // is an anchor and share a <button>, and on the phone the button read smaller
 // and without an underline. vjt's ruling: one look — the same size, both
-// underlined, both a little larger than the anchor was.
+// underlined, both a little larger than the anchor was. The "smaller" is not
+// reproduced in computed style (both were 0.9rem before) and its cause is not
+// identified; nothing here is verified on a device.
 //
 // What this spec can prove, and what it cannot:
 //
@@ -30,9 +32,11 @@
 //     native callout, so what the menu then offers is the device's call.
 //
 //   * THE LOOK (issue 2501) — the computed style of each verb, on all three
-//     projects: font size, underline, and that the size grew. Computed style
-//     is the right oracle for "the same look" and the one the stylesheet
-//     owns; whether the result PLEASES is the device's call.
+//     projects: font size, underline, that the size grew, and the colour,
+//     family, weight and line height. Computed style is what the stylesheet
+//     owns, so it is the oracle for "the same look" as written; it could not
+//     see the reported "smaller", and whether the result PLEASES is the
+//     device's call.
 //
 // The phone-layout test is the header's width: it carries up to four controls,
 // and a modal capped at 92vw on a 393px screen is where they would first stop
@@ -143,11 +147,7 @@ test("issue2468 @touch @webkit — every header control fits on a phone screen",
   }
   // issue 2501 — copy is the third take-it-away verb, and it wears the same
   // look as the two the ruling names (a choice declared in that PR).
-  await expectOneLook(viewer, [
-    viewer.getByRole("link", { name: /open in browser/i }),
-    viewer.getByRole("button", { name: /^share$/i }),
-    copy,
-  ]);
+  await expectOneLook(viewer, [copy]);
 
   await closeMediaViewer(viewer);
 });
@@ -164,8 +164,12 @@ async function verbLooks(controls: Locator[]) {
         return {
           fontSize: Number.parseFloat(style.fontSize),
           underlined: style.textDecorationLine.includes("underline"),
-          background: style.backgroundColor,
-          borderStyle: style.borderTopStyle,
+          face: {
+            color: style.color,
+            fontFamily: style.fontFamily,
+            fontWeight: style.fontWeight,
+            lineHeight: style.lineHeight,
+          },
         };
       }),
     );
@@ -176,7 +180,15 @@ async function verbLooks(controls: Locator[]) {
   return { looks, rootFontSize: rootFontSize ?? 0 };
 }
 
-async function expectOneLook(viewer: Locator, controls: Locator[]): Promise<void> {
+// "Open in browser" and share are the two verbs the ruling names, so the
+// helper builds them itself, in that order; `extra` is any further verb the
+// same row carries (copy, on a text file).
+async function expectOneLook(viewer: Locator, extra: Locator[]): Promise<void> {
+  const controls = [
+    viewer.getByRole("link", { name: /open in browser/i }),
+    viewer.getByRole("button", { name: /^share$/i }),
+    ...extra,
+  ];
   for (const control of controls) await expect(control).toBeVisible();
   // No way to save a file but share: the anchor is gone, and so is any element
   // carrying the attribute that made it one.
@@ -184,22 +196,24 @@ async function expectOneLook(viewer: Locator, controls: Locator[]): Promise<void
   await expect(viewer.locator("[download]")).toHaveCount(0);
 
   const { looks, rootFontSize } = await verbLooks(controls);
-  const [reference, ...rest] = looks;
+  const [reference, ...others] = looks;
   if (reference === undefined) throw new Error("no controls to compare");
 
-  // CALIBRATION — the share <button> reads its AUTHOR styles: transparent and
-  // borderless, where a UA button is filled and outset. A reading that fell
-  // back to defaults (the #963 trap on this engine) fails here instead of
-  // comparing two default 16px boxes and calling them equal.
-  const share = looks[1];
-  expect(share?.background).toBe("rgba(0, 0, 0, 0)");
-  expect(share?.borderStyle).toBe("none");
-
-  // THE RULING: the same size, and underlined, on every verb.
-  for (const look of rest) expect(look.fontSize).toBe(reference.fontSize);
+  // THE RULING: the same size, and underlined, on every verb. The sizes were
+  // already equal before 2501 (0.9rem each), so the first line guards the
+  // match; the underline and the step up below are what main fails. The
+  // underline is also what a read that fell back to defaults (the #963 trap on
+  // this engine) fails: a UA <button> has none, and neither has the initial
+  // value, so two default boxes cannot pass as one look.
+  for (const look of others) expect(look.fontSize).toBe(reference.fontSize);
   for (const look of looks) expect(look.underlined).toBe(true);
-  // And a little larger than "open in browser" was: 0.9rem of the root.
+  // And a little larger than "open in browser" was: 0.9rem of the root. The
+  // strict `>` sits on the boundary on purpose: 0.9 × 14 is 12.6 as a double,
+  // and the old rule reads back as 12.6px on both engines, so it fails there.
   expect(reference.fontSize).toBeGreaterThan(0.9 * rootFontSize);
+  // The rest of the one look: the colour, and the family, weight and line
+  // height that `font: inherit` gives a <button> in place of the UA's.
+  for (const look of others) expect(look.face).toEqual(reference.face);
 }
 
 test("issue2501 — open in browser and share wear one look, and nothing downloads", async ({
@@ -211,10 +225,7 @@ test("issue2501 — open in browser and share wear one look, and nothing downloa
   const { link } = await uploadImageAndGetLink(page, "issue2501.png");
   const viewer = await openMediaViewer(page, link);
 
-  await expectOneLook(viewer, [
-    viewer.getByRole("link", { name: /open in browser/i }),
-    viewer.getByRole("button", { name: /^share$/i }),
-  ]);
+  await expectOneLook(viewer, []);
   await closeMediaViewer(viewer);
 });
 
@@ -225,9 +236,6 @@ test("issue2501 @touch @webkit — the same look on a phone", async ({ page }) =
   const { link } = await uploadImageAndGetLink(page, "issue2501-phone.png");
   const viewer = await openMediaViewer(page, link);
 
-  await expectOneLook(viewer, [
-    viewer.getByRole("link", { name: /open in browser/i }),
-    viewer.getByRole("button", { name: /^share$/i }),
-  ]);
+  await expectOneLook(viewer, []);
   await closeMediaViewer(viewer);
 });
