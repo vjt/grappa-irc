@@ -64,7 +64,16 @@ import {
   sidebarWindow,
 } from "../fixtures/cicchettoPage";
 import { botCmd, botEvents, botPins, test as botTest, botWaitFor } from "../fixtures/e2eBot";
-import { boot, e2eWindow, equery, ownKey, pin, row, send } from "../fixtures/encryptedQuery";
+import {
+  boot,
+  chatLines,
+  e2eWindow,
+  equery,
+  ownKey,
+  pin,
+  row,
+  send,
+} from "../fixtures/encryptedQuery";
 import { joinChannel, sendPrivmsg } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import { awaitMail, extractFromMail } from "../fixtures/mailpit";
@@ -233,7 +242,7 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
   await expect(row(page, "in", longIn)).toHaveCount(1, { timeout: UNDER_WAY_BOUND });
 
   // What the encrypted chat shows before any challenge: the four messages.
-  const messages = page.getByTestId("e2e-row");
+  const messages = chatLines(page);
   await expect(messages).toHaveCount(4);
   await expect(page.getByTestId("e2e-check-chip")).toHaveCount(0);
 
@@ -331,8 +340,6 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
   await sidebarWindow(page, NETWORK_SLUG, e2eWindow(bot.nick)).locator("button").first().click();
   await expect(page.getByTestId("e2e-pane")).toBeVisible();
   await expect(row(page, "in", longIn)).toHaveCount(1);
-  await expect(page.locator('[data-testid="e2e-row"][data-row-kind="undecryptable"]')).toHaveCount(
-    0,
-  );
+  await expect(page.getByTestId("e2e-pane").getByTestId("e2e-undeliverable")).toHaveCount(0);
   await expect(page.getByTestId("e2e-peer-trust")).toHaveAttribute("data-trust", "verified");
 });
