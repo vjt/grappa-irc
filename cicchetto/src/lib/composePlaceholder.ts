@@ -1,4 +1,4 @@
-import { SERVER_WINDOW_NAME } from "./windowKinds";
+import { encryptedWindowPeer, SERVER_WINDOW_NAME } from "./windowKinds";
 
 // Friendly placeholder text for the compose textarea (#151).
 //
@@ -12,16 +12,18 @@ import { SERVER_WINDOW_NAME } from "./windowKinds";
 // General rule, not the one example (CLAUDE.md "fix root causes" +
 // "total consistency"): EVERY synthetic window carries a `$`-prefixed
 // sentinel as `channelName`, and real IRC targets never start with `$`.
-// Today `$server` is the only synthetic window that renders a compose
-// box (the others are gated out by `kindHasScrollback`), but should a
-// future synthetic-window-with-compose appear, fall back to a generic
-// hint rather than leak its sentinel — no per-sentinel exclusion list.
+// `$server` and the encrypted query (issue 2512, `$e2e:<nick>`, which names
+// its peer and where the line goes) are the synthetic windows that render a
+// compose box; should another appear, fall back to a generic hint rather than
+// leak its sentinel — no per-sentinel exclusion list.
 //
 // Pure + dependency-light (only the sentinel const) so it's directly
 // unit-testable and importable into ComposeBox render tests without
 // dragging compose.ts's stateful network graph through the mock layer.
 export function composePlaceholder(networkSlug: string, channelName: string): string {
   if (channelName === SERVER_WINDOW_NAME) return `message ${networkSlug}`;
+  const peer = encryptedWindowPeer(channelName);
+  if (peer !== null) return `encrypted message to ${peer}`;
   if (channelName.startsWith("$")) return "send a command…";
   return `message ${channelName}`;
 }

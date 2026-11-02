@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { composePlaceholder } from "../lib/composePlaceholder";
-import { SERVER_WINDOW_NAME } from "../lib/windowKinds";
+import { encryptedWindowName, SERVER_WINDOW_NAME } from "../lib/windowKinds";
 
 // #151 — the compose textarea placeholder leaked the internal `$server`
 // window-name sentinel. composePlaceholder is the pure boundary that
@@ -27,5 +27,14 @@ describe("composePlaceholder (#151)", () => {
     // A hypothetical future synthetic-window-with-compose: its sentinel
     // must not reach the placeholder even though no branch names it.
     expect(composePlaceholder("freenode", "$future")).not.toContain("$");
+  });
+
+  // issue 2512 — the first synthetic window with a compose box after
+  // `$server`: the encrypted query. Its sentinel names the peer, and so does
+  // the placeholder, saying where the line goes.
+  it("names the peer of an encrypted query, never its $e2e sentinel", () => {
+    expect(composePlaceholder("freenode", encryptedWindowName("Bob"))).toBe(
+      "encrypted message to Bob",
+    );
   });
 });

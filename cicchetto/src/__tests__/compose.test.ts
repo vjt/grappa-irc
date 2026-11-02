@@ -218,6 +218,19 @@ vi.mock("../lib/encryptedWindow", () => ({
   openEncryptedWindow: vi.fn(async () => undefined),
 }));
 
+// issue 2512 — an encrypted window's compose box sends through the encrypted
+// door, a boundary spy here; what it does is encryptedChats' own tests'. A
+// chat deleted on the device is a signal the test fires (`deleteChat`).
+const deleteChat = vi.hoisted(() => ({ fire: (_key: ChannelKey) => {} }));
+vi.mock("../lib/encryptedChats", async () => {
+  const { createSignal } = await import("solid-js");
+  const [encryptedChatDeleted, setDeleted] = createSignal<ChannelKey | null>(null, {
+    equals: false,
+  });
+  deleteChat.fire = setDeleted;
+  return { sendEncrypted: vi.fn(async () => undefined), encryptedChatDeleted };
+});
+
 // Mock selection.ts — compose.ts reads selectedChannel for channel-context verbs.
 vi.mock("../lib/selection", () => ({
   selectedChannel: vi.fn(() => ({ networkSlug: "freenode", channelName: "#a", kind: "channel" })),
@@ -7442,5 +7455,104 @@ describe("compose submit — an unreadable list query is reported, not fired (is
 
     expect(socket.pushChannelMode).toHaveBeenCalledWith(1, "#a", "m", []);
     expect(result).toEqual({ ok: true });
+  });
+});
+
+// issue 2512 — the encrypted query composes in the compose box every window
+// has, and the window decides where what was typed goes: to the peer, through
+// Olm, and nowhere else. No slash command is read there, so nothing typed in
+// an encrypted window can reach grappa's send door in clear.
+describe("compose in an encrypted window (issue 2512)", () => {
+  const e2eWindow = "$e2e:Bob";
+
+  it("sends everything typed to the peer through the encrypted door, a slash included", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const encrypted = await import("../lib/encryptedChats");
+    const sb = await import("../lib/scrollback");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", e2eWindow);
+
+    compose.setDraft(k, "/whois bob");
+    expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
+
+    expect(encrypted.sendEncrypted).toHaveBeenCalledWith("freenode", "Bob", "/whois bob");
+    expect(sb.sendMessage).not.toHaveBeenCalled();
+    expect(socket.pushWhois).not.toHaveBeenCalled();
+    expect(compose.getDraft(k)).toBe("");
+  });
+
+  it("sends a body of several lines as the one message it is", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const encrypted = await import("../lib/encryptedChats");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", e2eWindow);
+
+    compose.setDraft(k, "uno\ndue");
+    await compose.submit(k, "freenode", e2eWindow);
+
+    expect(vi.mocked(encrypted.sendEncrypted).mock.calls).toEqual([
+      ["freenode", "Bob", "uno\ndue"],
+    ]);
+  });
+
+  it("hands a send that never reached the engine back to the box, says so, and logs why", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const encrypted = await import("../lib/encryptedChats");
+    const cause = new Error("no network freenode to use");
+    vi.mocked(encrypted.sendEncrypted).mockRejectedValueOnce(cause);
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", e2eWindow);
+
+    compose.setDraft(k, "segreto");
+    const result = await compose.submit(k, "freenode", e2eWindow);
+
+    expect(result).toEqual({ error: "send failed" });
+    expect(compose.getDraft(k)).toBe("segreto");
+    expect(warn).toHaveBeenCalledWith("[e2e] could not send to Bob", cause);
+    warn.mockRestore();
+  });
+
+  it("keeps an encrypted window's draft out of the reload mirror: no plaintext at rest", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const plain = channelKey("freenode", "#a");
+    const secret = channelKey("freenode", e2eWindow);
+
+    const before = await import("../lib/compose");
+    before.setDraft(plain, "for #a");
+    before.setDraft(secret, "segreto");
+    expect(sessionStorage.getItem("cicchetto.composeDrafts")).not.toContain("segreto");
+
+    vi.resetModules();
+    const after = await import("../lib/compose");
+    expect(after.getDraft(plain)).toBe("for #a");
+    expect(after.getDraft(secret)).toBe("");
+  });
+
+  // What the delete promised nobody could bring back, the up arrow must not:
+  // the chat's window loses its draft and its history, whichever door
+  // deleted the chat. Another window keeps its own.
+  it("a chat deleted on the device takes its window's draft and history along", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", e2eWindow);
+    const other = channelKey("freenode", "#a");
+    compose.setDraft(k, "segreto");
+    await compose.submit(k, "freenode", e2eWindow);
+    compose.setDraft(k, "half typed");
+    compose.setDraft(other, "for #a");
+
+    deleteChat.fire(k);
+
+    expect(compose.getDraft(k)).toBe("");
+    compose.recallPrev(k);
+    expect(compose.getDraft(k)).toBe("");
+    expect(compose.getDraft(other)).toBe("for #a");
+  });
+
+  it("previews no frame split: the encrypted message is sized by the engine, not as a PRIVMSG", async () => {
+    const compose = await import("../lib/compose");
+    expect(compose.draftFramePreview(e2eWindow, "a".repeat(25), 10)).toBeNull();
   });
 });

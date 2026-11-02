@@ -1588,6 +1588,15 @@ describe("ComposeBox", () => {
       expect(btn).toBeInTheDocument();
     });
 
+    // issue 2512 — an encrypted query sends text only: the upload host is
+    // not end-to-end encrypted (the door refuses it too, uploadOrchestrator).
+    it("offers no file picker in an encrypted query", () => {
+      render(() => <ComposeBox networkSlug="freenode" channelName="$e2e:Bob" />);
+      expect(screen.queryByRole("button", { name: /upload file/i })).toBeNull();
+      expect(document.querySelector("input[type='file'][data-file-picker]")).toBeNull();
+      expect(screen.getByRole("textbox", { name: "compose message" })).toBeInTheDocument();
+    });
+
     it("renders a hidden file input that accepts ALL the host's MIME categories", () => {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const input = document.querySelector(

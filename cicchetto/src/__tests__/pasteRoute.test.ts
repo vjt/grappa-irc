@@ -185,6 +185,41 @@ describe("pasteRoute — routeClipboardPaste", () => {
   });
 });
 
+// issue 2512 — in an encrypted query a pasted block is ONE message, sent whole
+// through Olm, so there is no burst to guard against; and the guard's way out,
+// uploading the block as a text file, would put the plaintext on the upload
+// host. Every door lets the block land in the box as typed text would.
+describe("pasteRoute — an encrypted query (issue 2512)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const BLOCK_OVER_LIMIT = "a\nb\nc\nd\ne\nf\ng";
+
+  it("a block is left to the browser on the textarea, inserted on the global path, and nothing is offered as a file", () => {
+    for (const native of [true, false]) {
+      vi.clearAllMocks();
+      const { e } = pasteEvent({ text: BLOCK_OVER_LIMIT });
+      routeClipboardPaste(e, textarea(), "freenode", "$e2e:Bob", native);
+      expect(requestConfirm).not.toHaveBeenCalled();
+      expect(dropUpload).not.toHaveBeenCalled();
+      expect(vi.mocked(setDraft).mock.calls).toEqual(
+        native ? [] : [["freenode $e2e:Bob", BLOCK_OVER_LIMIT]],
+      );
+    }
+  });
+
+  it("the IME door lets the block land the same way", () => {
+    const { e, preventDefault } = inputEvent({
+      inputType: "insertFromPaste",
+      dataTransferText: BLOCK_OVER_LIMIT,
+    });
+    routePastedInput(e, textarea(), "freenode", "$e2e:Bob");
+    expect(requestConfirm).not.toHaveBeenCalled();
+    expect(preventDefault).not.toHaveBeenCalled();
+  });
+});
+
 // #1250 — the IME door. GBoard's clipboard chip fires NO `paste` event: it
 // commits through the input method, which surfaces only as `beforeinput` with
 // an `insertFromPaste` inputType. Before this the flood cap was not weak on

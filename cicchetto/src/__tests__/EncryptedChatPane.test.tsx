@@ -68,6 +68,8 @@ vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   deleteEncryptedChat,
   rekeyEncrypted,
   pairedHere: vi.fn(),
+  // What the compose store follows (issue 2512); its own suite drives it.
+  encryptedChatDeleted: () => null,
 }));
 // Whether this browser holds the network's master, and the add-a-device
 // panel itself (its own tests drive it): the pane decides only what to offer.
