@@ -1167,3 +1167,82 @@ in an encrypted window encoded the defect and was rewritten. e2e:
 bare IRC peer and reads the rail: exactly one heading, saying encrypted;
 the card naming the peer, no ×, the rail's stacked fields; the key
 sections above the card; and no door.
+<!-- entry #2497 -->
+
+---
+
+## 2026-11-02 — #2497: a nick that is not on the network says so, in the encrypted query too
+
+vjt, on staging while testing e2ee: writing to a nick that does not exist
+showed nothing. Measured on the testnet before any code (a throwaway probe,
+three ways of writing to a ghost): the plaintext query shows the 401 as it
+always did (`cp13-s5-msg-ghost-401.spec.ts`); the encrypted query
+(`/equery`) showed "waiting for keys" for 90 s and then "no keys came from
+the peer"; asking a ghost for an encrypted chat (#2486) put the 401 in the
+query and left the card "Waiting for … to accept" for 24 h. So: e2ee only,
+and no code path ever carried it: not a regression.
+
+**Where the 401 went.** An encrypted message to a nick with no pinned key
+waits for keys and sends a KEYREQ, an E2E line inside a PRIVMSG; the ircd
+answers it 401. The encrypted query lives in cic only (2430), so no query
+window is open on grappa, and #640's gate files the reply under `$server`,
+correctly: a reply never opens a window. Nothing then reached the window
+that was waiting, and the asking had no hook on a 401 at all.
+
+**The fact goes typed, for every 401 that names a nick.** `no_such_nick
+{network, nick}` on the user topic (protocol 54), read off the router's
+decision BEFORE the #640 gate, since the nick is absent wherever its row
+lands. Typed because cic never parses IRC: reading `raw_params` off a
+`$server` row would be exactly that. For every such 401, not only those
+answering an E2E line, because grappa does not know which windows a client
+has, and tying a 401 to the line it answers would need per-target
+bookkeeping of what went out: the push is rare and cheap. Not for a 401
+naming a channel, nor for the one a WHOIS folds into its bundle (the card
+says it).
+
+**cic fails what waits for the nick's keys, and nothing else.** As
+`no-such-nick` ("not sent: there is no such nick on the network"), and it
+stops asking the nick for keys and gives up on keys the user asked for
+again. A message a device already took is not judged: the 401 does not say
+which line it answers, and failing a delivered message is the opposite lie.
+The glue acts only on a network with something waiting on the clock, the
+only one that can hold such a message, so any other 401 neither opens the
+encrypted store nor, on an account that never used E2E, runs the identity
+sync `run` falls back to.
+
+**The asking ends: our live `outgoing` request goes** (`E2eRequests.absent/2`,
+`e2e_request_gone` on every device). Deleted rather than a new stored state:
+the 401 is already a row in the query the user asked from, which says why,
+and a state would mean rebuilding the table for its CHECK constraint. An
+expired asking, the peer's asking and an answer stay. **The accepted price:**
+a peer who got the REQUEST and has since quit ends the asking too; on their
+return they ask afresh, or the nick is someone else's.
+
+**Known gaps, not bugs to rediscover.** A message a pinned peer's device
+took before the peer quit still reads "sent": nothing ties the 401 to it.
+And the ask's 202 travels by HTTP while `e2e_request_gone` travels by WS: a
+gone pushed ahead of the 202 would let cic put the card back until the next
+reload. It needs the 401 to beat a local HTTP response across an IRC round
+trip and the E2E pacer, and was not seen.
+
+Tests: server, a real session over `IRCServer` (the KEYREQ's 401 lands on
+`$server` and pushes `no_such_nick`; a channel's 401 pushes nothing; the
+asking ends on its peer's 401 and every other request stays), the plan
+alone in `E2eRequestsTest`; cic, the engine (fails what waits, keeps
+another nick's queue and a delivered message, ends a re-key), the glue
+(a waiting message turns failed; with nothing waiting no store is opened
+and no identity made), the user topic arm, and the boundary census.
+Each read red against a mutant of its own. Server, 5 of 5: no push (3
+tests red), the asking not ended (1, its own), any 401 target pushed (1,
+the channel case), any row deleted (2, the plan and the session), and the
+hook read AFTER the #640 gate (4: with no query window the push never
+fires, which is precisely the encrypted query). cic, 8 of 8: `absent` a
+no-op (3), the outq kept (3), `keysAwaited` kept (2), the re-key not ended
+(1), delivered messages failed too (1, its own), the glue's `waiting` gate
+removed (1, its own), the glue ticking instead (1), the user-topic arm
+dropped (1).
+e2e: `issue2497-no-such-nick.spec.ts`, (a) the encrypted query's row fails
+at once with that reason, well inside the 90 s it used to wait, and (b) the
+asking ends (no card, the rail button free) with the 401 under it. Its red
+arm is the probe's own reading at `fa5c59ace`: the row still "waiting for
+keys" after 12 s, the card still pending after 10 s.
