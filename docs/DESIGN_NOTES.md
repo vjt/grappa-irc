@@ -1345,3 +1345,56 @@ follows the bar down (more than the ~32px margin above the header, so a frame
 frozen at open fails it). Not proven
 here: the inset a device really reports, the iOS 27 band on top of it, and
 the look; that leg is the device's.
+<!-- entry #2501 -->
+
+---
+
+## 2026-11-03 — #2501: the media viewer loses its download, and its verbs share one look
+
+vjt, on an installed iPhone PWA: in the media viewer's header (1) the
+download link (`a.media-viewer-download`, `download=""`, #2468) opened an
+iOS preview window the reader could not leave, so the PWA was stuck there;
+(2) "open in browser" and share did not look alike, share a `<button>` that
+read smaller and had no underline. Ruling: remove the download entirely,
+because share covers it (the iOS sheet carries "Save Image"); give "open in
+browser" and share the same look: the same font size, both underlined, both
+a little larger than "open in browser" was. Keep the `gone()` gate and the
+`canNativeShare()` feature-detect as they are.
+
+* **Removed with the anchor:** its `.media-viewer-download` style, the
+  `isSameOrigin` gate in `MediaViewerModal` that only it needed, and the
+  `download` clauses in `isSameOrigin`'s and `mediaAvailability`'s notes,
+  which now speak of fetches and share alone. The #2468 comment beside share
+  says why there is no download. On desktop the picture keeps its own
+  context menu and "open in browser" keeps its tab.
+* **One rule for the verbs:** `.media-viewer-open-external`,
+  `.media-viewer-copy`, `.media-viewer-share` take `font: inherit`, then
+  `font-size: var(--font-size)` and `text-decoration: underline`; the two
+  buttons keep a rule of their own that strips them to their text. `font:
+  inherit` comes first so a `<button>` takes the anchor's family, weight
+  and line height rather than the UA's, and the underline is stated because
+  a button has none to inherit.
+* **Choices the ruling did not make**, declared:
+  * **The size is `--font-size`** (14px at the default), up from 0.9rem
+    (12.6px): "a little larger" read as the step up to the size the rest of
+    the app's text uses, the ✕ beside them included, rather than a new
+    number.
+  * **Copy joins the look.** It appears only on a text file, is not named in
+    the ruling, and shared share's rule until now; a third look beside two
+    matched ones would be the same complaint.
+
+### Tests
+
+Unit: the three download tests became one, run on an own image, an own
+video and a cross-host image: no `download` link and no element carrying the
+attribute, with "open in browser" and share present as the control; the
+`gone` test keeps share only. It was red before the change on the two own
+uploads. e2e: `issue2468-viewer-download-share.spec.ts` is renamed
+`issue2468-viewer-share.spec.ts` and loses its download leg; two tests
+(desktop chromium, and iPhone 15 + Pixel 7) read the computed look of "open
+in browser" and share: equal font size, both underlined, larger than 0.9 of
+the root size, and nothing carrying `download`. The text viewer's phone test
+holds copy to the same look. Before comparing, each look test reads the
+share button's author styles (transparent, borderless), so a computed-style
+read that fell back to UA defaults on the iPhone engine (#963) fails rather
+than comparing two default boxes.
