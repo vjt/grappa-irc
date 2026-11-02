@@ -15113,12 +15113,17 @@ button.home-pane-network-title:hover .home-pane-network-slug {
      contract as .archive-modal: the frame is cut from `--viewport-height`. */
   --media-viewer-frame: calc(var(--viewport-height, 100dvh) - var(--media-viewer-top, 0px));
   position: fixed;
-  /* The middle of the frame rather than of the viewport. Spelled off `50%`
-     and not off `--media-viewer-frame`, so that with nothing to clear this is
-     the old `top: 50%` to the pixel. The centring itself stays in `transform`,
-     which the dismiss drag restates (MediaViewerModal's `draggedTransform`),
-     so the drag needed no change. */
-  top: calc(50% + var(--media-viewer-top, 0px) / 2);
+  /* The middle of the frame. Wherever `--viewport-height` is the layout
+     viewport's height — a desktop, and a phone with no keyboard up — this is
+     `50% + top / 2`, and with nothing to clear the old `top: 50%` to the
+     pixel. Spelled off the frame and not off `50%` for the case where the two
+     differ: a viewer opened while the soft keyboard is still up (the opening
+     tap blurs it, but the keyboard leaves over an animation), where `50%` of
+     the layout viewport would centre the modal low, against a cap cut from
+     the shorter visual one, and push part of the picture under the keyboard.
+     The centring itself stays in `transform`, which the dismiss drag restates
+     (MediaViewerModal's `draggedTransform`), so the drag needed no change. */
+  top: calc(var(--media-viewer-top, 0px) + var(--media-viewer-frame) / 2);
   left: 50%;
   transform: translate(-50%, -50%);
   width: max-content;
