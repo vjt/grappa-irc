@@ -23,6 +23,7 @@ import {
 } from "./EncryptedRail";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { ApiError } from "./lib/api";
+import { casemappingForSlug } from "./lib/casemapping";
 import { requestConfirm } from "./lib/confirmDialog";
 import { formatDateTime } from "./lib/dateFormat";
 import { loadDocument } from "./lib/documentNavigation";
@@ -50,6 +51,8 @@ import {
   verifyEncrypted,
 } from "./lib/encryptedChats";
 import { friendlyApiError } from "./lib/friendlyApiError";
+import { networkIdBySlug } from "./lib/networks";
+import { nickEquals } from "./lib/nickEquals";
 import { formatTimestamp } from "./lib/timeFormat";
 import NickText from "./NickText";
 import { createLineActions, type LineMessage, ScrollbackLine } from "./ScrollbackPane";
@@ -110,9 +113,8 @@ type Props = {
   nick: string;
   /**
    * Our nick on the network, as any query's lines name us (issue 2498): the
-   * sender of every outgoing line. `null` only while `/me` or the network
-   * list is not loaded, and no chat is open then: opening one needs the
-   * network's nick (`encryptedChats.ts`).
+   * sender of every outgoing line. `null` while `/me` or the network is
+   * unknown, and then no line is drawn: an outgoing one would name nobody.
    */
   ownNick: string | null;
   /**
@@ -538,14 +540,22 @@ const EncryptedChatPane: Component<Props> = (props) => {
   const messageCount = () => messages().filter((row) => row.kind !== "undecryptable").length;
 
   // A nick on a line does what it does on any query's line (issue 2498): a
-  // click opens the query with it, a right click the nick's menu, whose
-  // verbs answer in that query. A query has no modes of ours.
+  // right click opens the nick's menu, whose verbs answer in the plain query
+  // with the peer (a query has no modes of ours), and a click opens the
+  // nick's query, except the peer's own: in any query that click lands in
+  // the window already open, and here that is this one, never the plaintext
+  // query beside it.
   const lineActions = createLineActions({
     networkSlug: () => props.networkSlug,
+    networkId: () => networkIdBySlug(props.networkSlug),
     channelName: display,
     ownNick: () => props.ownNick,
     ownModes: () => [],
   });
+  const onNickClick = (nick: string): void => {
+    if (nickEquals(nick, display(), casemappingForSlug(props.networkSlug))) return;
+    lineActions.onNickClick(nick);
+  };
 
   createEffect(
     on(
@@ -733,20 +743,27 @@ const EncryptedChatPane: Component<Props> = (props) => {
       <div class="e2e-body">
         <div class="e2e-body-content" inert={sas() !== null}>
           <div class="e2e-rows" ref={list}>
-            <For each={shown()}>
-              {(row) => (
-                <ScrollbackLine
-                  msg={lineOf(row, display(), props.ownNick ?? "")}
-                  userNick={props.ownNick}
-                  networkSlug={props.networkSlug}
-                  onNickClick={lineActions.onNickClick}
-                  onNickContextMenu={lineActions.onNickContextMenu}
-                  onJoinChannel={lineActions.onJoinChannel}
-                  marker={<Lock />}
-                  trailer={<Trailer row={row} pinned={peerTrust()?.master} />}
-                />
+            <Show when={props.ownNick}>
+              {(own) => (
+                <For each={shown()}>
+                  {(row) => {
+                    const msg = createMemo(() => lineOf(row, display(), own()));
+                    return (
+                      <ScrollbackLine
+                        msg={msg()}
+                        userNick={own()}
+                        networkSlug={props.networkSlug}
+                        onNickClick={onNickClick}
+                        onNickContextMenu={lineActions.onNickContextMenu}
+                        onJoinChannel={lineActions.onJoinChannel}
+                        marker={<Lock />}
+                        trailer={<Trailer row={row} pinned={peerTrust()?.master} />}
+                      />
+                    );
+                  }}
+                </For>
               )}
-            </For>
+            </Show>
           </div>
           <Show when={step()}>
             {(s) => (
