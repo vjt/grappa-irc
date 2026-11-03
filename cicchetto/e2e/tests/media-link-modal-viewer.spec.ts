@@ -160,9 +160,10 @@ test("🎵 upload link click opens the docked mini-player, NOT the modal (GH #11
   // the src wire-up; the _cspGuard proves the fetch was CSP-admitted.
   await expect(page.getByTestId("audio-mini-player-el")).toHaveAttribute("src", url);
 
-  // issue 2501 — share where the download anchor was (on an iOS PWA that
-  // anchor opened a preview the app could not be left from). Nothing on the
-  // bar saves by anchor any more, and share hands over the served FILE —
+  // issue 2501 — share where the download anchor was (the media viewer's twin
+  // of it opened a preview an iOS PWA could not be left from; this one very
+  // likely did too, not verified on a device). Nothing on the bar saves by
+  // anchor any more, and share hands over the served FILE —
   // fetched by the app itself, under the prod CSP — the same flow the media
   // viewer's share runs.
   await expect(player.locator("[download]")).toHaveCount(0);

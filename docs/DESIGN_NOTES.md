@@ -1387,9 +1387,10 @@ a little larger than "open in browser" was. Keep the `gone()` gate and the
   from, so on an iOS PWA it very likely dead-ended the same way (not verified
   on a device). It is now a share button (`.audio-mini-player-share`)
   running the viewer's flow: `createMediaSharer` in `lib/mediaShare.ts`,
-  lifted out of `MediaViewerModal` rather than copied, with a refused file
-  remembered per href instead of as a flag because the player outlives every
-  source it plays (for the viewer, built per open, the two are the same).
+  lifted out of `MediaViewerModal` rather than copied. A sharer is built per
+  SUBJECT: the viewer builds one per open, and the player, which outlives
+  every source it plays, one per source, so what a sharer remembers (a share
+  in flight, a refused file) lives exactly as long as the thing shared.
   Kept from the download: the `!live()` gate (a source with no end is no file
   to hand over) and its place outside the readout, so a file the browser
   cannot decode can still be handed to something that can. Added: the
@@ -1398,7 +1399,23 @@ a little larger than "open in browser" was. Keep the `gone()` gate and the
   toast for a failure (`audioShareToasts`, on the app's one toast surface),
   because the bar has no status line and a share that does nothing is the
   inert control #1839 refused. The anchor-only CSS rule went with the anchor;
-  the button sits in the transport row's shared rule.
+  the button sits in the transport row's shared rule. The refused-file
+  sentence now reads "share again to send the link" at both doors, since the
+  bar's control is a glyph and not the word.
+* **What the bar loses, and it is a question for vjt.** The ⬇ rendered on
+  every browser; share renders only where Web Share exists, so on desktop
+  Firefox and Linux Chromium the bar now offers no save at all. That also
+  removes #1744's remedy there: a track the browser cannot decode (an AAC
+  voice memo on a Chromium without proprietary codecs) can only be saved from
+  the scrollback link. The viewer lost the same thing on the same browsers,
+  but keeps the picture's context menu. Not decided here: keeping the anchor
+  as the fallback where share is absent would bring the save back without
+  reaching iOS, which always has Web Share.
+* **Audio is the share likeliest to outrun the activation window.** The
+  bar's `<audio>` preloads only metadata, so a share fetches the whole track
+  at the tap, where an image is a cache hit. A long track on a slow link is
+  therefore where the refusal, then "share again to send the link", is most
+  likely. Not measured on a device.
 * **Choices in that which vjt did not rule:** the glyph ⤴ with
   `aria-label="share"` (the bar's controls are glyphs, and the word would
   widen a 2.5rem square on a phone bar that is one row), and the toast as the
@@ -1451,11 +1468,14 @@ expect share, present for a file and after a decode failure, absent for an
 endless or a failed live source. A 2501 block adds: no share without Web
 Share; an own upload's FILE goes out; a refused share is named in a toast; a
 dismissed sheet says nothing; a source closed mid-fetch opens no sheet; a
-refused file turns only that source to its link, not the next one. 8 were
-red on the old component (the three absence tests pass there by
-construction), and five mutants, each on one axis (the live gate, the
-feature-detect, the abort, the refusal kept as a flag, the toast), were each
-killed by the test that names it. `Toasts.test.tsx`: the share failure
+source swapped mid-fetch opens no sheet for it and the next source still
+shares; a refused file turns only that source to its link, not the next one.
+8 were red on the old component (the three absence tests pass there by
+construction). Mutants, each on one axis, each killed by the test that names
+it: the live gate, the feature-detect, the abort on a source change, the
+controller not renewed after it, the sharer kept across sources, and the
+toast. The viewer's share tests and the mini player's now share one Web
+Share stub (`__tests__/helpers/webShare.ts`). `Toasts.test.tsx`: the share failure
 reaches the stack and dismisses. e2e: the audio journey in
 `media-link-modal-viewer.spec.ts` asserts nothing on the bar carries
 `download` and that share hands over the served file, named, typed and sized

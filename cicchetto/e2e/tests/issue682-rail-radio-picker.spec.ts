@@ -60,8 +60,8 @@
 // closed here rather than left, and nothing in this spec asserts a track.
 //
 // WHAT THIS SPEC DELIBERATELY DOES NOT ASSERT, and where it IS asserted.
-// The transport's LIVE mode — no seek slider, no download anchor, elapsed
-// shown alone — is not checked here, and the omission is a platform limit
+// The transport's LIVE mode — no seek slider, no share button (a download
+// anchor before issue 2501), elapsed shown alone — is not checked here, and the omission is a platform limit
 // rather than a gap left open. Live mode keys off a non-finite
 // `HTMLMediaElement.duration`, and `route.fulfill` must serve a COMPLETE
 // body, which is by definition finite: any stream this spec can serve

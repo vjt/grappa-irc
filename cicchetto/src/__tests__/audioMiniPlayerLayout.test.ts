@@ -59,9 +59,9 @@ describe("the docked player's text spans can shrink, and its controls cannot", (
 
   it("keeps the transport controls unshrinkable, so ✕ never leaves the screen", () => {
     // Grouped in one rule with the toggle, the hide chevron and share (the
-    // download anchor until issue 2501); asserted through the group rather than per-selector, because
-    // that IS the shape and splitting it would let one member drift out
-    // silently.
+    // download anchor until issue 2501); asserted through the group rather
+    // than per-selector, because that IS the shape and splitting it would let
+    // one member drift out silently.
     //
     // The list is spelled out in full, and the exactness is the point: this
     // pin was first written against a THREE-member group and #1697 landed a
