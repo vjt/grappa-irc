@@ -253,7 +253,7 @@ describe("EncryptedChatPane", () => {
     expect(badge().textContent).toBe("key changed");
   });
 
-  it("the top bar is verification only: no key, no pin form, no device, and the comparison only behind the badge", () => {
+  it("the top bar is verification only: no key, no pin form, no device, no comparison running in it", () => {
     setTrust({ master: KEY, verified: false, devices: 2 });
     setRows([{ kind: "accepted", id: "p", at, nick: "Bob", ed25519: KEY }]);
     renderPane();
@@ -718,22 +718,53 @@ describe("EncryptedChatPane, the emoji comparison", () => {
   // The button the badge sits in, if it is one.
   const door = () => screen.getByTestId("e2e-peer-trust").closest("button");
 
-  it("starts from a tap on the top bar's badge, verified or not, and from no button in the rail", () => {
+  // The handler sits on the button, so a keyboard's Enter or Space reaches
+  // it: the test clicks the button, not the badge inside it.
+  it("starts from a tap on the top bar's badge, not verified or verified by emoji", () => {
     setTrust({ master: KEY, verified: false, devices: 1 });
     renderPane();
     const bar = within("e2e-pane").querySelector("header") as HTMLElement;
     expect(bar.contains(door())).toBe(true);
     expect(door()?.getAttribute("aria-label")).toBe("not verified: compare emoji with Bob");
-    fireEvent.click(screen.getByTestId("e2e-peer-trust"));
+    fireEvent.click(door() as HTMLButtonElement);
     expect(verifyEncrypted).toHaveBeenCalledWith("azzurra", "bob", "start");
 
     setTrust({ master: KEY, verified: true, devices: 1 });
+    setRows([
+      { kind: "accepted", id: "a", at, nick: "Bob", ed25519: KEY },
+      { kind: "verified", id: "v", at, nick: "Bob", ed25519: KEY },
+      { kind: "sas_cancelled", id: "c", at, nick: "Bob", by: "you", reason: "user" },
+    ]);
     expect(door()?.getAttribute("aria-label")).toBe("verified: compare emoji with Bob again");
-    fireEvent.click(screen.getByTestId("e2e-peer-trust"));
+    fireEvent.click(door() as HTMLButtonElement);
     expect(verifyEncrypted).toHaveBeenCalledTimes(2);
+  });
 
-    expect(screen.queryByTestId("e2e-sas-start")).toBeNull();
-    expect(within("e2e-rail").textContent).not.toContain("compar");
+  // A key pasted by hand was checked at its source, and a bot's always is: a
+  // bot never answers a comparison, so offering one could only time out.
+  it("a key verified by pasting it offers no comparison, nor one with no row left to say how", () => {
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    setRows([{ kind: "pinned", id: "p", at, nick: "Bob", ed25519: KEY }]);
+    renderPane();
+    expect(door()).toBeNull();
+
+    setRows([
+      { kind: "verified", id: "v", at, nick: "Bob", ed25519: KEY },
+      { kind: "pinned", id: "p", at, nick: "Bob", ed25519: KEY },
+    ]);
+    expect(door()).toBeNull();
+
+    setRows([]);
+    expect(door()).toBeNull();
+  });
+
+  it("the rail starts no comparison: none of its buttons does", () => {
+    setTrust({ master: KEY, verified: false, devices: 1 });
+    renderPane();
+    const buttons = within("e2e-rail").querySelectorAll("button");
+    expect(buttons.length).toBeGreaterThan(0);
+    for (const button of buttons) fireEvent.click(button);
+    expect(verifyEncrypted).not.toHaveBeenCalled();
   });
 
   it("the badge is no door with no key pinned, an alarm open, a comparison running, or the identity elsewhere", () => {
@@ -1184,7 +1215,7 @@ describe("EncryptedChatPane, compose and the chat's tools", () => {
   });
 
   // Mobile: the rail is a drawer over the pane, and the dialog opens behind
-  // it (started from the rail, or asked by the peer while it is up).
+  // it when the peer asks while it is up.
   it("says each time the emoji comparison's dialog opens", () => {
     const opened = vi.fn();
     render(() => (

@@ -28,6 +28,7 @@ import { formatDateTime } from "./lib/dateFormat";
 import { loadDocument } from "./lib/documentNavigation";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import {
+  type ChatRow,
   countsAsUnread,
   type IdentityCheck,
   isMessage,
@@ -494,6 +495,24 @@ const SasDialog: Component<{
   );
 };
 
+/**
+ * issue 2507 — whether the key now pinned was verified by comparing emoji:
+ * the newest row that chose or checked a key is a `verified`. A key pasted by
+ * hand (`pinned`) was checked at its source, and a bot's always is, since a
+ * bot answers only once pinned that way: comparing emoji with a bot can only
+ * time out (irc-olm drops SAS), so such a key offers no "check again". Taken
+ * unverified (`accepted`), or with no row left (a deleted chat keeps the pin,
+ * not the rows), it reads false.
+ */
+function verifiedByEmoji(rows: readonly ChatRow[]): boolean {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const kind = rows[i]?.kind;
+    if (kind === "verified") return true;
+    if (kind === "pinned" || kind === "accepted") return false;
+  }
+  return false;
+}
+
 /** The check's moment, compact: the time today, the date and time before. */
 function checkWhen(at: number): string {
   const day = new Date(at);
@@ -539,11 +558,15 @@ const EncryptedChatPane: Component<Props> = (props) => {
   const check = () => encryptedChat(props.networkSlug, props.nick)?.check;
   const windowName = () => encryptedWindowName(props.nick);
   const windowKey = () => channelKey(props.networkSlug, windowName());
-  // issue 2507 — the badge starts the emoji comparison for a pinned key,
-  // verified or not (to check again), while no alarm is open, none runs, and
-  // the identity is here.
-  const canCompare = () =>
-    !elsewhere() && peerTrust() !== null && alarm() === null && sas() === null;
+  // issue 2507 — the badge starts the emoji comparison for a pinned key not
+  // verified, or one verified by emoji (to check again), while no alarm is
+  // open, none runs, and the identity is here. A key verified by pasting it
+  // (every bot's) offers none: see `verifiedByEmoji`.
+  const canCompare = () => {
+    const peer = peerTrust();
+    if (elsewhere() || peer === null || alarm() !== null || sas() !== null) return false;
+    return !peer.verified || verifiedByEmoji(rows());
+  };
 
   // The step still needed, read once the chat is loaded (before, a pinned
   // peer would flash as one with no key).
