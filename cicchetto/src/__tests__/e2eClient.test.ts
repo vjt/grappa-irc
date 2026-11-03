@@ -6,7 +6,7 @@
 // REST is mocked at the api module (the boundary) and answered by the fake.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { accountStore, open, seal } from "../lib/e2e/accountStore";
-import { chatStore } from "../lib/e2e/chatStore";
+import { type ChatRow, chatStore } from "../lib/e2e/chatStore";
 import {
   e2eClient,
   IdentityElsewhereError,
@@ -380,6 +380,61 @@ describe("e2eClient", () => {
     expect(await states(a, "bob")).toEqual([["failed", "no-budget"]]);
     expect(sent.waiting).toBe(false);
     expect(w.grappa.sends).toEqual([]);
+  });
+
+  it("a message keeps the payload it travelled as on both ends, in both directions: the payload and msgid grappa took, and the reader read (issue 2513)", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+
+    // The row's payloads are exactly what its device handed the send door,
+    // under the msgid grappa gave them: what IRC carried.
+    const wireOf = (by: string, row: ChatRow | undefined) =>
+      w.grappa.sends
+        .filter((s) => s.by === by && s.tag === row?.id)
+        .map((s) => ({ verb: s.verb, msgid: s.msgid, payload: s.payload }));
+    const [hello, hiIn] = await rowsOf(a, "bob");
+    const [helloIn, hi] = await rowsOf(b, "alice");
+    const aliceSent = wireOf("alice", hello);
+    const bobSent = wireOf("Bob", hi);
+    // Alice's first goes pre-key; Bob answers on the session it opened.
+    expect(aliceSent.map((p) => p.verb)).toEqual(["pkmsg"]);
+    expect(bobSent.map((p) => p.verb)).toEqual(["msg"]);
+
+    expect(hello).toMatchObject({ kind: "out", body: "hello", wire: aliceSent });
+    expect(helloIn).toMatchObject({ kind: "in", body: "hello", wire: aliceSent });
+    expect(hi).toMatchObject({ kind: "out", body: "hi", wire: bobSent });
+    expect(hiIn).toMatchObject({ kind: "in", body: "hi", wire: bobSent });
+    // Ciphertext: nothing of the text is in it.
+    for (const p of [...aliceSent, ...bobSent]) expect(p.payload).not.toMatch(/hello|"hi"/);
+  });
+
+  it("a message sent again after a NACK keeps both payloads; the reader's unreadable row keeps the one it could not read (issue 2513)", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    await b.accounts.withAccount(SLOT, async ({ state }) => {
+      state.sessions = {};
+    });
+
+    await a.client.send(a.ctx, "bob", "lost");
+    await b.client.drain(b.ctx);
+    w.now += KEYREQ_RETRY_MS;
+    await a.client.drain(a.ctx);
+    w.now += KEYREQ_RETRY_MS;
+    await a.client.tick(a.ctx);
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+
+    const lost = (await rowsOf(a, "bob")).find((r) => r.kind === "out" && r.body === "lost");
+    const sent = w.grappa.sends
+      .filter((s) => s.by === "alice" && s.tag === lost?.id)
+      .map((s) => ({ verb: s.verb, msgid: s.msgid, payload: s.payload }));
+    expect(sent).toHaveLength(2);
+    expect(lost).toMatchObject({ state: "sent", wire: sent });
+    const read = (await rowsOf(b, "alice")).slice(2);
+    expect(read).toEqual([
+      expect.objectContaining({ kind: "undecryptable", wire: [sent[0]] }),
+      expect.objectContaining({ kind: "in", body: "lost", wire: [sent[1]] }),
+    ]);
   });
 
   it("tells the recipient of a message it cannot read and NACKs it; the sender re-keys and sends it again, its row staying sent", async () => {

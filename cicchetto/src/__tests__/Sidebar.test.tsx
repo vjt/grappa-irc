@@ -215,8 +215,20 @@ vi.mock("../lib/windowState", () => ({
 // mocked selection) and spies the close.
 let mockEncryptedChats: { key: string; nick: string; unread: number }[] = [];
 const closeEncryptedWindowMock = vi.hoisted(() => vi.fn());
+// issue 2513 — and the ciphertext view the row's menu toggles: a set of the
+// chats it is on, which the toggle flips.
+const wireViewOn = vi.hoisted(() => new Set<string>());
+const toggleEncryptedWireViewMock = vi.hoisted(() =>
+  vi.fn((slug: string, nick: string) => {
+    const key = `${slug} ${nick.toLowerCase()}`;
+    if (!wireViewOn.delete(key)) wireViewOn.add(key);
+  }),
+);
 vi.mock("../lib/encryptedChats", () => ({
   encryptedChatsFor: (slug: string) => (slug === "freenode" ? mockEncryptedChats : []),
+  encryptedWireView: (slug: string, nick: string) =>
+    wireViewOn.has(`${slug} ${nick.toLowerCase()}`),
+  toggleEncryptedWireView: toggleEncryptedWireViewMock,
 }));
 vi.mock("../lib/encryptedWindow", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/encryptedWindow")>()),
@@ -230,6 +242,7 @@ import * as apiMod from "../lib/api";
 // and never reflect the requestConfirm write).
 import { acceptConfirm, confirmRequest, dismissConfirm } from "../lib/confirmDialog";
 import { setShowEventBadge } from "../lib/eventBadge";
+import { LONG_PRESS_MS } from "../lib/keepKeyboard";
 // Capture mocked module references at import time, before any resetModules
 import * as qwMod from "../lib/queryWindows";
 import * as scrollCmd from "../lib/scrollToBottomCommand";
@@ -243,6 +256,8 @@ import {
   SERVER_WINDOW_NAME,
 } from "../lib/windowKinds";
 import Sidebar from "../Sidebar";
+import { pressAndClick } from "./helpers/pointerEvents";
+import { fireTouch } from "./helpers/touchEvents";
 
 beforeEach(() => {
   mockEncryptedChats = [];
@@ -1484,5 +1499,64 @@ describe("Sidebar — encrypted query rows", () => {
     render(() => <Sidebar />);
     fireEvent.click(rowOf()?.querySelector(".sidebar-close") as HTMLElement);
     expect(closeEncryptedWindowMock).toHaveBeenCalledWith("freenode", "Bob");
+  });
+
+  // issue 2513 — the row's context menu is the ciphertext view's door: a
+  // right-click (a hold on a touch device) opens it, its one item flips the
+  // chat between plaintext and the ciphertext that travelled over IRC.
+  describe("its context menu", () => {
+    const menuItems = () =>
+      [...document.querySelectorAll<HTMLElement>(".context-menu-item")].map((b) => b.textContent);
+    const button = () => rowOf()?.querySelector(".sidebar-window-btn") as HTMLElement;
+
+    beforeEach(() => {
+      wireViewOn.clear();
+      mockEncryptedChats = [{ key: "bob", nick: "Bob", unread: 0 }];
+    });
+
+    it("a right-click shows the chat's ciphertext, then its plaintext again", () => {
+      render(() => <Sidebar />);
+      const right = fireEvent.contextMenu(button(), { clientX: 40, clientY: 60 });
+      expect(right).toBe(false); // the browser's own menu stays shut
+      expect(menuItems()).toEqual(["Show ciphertext"]);
+
+      pressAndClick(screen.getByText("Show ciphertext"));
+      expect(toggleEncryptedWireViewMock).toHaveBeenCalledWith("freenode", "Bob");
+      expect(menuItems()).toEqual([]);
+      // Nothing else happened to the window: it was not focused, nor closed.
+      expect(selMod.setSelectedChannel).not.toHaveBeenCalled();
+      expect(closeEncryptedWindowMock).not.toHaveBeenCalled();
+
+      fireEvent.contextMenu(button(), { clientX: 40, clientY: 60 });
+      expect(menuItems()).toEqual(["Show plaintext"]);
+      pressAndClick(screen.getByText("Show plaintext"));
+      expect(toggleEncryptedWireViewMock).toHaveBeenCalledTimes(2);
+      expect(wireViewOn.size).toBe(0);
+    });
+
+    it("a hold on the row opens it on a touch device that sends no contextmenu (iOS)", () => {
+      vi.useFakeTimers();
+      try {
+        render(() => <Sidebar />);
+        const nick = button().querySelector(".sidebar-channel-name") as HTMLElement;
+        fireTouch(nick, "touchstart", { clientX: 40, clientY: 60 });
+        vi.advanceTimersByTime(LONG_PRESS_MS);
+        expect(menuItems()).toEqual(["Show ciphertext"]);
+        const release = fireTouch(nick, "touchend", { clientX: 40, clientY: 60 });
+        expect(release.defaultPrevented).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("no other row opens it", () => {
+      render(() => <Sidebar />);
+      const channel = document.querySelector<HTMLElement>(
+        'li[data-window-name="#italia"] .sidebar-window-btn',
+      );
+      expect(channel).not.toBeNull();
+      fireEvent.contextMenu(channel as HTMLElement, { clientX: 40, clientY: 60 });
+      expect(menuItems()).toEqual([]);
+    });
   });
 });

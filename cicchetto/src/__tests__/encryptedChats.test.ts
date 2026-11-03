@@ -879,6 +879,26 @@ describe("encrypted chats", () => {
     ]);
   });
 
+  it("the ciphertext view is a chat's own and starts off; a deleted chat, or a new identity, starts it off again (issue 2513)", async () => {
+    await chats.drainE2e(net.slug);
+    await chats.openEncryptedChat(net.slug, "Bob");
+    expect(chats.encryptedWireView(net.slug, "Bob")).toBe(false);
+
+    chats.toggleEncryptedWireView(net.slug, "BOB");
+    expect(chats.encryptedWireView(net.slug, "bob")).toBe(true);
+    expect(chats.encryptedWireView(net.slug, "carol")).toBe(false);
+    chats.toggleEncryptedWireView(net.slug, "Bob");
+    expect(chats.encryptedWireView(net.slug, "Bob")).toBe(false);
+
+    chats.toggleEncryptedWireView(net.slug, "Bob");
+    await chats.deleteEncryptedChat(net.slug, "Bob");
+    expect(chats.encryptedWireView(net.slug, "Bob")).toBe(false);
+
+    chats.toggleEncryptedWireView(net.slug, "Bob");
+    setBearer("another-token");
+    expect(chats.encryptedWireView(net.slug, "Bob")).toBe(false);
+  });
+
   it("a new identity sees none of the last one's chats", async () => {
     await chats.drainE2e(net.slug);
     await chats.openEncryptedChat(net.slug, "Bob");

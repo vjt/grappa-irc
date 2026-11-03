@@ -33,6 +33,7 @@ const [own, setOwn] = createSignal<string | undefined>(undefined);
 const [visible, setVisible] = createSignal(true);
 const [sas, setSas] = createSignal<SasView | null>(null);
 const [elsewhere, setElsewhere] = createSignal(false);
+const [wireView, setWireView] = createSignal(false);
 
 const loadEncryptedChat = vi.hoisted(() => vi.fn());
 const readEncryptedChat = vi.hoisted(() => vi.fn());
@@ -66,6 +67,8 @@ vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   encryptedSas: () => sas(),
   ownKey: () => own(),
   identityElsewhere: () => elsewhere(),
+  // issue 2513 — the sidebar's toggle (its own tests drive it): the pane reads it.
+  encryptedWireView: () => wireView(),
   replaceEncryptedIdentity,
   loadEncryptedChat,
   readEncryptedChat,
@@ -145,7 +148,7 @@ vi.mock("../lib/scrollback", async (importOriginal) => ({
 // it was handed the way the browser would, as a fresh document.
 vi.mock("../lib/documentNavigation", () => ({ loadDocument }));
 
-const { default: EncryptedChatPane } = await import("../EncryptedChatPane");
+const { default: EncryptedChatPane, NO_CIPHERTEXT } = await import("../EncryptedChatPane");
 const { default: EncryptedRail } = await import("../EncryptedRail");
 const { default: PairScan } = await import("../PairScan");
 const { formatTime } = await import("../ScrollbackPane");
@@ -177,6 +180,7 @@ beforeEach(() => {
   setVisible(true);
   setSas(null);
   setElsewhere(false);
+  setWireView(false);
   dismissConfirm();
   // The compose store is the app's one (issue 2512): each test starts on an
   // empty draft for the window.
@@ -324,6 +328,70 @@ describe("EncryptedChatPane", () => {
     expect(list.textContent).not.toContain(OWN);
     // The exchange is done (a pinned key, the alarm answered): no step either.
     expect(screen.queryByTestId("e2e-step")).toBeNull();
+  });
+
+  // issue 2513 — the ciphertext view: each message reads as the payloads it
+  // went over IRC as, on the line it holds in the plaintext view, so the
+  // scroll, the unread marker and the delivery state stay where they were.
+  it("in the ciphertext view each message reads as the payloads it travelled as, on its own line; the plaintext comes back with the toggle (issue 2513)", () => {
+    const read = {
+      verb: "msg",
+      msgid: "cXV1eHF1dXh",
+      payload: '{"ck":"y","bodies":{"d":"e"}}',
+    } as const;
+    const sent = {
+      verb: "pkmsg",
+      msgid: "Zm9vYmFyYmF",
+      payload: '{"id":{},"bodies":{"a":"b"}}',
+    } as const;
+    const again = {
+      verb: "msg",
+      msgid: "YmF6cXV4cXV",
+      payload: '{"ck":"x","bodies":{"a":"c"}}',
+    } as const;
+    const lost = {
+      verb: "pkmsg",
+      msgid: "bG9zdGxvc3R",
+      payload: '{"id":{},"bodies":{"f":"g"}}',
+    } as const;
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    setRows([
+      { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "ciao", wire: [read] },
+      { kind: "out", id: "2", at, body: "twice", state: "sent", reason: null, wire: [sent, again] },
+      { kind: "out", id: "3", at, body: "waiting", state: "queued", reason: null },
+      { kind: "undecryptable", id: "4", at, nick: "Bob", wire: [lost] },
+      // Kept before this device kept ciphertext: there is none to show.
+      { kind: "in", id: "5", at, nick: "Bob", ed25519: KEY, body: "old" },
+      { kind: "pinned", id: "6", at, nick: "Bob", ed25519: KEY },
+    ]);
+    renderPane();
+    const plaintext = lines().map((row) => row.textContent);
+
+    setWireView(true);
+    const shown = lines();
+    expect(shown.map(line)).toEqual([
+      "privmsg <Bob>",
+      "privmsg <alice>",
+      "privmsg <alice>",
+      "privmsg <Bob>",
+      "privmsg <Bob>",
+    ]);
+    expect(shown.map(body)).toEqual([
+      `E2E MSG cXV1eHF1dXh {"ck":"y","bodies":{"d":"e"}}`,
+      `E2E PKMSG Zm9vYmFyYmF {"id":{},"bodies":{"a":"b"}}\nE2E MSG YmF6cXV4cXV {"ck":"x","bodies":{"a":"c"}}`,
+      NO_CIPHERTEXT,
+      `E2E PKMSG bG9zdGxvc3R {"id":{},"bodies":{"f":"g"}}`,
+      NO_CIPHERTEXT,
+    ]);
+    // The delivery state still says where a message is, and no plaintext shows.
+    expect(shown[2]?.textContent).toContain("waiting for keys");
+    const list = within("e2e-pane").querySelector("[data-testid=scrollback]") as HTMLElement;
+    for (const text of ["ciao", "twice", "waiting", "old"]) {
+      expect(list.textContent).not.toContain(text);
+    }
+
+    setWireView(false);
+    expect(lines().map((row) => row.textContent)).toEqual(plaintext);
   });
 
   // In any query a click on the peer's nick lands in the window already
