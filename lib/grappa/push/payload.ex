@@ -96,13 +96,11 @@ defmodule Grappa.Push.Payload do
 
   Format: `/?network=<slug>&channel=<percent-encoded>`, plus `&e2e=1` when
   the conversation to open is the encrypted query with the nick
-  (`build_e2e/2`, issue 2515). The format is
-  fixed at B4 so B5 (Playwright e2e + SW notificationclick handler)
-  has nothing to negotiate when wiring up cic-side selection. cic
-  itself does NOT parse `?network` / `?channel` on cold-load yet —
-  B5 adds the SW notificationclick handler + the main.tsx URL-param
-  reader together. Until then the URL ships in the payload but
-  clicking the OS notification just opens `/`.
+  (`build_e2e/2`, issue 2515). The format was fixed at B4 so B5
+  (Playwright e2e + SW notificationclick handler) had nothing to
+  negotiate when wiring up cic-side selection; cic reads it in
+  `lib/pushPayload.ts` (`parsePushTargetUrl`), on a warm tap and on a
+  cold boot alike.
 
   The channel name is percent-encoded because IRC channel names start
   with `#`, which would otherwise be interpreted as a URL fragment by
