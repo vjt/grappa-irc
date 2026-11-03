@@ -1881,17 +1881,32 @@ grappa relays the ciphertext and keeps no row.
   maps `$e2e:<nick>` to the peer: muting bob drops both of bob's windows from
   the cycle. The drawer's mute picker skips encrypted candidates. The mute
   they would write is the peer's, and a `$e2e:` row would name a window the
-  mute is not keyed on. Known gap, not changed here: the sidebar's 🔒 badge
-  (`EncryptedUnreadBadge`) does not dim for a muted peer, as #1077 dims a
-  muted window's badges.
+  mute is not keyed on. The 🔒 badge (`EncryptedUnreadBadge`, sidebar and
+  bottom bar) dims under the same mute through the same `windowMuteKey`, as
+  #1077 dims a muted window's badges: a count the cycle skips never shines
+  at full strength. Before this issue the client read no mute for an
+  encrypted window at all, so the gap would have been this issue's own.
+* **A chat with no line is read when its window shows.** The chat's unread
+  counts a key alarm and the peer asking to compare emoji, and the window
+  reads at its tail (#2512's `setCursorIfAdvances` → `readEncryptedChat`).
+  A chat holding only such a step has no tail: nothing read it but an own
+  send, so its badge stuck, and with this issue it would have been a red
+  next-active stop no jump could clear (the dead button #1178 and #1765
+  cured for grappa's windows). The pane now reads a loaded chat with no
+  line whenever it shows with the page visible: the card or the dialog on
+  screen is what the user reads. Rows still loading are not "no line".
 
 Tests: the pure order (an encrypted query ahead of a channel listed before it, priority,
 the badge kind, a muted peer skipped), the memo with the chat index mocked
 (a candidate counted from the chat's own unread, the jump selects it with
-kind `encrypted`, none once read), and the picker offering no `$e2e:` row.
-e2e: `issue2509-encrypted-next-active.spec.ts`, two browsers on the real
-ircd. Alice parks on the server window with nothing to jump to, and Bob
-writes in the encrypted query. Her button must count 1 in the DM tier's
-colour, and the jump (Alt+A on desktop, the button on both phones) must land
-in the encrypted window with Bob's line on screen, after which the button
-goes.
+kind `encrypted`, none once read), the picker offering no `$e2e:` row, the
+badge dimmed under the peer's mute, and a chat with no line read once shown
+(never while hidden, never while loading). e2e:
+`issue2509-encrypted-next-active.spec.ts`, two browsers on the real ircd.
+Alice parks on the server window with nothing to jump to, and Bob writes in
+the encrypted query. Her button must count 1 in the DM tier's colour, and the
+jump (Alt+A on desktop, the button on both phones) must land in the
+encrypted window with Bob's line on screen, after which the button goes. A
+third test makes the stop a key alarm in a chat with no line (Alice pinned
+Bob's key by hand, Bob comes back with a new identity): one Alt+A lands on
+the alarm and the button goes.
