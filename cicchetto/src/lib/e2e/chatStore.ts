@@ -43,9 +43,8 @@ export type WirePayload = { verb: MessageVerb; msgid: string; payload: string };
 
 // `wire` (issue 2513): the payloads a message crossed IRC as. An incoming
 // row's is the one this device read, an outgoing row's each one grappa took
-// for it, in order (a re-send after a NACK is another). What grappa took and
-// then dropped stays: the row turns failed, and its state says it never went
-// out, in this view as in the plaintext one. Absent on a row kept before this
+// for it, in order (a re-send after a NACK is another), less any grappa took
+// and then dropped, which never crossed. Absent on a row kept before this
 // device kept them, on a copy from one of our other devices (which reached
 // this one through grappa's copy door, never IRC), and on a message not sent.
 export type ChatRow =
@@ -147,6 +146,8 @@ export type Chat = { nick: string; open: boolean; unread: number; check?: Identi
  * moves an outgoing row along, adding the payload grappa took (`wire`, when
  * the move is to sent), and changes nothing if the row is not there,
  * nor once the row is sent and the change would take it back (`backwards`).
+ * `drop` takes from an outgoing row the payload grappa dropped, whatever its
+ * state (issue 2513), and changes nothing else.
  * `check` keeps the chat's last identity check and nothing else: it neither
  * opens the chat nor counts as unread, and a nick with no chat gets a closed
  * one to keep it on.
@@ -161,6 +162,7 @@ export type ChatChange =
       reason: OutFailure | null;
       wire: WirePayload | null;
     }
+  | { op: "drop"; nick: string; id: string; msgid: string }
   | { op: "check"; nick: string; check: IdentityCheck };
 
 /** Rows kept per chat; the oldest go first. */
@@ -270,8 +272,13 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
         }
         const touched: string[] = [];
         for (const [key, own] of byChat) {
-          // An `out` alone never creates a chat: its row would not be there.
-          if (index.chats[key] === undefined && own.every((c) => c.op === "out")) continue;
+          // An `out` or a `drop` alone never creates a chat: its row would not be there.
+          if (
+            index.chats[key] === undefined &&
+            own.every((c) => c.op === "out" || c.op === "drop")
+          ) {
+            continue;
+          }
           const first = own[0] as ChatChange;
           const chat = entry(index, first.nick, first.op === "add" && countsAsUnread(first.row));
           // A check lives on the index: the rows are not read, nor sealed again.
@@ -286,6 +293,12 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
               if (change.unread) chat.unread += 1;
             } else if (change.op === "check") {
               chat.check = change.check;
+            } else if (change.op === "drop") {
+              rows = rows.map((r) =>
+                r.kind === "out" && r.id === change.id && r.wire !== undefined
+                  ? { ...r, wire: r.wire.filter((p) => p.msgid !== change.msgid) }
+                  : r,
+              );
             } else {
               const { state, reason, wire } = change;
               rows = rows.map((r) => {

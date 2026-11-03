@@ -193,8 +193,8 @@ const FAILURE_LABEL: Record<OutFailure, string> = {
 
 /** What a message reads in the ciphertext view when this device kept none of it (issue 2513). */
 export const NO_CIPHERTEXT = "(no ciphertext on this device)";
-/** What one of ours reads there before grappa took it, or when it never did: nothing crossed. */
-export const NOT_SENT = "(not sent)";
+/** What one of ours not sent reads there: none anywhere, and the line's state says why. */
+export const UNSENT = "(no ciphertext)";
 
 // issue 2513 — a message as the ciphertext view writes it: each payload it
 // crossed IRC as on a line of its own, the verb and msgid its `E2E` lines
@@ -207,7 +207,7 @@ function ciphertextOf(row: Message): string {
   if (wire.length > 0) {
     return wire.map((p) => `E2E ${p.verb.toUpperCase()} ${p.msgid} ${p.payload}`).join("\n");
   }
-  return row.kind === "out" && row.state !== "sent" ? NOT_SENT : NO_CIPHERTEXT;
+  return row.kind === "out" && row.state !== "sent" ? UNSENT : NO_CIPHERTEXT;
 }
 
 // issue 2498 — a message as the scrollback's line. Ours is named by our nick,

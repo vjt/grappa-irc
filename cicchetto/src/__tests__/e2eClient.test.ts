@@ -1124,6 +1124,37 @@ describe("e2eClient, order challenges", () => {
     ]);
   });
 
+  // issue 2513 — a message can go as several payloads (a MSG to the device
+  // with a session, a PKMSG to the new one): one grappa drops never crossed
+  // IRC, so it goes from the row even while the row stays sent.
+  it("a payload grappa dropped goes from its row, which stays sent while another payload went and turns failed once none did (issue 2513)", async () => {
+    const { w, a, b } = await pair();
+    await w.pairDevice(b);
+    await chat(a, b);
+    await a.client.send(a.ctx, "bob", "half");
+    const half = (await rowsOf(a, "bob")).at(-1);
+    const [first, second] = w.grappa.sends
+      .filter((s) => s.by === "alice" && s.tag === half?.id)
+      .map((s) => ({ verb: s.verb, msgid: s.msgid, payload: s.payload }));
+    expect([first?.verb, second?.verb].sort()).toEqual(["msg", "pkmsg"]);
+    expect(half).toMatchObject({ state: "sent", wire: [first, second] });
+
+    const report = await a.client.dropped(a.ctx, second?.msgid ?? "", "send-failed");
+    expect(report.chats).toEqual(["bob"]);
+    expect((await rowsOf(a, "bob")).at(-1)).toMatchObject({
+      state: "sent",
+      reason: null,
+      wire: [first],
+    });
+
+    await a.client.dropped(a.ctx, first?.msgid ?? "", "session-ended");
+    expect((await rowsOf(a, "bob")).at(-1)).toMatchObject({
+      state: "failed",
+      reason: "session-ended",
+      wire: [],
+    });
+  });
+
   it("a drop of a message this device did not send, of an ACK, or of list traffic, changes no row", async () => {
     const { w, a, b } = await verifiedPair();
     await sent(w, a, LINE);

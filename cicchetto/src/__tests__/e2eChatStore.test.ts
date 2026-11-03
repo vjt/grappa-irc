@@ -158,6 +158,13 @@ describe("chatStore", () => {
       reason: "unreadable",
       wire: [first, again],
     });
+
+    // A payload grappa dropped never crossed IRC: it goes, and nothing else
+    // of the row moves. Alone it opens no chat, as an `out` alone does not.
+    await chats.apply(SLOT, [{ op: "drop", nick: "bob", id: "t1", msgid: first.msgid }]);
+    expect(await state()).toEqual({ ...out, state: "failed", reason: "unreadable", wire: [again] });
+    await chats.apply(SLOT, [{ op: "drop", nick: "carol", id: "t1", msgid: again.msgid }]);
+    expect(Object.keys(await chats.chats(SLOT))).toEqual(["bob"]);
   });
 
   it("reopens a closed chat on a new row, and `read` clears its count", async () => {

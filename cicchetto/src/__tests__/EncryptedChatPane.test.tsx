@@ -151,11 +151,7 @@ vi.mock("../lib/scrollback", async (importOriginal) => ({
 // it was handed the way the browser would, as a fresh document.
 vi.mock("../lib/documentNavigation", () => ({ loadDocument }));
 
-const {
-  default: EncryptedChatPane,
-  NO_CIPHERTEXT,
-  NOT_SENT,
-} = await import("../EncryptedChatPane");
+const { default: EncryptedChatPane, NO_CIPHERTEXT, UNSENT } = await import("../EncryptedChatPane");
 const { default: EncryptedRail } = await import("../EncryptedRail");
 const { default: PairScan } = await import("../PairScan");
 const { formatTime } = await import("../ScrollbackPane");
@@ -371,6 +367,8 @@ describe("EncryptedChatPane", () => {
       { kind: "in", id: "5", at, nick: "Bob", ed25519: KEY, body: "old" },
       { kind: "pinned", id: "6", at, nick: "Bob", ed25519: KEY },
       { kind: "out", id: "7", at, body: "huge", state: "failed", reason: "too-large" },
+      // A copy from one of our other devices: it crossed, elsewhere.
+      { kind: "out", id: "8", at, body: "copied", state: "sent", reason: null },
     ]);
     renderPane();
     const plaintext = lines().map((row) => row.textContent);
@@ -390,20 +388,23 @@ describe("EncryptedChatPane", () => {
       "privmsg <Bob>",
       "privmsg <Bob>",
       "privmsg <alice>",
+      "privmsg <alice>",
     ]);
     expect(shown.map(body)).toEqual([
       `E2E MSG cXV1eHF1dXh {"ck":"y","bodies":{"d":"e"}}`,
       `E2E PKMSG Zm9vYmFyYmF {"id":{},"bodies":{"a":"b"}}\nE2E MSG YmF6cXV4cXV {"ck":"x","bodies":{"a":"c"}}`,
-      // Not sent, so not encrypted for anyone yet, or ever: nothing crossed.
-      NOT_SENT,
+      // Not sent: no ciphertext anywhere, and the line's state says why.
+      UNSENT,
       `E2E PKMSG bG9zdGxvc3R {"id":{},"bodies":{"f":"g"}}`,
       NO_CIPHERTEXT,
-      NOT_SENT,
+      UNSENT,
+      NO_CIPHERTEXT,
     ]);
     // The delivery state still says where a message is, and no plaintext shows.
     expect(shown[2]?.textContent).toContain("waiting for keys");
+    expect(shown[5]?.textContent).toContain("not sent: it is too large");
     const list = within("e2e-pane").querySelector("[data-testid=scrollback]") as HTMLElement;
-    for (const text of ["ciao", "twice", "later", "old", "huge"]) {
+    for (const text of ["ciao", "twice", "later", "old", "huge", "copied"]) {
       expect(list.textContent).not.toContain(text);
     }
 
