@@ -66,9 +66,10 @@ defmodule GrappaWeb.E2eControllerTest do
     {network, _} = network_with_server(port: port, slug: "azzurra-#{u()}")
     _ = credential_fixture(vjt, network, %{nick: "grappa-test", autojoin_channels: []})
     devices = listed_devices!(vjt, network, n)
-    pid = start_session_for(vjt, network)
+    # `start_session_for/2` registers the teardown, keyed on (subject,
+    # network): it outlasts a session that dies with the fake ircd first.
+    _ = start_session_for(vjt, network)
     :ok = IRCServer.await_handshake(server, 1_000)
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid, :normal, 1_000) end)
     {server, network, devices}
   end
 
