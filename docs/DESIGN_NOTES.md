@@ -2075,3 +2075,92 @@ Measured:
   red on both phones, `opacity: "1"` against the channel's `"0.5"`. Shell's
   gate reopened is the one-button check's: measured on the standalone spec,
   red on both phones with 2 buttons.
+<!-- entry #2511 -->
+
+---
+
+## 2026-11-03 — #2511: the encrypted top bar keeps its buttons on one row; the id check goes under the nick
+
+vjt (iOS PWA, iPhone portrait, 2026-11-02, then three rulings on the issue):
+the encrypted query's top bar put `🔒 <nick>`, the trust badge and the
+`✓ id check <date>` stamp on one line. On a phone that did not fit, and since
+`.e2e-header-main` was `flex-wrap: wrap` the row wrapped. First the ☰ dropped
+under `#`; then, once the stamp carried a full date, search, shredder and ☰
+all dropped together. The rulings: the stamp wraps to its own line under the
+nick or moves to the rail (either is fine); the buttons stay on ONE row, with
+long nicks too; and the search and shredder icons get the ☰'s treatment.
+
+* **The row no longer wraps, and the title is two lines** (`.e2e-title`).
+  Line one is the 🔒 and the nick, cut with an ellipsis. Line two is the badge
+  (the emoji comparison's door, #2507) and the stamp, which is cut first; its
+  full text stays its title, its spoken label, and the rail's "last identity
+  check". The badge gives way last, with an ellipsis, on a pane too narrow
+  even for it: nothing in the title runs under the tools. That is iPad's
+  Slide Over (its windowed pane takes a 65px leading inset), which Playwright
+  cannot emulate; a phone narrow enough has the window bar back in flow below
+  383px (#2161), so no `#` in the bar and room for the badge. The stamp's shrink weight (1000) dwarfs the badge's, so the
+  badge only shrinks once the stamp is gone. The tools and the two doors do
+  not shrink.
+* **The badge moved to line two with the stamp.** The issue's first wording
+  had the stamp "under the nick + badge", i.e. the badge kept beside the nick.
+  It does not fit the worst case, which is the one vjt reported from: a
+  393px phone with the window bar off, so the bar carries the `#` too. From
+  the tokens, 1rem (14px) of inline padding on each side, four 48px chrome
+  buttons (`--chrome-tap-min`), the tools' 0.25rem gap and the row's three
+  0.5rem gaps leave the title about 148px. "not verified" at 0.85em
+  monospace is about 97px with its padding and border, and the 🔒 and two
+  gaps take about 30px more, so the nick would get 2 to 5 characters. Under
+  the nick, the badge leaves the nick about 12. This is computed from the
+  tokens, not measured on a device: the spec below measures the result, not
+  the alternative.
+* **The door's tap floor is an `::after`, not the button's height.** #2507
+  gave `.e2e-trust-door` `min-height: var(--tap-min)`; on line two that
+  would make the title 22 + 44px tall, and the bar about 18px taller. The
+  44px is now an absolutely placed `::after` that grows UP from the badge's
+  bottom edge. Centred on the badge, as first written, it reached below the
+  bar's row: over the search row when open, and under the chat's body, which
+  paints above it and took its last pixel. The review computed that, and the
+  first green arm measured it: a tap 20px below the badge's centre missed the
+  door. Above the badge is the nick, which is not interactive, so a tap on
+  the nick's first characters starts the comparison. In practice the door
+  and the stamp do not meet: the stamp comes only from a bot's order
+  challenge, and a bot's key is pinned by hand, which offers no door (#2507).
+  #2507's phone test asserted the button's box at 44px or more; it now
+  asserts the `::after`'s computed height at 44px or more, and that a tap at
+  either end of it lands on the door.
+* **The icons fill the ☰'s square.** The ☰'s three bars are drawn to fill a
+  `--chrome-icon-size` square exactly (#1766). The magnifier and the shredder
+  were drawn on a 24-unit grid with a margin, so their ink sat smaller than
+  their 1em box. Each viewBox is now cropped to its own ink, stroke and round
+  caps included: magnifier `3 3 19 19`, shredder `2 2 20 20`.
+
+Tests:
+
+* vitest pins the title's structure: two lines, the nick alone on the first,
+  the badge and the stamp on the second. It was red against #2507's markup.
+* e2e: `issue2511-encrypted-top-bar-one-row.spec.ts` (`@webkit @touch`,
+  both phones) builds the worst case for real. The real irc-olm bot runs
+  with a 26-character nick and is pinned both ways. One message opens the
+  session, and an order in a shared channel gives a passed identity check,
+  so the stamp is there. The window bar is turned off, so the `#` door is
+  in the bar too. The spec asserts that the four buttons share a top and the
+  bar is no taller than they are, that the nick is cut before the search
+  button, that the badge and the stamp sit under the nick, and that each
+  icon's ink is the bars' square within a pixel. The ink is read off
+  `getBBox()` grown by half the stroke and scaled by `getScreenCTM()`,
+  within half a pixel. Then the viewport goes to 280px (a Galaxy Fold's cover
+  screen, the narrowest phone): three buttons (the `#` leaves with #2161),
+  still one row, and nothing of the title reaching the search button.
+  - **Red on #2507's code** (`c87d4a2a`): on both phones the buttons after
+    `#` sat 55px lower, on a second row. That is the report.
+  - **First green arm**, before the review's fixes: the spec green on both
+    phones, and the encrypted set with it, interop included: 42 passed, 1
+    red. The red was #2507's phone test, whose probe 20px below the badge's
+    centre missed the door, as the review had computed.
+  - **After the fixes**: #2507 (desktop and phone), #2485, `issue2430-sas`,
+    #2506 and #2512 green, 12 passed; then this spec, with its 280px step,
+    green on both phones.
+* The NickServ registration, the order verdict, the 2430 bounds and the bot's
+  `cic` subject moved from `issue2430-interop-bot.spec.ts` into
+  `fixtures/e2eBot.ts`, now that two specs need them. The interop spec is
+  unchanged in behaviour and runs in the green arm.
