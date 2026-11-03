@@ -1,11 +1,12 @@
 import { type Component, Show } from "solid-js";
 import type { ChannelKey } from "./lib/channelKey";
-import { isConversationMuted } from "./lib/conversationMute";
+import { isConversationMuted, windowMuteKey } from "./lib/conversationMute";
 import { getShowEventBadge } from "./lib/eventBadge";
 import { mentionCounts } from "./lib/mentions";
 import { notificationPrefs } from "./lib/notificationPrefs";
 import { farBehindByChannel } from "./lib/scrollback";
 import { eventsUnread, messagesUnread } from "./lib/selection";
+import { encryptedWindowName } from "./lib/windowKinds";
 
 // The unread / events / mention badge triad that trails a window row.
 //
@@ -153,20 +154,35 @@ const WindowBadges: Component<Props> = (props) => {
 // issue 2430 — the unread count of an encrypted window. Its number is the
 // device's own (the chat index, lib/encryptedChats.ts: grappa never sees the
 // rows), so none of the server-backed state above applies — no far-behind
-// freeze, no events, no mentions, no mute — but it is the same badge, spoken
-// the same way.
-export const EncryptedUnreadBadge: Component<{ count: number; variant: WindowBadgesVariant }> = (
-  props,
-) => (
-  <Show when={props.count > 0}>
-    <span
-      class={BADGE_CLASSES[props.variant].messages}
-      role="img"
-      aria-label={badgeLabel(props.count, "messages", false)}
-    >
-      {props.count}
-    </span>
-  </Show>
-);
+// freeze, no events, no mentions — but it is the same badge, spoken the same
+// way. Issue 2509: and dimmed the same way (#1077), under its PEER's mute,
+// the one the cycle-skip reads for the window (`windowMuteKey`).
+export const EncryptedUnreadBadge: Component<{
+  networkSlug: string;
+  nick: string;
+  count: number;
+  variant: WindowBadgesVariant;
+}> = (props) => {
+  const muted = () =>
+    isConversationMuted(
+      notificationPrefs().muted_targets,
+      windowMuteKey({
+        networkSlug: props.networkSlug,
+        channelName: encryptedWindowName(props.nick),
+      }),
+    );
+  return (
+    <Show when={props.count > 0}>
+      <span
+        class={BADGE_CLASSES[props.variant].messages}
+        classList={{ [MUTED_CLASS]: muted() }}
+        role="img"
+        aria-label={badgeLabel(props.count, "messages", false)}
+      >
+        {props.count}
+      </span>
+    </Show>
+  );
+};
 
 export default WindowBadges;

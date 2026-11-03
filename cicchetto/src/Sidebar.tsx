@@ -681,7 +681,12 @@ const Sidebar: Component<Props> = (props) => {
                         </span>
                         <NickText nick={chat.nick} extraClass="sidebar-channel-name" />
                         <span class="sr-only"> (encrypted)</span>
-                        <EncryptedUnreadBadge count={chat.unread} variant="sidebar" />
+                        <EncryptedUnreadBadge
+                          networkSlug={network.slug}
+                          nick={chat.nick}
+                          count={chat.unread}
+                          variant="sidebar"
+                        />
                       </button>
                       <CloseButton
                         class="sidebar-close"

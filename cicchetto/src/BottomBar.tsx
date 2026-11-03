@@ -259,7 +259,12 @@ const BottomBar: Component<Props> = (props) => {
                       </span>
                       <NickText nick={chat.nick} extraClass="bottom-bar-tab-nick" />
                       <span class="sr-only"> (encrypted)</span>
-                      <EncryptedUnreadBadge count={chat.unread} variant="bottom-bar" />
+                      <EncryptedUnreadBadge
+                        networkSlug={network.slug}
+                        nick={chat.nick}
+                        count={chat.unread}
+                        variant="bottom-bar"
+                      />
                     </button>
                     <CloseButton
                       class="bottom-bar-close"
