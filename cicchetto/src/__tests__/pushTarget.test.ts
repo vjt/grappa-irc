@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { encryptedChat } from "../lib/encryptedChats";
 import { openEncryptedWindow } from "../lib/encryptedWindow";
 import { applyPushTarget, installPushTargetListener, pushTargetSelection } from "../lib/pushTarget";
 import { openQueryWindowState } from "../lib/queryWindows";
@@ -45,11 +46,17 @@ vi.mock("../lib/queryWindows", () => ({
 // index knows whether it exists and how it spells the peer (here: `alice`,
 // a chat first opened under that spelling), and `openEncryptedWindow` is
 // the open-then-focus verb every other door uses (`/equery`, the nick menu).
+// Two readers of that index: the page's copy (`encryptedChat`, what the
+// sidebar shows) and the store itself (`encryptedChatNick`), which a cold tap
+// reads before the page's copy is in.
 vi.mock("../lib/encryptedChats", () => ({
   encryptedChat: vi.fn((slug: string, nick: string) =>
     slug === "libera" && nick.toLowerCase() === "alice"
       ? { nick: "alice", open: true, unread: 1 }
       : undefined,
+  ),
+  encryptedChatNick: vi.fn(async (slug: string, nick: string) =>
+    slug === "libera" && nick.toLowerCase() === "alice" ? "alice" : nick,
   ),
 }));
 
@@ -100,18 +107,25 @@ describe("applyPushTarget", () => {
     });
   });
 
-  it("opens AND focuses the encrypted query for an encrypted-message deep-link (issue 2515)", () => {
+  it("opens the encrypted query for an encrypted-message deep-link (issue 2515)", async () => {
     applyPushTarget("/?network=libera&channel=Bob&e2e=1");
     // The encrypted window, never the plaintext query with the same nick:
     // no query window is opened and nothing selects one.
-    expect(openEncryptedWindow).toHaveBeenCalledWith("libera", "Bob");
+    await vi.waitFor(() => expect(openEncryptedWindow).toHaveBeenCalledWith("libera", "Bob"));
     expect(openQueryWindowState).not.toHaveBeenCalled();
     expect(setSelectedChannel).not.toHaveBeenCalled();
   });
 
-  it("opens the encrypted chat under the spelling the device's chat index already has", () => {
-    applyPushTarget("/?network=libera&channel=Alice&e2e=1");
-    expect(openEncryptedWindow).toHaveBeenCalledWith("libera", "alice");
+  it("opens the chat under the name the device's chat index stores, even before the page's copy has it", async () => {
+    // A cold tap: the page's copy of the index is still empty.
+    const pageCopy = vi.mocked(encryptedChat).getMockImplementation();
+    vi.mocked(encryptedChat).mockImplementation(() => undefined);
+    try {
+      applyPushTarget("/?network=libera&channel=Alice&e2e=1");
+      await vi.waitFor(() => expect(openEncryptedWindow).toHaveBeenCalledWith("libera", "alice"));
+    } finally {
+      if (pageCopy !== undefined) vi.mocked(encryptedChat).mockImplementation(pageCopy);
+    }
   });
 
   it("says when the encrypted chat could not be opened, never swallows it", async () => {

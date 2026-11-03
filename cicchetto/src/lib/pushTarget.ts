@@ -24,7 +24,7 @@
 // selection doesn't fire on a still-loading store.
 
 import { createEffect, untrack } from "solid-js";
-import { encryptedChat } from "./encryptedChats";
+import { encryptedChat, encryptedChatNick } from "./encryptedChats";
 import { openEncryptedWindow } from "./encryptedWindow";
 import { parseInviteLinkUrl, routeInviteTarget } from "./inviteLink";
 import { moduleRoot } from "./moduleRoot";
@@ -56,8 +56,11 @@ import { encryptedWindowName } from "./windowKinds";
  * nick, never the plaintext one: through `openEncryptedWindow`, the
  * open-then-focus verb `/equery` and the nick menu use. Opening is what
  * makes the window exist on a device that has not drained the message yet
- * (a cold tap); the drain then fills it. It is async and fires from a tap,
- * so a failure is said, not thrown.
+ * (a cold tap); the drain then fills it. The nick is the one the device's
+ * chat index stores (`encryptedChatNick`), read off the store because on a
+ * cold tap the page's copy is not in yet: an open under the wire's spelling
+ * would rename a chat the user named otherwise. It is async and fires from a
+ * tap, so a failure is said, not thrown.
  *
  * Shared by both push-target call sites (warm `applyPushTarget`, cold
  * `deferUntilNetworksSeed`) so the open-then-select contract can't drift
@@ -65,10 +68,12 @@ import { encryptedWindowName } from "./windowKinds";
  */
 function routePushTarget(target: PushTarget): void {
   if (target.kind === "encrypted") {
-    const nick = encryptedPeer(target);
-    void openEncryptedWindow(target.networkSlug, nick).catch((err: unknown) => {
-      console.warn(`pushTarget: could not open the encrypted query with ${nick}`, err);
-    });
+    const { networkSlug, channelName } = target;
+    void encryptedChatNick(networkSlug, channelName)
+      .then((nick) => openEncryptedWindow(networkSlug, nick))
+      .catch((err: unknown) => {
+        console.warn(`pushTarget: could not open the encrypted query with ${channelName}`, err);
+      });
     return;
   }
   const selection = pushTargetSelection(target);
@@ -117,9 +122,10 @@ function routePushTarget(target: PushTarget): void {
  * while every forward-path test stayed green.
  *
  * An encrypted message names the encrypted query `$e2e:<nick>` (issue
- * 2515), with the nick as the device's chat index spells it: that is the
+ * 2515), with the nick as the page's copy of the chat index spells it: the
  * name the window's sidebar row carries, the twin of the query branch's
- * canonical nick.
+ * canonical nick. Only the backward walk reads it here, and a window in view
+ * is in that copy; the forward walk reads the store (see `routePushTarget`).
  *
  * Total: an unresolvable network yields the raw name rather than null, so
  * a stale deep-link degrades to a best-effort match instead of a crash.
@@ -128,7 +134,9 @@ export function pushTargetSelection(target: PushTarget): NonNullable<SelectedCha
   if (target.kind === "encrypted") {
     return {
       networkSlug: target.networkSlug,
-      channelName: encryptedWindowName(encryptedPeer(target)),
+      channelName: encryptedWindowName(
+        encryptedChat(target.networkSlug, target.channelName)?.nick ?? target.channelName,
+      ),
       kind: "encrypted",
     };
   }
@@ -149,14 +157,11 @@ export function pushTargetSelection(target: PushTarget): NonNullable<SelectedCha
   };
 }
 
-// The encrypted chat's peer as the device's chat index spells it, else as
-// the payload does (a chat the device does not know yet).
-const encryptedPeer = (target: PushTarget): string =>
-  encryptedChat(target.networkSlug, target.channelName)?.nick ?? target.channelName;
-
 /**
- * Resolves a push-target URL and routes selection. Returns true if a
- * selection was applied, false on parse failure or no-op.
+ * Resolves a push-target URL and routes selection. Returns true if the
+ * target was routed, false on parse failure. An encrypted target (issue
+ * 2515) is routed to an async open: true says the open was asked for, not
+ * that the window is up yet; its failure goes to the console.
  *
  * Pure wrt the selection store — caller responsibility to invoke from
  * a context where setSelectedChannel side-effects are appropriate
@@ -224,6 +229,8 @@ export function installPushTargetListener(): void {
  * an assertion on this flag so it doesn't pass for the wrong reason
  * (e.g. a session-restore code path that selected the same channel
  * independently). Pure dev/test signal — production code ignores it.
+ * For an encrypted target it marks the open as asked for, as
+ * `applyPushTarget`'s true does: the window comes up when the open settles.
  *
  * Residual: the deep-link params are cleared from the URL bar via
  * `history.replaceState({}, "", "/")` after the selection lands.
