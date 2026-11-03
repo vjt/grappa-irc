@@ -322,11 +322,13 @@ test("(c) accepted while the requester's browser is closed: she comes back to th
     // ... and Bob holds hers.
     await expect(b.page.getByTestId("e2e-peer-key")).toHaveText(await ownKey(back));
 
-    // The request did its job and went: no card in the plaintext query.
+    // The request did its job and went: no card in the plaintext query, and
+    // the rail opens the chat it made rather than asking again (issue 2508).
     await focusQuery(back, bob.nick);
     await expect(back.getByTestId("scrollback-pinned")).toBeAttached();
     await expect(card(back)).toHaveCount(0);
-    await expect(railButton(back)).toBeEnabled();
+    await expect(back.getByTestId("rail-chat-securely")).toBeEnabled();
+    await expect(railButton(back)).toHaveCount(0);
   } finally {
     await a.context.close();
     await b.context.close();
