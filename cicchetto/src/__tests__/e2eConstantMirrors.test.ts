@@ -82,6 +82,7 @@ const MIRRORS: readonly Mirror[] = [
     "e2e/tests/issue1445-directory-pull-refresh.spec.ts",
     "e2e/tests/issue220-link-double-fire.spec.ts",
     "e2e/tests/issue244-directory-tap-foreground.spec.ts",
+    "e2e/tests/issue2505-sidebar-row-glyph-alignment.spec.ts",
     "e2e/tests/issue677-directory-pagination.spec.ts",
   ].map(
     (file): Mirror => ({
