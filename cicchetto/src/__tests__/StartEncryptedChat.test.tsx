@@ -8,6 +8,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // before the confirm" is measured at the network, not only at the spy.
 
 const askEncryptedChat = vi.hoisted(() => vi.fn());
+const openEncryptedWindow = vi.hoisted(() => vi.fn());
+// issue 2508 — the device's chat index, as a signal: whether an encrypted chat
+// with the peer exists is what the button reads, and it can change under it.
+const chats = vi.hoisted(() => ({
+  get: (
+    _slug: string,
+    _nick: string,
+  ): { nick: string; open: boolean; unread: number } | undefined => undefined,
+}));
 
 vi.mock("../lib/e2eRequests", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/e2eRequests")>()),
@@ -15,10 +24,11 @@ vi.mock("../lib/e2eRequests", async (importOriginal) => ({
 }));
 vi.mock("../lib/encryptedChats", () => ({
   askEncryptedKeys: vi.fn(),
+  encryptedChat: (slug: string, nick: string) => chats.get(slug, nick),
   encryptedDevice: vi.fn(),
   openEncryptedChat: vi.fn(),
 }));
-vi.mock("../lib/encryptedWindow", () => ({ openEncryptedWindow: vi.fn() }));
+vi.mock("../lib/encryptedWindow", () => ({ openEncryptedWindow }));
 vi.mock("../lib/auth", () => ({ token: () => "tok" }));
 vi.mock("../lib/networks", () => ({ networks: () => [] }));
 vi.mock("../lib/selection", () => ({ selectedChannel: () => null }));
@@ -39,6 +49,9 @@ const show = () => render(() => <StartEncryptedChat networkSlug="azzurra" peer="
 beforeEach(() => {
   askEncryptedChat.mockReset();
   askEncryptedChat.mockResolvedValue(undefined);
+  openEncryptedWindow.mockReset();
+  openEncryptedWindow.mockResolvedValue(undefined);
+  chats.get = () => undefined;
   fetchSpy = vi.fn();
   vi.stubGlobal("fetch", fetchSpy);
 });
@@ -148,6 +161,49 @@ describe("StartEncryptedChat", () => {
     await vi.waitFor(() =>
       expect(screen.getByTestId("rail-start-encrypted-chat-error").textContent).toBe(
         errorMessage(refusal),
+      ),
+    );
+  });
+  it("with an encrypted chat with the peer already here, the button says chat securely and opens it: no confirm, nothing asked", () => {
+    chats.get = (slug, nick) =>
+      slug === "azzurra" && nick === "Bob" ? { nick: "bob", open: false, unread: 0 } : undefined;
+    show();
+
+    const securely = screen.getByTestId("rail-chat-securely") as HTMLButtonElement;
+    expect(securely.textContent).toBe("chat securely");
+    expect(screen.queryByTestId("rail-start-encrypted-chat")).toBeNull();
+
+    securely.click();
+
+    // The window the chat index names, spelled as the index has it.
+    expect(openEncryptedWindow).toHaveBeenCalledWith("azzurra", "bob");
+    expect(confirmRequest()).toBeNull();
+    expect(askEncryptedChat).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("an encrypted chat that comes to exist while the rail is up turns the button into chat securely", () => {
+    const [exists, setExists] = createSignal(false);
+    chats.get = () => (exists() ? { nick: "Bob", open: true, unread: 0 } : undefined);
+    show();
+    expect(button().textContent).toBe("start encrypted chat");
+
+    setExists(true);
+
+    expect(screen.getByTestId("rail-chat-securely").textContent).toBe("chat securely");
+    expect(screen.queryByTestId("rail-start-encrypted-chat")).toBeNull();
+  });
+
+  it("a chat that could not be opened is said under the button", async () => {
+    chats.get = () => ({ nick: "Bob", open: false, unread: 0 });
+    openEncryptedWindow.mockRejectedValue(new Error("the chat index is not readable"));
+    show();
+
+    screen.getByTestId("rail-chat-securely").click();
+
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("rail-start-encrypted-chat-error").textContent).toBe(
+        errorMessage(new Error("the chat index is not readable")),
       ),
     );
   });
