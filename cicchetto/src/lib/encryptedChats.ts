@@ -240,6 +240,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   /** Networks with something waiting on the clock: messages waiting for keys, a SAS. */
   const waiting = new Set<string>();
   const draining = new Map<string, Promise<void>>();
+  /** Each network's last refresh: the next one starts after it has set its copy. */
+  const refreshing = new Map<string, Promise<void>>();
   const drainAgain = new Set<string>();
 
   onIdentityChange(() => {
@@ -335,10 +337,26 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     }
   }
 
+  // One refresh at a time per network (issue 2515). Each reads the whole
+  // index and sets the network's copy from it, so two that overlap could set
+  // in the other order than they read: a refresh that read before a chat was
+  // opened would set its copy over the open's, the window just opened would
+  // drop out of the list and the selection would move away from it. A cold
+  // notification tap opens a chat while the boot drain refreshes. In turn,
+  // a refresh reads after every earlier one has set. A failed one does not
+  // hold up the next: its caller has the error.
+  function refresh(slug: string, touched: readonly string[]): Promise<void> {
+    const next = (refreshing.get(slug) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => refreshNow(slug, touched));
+    refreshing.set(slug, next);
+    return next;
+  }
+
   // Reads the network's chat index again, and the trust, SAS and rows of
   // the touched chats a window has shown. Identity first: working out a
   // SAS's emoji may end it (a key that makes no secret), and write that down.
-  async function refresh(slug: string, touched: readonly string[]): Promise<void> {
+  async function refreshNow(slug: string, touched: readonly string[]): Promise<void> {
     const { slot } = contextFor(slug);
     const { chats } = await browserE2e();
     const shown = touched.filter((key) => loaded.has(`${slug} ${key}`));
@@ -475,6 +493,18 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     const { chats } = await browserE2e();
     await chats.open(contextFor(slug).slot, nick);
     await changed(slug, [fold(nick)]);
+  }
+
+  /**
+   * The nick the device's chat index stores for the chat with `nick`, else
+   * `nick` (issue 2515). Read off the store, not the page's copy: a door that
+   * opens a chat from a nick spelled elsewhere (a notification carries the
+   * wire's) keeps the name the chat already has, and on a cold start the
+   * page's copy is not in yet.
+   */
+  async function encryptedChatNick(slug: string, nick: string): Promise<string> {
+    const { chats } = await browserE2e();
+    return (await chats.chats(contextFor(slug).slot))[fold(nick)]?.nick ?? nick;
   }
 
   async function closeEncryptedChat(slug: string, nick: string): Promise<void> {
@@ -665,6 +695,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     drainEveryNetwork,
     loadEncryptedChat,
     openEncryptedChat,
+    encryptedChatNick,
     closeEncryptedChat,
     deleteEncryptedChat,
     encryptedChatHasMessages,
@@ -698,6 +729,7 @@ export const drainE2e = exports_.drainE2e;
 export const drainEveryNetwork = exports_.drainEveryNetwork;
 export const loadEncryptedChat = exports_.loadEncryptedChat;
 export const openEncryptedChat = exports_.openEncryptedChat;
+export const encryptedChatNick = exports_.encryptedChatNick;
 export const closeEncryptedChat = exports_.closeEncryptedChat;
 export const deleteEncryptedChat = exports_.deleteEncryptedChat;
 export const encryptedChatHasMessages = exports_.encryptedChatHasMessages;
