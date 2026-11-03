@@ -676,7 +676,7 @@ const Sidebar: Component<Props> = (props) => {
                           encryptedWindowSelected(network.slug, chat.key) ? "true" : undefined
                         }
                       >
-                        <span class="encrypted-marker" aria-hidden="true">
+                        <span class="sidebar-network-emoji encrypted-marker" aria-hidden="true">
                           🔒
                         </span>
                         <NickText nick={chat.nick} extraClass="sidebar-channel-name" />
