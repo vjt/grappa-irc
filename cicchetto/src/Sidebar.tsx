@@ -1,5 +1,6 @@
-import { type Component, For, Show } from "solid-js";
+import { type Component, For, onCleanup, Show } from "solid-js";
 import CloseButton from "./CloseButton";
+import EncryptedChatMenu, { openEncryptedChatMenu } from "./EncryptedChatMenu";
 import type { Network } from "./lib/api";
 import { ownNickForNetwork } from "./lib/api";
 import { awayByNetwork } from "./lib/awayStatus";
@@ -9,6 +10,7 @@ import { closeEncryptedWindow, encryptedWindowSelected } from "./lib/encryptedWi
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import { isNetworkParked } from "./lib/networkParked";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
+import { bindNickLongPress } from "./lib/nickLongPress";
 import { navPseudoChannelsForNetwork } from "./lib/pseudoChannels";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { reconnectingByNetwork } from "./lib/reconnectingStatus";
@@ -337,6 +339,9 @@ const Sidebar: Component<Props> = (props) => {
               <ul
                 class={`sidebar-network-section${isNetworkGreyed(network.slug) ? " sidebar-network-greyed" : ""}`}
                 aria-label={`${network.slug} windows`}
+                // issue 2513 — a hold on an encrypted window's row opens its
+                // menu on a touch device, as a right-click does elsewhere.
+                ref={(el) => onCleanup(bindNickLongPress(el, ".sidebar-encrypted-btn"))}
               >
                 {/* UX-4 bucket C — network header + server window collapsed
                   into a single row. The old per-network `<h3>` is gone; this
@@ -659,7 +664,9 @@ const Sidebar: Component<Props> = (props) => {
                   the unread count and whether a window is open are the
                   device's chat index (lib/encryptedChats.ts), so none of the
                   server-backed row state above (greying, WindowBadges)
-                  applies. The 🔒 is decoration; the sr-only word says it. */}
+                  applies. The 🔒 is decoration; the sr-only word says it.
+                  issue 2513 — the row's context menu (EncryptedChatMenu) is
+                  the door to the chat's ciphertext view. */}
                 <For each={encryptedChatsFor(network.slug)}>
                   {(chat) => (
                     <li
@@ -671,7 +678,15 @@ const Sidebar: Component<Props> = (props) => {
                         onClick={() =>
                           handleClick(network.slug, encryptedWindowName(chat.nick), "encrypted")
                         }
-                        class="sidebar-window-btn"
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          openEncryptedChatMenu({
+                            networkSlug: network.slug,
+                            nick: chat.nick,
+                            at: { x: e.clientX, y: e.clientY },
+                          });
+                        }}
+                        class="sidebar-window-btn sidebar-encrypted-btn"
                         aria-current={
                           encryptedWindowSelected(network.slug, chat.key) ? "true" : undefined
                         }
@@ -736,6 +751,7 @@ const Sidebar: Component<Props> = (props) => {
           )}
         </For>
       </Show>
+      <EncryptedChatMenu />
     </>
   );
 };

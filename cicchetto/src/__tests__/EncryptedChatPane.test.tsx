@@ -358,7 +358,7 @@ describe("EncryptedChatPane", () => {
     setRows([
       { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "ciao", wire: [read] },
       { kind: "out", id: "2", at, body: "twice", state: "sent", reason: null, wire: [sent, again] },
-      { kind: "out", id: "3", at, body: "waiting", state: "queued", reason: null },
+      { kind: "out", id: "3", at, body: "later", state: "queued", reason: null },
       { kind: "undecryptable", id: "4", at, nick: "Bob", wire: [lost] },
       // Kept before this device kept ciphertext: there is none to show.
       { kind: "in", id: "5", at, nick: "Bob", ed25519: KEY, body: "old" },
@@ -386,7 +386,7 @@ describe("EncryptedChatPane", () => {
     // The delivery state still says where a message is, and no plaintext shows.
     expect(shown[2]?.textContent).toContain("waiting for keys");
     const list = within("e2e-pane").querySelector("[data-testid=scrollback]") as HTMLElement;
-    for (const text of ["ciao", "twice", "waiting", "old"]) {
+    for (const text of ["ciao", "twice", "later", "old"]) {
       expect(list.textContent).not.toContain(text);
     }
 

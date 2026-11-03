@@ -45,6 +45,7 @@ import {
   encryptedSas,
   encryptedSendSubmitted,
   encryptedTrust,
+  encryptedWireView,
   identityElsewhere,
   lastEncryptedSend,
   loadEncryptedChat,
@@ -122,6 +123,13 @@ import ScrollbackPane from "./ScrollbackPane";
 // side only, no server index"): a filter over the messages the window
 // already holds decrypted, at most `CHAT_ROWS_MAX`. The shredder asks first,
 // as the window's × does when the chat keeps messages.
+//
+// issue 2513 — the window can show what the server and the network see
+// instead: each message as the payloads it crossed IRC as (`ciphertextOf`),
+// on the line it holds in the plaintext view, so the scroll, the unread
+// marker and the delivery state stay put. The door is the window's row in
+// the sidebar (`EncryptedChatMenu`), never the top bar; the compose box stays,
+// so a line typed there shows up as the ciphertext it went as.
 
 type Props = {
   networkSlug: string;
@@ -182,26 +190,48 @@ const FAILURE_LABEL: Record<OutFailure, string> = {
   "session-ended": "the connection to the network ended before it went",
 };
 
+/** What a message reads in the ciphertext view when this device kept none of it (issue 2513). */
+export const NO_CIPHERTEXT = "(no ciphertext on this device)";
+
+// issue 2513 — a message as the ciphertext view writes it: each payload it
+// crossed IRC as on a line of its own, the verb and msgid its `E2E` lines
+// carried, then the compact JSON grappa cut into them. One line per payload
+// and not one per IRC line: the cut is the sending grappa's, sized to its
+// relay budget, and the peer's is unknown here, so the lines would be
+// invented; the payload is what they carried, whole.
+function ciphertextOf(row: Message): string {
+  const wire = row.wire ?? [];
+  if (wire.length === 0) return NO_CIPHERTEXT;
+  return wire.map((p) => `E2E ${p.verb.toUpperCase()} ${p.msgid} ${p.payload}`).join("\n");
+}
+
 // issue 2498 — a message as the scrollback's line. Ours is named by our nick,
 // the peer's by theirs, as in any query. A message that cannot be read here is
 // the line the scrollback draws for a peer's messages that cannot be read
 // (issue 2430's `e2e_undeliverable`), one of them: the same words, one place.
 // issue 2512 — `id` is the line's number in the window (`seq`), not the row's
 // own id, which is a string: the pane orders, marks and reads lines by id.
+// issue 2513 — in the ciphertext view the body is the payloads instead, on the
+// same line; a message that could not be read is then its sender's line too.
 function lineOf(
   row: Message,
   seq: number,
   slug: string,
   windowName: string,
   ownNick: string,
+  ciphertext: boolean,
 ): ScrollbackMessage {
   const line = { id: seq, network: slug, channel: windowName, server_time: row.at, meta: {} };
+  const body = (plaintext: string) => (ciphertext ? ciphertextOf(row) : plaintext);
   switch (row.kind) {
     case "in":
-      return { ...line, kind: "privmsg", sender: row.nick, body: row.body };
+      return { ...line, kind: "privmsg", sender: row.nick, body: body(row.body) };
     case "out":
-      return { ...line, kind: "privmsg", sender: ownNick, body: row.body };
+      return { ...line, kind: "privmsg", sender: ownNick, body: body(row.body) };
     case "undecryptable":
+      if (ciphertext) {
+        return { ...line, kind: "privmsg", sender: row.nick, body: ciphertextOf(row) };
+      }
       return {
         ...line,
         kind: "server_event",
@@ -595,11 +625,12 @@ const EncryptedChatPane: Component<Props> = (props) => {
   const lines = createMemo(() => {
     const own = props.ownNick;
     if (own === null || !loaded()) return undefined;
+    const ciphertext = encryptedWireView(props.networkSlug, props.nick);
     return rows()
       .filter(isMessage)
       .map((row) => ({
         row,
-        msg: lineOf(row, seqOf(row.id), props.networkSlug, windowName(), own),
+        msg: lineOf(row, seqOf(row.id), props.networkSlug, windowName(), own, ciphertext),
       }));
   });
   const rowBySeq = createMemo(
