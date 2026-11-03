@@ -2140,6 +2140,7 @@ html.resize-dragging * {
 
 .sidebar-network-section li .sidebar-window-btn {
   display: flex;
+  justify-content: flex-start;
   align-items: center;
   flex: 1 1 auto;
   min-width: 0;
@@ -2176,9 +2177,8 @@ html.resize-dragging * {
    (away badge / unread counts) after the slug, so the header reads as
    a header — slug left-anchored at the row edge. BT used to override
    the base rule's `justify-content: space-between` here too, which
-   floated the slug toward the middle of the row; issue 2505 took
-   `space-between` off the base rule, so there is nothing left to
-   override. (#71 INC-1
+   floated the slug toward the middle of the row; issue 2505 made the
+   base rule `flex-start`, so there is nothing left to override. (#71 INC-1
    removed the leading ⚙️ network-emoji this comment used to reference;
    the slug now leads the row directly.) The slug
    `<span class="sidebar-channel-name">` itself gets `font-weight: bold`
@@ -2498,7 +2498,8 @@ html.resize-dragging * {
 /* issue 2505 — the name takes the free space after itself, so it follows
    whatever opens the row (the 🔒 of an encrypted query, the 📇 of the
    directory) and the unread badges close the row on the right. The button
-   used to spread its children with `justify-content: space-between`: fine
+   packs from the start now; it used to spread its children with
+   `justify-content: space-between`: fine
    for a name and one badge, but a glyph and a name went to the two ends,
    the name next to the ×, and two badges split the free space between them.
    The header row is left out: its badges follow the slug (UX-5 BT). */
