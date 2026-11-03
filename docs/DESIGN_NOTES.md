@@ -1502,10 +1502,15 @@ row. Plain rows, which open with the name, were fine.
   two flex items.
 * **Cure.** In non-header rows the name takes the free space after itself
   (`margin-right: auto` on `.sidebar-channel-name`), so it follows whatever
-  opens the row and the badges still close it on the right. `space-between`
-  leaves the base rule, and with it the header row's
-  `justify-content: flex-start`, which existed only to undo it (UX-5 BT).
-  The header is left out of the new rule: its badges follow the slug.
+  opens the row and the badges still close it on the right. The base rule
+  packs from the start (`justify-content: flex-start` instead of
+  `space-between`), so the header row's own `flex-start`, which existed only
+  to undo `space-between` (UX-5 BT), goes. The header is left out of the new
+  rule: its badges follow the slug. The base keeps an explicit `flex-start`
+  rather than none because `ux-5-bt-narrow-chrome-compression.spec.ts` pins
+  the header button's computed `justify-content` to `flex-start`, and the
+  initial `normal` packs the same way but reads differently (the code
+  review caught it before CI did).
 * **Choices vjt did not rule.** The 🔒 takes the leading-glyph class the 📇
   and @ rows carry (`.sidebar-network-emoji`: 0.4rem before the name, never
   shrinks), instead of touching the nick. Two badges on one row (messages
