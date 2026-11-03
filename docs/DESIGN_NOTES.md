@@ -1708,3 +1708,48 @@ three engines; the content-box assertion was written after that run, and is
 red on the measured old rule by arithmetic (44px content against 22.4px),
 not by a run. jsdom has no layout, so the spec is the only test of either
 change.
+<!-- entry #2508 -->
+
+---
+
+## 2026-11-03 — #2508: the query rail opens an existing encrypted chat
+
+A plain query's rail always offered "start encrypted chat" (#2486), even
+when an encrypted chat with that peer already existed on the network, and
+pressing it asked the peer to start a second one. vjt's ruling, on the
+issue: with no chat yet, unchanged; with one, the button becomes **chat
+securely** and simply opens the existing 🔒 window, with no request and no
+confirm.
+
+* **"Exists" is the device's chat index's word** (`encryptedChat(slug,
+  nick)`, `lib/encryptedChats.ts`), open or closed. A chat closed with its
+  messages kept counts; so does the closed, empty entry a bot's identity
+  check leaves (`ChatChange` `check` op). In both the device already holds
+  an encrypted conversation with that nick, and opening it is what the
+  ruling wants instead of a second asking. A chat deleted from the × is
+  gone from the index, so the asking comes back.
+* **One door.** The button calls `openEncryptedWindow`, the verb `/equery`
+  and the nick menu use, with the nick spelled as the index has it, so the
+  window opened is the one the sidebar lists.
+* **Reactive.** The button reads the index's signal: a chat that comes to
+  exist while the rail is up (the peer accepts, a message arrives) turns
+  it without a remount.
+* **A failure to open** is said under the button, in the same error line
+  the asking uses.
+* **Choices vjt did not rule:** the label is exactly his ("chat
+  securely"); a pending asking of ours no longer shows when a chat already
+  exists (the chat wins); the button keeps the asking button's look.
+
+### Tests
+
+Unit (`StartEncryptedChat.test.tsx`), three new: with a chat in the index
+the button reads "chat securely", the asking button is gone, and a click
+opens the window in the index's spelling with no confirm, no asking and
+nothing fetched; a chat appearing under a mounted rail turns the button;
+a window that fails to open is said under it. All three were red on the
+old component (no `rail-chat-securely`). e2e
+`issue2508-chat-securely.spec.ts`, desktop chromium: the query's rail
+before any encrypted chat (the asking button), with the 🔒 window open,
+and with it closed — "chat securely" opens and focuses it each time, no
+confirm shows, and no request is POSTed. **Not run locally** (the stack
+lane was not free); CI's integration run is its first.
