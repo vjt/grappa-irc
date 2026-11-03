@@ -1765,3 +1765,65 @@ lane was not free); CI's integration run is its first. That run turned
 accepted request made the chat, it still expected the asking button
 enabled in the plaintext query. It now expects "chat securely" there and
 no asking button, which is this issue's ruling.
+<!-- entry #2515 -->
+
+---
+
+## 2026-11-03 — #2515: the encrypted-message notification opens the encrypted query
+
+vjt reported it: tapping the "encrypted message" notification from a peer
+opened the plaintext query with that peer, whether one existed or not. That
+was what the server asked for. `Push.Payload.build_e2e/2` (issue 2430) wrote
+the plaintext DM's `url` and `tag` on purpose, "so an encrypted banner
+coalesces with that peer's plaintext DM banner and opens the same
+conversation", and cic routed that link to the query like any DM. Since the
+encrypted query became a window of its own (2430's window, 2512's
+scrollback), it is the wrong conversation.
+
+* **The server says which window, because only it can.** The service worker
+  gets four strings; nothing in them told an encrypted push from a plaintext
+  one but the body's English. `build_e2e/2`'s deep link is now the DM one
+  plus `e2e=1`, and cic's `parsePushTargetUrl` reads it as a third target
+  kind, `"encrypted"`. A separate parameter rather than
+  `channel=$e2e:<nick>`: `$e2e:` is cic's local window name, which grappa
+  knows nothing of, and an older cic would have opened a query named
+  `$e2e:alice`. With the parameter it ignores what it does not know and
+  keeps opening the plaintext query, today's behaviour.
+* **The tap opens, then focuses.** `routePushTarget` sends an encrypted
+  target to `openEncryptedWindow`, the verb `/equery` and the nick menu use,
+  never to `openQueryWindowState`. Opening is what makes the window exist on
+  a cold tap, before the device has drained the message; the drain then
+  fills it. The nick is the one the device's chat index already spells, so
+  the tap lands on the window the sidebar shows (the twin of
+  `canonicalQueryNick`). The open is async from a tap: a failure goes to the
+  console.
+* **Two windows, two banners.** The tag gains an `e2e:` infix
+  (`<slug>:e2e:<nick>`), so an encrypted banner no longer replaces the
+  plaintext DM banner from the same peer, or the reverse: each tap still has
+  a banner for the window it opens. `:` is in neither RFC 2812 `nickname`
+  nor `chanstring`, so the infix collides with no tag; a property pins it,
+  as for presence. The #2034 sweep follows on its own, through the shared
+  `pushTargetSelection`: the encrypted banner leaves the shade when the
+  encrypted window is read, and no longer when the plaintext query is.
+* **The request push keeps the plaintext link.** `build_e2e_request/2`
+  (issue 2486) opens the plaintext query, where the request's banner is:
+  there is no encrypted chat yet.
+* **No protocol bump.** The payload's shape (`title`/`body`/`tag`/`url`) is
+  unchanged and the push payload is not on the versioned WS/REST wire
+  (`wire_pin` does not cover it); a new cic against an old server gets
+  today's plaintext routing, which needs no number to detect.
+
+### Tests
+
+ExUnit pins the deep link and the tag of `build_e2e/2` and the tag's
+disjointness over the nick and channel grammars. vitest pins the parse, the
+routing (open the encrypted chat, open no query, select nothing else, a
+failed open is said), the chat-index spelling (a mutant that drops it turns
+three tests red) and the dismissal from the encrypted window only. The e2e
+`issue2515-encrypted-notification-tap.spec.ts` reads the screen after a
+`notificationclick` dispatched into the live service worker, with a
+plaintext query open and with none, and after a cold boot at the deep link
+(desktop and both phones): the `$e2e:<peer>` row selected, the encrypted
+pane composing to the peer, the plaintext query not selected or not there.
+It was written without a local run, since the stack lane was held; CI runs
+it.
