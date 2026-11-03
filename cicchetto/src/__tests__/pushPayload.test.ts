@@ -129,6 +129,25 @@ describe("parsePushTargetUrl", () => {
     });
   });
 
+  // issue 2515 — `Push.Payload.build_e2e/2` marks an encrypted message's
+  // deep link `e2e=1`: the window it opens is the encrypted query, not the
+  // plaintext one with the same nick.
+  it("parses an encrypted query target (e2e=1 → encrypted kind)", () => {
+    expect(parsePushTargetUrl("/?network=azzurra&channel=Alice&e2e=1")).toEqual({
+      networkSlug: "azzurra",
+      channelName: "Alice",
+      kind: "encrypted",
+    });
+  });
+
+  it("keeps a channel a channel under e2e=1: there is no encrypted channel", () => {
+    expect(parsePushTargetUrl("/?network=azzurra&channel=%23sniffo&e2e=1")).toEqual({
+      networkSlug: "azzurra",
+      channelName: "#sniffo",
+      kind: "channel",
+    });
+  });
+
   it("accepts both `+` and `%20` for spaces (URLSearchParams)", () => {
     // Defensive — IRC channel names cannot contain space, but the
     // parser shouldn't blow up on either encoding.

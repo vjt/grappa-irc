@@ -94,6 +94,18 @@ vi.mock("../lib/queryWindows", () => ({
   canonicalQueryNick: vi.fn((_networkId: number, nick: string) => nick.toLowerCase()),
 }));
 
+// issue 2515 — the device's chat index spells the encrypted chat with
+// `Alice` as `alice`, the way the open window is named (`$e2e:alice`).
+vi.mock("../lib/encryptedChats", () => ({
+  encryptedChat: vi.fn((_slug: string, nick: string) =>
+    nick.toLowerCase() === "alice" ? { nick: "alice", open: true, unread: 1 } : undefined,
+  ),
+}));
+
+vi.mock("../lib/encryptedWindow", () => ({
+  openEncryptedWindow: vi.fn(() => Promise.resolve()),
+}));
+
 type FakeNotification = { data: unknown; close: ReturnType<typeof vi.fn> };
 
 const notification = (url: string | undefined): FakeNotification => ({
@@ -166,6 +178,21 @@ describe("dismissNotificationsForActiveWindow", () => {
     await dismissNotificationsForActiveWindow();
 
     expect(dm.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes an encrypted-message notification from its encrypted window, never from the plaintext query", async () => {
+    // issue 2515: the two windows with one peer are two windows. The banner
+    // names `$e2e:alice`; reading the plaintext query `alice` leaves it up.
+    const encrypted = notification("/?network=libera&channel=Alice&e2e=1");
+    installFakeServiceWorker([encrypted]);
+
+    fixture.setSelection({ networkSlug: "libera", channelName: "alice", kind: "query" });
+    await dismissNotificationsForActiveWindow();
+    expect(encrypted.close).not.toHaveBeenCalled();
+
+    fixture.setSelection({ networkSlug: "libera", channelName: "$e2e:alice", kind: "encrypted" });
+    await dismissNotificationsForActiveWindow();
+    expect(encrypted.close).toHaveBeenCalledTimes(1);
   });
 
   it("leaves a notification whose data carries no usable URL", async () => {

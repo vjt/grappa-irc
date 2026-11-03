@@ -72,7 +72,11 @@ export function narrowPushPayload(raw: unknown): PushPayload | null {
  *
  * `kind` discriminator follows RFC 2812 channel-name sigils
  * `#`, `&`, `!`, `+` (`canonicalChannel` in lib/channelKey.ts) —
- * starts-with-sigil ⇒ `"channel"`, otherwise ⇒ `"query"` (DM target).
+ * starts-with-sigil ⇒ `"channel"`, otherwise ⇒ `"query"` (DM target),
+ * or `"encrypted"` when the link carries `e2e=1` (issue 2515:
+ * `build_e2e/2`'s encrypted message, whose window is the encrypted query
+ * with the nick, not the plaintext one). A channel stays a channel under
+ * `e2e=1`: there is no encrypted channel to open.
  * Server / list / mentions / home / admin pseudo-windows never carry
  * push payloads.
  *
@@ -84,7 +88,7 @@ export function narrowPushPayload(raw: unknown): PushPayload | null {
 export type PushTarget = {
   networkSlug: string;
   channelName: string;
-  kind: "channel" | "query";
+  kind: "channel" | "query" | "encrypted";
 };
 
 /**
@@ -126,9 +130,10 @@ export function parsePushTargetUrl(rawUrl: string): PushTarget | null {
   const first = channelName.charCodeAt(0);
   // 0x23 #, 0x26 &, 0x21 !, 0x2B + — RFC 2812 chanstring sigils.
   const isChannel = first === 0x23 || first === 0x26 || first === 0x21 || first === 0x2b;
+  const encrypted = url.searchParams.get("e2e") === "1";
   return {
     networkSlug,
     channelName,
-    kind: isChannel ? "channel" : "query",
+    kind: isChannel ? "channel" : encrypted ? "encrypted" : "query",
   };
 }
