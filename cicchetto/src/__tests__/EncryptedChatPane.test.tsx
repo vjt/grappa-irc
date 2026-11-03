@@ -523,6 +523,44 @@ describe("EncryptedChatPane", () => {
       timeout: 2_000,
     });
   });
+
+  // issue 2509 — rows not yet loaded are no "no line": a chat whose messages
+  // the device has not read back yet must not be marked read unseen.
+  it("reads nothing while the chat's rows are still loading", async () => {
+    setChat({ nick: "Bob", open: true, unread: 2 });
+    setRows(undefined);
+    renderPane();
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(readEncryptedChat).not.toHaveBeenCalled();
+  });
+
+  // issue 2509 — a chat whose unread is a key event and no line (an alarm on
+  // its card, the peer asking to compare emoji in its dialog) has no last line
+  // to see: the window shown is what reads it. Left unread, it would be a
+  // next-active stop no jump could clear.
+  it.each([
+    ["a key alarm", { kind: "key_alarm", id: "a", at, nick: "Bob", presented: OWN }],
+    [
+      "the peer asking to compare emoji",
+      { kind: "sas_asked", id: "s", at, nick: "Bob", by: "peer" },
+    ],
+  ] satisfies [string, ChatRow][])(
+    "reads a chat with no line whose unread is %s, once the page shows",
+    async (_what, step) => {
+      setTrust({ master: KEY, verified: false, devices: 1 });
+      setVisible(false);
+      setChat({ nick: "Bob", open: true, unread: 1 });
+      setRows([{ kind: "pinned", id: "p", at, nick: "Bob", ed25519: KEY }, step]);
+      renderPane();
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      expect(readEncryptedChat).not.toHaveBeenCalled();
+
+      setVisible(true);
+      await waitFor(() => expect(readEncryptedChat).toHaveBeenCalledWith("azzurra", "bob"), {
+        timeout: 2_000,
+      });
+    },
+  );
 });
 
 // The key exchange is done once the nick has a pinned key and no alarm is

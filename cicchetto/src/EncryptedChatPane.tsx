@@ -28,6 +28,7 @@ import { channelKey } from "./lib/channelKey";
 import { requestConfirm } from "./lib/confirmDialog";
 import { formatDateTime } from "./lib/dateFormat";
 import { loadDocument } from "./lib/documentNavigation";
+import { isDocumentVisible } from "./lib/documentVisibility";
 import {
   countsAsUnread,
   type IdentityCheck,
@@ -612,13 +613,27 @@ const EncryptedChatPane: Component<Props> = (props) => {
 
   // Seen up to line `id`: once that is the last line, the chat is read, as a
   // query is read at its tail.
-  const markRead = (id: number): void => {
-    const last = lines()?.at(-1)?.msg.id;
-    if (last === undefined || id < last) return;
+  const read = (): void => {
     void readEncryptedChat(props.networkSlug, props.nick).catch((err: unknown) => {
       console.warn(`[e2e] could not mark the encrypted chat with ${props.nick} read`, err);
     });
   };
+  const markRead = (id: number): void => {
+    const last = lines()?.at(-1)?.msg.id;
+    if (last === undefined || id < last) return;
+    read();
+  };
+
+  // issue 2509 — a chat with no line has no last line to see, yet its unread
+  // can count a key event (an alarm on its card, the peer asking to compare
+  // emoji in its dialog). The window shown with the page visible is what the
+  // user reads then: left unread, it would badge for good and be a
+  // next-active stop no jump could clear. A chat with lines is read at its
+  // tail, above.
+  createEffect(() => {
+    if (lines()?.length !== 0 || !isDocumentVisible()) return;
+    if ((encryptedChat(props.networkSlug, props.nick)?.unread ?? 0) > 0) read();
+  });
 
   const ours = (slug: string, name: string): boolean => channelKey(slug, name) === windowKey();
   const source: ScrollbackSource = {
