@@ -207,4 +207,35 @@ describe("StartEncryptedChat", () => {
       ),
     );
   });
+  it("a chat that comes to exist while the confirm is open: Ask opens it and asks nothing", () => {
+    const [exists, setExists] = createSignal(false);
+    chats.get = () => (exists() ? { nick: "Bob", open: false, unread: 0 } : undefined);
+    show();
+    button().click();
+    expect(confirmRequest()).not.toBeNull();
+
+    setExists(true);
+    acceptConfirm();
+
+    expect(askEncryptedChat).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(openEncryptedWindow).toHaveBeenCalledWith("azzurra", "Bob");
+  });
+
+  it("an asking's error does not follow the button once the chat exists", async () => {
+    askEncryptedChat.mockRejectedValueOnce(new ApiError(422, "requests_full"));
+    const [exists, setExists] = createSignal(false);
+    chats.get = () => (exists() ? { nick: "Bob", open: false, unread: 0 } : undefined);
+    show();
+    button().click();
+    acceptConfirm();
+    await vi.waitFor(() =>
+      expect(screen.queryByTestId("rail-start-encrypted-chat-error")).not.toBeNull(),
+    );
+
+    setExists(true);
+
+    expect(screen.getByTestId("rail-chat-securely").textContent).toBe("chat securely");
+    expect(screen.queryByTestId("rail-start-encrypted-chat-error")).toBeNull();
+  });
 });
