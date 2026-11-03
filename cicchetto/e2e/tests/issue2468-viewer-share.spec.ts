@@ -121,7 +121,7 @@ test("issue2468 @touch @webkit — every header control fits on a phone screen",
     await expect(control).toBeInViewport({ ratio: 1 });
   }
   // issue 2501 — copy is the third take-it-away verb, and it wears the same
-  // look as the two the ruling names (a choice declared in that PR).
+  // look as the two the ruling names (vjt's ruling on that PR).
   await expectOneLook(viewer, [copy]);
 
   await closeMediaViewer(viewer);

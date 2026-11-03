@@ -1349,7 +1349,7 @@ the look; that leg is the device's.
 
 ---
 
-## 2026-11-03 — #2501: the media viewer loses its download, and its verbs share one look
+## 2026-11-03 — #2501: the media viewer and the mini player trade their download for share, and the viewer's verbs share one look
 
 vjt, on an installed iPhone PWA: in the media viewer's header (1) the
 download link (`a.media-viewer-download`, `download=""`, #2468) opened an
@@ -1382,19 +1382,32 @@ a little larger than "open in browser" was. Keep the `gone()` gate and the
   and nothing here identifies what it was. The difference on main that the
   e2e arms below did measure is the underline. The fix is not verified on a
   device.
-* **Not touched, the same mechanism:** `AudioMiniPlayer`'s ⬇
-  (`a.audio-mini-player-download`, `download=""`) is the anchor the viewer's
-  download was copied from, and on an iOS PWA it very likely dead-ends the
-  same way (not verified on a device). The ruling covers the viewer only;
-  named here so it is not rediscovered as new.
-* **Choices the ruling did not make**, declared:
-  * **The size is `--font-size`** (14px at the default), up from 0.9rem
-    (12.6px): "a little larger" read as the step up to the size the rest of
-    the app's text uses, the ✕ beside them included, rather than a new
-    number.
-  * **Copy joins the look.** It appears only on a text file, is not named in
-    the ruling, and shared share's rule until now; a third look beside two
-    matched ones would be the same complaint.
+* **The mini player too (vjt's ruling on the PR).** `AudioMiniPlayer`'s ⬇
+  was the same `download=""` anchor, the one the viewer's had been copied
+  from, so on an iOS PWA it very likely dead-ended the same way (not verified
+  on a device). It is now a share button (`.audio-mini-player-share`)
+  running the viewer's flow: `createMediaSharer` in `lib/mediaShare.ts`,
+  lifted out of `MediaViewerModal` rather than copied, with a refused file
+  remembered per href instead of as a flag because the player outlives every
+  source it plays (for the viewer, built per open, the two are the same).
+  Kept from the download: the `!live()` gate (a source with no end is no file
+  to hand over) and its place outside the readout, so a file the browser
+  cannot decode can still be handed to something that can. Added: the
+  `canNativeShare()` feature-detect every share door uses; an abort when the
+  source closes or changes, so no sheet opens for a track that is gone; and a
+  toast for a failure (`audioShareToasts`, on the app's one toast surface),
+  because the bar has no status line and a share that does nothing is the
+  inert control #1839 refused. The anchor-only CSS rule went with the anchor;
+  the button sits in the transport row's shared rule.
+* **Choices in that which vjt did not rule:** the glyph ⤴ with
+  `aria-label="share"` (the bar's controls are glyphs, and the word would
+  widen a 2.5rem square on a phone bar that is one row), and the toast as the
+  failure channel.
+* **Ruled on the PR (vjt):** the size stays `var(--font-size)` (14px at the
+  default, up from 0.9rem, 12.6px): "a little larger" as the step up to the
+  size the rest of the app's text uses, the ✕ beside the verbs included.
+  Copy, which appears only on a text file and shared share's rule until now,
+  joins the look.
 
 ### Tests
 
@@ -1432,3 +1445,20 @@ dropped the calibration; that comparison has no red arm. Main's component
 was not run in e2e: its download anchor is pinned red-before-fix by the unit
 test, and in e2e it would stop every test at the download count, before any
 look assertion.
+
+Mini player, unit (`AudioMiniPlayer.test.tsx`): the five download tests now
+expect share, present for a file and after a decode failure, absent for an
+endless or a failed live source. A 2501 block adds: no share without Web
+Share; an own upload's FILE goes out; a refused share is named in a toast; a
+dismissed sheet says nothing; a source closed mid-fetch opens no sheet; a
+refused file turns only that source to its link, not the next one. 8 were
+red on the old component (the three absence tests pass there by
+construction), and five mutants, each on one axis (the live gate, the
+feature-detect, the abort, the refusal kept as a flag, the toast), were each
+killed by the test that names it. `Toasts.test.tsx`: the share failure
+reaches the stack and dismisses. e2e: the audio journey in
+`media-link-modal-viewer.spec.ts` asserts nothing on the bar carries
+`download` and that share hands over the served file, named, typed and sized
+as the route served it; the recording Web Share stub moved from the 2468
+spec into `e2e/fixtures/webShare.ts`. None of the mini player's e2e has run
+locally; CI's integration run is its first.
