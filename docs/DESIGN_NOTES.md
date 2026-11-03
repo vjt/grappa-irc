@@ -1760,4 +1760,8 @@ does not survive the turn. All five were red before their code. e2e
 before any encrypted chat (the asking button), with the 🔒 window open,
 and with it closed — "chat securely" opens and focuses it each time, no
 confirm shows, and no request is POSTed. **Not run locally** (the stack
-lane was not free); CI's integration run is its first.
+lane was not free); CI's integration run is its first. That run turned
+`issue2486-encrypted-chat-request.spec.ts` (c) red, and rightly: after the
+accepted request made the chat, it still expected the asking button
+enabled in the plaintext query. It now expects "chat securely" there and
+no asking button, which is this issue's ruling.
