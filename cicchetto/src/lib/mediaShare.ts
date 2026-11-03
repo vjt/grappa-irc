@@ -18,7 +18,10 @@
 // rarely made. The cost is the user-activation window: `navigator.share` must
 // run within it, and the fetch spends part of it. Chromium and WebKit grant
 // several seconds, which a cached image never comes near, but a large video on
-// a slow link can outlast it and the share is then refused. NOT device-verified.
+// a slow link can outlast it and the share is then refused. The mini player's
+// <audio> preloads only metadata, so its share fetches the whole track at the
+// tap: a long one on a slow link is the share likeliest to run out the window
+// and land on the link-next-tap answer below. NOT device-verified.
 //
 // `canShare({ files })` saying yes is NOT the platform agreeing to the file.
 // Measured in Chromium's source: Blink's `canShare` checks only that the name
@@ -34,7 +37,7 @@
 import { isSameOrigin } from "./mediaLink";
 
 /**
- * What to hand `navigator.share` for a viewer href: `{ files: [file] }` when
+ * What to hand `navigator.share` for a media href: `{ files: [file] }` when
  * the bytes could be fetched and the platform accepts them, `{ url: href }` in
  * every other case.
  *
@@ -44,13 +47,15 @@ import { isSameOrigin } from "./mediaLink";
  *
  * A fetch that fails or answers non-2xx also degrades to the link: the reader
  * asked to share, and the URL is still a working way to do it. An ABORT is the
- * one failure that is rethrown — the viewer closed mid-fetch, and a share sheet
- * must not open over a viewer that is gone.
+ * one failure that is rethrown — the control's subject went away mid-fetch (the
+ * viewer closed, the mini player's source changed), and a share sheet must not
+ * open for something that is gone.
  *
- * @param href the viewer-safe href from `classifyMediaLink`.
+ * @param href what is shared: the viewer's href from `classifyMediaLink`, or
+ *   the mini player's source (an upload, or a station's stream URL).
  * @param origin `window.location.origin` at the call site — injected so this
  *   module stays pure.
- * @param signal aborts the fetch when the viewer closes.
+ * @param signal aborts the fetch when that subject goes away.
  */
 export async function mediaShareData(
   href: string,
@@ -71,21 +76,22 @@ export async function mediaShareData(
 }
 
 /**
- * One share control's taps. Returns `"busy"` for a tap that lands while the
+ * One tap on a share control. Returns `"busy"` for a tap that lands while the
  * previous share is still fetching or showing its sheet (the platform would
  * refuse it as a share already in progress, which is not a failure worth a
  * sentence); otherwise the settled attempt: `null` when there is nothing to
  * tell the reader, or the sentence to show.
  */
-export type MediaSharer = (
-  href: string,
-  origin: string,
-  signal: AbortSignal,
-) => Promise<string | null> | "busy";
+export type MediaSharer = () => Promise<string | null> | "busy";
 
 /**
  * The share flow, issue 2468's, lifted out of the media viewer in issue 2501
  * so the mini player runs the same one.
+ *
+ * Built per SUBJECT — the viewer builds one per open, the mini player one per
+ * source — so what it remembers (a share in flight, a refused file) lives
+ * exactly as long as the thing being shared, as it did when this flow lived
+ * inside the viewer.
  *
  * AbortError is the reader dismissing the sheet (or the caller aborting
  * mid-fetch because its control is gone) — a choice, not a failure, and it says
@@ -96,30 +102,31 @@ export type MediaSharer = (
  * is the platform refusing that file (Chromium's type allowlist, above) or the
  * activation window running out on a slow fetch, and either way the
  * activation is spent, so the link cannot follow in the same tap. The next tap
- * on the SAME href shares the link instead, and the sentence says so — the URL
- * fallback vjt's ruling promises, one tap later. Keyed on the href rather than
- * held as a flag because the mini player outlives every source it plays; for
- * the viewer, which is built per open, the two are the same.
+ * shares the link instead, and the sentence says so — the URL fallback vjt's
+ * ruling promises, one tap later. "share again" and not "tap share": on the
+ * mini player the control's face is a glyph.
  *
  * `DOMException`, not `Error`, in both tests: both doors reject with one, and
  * jsdom's does not descend from the realm's `Error`, so an `Error` test there
  * would let a cancelled sheet through as a failure.
  *
+ * @param href, origin, signal as for `mediaShareData`, fixed for the subject.
  * @param describe renders any other rejection as the sentence to show —
  *   `errorMessage` at both call sites, injected so this module stays pure.
  */
-export function createMediaSharer(describe: (error: unknown) => string): MediaSharer {
+export function createMediaSharer(
+  href: string,
+  origin: string,
+  signal: AbortSignal,
+  describe: (error: unknown) => string,
+): MediaSharer {
   let sharing = false;
-  let refusedFile: string | undefined;
+  let linkOnly = false;
 
-  const attempt = async (
-    href: string,
-    origin: string,
-    signal: AbortSignal,
-  ): Promise<string | null> => {
+  const attempt = async (): Promise<string | null> => {
     let data: ShareData | undefined;
     try {
-      data = href === refusedFile ? { url: href } : await mediaShareData(href, origin, signal);
+      data = linkOnly ? { url: href } : await mediaShareData(href, origin, signal);
       await navigator.share(data);
       return null;
     } catch (value) {
@@ -129,8 +136,8 @@ export function createMediaSharer(describe: (error: unknown) => string): MediaSh
         value instanceof DOMException &&
         value.name === "NotAllowedError"
       ) {
-        refusedFile = href;
-        return "this file could not be shared — tap share again to send the link";
+        linkOnly = true;
+        return "this file could not be shared — share again to send the link";
       }
       return describe(value);
     } finally {
@@ -138,10 +145,10 @@ export function createMediaSharer(describe: (error: unknown) => string): MediaSh
     }
   };
 
-  return (href, origin, signal) => {
+  return () => {
     if (sharing) return "busy";
     sharing = true;
-    return attempt(href, origin, signal);
+    return attempt();
   };
 }
 
