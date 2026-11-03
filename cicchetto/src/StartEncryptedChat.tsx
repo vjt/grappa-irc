@@ -1,6 +1,8 @@
 import { type Component, createSignal, Show } from "solid-js";
 import { requestConfirm } from "./lib/confirmDialog";
 import { askEncryptedChat, createRequestView } from "./lib/e2eRequests";
+import { encryptedChat } from "./lib/encryptedChats";
+import { openEncryptedWindow } from "./lib/encryptedWindow";
 import { errorMessage } from "./lib/friendlyApiError";
 
 // issue 2486 — the one button in a query's rail that asks the peer to start
@@ -9,6 +11,12 @@ import { errorMessage } from "./lib/friendlyApiError";
 // anything is sent, what the peer needs to answer and how long the asking
 // waits. Our asking still waiting is the banner's to cancel, so the button
 // says so rather than asking twice, and holds while the asking is on its way.
+//
+// issue 2508 — once an encrypted chat with the peer exists on this network
+// (the device's chat index holds it, open or closed), there is nothing left
+// to ask: the button becomes "chat securely" and opens that chat's 🔒 window,
+// with no confirm and no request. Asking again would ask the peer to start a
+// second chat.
 
 /** How the confirm words the asking: what it needs from the peer, and the 24 h it waits. */
 export function startEncryptedChatBody(nick: string): string {
@@ -43,6 +51,7 @@ const Button: Component<Props> = (props) => {
     () => props.peer,
   );
   const pending = () => view()?.kind === "pending";
+  const existing = () => encryptedChat(props.networkSlug, props.peer);
 
   const ask = () => {
     setError(null);
@@ -64,17 +73,41 @@ const Button: Component<Props> = (props) => {
     });
   };
 
+  // The window the chat index names, spelled as the index has it.
+  const open = (nick: string) => {
+    setError(null);
+    void openEncryptedWindow(props.networkSlug, nick).catch((err: unknown) =>
+      setError(errorMessage(err)),
+    );
+  };
+
   return (
     <div class="rail-encrypted-chat">
-      <button
-        type="button"
-        class="rail-encrypted-chat-button"
-        data-testid="rail-start-encrypted-chat"
-        disabled={pending() || asking()}
-        onClick={ask}
+      <Show
+        when={existing()}
+        fallback={
+          <button
+            type="button"
+            class="rail-encrypted-chat-button"
+            data-testid="rail-start-encrypted-chat"
+            disabled={pending() || asking()}
+            onClick={ask}
+          >
+            {pending() ? "encrypted chat requested" : "start encrypted chat"}
+          </button>
+        }
       >
-        {pending() ? "encrypted chat requested" : "start encrypted chat"}
-      </button>
+        {(chat) => (
+          <button
+            type="button"
+            class="rail-encrypted-chat-button"
+            data-testid="rail-chat-securely"
+            onClick={() => open(chat().nick)}
+          >
+            chat securely
+          </button>
+        )}
+      </Show>
       <Show when={error()}>
         {(message) => (
           <div class="e2e-error" data-testid="rail-start-encrypted-chat-error" role="alert">
