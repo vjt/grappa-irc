@@ -21,7 +21,9 @@
 //
 //   * The tap focuses the plaintext query (the bug): the encrypted window is
 //     not the selected row, the pane is not the encrypted one.
-//   * The tap opens a plaintext query that was not there.
+//   * The tap opens a plaintext query that was not there. Read off the server
+//     after a reload, not off the sidebar as the tap left it: an open the tap
+//     asked for may not have come back yet, so an absence there passes at once.
 //   * The cold boot routes nowhere, or to the plaintext query.
 //
 // The service-worker tap runs on desktop chromium only: Playwright reaches a
@@ -45,6 +47,16 @@ import { expect, specNick, specUser, test } from "../fixtures/test";
 const PEER_WITH_QUERY = "e2515-plain";
 const PEER_NO_QUERY = "e2515-none";
 const PEER_COLD = "e2515-cold";
+// A plaintext query opened before the tap: in the list the server sends on a
+// join, it proves the list has landed.
+const CONTROL = "e2515-control";
+
+/** Opens the plaintext query with `nick` from a channel's compose box, and waits until it is live. */
+async function openPlaintextQuery(page: Page, nick: string): Promise<void> {
+  await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: specNick() });
+  await composeSend(page, `/query ${nick}`);
+  await waitForQueryWindowReady(page, NETWORK_SLUG, nick);
+}
 
 // The encrypted query with `nick` is the focused window, and it is the
 // encrypted pane that shows, composing to `nick`.
@@ -56,15 +68,21 @@ async function encryptedQueryFocused(page: Page, nick: string): Promise<void> {
   await expect(composer(page)).toHaveAttribute("placeholder", `encrypted message to ${nick}`);
 }
 
+// The server holds no plaintext query with `peer`: a reload is a fresh join,
+// whose snapshot lists every query window the server holds, CONTROL included.
+async function noPlaintextQueryOnServer(page: Page, peer: string): Promise<void> {
+  await page.reload();
+  await expect(sidebarWindow(page, NETWORK_SLUG, CONTROL)).toHaveCount(1, { timeout: 15_000 });
+  await expect(sidebarWindow(page, NETWORK_SLUG, peer)).toHaveCount(0);
+}
+
 test.describe("issue 2515 — the encrypted-message notification opens the encrypted query", () => {
   test("with a plaintext query already open, the tap opens the encrypted one", async ({
     page,
     context,
   }) => {
     await boot(page, specUser());
-    await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: specNick() });
-    await composeSend(page, `/query ${PEER_WITH_QUERY}`);
-    await waitForQueryWindowReady(page, NETWORK_SLUG, PEER_WITH_QUERY);
+    await openPlaintextQuery(page, PEER_WITH_QUERY);
     // The premise: the plaintext query is there, and it is where the reader is.
     await expect(sidebarWindow(page, NETWORK_SLUG, PEER_WITH_QUERY)).toHaveClass(/selected/);
 
@@ -79,12 +97,13 @@ test.describe("issue 2515 — the encrypted-message notification opens the encry
     context,
   }) => {
     await boot(page, specUser());
+    await openPlaintextQuery(page, CONTROL);
     await expect(sidebarWindow(page, NETWORK_SLUG, PEER_NO_QUERY)).toHaveCount(0);
 
     await tapNotification(context, buildEncryptedPushDeepLink(NETWORK_SLUG, PEER_NO_QUERY));
 
     await encryptedQueryFocused(page, PEER_NO_QUERY);
-    await expect(sidebarWindow(page, NETWORK_SLUG, PEER_NO_QUERY)).toHaveCount(0);
+    await noPlaintextQueryOnServer(page, PEER_NO_QUERY);
   });
 
   test("with the app not running, the tap boots it on the encrypted query", async ({ page }) => {
@@ -103,8 +122,9 @@ test.describe("issue 2515 — the encrypted-message notification opens the encry
 // installed PWA.
 async function coldTap(page: Page): Promise<void> {
   await boot(page, specUser());
+  await openPlaintextQuery(page, CONTROL);
   await page.goto(buildEncryptedPushDeepLink(NETWORK_SLUG, PEER_COLD));
 
   await encryptedQueryFocused(page, PEER_COLD);
-  await expect(sidebarWindow(page, NETWORK_SLUG, PEER_COLD)).toHaveCount(0);
+  await noPlaintextQueryOnServer(page, PEER_COLD);
 }

@@ -34,6 +34,14 @@
 //      Exercises the real `applyPushTarget` routing (the warm call site
 //      of the fix). The SW→page hop itself is simulated because the real
 //      SW handler is undrivable (see above).
+//
+//   3. SW handler (`tapNotification`, Chromium only): found later by the
+//      #146 recurrence spec — the real handler IS drivable when the event is
+//      dispatched INTO the live service worker as a plain `Event` carrying
+//      the `notification` shape the handler reads. No real
+//      `NotificationEvent`, no transient activation, so `focus()` still
+//      rejects; the navigate must survive that, which is what that spec
+//      pins. The closest a headless run gets to a tap.
 
 import type { BrowserContext, Page } from "@playwright/test";
 
