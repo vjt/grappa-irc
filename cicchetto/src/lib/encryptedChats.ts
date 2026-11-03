@@ -235,6 +235,11 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const [encryptedChatDeleted, setEncryptedChatDeleted] = createSignal<ChannelKey | null>(null, {
     equals: false,
   });
+  // issue 2513 — the chats this tab shows as the payloads that crossed IRC
+  // rather than as their plaintext (the sidebar row's menu). A way of looking,
+  // so this tab's memory: off for every chat until asked, and off again for a
+  // chat deleted, which starts over.
+  const [wireViewByChat, setWireViewByChat] = createSignal<Record<string, true>>({});
   /** Chats a window showed: kept current. Others are read when shown. */
   const loaded = new Set<string>();
   /** Networks with something waiting on the clock: messages waiting for keys, a SAS. */
@@ -254,6 +259,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     setEncryptedSendSubmitted(null);
     setLastEncryptedSend(null);
     setEncryptedChatDeleted(null);
+    setWireViewByChat({});
     loaded.clear();
     waiting.clear();
     drainAgain.clear();
@@ -520,8 +526,28 @@ const exports_ = identityScopedStore((onIdentityChange) => {
    */
   async function deleteEncryptedChat(slug: string, nick: string): Promise<void> {
     await changed(slug, await run(slug, (client, ctx) => client.deleteChat(ctx, nick)));
+    setWireView(chatId(slug, nick), false);
     setEncryptedChatDeleted(channelKey(slug, encryptedWindowName(nick)));
   }
+
+  function setWireView(id: string, on: boolean): void {
+    setWireViewByChat((prev) => {
+      if ((prev[id] === true) === on) return prev;
+      const next = { ...prev };
+      if (on) next[id] = true;
+      else delete next[id];
+      return next;
+    });
+  }
+
+  /** Flips the chat with `nick` between its plaintext and its ciphertext (issue 2513). */
+  function toggleEncryptedWireView(slug: string, nick: string): void {
+    setWireView(chatId(slug, nick), !encryptedWireView(slug, nick));
+  }
+
+  /** Whether this tab shows the chat with `nick` as the payloads that crossed IRC. */
+  const encryptedWireView = (slug: string, nick: string): boolean =>
+    wireViewByChat()[chatId(slug, nick)] === true;
 
   /** Whether the chat with `nick` keeps any message on this device: what its close asks about. */
   async function encryptedChatHasMessages(slug: string, nick: string): Promise<boolean> {
@@ -720,6 +746,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     encryptedRows,
     encryptedTrust,
     encryptedSas,
+    encryptedWireView,
+    toggleEncryptedWireView,
     ownKey,
     mountEncryptedChats,
   };
@@ -754,5 +782,7 @@ export const encryptedChat = exports_.encryptedChat;
 export const encryptedRows = exports_.encryptedRows;
 export const encryptedTrust = exports_.encryptedTrust;
 export const encryptedSas = exports_.encryptedSas;
+export const encryptedWireView = exports_.encryptedWireView;
+export const toggleEncryptedWireView = exports_.toggleEncryptedWireView;
 export const ownKey = exports_.ownKey;
 export const mountEncryptedChats = exports_.mountEncryptedChats;

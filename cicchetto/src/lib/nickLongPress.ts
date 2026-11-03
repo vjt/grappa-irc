@@ -23,6 +23,10 @@
 // click on the nick: that click opens a query window and lands on the menu's
 // backdrop, closing it the instant it appeared.
 //
+// issue 2513 — the sidebar binds it too, on an encrypted window's row (a nick,
+// the peer's): its `contextmenu` opens the row's menu, the ciphertext view's
+// door, so a phone reaches it the way a right-click does.
+//
 // Returns a disposer for `onCleanup` (#308 landmine 3).
 import { LONG_PRESS_MS } from "./keepKeyboard";
 import { HOLD_MOVE_TOLERANCE_PX } from "./messageGestures";
