@@ -1482,3 +1482,44 @@ reaches the stack and dismisses. e2e: the audio journey in
 as the route served it; the recording Web Share stub moved from the 2468
 spec into `e2e/fixtures/webShare.ts`. None of the mini player's e2e has run
 locally; CI's integration run is its first.
+<!-- entry #2505 -->
+
+---
+
+## 2026-11-03 — #2505: a rail row's name follows the glyph that opens it
+
+In the left rail, a row that opens with a glyph showed its name at the
+right edge, next to the ×: the 🔒 rows of encrypted queries (vjt's report,
+iOS PWA), and, by the same cause, the 📇 "channels" row and the @ mentions
+row. Plain rows, which open with the name, were fine.
+
+* **Cause.** The per-network row button laid out its children with
+  `justify-content: space-between`, which pushes the first child to the
+  left edge and the last to the right. With a name and one badge that is
+  the intended look; with a glyph and a name it puts the name at the far
+  end. The `.sr-only` "(encrypted)" is absolutely positioned and takes no
+  part in the layout, so an encrypted row with no unread count has exactly
+  two flex items.
+* **Cure.** In non-header rows the name takes the free space after itself
+  (`margin-right: auto` on `.sidebar-channel-name`), so it follows whatever
+  opens the row and the badges still close it on the right. `space-between`
+  leaves the base rule, and with it the header row's
+  `justify-content: flex-start`, which existed only to undo it (UX-5 BT).
+  The header is left out of the new rule: its badges follow the slug.
+* **Choices vjt did not rule.** The 🔒 takes the leading-glyph class the 📇
+  and @ rows carry (`.sidebar-network-emoji`: 0.4rem before the name, never
+  shrinks), instead of touching the nick. Two badges on one row (messages
+  and events) now sit together at the right edge; under `space-between` the
+  first floated to the middle of the free space. Same cause, same cure.
+
+### Tests
+
+e2e `issue2505-sidebar-row-glyph-alignment.spec.ts`, desktop chromium: an
+encrypted query and the channel directory row each put their glyph at the
+column where a plain channel row's name starts, and their name after the
+glyph by at most the glyph's width; a plain row's unread badge still ends
+at the button's right padding. `$list` is mirrored and pinned in
+`e2eConstantMirrors.test.ts`. jsdom has no layout, so the spec is the only
+test of the cure. **Not run locally** (the stack lane was not free): the
+red is argued from the rule above, not seen, and CI's integration run is
+the spec's first.
