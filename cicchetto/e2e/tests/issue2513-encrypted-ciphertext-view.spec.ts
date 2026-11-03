@@ -107,11 +107,11 @@ test("the sidebar row's menu shows an encrypted chat as the payloads that crosse
     await flip(page, bobNick, "Show ciphertext");
     await flip(peer, aliceNick, "Show ciphertext");
 
+    const frames = [expect.stringMatching(FRAME), expect.stringMatching(FRAME)];
+    await expect.poll(() => bodies(page)).toEqual(frames);
     const seenByAlice = await bodies(page);
-    expect(seenByAlice).toHaveLength(2);
-    for (const body of seenByAlice) expect(body).toMatch(FRAME);
     // What Alice sent is what Bob read, and what Bob sent is what Alice read.
-    expect(await bodies(peer)).toEqual(seenByAlice);
+    await expect.poll(() => bodies(peer)).toEqual(seenByAlice);
     for (const p of [page, peer]) {
       const pane = p.getByTestId("e2e-pane");
       await expect(pane).not.toContainText(HELLO);
@@ -183,9 +183,9 @@ test("@touch on a phone, a hold on the encrypted window's row in the window list
 }, testInfo) => {
   await conversation(page, browser, testInfo, async ({ bobNick }) => {
     await holdAndFlip(page, bobNick, "Show ciphertext");
-    const seen = await bodies(page);
-    expect(seen).toHaveLength(2);
-    for (const body of seen) expect(body).toMatch(FRAME);
+    await expect
+      .poll(() => bodies(page))
+      .toEqual([expect.stringMatching(FRAME), expect.stringMatching(FRAME)]);
     await expect(page.getByTestId("e2e-pane")).not.toContainText(HELLO);
 
     await holdAndFlip(page, bobNick, "Show plaintext");
