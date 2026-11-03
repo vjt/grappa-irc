@@ -52,7 +52,12 @@ vi.mock("../lib/notificationPrefs", () => ({
 import { channelKey } from "../lib/channelKey";
 import { conversationMuteKey } from "../lib/conversationMute";
 import { setShowEventBadge } from "../lib/eventBadge";
-import WindowBadges, { badgeLabel, FAR_BEHIND_CLASS, MUTED_CLASS } from "../WindowBadges";
+import WindowBadges, {
+  badgeLabel,
+  EncryptedUnreadBadge,
+  FAR_BEHIND_CLASS,
+  MUTED_CLASS,
+} from "../WindowBadges";
 
 const BEHIND = channelKey("freenode", "#italia");
 const NORMAL = channelKey("freenode", "#bnc");
@@ -253,5 +258,41 @@ describe("#1077 muted badge treatment", () => {
     ]) {
       expect(container.querySelector(sel)?.classList.contains(MUTED_CLASS)).toBe(true);
     }
+  });
+});
+
+// issue 2509 — an encrypted window's badge dims under its PEER's mute, the
+// one the cycle reads for it (`windowMuteKey`: `$e2e:<nick>` → the nick), so
+// a count Alt+A skips never shines at full strength.
+describe("issue 2509 — the encrypted window's badge", () => {
+  it("dims under the peer's mute, folded, on both variants", () => {
+    setMutedTargets({ [conversationMuteKey("freenode", "vjt")]: { until: null } });
+    const { container } = render(() => (
+      <>
+        <EncryptedUnreadBadge networkSlug="freenode" nick="Vjt" count={2} variant="sidebar" />
+        <EncryptedUnreadBadge networkSlug="freenode" nick="Vjt" count={2} variant="bottom-bar" />
+      </>
+    ));
+    for (const sel of [".sidebar-msg-unread", ".bottom-bar-msg-unread"]) {
+      expect(container.querySelector(sel)?.classList.contains(MUTED_CLASS)).toBe(true);
+      expect(container.querySelector(sel)?.textContent).toBe("2");
+    }
+  });
+
+  it("stays at full strength for another peer's mute, and brightens when its own is lifted", () => {
+    setMutedTargets({ [conversationMuteKey("freenode", "vjt")]: { until: null } });
+    const { container } = render(() => (
+      <>
+        <EncryptedUnreadBadge networkSlug="freenode" nick="Bob" count={1} variant="sidebar" />
+        <EncryptedUnreadBadge networkSlug="freenode" nick="vjt" count={1} variant="bottom-bar" />
+      </>
+    ));
+    const other = container.querySelector(".sidebar-msg-unread");
+    const own = container.querySelector(".bottom-bar-msg-unread");
+    expect(other?.classList.contains(MUTED_CLASS)).toBe(false);
+    expect(own?.classList.contains(MUTED_CLASS)).toBe(true);
+
+    setMutedTargets({});
+    expect(own?.classList.contains(MUTED_CLASS)).toBe(false);
   });
 });
