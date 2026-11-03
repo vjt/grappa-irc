@@ -215,9 +215,10 @@ export function isCoarsePointer(): boolean {
 }
 
 // Web Share API feature-detect, read live and guarded for the jsdom path where
-// `navigator.share` is absent. One answer for both share doors — the session
-// link (ShareSessionModal) and, since issue 2468, the media viewer's file — so
-// a platform cannot offer one share sheet and hide the other.
+// `navigator.share` is absent. One answer for every share door — the session
+// link (ShareSessionModal), since issue 2468 the media viewer's file, and since
+// issue 2501 the audio mini player's — so a platform cannot offer one share
+// sheet and hide another.
 export function canNativeShare(): boolean {
   return typeof navigator !== "undefined" && typeof navigator.share === "function";
 }
