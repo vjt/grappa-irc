@@ -5,17 +5,26 @@
 //   2. the peer's WHOIS card under the key sections with a left edge of its
 //      own, further in than the peer card and `your identity`.
 //
+// Measured first (CI, this spec's red run): on desktop chromium, Pixel 7 and
+// iPhone 15 WebKit the input and all three buttons were exactly 44.0px, the
+// --tap-min floor (#306) that both carried, and the WHOIS card sat 7px (its
+// 0.5rem margin) inside the key sections on both sides. vjt's ruling on the
+// first point: the buttons are sized to their content, the input keeps its
+// 44px, and `pin`, on the input's row, takes the input's height.
+//
 // Asserted as the geometry a person reads, on the desktop rail and in the
 // phone drawer:
-//   * `pin` is as tall as the input on its row, and no rail button is taller
-//     than that input;
+//   * `pin` is as tall as the input on its row;
+//   * `copy your key` and `add a device` are one line of text, and their
+//     content box no taller than that line (no floor holding them open);
 //   * the WHOIS card's left and right edges are the key sections' own.
 // Every measured box is attached to the run, so a red says by how much.
 //
 // ## What makes this spec able to fail
 //
-//   * A rail button grows past the input's height again (a floor, a padding,
-//     a label that wraps).
+//   * A floor comes back on the rail's buttons (44px for a 14px line).
+//   * A label wraps to a second line.
+//   * `pin` stops matching the input beside it.
 //   * The WHOIS card keeps a horizontal margin the rail's cards do not have.
 
 import type { Locator, Page, TestInfo } from "@playwright/test";
@@ -23,7 +32,16 @@ import { boot, equery } from "../fixtures/encryptedQuery";
 import { IrcPeer } from "../fixtures/ircClient";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
-type Box = { left: number; right: number; height: number };
+type Box = {
+  left: number;
+  right: number;
+  height: number;
+  /** Height inside padding and border: what the content holds open. */
+  content: number;
+  fontSize: number;
+  /** Line boxes of the element's text. */
+  lines: number;
+};
 
 // Every box read in ONE frame: the phone drawer slides in, and boxes read one
 // call apart would compare edges taken at different points of the slide.
@@ -44,7 +62,31 @@ const railBoxes = (r: Locator): Promise<Record<keyof typeof RAIL_PARTS, Box>> =>
       const el = root.querySelector(sel);
       if (el === null) throw new Error(`the rail has no ${sel}`);
       const b = el.getBoundingClientRect();
-      out[name] = { left: b.left, right: b.right, height: b.height };
+      const cs = getComputedStyle(el);
+      const px = (v: string) => Number.parseFloat(v) || 0;
+      const content =
+        b.height -
+        px(cs.paddingTop) -
+        px(cs.paddingBottom) -
+        px(cs.borderTopWidth) -
+        px(cs.borderBottomWidth);
+      // Lines counted over TEXT nodes only (#858: an element box adds rects).
+      const tops = new Set<number>();
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+        if ((n.textContent ?? "").trim() === "") continue;
+        const range = document.createRange();
+        range.selectNodeContents(n);
+        for (const r of Array.from(range.getClientRects())) tops.add(Math.round(r.top));
+      }
+      out[name] = {
+        left: b.left,
+        right: b.right,
+        height: b.height,
+        content,
+        fontSize: px(cs.fontSize),
+        lines: tops.size,
+      };
     }
     return out as Record<keyof typeof parts, Box>;
   }, RAIL_PARTS);
@@ -66,10 +108,14 @@ async function expectRailGeometry(page: Page, testInfo: TestInfo): Promise<void>
   });
 
   // 1. `pin` sits on the input's row and takes its height; the other two
-  //    stand alone and are no taller than that input.
+  //    stand alone, one line, and their content box is that line: at most
+  //    1.6 of the font size (the line height of a single line), where the
+  //    44px floor held a 14px line open at three times that.
   expect(Math.abs(boxes.pin.height - boxes.input.height)).toBeLessThanOrEqual(1);
-  expect(boxes.copy.height).toBeLessThanOrEqual(boxes.input.height + 1);
-  expect(boxes.addDevice.height).toBeLessThanOrEqual(boxes.input.height + 1);
+  for (const button of [boxes.copy, boxes.addDevice]) {
+    expect(button.lines).toBe(1);
+    expect(button.content).toBeLessThanOrEqual(1.6 * button.fontSize);
+  }
 
   // 2. Every card in the panel on the key sections' edges.
   expect(Math.abs(boxes.own.left - boxes.peer.left)).toBeLessThanOrEqual(1);
@@ -77,7 +123,7 @@ async function expectRailGeometry(page: Page, testInfo: TestInfo): Promise<void>
   expect(Math.abs(boxes.whois.right - boxes.peer.right)).toBeLessThanOrEqual(1);
 }
 
-test("issue 2506 — the encrypted rail's buttons are an input tall, and its WHOIS card sits on the key sections' edges", async ({
+test("issue 2506 — the encrypted rail's buttons are sized to their content, pin to its input, and the WHOIS card sits on the key sections' edges", async ({
   page,
 }, testInfo) => {
   const peer = await IrcPeer.connect({ nick: `E2506${crypto.randomUUID().slice(0, 8)}` });
@@ -90,7 +136,7 @@ test("issue 2506 — the encrypted rail's buttons are an input tall, and its WHO
   }
 });
 
-test("@touch @webkit issue 2506 — on a phone, the drawer's encrypted rail: buttons an input tall, the WHOIS card on the key sections' edges", async ({
+test("@touch @webkit issue 2506 — on a phone, the drawer's encrypted rail: buttons sized to their content, pin to its input, the WHOIS card on the key sections' edges", async ({
   page,
 }, testInfo) => {
   const peer = await IrcPeer.connect({ nick: `E2506${crypto.randomUUID().slice(0, 8)}` });
