@@ -88,11 +88,15 @@ defmodule Grappa.Push.Payload do
   `#general` on freenode.
 
   For DMs, the dm peer is `sender` (inbound DM the recipient sees).
-  For channel rows, the dm peer is the channel name itself.
+  For channel rows, the dm peer is the channel name itself. An encrypted
+  message (`build_e2e/2`) tags `"<network_slug>:e2e:<nick>"`: its window is
+  not the plaintext query's.
 
   ## URL — deep-link
 
-  Format: `/?network=<slug>&channel=<percent-encoded>`. The format is
+  Format: `/?network=<slug>&channel=<percent-encoded>`, plus `&e2e=1` when
+  the conversation to open is the encrypted query with the nick
+  (`build_e2e/2`, issue 2515). The format is
   fixed at B4 so B5 (Playwright e2e + SW notificationclick handler)
   has nothing to negotiate when wiring up cic-side selection. cic
   itself does NOT parse `?network` / `?channel` on cold-load yet —
@@ -227,32 +231,39 @@ defmodule Grappa.Push.Payload do
   The spec's wording — "encrypted message from X" — split the way every DM
   notification is: the nick on top, what arrived below.
 
-  `tag` and `url` are the DM ones `build/2` writes for the same nick, so an
-  encrypted banner coalesces with that peer's plaintext DM banner and opens
-  the same conversation. No badge: the message is not a row, so nothing
-  counts it as unread.
+  A tap opens the ENCRYPTED query with the nick (issue 2515), a window of
+  its own beside the plaintext one: `url` is the DM deep link `build/2`
+  writes for the same nick plus `e2e=1`, and `tag` carries an `e2e:` infix
+  so the banner stacks apart from that peer's plaintext DM banner instead
+  of replacing it — two windows, two banners. `:` is in neither RFC 2812
+  `nickname` nor `chanstring`, so the infix collides with no other tag. No
+  badge: the message is not a row, so nothing counts it as unread.
   """
   @spec build_e2e(nick :: String.t(), network_slug :: String.t()) :: t()
-  def build_e2e(nick, network_slug) when is_binary(nick) and is_binary(network_slug),
-    do: e2e_payload(nick, network_slug, "encrypted message")
+  def build_e2e(nick, network_slug) when is_binary(nick) and is_binary(network_slug) do
+    %{
+      title: MircFormat.plain_text(nick),
+      body: "encrypted message",
+      tag: "#{network_slug}:e2e:#{nick}",
+      url: build_url(network_slug, nick) <> "&e2e=1"
+    }
+  end
 
   @doc """
   Builds a notification payload for a request from `nick` on
   `network_slug` to start an end-to-end encrypted chat (issue 2486).
 
   Pure, and shaped like `build_e2e/2`: the nick on top, what arrived below
-  ("would like to start an encrypted chat", the design's wording). `tag`
-  and `url` are the same DM ones, so a tap opens the plaintext query, where
-  the request's banner is.
+  ("would like to start an encrypted chat", the design's wording). Unlike
+  it, `tag` and `url` are the plaintext DM ones `build/2` writes for the
+  same nick: there is no encrypted chat yet, and a tap opens the plaintext
+  query, where the request's banner is.
   """
   @spec build_e2e_request(nick :: String.t(), network_slug :: String.t()) :: t()
-  def build_e2e_request(nick, network_slug) when is_binary(nick) and is_binary(network_slug),
-    do: e2e_payload(nick, network_slug, "would like to start an encrypted chat")
-
-  defp e2e_payload(nick, network_slug, body) do
+  def build_e2e_request(nick, network_slug) when is_binary(nick) and is_binary(network_slug) do
     %{
       title: MircFormat.plain_text(nick),
-      body: body,
+      body: "would like to start an encrypted chat",
       tag: "#{network_slug}:#{nick}",
       url: build_url(network_slug, nick)
     }

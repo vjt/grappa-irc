@@ -349,7 +349,9 @@ defmodule Grappa.Push.PayloadTest do
       assert payload.body == "encrypted message"
     end
 
-    test "coalesces with, and opens, the same conversation as a plaintext DM from that nick" do
+    # Issue 2515: the encrypted query is a window of its own, so a tap opens
+    # it and not the plaintext query with the same nick.
+    test "opens the encrypted query with that nick: the plaintext DM's deep link, marked e2e" do
       dm =
         Payload.build(
           %Message{channel: "vjt", dm_with: "Alice", sender: "Alice", kind: :privmsg, body: "hi"},
@@ -358,8 +360,14 @@ defmodule Grappa.Push.PayloadTest do
 
       payload = Payload.build_e2e("Alice", "azzurra")
 
-      assert payload.tag == dm.tag
-      assert payload.url == dm.url
+      assert payload.url == "/?network=azzurra&channel=Alice&e2e=1"
+      assert payload.url == dm.url <> "&e2e=1"
+    end
+
+    test "stacks apart from the plaintext DM banner: two windows, two tags" do
+      payload = Payload.build_e2e("Alice", "azzurra")
+
+      assert payload.tag == "azzurra:e2e:Alice"
     end
 
     test "badge is OMITTED — the message is not a row, so it is not unread anywhere" do
@@ -451,6 +459,29 @@ defmodule Grappa.Push.PayloadTest do
 
         refute presence_tag == Payload.build(dm, slug).tag
         refute presence_tag == Payload.build(chan, slug).tag
+      end
+    end
+  end
+
+  describe "build_e2e/2 — tag disjointness from every other tag" do
+    # Same grammar argument as the presence property above: `:` is in neither
+    # `nickname` nor `chanstring`, so the `e2e:` infix keeps an encrypted
+    # banner from coalescing with — and overwriting — the plaintext DM, a
+    # channel or a presence banner (issue 2515).
+    property "an encrypted-message tag never equals a message or presence tag on the same network" do
+      check all(
+              nick <- nick_gen(),
+              slug <- slug_gen(),
+              channel <- channel_gen()
+            ) do
+        e2e_tag = Payload.build_e2e(nick, slug).tag
+
+        dm = msg(channel: "vjt", sender: nick, dm_with: nick, body: "ping")
+        chan = msg(channel: channel, sender: nick, body: "ping")
+
+        refute e2e_tag == Payload.build(dm, slug).tag
+        refute e2e_tag == Payload.build(chan, slug).tag
+        refute e2e_tag == Payload.build_presence(nick, :online, slug).tag
       end
     end
   end
