@@ -63,7 +63,21 @@ import {
   sidebarMessageBadge,
   sidebarWindow,
 } from "../fixtures/cicchettoPage";
-import { botCmd, botEvents, botPins, test as botTest, botWaitFor } from "../fixtures/e2eBot";
+import {
+  botCmd,
+  botEvents,
+  botPins,
+  test as botTest,
+  botWaitFor,
+  escapeRe,
+  KEYS_BOUND,
+  ORDER_VERDICT,
+  orderVerdict,
+  PINS_RELOAD,
+  registerNick,
+  UNDER_WAY_BOUND,
+  WHOIS_ASK,
+} from "../fixtures/e2eBot";
 import {
   boot,
   chatLines,
@@ -75,34 +89,8 @@ import {
   send,
 } from "../fixtures/encryptedQuery";
 import { joinChannel, sendPrivmsg } from "../fixtures/grappaApi";
-import { IrcPeer } from "../fixtures/ircClient";
-import { awaitMail, extractFromMail } from "../fixtures/mailpit";
 import { NETWORK_SLUG } from "../fixtures/seedData";
-import {
-  provisionPeerSubject,
-  type SpecSubject,
-  teardownSpecSubject,
-} from "../fixtures/specSubject";
 import { expect } from "../fixtures/test";
-
-const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-// The 2430 bounds: a KEYREQ answered within 32 s, a message under way
-// delivered within 46 s.
-const KEYS_BOUND = 32_000;
-const UNDER_WAY_BOUND = 46_000;
-// An order challenge lives 15 s (irc-olm CHALLENGE_TTL); the bot ends a held
-// line at its next tick past that, so its verdict is in well within 25 s.
-const ORDER_VERDICT = 25_000;
-// The bot reloads its pins file at a 1 s tick.
-const PINS_RELOAD = 15_000;
-
-// Azzurra's NickServ: 5–32 chars, and the confirmation mail carries the code
-// as `/msg NickServ AUTH <digits>` (registration-wizard-real.spec.ts).
-const NS_PASSWORD = "e2eintpw1";
-const AUTH_CODE_RE = /AUTH (\d+)/;
-// One WHOIS round trip: it sits behind bahamut's fake-lag bank, ~10 s cap.
-const WHOIS_ASK = 15_000;
 
 // The waits below, each at its bound, add up to about ten minutes (mail 45 s,
 // registration 30 s, the bot's start 45 s, VERIFIED 15 s, the pin's load
@@ -110,18 +98,10 @@ const WHOIS_ASK = 15_000;
 // budget must not cut one short.
 const BUDGET = 720_000;
 
-// The cic subject, torn down by its fixture, so a timeout deletes it too (a
-// `finally` in the test body does not run on one, fixtures/e2eBot.ts). Its
-// nick is named per run: NickServ keeps a nick registered for as long as the
-// testnet lives. A red run gets cic's `[e2e]` console lines attached: what
-// it decided about each challenge.
-const test = botTest.extend<{ cic: SpecSubject; e2eConsole: string[] }>({
-  // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture-dependency declaration
-  cic: async ({}, use, testInfo) => {
-    const cic = await provisionPeerSubject(testInfo, `cic-${Date.now().toString(36)}`);
-    await use(cic);
-    await teardownSpecSubject(cic);
-  },
+// The cic subject comes from the bot fixture (fixtures/e2eBot.ts), torn down
+// by it. A red run gets cic's `[e2e]` console lines attached: what it decided
+// about each challenge.
+const test = botTest.extend<{ e2eConsole: string[] }>({
   e2eConsole: [
     async ({ page }, use, testInfo) => {
       const lines: string[] = [];
@@ -142,31 +122,11 @@ const test = botTest.extend<{ cic: SpecSubject; e2eConsole: string[] }>({
 
 test.setTimeout(BUDGET);
 
-// Whether `nick` is registered as the bot will see it: a WHOIS whose replies
-// carry a 307. Asked again until one does, half a second apart — services
-// set +r over the server link a moment after they accept the code. A 401
-// (the nick is not on the network) rejects at once.
-async function awaitRegistered(peer: IrcPeer, nick: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await peer.whoisRegistered(nick)) return;
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  throw new Error(`${nick} is not registered with NickServ after ${timeoutMs}ms`);
-}
-
 // A body no single IRC line can carry (1 KiB and more against a 512-byte
 // line): each side has to cut it into fragments and the other has to put them
 // back together.
 const longBody = (from: string): string =>
   `${from}: ${Array.from({ length: 60 }, (_, i) => `parola${i} è cifrata`).join(" ")} fine`;
-
-// The bot's verdict on the order `body` from `nick`: either way, so a wrong
-// one fails at once and names itself instead of running out the clock.
-const orderVerdict = (nick: string, body: string): RegExp =>
-  new RegExp(
-    ` MSG (TRUSTED CONFIRMED=1|UNTRUSTED WHY=\\S+) FROM=${escapeRe(nick)} .* BODY=${escapeRe(body)}$`,
-  );
 
 test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand both ways, both directions, long messages, an order confirmed and one refused", async ({
   page,
@@ -176,16 +136,7 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
   const run = Date.now().toString(36);
   // 1. Register the cic user's nick through grappa, the way a client would,
   //    and wait until a WHOIS says so.
-  const email = `${cic.nick}-${run}@example.com`;
-  await sendPrivmsg(cic.user.token, NETWORK_SLUG, "NickServ", `REGISTER ${NS_PASSWORD} ${email}`);
-  const code = extractFromMail(await awaitMail(email, { timeoutMs: 45_000 }), AUTH_CODE_RE);
-  await sendPrivmsg(cic.user.token, NETWORK_SLUG, "NickServ", `AUTH ${code}`);
-  const witness = await IrcPeer.connect({ nick: `iw${run}` });
-  try {
-    await awaitRegistered(witness, cic.nick, 30_000);
-  } finally {
-    await witness.disconnect("done");
-  }
+  await registerNick(cic, run);
 
   // The bot comes up trusting the cic nick from any host, and asks its
   // WHOIS on connect: VERIFIED is layer 1 satisfied.
