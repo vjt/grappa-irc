@@ -126,10 +126,11 @@ import ScrollbackPane from "./ScrollbackPane";
 //
 // issue 2513 — the window can show what the server and the network see
 // instead: each message as the payloads it crossed IRC as (`ciphertextOf`),
-// on the line it holds in the plaintext view, so the scroll, the unread
-// marker and the delivery state stay put. The door is the window's row in
-// the sidebar (`EncryptedChatMenu`), never the top bar; the compose box stays,
-// so a line typed there shows up as the ciphertext it went as.
+// on the line it holds in the plaintext view, so the unread marker and the
+// delivery state stay on it (the lines are longer: the scroll may move). The
+// door is the window's row in the sidebar (`EncryptedChatMenu`), never the top
+// bar; the compose box stays, so a line typed there shows up as the
+// ciphertext it went as, and the search looks in what is shown.
 
 type Props = {
   networkSlug: string;
@@ -192,6 +193,8 @@ const FAILURE_LABEL: Record<OutFailure, string> = {
 
 /** What a message reads in the ciphertext view when this device kept none of it (issue 2513). */
 export const NO_CIPHERTEXT = "(no ciphertext on this device)";
+/** What one of ours reads there before grappa took it, or when it never did: nothing crossed. */
+export const NOT_SENT = "(not sent)";
 
 // issue 2513 — a message as the ciphertext view writes it: each payload it
 // crossed IRC as on a line of its own, the verb and msgid its `E2E` lines
@@ -201,8 +204,10 @@ export const NO_CIPHERTEXT = "(no ciphertext on this device)";
 // invented; the payload is what they carried, whole.
 function ciphertextOf(row: Message): string {
   const wire = row.wire ?? [];
-  if (wire.length === 0) return NO_CIPHERTEXT;
-  return wire.map((p) => `E2E ${p.verb.toUpperCase()} ${p.msgid} ${p.payload}`).join("\n");
+  if (wire.length > 0) {
+    return wire.map((p) => `E2E ${p.verb.toUpperCase()} ${p.msgid} ${p.payload}`).join("\n");
+  }
+  return row.kind === "out" && row.state !== "sent" ? NOT_SENT : NO_CIPHERTEXT;
 }
 
 // issue 2498 — a message as the scrollback's line. Ours is named by our nick,
@@ -638,18 +643,17 @@ const EncryptedChatPane: Component<Props> = (props) => {
   );
 
   // While searching, only the messages that hold what was typed, in any case.
+  // issue 2513 — what they hold as shown: in the ciphertext view the payloads,
+  // where a message that cannot be read is a message too, never the plaintext.
   const needle = () => (searching() ? query().trim().toLowerCase() : "");
+  const searchable = () => (lines() ?? []).filter(({ msg }) => msg.kind === "privmsg");
   const shown = createMemo(() => {
     const all = lines();
     const n = needle();
     if (all === undefined || n === "") return all;
-    return all.filter(
-      ({ row }) => row.kind !== "undecryptable" && row.body.toLowerCase().includes(n),
-    );
+    return searchable().filter(({ msg }) => msg.body?.toLowerCase().includes(n));
   });
   const shownMessages = createMemo(() => shown()?.map((line) => line.msg));
-  const messageCount = () =>
-    rows().filter((row) => isMessage(row) && row.kind !== "undecryptable").length;
 
   // The chat counts what is unread rather than keeping a cursor: the cursor
   // is the last line before the last `unread` rows that count. A key event
@@ -892,7 +896,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
                 data-testid="e2e-search-count"
                 aria-live="polite"
               >
-                {shown()?.length ?? 0} of {messageCount()} messages
+                {shown()?.length ?? 0} of {searchable().length} messages
               </span>
             </Show>
           </div>

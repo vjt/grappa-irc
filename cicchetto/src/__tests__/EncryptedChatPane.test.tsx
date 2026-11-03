@@ -33,7 +33,9 @@ const [own, setOwn] = createSignal<string | undefined>(undefined);
 const [visible, setVisible] = createSignal(true);
 const [sas, setSas] = createSignal<SasView | null>(null);
 const [elsewhere, setElsewhere] = createSignal(false);
-const [wireView, setWireView] = createSignal(false);
+// issue 2513 — the one chat (`slug/nick`) the sidebar's toggle shows as its
+// ciphertext, or none.
+const [wireView, setWireView] = createSignal<string | null>(null);
 
 const loadEncryptedChat = vi.hoisted(() => vi.fn());
 const readEncryptedChat = vi.hoisted(() => vi.fn());
@@ -67,8 +69,9 @@ vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   encryptedSas: () => sas(),
   ownKey: () => own(),
   identityElsewhere: () => elsewhere(),
-  // issue 2513 — the sidebar's toggle (its own tests drive it): the pane reads it.
-  encryptedWireView: () => wireView(),
+  // issue 2513 — the sidebar's toggle (its own tests drive it): the pane reads
+  // it for its own chat, never another's.
+  encryptedWireView: (slug: string, nick: string) => wireView() === `${slug}/${nick}`,
   replaceEncryptedIdentity,
   loadEncryptedChat,
   readEncryptedChat,
@@ -148,7 +151,11 @@ vi.mock("../lib/scrollback", async (importOriginal) => ({
 // it was handed the way the browser would, as a fresh document.
 vi.mock("../lib/documentNavigation", () => ({ loadDocument }));
 
-const { default: EncryptedChatPane, NO_CIPHERTEXT } = await import("../EncryptedChatPane");
+const {
+  default: EncryptedChatPane,
+  NO_CIPHERTEXT,
+  NOT_SENT,
+} = await import("../EncryptedChatPane");
 const { default: EncryptedRail } = await import("../EncryptedRail");
 const { default: PairScan } = await import("../PairScan");
 const { formatTime } = await import("../ScrollbackPane");
@@ -180,7 +187,7 @@ beforeEach(() => {
   setVisible(true);
   setSas(null);
   setElsewhere(false);
-  setWireView(false);
+  setWireView(null);
   dismissConfirm();
   // The compose store is the app's one (issue 2512): each test starts on an
   // empty draft for the window.
@@ -332,7 +339,7 @@ describe("EncryptedChatPane", () => {
 
   // issue 2513 — the ciphertext view: each message reads as the payloads it
   // went over IRC as, on the line it holds in the plaintext view, so the
-  // scroll, the unread marker and the delivery state stay where they were.
+  // unread marker and the delivery state stay on it.
   it("in the ciphertext view each message reads as the payloads it travelled as, on its own line; the plaintext comes back with the toggle (issue 2513)", () => {
     const read = {
       verb: "msg",
@@ -363,11 +370,18 @@ describe("EncryptedChatPane", () => {
       // Kept before this device kept ciphertext: there is none to show.
       { kind: "in", id: "5", at, nick: "Bob", ed25519: KEY, body: "old" },
       { kind: "pinned", id: "6", at, nick: "Bob", ed25519: KEY },
+      { kind: "out", id: "7", at, body: "huge", state: "failed", reason: "too-large" },
     ]);
     renderPane();
     const plaintext = lines().map((row) => row.textContent);
 
-    setWireView(true);
+    // Another chat's toggle is not this one's.
+    setWireView("azzurra/carol");
+    expect(lines().map((row) => row.textContent)).toEqual(plaintext);
+    setWireView("libera/bob");
+    expect(lines().map((row) => row.textContent)).toEqual(plaintext);
+
+    setWireView("azzurra/bob");
     const shown = lines();
     expect(shown.map(line)).toEqual([
       "privmsg <Bob>",
@@ -375,23 +389,70 @@ describe("EncryptedChatPane", () => {
       "privmsg <alice>",
       "privmsg <Bob>",
       "privmsg <Bob>",
+      "privmsg <alice>",
     ]);
     expect(shown.map(body)).toEqual([
       `E2E MSG cXV1eHF1dXh {"ck":"y","bodies":{"d":"e"}}`,
       `E2E PKMSG Zm9vYmFyYmF {"id":{},"bodies":{"a":"b"}}\nE2E MSG YmF6cXV4cXV {"ck":"x","bodies":{"a":"c"}}`,
-      NO_CIPHERTEXT,
+      // Not sent, so not encrypted for anyone yet, or ever: nothing crossed.
+      NOT_SENT,
       `E2E PKMSG bG9zdGxvc3R {"id":{},"bodies":{"f":"g"}}`,
       NO_CIPHERTEXT,
+      NOT_SENT,
     ]);
     // The delivery state still says where a message is, and no plaintext shows.
     expect(shown[2]?.textContent).toContain("waiting for keys");
     const list = within("e2e-pane").querySelector("[data-testid=scrollback]") as HTMLElement;
-    for (const text of ["ciao", "twice", "later", "old"]) {
+    for (const text of ["ciao", "twice", "later", "old", "huge"]) {
       expect(list.textContent).not.toContain(text);
     }
 
-    setWireView(false);
+    setWireView(null);
     expect(lines().map((row) => row.textContent)).toEqual(plaintext);
+  });
+
+  // issue 2513 — the search filters the lines as shown: in the ciphertext view
+  // that is the ciphertext (a msgid finds its message), never the plaintext
+  // behind it, and a message that could not be read is one of them there.
+  it("in the ciphertext view the search looks in the ciphertext, not the plaintext (issue 2513)", () => {
+    const wire = (msgid: string) => [{ verb: "msg" as const, msgid, payload: '{"ck":"z"}' }];
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    setRows([
+      {
+        kind: "in",
+        id: "1",
+        at,
+        nick: "Bob",
+        ed25519: KEY,
+        body: "the codes",
+        wire: wire("Q29kZXNjb2R"),
+      },
+      {
+        kind: "out",
+        id: "2",
+        at,
+        body: "which codes?",
+        state: "sent",
+        reason: null,
+        wire: wire("V2hpY2hjb2R"),
+      },
+      { kind: "undecryptable", id: "3", at, nick: "Bob", wire: wire("TG9zdGxvc3R") },
+    ]);
+    setWireView("azzurra/bob");
+    renderPane();
+    fireEvent.click(screen.getByTestId("e2e-search-toggle"));
+    const input = screen.getByTestId("e2e-search-input") as HTMLInputElement;
+
+    fireEvent.input(input, { target: { value: "codes" } });
+    expect(lines()).toEqual([]);
+    expect(screen.getByTestId("e2e-search-count").textContent).toBe("0 of 3 messages");
+
+    fireEvent.input(input, { target: { value: "v2hpy2hjb2r" } });
+    expect(lines().map(body)).toEqual([`E2E MSG V2hpY2hjb2R {"ck":"z"}`]);
+
+    fireEvent.input(input, { target: { value: "TG9zdGxvc3R" } });
+    expect(lines().map(line)).toEqual(["privmsg <Bob>"]);
+    expect(screen.getByTestId("e2e-search-count").textContent).toBe("1 of 3 messages");
   });
 
   // In any query a click on the peer's nick lands in the window already
