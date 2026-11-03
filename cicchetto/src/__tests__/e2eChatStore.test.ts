@@ -9,6 +9,7 @@ import {
   type ChatRow,
   chatStore,
   type IdentityCheck,
+  type WirePayload,
 } from "../lib/e2e/chatStore";
 import { memoryLock, memoryVault } from "./helpers/e2eVault";
 
@@ -117,6 +118,45 @@ describe("chatStore", () => {
     // Lost after all (the re-send never reached the device): failed.
     await chats.apply(SLOT, [move("failed")]);
     expect(await state()).toEqual({ ...out, state: "failed", reason: "keys-timeout" });
+  });
+
+  it("keeps each payload an outgoing row went as, in the order grappa took them; a move with none keeps them (issue 2513)", async () => {
+    const chats = chatStore(memoryVault(), memoryLock());
+    const out: ChatRow = {
+      kind: "out",
+      id: "t1",
+      at: 1,
+      body: "hi",
+      state: "sending",
+      reason: null,
+    };
+    await chats.apply(SLOT, [add("bob", out, false)]);
+    const first: WirePayload = { verb: "pkmsg", msgid: "Zm9vYmFyYmF", payload: '{"bodies":{}}' };
+    const again: WirePayload = { verb: "msg", msgid: "YmF6cXV4cXV", payload: '{"ck":"x"}' };
+    const sent = (wire: WirePayload | null): ChatChange => ({
+      op: "out",
+      nick: "bob",
+      id: "t1",
+      state: "sent",
+      reason: null,
+      wire,
+    });
+    const state = async () => (await chats.rows(SLOT, "bob"))[0];
+
+    await chats.apply(SLOT, [sent(first)]);
+    expect(await state()).toEqual({ ...out, state: "sent", wire: [first] });
+    // A re-send after a NACK goes as a second payload.
+    await chats.apply(SLOT, [sent(again)]);
+    expect(await state()).toEqual({ ...out, state: "sent", wire: [first, again] });
+    await chats.apply(SLOT, [
+      { op: "out", nick: "bob", id: "t1", state: "failed", reason: "unreadable", wire: null },
+    ]);
+    expect(await state()).toEqual({
+      ...out,
+      state: "failed",
+      reason: "unreadable",
+      wire: [first, again],
+    });
   });
 
   it("reopens a closed chat on a new row, and `read` clears its count", async () => {
