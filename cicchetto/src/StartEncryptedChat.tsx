@@ -1,4 +1,4 @@
-import { type Component, createSignal, Show } from "solid-js";
+import { type Component, createEffect, createSignal, on, Show } from "solid-js";
 import { requestConfirm } from "./lib/confirmDialog";
 import { askEncryptedChat, createRequestView } from "./lib/e2eRequests";
 import { encryptedChat } from "./lib/encryptedChats";
@@ -52,6 +52,23 @@ const Button: Component<Props> = (props) => {
   );
   const pending = () => view()?.kind === "pending";
   const existing = () => encryptedChat(props.networkSlug, props.peer);
+  // What the asking failed with is about the asking: once the chat exists
+  // and the button opens it instead, the line goes.
+  createEffect(
+    on(
+      () => existing() !== undefined,
+      () => setError(null),
+      { defer: true },
+    ),
+  );
+
+  // The window the chat index names, spelled as the index has it.
+  const open = (nick: string) => {
+    setError(null);
+    void openEncryptedWindow(props.networkSlug, nick).catch((err: unknown) =>
+      setError(errorMessage(err)),
+    );
+  };
 
   const ask = () => {
     setError(null);
@@ -60,6 +77,14 @@ const Button: Component<Props> = (props) => {
       body: startEncryptedChatBody(props.peer),
       confirmLabel: "Ask",
       onConfirm: () => {
+        // The chat may have come to exist while the confirm was open (the
+        // index loads after login, the peer may start it): open that one
+        // rather than ask for a second.
+        const chat = existing();
+        if (chat !== undefined) {
+          open(chat.nick);
+          return;
+        }
         setAsking(true);
         void askEncryptedChat(props.networkSlug, props.peer)
           .catch((err: unknown) => setError(errorMessage(err)))
@@ -71,14 +96,6 @@ const Button: Component<Props> = (props) => {
       toggle: null,
       defaultButton: "cancel",
     });
-  };
-
-  // The window the chat index names, spelled as the index has it.
-  const open = (nick: string) => {
-    setError(null);
-    void openEncryptedWindow(props.networkSlug, nick).catch((err: unknown) =>
-      setError(errorMessage(err)),
-    );
   };
 
   return (
