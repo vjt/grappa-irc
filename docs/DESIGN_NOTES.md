@@ -2431,3 +2431,109 @@ Rejected:
   every project it runs on: 8 of 8 green (the key-alarm and DM-tier tests
   on chromium, the phone test on chromium-pixel-touch and
   webkit-iphone-15).
+<!-- entry #2513 -->
+
+---
+
+## 2026-11-03 — #2513: an encrypted chat shown as the ciphertext that crossed IRC
+
+The issue asks for a toggle that shows an encrypted query as the E2E blobs
+as they travel over IRC, in both directions, reached from the sidebar, a
+read-only view that gives the plaintext back when toggled off, with no
+server or protocol change.
+
+* **"The ciphertext already reaches the client" was half true.** Every
+  payload does reach cic, but the chat store kept only the plaintext, and an
+  Olm message key is spent once read: a payload not kept at receipt can
+  never be made again. So the row keeps it (`ChatRow.wire?: WirePayload[]`,
+  `{verb, msgid, payload}`): an incoming row the one this device read, an
+  outgoing row each one grappa took for it, appended on the move to sent, in
+  order (a re-send after a NACK is a second).
+* **A payload grappa dropped goes.** `e2e_send_dropped` says a payload
+  grappa accepted never left, so it is taken off its row whatever the row's
+  state (a `drop` chat change; `engine.sentAs(msgid)` names the row). Taking
+  it off only when the row turns failed would not do: one message can be
+  several payloads (a MSG to the peer's device with a session, a PKMSG to a
+  new one), and a drop of one while another went leaves the row sent, which
+  showed the dropped payload as crossed with nothing on the line to say
+  otherwise. The review found it.
+* **What has none.** Rows kept before this; copies from our other devices,
+  which reach this one through grappa's copy door and never crossed IRC; a
+  message of ours not sent (waiting for keys, at the door, refused, dropped
+  whole). The first two read `(no ciphertext on this device)`: it existed,
+  elsewhere. The last reads `(no ciphertext)`, beside the line's own state
+  (`waiting for keys`, `sending`, `not sent: …`), which says why.
+* **One line per payload, not per IRC line.** A message reads
+  `E2E <VERB> <msgid> <payload>`, each payload on its own line of the same
+  scrollback line (bodies are pre-wrap). The `\x01E2E VERB msgid i/n from to
+  chunk\x01` lines themselves are not drawn: the cut is the sending grappa's,
+  sized to its relay budget, and on receipt the peer's budget and `to` are
+  unknown, so the receiving end would draw lines it invented. The payload is
+  what those lines carried, whole, and the same bytes on both ends.
+* **The same line ids.** The view swaps bodies on the lines the plaintext
+  view draws, so the unread marker and the delivery state stay on them. A
+  message that could not be read becomes its sender's line, carrying the
+  payload it arrived as. The search filters the lines as shown, so in this
+  view it looks in the ciphertext (a msgid finds its message), never in the
+  plaintext behind it.
+* **The door is the sidebar row's context menu.** One item, "Show
+  ciphertext" / "Show plaintext"; a right-click, or a hold on a touch device
+  through `bindNickLongPress`, which delivers the `contextmenu` iOS never
+  sends for a hold. What is open lives in `EncryptedChatMenu`, because the
+  Sidebar keeps no state of its own (Shell remounts it on every swipe,
+  #1041); the menu goes with the Sidebar that mounted it.
+* **Per chat, in the tab's memory.** A way of looking, not a setting: off
+  until asked, off again when this tab deletes the chat or the identity
+  changes, gone on a reload.
+* **The compose box stays.** "Read-only" is read as a view that changes
+  nothing stored: a line typed there shows up as the ciphertext it went as.
+  Hiding the compose box in the view is the alternative, put to vjt on the
+  PR.
+* **Storage.** Every new row now carries one or more payloads, a JSON text
+  several times a short plaintext, and a chat's rows are one sealed record
+  rewritten on each change. At `CHAT_ROWS_MAX` (1000) rows and about a
+  kilobyte of payload each that record nears 1 MB: an estimate, not a
+  measurement. Capping the kept payloads to the last rows, or keeping them
+  only for chats whose view was ever on, are the alternatives, put to vjt on
+  the PR.
+
+### Tests
+
+vitest pins the store (each payload grappa took appended in order, a move
+with none keeps them, a drop takes one off and opens no chat), the client
+(on both ends, in both directions, the payload and msgid grappa took equal
+the ones the reader read; a re-send after a NACK keeps both; an unreadable
+row keeps the one it could not read; a dropped payload of a two-payload
+message goes while the row stays sent, and the row turns failed once both
+are dropped), the pane (each message as its payloads on its line, the two
+placeholder texts, a sent row of ours with none reading as kept elsewhere,
+the delivery state still on the line, no plaintext on screen, the plaintext
+back on the toggle, another chat's toggle leaving this chat as it was, the
+search looking in the ciphertext), the sidebar menu (a right-click, a hold on
+a touch device that sends no `contextmenu`, no other row opens it) and the
+toggle's lifetime (per chat, off on a delete or a new identity). 18 mutants
+(the store append dropped or replacing, `wire: null` at the flush, the flag
+ignored, a space join, the unreadable row kept as an event, no
+`preventDefault`, no hold binding, no reset on delete or identity, the
+not-sent text never, the search on the plaintext, the in or unreadable row
+without its payload, the labels swapped, no menu cleanup, a toggle that only
+sets, the count over every line) each turn 1 to 3 tests red, and so do 5 on
+the drop (the store arm a no-op, a drop only once the message is lost, the
+not-sent text on every row of ours, no guard on list or rowless traffic, a
+drop that opens a chat), after the 3 drop tests were seen red on the code
+before it.
+
+The e2e `issue2513-encrypted-ciphertext-view.spec.ts` runs two browsers, two
+grappa users, two real vodozemac engines and one real ircd: a message each
+way, then the view. On desktop a right-click on the row: Alice's lines equal
+Bob's (one IRC message seen from its two ends, since grappa mints the msgid as
+it cuts the payload and the peer's grappa reads it back), no plaintext on
+either screen, and the plaintext again on "Show plaintext". On a phone
+(`@touch`) the window list from the left-edge swipe and a hold on the row; it
+runs on chromium only, since `new Touch` throws on Playwright's WebKit. On
+the pre-fix code with only the spec added, both tests were red at the menu
+item, after the whole conversation; with the fix, both green (chromium 28 s, the phone 29 s). The encrypted-window specs
+beside it (the 2430 suite, 2485, 2486, 2505, 2506, 2508, 2512, 2515) ran in
+the same pass, 40 of 42 green; the two reds, a chromium that crashed at
+launch and a 1.7 px offset in the WebKit phone rail while it slid in, were
+green on an iso-rerun at the final head, with 2513 again.
