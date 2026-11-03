@@ -69,15 +69,17 @@ export type ActiveWindow = {
 export type OrderInput = {
   /**
    * All candidate windows in stable flat (sidebar) order — network
-   * order, then channels then queries within each network. Used both as
-   * the membership universe and as the final tie-break order.
+   * order, then channels, queries and encrypted queries within each
+   * network. Used both as the membership universe and as the final
+   * tie-break order.
    */
   candidates: ActiveWindow[];
   /**
    * Per-window message-scoped unread (content kinds PRIVMSG/NOTICE/ACTION
-   * via `selection.messagesUnread`) — the activity gate. #265: presence
-   * churn (JOIN/PART/QUIT/NICK/MODE/TOPIC/KICK) is EXCLUDED, so a window
-   * with only join/part noise or a mode flip never lights the affordance.
+   * via `selection.messagesUnread`, and an encrypted window's own chat
+   * count, issue 2509) — the activity gate. #265: presence churn
+   * (JOIN/PART/QUIT/NICK/MODE/TOPIC/KICK) is EXCLUDED, so a window with
+   * only join/part noise or a mode flip never lights the affordance.
    */
   unread: Record<ChannelKey, number>;
   /** Per-window mention/highlight count — promotes a channel to tier 0. */
@@ -86,7 +88,8 @@ export type OrderInput = {
    * Per-window activity timestamp: the newest local scrollback row id
    * (monotonic sqlite PK, globally ordered across windows). 0 for a
    * seed-only window (unread carried over from before this session with
-   * no local rows yet) — correctly the "oldest" activity.
+   * no local rows yet) — correctly the "oldest" activity — and for an
+   * encrypted window, whose rows carry no grappa id (issue 2509).
    */
   activityId: Record<ChannelKey, number>;
   /**
@@ -103,10 +106,10 @@ export type OrderInput = {
 };
 
 // Tier-0 predicate: a window is "priority" when it is a query (DM), plain
-// or encrypted, OR carries a mention/highlight. The single source of truth for the tier
-// distinction, shared by `orderUnreadWindows` (tier assignment) and
-// `classifyNextActive` (#280 badge color) so the two can never diverge —
-// derive, don't duplicate (CLAUDE.md).
+// or encrypted, OR carries a mention/highlight. The single source of truth
+// for the tier distinction, shared by `orderUnreadWindows` (tier
+// assignment) and `classifyNextActive` (#280 badge color) so the two can
+// never diverge — derive, don't duplicate (CLAUDE.md).
 export function isPriorityWindow(w: ActiveWindow, mentions: Record<ChannelKey, number>): boolean {
   const key = channelKey(w.networkSlug, w.channelName);
   return w.kind === "query" || w.kind === "encrypted" || (mentions[key] ?? 0) > 0;
@@ -154,8 +157,9 @@ export function orderUnreadWindows(input: OrderInput): ActiveWindow[] {
 
 // #280 — the "next" badge color reflects the KIND of the highest-priority
 // pending window (the ordered-list HEAD, since orderUnreadWindows sorts
-// tier-0 first): "priority" (RED) when that window is a query (DM) or
-// carries a mention, "normal" (BLUE) when it is an ordinary channel, null
+// tier-0 first): "priority" (RED) when that window is a query (DM), plain or
+// encrypted, or carries a mention, "normal" (BLUE) when it is an ordinary
+// channel, null
 // when nothing is pending. Pure: takes the already-ordered list + the same
 // mention map, so it can never disagree with the ordering / auto-hide.
 export type NextActiveKind = "priority" | "normal";
@@ -173,11 +177,12 @@ export function classifyNextActive(
 // per network, channels, then queries, then encrypted queries (issue 2509,
 // the sidebar's own order). Server / home / admin / list /
 // mentions windows are intentionally excluded — #235 cycles
-// "channel/query" windows only (server status buffers aren't activity
+// conversation windows only (server status buffers aren't activity
 // windows in the irssi sense).
 //
-// Exported since #866: the per-conversation mute picker offers exactly the
-// conversations the sidebar shows, and the alternative was a second
+// Exported since #866: the per-conversation mute picker offers the
+// conversations the sidebar shows (less the encrypted ones, whose mute is
+// the peer's, issue 2509), and the alternative was a second
 // walk over `networks()` × `channelsBySlug()` × `queryWindowsByNetwork()`
 // that would drift from this one the first time a window shape is added.
 export function windowCandidates(): ActiveWindow[] {
