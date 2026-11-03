@@ -237,8 +237,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   });
   // issue 2513 — the chats this tab shows as the payloads that crossed IRC
   // rather than as their plaintext (the sidebar row's menu). A way of looking,
-  // so this tab's memory: off for every chat until asked, and off again for a
-  // chat deleted, which starts over.
+  // so this tab's memory: off for every chat until asked, and off again when
+  // this tab deletes the chat, which starts over.
   const [wireViewByChat, setWireViewByChat] = createSignal<Record<string, true>>({});
   /** Chats a window showed: kept current. Others are read when shown. */
   const loaded = new Set<string>();

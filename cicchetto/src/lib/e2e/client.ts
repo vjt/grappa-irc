@@ -337,14 +337,15 @@ function wirePayload(
 
 /**
  * The inbox message a drain read events from: its id, which the rows it
- * writes derive theirs from, and what it crossed IRC as (null for a copy
- * from one of our other devices, which came through grappa's copy door).
+ * writes derive theirs from, and what it crossed IRC as. Only a message read
+ * off a peer takes the latter: a copy from one of our other devices came
+ * through grappa's copy door, and its row (`copied`) keeps none.
  */
 type FromInbox = { id: number; wire: WirePayload | null };
 
 const fromInbox = (m: InboxMessage): FromInbox => ({
   id: m.id,
-  wire: m.own ? null : wirePayload(m.verb, m.msgid, m.payload),
+  wire: wirePayload(m.verb, m.msgid, m.payload),
 });
 
 /** The chat changes `events` make; rows from the inbox message `inbox` get ids derived from it. */

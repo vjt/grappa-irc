@@ -43,10 +43,11 @@ export type WirePayload = { verb: MessageVerb; msgid: string; payload: string };
 
 // `wire` (issue 2513): the payloads a message crossed IRC as. An incoming
 // row's is the one this device read, an outgoing row's each one grappa took
-// for it, in order (a re-send after a NACK is another). Absent on a row kept
-// before this device kept them, on a copy from one of our other devices
-// (which reached this one through grappa's copy door, never IRC), and on a
-// message not sent yet.
+// for it, in order (a re-send after a NACK is another). What grappa took and
+// then dropped stays: the row turns failed, and its state says it never went
+// out, in this view as in the plaintext one. Absent on a row kept before this
+// device kept them, on a copy from one of our other devices (which reached
+// this one through grappa's copy door, never IRC), and on a message not sent.
 export type ChatRow =
   /** A message read: `ed25519` is the master of the device that wrote it, the key the nick is pinned to. */
   | {
