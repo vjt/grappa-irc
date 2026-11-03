@@ -13174,6 +13174,16 @@ html.is-ios27-band .shell {
   margin-top: 0.4rem;
 }
 
+/* issue 2506 — in the rail the card keeps no horizontal margin of its own:
+   the rail's inset lives on `.shell-members` (#1737), and the rail's other
+   cards (`.rail-e2e-section`, `.rail-server-info`) take none, so the WHOIS
+   card's 0.5rem (the scrollback overlay's) put its edges inside theirs. Under
+   an encrypted query's key sections (issue 2499) that read as a card with a
+   left edge of its own. The scrollback overlay keeps its margin. */
+.rail-query-context .whois-card {
+  margin-inline: 0;
+}
+
 /* Mirrors `.members-pane h3` (uppercased, muted) so the query rail's
    heading slot reads identically to the channel members slot. */
 .rail-query-heading {
