@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyPushTarget, installPushTargetListener } from "../lib/pushTarget";
+import { openEncryptedWindow } from "../lib/encryptedWindow";
+import { applyPushTarget, installPushTargetListener, pushTargetSelection } from "../lib/pushTarget";
 import { openQueryWindowState } from "../lib/queryWindows";
 import { setSelectedChannel } from "../lib/selection";
 
@@ -38,6 +39,22 @@ vi.mock("../lib/networks", () => ({
 vi.mock("../lib/queryWindows", () => ({
   openQueryWindowState: vi.fn(),
   canonicalQueryNick: vi.fn((_networkId: number, nick: string) => nick),
+}));
+
+// issue 2515 — the encrypted query is cic's own window: the device's chat
+// index knows whether it exists and how it spells the peer (here: `alice`,
+// a chat first opened under that spelling), and `openEncryptedWindow` is
+// the open-then-focus verb every other door uses (`/equery`, the nick menu).
+vi.mock("../lib/encryptedChats", () => ({
+  encryptedChat: vi.fn((slug: string, nick: string) =>
+    slug === "libera" && nick.toLowerCase() === "alice"
+      ? { nick: "alice", open: true, unread: 1 }
+      : undefined,
+  ),
+}));
+
+vi.mock("../lib/encryptedWindow", () => ({
+  openEncryptedWindow: vi.fn(() => Promise.resolve()),
 }));
 
 describe("applyPushTarget", () => {
@@ -83,6 +100,28 @@ describe("applyPushTarget", () => {
     });
   });
 
+  it("opens AND focuses the encrypted query for an encrypted-message deep-link (issue 2515)", () => {
+    applyPushTarget("/?network=libera&channel=Bob&e2e=1");
+    // The encrypted window, never the plaintext query with the same nick:
+    // no query window is opened and nothing selects one.
+    expect(openEncryptedWindow).toHaveBeenCalledWith("libera", "Bob");
+    expect(openQueryWindowState).not.toHaveBeenCalled();
+    expect(setSelectedChannel).not.toHaveBeenCalled();
+  });
+
+  it("opens the encrypted chat under the spelling the device's chat index already has", () => {
+    applyPushTarget("/?network=libera&channel=Alice&e2e=1");
+    expect(openEncryptedWindow).toHaveBeenCalledWith("libera", "alice");
+  });
+
+  it("says when the encrypted chat could not be opened, never swallows it", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.mocked(openEncryptedWindow).mockRejectedValueOnce(new Error("no network libera to use"));
+    applyPushTarget("/?network=libera&channel=Bob&e2e=1");
+    await vi.waitFor(() => expect(warnSpy).toHaveBeenCalledTimes(1));
+    warnSpy.mockRestore();
+  });
+
   it("ignores malformed URLs (no selection change) and warns", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     applyPushTarget("/");
@@ -112,6 +151,24 @@ describe("applyPushTarget", () => {
       channelName: "#anywhere",
       kind: "channel",
     });
+  });
+});
+
+describe("pushTargetSelection", () => {
+  // issue 2515 — the window an encrypted-message notification names is the
+  // encrypted query `$e2e:<nick>`, spelled as the chat index spells the peer
+  // (the sidebar row's name), so a notification is dismissed by the window
+  // it opens (`notificationDismiss.ts` walks this mapping backwards).
+  it("maps an encrypted target to the encrypted window, in the chat index's spelling", () => {
+    expect(
+      pushTargetSelection({ networkSlug: "libera", channelName: "Alice", kind: "encrypted" }),
+    ).toEqual({ networkSlug: "libera", channelName: "$e2e:alice", kind: "encrypted" });
+  });
+
+  it("keeps the payload's spelling for a peer the chat index does not know yet", () => {
+    expect(
+      pushTargetSelection({ networkSlug: "libera", channelName: "Bob", kind: "encrypted" }),
+    ).toEqual({ networkSlug: "libera", channelName: "$e2e:Bob", kind: "encrypted" });
   });
 });
 

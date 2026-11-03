@@ -24,12 +24,15 @@
 // selection doesn't fire on a still-loading store.
 
 import { createEffect, untrack } from "solid-js";
+import { encryptedChat } from "./encryptedChats";
+import { openEncryptedWindow } from "./encryptedWindow";
 import { parseInviteLinkUrl, routeInviteTarget } from "./inviteLink";
 import { moduleRoot } from "./moduleRoot";
 import { channelsBySlug, networkBySlug, networks } from "./networks";
 import { type PushTarget, parsePushTargetUrl } from "./pushPayload";
 import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
 import { type SelectedChannel, setSelectedChannel } from "./selection";
+import { encryptedWindowName } from "./windowKinds";
 
 /**
  * Routes a parsed push target into the selection store.
@@ -49,11 +52,25 @@ import { type SelectedChannel, setSelectedChannel } from "./selection";
  * Channels need no open step — a highlight implies the operator is already
  * joined, so the channel is already in `channelsBySlug`.
  *
+ * An encrypted message (issue 2515) opens the encrypted query with the
+ * nick, never the plaintext one: through `openEncryptedWindow`, the
+ * open-then-focus verb `/equery` and the nick menu use. Opening is what
+ * makes the window exist on a device that has not drained the message yet
+ * (a cold tap); the drain then fills it. It is async and fires from a tap,
+ * so a failure is said, not thrown.
+ *
  * Shared by both push-target call sites (warm `applyPushTarget`, cold
  * `deferUntilNetworksSeed`) so the open-then-select contract can't drift
  * between them.
  */
 function routePushTarget(target: PushTarget): void {
+  if (target.kind === "encrypted") {
+    const nick = encryptedPeer(target);
+    void openEncryptedWindow(target.networkSlug, nick).catch((err: unknown) => {
+      console.warn(`pushTarget: could not open the encrypted query with ${nick}`, err);
+    });
+    return;
+  }
   const selection = pushTargetSelection(target);
   if (selection.kind === "query") {
     const net = networkBySlug(target.networkSlug);
@@ -99,10 +116,22 @@ function routePushTarget(target: PushTarget): void {
  * not in its setter — removing it there would silently break the dismissal
  * while every forward-path test stayed green.
  *
+ * An encrypted message names the encrypted query `$e2e:<nick>` (issue
+ * 2515), with the nick as the device's chat index spells it: that is the
+ * name the window's sidebar row carries, the twin of the query branch's
+ * canonical nick.
+ *
  * Total: an unresolvable network yields the raw name rather than null, so
  * a stale deep-link degrades to a best-effort match instead of a crash.
  */
 export function pushTargetSelection(target: PushTarget): NonNullable<SelectedChannel> {
+  if (target.kind === "encrypted") {
+    return {
+      networkSlug: target.networkSlug,
+      channelName: encryptedWindowName(encryptedPeer(target)),
+      kind: "encrypted",
+    };
+  }
   if (target.kind === "query") {
     const net = networkBySlug(target.networkSlug);
     if (net !== undefined) {
@@ -119,6 +148,11 @@ export function pushTargetSelection(target: PushTarget): NonNullable<SelectedCha
     kind: target.kind,
   };
 }
+
+// The encrypted chat's peer as the device's chat index spells it, else as
+// the payload does (a chat the device does not know yet).
+const encryptedPeer = (target: PushTarget): string =>
+  encryptedChat(target.networkSlug, target.channelName)?.nick ?? target.channelName;
 
 /**
  * Resolves a push-target URL and routes selection. Returns true if a
