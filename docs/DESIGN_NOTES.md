@@ -1793,10 +1793,24 @@ scrollback), it is the wrong conversation.
   target to `openEncryptedWindow`, the verb `/equery` and the nick menu use,
   never to `openQueryWindowState`. Opening is what makes the window exist on
   a cold tap, before the device has drained the message; the drain then
-  fills it. The nick is the one the device's chat index already spells, so
-  the tap lands on the window the sidebar shows (the twin of
-  `canonicalQueryNick`). The open is async from a tap: a failure goes to the
-  console.
+  fills it. The nick is the one the device's chat index stores
+  (`encryptedChatNick`), read off the store and not the page's copy, which
+  on a cold tap is not in yet: `chatStore.open` respells a chat to the nick
+  it is given (what `/equery` wants), so an open under the wire's spelling
+  renamed a chat the user had named otherwise, and everything keyed on the
+  window name, the draft among them, changed key. The code review caught
+  that the first cut read the page's copy and so held only on a warm tap.
+  The open is async from a tap: a failure goes to the console.
+* **The chat index refreshes one at a time per network.** Each refresh reads
+  the whole index and sets the network's copy from it. Two that overlapped
+  could set in the other order than they read, and a refresh that read
+  before a chat was opened then set over the open's own: the window just
+  opened dropped out of the list and the selection moved away from it. A
+  cold tap opens a chat while the boot drain refreshes, so it would meet
+  this every time (`/equery` during a drain could too). Refreshes now chain
+  per network, each reading after every earlier one has set; a failed one
+  does not hold up the next. A unit test that holds the first refresh's
+  read until an open has written was red before the chain.
 * **Two windows, two banners.** The tag gains an `e2e:` infix
   (`<slug>:e2e:<nick>`), so an encrypted banner no longer replaces the
   plaintext DM banner from the same peer, or the reverse: each tap still has
@@ -1818,12 +1832,16 @@ scrollback), it is the wrong conversation.
 ExUnit pins the deep link and the tag of `build_e2e/2` and the tag's
 disjointness over the nick and channel grammars. vitest pins the parse, the
 routing (open the encrypted chat, open no query, select nothing else, a
-failed open is said), the chat-index spelling (a mutant that drops it turns
-three tests red) and the dismissal from the encrypted window only. The e2e
+failed open is said), the stored spelling with the page's copy empty (a
+mutant opening under the wire's spelling turns it red), the dismissal from
+the encrypted window only (a mutant dropping the spelling there turns two
+red), `encryptedChatNick`, and the refresh chain. The e2e
 `issue2515-encrypted-notification-tap.spec.ts` reads the screen after a
 `notificationclick` dispatched into the live service worker, with a
 plaintext query open and with none, and after a cold boot at the deep link
 (desktop and both phones): the `$e2e:<peer>` row selected, the encrypted
-pane composing to the peer, the plaintext query not selected or not there.
-It was written without a local run, since the stack lane was held; CI runs
-it.
+pane composing to the peer, the plaintext query not selected. That no
+plaintext query was opened is read off the server after a reload, against
+a control query opened before the tap: read off the sidebar right after the
+tap, an absence passes before the open could have come back. It was written
+without a local run, since the stack lane was held; CI runs it.

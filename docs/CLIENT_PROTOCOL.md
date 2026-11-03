@@ -772,7 +772,13 @@ A queued `pkmsg` or `msg` also raises a Web Push notification, once per
 message however many devices it was queued for, under the same
 private-message preferences and mute as a DM: the title is the peer's nick,
 the body "encrypted message", nothing else. A copy of your own message
-(`own: true`) never does.
+(`own: true`) never does. Its `url` is the deep link a DM from that nick
+carries plus `&e2e=1` (`/?network=<slug>&channel=<nick>&e2e=1`): open the
+end-to-end encrypted conversation with the nick, not the plaintext one
+(issue 2515). Its `tag` is `<slug>:e2e:<nick>`, so it stacks apart from the
+plaintext DM banner from the same nick. A client that ignores `e2e` opens
+the plaintext conversation, as before. The payload's shape did not change
+and nothing on the WebSocket moved, so `protocol_version` did not either.
 
 Sending:
 
