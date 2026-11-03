@@ -1735,19 +1735,27 @@ confirm.
   exist while the rail is up (the peer accepts, a message arrives) turns
   it without a remount.
 * **A failure to open** is said under the button, in the same error line
-  the asking uses.
+  the asking uses; an asking's error goes when the button turns.
+* **Ask checks again** (code review): the index loads after login and the
+  peer may start the chat, so a chat that came to exist while the confirm
+  was open is opened by Ask rather than asked for a second time.
+* **Known, older, not touched here:** a boot drain that fails with an
+  error other than "elsewhere" is retried only when the network list
+  changes (`mountEncryptedChats`), so until then the index, the sidebar
+  and this button all read as no chat.
 * **Choices vjt did not rule:** the label is exactly his ("chat
   securely"); a pending asking of ours no longer shows when a chat already
   exists (the chat wins); the button keeps the asking button's look.
 
 ### Tests
 
-Unit (`StartEncryptedChat.test.tsx`), three new: with a chat in the index
+Unit (`StartEncryptedChat.test.tsx`), five new: with a chat in the index
 the button reads "chat securely", the asking button is gone, and a click
 opens the window in the index's spelling with no confirm, no asking and
 nothing fetched; a chat appearing under a mounted rail turns the button;
-a window that fails to open is said under it. All three were red on the
-old component (no `rail-chat-securely`). e2e
+a window that fails to open is said under it; a chat that appears while
+the confirm is open makes Ask open it and ask nothing; an asking's error
+does not survive the turn. All five were red before their code. e2e
 `issue2508-chat-securely.spec.ts`, desktop chromium: the query's rail
 before any encrypted chat (the asking button), with the 🔒 window open,
 and with it closed — "chat securely" opens and focuses it each time, no
