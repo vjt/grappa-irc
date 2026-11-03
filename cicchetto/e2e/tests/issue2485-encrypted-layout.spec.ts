@@ -12,8 +12,10 @@
 // One flow walks all three: before the exchange, after it (keys taken on
 // first use: unverified), and after an emoji comparison (verified). A second,
 // on a phone, walks the one path a phone changes: the rail is a drawer OVER
-// the pane, reached from the top bar's ☰, and the comparison it starts opens
-// its dialog in the pane behind it, so the drawer has to go.
+// the pane, reached from the top bar's ☰, and a comparison the peer asks for
+// while it is open opens its dialog in the pane behind it, so the drawer has
+// to go. Issue 2507: the comparison starts from the top bar's trust badge,
+// no longer from the rail.
 //
 // ## What makes this spec able to fail
 //
@@ -21,12 +23,12 @@
 //     shows a row that is neither in nor out, or a master key in its text.
 //   * The step card outlives the exchange, or never shows before it.
 //   * A key setting stays in the pane or the top bar, or leaves the rail: a
-//     key, an input or a comparison control under the top bar, or a key
-//     action missing from the rail's sections.
+//     key or an input under the top bar, or a key action missing from the
+//     rail's sections.
 //   * The comparison runs anywhere but over the chat body, or leaves the body
 //     usable while it runs.
 //   * On a phone: the top bar hosts no door to the rail, or the drawer stays
-//     over the dialog the rail's "verify" opened.
+//     over the dialog a peer's request opened.
 
 import type { Page } from "@playwright/test";
 import {
@@ -60,8 +62,9 @@ async function bodyIsClean(page: Page, keys: string[]): Promise<void> {
   for (const key of keys) expect(text).not.toContain(key);
 }
 
-// The top bar is the peer's verification: the badge, the check signal when
-// there is one, and the chat's two tools. No key, no input, no comparison.
+// The top bar is the peer's verification: the badge (the comparison's door,
+// issue 2507), the check signal when there is one, and the chat's two tools.
+// No key, no input, no comparison running in it.
 async function topBarIsVerificationOnly(page: Page, keys: string[]): Promise<void> {
   const bar = topBar(page);
   await expect(bar.getByTestId("e2e-peer-trust")).toHaveCount(1);
@@ -69,7 +72,6 @@ async function topBarIsVerificationOnly(page: Page, keys: string[]): Promise<voi
   await expect(bar.getByTestId("e2e-delete-chat")).toHaveCount(1);
   await expect(bar.locator("input")).toHaveCount(0);
   await expect(bar.getByTestId("e2e-sas")).toHaveCount(0);
-  await expect(bar.getByTestId("e2e-sas-start")).toHaveCount(0);
   const text = (await bar.textContent()) ?? "";
   for (const key of keys) expect(text).not.toContain(key);
 }
@@ -130,9 +132,10 @@ test("the encrypted window: key steps in the chat until the exchange is done, se
       "unverified",
     );
 
-    // The comparison starts from the rail and runs over each chat body: a
-    // dialog inside the window, the body inert beneath it.
-    await peerSection.getByTestId("e2e-sas-start").click();
+    // The comparison starts from the top bar's badge (issue 2507) and runs
+    // over each chat body: a dialog inside the window, the body inert
+    // beneath it.
+    await trust(page).click();
     const aliceDialog = body(page).getByRole("dialog");
     await expect(aliceDialog).toHaveAttribute("data-phase", "waiting", { timeout: KEYS_TIMEOUT });
     const bobDialog = body(peer.page).getByRole("dialog");
@@ -160,7 +163,6 @@ test("the encrypted window: key steps in the chat until the exchange is done, se
       await expect(trust(p)).toHaveAttribute("data-trust", "verified", { timeout: KEYS_TIMEOUT });
       await expect(body(p).getByRole("dialog")).toHaveCount(0);
       await expect(rail(p).getByTestId("e2e-rail-comparison")).toHaveText("matched");
-      await expect(rail(p).getByTestId("e2e-sas-start")).toHaveCount(0);
       await expect
         .poll(() =>
           body(p)
@@ -181,7 +183,7 @@ test("the encrypted window: key steps in the chat until the exchange is done, se
   }
 });
 
-test("@touch on a phone, the encrypted window's top bar opens the rail, and the comparison it starts closes the drawer over the dialog", async ({
+test("@touch on a phone, the encrypted window's top bar opens the rail, and a comparison the peer asks for closes the drawer over its dialog", async ({
   page,
   browser,
 }, testInfo) => {
@@ -196,8 +198,8 @@ test("@touch on a phone, the encrypted window's top bar opens the rail, and the 
     await equery(page, aliceNick, bob.nick);
     await equery(peer.page, bob.nick, aliceNick);
 
-    // Keys taken on first use: a pinned key, not verified, so the rail
-    // offers the comparison.
+    // Keys taken on first use: a pinned key, not verified, so either side
+    // can ask to compare.
     const hello = "ciao bob, dal telefono";
     await send(page, hello);
     await expect(row(peer.page, "in", hello)).toHaveCount(1, { timeout: KEYS_TIMEOUT });
@@ -211,19 +213,19 @@ test("@touch on a phone, the encrypted window's top bar opens the rail, and the 
     await expect(drawer).toHaveCount(0);
     await topBar(page).locator(".topic-bar-hamburger").tap();
     await expect(drawer).toHaveCount(1);
-    const start = rail(page).getByTestId("e2e-sas-start");
-    await expect(start).toBeVisible();
+    await expect(rail(page).getByTestId("e2e-pin-input")).toBeVisible();
 
-    // The comparison opens over the chat body, behind the drawer: the drawer
-    // goes, and the dialog is what the phone shows.
-    await start.tap();
-    const dialog = body(page).getByRole("dialog");
-    await expect(dialog).toHaveAttribute("data-phase", "waiting", { timeout: KEYS_TIMEOUT });
-    await expect(drawer).toHaveCount(0);
-    await expect(dialog).toBeVisible();
-    await expect(body(peer.page).getByRole("dialog")).toHaveAttribute("data-phase", "asked", {
+    // Bob asks while the phone shows the rail: the request opens its dialog
+    // over the chat body, behind the drawer, so the drawer goes and the
+    // dialog is what the phone shows.
+    await trust(peer.page).click();
+    await expect(body(peer.page).getByRole("dialog")).toHaveAttribute("data-phase", "waiting", {
       timeout: KEYS_TIMEOUT,
     });
+    const dialog = body(page).getByRole("dialog");
+    await expect(dialog).toHaveAttribute("data-phase", "asked", { timeout: KEYS_TIMEOUT });
+    await expect(drawer).toHaveCount(0);
+    await expect(dialog).toBeVisible();
   } finally {
     await peer.context.close();
     await teardownSpecSubject(bob);

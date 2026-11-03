@@ -25,9 +25,10 @@
 //     once the key is taken. Taking a key verifies it (fork 7 says it must
 //     not): the badge reads verified before any comparison.
 //
-// issue 2485 — the comparison starts from the rail and runs as a dialog over
-// the chat body; the key events it records are the rail's state, never chat
-// rows; the alarm is the chat's step card until it is answered.
+// issue 2485 — the comparison runs as a dialog over the chat body; the key
+// events it records are the rail's state, never chat rows; the alarm is the
+// chat's step card until it is answered. Issue 2507: the comparison starts
+// from a tap on the top bar's trust badge (`compareEmoji`).
 
 import {
   AFTER_A_REASK,
