@@ -120,9 +120,10 @@ const emoji = (page: Page): Promise<(string | null)[]> =>
     .getByTestId("e2e-sas-emoji")
     .evaluateAll((els) => els.map((el) => el.getAttribute("data-index")));
 
-// Alice asks, Bob accepts, both compare the same 7 emoji and both say they
-// match: each one's key reads verified on the other side. The request
-// reaches Bob within `askedWithin`.
+// Alice asks, from a tap on her top bar's trust badge (issue 2507), Bob
+// accepts, both compare the same 7 emoji and both say they match: each one's
+// key reads verified on the other side. The request reaches Bob within
+// `askedWithin`.
 export async function compareEmoji(
   alice: Page,
   bob: Page,
@@ -130,7 +131,7 @@ export async function compareEmoji(
   bobKey: string,
   askedWithin: number,
 ): Promise<void> {
-  await alice.getByTestId("e2e-rail").getByTestId("e2e-sas-start").click();
+  await trust(alice).click();
   await phase(alice, "waiting", KEYS_TIMEOUT);
 
   await phase(bob, "asked", askedWithin);
@@ -157,7 +158,6 @@ export async function compareEmoji(
     await expect(page.getByTestId("e2e-peer-key")).toHaveText(key);
     await expect(page.getByTestId("e2e-rail-comparison")).toHaveText("matched");
     await expect(page.getByTestId("e2e-sas")).toHaveCount(0);
-    await expect(page.getByTestId("e2e-sas-start")).toHaveCount(0);
   }
 }
 
