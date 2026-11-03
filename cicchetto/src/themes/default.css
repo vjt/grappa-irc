@@ -4834,9 +4834,36 @@ html.is-ios27-band .shell {
 
 .e2e-header-main {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
+}
+
+/* issue 2511 — the title is two lines, and the bar's buttons stay on ONE row
+   whatever the nick (vjt's ruling). The row used to wrap (`flex-wrap`) and
+   drop the ☰, then all three buttons, to a second row on a phone. Line one is
+   the 🔒 and the nick, cut with an ellipsis when long; line two is the badge
+   (the emoji comparison's door, #2507) and the last identity check. On a
+   393px phone with the `#` door the buttons leave the title about 148px, and
+   a badge beside the nick would leave the nick two to five characters, so the
+   badge goes under it with the stamp. The stamp gives way first: it is cut
+   before the badge, and its full text is its title and its spoken label, and
+   the rail's. Then the badge, on a pane too narrow even for it (iPad's Slide
+   Over, whose windowed pane takes a 65px leading inset; a phone that narrow
+   has the window bar back in flow, #2161, and no `#` in the bar): it
+   ellipsizes rather than run under the tools, whose taps its door's tap
+   floor would otherwise take. Nothing in the title overflows the title. */
+.e2e-title {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.e2e-title-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
 }
 
 /* The chat's two tools, pushed to the far end of the bar; the rail's ☰ (on
@@ -4845,10 +4872,16 @@ html.is-ios27-band .shell {
    line drawing sized to the chrome icon token, in `currentColor`. */
 .e2e-header-tools {
   display: flex;
+  flex-shrink: 0;
   gap: 0.25rem;
   margin-left: auto;
 }
 
+/* issue 2511 — as big as the ☰'s bars, which fill a `--chrome-icon-size`
+   square exactly (#1766). The svg box is that square (1em of the chrome
+   button's font size), and each drawing's viewBox is cropped to its own ink,
+   stroke included, so the ink fills the box instead of floating in the
+   24-unit margin of the icon grid it was drawn on. */
 .e2e-tool svg {
   width: 1em;
   height: 1em;
@@ -4865,8 +4898,14 @@ html.is-ios27-band .shell {
 }
 
 .e2e-check-chip {
+  /* Gives way long before the badge beside it: its shrink weight dwarfs the
+     badge's, so the badge only shrinks once the stamp is gone (`.e2e-title`). */
+  flex-shrink: 1000;
   font-size: 0.85em;
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .e2e-search {
@@ -4879,22 +4918,35 @@ html.is-ios27-band .shell {
 .e2e-heading {
   font-size: 1.15em;
   font-weight: bold;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .e2e-trust {
+  min-width: 0;
   font-size: 0.85em;
   padding: 0 0.4em;
   border: 1px solid currentColor;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* issue 2507 — in the top bar the badge is the emoji comparison's door: a
    bare button around it, so the badge looks as it always did, with the tap
-   floor's height for a finger (the bar's chrome buttons already make the row
-   that tall) and the chrome buttons' focus ring. */
+   floor's height for a finger and the chrome buttons' focus ring.
+   issue 2511 — the door sits on the title's second line now, so the tap
+   floor is an `::after` and not the button's own height, which would grow
+   the line and the bar with it. The floor grows UP from the badge's bottom
+   edge: below the badge are the row's last pixels and then the search row or
+   the chat, which keep their taps; above it is the nick, which has none. */
 .e2e-trust-door {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  min-height: var(--tap-min);
+  min-width: 0;
   margin: 0;
   padding: 0;
   border: none;
@@ -4902,6 +4954,15 @@ html.is-ios27-band .shell {
   color: inherit;
   font: inherit;
   cursor: pointer;
+}
+
+.e2e-trust-door::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--tap-min);
 }
 
 .e2e-trust-door:hover .e2e-trust {

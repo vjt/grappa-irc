@@ -948,6 +948,21 @@ describe("EncryptedChatPane, the last identity check", () => {
     expect(full.textContent).toContain("#grappa on AzzurraNet");
   });
 
+  // issue 2511 — on a phone the bar's buttons leave the title too little
+  // width for the nick beside the badge: the title is two lines, the nick
+  // alone on the first, the badge and the stamp under it.
+  it("puts the stamp under the nick, beside the badge, in the title's second line", () => {
+    setChat({ nick: "Bob", open: true, unread: 0, check: passed });
+    renderPane();
+    const lines = within("e2e-pane").querySelectorAll(".e2e-title > .e2e-title-line");
+    expect(lines).toHaveLength(2);
+    const [first, second] = Array.from(lines);
+    expect(first?.querySelector(".e2e-heading")?.textContent).toBe("Bob");
+    expect(first?.querySelector("[data-testid=e2e-peer-trust]")).toBeNull();
+    expect(second?.querySelector("[data-testid=e2e-peer-trust]")).not.toBeNull();
+    expect(second?.querySelector("[data-testid=e2e-check-chip]")).not.toBeNull();
+  });
+
   it("a failed check is red and says why", () => {
     setChat({
       nick: "Bob",
