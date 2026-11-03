@@ -48,7 +48,14 @@
 import { ApiError } from "../api";
 import type { E2eKeysWireDevice } from "../wireTypes";
 import type { AccountStore } from "./accountStore";
-import type { ChatChange, ChatStore, CheckFailure, DoorRefusal, SendDropped } from "./chatStore";
+import type {
+  ChatChange,
+  ChatStore,
+  CheckFailure,
+  DoorRefusal,
+  SendDropped,
+  WirePayload,
+} from "./chatStore";
 import {
   type CopyResult,
   type E2eEvent,
@@ -68,7 +75,7 @@ import {
   UNCONFIRMED,
 } from "./orders";
 import { isSas, SAS_TAG, type SasHost, type SasStep, type SasView, Verifier } from "./sas";
-import { fold, type ReceiveVerb } from "./wire";
+import { fold, type ReceiveVerb, type SendVerb } from "./wire";
 
 /** One whole message grappa holds for this device (the `e2e_message` wire shape, minus its envelope). */
 export type InboxMessage = {
@@ -316,11 +323,37 @@ const REKEY_PHASE = {
   keys_unanswered: "unanswered",
 } as const;
 
+/**
+ * A payload as it crossed IRC (issue 2513), when it is a message's: a PKMSG
+ * or a MSG. What the row of that message keeps for the ciphertext view.
+ */
+function wirePayload(
+  verb: SendVerb | ReceiveVerb,
+  msgid: string,
+  payload: string,
+): WirePayload | null {
+  return verb === "pkmsg" || verb === "msg" ? { verb, msgid, payload } : null;
+}
+
+/**
+ * The inbox message a drain read events from: its id, which the rows it
+ * writes derive theirs from, and what it crossed IRC as (null for a copy
+ * from one of our other devices, which came through grappa's copy door).
+ */
+type FromInbox = { id: number; wire: WirePayload | null };
+
+const fromInbox = (m: InboxMessage): FromInbox => ({
+  id: m.id,
+  wire: m.own ? null : wirePayload(m.verb, m.msgid, m.payload),
+});
+
 /** The chat changes `events` make; rows from the inbox message `inbox` get ids derived from it. */
-function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatChange[] {
+function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): ChatChange[] {
   const changes: ChatChange[] = [];
+  // The message the inbox item carried, as it crossed IRC: what its row keeps.
+  const wire = inbox?.wire ? { wire: [inbox.wire] } : {};
   events.forEach((e, i) => {
-    const id = `in:${inbox}:${i}`;
+    const id = `in:${inbox?.id ?? null}:${i}`;
     switch (e.kind) {
       case "received":
         // Only text is shown. A CHAL is answered in the drain (`answer`),
@@ -331,7 +364,15 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
             op: "add",
             nick: e.nick,
             unread: true,
-            row: { kind: "in", id, at, nick: e.nick, ed25519: e.master, body: e.inner.body },
+            row: {
+              kind: "in",
+              id,
+              at,
+              nick: e.nick,
+              ed25519: e.master,
+              body: e.inner.body,
+              ...wire,
+            },
           });
         }
         break;
@@ -341,7 +382,7 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
             op: "add",
             nick: e.nick,
             unread: true,
-            row: { kind: "undecryptable", id, at, nick: e.nick },
+            row: { kind: "undecryptable", id, at, nick: e.nick, ...wire },
           });
         }
         break;
@@ -357,7 +398,14 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
         break;
       case "send_queued":
         if (!rowless(e.tag)) {
-          changes.push({ op: "out", nick: e.nick, id: e.tag, state: "queued", reason: null });
+          changes.push({
+            op: "out",
+            nick: e.nick,
+            id: e.tag,
+            state: "queued",
+            reason: null,
+            wire: null,
+          });
         }
         break;
       case "send_failed":
@@ -365,7 +413,14 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
           if (rowless(tag)) {
             rowlessLost(tag, e.nick, e.reason);
           } else {
-            changes.push({ op: "out", nick: e.nick, id: tag, state: "failed", reason: e.reason });
+            changes.push({
+              op: "out",
+              nick: e.nick,
+              id: tag,
+              state: "failed",
+              reason: e.reason,
+              wire: null,
+            });
           }
         }
         break;
@@ -392,7 +447,7 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
             unread: false,
             row: {
               kind: "out",
-              id: `copy:${inbox}:${i}`,
+              id: `copy:${inbox.id}:${i}`,
               at,
               body: e.body,
               state: "sent",
@@ -513,7 +568,14 @@ export function e2eClient(
       if (!("refused" in answer)) {
         engine.sent(out.ref, answer.msgid);
         if (out.tag !== LIST_TAG && !rowless(out.tag)) {
-          changes.push({ op: "out", nick: out.target, id: out.tag, state: "sent", reason: null });
+          changes.push({
+            op: "out",
+            nick: out.target,
+            id: out.tag,
+            state: "sent",
+            reason: null,
+            wire: wirePayload(out.verb, answer.msgid, out.payload),
+          });
           taken.set(out.tag, out.target);
         }
         continue;
@@ -536,6 +598,7 @@ export function e2eClient(
           id: lost.tag,
           state: "failed",
           reason: answer.refused,
+          wire: null,
         });
       }
     }
@@ -760,7 +823,7 @@ export function e2eClient(
                 ...changesFor(
                   res.events.filter((e) => !listBehind(e)),
                   now(),
-                  m.id,
+                  fromInbox(m),
                 ),
               );
               behind = true;
@@ -772,7 +835,7 @@ export function e2eClient(
             // trust again all the same (issue 2486, keys asked before any
             // message).
             if (m.verb === "keys") touched.add(fold(m.from));
-            changes.push(...changesFor(res.events, now(), m.id));
+            changes.push(...changesFor(res.events, now(), fromInbox(m)));
             outbound.push(...res.outbound);
             for (const [i, e] of res.events.entries()) {
               if (e.kind !== "received") continue;
@@ -935,7 +998,14 @@ export function e2eClient(
         if (lost !== undefined && rowless(lost.tag)) {
           rowlessLost(lost.tag, lost.nick, reason);
         } else if (lost !== undefined) {
-          changes.push({ op: "out", nick: lost.nick, id: lost.tag, state: "failed", reason });
+          changes.push({
+            op: "out",
+            nick: lost.nick,
+            id: lost.tag,
+            state: "failed",
+            reason,
+            wire: null,
+          });
         }
         return finish(ctx, engine, verifier, persist, door, changes, []);
       }),

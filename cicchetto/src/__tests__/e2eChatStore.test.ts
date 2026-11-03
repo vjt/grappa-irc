@@ -77,8 +77,8 @@ describe("chatStore", () => {
     await chats.apply(SLOT, [add("bob", out, false)]);
 
     const touched = await chats.apply(SLOT, [
-      { op: "out", nick: "bob", id: "t1", state: "failed", reason: "rate-limited" },
-      { op: "out", nick: "nobody", id: "t9", state: "sent", reason: null },
+      { op: "out", nick: "bob", id: "t1", state: "failed", reason: "rate-limited", wire: null },
+      { op: "out", nick: "nobody", id: "t9", state: "sent", reason: null, wire: null },
     ]);
 
     expect(touched).toEqual(["bob"]);
@@ -105,6 +105,7 @@ describe("chatStore", () => {
       id: "t1",
       state,
       reason: state === "failed" ? "keys-timeout" : null,
+      wire: null,
     });
     const state = async () => (await chats.rows(SLOT, "bob"))[0];
 

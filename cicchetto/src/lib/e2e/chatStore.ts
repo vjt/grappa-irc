@@ -18,7 +18,7 @@
 import { type Lock, open, type Sealed, seal, type Vault } from "./accountStore";
 import type { SendFailure } from "./engine";
 import type { OrderVerdict } from "./orders";
-import { fold } from "./wire";
+import { fold, type MessageVerb } from "./wire";
 
 /** Where an outgoing message is: waiting for keys, handed to grappa, accepted, or not. */
 export type OutState = "queued" | "sending" | "sent" | "failed";
@@ -33,9 +33,31 @@ export type DoorRefusal = "rate-limited" | "too-large" | "too-late" | "unknown-d
 export type SendDropped = "late" | "send-failed" | "session-ended";
 export type OutFailure = SendFailure | DoorRefusal | SendDropped;
 
+/**
+ * A message's payload as it crossed IRC (issue 2513): the verb and msgid its
+ * `E2E` lines carried, and the compact JSON text grappa cut into them, or
+ * joined back from them. The ciphertext view draws it; its session key is
+ * spent, so it can only be kept as it went, never made again.
+ */
+export type WirePayload = { verb: MessageVerb; msgid: string; payload: string };
+
+// `wire` (issue 2513): the payloads a message crossed IRC as. An incoming
+// row's is the one this device read, an outgoing row's each one grappa took
+// for it, in order (a re-send after a NACK is another). Absent on a row kept
+// before this device kept them, on a copy from one of our other devices
+// (which reached this one through grappa's copy door, never IRC), and on a
+// message not sent yet.
 export type ChatRow =
   /** A message read: `ed25519` is the master of the device that wrote it, the key the nick is pinned to. */
-  | { kind: "in"; id: string; at: number; nick: string; ed25519: string; body: string }
+  | {
+      kind: "in";
+      id: string;
+      at: number;
+      nick: string;
+      ed25519: string;
+      body: string;
+      wire?: WirePayload[];
+    }
   | {
       kind: "out";
       id: string;
@@ -43,9 +65,10 @@ export type ChatRow =
       body: string;
       state: OutState;
       reason: OutFailure | null;
+      wire?: WirePayload[];
     }
   /** "X sent you an encrypted message that cannot be read here" (2430 "Delivery"). */
-  | { kind: "undecryptable"; id: string; at: number; nick: string }
+  | { kind: "undecryptable"; id: string; at: number; nick: string; wire?: WirePayload[] }
   /** A key other than the pinned one, on this nick: ignored, and shown. */
   | { kind: "key_alarm"; id: string; at: number; nick: string; presented: string }
   /** The user pinned this key to the nick by hand: it is the one written to now. */
@@ -120,7 +143,8 @@ export type Chat = { nick: string; open: boolean; unread: number; check?: Identi
  * `add` writes a row unless one with its id is there already; a row the
  * window shows (`countsAsUnread`) opens the chat (a new message reopens a closed one,
  * as a query window does) and counts if `unread`, the others do neither. `out`
- * moves an outgoing row along, and changes nothing if the row is not there,
+ * moves an outgoing row along, adding the payload grappa took (`wire`, when
+ * the move is to sent), and changes nothing if the row is not there,
  * nor once the row is sent and the change would take it back (`backwards`).
  * `check` keeps the chat's last identity check and nothing else: it neither
  * opens the chat nor counts as unread, and a nick with no chat gets a closed
@@ -128,7 +152,14 @@ export type Chat = { nick: string; open: boolean; unread: number; check?: Identi
  */
 export type ChatChange =
   | { op: "add"; nick: string; row: ChatRow; unread: boolean }
-  | { op: "out"; nick: string; id: string; state: OutState; reason: OutFailure | null }
+  | {
+      op: "out";
+      nick: string;
+      id: string;
+      state: OutState;
+      reason: OutFailure | null;
+      wire: WirePayload | null;
+    }
   | { op: "check"; nick: string; check: IdentityCheck };
 
 /** Rows kept per chat; the oldest go first. */
@@ -255,11 +286,12 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
             } else if (change.op === "check") {
               chat.check = change.check;
             } else {
-              rows = rows.map((r) =>
-                r.kind === "out" && r.id === change.id && !backwards(r.state, change.state)
-                  ? { ...r, state: change.state, reason: change.reason }
-                  : r,
-              );
+              const { state, reason, wire } = change;
+              rows = rows.map((r) => {
+                if (r.kind !== "out" || r.id !== change.id || backwards(r.state, state)) return r;
+                const moved = { ...r, state, reason };
+                return wire === null ? moved : { ...moved, wire: [...(r.wire ?? []), wire] };
+              });
             }
           }
           if (rowsChange) {
