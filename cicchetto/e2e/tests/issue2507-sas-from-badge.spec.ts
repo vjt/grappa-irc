@@ -20,7 +20,8 @@
 //   * The chat area holds a key input again (the no-key card's pin form, the
 //     alarm card's): an `input` under the chat body.
 //   * The badge is not the comparison's door: a click on it opens no dialog,
-//     or opens it only while not verified (no check again).
+//     or opens it only while not verified (no check again), or the button
+//     does not answer the keyboard.
 //   * The rail still offers its own start: a button naming the comparison.
 //   * On a phone, the badge's door is smaller than the tap floor, or reaching
 //     the comparison still opens the drawer.
@@ -64,6 +65,8 @@ async function exchangeKeys(alice: Page, bob: Page): Promise<void> {
   await send(bob, reply);
   await expect(row(alice, "in", reply)).toHaveCount(1, { timeout: KEYS_TIMEOUT });
   for (const p of [alice, bob]) {
+    // The no-key card goes once the nick has a pinned key.
+    await expect(body(p).getByTestId("e2e-step")).toHaveCount(0);
     await expect(trust(p)).toHaveAttribute("data-trust", "unverified");
   }
 }
@@ -94,9 +97,12 @@ test("a new encrypted chat has no key to paste in the chat area, and the emoji c
     // clicks it once, then walks accept, compare and match to verified.
     await compareEmoji(page, peer.page, await ownKey(page), await ownKey(peer.page), KEYS_TIMEOUT);
 
-    // `verified`: the same badge checks again. Bob declines, and nothing
+    // `verified` by emoji: the same badge checks again, from the keyboard
+    // this time (the handler is the button's). Bob declines, and nothing
     // changes but the dialogs going.
-    await trust(page).click();
+    await page
+      .getByRole("button", { name: /^verified: compare emoji with .* again$/ })
+      .press("Enter");
     await expect(dialog(page)).toHaveAttribute("data-phase", "waiting", { timeout: KEYS_TIMEOUT });
     await expect(dialog(peer.page)).toHaveAttribute("data-phase", "asked", {
       timeout: KEYS_TIMEOUT,

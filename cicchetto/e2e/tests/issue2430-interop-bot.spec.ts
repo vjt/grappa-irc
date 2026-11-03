@@ -342,4 +342,7 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
   await expect(row(page, "in", longIn)).toHaveCount(1);
   await expect(page.getByTestId("e2e-pane").getByTestId("e2e-undeliverable")).toHaveCount(0);
   await expect(page.getByTestId("e2e-peer-trust")).toHaveAttribute("data-trust", "verified");
+  // issue 2507 — a key pinned by hand, as a bot's always is, offers no emoji
+  // comparison from the badge: the bot would never answer one.
+  await expect(page.getByRole("button", { name: /compare emoji/ })).toHaveCount(0);
 });
