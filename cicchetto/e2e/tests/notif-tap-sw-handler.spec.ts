@@ -19,7 +19,7 @@
 // GREEN once delivery no longer depends on focus() resolving.
 
 import { loginAs, sidebarWindow } from "../fixtures/cicchettoPage";
-import { buildPushDeepLink } from "../fixtures/pushTap";
+import { buildPushDeepLink, tapNotification } from "../fixtures/pushTap";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specUser, test } from "../fixtures/test";
 
@@ -42,29 +42,9 @@ test("#146 recurrence — real SW notificationclick delivers the navigate even w
 
   const url = buildPushDeepLink(NETWORK_SLUG, channel);
 
-  // Grab the live SW object.
-  const sw = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
-
-  // Dispatch a real `notificationclick` into the SW. The synthetic event
-  // carries the notification shape the handler reads (`data.url`,
-  // `close()`); `waitUntil` collects the focusOrOpen promise so we can
-  // see whether it rejected (the swallow).
-  const waitUntilResult = await sw.evaluate((targetUrl) => {
-    const ev = new Event("notificationclick") as Event & {
-      notification: { data: { url: string }; close: () => void };
-      waitUntil: (p: Promise<unknown>) => void;
-    };
-    ev.notification = { data: { url: targetUrl }, close() {} };
-    let collected: Promise<unknown> = Promise.resolve();
-    ev.waitUntil = (p: Promise<unknown>) => {
-      collected = p;
-    };
-    self.dispatchEvent(ev);
-    return collected.then(
-      () => "resolved",
-      (e) => `rejected: ${e}`,
-    );
-  }, url);
+  // Dispatch a real `notificationclick` into the SW; the outcome of its
+  // `waitUntil` says whether focusOrOpen rejected (the swallow).
+  const waitUntilResult = await tapNotification(context, url);
   // Diagnostic only — a "rejected: ..." here is the focus() swallow.
   console.log(`focusOrOpen waitUntil → ${waitUntilResult}`);
 
