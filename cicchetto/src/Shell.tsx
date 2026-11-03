@@ -1257,9 +1257,10 @@ const Shell: Component = () => {
                 {/* issue 2430 — the encrypted query pane on mobile. issue 2485
                   — its top bar hosts the rail's ☰, as MentionsWindow does,
                   and the emoji comparison's dialog, which opens in the pane
-                  behind the drawer (the rail's "verify" starts it, or the
-                  peer asks while the drawer is up), closes the drawer, as the
-                  rail's refresh does for the table behind it. */}
+                  behind the drawer (the peer asks while the drawer is up;
+                  since issue 2507 our own start is the top bar's badge),
+                  closes the drawer, as the rail's refresh does for the table
+                  behind it. */}
                 {(w) => (
                   <EncryptedChatPane
                     networkSlug={w.networkSlug}
