@@ -4887,6 +4887,32 @@ html.is-ios27-band .shell {
   border: 1px solid currentColor;
 }
 
+/* issue 2507 — in the top bar the badge is the emoji comparison's door: a
+   bare button around it, so the badge looks as it always did, with the tap
+   floor's height for a finger (the bar's chrome buttons already make the row
+   that tall) and the chrome buttons' focus ring. */
+.e2e-trust-door {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap-min);
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.e2e-trust-door:hover .e2e-trust {
+  text-decoration: underline;
+}
+
+.e2e-trust-door:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .e2e-trust-verified {
   color: var(--accent);
 }
