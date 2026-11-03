@@ -6,6 +6,7 @@ import {
   orderUnreadWindows,
 } from "../lib/activeWindows";
 import { type ChannelKey, channelKey } from "../lib/channelKey";
+import { encryptedWindowName } from "../lib/windowKinds";
 
 // GH #235 — pure ordering for the "jump to next active window" (Alt+A)
 // affordance. The fn must:
@@ -39,6 +40,12 @@ const query = (nick: string): ActiveWindow => ({
   networkSlug: "net",
   channelName: nick,
   kind: "query",
+});
+// issue 2509 — an encrypted query, named as the sidebar names its window.
+const encrypted = (nick: string): ActiveWindow => ({
+  networkSlug: "net",
+  channelName: encryptedWindowName(nick),
+  kind: "encrypted",
 });
 
 const names = (list: ActiveWindow[]): string[] => list.map((w) => w.channelName);
@@ -170,6 +177,25 @@ describe("orderUnreadWindows", () => {
       ]),
     });
     expect(names(out)).toEqual(["alice", "zoe"]);
+  });
+
+  // issue 2509 — an encrypted query is a DM: tier 0, ahead of channel traffic.
+  // It has no grappa row id (activity 0), so the channel here reads 0 too and
+  // comes first in the sidebar: only the tier can put the encrypted one ahead.
+  it("puts an encrypted query with unread in the DM tier, ahead of a channel listed before it", () => {
+    const a = chan("#a");
+    const bob = encrypted("bob");
+    const out = orderUnreadWindows({
+      candidates: [a, bob],
+      muted: {},
+      unread: counts([
+        [a, 1],
+        [bob, 1],
+      ]),
+      mentions: {},
+      activityId: {},
+    });
+    expect(names(out)).toEqual([encryptedWindowName("bob"), "#a"]);
   });
 
   it("excludes a window that has a mention count but zero unread", () => {
@@ -329,6 +355,24 @@ describe("orderUnreadWindows — muted conversations (#1018)", () => {
     expect(out).toEqual([there]);
   });
 
+  // issue 2509 — grappa reads the PEER's mute for an encrypted message's
+  // push (`should_notify_e2e?`); the cycle reads the same one.
+  it("skips an encrypted query whose PEER is muted", () => {
+    const bob = encrypted("bob");
+    const a = chan("#a");
+    const out = orderUnreadWindows({
+      candidates: [bob, a],
+      muted: { [ck("net", "Bob")]: { until: null } },
+      unread: counts([
+        [bob, 2],
+        [a, 1],
+      ]),
+      mentions: {},
+      activityId: {},
+    });
+    expect(names(out)).toEqual(["#a"]);
+  });
+
   it("a BARE (pre-#1038) stored key silences nothing — it fails OPEN", () => {
     const noisy = chan("#noisy");
     const out = orderUnreadWindows({
@@ -390,6 +434,10 @@ describe("isPriorityWindow", () => {
     expect(isPriorityWindow(m, counts([[m, 1]]))).toBe(true);
   });
 
+  it("an encrypted query is priority regardless of mentions (issue 2509)", () => {
+    expect(isPriorityWindow(encrypted("bob"), {})).toBe(true);
+  });
+
   it("a plain channel with no mention entry is not priority", () => {
     expect(isPriorityWindow(chan("#plain"), {})).toBe(false);
   });
@@ -412,6 +460,10 @@ describe("classifyNextActive", () => {
   it("priority when the head is a mentioned channel", () => {
     const ment = chan("#ment");
     expect(classifyNextActive([ment, chan("#a")], counts([[ment, 2]]))).toBe("priority");
+  });
+
+  it("priority when the head is an encrypted query (issue 2509)", () => {
+    expect(classifyNextActive([encrypted("bob"), chan("#a")], {})).toBe("priority");
   });
 
   it("normal when the head is an ordinary channel", () => {

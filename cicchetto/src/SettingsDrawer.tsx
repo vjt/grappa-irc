@@ -970,6 +970,10 @@ const SettingsDrawer: Component<Props> = (props) => {
     const muted = mutedTargets();
     const byKey = new Map<ChannelKey, string>();
     for (const candidate of windowCandidates()) {
+      // issue 2509 — an encrypted window is muted by its peer's mute
+      // (`windowMuteKey`): offering it here would name a `$e2e:` window the
+      // mute is not keyed on, and muting it would be muting the peer.
+      if (candidate.kind === "encrypted") continue;
       const key = windowMuteKey(candidate);
       if (Object.hasOwn(muted, key) || byKey.has(key)) continue;
       byKey.set(key, `${candidate.channelName} — ${candidate.networkSlug}`);

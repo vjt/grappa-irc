@@ -22,6 +22,7 @@
 
 import { type ChannelKey, channelKey } from "./channelKey";
 import type { MutedTargets } from "./userSettings";
+import { encryptedWindowPeer } from "./windowKinds";
 
 /**
  * The key under which a conversation is muted: the composite `ChannelKey` of
@@ -60,9 +61,15 @@ export function conversationMuteKey(networkSlug: string, target: string): Channe
  * mute lookup free of a dependency on the window projection — and since
  * #1038 the window's own `networkSlug` is part of that structure, because it
  * is part of the key.
+ *
+ * Issue 2509: an encrypted window (`$e2e:<nick>`) is muted by its PEER's
+ * mute, the one grappa reads for an encrypted message's push
+ * (`Push.Triggers.should_notify_e2e?/3`): both are a private conversation
+ * with that nick, and "I silenced bob" covers the two.
  */
 export function windowMuteKey(window: { networkSlug: string; channelName: string }): ChannelKey {
-  return conversationMuteKey(window.networkSlug, window.channelName);
+  const peer = encryptedWindowPeer(window.channelName);
+  return conversationMuteKey(window.networkSlug, peer ?? window.channelName);
 }
 
 /**

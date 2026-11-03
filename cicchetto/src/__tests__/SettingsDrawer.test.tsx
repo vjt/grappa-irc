@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ActiveWindow } from "../lib/activeWindows";
 import { allRules, ruleBody, selectorList } from "./helpers/themeCss";
 
 vi.mock("@solidjs/router", () => ({
@@ -222,7 +223,7 @@ vi.mock("../lib/selection", () => ({
 // becomes an option", and a test that rebuilt the projection would be
 // asserting its own arithmetic.
 const windowCandidatesHolder = vi.hoisted(() => ({
-  current: [] as { networkSlug: string; channelName: string; kind: "channel" | "query" }[],
+  current: [] as ActiveWindow[],
 }));
 vi.mock("../lib/activeWindows", () => ({
   windowCandidates: () => windowCandidatesHolder.current,
@@ -1049,6 +1050,19 @@ describe("SettingsDrawer muted conversations — #866", () => {
     // the network appended so two networks can be told apart.
     expect(optionValues()).toEqual(["", "azzurra #sbiffo", "azzurra alice"]);
     expect(screen.getByRole("option", { name: "#Sbiffo — azzurra" })).toBeInTheDocument();
+  });
+
+  // issue 2509 — the sidebar's encrypted windows are cycle candidates, but
+  // their mute is their peer's: the picker offers no `$e2e:` row.
+  it("offers no encrypted window: its mute is its peer's", async () => {
+    windowCandidatesHolder.current = [
+      { networkSlug: "azzurra", channelName: "alice", kind: "query" },
+      { networkSlug: "azzurra", channelName: "$e2e:bob", kind: "encrypted" },
+    ];
+
+    await openPush();
+
+    expect(optionValues()).toEqual(["", "azzurra alice"]);
   });
 
   it("offers the same conversation on two networks TWICE, one row each (#1038)", async () => {

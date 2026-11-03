@@ -30,6 +30,7 @@ const h = vi.hoisted(() => ({
   isActiveSelection: vi.fn(),
   requestScrollToBottom: vi.fn(),
   requestJumpToUnread: vi.fn(),
+  encrypted: [] as Array<{ key: string; nick: string; unread: number }>,
 }));
 
 vi.mock("../lib/networks", () => ({
@@ -43,6 +44,10 @@ vi.mock("../lib/networks", () => ({
 vi.mock("../lib/queryWindows", () => ({ queryWindowsByNetwork: () => ({}) }));
 
 vi.mock("../lib/mentions", () => ({ mentionCounts: () => ({}) }));
+
+// issue 2509 — the device's encrypted chats, as the sidebar lists them: an
+// open chat and its unread count, which grappa's counts never hold.
+vi.mock("../lib/encryptedChats", () => ({ encryptedChatsFor: () => h.encrypted }));
 
 vi.mock("../lib/notificationPrefs", () => ({
   notificationPrefs: () => ({ muted_targets: {} }),
@@ -85,6 +90,7 @@ beforeEach(() => {
   h.unread = {};
   h.farBehind = {};
   h.selected = null;
+  h.encrypted = [];
   h.isActiveSelection.mockReturnValue(false);
 });
 
@@ -267,5 +273,43 @@ describe("stepActiveWindow — a real window switch is untouched", () => {
 
     expect(h.setSelectedChannel).not.toHaveBeenCalled();
     expect(h.requestScrollToBottom).not.toHaveBeenCalled();
+  });
+});
+
+// issue 2509 — an encrypted query with unread is a stop like a plain query,
+// counted from its own chat: grappa's unread map holds nothing for it.
+describe("stepActiveWindow — an encrypted query", () => {
+  it("is a stop, counted from the chat's own unread, ahead of channel traffic", async () => {
+    h.channels = [{ name: "#grappa" }];
+    h.unread = { [channelKey("net", "#grappa")]: 3 };
+    h.encrypted = [{ key: "bob", nick: "Bob", unread: 2 }];
+
+    const { activeWindowCount, jumpToNextActiveWindow, nextActiveKind, windowCandidates } =
+      await load();
+    expect(windowCandidates()).toContainEqual({
+      networkSlug: "net",
+      channelName: "$e2e:Bob",
+      kind: "encrypted",
+    });
+    expect(activeWindowCount()).toBe(2);
+    expect(nextActiveKind()).toBe("priority");
+
+    jumpToNextActiveWindow();
+
+    expect(h.setSelectedChannel).toHaveBeenCalledWith({
+      networkSlug: "net",
+      channelName: "$e2e:Bob",
+      kind: "encrypted",
+    });
+  });
+
+  it("is no stop once its chat reads nothing unread", async () => {
+    h.encrypted = [{ key: "bob", nick: "Bob", unread: 0 }];
+
+    const { activeWindowCount, jumpToNextActiveWindow } = await load();
+    expect(activeWindowCount()).toBe(0);
+    jumpToNextActiveWindow();
+
+    expect(h.setSelectedChannel).not.toHaveBeenCalled();
   });
 });

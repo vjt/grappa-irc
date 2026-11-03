@@ -1,6 +1,7 @@
 import { createMemo, untrack } from "solid-js";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { isConversationMuted, windowMuteKey } from "./conversationMute";
+import { encryptedChatsFor } from "./encryptedChats";
 import { requestJumpToUnread } from "./jumpToUnreadCommand";
 import { mentionCounts } from "./mentions";
 import { moduleRoot } from "./moduleRoot";
@@ -16,6 +17,7 @@ import {
   setSelectedChannel,
 } from "./selection";
 import type { MutedTargets } from "./userSettings";
+import { encryptedWindowName } from "./windowKinds";
 
 // GH #235 — "jump to next active window" (irssi Alt+A).
 //
@@ -49,11 +51,19 @@ import type { MutedTargets } from "./userSettings";
 // Ctrl+N/P and the auto-hide all inherit it. The per-window sidebar /
 // bottom-bar badges keep rendering `messagesUnread` + `eventsUnread`
 // separately — they are unaffected.
+//
+// issue 2509 — an encrypted query (🔒, `$e2e:<nick>`) is a stop too, in the
+// DM tier like the plain query it is the encrypted twin of. grappa never
+// sees its plaintext, so it counts nothing for it: the window's unread is
+// the device's own chat index (`encryptedChatsFor`), merged into the same
+// unread map the gate reads. Its rows carry no grappa row id, so it has no
+// activity id to order by and reads 0, the "oldest" a seed-only window
+// reads: among the DM tier it comes first.
 
 export type ActiveWindow = {
   networkSlug: string;
   channelName: string;
-  kind: "channel" | "query";
+  kind: "channel" | "query" | "encrypted";
 };
 
 export type OrderInput = {
@@ -92,14 +102,14 @@ export type OrderInput = {
   muted: MutedTargets | undefined;
 };
 
-// Tier-0 predicate: a window is "priority" when it is a query (DM) OR
-// carries a mention/highlight. The single source of truth for the tier
+// Tier-0 predicate: a window is "priority" when it is a query (DM), plain
+// or encrypted, OR carries a mention/highlight. The single source of truth for the tier
 // distinction, shared by `orderUnreadWindows` (tier assignment) and
 // `classifyNextActive` (#280 badge color) so the two can never diverge —
 // derive, don't duplicate (CLAUDE.md).
 export function isPriorityWindow(w: ActiveWindow, mentions: Record<ChannelKey, number>): boolean {
   const key = channelKey(w.networkSlug, w.channelName);
-  return w.kind === "query" || (mentions[key] ?? 0) > 0;
+  return w.kind === "query" || w.kind === "encrypted" || (mentions[key] ?? 0) > 0;
 }
 
 // Pure ordering. Filter to windows with unread activity that the operator
@@ -160,7 +170,8 @@ export function classifyNextActive(
 }
 
 // Flat candidate list mirroring the sidebar/bottom-bar window order:
-// per network, channels then queries. Server / home / admin / list /
+// per network, channels, then queries, then encrypted queries (issue 2509,
+// the sidebar's own order). Server / home / admin / list /
 // mentions windows are intentionally excluded — #235 cycles
 // "channel/query" windows only (server status buffers aren't activity
 // windows in the irssi sense).
@@ -179,6 +190,25 @@ export function windowCandidates(): ActiveWindow[] {
     }
     for (const qw of qwbn[net.id] ?? []) {
       out.push({ networkSlug: net.slug, channelName: qw.targetNick, kind: "query" });
+    }
+    for (const chat of encryptedChatsFor(net.slug)) {
+      out.push({
+        networkSlug: net.slug,
+        channelName: encryptedWindowName(chat.nick),
+        kind: "encrypted",
+      });
+    }
+  }
+  return out;
+}
+
+// issue 2509 — the encrypted windows' unread, from the device's chat index:
+// grappa's counts never hold one, the plaintext lives only here.
+function encryptedUnread(): Record<ChannelKey, number> {
+  const out: Record<ChannelKey, number> = {};
+  for (const net of networks() ?? []) {
+    for (const chat of encryptedChatsFor(net.slug)) {
+      out[channelKey(net.slug, encryptedWindowName(chat.nick))] = chat.unread;
     }
   }
   return out;
@@ -205,7 +235,7 @@ const root = moduleRoot(() => {
   const activeWindows = createMemo((): ActiveWindow[] =>
     orderUnreadWindows({
       candidates: windowCandidates(),
-      unread: messagesUnread(),
+      unread: { ...messagesUnread(), ...encryptedUnread() },
       mentions: mentionCounts(),
       activityId: buildActivityIds(),
       // #1018 — read through `notificationPrefs()`, never the stored signal:
