@@ -15178,16 +15178,15 @@ button.home-pane-network-title:hover .home-pane-network-slug {
    same size, both underlined, both a little larger than the link was.
 
    The size is `--font-size`, the app's text size and the ✕'s beside them,
-   where the link was 0.9rem: "a little larger" taken as the step up to the
-   size the rest of the app's text is read at, not as a new number. Their
+   where the link was 0.9rem: "a little larger" as the step up to the size
+   the rest of the app's text is read at, and vjt kept it so on the PR. Their
    computed sizes were already equal before this (0.9rem each), so what read
    smaller on the phone was not the font size; it is not measured beyond
    that. `font: inherit` first, so a <button> takes the weight and line height
    the anchor inherits instead of the UA's (the family it already inherited);
    the underline is stated rather than left to the UA, because a <button> has
-   none of its own. Copy is not named in the ruling; it is the same kind of
-   control in the same row, and a third look beside two matched ones would be
-   the same complaint again. */
+   none of its own. Copy, the same kind of control in the same row, wears the
+   same look: vjt's ruling on the PR. */
 .media-viewer-open-external,
 .media-viewer-copy,
 .media-viewer-share {
