@@ -23,8 +23,9 @@
 //     or opens it only while not verified (no check again), or the button
 //     does not answer the keyboard.
 //   * The rail still offers its own start: a button naming the comparison.
-//   * On a phone, the badge's door is smaller than the tap floor, or reaching
-//     the comparison still opens the drawer.
+//   * On a phone, the badge's tap area is shorter than the tap floor (issue
+//     2511: an area around the badge, so the title's line does not grow), or
+//     reaching the comparison still opens the drawer.
 
 import type { Page } from "@playwright/test";
 import {
@@ -136,11 +137,20 @@ test("@touch on a phone, the emoji comparison is one tap on the top bar's badge,
     await noKeyInputInChat(page, bob.nick);
     await exchangeKeys(page, peer.page);
 
-    // The door is the button the badge sits in: at least the tap floor tall.
+    // The door is the button the badge sits in, with a finger's tap floor:
+    // its tap area (an `::after` growing up from the badge, issue 2511) is at
+    // least 44px tall, and a tap at either end of it lands on the door.
     const door = page.getByRole("button", { name: /^not verified: compare emoji with / });
     await expect(door).toBeVisible();
-    const box = await door.boundingBox();
-    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+    const reach = await door.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const floor = Number.parseFloat(getComputedStyle(el, "::after").height);
+      const x = r.left + r.width / 2;
+      const lands = (y: number) => el.contains(document.elementFromPoint(x, y));
+      return { floor, top: lands(r.bottom - floor + 0.5), bottom: lands(r.bottom - 0.5) };
+    });
+    expect(reach.floor).toBeGreaterThanOrEqual(44);
+    expect(reach).toMatchObject({ top: true, bottom: true });
 
     const drawer = page.locator(".shell-members.open");
     await expect(drawer).toHaveCount(0);

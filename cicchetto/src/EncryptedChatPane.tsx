@@ -752,22 +752,33 @@ const EncryptedChatPane: Component<Props> = (props) => {
       <header class="e2e-header">
         <div class="e2e-header-main">
           {props.windowsOpener}
-          <span class="encrypted-marker" aria-hidden="true">
-            🔒
-          </span>
-          <NickText nick={display()} extraClass="e2e-heading" />
-          <Show when={canCompare()} fallback={badge()}>
-            <button
-              type="button"
-              class="e2e-trust-door"
-              aria-label={compareLabel()}
-              title={compareLabel()}
-              onClick={() => sasStep("start")}
-            >
-              {badge()}
-            </button>
-          </Show>
-          <Show when={check()}>{(c) => <CheckChip check={c()} slug={props.networkSlug} />}</Show>
+          {/* issue 2511 — two lines, so the bar's buttons keep one row: the
+            nick, cut when it is long; under it the badge and the last
+            identity check. */}
+          <div class="e2e-title">
+            <span class="e2e-title-line">
+              <span class="encrypted-marker" aria-hidden="true">
+                🔒
+              </span>
+              <NickText nick={display()} extraClass="e2e-heading" />
+            </span>
+            <span class="e2e-title-line">
+              <Show when={canCompare()} fallback={badge()}>
+                <button
+                  type="button"
+                  class="e2e-trust-door"
+                  aria-label={compareLabel()}
+                  title={compareLabel()}
+                  onClick={() => sasStep("start")}
+                >
+                  {badge()}
+                </button>
+              </Show>
+              <Show when={check()}>
+                {(c) => <CheckChip check={c()} slug={props.networkSlug} />}
+              </Show>
+            </span>
+          </div>
           <span class="e2e-header-tools">
             <button
               type="button"
@@ -782,7 +793,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
               <svg
                 width="16"
                 height="16"
-                viewBox="0 0 24 24"
+                viewBox="3 3 19 19"
                 fill="none"
                 stroke="currentColor"
                 stroke-width="2"
@@ -807,7 +818,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
               <svg
                 width="16"
                 height="16"
-                viewBox="0 0 24 24"
+                viewBox="2 2 20 20"
                 fill="none"
                 stroke="currentColor"
                 stroke-width="2"
