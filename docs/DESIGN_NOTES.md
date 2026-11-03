@@ -1910,3 +1910,114 @@ encrypted window with Bob's line on screen, after which the button goes. A
 third test makes the stop a key alarm in a chat with no line (Alice pinned
 Bob's key by hand, Bob comes back with a new identity): one Alt+A lands on
 the alarm and the button goes.
+<!-- entry #2507 -->
+
+---
+
+## 2026-11-03 — #2507: the trust badge starts the emoji comparison, and pinning a key by hand is the rail's alone
+
+vjt tested the encrypted flow end to end (2026-11-02) and reported two
+things. A new chat showed, in the chat area, inputs to paste the peer's key:
+the most prominent thing on the screen, and noise for anyone who is not
+pinning a bot's key. And the emoji comparison, what matters to a normal
+user, was the hard thing to find, behind the rail (on a phone, behind the ☰
+too). He ruled twice on the issue (2026-11-02, relayed by the ircbot
+session). The first ruling allowed a static fingerprint shown in the top bar
+if it cost no security, and set its floor at ~80 bits (14 emoji): a static
+fingerprint has no commitment, so 7 emoji (~42 bits) could be ground for
+offline. The second, final, keeps the synchronized 7-emoji SAS and asks for
+three things: the key-paste inputs out of the chat area (rail only), the
+comparison started from a tap on the top bar's `not verified` / `verified`
+badge, and no more taps and screens than the protocol needs.
+
+* **The chat's cards say what to do, in words.** The no-key card keeps its
+  sentence (send a message; a bot answers only once its key is pinned here
+  and ours there) and ends on where that is done, the side panel. The alarm
+  card keeps "take the new key (not verified)", a button, not a key to paste,
+  and points to the side panel for pinning the key they give. Neither holds
+  an input or the copy button any more. **This reverses #2485's
+  "duplicated doors, on purpose"**, whose argument was that on a phone a
+  card that only points to the drawer makes finishing the exchange a hunt.
+  The ruling outweighs it: pinning by hand is for bots and for whoever knows
+  what they are doing, and a person's key is taken on first use with no
+  card at all. `PinForm` and `CopyOwnKey` are the rail's again, unexported,
+  and lose the `testId` prop that told the doors apart. The identity-
+  elsewhere card keeps its pairing-link input: that is a pairing link, not a
+  key, and the card is the only way out of that state (#2485 bullet 4).
+* **The badge is the comparison's door.** While a comparison can start, the
+  top bar's badge sits in a bare button whose tap starts it. That holds for a
+  pinned key not verified, or one verified BY EMOJI (a `verified` badge then
+  checks again), with no alarm open, none running, and the identity here.
+  Otherwise the badge is a plain span, as before.
+* **A key verified by pasting it offers no "check again".** `Verifier.start`
+  would run on any pinned master, but a bot answers only once its key is
+  pasted here (2430 ruling 6253162964), so every bot window reads `verified`,
+  and irc-olm drops `sas.*`: a re-check there could only sit in "waiting" for
+  the 10-minute timeout with the compose line inert. A key pasted by a person
+  was checked at its source, and emoji would add nothing. The review caught
+  this before it shipped; vjt's own encrypted chat is with a bot. The door
+  reads the chat's rows: the newest row that chose or checked a key must be a
+  `verified` (`verifiedByEmoji`), not a `pinned` or an `accepted`. **Known
+  gap:** a deleted chat keeps the pin and loses the rows, so a key verified
+  by emoji offers no re-check after the chat is deleted, until a new
+  comparison is started some other way (the peer's request). The opposite
+  default would hand every bot whose chat was deleted the dead end back. The
+  button keeps the badge's look and takes the tap floor's height (44 px).
+  The bar's chrome buttons are 48 px tall, so the row should grow no taller;
+  that comes from the CSS and was not measured. Its
+  accessible name says what the tap does ("not verified: compare emoji with
+  bob", "… again" when verified). The rail's "verify by comparing emoji"
+  goes: one door, where the state is shown.
+* **What the protocol needs, and what went.** The steps that stay are
+  protocol: A's start, B's accept (B's commitment to its key before A
+  reveals its own is what keeps 7 emoji safe, the property the first
+  ruling's 80-bit floor was about), each human's match, and the wait for the
+  peer's MAC. B's accept also stays a human tap. Auto-accepting would put
+  emoji on a screen nobody asked for, the "compared by chance" risk the
+  issue names. What went is the trip to the start: on desktop the rail's
+  button, on a phone the ☰, the drawer and the button, now one tap in the
+  bar. The "exchanging keys" and "waiting" screens are unchanged: they are
+  the protocol's own round trips, shown while they run, and they cost no tap.
+
+**Mobile.** The dialog still closes the rail's drawer when it opens
+(`onDialogOpen`). The phone's own start no longer passes through the drawer,
+but a request from the peer can still land while the drawer is up.
+
+**Open, for a ruling: a failed re-check changes nothing visible.** A "they
+don't match" (or a MAC mismatch) on a key already verified only writes a
+`sas_cancelled` row. The engine's `verified` flag stays, so the badge still
+reads `verified` while the rail says "stopped: the emoji did not match". That
+was already true of a comparison the peer started. 2507 makes "check again"
+a flow the user starts, so the outcome they are checking for leaves no trace
+on the badge. Un-verifying, or raising the key alarm, is a protocol decision
+and was not taken here.
+
+Tests: the window (`EncryptedChatPane.test`). The no-key card holds no input
+or button and the alarm card no input, both naming the side panel, while the
+rail holds the pin form and the copy. A click on the door (the button, so a
+keyboard reaches it too) starts the comparison, for `not verified` and for
+`verified` by emoji, with the accessible name read. A key pasted by hand
+offers none, nor does a key with no row left. The badge is no door with no
+key, an alarm open, a comparison running, or the identity elsewhere. Clicking
+every rail button starts nothing. Ten mutants each turned their own tests
+red, and only tests about the door: each clause of the condition (dropping
+"none running" also reddens the six dialog-phase cases, which read the door),
+the "again", a no-op handler, the handler on the badge instead of the button,
+"any verified key", a pin that does not end the search, a rail button that
+starts one. e2e:
+`issue2507-sas-from-badge.spec.ts`, two browsers on the real ircd. Before the
+exchange the chat body holds no input, its card no button, and the compose
+box is its only text field. One click on `not verified` reaches a match, one
+on `verified` asks again, this time from the keyboard (Enter on the button),
+and Bob declining leaves both sides verified. On `@touch` the badge's button
+is at least 44 px tall, and its tap opens the dialog with the drawer shut.
+`compareEmoji` starts from the badge, and #2485's phone test keeps its
+subject (a dialog behind the drawer closes it) by having the peer ask while
+the phone shows the rail. `issue2430-interop-bot` now also reads, against the
+real irc-olm bot, that its hand-pinned key offers no comparison. Two red
+arms, both run locally on the stack. With the spec on main's code, both
+projects went red on the first subject, an `input` in the chat body. With
+the door switched off on this branch (`canCompare` → false), the desktop test
+went red waiting for the dialog after the click, and the phone test went red
+finding no door. The second arm is needed because the first went red before
+reaching the door.
