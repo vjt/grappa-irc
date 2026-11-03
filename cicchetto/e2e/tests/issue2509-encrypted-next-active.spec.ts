@@ -20,6 +20,8 @@
 //   * It is a candidate outside the DM tier: the count reads normal (blue).
 //   * The jump goes elsewhere, or the window stays a stop once read: the
 //     button does not go.
+//   * A chat with no line whose unread is a key alarm is never read: the
+//     button stays after the jump, a stop no jump can clear.
 
 import type { Page } from "@playwright/test";
 import { selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
@@ -28,9 +30,13 @@ import {
   e2eWindow,
   equery,
   KEYS_TIMEOUT,
+  ownKey,
   peerPage,
+  pin,
+  replaceIdentity,
   row,
   send,
+  trust,
 } from "../fixtures/encryptedQuery";
 import { NETWORK_SLUG } from "../fixtures/seedData";
 import { provisionPeerSubject, teardownSpecSubject } from "../fixtures/specSubject";
@@ -114,6 +120,49 @@ test("@webkit @touch mobile: the next-active button counts an encrypted query wi
     await bobWrites(page, peer.page, line);
     await page.locator(NEXT_ACTIVE_BTN).click();
     await landedInEncryptedQuery(page, bob.nick, line);
+  } finally {
+    await peer.context.close();
+    await teardownSpecSubject(bob);
+  }
+});
+
+// The alarm's chat has no line: Alice pinned Bob's key by hand and nobody
+// wrote, then Bob comes back with a new identity, and what its key writes is
+// ignored and shown as the alarm, which counts. There is no last line to see,
+// so the window shown is what reads it: one jump, and the button goes.
+test("desktop: a key alarm in a chat with no line is one stop, cleared by the jump that lands on it", async ({
+  page,
+  browser,
+}, testInfo) => {
+  // Two boots, a reload, and a new identity.
+  test.setTimeout(180_000);
+  const alice = specUser();
+  const aliceNick = specNick();
+  const bob = await provisionPeerSubject(testInfo, "bob");
+  const peer = await peerPage(browser);
+  try {
+    await boot(page, alice);
+    await boot(peer.page, bob.user);
+    await equery(page, aliceNick, bob.nick);
+    await equery(peer.page, bob.nick, aliceNick);
+    await pin(page, await ownKey(peer.page));
+    await selectChannel(page, NETWORK_SLUG, NETWORK_SLUG, { awaitWsReady: false });
+    await expect(page.locator(NEXT_ACTIVE_BTN)).toHaveCount(0);
+
+    await peer.page.evaluate(() => window.__cic_e2eResetForTests?.());
+    await peer.page.reload();
+    await equery(peer.page, bob.nick, aliceNick);
+    await replaceIdentity(peer.page);
+    await send(peer.page, "2509 da un browser nuovo");
+
+    await expect(page.locator(NEXT_ACTIVE_COUNT)).toHaveText("1", { timeout: KEYS_TIMEOUT });
+    await expect(page.locator(NEXT_ACTIVE_COUNT)).toHaveClass(/next-active-count-priority/);
+    await page.keyboard.press("Alt+a");
+    await expect(sidebarWindow(page, NETWORK_SLUG, e2eWindow(bob.nick))).toHaveClass(/selected/);
+    await expect(page.getByTestId("e2e-step")).toHaveAttribute("data-step", "alarm");
+    await expect(trust(page)).toHaveAttribute("data-trust", "alarm");
+    await expect(page.getByTestId("e2e-pane").getByTestId("scrollback-line")).toHaveCount(0);
+    await expect(page.locator(NEXT_ACTIVE_BTN)).toHaveCount(0, { timeout: 10_000 });
   } finally {
     await peer.context.close();
     await teardownSpecSubject(bob);
