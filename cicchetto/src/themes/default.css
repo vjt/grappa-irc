@@ -13226,6 +13226,21 @@ html.is-ios27-band .shell {
   margin: 0;
 }
 
+/* issue 2506 — the rail's key buttons are sized to their content (vjt's
+   ruling): one line and the input's own 0.5rem above and below, instead of
+   the --tap-min floor every e2e button carries. Measured before this rule on
+   desktop chromium, Pixel 7 and iPhone 15: buttons and input all 44px, a
+   14px line held open at three times its height. The input keeps its 44px
+   (the global form-control floor), and `pin`, on its row, stretches to it
+   (`.e2e-pin` is a flex row), so the two still line up. Rail-scoped: the
+   chat body's step card and the request card keep the floor. */
+.rail-e2e .e2e-copy,
+.rail-e2e .e2e-pin-submit,
+.rail-e2e .e2e-sas-button {
+  min-height: 0;
+  padding: 0.5rem 1rem;
+}
+
 .e2e-check-passed {
   color: var(--accent);
 }
