@@ -10,6 +10,10 @@
 //     one-line input instead of growing as the compose box does.
 // On a phone the window now carries the floating "next active" button in the
 // pane's float stack, as every scrollback window does: exactly one of it.
+// Issue 2510 reported that button's look over an encrypted query (opaque,
+// placed apart: Shell's bare mount); since this issue it is the stack child
+// it is over a channel, and the phone test reads that it LOOKS so: the same
+// opacity and the same place in its pane as over a channel.
 //
 // The reopen runs on desktop and on both phones (`@webkit` for the engine the
 // report came from, `@touch` for the other).
@@ -26,6 +30,9 @@
 //     compose box does.
 //   * On a phone, with another window unread: no "next active" button, two
 //     of them, or one outside the pane's float stack.
+//   * On a phone, that button looks or sits otherwise than over a channel:
+//     another opacity, or another distance from its pane's corner (issue
+//     2510), with scroll-to-bottom absent from both readings.
 
 import type { Browser, Page, TestInfo } from "@playwright/test";
 import { composeSend, selectChannel } from "../fixtures/cicchettoPage";
@@ -76,6 +83,41 @@ const composeShape = (box: ReturnType<Page["locator"]>) =>
   });
 
 type Chat = { aliceNick: string; peer: Page; bobNick: string };
+
+// issue 2510 — the one "next active" button as the phone paints it: its
+// opacity, whether it is a float-stack child, and how far its corner sits
+// from the corner of the box it is placed in (the pane, for a stack child).
+// Read with scroll-to-bottom absent, which would lift it within the stack.
+type Look = { opacity: string; inStack: boolean; right: number; bottom: number };
+
+async function look(page: Page): Promise<Look> {
+  const button = page.getByTestId("next-active-btn");
+  await expect(button).toHaveCount(1, { timeout: KEYS_TIMEOUT });
+  await expect(button).toBeVisible();
+  await expect(page.getByTestId("scroll-to-bottom")).toHaveCount(0);
+  return button.evaluate((el) => {
+    const stack = el.closest(".scrollback-float-stack");
+    const box = (stack?.parentElement ?? document.documentElement).getBoundingClientRect();
+    const own = el.getBoundingClientRect();
+    return {
+      opacity: getComputedStyle(el).opacity,
+      inStack: stack !== null,
+      right: box.right - own.right,
+      bottom: box.bottom - own.bottom,
+    };
+  });
+}
+
+// The same look, to the pixel: a fractional rem lands either side of a
+// rounding boundary, so the distances get one pixel of slack.
+function expectSameLook(actual: Look, expected: Look): void {
+  expect({ opacity: actual.opacity, inStack: actual.inStack }).toEqual({
+    opacity: expected.opacity,
+    inStack: expected.inStack,
+  });
+  expect(Math.abs(actual.right - expected.right)).toBeLessThanOrEqual(1);
+  expect(Math.abs(actual.bottom - expected.bottom)).toBeLessThanOrEqual(1);
+}
 
 // Alice and Bob in an encrypted query whose chat holds more lines than fit;
 // Alice leaves it for a channel and comes back, and it opens on its last line.
@@ -156,11 +198,11 @@ test("reopening an encrypted chat lands on its last line, and its compose box wr
   });
 });
 
-test("@webkit @touch on a phone, reopening an encrypted chat lands on its last line, and the next-active button is the pane's one", async ({
+test("@webkit @touch on a phone, reopening an encrypted chat lands on its last line, and the next-active button is the pane's one, looking as over a channel", async ({
   page,
   browser,
 }, testInfo) => {
-  await reopenedChat(page, browser, testInfo, async ({ aliceNick, peer }) => {
+  await reopenedChat(page, browser, testInfo, async ({ aliceNick, bobNick, peer }) => {
     // Another window with something unread: Bob writes Alice in clear.
     await selectChannel(peer, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { awaitWsReady: false });
     await composeSend(peer, `/msg ${aliceNick} 2512 in chiaro`);
@@ -171,5 +213,16 @@ test("@webkit @touch on a phone, reopening an encrypted chat lands on its last l
       page.locator(".scrollback-float-stack").getByTestId("next-active-btn"),
     ).toHaveCount(1);
     await expect(buttons).toBeVisible();
+
+    // issue 2510 — and it looks as it does over a channel, both ways.
+    const overEncrypted = await look(page);
+    await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { awaitWsReady: false });
+    await expect(page.getByTestId("e2e-pane")).toHaveCount(0);
+    const overChannel = await look(page);
+    expect(overChannel).toMatchObject({ opacity: "0.5", inStack: true });
+    expectSameLook(overEncrypted, overChannel);
+    await selectChannel(page, NETWORK_SLUG, e2eWindow(bobNick), { awaitWsReady: false });
+    await expect(page.getByTestId("e2e-pane")).toBeVisible();
+    expectSameLook(await look(page), overChannel);
   });
 });
