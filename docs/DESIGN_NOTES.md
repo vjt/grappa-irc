@@ -1845,3 +1845,53 @@ plaintext query was opened is read off the server after a reload, against
 a control query opened before the tap: read off the sidebar right after the
 tap, an absence passes before the open could have come back. It was written
 without a local run, since the stack lane was held; CI runs it.
+<!-- entry #2509 -->
+
+---
+
+## 2026-11-03 — #2509: an encrypted query is a next-active stop, counted from its own chat
+
+vjt (2026-11-02): Alt+A, Ctrl+N / Ctrl+P and the next-active button skipped
+encrypted (🔒) queries even with unread messages. The cycle's candidates
+(`activeWindows.windowCandidates`) were channels and plain queries, and its
+gate read grappa's unread map, which can never hold an encrypted window:
+grappa relays the ciphertext and keeps no row.
+
+* **A third candidate kind, `encrypted`, in the sidebar's own order**: per
+  network, channels, then queries, then the open encrypted chats
+  (`encryptedChatsFor`), named `$e2e:<nick>` as the sidebar names them.
+* **Its unread is the device's chat index.** The memo merges each open
+  chat's `unread` into the unread map the gate reads, under the window's
+  `channelKey`, so the count, the badge, Alt+A, Ctrl+N/P and the button's
+  auto-hide all take it through the one gate they already share. That count
+  is what the sidebar's 🔒 badge shows, so the button and the badge cannot
+  disagree. It counts what the chat counts: messages, plus a key alarm or a
+  peer asking to compare emoji (both are things to act on, #2485).
+* **The DM tier.** `isPriorityWindow` treats an encrypted query as it treats
+  a plain one: tier 0, the red badge.
+* **No activity id, so it reads as the oldest.** The order within a tier is
+  the newest local grappa row id, and an encrypted row has none (its id is
+  the device's own string, its time the device's clock, comparable to
+  neither). It reads 0, as a seed-only window does: among the DM tier it
+  comes first. Mixing it in by time would mean changing every window's
+  activity key from row ids to timestamps, which this issue does not
+  warrant.
+* **Muted by its peer's mute.** grappa gates an encrypted message's push on
+  the PEER's mute (`Push.Triggers.should_notify_e2e?/3`), so `windowMuteKey`
+  maps `$e2e:<nick>` to the peer: muting bob drops both of bob's windows from
+  the cycle. The drawer's mute picker skips encrypted candidates. The mute
+  they would write is the peer's, and a `$e2e:` row would name a window the
+  mute is not keyed on. Known gap, not changed here: the sidebar's 🔒 badge
+  (`EncryptedUnreadBadge`) does not dim for a muted peer, as #1077 dims a
+  muted window's badges.
+
+Tests: the pure order (an encrypted query ahead of a channel listed before it, priority,
+the badge kind, a muted peer skipped), the memo with the chat index mocked
+(a candidate counted from the chat's own unread, the jump selects it with
+kind `encrypted`, none once read), and the picker offering no `$e2e:` row.
+e2e: `issue2509-encrypted-next-active.spec.ts`, two browsers on the real
+ircd. Alice parks on the server window with nothing to jump to, and Bob
+writes in the encrypted query. Her button must count 1 in the DM tier's
+colour, and the jump (Alt+A on desktop, the button on both phones) must land
+in the encrypted window with Bob's line on screen, after which the button
+goes.
