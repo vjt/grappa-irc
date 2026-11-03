@@ -2021,3 +2021,57 @@ the door switched off on this branch (`canCompare` → false), the desktop test
 went red waiting for the dialog after the click, and the phone test went red
 finding no door. The second arm is needed because the first went red before
 reaching the door.
+<!-- entry #2510 -->
+
+---
+
+## 2026-11-03 — #2510: the phone's next-active button over an encrypted query, cured by #2512 and now guarded
+
+vjt (iOS PWA, 2026-11-02): over an encrypted (🔒) query the mobile
+next-active button lost its look. Over channels and plain queries it is
+translucent and sits in ScrollbackPane's float stack beside scroll-to-bottom
+(#289/#302: `.shell-mobile .scrollback-float-stack > *` at opacity 0.5).
+Over the encrypted query it was Shell's bare mount for windows with no
+scrollback: opaque, and placed against the viewport.
+
+**No production change: #2512 cured it, and this issue measured that.**
+#2512 made the encrypted window's body the scrollback pane every chat
+window has, so the window carries the float stack and the button in it, and
+it gated Shell's bare mount off the encrypted kind
+(`!kindHasScrollback(selKind()) && selKind() !== "encrypted"`), so only one
+button mounts. The report (2026-11-02 21:58 UTC) predates #2512's merge
+(PR #2521, 2026-11-03 02:39 UTC).
+
+**The guard lives in #2512's phone test, not in a spec of its own.** That
+test (`issue2512-encrypted-scrollback.spec.ts`, `@webkit @touch`) already
+builds the scene (Bob writes Alice in clear while she is in the encrypted
+query) and already asserts one button, inside the float stack. A second
+two-browser spec repeating that scene was cut in review: it bought two
+vodozemac runs on both phones for three readings the existing test could
+take. What the test now adds is the LOOK: the button's computed opacity and
+the distance from its corner to the corner of the box it is placed in, read
+over the encrypted query, over a channel, and over the encrypted query again,
+all equal within a pixel, with the channel's premise pinned (0.5, in the
+stack) and scroll-to-bottom absent from every reading (it would lift the
+button within the stack). The pane-relative distance cannot see the pane
+itself move, and the opacity is the button's own, not an ancestor's: by
+design, those are the pane's and the theme's.
+
+Measured:
+
+* **Red, pre-#2512 (`17c33f670`) + the comparison** (taken as a standalone
+  spec before it was folded in), both phones. Over the encrypted query the
+  button read `{opacity: "1", inStack: false}`, against the channel's
+  `{opacity: "0.5", inStack: true}`. The report, measured. Its two distances
+  (112px and 7px, against 11px and 14px) are not comparable to the
+  channel's: outside the stack they are taken from the viewport, and the 112
+  is the focused composer's lift (`--nab-lift: 8rem`).
+* **Green, main + the folded test**: the whole #2512 spec, with the
+  float-stack and opacity specs the look leans on (#1062, #264, #289/#302):
+  10 passed, the phone test on both phones.
+* **What only the look catches**: with the encrypted pane's float stack
+  forced opaque (`.e2e-pane .scrollback-float-stack > * { opacity: 1 }`),
+  the test's one-button and in-the-stack checks pass and the look turns it
+  red on both phones, `opacity: "1"` against the channel's `"0.5"`. Shell's
+  gate reopened is the one-button check's: measured on the standalone spec,
+  red on both phones with 2 buttons.
