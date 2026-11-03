@@ -16,10 +16,8 @@ import {
   acceptAlarmKey,
   CHECK_LOOK,
   CHECK_REASON,
-  CopyOwnKey,
   checkLook,
   checkPlace,
-  PinForm,
   TRUST_LABEL,
 } from "./EncryptedRail";
 import InlineConfirmButton from "./InlineConfirmButton";
@@ -87,22 +85,25 @@ import ScrollbackPane from "./ScrollbackPane";
 //   * the TOP BAR is the peer's verification only: verified or not (or the
 //     key changed), the last identity check a bot made, compact, and two
 //     buttons for the chat itself, a magnifier (search) and a shredder
-//     (delete this chat);
+//     (delete this chat). Issue 2507 (vjt's ruling): the verification badge
+//     is also where the emoji comparison starts, one tap on `not verified`,
+//     or on `verified` to check again;
 //   * the CHAT BODY holds messages, and while the key exchange is not done,
 //     the one step still needed, as a card: an identity held on another
 //     device (pair this browser, or start a new identity), a key alarm (take
-//     the new key), or no key yet (send, or paste the bot's key and give it
-//     ours). The exchange is done once the nick has a pinned key and no alarm
-//     is open, verified or not: verification is the top bar's state. A
-//     message none of the peer's devices could read leaves a card too (issue
-//     2491): asking for their keys again is the user's choice, never made
-//     for them, and the compose line stays usable meanwhile. The
-//     emoji comparison runs here too, modal-like over the body, and nothing
-//     can be sent until it ends;
-//   * everything technical (keys, devices, pins, the comparison's start, the
-//     check in full) is the right rail's (`EncryptedRail`). The key events the
-//     chat used to list as rows (pinned, taken, compared, alarmed) stay in the
-//     store, where the badge reads them, and show only as the rail's state.
+//     the new key), or no key yet (send). The exchange is done once the nick
+//     has a pinned key and no alarm is open, verified or not: verification is
+//     the top bar's state. A message none of the peer's devices could read
+//     leaves a card too (issue 2491): asking for their keys again is the
+//     user's choice, never made for them, and the compose line stays usable
+//     meanwhile. The emoji comparison runs here too, modal-like over the
+//     body, and nothing can be sent until it ends. Issue 2507 (vjt's ruling):
+//     no card holds a key to paste or copy; they say in words that a bot's
+//     key, and ours for it, are the rail's;
+//   * everything technical (keys, devices, pins, the check in full) is the
+//     right rail's (`EncryptedRail`). The key events the chat used to list as
+//     rows (pinned, taken, compared, alarmed) stay in the store, where the
+//     badge reads them, and show only as the rail's state.
 //
 // Bots are pinned by hand (2430 ruling 6253162964): the user reads the bot's
 // master key off the bot and pastes it; our own master is copied for the
@@ -538,6 +539,11 @@ const EncryptedChatPane: Component<Props> = (props) => {
   const check = () => encryptedChat(props.networkSlug, props.nick)?.check;
   const windowName = () => encryptedWindowName(props.nick);
   const windowKey = () => channelKey(props.networkSlug, windowName());
+  // issue 2507 — the badge starts the emoji comparison for a pinned key,
+  // verified or not (to check again), while no alarm is open, none runs, and
+  // the identity is here.
+  const canCompare = () =>
+    !elsewhere() && peerTrust() !== null && alarm() === null && sas() === null;
 
   // The step still needed, read once the chat is loaded (before, a pinned
   // peer would flash as one with no key).
@@ -676,6 +682,19 @@ const EncryptedChatPane: Component<Props> = (props) => {
     });
   };
 
+  const badge = () => (
+    <span
+      class={`e2e-trust e2e-trust-${trust()}`}
+      data-testid="e2e-peer-trust"
+      data-trust={trust()}
+    >
+      {TRUST_LABEL[trust()]}
+    </span>
+  );
+  const compareLabel = () =>
+    `${TRUST_LABEL[trust()]}: compare emoji with ${display()}` +
+    (trust() === "verified" ? " again" : "");
+
   const toggleSearch = () => {
     const open = !searching();
     setSearching(open);
@@ -714,13 +733,17 @@ const EncryptedChatPane: Component<Props> = (props) => {
             🔒
           </span>
           <NickText nick={display()} extraClass="e2e-heading" />
-          <span
-            class={`e2e-trust e2e-trust-${trust()}`}
-            data-testid="e2e-peer-trust"
-            data-trust={trust()}
-          >
-            {TRUST_LABEL[trust()]}
-          </span>
+          <Show when={canCompare()} fallback={badge()}>
+            <button
+              type="button"
+              class="e2e-trust-door"
+              aria-label={compareLabel()}
+              title={compareLabel()}
+              onClick={() => sasStep("start")}
+            >
+              {badge()}
+            </button>
+          </Show>
           <Show when={check()}>{(c) => <CheckChip check={c()} slug={props.networkSlug} />}</Show>
           <span class="e2e-header-tools">
             <button
@@ -831,7 +854,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
                         <p class="e2e-error">
                           {display()} wrote with a key that is not the one pinned, and it was
                           ignored. If they changed it, take the new key and compare emoji to verify
-                          it; otherwise pin the key they give you.
+                          it; otherwise pin the key they give you in the side panel.
                         </p>
                         <div class="e2e-step-actions">
                           <button
@@ -843,12 +866,6 @@ const EncryptedChatPane: Component<Props> = (props) => {
                             take the new key (not verified)
                           </button>
                         </div>
-                        <PinForm
-                          networkSlug={props.networkSlug}
-                          nick={props.nick}
-                          display={display()}
-                          testId="e2e-alarm-pin"
-                        />
                       </>
                     )}
                   </Match>
@@ -856,17 +873,9 @@ const EncryptedChatPane: Component<Props> = (props) => {
                     <p>
                       no keys exchanged with {display()} yet. Send a message: a person's key is
                       taken when they answer. A bot answers only once its key is pinned here, and
-                      yours there: paste the key it prints, and give its operator yours.
+                      yours there: the side panel pins the key it prints, and copies yours for its
+                      operator.
                     </p>
-                    <PinForm
-                      networkSlug={props.networkSlug}
-                      nick={props.nick}
-                      display={display()}
-                      testId="e2e-step-pin"
-                    />
-                    <div class="e2e-step-actions">
-                      <CopyOwnKey networkSlug={props.networkSlug} testId="e2e-step-copy" />
-                    </div>
                   </Match>
                   <Match when={s() === "unreadable"}>
                     <p class="e2e-error">

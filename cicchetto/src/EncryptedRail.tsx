@@ -11,7 +11,6 @@ import type { SasCancelReason } from "./lib/e2e/sas";
 import {
   encryptedChat,
   encryptedRows,
-  encryptedSas,
   encryptedTrust,
   identityElsewhere,
   openAlarm,
@@ -19,7 +18,6 @@ import {
   pinEncryptedKey,
   type Trust,
   trustOf,
-  verifyEncrypted,
 } from "./lib/encryptedChats";
 import { errorMessage } from "./lib/friendlyApiError";
 import { chantypesForNetwork } from "./lib/isupport";
@@ -32,8 +30,8 @@ import { networkBySlug } from "./lib/networks";
 // every rail card uses (#857):
 //   * the peer: the key their nick is pinned to, how far it is trusted, how
 //     many of its devices, how the last emoji comparison ended, the last
-//     identity check a bot made; and the key actions: compare emoji, take the
-//     key an alarm showed, pin a pasted key;
+//     identity check a bot made; and the key actions: take the key an alarm
+//     showed, pin a pasted key;
 //   * this browser's identity: our own key, to copy for a bot's operator, and
 //     the door to add a device (only from the browser that holds the master).
 //
@@ -42,6 +40,13 @@ import { networkBySlug } from "./lib/networks";
 // "delete this chat" (the top bar's magnifier and shredder), and the two ways
 // out of an identity held elsewhere (a card in the chat). While the identity
 // is elsewhere, nothing here can act: no key could be pinned or verified.
+//
+// issue 2507 (vjt's rulings): the comparison starts from a tap on the top
+// bar's trust badge, so the rail no longer offers it; and pinning a key by
+// hand, with our own key to copy for a bot's operator, lives HERE ONLY. The
+// chat's step cards say what to do in words and hold no key to paste or copy:
+// it is what a bot needs, or someone who knows what they are doing, and it
+// was the most prominent thing on a new chat's screen.
 //
 // Mounted by RailContext, keyed on the window, so a key half pasted for one
 // peer never follows into another peer's rail and gets pinned there. Issue
@@ -131,16 +136,8 @@ export function checkPlace(check: IdentityCheck, slug: string): string {
   return `${where} on ${check.network}`;
 }
 
-/**
- * Pastes a key as the peer's and pins it, verified. The rail's form and the
- * chat's "no key yet" step are the same verb: `testId` tells them apart.
- */
-export const PinForm: Component<{
-  networkSlug: string;
-  nick: string;
-  display: string;
-  testId: string;
-}> = (props) => {
+/** Pastes a key as the peer's and pins it, verified. */
+const PinForm: Component<{ networkSlug: string; nick: string; display: string }> = (props) => {
   const [pin, setPin] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
   const submit = async (event: SubmitEvent) => {
@@ -168,7 +165,7 @@ export const PinForm: Component<{
         <input
           type="text"
           class="e2e-pin-input"
-          data-testid={`${props.testId}-input`}
+          data-testid="e2e-pin-input"
           aria-label={`pin ${props.display}'s key`}
           placeholder="paste their key"
           autocomplete="off"
@@ -176,13 +173,13 @@ export const PinForm: Component<{
           value={pin()}
           onInput={(event) => setPin(event.currentTarget.value)}
         />
-        <button type="submit" class="e2e-pin-submit" data-testid={`${props.testId}-submit`}>
+        <button type="submit" class="e2e-pin-submit" data-testid="e2e-pin-submit">
           pin
         </button>
       </form>
       <Show when={error()}>
         {(message) => (
-          <div class="e2e-error" data-testid={`${props.testId}-error`}>
+          <div class="e2e-error" data-testid="e2e-pin-error">
             {message()}
           </div>
         )}
@@ -191,8 +188,8 @@ export const PinForm: Component<{
   );
 };
 
-/** Copies our own master key, what a bot's operator pins; `testId` tells the doors apart. */
-export const CopyOwnKey: Component<{ networkSlug: string; testId: string }> = (props) => {
+/** Copies our own master key, what a bot's operator pins. */
+const CopyOwnKey: Component<{ networkSlug: string }> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
   const copy = async () => {
     const own = ownKey(props.networkSlug);
@@ -209,7 +206,7 @@ export const CopyOwnKey: Component<{ networkSlug: string; testId: string }> = (p
       <button
         type="button"
         class="e2e-copy"
-        data-testid={props.testId}
+        data-testid="e2e-own-identity-copy"
         disabled={ownKey(props.networkSlug) === undefined}
         onClick={() => void copy()}
       >
@@ -255,18 +252,6 @@ const EncryptedRail: Component<Props> = (props) => {
   const comparison = () => lastComparison(rows());
   const check = () => encryptedChat(props.networkSlug, props.nick)?.check;
   const elsewhere = () => identityElsewhere(props.networkSlug);
-  // A comparison is offered for a pinned key not verified, while none runs.
-  const canCompare = () =>
-    !elsewhere() &&
-    peerTrust()?.verified === false &&
-    alarm() === null &&
-    encryptedSas(props.networkSlug, props.nick) === null;
-
-  const compare = () => {
-    void verifyEncrypted(props.networkSlug, props.nick, "start").catch((err: unknown) => {
-      console.warn(`[e2e] could not start the emoji comparison with ${props.nick}`, err);
-    });
-  };
 
   return (
     <div class="rail-e2e selectable-text" data-testid="e2e-rail">
@@ -339,16 +324,6 @@ const EncryptedRail: Component<Props> = (props) => {
           </Show>
         </dl>
         <Show when={!elsewhere()}>
-          <Show when={canCompare()}>
-            <button
-              type="button"
-              class="e2e-sas-button"
-              data-testid="e2e-sas-start"
-              onClick={compare}
-            >
-              verify by comparing emoji
-            </button>
-          </Show>
           <Show when={alarm()}>
             {(key) => (
               <button
@@ -361,12 +336,7 @@ const EncryptedRail: Component<Props> = (props) => {
               </button>
             )}
           </Show>
-          <PinForm
-            networkSlug={props.networkSlug}
-            nick={props.nick}
-            display={display()}
-            testId="e2e-pin"
-          />
+          <PinForm networkSlug={props.networkSlug} nick={props.nick} display={display()} />
         </Show>
       </section>
       <section class="rail-e2e-section" data-testid="e2e-rail-own">
@@ -387,7 +357,7 @@ const EncryptedRail: Component<Props> = (props) => {
               </code>
             </dd>
           </dl>
-          <CopyOwnKey networkSlug={props.networkSlug} testId="e2e-own-identity-copy" />
+          <CopyOwnKey networkSlug={props.networkSlug} />
           <Show when={answered() === true}>
             <Show when={!adding()} fallback={<AddDevicePanel onClose={() => setAdding(false)} />}>
               <button
