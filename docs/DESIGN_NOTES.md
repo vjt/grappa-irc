@@ -1659,3 +1659,52 @@ projects on the old code, webkit-iphone-15 included.** Playwright's WebKit does
 not reproduce the iOS report, so that arm guards against a reopen that misses
 its last line where the bench can see one; it does not prove the reported bug
 cured. That cure is argued from the removed `.e2e-rows`, not measured.
+<!-- entry #2506 -->
+
+---
+
+## 2026-11-03 — #2506: the encrypted rail's buttons fit their content, and its WHOIS card its edges
+
+Two things vjt saw in the encrypted query's rail on his phone: the buttons
+(`pin`, `copy your key`, `add a device`) much taller than one line needs,
+"roughly twice the height of the `paste their key` input, and more"; and
+the peer's WHOIS card, under the key sections, with a left edge further in
+than the peer card and `your identity`.
+
+* **Measured before anything changed** (the spec's first run, on CI, since
+  no browser runs on the worker host and the stack lane was busy): on
+  desktop chromium, Pixel 7 and iPhone 15 WebKit, the input and all three
+  buttons were **44.0px**, the `--tap-min` floor (#306) that the global
+  form-control rule and the e2e button rule both carry; the WHOIS card sat
+  **7px** inside the key sections on both sides. So the margin reproduced
+  and the "twice the input" did not: off-device, buttons and input are the
+  same height. What the PWA draws on vjt's iPhone is not measured here.
+* **WHOIS card.** It carries the scrollback overlay's 0.5rem margin. In the
+  rail, `.rail-query-context .whois-card` takes none horizontally, like
+  `.rail-e2e-section` and `.rail-server-info` since #1737 moved the rail's
+  inset to `.shell-members`. A plain query's rail aligns the same way; the
+  scrollback overlay keeps its margin.
+* **Buttons, vjt's ruling** (asked with the 44px in hand): sized to their
+  content, the input keeps its 44px. The rail's key buttons (`.e2e-copy`,
+  `.e2e-pin-submit`, `.e2e-sas-button` under `.rail-e2e`) drop the floor
+  and take one line plus the input's own 0.5rem above and below; `pin`
+  stretches to the input on the `.e2e-pin` flex row, so the row still lines
+  up. This goes below the 44px tap-target minimum on a phone, knowingly.
+  The chat body's step card and the request card keep the floor.
+* **Choices vjt did not rule:** the 0.5rem vertical padding (the input's);
+  the comparison and alarm buttons ("verify by comparing emoji", "take the
+  ignored key") follow the three named ones, since they are the same rail's
+  buttons and one look is the point.
+
+### Tests
+
+e2e `issue2506-encrypted-rail-geometry.spec.ts`, on desktop chromium and in
+the phone drawer (Pixel 7, iPhone 15), every box read in one frame and
+attached to the run: `pin` as tall as its input; `copy your key` and `add a
+device` one line of text with a content box at most 1.6 of the font size;
+the WHOIS card on the key sections' left and right edges. Its first version
+(no button floor asserted) ran red on CI on the margin alone, 7px on all
+three engines; the content-box assertion was written after that run, and is
+red on the measured old rule by arithmetic (44px content against 22.4px),
+not by a run. jsdom has no layout, so the spec is the only test of either
+change.
