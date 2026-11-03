@@ -35,7 +35,7 @@
 //      of the fix). The SW→page hop itself is simulated because the real
 //      SW handler is undrivable (see above).
 
-import type { Page } from "@playwright/test";
+import type { BrowserContext, Page } from "@playwright/test";
 
 /**
  * Builds the push deep-link URL the way the server does.
@@ -56,6 +56,51 @@ import type { Page } from "@playwright/test";
 export function buildPushDeepLink(networkSlug: string, target: string): string {
   const params = new URLSearchParams({ network: networkSlug, channel: target });
   return `/?${params.toString()}`;
+}
+
+/**
+ * The deep link of an end-to-end encrypted message (issue 2515).
+ *
+ * Mirrors `Grappa.Push.Payload.build_e2e/2`: the DM deep link for the peer
+ * plus `e2e=1`, the marker that makes the tap open the encrypted query
+ * rather than the plaintext one. Asserted server-side in
+ * `test/grappa/push/payload_test.exs`, as `buildPushDeepLink` is.
+ */
+export function buildEncryptedPushDeepLink(networkSlug: string, nick: string): string {
+  return `${buildPushDeepLink(networkSlug, nick)}&e2e=1`;
+}
+
+/**
+ * Taps a notification: dispatches a `notificationclick` carrying `url` into
+ * the context's LIVE service worker, so the real handler (`focusOrOpen` →
+ * `deliverNavigate`) runs and posts the navigate to the page. The page must
+ * be controlled by the SW first (`awaitServiceWorkerActive`), or the
+ * handler's `clients.matchAll` finds no window to post to.
+ *
+ * Resolves to how the handler's `waitUntil` promise settled — diagnostic
+ * only: a `rejected: …` is `focus()` refusing without transient activation,
+ * which the navigate must survive (#146 recurrence).
+ */
+export async function tapNotification(context: BrowserContext, url: string): Promise<string> {
+  const sw = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
+  // The synthetic event carries the notification shape the handler reads
+  // (`data.url`, `close()`); `waitUntil` collects the focusOrOpen promise.
+  return sw.evaluate((targetUrl) => {
+    const ev = new Event("notificationclick") as Event & {
+      notification: { data: { url: string }; close: () => void };
+      waitUntil: (p: Promise<unknown>) => void;
+    };
+    ev.notification = { data: { url: targetUrl }, close() {} };
+    let collected: Promise<unknown> = Promise.resolve();
+    ev.waitUntil = (p: Promise<unknown>) => {
+      collected = p;
+    };
+    self.dispatchEvent(ev);
+    return collected.then(
+      () => "resolved",
+      (e) => `rejected: ${e}`,
+    );
+  }, url);
 }
 
 /**
