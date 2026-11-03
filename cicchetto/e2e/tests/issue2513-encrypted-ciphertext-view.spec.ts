@@ -39,6 +39,10 @@ import { type Pt, synthEdgeGesture } from "../fixtures/shellTouch";
 import { provisionPeerSubject, teardownSpecSubject } from "../fixtures/specSubject";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
+// Two logins with their key bundles, two windows, a message each way (the
+// first one waits for the peer's keys), and the view flipped twice.
+test.setTimeout(180_000);
+
 const HELLO = "2513 ciao bob, questa riga la legge solo chi ha la chiave";
 const REPLY = "2513 ciao alice, nemmeno questa la vede il server";
 
@@ -59,6 +63,7 @@ async function flip(page: Page, nick: string, label: string): Promise<void> {
   await sidebarWindow(page, NETWORK_SLUG, e2eWindow(nick))
     .locator(".sidebar-window-btn")
     .click({ button: "right" });
+  await expect(menuItem(page, label)).toBeVisible();
   await menuItem(page, label).click();
   await expect(page.locator(".context-menu")).toHaveCount(0);
 }
@@ -72,7 +77,6 @@ async function conversation(
   testInfo: TestInfo,
   then: (chat: Chat) => Promise<void>,
 ): Promise<void> {
-  test.slow();
   const alice = specUser();
   const aliceNick = specNick();
   const bob = await provisionPeerSubject(testInfo, "bob");
@@ -166,6 +170,7 @@ async function holdAndFlip(page: Page, nick: string, label: string): Promise<voi
       holdMs: 700,
     },
   );
+  await expect(menuItem(page, label)).toBeVisible();
   await menuItem(page, label).tap();
   await expect(page.locator(".context-menu")).toHaveCount(0);
   await page.locator(".shell-drawer-backdrop.open").tap({ position: { x: 350, y: 400 } });
