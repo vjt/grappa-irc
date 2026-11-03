@@ -719,8 +719,8 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
 
   // issue 2468 — cancels a share's fetch when the viewer closes under it, so a
   // sheet cannot open over a viewer that is gone (lib/mediaShare.ts rethrows
-  // the abort, and it lands in the AbortError arm below). Fresh per open, with
-  // the rest of this component.
+  // the abort, and `createMediaSharer` answers it with silence). Fresh per
+  // open, with the rest of this component.
   const abort = new AbortController();
   onCleanup(() => {
     abort.abort();
@@ -729,11 +729,18 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
   // The share flow is lib/mediaShare.ts's (`createMediaSharer`, shared with
   // the mini player since issue 2501): a tap while one is running is dropped, a
   // dismissed sheet says nothing, a refused FILE turns the next tap into the
-  // link. Built per open with the rest of this component, so what it remembers
-  // dies with the open. What stays here is where the reader is told.
-  const share = createMediaSharer(errorMessage);
+  // link. Built per open with the rest of this component (the keyed <Show>
+  // remounts it for every viewer state, so the href cannot change under it),
+  // and what it remembers dies with the open. What stays here is where the
+  // reader is told.
+  const share = createMediaSharer(
+    props.state.href,
+    window.location.origin,
+    abort.signal,
+    errorMessage,
+  );
   const shareMedia = async (): Promise<void> => {
-    const attempt = share(props.state.href, window.location.origin, abort.signal);
+    const attempt = share();
     if (attempt === "busy") return;
     // A new attempt starts with a clean line: an earlier refusal sitting under
     // a share that then worked would report a failure that is over.
@@ -901,7 +908,7 @@ const MediaViewerDialog: Component<{ state: MediaViewerState }> = (props) => {
                   the picture's context menu and "open in browser" remain.
 
                   Only where the Web Share API exists (the ShareSessionModal
-                  rule, one feature-detect for both doors). */}
+                  rule, one feature-detect for every share door). */}
               <Show when={canNativeShare()}>
                 <button type="button" class="media-viewer-share" onClick={() => void shareMedia()}>
                   share

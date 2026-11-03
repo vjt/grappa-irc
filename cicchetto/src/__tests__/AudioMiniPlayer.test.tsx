@@ -1,5 +1,5 @@
 import { render, screen } from "@solidjs/testing-library";
-import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AudioDock from "../AudioDock";
 import AudioMiniPlayer from "../AudioMiniPlayer";
 import {
@@ -13,33 +13,7 @@ import {
   showPlayer,
 } from "../lib/audioPlayer";
 import type { RadioStation } from "../lib/radioStations";
-
-// issue 2501 — the ⬇ download became share, like the media viewer's. Share is
-// offered only where the Web Share API exists and jsdom has none, so a test
-// that expects the control installs one; `afterEach` takes it back. Defined on
-// `navigator` itself rather than stubbing the global, because the player also
-// reads `navigator.mediaSession`.
-const restoreNavigator: Array<() => void> = [];
-
-const defineOnNavigator = (key: "share" | "canShare", value: unknown): void => {
-  const original = Object.getOwnPropertyDescriptor(navigator, key);
-  Object.defineProperty(navigator, key, { value, configurable: true });
-  restoreNavigator.push(() => {
-    if (original === undefined) Reflect.deleteProperty(navigator, key);
-    else Object.defineProperty(navigator, key, original);
-  });
-};
-
-const stubWebShare = (
-  respond: (data: ShareData) => Promise<void>,
-): Mock<(data: ShareData) => Promise<void>> => {
-  const share = vi.fn<(data: ShareData) => Promise<void>>(respond);
-  defineOnNavigator("share", share);
-  defineOnNavigator("canShare", () => true);
-  return share;
-};
-
-const sheetCloses = (): Promise<void> => Promise.resolve();
+import { restoreWebShare, sheetCloses, stubWebShare } from "./helpers/webShare";
 
 // jsdom does not implement HTMLMediaElement playback — stub the methods
 // the player drives so the component mounts without "Not implemented".
@@ -106,7 +80,7 @@ beforeEach(() => {
 afterEach(() => {
   closeAudio();
   showPlayer();
-  for (const restore of restoreNavigator.splice(0)) restore();
+  restoreWebShare();
   for (const toast of audioShareToasts()) dismissAudioShareToast(toast.id);
   vi.restoreAllMocks();
   // #1698 — `restoreAllMocks` does NOT undo `stubGlobal`, so without this the
@@ -154,9 +128,10 @@ describe("AudioMiniPlayer", () => {
 
   it("offers share where the download was, and nothing that saves by anchor (issue 2501)", () => {
     // The ⬇ was a same-origin `download=""` anchor, the one the media viewer's
-    // download copied, and on an iOS PWA that anchor opened a preview the app
-    // could not be left from. vjt's ruling: share here too, like the viewer.
-    stubWebShare(sheetCloses);
+    // download copied. The viewer's opened a preview an iOS PWA could not be
+    // left from; this one very likely did the same (not verified on a device).
+    // vjt's ruling: share here too, like the viewer.
+    stubWebShare(sheetCloses, true);
     renderPlayer();
     playAudio("https://grappa.example/uploads/abc", null);
 
@@ -181,7 +156,7 @@ describe("AudioMiniPlayer", () => {
   };
 
   it("a finite duration keeps the seek control and share", () => {
-    stubWebShare(sheetCloses);
+    stubWebShare(sheetCloses, true);
     renderPlayer();
     playAudio("https://grappa.example/uploads/abc", null);
 
@@ -206,7 +181,7 @@ describe("AudioMiniPlayer", () => {
     // Share took the download's place under the download's gate (#682): a
     // source with no end is no file to hand over. Web Share is installed so
     // the absence is the gate's, not the platform's.
-    stubWebShare(sheetCloses);
+    stubWebShare(sheetCloses, true);
     renderPlayer();
     playAudio("https://ice.somafm.com/groovesalad-128-mp3", "Groove Salad");
 
@@ -259,6 +234,34 @@ describe("AudioMiniPlayer", () => {
 
     const shareButton = (): HTMLElement => screen.getByTestId("audio-mini-player-share");
 
+    // A fetch that honours its signal, as the platform's does, AND answers on
+    // its own a tick later: a stub that only settled on abort would hang with
+    // the abort unwired, and a test would pass for a player that never cancels
+    // anything.
+    const stubSlowServedTrack = (): void => {
+      vi.stubGlobal(
+        "fetch",
+        (_href: string, init: { signal: AbortSignal }) =>
+          new Promise((resolve, reject) => {
+            if (init.signal.aborted) {
+              reject(new DOMException("aborted", "AbortError"));
+              return;
+            }
+            const answer = setTimeout(() => {
+              resolve({
+                ok: true,
+                status: 200,
+                blob: () => Promise.resolve(new Blob([MP3_BYTES], { type: "audio/mpeg" })),
+              });
+            }, 0);
+            init.signal.addEventListener("abort", () => {
+              clearTimeout(answer);
+              reject(new DOMException("aborted", "AbortError"));
+            });
+          }),
+      );
+    };
+
     // The served bytes, as the upload route answers them.
     const stubServedTrack = (): void => {
       vi.stubGlobal(
@@ -283,7 +286,7 @@ describe("AudioMiniPlayer", () => {
 
     it("shares the FILE of an own upload", async () => {
       stubServedTrack();
-      const share = stubWebShare(sheetCloses);
+      const share = stubWebShare(sheetCloses, true);
       renderPlayer();
       playAudio(OWN_TRACK, null);
 
@@ -299,7 +302,10 @@ describe("AudioMiniPlayer", () => {
     it("names a refused share in a toast instead of failing inert", async () => {
       // A LINK share, so there is nothing smaller to fall back to: the refusal
       // is reported as the platform worded it.
-      stubWebShare(() => Promise.reject(new DOMException("share refused", "NotAllowedError")));
+      stubWebShare(
+        () => Promise.reject(new DOMException("share refused", "NotAllowedError")),
+        true,
+      );
       renderPlayer();
       playAudio(FOREIGN_TRACK, null);
 
@@ -310,7 +316,10 @@ describe("AudioMiniPlayer", () => {
     });
 
     it("says nothing when the reader dismisses the share sheet", async () => {
-      const share = stubWebShare(() => Promise.reject(new DOMException("cancelled", "AbortError")));
+      const share = stubWebShare(
+        () => Promise.reject(new DOMException("cancelled", "AbortError")),
+        true,
+      );
       renderPlayer();
       playAudio(FOREIGN_TRACK, null);
 
@@ -323,28 +332,8 @@ describe("AudioMiniPlayer", () => {
     });
 
     it("opens no share sheet once the source has closed under the fetch", async () => {
-      // A fetch that honours its signal, as the platform's does, AND answers on
-      // its own a tick later: a stub that only settled on abort would hang with
-      // the abort unwired, and the test would pass for a player that never
-      // cancels anything.
-      vi.stubGlobal(
-        "fetch",
-        (_href: string, init: { signal: AbortSignal }) =>
-          new Promise((resolve, reject) => {
-            const answer = setTimeout(() => {
-              resolve({
-                ok: true,
-                status: 200,
-                blob: () => Promise.resolve(new Blob([MP3_BYTES], { type: "audio/mpeg" })),
-              });
-            }, 0);
-            init.signal.addEventListener("abort", () => {
-              clearTimeout(answer);
-              reject(new DOMException("aborted", "AbortError"));
-            });
-          }),
-      );
-      const share = stubWebShare(sheetCloses);
+      stubSlowServedTrack();
+      const share = stubWebShare(sheetCloses, true);
       renderPlayer();
       playAudio(OWN_TRACK, null);
 
@@ -356,11 +345,32 @@ describe("AudioMiniPlayer", () => {
       expect(audioShareToasts()).toHaveLength(0);
     });
 
+    it("a source swapped under the fetch opens no sheet for it, and the next source still shares", async () => {
+      // The swap aborts the old source's fetch AND hands the new source a
+      // controller of its own: without the second half every share after the
+      // first swap would start on an aborted signal and end in silence. The
+      // slow stub rejects an already-aborted signal at once, as `fetch` does.
+      stubSlowServedTrack();
+      const share = stubWebShare(sheetCloses, true);
+      renderPlayer();
+      playAudio(OWN_TRACK, null);
+
+      shareButton().click();
+      playAudio(OTHER_OWN_TRACK, null);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(share).not.toHaveBeenCalled();
+
+      shareButton().click();
+      await vi.waitFor(() => expect(share).toHaveBeenCalledTimes(1));
+      expect(share.mock.calls[0]?.[0]?.files?.[0]?.name).toBe("zyxwvutsrqponmlkjihgfedcba.mp3");
+      expect(audioShareToasts()).toHaveLength(0);
+    });
+
     it("a refused FILE turns only that source to its link, not the next one", async () => {
       // The viewer forgets a refusal when it closes; this player outlives every
-      // source it plays, so the refusal is keyed on the href instead.
+      // source it plays, so it builds its sharer per source and forgets there.
       stubServedTrack();
-      const share = stubWebShare(sheetCloses);
+      const share = stubWebShare(sheetCloses, true);
       share.mockImplementationOnce(() =>
         Promise.reject(new DOMException("Permission denied", "NotAllowedError")),
       );
@@ -369,7 +379,9 @@ describe("AudioMiniPlayer", () => {
 
       shareButton().click();
       await vi.waitFor(() =>
-        expect(audioShareToasts()[0]?.message).toMatch(/tap share again to send the link/),
+        expect(audioShareToasts()[0]?.message).toMatch(
+          /could not be shared — share again to send the link/,
+        ),
       );
 
       shareButton().click();
@@ -896,7 +908,8 @@ describe("AudioMiniPlayer", () => {
   // browser cannot DECODE is exactly the upload the operator wants to SAVE.
   // Taking it away would remove the remedy at the moment it is needed. So the
   // notice replaces the readout, and the anchor keeps #682's own `live()`
-  // gate, unchanged.
+  // gate, unchanged. (Since issue 2501 that control is share, under the same
+  // gate and in the same place; the measurements above predate it.)
   //
   // WHY THIS IS NOT A SECOND PREDICATE BESIDE `mustRefetch` (#1700's rule that
   // the predicate is one). Two independent reasons, and either is sufficient:
@@ -981,7 +994,7 @@ describe("AudioMiniPlayer", () => {
       // cannot decode is exactly the upload the operator wants to hand to
       // something that can. It is not a claim about playback — it is what to
       // do about the notice beside it. (A download until issue 2501.)
-      stubWebShare(sheetCloses);
+      stubWebShare(sheetCloses, true);
       renderPlayer();
       playAudio(UPLOAD, null);
 
@@ -997,7 +1010,7 @@ describe("AudioMiniPlayer", () => {
       // fix, and what is unchanged from before this issue: a stream that
       // failed BEFORE metadata reads `duration = 0`, which is finite, so it is
       // not live as far as this predicate can see.
-      stubWebShare(sheetCloses);
+      stubWebShare(sheetCloses, true);
       renderPlayer();
       playAudio(STATION, "Groove Salad");
       metadataArrives(Number.POSITIVE_INFINITY);

@@ -21,7 +21,7 @@ import {
   setMediaSessionHandlers,
   setMediaSessionPlaybackState,
 } from "./lib/mediaSession";
-import { createMediaSharer } from "./lib/mediaShare";
+import { createMediaSharer, type MediaSharer } from "./lib/mediaShare";
 import { nowPlayingLabel } from "./lib/nowPlaying";
 import { canNativeShare } from "./lib/platform";
 
@@ -298,29 +298,33 @@ const AudioMiniPlayer: Component = () => {
   };
 
   // issue 2501 — share, where the ⬇ download was: vjt's ruling, the media
-  // viewer's flow (lib/mediaShare.ts) at a second door. The fetch dies with the
-  // source it was for, so closing the bar or tuning another source mid-fetch
-  // opens no sheet for a track that is gone: the viewer's rule for a viewer
-  // that is gone, with a controller per source because this component outlives
-  // them. A failure is told in a toast; the bar has no line to say it on.
-  const share = createMediaSharer(errorMessage);
-  let shareAbort = new AbortController();
+  // viewer's flow (lib/mediaShare.ts) at a second door. The viewer builds its
+  // sharer per open; this component outlives every source it plays, so it
+  // builds one per SOURCE, with the controller that aborts its fetch. Closing
+  // the bar or tuning another source mid-fetch therefore opens no sheet for a
+  // track that is gone, and a file refused on one track is forgotten with it.
+  // A failure is told in a toast; the bar has no line to say it on.
+  let sourceShare: { share: MediaSharer; abort: AbortController } | null = null;
   createEffect(
-    on(
-      activeAudio,
-      () => {
-        shareAbort.abort();
-        shareAbort = new AbortController();
-      },
-      { defer: true },
-    ),
+    on(activeAudio, (source) => {
+      sourceShare?.abort.abort();
+      if (source === null) {
+        sourceShare = null;
+        return;
+      }
+      const abort = new AbortController();
+      sourceShare = {
+        abort,
+        share: createMediaSharer(source.href, window.location.origin, abort.signal, errorMessage),
+      };
+    }),
   );
   onCleanup(() => {
-    shareAbort.abort();
+    sourceShare?.abort.abort();
   });
-  const shareSource = async (href: string): Promise<void> => {
-    const attempt = share(href, window.location.origin, shareAbort.signal);
-    if (attempt === "busy") return;
+  const shareSource = async (): Promise<void> => {
+    const attempt = sourceShare?.share();
+    if (attempt === undefined || attempt === "busy") return;
     const failure = await attempt;
     if (failure !== null) reportAudioShareFailure(failure);
   };
@@ -494,13 +498,16 @@ const AudioMiniPlayer: Component = () => {
                   </Show>
                 </Show>
                 {/* issue 2501 — SHARE, where a same-origin `download=""` anchor
-              was. On an iOS PWA that anchor opened a preview the app could not
-              be left from (the media viewer's, reported there, and this one is
-              the anchor the viewer's copied); vjt ruled share at both doors.
+              was: the anchor the media viewer's download copied. The viewer's
+              opened a preview an iOS PWA could not be left from (reported);
+              this one very likely did too (not verified on a device). vjt
+              ruled share at both doors.
               The FILE where the platform takes it, the link otherwise (see
               lib/mediaShare.ts); only where the Web Share API exists, the one
               feature-detect every share door uses. Where it does not (desktop
-              Firefox, Linux Chromium) the bar offers no save.
+              Firefox, Linux Chromium) the bar offers no save at all, which
+              also takes #1744's remedy below away there: a track that browser
+              cannot decode can only be saved from the scrollback link.
               #682 — gated OFF for a live source, kept from the download: a
               source with no end is no file to hand over.
               #1744 — LIFTED OUT of the file readout above, and it is the one
@@ -522,10 +529,7 @@ const AudioMiniPlayer: Component = () => {
                     type="button"
                     class="audio-mini-player-share"
                     data-testid="audio-mini-player-share"
-                    onClick={() => {
-                      const source = activeAudio();
-                      if (source !== null) void shareSource(source.href);
-                    }}
+                    onClick={() => void shareSource()}
                     aria-label="share"
                   >
                     ⤴

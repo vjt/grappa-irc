@@ -13,6 +13,7 @@ import { TEXT_VIEW_MAX_BYTES } from "../lib/textResource";
 import MediaViewerModal from "../MediaViewerModal";
 import { resetPlatformStubs, stubIosStandalone } from "./helpers/platformStubs";
 import { fireTouchAt } from "./helpers/touchEvents";
+import { defineOnNavigator, restoreWebShare, sheetCloses, stubWebShare } from "./helpers/webShare";
 
 // `maybeEscapePwaClick` is mocked at the module boundary: its escaping
 // branch calls window.location.assign, which jsdom makes unforgeable
@@ -1050,27 +1051,6 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
   const FOREIGN_IMAGE_URL = "https://elsewhere.example/uploads/pic.png";
   const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-  const restoreNavigator: Array<() => void> = [];
-
-  const defineOnNavigator = (key: "share" | "canShare", value: unknown): void => {
-    const original = Object.getOwnPropertyDescriptor(navigator, key);
-    Object.defineProperty(navigator, key, { value, configurable: true });
-    restoreNavigator.push(() => {
-      if (original === undefined) Reflect.deleteProperty(navigator, key);
-      else Object.defineProperty(navigator, key, original);
-    });
-  };
-
-  const stubShare = (
-    respond: () => Promise<void> = () => Promise.resolve(),
-    canShareFiles = true,
-  ): Mock<(data: ShareData) => Promise<void>> => {
-    const share = vi.fn<(data: ShareData) => Promise<void>>(respond);
-    defineOnNavigator("share", share);
-    defineOnNavigator("canShare", (data: ShareData) => data.files === undefined || canShareFiles);
-    return share;
-  };
-
   // The served bytes, as the upload route answers them.
   const stubServedImage = (): Mock => {
     const fetchMock = vi.fn(() =>
@@ -1088,7 +1068,7 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
     container.querySelector(".media-viewer-action-status");
 
   afterEach(() => {
-    for (const restore of restoreNavigator.splice(0)) restore();
+    restoreWebShare();
     vi.unstubAllGlobals();
   });
 
@@ -1100,7 +1080,7 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
     ["an own video", OWN_VIDEO_URL, "video"],
     ["a cross-host image", FOREIGN_IMAGE_URL, "image"],
   ] as const)("offers no download control on %s", (_label, url, kind) => {
-    stubShare();
+    stubWebShare(sheetCloses, true);
     const { container } = render(() => <MediaViewerModal />);
     openMediaViewer(url, kind);
     expect(screen.queryByRole("link", { name: /download/i })).toBeNull();
@@ -1116,14 +1096,14 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
     expect(screen.queryByRole("button", { name: /^share$/i })).toBeNull();
     closeMediaViewer();
 
-    stubShare();
+    stubWebShare(sheetCloses, true);
     openMediaViewer(OWN_IMAGE_URL, "image");
     expect(screen.getByRole("button", { name: /^share$/i })).not.toBeNull();
   });
 
   it("shares the FILE of an own upload where the platform accepts files", async () => {
     const fetchMock = stubServedImage();
-    const share = stubShare();
+    const share = stubWebShare(sheetCloses, true);
     render(() => <MediaViewerModal />);
     openMediaViewer(OWN_IMAGE_URL, "image");
 
@@ -1144,7 +1124,7 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
 
   it("falls back to the link where the platform refuses the file", async () => {
     stubServedImage();
-    const share = stubShare(() => Promise.resolve(), false);
+    const share = stubWebShare(sheetCloses, false);
     render(() => <MediaViewerModal />);
     openMediaViewer(OWN_IMAGE_URL, "image");
 
@@ -1166,7 +1146,7 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
           Promise.resolve(new Blob(['{"error":"not_found"}'], { type: "application/json" })),
       }),
     );
-    const share = stubShare();
+    const share = stubWebShare(sheetCloses, true);
     render(() => <MediaViewerModal />);
     openMediaViewer(OWN_IMAGE_URL, "image");
 
@@ -1180,7 +1160,7 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
     // Not merely "falls back": the request must not be ISSUED, because a
     // blocked fetch is a securitypolicyviolation (the issue 1889 probe rule).
     const fetchMock = stubServedImage();
-    const share = stubShare();
+    const share = stubWebShare(sheetCloses, true);
     render(() => <MediaViewerModal />);
     openMediaViewer(FOREIGN_IMAGE_URL, "image");
 
@@ -1213,7 +1193,7 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
           });
         }),
     );
-    const share = stubShare();
+    const share = stubWebShare(sheetCloses, true);
     render(() => <MediaViewerModal />);
     openMediaViewer(OWN_IMAGE_URL, "image");
 
@@ -1228,7 +1208,10 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
 
   it("says nothing when the reader dismisses the share sheet", async () => {
     stubServedImage();
-    const share = stubShare(() => Promise.reject(new DOMException("cancelled", "AbortError")));
+    const share = stubWebShare(
+      () => Promise.reject(new DOMException("cancelled", "AbortError")),
+      true,
+    );
     const { container } = render(() => <MediaViewerModal />);
     openMediaViewer(OWN_IMAGE_URL, "image");
 
@@ -1243,7 +1226,7 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
   it("names a refused share instead of failing inert", async () => {
     // A LINK share, so there is nothing smaller to fall back to: the refusal
     // is reported as the platform worded it.
-    stubShare(() => Promise.reject(new DOMException("share refused", "NotAllowedError")));
+    stubWebShare(() => Promise.reject(new DOMException("share refused", "NotAllowedError")), true);
     const { container } = render(() => <MediaViewerModal />);
     openMediaViewer(FOREIGN_IMAGE_URL, "image");
 
@@ -1257,7 +1240,7 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
     // process then refuses an off-list type with NotAllowedError — after the
     // activation is spent, so the link cannot go out in the same tap.
     const fetchMock = stubServedImage();
-    const share = stubShare();
+    const share = stubWebShare(sheetCloses, true);
     share.mockImplementationOnce(() =>
       Promise.reject(new DOMException("Permission denied", "NotAllowedError")),
     );
@@ -1266,7 +1249,9 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: /^share$/i }));
     await waitFor(() =>
-      expect(actionStatus(container)?.textContent).toMatch(/tap share again to send the link/),
+      expect(actionStatus(container)?.textContent).toMatch(
+        /could not be shared — share again to send the link/,
+      ),
     );
     expect(share.mock.calls[0]?.[0]?.files).toHaveLength(1);
 
@@ -1279,7 +1264,7 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
   });
 
   it("clears an earlier refusal when a later share goes through", async () => {
-    const share = stubShare();
+    const share = stubWebShare(sheetCloses, true);
     share.mockImplementationOnce(() =>
       Promise.reject(new DOMException("busy", "InvalidStateError")),
     );
@@ -1297,7 +1282,7 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
   it("drops a second tap while the first share is still open", async () => {
     // The sheet is up and has not answered. A second call would be refused by
     // the platform as a share already in progress — and reported as a failure.
-    const share = stubShare(() => new Promise<void>(() => undefined));
+    const share = stubWebShare(() => new Promise<void>(() => undefined), true);
     const { container } = render(() => <MediaViewerModal />);
     openMediaViewer(FOREIGN_IMAGE_URL, "image");
 
@@ -1330,7 +1315,7 @@ describe("MediaViewerModal — share (issues 2468, 2501)", () => {
     // Same reasoning as 'open in browser' above: it would hand the reader the
     // route's `{"error":"not_found"}` instead of a file.
     vi.stubGlobal("fetch", () => Promise.resolve({ status: 404 }));
-    stubShare();
+    stubWebShare(sheetCloses, true);
     const { container } = render(() => <MediaViewerModal />);
     openMediaViewer(OWN_IMAGE_URL, "image");
     expect(screen.getByRole("button", { name: /^share$/i })).not.toBeNull();
