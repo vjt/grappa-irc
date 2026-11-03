@@ -12,6 +12,11 @@
 // a test timeout too — a `finally` in the test body it does not (measured on
 // 1.59.1). A bot left running is an extra client every later spec meets.
 
+import { sendPrivmsg } from "./grappaApi";
+import { IrcPeer } from "./ircClient";
+import { awaitMail, extractFromMail } from "./mailpit";
+import { NETWORK_SLUG } from "./seedData";
+import { provisionPeerSubject, type SpecSubject, teardownSpecSubject } from "./specSubject";
 import { test as base, expect } from "./test";
 
 const E2E_BOT_URL = process.env.E2E_BOT_URL ?? "http://e2e-bot:8080";
@@ -99,11 +104,86 @@ export async function botWaitFor(
   }
 }
 
-/** The bot, stopped in teardown whatever the test did (timeout included). */
-export const test = base.extend<{ e2eBot: { start: typeof botStart } }>({
+export const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// The 2430 bounds: a KEYREQ answered within 32 s, a message under way
+// delivered within 46 s.
+export const KEYS_BOUND = 32_000;
+export const UNDER_WAY_BOUND = 46_000;
+// An order challenge lives 15 s (irc-olm CHALLENGE_TTL); the bot ends a held
+// line at its next tick past that, so its verdict is in well within 25 s.
+export const ORDER_VERDICT = 25_000;
+// The bot reloads its pins file at a 1 s tick.
+export const PINS_RELOAD = 15_000;
+// One WHOIS round trip: it sits behind bahamut's fake-lag bank, ~10 s cap.
+export const WHOIS_ASK = 15_000;
+
+// Azzurra's NickServ: 5–32 chars, and the confirmation mail carries the code
+// as `/msg NickServ AUTH <digits>` (registration-wizard-real.spec.ts).
+const NS_PASSWORD = "e2eintpw1";
+const AUTH_CODE_RE = /AUTH (\d+)/;
+
+// Whether `nick` is registered as the bot will see it: a WHOIS whose replies
+// carry a 307. Asked again until one does, half a second apart — services
+// set +r over the server link a moment after they accept the code. A 401
+// (the nick is not on the network) rejects at once.
+async function awaitRegistered(peer: IrcPeer, nick: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await peer.whoisRegistered(nick)) return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`${nick} is not registered with NickServ after ${timeoutMs}ms`);
+}
+
+/**
+ * Registers the subject's nick with NickServ through grappa, the way a
+ * client would, and resolves once a WHOIS says so: the bot's trust layer 1
+ * needs that 307. `run` names the mail and the witness, per run, because
+ * NickServ keeps a nick registered for as long as the testnet lives.
+ */
+export async function registerNick(subject: SpecSubject, run: string): Promise<void> {
+  const email = `${subject.nick}-${run}@example.com`;
+  await sendPrivmsg(
+    subject.user.token,
+    NETWORK_SLUG,
+    "NickServ",
+    `REGISTER ${NS_PASSWORD} ${email}`,
+  );
+  const code = extractFromMail(await awaitMail(email, { timeoutMs: 45_000 }), AUTH_CODE_RE);
+  await sendPrivmsg(subject.user.token, NETWORK_SLUG, "NickServ", `AUTH ${code}`);
+  const witness = await IrcPeer.connect({ nick: `iw${run}` });
+  try {
+    await awaitRegistered(witness, subject.nick, 30_000);
+  } finally {
+    await witness.disconnect("done");
+  }
+}
+
+// The bot's verdict on the order `body` from `nick`: either way, so a wrong
+// one fails at once and names itself instead of running out the clock.
+export const orderVerdict = (nick: string, body: string): RegExp =>
+  new RegExp(
+    ` MSG (TRUSTED CONFIRMED=1|UNTRUSTED WHY=\\S+) FROM=${escapeRe(nick)} .* BODY=${escapeRe(body)}$`,
+  );
+
+/**
+ * The bot, stopped in teardown whatever the test did (timeout included), and
+ * `cic`: the subject whose browser talks to it, torn down by its fixture for
+ * the same reason (a `finally` in the test body does not run on a timeout).
+ * Its nick is named per run: NickServ keeps a registered nick for as long as
+ * the testnet lives.
+ */
+export const test = base.extend<{ e2eBot: { start: typeof botStart }; cic: SpecSubject }>({
   // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture-dependency declaration
   e2eBot: async ({}, use) => {
     await use({ start: botStart });
     await botStop(); // a no-op when no bot runs
+  },
+  // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture-dependency declaration
+  cic: async ({}, use, testInfo) => {
+    const cic = await provisionPeerSubject(testInfo, `cic-${Date.now().toString(36)}`);
+    await use(cic);
+    await teardownSpecSubject(cic);
   },
 });
