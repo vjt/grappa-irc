@@ -749,6 +749,17 @@ export class Engine {
   }
 
   /**
+   * Who the payload grappa named `msgid` was for and the caller's tag, even
+   * while another payload of its message is on its way (issue 2513: a payload
+   * dropped goes from its row); undefined for a msgid this device did not
+   * send or no longer remembers.
+   */
+  sentAs(msgid: string): { nick: string; tag: string } | undefined {
+    const record = this.state.sent.find((s) => s.msgid === msgid);
+    return record === undefined ? undefined : { nick: record.nick, tag: record.msg.tag };
+  }
+
+  /**
    * The user asks `nick` for its keys again (issue 2491), after a message
    * reached none of its devices (`unreadable`). Only the user starts this,
    * never a NACK: the nick may be held by someone else now, and an impostor's

@@ -994,8 +994,14 @@ export function e2eClient(
 
     dropped: (ctx, msgid, reason) =>
       withEngine(ctx, async (engine, persist, verifier, door) => {
+        // issue 2513 — the payload never crossed IRC, so it goes from its row
+        // whether or not another payload of the message did.
+        const of = engine.sentAs(msgid);
         const lost = engine.dropped(msgid);
         const changes: ChatChange[] = [];
+        if (of !== undefined && of.tag !== LIST_TAG && !rowless(of.tag)) {
+          changes.push({ op: "drop", nick: of.nick, id: of.tag, msgid });
+        }
         if (lost !== undefined && rowless(lost.tag)) {
           rowlessLost(lost.tag, lost.nick, reason);
         } else if (lost !== undefined) {
