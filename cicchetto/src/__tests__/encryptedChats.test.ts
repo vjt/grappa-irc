@@ -888,6 +888,51 @@ describe("encrypted chats", () => {
 
     expect(chats.encryptedChatsFor(net.slug)).toEqual([]);
   });
+
+  // issue 2515 — a notification names the peer as the wire spells it; the
+  // tap opens the chat under the name the device already gave it. Read off
+  // the device's store, because on a cold tap the page's copy is not in yet.
+  it("names a chat as the device's chat index stores it, and an unknown one as asked", async () => {
+    await chats.drainE2e(net.slug);
+    await chats.openEncryptedChat(net.slug, "bob");
+
+    expect(await chats.encryptedChatNick(net.slug, "BOB")).toBe("bob");
+    expect(await chats.encryptedChatNick(net.slug, "Carol")).toBe("Carol");
+  });
+
+  // issue 2515 — every refresh reads the whole index and sets the network's
+  // copy from it. A refresh that read the index BEFORE a chat was opened must
+  // not set its copy AFTER the open's own refresh: the window just opened
+  // would vanish from the list, and the selection's close-watcher would move
+  // focus away from it. A cold notification tap opens a chat while the boot
+  // drain is refreshing, so it meets this every time.
+  it("a refresh that read the index before an open never sets it over the open's", async () => {
+    await chats.drainE2e(net.slug);
+    const { chats: store } = await browserE2e();
+    const read = store.chats.bind(store);
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reads = 0;
+    vi.spyOn(store, "chats").mockImplementation(async (slot) => {
+      const index = await read(slot);
+      reads += 1;
+      // The first refresh holds the index it read until the open has run.
+      if (reads === 1) await held;
+      return index;
+    });
+
+    const stale = chats.drainE2e(net.slug);
+    await vi.waitFor(() => expect(reads).toBe(1));
+    const opened = chats.openEncryptedChat(net.slug, "Bob");
+    // The open's write is in the store; only the refreshes are left.
+    await vi.waitFor(async () => expect(await read(slot())).toHaveProperty("bob"));
+    release();
+    await Promise.all([stale, opened]);
+
+    expect(chats.encryptedChatsFor(net.slug)).toEqual([{ key: "bob", nick: "Bob", unread: 0 }]);
+  });
 });
 
 // An identity is never replaced silently (vjt 6344779758): a browser that
