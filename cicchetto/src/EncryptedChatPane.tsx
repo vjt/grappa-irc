@@ -24,6 +24,7 @@ import InlineConfirmButton from "./InlineConfirmButton";
 import { ApiError, type ScrollbackMessage } from "./lib/api";
 import { channelKey } from "./lib/channelKey";
 import { requestConfirm } from "./lib/confirmDialog";
+import { isCtcpAction, stripCtcpAction } from "./lib/ctcpAction";
 import { formatDateTime } from "./lib/dateFormat";
 import { loadDocument } from "./lib/documentNavigation";
 import { isDocumentVisible } from "./lib/documentVisibility";
@@ -77,9 +78,10 @@ import ScrollbackPane from "./ScrollbackPane";
 // messages numbered in the order this window first saw them, the read state
 // from the chat's unread count, and no server history to page in, since the
 // device holds every line. The compose box, in an encrypted window, sends what
-// was typed through Olm as one message with no slash command, never mirrors
-// the draft to storage, and keeps its history in this tab's memory only,
-// dropped with the chat (lib/compose.ts). Each line renders through the
+// is said (text, and `/me` as an ACTION) through Olm as one message and runs
+// any other command as the plain query would, in clear (issue 2536), never
+// mirrors the draft to storage, and keeps its history in this tab's memory
+// only, dropped with the chat (lib/compose.ts). Each line renders through the
 // scrollback's renderer (issue 2498, vjt's ruling: one renderer), with the
 // lock and the delivery state in its two slots.
 //
@@ -218,6 +220,10 @@ function ciphertextOf(row: Message): string {
 // own id, which is a string: the pane orders, marks and reads lines by id.
 // issue 2513 — in the ciphertext view the body is the payloads instead, on the
 // same line; a message that could not be read is then its sender's line too.
+// issue 2536 — a `/me` rides inside the message as a CTCP ACTION
+// (lib/compose.ts), so a body in that envelope is the scrollback's action
+// line, which unwraps it, ours or the peer's. Not in the ciphertext view:
+// there the line is the payloads it crossed IRC as, and they are no action.
 function lineOf(
   row: Message,
   seq: number,
@@ -230,9 +236,11 @@ function lineOf(
   const body = (plaintext: string) => (ciphertext ? ciphertextOf(row) : plaintext);
   switch (row.kind) {
     case "in":
-      return { ...line, kind: "privmsg", sender: row.nick, body: body(row.body) };
-    case "out":
-      return { ...line, kind: "privmsg", sender: ownNick, body: body(row.body) };
+    case "out": {
+      const kind = !ciphertext && isCtcpAction(row.body) ? "action" : "privmsg";
+      const sender = row.kind === "in" ? row.nick : ownNick;
+      return { ...line, kind, sender, body: body(row.body) };
+    }
     case "undecryptable":
       if (ciphertext) {
         return { ...line, kind: "privmsg", sender: row.nick, body: ciphertextOf(row) };
@@ -645,13 +653,16 @@ const EncryptedChatPane: Component<Props> = (props) => {
   // While searching, only the messages that hold what was typed, in any case.
   // issue 2513 — what they hold as shown: in the ciphertext view the payloads,
   // where a message that cannot be read is a message too, never the plaintext.
+  // issue 2536 — and what a line says: an action is a message, and its
+  // envelope is framing, not text.
   const needle = () => (searching() ? query().trim().toLowerCase() : "");
-  const searchable = () => (lines() ?? []).filter(({ msg }) => msg.kind === "privmsg");
+  const searchable = () =>
+    (lines() ?? []).filter(({ msg }) => msg.kind === "privmsg" || msg.kind === "action");
   const shown = createMemo(() => {
     const all = lines();
     const n = needle();
     if (all === undefined || n === "") return all;
-    return searchable().filter(({ msg }) => msg.body?.toLowerCase().includes(n));
+    return searchable().filter(({ msg }) => stripCtcpAction(msg.body).toLowerCase().includes(n));
   });
   const shownMessages = createMemo(() => shown()?.map((line) => line.msg));
 

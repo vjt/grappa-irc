@@ -29,6 +29,9 @@ export const ctcpFrame = (verb: string, args: string): string =>
     ? `${CTCP_DELIMITER}${verb}${CTCP_DELIMITER}`
     : `${CTCP_DELIMITER}${verb} ${args}${CTCP_DELIMITER}`;
 
+// Whether `body` is an action: the envelope `stripCtcpAction` unwraps.
+export const isCtcpAction = (body: string): boolean => body.startsWith(CTCP_ACTION_PREFIX);
+
 // The inner text of an action body, or the body unchanged when the envelope
 // isn't there. Defensive on purpose: a future server-side pre-strip, or a row
 // persisted before the wire form was stored, must still render.

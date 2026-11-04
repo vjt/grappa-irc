@@ -7459,27 +7459,150 @@ describe("compose submit — an unreadable list query is reported, not fired (is
 });
 
 // issue 2512 — the encrypted query composes in the compose box every window
-// has, and the window decides where what was typed goes: to the peer, through
-// Olm, and nowhere else. No slash command is read there, so nothing typed in
-// an encrypted window can reach grappa's send door in clear.
-describe("compose in an encrypted window (issue 2512)", () => {
+// has, and what is typed there goes to the peer, through Olm, as one message.
+// issue 2536 (vjt's ruling) — a slash command runs there as it would in the
+// plain query with the peer, in clear: a command is not part of the encrypted
+// conversation. `/me` is the one exception, because it IS conversation: it
+// goes to the peer encrypted, as an ACTION inside the message.
+describe("compose in an encrypted window (issues 2512, 2536)", () => {
   const e2eWindow = "$e2e:Bob";
 
-  it("sends everything typed to the peer through the encrypted door, a slash included", async () => {
+  it("sends plain text to the peer through the encrypted door, and nothing to grappa's", async () => {
     localStorage.setItem("grappa-token", "tok");
     const encrypted = await import("../lib/encryptedChats");
     const sb = await import("../lib/scrollback");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", e2eWindow);
+
+    compose.setDraft(k, "ciao bob");
+    expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
+
+    expect(encrypted.sendEncrypted).toHaveBeenCalledWith("freenode", "Bob", "ciao bob");
+    expect(sb.sendMessage).not.toHaveBeenCalled();
+    expect(compose.getDraft(k)).toBe("");
+  });
+
+  it("runs a slash command as in any window, and sends none of it to the peer", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const encrypted = await import("../lib/encryptedChats");
     const socket = await import("../lib/socket");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", e2eWindow);
 
-    compose.setDraft(k, "/whois bob");
+    compose.setDraft(k, "/whois carol");
     expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
 
-    expect(encrypted.sendEncrypted).toHaveBeenCalledWith("freenode", "Bob", "/whois bob");
-    expect(sb.sendMessage).not.toHaveBeenCalled();
-    expect(socket.pushWhois).not.toHaveBeenCalled();
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "carol", null);
+    expect(encrypted.sendEncrypted).not.toHaveBeenCalled();
     expect(compose.getDraft(k)).toBe("");
+  });
+
+  // The leak that made this a fix and not only UX (vjt, 2536): the peer read
+  // a NickServ password typed in the encrypted window.
+  it("a command carrying a secret goes to its service, never to the peer", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const encrypted = await import("../lib/encryptedChats");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", e2eWindow);
+
+    compose.setDraft(k, "/ns identify hunter2");
+    expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
+
+    expect(sb.sendMessage).toHaveBeenCalledWith("freenode", "NickServ", "identify hunter2");
+    expect(encrypted.sendEncrypted).not.toHaveBeenCalled();
+  });
+
+  it("bare /whois asks about the peer, as it does in the plain query", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.ownNickForNetwork).mockReturnValue("mynick");
+    const sel = await import("../lib/selection");
+    vi.mocked(sel.selectedChannel).mockReturnValueOnce({
+      networkSlug: "freenode",
+      channelName: e2eWindow,
+      kind: "encrypted",
+    });
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", e2eWindow);
+
+    compose.setDraft(k, "/whois");
+    expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
+
+    expect(socket.pushWhois).toHaveBeenCalledWith(1, "Bob", null);
+  });
+
+  // A verb that addresses the window it was typed in addresses the plain
+  // query with the peer, as #2512's nick menu does: `$e2e:<nick>` is a window
+  // grappa has never heard of, and its 4xx feeds fail2ban (grappa-irc#160).
+  it("a command aimed at the window it was typed in aims at the plain query, never at $e2e:", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", e2eWindow);
+
+    compose.setDraft(k, "/notice carol heads up");
+    expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
+
+    expect(sb.sendMessage).toHaveBeenCalledWith("freenode", "Bob", "heads up", {
+      kind: "notice",
+      target: "carol",
+    });
+  });
+
+  it("/me goes to the peer encrypted, an ACTION inside the message, never a clear ACTION", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const encrypted = await import("../lib/encryptedChats");
+    const sb = await import("../lib/scrollback");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", e2eWindow);
+
+    compose.setDraft(k, "/me waves");
+    expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
+    compose.setDraft(k, "/me uno\ndue");
+    await compose.submit(k, "freenode", e2eWindow);
+
+    expect(vi.mocked(encrypted.sendEncrypted).mock.calls).toEqual([
+      ["freenode", "Bob", "\x01ACTION waves\x01"],
+      ["freenode", "Bob", "\x01ACTION uno\ndue\x01"],
+    ]);
+    expect(sb.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("an empty /me sends nothing, as in any window", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const encrypted = await import("../lib/encryptedChats");
+    const sb = await import("../lib/scrollback");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", e2eWindow);
+
+    compose.setDraft(k, "/me");
+    expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
+
+    expect(encrypted.sendEncrypted).not.toHaveBeenCalled();
+    expect(sb.sendMessage).not.toHaveBeenCalled();
+  });
+
+  // Only `/me` frames an ACTION: a delimiter in typed text is scrubbed, as at
+  // every other door (#1126), so a paste cannot pass for one.
+  it("sends a leading slash as text behind //, and no CTCP delimiter the text carried", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const encrypted = await import("../lib/encryptedChats");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", e2eWindow);
+
+    compose.setDraft(k, "//whois is a command");
+    await compose.submit(k, "freenode", e2eWindow);
+    compose.setDraft(k, "\x01ACTION forged\x01");
+    await compose.submit(k, "freenode", e2eWindow);
+
+    expect(vi.mocked(encrypted.sendEncrypted).mock.calls).toEqual([
+      ["freenode", "Bob", "/whois is a command"],
+      ["freenode", "Bob", "ACTION forged"],
+    ]);
   });
 
   it("sends a body of several lines as the one message it is", async () => {

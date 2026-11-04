@@ -196,9 +196,9 @@ export const queryCommand: CommandHandler<"query"> = async (cmd, ctx) => {
 /**
  * issue 2430 — `/equery <nick>`: open an encrypted query with `nick` and focus
  * it (the window is cic-local, see `encryptedWindow.ts`). No bare close, unlike
- * `/query`: the encrypted window has no compose box that takes commands, and
- * its × closes it. A channel, a services nick or our own nick has no
- * encrypted query.
+ * `/query`: the encrypted window's × closes it, and asks first when the chat
+ * keeps messages. A channel, a services nick or our own nick has no encrypted
+ * query.
  */
 export const equeryCommand: CommandHandler<"equery"> = async (cmd, ctx) => {
   if (cmd.target === null) return { error: "/equery <nick> required" };
