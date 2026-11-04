@@ -28,6 +28,7 @@
 //   * The WHOIS card keeps a horizontal margin the rail's cards do not have.
 
 import type { Locator, Page, TestInfo } from "@playwright/test";
+import { openMembersDrawer } from "../fixtures/cicchettoPage";
 import { boot, equery } from "../fixtures/encryptedQuery";
 import { IrcPeer } from "../fixtures/ircClient";
 import { expect, specNick, specUser, test } from "../fixtures/test";
@@ -48,10 +49,10 @@ type Box = {
 // 24f745040, run 41611248751; PR 2526, run 41887787807): the peer card's left
 // edge at 251.2px and 193.0px, the drawer still on its way in, and the peer
 // card, the box read FIRST, 1.48px and 1.08px right of `own` and the WHOIS
-// card, which agreed with each other exactly. So on WebKit the slide moved
-// between two reads of one evaluate. The phone test therefore measures only
-// once the drawer has stopped (see there); the single call stays, so the
-// boxes are at least read together.
+// card, which agreed with each other exactly: consistent with the slide
+// moving between two reads of one evaluate on WebKit. So the phone test
+// measures only once the drawer has stopped (see there); the single call
+// stays as one round trip and one attachment.
 const RAIL_PARTS = {
   peer: '[data-testid="e2e-rail-peer"]',
   own: '[data-testid="e2e-rail-own"]',
@@ -150,13 +151,11 @@ test("@touch @webkit issue 2506 — on a phone, the drawer's encrypted rail: but
   try {
     await boot(page, specUser());
     await equery(page, specNick(), peer.nick);
-    // The rail's door on a phone is the encrypted pane's top-bar ☰.
-    await page.getByTestId("e2e-pane").locator("header .topic-bar-hamburger").tap();
-    // Issue 2532: `.open` lands at the START of the 200ms slide, so wait for
-    // its end. The drawer is fixed to the right edge and fits the viewport's
-    // height, so it is wholly inside the viewport only at translateX(0):
-    // the settle idiom of `openMembersDrawer` (cicchettoPage.ts, #653).
-    await expect(page.locator(".shell-members.open")).toBeInViewport({ ratio: 1, timeout: 5_000 });
+    // The rail's door on a phone is the encrypted pane's top-bar ☰, the one
+    // `.topic-bar-hamburger` in this window. Issue 2532: the shared opener,
+    // because it returns only once the drawer's slide has ENDED (`.open`
+    // lands at its start, and the boxes were measured inside it).
+    await openMembersDrawer(page);
     await expectRailGeometry(page, testInfo);
   } finally {
     await peer.disconnect("bye").catch(() => {});

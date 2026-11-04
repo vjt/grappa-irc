@@ -1093,7 +1093,8 @@ export async function openMembersDrawer(page: Page): Promise<void> {
   // this is green in isolation and red in the gate (#519, #531, #512).
   // Waiting for the drawer to be FULLY in the viewport is the open-side mirror
   // of openAdminConsole's `not.toBeInViewport()` close-side wait: the drawer is
-  // `position: fixed; top: 0; right: 0`, `height: var(--viewport-height)`,
+  // `position: fixed; right: 0`, its `top` the safe-area inset and its `height`
+  // the viewport height less that inset (#1751), with
   // `* { box-sizing: border-box }` — so ratio 1 is reachable only once the
   // transform has settled at translateX(0), the instant it stops moving under
   // the next click. Kept OUT of the retry loop above deliberately: the openers
