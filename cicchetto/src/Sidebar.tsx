@@ -666,49 +666,61 @@ const Sidebar: Component<Props> = (props) => {
                   server-backed row state above (greying, WindowBadges)
                   applies. The 🔒 is decoration; the sr-only word says it.
                   issue 2513 — the row's context menu (EncryptedChatMenu) is
-                  the door to the chat's ciphertext view. */}
-                <For each={encryptedChatsFor(network.slug)}>
-                  {(chat) => (
-                    <li
-                      classList={{ selected: encryptedWindowSelected(network.slug, chat.key) }}
-                      data-window-name={encryptedWindowName(chat.nick)}
-                    >
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleClick(network.slug, encryptedWindowName(chat.nick), "encrypted")
-                        }
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          openEncryptedChatMenu({
-                            networkSlug: network.slug,
-                            nick: chat.nick,
-                            at: { x: e.clientX, y: e.clientY },
-                          });
-                        }}
-                        class="sidebar-window-btn sidebar-encrypted-btn"
-                        aria-current={
-                          encryptedWindowSelected(network.slug, chat.key) ? "true" : undefined
-                        }
-                      >
-                        <span class="sidebar-network-emoji encrypted-marker" aria-hidden="true">
-                          🔒
-                        </span>
-                        <NickText nick={chat.nick} extraClass="sidebar-channel-name" />
-                        <span class="sr-only"> (encrypted)</span>
-                        <EncryptedUnreadBadge
-                          networkSlug={network.slug}
-                          nick={chat.nick}
-                          count={chat.unread}
-                          variant="sidebar"
-                        />
-                      </button>
-                      <CloseButton
-                        class="sidebar-close"
-                        ariaLabel={`Close encrypted query with ${chat.nick}`}
-                        onConfirm={() => closeEncryptedWindow(network.slug, chat.nick)}
-                      />
-                    </li>
+                  the door to the chat's ciphertext view. The rows are keyed
+                  by the chat's key, not by its entry: the index is read again
+                  on every change and hands out new entries, and a row rebuilt
+                  under a held finger loses the hold, because the menu's event
+                  then lands on a node no longer in the page. */}
+                <For each={encryptedChatsFor(network.slug).map((entry) => entry.key)}>
+                  {(key) => (
+                    <Show when={encryptedChatsFor(network.slug).find((entry) => entry.key === key)}>
+                      {(chat) => (
+                        <li
+                          classList={{ selected: encryptedWindowSelected(network.slug, key) }}
+                          data-window-name={encryptedWindowName(chat().nick)}
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleClick(
+                                network.slug,
+                                encryptedWindowName(chat().nick),
+                                "encrypted",
+                              )
+                            }
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              openEncryptedChatMenu({
+                                networkSlug: network.slug,
+                                nick: chat().nick,
+                                at: { x: e.clientX, y: e.clientY },
+                              });
+                            }}
+                            class="sidebar-window-btn sidebar-encrypted-btn"
+                            aria-current={
+                              encryptedWindowSelected(network.slug, key) ? "true" : undefined
+                            }
+                          >
+                            <span class="sidebar-network-emoji encrypted-marker" aria-hidden="true">
+                              🔒
+                            </span>
+                            <NickText nick={chat().nick} extraClass="sidebar-channel-name" />
+                            <span class="sr-only"> (encrypted)</span>
+                            <EncryptedUnreadBadge
+                              networkSlug={network.slug}
+                              nick={chat().nick}
+                              count={chat().unread}
+                              variant="sidebar"
+                            />
+                          </button>
+                          <CloseButton
+                            class="sidebar-close"
+                            ariaLabel={`Close encrypted query with ${chat().nick}`}
+                            onConfirm={() => closeEncryptedWindow(network.slug, chat().nick)}
+                          />
+                        </li>
+                      )}
+                    </Show>
                   )}
                 </For>
               </ul>

@@ -224,12 +224,24 @@ const toggleEncryptedWireViewMock = vi.hoisted(() =>
     if (!wireViewOn.delete(key)) wireViewOn.add(key);
   }),
 );
-vi.mock("../lib/encryptedChats", () => ({
-  encryptedChatsFor: (slug: string) => (slug === "freenode" ? mockEncryptedChats : []),
-  encryptedWireView: (slug: string, nick: string) =>
-    wireViewOn.has(`${slug} ${nick.toLowerCase()}`),
-  toggleEncryptedWireView: toggleEncryptedWireViewMock,
-}));
+// The index is handed out as production does: a new entry per chat on every
+// read, read again on every change (`chatIndex.refresh`, as an incoming line
+// or the read after it does).
+const chatIndex = vi.hoisted(() => ({ refresh: (): void => {} }));
+vi.mock("../lib/encryptedChats", async () => {
+  const { createSignal } = await import("solid-js");
+  const [version, setVersion] = createSignal(0);
+  chatIndex.refresh = () => setVersion((v) => v + 1);
+  return {
+    encryptedChatsFor: (slug: string) => {
+      version();
+      return slug === "freenode" ? mockEncryptedChats.map((chat) => ({ ...chat })) : [];
+    },
+    encryptedWireView: (slug: string, nick: string) =>
+      wireViewOn.has(`${slug} ${nick.toLowerCase()}`),
+    toggleEncryptedWireView: toggleEncryptedWireViewMock,
+  };
+});
 vi.mock("../lib/encryptedWindow", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/encryptedWindow")>()),
   closeEncryptedWindow: (...args: unknown[]) => closeEncryptedWindowMock(...args),
@@ -1544,6 +1556,28 @@ describe("Sidebar — encrypted query rows", () => {
         expect(menuItems()).toEqual(["Show ciphertext"]);
         const release = fireTouch(nick, "touchend", { clientX: 40, clientY: 60 });
         expect(release.defaultPrevented).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("a hold still opens it when the chat index is read again under the finger", () => {
+      vi.useFakeTimers();
+      try {
+        render(() => <Sidebar />);
+        const held = button();
+        fireTouch(held.querySelector(".sidebar-channel-name") as HTMLElement, "touchstart", {
+          clientX: 40,
+          clientY: 60,
+        });
+        // A line arrives mid-hold: the index is read again, with a count.
+        mockEncryptedChats = [{ key: "bob", nick: "Bob", unread: 2 }];
+        chatIndex.refresh();
+        vi.advanceTimersByTime(LONG_PRESS_MS);
+        expect(menuItems()).toEqual(["Show ciphertext"]);
+        // The row under the finger is the one it pressed, drawn again in place.
+        expect(button()).toBe(held);
+        expect(held.textContent).toContain("2");
       } finally {
         vi.useRealTimers();
       }
