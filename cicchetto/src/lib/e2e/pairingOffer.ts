@@ -48,9 +48,13 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     own.add(curve);
   }
 
-  /** The user-topic dispatch for `e2e_pairing_offered`. */
+  /**
+   * The user-topic dispatch for `e2e_pairing_offered`. The offer already held
+   * is left as it is: every rejoin's snapshot pushes it again, and clearing it
+   * first would let the banner stack's re-arm forget its "Not now".
+   */
   function deliverPairingOffer(next: PairingOffer): void {
-    if (own.has(next.curve)) return;
+    if (own.has(next.curve) || offer()?.rendezvous_id === next.rendezvous_id) return;
     const left = Date.parse(next.expires_at) - Date.now();
     if (!(left > 0)) return;
     clear();
