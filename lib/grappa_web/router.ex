@@ -353,6 +353,7 @@ defmodule GrappaWeb.Router do
     # per-client token may not start or join one. Subject-wide, not under
     # `/networks/:id`: one pairing covers every network.
     post "/e2e/pairings", E2ePairingController, :create
+    get "/e2e/pairings/offer", E2ePairingController, :offer
     post "/e2e/pairings/:id/join", E2ePairingController, :join
     post "/e2e/pairings/:id/messages", E2ePairingController, :post_message
     get "/e2e/pairings/:id/messages", E2ePairingController, :messages

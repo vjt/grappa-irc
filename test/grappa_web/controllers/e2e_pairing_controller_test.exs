@@ -17,6 +17,10 @@ defmodule GrappaWeb.E2ePairingControllerTest do
 
   defp as(conn, session), do: conn |> recycle() |> put_bearer(session)
 
+  # The ephemeral Curve25519 key a pairing QR carries: 32 bytes, base64
+  # without padding.
+  defp key, do: Base.encode64(:crypto.strong_rand_bytes(32), padding: false)
+
   defp open!(conn, a) do
     %{"rendezvous" => r} = conn |> as(a) |> post("/e2e/pairings") |> json_response(201)
     r
@@ -33,6 +37,44 @@ defmodule GrappaWeb.E2ePairingControllerTest do
     assert r["role"] == "creator"
     assert r["id"] =~ ~r/\A[A-Za-z0-9_-]{22}\z/
     assert {:ok, _, 0} = DateTime.from_iso8601(r["expires_at"])
+  end
+
+  # Issue 2537 — the creator's key rides the open and the rendezvous is
+  # offered to the account's other devices: pushed on the user topic, and
+  # here the REST twin a device reads it from.
+  describe "the offer" do
+    test "an open with the creator's key is the offer every device of the account reads",
+         %{conn: conn, a: a, b: b} do
+      curve = key()
+      r = conn |> as(a) |> post("/e2e/pairings", %{curve: curve}) |> json_response(201)
+      assert r["rendezvous"]["role"] == "creator"
+
+      offer = %{
+        "rendezvous_id" => r["rendezvous"]["id"],
+        "curve" => curve,
+        "expires_at" => r["rendezvous"]["expires_at"]
+      }
+
+      assert conn |> as(b) |> get("/e2e/pairings/offer") |> json_response(200) == %{"offer" => offer}
+      assert conn |> as(a) |> get("/e2e/pairings/offer") |> json_response(200) == %{"offer" => offer}
+
+      {_, other} = user_and_session()
+      assert conn |> as(other.id) |> get("/e2e/pairings/offer") |> json_response(200) == %{"offer" => nil}
+
+      conn |> as(b) |> post("/e2e/pairings/#{r["rendezvous"]["id"]}/join") |> json_response(200)
+      assert conn |> as(b) |> get("/e2e/pairings/offer") |> json_response(200) == %{"offer" => nil}
+    end
+
+    test "an open without a key, as an older client sends it, offers nothing", %{conn: conn, a: a, b: b} do
+      _ = open!(conn, a)
+      assert conn |> as(b) |> get("/e2e/pairings/offer") |> json_response(200) == %{"offer" => nil}
+    end
+
+    test "a key that is not 32 bytes of base64 is 422", %{conn: conn, a: a} do
+      for bad <- ["", "not a key", String.duplicate("A", 44), 42] do
+        assert %{"error" => _} = conn |> as(a) |> post("/e2e/pairings", %{curve: bad}) |> json_response(422)
+      end
+    end
   end
 
   test "POST /e2e/pairings/:id/join makes the caller the joiner", %{conn: conn, a: a, b: b} do
@@ -161,6 +203,9 @@ defmodule GrappaWeb.E2ePairingControllerTest do
     {:ok, token} = Accounts.create_client_token(user, "headless", nil, nil, [])
 
     assert conn |> as(token.id) |> post("/e2e/pairings") |> json_response(403) ==
+             %{"error" => "client_token_scope"}
+
+    assert conn |> as(token.id) |> get("/e2e/pairings/offer") |> json_response(403) ==
              %{"error" => "client_token_scope"}
   end
 

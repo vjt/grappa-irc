@@ -4,7 +4,12 @@ defmodule GrappaWeb.E2ePairingController do
   account pair through (grappa-irc#2430, X1).
 
     * `POST /e2e/pairings` — open a rendezvous; the caller's device is its
-      creator. `201 {rendezvous: {id, role, expires_at}}`.
+      creator. `201 {rendezvous: {id, role, expires_at}}`. An optional
+      `{curve}`, the creator's ephemeral key, offers it to the account's
+      other devices (issue 2537); a malformed one is `422`.
+    * `GET /e2e/pairings/offer` — the account's offered rendezvous, `200
+      {offer: {rendezvous_id, curve, expires_at}}` or `{offer: null}`: what
+      the user-topic push said, for a device that was not there for it.
     * `POST /e2e/pairings/:id/join` — join it from a second device of the
       same account. `200 {rendezvous}`; a second joiner gets `409
       pairing_already_joined`, never silence.
@@ -32,12 +37,16 @@ defmodule GrappaWeb.E2ePairingController do
 
   @doc "`POST /e2e/pairings` — open a rendezvous with the caller's device as its creator."
   @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, term()}
-  def create(conn, _) do
+  def create(conn, params) do
     with :ok <- portable(conn),
-         {:ok, r} <- E2ePairing.open(subject(conn), label(conn), session(conn)) do
+         {:ok, r} <- E2ePairing.open(subject(conn), label(conn), session(conn), params["curve"]) do
       conn |> put_status(:created) |> json(Wire.rendezvous_response(r, :creator))
     end
   end
+
+  @doc "`GET /e2e/pairings/offer` — the account's offered rendezvous, or null."
+  @spec offer(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def offer(conn, _), do: json(conn, Wire.offer_response(E2ePairing.offer(subject(conn))))
 
   @doc "`POST /e2e/pairings/:id/join` — join it as the second device of the same account."
   @spec join(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, term()}

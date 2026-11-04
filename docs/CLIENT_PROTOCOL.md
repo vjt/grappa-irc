@@ -1040,7 +1040,8 @@ token gets 403 `client_token_scope`, an incognito visitor 403 `forbidden`.
 
 | Request | Answer |
 |---|---|
-| `POST /e2e/pairings` | 201 `{rendezvous: {id, role: "creator", expires_at}}` |
+| `POST /e2e/pairings` `{curve}` (optional, v55) | 201 `{rendezvous: {id, role: "creator", expires_at}}`; with `curve`, the rendezvous is offered (below); 422 for a `curve` that is not 43 characters of standard base64 |
+| `GET /e2e/pairings/offer` (v55) | 200 `{offer: {rendezvous_id, curve, expires_at}}`, or `{offer: null}`: the account's offered rendezvous |
 | `POST /e2e/pairings/:id/join` | 200 `{rendezvous: {id, role: "joiner", expires_at}}`; 409 `pairing_already_joined` to a second joiner, 409 `pairing_own_rendezvous` to the creating device |
 | `POST /e2e/pairings/:id/messages` `{payload}` | 201 `{message: {seq, from, payload}}`; 409 `pairing_not_joined` to a creator before anyone joined; 413 `pairing_full`; 422 for a payload that is not base64 or passes 16 KiB |
 | `GET /e2e/pairings/:id/messages?after=<seq>` | 200 `{messages: [{seq, from, payload}…]}`: what the OTHER side posted after `seq`, oldest first |
@@ -1068,6 +1069,28 @@ rendezvous ended while you missed the push saying so. `reason` is
 `closed` (a side closed it), `expired` or `replaced`.
 
 Check `protocol_version >= 48`.
+
+**The offer (issue 2537, v55).** A creator may send its ephemeral key as
+`curve` when it opens: then the rendezvous is OFFERED to the account's
+other devices, the same code the QR carries pushed instead of scanned:
+
+```json
+{"kind": "e2e_pairing_offered", "rendezvous_id": "…", "curve": "…", "expires_at": "…"}
+```
+
+It is pushed once, at the open, and again in every user-topic join
+snapshot while nobody has joined, so a device that logs in meanwhile gets
+it too; `GET /e2e/pairings/offer` answers the same for a client that is not
+on the socket. Joining is the ordinary `POST …/join` with the pushed
+`rendezvous_id`, and the channel runs with the pushed `curve` exactly as
+with a scanned one. The offer is gone at the first `e2e_pairing_message`
+(someone joined), at `e2e_pairing_closed`, and at `expires_at`. Ignore an
+offer whose `curve` is your own, and one your device has no use for (it
+already holds the identity on every network). cicchetto shows a banner and
+joins only when the user says so, never on its own: a rendezvous takes ONE
+joiner, so every eligible device joining by itself would race, and the
+winner could be a tab nobody is looking at. Check `protocol_version >= 55`;
+an older server ignores `curve` and offers nothing.
 
 **What cicchetto puts on the channel (issue 2430, X1-crypto; no wire
 change, protocol stays 49).** grappa never reads this, and a client
@@ -2003,6 +2026,7 @@ forever.
 | `e2e_message` | user | one whole end-to-end encrypted message for one of your devices (`to_did`, v49): from a peer, or, with `own: true` (v50), a copy of one your other device sent; payload never decoded; queued until that device acks (§4f) |
 | `e2e_pairing_closed` | user | a pairing rendezvous is gone: `closed` by a side, `expired`, or `replaced` by a newer open (§4g, v48) |
 | `e2e_pairing_message` | user | a side posted message `seq` on a pairing rendezvous; no payload, fetch it (§4g, v48) |
+| `e2e_pairing_offered` | user | a pairing rendezvous opened with the creator's key, offered to the account's other devices: its code and `expires_at`; also in each join snapshot until someone joins (§4g, v55) |
 | `e2e_request` | user | a request to start an encrypted chat was made or changed state: yours, a peer's, the peer's answer (§4i, v53) |
 | `e2e_request_gone` | user | that request is gone: answered, dismissed, cancelled by the peer, or withdrawn past its deadline (§4i, v53) |
 | `e2e_send_dropped` | user | an outbound end-to-end encrypted message accepted by the send door and dropped unsent: `late`, `send_failed` or `session_ended` (§4f, v46) |

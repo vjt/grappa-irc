@@ -1299,6 +1299,46 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert active_host in [:embedded, :litterbox]
     end
 
+    # Issue 2537 — a pairing offered to the account's other devices is pushed
+    # once, when it opens, and PubSub does not replay: a device that logs in
+    # while it lives (the usual order: "add a device" on the phone, then the
+    # login on the PC) reads it from this snapshot, the same payload the live
+    # push carries.
+    test "after-join snapshot: pushes the account's live pairing offer" do
+      user_name = "pairoffer-#{System.unique_integer([:positive])}"
+      user = user_fixture(name: user_name)
+      curve = Base.encode64(:crypto.strong_rand_bytes(32), padding: false)
+      {:ok, r} = Grappa.E2ePairing.open({:user, user.id}, user_name, session_fixture(user).id, curve)
+      expires_at = DateTime.to_iso8601(r.expires_at)
+      rendezvous_id = r.id
+
+      {:ok, _, _} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(Topic.user(user_name), %{})
+
+      assert_push("event", %{
+        kind: :e2e_pairing_offered,
+        rendezvous_id: ^rendezvous_id,
+        curve: ^curve,
+        expires_at: ^expires_at
+      })
+    end
+
+    test "after-join snapshot: no pairing offer without a live one" do
+      user_name = "nopairoffer-#{System.unique_integer([:positive])}"
+      user = user_fixture(name: user_name)
+      {:ok, _} = Grappa.E2ePairing.open({:user, user.id}, user_name, session_fixture(user).id, nil)
+
+      {:ok, _, _} =
+        user_name
+        |> build_socket()
+        |> subscribe_and_join(Topic.user(user_name), %{})
+
+      assert_push("event", %{kind: :server_settings_changed})
+      refute_push("event", %{kind: :e2e_pairing_offered}, 100)
+    end
+
     test "after-join snapshot: query_windows_list payload is JSON-serializable (regression)" do
       # Regression: the prod bug raised Protocol.UndefinedError for
       # Jason.Encoder on %QueryWindows.Window{} structs because the schema

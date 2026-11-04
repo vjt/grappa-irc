@@ -53,16 +53,16 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v53 -> v54 (issue 2497): the user-topic event
- * `no_such_nick`, a 401 naming a nick, for the encrypted query that keeps
- * no scrollback. The kind is NARROWED and dropped, not ignored: cicchetto
- * narrows it, and test_commands requires every kind it narrows to be
- * known here. A terminal has no encrypted query, and the 401 itself is
- * still the `notice` row it already shows, so nothing it renders changed.
+ * Last read, v54 -> v55 (issue 2537): the user-topic event
+ * `e2e_pairing_offered`, a QR pairing offered to the account's other
+ * devices, plus an optional key on `POST /e2e/pairings` and the REST twin
+ * `GET /e2e/pairings/offer`. A terminal neither pairs nor holds an E2E
+ * identity, so nothing it renders changed; like the other `e2e_*` kinds
+ * the name carries a digit, which test_commands' parity scan skips.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 54
+#define WIRE_PROTOCOL_VERSION 55
 
 #include <stdbool.h>
 #include <stddef.h>

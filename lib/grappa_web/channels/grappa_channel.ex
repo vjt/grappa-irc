@@ -178,6 +178,7 @@ defmodule GrappaWeb.GrappaChannel do
 
   alias Grappa.{
     Accounts,
+    E2ePairing,
     Networks,
     Notify,
     QueryWindows,
@@ -190,6 +191,7 @@ defmodule GrappaWeb.GrappaChannel do
 
   alias Grappa.Cic.Bundle, as: CicBundle
   alias Grappa.Cic.Wire, as: CicWire
+  alias Grappa.E2ePairing.Wire, as: E2ePairingWire
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
   alias Grappa.PresenceFilter.Resolver
@@ -1627,10 +1629,25 @@ defmodule GrappaWeb.GrappaChannel do
         push_session_snapshot(subject, socket)
         push_notify_list(subject, socket)
         push_presence_if_live(subject, socket)
+        push_pairing_offer(subject, socket)
 
       :error ->
         :ok
     end
+  end
+
+  # Issue 2537 — the account's offered pairing, the same payload its live
+  # push carried: that push went out once, at the open, and a device that
+  # logs in meanwhile (the usual order: "add a device" on the phone, then the
+  # login on the PC) would otherwise never hear of it.
+  @spec push_pairing_offer(Session.subject(), Phoenix.Socket.t()) :: :ok
+  defp push_pairing_offer(subject, socket) do
+    case E2ePairing.offer(subject) do
+      nil -> :ok
+      r -> push(socket, "event", E2ePairingWire.offered_payload(r))
+    end
+
+    :ok
   end
 
   # #229/#249/#482: seed the per-session user-topic cold-WS-subscribe state in
