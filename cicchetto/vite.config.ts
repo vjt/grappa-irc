@@ -234,8 +234,9 @@ export default defineConfig({
         // calls (mode=cors/same-origin) and WS upgrades (mode=websocket)
         // pass straight through to the network — that part is
         // architectural, not denylist-driven. The navigation fallback
-        // (denylist for /auth, /me, /networks, /socket) is wired
-        // explicitly in `service-worker.ts` via NavigationRoute.
+        // (a denylist for the REST scopes, /socket and a few more) is
+        // built in `lib/swNavigationRoute.ts` and registered explicitly by
+        // `service-worker.ts`.
         //
         // #1480 — `mp3` joined the list, and unlike the logos below these ARE
         // shell: a notification sound that has to be fetched is silent exactly
