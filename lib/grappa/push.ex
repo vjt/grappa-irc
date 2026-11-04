@@ -117,14 +117,28 @@ defmodule Grappa.Push do
 
   @doc """
   Boot-time stash of the operator's private push hosts (#2401 —
-  `PUSH_ALLOWED_PRIVATE_HOSTS`, read by `config/runtime.exs` in every env
-  and passed in by `Grappa.Application.start/2`), folded once here so
+  `PUSH_ALLOWED_PRIVATE_HOSTS`, read by `config/runtime.exs` and passed in
+  by `Grappa.Application.start/2`), folded once here so
   `allowed_private_host?/1` is a set lookup on every endpoint save and
   every delivery. Idempotent; later calls overwrite.
+
+  Raises `ArgumentError` on an entry that is neither a bare hostname nor
+  an IP literal — `ntfy.lan:8080`, `http://ntfy.lan`, `[fd00::1]`. Such an
+  entry could never equal an endpoint's host, so accepting it would leave
+  the operator believing in an exemption that does not exist.
   """
   @spec boot_allowed_private_hosts([String.t()]) :: :ok
-  def boot_allowed_private_hosts(hosts) when is_list(hosts),
-    do: :persistent_term.put(@allowed_private_hosts_term, MapSet.new(hosts, &fold_host/1))
+  def boot_allowed_private_hosts(hosts) when is_list(hosts) do
+    case Enum.reject(hosts, &bare_host?(fold_host(&1))) do
+      [] ->
+        :persistent_term.put(@allowed_private_hosts_term, MapSet.new(hosts, &fold_host/1))
+
+      bad ->
+        raise ArgumentError,
+              "PUSH_ALLOWED_PRIVATE_HOSTS takes bare hostnames or IP literals " <>
+                "(no scheme, port or brackets), got: #{inspect(bad)}"
+    end
+  end
 
   @doc """
   Is `host` one the operator exempted from the push endpoint address
@@ -133,13 +147,27 @@ defmodule Grappa.Push do
   resolves it without judging the answer. The list is the operator's
   (`PUSH_ALLOWED_PRIVATE_HOSTS`, empty by default) — a UnifiedPush
   distributor on their own LAN — never the client's. The match folds
-  ASCII case and a trailing root dot, as DNS does.
+  ASCII case and a trailing root dot, as DNS does, and compares an IP
+  literal in its canonical form (`fd00:0::1` is `fd00::1`). Before boot the
+  answer is `false`: no exemption is the safe default.
   """
   @spec allowed_private_host?(String.t()) :: boolean()
   def allowed_private_host?(host) when is_binary(host),
-    do: MapSet.member?(:persistent_term.get(@allowed_private_hosts_term), fold_host(host))
+    do: MapSet.member?(:persistent_term.get(@allowed_private_hosts_term, MapSet.new()), fold_host(host))
 
-  defp fold_host(host), do: host |> String.trim_trailing(".") |> String.downcase(:ascii)
+  defp fold_host(host) do
+    name = host |> String.trim_trailing(".") |> String.downcase(:ascii)
+
+    case :inet.parse_strict_address(String.to_charlist(name)) do
+      {:ok, ip} -> ip |> :inet.ntoa() |> List.to_string()
+      {:error, _} -> name
+    end
+  end
+
+  # A folded entry: a canonical IP literal, or hostname characters only.
+  defp bare_host?(folded) do
+    Regex.match?(~r/^[a-z0-9._-]+$/, folded) or match?({:ok, _}, :inet.parse_strict_address(String.to_charlist(folded)))
+  end
 
   @doc """
   Returns the VAPID public key pinned at boot. Raises if `boot/0`

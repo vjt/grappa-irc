@@ -80,6 +80,13 @@ defmodule Grappa.Push.AllowedPrivateHostsTest do
       assert {:ok, _} = register("http://push-catcher.:3000/p/abc")
     end
 
+    test "an IP literal matches in its canonical form, however either side spells it" do
+      Push.boot_allowed_private_hosts(["fd00:0::20"])
+
+      assert {:ok, _} = register("http://[fd00::20]:8080/wp")
+      assert {:ok, _} = register("http://[FD00:0:0::20]:8080/wp")
+    end
+
     @neighbours [
       "http://evil.push-catcher:3000/p",
       "http://push-catcher.evil:3000/p",
@@ -93,6 +100,22 @@ defmodule Grappa.Push.AllowedPrivateHostsTest do
       for endpoint <- @neighbours do
         assert refused?(register(endpoint)), "#{endpoint} rode the push-catcher exemption"
       end
+    end
+  end
+
+  describe "boot" do
+    @impossible ["ntfy.lan:8080", "http://ntfy.lan", "[fd00::20]", "ntfy.lan/up"]
+
+    test "an entry that could never equal a host is refused by name, and nothing is installed" do
+      Push.boot_allowed_private_hosts(["push-catcher"])
+
+      for entry <- @impossible do
+        error = assert_raise ArgumentError, fn -> Push.boot_allowed_private_hosts(["ntfy.lan", entry]) end
+        assert error.message =~ inspect(entry)
+      end
+
+      assert Push.allowed_private_host?("push-catcher")
+      refute Push.allowed_private_host?("ntfy.lan")
     end
   end
 

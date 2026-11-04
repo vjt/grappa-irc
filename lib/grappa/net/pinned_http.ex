@@ -61,10 +61,10 @@ defmodule Grappa.Net.PinnedHttp do
   def request(method, %URI{scheme: scheme, host: host, port: port} = uri, ip, headers, body, opts)
       when scheme in ["http", "https"] and is_binary(host) and is_integer(port) do
     connect_timeout = Keyword.fetch!(opts, :connect_timeout)
-    deadline = System.monotonic_time(:millisecond) + Keyword.fetch!(opts, :deadline)
     max_body = Keyword.fetch!(opts, :max_body)
 
     with {:ok, conn} <- connect(uri, ip, connect_timeout),
+         deadline = System.monotonic_time(:millisecond) + Keyword.fetch!(opts, :deadline),
          {:ok, conn, ref} <- send_request(conn, method, uri, headers, body) do
       {result, conn} = read(conn, ref, deadline, max_body, %{status: nil, headers: [], body: [], size: 0})
       _ = Mint.HTTP.close(conn)
@@ -72,8 +72,12 @@ defmodule Grappa.Net.PinnedHttp do
     end
   end
 
+  # `inet4: false` beside `inet6: true`: Mint otherwise answers a failed v6
+  # connect by retrying it without `:inet6` (`Mint.Core.Transport.TCP` /
+  # `.SSL` `connect/4`), which doubles the connect budget for an address that
+  # has only the one family anyway.
   defp connect(%URI{scheme: scheme, host: host, port: port}, ip, connect_timeout) do
-    transport_opts = [timeout: connect_timeout] ++ if(tuple_size(ip) == 8, do: [inet6: true], else: [])
+    transport_opts = [timeout: connect_timeout] ++ if(tuple_size(ip) == 8, do: [inet6: true, inet4: false], else: [])
 
     case Mint.HTTP.connect(mint_scheme(scheme), ip, port,
            hostname: host,
