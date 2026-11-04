@@ -2549,3 +2549,74 @@ beside it (the 2430 suite, 2485, 2486, 2505, 2506, 2508, 2512, 2515) ran in
 the same pass, 40 of 42 green; the two reds, a chromium that crashed at
 launch and a 1.7 px offset in the WebKit phone rail while it slid in, were
 green on an iso-rerun at the final head, with 2513 again.
+<!-- entry #2536 -->
+
+---
+
+## 2026-11-04 — #2536: commands run in an encrypted query, `/me` goes encrypted
+
+vjt's ruling on 2536 (#grappa, 2026-11-04 22:19), after weighing a block:
+blocking commands is counter-intuitive, remove the block completely.
+#2512 sent everything typed in an encrypted query to the peer as one
+encrypted message, asked before any verb was parsed. A line starting with
+`/` was therefore text: `/whois foo` landed in the peer's window, and
+`/ns identify <password>` handed the peer the NickServ password (vjt: "a
+command can carry a secret"). The block would have fixed the leak; the
+ruling fixes it by running the command.
+
+* **What is said goes to the peer; everything else is a command.** The
+  submit is parsed by `parseSlash` as in every window. Plain text and
+  `/me` go to the peer through Olm as one message, as before; any other
+  command runs **in clear**, on purpose: a command is not part of the
+  encrypted conversation. #2512's "nothing typed in that window reaches
+  grappa's send door in clear" now holds for what is said, not for what
+  is typed.
+* **`/me` is the one exception, inside the plaintext.** It is
+  conversation, so it must not leave as a clear CTCP ACTION. The engine's
+  inner message is `{t: "text", body}` (vjt/irc-olm, shared with the
+  bots), and the action rides in `body` as the CTCP envelope,
+  `\x01ACTION …\x01`, framed by `wireBody`, the call every other door
+  frames with. Chosen over a new inner field: the envelope is the shape
+  grappa's own scrollback already stores an action in (the CTCP
+  "preserved as-is" rule), so the receiver needs only to recognise it,
+  and the scrollback's action line already unwraps it; a peer that knows
+  nothing of it (an irc-olm bot) still gets the words. Typed text is
+  scrubbed of the delimiter first (#1126's exit scrub), so only `/me`
+  frames an ACTION. An empty `/me` sends nothing, as in any window. A
+  multi-line `/me` is one action, as a multi-line text is one message.
+* **The receiver draws it as an action, ours or the peer's.**
+  `EncryptedChatPane`'s `lineOf` gives a body in the envelope the
+  scrollback's `action` kind (`isCtcpAction`, next to `stripCtcpAction`
+  in `ctcpAction.ts`; `frameBudget` now asks it too instead of spelling
+  the prefix), so `* nick waves` renders as in any query, still locked
+  and still carrying its state. The chat's search
+  reads what a line says (`stripCtcpAction`), not the envelope.
+* **A command runs as it would in the plain query with the peer.** The
+  command context's submitting window is that query for a command typed
+  in an encrypted one: a verb aimed at "here" (`/notice`'s echo, `/np`,
+  a CTCP's source window, a bare `/part`) aims at the plain query, never
+  at `$e2e:<nick>`, a window grappa has never heard of and whose 4xx
+  feeds fail2ban (grappa-irc#160). It is the window #2512's nick menu
+  already answers in. Bare `/whois` asks about the peer, as in a query.
+  **Consequences, accepted with the ruling:** `/np` there is a clear
+  ACTION in the plain query, not an encrypted one (it is not `/me`), and
+  a bare `/query` (`/q`) is still an error there: it closes a *query*,
+  and the encrypted window's × closes that one, asking first when the
+  chat keeps messages.
+
+Tests: compose (plain text to the encrypted door; `/whois carol` and
+`/ns identify` on the normal path with no encrypted send; bare `/whois`
+on the peer; `/notice`'s echo in the plain query; `/me` single and
+multi-line encrypted in the envelope with no clear send; empty `/me`;
+`//` and a pasted delimiter), the pane (an envelope is an action line,
+the peer's and ours; the search ignores the envelope). Each rule read
+red against a mutant of its own, 8 of 8, each turning only its own tests
+red (the never-action mutant also turns the search test, which reads the
+line's kind). e2e: `issue2536-encrypted-query-commands.spec.ts`, two
+browsers on the real ircd: Alice sends `/ns identify notforbob` and the
+real NickServ answers her; `/me waves at bob` reaches Bob as an action;
+neither window shows the identify, and grappa keeps no DM history between
+them. The absence is barriered by order: Alice's encrypted messages to
+one peer leave in the order sent, so an identify sent to Bob would have
+preceded the action. **Not run locally** (the stack lane is w2's): CI's
+integration run is the spec's first.
