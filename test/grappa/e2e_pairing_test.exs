@@ -28,8 +28,17 @@ defmodule Grappa.E2ePairingTest do
     %{user: user, a: device(user), b: device(user)}
   end
 
+  # The ephemeral Curve25519 key a pairing QR carries: 32 bytes, base64
+  # without padding, 43 characters.
+  defp curve, do: Base.encode64(:crypto.strong_rand_bytes(32), padding: false)
+
   defp open!(user, session) do
-    {:ok, r} = E2ePairing.open(subject(user), user.name, session)
+    {:ok, r} = E2ePairing.open(subject(user), user.name, session, nil)
+    r
+  end
+
+  defp offered!(user, session, key) do
+    {:ok, r} = E2ePairing.open(subject(user), user.name, session, key)
     r
   end
 
@@ -39,7 +48,7 @@ defmodule Grappa.E2ePairingTest do
     r
   end
 
-  describe "open/3" do
+  describe "open/4" do
     test "opens a rendezvous whose creator is the opening device", %{user: user, a: a} do
       r = open!(user, a)
       assert byte_size(r.id) == 22
@@ -73,11 +82,96 @@ defmodule Grappa.E2ePairingTest do
     end
 
     test "opens are rate limited per subject", %{user: user, a: a} do
-      results = for _ <- 1..(E2ePairing.open_burst() + 1), do: E2ePairing.open(subject(user), user.name, a)
+      results = for _ <- 1..(E2ePairing.open_burst() + 1), do: E2ePairing.open(subject(user), user.name, a, nil)
       assert List.last(results) == {:error, :rate_limited}
       assert Enum.count(results, &match?({:ok, _}, &1)) == E2ePairing.open_burst()
       other = user_fixture()
-      assert {:ok, _} = E2ePairing.open(subject(other), other.name, device(other))
+      assert {:ok, _} = E2ePairing.open(subject(other), other.name, device(other), nil)
+    end
+  end
+
+  # Issue 2537 — the creator's key rides the open, and the rendezvous is
+  # offered to every other device of the account: the code a QR carries,
+  # pushed on the user topic instead of scanned.
+  describe "the offer" do
+    test "an open with the creator's key offers it on the user topic", %{user: user, a: a} do
+      key = curve()
+      r = offered!(user, a, key)
+      expires_at = DateTime.to_iso8601(r.expires_at)
+
+      assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: payload}
+
+      assert payload == %{
+               kind: :e2e_pairing_offered,
+               rendezvous_id: r.id,
+               curve: key,
+               expires_at: expires_at
+             }
+    end
+
+    test "an open without a key offers nothing", %{user: user, a: a} do
+      _ = open!(user, a)
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_pairing_offered}}
+      assert E2ePairing.offer(subject(user)) == nil
+    end
+
+    test "a key that is not 32 bytes of base64 is refused, and costs no open", %{user: user, a: a} do
+      for bad <- [
+            "",
+            String.duplicate("A", 42),
+            String.duplicate("A", 44),
+            String.duplicate("A", 42) <> "=",
+            String.duplicate("A", 42) <> "-",
+            String.duplicate("é", 43),
+            42,
+            ["A"]
+          ] do
+        assert {:error, %Ecto.Changeset{}} = E2ePairing.open(subject(user), user.name, a, bad)
+      end
+
+      refute_receive %Phoenix.Socket.Broadcast{}
+      # The refusals took nothing from the bucket: a full burst still opens.
+      for _ <- 1..E2ePairing.open_burst(), do: {:ok, _} = E2ePairing.open(subject(user), user.name, a, curve())
+    end
+
+    test "offer/1 is the subject's rendezvous with a key and no joiner yet", %{user: user, a: a, b: b} do
+      r = offered!(user, a, curve())
+      assert %Rendezvous{id: id} = E2ePairing.offer(subject(user))
+      assert id == r.id
+
+      other = user_fixture()
+      assert E2ePairing.offer(subject(other)) == nil
+
+      {:ok, _} = E2ePairing.join(subject(user), b, r.id)
+      assert E2ePairing.offer(subject(user)) == nil
+    end
+
+    test "a newer open is the offer, and a close or an expiry ends it", %{user: user, a: a, b: b} do
+      _ = offered!(user, a, curve())
+      newer = offered!(user, b, curve())
+      assert E2ePairing.offer(subject(user)).id == newer.id
+
+      :ok = E2ePairing.close(subject(user), b, newer.id)
+      assert E2ePairing.offer(subject(user)) == nil
+
+      _ = offered!(user, a, curve())
+      :ok = E2ePairing.sweep(System.monotonic_time(:millisecond) + @ttl_ms + 1_000)
+      assert E2ePairing.offer(subject(user)) == nil
+    end
+
+    # Its timer may not have fired yet: past its ttl, a rendezvous is no
+    # offer even while the relay still holds it. Driven directly, on a state
+    # of its own, as the timer test below is.
+    test "a rendezvous past its ttl is no offer before its timer fires", %{user: user, a: a} do
+      dead = Rendezvous.new(subject(user), user.name, a, -1, curve())
+      state = %{dead.id => dead}
+      now = System.monotonic_time(:millisecond)
+
+      assert {:reply, nil, ^state} = E2ePairing.handle_call({:offer, subject(user), now}, self(), state)
+
+      live = Rendezvous.new(subject(user), user.name, a, @ttl_ms, curve())
+      state = %{live.id => live}
+      assert {:reply, ^live, ^state} = E2ePairing.handle_call({:offer, subject(user), now}, self(), state)
     end
   end
 
@@ -248,8 +342,8 @@ defmodule Grappa.E2ePairingTest do
     # seam does. Driven directly, on a state of its own.
     test "a timer's expire closes the rendezvous whose ttl ended, not a live one",
          %{user: user, a: a, b: b} do
-      dead = Rendezvous.new(subject(user), user.name, a, -1)
-      live = Rendezvous.new(subject(user), user.name, b, @ttl_ms)
+      dead = Rendezvous.new(subject(user), user.name, a, -1, nil)
+      live = Rendezvous.new(subject(user), user.name, b, @ttl_ms, nil)
       state = %{dead.id => dead, live.id => live}
 
       assert {:noreply, left} = E2ePairing.handle_info({:expire, dead.id}, state)

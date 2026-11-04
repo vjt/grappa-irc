@@ -662,11 +662,28 @@ export type E2ePairingWireMessagesResponse = {
   messages: E2ePairingWireMessage[];
 };
 
+export type E2ePairingWireOffer = {
+  rendezvous_id: string;
+  curve: string;
+  expires_at: string;
+};
+
+export type E2ePairingWireOfferResponse = {
+  offer: E2ePairingWireOffer | null;
+};
+
 export type E2ePairingWireE2ePairingMessagePayload = {
   kind: "e2e_pairing_message";
   rendezvous_id: string;
   seq: number;
   from: E2ePairingWireSide;
+};
+
+export type E2ePairingWireE2ePairingOfferedPayload = {
+  kind: "e2e_pairing_offered";
+  rendezvous_id: string;
+  curve: string;
+  expires_at: string;
 };
 
 export type E2ePairingWireE2ePairingClosedPayload = {
@@ -677,6 +694,7 @@ export type E2ePairingWireE2ePairingClosedPayload = {
 
 export type WireE2ePairingEvent =
   | E2ePairingWireE2ePairingMessagePayload
+  | E2ePairingWireE2ePairingOfferedPayload
   | E2ePairingWireE2ePairingClosedPayload;
 
 // === Grappa.E2eRequests.Wire ===

@@ -3,12 +3,28 @@ defmodule Grappa.E2ePairing.Rendezvous do
   One pairing rendezvous (`Grappa.E2ePairing`): its subject, the auth
   session of each side, its messages, newest first, and its deadline on
   both clocks (monotonic for the timer, wall-clock for the wire).
+
+  `curve` is the creator's ephemeral Curve25519 key, the public half of the
+  code its QR shows (issue 2537). A creator that sent it has its rendezvous
+  offered to the account's other devices; nil (an older client) offers
+  nothing.
   """
   alias Grappa.E2ePairing.{Message, Wire}
   alias Grappa.Subject
 
   @enforce_keys [:id, :subject, :topic_label, :creator, :expires_at, :expires_at_ms]
-  defstruct [:id, :subject, :topic_label, :creator, :expires_at, :expires_at_ms, joiner: nil, messages: [], bytes: 0]
+  defstruct [
+    :id,
+    :subject,
+    :topic_label,
+    :creator,
+    :curve,
+    :expires_at,
+    :expires_at_ms,
+    joiner: nil,
+    messages: [],
+    bytes: 0
+  ]
 
   @type side :: Wire.side()
 
@@ -17,6 +33,7 @@ defmodule Grappa.E2ePairing.Rendezvous do
           subject: Subject.t(),
           topic_label: String.t(),
           creator: String.t(),
+          curve: String.t() | nil,
           joiner: String.t() | nil,
           expires_at: DateTime.t(),
           expires_at_ms: integer(),
@@ -25,13 +42,14 @@ defmodule Grappa.E2ePairing.Rendezvous do
         }
 
   @doc "A fresh rendezvous with a random 128-bit id, url-safe base64 (22 characters)."
-  @spec new(Subject.t(), String.t(), String.t(), pos_integer()) :: t()
-  def new(subject, topic_label, creator, ttl_ms) do
+  @spec new(Subject.t(), String.t(), String.t(), pos_integer(), String.t() | nil) :: t()
+  def new(subject, topic_label, creator, ttl_ms, curve) do
     %__MODULE__{
       id: Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false),
       subject: subject,
       topic_label: topic_label,
       creator: creator,
+      curve: curve,
       expires_at: DateTime.add(DateTime.utc_now(), ttl_ms, :millisecond),
       expires_at_ms: System.monotonic_time(:millisecond) + ttl_ms
     }

@@ -388,7 +388,13 @@ let _socket: Socket | null = null;
 // a message waiting for its keys fails at once (`encryptedPeerAbsent`). A
 // pre-54 server never pushes it, so such a message waits out its own 90 s and
 // fails "no keys came", as before; `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 54;
+//
+// 55 (issue 2537) — "add a device" offers its pairing to the account's other
+// sessions: the open carries the ephemeral key, `e2e_pairing_offered` rides
+// the user topic, and a browser that can be paired shows a banner. A pre-55
+// server ignores the key and never offers, so the QR and its copied link are
+// the only way, as before; `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 55;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

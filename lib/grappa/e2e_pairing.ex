@@ -38,6 +38,18 @@ defmodule Grappa.E2ePairing do
   reaches every device of the account, and the fetch answers the two
   sides alone.
 
+  ## The offer (issue 2537)
+
+  A creator may open with its ephemeral Curve25519 key, the public half of
+  the code its QR shows. Then the rendezvous is OFFERED: announced on the
+  user topic with that key, so another device of the account can join
+  without a scan or a copied link (cic shows it a banner, never joins on
+  its own: one joiner per rendezvous, and a forgotten tab would win). Until
+  someone joins, `offer/1` answers it, which is what a device that logs in
+  meanwhile reads (the user-topic join snapshot and `GET
+  /e2e/pairings/offer`). The key is public, like everything else a QR
+  carries, and the push reaches the account's own devices alone.
+
   ## Ephemeral by design
 
   In memory only. A restart drops every rendezvous, and the user starts
@@ -62,6 +74,9 @@ defmodule Grappa.E2ePairing do
   @open_burst 5
   @open_refill_per_sec 1 / 60
   @payload_format ~r/\A[A-Za-z0-9+\/_-]+={0,2}\z/
+  # A Curve25519 public key: 32 bytes, standard base64 without padding, as
+  # vodozemac writes it and the QR code carries it.
+  @curve_format ~r/\A[A-Za-z0-9+\/]{43}\z/
 
   @spec ttl_ms() :: unquote(@ttl_ms)
   def ttl_ms, do: @ttl_ms
@@ -84,14 +99,27 @@ defmodule Grappa.E2ePairing do
   @doc """
   Open a rendezvous with `session_id` as its creator, replacing the
   subject's live one if any. `topic_label` names the subject's user topic.
+  With the creator's ephemeral key (`curve`, nil for none) the rendezvous
+  is offered to the account's other devices; a malformed key is refused
+  before it costs an open.
   """
-  @spec open(Subject.t(), String.t(), String.t()) :: {:ok, Rendezvous.t()} | {:error, :rate_limited}
-  def open(subject, topic_label, session_id)
+  @spec open(Subject.t(), String.t(), String.t(), term()) ::
+          {:ok, Rendezvous.t()} | {:error, Ecto.Changeset.t() | :rate_limited}
+  def open(subject, topic_label, session_id, curve)
       when is_binary(topic_label) and is_binary(session_id) do
-    with :ok <- TokenBucket.take(:e2e_pairing_open, subject, @open_burst, @open_refill_per_sec) do
-      GenServer.call(__MODULE__, {:open, subject, topic_label, session_id})
+    with {:ok, curve} <- validate_curve(curve),
+         :ok <- TokenBucket.take(:e2e_pairing_open, subject, @open_burst, @open_refill_per_sec) do
+      GenServer.call(__MODULE__, {:open, subject, topic_label, session_id, curve})
     end
   end
+
+  @doc """
+  The subject's offered rendezvous: opened with a key, nobody joined yet,
+  and not past its ttl. nil when there is none.
+  """
+  @spec offer(Subject.t()) :: Rendezvous.t() | nil
+  def offer(subject),
+    do: GenServer.call(__MODULE__, {:offer, subject, System.monotonic_time(:millisecond)})
 
   @doc "Join the rendezvous `id` with `session_id` as its joiner."
   @spec join(Subject.t(), String.t(), String.t()) ::
@@ -137,6 +165,19 @@ defmodule Grappa.E2ePairing do
   @spec sweep(integer()) :: :ok
   def sweep(now) when is_integer(now), do: GenServer.call(__MODULE__, {:sweep, now})
 
+  # `empty_values: []`: a blank key is a malformed one, not an absent one.
+  defp validate_curve(nil), do: {:ok, nil}
+
+  defp validate_curve(curve) do
+    changeset =
+      {%{}, %{curve: :string}}
+      |> Ecto.Changeset.cast(%{curve: curve}, [:curve], empty_values: [])
+      |> Ecto.Changeset.validate_required([:curve])
+      |> Ecto.Changeset.validate_format(:curve, @curve_format)
+
+    with {:ok, %{curve: c}} <- Ecto.Changeset.apply_action(changeset, :insert), do: {:ok, c}
+  end
+
   defp validate_payload(payload) do
     changeset =
       {%{}, %{payload: :string}}
@@ -154,16 +195,26 @@ defmodule Grappa.E2ePairing do
   def init(state), do: {:ok, state}
 
   @impl GenServer
-  def handle_call({:open, subject, topic_label, session_id}, _, state) do
+  def handle_call({:open, subject, topic_label, session_id, curve}, _, state) do
     state =
       case Enum.find(state, fn {_, r} -> r.subject == subject end) do
         {_, old} -> drop(state, old, :replaced)
         nil -> state
       end
 
-    r = Rendezvous.new(subject, topic_label, session_id, @ttl_ms)
+    r = Rendezvous.new(subject, topic_label, session_id, @ttl_ms, curve)
     Process.send_after(self(), {:expire, r.id}, @ttl_ms)
+    if curve != nil, do: :ok = broadcast(r, Wire.offered_payload(r))
     {:reply, {:ok, r}, Map.put(state, r.id, r)}
+  end
+
+  def handle_call({:offer, subject, now}, _, state) do
+    offer =
+      state
+      |> Map.values()
+      |> Enum.find(&(&1.subject == subject and &1.curve != nil and &1.joiner == nil and &1.expires_at_ms > now))
+
+    {:reply, offer, state}
   end
 
   def handle_call({:join, subject, session_id, id}, _, state) do

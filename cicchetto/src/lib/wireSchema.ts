@@ -573,6 +573,11 @@ export const S_E2ePairingWireE2ePairingMessagePayload = {
   },
 } as const;
 
+// Grappa.E2ePairing.Wire.e2e_pairing_offered_payload/0
+export const S_E2ePairingWireE2ePairingOfferedPayload = {
+  o: { kind: { l: "e2e_pairing_offered" }, rendezvous_id: "s", curve: "s", expires_at: "s" },
+} as const;
+
 // Grappa.E2ePairing.Wire.message/0
 export const S_E2ePairingWireMessage = {
   o: { seq: "i", from: S_E2ePairingWireSide, payload: "s" },
@@ -584,6 +589,16 @@ export const S_E2ePairingWireMessageResponse = { o: { message: S_E2ePairingWireM
 // Grappa.E2ePairing.Wire.messages_response/0
 export const S_E2ePairingWireMessagesResponse = {
   o: { messages: { a: S_E2ePairingWireMessage } },
+} as const;
+
+// Grappa.E2ePairing.Wire.offer/0
+export const S_E2ePairingWireOffer = {
+  o: { rendezvous_id: "s", curve: "s", expires_at: "s" },
+} as const;
+
+// Grappa.E2ePairing.Wire.offer_response/0
+export const S_E2ePairingWireOfferResponse = {
+  o: { offer: { u: [S_E2ePairingWireOffer, "z"] } },
 } as const;
 
 // Grappa.E2ePairing.Wire.rendezvous/0

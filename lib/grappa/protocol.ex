@@ -1428,7 +1428,26 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: an older client drops an event kind it
   # does not know, and sees the request go as it sees any other go.
-  @protocol_version 54
+  #
+  # ---------------------------------------------------------------------------
+  # 55 — issue 2537: a pairing offered to the account's other devices
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: an optional `{curve}` on `POST /e2e/pairings` (the creator's
+  # ephemeral Curve25519 key, the public half of the code its QR shows; a
+  # malformed one is 422), the user-topic event `e2e_pairing_offered`
+  # `{rendezvous_id, curve, expires_at}` (`E2ePairing.Wire.offered_payload/1`),
+  # pushed at such an open and in every user-topic join snapshot while nobody
+  # has joined, and its REST twin `GET /e2e/pairings/offer` `{offer: {…} |
+  # null}`. Bumped on the #1393d rule: a client that offers a pairing to its
+  # other devices cannot get that from a server predating this.
+  #
+  # Checked for a collision before claiming 55: origin/main carries 54, and
+  # no open PR edits this file.
+  #
+  # @min_protocol_version stays at 1: an older client opens without a key,
+  # which offers nothing, and drops an event kind it does not know.
+  @protocol_version 55
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1469,7 +1488,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 54
+  @spec version() :: 55
   def version, do: @protocol_version
 
   @doc """
