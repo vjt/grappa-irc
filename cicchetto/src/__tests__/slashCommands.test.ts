@@ -544,7 +544,7 @@ describe("parseSlash — /msg", () => {
 });
 
 // issue 2430 — /equery <nick>: the target as typed; bare is `null`, which
-// compose refuses (no bare close: the encrypted window takes no commands).
+// compose refuses (no bare close: the encrypted window's × closes it).
 describe("parseSlash — /equery", () => {
   it("/equery <nick> → open an encrypted query", () => {
     expect(parseSlash("/equery Bob")).toEqual({ kind: "equery", target: "Bob" });

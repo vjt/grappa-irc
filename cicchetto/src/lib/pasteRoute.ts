@@ -1,11 +1,10 @@
-import { channelKey } from "./channelKey";
-import { getDraft, isDraining, setDraft } from "./compose";
+import { type ChannelKey, channelKey } from "./channelKey";
+import { getDraft, isDraining, sentEncrypted, setDraft } from "./compose";
 import { placeCaretInView } from "./composeCaret";
 import { requestConfirm } from "./confirmDialog";
 import { dropUpload } from "./dropUpload";
 import { classifyPaste, PASTE_HARD_MESSAGE_LIMIT, pastedMessageCount } from "./pasteFlood";
 import { categoryOf } from "./uploadCategory";
-import { encryptedWindowPeer } from "./windowKinds";
 
 // Shared clipboard-paste routing — the file/text branching lifted out of
 // ComposeBox.onPaste so the textarea's own paste AND the boot-time global
@@ -27,6 +26,14 @@ import { encryptedWindowPeer } from "./windowKinds";
 // explicitly (NOT read off `e.currentTarget`) precisely so the global path can
 // hand in the mounted compose textarea for a paste event that fired on
 // `document`.
+
+// The draft a paste of `text` leaves: the text in place of the selection.
+function draftWithPaste(ta: HTMLTextAreaElement, key: ChannelKey, text: string): string {
+  const before = getDraft(key);
+  const start = ta.selectionStart ?? before.length;
+  const end = ta.selectionEnd ?? before.length;
+  return before.slice(0, start) + text + before.slice(end);
+}
 
 // #80 — insert a confirmed paste at the caret, replacing any selection,
 // exactly as a native paste would. The confirm dialog only GATES the paste, so
@@ -50,11 +57,8 @@ export function insertPastedText(
   text: string,
 ): void {
   const key = channelKey(networkSlug, channelName);
-  const before = getDraft(key);
-  const start = ta.selectionStart ?? before.length;
-  const end = ta.selectionEnd ?? before.length;
-  const next = before.slice(0, start) + text + before.slice(end);
-  setDraft(key, next);
+  const start = ta.selectionStart ?? getDraft(key).length;
+  setDraft(key, draftWithPaste(ta, key, text));
   const caret = start + text.length;
   queueMicrotask(() => {
     ta.focus();
@@ -214,10 +218,14 @@ function routeGuardedText(
   // Always the real count in both guarded arms, and ≥ 2 by construction, so
   // the plural is unconditional and needs no branch.
   const messages = pastedMessageCount(text);
-  // issue 2512 — an encrypted query sends a pasted block as ONE message, so
-  // there is no burst to guard; and the guard's way out, the block as a text
-  // file, would put the plaintext on the upload host. It lands as typed text.
-  const guard = encryptedWindowPeer(channelName) === null ? classifyPaste(text) : "insert";
+  // issue 2512 — what an encrypted query says goes as ONE message, so a block
+  // pasted to be said there is no burst to guard; and the guard's way out, the
+  // block as a text file, would put the plaintext on the upload host. It lands
+  // as typed text. issue 2536 — a block handed to a command there (`/msg x `
+  // and twenty lines) fans out in clear as anywhere, so it is guarded as
+  // anywhere.
+  const draft = draftWithPaste(ta, channelKey(networkSlug, channelName), text);
+  const guard = sentEncrypted(networkSlug, channelName, draft) ? "insert" : classifyPaste(text);
   switch (guard) {
     case "confirm":
       e.preventDefault();

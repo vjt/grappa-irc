@@ -31,6 +31,12 @@ export type CommandContext = {
    *
    * Not derivable from `key`: `channelKey` folds the name (#537), so the
    * spelling survives only here — and `part` puts it on the WIRE.
+   *
+   * issue 2536 — the one place the two fields name different windows: for a
+   * command typed in an encrypted query, `key` stays that window (an answer
+   * shown in the window, `/ignore`'s or `/topic`'s, lands where it was asked)
+   * while this is the peer's nick, the plain query the command runs in, as it
+   * would there. Never `$e2e:<nick>`, a window grappa has never heard of.
    */
   submittedFrom: string;
   /** The raw draft, before parsing — the one arm that re-reads it needs it. */

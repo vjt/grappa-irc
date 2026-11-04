@@ -92,7 +92,7 @@ import { sendMessage as sendWindowMessage } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { draftLines, sendBodyLines, wireBody } from "./sendPipeline";
 import { isServicesSender } from "./servicesSender";
-import { parseSlash } from "./slashCommands";
+import { parseSlash, type SlashCommand } from "./slashCommands";
 import { peelStatusmsg } from "./statusmsg";
 import { type TabCycle, tabCompleteStep } from "./tabCompletion";
 import { encryptedWindowPeer, SERVER_WINDOW_NAME } from "./windowKinds";
@@ -241,6 +241,23 @@ export const draftFramePreview = (
     budget,
   );
 };
+
+// issue 2536 — what an encrypted query says to its peer: plain text and
+// `/me`, each ONE encrypted message however many lines it holds. Every other
+// command runs as it would in the plain query, in clear.
+const isSaid = (cmd: SlashCommand): cmd is Extract<SlashCommand, { kind: "privmsg" | "me" }> =>
+  cmd.kind === "privmsg" || cmd.kind === "me";
+
+/**
+ * issue 2536 — whether `draft`, submitted from `channelName`, goes to an
+ * encrypted query's peer as ONE encrypted message: the question `submit`
+ * answers, for a door that must know before it. The paste guard asks it: a
+ * block said there is no burst, a block handed to a command (`/msg x ` and
+ * twenty lines) fans out in clear as anywhere.
+ */
+export const sentEncrypted = (networkSlug: string, channelName: string, draft: string): boolean =>
+  encryptedWindowPeer(channelName) !== null &&
+  isSaid(parseSlash(draft, aliases(), chantypesForSlug(networkSlug)));
 
 const exports_ = identityScopedStore((onIdentityChange) => {
   // #772 — seeded from the previous document's unsent drafts. The textarea is
@@ -654,7 +671,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // `/ns identify <password>`. So 2512's "nothing typed in that window
     // reaches grappa's send door in clear" now holds for what is said only.
     const peer = encryptedWindowPeer(submittedFrom);
-    if (peer !== null && (cmd.kind === "privmsg" || cmd.kind === "me")) {
+    if (peer !== null && isSaid(cmd)) {
       // Typed text frames nothing (the #1126 exit scrub): only `/me` makes an
       // ACTION, so a pasted delimiter cannot pass for one.
       const said = scrubCtcpDelimiters(cmd.body);
