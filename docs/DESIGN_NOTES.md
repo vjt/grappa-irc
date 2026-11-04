@@ -2644,3 +2644,49 @@ them. The absence is barriered by order: Alice's encrypted messages to
 one peer leave in the order sent, so an identify sent to Bob would have
 preceded the action. **Not run locally** (the stack lane is w2's): CI's
 integration run is the spec's first.
+<!-- entry #2530 -->
+
+---
+
+## 2026-11-05 — #2530: the service worker lets Cloudflare's /cdn-cgi/ through
+
+Behind Cloudflare Access (Zero Trust, an Access application in front of the
+whole hostname) the installed PWA could not finish the Access login. Access
+ends it with a navigation to `/cdn-cgi/access/authorized` on the app's own
+origin, and that response is what sets the Access session cookie. The SW's
+navigation fallback answers every navigation outside its denylist, so the
+callback went to the shell handler and never reached Cloudflare: no cookie,
+and every REST call kept being redirected to the Access login host. Removing
+the Access application restored the app, which is what pointed at the SW.
+
+* **`/^\/cdn-cgi/` joins the denylist.** `/cdn-cgi/` is the prefix
+  Cloudflare reserves on every hostname it proxies, so no app route can live
+  under it and denying it costs the shell nothing. Off Cloudflare nobody
+  navigates there; if somebody did, the request would reach the server and
+  `SpaController`'s catch-all would hand back the same shell from the
+  network instead of the precache.
+* **Not a router scope, so the superset check is blind to it.**
+  `RouterSwDenylistTest` checks that the denylist is a SUPERSET of the
+  router's top-level scopes; a missing `/cdn-cgi` stays green there. The
+  one earlier non-router entry, `/socket` (mounted on the Endpoint), is held
+  by the same test's hard-coded baseline list, which only proves the token
+  is in the source.
+* **So the route moved where a test can ask Workbox.** The denylist lived
+  inline in `service-worker.ts`, which no test can import (it declares the
+  `ServiceWorkerGlobalScope` `self` and registers listeners on load).
+  `lib/swNavigationRoute.ts` now builds the route the SW registers, and
+  `swNavigationRoute.test.ts` asks Workbox's own matcher what it answers,
+  against path plus query string: the shell on the SPA's routes (the
+  positive control), the network on REST scopes and on `/cdn-cgi/…`. Red on
+  the callback before the entry, green after. A presence check could not
+  tell a regex that matches from one that does not; issue 2531 needs exactly
+  that, for an entry keyed on a query parameter. `RouterSwDenylistTest`
+  still parses the array literal, now from the new file. Inside it, a `]`
+  in a comment ends the parse, and regex-shaped text in a comment counts as
+  an entry, so the literal's header says to name prefixes as paths.
+* **Scope.** Only the login callback. Recovering an installed PWA once the
+  Access cookie EXPIRES is issue 2531, and it depends on this entry: the
+  re-login it triggers ends at the same callback.
+
+**Deploy class:** cic bundle only (`--cic`). No server code changes; the
+Elixir test edit is test-only.

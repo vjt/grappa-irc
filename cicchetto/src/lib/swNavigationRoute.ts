@@ -75,6 +75,20 @@ export function createNavigationRoute(
       // singular `/theme/:id` SPA share route (after `/theme` comes `/`, not
       // `s`), so a shared theme link still resolves to the SPA shell.
       /^\/themes/,
+      // issue 2530 — NOT a router scope, so the router test's superset check
+      // cannot ask for it (`/socket`, an Endpoint mount, is the other such
+      // entry; that test's baseline list holds it). `/cdn-cgi/` is the prefix
+      // Cloudflare reserves on every hostname it proxies; no app route can
+      // live under it. Cloudflare Access (Zero Trust) finishes its login
+      // there: the navigation to `/cdn-cgi/access/authorized` on THIS origin
+      // is the response that sets the Access session cookie. Handed to the
+      // shell handler instead, that navigation never reaches Cloudflare: the
+      // cookie is never set, the login cannot complete, and every REST call
+      // keeps being redirected to the Access login host. Reported from an
+      // installed iOS PWA, where the page read "FetchEvent.respondWith
+      // received an error: TypeError: Load failed". Pinned by
+      // `swNavigationRoute.test.ts`.
+      /^\/cdn-cgi/,
     ],
   });
 }
