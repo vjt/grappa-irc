@@ -299,6 +299,11 @@ defmodule Grappa.MixProject do
       {:decimal, "~> 3.0", override: true},
       {:jason, "~> 1.4"},
       {:req, "~> 0.5"},
+      # #2401 — `Grappa.Net.PinnedHttp` calls Mint directly: one connection
+      # per push delivery, dialled at the address the SSRF guard vetted. It
+      # already arrives through req/finch; declaring it keeps that call site
+      # from resting on another package's dependency list.
+      {:mint, "~> 1.10"},
       {:argon2_elixir, "~> 4.1"},
       {:cloak, "~> 1.1"},
       {:cloak_ecto, "~> 1.3"},

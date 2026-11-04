@@ -84,7 +84,7 @@ defmodule Grappa.Net.PinnedHttpTest do
                Keyword.put(@opts, :deadline, 200)
              )
 
-    assert_received :accepted
+    assert_receive :accepted
     assert System.monotonic_time(:millisecond) - started < 1_000
   end
 

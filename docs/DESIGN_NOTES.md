@@ -2282,8 +2282,10 @@ supervision tree per name, forever. Push volume makes a handshake per delivery
 free, and the cold-pool race the sender tests used to pre-warm around is gone
 with the pool. Bounds are explicit and fit the 10 s per-delivery Task budget:
 two 2 s DNS lookups (now `:inet.getaddrs/3`, the old ones had no timeout),
-2 s connect, a 3 s wall-clock response deadline that does not restart per
-chunk, and a 64 KiB body cap. The headers are the same RFC 8291/8292 set and
+2 s connect, a 3 s wall-clock response deadline counted from the connect that
+does not restart per chunk, and a 64 KiB body cap. A v6 address passes
+`inet4: false` beside `inet6: true`, or Mint would retry a failed connect
+without `:inet6` and spend the connect budget twice. The headers are the same RFC 8291/8292 set and
 `WireFormatTest` still decrypts the body as a receiver would. The result
 mapping is ours now (404/410 sweep, everything else an `http_error`), so the
 `normalize/1` adapter and its unknown-shape clause are gone; and
@@ -2326,8 +2328,13 @@ IS the production path, and it serves the case the original text wrote off —
 a self-hoster's ntfy on their own LAN. The tenant attack stays closed: the list
 comes from the operator's environment at boot, is empty by default, and
 matches a host exactly (ASCII case and a trailing dot folded), never by
-suffix. `config/runtime.exs` reads it in every env because the harness runs
-`MIX_ENV=dev`; `cicchetto/e2e/compose.yaml` sets it to `push-catcher`.
+suffix; an IP literal is compared in canonical form. An entry that could
+never equal a host (`ntfy.lan:8080`, `http://ntfy.lan`, `[fd00::1]`) raises
+at boot rather than standing as an exemption that does not exist.
+`config/runtime.exs` reads it in every env but `:test` (the harness runs
+`MIX_ENV=dev`; `cicchetto/e2e/compose.yaml` sets it to `push-catcher`), and
+`config/test.exs` pins it empty so a developer's `.env` cannot change what the
+suite asserts.
 
 **Found on the way: `ImageFetcher.Req` double-bracketed IPv6.**
 `URI.to_string/1` already brackets a host containing `:`, so its own

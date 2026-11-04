@@ -233,6 +233,11 @@ config :grappa, :themes,
 # delivery tests need the same loopback-permitting resolver.
 config :grappa, :push, ssrf_resolver: Grappa.Net.Ssrf.TestResolver
 
+# #2401 — no operator-exempted push host in the suite, whatever the
+# developer's environment says (runtime.exs skips the read under :test).
+# The exemption's own tests set the list explicitly and put this back.
+config :grappa, :push_allowed_private_hosts, []
+
 # #543 INC-5 — source-alias command seam → a Mox so the FreeBSD/Linux adapter
 # tests assert argv + exit-mapping without a real `sudo ifconfig` / `sysctl` /
 # `ip route`. Substrate stays `:docker` (Disabled adapter) by default; tests

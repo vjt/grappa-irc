@@ -53,15 +53,19 @@ extra_origins =
 # for the e2e harness's push-catcher sidecar. Comma-separated bare hostnames
 # or IP literals, matched case-insensitively; pinned by
 # `Grappa.Push.boot_allowed_private_hosts/1`.
-# Hoisted out of the prod block (all envs) because that harness runs
-# MIX_ENV=dev. Empty / unset = no exemption.
-push_allowed_private_hosts =
-  case System.get_env("PUSH_ALLOWED_PRIVATE_HOSTS") do
-    nil -> []
-    raw -> raw |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
-  end
+# Hoisted out of the prod block because that harness runs MIX_ENV=dev.
+# Every env EXCEPT :test, where `config/test.exs` pins the list empty: a
+# developer's own .env (compose.yaml forwards it) must not change what the
+# suite asserts. Empty / unset = no exemption.
+if config_env() != :test do
+  push_allowed_private_hosts =
+    case System.get_env("PUSH_ALLOWED_PRIVATE_HOSTS") do
+      nil -> []
+      raw -> raw |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+    end
 
-config :grappa, :push_allowed_private_hosts, push_allowed_private_hosts
+  config :grappa, :push_allowed_private_hosts, push_allowed_private_hosts
+end
 
 case System.get_env("GRAPPA_PASSKEY_ORIGIN") do
   origin when origin in [nil, ""] -> :ok
