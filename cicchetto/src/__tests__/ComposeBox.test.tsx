@@ -28,6 +28,10 @@ vi.mock("../lib/compose", () => ({
   // it is a boundary, so the view's two affordances can be driven from a
   // known preview.
   draftFramePreview: vi.fn(() => mockFramePreview),
+  // issue 2536 — whether the draft a paste leaves is said to an encrypted
+  // query's peer, which the paste guard asks (pinned in compose.test.ts).
+  // False: every window here is a plain one.
+  sentEncrypted: vi.fn(() => false),
 }));
 
 let mockFramePreview: { messages: number; remainingBytes: number | null } | null = null;
