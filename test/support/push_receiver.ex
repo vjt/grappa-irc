@@ -15,8 +15,7 @@ defmodule Grappa.PushReceiver do
   """
   use Boundary, top_level?: true, deps: [Grappa.Push, Grappa.PushFixtures]
 
-  alias Grappa.Push
-  alias Grappa.PushFixtures
+  alias Grappa.{Push, PushFixtures}
 
   # RFC 8188 §2.1: salt(16) ‖ rs(4) ‖ idlen(1) ‖ keyid(idlen).
   @salt_length 16
