@@ -78,6 +78,14 @@ defmodule Grappa.E2ePairing do
   # vodozemac writes it and the QR code carries it.
   @curve_format ~r/\A[A-Za-z0-9+\/]{43}\z/
 
+  @typedoc """
+  The relay's state: every live rendezvous, by id. Named so the hot-deploy
+  preflight sees it (`Grappa.HotReload.LongLivedModules`): a field added to
+  `Rendezvous` is a shape change for every rendezvous already held, as
+  `curve` was (issue 2537).
+  """
+  @type t :: %{optional(String.t()) => Rendezvous.t()}
+
   @spec ttl_ms() :: unquote(@ttl_ms)
   def ttl_ms, do: @ttl_ms
 

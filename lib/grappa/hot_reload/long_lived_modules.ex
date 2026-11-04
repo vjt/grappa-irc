@@ -136,6 +136,9 @@ defmodule Grappa.HotReload.LongLivedModules do
     Grappa.ShareTokens,
     Grappa.RateLimit.DailyQuota,
     Grappa.RateLimit.FailureWindow,
+    # issue 2537 — the pairing relay holds every live `%Rendezvous{}`. Its
+    # `init/1` returns its argument, so the shape is the `@type t` it names.
+    Grappa.E2ePairing,
     Grappa.RateLimit.TokenBucket,
     Grappa.Net.PtrCache,
     # #1768 — its `init/1` returns the bare `{:ok, %{}}` literal, which is
@@ -178,6 +181,11 @@ defmodule Grappa.HotReload.LongLivedModules do
     # and the #1473 membership test walks the parent's `t` typespec to find
     # it, so this entry is derived rather than a judgement call.
     Grappa.DbLatency.Distribution,
+    # issue 2537 — what `Grappa.E2ePairing` holds: each rendezvous, and the
+    # messages queued in it. `Rendezvous` gaining `curve` is the change that
+    # made the relay's shape visible here.
+    Grappa.E2ePairing.Message,
+    Grappa.E2ePairing.Rendezvous,
     Grappa.Session.AwayState,
     Grappa.Session.DccOffers,
     Grappa.Session.Deps,
@@ -222,6 +230,7 @@ defmodule Grappa.HotReload.LongLivedModules do
           | Grappa.ShareTokens
           | Grappa.RateLimit.DailyQuota
           | Grappa.RateLimit.FailureWindow
+          | Grappa.E2ePairing
           | Grappa.RateLimit.TokenBucket
           | Grappa.Net.PtrCache
           | Grappa.WindowCounts.Pusher.Coalescer
@@ -243,6 +252,8 @@ defmodule Grappa.HotReload.LongLivedModules do
   """
   @type state_helper ::
           Grappa.DbLatency.Distribution
+          | Grappa.E2ePairing.Message
+          | Grappa.E2ePairing.Rendezvous
           | Grappa.Session.AwayState
           | Grappa.Session.DccOffers
           | Grappa.Session.Deps
