@@ -43,8 +43,15 @@ type Box = {
   lines: number;
 };
 
-// Every box read in ONE frame: the phone drawer slides in, and boxes read one
-// call apart would compare edges taken at different points of the slide.
+// Every box read in one call, but that alone does not keep a sliding drawer's
+// edges together (issue 2532). Twice red on webkit-iphone-15 (main at
+// 24f745040, run 41611248751; PR 2526, run 41887787807): the peer card's left
+// edge at 251.2px and 193.0px, the drawer still on its way in, and the peer
+// card, the box read FIRST, 1.48px and 1.08px right of `own` and the WHOIS
+// card, which agreed with each other exactly. So on WebKit the slide moved
+// between two reads of one evaluate. The phone test therefore measures only
+// once the drawer has stopped (see there); the single call stays, so the
+// boxes are at least read together.
 const RAIL_PARTS = {
   peer: '[data-testid="e2e-rail-peer"]',
   own: '[data-testid="e2e-rail-own"]',
@@ -145,7 +152,11 @@ test("@touch @webkit issue 2506 — on a phone, the drawer's encrypted rail: but
     await equery(page, specNick(), peer.nick);
     // The rail's door on a phone is the encrypted pane's top-bar ☰.
     await page.getByTestId("e2e-pane").locator("header .topic-bar-hamburger").tap();
-    await expect(page.locator(".shell-members.open")).toHaveCount(1);
+    // Issue 2532: `.open` lands at the START of the 200ms slide, so wait for
+    // its end. The drawer is fixed to the right edge and fits the viewport's
+    // height, so it is wholly inside the viewport only at translateX(0):
+    // the settle idiom of `openMembersDrawer` (cicchettoPage.ts, #653).
+    await expect(page.locator(".shell-members.open")).toBeInViewport({ ratio: 1, timeout: 5_000 });
     await expectRailGeometry(page, testInfo);
   } finally {
     await peer.disconnect("bye").catch(() => {});
