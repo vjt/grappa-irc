@@ -2761,3 +2761,67 @@ navigation, so the proxy never got to run its login.
   real iOS device.
 
 **Deploy class:** cic bundle only (`--cic`), shipped with or after #2530.
+<!-- entry #2537 -->
+
+---
+
+## 2026-11-05 — #2537: "add a device" offers its pairing to the account's other sessions, and its link copies
+
+Moving the pairing link from a phone to a PC meant pointing a laptop camera
+at the QR or retyping the link. The relay already announced every message
+and close of a rendezvous on the user topic, which every session of the
+account listens on. What it lacked was the code itself: the ephemeral key
+lived only in the QR.
+
+* **A copy button** next to the link. It goes through `copyText` like the
+  rail's "copy your key": a refused or insecure-context write says why and
+  leaves the link on screen to copy by hand.
+* **The offer (protocol 55).** The open carries the creator's ephemeral
+  Curve25519 key as an optional `curve`. grappa then broadcasts
+  `e2e_pairing_offered {rendezvous_id, curve, expires_at}` on the user topic.
+  `E2ePairing.offer/1` answers the subject's rendezvous that has a key, no
+  joiner yet and time left. Two doors read it: the user-topic join snapshot,
+  and `GET /e2e/pairings/offer`, its REST twin. That is the DCC consent
+  banner's pattern (#2089). The snapshot is required, not a nicety: the usual
+  order is "add a device" on the phone and THEN the login on the PC, after
+  the one live push has gone.
+* **A banner, never an automatic join.** This deviates from the issue's text
+  ("opens the joiner side on its own"), by the orchestrator's ruling (A1). A
+  rendezvous takes one joiner, so every eligible session joining by itself
+  would race. A forgotten tab on another machine could win, leaving its check
+  code on a screen nobody is looking at and "already joined" on the one in
+  front of the user. The banner's button loads `/pair#pair=<id>.<curve>` as
+  a document (`loadDocument`), the same route a scan lands on, so the joiner
+  side is `PairScan` unchanged. The × is "Not now", which hides it on this
+  page only; a reload or another pairing asks again.
+* **Who sees it is derived, not checked.** Only a browser that does not hold
+  the account's identity on some network sees the banner. That is
+  `identityElsewhere(slug)`, which the page-load identity sync already keeps
+  for every network. The approved design said to sync each network when an
+  offer arrives; the existing signal gives the same answer for no extra GET,
+  and it reacts when a sync lands after the offer. The tab showing the QR is
+  told its own offer back, and recognises it by the key it made. It registers
+  that key before the open, so a push that arrives before the POST's answer
+  is still recognised.
+* **When it ends.** At the first `e2e_pairing_message` of its rendezvous
+  (someone joined; derived, so no `joined` event was added), at
+  `e2e_pairing_closed`, and at `expires_at` on a client timer, in case the
+  tab missed the push. The snapshot skips a rendezvous that is joined or
+  past its ttl, even before its timer fires.
+* **The key is public:** it is the half of the code the QR already shows. A
+  malformed one, blank included, is 422 before it costs an open; it must be
+  43 characters of standard base64. An older client opens without it, and
+  nothing is offered.
+
+### Tests
+
+* `e2e_pairing_test` ("the offer"), the controller test and two user-topic
+  snapshot tests pin the server side; `e2ePairingOffer.test.ts` the client
+  store, where each of six mutants is killed by exactly one test.
+* `issue2537-pairing-offer.spec.ts`, two chromium tests: a browser that logs
+  in AFTER the QR is up is offered it through the snapshot and pairs from the
+  banner (plus the copy button); a browser already open is offered it live,
+  the offer goes at the close, a second one comes, and "Not now" hides it.
+* Two mutants on the stack: dropping the join snapshot turns test 1 red at
+  the banner (2/2 runs); a close that does not end the offer turns test 2 red
+  at the count after the close (expected 0, received 1).
