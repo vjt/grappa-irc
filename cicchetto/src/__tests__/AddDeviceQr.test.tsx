@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // issue 2430, X1 — the showing side of a pairing: open a rendezvous, show
@@ -22,6 +22,10 @@ vi.mock("../lib/e2e/pairing", async (orig) => ({
   openPairing: pairingHolder.openPairing,
   openChannel: pairingHolder.openChannel,
 }));
+
+// issue 2537 — the link's copy button.
+const clipboardHolder = vi.hoisted(() => ({ copyText: vi.fn(async (_t: string) => undefined) }));
+vi.mock("../lib/clipboard", () => ({ copyText: clipboardHolder.copyText }));
 
 import AddDeviceQr from "../AddDeviceQr";
 import { ApiError } from "../lib/api";
@@ -61,6 +65,25 @@ describe("AddDeviceQr", () => {
     expect(pairingHolder.openPairing).toHaveBeenCalledWith("tok");
     expect(onChannel).toHaveBeenCalledTimes(1);
     expect(onChannel.mock.calls[0]?.[0].rendezvous).toEqual(rendezvous);
+  });
+
+  it("copies the pairing link", async () => {
+    render(() => (
+      <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={vi.fn()} onClosed={vi.fn()} />
+    ));
+    fireEvent.click(await screen.findByTestId("pair-url-copy"));
+    expect(clipboardHolder.copyText).toHaveBeenCalledExactlyOnceWith(
+      `${window.location.origin}/pair#pair=${ID}.${CURVE}`,
+    );
+  });
+
+  it("says why a copy failed", async () => {
+    clipboardHolder.copyText.mockRejectedValueOnce(new Error("copy it by hand"));
+    render(() => (
+      <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={vi.fn()} onClosed={vi.fn()} />
+    ));
+    fireEvent.click(await screen.findByTestId("pair-url-copy"));
+    expect((await screen.findByTestId("pair-url-copy-error")).textContent).toBe("copy it by hand");
   });
 
   it("counts down to the rendezvous's expiry", async () => {
