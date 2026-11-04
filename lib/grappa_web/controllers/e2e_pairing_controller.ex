@@ -46,7 +46,7 @@ defmodule GrappaWeb.E2ePairingController do
 
   @doc "`GET /e2e/pairings/offer` — the account's offered rendezvous, or null."
   @spec offer(Plug.Conn.t(), map()) :: Plug.Conn.t()
-  def offer(conn, _), do: json(conn, Wire.offer_response(E2ePairing.offer(subject(conn))))
+  def offer(conn, _), do: json(conn, conn |> subject() |> E2ePairing.offer() |> Wire.offer_response())
 
   @doc "`POST /e2e/pairings/:id/join` — join it as the second device of the same account."
   @spec join(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, term()}

@@ -164,14 +164,17 @@ defmodule Grappa.E2ePairingTest do
     # of its own, as the timer test below is.
     test "a rendezvous past its ttl is no offer before its timer fires", %{user: user, a: a} do
       dead = Rendezvous.new(subject(user), user.name, a, -1, curve())
-      state = %{dead.id => dead}
+      dead_state = %{dead.id => dead}
       now = System.monotonic_time(:millisecond)
 
-      assert {:reply, nil, ^state} = E2ePairing.handle_call({:offer, subject(user), now}, self(), state)
+      assert {:reply, nil, ^dead_state} =
+               E2ePairing.handle_call({:offer, subject(user), now}, self(), dead_state)
 
       live = Rendezvous.new(subject(user), user.name, a, @ttl_ms, curve())
-      state = %{live.id => live}
-      assert {:reply, ^live, ^state} = E2ePairing.handle_call({:offer, subject(user), now}, self(), state)
+      live_state = %{live.id => live}
+
+      assert {:reply, ^live, ^live_state} =
+               E2ePairing.handle_call({:offer, subject(user), now}, self(), live_state)
     end
   end
 
