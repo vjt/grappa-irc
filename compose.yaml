@@ -78,6 +78,9 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      # #2401 — push hosts exempt from the endpoint address policy (a LAN
+      # UnifiedPush distributor). See .env.example. Empty = no exemption.
+      PUSH_ALLOWED_PRIVATE_HOSTS: ${PUSH_ALLOWED_PRIVATE_HOSTS:-}
       # Erlang distribution cookie for `bin/grappa remote-shell` (T-2). The dev
       # default keeps `docker compose up` clone-and-go; runtime.exs raises in
       # prod when it is unset or still the sentinel. Threat model: .env.example.

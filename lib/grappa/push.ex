@@ -91,6 +91,7 @@ defmodule Grappa.Push do
   alias Grappa.{Push.Subscription, Repo, Subject}
 
   @vapid_public_key_term {__MODULE__, :vapid_public_key}
+  @allowed_private_hosts_term {__MODULE__, :allowed_private_hosts}
 
   @doc """
   Boot-time stash of the VAPID public key into `:persistent_term`. Read
@@ -113,6 +114,32 @@ defmodule Grappa.Push do
     :persistent_term.put(@vapid_public_key_term, key)
     :ok
   end
+
+  @doc """
+  Boot-time stash of the operator's private push hosts (#2401 —
+  `PUSH_ALLOWED_PRIVATE_HOSTS`, read by `config/runtime.exs` in every env
+  and passed in by `Grappa.Application.start/2`), folded once here so
+  `allowed_private_host?/1` is a set lookup on every endpoint save and
+  every delivery. Idempotent; later calls overwrite.
+  """
+  @spec boot_allowed_private_hosts([String.t()]) :: :ok
+  def boot_allowed_private_hosts(hosts) when is_list(hosts),
+    do: :persistent_term.put(@allowed_private_hosts_term, MapSet.new(hosts, &fold_host/1))
+
+  @doc """
+  Is `host` one the operator exempted from the push endpoint address
+  policy (#2401)? An exempt host may be private, and plain `http`:
+  `Subscription.changeset/2` admits it at save, and `Grappa.Push.Sender`
+  resolves it without judging the answer. The list is the operator's
+  (`PUSH_ALLOWED_PRIVATE_HOSTS`, empty by default) — a UnifiedPush
+  distributor on their own LAN — never the client's. The match folds
+  ASCII case and a trailing root dot, as DNS does.
+  """
+  @spec allowed_private_host?(String.t()) :: boolean()
+  def allowed_private_host?(host) when is_binary(host),
+    do: MapSet.member?(:persistent_term.get(@allowed_private_hosts_term), fold_host(host))
+
+  defp fold_host(host), do: host |> String.trim_trailing(".") |> String.downcase(:ascii)
 
   @doc """
   Returns the VAPID public key pinned at boot. Raises if `boot/0`

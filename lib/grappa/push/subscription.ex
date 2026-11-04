@@ -76,7 +76,9 @@ defmodule Grappa.Push.Subscription do
   resolved here: `Grappa.Push.Sender` resolves at every delivery and dials
   the address it checked, which is the half a rebinding name cannot pass.
   No vendor allowlist: a UnifiedPush distributor can live on any public
-  host.
+  host. The one exemption is the operator's: a host in
+  `PUSH_ALLOWED_PRIVATE_HOSTS` (`Grappa.Push.allowed_private_host?/1`) may
+  be private and plain `http`, for a distributor on the operator's own LAN.
 
   ## Public API
 
@@ -92,7 +94,7 @@ defmodule Grappa.Push.Subscription do
 
   alias Grappa.Accounts.User
   alias Grappa.Net.Ssrf
-  alias Grappa.Subject
+  alias Grappa.{Push, Subject}
   alias Grappa.Visitors.Visitor
 
   @providers [:webpush, :unifiedpush]
@@ -229,20 +231,27 @@ defmodule Grappa.Push.Subscription do
 
   # #2401 — the save-time half of the endpoint policy. `https` because RFC
   # 8030 makes it the only push transport and every vendor in use speaks it;
-  # a host, and not one `Ssrf` can refuse without a lookup. A NAME that
+  # a host, and not one `Ssrf` can refuse without a lookup — save for the
+  # operator's exemption, below. A NAME that
   # resolves privately passes here on purpose: a check at save is one the
   # name can pass and then stop passing, so the authority is the send-time
   # resolve-and-pin in `Grappa.Push.Sender`, and this half only keeps DNS
   # out of the request path while refusing what is already decidable.
   defp validate_endpoint(:endpoint, endpoint) do
     case URI.parse(endpoint) do
-      %URI{scheme: "https", host: host} when is_binary(host) and host != "" ->
-        if Ssrf.blocked_literal_host?(host), do: endpoint_error(), else: []
+      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+        if endpoint_host_allowed?(scheme, host), do: [], else: endpoint_error()
 
       _ ->
         endpoint_error()
     end
   end
+
+  # A host the operator exempted takes either scheme: it is private by
+  # declaration, and a distributor on a LAN need not terminate TLS. Every
+  # other host needs `https` and must not be one `Ssrf` refuses outright.
+  defp endpoint_host_allowed?(scheme, host),
+    do: Push.allowed_private_host?(host) or (scheme == "https" and not Ssrf.blocked_literal_host?(host))
 
   defp endpoint_error, do: [endpoint: "must be an https URL on a public host"]
 

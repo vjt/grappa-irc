@@ -512,6 +512,13 @@ services:
       # page origin. Harmless for other specs (no browser reaches
       # alias-b.test; MIX_ENV=dev leaves check_origin=false anyway).
       EXTRA_CHECK_ORIGINS: "https://alias-b.test"
+      # #2401 — the push-catcher sidecar (below) plays the push vendor at
+      # http://push-catcher:3000, a plain-http host on this private docker
+      # network: exactly what the endpoint address policy refuses. The
+      # operator exemption is how a deployment admits a LAN distributor, and
+      # it is how this harness admits its fake vendor — through the
+      # production path, not around it.
+      PUSH_ALLOWED_PRIVATE_HOSTS: push-catcher
     command: ["mix", "phx.server"]
     networks:
       grappa-e2e:
