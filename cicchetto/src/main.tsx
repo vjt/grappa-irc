@@ -7,6 +7,7 @@ import InstallSplash, { INSTALL_CHOICE_KEY, shouldShowInstallSplash } from "./In
 import Login from "./Login";
 import { me } from "./lib/api";
 import { bootstrapAuth, isAuthenticated, token } from "./lib/auth";
+import { stripReauthParam } from "./lib/authProxy";
 import { moduleRoot } from "./lib/moduleRoot";
 import PairScan from "./PairScan";
 import ShareConsume from "./ShareConsume";
@@ -222,6 +223,12 @@ window.addEventListener("beforeinstallprompt", (e) => {
 // `auth.ts > bootstrapAuth` for the rationale behind the explicit
 // bootstrap point.
 bootstrapAuth();
+
+// issue 2531 — a boot that arrives through the auth-proxy recovery carries
+// `?reauth=1`, the marker that let its navigation past the service worker.
+// Dropped at once: left in the address bar, the next reload would skip the
+// worker too, and land on the browser's offline page if the link were down.
+stripReauthParam();
 
 // UX-6-J (2026-05-22) — push notification deep-link routing.
 // Warm-path: SW posts `{type: "navigate", url}` to the focused client

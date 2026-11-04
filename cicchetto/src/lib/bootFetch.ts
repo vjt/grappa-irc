@@ -26,6 +26,18 @@
 // status: the server answered, the caller's `!res.ok` arm owns it, and 401
 // already has its own path (on401 → clear token → /login). Re-sending on a 503
 // would also turn a struggling server into a thundering herd of reloading PWAs.
+//
+// A REDIRECT IS NOT FOLLOWED (issue 2531). Grappa never redirects these GETs,
+// so one can only come from something in front of it — an authenticating proxy
+// such as Cloudflare Access whose session expired, sending us to its login
+// host. Followed, that is a cross-origin request the browser rejects as a CORS
+// failure, which looks exactly like a dead network and would be retried as
+// one. With `redirect: "manual"` it arrives as an `opaqueredirect` response
+// instead, and is rejected at once as `AuthProxyRedirectError`: an answer,
+// not a stall, and the boot-failure screen knows what to do with it
+// (`lib/authProxy.ts`).
+
+import { AuthProxyRedirectError } from "./authProxy";
 
 /** Per-attempt ceiling. Exceeding it aborts THAT attempt, not the whole boot. */
 export const BOOT_FETCH_TIMEOUT_MS = 8_000;
@@ -46,15 +58,17 @@ function sleep(ms: number): Promise<void> {
  * Resolves with the `Response` for ANY completed request, including error
  * statuses — status handling stays with the caller. "Completed" means the body
  * arrived too, not just the headers. Rejects with the last transport error once
- * the attempts are exhausted.
+ * the attempts are exhausted, and at once with `AuthProxyRedirectError` when
+ * the answer is a redirect.
  */
 export async function bootFetch(
   path: string,
-  // `signal` is EXCLUDED rather than merged: this function owns the abort, and
-  // a plain `RequestInit` would advertise a `signal` that the spread below
-  // silently overwrites. No caller needs one today; the type says so instead
-  // of letting the next one find out at runtime.
-  init: Omit<RequestInit, "signal">,
+  // `signal` and `redirect` are EXCLUDED rather than merged: this function
+  // owns the abort and the redirect policy, and a plain `RequestInit` would
+  // advertise fields that the spread below silently overwrites. No caller
+  // needs either today; the type says so instead of letting the next one find
+  // out at runtime.
+  init: Omit<RequestInit, "signal" | "redirect">,
 ): Promise<Response> {
   let lastError: unknown;
 
@@ -68,8 +82,9 @@ export async function bootFetch(
     // A FRESH signal per attempt: reusing one would let attempt 1's expiry
     // abort attempt 2 the moment it started — a retry that can never win.
     const signal = AbortSignal.timeout(BOOT_FETCH_TIMEOUT_MS);
+    let res: Response;
     try {
-      const res = await fetch(path, { ...init, signal });
+      res = await fetch(path, { ...init, redirect: "manual", signal });
       // The budget must cover the BODY too. `fetch` resolves at the headers
       // while the signal stays live on the `Response`, and every caller reads
       // the body (`res.json()`) after this function has returned — so a body
@@ -79,13 +94,17 @@ export async function bootFetch(
       // the abort retryable and leaves the returned `Response` fully buffered,
       // so the caller's own read can no longer be cut by our signal.
       await res.clone().arrayBuffer();
-      return res;
     } catch (error) {
       lastError = error;
       const backoff = BOOT_FETCH_BACKOFF_MS[attempt];
       if (backoff === undefined) break;
       await sleep(backoff);
+      continue;
     }
+    // Outside the try, so the catch above cannot mistake it for a transport
+    // failure and retry it.
+    if (res.type === "opaqueredirect") throw new AuthProxyRedirectError(path);
+    return res;
   }
 
   throw lastError;

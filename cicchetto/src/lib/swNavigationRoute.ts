@@ -89,6 +89,15 @@ export function createNavigationRoute(
       // received an error: TypeError: Load failed". Pinned by
       // `swNavigationRoute.test.ts`.
       /^\/cdn-cgi/,
+      // issue 2531 — not a path but a query parameter, on any path: the
+      // re-auth marker `lib/authProxy.ts` puts on the navigation that must
+      // reach an authenticating proxy (Cloudflare Access) whose session
+      // expired. A plain reload never does — this route or the precache one
+      // answers it from the device — so this entry is the recovery's way out.
+      // Workbox matches against path plus query string. Pinned by
+      // `swNavigationRoute.test.ts`, which builds the URL with the same
+      // function the recovery uses.
+      /(\?|&)reauth=/,
     ],
   });
 }

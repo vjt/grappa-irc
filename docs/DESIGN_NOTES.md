@@ -2690,3 +2690,74 @@ the Access application restored the app, which is what pointed at the SW.
 
 **Deploy class:** cic bundle only (`--cic`). No server code changes; the
 Elixir test edit is test-only.
+<!-- entry #2531 -->
+
+---
+
+## 2026-11-05 — #2531: an installed PWA signs back in through an expired auth proxy
+
+With cicchetto behind Cloudflare Access (or another authenticating proxy in
+front of the whole hostname that answers an expired session with a redirect),
+an installed PWA could not recover once the proxy's cookie expired. The shell
+still came up, served by the service worker from the precache, so the user
+saw the app; every REST call was then redirected to the proxy's login host,
+`fetch` followed that cross-origin, and the browser rejected it as a CORS
+failure ("Load failed" on iOS). Nothing in the app made a top-level
+navigation, so the proxy never got to run its login.
+
+* **A reload cannot fix it, which the issue's suggested cure missed.** The
+  issue asked for "a top-level navigation to reload the page". In an
+  installed PWA that request never leaves the device: the precache route
+  answers `/` and the navigation fallback answers every other SPA route.
+  `swNavigationRoute.test.ts` pins this premise as the precache leg's
+  positive control, with Workbox's own `PrecacheRoute`.
+* **Detection: the boot GETs stop following redirects.** `bootFetch` (the
+  three #717 boot GETs, which the resume and reconnect refetches also use)
+  sends `redirect: "manual"`, so the proxy's 302 arrives as an
+  `opaqueredirect` response instead of a cross-origin follow. Grappa never
+  redirects those GETs, so a redirect there can only come from something in
+  front of it. It is rejected at once as `AuthProxyRedirectError`, checked
+  outside the `try` so it is never retried: it is an answer, not a stall,
+  and before this change it was spent as three "transport failures".
+* **The "non-JSON response" half of the issue's trigger is declined.** nginx's
+  HTML 502 while the BEAM restarts is non-JSON too, and answering it with a
+  navigation would take the user out of the app onto an error page instead of
+  leaving them on the boot-failure screen, whose Retry works once the server
+  is back.
+* **Recovery: one navigation the worker lets out.** `requestReauth`
+  (`lib/authProxy.ts`) replaces the document with the current URL plus
+  `?reauth=1` (a replace, so a Back out of the proxy's login does not restore
+  the failed page from the bfcache with its button frozen mid-press). The navigation
+  denylist gains `(\?|&)reauth=` (Workbox matches path plus query string), and
+  the precache route ignores the URL because no precached entry carries a
+  query. The proxy sees the request, runs its login, and sends the browser
+  back; Cloudflare Access does that through `/cdn-cgi/access/authorized`,
+  which is why this depends on #2530. `stripReauthParam` drops the marker
+  at boot, because a reload of a marked URL would also skip the worker and
+  land on the browser's offline page if the link were down.
+* **Where it fires: the boot-failure screen.** The rejected boot resource
+  already lands in `BootErrorBoundary` (#717), at boot or on a resume
+  refetch. On an `AuthProxyRedirectError` the screen starts the navigation
+  itself, once per five-minute window kept in `sessionStorage`. The window
+  stops the loop that needs no human, an identity provider that signs the
+  user straight back in while the cookie never sticks. Inside it, the
+  second button reads "Sign in again" instead of "Restart app" (a restart
+  is answered by the worker and signs nobody in) and navigates on press.
+* **Known gaps, not handled here.** The login door (`POST /auth/login`) is
+  not a boot GET, so a logged-out user behind an expired proxy still sees a
+  plain failure. Cloudflare's opt-in Managed OAuth answers non-browser
+  clients with a 401 instead of a 302, and a 401 on `/me` takes the existing
+  `on401` path, which clears the grappa token. A proxy that redirects with
+  the precache gone (iOS can evict it) fails inside the worker's shell
+  handler before the app exists, where nothing in the app can act. A proxy
+  whose login callback sits on THIS origin under a path no entry covers
+  (oauth2-proxy's `/oauth2/callback`, Pomerium, an authentik embedded
+  outpost) gets one automatic round trip and then the button: the worker
+  answers its callback with the shell, exactly as it did `/cdn-cgi` before
+  #2530, so each such proxy needs its own denylist entry. `/pair` sits
+  outside `BootErrorBoundary`, so a redirect met there surfaces as plain
+  text with no recovery. And `redirect: "manual"` turning a 302 into
+  `opaqueredirect` is exercised only against a stub `Response`, never on a
+  real iOS device.
+
+**Deploy class:** cic bundle only (`--cic`), shipped with or after #2530.

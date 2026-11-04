@@ -57,6 +57,10 @@ vi.mock("../lib/bundleHash", async (importOriginal) => {
   return { ...actual, performRefresh: vi.fn().mockResolvedValue(undefined) };
 });
 
+// issue 2531 — the document load the re-auth recovery makes. jsdom cannot
+// navigate, so the seam is mocked and the URL it was handed is the assertion.
+vi.mock("../lib/documentNavigation", () => ({ replaceDocument: vi.fn() }));
+
 const HEALTHY_ME = {
   kind: "user",
   id: "u1",
@@ -73,6 +77,9 @@ beforeAll(() => warmGraph(() => import("../BootErrorBoundary")));
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
+  // issue 2531 — the auth-proxy loop guard lives here: a marker left by one
+  // test would hold off the next test's navigation and mask its assertion.
+  sessionStorage.clear();
   vi.clearAllMocks();
 });
 
@@ -169,6 +176,11 @@ describe("BootErrorBoundary (#717 — a failed boot must not freeze on the splas
 
     expect(screen.getByTestId("boot-failure-retry")).toHaveAccessibleName("Retry loading");
     expect(screen.getByTestId("boot-failure-reload")).toHaveAccessibleName("Restart app");
+    // issue 2531 — only a proxy redirect navigates on its own. A dead network
+    // that did would take the user out of the app onto the browser's offline
+    // page instead of this screen.
+    const { replaceDocument } = await import("../lib/documentNavigation");
+    expect(replaceDocument).not.toHaveBeenCalled();
   });
 
   it("leaves a healthy boot untouched", async () => {
@@ -350,5 +362,53 @@ describe("BootErrorBoundary reload — purge needs proof the server answers", ()
     expect(reloadSpy).toHaveBeenCalledTimes(1);
 
     __setConnectivityForTests(true);
+  });
+});
+
+// issue 2531 — an authenticating proxy (Cloudflare Access) wants the user to
+// sign in again. `bootFetch` reports it as AuthProxyRedirectError; the failure
+// screen is where the app reacts, because a reload cannot help (the service
+// worker answers it from the precache) and only a navigation the worker lets
+// through reaches the proxy.
+describe("BootErrorBoundary — an expired auth-proxy session (2531)", () => {
+  async function renderRedirected(): Promise<{ replaceDocument: Mock }> {
+    localStorage.setItem("grappa-token", "tokA");
+    const api = await import("../lib/api");
+    const { AuthProxyRedirectError } = await import("../lib/authProxy");
+    const pending = deferredMe(api);
+
+    await renderBootTree();
+    pending.reject(new AuthProxyRedirectError("/me"));
+    await screen.findByTestId("boot-failure");
+
+    const { replaceDocument } = await import("../lib/documentNavigation");
+    return { replaceDocument: replaceDocument as unknown as Mock };
+  }
+
+  it("sends the browser to sign in again on its own, through the URL the worker lets out", async () => {
+    const { replaceDocument } = await renderRedirected();
+    const { reauthUrl } = await import("../lib/authProxy");
+
+    expect(replaceDocument).toHaveBeenCalledTimes(1);
+    expect(replaceDocument).toHaveBeenCalledWith(reauthUrl(window.location.href));
+    // In flight, the button says what is happening instead of offering it.
+    expect(screen.getByTestId("boot-failure-reload")).toHaveAccessibleName("Signing in…");
+  });
+
+  it("does not go round again inside the window, and leaves the person a button that does", async () => {
+    const { REAUTH_MARKER_KEY } = await import("../lib/authProxy");
+    // An attempt one second ago: the redirect came back anyway.
+    sessionStorage.setItem(REAUTH_MARKER_KEY, String(Date.now() - 1_000));
+
+    const { replaceDocument } = await renderRedirected();
+
+    expect(replaceDocument).not.toHaveBeenCalled();
+    // Not "Restart app": a reload is answered by the worker and changes nothing.
+    const button = screen.getByTestId("boot-failure-reload");
+    expect(button).toHaveAccessibleName("Sign in again");
+
+    fireEvent.click(button);
+
+    expect(replaceDocument).toHaveBeenCalledTimes(1);
   });
 });
