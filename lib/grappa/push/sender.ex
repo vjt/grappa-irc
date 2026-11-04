@@ -77,6 +77,11 @@ defmodule Grappa.Push.Sender do
   `HTTPoison.post/3` with no options, so none of this can be asked of it.
   A refused row is kept and logged, never swept — see `deliver/2`'s caller.
 
+  A host the operator exempted (`Grappa.Push.allowed_private_host?/1`,
+  `PUSH_ALLOWED_PRIVATE_HOSTS`) is resolved WITHOUT the verdict — it is
+  listed because it is private — and still dialled by address, through
+  the same connection path.
+
   ## What else the wrapper owns
 
   Four concerns B4 callers MUST NOT have to repeat at every call site:
@@ -200,8 +205,9 @@ defmodule Grappa.Push.Sender do
     * any other non-2xx, a redirect included → Logger.warning + the
       `[:grappa, :push, :vendor_rejection]` event `Grappa.Push.VendorLog`
       turns into the vendor's own reason + `{:error, {:http_error, status}}`.
-    * endpoint not `http(s)`, or its host not a public address →
-      Logger.warning + `{:error, :ssrf_blocked}`; the row is kept.
+    * endpoint not `http(s)`, or its host not a public address and not
+      operator-exempted → Logger.warning + `{:error, :ssrf_blocked}`; the
+      row is kept.
     * network error / DNS failure / timeout →
       `{:error, {:transport_error, reason}}`.
     * encryption or VAPID-signing failure →
@@ -246,6 +252,11 @@ defmodule Grappa.Push.Sender do
   # an error PAGE from being buffered whole.
   @http_opts [connect_timeout: 2_000, deadline: 3_000, max_body: 64 * 1024]
 
+  # Per family, for an operator-exempted host — the same bound
+  # `Grappa.Net.Ssrf` puts on each of its two lookups, so the exempt path
+  # spends no more of the 10 s budget than the checked one.
+  @exempt_lookup_timeout_ms 2_000
+
   @typedoc """
   Push payload shape. The wire shape is typed (atom keys, String.t()
   values), but the values themselves are user-facing strings — the
@@ -269,7 +280,7 @@ defmodule Grappa.Push.Sender do
     * `{:error, :gone}` — vendor 404/410; subscription deleted.
     * `{:error, {:http_error, status :: integer()}}` — other 4xx/5xx.
     * `{:error, :ssrf_blocked}` — endpoint not `http(s)`, or its host
-      not a public address (#2401); row kept.
+      not a public address and not operator-exempted (#2401); row kept.
     * `{:error, {:transport_error, reason}}` — network error /
       DNS failure / timeout.
     * `{:error, {:encrypt_error, reason}}` — payload encryption /
@@ -481,10 +492,26 @@ defmodule Grappa.Push.Sender do
   end
 
   defp resolve(host) do
+    if Push.allowed_private_host?(host), do: resolve_exempt(host), else: resolve_checked(host)
+  end
+
+  defp resolve_checked(host) do
     case @resolver.resolve_safe(host) do
       {:ok, ip} -> {:ok, ip}
       {:error, :ssrf_blocked} -> {:error, :ssrf_blocked}
       {:error, :dns_error} -> {:error, {:transport_error, :dns_error}}
+    end
+  end
+
+  # The operator listed this host BECAUSE it is private, so the answer is
+  # not judged — but it is still an address the POST dials, v4 first like
+  # the checked path, and the lookup is bounded the same way.
+  defp resolve_exempt(host) do
+    charlist = String.to_charlist(host)
+
+    with {:error, _} <- :inet.getaddr(charlist, :inet, @exempt_lookup_timeout_ms),
+         {:error, _} <- :inet.getaddr(charlist, :inet6, @exempt_lookup_timeout_ms) do
+      {:error, {:transport_error, :dns_error}}
     end
   end
 

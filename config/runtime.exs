@@ -46,6 +46,23 @@ extra_origins =
     raw -> raw |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
   end
 
+# #2401 — push endpoint hosts the operator exempts from the endpoint address
+# policy. A client's push endpoint must otherwise be `https` on a public
+# address; a host listed here may be private, and plain `http`. For a
+# UnifiedPush distributor (ntfy, say) living on the operator's own LAN, and
+# for the e2e harness's push-catcher sidecar. Comma-separated bare hostnames
+# or IP literals, matched case-insensitively; pinned by
+# `Grappa.Push.boot_allowed_private_hosts/1`.
+# Hoisted out of the prod block (all envs) because that harness runs
+# MIX_ENV=dev. Empty / unset = no exemption.
+push_allowed_private_hosts =
+  case System.get_env("PUSH_ALLOWED_PRIVATE_HOSTS") do
+    nil -> []
+    raw -> raw |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+  end
+
+config :grappa, :push_allowed_private_hosts, push_allowed_private_hosts
+
 case System.get_env("GRAPPA_PASSKEY_ORIGIN") do
   origin when origin in [nil, ""] -> :ok
   origin -> config :grappa, :passkey_origin, origin

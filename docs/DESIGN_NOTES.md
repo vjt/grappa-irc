@@ -2244,7 +2244,7 @@ that rules it out.
 
 ---
 
-## 2026-10-13 — #2401: push endpoints are outbound requests a client aimed
+## 2026-11-04 — #2401: push endpoints are outbound requests a client aimed
 
 A push subscription's `endpoint` is a URL the server POSTs to on every
 notification, and the client picks it. Until now the only check on it was a
@@ -2310,11 +2310,24 @@ delivery re-asks and each refusal logs `push.send endpoint refused`. `http`
 is still dialled at send for rows saved before this change — the address,
 not the scheme, is what makes a request safe to send.
 
-**No vendor allowlist.** FCM, Mozilla autopush and Apple all sit on public
-`https` hosts and pass unchanged; a UnifiedPush distributor can be any public
-host. A self-hosted distributor on the bouncer's own private network is now
-refused — on a multi-tenant bouncer that is exactly the request this closes,
-and there is deliberately no opt-out.
+**No vendor allowlist; one operator exemption.** FCM, Mozilla autopush and
+Apple all sit on public `https` hosts and pass unchanged; a UnifiedPush
+distributor can be any public host. A host the OPERATOR lists in
+`PUSH_ALLOWED_PRIVATE_HOSTS` may be private and plain `http`, at both doors
+(`Push.allowed_private_host?/1`): the changeset admits it, and the sender
+resolves it without judging the answer and still dials the address. This
+reverses what this entry said when the PR was opened — "deliberately no
+opt-out" — and the reason was measured, not argued: the PR's first CI run lost
+every push e2e spec to `seedOneDevice: 422 … must be an https URL on a public
+host`, because the harness's fake vendor is `http://push-catcher:3000` on a
+private docker network, the exact shape the policy refuses. A test-only bypass
+would have left the e2e proving a path production never takes; the exemption
+IS the production path, and it serves the case the original text wrote off —
+a self-hoster's ntfy on their own LAN. The tenant attack stays closed: the list
+comes from the operator's environment at boot, is empty by default, and
+matches a host exactly (ASCII case and a trailing dot folded), never by
+suffix. `config/runtime.exs` reads it in every env because the harness runs
+`MIX_ENV=dev`; `cicchetto/e2e/compose.yaml` sets it to `push-catcher`.
 
 **Found on the way: `ImageFetcher.Req` double-bracketed IPv6.**
 `URI.to_string/1` already brackets a host containing `:`, so its own
@@ -2328,7 +2341,13 @@ fetcher's) waves loopback through for Bypass and pins `pinned.invalid` to
 name proves the client dialled the pinned address. `Ssrf` exports it only
 under `MIX_ENV=test`. Delivery suites write rows through
 `Grappa.PushFixtures.stored_subscription!/2`, past the changeset, because
-Bypass is plain `http` on loopback.
+Bypass is plain `http` on loopback — `Grappa.PushReceiver.browser_subscription/2`
+included, which issue 2487 moved out of `WireFormatTest` while this PR was
+open and which still called `Push.create/2`. The exemption's own tests pair
+every admitted case with its refusal under an empty list, and prove the
+send-time half by ARRIVAL: a `gen_tcp` listener on `127.0.0.2`, an address the
+real guard refuses and the test resolver does not wave through, receives the
+POST only when the host is listed.
 
 **Deploy class: COLD.** No `Session.Server` field and no `defstruct` change,
 but `VendorLog` attaches its handler in `init/1`: a hot reload would leave it

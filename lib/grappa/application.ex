@@ -95,6 +95,11 @@ defmodule Grappa.Application do
     # guaranteed by the time `Application.start/2` is invoked.
     :ok = Grappa.Push.boot()
 
+    # #2401: the operator's private push hosts (`PUSH_ALLOWED_PRIVATE_HOSTS`,
+    # read by runtime.exs in EVERY env — the e2e harness runs MIX_ENV=dev),
+    # pinned for the endpoint checks at save and at delivery.
+    :ok = Grappa.Push.boot_allowed_private_hosts(Application.fetch_env!(:grappa, :push_allowed_private_hosts))
+
     # #364 J/cross-module-S2: stash the door #1 badge-count DI-seam impl in
     # `:persistent_term` so `Grappa.Push.BadgeSource.impl/0` resolves it
     # lock-free on the push hot path instead of a runtime `Application.get_env/2`
