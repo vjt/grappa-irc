@@ -130,6 +130,25 @@ test("@webkit @touch mobile: the next-active button counts an encrypted query wi
 // wrote, then Bob comes back with a new identity, and what its key writes is
 // ignored and shown as the alarm, which counts. There is no last line to see,
 // so the window shown is what reads it: one jump, and the button goes.
+//
+// Issue 2535: the pin asks Bob for his keys (a KEYREQ), and his grappa answers
+// over IRC under its send budget. Bob comes back only once that answer has
+// landed, his one device listed in Alice's rail. Left racing, the answer was
+// built either after his new identity (and raised the alarm itself) or before
+// it (his old keys, the pin's): then the alarm had to wait for his message,
+// queued in his grappa behind those old keys, and twice it was still unsent
+// when the 30 s ran out (runs 41887617372 and 41900042768). So the alarm now
+// always comes with his message, and that takes `ALARM_TIMEOUT`.
+//
+// When Bob writes, eight paced lines stand between his message and Alice's
+// count: the pin's listreq to his old device (3 lines, sent once his keys
+// land), Alice's KEYS answer to his new one, queued behind that listreq (2),
+// and his PKMSG (3). The pacer lets a 405-byte E2E line out about every 5 s
+// (the bank's reserve), so about 40 s at worst. 6 runs measured 26 to 28 s,
+// which left 2 to 4 s of `KEYS_TIMEOUT`: a measured budget, not a raised
+// timeout.
+const ALARM_TIMEOUT = 60_000;
+
 test("desktop: a key alarm in a chat with no line is one stop, cleared by the jump that lands on it", async ({
   page,
   browser,
@@ -146,6 +165,10 @@ test("desktop: a key alarm in a chat with no line is one stop, cleared by the ju
     await equery(page, aliceNick, bob.nick);
     await equery(peer.page, bob.nick, aliceNick);
     await pin(page, await ownKey(peer.page));
+    await expect(page.getByTestId("e2e-peer-devices")).toHaveText("1 device", {
+      timeout: KEYS_TIMEOUT,
+    });
+    await expect(trust(page)).toHaveAttribute("data-trust", "verified");
     await selectChannel(page, NETWORK_SLUG, NETWORK_SLUG, { awaitWsReady: false });
     await expect(page.locator(NEXT_ACTIVE_BTN)).toHaveCount(0);
 
@@ -155,7 +178,7 @@ test("desktop: a key alarm in a chat with no line is one stop, cleared by the ju
     await replaceIdentity(peer.page);
     await send(peer.page, "2509 da un browser nuovo");
 
-    await expect(page.locator(NEXT_ACTIVE_COUNT)).toHaveText("1", { timeout: KEYS_TIMEOUT });
+    await expect(page.locator(NEXT_ACTIVE_COUNT)).toHaveText("1", { timeout: ALARM_TIMEOUT });
     await expect(page.locator(NEXT_ACTIVE_COUNT)).toHaveClass(/next-active-count-priority/);
     await page.keyboard.press("Alt+a");
     await expect(sidebarWindow(page, NETWORK_SLUG, e2eWindow(bob.nick))).toHaveClass(/selected/);
