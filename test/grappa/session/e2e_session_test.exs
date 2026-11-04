@@ -28,8 +28,9 @@ defmodule Grappa.Session.E2eSessionTest do
 
   import Ecto.Query
   import Grappa.AuthFixtures
+  import Grappa.PushFixtures, only: [stored_subscription!: 2]
 
-  alias Grappa.{E2eFixtures, E2eInbox, E2eKeys, E2eRequests, IRCServer, Push, QueryWindows, Repo, Session}
+  alias Grappa.{E2eFixtures, E2eInbox, E2eKeys, E2eRequests, IRCServer, QueryWindows, Repo, Session}
   alias Grappa.E2eRequests.Request
   alias Grappa.IRC.{Client, E2e, LineSplit}
   alias Grappa.Networks.{Credentials, SessionPlan}
@@ -579,13 +580,12 @@ defmodule Grappa.Session.E2eSessionTest do
       bypass = Bypass.open()
       Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
 
-      {:ok, _} =
-        Push.create({:user, user.id}, %{
-          endpoint: "http://localhost:#{bypass.port}/wp",
-          p256dh_key: @client_p256dh,
-          auth_key: @client_auth,
-          user_agent: "Mozilla/5.0 e2e-session-test"
-        })
+      stored_subscription!({:user, user.id}, %{
+        endpoint: "http://localhost:#{bypass.port}/wp",
+        p256dh_key: @client_p256dh,
+        auth_key: @client_auth,
+        user_agent: "Mozilla/5.0 e2e-session-test"
+      })
 
       test_pid = self()
       handler = "e2e-push-#{System.unique_integer([:positive])}"
@@ -999,13 +999,12 @@ defmodule Grappa.Session.E2eSessionTest do
       bypass = Bypass.open()
       Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
 
-      {:ok, _} =
-        Push.create(subject, %{
-          endpoint: "http://localhost:#{bypass.port}/wp",
-          p256dh_key: @client_p256dh,
-          auth_key: @client_auth,
-          user_agent: "Mozilla/5.0 e2e-session-test"
-        })
+      stored_subscription!(subject, %{
+        endpoint: "http://localhost:#{bypass.port}/wp",
+        p256dh_key: @client_p256dh,
+        auth_key: @client_auth,
+        user_agent: "Mozilla/5.0 e2e-session-test"
+      })
 
       test_pid = self()
       handler = "e2e-copy-push-#{System.unique_integer([:positive])}"
@@ -1598,18 +1597,19 @@ defmodule Grappa.Session.E2eSessionTest do
   end
 
   # A push subscription for `user` on a stub endpoint, and every push sent
-  # reported to the test as `{:pushed, meta}`.
+  # reported to the test as `{:pushed, meta}`. The row goes in past the
+  # changeset, as at every site here: Bypass is plain http on loopback,
+  # which `Push.create/2` refuses since #2401 (see `Grappa.PushFixtures`).
   defp push_telemetry!(user) do
     bypass = Bypass.open()
     Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
 
-    {:ok, _} =
-      Push.create({:user, user.id}, %{
-        endpoint: "http://localhost:#{bypass.port}/wp",
-        p256dh_key: @client_p256dh,
-        auth_key: @client_auth,
-        user_agent: "Mozilla/5.0 e2e-session-test"
-      })
+    stored_subscription!({:user, user.id}, %{
+      endpoint: "http://localhost:#{bypass.port}/wp",
+      p256dh_key: @client_p256dh,
+      auth_key: @client_auth,
+      user_agent: "Mozilla/5.0 e2e-session-test"
+    })
 
     test_pid = self()
     handler = "e2e-push-#{System.unique_integer([:positive])}"
