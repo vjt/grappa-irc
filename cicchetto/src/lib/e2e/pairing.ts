@@ -50,8 +50,17 @@ export function parsePairFragment(hash: string): PairCode | null {
 
 // --- REST ------------------------------------------------------------------
 
-export async function openPairing(token: string): Promise<Rendezvous> {
-  const res = await fetch("/e2e/pairings", { method: "POST", headers: buildHeaders(token) });
+/**
+ * Opens a rendezvous with this device as its creator. `curve`, the ephemeral
+ * key the QR shows, rides the open too (issue 2537): grappa offers the
+ * rendezvous to the account's other devices with it.
+ */
+export async function openPairing(token: string, curve: string): Promise<Rendezvous> {
+  const res = await fetch("/e2e/pairings", {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify({ curve }),
+  });
   if (!res.ok) throw await readError(res);
   return narrowPairingRendezvousResponse(await res.json()).rendezvous;
 }

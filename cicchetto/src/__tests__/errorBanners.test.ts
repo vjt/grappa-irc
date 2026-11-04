@@ -6,6 +6,7 @@ import { channelKey } from "../lib/channelKey";
 import { __setConnectivityForTests } from "../lib/connectivity";
 import { acceptDccOffer, refuseDccOffer } from "../lib/dccConsent";
 import { type DccOffer, dccOffersById, holdDccOffer, resolveDccOffer } from "../lib/dccOffers";
+import { loadDocument } from "../lib/documentNavigation";
 import {
   __resetDismissedForTests,
   activeBanners,
@@ -92,6 +93,22 @@ vi.mock("../lib/dccConsent", () => ({
   acceptDccOffer: vi.fn(),
   refuseDccOffer: vi.fn(),
 }));
+
+// issue 2537 — the offer and who may take it are the store's
+// (e2ePairingOffer.test.ts); the registry projects what it answers. A
+// document load is what opens `/pair` (jsdom implements none).
+const pairingOfferHolder = vi.hoisted(() => ({
+  offer: null as null | {
+    kind: "e2e_pairing_offered";
+    rendezvous_id: string;
+    curve: string;
+    expires_at: string;
+  },
+}));
+vi.mock("../lib/e2e/pairingOffer", () => ({
+  pairingOfferHere: () => pairingOfferHolder.offer,
+}));
+vi.mock("../lib/documentNavigation", () => ({ loadDocument: vi.fn() }));
 
 const mockShouldShowRefresh = vi.mocked(shouldShowRefreshBanner);
 const mockShouldShowPushOptin = vi.mocked(shouldShowPushOptinBanner);
@@ -799,5 +816,77 @@ describe("errorBanners dcc-offer (#2089)", () => {
     const entry = activeBanners().find((e) => e.source === "dcc-offer");
 
     expect(entry?.message).toContain("(unnamed)");
+  });
+});
+
+// issue 2537 — a pairing another device of the account offers. The banner's
+// button opens `/pair` with the code, the route a scan lands on; it never
+// joins by itself, because a rendezvous takes one joiner and every eligible
+// tab joining on its own would race. The × is "Not now", this page's hide.
+describe("errorBanners pairing-offer (#2537)", () => {
+  const ID = "AbCdEfGhIjKlMnOpQrStUv";
+  const CURVE = "fJKDF4omlQo87Jaqp5pqfZqg9TcQO1PG5lS1Kzz5FIA";
+
+  beforeEach(() => {
+    __resetSocketHealthForTests();
+    __setConnectivityForTests(true);
+    __resetSwRegistrationForTests();
+    __resetDismissedForTests();
+    mockShouldShowRefresh.mockReturnValue(false);
+    mockShouldShowPushOptin.mockReturnValue(false);
+    vi.mocked(loadDocument).mockClear();
+    pairingOfferHolder.offer = {
+      kind: "e2e_pairing_offered",
+      rendezvous_id: ID,
+      curve: CURVE,
+      expires_at: new Date(Date.now() + 300_000).toISOString(),
+    };
+  });
+
+  it("emits no entry without an offer this browser can take", () => {
+    pairingOfferHolder.offer = null;
+    expect(activeBanners().some((e) => e.source === "pairing-offer")).toBe(false);
+  });
+
+  it("offers to pair this browser, and its button opens /pair with the code", () => {
+    const entry = activeBanners().find((e) => e.source === "pairing-offer");
+    expect(entry?.severity).toBe("info");
+    expect(entry?.actionHint?.label).toBe("Pair this browser");
+    entry?.actionHint?.onAction();
+    expect(vi.mocked(loadDocument)).toHaveBeenCalledExactlyOnceWith(
+      `${window.location.origin}/pair#pair=${ID}.${CURVE}`,
+    );
+  });
+
+  it("Not now hides it, and another rendezvous's offer shows again", () => {
+    const entry = activeBanners().find((e) => e.source === "pairing-offer");
+    expect(entry?.dismiss?.label).toBe("Not now");
+    entry?.dismiss?.onAction();
+    expect(visibleBanners().some((e) => e.source === "pairing-offer")).toBe(false);
+    expect(vi.mocked(loadDocument)).not.toHaveBeenCalled();
+
+    const next = "ZyXwVuTsRqPoNmLkJiHgFe";
+    pairingOfferHolder.offer = {
+      kind: "e2e_pairing_offered",
+      rendezvous_id: next,
+      curve: CURVE,
+      expires_at: new Date(Date.now() + 300_000).toISOString(),
+    };
+    expect(visibleBanners().find((e) => e.source === "pairing-offer")?.id).toBe(
+      `pairing-offer:${next}`,
+    );
+  });
+
+  it("stacks below every fault and the update prompt, above the invites", () => {
+    __setConnectivityForTests(false);
+    mockShouldShowRefresh.mockReturnValue(true);
+    mockShouldShowPushOptin.mockReturnValue(true);
+    setInvited(channelKey("azzurra", "#one"), "alice");
+    const sources = activeBanners().map((e) => e.source);
+
+    expect(sources.indexOf("pairing-offer")).toBeGreaterThan(sources.indexOf("bundle-refresh"));
+    expect(sources.indexOf("pairing-offer")).toBeLessThan(sources.indexOf("invite"));
+    expect(sources.indexOf("pairing-offer")).toBeLessThan(sources.indexOf("push-optin"));
+    forceParted(channelKey("azzurra", "#one"));
   });
 });

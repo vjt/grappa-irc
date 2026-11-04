@@ -5,6 +5,9 @@ import { acceptInvite, declineInvite } from "./channelJoin";
 import { isOffline } from "./connectivity";
 import { acceptDccOffer, refuseDccOffer } from "./dccConsent";
 import { type DccOffer, dccOffersById } from "./dccOffers";
+import { loadDocument } from "./documentNavigation";
+import { pairingUrl } from "./e2e/pairing";
+import { type PairingOffer, pairingOfferHere } from "./e2e/pairingOffer";
 import { formatBytes } from "./formatBytes";
 import { acceptPushOptin, declinePushOptin, shouldShowPushOptinBanner } from "./pushOptin";
 import { serverOutdatedMessage, shouldShowServerOutdatedBanner } from "./serverProtocol";
@@ -73,6 +76,10 @@ export const BANNER_SOURCES = [
   // the reason vjt's ruling says "banner, same pattern as the invite" —
   // there was nothing structural left to build.
   "dcc-offer",
+  // issue 2537 — another device of the account offers a pairing (its "add a
+  // device" screen is open), and this browser can take it. One more member,
+  // one more derivation, the seam the DCC offer used.
+  "pairing-offer",
 ] as const;
 export type BannerSource = (typeof BANNER_SOURCES)[number];
 
@@ -343,6 +350,13 @@ export function activeBanners(): BannerEntry[] {
     entries.push(dccOfferEntry(offer));
   }
 
+  // issue 2537 — a pairing offered by another device of the account, below
+  // the DCC offer and above the invites for the DCC offer's reason: it
+  // expires (300 s), and someone is holding the other screen open. Derived:
+  // the store holds the offer and says whether this browser can take it.
+  const pairing = pairingOfferHere();
+  if (pairing !== null) entries.push(pairingOfferEntry(pairing));
+
   for (const invite of invitedWindows()) {
     entries.push(inviteEntry(invite));
   }
@@ -451,6 +465,29 @@ function dccOfferEntry(offer: DccOffer): BannerEntry {
       label: `Refuse the file ${offer.filename} from ${offer.from}`,
       onAction: () => refuseDccOffer(offer.network, offer.offer_id),
     },
+  };
+}
+
+// The button opens `/pair` with the code, the route a scan lands on, as a
+// document load (`/pair` reads its fragment when it mounts). It never joins
+// by itself: a rendezvous takes one joiner, so every eligible tab joining on
+// its own would race, and the winner could be one nobody is looking at. The
+// × is "Not now", this page's hide; a reload or another pairing asks again.
+function pairingOfferEntry(offer: PairingOffer): BannerEntry {
+  const id = `pairing-offer:${offer.rendezvous_id}`;
+  return {
+    source: "pairing-offer",
+    id,
+    severity: "info",
+    message: "Another of your devices is adding a browser to your encrypted chats.",
+    actionHint: {
+      label: "Pair this browser",
+      onAction: () =>
+        loadDocument(
+          pairingUrl(window.location.origin, { id: offer.rendezvous_id, curve: offer.curve }),
+        ),
+    },
+    dismiss: { label: "Not now", onAction: () => dismissBanner(id) },
   };
 }
 

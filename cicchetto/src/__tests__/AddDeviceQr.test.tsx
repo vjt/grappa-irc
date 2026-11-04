@@ -23,7 +23,10 @@ vi.mock("../lib/e2e/pairing", async (orig) => ({
   openChannel: pairingHolder.openChannel,
 }));
 
-// issue 2537 — the link's copy button.
+// issue 2537 — the key this tab offers, so its own offer is never shown back
+// to it; and the link's copy button.
+const offerHolder = vi.hoisted(() => ({ offeringFromHere: vi.fn() }));
+vi.mock("../lib/e2e/pairingOffer", () => ({ offeringFromHere: offerHolder.offeringFromHere }));
 const clipboardHolder = vi.hoisted(() => ({ copyText: vi.fn(async (_t: string) => undefined) }));
 vi.mock("../lib/clipboard", () => ({ copyText: clipboardHolder.copyText }));
 
@@ -62,9 +65,20 @@ describe("AddDeviceQr", () => {
     expect(screen.getByTestId("pair-url").textContent).toBe(
       `${window.location.origin}/pair#pair=${ID}.${CURVE}`,
     );
-    expect(pairingHolder.openPairing).toHaveBeenCalledWith("tok");
+    expect(pairingHolder.openPairing).toHaveBeenCalledWith("tok", CURVE);
     expect(onChannel).toHaveBeenCalledTimes(1);
     expect(onChannel.mock.calls[0]?.[0].rendezvous).toEqual(rendezvous);
+  });
+
+  it("marks its key as this tab's own before the open can be offered back to it", async () => {
+    render(() => (
+      <AddDeviceQr curve={CURVE} onChannel={vi.fn()} onMessage={vi.fn()} onClosed={vi.fn()} />
+    ));
+    await screen.findByTestId("pair-qr");
+    expect(offerHolder.offeringFromHere).toHaveBeenCalledExactlyOnceWith(CURVE);
+    expect(offerHolder.offeringFromHere.mock.invocationCallOrder[0]).toBeLessThan(
+      pairingHolder.openPairing.mock.invocationCallOrder[0] ?? 0,
+    );
   });
 
   it("copies the pairing link", async () => {

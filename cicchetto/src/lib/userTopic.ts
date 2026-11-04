@@ -14,6 +14,7 @@ import { channelKey } from "./channelKey";
 import { holdDccOffer, resolveDccOffer } from "./dccOffers";
 import { diagPush } from "./diagLog";
 import { catchUpPairings, deliverPairingEvent } from "./e2e/pairing";
+import { deliverPairingOffer, pairingOfferEnded } from "./e2e/pairingOffer";
 import { dropE2eRequest, putE2eRequest, reloadE2eRequests } from "./e2eRequests";
 import {
   drainE2e,
@@ -91,6 +92,7 @@ import { narrowIsupportChanged, narrowWindowStateEvent } from "./wireNarrow";
 import {
   S_E2ePairingWireE2ePairingClosedPayload,
   S_E2ePairingWireE2ePairingMessagePayload,
+  S_E2ePairingWireE2ePairingOfferedPayload,
   S_E2eRequestsWireE2eRequestGonePayload,
   S_E2eRequestsWireE2eRequestPayload,
   S_NetworksWireConnectionStateEvent,
@@ -536,6 +538,9 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       return validate(S_E2ePairingWireE2ePairingMessagePayload, r);
     case "e2e_pairing_closed":
       return validate(S_E2ePairingWireE2ePairingClosedPayload, r);
+    case "e2e_pairing_offered":
+      // issue 2537 (protocol 55) — a pairing offered to the account's devices.
+      return validate(S_E2ePairingWireE2ePairingOfferedPayload, r);
     case "e2e_request":
       // issue 2486 (protocol 53) — a request to start an encrypted chat was
       // made or changed state; the dispatch arm below mirrors it.
@@ -1329,8 +1334,16 @@ moduleRoot(() => {
         case "e2e_pairing_closed":
           // issue 2430 X1 — to the pairing channel this tab holds for that
           // rendezvous, if any; every device of the account hears both
-          // (lib/e2e/pairing.ts).
+          // (lib/e2e/pairing.ts). Issue 2537: either ends that rendezvous's
+          // offer, a message meaning someone joined it.
           deliverPairingEvent(payload);
+          pairingOfferEnded(payload.rendezvous_id);
+          return;
+
+        case "e2e_pairing_offered":
+          // issue 2537 — a pairing another device offers: a banner on a
+          // browser that can take it (lib/e2e/pairingOffer.ts).
+          deliverPairingOffer(payload);
           return;
 
         case "e2e_request":

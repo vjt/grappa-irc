@@ -83,11 +83,13 @@ describe("the pairing code", () => {
 describe("the REST doors", () => {
   const rendezvous: Rendezvous = { id: ID, role: "creator", expires_at: "2026-10-22T18:00:00Z" };
 
-  it("opens with the bearer and reads the rendezvous", async () => {
+  // issue 2537 — the creator's key rides the open, so grappa can offer the
+  // rendezvous to the account's other devices.
+  it("opens with the bearer and the creator's key, and reads the rendezvous", async () => {
     answer = () => json(201, { rendezvous });
-    await expect(openPairing("tok")).resolves.toEqual(rendezvous);
+    await expect(openPairing("tok", CURVE)).resolves.toEqual(rendezvous);
     expect(calls).toEqual([
-      { url: "/e2e/pairings", method: "POST", auth: "Bearer tok", body: undefined },
+      { url: "/e2e/pairings", method: "POST", auth: "Bearer tok", body: { curve: CURVE } },
     ]);
   });
 
@@ -106,7 +108,7 @@ describe("the REST doors", () => {
 
   it("refuses an answer of the wrong shape", async () => {
     answer = () => json(201, { rendezvous: { id: ID } });
-    await expect(openPairing("tok")).rejects.toBeInstanceOf(WireShapeError);
+    await expect(openPairing("tok", CURVE)).rejects.toBeInstanceOf(WireShapeError);
   });
 });
 

@@ -171,6 +171,11 @@ vi.mock("../lib/e2e/pairing", () => ({
   deliverPairingEvent: vi.fn(),
 }));
 
+vi.mock("../lib/e2e/pairingOffer", () => ({
+  deliverPairingOffer: vi.fn(),
+  pairingOfferEnded: vi.fn(),
+}));
+
 vi.mock("../lib/e2eRequests", () => ({
   putE2eRequest: vi.fn(),
   dropE2eRequest: vi.fn(),
@@ -367,6 +372,41 @@ describe("userTopic", () => {
     channelMock.fireEvent(end);
     expect(pairing.deliverPairingEvent).toHaveBeenNthCalledWith(1, ring);
     expect(pairing.deliverPairingEvent).toHaveBeenNthCalledWith(2, end);
+  });
+
+  // issue 2537 — a pairing offered to the account's devices; the offer ends
+  // when someone joins (the first message) or the rendezvous closes.
+  it("hands e2e_pairing_offered to the offer, and ends it on that rendezvous's message or close", async () => {
+    const offer = await import("../lib/e2e/pairingOffer");
+    const offered = {
+      kind: "e2e_pairing_offered",
+      rendezvous_id: "AbCdEfGhIjKlMnOpQrStUv",
+      curve: "fJKDF4omlQo87Jaqp5pqfZqg9TcQO1PG5lS1Kzz5FIA",
+      expires_at: "2026-11-05T00:05:00Z",
+    };
+    channelMock.fireEvent(offered);
+    expect(offer.deliverPairingOffer).toHaveBeenCalledWith(offered);
+
+    channelMock.fireEvent({
+      kind: "e2e_pairing_message",
+      rendezvous_id: "AbCdEfGhIjKlMnOpQrStUv",
+      seq: 1,
+      from: "joiner",
+    });
+    channelMock.fireEvent({
+      kind: "e2e_pairing_closed",
+      rendezvous_id: "ZyXwVuTsRqPoNmLkJiHgFe",
+      reason: "replaced",
+    });
+    expect(offer.pairingOfferEnded).toHaveBeenNthCalledWith(1, "AbCdEfGhIjKlMnOpQrStUv");
+    expect(offer.pairingOfferEnded).toHaveBeenNthCalledWith(2, "ZyXwVuTsRqPoNmLkJiHgFe");
+  });
+
+  it("drops an offer of the wrong shape before the offer sees it", async () => {
+    const offer = await import("../lib/e2e/pairingOffer");
+    vi.mocked(offer.deliverPairingOffer).mockClear();
+    channelMock.fireEvent({ kind: "e2e_pairing_offered", rendezvous_id: "x", curve: 42 });
+    expect(offer.deliverPairingOffer).not.toHaveBeenCalled();
   });
 
   it("drops a pairing push of the wrong shape before the pairing channel sees it", async () => {
