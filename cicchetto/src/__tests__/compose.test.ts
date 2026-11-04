@@ -7605,6 +7605,16 @@ describe("compose in an encrypted window (issues 2512, 2536)", () => {
     ]);
   });
 
+  // The paste guard's question (pasteRoute): what the window says goes as one
+  // message, what a command takes fans out as it would anywhere.
+  it("sentEncrypted: what the window says, never a command, and nothing outside an encrypted window", async () => {
+    const compose = await import("../lib/compose");
+    expect(compose.sentEncrypted("freenode", e2eWindow, "uno\ndue")).toBe(true);
+    expect(compose.sentEncrypted("freenode", e2eWindow, "/me uno\ndue")).toBe(true);
+    expect(compose.sentEncrypted("freenode", e2eWindow, "/msg carol uno\ndue")).toBe(false);
+    expect(compose.sentEncrypted("freenode", "bob", "uno\ndue")).toBe(false);
+  });
+
   it("sends a body of several lines as the one message it is", async () => {
     localStorage.setItem("grappa-token", "tok");
     const encrypted = await import("../lib/encryptedChats");

@@ -1870,8 +1870,9 @@ const ScrollbackPane: Component<Props> = (props) => {
   };
 
   // issue 2498 / 2512 — an encrypted query's lines answer as its peer's query
-  // does. The nick menu's verbs go to the plain query: the encrypted window
-  // takes no command, and a verb there would be encrypted to the peer as text.
+  // does. The nick menu's verbs go to the plain query, where a command typed
+  // in the encrypted window runs too (issue 2536): `$e2e:<nick>` is a window
+  // grappa has never heard of.
   // A click on the peer stays here, the window already open with them, as it
   // stays in any query; another nick opens its query, as on every line.
   const peer = (): string | null => encryptedWindowPeer(props.channelName);

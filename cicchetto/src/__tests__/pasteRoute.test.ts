@@ -17,6 +17,10 @@ vi.mock("../lib/compose", () => ({
   // #737 — the router drops a text paste aimed at a window a paced drain is
   // still rewriting. Default false: every pre-existing case is idle.
   isDraining: vi.fn(() => false),
+  // issue 2536 — whether the draft the paste leaves is said to an encrypted
+  // query's peer (its own tests are compose's). Default false, the answer in
+  // every window that is not an encrypted one.
+  sentEncrypted: vi.fn(() => false),
 }));
 
 vi.mock("../lib/confirmDialog", () => ({
@@ -27,7 +31,7 @@ vi.mock("../lib/dropUpload", () => ({
   dropUpload: vi.fn(),
 }));
 
-import { setDraft } from "../lib/compose";
+import { getDraft, sentEncrypted, setDraft } from "../lib/compose";
 import { requestConfirm } from "../lib/confirmDialog";
 import { dropUpload } from "../lib/dropUpload";
 import {
@@ -189,7 +193,9 @@ describe("pasteRoute — routeClipboardPaste", () => {
 // through Olm, so there is no burst to guard against; and the guard's way out,
 // uploading the block as a text file, would put the plaintext on the upload
 // host. Every door lets the block land in the box as typed text would.
-describe("pasteRoute — an encrypted query (issue 2512)", () => {
+// issue 2536 — as long as the block is said: handed to a command there, it
+// fans out in clear as anywhere, and is guarded as anywhere.
+describe("pasteRoute — an encrypted query (issues 2512, 2536)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -199,6 +205,7 @@ describe("pasteRoute — an encrypted query (issue 2512)", () => {
   it("a block is left to the browser on the textarea, inserted on the global path, and nothing is offered as a file", () => {
     for (const native of [true, false]) {
       vi.clearAllMocks();
+      vi.mocked(sentEncrypted).mockReturnValueOnce(true);
       const { e } = pasteEvent({ text: BLOCK_OVER_LIMIT });
       routeClipboardPaste(e, textarea(), "freenode", "$e2e:Bob", native);
       expect(requestConfirm).not.toHaveBeenCalled();
@@ -210,6 +217,7 @@ describe("pasteRoute — an encrypted query (issue 2512)", () => {
   });
 
   it("the IME door lets the block land the same way", () => {
+    vi.mocked(sentEncrypted).mockReturnValueOnce(true);
     const { e, preventDefault } = inputEvent({
       inputType: "insertFromPaste",
       dataTransferText: BLOCK_OVER_LIMIT,
@@ -217,6 +225,24 @@ describe("pasteRoute — an encrypted query (issue 2512)", () => {
     routePastedInput(e, textarea(), "freenode", "$e2e:Bob");
     expect(requestConfirm).not.toHaveBeenCalled();
     expect(preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("asks about the draft the paste leaves, and guards a block handed to a command", () => {
+    const ta = textarea();
+    ta.value = "/msg carol ";
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    vi.mocked(getDraft).mockReturnValueOnce(ta.value);
+    const { e, preventDefault } = pasteEvent({ text: BLOCK_OVER_LIMIT });
+
+    routeClipboardPaste(e, ta, "freenode", "$e2e:Bob", true);
+
+    expect(sentEncrypted).toHaveBeenCalledWith(
+      "freenode",
+      "$e2e:Bob",
+      `/msg carol ${BLOCK_OVER_LIMIT}`,
+    );
+    expect(preventDefault).toHaveBeenCalled();
+    expect(vi.mocked(requestConfirm).mock.calls[0]?.[0].title).toBe("Too many messages to send");
   });
 });
 

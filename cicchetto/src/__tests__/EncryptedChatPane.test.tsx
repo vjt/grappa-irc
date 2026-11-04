@@ -527,9 +527,9 @@ describe("EncryptedChatPane", () => {
     expect(openQueryWindowState).toHaveBeenCalledWith(7, "alice", expect.any(String));
   });
 
-  // The window takes no command: anything typed there goes to the peer,
-  // encrypted. So a verb from a nick's menu answers in the plain query with
-  // the peer, as it would from any query window (issue 2498), never here.
+  // A verb from a nick's menu answers in the plain query with the peer, as it
+  // would from any query window (issue 2498), never here: the window a
+  // command typed in it runs in too (issue 2536).
   it("a nick's menu answers in the plain query with the peer, never in the encrypted window", () => {
     setTrust({ master: KEY, verified: true, devices: 1 });
     setRows([{ kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "ciao" }]);
