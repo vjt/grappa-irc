@@ -69,6 +69,7 @@ import type {
   E2eKeysWireStatus,
   E2ePairingWireE2ePairingClosedPayload,
   E2ePairingWireE2ePairingMessagePayload,
+  E2ePairingWireE2ePairingOfferedPayload,
   E2eRequestsWireE2eRequestGonePayload,
   E2eRequestsWireE2eRequestPayload,
   E2eRequestsWireRequest,
@@ -1315,6 +1316,9 @@ export type WireUserEvent =
   // gone. lib/e2e/pairing.ts is their only reader. Generated shape verbatim.
   | E2ePairingWireE2ePairingMessagePayload
   | E2ePairingWireE2ePairingClosedPayload
+  // issue 2537 (protocol 55) — a rendezvous offered to the account's devices;
+  // lib/e2e/pairingOffer.ts is its only reader. Generated shape verbatim.
+  | E2ePairingWireE2ePairingOfferedPayload
   // issue 2486 (protocol 53) — a request to start an encrypted chat was
   // made or changed state, or it is gone. lib/e2eRequests.ts is their only
   // reader. Generated shape verbatim.

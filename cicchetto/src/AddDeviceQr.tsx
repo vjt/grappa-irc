@@ -9,6 +9,7 @@ import {
   pairingUrl,
   type Rendezvous,
 } from "./lib/e2e/pairing";
+import { offeringFromHere } from "./lib/e2e/pairingOffer";
 import { errorMessage } from "./lib/friendlyApiError";
 import { qrSvgWithLabel } from "./lib/qr";
 
@@ -20,8 +21,10 @@ import { qrSvgWithLabel } from "./lib/qr";
 // When the rendezvous ends it drops the QR and tells the caller why; saying
 // so is the caller's (AddDevicePanel), which knows what the pairing came to.
 //
-// Issue 2537: the link has a copy button, for the device with no camera to
-// scan the QR.
+// Issue 2537: the key rides the open, so grappa offers the rendezvous to the
+// account's other devices (lib/e2e/pairingOffer); this tab marks the key as
+// its own first, since the offer is pushed back to it too. The link has a
+// copy button, for the device with no camera to scan the QR.
 
 type Stage =
   | { tag: "opening" }
@@ -49,7 +52,8 @@ const AddDeviceQr: Component<{
       return;
     }
     try {
-      const rendezvous = await openPairing(t);
+      offeringFromHere(props.curve);
+      const rendezvous = await openPairing(t, props.curve);
       channel = openChannel(t, rendezvous, {
         onMessage: props.onMessage,
         onClosed: (reason) => {

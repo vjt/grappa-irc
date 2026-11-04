@@ -118,6 +118,7 @@ import type {
   CicWireBundleHashPayload,
   E2ePairingWireE2ePairingClosedPayload,
   E2ePairingWireE2ePairingMessagePayload,
+  E2ePairingWireE2ePairingOfferedPayload,
   E2eRequestsWireE2eRequestGonePayload,
   E2eRequestsWireE2eRequestPayload,
   MeJSONMeJson,
@@ -400,6 +401,7 @@ type CrossModuleArm = {
   // payloads, out of the Session walk's reach like the two above.
   e2e_pairing_message: E2ePairingWireE2ePairingMessagePayload;
   e2e_pairing_closed: E2ePairingWireE2ePairingClosedPayload;
+  e2e_pairing_offered: E2ePairingWireE2ePairingOfferedPayload;
   // issue 2486 — the requests to start an encrypted chat. `Grappa.E2eRequests.Wire`
   // payloads, out of the Session walk's reach like the pairing pair above.
   e2e_request: E2eRequestsWireE2eRequestPayload;
