@@ -2584,6 +2584,9 @@ ruling fixes it by running the command.
   scrubbed of the delimiter first (#1126's exit scrub), so only `/me`
   frames an ACTION. An empty `/me` sends nothing, as in any window. A
   multi-line `/me` is one action, as a multi-line text is one message.
+  What is said is now `parseSlash`'s body, so it is trimmed as in every
+  window (a pasted code block loses its first line's indentation) and
+  `//` sends a leading slash as text.
 * **The receiver draws it as an action, ours or the peer's.**
   `EncryptedChatPane`'s `lineOf` gives a body in the envelope the
   scrollback's `action` kind (`isCtcpAction`, next to `stripCtcpAction`
@@ -2598,23 +2601,36 @@ ruling fixes it by running the command.
   at `$e2e:<nick>`, a window grappa has never heard of and whose 4xx
   feeds fail2ban (grappa-irc#160). It is the window #2512's nick menu
   already answers in. Bare `/whois` asks about the peer, as in a query.
-  **Consequences, accepted with the ruling:** `/np` there is a clear
-  ACTION in the plain query, not an encrypted one (it is not `/me`), and
-  a bare `/query` (`/q`) is still an error there: it closes a *query*,
-  and the encrypted window's × closes that one, asking first when the
-  chat keeps messages.
+  The two context fields part here: `key` stays the encrypted window, so
+  an answer shown in the window (`/ignore`'s, `/topic`'s) lands where it
+  was asked. The peer is as the chat spells it, exactly what the nick
+  menu passes, not folded to an open query's casing.
+  **Consequences, accepted with the ruling:** `/np` and `/ctcp <peer>
+  ACTION …` there are clear ACTIONs (neither is `/me`), as is a user alias
+  that shadows `/me`; and a bare `/query` (`/q`) is still an error there:
+  it closes a *query*, and the encrypted window's × closes that one,
+  asking first when the chat keeps messages.
+* **The paste guard follows the same line.** #2512 skipped the flood
+  guard in an encrypted window because a pasted block was one message.
+  That holds for what is said only: a block handed to a command there
+  (`/msg x ` and twenty lines) fans out in clear as anywhere. The guard
+  now asks `sentEncrypted(slug, window, draft)` of the draft the paste
+  leaves, the same question `dispatchDraft` answers (`isSaid`), and
+  guards a command's block as any window would.
 
 Tests: compose (plain text to the encrypted door; `/whois carol` and
 `/ns identify` on the normal path with no encrypted send; bare `/whois`
 on the peer; `/notice`'s echo in the plain query; `/me` single and
 multi-line encrypted in the envelope with no clear send; empty `/me`;
-`//` and a pasted delimiter), the pane (an envelope is an action line,
-the peer's and ours; the search ignores the envelope). Each rule read
-red against a mutant of its own, 8 of 8, each turning only its own tests
-red (the never-action mutant also turns the search test, which reads the
-line's kind). e2e: `issue2536-encrypted-query-commands.spec.ts`, two
+`//` and a pasted delimiter; `sentEncrypted`), the paste router (it asks
+about the draft the paste leaves, and guards a command's block), the
+pane (an envelope is an action line, the peer's and ours; the search
+ignores the envelope). Each rule read red against a mutant of its own,
+each turning only its own tests red (the never-action mutant also turns
+the search test, which reads the line's kind). e2e: `issue2536-encrypted-query-commands.spec.ts`, two
 browsers on the real ircd: Alice sends `/ns identify notforbob` and the
-real NickServ answers her; `/me waves at bob` reaches Bob as an action;
+real NickServ answers her (a notice naming her nick, as its reply to
+that IDENTIFY does); `/me waves at bob` reaches Bob as an action;
 neither window shows the identify, and grappa keeps no DM history between
 them. The absence is barriered by order: Alice's encrypted messages to
 one peer leave in the order sent, so an identify sent to Bob would have
