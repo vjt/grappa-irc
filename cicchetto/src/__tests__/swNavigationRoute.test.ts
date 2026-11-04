@@ -41,6 +41,16 @@ describe("SW navigation route", () => {
     expect(servesShell("/uploads/abc.png")).toBe(false);
   });
 
+  // issue 2530 — behind Cloudflare Access the login ends with a navigation to
+  // `/cdn-cgi/access/authorized` on THIS origin, and that response is what
+  // sets the Access session cookie. Handed to the shell handler, it never
+  // reaches Cloudflare: the cookie is never set, the login cannot complete and
+  // every REST call keeps being redirected to the Access login host.
+  it("lets Cloudflare's reserved /cdn-cgi/ prefix reach the network", () => {
+    expect(servesShell("/cdn-cgi/access/authorized?redirect_url=%2F")).toBe(false);
+    expect(servesShell("/cdn-cgi/access/logout")).toBe(false);
+  });
+
   it("never answers a request that is not a navigation", () => {
     expect(servesShell("/", "cors")).toBe(false);
   });
