@@ -47,6 +47,11 @@ export async function joinWithLink(holder: Page, joiner: Page): Promise<string> 
   expect(url).toMatch(/\/pair#pair=/);
 
   await joiner.goto(url);
+  return readCheckCode(joiner);
+}
+
+/** The two-digit code the new browser shows on `/pair`, once it shows it. */
+export async function readCheckCode(joiner: Page): Promise<string> {
   const shown = joiner.getByTestId("pair-check-code");
   await expect(shown).toHaveText(/\d{2}\s*$/, { timeout: STEP });
   const code = /(\d{2})\s*$/.exec((await shown.textContent()) ?? "")?.[1];
