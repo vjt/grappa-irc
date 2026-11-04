@@ -74,6 +74,7 @@ import {
   partCommand,
   queryCommand,
 } from "./commands/window";
+import { scrubCtcpDelimiters } from "./ctcpAction";
 import { documentTeardownEpoch, documentTornDownSince } from "./documentTeardown";
 import { encryptedChatDeleted, sendEncrypted } from "./encryptedChats";
 import { type FramePreview, framePreview } from "./frameBudget";
@@ -638,22 +639,41 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // wants the same outcome whether or not a token is in play.
     if (cmd.kind === "empty") return { error: "empty" };
 
-    // issue 2512 — an encrypted query takes no command: everything typed in it
-    // goes to the peer, encrypted, as ONE message however many lines it holds
-    // (Olm carries the body whole, and a line renders its newlines). Asked
-    // before any verb is read, so nothing typed in that window can reach
-    // grappa's send door in clear. A failure here never reached the engine
-    // (which marks its own on the row): the pump hands the text back.
+    // issue 2512 — in an encrypted query, what is said goes to the peer,
+    // encrypted, as ONE message however many lines it holds (Olm carries the
+    // body whole, and a line renders its newlines). A failure here never
+    // reached the engine (which marks its own on the row): the pump hands the
+    // text back.
+    //
+    // issue 2536 (vjt's ruling, reversing 2512's "an encrypted query takes no
+    // command") — what is said is plain text and `/me`, nothing else. `/me`
+    // IS conversation, so it rides inside the message as an ACTION (the
+    // receiver draws it as one, EncryptedChatPane) and never as a clear CTCP.
+    // Every other command runs in clear, on purpose: a command is not part of
+    // the encrypted conversation, and treating it as text handed the peer a
+    // `/ns identify <password>`. So 2512's "nothing typed in that window
+    // reaches grappa's send door in clear" now holds for what is said only.
     const peer = encryptedWindowPeer(submittedFrom);
-    if (peer !== null) {
+    if (peer !== null && (cmd.kind === "privmsg" || cmd.kind === "me")) {
+      // Typed text frames nothing (the #1126 exit scrub): only `/me` makes an
+      // ACTION, so a pasted delimiter cannot pass for one.
+      const said = scrubCtcpDelimiters(cmd.body);
+      // Nothing left to say (an empty `/me`) sends nothing, as in any window.
+      if (said.trim() === "") return { ok: true };
       try {
-        await sendEncrypted(networkSlug, peer, text);
+        await sendEncrypted(networkSlug, peer, wireBody(said, cmd.kind === "me"));
         return { ok: true };
       } catch (e) {
         console.warn(`[e2e] could not send to ${peer}`, e);
         return { error: friendlyError(e) };
       }
     }
+    // …and a command typed there runs as it would in the plain query with the
+    // peer, the window #2512's nick menu already answers in: a verb that aims
+    // at the window it was typed in (`/notice`'s echo, `/np`, a bare `/part`)
+    // aims there, never at `$e2e:<nick>`, a window grappa has never heard of
+    // (and whose 4xx feeds fail2ban, grappa-irc#160).
+    const commandWindow = peer ?? submittedFrom;
 
     // CP13 S9 — server-window only accepts slash-commands. The window
     // has no IRC target a PRIVMSG could go to. Plain text gets a friendly
@@ -752,6 +772,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     const resolveBareWhoisNick = (verb: string): string | { error: string } => {
       const sel = selectedChannel();
       if (sel?.kind === "query") return sel.channelName;
+      // issue 2536 — an encrypted query's partner too: a command typed there
+      // runs as in the plain query with them.
+      const partner = sel?.kind === "encrypted" ? encryptedWindowPeer(sel.channelName) : null;
+      if (partner !== null) return partner;
       const net = networkBySlug(networkSlug);
       const own = net ? ownNickForNetwork(net, user()) : null;
       // `!own` (not `=== null`): an empty string is a server-contract
@@ -769,7 +793,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     const ctx: CommandContext = {
       key,
       networkSlug,
-      submittedFrom,
+      // issue 2536 — the plain query, for a command typed in an encrypted one.
+      submittedFrom: commandWindow,
       text,
       token: t,
       getActiveChannel,

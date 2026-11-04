@@ -28,7 +28,7 @@
 // the draft would actually POST (`draftLines` + `wireBody` — the same calls
 // the send path makes), and this module counts it.
 
-import { CTCP_DELIMITER, stripCtcpAction } from "./ctcpAction";
+import { CTCP_DELIMITER, isCtcpAction, stripCtcpAction } from "./ctcpAction";
 
 // `\x01ACTION ` + the closing `\x01` — the per-fragment envelope the server
 // re-adds to EVERY fragment of an action, so it is charged once per frame,
@@ -129,7 +129,7 @@ export function frameCount(wireBody: string, budget: number): number {
   if (budget <= 0) return 1;
   if (utf8ByteLength(wireBody) <= budget) return 1;
 
-  if (wireBody.startsWith(`${CTCP_DELIMITER}ACTION `)) {
+  if (isCtcpAction(wireBody)) {
     const innerBudget = budget - CTCP_ACTION_ENVELOPE_BYTES;
     if (innerBudget <= 0) return 1;
     return chunkCount(stripCtcpAction(wireBody), innerBudget);

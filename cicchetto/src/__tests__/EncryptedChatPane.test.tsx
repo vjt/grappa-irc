@@ -11,6 +11,7 @@ import type { PeerTrust } from "../lib/e2e/client";
 import type { SasView } from "../lib/e2e/sas";
 import { SAS_EMOJI } from "../lib/e2e/sasEmoji";
 import { friendlyApiError } from "../lib/friendlyApiError";
+import { wireBody } from "../lib/sendPipeline";
 import { pressAndClick } from "./helpers/pointerEvents";
 import { ruleBody, themeCss } from "./helpers/themeCss";
 
@@ -454,6 +455,58 @@ describe("EncryptedChatPane", () => {
     fireEvent.input(input, { target: { value: "TG9zdGxvc3R" } });
     expect(lines().map(line)).toEqual(["privmsg <Bob>"]);
     expect(screen.getByTestId("e2e-search-count").textContent).toBe("1 of 3 messages");
+  });
+
+  // issue 2536 — `/me` in an encrypted query rides inside the message as a
+  // CTCP ACTION, and either side's line is the scrollback's action line, as
+  // in any query, still marked encrypted and still carrying its state.
+  it("a message carrying an ACTION is the scrollback's action line, the peer's and ours", () => {
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    setRows([
+      { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "\x01ACTION waves\x01" },
+      { kind: "out", id: "2", at, body: "\x01ACTION waves back\x01", state: "sent", reason: null },
+      { kind: "out", id: "3", at, body: "ACTION is a word", state: "sent", reason: null },
+    ]);
+    renderPane();
+    const shown = lines();
+    expect(shown.map((row) => row.dataset.kind)).toEqual(["action", "action", "privmsg"]);
+    expect(body(shown[0])).toBe("* Bob waves");
+    expect(body(shown[1])).toBe("* alice waves back");
+    expect(body(shown[2])).toBe("ACTION is a word");
+    expect(shown.every((row) => row.querySelector(".encrypted-marker") !== null)).toBe(true);
+    expect(shown[1]?.querySelector("[data-testid=e2e-row-state]")?.getAttribute("data-state")).toBe(
+      "sent",
+    );
+  });
+
+  // issues 2513 + 2536 — the ciphertext view shows what crossed IRC, and an
+  // ACTION crossed as payloads like any message: its line is the payloads,
+  // never the action line, and the `/me` behind it does not show.
+  it("in the ciphertext view a message carrying an ACTION is the payloads it crossed as, not an action line", () => {
+    const sent = {
+      verb: "msg",
+      msgid: "QWN0aW9uYWN",
+      payload: '{"ck":"w","bodies":{"a":"b"}}',
+    } as const;
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    setRows([
+      {
+        kind: "out",
+        id: "1",
+        at,
+        body: "\x01ACTION waves\x01",
+        state: "sent",
+        reason: null,
+        wire: [sent],
+      },
+    ]);
+    setWireView("azzurra/bob");
+    renderPane();
+    const shown = lines();
+
+    expect(shown.map(line)).toEqual(["privmsg <alice>"]);
+    expect(shown.map(body)).toEqual([`E2E MSG QWN0aW9uYWN {"ck":"w","bodies":{"a":"b"}}`]);
+    expect(shown[0]?.textContent).not.toContain("waves");
   });
 
   // In any query a click on the peer's nick lands in the window already
@@ -1286,6 +1339,25 @@ describe("EncryptedChatPane, compose and the chat's tools", () => {
     expect(sendEncrypted).not.toHaveBeenCalled();
   });
 
+  // issues 2513 + 2536 — the ciphertext view changes what the lines show, not
+  // what the compose box does: `/me` still goes to the peer encrypted as an
+  // ACTION, and any other command still runs instead of reaching the peer.
+  it("in the ciphertext view the compose box still sends /me encrypted and keeps a command from the peer", async () => {
+    setWireView("azzurra/bob");
+    renderPane();
+    type("/me waves");
+    enter();
+    await waitFor(() =>
+      expect(sendEncrypted).toHaveBeenCalledWith("azzurra", "bob", wireBody("waves", true)),
+    );
+
+    sendEncrypted.mockClear();
+    type("/whois bob");
+    enter();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sendEncrypted).not.toHaveBeenCalled();
+  });
+
   it("the magnifier opens a search over the messages, any case, counted; Esc closes it and shows all", () => {
     setTrust({ master: KEY, verified: true, devices: 1 });
     setRows([
@@ -1325,6 +1397,24 @@ describe("EncryptedChatPane, compose and the chat's tools", () => {
     // Opened again, it starts empty.
     fireEvent.click(toggle);
     expect((screen.getByTestId("e2e-search-input") as HTMLInputElement).value).toBe("");
+  });
+
+  // issue 2536 — the search reads what a line says: an ACTION's envelope is
+  // framing, not text.
+  it("the search finds an ACTION by its words, never by its envelope", () => {
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    setRows([
+      { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "\x01ACTION waves\x01" },
+      { kind: "in", id: "2", at, nick: "Bob", ed25519: KEY, body: "ciao" },
+    ]);
+    renderPane();
+    fireEvent.click(screen.getByTestId("e2e-search-toggle"));
+    const input = screen.getByTestId("e2e-search-input") as HTMLInputElement;
+
+    fireEvent.input(input, { target: { value: "action" } });
+    expect(lines()).toEqual([]);
+    fireEvent.input(input, { target: { value: "waves" } });
+    expect(lines().map((row) => row.dataset.kind)).toEqual(["action"]);
   });
 
   it("the shredder asks first, and deletes the chat only on the dialog's yes", () => {
