@@ -2360,3 +2360,74 @@ POST only when the host is listed.
 but `VendorLog` attaches its handler in `init/1`: a hot reload would leave it
 bound to the old event, which nothing emits any more, and vendor rejections
 would go unlogged until the next restart.
+<!-- entry #2535 -->
+
+---
+
+## 2026-11-04 — #2535: the 2509 key-alarm test waits for its setup, and the alarm gets a measured 60 s
+
+`issue2509-encrypted-next-active.spec.ts`'s desktop test "a key alarm in a
+chat with no line" timed out at 30 s waiting for Alice's next-active count:
+CI run 41887617372 (attempt 1) and run 41900042768 (shard 2), green when
+rerun. The issue read it as an observation race. The container logs of both
+reds and of two local greens say otherwise: it is a race in the SETUP, made
+slow by the send budget.
+
+* **What raised the alarm came down to 28 ms.** Alice's pin sends a KEYREQ.
+  Bob's grappa answers it server-side from whatever keys it holds at that
+  instant, and the answer waits in the 2430 pacer. In the greens it was
+  built after Bob's `replaceIdentity`, carried his new master, and `onKeys`
+  → `checkMaster` raised the alarm. In both reds it was built 28 ms before
+  the replacement (his queries at 20:09:08.906, `register_device` at
+  08.934), so it carried his old keys, which are the pin's, and raised
+  nothing. Alice then opened a session to his old device. The alarm could
+  only come with Bob's PKMSG, queued in his grappa behind those old KEYS and
+  a NACK, and at teardown it was still `e2e pkmsg dropped unsent: the
+  session ended`.
+* **The cure: Bob comes back only once the pin's answer has landed.** After
+  `pin`, the test waits for Alice's rail to list Bob's one device
+  (`e2e-peer-devices` "1 device", `KEYS_TIMEOUT`) and for the pin to read
+  verified. A scratch probe read the rail at the pin: "0 devices" in all 6
+  runs, so the wait is not vacuous; the device was listed 11 to 12 s after
+  the pin. From there the alarm always comes with Bob's message.
+* **That path is slow by construction, and the 3-line message to Bob's old
+  device that the first analysis could not name is the pin's listreq.** A
+  pin asks the peer for his list (`askList`, O1), and the ask waits behind
+  the keys it needs, so it leaves once his KEYS land: a 3-line PKMSG to his
+  old device, in flight just as the new Bob asks Alice for her keys. Her
+  KEYS answer (2 lines) queues behind it, because REACTIVE messages are FIFO
+  per target (`E2ePacer`), and Bob's PKMSG (3 lines) waits for her KEYS:
+  eight paced lines. A 405-byte E2E line leaves only at an empty bank, since
+  the pacer keeps 5 s of the fake-lag ceiling in reserve for URGENT lines,
+  so about one every 5 s. On the container clock in one run: Bob's KEYREQ
+  at 40.4, Alice's listreq 38.2 → 46.3, her KEYS 51.3 and 56.3, his PKMSG
+  56.3 → 04.3.
+* **The count gets `ALARM_TIMEOUT` = 60 s: a measured budget, not a raised
+  timeout** (the orchestrator's ruling). From Bob's send to Alice's count,
+  6 runs: 27.0, 28.1, 26.0, 27.1, 27.0, 28.1 s. That left 2 to 4 s of
+  `KEYS_TIMEOUT`'s 30; eight lines at 5 s is about 40 s at worst. Only the
+  count's wait changes: the green path still takes about 27 s.
+
+Rejected:
+
+* **Bob replaces first, Alice pins his old key after.** The pin's answer
+  would carry the new master and raise the alarm through `onKeys` in about
+  10 s, but it can land while Alice still has the encrypted window open,
+  and the window shown is what reads the alarm. KEYS took 8 s after the
+  KEYREQ in these runs only because registration had filled Bob's fake-lag
+  bank; at an empty bank it leaves at once.
+* **Bob comes back once Alice's listreq has reached him** (a scratch arm,
+  never committed). He decrypts it and answers with his `t:list` and a
+  listreq of his own, and Alice answers with hers: about 20 s more on both
+  connections. His rail shows nothing of Alice either: `e2e-peer-devices`
+  never appeared on his side (5 of 5 red on that wait, a sixth lost to a
+  chromium SIGSEGV at launch), so there was nothing to wait on.
+
+### Tests
+
+* The committed wait with scratch timing probes, 6 runs on chromium: 6
+  green, the numbers above.
+* The committed spec, the wait and `ALARM_TIMEOUT` with no probe, twice on
+  every project it runs on: 8 of 8 green (the key-alarm and DM-tier tests
+  on chromium, the phone test on chromium-pixel-touch and
+  webkit-iphone-15).
