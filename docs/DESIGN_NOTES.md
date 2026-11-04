@@ -2773,9 +2773,9 @@ and close of a rendezvous on the user topic, which every session of the
 account listens on. What it lacked was the code itself: the ephemeral key
 lived only in the QR.
 
-* **A copy button** next to the link. It goes through `copyText` like the
-  rail's "copy your key": a refused or insecure-context write says why and
-  leaves the link on screen to copy by hand.
+* **A copy button** next to the link. It is the rail's "copy your key"
+  button, now one `E2eCopyButton` for both: a refused or insecure-context
+  write says why and leaves the link on screen to copy by hand.
 * **The offer (protocol 55).** The open carries the creator's ephemeral
   Curve25519 key as an optional `curve`. grappa then broadcasts
   `e2e_pairing_offered {rendezvous_id, curve, expires_at}` on the user topic.
@@ -2793,7 +2793,10 @@ lived only in the QR.
   front of the user. The banner's button loads `/pair#pair=<id>.<curve>` as
   a document (`loadDocument`), the same route a scan lands on, so the joiner
   side is `PairScan` unchanged. The × is "Not now", which hides it on this
-  page only; a reload or another pairing asks again.
+  page only; a reload or another pairing asks again. Every rejoin's snapshot
+  pushes the same offer again, so the store keeps the offer it already holds:
+  clearing it first, outside a batch, let the banner stack's re-arm effect
+  see no entry for a moment and forget the dismissal (found in review).
 * **Who sees it is derived, not checked.** Only a browser that does not hold
   the account's identity on some network sees the banner. That is
   `identityElsewhere(slug)`, which the page-load identity sync already keeps
@@ -2811,7 +2814,37 @@ lived only in the QR.
 * **The key is public:** it is the half of the code the QR already shows. A
   malformed one, blank included, is 422 before it costs an open; it must be
   43 characters of standard base64. An older client opens without it, and
-  nothing is offered.
+  nothing is offered. What did change is who learns the rendezvous id:
+  before, whoever saw the QR; now every socket of the account, before anyone
+  joins. A forgotten or hostile session of the account can therefore join
+  first, and gets no further: the user, who is not looking at that screen,
+  confirms the check code on neither side, so the worst case is a pairing
+  that has to start again, not a copied identity. The user topic does not
+  filter on session kind, so a per-client token's socket hears the offer, as
+  it has heard every pairing message and close since #2430, while
+  `GET /e2e/pairings/offer` stays in `:full_session` with the rest of the
+  relay and refuses that token (403). Joining needs a full session either way.
+* **The relay's state is now visible to the hot-deploy preflight.**
+  `Rendezvous` gained a field, and `E2ePairing` holds rendezvous in its
+  state. Since #2430 its `init/1` returned its argument, so the extractor
+  saw no shape and the GenServer was not in `LongLivedModules`: this branch
+  would have classified HOT, and after the reload the first offer lookup
+  would have read `curve` off a rendezvous built before it and crashed the
+  relay, dropping every account's pairing. `E2ePairing.t` now names the
+  state; the membership test then required `E2ePairing` among the modules
+  and `Rendezvous` and `Message` among the state helpers, and with them the
+  branch classifies COLD.
+* **Known gaps, accepted.** (1) A rejoin's snapshot can add an offer but
+  never remove one: a browser that missed the close, or the joiner's first
+  message, while disconnected keeps the banner until `expires_at`, and its
+  button lands on `/pair`, which says the pairing is gone or taken. cic
+  does not call the REST twin; a call beside `catchUpPairings()` on rejoin
+  would close it. (2) The keys a browser opened with are held per tab, so
+  another tab of the creating browser shows the banner when that browser
+  lacks the identity on some network, and its button gets 409
+  `pairing_own_rendezvous`. (3) The expiry timer compares the server's
+  `expires_at` with the local clock: a clock fast by the whole ttl never
+  shows the banner, the assumption the QR's countdown already makes.
 
 ### Tests
 
@@ -2825,3 +2858,6 @@ lived only in the QR.
 * Two mutants on the stack: dropping the join snapshot turns test 1 red at
   the banner (2/2 runs); a close that does not end the offer turns test 2 red
   at the count after the close (expected 0, received 1).
+* `ErrorBanners.test.tsx` drives the real offer store and the real banner
+  stack: "Not now", the same offer delivered again, still hidden; another
+  pairing, shown. Red on the old delivery at the second delivery.
