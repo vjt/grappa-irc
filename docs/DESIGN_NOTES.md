@@ -2482,6 +2482,16 @@ server or protocol change.
   sends for a hold. What is open lives in `EncryptedChatMenu`, because the
   Sidebar keeps no state of its own (Shell remounts it on every swipe,
   #1041); the menu goes with the Sidebar that mounted it.
+* **The rows keep their node.** The sidebar keys an encrypted window's row
+  by the chat's key, not by the index entry. The index is read again on
+  every change (an incoming line, the read after it) and hands out new
+  entries, so keyed by entry each refresh rebuilt every row, and one landing
+  inside a hold left the menu's `contextmenu` on a detached button, which
+  Solid's delegation at the document never sees. Found after the rebase over
+  #2511, when the phone test went red once with Bob's reply shown about
+  390ms before the hold: consistent with this, not proven, since 22 probed
+  holds afterwards saw no row rebuilt. The window bar keys its encrypted tabs
+  the same way and stays so: nothing there is held.
 * **Per chat, in the tab's memory.** A way of looking, not a setting: off
   until asked, off again when this tab deletes the chat or the identity
   changes, gone on a reload.
@@ -2510,8 +2520,10 @@ placeholder texts, a sent row of ours with none reading as kept elsewhere,
 the delivery state still on the line, no plaintext on screen, the plaintext
 back on the toggle, another chat's toggle leaving this chat as it was, the
 search looking in the ciphertext), the sidebar menu (a right-click, a hold on
-a touch device that sends no `contextmenu`, no other row opens it) and the
-toggle's lifetime (per chat, off on a delete or a new identity). 18 mutants
+a touch device that sends no `contextmenu`, a hold that the index is read
+again under, red before the rows were keyed by chat, no other row opens it)
+and the toggle's lifetime (per chat, off on a delete or a new identity). 18
+mutants
 (the store append dropped or replacing, `wire: null` at the flush, the flag
 ignored, a space join, the unreadable row kept as an event, no
 `preventDefault`, no hold binding, no reset on delete or identity, the
