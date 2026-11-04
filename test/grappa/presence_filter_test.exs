@@ -45,7 +45,7 @@ defmodule Grappa.PresenceFilterTest do
   # suites fully green while the server omits presence from the REST history
   # page and cic renders it on the live tail — for every channel sized between
   # the two values, silently. Same executable-drift-guard shape as
-  # `GrappaWeb.RouterSwDenylistTest` (which parses `service-worker.ts`) and the
+  # `GrappaWeb.RouterSwDenylistTest` (which parses `swNavigationRoute.ts`) and the
   # `should_notify_parity_test.exs` shared truth table: the rule is expressed
   # once per language, so the EQUALITY has to be expressed as code.
   describe "cross-language threshold parity (#915)" do

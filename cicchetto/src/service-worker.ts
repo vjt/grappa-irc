@@ -16,9 +16,11 @@
 //     (mode=websocket) are NOT navigation requests; the
 //     NavigationRoute below only matches `request.mode === "navigate"`,
 //     so they pass through to the network untouched. The denylist
-//     excludes server-handled paths (auth, REST scopes, /socket)
-//     from navigation-fallback rewriting — keep in lockstep with
-//     `lib/grappa_web/router.ex` REST scope prefixes.
+//     (`lib/swNavigationRoute.ts`) excludes server-handled paths
+//     (auth, REST scopes, /socket) from navigation-fallback
+//     rewriting — keep in lockstep with `lib/grappa_web/router.ex`
+//     REST scope prefixes; the entries that are not router scopes say
+//     why at their own lines.
 //   - skipWaiting + clients.claim is correct for a shell-only
 //     cache where stale assets are never useful (matches the
 //     pre-B0 `registerType: "autoUpdate"` behavior). #1063
@@ -35,12 +37,13 @@
 //     regardless of which channel is selected.
 
 import { createHandlerBoundToURL, precacheAndRoute } from "workbox-precaching";
-import { NavigationRoute, registerRoute } from "workbox-routing";
+import { registerRoute } from "workbox-routing";
 import { shouldSuppressPush } from "./lib/pushDedup";
 import { narrowPushPayload, type PushPayload, pushNotificationOptions } from "./lib/pushPayload";
 import { handleShareTargetRequest, isShareTargetRequest } from "./lib/shareTarget";
 import { isSkipWaitingMessage, navigateStaleClients } from "./lib/swLifecycle";
 import { deliverNavigate } from "./lib/swNavigate";
+import { createNavigationRoute } from "./lib/swNavigationRoute";
 
 declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<{ url: string; revision: string | null }>;
@@ -65,69 +68,10 @@ self.addEventListener("fetch", (event: FetchEvent) => {
 
 precacheAndRoute(self.__WB_MANIFEST);
 
-// SPA navigation fallback: any in-app route (e.g. `/`, `/login`)
-// resolves to the precached `index.html`. The denylist mirrors
-// router.ex REST scope prefixes — those paths must reach the
-// origin server even on an explicit navigation (e.g. an OAuth-
-// style redirect). Workbox `NavigationRoute` only matches
-// `request.mode === "navigate"`, so non-navigation REST + WS
-// requests are unaffected by this route.
-//
-// REV-G H22 (2026-05-22): added `/api`, `/admin`, `/uploads`.
-// `/uploads/<slug>` is the public file-fetch surface for embedded
-// image uploads (UX-6-B1); when a user posts `📸 host/uploads/<slug>`
-// in IRC and a peer taps the link in a new tab, the PWA SW
-// intercepts the top-level navigation and pre-REV-G served the SPA
-// shell instead of the image bytes. `/admin` covers BOTH the
-// loopback hooks (`/admin/reload`) and the operator console
-// (`/admin/me`, `/admin/visitors`, etc.) — direct navigation
-// pre-REV-G served the SPA shell instead of forwarding to the
-// controller. `/api` covers the small authenticated surface
-// (uploads.create, server-settings.show). `/healthz` is intentionally
-// omitted (single GET; if a curl probe is opened in a tab the SPA
-// shell isn't a security issue).
-//
-// The denylist MUST be a superset of router.ex's top-level scope
-// prefixes. `test/grappa_web/router_sw_denylist_test.exs` enforces
-// this — adding a new top-level scope without updating this regex
-// list trips the test before deploy.
-const navigationHandler = createHandlerBoundToURL("index.html");
-const navigationRoute = new NavigationRoute(navigationHandler, {
-  denylist: [
-    /^\/auth/,
-    // #1679 — the one-round-trip boot envelope. A top-level REST path, so
-    // without this entry an explicit navigation to it serves the SPA shell
-    // instead of reaching the controller (REV-G H22). Pinned by
-    // `GrappaWeb.RouterSwDenylistTest`, which is what caught its absence.
-    /^\/boot/,
-    /^\/me/,
-    /^\/networks/,
-    /^\/socket/,
-    /^\/push/,
-    /^\/api/,
-    /^\/session/,
-    /^\/admin/,
-    /^\/uploads/,
-    // issue 2127 — the accepted-DCC-file door, moved to this public
-    // top-level surface beside `/uploads`. Exactly the same failure mode
-    // the `/uploads` entry above was added for: the server mints an
-    // ABSOLUTE URL into the delivery row, a peer taps it, and without
-    // this entry the SW intercepts the top-level navigation and serves
-    // the SPA shell instead of the bytes. Pinned by
-    // `GrappaWeb.RouterSwDenylistTest`, which is what caught its absence.
-    /^\/dcc_files/,
-    // issue 2430 X1 — the pairing relay's REST doors (`/e2e/pairings`). The
-    // SPA route a pairing QR opens is `/pair`, deliberately outside this
-    // prefix, so it still gets the shell. Pinned by
-    // `GrappaWeb.RouterSwDenylistTest`, which is what caught its absence.
-    /^\/e2e/,
-    // #75 themes REST surface. PLURAL only — `/^\/themes/` does NOT match the
-    // singular `/theme/:id` SPA share route (after `/theme` comes `/`, not
-    // `s`), so a shared theme link still resolves to the SPA shell.
-    /^\/themes/,
-  ],
-});
-registerRoute(navigationRoute);
+// SPA navigation fallback — which top-level navigations get the precached
+// shell and which must reach the network. The route and its denylist live
+// in `lib/swNavigationRoute.ts`, where vitest can reach them.
+registerRoute(createNavigationRoute(createHandlerBoundToURL("index.html")));
 
 self.addEventListener("install", () => {
   self.skipWaiting();

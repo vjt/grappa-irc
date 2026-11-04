@@ -18,8 +18,10 @@ defmodule GrappaWeb.RouterSwDenylistTest do
   #      reflection — authoritative source, not regex over
   #      router.ex);
   #   2. extracts each route's top-level path segment;
-  #   3. parses cicchetto/src/service-worker.ts for the `denylist`
-  #      array, extracting each `/^\/<token>/` regex's prefix;
+  #   3. parses cicchetto/src/lib/swNavigationRoute.ts (the SW's
+  #      navigation route, extracted from service-worker.ts in issue
+  #      2530) for the `denylist` array, extracting each `/^\/<token>/`
+  #      regex's prefix;
   #   4. asserts every router top-level prefix appears in the SW
   #      denylist (modulo the small whitelist below).
   #
@@ -45,7 +47,7 @@ defmodule GrappaWeb.RouterSwDenylistTest do
   # state.
   use ExUnit.Case, async: true
 
-  @sw_path "cicchetto/src/service-worker.ts"
+  @sw_path "cicchetto/src/lib/swNavigationRoute.ts"
   @whitelist ["/", "/healthz", "/*path", "/service-worker.js"]
 
   describe "SW denylist ⊇ router top-level scopes" do
