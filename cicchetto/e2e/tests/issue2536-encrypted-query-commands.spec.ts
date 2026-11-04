@@ -35,11 +35,15 @@ import { NETWORK_SLUG } from "../fixtures/seedData";
 import { provisionPeerSubject, teardownSpecSubject } from "../fixtures/specSubject";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
-// What NickServ has said to `token`'s user: services notices land in the
-// server window (`EventRouter`'s services arm), one row each.
-const nickServNotices = async (token: string): Promise<number> =>
+// NickServ's notices to `token`'s user that name `nick`: services notices
+// land in the server window (`EventRouter`'s services arm), one row each. A
+// one-argument IDENTIFY from an unregistered nick is answered with that nick
+// (azzurra/services `do_identify` → ERROR_NICK_NOT_REG, "Nickname %s is not
+// registered." / "Il nick %s non e' registrato."), which a notice of another
+// cause would not carry.
+const nickServNotices = async (token: string, nick: string): Promise<number> =>
   (await fetchAllMessagesAsc(token, NETWORK_SLUG, "$server")).filter(
-    (m) => m.kind === "notice" && /^nickserv$/i.test(m.sender),
+    (m) => m.kind === "notice" && /^nickserv$/i.test(m.sender) && (m.body ?? "").includes(nick),
   ).length;
 
 const linesReading = (page: Page, text: string) => chatLines(page).filter({ hasText: text });
@@ -61,11 +65,11 @@ test("issue 2536 — in an encrypted query a command runs in clear and never rea
     await pin(page, await ownKey(peer.page));
     await pin(peer.page, await ownKey(page));
 
-    const before = await nickServNotices(alice.token);
+    const before = await nickServNotices(alice.token, aliceNick);
     await send(page, "/ns identify notforbob");
-    // The command ran: NickServ answered it, whatever it said.
+    // The command ran: NickServ answered it.
     await expect
-      .poll(() => nickServNotices(alice.token), { timeout: KEYS_TIMEOUT })
+      .poll(() => nickServNotices(alice.token, aliceNick), { timeout: KEYS_TIMEOUT })
       .toBeGreaterThan(before);
 
     await send(page, "/me waves at bob");
