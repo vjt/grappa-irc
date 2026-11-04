@@ -2164,3 +2164,60 @@ Tests:
   `cic` subject moved from `issue2430-interop-bot.spec.ts` into
   `fixtures/e2eBot.ts`, now that two specs need them. The interop spec is
   unchanged in behaviour and runs in the green arm.
+<!-- entry #2532 -->
+
+---
+
+## 2026-11-04 — #2532: the 2506 phone test measures the rail once the drawer stops
+
+`issue2506-encrypted-rail-geometry.spec.ts`'s phone test (`@touch @webkit`,
+webkit-iphone-15) went red now and then at its first edge check:
+`|own.left - peer.left|` 1.48px, against a 1px tolerance. Seen on main
+integration at `24f745040` (run 41611248751) and on PR 2526 (run
+41887787807), green when rerun alone.
+
+* **It measured inside the slide.** The test tapped the encrypted pane's ☰,
+  waited for `.shell-members.open`, and read the boxes. The class lands at
+  the START of the drawer's 200ms `translateX(100%) → 0` transition. In both
+  red traces the evaluate began 43ms and 68ms after the tap returned, with
+  the peer card's left edge at 251.2px and 193.0px, the drawer still on its
+  way in.
+* **One evaluate did not keep the edges together.** The spec read every box
+  in one call, so that a moving drawer would move them all alike. On WebKit
+  it did not: both times the box read first (the peer card) sat 1.48px and
+  1.08px right of `own` and the WHOIS card, which agreed with each other
+  exactly. The slide advanced between two reads of one call. Why WebKit
+  advances it there is not known; the two traces say that it does.
+* **The cure is the settle idiom already in the fixtures.** The test now
+  waits for `.shell-members.open` to be wholly inside the viewport
+  (`toBeInViewport({ ratio: 1 })`), which for a drawer fixed to the right
+  edge and no taller than the viewport happens only at `translateX(0)`:
+  `openMembersDrawer`'s wait (#653). The 1px tolerance is unchanged, as the
+  issue asks. The desktop test has no slide and is untouched.
+
+### Tests
+
+Displacement, on webkit-iphone-15, one run with five scratch arms beside the
+spec (never committed): each recorded when it measured after the tap
+returned, whether the drawer still had a running animation, and the
+drawer's left edge then against where it stops (141px on the 393px phone).
+The slide was left at 200ms or forced to 2s or 4s with an injected
+`transition-duration`.
+
+| wait | slide | measured after the tap | animation running | drawer left |
+|---|---|---|---|---|
+| `.open` (before) | 200ms | 37ms | yes | 393px |
+| `.open` (before) | 2s | 30ms | yes | 393px |
+| in viewport (after) | 200ms | 445ms | no | 141px |
+| in viewport (after) | 2s | 3008ms | no | 141px |
+| in viewport (after) | 4s | 4039ms | no | 141px |
+
+The old wait measures at the same few milliseconds however long the slide,
+with the drawer still at its starting edge; the new one measures after the
+slide has ended, whatever its length. How far it trails varies (about 1s
+on the 2s arm, 39ms on the 4s one), which fits `expect` retrying at growing
+intervals up to 1s; that is an inference, not measured. The committed phone
+test ran green in the same pass. Not reproduced: the 1.48px geometry red
+itself. In the two `.open` arms every box was read at the same drawer
+position (both deltas 0), so the per-read drift the CI traces show did not
+occur on demand; what the arms prove is the ordering that rules it out.
