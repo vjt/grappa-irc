@@ -1,7 +1,7 @@
 import { type Component, createResource, createSignal, Show } from "solid-js";
 import AddDevicePanel from "./AddDevicePanel";
+import E2eCopyButton from "./E2eCopyButton";
 import { isChannelName } from "./lib/chantypes";
-import { copyText } from "./lib/clipboard";
 import { formatDateTime } from "./lib/dateFormat";
 import type { ChatRow, CheckFailure, IdentityCheck } from "./lib/e2e/chatStore";
 import type { PinOutcome } from "./lib/e2e/engine";
@@ -188,35 +188,6 @@ const PinForm: Component<{ networkSlug: string; nick: string; display: string }>
   );
 };
 
-/** Copies our own master key, what a bot's operator pins. */
-const CopyOwnKey: Component<{ networkSlug: string }> = (props) => {
-  const [error, setError] = createSignal<string | null>(null);
-  const copy = async () => {
-    const own = ownKey(props.networkSlug);
-    if (own === undefined) return;
-    setError(null);
-    try {
-      await copyText(own);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-  return (
-    <>
-      <button
-        type="button"
-        class="e2e-copy"
-        data-testid="e2e-own-identity-copy"
-        disabled={ownKey(props.networkSlug) === undefined}
-        onClick={() => void copy()}
-      >
-        copy your key
-      </button>
-      <Show when={error()}>{(message) => <div class="e2e-error">{message()}</div>}</Show>
-    </>
-  );
-};
-
 /** Takes the key an alarm showed for the nick: written to now, not verified. */
 export function acceptAlarmKey(slug: string, nick: string, key: string): void {
   void pinEncryptedKey(slug, nick, key, false).catch((err: unknown) => {
@@ -357,7 +328,11 @@ const EncryptedRail: Component<Props> = (props) => {
               </code>
             </dd>
           </dl>
-          <CopyOwnKey networkSlug={props.networkSlug} />
+          <E2eCopyButton
+            text={ownKey(props.networkSlug)}
+            label="copy your key"
+            testId="e2e-own-identity-copy"
+          />
           <Show when={answered() === true}>
             <Show when={!adding()} fallback={<AddDevicePanel onClose={() => setAdding(false)} />}>
               <button

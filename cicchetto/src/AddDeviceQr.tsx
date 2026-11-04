@@ -1,6 +1,6 @@
 import { type Component, createSignal, onCleanup, onMount, Show } from "solid-js";
+import E2eCopyButton from "./E2eCopyButton";
 import { token } from "./lib/auth";
-import { copyText } from "./lib/clipboard";
 import {
   type CloseReason,
   openChannel,
@@ -40,7 +40,6 @@ const AddDeviceQr: Component<{
 }> = (props) => {
   const [stage, setStage] = createSignal<Stage>({ tag: "opening" });
   const [now, setNow] = createSignal(Date.now());
-  const [copyError, setCopyError] = createSignal<string | null>(null);
   const tick = setInterval(() => setNow(Date.now()), 1_000);
   let channel: PairingChannel | null = null;
   let gone = false;
@@ -84,15 +83,6 @@ const AddDeviceQr: Component<{
     void channel?.close();
   });
 
-  const copy = async (url: string) => {
-    setCopyError(null);
-    try {
-      await copyText(url);
-    } catch (err) {
-      setCopyError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
   const countdown = (expiresAt: string): string => {
     const s = Math.max(0, Math.floor((Date.parse(expiresAt) - now()) / 1000));
     return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
@@ -124,21 +114,7 @@ const AddDeviceQr: Component<{
             <p class="pair-url" data-testid="pair-url">
               {s().url}
             </p>
-            <button
-              type="button"
-              class="e2e-copy"
-              data-testid="pair-url-copy"
-              onClick={() => void copy(s().url)}
-            >
-              copy link
-            </button>
-            <Show when={copyError()}>
-              {(message) => (
-                <div class="e2e-error" data-testid="pair-url-copy-error">
-                  {message()}
-                </div>
-              )}
-            </Show>
+            <E2eCopyButton text={s().url} label="copy link" testId="pair-url-copy" />
             <p>
               Expires in{" "}
               <span data-testid="pair-countdown">{countdown(s().rendezvous.expires_at)}</span>
