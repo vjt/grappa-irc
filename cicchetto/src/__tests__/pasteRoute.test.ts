@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // pasteRoute is the shared clipboard-paste router (extracted from ComposeBox,
 // #352). ComposeBox.test.tsx already exercises the focused path end-to-end via
@@ -198,6 +198,12 @@ describe("pasteRoute — routeClipboardPaste", () => {
 describe("pasteRoute — an encrypted query (issues 2512, 2536)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+  // A one-shot answer a test left unasked would answer the next describe's
+  // paste (`clearAllMocks` keeps implementations): drop it with the test.
+  afterEach(() => {
+    vi.mocked(sentEncrypted).mockReset();
+    vi.mocked(sentEncrypted).mockReturnValue(false);
   });
 
   const BLOCK_OVER_LIMIT = "a\nb\nc\nd\ne\nf\ng";
