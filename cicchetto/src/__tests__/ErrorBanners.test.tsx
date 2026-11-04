@@ -5,6 +5,7 @@ import { shouldShowRefreshBanner } from "../lib/bundleHash";
 import { declineInvite } from "../lib/channelJoin";
 import { channelKey } from "../lib/channelKey";
 import { __setConnectivityForTests } from "../lib/connectivity";
+import { deliverPairingOffer, pairingOfferEnded } from "../lib/e2e/pairingOffer";
 import { __resetDismissedForTests } from "../lib/errorBanners";
 import { acceptPushOptin, declinePushOptin, shouldShowPushOptinBanner } from "../lib/pushOptin";
 import {
@@ -43,6 +44,19 @@ vi.mock("../lib/channelJoin", () => ({
   acceptInvite: vi.fn(),
   declineInvite: vi.fn(),
   confirmJoinChannel: vi.fn(),
+}));
+
+// issue 2537 — the pairing offer shows only on a browser that lacks the
+// identity on some network; both lookups are stubbed to "lacks it on libera"
+// so the REAL offer store drives the slot. Partial: everything else the two
+// modules export stays real.
+vi.mock("../lib/encryptedChats", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/encryptedChats")>()),
+  identityElsewhere: (slug: string) => slug === "libera",
+}));
+vi.mock("../lib/networks", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/networks")>()),
+  networks: () => [{ slug: "libera" }],
 }));
 
 const mockShouldShowRefresh = vi.mocked(shouldShowRefreshBanner);
@@ -250,5 +264,49 @@ describe("ErrorBanners invite decline (#976)", () => {
 
     expect(close?.getAttribute("aria-label")).toContain("Decline");
     expect(close?.getAttribute("aria-label")).toContain("#refused");
+  });
+});
+
+// issue 2537 — "Not now" hides the offer on this page. A user-topic rejoin
+// (a socket reconnect, a phone back from the background) pushes the same
+// offer again in its join snapshot; that must not bring it back, while a
+// DIFFERENT pairing still asks.
+describe("ErrorBanners pairing offer (issue 2537)", () => {
+  const offer = (id: string) => ({
+    kind: "e2e_pairing_offered" as const,
+    rendezvous_id: id,
+    curve: "fJKDF4omlQo87Jaqp5pqfZqg9TcQO1PG5lS1Kzz5FIA",
+    expires_at: new Date(Date.now() + 300_000).toISOString(),
+  });
+  const slot = (c: HTMLElement) => c.querySelector('.error-banner[data-source="pairing-offer"]');
+
+  beforeEach(() => {
+    __resetSocketHealthForTests();
+    __setConnectivityForTests(true);
+    __resetDismissedForTests();
+    mockShouldShowRefresh.mockReturnValue(false);
+    mockShouldShowPushOptin.mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    pairingOfferEnded("AbCdEfGhIjKlMnOpQrStUv");
+    pairingOfferEnded("ZyXwVuTsRqPoNmLkJiHgFe");
+  });
+
+  it("stays hidden after Not now when a rejoin delivers the same offer again", () => {
+    deliverPairingOffer(offer("AbCdEfGhIjKlMnOpQrStUv"));
+    const { container } = render(() => <ErrorBanners />);
+    const notNow = container.querySelector<HTMLButtonElement>(
+      '.error-banner[data-source="pairing-offer"] .error-banner-dismiss',
+    );
+    expect(notNow?.getAttribute("aria-label")).toBe("Not now");
+    if (notNow) fireEvent.click(notNow);
+    expect(slot(container)).toBeNull();
+
+    deliverPairingOffer(offer("AbCdEfGhIjKlMnOpQrStUv"));
+    expect(slot(container)).toBeNull();
+
+    deliverPairingOffer(offer("ZyXwVuTsRqPoNmLkJiHgFe"));
+    expect(slot(container)).not.toBeNull();
   });
 });
