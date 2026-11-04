@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AuthProxyRedirectError } from "../lib/authProxy";
 import {
   BOOT_FETCH_ATTEMPTS,
   BOOT_FETCH_BACKOFF_MS,
@@ -13,6 +14,18 @@ import {
 // response — whatever its status — is an ANSWER and must not be retried.
 
 const totalBackoffMs = BOOT_FETCH_BACKOFF_MS.reduce((a, b) => a + b, 0);
+
+// What `fetch(…, { redirect: "manual" })` resolves with when the answer is a
+// 3xx: type `opaqueredirect`, status 0, no headers, no body. The constructor
+// cannot build one (status must be 200-599 and `type` is read-only), so the
+// three fields are laid over a real Response.
+function opaqueRedirect(): Response {
+  return Object.defineProperties(new Response(null, { status: 200 }), {
+    type: { value: "opaqueredirect" },
+    status: { value: 0 },
+    ok: { value: false },
+  });
+}
 
 // Explicit rather than `calls[i]?.[1]`: an optional chain feeding a member
 // access reads as "may be absent" while still throwing a bare TypeError if it
@@ -173,5 +186,35 @@ describe("bootFetch (#717 — bounded, retrying boot transport)", () => {
     const first = initOfCall(fetchMock.mock.calls, 0).signal;
     const second = initOfCall(fetchMock.mock.calls, 1).signal;
     expect(first).not.toBe(second);
+  });
+});
+
+// issue 2531 — an authenticating proxy (Cloudflare Access) in front of the
+// whole hostname answers an expired session with a redirect to its login host.
+// Followed, that redirect is a cross-origin request the browser rejects as a
+// CORS failure — indistinguishable from a dead network, and retried as one.
+describe("bootFetch (2531 — a redirect is a proxy, not the server)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("asks fetch not to follow redirects", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await bootFetch("/me", {});
+
+    // `manual` is what turns the proxy's 302 into a response the code can
+    // see; `follow` (the default) turns it into the CORS failure above.
+    expect(initOfCall(fetchMock.mock.calls, 0).redirect).toBe("manual");
+  });
+
+  it("rejects an opaque redirect as AuthProxyRedirectError, and does not retry it", async () => {
+    const fetchMock = vi.fn(async () => opaqueRedirect());
+    vi.stubGlobal("fetch", fetchMock);
+
+    // An answer, not a stall: retrying asks the same proxy the same question.
+    await expect(bootFetch("/me", {})).rejects.toBeInstanceOf(AuthProxyRedirectError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

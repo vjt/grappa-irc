@@ -1,5 +1,6 @@
-import { type Component, createSignal, ErrorBoundary, type JSX } from "solid-js";
+import { type Component, createSignal, ErrorBoundary, type JSX, onMount } from "solid-js";
 import { ApiError } from "./lib/api";
+import { AuthProxyRedirectError, requestReauth } from "./lib/authProxy";
 import { requestBundleRefreshNow } from "./lib/bundleRefreshNotice";
 import { isOffline } from "./lib/connectivity";
 import { friendlyApiError } from "./lib/friendlyApiError";
@@ -51,6 +52,25 @@ function failureText(error: unknown): string {
 // belongs.
 const BootFailure: Component<{ error: unknown; onRetry: () => void }> = (props) => {
   const [reloading, setReloading] = createSignal(false);
+
+  // issue 2531 — an authenticating proxy in front of the server (Cloudflare
+  // Access) wants the user to sign in again. Neither restart below can do that:
+  // the service worker answers a reload from the device, so the proxy never
+  // sees it. `requestReauth` makes the one navigation the worker lets through.
+  // It goes on its own, once per window (`lib/authProxy.ts` argues the
+  // window); after that the button below makes it, with a person behind it.
+  // Read once: the boundary mounts a fresh BootFailure for every error.
+  const proxyRedirect = props.error instanceof AuthProxyRedirectError;
+  onMount(() => {
+    if (proxyRedirect && requestReauth("auto", Date.now())) setReloading(true);
+  });
+
+  // The proxy case names its own object, as #1877 asks of both buttons:
+  // restarting the app would not sign anybody in.
+  const reloadLabel = (): string => {
+    if (proxyRedirect) return reloading() ? "Signing in…" : "Sign in again";
+    return reloading() ? "Restarting…" : "Restart app";
+  };
 
   return (
     <div class="boot-failure" data-testid="boot-failure">
@@ -134,6 +154,10 @@ const BootFailure: Component<{ error: unknown; onRetry: () => void }> = (props) 
         data-testid="boot-failure-reload"
         onClick={() => {
           setReloading(true);
+          if (proxyRedirect) {
+            requestReauth("user", Date.now());
+            return;
+          }
           if (props.error instanceof ApiError && !isOffline()) {
             // #1063 — `"user"`, same as the refresh banner: a human pressed
             // Refresh, so the boot that follows owes them an answer. Here the
@@ -148,14 +172,16 @@ const BootFailure: Component<{ error: unknown; onRetry: () => void }> = (props) 
       >
         {/* "Restart app", not "Reload" (#1877): the sibling above retries the
               LOAD, this one throws the running app away — either onto a fresh
-              bundle or onto the same one. Both branches restart it, so the
-              label is honest for both, and it shares no word with "Retry
-              loading" for the reader who is scanning rather than reading.
+              bundle or onto the same one. Both restart branches restart it, so
+              the label is honest for both, and it shares no word with "Retry
+              loading" for the reader who is scanning rather than reading. The
+              auth-proxy branch (issue 2531) restarts nothing, so it names its
+              own object: "Sign in again".
 
               `performRefresh` can take up to ~2s waiting on controllerchange.
               On a dead-boot screen a button that appears to do nothing is
               exactly what sends the user back to force-killing the app. */}
-        {reloading() ? "Restarting…" : "Restart app"}
+        {reloadLabel()}
       </button>
     </div>
   );
