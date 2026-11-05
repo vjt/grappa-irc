@@ -53,16 +53,14 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v54 -> v55 (issue 2537): the user-topic event
- * `e2e_pairing_offered`, a QR pairing offered to the account's other
- * devices, plus an optional key on `POST /e2e/pairings` and the REST twin
- * `GET /e2e/pairings/offer`. A terminal neither pairs nor holds an E2E
- * identity, so nothing it renders changed; like the other `e2e_*` kinds
- * the name carries a digit, which test_commands' parity scan skips.
+ * Last read, v55 -> v56 (issue 2547): `last_seen_at` on the E2E device
+ * shape of `GET /e2e/devices`, when each device last read its inbox. A
+ * terminal holds no E2E identity and reads no device list, so nothing it
+ * renders changed.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 55
+#define WIRE_PROTOCOL_VERSION 56
 
 #include <stdbool.h>
 #include <stddef.h>

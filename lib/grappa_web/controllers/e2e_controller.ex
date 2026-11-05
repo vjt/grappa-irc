@@ -121,12 +121,14 @@ defmodule GrappaWeb.E2eController do
   Each is the `e2e_message` the user topic pushes, `id` included.
   `?after=<id>` pages past the last id seen; 400 for one that is not a
   non-negative integer, 404 for a `did` that is not one of this subject's
-  devices here.
+  devices here. The read marks the device active (`E2eKeys.seen/1`,
+  issue 2547): the `last_seen_at` the device list carries.
   """
-  @spec inbox(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request | :not_found}
+  @spec inbox(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request | :not_found | :db_unavailable}
   def inbox(conn, %{"did" => did} = params) do
     with {:ok, after_id} <- cursor(Map.get(params, "after", "0")),
-         {:ok, device} <- E2eKeys.device(subject(conn), conn.assigns.network.id, did) do
+         {:ok, device} <- E2eKeys.device(subject(conn), conn.assigns.network.id, did),
+         :ok <- E2eKeys.seen(device) do
       json(conn, SessionWire.e2e_inbox(conn.assigns.network.slug, device.did, E2eInbox.list(device, after_id)))
     end
   end
@@ -176,7 +178,8 @@ defmodule GrappaWeb.E2eController do
 
   @doc """
   `GET /networks/:network_id/e2e/devices` — this subject's devices on this
-  network, oldest first, listed or not: `{devices: [device]}`.
+  network, oldest first, listed or not: `{devices: [device]}`, each with
+  when it last read its inbox (`last_seen_at`, issue 2547).
   """
   @spec devices(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def devices(conn, _) do

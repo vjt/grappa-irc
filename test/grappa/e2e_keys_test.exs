@@ -548,6 +548,59 @@ defmodule Grappa.E2eKeysTest do
     end
   end
 
+  describe "seen/1 (issue 2547)" do
+    setup %{subject: subject, network: network, master: master} do
+      {:ok, dev: device(subject, network, master).device}
+    end
+
+    # The stamp as stored, read back through the context.
+    defp last_seen(subject, network, %Device{did: did}) do
+      {:ok, %Device{last_seen_at: at}} = E2eKeys.device(subject, network.id, did)
+      at
+    end
+
+    # The device as it reads once seen `seconds` ago, the row stamped too.
+    defp seen_ago(%Device{id: id} = device, seconds) do
+      at = DateTime.add(DateTime.utc_now(:second), -seconds)
+      {1, _} = Device |> where([d], d.id == ^id) |> Repo.update_all(set: [last_seen_at: at])
+      %{device | last_seen_at: at}
+    end
+
+    test "a device never seen is stamped now", %{subject: subject, network: network, dev: dev} do
+      assert dev.last_seen_at == nil
+      before = DateTime.utc_now(:second)
+
+      assert :ok = E2eKeys.seen(dev)
+      at = last_seen(subject, network, dev)
+      assert DateTime.compare(at, before) != :lt
+      assert DateTime.diff(DateTime.utc_now(:second), at) <= 1
+    end
+
+    test "a stamp younger than a minute stays as it is: most reads write nothing",
+         %{subject: subject, network: network, dev: dev} do
+      young = seen_ago(dev, 30)
+
+      assert :ok = E2eKeys.seen(young)
+      assert last_seen(subject, network, dev) == young.last_seen_at
+    end
+
+    test "a stamp a minute old moves to now", %{subject: subject, network: network, dev: dev} do
+      old = seen_ago(dev, 60)
+      before = DateTime.utc_now(:second)
+
+      assert :ok = E2eKeys.seen(old)
+      assert DateTime.compare(last_seen(subject, network, dev), before) != :lt
+    end
+
+    test "a device dropped since the caller read it is :ok, and nothing comes back",
+         %{subject: subject, network: network, dev: dev} do
+      :ok = E2eKeys.clear(subject, network.id)
+
+      assert :ok = E2eKeys.seen(dev)
+      assert E2eKeys.devices(subject, network.id) == []
+    end
+  end
+
   describe "put_list/3 and list/2 (multi-device)" do
     setup %{subject: subject, network: network} do
       master = E2eFixtures.identity()

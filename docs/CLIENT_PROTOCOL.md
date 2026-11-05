@@ -689,8 +689,8 @@ only from them:
 
 | route | answer |
 |---|---|
-| `POST /networks/:network_id/e2e/devices` `{"ed25519", "curve25519", "sig"}` | **200** the device: `{"did", "ed25519", "curve25519", "sig"}`. Registering the same `ed25519` again replaces its id block and stays one device |
-| `GET /networks/:network_id/e2e/devices` | **200** `{"devices": [device…]}`, oldest first, listed or not |
+| `POST /networks/:network_id/e2e/devices` `{"ed25519", "curve25519", "sig"}` | **200** the device: `{"did", "ed25519", "curve25519", "sig", "last_seen_at"}`. Registering the same `ed25519` again replaces its id block and stays one device |
+| `GET /networks/:network_id/e2e/devices` | **200** `{"devices": [device…]}`, oldest first, listed or not. `last_seen_at` (protocol 56, issue 2547) is when that device last read its own inbox (`GET …/devices/:did/inbox`), ISO 8601, moved at most once a minute; `null` for a device that has not read it since grappa records it, and absent from a server older than 56 |
 | `DELETE /networks/:network_id/e2e/devices/:did` | **204** — a device the list does NOT name (a pairing that never finished) is dropped with its keys and queue, freeing its room; 404 `not_found` for a `did` that is not yours there, 409 `listed_device` for one the list names (that one goes with a list that leaves it out) |
 | `PUT /networks/:network_id/e2e/list` `{"master", "ver", "devices", "sig"}` | **200** the list as held |
 | `GET /networks/:network_id/e2e/list` | **200** the list; 404 `not_found` before one is put |
@@ -735,7 +735,7 @@ acknowledges it or it expires:
 
 | route | answer |
 |---|---|
-| `GET /networks/:network_id/e2e/devices/:did/inbox?after=<id>` | **200** `{"messages": [e2e_message…]}` — oldest first, at most 100; page with the last `id` you got (`after` absent = from the start) |
+| `GET /networks/:network_id/e2e/devices/:did/inbox?after=<id>` | **200** `{"messages": [e2e_message…]}` — oldest first, at most 100; page with the last `id` you got (`after` absent = from the start). The read marks the device active: its `last_seen_at` |
 | `POST /networks/:network_id/e2e/devices/:did/inbox/ack` `{"ids": [<id>…]}` | **204** — those entries of that device are deleted; idempotent, and an id of another device is skipped; 1 to 100 positive integers, else 400 `bad_request` |
 
 Both 404 `not_found` for a `did` that is not one of your devices there.

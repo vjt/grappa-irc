@@ -1447,7 +1447,27 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: an older client opens without a key,
   # which offers nothing, and drops an event kind it does not know.
-  @protocol_version 55
+  #
+  # ---------------------------------------------------------------------------
+  # 56 — issue 2547: when each E2E device was last active
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `last_seen_at` (ISO 8601 or null) on the E2E device shape
+  # (`E2eKeys.Wire.device/1`), so on `GET /e2e/devices` and the
+  # `POST /e2e/devices` answer: when the device last read its own inbox,
+  # moved at most once a minute (`E2eKeys.seen/1`), null for one that has
+  # not since the column exists. A browser that holds no keys for the
+  # account's identity says how long ago a device grappa lists was active,
+  # so the user learns the keys live on before starting over. Bumped on the
+  # #1393d rule: a client that shows it cannot get it from a server
+  # predating it.
+  #
+  # Checked for a collision before claiming 56: origin/main carries 55, and
+  # no open PR edits this file.
+  #
+  # @min_protocol_version stays at 1: an older client ignores a field it
+  # does not know.
+  @protocol_version 56
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1488,7 +1508,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 55
+  @spec version() :: 56
   def version, do: @protocol_version
 
   @doc """

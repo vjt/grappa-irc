@@ -53,6 +53,10 @@ defmodule Grappa.E2eKeys do
 
   @max_one_time_keys 50
 
+  # issue 2547: how stale a device's activity stamp gets before an inbox
+  # read moves it. The window shows minutes, so a finer stamp buys nothing.
+  @seen_every_seconds 60
+
   @typedoc "A key as a device uploads it: the Curve25519 key and the device's signature over `\"irc-e2e:v1:otk:\" + key`."
   @type signed_key :: %{key: String.t(), sig: String.t()}
 
@@ -162,6 +166,36 @@ defmodule Grappa.E2eKeys do
     case Repo.one(device_query(subject, network_id, did)) do
       %Device{} = device -> {:ok, device}
       nil -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Records that `device` is active (issue 2547): it read its own inbox,
+  which every device does when its page loads, reconnects, or hears of a
+  message. A browser holding no keys for the identity shows the user how
+  long ago a listed device was active, so they learn the keys live on
+  before they start over.
+
+  The stamp moves at most once every #{@seen_every_seconds} s, judged on
+  the stamp `device` carries: a read inside that window writes nothing,
+  so the inbox's steady traffic costs no write lock. A device dropped
+  since the caller read it is `:ok` and nothing is written.
+  `{:error, :db_unavailable}` when the write lock stays taken past the
+  retry budget.
+  """
+  @spec seen(Device.t()) :: :ok | {:error, :db_unavailable}
+  def seen(%Device{id: id, last_seen_at: last_seen_at}) do
+    now = DateTime.utc_now(:second)
+
+    if last_seen_at != nil and DateTime.diff(now, last_seen_at) < @seen_every_seconds do
+      :ok
+    else
+      stamp = fn -> {:ok, Device |> where([d], d.id == ^id) |> Repo.update_all(set: [last_seen_at: now])} end
+
+      case Repo.BusyRetry.run(stamp) do
+        {:ok, {_, _}} -> :ok
+        {:error, :db_unavailable} = err -> err
+      end
     end
   end
 

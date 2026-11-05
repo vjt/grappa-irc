@@ -327,6 +327,24 @@ defmodule GrappaWeb.E2eControllerTest do
       end
     end
 
+    test "GET marks the device active, and the device list says when (issue 2547)", %{conn: conn, vjt: vjt} do
+      network = idle_network(vjt)
+      device = listed_device!(vjt, network)
+      %{attrs: attrs} = E2eFixtures.device(E2eFixtures.identity())
+      {:ok, sibling} = E2eKeys.register_device({:user, vjt.id}, network.id, attrs)
+      devices = "/networks/#{network.slug}/e2e/devices"
+      last_seen = fn -> Map.new(json_response(get(conn, devices), 200)["devices"], &{&1["did"], &1["last_seen_at"]}) end
+
+      assert last_seen.() == %{device.did => nil, sibling.did => nil}
+      before = DateTime.utc_now(:second)
+      assert json_response(get(conn, inbox_path(network, device)), 200)["messages"] == []
+
+      seen = last_seen.()
+      assert seen[sibling.did] == nil
+      assert {:ok, at, 0} = DateTime.from_iso8601(seen[device.did])
+      assert DateTime.compare(at, before) != :lt
+    end
+
     test "GET shows a device only its own queue; another subject's device is a 404", %{conn: conn, vjt: vjt} do
       network = idle_network(vjt)
       device = listed_device!(vjt, network)
@@ -531,7 +549,15 @@ defmodule GrappaWeb.E2eControllerTest do
 
       assert %{"did" => did} = device = json_response(post(conn, "#{base}/devices", attrs), 200)
       assert {:ok, did} == E2eKeys.Device.did(attrs.ed25519)
-      assert device == %{"did" => did, "ed25519" => attrs.ed25519, "curve25519" => attrs.curve25519, "sig" => attrs.sig}
+
+      assert device == %{
+               "did" => did,
+               "ed25519" => attrs.ed25519,
+               "curve25519" => attrs.curve25519,
+               "sig" => attrs.sig,
+               "last_seen_at" => nil
+             }
+
       assert json_response(get(conn, "#{base}/devices"), 200) == %{"devices" => [device]}
 
       assert json_response(get(conn, "#{base}/list"), 404) == %{"error" => "not_found"}
