@@ -3139,6 +3139,19 @@ whatever the legs uploaded (#504), so the broken package would already be
 in the artifact set. A proof placed ahead of the upload steps keeps the
 package out of the run, and `publish` then refuses to *create* a release
 from an incomplete set (#1591). The same order rule the #1714 arms follow.
+For the same reason neither the step nor the uploads may carry an `if:` or
+`continue-on-error:`; the bats suite pins that, along with `runs-on:` really
+reading the matrix runner.
+
+**The script comes from the dispatched ref, not the checked-out tree.** A
+repair dispatch builds an existing tag, and no tag cut before this one
+carries `deb_floor_proof.sh`: running the tag's copy would die 127 and turn
+red the very repair that republishes 1.6.2. The step `git show`s the file
+from `GITHUB_SHA` into `RUNNER_TEMP`, which leaves the tag's tree clean; on a
+tag push and a `deb_validation` dispatch the two are the same commit. Found
+in review. Inside the container the checks travel as a `bash -c` argument,
+not on stdin, because the postinst starts the BEAM twice and a child that
+drained a piped script would end the run green with no check executed.
 
 **What the floor proof runs, and what it leaves out.** The install itself
 (postinst runs `grappa migrate`, which starts beam.smp and loads the exqlite
