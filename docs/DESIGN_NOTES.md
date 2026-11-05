@@ -3101,3 +3101,58 @@ device.
 * Not verified on a device: the installed iOS PWA. The flow it now takes is
   the banner's from #2537, plus a `sessionStorage` slot across a same-tab
   document load.
+<!-- entry #2553 -->
+
+---
+
+## 2026-11-05 — #2553: the .deb's glibc floor is pinned at the runner and proved on trixie
+
+`grappa_1.6.1_amd64.deb` and `grappa_1.6.2_amd64.deb` would not start on
+Debian trixie: `beam.smp: libm.so.6: version 'GLIBC_2.43' not found`. Two
+self-hosters went back to 1.6.0.
+
+**Cause (measured in the issue).** The bundled ERTS and `shottino` link the
+glibc of the runner that builds them. The amd64 leg of the deb job ran on
+`ubuntu-latest`, and GitHub moved that label from 24.04 to 26.04 between
+v1.6.0 and v1.6.1. beam.smp's highest `GLIBC_` symbol went from 2.38 to
+2.43 on amd64; arm64, pinned to `ubuntu-24.04-arm`, stayed at 2.38. Trixie
+carries 2.41. Every proof in the job passed for both releases, because they
+all install on the runner, the one host where a glibc mismatch cannot show
+up.
+
+**Two cures, both needed.**
+
+* Both legs name ONE Ubuntu release: `ubuntu-24.04` and `ubuntu-24.04-arm`.
+  A label that moves means the floor moves, and two legs on two releases
+  mean two floors under one version number.
+  `test/infra/release_deb_glibc_floor_test.bats` holds both properties.
+* Before uploading, the deb job installs both packages on a stock
+  `debian:trixie` and starts the BEAM and the client there
+  (`infra/packaging/deb_floor_proof.sh`). The pin alone does not hold the
+  floor: GitHub will retire 24.04 one day and someone will bump it, and
+  then this step is what notices.
+
+**Why a step inside `deb` and not a job named in `publish`'s needs.** The
+issue's natural reading is "publish depends on the smoke". That would go
+red without gating anything: `publish` runs on `!cancelled()` and attaches
+whatever the legs uploaded (#504), so the broken package would already be
+in the artifact set. A proof placed ahead of the upload steps keeps the
+package out of the run, and `publish` then refuses to *create* a release
+from an incomplete set (#1591). The same order rule the #1714 arms follow.
+
+**What the floor proof runs, and what it leaves out.** The install itself
+(postinst runs `grappa migrate`, which starts beam.smp and loads the exqlite
+NIF), a `grappa eval` that loads the crypto NIF against trixie's libcrypto
+and prints a digest checked against `sha256sum`, and `shottino --help`. It
+installs Depends only: the Recommends (nginx, ffmpeg, exiftool) are
+Debian's own builds and pull about 300 packages, none of which is the
+subject.
+
+**Bookworm is not supported, and the step does not pretend it is.** Glibc
+2.36 has never run a 24.04-built ERTS; 1.6.0 needed 2.38 already. The
+`libssl3` fallback in `nfpm.yaml` still resolves there, so apt installs the
+package and its postinst then fails. Declaring `libc6 (>= 2.38)` would turn
+that into an apt refusal; that is a separate change and not made here.
+
+**Not done here:** republishing the 1.6.2 amd64 `.deb` to the apt repo. That
+is a repair dispatch from main once this lands, owned by whoever cuts it.
