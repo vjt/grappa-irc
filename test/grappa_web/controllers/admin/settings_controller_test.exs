@@ -6,7 +6,8 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
 
   alias Grappa.Net.{SourceAliasManager, SourceAliasMock}
   alias Grappa.PubSub.Topic
-  alias Grappa.{ServerSettings, WSPresence}
+  alias Grappa.{Repo, ServerSettings, WSPresence}
+  alias Grappa.ServerSettings.Setting
   alias Grappa.Session.Server
 
   describe "GET /admin/settings — gate" do
@@ -332,6 +333,34 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
 
         assert ServerSettings.public_view().upload[String.to_existing_atom(key)] == before
       end
+    end
+
+    # issue 2529 — the settings form sends every upload key on every save.
+    # A cap saved above the maximum before the maximum existed must not
+    # make the next save fail on a field the operator never touched.
+    test "a save of the form as read succeeds over a cap stored above the maximum", %{
+      conn: conn,
+      session: session
+    } do
+      max = ServerSettings.max_upload_per_file_cap_bytes()
+
+      Repo.insert!(%Setting{
+        key: "upload.video_per_file_cap_bytes",
+        value: Integer.to_string(2 * max)
+      })
+
+      %{"settings" => %{"upload" => upload}} =
+        conn |> put_bearer(session.id) |> get("/admin/settings") |> json_response(200)
+
+      assert upload["video_per_file_cap_bytes"] == max
+
+      resp =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{"upload" => upload})
+
+      assert %{"settings" => %{"upload" => %{"video_per_file_cap_bytes" => ^max}}} =
+               json_response(resp, 200)
     end
 
     test "a per-file cap AT the maximum saves", %{conn: conn, session: session} do

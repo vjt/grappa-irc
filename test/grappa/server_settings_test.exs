@@ -112,8 +112,9 @@ defmodule Grappa.ServerSettingsTest do
     # issue 2529 — the transport reads an upload door's body up to a fixed
     # ceiling (`GrappaWeb.MultipartLimits`), so a per-file cap above it was
     # policy nothing could reach: the parser 413'd first, whatever the
-    # setting said. The ceiling is derived from this maximum, and the
-    # maximum is refused at the write, so the two cannot drift apart again.
+    # setting said. The ceiling is sized to clear this maximum (pinned by
+    # `GrappaWeb.MultipartBodyTest`), and the maximum is refused at the
+    # write, so the two cannot drift apart again.
     test "every category accepts a cap at the per-file maximum and refuses one byte more" do
       max = ServerSettings.max_upload_per_file_cap_bytes()
 
@@ -125,6 +126,18 @@ defmodule Grappa.ServerSettingsTest do
 
         assert ServerSettings.get_upload_per_file_cap_bytes(category) == max
       end
+    end
+
+    # A row saved before the maximum existed can hold more. It reads as the
+    # maximum, which is what an upload can actually get, and what the admin
+    # form then shows and sends back: read raw, it would be refused on every
+    # save, whatever field the save was for.
+    test "a cap stored above the maximum before it existed reads as the maximum" do
+      max = ServerSettings.max_upload_per_file_cap_bytes()
+      Repo.insert!(%Setting{key: "upload.video_per_file_cap_bytes", value: Integer.to_string(2 * max)})
+
+      assert ServerSettings.get_upload_per_file_cap_bytes(:video) == max
+      assert ServerSettings.public_view().upload.video_per_file_cap_bytes == max
     end
 
     # The value the operator set on prod on 2026-11-03, the reason the
