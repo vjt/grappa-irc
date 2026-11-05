@@ -2594,6 +2594,14 @@ ruling fixes it by running the command.
   the prefix), so `* nick waves` renders as in any query, still locked
   and still carrying its state. The chat's search
   reads what a line says (`stripCtcpAction`), not the envelope.
+* **With the ciphertext view (#2513, which landed while this was open).**
+  That view shows what crossed IRC, and an ACTION crossed as payloads like
+  any message, so there its line is the payloads as a plain message line,
+  never the action line (`lineOf` asks `isCtcpAction` only outside that
+  view). The search counts an action as a message in either view and
+  reads it unwrapped. The compose box does not look at the view: `/me`
+  still goes to the peer encrypted and every other command still runs, a
+  pane test in that view pins both.
 * **A command runs as it would in the plain query with the peer.** The
   command context's submitting window is that query for a command typed
   in an encrypted one: a verb aimed at "here" (`/notice`'s echo, `/np`,
