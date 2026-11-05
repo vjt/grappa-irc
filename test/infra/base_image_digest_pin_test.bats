@@ -52,10 +52,11 @@ REPO_ROOT="$BATS_TEST_DIRNAME/../.."
 #     e2e-bot, the playwright runner base) — test-fixture images that never
 #     reach an operator. (The e2e-bot's CODE under test is still pinned:
 #     checksummed ADDs and a hash-locked requirements file.)
-#   - `debian:trixie` as release.yml's .deb floor (#2553) — the image the
-#     packages are INSTALLED on to prove they run there, never built into
-#     anything. The moving tag is the subject: the current trixie is what an
-#     operator installs onto, and its glibc is fixed for the release's life.
+#   - `debian:trixie` ALSO serves outside e2e, as release.yml's .deb floor
+#     (#2553): the packages are INSTALLED on it to prove they run there, and
+#     it is never built into anything. The moving tag is the subject: the
+#     current trixie is what an operator installs onto, and its glibc is
+#     fixed for the release's life.
 #
 # Adding a family here REQUIRES amending the runbook line the last test
 # reads; that is the whole point of the pin. `rust:` is anchored on a

@@ -21,7 +21,11 @@
 #     BEFORE its first upload step. The order is the gate: `publish` runs on
 #     `!cancelled()` and attaches whatever a leg uploaded, so a proof placed
 #     after the upload (or in a separate job named in `publish`'s needs) would
-#     go red while the broken package shipped anyway.
+#     go red while the broken package shipped anyway. For the same reason the
+#     proof and the uploads must carry no `if:` and no `continue-on-error:`;
+#   * the proof runs the DISPATCHED ref's copy of the script. A repair
+#     dispatch checks out an existing tag, and no tag cut before #2553 carries
+#     it — the tag's copy would die 127 on the repair of 1.6.2 itself.
 #
 # What these cases CANNOT claim: that the floor proof passes. That is the deb
 # job's work on a real tag or a `deb_validation` dispatch. The seam is the one
@@ -36,11 +40,12 @@ setup() {
     PROOF="$REPO_SRC/infra/packaging/deb_floor_proof.sh"
 }
 
-# The deb job's lines: from its key to the next job key.
+# The deb job's lines, from its key to the next job key. Comment lines are
+# dropped: a commented-out step is not a step.
 deb_job() {
     awk '/^  deb:$/ { on = 1; print; next }
          on && /^  [a-z][a-z0-9_-]*:$/ { exit }
-         on' "$1"
+         on && !/^[[:space:]]*#/' "$1"
 }
 
 # The runner of one matrix leg of the deb job, by its `arch:` value.
@@ -48,6 +53,21 @@ deb_runner() {
     deb_job "$1" | awk -v want="$2" '
         $1 == "-" && $2 == "arch:" { arch = $3; next }
         $1 == "runner:" && arch == want { print $2; exit }'
+}
+
+# The deb job's `runs-on:` value, verbatim.
+deb_runs_on() {
+    deb_job "$1" | awk '$1 == "runs-on:" { sub(/^[[:space:]]*runs-on:[[:space:]]*/, ""); print; exit }'
+}
+
+# Every step of the deb job that has a line matching the pattern, whole.
+deb_steps() {
+    deb_job "$1" | awk -v pat="$2" '
+        function flush() { if (hit) printf "%s", buf; buf = ""; hit = 0 }
+        /^      - / { flush() }
+        { buf = buf $0 "\n" }
+        $0 ~ pat { hit = 1 }
+        END { flush() }'
 }
 
 # A runner label that names an Ubuntu release (`ubuntu-24.04`,
@@ -64,9 +84,23 @@ same_release() {
 # The floor proof is invoked against debian:trixie, ahead of the first upload.
 floor_before_upload() {
     deb_job "$1" | awk '
-        /infra\/packaging\/deb_floor_proof\.sh debian:trixie / && !floor { floor = NR }
+        /deb_floor_proof\.sh"? debian:trixie / && !floor { floor = NR }
         /uses: actions\/upload-artifact@/ && !upload { upload = NR }
         END { exit !(floor && upload && floor < upload) }'
+}
+
+# Steps that run whatever happened before them: no step-level `if:` and no
+# `continue-on-error:`. Empty input is not a step and does not pass.
+no_escape() {
+    [ -n "$1" ] && refute grep -qE '^      (- |  )(if|continue-on-error):' <<<"$1"
+}
+
+# The floor step takes the script from GITHUB_SHA and runs that copy.
+floor_from_dispatched_ref() {
+    local step
+    step="$(deb_steps "$1" 'deb_floor_proof\.sh')"
+    grep -qF 'git show "${GITHUB_SHA}:infra/packaging/deb_floor_proof.sh" > "$RUNNER_TEMP/deb_floor_proof.sh"' <<<"$step" &&
+        grep -qE '^ +"\$RUNNER_TEMP/deb_floor_proof\.sh" debian:trixie ' <<<"$step"
 }
 
 @test "#2553 — the deb job's amd64 leg names an Ubuntu release, not ubuntu-latest" {
@@ -79,13 +113,21 @@ floor_before_upload() {
     }
 }
 
-@test "#2553 — both deb legs build on the same Ubuntu release" {
+@test "#2553 — both deb legs build on the same Ubuntu release, and the job runs on the leg's runner" {
     amd64="$(deb_runner "$WORKFLOW" amd64)"
     arm64="$(deb_runner "$WORKFLOW" arm64)"
     names_a_release "$arm64"
     same_release "$amd64" "$arm64" || {
         printf 'the deb legs build on %q (amd64) and %q (arm64). Two releases mean\n' "$amd64" "$arm64" >&2
         printf 'two glibc floors for one version number (#2553).\n' >&2
+        return 1
+    }
+
+    # The matrix values pin nothing unless the job actually runs on them.
+    runs_on="$(deb_runs_on "$WORKFLOW")"
+    [ "$runs_on" = '${{ matrix.runner }}' ] || {
+        printf 'the deb job runs on %q, not on its matrix leg'"'"'s runner — the pins\n' "$runs_on" >&2
+        printf 'above are dead and the build floats again (#2553).\n' >&2
         return 1
     }
 }
@@ -101,35 +143,84 @@ floor_before_upload() {
     }
 }
 
-@test "#2553 — RED: the predicates reject a moving label, a split release and a late proof" {
+@test "#2553 — neither the floor proof nor an upload can be skipped past" {
+    floor="$(deb_steps "$WORKFLOW" 'deb_floor_proof\.sh')"
+    no_escape "$floor" || {
+        printf 'the floor step carries an if: or continue-on-error: — a failure there\n' >&2
+        printf 'would no longer stop the leg before it uploads (#2553):\n%s\n' "$floor" >&2
+        return 1
+    }
+    uploads="$(deb_steps "$WORKFLOW" 'uses: actions/upload-artifact@')"
+    no_escape "$uploads" || {
+        printf 'an upload step carries an if: or continue-on-error: — it could upload\n' >&2
+        printf 'after the floor proof failed (#2553):\n%s\n' "$uploads" >&2
+        return 1
+    }
+}
+
+@test "#2553 — the floor proof runs the dispatched ref's copy, so a repair of an old tag can run it" {
+    floor_from_dispatched_ref "$WORKFLOW" || {
+        printf 'the floor step does not take deb_floor_proof.sh from GITHUB_SHA. A repair\n' >&2
+        printf 'dispatch checks out the TAG, and no tag before #2553 carries the script:\n' >&2
+        printf 'the step would die 127 on the repair of 1.6.2 itself.\n' >&2
+        deb_steps "$WORKFLOW" 'deb_floor_proof\.sh' >&2
+        return 1
+    }
+}
+
+@test "#2553 — RED: the predicates reject each way the gate can be undone" {
     refute names_a_release ubuntu-latest
     refute names_a_release ubuntu-24.04-latest
     refute same_release ubuntu-26.04 ubuntu-24.04-arm
     refute same_release "" ""
+    refute no_escape ""
 
     # POSITIVE controls: predicates broken into always-false would report
-    # every RED above as a pass.
+    # every RED below as a pass.
     names_a_release ubuntu-24.04
     names_a_release ubuntu-24.04-arm
     same_release ubuntu-24.04 ubuntu-24.04-arm
 
-    local late="$BATS_TEST_TMPDIR/late.yml" early="$BATS_TEST_TMPDIR/early.yml"
-    cat > "$late" <<'EOF'
+    local f="$BATS_TEST_TMPDIR/release.yml"
+    cat > "$f" <<'EOF'
+jobs:
+  deb:
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Floor
+        run: |
+          git show "${GITHUB_SHA}:infra/packaging/deb_floor_proof.sh" > "$RUNNER_TEMP/deb_floor_proof.sh"
+          "$RUNNER_TEMP/deb_floor_proof.sh" debian:trixie "$deb" "$client"
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@0000000000000000000000000000000000000000 # v0
+  arch:
+    steps: []
+EOF
+    [ "$(deb_runs_on "$f")" = '${{ matrix.runner }}' ]
+    floor_before_upload "$f"
+    no_escape "$(deb_steps "$f" 'deb_floor_proof\.sh')"
+    no_escape "$(deb_steps "$f" 'uses: actions/upload-artifact@')"
+    floor_from_dispatched_ref "$f"
+
+    # A job that ignores its matrix.
+    sed 's/runs-on: .*/runs-on: ubuntu-latest/' "$f" > "$f.runs-on"
+    [ "$(deb_runs_on "$f.runs-on")" = ubuntu-latest ]
+
+    # The proof after the upload.
+    cat > "$f.late" <<'EOF'
 jobs:
   deb:
     steps:
       - name: Upload .deb artifact
         uses: actions/upload-artifact@0000000000000000000000000000000000000000 # v0
       - name: Floor
-        run: infra/packaging/deb_floor_proof.sh debian:trixie "$deb" "$client"
-  arch:
-    steps: []
+        run: '"$RUNNER_TEMP/deb_floor_proof.sh" debian:trixie "$deb" "$client"'
 EOF
-    run floor_before_upload "$late"
+    run floor_before_upload "$f.late"
     [ "$status" -ne 0 ]
 
-    # A proof that sits in the NEXT job is not in the deb job at all.
-    cat > "$early" <<'EOF'
+    # The proof in the NEXT job is not in the deb job at all.
+    cat > "$f.next" <<'EOF'
 jobs:
   deb:
     steps:
@@ -137,24 +228,27 @@ jobs:
         uses: actions/upload-artifact@0000000000000000000000000000000000000000 # v0
   floor:
     steps:
-      - run: infra/packaging/deb_floor_proof.sh debian:trixie "$deb" "$client"
+      - run: '"$RUNNER_TEMP/deb_floor_proof.sh" debian:trixie "$deb" "$client"'
 EOF
-    run floor_before_upload "$early"
+    run floor_before_upload "$f.next"
     [ "$status" -ne 0 ]
 
-    cat > "$early" <<'EOF'
-jobs:
-  deb:
-    steps:
-      - name: Floor
-        run: infra/packaging/deb_floor_proof.sh debian:trixie "$deb" "$client"
-      - name: Upload .deb artifact
-        uses: actions/upload-artifact@0000000000000000000000000000000000000000 # v0
-  arch:
-    steps: []
-EOF
-    run floor_before_upload "$early"
-    [ "$status" -eq 0 ]
+    # The proof commented out.
+    awk '/"\$RUNNER_TEMP\/deb_floor_proof\.sh" debian:trixie/ { sub(/"/, "# \"") } { print }' "$f" > "$f.commented"
+    grep -q '# "\$RUNNER_TEMP/deb_floor_proof.sh" debian:trixie' "$f.commented"
+    run floor_before_upload "$f.commented"
+    [ "$status" -ne 0 ]
+
+    # An escape on the floor step, and one on the upload.
+    awk '{ print } /- name: Floor$/ { print "        continue-on-error: true" }' "$f" > "$f.coe"
+    refute no_escape "$(deb_steps "$f.coe" 'deb_floor_proof\.sh')"
+    awk '{ print } /- name: Upload/ { print "        if: always()" }' "$f" > "$f.if"
+    refute no_escape "$(deb_steps "$f.if" 'uses: actions/upload-artifact@')"
+
+    # The tag's copy instead of the dispatched one.
+    awk '/git show/ { next } { sub(/"\$RUNNER_TEMP\/deb_floor_proof\.sh"/, "infra/packaging/deb_floor_proof.sh"); print }' "$f" > "$f.tagcopy"
+    floor_before_upload "$f.tagcopy"
+    refute floor_from_dispatched_ref "$f.tagcopy"
 }
 
 @test "#2553 — deb_floor_proof.sh refuses a missing package before it reaches docker" {
