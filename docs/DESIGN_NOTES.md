@@ -2861,3 +2861,77 @@ lived only in the QR.
 * `ErrorBanners.test.tsx` drives the real offer store and the real banner
   stack: "Not now", the same offer delivered again, still hidden; another
   pairing, shown. Red on the old delivery at the second delivery.
+<!-- entry #2543 -->
+
+---
+
+## 2026-11-05 — #2543: `/np` and `/ctcp <peer> ACTION` in an encrypted query go encrypted
+
+#2536 made `/me` in an encrypted query ride inside the Olm message as an
+ACTION and listed, as a consequence accepted with its ruling, that `/np`
+and `/ctcp <peer> ACTION …` there stayed clear ACTIONs. #2543 takes that
+consequence back: they are the same thing on the wire as `/me`, so the
+now-playing line and a typed action went to the server and the network in
+clear from a window that says it is encrypted. Nothing ACTION-shaped now
+leaves an encrypted query for its peer in clear.
+
+* **One door for every ACTION a command sends: `CommandContext.sendAction`.**
+  Both handlers used to frame their own `\x01ACTION …\x01` and hand it to
+  the window-message seam. They now call `ctx.sendAction(target, text)`,
+  built per submission in `dispatchDraft`: aimed at the peer of the
+  encrypted query it was typed in, it is what `/me` is there, one message
+  through Olm; to anyone else, and from any other window, the clear ACTION
+  it always was. It lives on the context and not in the handlers because
+  the answer depends on the window the command was typed in, which only
+  the dispatcher knows (since #2536 `submittedFrom` is the plain query for
+  a command typed in an encrypted one, so a handler cannot tell).
+* **The peer is matched by the network's casemapping** (`nickEquals` +
+  `casemappingForSlug`): `/ctcp BOB ACTION` is the peer as much as
+  `/ctcp Bob ACTION`. `/np` aims at the window it was typed in, which in an
+  encrypted query is the peer by construction.
+* **One encrypted send, `sayEncrypted`.** The send `/me` used is lifted out
+  of the dispatcher's branch so every ACTION to the peer shares it: the
+  #1126 scrub of typed delimiters (a `\x01` inside `/ctcp`'s text cannot
+  frame a second CTCP), "nothing left to say sends nothing" (so an empty
+  `/ctcp <peer> ACTION` sends nothing, as an empty `/me`; in a plain window
+  it still sends the bare `\x01ACTION\x01` it always did), and the
+  log-and-rethrow on a send the engine never took, which the pump turns
+  into the text handed back.
+* **Out of scope, still clear on purpose:** an ACTION to another nick
+  (`/ctcp carol ACTION …` from the encrypted window with Bob is not the
+  encrypted conversation) and every other CTCP (`VERSION`, `PING`, …), a
+  request to the peer's client rather than something said.
+* **The paste guard asks the same question.** `sentEncrypted` answers yes
+  for an ACTION to the peer too (`actsToPeer`, beside `isSaid`), so a block
+  pasted after `/ctcp <peer> ACTION ` is said as one encrypted message, no
+  burst, and is never offered the guard's way out, the text file that
+  would put it on the upload host in clear.
+
+Tests: compose (`/np` encrypted with the now-playing envelope and no clear
+send; `/np` with nothing playing sends nothing anywhere; `/ctcp Bob ACTION`
+and `/ctcp bob action` both encrypted; a `\x01` inside the text scrubbed and
+an empty one sending nothing; `/ctcp carol ACTION` and `/ctcp Bob VERSION`
+still clear; a `/np` the engine refused handed back with the log line;
+`sentEncrypted` for an ACTION to the peer, to another nick, another CTCP and
+a plain window). The `/np` fetch stub `tuneWith` moved to file scope so both
+`/np` blocks share it. Seven mutants, each killed by its own tests: the
+door always clear (4 red), the peer matched with `===` (2), the guard
+without `actsToPeer` (1), without `/np` in it (1), no scrub (2), an empty
+ACTION sent (2), no log line (2). Caveat: `nickEquals` is mocked
+case-insensitively in that file, so the casemapping argument itself is not
+pinned there. Full vitest 8895/8895, `bun run check` 5/5.
+
+e2e: `issue2543-encrypted-query-actions.spec.ts`, two browsers on the real
+ircd, chromium. Alice tunes the radio (feed answered in the page, stream on
+a route), opens the encrypted query and sends `/ctcp <bob> ACTION …` then
+`/np`: both are her action lines and reach `sent`, both are Bob's actions
+from Alice in the encrypted window, neither grappa holds DM history between
+the two nicks (Bob's is what the ircd delivered him, where a clear ACTION
+would be a DM row), and the ciphertext view on both ends shows two payloads
+and never the words. The ciphertext view's helpers (`FRAME`, `bodies`,
+`menuItem`, `flip`) moved from the 2513 spec to `fixtures/encryptedQuery.ts`.
+Run locally with the stack: 2543, 2536 and 2513 (desktop and `@touch`) 4/4
+green; 2543 against a mutant whose encrypted branch sends the clear ACTION
+instead went red at Alice's first action never reaching `sent`.
+
+**Deploy class:** cic bundle only (`--cic`).
