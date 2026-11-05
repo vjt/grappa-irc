@@ -23,18 +23,19 @@
 // arm runs on chromium only.
 
 import type { Browser, Page, TestInfo } from "@playwright/test";
-import { sidebarWindow } from "../fixtures/cicchettoPage";
 import {
+  bodies,
   boot,
-  chatLines,
   e2eWindow,
   equery,
+  FRAME,
+  flip,
   KEYS_TIMEOUT,
+  menuItem,
   peerPage,
   row,
   send,
 } from "../fixtures/encryptedQuery";
-import { NETWORK_SLUG } from "../fixtures/seedData";
 import { type Pt, synthEdgeGesture } from "../fixtures/shellTouch";
 import { provisionPeerSubject, teardownSpecSubject } from "../fixtures/specSubject";
 import { expect, specNick, specUser, test } from "../fixtures/test";
@@ -45,28 +46,6 @@ test.setTimeout(180_000);
 
 const HELLO = "2513 ciao bob, questa riga la legge solo chi ha la chiave";
 const REPLY = "2513 ciao alice, nemmeno questa la vede il server";
-
-/** One payload, as the view writes it: the verb, the msgid, the compact JSON. */
-const FRAME = /^E2E (PKMSG|MSG) [A-Za-z0-9+/]{11} \{\S+\}$/;
-
-/** What each line of the open encrypted window reads, top to bottom. */
-const bodies = (page: Page) =>
-  chatLines(page).evaluateAll((lines) =>
-    lines.map((line) => line.querySelector(".scrollback-body")?.textContent ?? null),
-  );
-
-const menuItem = (page: Page, label: string) =>
-  page.locator(".context-menu .context-menu-item", { hasText: new RegExp(`^${label}$`) });
-
-/** A right-click on the encrypted window's sidebar row, and `label` in its menu. */
-async function flip(page: Page, nick: string, label: string): Promise<void> {
-  await sidebarWindow(page, NETWORK_SLUG, e2eWindow(nick))
-    .locator(".sidebar-window-btn")
-    .click({ button: "right" });
-  await expect(menuItem(page, label)).toBeVisible();
-  await menuItem(page, label).click();
-  await expect(page.locator(".context-menu")).toHaveCount(0);
-}
 
 type Chat = { peer: Page; aliceNick: string; bobNick: string };
 
