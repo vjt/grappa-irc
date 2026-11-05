@@ -112,10 +112,11 @@ defmodule GrappaWeb.Router do
   # unread). Both pipelines go after `:authn`, so a body is read only for
   # an authenticated subject, and only up to what the route needs.
   # `:upload_body` is for the two doors whose body a per-file cap polices:
-  # its ceiling is derived from the largest cap an operator can set.
+  # its ceiling clears the largest cap an operator can set.
   # `:multipart_body` is for any other route that takes a file.
-  # `GrappaWeb.MultipartBodyTest` fails when a route whose action can
-  # receive a `%Plug.Upload{}` pipes through neither, when either comes
+  # `GrappaWeb.MultipartBodyTest` fails when a route whose action (or a
+  # function of its own module) matches `%Plug.Upload{}` pipes through
+  # neither, when a route that does not pipes through one, when either comes
   # before `:authn`, and when `:upload_body` reaches any other action.
   pipeline :upload_body do
     plug Plug.Parsers,
