@@ -490,16 +490,16 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // retried or dismissed), so only a dismissal frees a room.
       return "Too many encrypted chat requests are open on this network. Dismiss one first.";
     case "pairing_already_joined":
-      // issue 2430 X1 — 409: another device already scanned this pairing
-      // code. A code pairs one device; the other screen can show a new one.
-      return "This pairing code has already been used. Show a new one on your other device.";
+      // issue 2430 X1 — 409: another device already joined this pairing. A
+      // pairing adds one device; the other screen can start a new one.
+      return "Another browser has already accepted this pairing. Start a new one on your other device.";
     case "pairing_own_rendezvous":
       // 409 — this device opened the rendezvous it is trying to join.
-      return "Scan this code from your other device, not from this one.";
+      return "Accept this pairing on your other device, not on this one.";
     case "pairing_not_joined":
-      // 409 — the showing side posted before anyone scanned its code; the
-      // scanner speaks first.
-      return "No device has scanned this pairing code yet.";
+      // 409 — the opening side posted before anyone joined; the joiner
+      // speaks first.
+      return "No device has accepted this pairing yet.";
     case "pairing_not_a_party":
       // 403 — a third device of the account: it is neither side.
       return "This pairing is between two other devices of your account.";

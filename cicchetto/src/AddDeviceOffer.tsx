@@ -1,38 +1,37 @@
 import { type Component, createSignal, onCleanup, onMount, Show } from "solid-js";
-import E2eCopyButton from "./E2eCopyButton";
 import { token } from "./lib/auth";
 import {
   type CloseReason,
   openChannel,
   openPairing,
   type PairingChannel,
-  pairingUrl,
   type Rendezvous,
 } from "./lib/e2e/pairing";
 import { offeringFromHere } from "./lib/e2e/pairingOffer";
 import { errorMessage } from "./lib/friendlyApiError";
-import { qrSvgWithLabel } from "./lib/qr";
 
-// issue 2430, X1 — the showing side of a pairing: open a rendezvous and show
-// its code as a QR for the new device's OS camera, which lands it on `/pair`
-// (PairScan). The ephemeral key in the code is the caller's, from the ECIES
-// layer; this component only puts it in the code, holds the channel while
-// the code is on screen, and closes the rendezvous when it leaves the screen.
-// When the rendezvous ends it drops the QR and tells the caller why; saying
-// so is the caller's (AddDevicePanel), which knows what the pairing came to.
+// issue 2430, X1 — the holder's side of a pairing: open a rendezvous with the
+// caller's ephemeral key (from the ECIES layer), hold its channel while the
+// pairing waits, and close it when it leaves the screen. When the rendezvous
+// ends it says nothing and tells the caller why; saying so is the caller's
+// (AddDevicePanel), which knows what the pairing came to.
 //
 // Issue 2537: the key rides the open, so grappa offers the rendezvous to the
 // account's other devices (lib/e2e/pairingOffer); this tab marks the key as
-// its own first, since the offer is pushed back to it too. The link has a
-// copy button, for the device with no camera to scan the QR.
+// its own first, since the offer is pushed back to it too.
+//
+// Issue 2549: that offer is the ONLY way the pairing travels. This used to
+// show the code as a QR, as a link, and with a copy button; a link opens in
+// the system browser, not in the installed app, so the identity ended up in
+// a browser nobody meant to pair. Here the user is told where to accept it.
 
 type Stage =
   | { tag: "opening" }
-  | { tag: "showing"; rendezvous: Rendezvous; url: string }
+  | { tag: "waiting"; rendezvous: Rendezvous }
   | { tag: "failed"; message: string }
   | { tag: "ended" };
 
-const AddDeviceQr: Component<{
+const AddDeviceOffer: Component<{
   curve: string;
   onChannel: (channel: PairingChannel) => void;
   onMessage: (payload: string) => void;
@@ -66,11 +65,7 @@ const AddDeviceQr: Component<{
         void channel.close();
         return;
       }
-      setStage({
-        tag: "showing",
-        rendezvous,
-        url: pairingUrl(window.location.origin, { id: rendezvous.id, curve: props.curve }),
-      });
+      setStage({ tag: "waiting", rendezvous });
       props.onChannel(channel);
     } catch (err) {
       setStage({ tag: "failed", message: errorMessage(err) });
@@ -88,9 +83,9 @@ const AddDeviceQr: Component<{
     return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
   };
 
-  const showing = () => {
+  const waiting = () => {
     const s = stage();
-    return s.tag === "showing" ? s : null;
+    return s.tag === "waiting" ? s : null;
   };
   const failed = () => {
     const s = stage();
@@ -98,23 +93,17 @@ const AddDeviceQr: Component<{
   };
 
   return (
-    <section class="add-device-qr">
+    <section>
       <Show when={stage().tag === "opening"}>
-        <p>Preparing a pairing code…</p>
+        <p>Preparing the pairing…</p>
       </Show>
-      <Show when={showing()}>
+      <Show when={waiting()}>
         {(s) => (
           <>
-            <p>Scan this code with the camera of the device you are adding.</p>
-            <div
-              class="qr-frame"
-              data-testid="pair-qr"
-              innerHTML={qrSvgWithLabel(s().url, "pairing QR code")}
-            />
-            <p class="pair-url" data-testid="pair-url">
-              {s().url}
+            <p data-testid="pair-waiting">
+              Open grappa on the device you are adding, signed in to this account, and tap "Pair
+              this browser" on the banner it shows.
             </p>
-            <E2eCopyButton text={s().url} label="copy link" testId="pair-url-copy" />
             <p>
               Expires in{" "}
               <span data-testid="pair-countdown">{countdown(s().rendezvous.expires_at)}</span>
@@ -133,4 +122,4 @@ const AddDeviceQr: Component<{
   );
 };
 
-export default AddDeviceQr;
+export default AddDeviceOffer;

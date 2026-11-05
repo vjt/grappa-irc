@@ -2,8 +2,10 @@ import { render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// issue 2430, X1 — the `/pair` route a scanned pairing QR opens. The code
-// is read from the fragment, as `/share` reads its token.
+// issue 2430, X1 — the `/pair` route, where a browser joins a pairing.
+// Issue 2549: it joins only the offer the banner handed it (once, across the
+// document load); nothing in the address bar names one, and a Back, a reload
+// or an old link to `/pair` joins nothing.
 
 const ID = "AbCdEfGhIjKlMnOpQrStUv";
 const CURVE = "fJKDF4omlQo87Jaqp5pqfZqg9TcQO1PG5lS1Kzz5FIA";
@@ -33,6 +35,9 @@ vi.mock("../lib/e2e/pairingDeps", () => ({ pairingDeps: session.pairingDeps }));
 vi.mock("../lib/e2e/pairingSession", () => ({ joinerPairing: session.joinerPairing }));
 vi.mock("../lib/encryptedChats", () => ({ pairedHere: session.paired }));
 
+const offerHolder = vi.hoisted(() => ({ take: vi.fn() }));
+vi.mock("../lib/e2e/pairingOffer", () => ({ takeAcceptedPairing: offerHolder.take }));
+
 const pairingHolder = vi.hoisted(() => ({
   joinPairing: vi.fn(),
   openChannel: vi.fn(),
@@ -48,7 +53,7 @@ vi.mock("../lib/e2e/pairing", async (orig) => ({
 import { ApiError } from "../lib/api";
 import type { JoinerState } from "../lib/e2e/pairingSession";
 
-const { default: PairScan } = await import("../PairScan");
+const { default: PairJoin } = await import("../PairJoin");
 
 const landOn = (hash: string) => window.history.replaceState(null, "", `/pair${hash}`);
 
@@ -83,6 +88,7 @@ beforeEach(() => {
   };
   session.current = fake;
   session.pairingDeps.mockResolvedValue(DEPS);
+  offerHolder.take.mockReturnValue({ id: ID, curve: CURVE });
   session.joinerPairing.mockReturnValue(fake);
   pairingHolder.openChannel.mockImplementation((_t, rendezvous, handlers) => {
     pairingHolder.handlers = handlers;
@@ -93,15 +99,16 @@ beforeEach(() => {
       close: pairingHolder.close,
     };
   });
-  landOn(`#pair=${ID}.${CURVE}`);
+  landOn("");
 });
 
-describe("PairScan", () => {
-  it("joins the rendezvous the code names and opens its channel", async () => {
+describe("PairJoin", () => {
+  it("joins the rendezvous the banner handed over and opens its channel", async () => {
     const rendezvous = { id: ID, role: "joiner", expires_at: "2026-10-22T18:00:00Z" };
     pairingHolder.joinPairing.mockResolvedValue(rendezvous);
-    render(() => <PairScan />);
+    render(() => <PairJoin />);
     await waitFor(() => expect(pairingHolder.joinPairing).toHaveBeenCalledWith("tok", ID));
+    expect(offerHolder.take).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(pairingHolder.openChannel).toHaveBeenCalled());
     expect(pairingHolder.openChannel.mock.calls[0]?.[1]).toEqual(rendezvous);
     expect(await screen.findByTestId("pair-joined")).toBeTruthy();
@@ -109,7 +116,7 @@ describe("PairScan", () => {
 
   it("builds the joiner session from this browser's deps, with pairedHere, and hands it the channel and what arrives", async () => {
     pairingHolder.joinPairing.mockResolvedValue(RENDEZVOUS);
-    render(() => <PairScan />);
+    render(() => <PairJoin />);
     await screen.findByTestId("pair-joined");
     expect(session.pairingDeps).toHaveBeenCalledWith("tok");
     const [deps, code] = session.joinerPairing.mock.calls[0] ?? [];
@@ -123,9 +130,9 @@ describe("PairScan", () => {
     expect(session.current?.onClosed).toHaveBeenCalledWith("expired");
   });
 
-  it("PairScan shows the check code, then the offered networks and Pair this browser", async () => {
+  it("PairJoin shows the check code, then the offered networks and Pair this browser", async () => {
     pairingHolder.joinPairing.mockResolvedValue(RENDEZVOUS);
-    render(() => <PairScan />);
+    render(() => <PairJoin />);
     await screen.findByTestId("pair-joined");
     expect(screen.queryByTestId("pair-check-code")).toBeNull();
     expect(screen.queryByTestId("pair-confirm")).toBeNull();
@@ -160,7 +167,7 @@ describe("PairScan", () => {
 
   it("shows no full line when no network is full", async () => {
     pairingHolder.joinPairing.mockResolvedValue(RENDEZVOUS);
-    render(() => <PairScan />);
+    render(() => <PairJoin />);
     await screen.findByTestId("pair-joined");
     setState({ ...joining(), stage: "confirm", checkCode: "07", offered: ["azzurra"] });
     expect(screen.queryByTestId("pair-full")).toBeNull();
@@ -168,7 +175,7 @@ describe("PairScan", () => {
 
   it("shows paired, with the result per network, once done", async () => {
     pairingHolder.joinPairing.mockResolvedValue(RENDEZVOUS);
-    render(() => <PairScan />);
+    render(() => <PairJoin />);
     await screen.findByTestId("pair-joined");
     setState({
       ...joining(),
@@ -186,7 +193,7 @@ describe("PairScan", () => {
 
   it("an all-failed done says this browser was not paired; one network added or already paired says it is", async () => {
     pairingHolder.joinPairing.mockResolvedValue(RENDEZVOUS);
-    render(() => <PairScan />);
+    render(() => <PairJoin />);
     await screen.findByTestId("pair-joined");
     const done = (results: JoinerState["results"]) =>
       setState({ ...joining(), stage: "done", results });
@@ -216,7 +223,7 @@ describe("PairScan", () => {
 
   it("an offer of no network shows no Pair this browser: nothing to pair, and the networks already full", async () => {
     pairingHolder.joinPairing.mockResolvedValue(RENDEZVOUS);
-    render(() => <PairScan />);
+    render(() => <PairJoin />);
     await screen.findByTestId("pair-joined");
 
     setState({ ...joining(), stage: "ended", ended: "nothing-to-pair", full: ["oftc"] });
@@ -232,9 +239,9 @@ describe("PairScan", () => {
     expect(screen.queryByTestId("pair-full")).toBeNull();
   });
 
-  it("PairScan says paired, not ended, when the holder closes after done", async () => {
+  it("PairJoin says paired, not ended, when the holder closes after done", async () => {
     pairingHolder.joinPairing.mockResolvedValue(RENDEZVOUS);
-    render(() => <PairScan />);
+    render(() => <PairJoin />);
     await screen.findByTestId("pair-joined");
     setState({ ...joining(), stage: "done", results: [{ network: "azzurra", outcome: "added" }] });
     pairingHolder.handlers?.onClosed("closed");
@@ -244,7 +251,7 @@ describe("PairScan", () => {
 
   it("says a pairing that failed on this side failed, not that the other device ended it", async () => {
     pairingHolder.joinPairing.mockResolvedValue(RENDEZVOUS);
-    render(() => <PairScan />);
+    render(() => <PairJoin />);
     await screen.findByTestId("pair-joined");
     setState({ ...joining(), stage: "ended", ended: "failed" });
     const ended = screen.getByTestId("pair-ended").textContent ?? "";
@@ -258,44 +265,87 @@ describe("PairScan", () => {
   it("says so when this browser cannot be prepared for pairing, and joins nothing", async () => {
     session.pairingDeps.mockRejectedValue(new Error("no binding"));
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    render(() => <PairScan />);
+    render(() => <PairJoin />);
     expect((await screen.findByTestId("pair-failed")).textContent).toBe(
       "Could not prepare this browser for pairing.",
     );
     expect(pairingHolder.joinPairing).not.toHaveBeenCalled();
   });
 
-  it("scrubs the code from the address bar before joining", async () => {
-    pairingHolder.joinPairing.mockImplementation(async () => {
-      expect(window.location.hash).toBe("");
-      return { id: ID, role: "joiner", expires_at: "2026-10-22T18:00:00Z" };
-    });
-    render(() => <PairScan />);
-    await waitFor(() => expect(pairingHolder.joinPairing).toHaveBeenCalled());
-    expect(window.location.pathname).toBe("/pair");
+  it("joins what the banner handed over, never a pairing code in the address bar", async () => {
+    const other = "ZyXwVuTsRqPoNmLkJiHgFe";
+    landOn(`#pair=${other}.${CURVE}`);
+    pairingHolder.joinPairing.mockResolvedValue(RENDEZVOUS);
+    render(() => <PairJoin />);
+    await screen.findByTestId("pair-joined");
+    expect(pairingHolder.joinPairing.mock.calls).toEqual([["tok", ID]]);
   });
 
-  it("says so when the link carries no valid code, and joins nothing", async () => {
-    landOn("#pair=nope");
-    render(() => <PairScan />);
-    expect(await screen.findByTestId("pair-invalid")).toBeTruthy();
+  // A Back to `/pair`, a reload of it, an old link: the banner handed nothing
+  // over, so nothing is joined, whatever the account has on offer.
+  it("with nothing handed over by the banner, says where pairing starts and joins nothing", async () => {
+    offerHolder.take.mockReturnValue(null);
+    landOn(`#pair=${ID}.${CURVE}`);
+    render(() => <PairJoin />);
+    const none = await screen.findByTestId("pair-none");
+    expect(none.textContent).toContain("add a device");
     expect(pairingHolder.joinPairing).not.toHaveBeenCalled();
-    expect(window.location.hash).toBe("");
+    expect(session.joinerPairing).not.toHaveBeenCalled();
   });
 
-  it("asks for a login first on a device that has none", async () => {
+  it("on a browser with no login, says where pairing starts, joins nothing, and uses up the hand-over", async () => {
     authHolder.token.mockReturnValue(null);
-    render(() => <PairScan />);
-    expect(await screen.findByTestId("pair-login")).toBeTruthy();
+    render(() => <PairJoin />);
+    expect((await screen.findByTestId("pair-none")).textContent).toContain("add a device");
+    expect(offerHolder.take).toHaveBeenCalledTimes(1);
     expect(pairingHolder.joinPairing).not.toHaveBeenCalled();
-    expect(window.location.hash).toBe("");
   });
 
-  it("tells a second scanner the code is used", async () => {
+  it("joins nothing when it leaves the route while this browser is still being prepared", async () => {
+    let resolve: (d: unknown) => void = () => undefined;
+    session.pairingDeps.mockReturnValue(new Promise((r) => (resolve = r)));
+    const { unmount } = render(() => <PairJoin />);
+    await waitFor(() => expect(session.pairingDeps).toHaveBeenCalled());
+    unmount();
+    resolve(DEPS);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(pairingHolder.joinPairing).not.toHaveBeenCalled();
+  });
+
+  // `/pair` is outside the Shell, and an installed app has no address bar:
+  // every page that ends here leads back, where the banner can ask again.
+  it("leads back to grappa from every page that ends the pairing", async () => {
+    const back = () => screen.queryByRole("link", { name: "Back to grappa" });
+
+    offerHolder.take.mockReturnValue(null);
+    const none = render(() => <PairJoin />);
+    await screen.findByTestId("pair-none");
+    expect(back()).toBeTruthy();
+    none.unmount();
+
+    offerHolder.take.mockReturnValue({ id: ID, curve: CURVE });
+    pairingHolder.joinPairing.mockRejectedValueOnce(new ApiError(409, "pairing_already_joined"));
+    const failed = render(() => <PairJoin />);
+    await screen.findByRole("alert");
+    expect(back()).toBeTruthy();
+    failed.unmount();
+
+    pairingHolder.joinPairing.mockResolvedValue(RENDEZVOUS);
+    render(() => <PairJoin />);
+    await screen.findByTestId("pair-joined");
+    expect(back()).toBeNull();
+    setState({ ...joining(), stage: "ended", ended: "replaced" });
+    expect(screen.getByTestId("pair-ended").textContent).toContain("Go back to grappa");
+    expect(back()).toBeTruthy();
+    setState({ ...joining(), stage: "done", results: [{ network: "azzurra", outcome: "added" }] });
+    expect(back()).toBeTruthy();
+  });
+
+  it("tells a second browser the pairing is taken", async () => {
     pairingHolder.joinPairing.mockRejectedValue(new ApiError(409, "pairing_already_joined"));
-    render(() => <PairScan />);
+    render(() => <PairJoin />);
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("already been used");
+    expect(alert.textContent).toContain("already accepted this pairing");
   });
 
   it("says the other device ended it when the rendezvous closes", async () => {
@@ -304,7 +354,7 @@ describe("PairScan", () => {
       role: "joiner",
       expires_at: "2026-10-22T18:00:00Z",
     });
-    render(() => <PairScan />);
+    render(() => <PairJoin />);
     await waitFor(() => expect(pairingHolder.handlers).not.toBeNull());
     pairingHolder.handlers?.onClosed("expired");
     expect((await screen.findByTestId("pair-ended")).textContent).toContain("expired");
@@ -316,7 +366,7 @@ describe("PairScan", () => {
       role: "joiner",
       expires_at: "2026-10-22T18:00:00Z",
     });
-    render(() => <PairScan />);
+    render(() => <PairJoin />);
     (await screen.findByTestId("pair-cancel")).click();
     await waitFor(() => expect(routerHolder.navigate).toHaveBeenCalledWith("/", { replace: true }));
     expect(pairingHolder.close).toHaveBeenCalled();
@@ -329,7 +379,7 @@ describe("PairScan", () => {
       role: "joiner",
       expires_at: "2026-10-22T18:00:00Z",
     });
-    const { unmount } = render(() => <PairScan />);
+    const { unmount } = render(() => <PairJoin />);
     await screen.findByTestId("pair-joined");
     unmount();
     await waitFor(() => expect(pairingHolder.close).toHaveBeenCalled());
@@ -338,7 +388,7 @@ describe("PairScan", () => {
   it("closes a rendezvous whose join was still in flight when it left the route", async () => {
     let resolve: (r: unknown) => void = () => undefined;
     pairingHolder.joinPairing.mockReturnValue(new Promise((r) => (resolve = r)));
-    const { unmount } = render(() => <PairScan />);
+    const { unmount } = render(() => <PairJoin />);
     await waitFor(() => expect(pairingHolder.joinPairing).toHaveBeenCalled());
     unmount();
     resolve({ id: ID, role: "joiner", expires_at: "2026-10-22T18:00:00Z" });

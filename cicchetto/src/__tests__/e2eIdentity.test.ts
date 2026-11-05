@@ -864,7 +864,7 @@ describe("replaceIdentity", () => {
   });
 });
 
-// The doors a QR pairing goes through, without the channel: the holder is the
+// The doors a pairing goes through, without the channel: the holder is the
 // browser that holds the master, the joiner the new browser of the account.
 describe("the pairing doors", () => {
   /** A browser whose identity the sync made: it holds the master. */
@@ -874,7 +874,7 @@ describe("the pairing doors", () => {
     return made;
   }
 
-  /** The master key the holder's QR offers. */
+  /** The master key the holder offers. */
   async function offered(store: AccountStore): Promise<string> {
     const M = await masterOf(store, SLOT);
     if (M === null) throw new Error("no master here");

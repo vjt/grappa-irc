@@ -26,7 +26,6 @@ import { channelKey } from "./lib/channelKey";
 import { requestConfirm } from "./lib/confirmDialog";
 import { isCtcpAction, stripCtcpAction } from "./lib/ctcpAction";
 import { formatDateTime } from "./lib/dateFormat";
-import { loadDocument } from "./lib/documentNavigation";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import {
   type ChatRow,
@@ -36,7 +35,6 @@ import {
   type Message,
   type OutFailure,
 } from "./lib/e2e/chatStore";
-import { pairingUrl, parsePairFragment } from "./lib/e2e/pairing";
 import type { SasStep, SasView } from "./lib/e2e/sas";
 import { SAS_EMOJI } from "./lib/e2e/sasEmoji";
 import {
@@ -315,30 +313,15 @@ const REPLACE_CONFIRM =
 // grappa holds this account's identity for the network and this browser
 // cannot speak for it: another device holds it, or the browser was wiped.
 // Pairing this browser with a device that holds it (X1) keeps every
-// contact's trust: that device shows a code, which the camera scans into
-// `/pair`, or whose link is pasted here and loaded there as a camera scan
-// would load it (`loadDocument`: `/pair` reads its code when it mounts). A
-// new identity is the other way out, behind a confirmation that says what it
-// destroys, and only one at a time: a second would delete the first.
+// contact's trust: that device opens "add a device", and this browser is
+// offered the pairing in a banner (issue 2537) — the only way in since issue
+// 2549 took the link and its paste field away. A new identity is the other
+// way out, behind a confirmation that says what it destroys, and only one at
+// a time: a second would delete the first.
 const IdentityElsewhere: Component<{ slug: string }> = (props) => {
-  const [code, setCode] = createSignal("");
-  const [pairError, setPairError] = createSignal<string | null>(null);
   const [armed, setArmed] = createSignal(false);
   const [replacing, setReplacing] = createSignal(false);
   const [replaceError, setReplaceError] = createSignal<string | null>(null);
-
-  const pair = (event: SubmitEvent) => {
-    event.preventDefault();
-    const text = code().trim();
-    // The whole link, or the fragment that carries the code.
-    const found = parsePairFragment(text.includes("#") ? text.slice(text.indexOf("#")) : text);
-    if (found === null) {
-      setPairError("that is not a pairing link: paste the whole link the other device shows");
-      return;
-    }
-    setPairError(null);
-    loadDocument(pairingUrl(window.location.origin, found));
-  };
 
   const replace = async () => {
     setArmed(false);
@@ -364,32 +347,10 @@ const IdentityElsewhere: Component<{ slug: string }> = (props) => {
         this account's encryption identity for this network lives on another device, or was lost. To
         use it here, pair this browser with a device that holds it.
       </p>
-      <p class="muted">
-        on a device that holds it, open "add a device" and scan the code it shows with this device's
-        camera, or paste its link here:
+      <p class="muted" data-testid="e2e-identity-pair-how">
+        on a device that holds it, open "add a device": a banner then offers the pairing here, and
+        "Pair this browser" takes it.
       </p>
-      <form class="e2e-pin" onSubmit={pair}>
-        <input
-          type="text"
-          class="e2e-pin-input"
-          data-testid="e2e-identity-pair-code"
-          placeholder="pairing link"
-          autocomplete="off"
-          spellcheck={false}
-          value={code()}
-          onInput={(event) => setCode(event.currentTarget.value)}
-        />
-        <button type="submit" class="e2e-pin-submit" data-testid="e2e-identity-pair-submit">
-          pair
-        </button>
-      </form>
-      <Show when={pairError()}>
-        {(message) => (
-          <div class="e2e-error" data-testid="e2e-identity-pair-error">
-            {message()}
-          </div>
-        )}
-      </Show>
       <div class="e2e-step-actions">
         <InlineConfirmButton
           idleLabel="start a new identity here"

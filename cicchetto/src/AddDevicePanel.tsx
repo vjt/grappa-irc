@@ -1,5 +1,5 @@
 import { type Component, createSignal, onCleanup, onMount, Show } from "solid-js";
-import AddDeviceQr from "./AddDeviceQr";
+import AddDeviceOffer from "./AddDeviceOffer";
 import { token } from "./lib/auth";
 import { pairingDeps } from "./lib/e2e/pairingDeps";
 import { type HolderState, holderPairing } from "./lib/e2e/pairingSession";
@@ -7,7 +7,8 @@ import { errorMessage } from "./lib/friendlyApiError";
 import PairResults from "./PairResults";
 
 // issue 2430, X1-crypto — the master's side of a pairing, shown inline in the
-// encrypted pane's keys block: the QR for the new browser to scan, then the
+// encrypted pane's keys block: the pairing offered to the account's other
+// sessions (AddDeviceOffer; issue 2549 took its QR and link away), then the
 // two-digit code the new browser shows, TYPED here (the typing is this
 // screen's confirmation: someone who joined first has no code to type), then
 // what became of each network. All the logic is the session's
@@ -15,15 +16,15 @@ import PairResults from "./PairResults";
 
 type Holder = ReturnType<typeof holderPairing>;
 
-// Why a pairing ended, the one copy of it: the QR component it holds says
+// Why a pairing ended, the one copy of it: the offer component it holds says
 // none of its own.
 const ENDED: Record<Exclude<HolderState["ended"], "code-mismatch" | null>, string> = {
   closed: "The new device ended the pairing.",
-  expired: "The code expired. Start again to show a new one.",
+  expired: "The pairing expired. Start again to offer a new one.",
   replaced: "A newer pairing replaced this one.",
-  gone: "The pairing is no longer available. Start again to show a new code.",
+  gone: "The pairing is no longer available. Start again to offer a new one.",
   "nothing-to-offer": "There is no network this browser can add the new device to.",
-  failed: "The pairing failed. Start again to show a new code.",
+  failed: "The pairing failed. Start again to offer a new one.",
 };
 
 // An ended stage always says why; a null would be the session's bug, shown as a failure.
@@ -98,8 +99,8 @@ const AddDevicePanel: Component<{ onClose: () => void }> = (props) => {
         {(holder) => (
           <>
             {/* Kept mounted while the pairing lives: leaving the screen closes its channel. */}
-            <div data-testid="qr-slot" hidden={state()?.stage !== "waiting"}>
-              <AddDeviceQr
+            <div data-testid="offer-slot" hidden={state()?.stage !== "waiting"}>
+              <AddDeviceOffer
                 curve={holder().curve}
                 onChannel={(channel) => holder().attach(channel)}
                 onMessage={(payload) => holder().onPayload(payload)}

@@ -21,11 +21,14 @@ vi.mock("../lib/networks", () => ({
 
 import { setToken } from "../lib/auth";
 import {
+  acceptPairingOffer,
   deliverPairingOffer,
   offeringFromHere,
+  PAIRING_ACCEPTED_KEY,
   type PairingOffer,
   pairingOfferEnded,
   pairingOfferHere,
+  takeAcceptedPairing,
 } from "../lib/e2e/pairingOffer";
 
 const CURVE = "fJKDF4omlQo87Jaqp5pqfZqg9TcQO1PG5lS1Kzz5FIA";
@@ -40,6 +43,7 @@ const offer = (id: string, ms: number, curve = CURVE): PairingOffer => ({
 beforeEach(() => {
   vi.useFakeTimers();
   holder.elsewhere = new Set(["libera"]);
+  sessionStorage.clear();
   pairingOfferEnded("AbCdEfGhIjKlMnOpQrStUv");
   pairingOfferEnded("ZyXwVuTsRqPoNmLkJiHgFe");
 });
@@ -101,5 +105,31 @@ describe("pairingOffer", () => {
     deliverPairingOffer(offer("AbCdEfGhIjKlMnOpQrStUv", 300_000));
     setToken("tokB");
     expect(pairingOfferHere()).toBeNull();
+  });
+});
+
+// issue 2549 — the banner hands `/pair` the offer the user tapped, across the
+// document load, and `/pair` takes it ONCE: a Back to `/pair`, a reload of it,
+// or an old link to it finds nothing and joins nothing, offer live or not.
+describe("the offer the banner hands to /pair", () => {
+  it("hands over the accepted offer's code once", () => {
+    acceptPairingOffer(offer("AbCdEfGhIjKlMnOpQrStUv", 300_000));
+    expect(takeAcceptedPairing()).toEqual({ id: "AbCdEfGhIjKlMnOpQrStUv", curve: CURVE });
+    expect(takeAcceptedPairing()).toBeNull();
+  });
+
+  it("hands over nothing when no offer was accepted", () => {
+    expect(takeAcceptedPairing()).toBeNull();
+  });
+
+  it.each([
+    ["not JSON", "{"],
+    ["no curve", JSON.stringify({ id: "AbCdEfGhIjKlMnOpQrStUv" })],
+    ["a number for an id", JSON.stringify({ id: 1, curve: CURVE })],
+    ["null", "null"],
+  ])("hands over nothing from a slot holding %s, and clears it", (_name, raw) => {
+    sessionStorage.setItem(PAIRING_ACCEPTED_KEY, raw);
+    expect(takeAcceptedPairing()).toBeNull();
+    expect(sessionStorage.getItem(PAIRING_ACCEPTED_KEY)).toBeNull();
   });
 });

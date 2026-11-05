@@ -1,4 +1,4 @@
-// issue 2430 — a QR pairing from the QR to "done" (X1-crypto): the two roles
+// issue 2430 — a pairing from its offer to "done" (X1-crypto): the two roles
 // of `pairingSession.ts`, wired to each other through an in-memory relay (a
 // side's `send` reaches the other's `onPayload`, a close the other's
 // `onClosed`), over the fake grappa (one per network) and two browsers of one
@@ -326,7 +326,7 @@ function handJoiner(curve: string): { initial: string; link: EstablishedEcies; c
   };
 }
 
-/** A holder played by hand: the key its QR shows, and its side once the joiner's first payload came. */
+/** A holder played by hand: the key it offers, and its side once the joiner's first payload came. */
 function handHolder(): { curve: string; accept(initial: string): EstablishedEcies } {
   const ecies = new (olm().Ecies)(PAIRING_INFO);
   return {
@@ -582,7 +582,7 @@ describe("a pairing between the holder and a new browser", () => {
       expect(holder.state()).toMatchObject({ stage: "ended", ended: "failed" });
       expect(rec.closes()).toBe(1);
       expect(warn).toHaveBeenCalledWith(
-        "[e2e] pairing (holder): a first payload that is no hello to this QR's key",
+        "[e2e] pairing (holder): a first payload that is no hello to this pairing's key",
       );
     }
     // The holder's offer, read by the joiner: it registered nothing yet.
@@ -756,7 +756,7 @@ describe("a pairing between the holder and a new browser", () => {
     const p = start((await holderOn(A)).store, browser().store, () => [A]);
     await goThrough(p);
     expect(freed).toHaveBeenCalledTimes(2);
-    // A QR nobody scanned: its key, never used, goes with it.
+    // A pairing nobody joined: its key, never used, goes with it.
     const unused = vi.spyOn(olm().Ecies.prototype, "free");
     holderPairing(holderDeps(browser().store, () => [A])).cancel();
     expect(unused).toHaveBeenCalledTimes(1);
@@ -1098,7 +1098,7 @@ describe("a side that misbehaves", () => {
     expect(rec.closes()).toBe(1);
   });
 
-  it("a QR key that opens no channel ends the joiner as failed before it says anything, and says why", async () => {
+  it("an offered key that opens no channel ends the joiner as failed before it says anything, and says why", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const joiner = joinerPairing(
       { ...holderDeps(browser().store, () => [A]), paired: vi.fn() },
@@ -1112,7 +1112,7 @@ describe("a side that misbehaves", () => {
     expect(rec.sent).toEqual([]);
     expect(rec.closes()).toBe(1);
     expect(warn).toHaveBeenCalledWith(
-      "[e2e] pairing (joiner): no channel opens to this QR's key",
+      "[e2e] pairing (joiner): no channel opens to the offered key",
       expect.anything(),
     );
   });

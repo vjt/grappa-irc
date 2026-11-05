@@ -1,4 +1,3 @@
-import { Route, Router } from "@solidjs/router";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,7 +20,7 @@ import { ruleBody, themeCss } from "./helpers/themeCss";
 // reads are signals here and its verbs are spies, so these tests pin what the
 // window shows where, and which verb each control reaches. `trustOf`,
 // `openAlarm` and `unreadableStep` stay the real ones: the badge and the step are their answers,
-// not copies of them, as do the pairing link helpers (`lib/e2e/pairing.ts`).
+// not copies of them.
 // A key is a master.
 
 const KEY = "J2bCqN5ukKUq1qDNgzWbn9GZ7xjzM2bA0f9yqkvq0Ss";
@@ -47,7 +46,6 @@ const deleteEncryptedChat = vi.hoisted(() => vi.fn());
 const replaceEncryptedIdentity = vi.hoisted(() => vi.fn());
 const rekeyEncrypted = vi.hoisted(() => vi.fn());
 const copyText = vi.hoisted(() => vi.fn());
-const loadDocument = vi.hoisted(() => vi.fn());
 const holdsMasterHere = vi.hoisted(() => vi.fn());
 const openQueryWindowState = vi.hoisted(() => vi.fn());
 const sendCtcpQuery = vi.hoisted(() => vi.fn(async () => undefined));
@@ -147,14 +145,9 @@ vi.mock("../lib/scrollback", async (importOriginal) => ({
   loadNewer,
   refreshScrollback,
 }));
-// jsdom implements no document navigation (and makes `location.assign`
-// unforgeable): the one-line seam is mocked, and a test below loads the URL
-// it was handed the way the browser would, as a fresh document.
-vi.mock("../lib/documentNavigation", () => ({ loadDocument }));
 
 const { default: EncryptedChatPane, NO_CIPHERTEXT, UNSENT } = await import("../EncryptedChatPane");
 const { default: EncryptedRail } = await import("../EncryptedRail");
-const { default: PairScan } = await import("../PairScan");
 const { formatTime } = await import("../ScrollbackPane");
 
 const at = 1_700_000_000_000;
@@ -1483,8 +1476,6 @@ describe("EncryptedChatPane, compose and the chat's tools", () => {
 // behind a confirmation that names what it destroys; nothing can be sent
 // meanwhile, and the rail can act on nothing.
 describe("EncryptedChatPane, an identity held elsewhere", () => {
-  const LINK = `https://grappa.example/pair#pair=${"r".repeat(22)}.${"c".repeat(43)}`;
-
   it("says the identity is held elsewhere, offers both ways out, and keeps compose shut", () => {
     setTrust({ master: KEY, verified: false, devices: 1 });
     setElsewhere(true);
@@ -1496,8 +1487,12 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     expect(within("e2e-step").dataset.step).toBe("elsewhere");
     expect(within("e2e-step").contains(screen.getByTestId("e2e-identity-replace"))).toBe(true);
     expect(screen.getByTestId("e2e-rail-elsewhere")).toBeTruthy();
-    expect(screen.getByTestId("e2e-identity-pair-code")).toBeTruthy();
-    expect(screen.getByTestId("e2e-identity-pair-submit")).toBeTruthy();
+    // Issue 2549: pairing starts on the device that holds the identity and is
+    // accepted here from the banner; there is no link to paste.
+    const how = screen.getByTestId("e2e-identity-pair-how").textContent ?? "";
+    expect(how).toContain('"add a device"');
+    expect(how).toContain('"Pair this browser"');
+    expect(within("e2e-step").querySelector("input")).toBeNull();
     expect(screen.getByTestId("e2e-identity-replace").textContent).toBe(
       "start a new identity here",
     );
@@ -1539,81 +1534,6 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     expect(screen.getByTestId("e2e-alarm-accept")).toBeTruthy();
     expect(screen.getByTestId("e2e-rail-alarm-accept")).toBeTruthy();
     expect(remove.disabled).toBe(false);
-  });
-
-  it.each([
-    ["the whole link", LINK],
-    ["its fragment", `#pair=${"r".repeat(22)}.${"c".repeat(43)}`],
-  ])("a pasted pairing link (%s) opens /pair with its code in the fragment", (_name, pasted) => {
-    setElsewhere(true);
-    renderPane();
-
-    fireEvent.input(screen.getByTestId("e2e-identity-pair-code"), {
-      target: { value: `  ${pasted}\n` },
-    });
-    fireEvent.click(screen.getByTestId("e2e-identity-pair-submit"));
-
-    expect(loadDocument.mock.calls).toEqual([
-      [`${window.location.origin}/pair#pair=${"r".repeat(22)}.${"c".repeat(43)}`],
-    ]);
-    expect(screen.queryByTestId("e2e-identity-pair-error")).toBeNull();
-  });
-
-  // Inside the app's router, as the pane really runs: an in-app route change
-  // to /pair mounts PairScan before the URL (and its fragment) is pushed, so
-  // PairScan finds no code. The link must load /pair as a new document, the
-  // entry a camera scan takes, where PairScan reads the code and scrubs it.
-  it("a pasted link loads /pair as a document, where PairScan reads the code and scrubs it", async () => {
-    window.history.replaceState(null, "", "/");
-    setElsewhere(true);
-    const app = render(() => (
-      <Router>
-        <Route path="/" component={Pane} />
-        <Route path="/pair" component={PairScan} />
-      </Router>
-    ));
-    fireEvent.input(screen.getByTestId("e2e-identity-pair-code"), { target: { value: LINK } });
-    fireEvent.click(screen.getByTestId("e2e-identity-pair-submit"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    // No route change in the app: the pane stays, and no PairScan came up.
-    expect(screen.queryByTestId("pair-invalid")).toBeNull();
-    expect(screen.getByTestId("e2e-identity-elsewhere")).toBeTruthy();
-    expect(window.location.pathname).toBe("/");
-    const [target] = loadDocument.mock.calls.map(([url]) => url as string);
-    expect(target).toBe(`${window.location.origin}/pair#pair=${"r".repeat(22)}.${"c".repeat(43)}`);
-
-    // The browser loads that URL as a new document.
-    app.unmount();
-    window.history.replaceState(null, "", target);
-    render(() => (
-      <Router>
-        <Route path="/pair" component={PairScan} />
-      </Router>
-    ));
-
-    // Logged out here, so it asks for a login; what matters is that it read a code.
-    expect(await screen.findByTestId("pair-login")).toBeTruthy();
-    expect(screen.queryByTestId("pair-invalid")).toBeNull();
-    expect(window.location.hash).toBe("");
-    window.history.replaceState(null, "", "/");
-  });
-
-  it.each([
-    ["not a link", "garbage"],
-    ["a link with no code", "https://grappa.example/pair"],
-    ["a code cut short", `#pair=${"r".repeat(22)}.${"c".repeat(42)}`],
-  ])("a paste that is %s says so and goes nowhere", (_name, pasted) => {
-    setElsewhere(true);
-    renderPane();
-
-    fireEvent.input(screen.getByTestId("e2e-identity-pair-code"), { target: { value: pasted } });
-    fireEvent.click(screen.getByTestId("e2e-identity-pair-submit"));
-
-    expect(screen.getByTestId("e2e-identity-pair-error").textContent).toContain(
-      "that is not a pairing link",
-    );
-    expect(loadDocument).not.toHaveBeenCalled();
   });
 
   it("a new identity takes two taps, the second naming what it destroys", () => {

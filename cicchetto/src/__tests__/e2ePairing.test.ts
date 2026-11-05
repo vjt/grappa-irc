@@ -6,8 +6,6 @@ import {
   joinPairing,
   openChannel,
   openPairing,
-  pairingUrl,
-  parsePairFragment,
   type Rendezvous,
 } from "../lib/e2e/pairing";
 import { WireShapeError } from "../lib/wireNarrow";
@@ -47,37 +45,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-});
-
-describe("the pairing code", () => {
-  it("rides the fragment of the /pair route", () => {
-    expect(pairingUrl("https://grappa.example", { id: ID, curve: CURVE })).toBe(
-      `https://grappa.example/pair#pair=${ID}.${CURVE}`,
-    );
-  });
-
-  it("parses back from the fragment, with or without its #", () => {
-    expect(parsePairFragment(`#pair=${ID}.${CURVE}`)).toEqual({ id: ID, curve: CURVE });
-    expect(parsePairFragment(`pair=${ID}.${CURVE}`)).toEqual({ id: ID, curve: CURVE });
-  });
-
-  it.each([
-    ["", "nothing"],
-    [`#share=${ID}.${CURVE}`, "another key"],
-    [`#pair=${ID}`, "no curve"],
-    [`#pair=${ID}.${CURVE}.x`, "a third part"],
-    [`#pair=${ID.slice(1)}.${CURVE}`, "a short id"],
-    [`#pair=${ID.slice(1)}+.${CURVE}`, "an id outside url-safe base64"],
-    [`#pair=${ID}.${CURVE}=`, "a padded curve"],
-    [`#pair=${ID}.${CURVE.slice(1)}-`, "a curve outside standard base64"],
-  ])("refuses %s (%s)", (hash) => {
-    expect(parsePairFragment(hash)).toBeNull();
-  });
-
-  it("will not build a URL from a malformed code", () => {
-    expect(() => pairingUrl("https://h", { id: "short", curve: CURVE })).toThrow();
-    expect(() => pairingUrl("https://h", { id: ID, curve: "short" })).toThrow();
-  });
 });
 
 describe("the REST doors", () => {

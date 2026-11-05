@@ -98,6 +98,7 @@ vi.mock("../lib/dccConsent", () => ({
 // (e2ePairingOffer.test.ts); the registry projects what it answers. A
 // document load is what opens `/pair` (jsdom implements none).
 const pairingOfferHolder = vi.hoisted(() => ({
+  accept: vi.fn(),
   offer: null as null | {
     kind: "e2e_pairing_offered";
     rendezvous_id: string;
@@ -106,6 +107,7 @@ const pairingOfferHolder = vi.hoisted(() => ({
   },
 }));
 vi.mock("../lib/e2e/pairingOffer", () => ({
+  acceptPairingOffer: pairingOfferHolder.accept,
   pairingOfferHere: () => pairingOfferHolder.offer,
 }));
 vi.mock("../lib/documentNavigation", () => ({ loadDocument: vi.fn() }));
@@ -820,9 +822,10 @@ describe("errorBanners dcc-offer (#2089)", () => {
 });
 
 // issue 2537 — a pairing another device of the account offers. The banner's
-// button opens `/pair` with the code, the route a scan lands on; it never
-// joins by itself, because a rendezvous takes one joiner and every eligible
-// tab joining on its own would race. The × is "Not now", this page's hide.
+// button opens `/pair`, which joins the pairing the account offers (issue
+// 2549: no link carries the code); it never joins by itself, because a
+// rendezvous takes one joiner and every eligible tab joining on its own would
+// race. The × is "Not now", this page's hide.
 describe("errorBanners pairing-offer (#2537)", () => {
   const ID = "AbCdEfGhIjKlMnOpQrStUv";
   const CURVE = "fJKDF4omlQo87Jaqp5pqfZqg9TcQO1PG5lS1Kzz5FIA";
@@ -835,6 +838,7 @@ describe("errorBanners pairing-offer (#2537)", () => {
     mockShouldShowRefresh.mockReturnValue(false);
     mockShouldShowPushOptin.mockReturnValue(false);
     vi.mocked(loadDocument).mockClear();
+    pairingOfferHolder.accept.mockClear();
     pairingOfferHolder.offer = {
       kind: "e2e_pairing_offered",
       rendezvous_id: ID,
@@ -848,13 +852,15 @@ describe("errorBanners pairing-offer (#2537)", () => {
     expect(activeBanners().some((e) => e.source === "pairing-offer")).toBe(false);
   });
 
-  it("offers to pair this browser, and its button opens /pair with the code", () => {
+  it("offers to pair this browser; its button hands /pair this offer and opens it with no code in the URL", () => {
     const entry = activeBanners().find((e) => e.source === "pairing-offer");
     expect(entry?.severity).toBe("info");
     expect(entry?.actionHint?.label).toBe("Pair this browser");
     entry?.actionHint?.onAction();
-    expect(vi.mocked(loadDocument)).toHaveBeenCalledExactlyOnceWith(
-      `${window.location.origin}/pair#pair=${ID}.${CURVE}`,
+    expect(pairingOfferHolder.accept).toHaveBeenCalledExactlyOnceWith(pairingOfferHolder.offer);
+    expect(vi.mocked(loadDocument)).toHaveBeenCalledExactlyOnceWith("/pair");
+    expect(pairingOfferHolder.accept.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(loadDocument).mock.invocationCallOrder[0] ?? 0,
     );
   });
 
@@ -864,6 +870,7 @@ describe("errorBanners pairing-offer (#2537)", () => {
     entry?.dismiss?.onAction();
     expect(visibleBanners().some((e) => e.source === "pairing-offer")).toBe(false);
     expect(vi.mocked(loadDocument)).not.toHaveBeenCalled();
+    expect(pairingOfferHolder.accept).not.toHaveBeenCalled();
 
     const next = "ZyXwVuTsRqPoNmLkJiHgFe";
     pairingOfferHolder.offer = {

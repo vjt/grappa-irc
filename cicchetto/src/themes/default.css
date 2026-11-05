@@ -16190,8 +16190,8 @@ audio.media-viewer-media {
   height: 100%;
 }
 
-/* issue 2430 — QR pairing screens: the master's inline panel (AddDevicePanel)
-   and the new browser's route (PairScan). The two-digit check code is read
+/* issue 2430 — the pairing screens: the master's inline panel (AddDevicePanel)
+   and the new browser's route (PairJoin). The two-digit check code is read
    aloud across two screens, so it is large and spaced. */
 .add-device-panel {
   display: flex;
@@ -16203,7 +16203,7 @@ audio.media-viewer-media {
   border-radius: 6px;
 }
 
-.pair-scan {
+.pair-join {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
