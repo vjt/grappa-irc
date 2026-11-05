@@ -8,7 +8,10 @@ defmodule GrappaWeb.MultipartBodyTest do
   #
   # The price of that design: a route that takes a file but forgets its
   # pipeline gets `params` without the body, silently. The first describe
-  # makes that loud.
+  # makes that loud for the shape every file route here has — the action,
+  # or a function of its own module it calls, matches `%Plug.Upload{}`. It
+  # does NOT see a file taken only through another module's function, or
+  # matched as a bare map (`%{path: _}`) without the struct.
   use GrappaWeb.ConnCase, async: true
 
   import Grappa.AuthFixtures
@@ -40,7 +43,8 @@ defmodule GrappaWeb.MultipartBodyTest do
 
   describe "a route that takes a file parses it, after authentication" do
     # Driven from the compiled code, not from a list: an action "takes a
-    # file" when it, or a function of its module it calls, mentions
+    # file" when it, or a function of its own module it reaches (a local
+    # call, a `&fun/n` capture, a `__MODULE__.fun(...)` call), mentions
     # `Plug.Upload` (a `%Plug.Upload{}` match in a param or a helper).
     test "a route has a multipart parser exactly when its action can receive a %Plug.Upload{}" do
       for route <- controller_routes() do
@@ -65,6 +69,22 @@ defmodule GrappaWeb.MultipartBodyTest do
         assert authn != nil and authn < at,
                "#{describe(route)}: #{parser} must come after :authn in #{inspect(pipes)}"
       end
+    end
+
+    # A pipeline holds its `Plug.Parsers` options as a literal in the
+    # compiled router (`plug` options are evaluated at compile time), so the
+    # number read here is the one each pipeline parses with — a literal
+    # typed into router.ex instead of the `MultipartLimits` call shows up.
+    test "each multipart pipeline parses up to its own ceiling" do
+      router = definitions(GrappaWeb.Router)
+      upload = integers(Map.fetch!(router, {:upload_body, 2}))
+      multipart = integers(Map.fetch!(router, {:multipart_body, 2}))
+
+      assert MultipartLimits.upload_length() in upload and MultipartLimits.default_length() not in upload,
+             ":upload_body carries #{inspect(upload)}"
+
+      assert MultipartLimits.default_length() in multipart and MultipartLimits.upload_length() not in multipart,
+             ":multipart_body carries #{inspect(multipart)}"
     end
 
     test "only the per-file-capped actions get the upload ceiling" do
@@ -272,7 +292,15 @@ defmodule GrappaWeb.MultipartBodyTest do
   # Whether `action/2`, or any function of `module` it reaches through local
   # calls, mentions `Plug.Upload` — read from the compiled module's debug
   # info, where aliases are already expanded.
-  defp receives_upload?(module, action), do: reaches_upload?(definitions(module), {action, 2}, %{})
+  defp receives_upload?(module, action) do
+    defs = definitions(module)
+
+    # A routed action that is not a `def action/2` would read as "takes no
+    # file" for want of clauses, which is a guess, not an answer.
+    unless Map.has_key?(defs, {action, 2}), do: flunk("#{inspect(module)}.#{action}/2 is routed but not defined")
+
+    reaches_upload?(module, defs, {action, 2}, %{})
+  end
 
   defp definitions(module) do
     {^module, beam, _} = :code.get_object_code(module)
@@ -284,13 +312,20 @@ defmodule GrappaWeb.MultipartBodyTest do
     end)
   end
 
-  defp reaches_upload?(defs, fun_arity, seen) do
+  defp reaches_upload?(module, defs, fun_arity, seen) do
     clauses = Map.get(defs, fun_arity)
 
     cond do
-      clauses == nil or Map.has_key?(seen, fun_arity) -> false
-      mentions_upload?(clauses) -> true
-      true -> Enum.any?(local_calls(clauses, defs), &reaches_upload?(defs, &1, Map.put(seen, fun_arity, true)))
+      clauses == nil or Map.has_key?(seen, fun_arity) ->
+        false
+
+      mentions_upload?(clauses) ->
+        true
+
+      true ->
+        clauses
+        |> local_calls(module, defs)
+        |> Enum.any?(&reaches_upload?(module, defs, &1, Map.put(seen, fun_arity, true)))
     end
   end
 
@@ -299,17 +334,34 @@ defmodule GrappaWeb.MultipartBodyTest do
     found?
   end
 
-  defp local_calls(ast, defs) do
+  # The functions of `module` that `ast` calls: plain local calls, `&fun/n`
+  # captures (`{fun, meta, nil}` inside the capture, no argument list), and
+  # `__MODULE__.fun(...)`, which expands to a remote call on the module.
+  defp local_calls(ast, module, defs) do
     {_, calls} =
       Macro.prewalk(ast, [], fn
+        {:&, _, [{:/, _, [{name, _, ctx}, arity]}]} = node, acc
+        when is_atom(name) and is_atom(ctx) and is_integer(arity) ->
+          {node, add_call(acc, defs, {name, arity})}
+
+        {{:., _, [^module, name]}, _, args} = node, acc when is_atom(name) and is_list(args) ->
+          {node, add_call(acc, defs, {name, length(args)})}
+
         {name, _, args} = node, acc when is_atom(name) and is_list(args) ->
-          {node, if(Map.has_key?(defs, {name, length(args)}), do: [{name, length(args)} | acc], else: acc)}
+          {node, add_call(acc, defs, {name, length(args)})}
 
         node, acc ->
           {node, acc}
       end)
 
     Enum.uniq(calls)
+  end
+
+  defp add_call(acc, defs, fun_arity), do: if(Map.has_key?(defs, fun_arity), do: [fun_arity | acc], else: acc)
+
+  defp integers(ast) do
+    {_, found} = Macro.prewalk(ast, [], fn node, acc -> {node, if(is_integer(node), do: [node | acc], else: acc)} end)
+    found
   end
 
   defp strip_nginx_comments(source), do: Regex.replace(~r/#[^\n]*/, source, "")

@@ -210,8 +210,9 @@ defmodule GrappaWeb.Endpoint do
   # parsed by the route that takes it, in the router, after `:authn`:
   # `:upload_body` for the two upload doors, `:multipart_body` for the rest
   # (`GrappaWeb.MultipartLimits` holds both ceilings). A route that takes a
-  # file without one of those pipelines gets params without the body, which
-  # is why `GrappaWeb.MultipartBodyTest` fails on any such route.
+  # file without one of those pipelines gets params without the body;
+  # `GrappaWeb.MultipartBodyTest` fails on such a route when its action, or
+  # a function of its own module, matches `%Plug.Upload{}`.
   plug Plug.Parsers,
     parsers: [:urlencoded, :json],
     pass: ["*/*"],
