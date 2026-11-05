@@ -1017,16 +1017,15 @@ two devices encrypt it between themselves (vodozemac's ECIES, the MSC4108
 shape), and the 2-digit check code both screens show is what defeats a
 relay in the middle. Every payload is an opaque base64 string to grappa.
 
-**The code.** The device showing the QR opens a rendezvous and puts this
-URL in the QR:
-
-```
-https://<host>/pair#pair=<rendezvous id>.<ephemeral Curve25519 key>
-```
-
-The id is 22 characters of url-safe base64; the key is 43 characters of
-standard base64. Both are public, and they ride the fragment, which a
-browser never sends with a request.
+**The code.** A pairing's code is the rendezvous id and the creating
+device's ephemeral Curve25519 key. The id is 22 characters of url-safe
+base64; the key is 43 characters of standard base64. Both are public. How
+the code reaches the other device is the client's business, and cicchetto
+sends it only through the offer below (issue 2549). It used to put
+`https://<host>/pair#pair=<rendezvous id>.<key>` in a QR code and a link,
+and stopped: a link opens in the system browser rather than an installed
+app, so it paired a browser nobody meant to pair, and iOS cannot route a
+link into an installed web app.
 
 **The sides.** A side is the auth session (bearer) of one device: the
 creator's at open, the joiner's at join. A rendezvous belongs to one
@@ -1072,7 +1071,7 @@ Check `protocol_version >= 48`.
 
 **The offer (issue 2537, v55).** A creator may send its ephemeral key as
 `curve` when it opens: then the rendezvous is OFFERED to the account's
-other devices, the same code the QR carries pushed instead of scanned:
+other devices, the code pushed on the user topic:
 
 ```json
 {"kind": "e2e_pairing_offered", "rendezvous_id": "…", "curve": "…", "expires_at": "…"}
@@ -1082,8 +1081,7 @@ It is pushed once, at the open, and again in every user-topic join
 snapshot while nobody has joined, so a device that logs in meanwhile gets
 it too; `GET /e2e/pairings/offer` answers the same for a client that is not
 on the socket. Joining is the ordinary `POST …/join` with the pushed
-`rendezvous_id`, and the channel runs with the pushed `curve` exactly as
-with a scanned one. The offer is gone at the first `e2e_pairing_message`
+`rendezvous_id`, and the channel runs with the pushed `curve`. The offer is gone at the first `e2e_pairing_message`
 (someone joined), at `e2e_pairing_closed`, and at `expires_at`. Ignore an
 offer whose `curve` is your own, and one your device has no use for (it
 already holds the identity on every network). cicchetto shows a banner and
@@ -1095,9 +1093,8 @@ an older server ignores `curve` and offers nothing.
 **What cicchetto puts on the channel (issue 2430, X1-crypto; no wire
 change, protocol stays 49).** grappa never reads this, and a client
 that wants to pair with cic needs it. Direction: the device that holds
-the identity opens the rendezvous and shows the QR (the ECIES inbound
-side); the new device scans it and joins (the outbound side), and posts
-first.
+the identity opens the rendezvous and offers it (the ECIES inbound side);
+the new device joins the offer (the outbound side), and posts first.
 
 - **ECIES.** Both sides build vodozemac's `Ecies::with_info` with the
   info string `irc-e2e:v2:pair` and the digit mode `AllowLeadingZero`

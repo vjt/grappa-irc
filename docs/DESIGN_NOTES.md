@@ -3013,3 +3013,91 @@ cap sat above the transport (a 100 MiB cap met a 64 MiB ceiling on
   ceiling stays the limit on prod. The issue's check (a 400 MiB video
   through nginx on prod) was not run: neither prod nor a real nginx is
   reachable from the worker.
+<!-- entry #2549 -->
+
+---
+
+## 2026-11-05 — #2549: a pairing travels only as the in-app offer; no link, QR or copy button
+
+"Add a device" by link or QR was broken by design. The link opens in the
+system browser, not in the installed PWA, so the pairing completed and
+stored the E2E identity in the browser instead of the app the user meant
+to pair, and iOS has no way to route a link into an installed web app. The
+copy button #2537 added made the same link easier to move. All three are
+gone: the offer #2537 pushes to the account's signed-in sessions, accepted
+from the "Pair this browser" banner, is the one way a pairing reaches a
+device.
+
+* **The holder's side** (`AddDeviceOffer`, formerly `AddDeviceQr`) opens the
+  rendezvous with its ephemeral key, which makes grappa offer it, holds the
+  channel, and tells the user where to accept it, with the countdown. It
+  shows nothing that carries the code.
+* **The banner hands the code to `/pair`, once, and nothing else can.** Its
+  button writes the tapped offer's id and key to this tab's
+  `sessionStorage` (`acceptPairingOffer`) and loads `/pair` as a document;
+  `/pair` (`PairJoin`, formerly `PairScan`) takes the slot on mount,
+  clearing it whatever happens next (`takeAcceptedPairing`), and joins that
+  rendezvous. A code in the URL is never read.
+* **Why a hand-over, and not "join whatever the account offers".** The first
+  cut of this branch had `/pair` read `GET /e2e/pairings/offer` and join the
+  answer. Review found the hole: that page then joined on ANY load — a Back
+  to a finished `/pair`, a reload, a restored tab, an old
+  `/pair#pair=…` link opened in a signed-in system browser — and stole the
+  next pairing, one the user meant for another device. That is the misroute
+  this issue exists to close, and it broke #2537's rule that only a tap
+  joins. The hand-over is consumed once, lives in one tab, and no URL
+  reaches it, so all four cases find nothing and join nothing. It also made
+  the REST read unnecessary: the offer the banner shows carries the id and
+  the key, and the document load only needs a place to keep them. A slot
+  that holds something unreadable is cleared and read as nothing (the
+  `bundleRefreshNotice` storage-boundary pattern).
+* **Every page that ends on `/pair` leads back.** `/pair` is outside the
+  Shell, so outside its banners, and an installed app has no address bar:
+  "Back to grappa" is shown when nothing was handed over, when a request
+  failed, and when the pairing ended or finished. Before, recovery was a new
+  camera scan; now it is the banner, which lives in the Shell.
+* **Dead with the URL, removed:** `pairingUrl`, `parsePairFragment`, the
+  fragment key and the id/curve regexes that only validated a URL;
+  `PairScan`'s "invalid" and "login" stages, folded into one "none"; the
+  fragment scrubbing; the encrypted pane's "paste the pairing link" field
+  and its handler. `loadDocument` stays (the banner uses it), and so do
+  `lib/qr.ts` and `E2eCopyButton`, which the share modal, TOTP enrolment
+  and the rail's key copy still use. User-facing copy that said scan, show
+  a code, or link now names "add a device" and the banner.
+* **No wire change.** cic reads no new door. A pre-55 server never offers,
+  so against such a server cic can no longer pair at all; `socket.ts`'s 55
+  note says so, and the floor stays at 9 because nothing else breaks.
+* **Left as it was:** the server's moduledocs (`Grappa.E2ePairing`, its
+  `Wire` and `Rendezvous`) still describe a QR as the way a client carries
+  the code. They describe the relay, which is unchanged and still serves a
+  client that does show a QR; changing them would turn this cic-only change
+  into a server deploy for prose. The comment in the vodozemac binding's
+  Rust source that says the key goes "in the QR" also stays: fixing it means
+  regenerating the wasm. `docs/CLIENT_PROTOCOL.md` now says what the code
+  is, and that cicchetto sends it only through the offer.
+
+### Evidence
+
+* vitest red first, both rounds: the hand-over functions missing, and every
+  `/pair` test waiting on a join the old page never made. Then the full
+  suite: 414 files, 8896 tests, 0 failures; `bun run check` 5 stages, 0
+  failed.
+* Eleven mutants, each killed by the test that names it: `/pair` joining
+  with nothing handed over, preferring a code in its URL, taking the
+  hand-over only once logged in (so a logged-out visit leaves it behind),
+  joining after the user left the page, or dropping the way back from an
+  ended pairing; the slot surviving its take, or read without validation;
+  the banner handing nothing over; the offer panel printing the rendezvous
+  id or gaining a button; the pane keeping a paste field.
+* e2e: the pairing fixture takes the pairing from the second browser's
+  banner, so the 2430 pairing and copies specs exercise the banner path.
+  The 2537 spec checks that the open panel holds no link, QR or `/pair`
+  text and no button but Close, and a new test opens `/pair` straight, with
+  a code in its URL, while a pairing is on offer and the browser's banner is
+  up: "where pairing starts", the holder still waiting, the device list
+  unchanged. The 2430 key-bundle spec used the deleted paste field; it now
+  checks the card's pointer to the banner and that it holds no input. These
+  run in CI; the worker does not hold the docker stack.
+* Not verified on a device: the installed iOS PWA. The flow it now takes is
+  the banner's from #2537, plus a `sessionStorage` slot across a same-tab
+  document load.
