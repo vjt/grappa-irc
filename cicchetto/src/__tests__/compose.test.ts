@@ -7692,7 +7692,7 @@ describe("compose in an encrypted window (issues 2512, 2536)", () => {
       const k = channelKey("freenode", e2eWindow);
 
       compose.setDraft(k, "/ctcp Bob ACTION a\x01VERSION\x01b");
-      await compose.submit(k, "freenode", e2eWindow);
+      expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
       compose.setDraft(k, "/ctcp Bob ACTION");
       expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
 
