@@ -4,7 +4,7 @@
 // `Grappa.E2eKeys.answer/3` documents and its own test pins, its refusals
 // against `GrappaWeb.E2eController` and `Grappa.E2eKeys`. The keys are real
 // vodozemac keys, signed by the production code that signs them in cic.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { idBlock, signedKey } from "../lib/e2e/keyBundle";
 import type { Account } from "../lib/e2e/vodozemac/vodozemac_binding";
 import { listSigText, type SendVerb } from "../lib/e2e/wire";
@@ -351,6 +351,34 @@ describe("fake grappa v2: refusals", () => {
       grappa.api.registerE2eDevice("Bob", SLUG, idBlock(new (olm().Account)(), bob.list.master)),
     ).rejects.toMatchObject({ status: 409, code: "too_many_devices" });
     expect(await grappa.api.listE2eDevices("Bob", SLUG)).toHaveLength(4);
+  });
+
+  it("stamps a device's last_seen_at when it reads its inbox, at most once a minute, as E2eKeys.seen/1 does (issue 2547)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const grappa = new Grappa();
+      const bob = await identity(grappa, "Bob", 2);
+      const [one, two] = bob.devices as [Device, Device];
+      const seenAt = async () =>
+        Object.fromEntries(
+          (await grappa.api.listE2eDevices("Bob", SLUG)).map((d) => [d.did, d.last_seen_at]),
+        );
+      expect(await seenAt()).toEqual({ [one.did]: null, [two.did]: null });
+
+      vi.setSystemTime(new Date("2026-11-05T10:00:00.400Z"));
+      await grappa.api.listE2eDeviceInbox("Bob", SLUG, one.did, 0);
+      expect(await seenAt()).toEqual({ [one.did]: "2026-11-05T10:00:00.000Z", [two.did]: null });
+
+      // Inside the minute the stamp stays; past it, it moves.
+      vi.setSystemTime(new Date("2026-11-05T10:00:59Z"));
+      await grappa.api.listE2eDeviceInbox("Bob", SLUG, one.did, 0);
+      expect((await seenAt())[one.did]).toBe("2026-11-05T10:00:00.000Z");
+      vi.setSystemTime(new Date("2026-11-05T10:01:00Z"));
+      await grappa.api.listE2eDeviceInbox("Bob", SLUG, one.did, 0);
+      expect((await seenAt())[one.did]).toBe("2026-11-05T10:01:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refuses an upload past 50 one-time keys a device whole (413), and a device that is not one (404)", async () => {

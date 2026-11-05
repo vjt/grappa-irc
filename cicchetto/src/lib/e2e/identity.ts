@@ -9,7 +9,10 @@
 // grappa holds one this device cannot speak for (the browser was wiped, or
 // another device made it), the slot is "elsewhere" and nothing is written,
 // here or on grappa: only the user, explicitly, starts a new one over it
-// (`replaceIdentity`).
+// (`replaceIdentity`). Issue 2547: the sync says WHY (`ElsewhereReason`),
+// and `heldDevices` what grappa holds of the identity, so the window can
+// tell a user whose keys live on in another browser to pair this one
+// rather than start over.
 //
 // Once per page load and per (subject, network), and again for a network
 // that appears later: the identity needs no live IRC link (grappa stores it
@@ -62,8 +65,31 @@ import {
   validMasterList,
 } from "./wire";
 
-/** What a sync found: this device speaks for the slot's identity, or grappa holds one it cannot speak for. */
-export type IdentityState = "ready" | "elsewhere";
+/**
+ * Why grappa holds an identity this device cannot speak for (issue 2547):
+ *   - "no-keys": this browser holds no keys for it: never paired, wiped, or
+ *     a second storage of the same device (an installed app beside a tab);
+ *   - "replaced": the identity this browser holds was replaced on another
+ *     device, so grappa holds another master's;
+ *   - "left-out": grappa holds this identity's list, and it leaves this
+ *     device out;
+ *   - "no-list": grappa holds no list for the identity, and this device,
+ *     paired to it, cannot list itself again: only the one with the master
+ *     can.
+ */
+export type ElsewhereReason = "no-keys" | "replaced" | "left-out" | "no-list";
+
+/** What a sync found: this device speaks for the slot's identity, or why it cannot. */
+export type IdentityState = "ready" | { elsewhere: ElsewhereReason };
+
+/**
+ * What grappa holds of the identity on a network, for a browser that holds
+ * none of it (issue 2547): how many devices its signed list names (0 when
+ * it holds no list), and the latest time one of them read its inbox, ISO
+ * 8601, or null when none says (none read it since grappa records it, or
+ * a server predating protocol 56).
+ */
+export type HeldDevices = { listed: number; lastActive: string | null };
 
 const NOTHING_HELD: E2eKeysWireStatus = { one_time_keys: 0, fallback: false };
 
@@ -76,9 +102,13 @@ export function accountSlot(subject: { kind: string; id: string }, networkId: nu
 const running = new WeakMap<AccountStore, Map<string, Promise<IdentityState>>>();
 
 // Thrown out of the account session when grappa holds an identity this
-// device cannot speak for: a session that throws stores nothing, so the slot
-// keeps whatever it held.
-class Elsewhere extends Error {}
+// device cannot speak for, with why: a session that throws stores nothing,
+// so the slot keeps whatever it held.
+class Elsewhere extends Error {
+  constructor(readonly reason: ElsewhereReason) {
+    super(reason);
+  }
+}
 
 const refusedAs = (err: unknown, code: string): boolean =>
   err instanceof ApiError && err.code === code;
@@ -88,15 +118,16 @@ const refusedAs = (err: unknown, code: string): boolean =>
  * `slot` on `networkSlug`, under the slot's lock:
  *
  *   - no identity here and none on grappa: a new one (a master, this device
- *     registered and listed at version 1, its keys); "elsewhere" when another
+ *     registered and listed at version 1, its keys); "no-keys" when another
  *     browser puts its list first;
- *   - no identity here and one on grappa: "elsewhere";
+ *   - no identity here and one on grappa: "no-keys";
  *   - an identity here that grappa lists this device in: its keys topped up,
  *     and grappa's list taken when it is our master's at a higher version;
  *   - an identity here whose list grappa dropped: this device registered and
- *     listed again, one version up, then its keys;
- *   - an identity here that grappa holds under another master, or whose
- *     list leaves this device out: "elsewhere".
+ *     listed again, one version up, then its keys; "no-list" on a device
+ *     without the master;
+ *   - an identity here that grappa holds under another master: "replaced";
+ *     whose list leaves this device out: "left-out".
  *
  * "elsewhere" writes nothing here, and nothing on grappa but the removal of
  * a device this sync registered and could not list. The record is stored
@@ -138,24 +169,23 @@ async function runSync(
       const held = await getE2eList(bearer, slug);
       const own = session.own;
       if (own === null) {
-        if (held !== null) throw new Elsewhere();
+        if (held !== null) throw new Elsewhere("no-keys");
         try {
           await bootstrap(session, bearer, slug);
         } catch (err) {
           // Another browser put its list between our look and our put: its
           // identity stands, and ours was never made.
-          throw refusedAs(err, "master_mismatch") ? new Elsewhere() : err;
+          throw refusedAs(err, "master_mismatch") ? new Elsewhere("no-keys") : err;
         }
         return;
       }
       let current = own;
       if (held === null) {
         current = await relist(session, own, bearer, slug);
-      } else if (
-        held.master !== own.master ||
-        !held.devices.includes(session.account.ed25519_key())
-      ) {
-        throw new Elsewhere();
+      } else if (held.master !== own.master) {
+        throw new Elsewhere("replaced");
+      } else if (!held.devices.includes(session.account.ed25519_key())) {
+        throw new Elsewhere("left-out");
       } else if (held.ver > own.list.ver) {
         current = await adopt(session, own, held);
       }
@@ -164,9 +194,30 @@ async function runSync(
     });
     return "ready";
   } catch (err) {
-    if (err instanceof Elsewhere) return "elsewhere";
+    if (err instanceof Elsewhere) return { elsewhere: err.reason };
     throw err;
   }
+}
+
+/**
+ * What grappa holds of the identity on `networkSlug` (`HeldDevices`): the
+ * devices its list names, and the latest a listed one read its inbox. A
+ * device registered and not listed (a pairing under way) is no device of
+ * the identity, and its reads say nothing. Reads only.
+ */
+export async function heldDevices(bearer: string, networkSlug: string): Promise<HeldDevices> {
+  const [held, devices] = await Promise.all([
+    getE2eList(bearer, networkSlug),
+    listE2eDevices(bearer, networkSlug),
+  ]);
+  const listed = new Set(held?.devices ?? []);
+  let lastActive: string | null = null;
+  for (const device of devices) {
+    const at = device.last_seen_at ?? null;
+    if (!listed.has(device.ed25519) || at === null) continue;
+    if (lastActive === null || Date.parse(at) > Date.parse(lastActive)) lastActive = at;
+  }
+  return { listed: listed.size, lastActive };
 }
 
 /**
@@ -241,7 +292,7 @@ async function relist(
   bearer: string,
   slug: string,
 ): Promise<OwnIdentity> {
-  if (session.master === null) throw new Elsewhere();
+  if (session.master === null) throw new Elsewhere("no-list");
   const { did, list } = await enlist(
     session.account,
     session.master,
@@ -551,7 +602,7 @@ export async function completeJoin(
     const state = await syncIdentity(store, bearer, slot, slug);
     if (state !== "ready") {
       console.warn(
-        `[e2e] the sync after pairing ${slug} answered ${state}; its keys go up at the next sync`,
+        `[e2e] the sync after pairing ${slug} answered elsewhere (${state.elsewhere}); its keys go up at the next sync`,
       );
     }
   } catch (err) {

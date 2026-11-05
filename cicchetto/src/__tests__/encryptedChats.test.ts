@@ -566,7 +566,7 @@ describe("encrypted chats", () => {
     await chats.verifyEncrypted(net.slug, "Bob", "start");
     expect(chats.encryptedSas(net.slug, "Bob")).not.toBeNull();
 
-    chats.identitySynced(net.slug, "elsewhere");
+    chats.identitySynced(net.slug, { elsewhere: "no-keys" });
     expect(chats.encryptedSas(net.slug, "Bob")).toBeNull();
 
     chats.identitySynced(net.slug, "ready");
@@ -974,6 +974,10 @@ describe("encrypted chats, an identity held elsewhere", () => {
     await chats.drainE2e(net.slug);
 
     expect(chats.identityElsewhere(net.slug)).toBe(true);
+    // Why, and what grappa holds (issue 2547): this browser has no keys, and
+    // the other browser's one device is listed, never having read its inbox.
+    expect(chats.elsewhereReason(net.slug)).toBe("no-keys");
+    expect(await chats.identityDevices(net.slug)).toEqual({ listed: 1, lastActive: null });
     expect(await grappa.api.getE2eList(net.nick, net.slug)).toEqual(before);
     expect(api.registerE2eDevice).not.toHaveBeenCalled();
     expect(api.putE2eList).not.toHaveBeenCalled();
@@ -1004,13 +1008,14 @@ describe("encrypted chats, an identity held elsewhere", () => {
     await chats.drainE2e(net.slug);
 
     expect(chats.identityElsewhere(net.slug)).toBe(true);
+    expect(chats.elsewhereReason(net.slug)).toBe("no-keys");
     expect(api.listE2eDeviceInbox).not.toHaveBeenCalled();
     expect(api.sendE2e).not.toHaveBeenCalled();
   });
 
   it("a drop push on a network held elsewhere is no failure: the account's other devices send them", async () => {
     const warn = vi.spyOn(console, "warn");
-    chats.identitySynced(net.slug, "elsewhere");
+    chats.identitySynced(net.slug, { elsewhere: "no-keys" });
 
     await expect(
       chats.encryptedSendDropped(net.slug, "c29tZW9uZS1lbHNl", "late"),
@@ -1019,16 +1024,22 @@ describe("encrypted chats, an identity held elsewhere", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("takes what the page's identity sync found, both ways", () => {
-    chats.identitySynced(net.slug, "elsewhere");
+  it("takes what the page's identity sync found, both ways, and why", () => {
+    chats.identitySynced(net.slug, { elsewhere: "no-keys" });
     expect(chats.identityElsewhere(net.slug)).toBe(true);
+    expect(chats.elsewhereReason(net.slug)).toBe("no-keys");
+
+    // A later sync that finds another reason says so.
+    chats.identitySynced(net.slug, { elsewhere: "replaced" });
+    expect(chats.elsewhereReason(net.slug)).toBe("replaced");
 
     chats.identitySynced(net.slug, "ready");
     expect(chats.identityElsewhere(net.slug)).toBe(false);
+    expect(chats.elsewhereReason(net.slug)).toBeNull();
   });
 
   it("pairedHere clears the elsewhere flag and tells the other tabs", async () => {
-    chats.identitySynced(net.slug, "elsewhere");
+    chats.identitySynced(net.slug, { elsewhere: "no-keys" });
     const other = new BroadcastChannel("grappa-e2e-chats");
     const told: unknown[] = [];
     other.addEventListener("message", (event) => told.push(event.data));

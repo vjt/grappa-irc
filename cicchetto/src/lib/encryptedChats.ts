@@ -29,9 +29,10 @@
 //
 // An identity is never replaced silently (`e2e/identity.ts`): when grappa
 // holds one this browser cannot speak for, the network reads "elsewhere"
-// (`identityElsewhere`), nothing runs on it, and the window offers the two
-// ways out: pairing this browser with a device that holds the identity, or,
-// confirmed, starting a new one here (`replaceEncryptedIdentity`).
+// (`identityElsewhere`, and why: `elsewhereReason`), nothing runs on it, and
+// the window offers the two ways out: pairing this browser with a device
+// that holds the identity, which it names (`identityDevices`, issue 2547),
+// or, confirmed, starting a new one here (`replaceEncryptedIdentity`).
 
 import { createEffect, createSignal, onCleanup } from "solid-js";
 import {
@@ -62,7 +63,15 @@ import {
   refusedBy,
 } from "./e2e/client";
 import type { PinOutcome } from "./e2e/engine";
-import { accountSlot, type IdentityState, replaceIdentity, syncIdentity } from "./e2e/identity";
+import {
+  accountSlot,
+  type ElsewhereReason,
+  type HeldDevices,
+  heldDevices,
+  type IdentityState,
+  replaceIdentity,
+  syncIdentity,
+} from "./e2e/identity";
 import { type OrderScope, sendLog, subjectKey } from "./e2e/orders";
 import type { SasStep, SasView } from "./e2e/sas";
 import { fold } from "./e2e/wire";
@@ -215,8 +224,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const [trustByChat, setTrustByChat] = createSignal<Record<string, PeerTrust | null>>({});
   const [ownKeyBySlug, setOwnKeyBySlug] = createSignal<Record<string, string>>({});
   const [sasByChat, setSasByChat] = createSignal<Record<string, SasView | null>>({});
-  /** Networks whose identity grappa holds and this browser cannot speak for. */
-  const [elsewhereBySlug, setElsewhereBySlug] = createSignal<Record<string, true>>({});
+  /** Networks whose identity grappa holds and this browser cannot speak for, and why. */
+  const [elsewhereBySlug, setElsewhereBySlug] = createSignal<Record<string, ElsewhereReason>>({});
   // issue 2512 — the encrypted window an own send was submitted from, and the
   // one whose chat it then read: what the window's scrollback pane follows and
   // re-latches its unread marker on, as grappa's `ownSendSubmitted` and
@@ -298,16 +307,25 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
   /** Where a sync, or an operation, found the network's identity: what the window shows. */
   function identitySynced(slug: string, state: IdentityState): void {
+    const reason = state === "ready" ? undefined : state.elsewhere;
     setElsewhereBySlug((prev) => {
-      if ((prev[slug] === true) === (state === "elsewhere")) return prev;
+      if (prev[slug] === reason) return prev;
       const next = { ...prev };
-      if (state === "elsewhere") next[slug] = true;
-      else delete next[slug];
+      if (reason === undefined) delete next[slug];
+      else next[slug] = reason;
       return next;
     });
   }
 
-  const identityElsewhere = (slug: string): boolean => elsewhereBySlug()[slug] === true;
+  const identityElsewhere = (slug: string): boolean => elsewhereBySlug()[slug] !== undefined;
+
+  /** Why the network's identity is elsewhere (issue 2547), or null while it is not. */
+  const elsewhereReason = (slug: string): ElsewhereReason | null => elsewhereBySlug()[slug] ?? null;
+
+  /** What grappa holds of the network's identity: what a browser holding none of it shows (issue 2547). */
+  function identityDevices(slug: string): Promise<HeldDevices> {
+    return heldDevices(contextFor(slug).bearer, slug);
+  }
 
   async function sync(slug: string): Promise<IdentityState> {
     const c = contextFor(slug);
@@ -331,12 +349,13 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     try {
       return await op(client, c.ctx);
     } catch (err) {
-      if (err instanceof IdentityElsewhereError) identitySynced(slug, "elsewhere");
-      if (err instanceof ApiError && err.status === 404 && (await sync(slug)) === "elsewhere") {
+      // The record holds no identity this device speaks for: no keys here.
+      if (err instanceof IdentityElsewhereError) identitySynced(slug, { elsewhere: "no-keys" });
+      if (err instanceof ApiError && err.status === 404 && (await sync(slug)) !== "ready") {
         throw new IdentityElsewhereError(`identity elsewhere on ${slug}`);
       }
       if (!(err instanceof NoAccountError)) throw err;
-      if ((await sync(slug)) === "elsewhere") {
+      if ((await sync(slug)) !== "ready") {
         throw new IdentityElsewhereError(`identity elsewhere on ${slug}`);
       }
       return op(client, c.ctx);
@@ -615,7 +634,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
    * for after all is kept, never deleted.
    */
   async function replaceEncryptedIdentity(slug: string): Promise<void> {
-    if ((await sync(slug)) === "elsewhere") {
+    if ((await sync(slug)) !== "ready") {
       const c = contextFor(slug);
       const { accounts } = await browserE2e();
       await replaceIdentity(accounts, c.bearer, c.slot, slug);
@@ -737,6 +756,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     replaceEncryptedIdentity,
     identitySynced,
     identityElsewhere,
+    elsewhereReason,
+    identityDevices,
     pairedHere,
     verifyEncrypted,
     encryptedSendDropped,
@@ -773,6 +794,8 @@ export const pinEncryptedKey = exports_.pinEncryptedKey;
 export const replaceEncryptedIdentity = exports_.replaceEncryptedIdentity;
 export const identitySynced = exports_.identitySynced;
 export const identityElsewhere = exports_.identityElsewhere;
+export const elsewhereReason = exports_.elsewhereReason;
+export const identityDevices = exports_.identityDevices;
 export const pairedHere = exports_.pairedHere;
 export const verifyEncrypted = exports_.verifyEncrypted;
 export const encryptedSendDropped = exports_.encryptedSendDropped;
