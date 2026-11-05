@@ -1,10 +1,11 @@
-// issue 2430 — a QR pairing from the QR to "done" (X1-crypto): the two roles,
+// issue 2430 — a pairing from its offer to "done" (X1-crypto): the two roles,
 // each a small state machine over the channel `pairing.ts` opens. The screens
-// (AddDeviceQr, PairScan) open the channel and hand each role the channel and
-// what arrives on it; they read `state()` and call the verbs.
+// (AddDeviceOffer, PairJoin) open the channel and hand each role the channel
+// and what arrives on it; they read `state()` and call the verbs.
 //
-// The holder (the browser holding the master) shows the QR, the ECIES inbound
-// side; the joiner (the new browser) scans it and speaks first. The joiner's
+// The holder (the browser holding the master) offers its ephemeral key, the
+// ECIES inbound side; the joiner (the new browser) joins the offer and speaks
+// first. The joiner's
 // hello gives both the same two-digit code; the holder's user TYPES the code
 // the joiner shows, once (wrong, it ends with nothing sent but the hello); the
 // holder offers each network it is master of (with none to offer it sends no
@@ -128,7 +129,7 @@ function running(task: Promise<void>, failed: () => void): void {
   });
 }
 
-/** The browser that holds the master: it shows the QR, checks the typed code and signs the new device in. */
+/** The browser that holds the master: it offers the pairing, checks the typed code and signs the new device in. */
 export function holderPairing(deps: HolderDeps): {
   state: Accessor<HolderState>;
   curve: string;
@@ -192,7 +193,7 @@ export function holderPairing(deps: HolderDeps): {
         }
         inbound.free();
       } catch {
-        // Not a hello sealed to this QR's key: no channel.
+        // Not a hello sealed to this pairing's key: no channel.
       }
     }
     if (link !== null) {
@@ -200,7 +201,7 @@ export function holderPairing(deps: HolderDeps): {
       set({ stage: "code" });
       return;
     }
-    console.warn("[e2e] pairing (holder): a first payload that is no hello to this QR's key");
+    console.warn("[e2e] pairing (holder): a first payload that is no hello to this pairing's key");
     end("failed");
   }
 
@@ -384,8 +385,8 @@ export function joinerPairing(
         encodePairMessage({ v: 1, t: "hello" }),
       );
     } catch (err) {
-      // The QR's key is not a key: nobody to talk to.
-      console.warn("[e2e] pairing (joiner): no channel opens to this QR's key", err);
+      // The offered key is not a key: nobody to talk to.
+      console.warn("[e2e] pairing (joiner): no channel opens to the offered key", err);
     }
     link = out?.take_channel() ?? null;
     const initial = out?.message;

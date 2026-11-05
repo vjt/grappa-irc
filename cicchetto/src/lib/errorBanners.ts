@@ -6,8 +6,7 @@ import { isOffline } from "./connectivity";
 import { acceptDccOffer, refuseDccOffer } from "./dccConsent";
 import { type DccOffer, dccOffersById } from "./dccOffers";
 import { loadDocument } from "./documentNavigation";
-import { pairingUrl } from "./e2e/pairing";
-import { type PairingOffer, pairingOfferHere } from "./e2e/pairingOffer";
+import { acceptPairingOffer, type PairingOffer, pairingOfferHere } from "./e2e/pairingOffer";
 import { formatBytes } from "./formatBytes";
 import { acceptPushOptin, declinePushOptin, shouldShowPushOptinBanner } from "./pushOptin";
 import { serverOutdatedMessage, shouldShowServerOutdatedBanner } from "./serverProtocol";
@@ -468,11 +467,12 @@ function dccOfferEntry(offer: DccOffer): BannerEntry {
   };
 }
 
-// The button opens `/pair` with the code, the route a scan lands on, as a
-// document load (`/pair` reads its fragment when it mounts). It never joins
-// by itself: a rendezvous takes one joiner, so every eligible tab joining on
-// its own would race, and the winner could be one nobody is looking at. The
-// × is "Not now", this page's hide; a reload or another pairing asks again.
+// The button hands this offer to `/pair` and opens it (issue 2549: through
+// this tab's sessionStorage, never the URL, so no link can pair a browser,
+// and `/pair` joins nothing the button did not hand it). It never joins by
+// itself: a rendezvous takes one joiner, so every eligible tab joining on its
+// own would race, and the winner could be one nobody is looking at. The × is
+// "Not now", this page's hide; a reload or another pairing asks again.
 function pairingOfferEntry(offer: PairingOffer): BannerEntry {
   const id = `pairing-offer:${offer.rendezvous_id}`;
   return {
@@ -482,10 +482,10 @@ function pairingOfferEntry(offer: PairingOffer): BannerEntry {
     message: "Another of your devices is adding a browser to your encrypted chats.",
     actionHint: {
       label: "Pair this browser",
-      onAction: () =>
-        loadDocument(
-          pairingUrl(window.location.origin, { id: offer.rendezvous_id, curve: offer.curve }),
-        ),
+      onAction: () => {
+        acceptPairingOffer(offer);
+        loadDocument("/pair");
+      },
     },
     dismiss: { label: "Not now", onAction: () => dismissBanner(id) },
   };

@@ -1,14 +1,16 @@
-// issue 2430, X1 — the pairing relay's client half: the code a pairing QR
-// carries, grappa's REST doors for a rendezvous, and an opaque channel over
-// them. grappa relays the channel blind; what travels on it is encrypted by
-// the two devices (vodozemac ECIES, the MSC4108 shape), and that layer
-// lives above this module: here a payload is an opaque base64 string.
+// issue 2430, X1 — the pairing relay's client half: grappa's REST doors for
+// a rendezvous, and an opaque channel over them. grappa relays the channel
+// blind; what travels on it is encrypted by the two devices (vodozemac
+// ECIES, the MSC4108 shape), and that layer lives above this module: here a
+// payload is an opaque base64 string.
 //
-// The QR holds a URL whose FRAGMENT is `pair=<rendezvous id>.<ephemeral
-// Curve25519 key>`. Both halves are public — nothing secret goes in a QR or
-// in a URL — and the fragment is still where they go, because a browser
-// does not send it with the request, so the link costs nothing in a server
-// log.
+// A pairing's code is the rendezvous id and the creator's ephemeral
+// Curve25519 key, both public. Issue 2549: no link or QR carries it any
+// more. A link opens in the system browser, not in the installed app, so the
+// identity landed in a browser nobody meant to pair, and iOS cannot route a
+// link into the app. The code now reaches the account's other sessions only
+// through grappa: the open carries the key, grappa offers the rendezvous, and
+// its banner hands `/pair` the code (lib/e2e/pairingOffer).
 
 import { ApiError, buildHeaders, readError } from "../api";
 import {
@@ -29,31 +31,12 @@ export type PairingMessage = E2ePairingWireMessage;
 
 export type PairCode = { id: string; curve: string };
 
-const ID = /^[A-Za-z0-9_-]{22}$/;
-const CURVE = /^[A-Za-z0-9+/]{43}$/;
-const FRAGMENT_KEY = "pair=";
-
-/** The URL a pairing QR shows: the `/pair` route, with the code in its fragment. */
-export function pairingUrl(origin: string, code: PairCode): string {
-  if (!ID.test(code.id) || !CURVE.test(code.curve)) throw new Error("not a pairing code");
-  return `${origin}/pair#${FRAGMENT_KEY}${code.id}.${code.curve}`;
-}
-
-/** The code in a URL fragment (with or without its `#`), or null. */
-export function parsePairFragment(hash: string): PairCode | null {
-  const raw = hash.replace(/^#/, "");
-  if (!raw.startsWith(FRAGMENT_KEY)) return null;
-  const [id, curve, ...rest] = raw.slice(FRAGMENT_KEY.length).split(".");
-  if (rest.length > 0 || id === undefined || curve === undefined) return null;
-  return ID.test(id) && CURVE.test(curve) ? { id, curve } : null;
-}
-
 // --- REST ------------------------------------------------------------------
 
 /**
- * Opens a rendezvous with this device as its creator. `curve`, the ephemeral
- * key the QR shows, rides the open too (issue 2537): grappa offers the
- * rendezvous to the account's other devices with it.
+ * Opens a rendezvous with this device as its creator. `curve`, its ephemeral
+ * key, rides the open (issue 2537): grappa offers the rendezvous to the
+ * account's other devices with it.
  */
 export async function openPairing(token: string, curve: string): Promise<Rendezvous> {
   const res = await fetch("/e2e/pairings", {

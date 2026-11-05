@@ -21,7 +21,7 @@
 // changed the network, this device's doors answer 404 or refuse it as a
 // device they do not list, or the user confirms a new identity.
 //
-// A second browser of the account joins an identity through a QR pairing
+// A second browser of the account joins an identity through a pairing
 // (X1-crypto): the doors each side goes through, per network, close this
 // module (`masterOf` to `abandonJoin`).
 
@@ -351,7 +351,7 @@ async function topUpKeys(
 }
 
 // ── Pairing (X1-crypto). The browser that holds an identity's master (the
-// holder) shows the QR; a new browser of the account (the joiner) scans it.
+// holder) offers a pairing; a new browser of the account (the joiner) takes it.
 // Once both users confirmed, the holder's master lists the joiner's device on
 // each network it is master of, and certifies it. These are the doors each
 // side goes through per network, around the channel, whose messages

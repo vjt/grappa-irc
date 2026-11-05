@@ -1,9 +1,10 @@
 import { type Component, createSignal, Show } from "solid-js";
 import { copyText } from "./lib/clipboard";
 
-// The encrypted chats' copy button: the rail's "copy your key" and "add a
-// device"'s "copy link" (issue 2537). A refused or insecure-context write
-// says why under the button and leaves the text on screen, to copy by hand.
+// The encrypted chats' copy button: the rail's "copy your key". (Issue 2537
+// gave "add a device" one for its pairing link; issue 2549 took the link, and
+// the button with it.) A refused or insecure-context write says why under the
+// button and leaves the text on screen, to copy by hand.
 // Disabled while there is nothing to copy.
 const E2eCopyButton: Component<{ text: string | undefined; label: string; testId: string }> = (
   props,

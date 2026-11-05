@@ -6,7 +6,7 @@ import type { HolderState } from "../lib/e2e/pairingSession";
 // issue 2430, X1-crypto — the master's side of a pairing, as the user sees
 // it. The session (lib/e2e/pairingSession) is the boundary: faked at its
 // interface, so these tests pin what each stage shows and which verb each
-// control reaches. AddDeviceQr is a stub that hands the test its props,
+// control reaches. AddDeviceOffer is a stub that hands the test its props,
 // except where a test asks for the real one (over a faked relay).
 
 const CURVE = "fJKDF4omlQo87Jaqp5pqfZqg9TcQO1PG5lS1Kzz5FIA";
@@ -17,7 +17,7 @@ vi.mock("../lib/auth", () => ({ token: authHolder.token }));
 const holder = vi.hoisted(() => ({
   session: null as null | Record<string, ReturnType<typeof vi.fn>>,
   deps: { marker: "deps" },
-  qr: null as null | {
+  offer: null as null | {
     curve: string;
     onChannel: (c: unknown) => void;
     onMessage: (p: string) => void;
@@ -25,25 +25,25 @@ const holder = vi.hoisted(() => ({
   },
   pairingDeps: vi.fn(),
   holderPairing: vi.fn(),
-  realQr: false,
+  realOffer: false,
 }));
 vi.mock("../lib/e2e/pairingDeps", () => ({ pairingDeps: holder.pairingDeps }));
 vi.mock("../lib/e2e/pairingSession", () => ({ holderPairing: holder.holderPairing }));
-vi.mock("../AddDeviceQr", async (orig) => {
-  const real = (await orig<typeof import("../AddDeviceQr")>()).default;
+vi.mock("../AddDeviceOffer", async (orig) => {
+  const real = (await orig<typeof import("../AddDeviceOffer")>()).default;
   return {
-    default: (props: NonNullable<typeof holder.qr>) => {
-      holder.qr = props;
-      if (holder.realQr) return real(props);
+    default: (props: NonNullable<typeof holder.offer>) => {
+      holder.offer = props;
+      if (holder.realOffer) return real(props);
       const el = document.createElement("div");
-      el.dataset.testid = "qr-stub";
+      el.dataset.testid = "offer-stub";
       el.dataset.curve = props.curve;
       return el;
     },
   };
 });
 
-// The relay the real AddDeviceQr opens: its close handler, for a test to end it.
+// The relay the real AddDeviceOffer opens: its close handler, for a test to end it.
 const relay = vi.hoisted(() => ({
   onClosed: null as null | ((reason: string) => void),
 }));
@@ -75,8 +75,8 @@ let setState: (s: HolderState) => void;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  holder.qr = null;
-  holder.realQr = false;
+  holder.offer = null;
+  holder.realOffer = false;
   relay.onClosed = null;
   authHolder.token.mockReturnValue("tok");
   const [state, set] = createSignal<HolderState>(waiting());
@@ -101,22 +101,22 @@ beforeEach(() => {
 const mount = async () => {
   const onClose = vi.fn();
   const view = render(() => <AddDevicePanel onClose={onClose} />);
-  await screen.findByTestId("qr-stub");
+  await screen.findByTestId("offer-stub");
   return { ...view, onClose };
 };
 
 describe("AddDevicePanel", () => {
-  it("shows the QR of the session's key, then the code input, then the results per network", async () => {
+  it("offers the session's key, then shows the code input, then the results per network", async () => {
     await mount();
     expect(holder.pairingDeps).toHaveBeenCalledWith("tok");
     expect(holder.holderPairing).toHaveBeenCalledWith(holder.deps);
-    expect(screen.getByTestId("qr-stub").dataset.curve).toBe(CURVE);
-    expect(screen.getByTestId("qr-slot").hidden).toBe(false);
+    expect(screen.getByTestId("offer-stub").dataset.curve).toBe(CURVE);
+    expect(screen.getByTestId("offer-slot").hidden).toBe(false);
     expect(screen.queryByTestId("pair-code-input")).toBeNull();
 
     setState({ ...waiting(), stage: "code" });
-    const slot = screen.getByTestId("qr-slot");
-    // The QR component stays mounted (leaving would close the channel) but is out of sight.
+    const slot = screen.getByTestId("offer-slot");
+    // The offer stays mounted (leaving would close the channel) but is out of sight.
     expect(slot.hidden).toBe(true);
     expect(screen.getByText("Type the code shown on the new device")).toBeTruthy();
     const input = screen.getByTestId("pair-code-input") as HTMLInputElement;
@@ -160,12 +160,12 @@ describe("AddDevicePanel", () => {
     expect(screen.queryByTestId("pair-unconfirmed")).toBeNull();
   });
 
-  it("wires the QR component to the session: channel, payloads and closing", async () => {
+  it("wires the offer to the session: channel, payloads and closing", async () => {
     await mount();
     const channel = { send: vi.fn() };
-    holder.qr?.onChannel(channel);
-    holder.qr?.onMessage("b3BhcXVl");
-    holder.qr?.onClosed("expired");
+    holder.offer?.onChannel(channel);
+    holder.offer?.onMessage("b3BhcXVl");
+    holder.offer?.onClosed("expired");
     expect(holder.session?.attach).toHaveBeenCalledWith(channel);
     expect(holder.session?.onPayload).toHaveBeenCalledWith("b3BhcXVl");
     expect(holder.session?.onClosed).toHaveBeenCalledWith("expired");
@@ -252,7 +252,7 @@ describe("AddDevicePanel", () => {
         <AddDevicePanel onClose={onClose} />
       </Show>
     ));
-    await screen.findByTestId("qr-stub");
+    await screen.findByTestId("offer-stub");
     expect(holder.session?.cancel).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByTestId("add-device-close"));
@@ -262,18 +262,18 @@ describe("AddDevicePanel", () => {
     expect(screen.queryByTestId("add-device-panel")).toBeNull();
   });
 
-  // The QR component stays mounted, out of sight, while the pairing lives:
+  // The offer stays mounted, out of sight, while the pairing lives:
   // the copy that says why it ended is the panel's alone.
   it("a relay that ends the pairing leaves one ended copy on the page", async () => {
-    holder.realQr = true;
+    holder.realOffer = true;
     render(() => <AddDevicePanel onClose={vi.fn()} />);
-    await screen.findByTestId("pair-qr");
+    await screen.findByTestId("pair-waiting");
 
     relay.onClosed?.("expired");
 
     await waitFor(() => expect(screen.getAllByTestId("pair-ended")).toHaveLength(1));
     expect(screen.getByTestId("pair-ended").textContent).toContain("expired");
-    expect(screen.queryByTestId("pair-qr")).toBeNull();
+    expect(screen.queryByTestId("pair-waiting")).toBeNull();
   });
 
   it("cancels the pairing when it leaves the screen", async () => {

@@ -391,9 +391,11 @@ let _socket: Socket | null = null;
 //
 // 55 (issue 2537) — "add a device" offers its pairing to the account's other
 // sessions: the open carries the ephemeral key, `e2e_pairing_offered` rides
-// the user topic, and a browser that can be paired shows a banner. A pre-55
-// server ignores the key and never offers, so the QR and its copied link are
-// the only way, as before; `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+// the user topic, and a browser that can be paired shows a banner. Since issue
+// 2549 (no wire change) that offer is the ONLY way a pairing reaches another
+// device: the QR and its link are gone. A pre-55 server ignores the key and
+// never offers, so cicchetto cannot pair a browser against it at all; nothing
+// else breaks, and `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
 export const CLIENT_PROTOCOL_VERSION = 55;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.

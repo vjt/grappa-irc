@@ -9,7 +9,7 @@ import { me } from "./lib/api";
 import { bootstrapAuth, isAuthenticated, token } from "./lib/auth";
 import { stripReauthParam } from "./lib/authProxy";
 import { moduleRoot } from "./lib/moduleRoot";
-import PairScan from "./PairScan";
+import PairJoin from "./PairJoin";
 import ShareConsume from "./ShareConsume";
 // Side-effect-only: registers the WS subscribe createRoot so per-
 // channel join effects fire once `user()` + `channelsBySlug()` resolve.
@@ -461,10 +461,11 @@ render(
             which the browser keeps to itself and does not transmit.
             `ShareConsume` reads it from `location.hash`. */}
         <Route path="/share" component={ShareConsume} />
-        {/* issue 2430, X1 — where the OS camera lands after scanning another
-            device's pairing QR. Outside RequireAuth for the reason /share is:
-            a bounce to /login would lose the fragment the code rides. */}
-        <Route path="/pair" component={PairScan} />
+        {/* issue 2430, X1 — where a browser joins the pairing its account
+            offers, from the "Pair this browser" banner. Outside RequireAuth:
+            a browser with no login is told where pairing starts (issue 2549)
+            rather than bounced to a login that would pair the wrong one. */}
+        <Route path="/pair" component={PairJoin} />
         {/* #717 — the boundary wraps Shell ONLY, inside RequireAuth. A boot
             fetch that rejects puts its resource in `errored` state and every
             read re-throws (CrtSplash's `!user()` predicate among them); with

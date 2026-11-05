@@ -2,7 +2,7 @@ import { type Component, For, Show } from "solid-js";
 import type { NetworkResult } from "./lib/e2e/pairingSession";
 
 // issue 2430, X1-crypto — what a pairing came to on each network, one line
-// each. Both screens (AddDevicePanel, PairScan) show the same results in the
+// each. Both screens (AddDevicePanel, PairJoin) show the same results in the
 // same words, so the words live here once.
 
 const OUTCOME: Record<NetworkResult["outcome"], string> = {
