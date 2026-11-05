@@ -1,7 +1,5 @@
 import { assertNever } from "../api";
-import { ctcpFrame } from "../ctcpAction";
 import { NOW_PLAYING_STALE_MS, nowPlaying, nowPlayingLine } from "../nowPlaying";
-import { sendMessage as sendWindowMessage } from "../scrollback";
 import type { CommandHandler } from "./context";
 
 /**
@@ -36,8 +34,9 @@ import type { CommandHandler } from "./context";
  * anyone who wants to say that.
  *
  * TARGETING is `ctx.submittedFrom` — the window it was typed in, which is what
- * `/me` does, reached through the same `ctcpFrame` + `sendMessage` seam
- * `/ctcp <t> ACTION` uses. No pacing plan: the body is one generated line
+ * `/me` does, reached through the same `ctx.sendAction` door `/ctcp <t> ACTION`
+ * uses; in an encrypted query that is the peer, so the line goes encrypted, as
+ * `/me` there does (issue 2543). No pacing plan: the body is one generated line
  * (112 bytes at the longest of 237 songs measured), so there is no multi-line
  * fan-out to resume.
  */
@@ -60,11 +59,7 @@ export const npCommand: CommandHandler<"np"> = async (_cmd, ctx) => {
       };
     }
     case "playing":
-      await sendWindowMessage(
-        ctx.networkSlug,
-        ctx.submittedFrom,
-        ctcpFrame("ACTION", nowPlayingLine(state.track, state.station)),
-      );
+      await ctx.sendAction(ctx.submittedFrom, nowPlayingLine(state.track, state.station));
       return { ok: true };
     default:
       return assertNever(state);

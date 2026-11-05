@@ -85,6 +85,15 @@ export type CommandContext = {
    * same reason its two siblings do — it closes over the selected window.
    */
   resolveBareWhoisNick: (verb: string) => string | { error: string };
+  /**
+   * issue 2543 — send an ACTION saying `text` to `target`. The one door for
+   * every command that sends an ACTION (`/np`, `/ctcp <t> ACTION`), because
+   * whether it may go in clear depends on the window it was typed in: aimed at
+   * the peer of the encrypted query it was typed in, it is what `/me` is
+   * there, one message inside Olm; anywhere else it is the clear CTCP ACTION.
+   * (`/me` itself stays the dispatcher's, with its paced fan-out.)
+   */
+  sendAction: (target: string, text: string) => Promise<void>;
 };
 
 /**
