@@ -122,6 +122,9 @@ const MAX_PAYLOAD_BYTES = 32 * 1024;
 const MAX_SENDER_BYTES = 1_048_576;
 const ROW_OVERHEAD_BYTES = 256;
 const PAGE = 100;
+// `Grappa.E2eKeys`'s `@seen_every_seconds`: how stale a device's activity
+// stamp gets before an inbox read moves it (issue 2547).
+const SEEN_EVERY_MS = 60_000;
 
 /** How the send door answers each refusal: status, token. */
 const REFUSED: Record<DoorRefusal, [number, string]> = {
@@ -188,7 +191,19 @@ const wireDevice = (d: Device): E2eKeysWireDevice => ({
   ed25519: d.ed25519,
   curve25519: d.curve25519,
   sig: d.sig,
+  last_seen_at: d.last_seen_at ?? null,
 });
+
+// A device read its inbox (issue 2547): its activity stamp moves to now, to
+// the second, unless it moved less than a minute ago, as `E2eKeys.seen/1`
+// does.
+function seen(device: Device): void {
+  const now = Math.floor(Date.now() / 1000) * 1000;
+  const at = device.last_seen_at;
+  if (at === null || at === undefined || now - Date.parse(at) >= SEEN_EVERY_MS) {
+    device.last_seen_at = new Date(now).toISOString();
+  }
+}
 
 const status = (device: Device): E2eKeysWireStatus => ({
   one_time_keys: device.otks.length,
@@ -219,12 +234,16 @@ export class Grappa {
     putE2eList: async (nick, _slug, list) => this.putList(nick, list),
     getE2eDeviceKeys: async (nick, _slug, did) => status(this.device(nick, did)),
     uploadE2eDeviceKeys: async (nick, _slug, did, upload) => this.upload(nick, did, upload),
-    listE2eDeviceInbox: async (nick, slug, did, after) => ({
-      messages: this.device(nick, did)
-        .inbox.filter((m) => m.id > after)
-        .slice(0, this.pageSize)
-        .map((m) => ({ ...m, kind: "e2e_message" as const, network: slug })),
-    }),
+    listE2eDeviceInbox: async (nick, slug, did, after) => {
+      const device = this.device(nick, did);
+      seen(device);
+      return {
+        messages: device.inbox
+          .filter((m) => m.id > after)
+          .slice(0, this.pageSize)
+          .map((m) => ({ ...m, kind: "e2e_message" as const, network: slug })),
+      };
+    },
     claimE2eDeviceKeys: async (nick, _slug, did, fromDid) => ({
       keys: this.claim(nick, did, fromDid),
     }),
@@ -307,6 +326,7 @@ export class Grappa {
       ed25519: id.ed25519,
       curve25519: id.curve25519,
       sig: id.sig,
+      last_seen_at: null,
       otks: [],
       fallback: null,
       inbox: [],

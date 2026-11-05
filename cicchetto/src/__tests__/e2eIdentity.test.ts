@@ -63,6 +63,7 @@ const {
   accountSlot,
   addDevice,
   completeJoin,
+  heldDevices,
   masterOf,
   mountIdentitySync,
   offerable,
@@ -259,7 +260,7 @@ describe("syncIdentity", () => {
     expect(olm().verify_ed25519(mine.M, certSigText(1, mine.E), mine.own.cert)).toBe(true);
     // The device grappa holds is this one, its bundle full, the keys published.
     expect(await grappa.api.listE2eDevices(NICK, SLUG)).toEqual([
-      { did: mine.own.did, ...idBlockOf(mine.E) },
+      { did: mine.own.did, ...idBlockOf(mine.E), last_seen_at: null },
     ]);
     expect(await grappa.api.getE2eDeviceKeys(NICK, SLUG, mine.own.did)).toEqual({
       one_time_keys: 50,
@@ -275,7 +276,7 @@ describe("syncIdentity", () => {
     vi.clearAllMocks();
     const { store, vault } = browser();
 
-    expect(await sync(store)).toBe("elsewhere");
+    expect(await sync(store)).toEqual({ elsewhere: "no-keys" });
 
     expect(calls()).toEqual(["GET list"]);
     expect(vault.records.size).toBe(0);
@@ -333,7 +334,7 @@ describe("syncIdentity", () => {
     const held = await grappa.api.getE2eList(NICK, SLUG);
     vi.clearAllMocks();
 
-    expect(await sync(store)).toBe("elsewhere");
+    expect(await sync(store)).toEqual({ elsewhere: "replaced" });
 
     expect(calls()).toEqual(["GET list"]);
     expect(await grappa.api.getE2eList(NICK, SLUG)).toEqual(held);
@@ -360,7 +361,7 @@ describe("syncIdentity", () => {
     const before = await stored(store);
     vi.clearAllMocks();
 
-    expect(await sync(store)).toBe("elsewhere");
+    expect(await sync(store)).toEqual({ elsewhere: "left-out" });
 
     expect(calls()).toEqual(["GET list"]);
     expect(await stored(store)).toEqual(before);
@@ -386,7 +387,7 @@ describe("syncIdentity", () => {
     const before = await stored(store);
     vi.clearAllMocks();
 
-    expect(await sync(store)).toBe("elsewhere");
+    expect(await sync(store)).toEqual({ elsewhere: "replaced" });
 
     expect(calls()).toEqual(["GET list"]);
     expect(await stored(store)).toEqual(before);
@@ -437,7 +438,7 @@ describe("syncIdentity", () => {
     });
     master.free();
 
-    expect(await sync(store)).toBe("elsewhere");
+    expect(await sync(store)).toEqual({ elsewhere: "no-list" });
 
     expect(calls()).toEqual(["GET list"]);
   });
@@ -613,7 +614,9 @@ describe("syncIdentity", () => {
       r.status === "fulfilled" ? r.value : `rejected: ${r.reason}`,
     );
 
-    expect([...states].sort()).toEqual(["elsewhere", "ready"]);
+    // The loser holds no keys for the identity the winner put first.
+    expect(states).toContainEqual({ elsewhere: "no-keys" });
+    expect(states).toContain("ready");
     const winner = states[0] === "ready" ? a : b;
     const loser = states[0] === "ready" ? b : a;
     expect(loser.vault.records.size).toBe(0);
@@ -795,12 +798,73 @@ describe("syncIdentity", () => {
   });
 });
 
+// issue 2547 — what a browser holding no keys tells the user about the
+// identity grappa holds: how many devices its list names, and when the last
+// of them read its inbox (`last_seen_at`, stamped by that read).
+describe("heldDevices", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("counts the devices grappa's list names, and says when the last of them read its inbox", async () => {
+    const { store } = browser();
+    await sync(store);
+    const a = await stored(store);
+    // B is listed beside A; C is registered and not listed (a pairing under way).
+    const b = new (olm().Account)();
+    const c = new (olm().Account)();
+    await store.withAccount(SLOT, async ({ master }) => {
+      if (master === null) throw new Error("no master");
+      await grappa.api.registerE2eDevice(NICK, SLUG, idBlock(b, master.ed25519_key()));
+      await grappa.api.registerE2eDevice(NICK, SLUG, idBlock(c, master.ed25519_key()));
+      const devices = [a.E, b.ed25519_key()].sort();
+      await grappa.api.putE2eList(NICK, SLUG, {
+        master: master.ed25519_key(),
+        ver: 2,
+        devices,
+        sig: master.sign(listSigText(2, devices)),
+      });
+    });
+    const readAt = async (account: Account | string, at: string) => {
+      vi.setSystemTime(new Date(at));
+      const E = typeof account === "string" ? account : account.ed25519_key();
+      await grappa.api.listE2eDeviceInbox(NICK, SLUG, did(olm(), E), 0);
+    };
+    vi.useFakeTimers({ toFake: ["Date"] });
+
+    // No device read its inbox yet.
+    expect(await heldDevices(NICK, SLUG)).toEqual({ listed: 2, lastActive: null });
+
+    await readAt(a.E, "2026-11-05T10:00:00Z");
+    await readAt(b, "2026-11-05T10:05:00Z");
+    // The unlisted device is not one of the identity's: its read says nothing.
+    await readAt(c, "2026-11-05T10:09:00Z");
+
+    expect(await heldDevices(NICK, SLUG)).toEqual({
+      listed: 2,
+      lastActive: "2026-11-05T10:05:00.000Z",
+    });
+    b.free();
+    c.free();
+  });
+
+  it("with no list held it counts none, and none says when it was active", async () => {
+    const { store } = browser();
+    await sync(store);
+    const { E } = await stored(store);
+    await grappa.api.listE2eDeviceInbox(NICK, SLUG, did(olm(), E), 0);
+    await grappa.api.clearE2eKeys(NICK, SLUG);
+
+    expect(await heldDevices(NICK, SLUG)).toEqual({ listed: 0, lastActive: null });
+  });
+});
+
 describe("replaceIdentity", () => {
   it("from 'elsewhere', deletes the identity grappa holds and makes a new one here; the slot is then ready", async () => {
     await sync(browser().store);
     const old = await grappa.api.getE2eList(NICK, SLUG);
     const { store } = browser();
-    expect(await sync(store)).toBe("elsewhere");
+    expect(await sync(store)).toEqual({ elsewhere: "no-keys" });
     vi.clearAllMocks();
 
     await replaceIdentity(store, NICK, SLOT, SLUG);
@@ -1296,7 +1360,8 @@ describe("the pairing doors", () => {
         fallback: true,
       });
     }
-    // The sync reads no list on grappa: "elsewhere".
+    // The sync reads no list on grappa, and the joiner holds no master to
+    // list itself again: "elsewhere", for want of a list.
     {
       grappa = new Grappa();
       const a = await holder();
@@ -1310,7 +1375,7 @@ describe("the pairing doors", () => {
 
       expect((await stored(b.store)).own).toMatchObject({ master: M, certVer: 2, did: j.did });
       expect(warn).toHaveBeenCalledWith(
-        `[e2e] the sync after pairing ${SLUG} answered elsewhere; its keys go up at the next sync`,
+        `[e2e] the sync after pairing ${SLUG} answered elsewhere (no-list); its keys go up at the next sync`,
       );
     }
   });
@@ -1461,7 +1526,7 @@ describe("mountIdentitySync", () => {
     await until(() => expect(found).toHaveBeenCalledTimes(2));
     expect(found.mock.calls.sort()).toEqual([
       ["azzurra", "ready"],
-      ["libera", "elsewhere"],
+      ["libera", { elsewhere: "no-keys" }],
     ]);
     dispose();
   });
