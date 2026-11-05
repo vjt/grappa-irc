@@ -396,7 +396,13 @@ let _socket: Socket | null = null;
 // device: the QR and its link are gone. A pre-55 server ignores the key and
 // never offers, so cicchetto cannot pair a browser against it at all; nothing
 // else breaks, and `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 55;
+//
+// 56 (issue 2547) — `last_seen_at` on the E2E device shape: when each device
+// last read its inbox. A browser holding no keys for the identity says how
+// long ago a listed device was active. A pre-56 server leaves it out, so the
+// window says how many devices grappa lists and not when one was active;
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 56;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

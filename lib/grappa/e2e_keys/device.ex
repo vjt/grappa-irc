@@ -16,6 +16,11 @@ defmodule Grappa.E2eKeys.Device do
   routing label and nothing more — a frame's `<to>` names it, and no trust
   decision rests on it.
 
+  `last_seen_at` is when the device last read its own inbox (issue 2547),
+  moved at most once a minute by `Grappa.E2eKeys.seen/1`; `nil` for one
+  that has not since the column exists. It is no part of the id block, and
+  the changeset never casts it.
+
   Exactly one of `:user_id` / `:visitor_id` is set, enforced by
   `Grappa.Subject.validate_xor/1` and the `e2e_devices_subject_xor` CHECK,
   like every other per-subject table. Public API lives in
@@ -41,6 +46,7 @@ defmodule Grappa.E2eKeys.Device do
           ed25519: String.t() | nil,
           curve25519: String.t() | nil,
           sig: String.t() | nil,
+          last_seen_at: DateTime.t() | nil,
           inserted_at: DateTime.t() | nil
         }
 
@@ -53,6 +59,7 @@ defmodule Grappa.E2eKeys.Device do
     field :ed25519, :string
     field :curve25519, :string
     field :sig, :string
+    field :last_seen_at, :utc_datetime
 
     timestamps(type: :utc_datetime, updated_at: false)
   end
