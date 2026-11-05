@@ -1219,6 +1219,9 @@ defmodule Grappa.Deploy.PreflightTest do
     # (issue 2430 S1's `20261023162005_add_own_to_e2e_inbox` is one
     # `alter table ... add` with a constant default, the `add_tls_verify_*`
     # shape, so it deploys HOT. Added because this test failed on it.)
+    # (issue 2547's `20261105045827_add_last_seen_at_to_e2e_devices` is one
+    # `alter table ... add`, nullable, no default, the `add_detached_at_*`
+    # shape, so it deploys HOT. Added because this test failed on it.)
     @migrations_glob "priv/repo/migrations/*.exs"
     @expected_hot ~w(
       20260425000000_init
@@ -1264,6 +1267,7 @@ defmodule Grappa.Deploy.PreflightTest do
       20260919140437_add_detached_at_to_network_credentials
       20261015113204_add_messages_away_window_index
       20261023162005_add_own_to_e2e_inbox
+      20261105045827_add_last_seen_at_to_e2e_devices
     )
 
     test "every migration on disk classifies, and the HOT set is exactly the pinned one" do
