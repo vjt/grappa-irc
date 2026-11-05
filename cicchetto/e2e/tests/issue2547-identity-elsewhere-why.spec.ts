@@ -12,8 +12,9 @@
 // browser holds no keys, that grappa lists one device of the account, and
 // when that device was last active. Pairing is the way out it puts first;
 // starting over sits behind a disclosure, still behind its confirmation.
-// Pairing from the window's own form keeps the identity: A then shows the
-// master B started, and nothing was deleted on grappa.
+// Pairing the way the window says (B opens "add a device", A takes the
+// pairing from its banner) keeps the identity: A then shows the master B
+// started, and nothing was deleted on grappa.
 //
 // ## What makes this spec able to fail
 //
@@ -24,9 +25,9 @@
 //     read it.
 //   * Starting a new identity is still a visible way out before the user
 //     asks for another one.
-//   * The pairing form in the window does not lead to a pairing, or the
-//     pairing makes a new identity: A's master differs from B's, or grappa
-//     lists anything but B's device and A's.
+//   * The window does not say how to pair, or the pairing it points to does
+//     not pair, or makes a new identity: A's master differs from B's, or
+//     grappa lists anything but B's device and the one the pairing added.
 
 import { awaitServiceWorkerActive } from "../fixtures/cicchettoPage";
 import {
@@ -40,7 +41,7 @@ import {
   send,
 } from "../fixtures/encryptedQuery";
 import { fetchE2eDevices, soleE2eDevice } from "../fixtures/grappaApi";
-import { newBrowserOf, readCheckCode, typeCode } from "../fixtures/pairing";
+import { newBrowserOf, pairFromBanner } from "../fixtures/pairing";
 import { NETWORK_SLUG } from "../fixtures/seedData";
 import { provisionPeerSubject, teardownSpecSubject } from "../fixtures/specSubject";
 import { expect, specNick, specUser, test } from "../fixtures/test";
@@ -97,26 +98,16 @@ test("a browser with no keys says why, counts grappa's devices and when one was 
       { timeout: STEP },
     );
 
-    // Pairing first: its form is in view, starting over is not until the
-    // user asks for another way.
-    await expect(aliceA.getByTestId("e2e-identity-pair-code")).toBeVisible();
+    // Pairing first: the window says how, and starting over is out of view
+    // until the user asks for another way.
+    await expect(aliceA.getByTestId("e2e-identity-pair-how")).toBeVisible();
     await expect(aliceA.getByTestId("e2e-identity-replace")).toBeHidden();
     await aliceA.getByTestId("e2e-identity-other-way").click();
     await expect(aliceA.getByTestId("e2e-identity-replace")).toBeVisible();
 
-    // The way out the window leads to: B shows its pairing link, A pastes it
-    // into the window's form, and the pairing runs as a camera scan's would.
-    await page.getByTestId("e2e-add-device").click();
-    const link = page.getByTestId("pair-url");
-    await expect(link).toContainText("#pair=", { timeout: STEP });
-    await aliceA.getByTestId("e2e-identity-pair-code").fill((await link.textContent()) ?? "");
-    await aliceA.getByTestId("e2e-identity-pair-submit").click();
-    await typeCode(page, await readCheckCode(aliceA));
-    await aliceA.getByTestId("pair-confirm").click({ timeout: STEP });
-    await expect(page.getByTestId(`pair-result-${NETWORK_SLUG}`)).toContainText("added", {
-      timeout: STEP,
-    });
-    await expect(aliceA.getByTestId("pair-done")).toBeVisible({ timeout: STEP });
+    // The way out the window leads to: B opens "add a device", A takes the
+    // pairing from its banner, and B types the code A shows.
+    const paired = await pairFromBanner(page, aliceA, alice.token);
 
     // The identity stayed: A shows B's master, and grappa holds B's device
     // and A's, never a new identity.
@@ -127,7 +118,7 @@ test("a browser with no keys says why, counts grappa's devices and when one was 
     expect(await ownKey(aliceA)).toBe(master);
     const devices = await fetchE2eDevices(alice.token, NETWORK_SLUG);
     expect(devices).toHaveLength(2);
-    expect(devices.map((d) => d.did)).toContain(held.did);
+    expect(devices.map((d) => d.did)).toEqual(expect.arrayContaining([held.did, paired]));
   } finally {
     await second?.context.close();
     await peer.context.close();
