@@ -5061,6 +5061,18 @@ html.is-ios27-band .shell {
   gap: 0.5rem;
 }
 
+/* issue 2547 — a new identity is the other way out, folded away under its
+   summary; the summary keeps its default list-item display, and so its
+   disclosure marker. */
+.e2e-other-way > summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.e2e-other-way[open] > summary {
+  margin-bottom: 0.5rem;
+}
+
 .e2e-copy,
 .e2e-pin-submit,
 .e2e-sas-button,

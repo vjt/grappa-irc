@@ -62,13 +62,15 @@ export async function ownKey(page: Page): Promise<string> {
 
 /**
  * A browser that lost its identity on an account whose identity grappa still
- * holds reads "elsewhere": the user starts a new identity on purpose, behind
- * the inline confirm (first click arms, second confirms). Resolves once the
- * new identity's key bundle is on grappa and the pane shows the new master.
- * Call it with the encrypted pane open.
+ * holds reads "elsewhere": the user opens the other way out (issue 2547) and
+ * starts a new identity on purpose, behind the inline confirm (first click
+ * arms, second confirms). Resolves once the new identity's key bundle is on
+ * grappa and the pane shows the new master. Call it with the encrypted pane
+ * open.
  */
 export async function replaceIdentity(page: Page): Promise<void> {
   const uploaded = e2eBundleUploaded(page, NETWORK_SLUG);
+  await page.getByTestId("e2e-identity-other-way").click();
   const replace = page.getByTestId("e2e-identity-replace");
   await replace.click();
   await expect(replace).toHaveClass(/confirming/);

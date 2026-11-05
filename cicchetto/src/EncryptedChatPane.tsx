@@ -2,6 +2,7 @@ import {
   type Component,
   createEffect,
   createMemo,
+  createResource,
   createSignal,
   For,
   type JSX,
@@ -27,6 +28,7 @@ import { requestConfirm } from "./lib/confirmDialog";
 import { isCtcpAction, stripCtcpAction } from "./lib/ctcpAction";
 import { formatDateTime } from "./lib/dateFormat";
 import { isDocumentVisible } from "./lib/documentVisibility";
+import { formatDurationSince } from "./lib/duration";
 import {
   type ChatRow,
   countsAsUnread,
@@ -35,16 +37,19 @@ import {
   type Message,
   type OutFailure,
 } from "./lib/e2e/chatStore";
+import type { ElsewhereReason, HeldDevices } from "./lib/e2e/identity";
 import type { SasStep, SasView } from "./lib/e2e/sas";
 import { SAS_EMOJI } from "./lib/e2e/sasEmoji";
 import {
   deleteEncryptedChat,
+  elsewhereReason,
   encryptedChat,
   encryptedRows,
   encryptedSas,
   encryptedSendSubmitted,
   encryptedTrust,
   encryptedWireView,
+  identityDevices,
   identityElsewhere,
   lastEncryptedSend,
   loadEncryptedChat,
@@ -310,18 +315,58 @@ const REPLACE_CONFIRM =
   "for this network, every contact sees a key alarm and must verify it again, and nothing " +
   "encrypted to the old identity can be read here";
 
+// issue 2547 — what the card says first: why this browser cannot speak for
+// the identity grappa holds, one sentence per reason the sync found.
+export const ELSEWHERE_WHY: Record<ElsewhereReason, string> = {
+  "no-keys": "this browser holds no keys for this account's encryption identity on this network.",
+  replaced:
+    "this account's encryption identity on this network was replaced on another device: the " +
+    "keys this browser holds belong to the old one.",
+  "left-out":
+    "this browser is no longer one of the devices of this account's encryption identity on " +
+    "this network.",
+  "no-list":
+    "grappa no longer holds the list of this identity's devices, and only the device that made " +
+    "the identity can list them again.",
+};
+
+/**
+ * issue 2547 — the card's line on what grappa holds of the identity: how
+ * many devices its list names, and how long ago one of them was last active
+ * (read its inbox) as of `nowMs`. No activity clause when none says.
+ */
+export function heldDevicesLine(held: HeldDevices, nowMs: number): string {
+  if (held.listed === 0) return "grappa lists none of your devices";
+  const count = `grappa lists ${held.listed} of your devices`;
+  const ago = formatDurationSince(held.lastActive, nowMs);
+  if (ago === null) return count;
+  return held.listed === 1 ? `${count}, active ${ago} ago` : `${count}, one active ${ago} ago`;
+}
+
 // grappa holds this account's identity for the network and this browser
 // cannot speak for it: another device holds it, or the browser was wiped.
-// Pairing this browser with a device that holds it (X1) keeps every
-// contact's trust: that device opens "add a device", and this browser is
-// offered the pairing in a banner (issue 2537) — the only way in since issue
-// 2549 took the link and its paste field away. A new identity is the other
-// way out, behind a confirmation that says what it destroys, and only one at
-// a time: a second would delete the first.
-const IdentityElsewhere: Component<{ slug: string }> = (props) => {
+// The card says which (issue 2547), and what grappa holds: a device of the
+// identity active minutes ago means the keys live on, somewhere this browser
+// is not, and the way in is pairing. Pairing this browser with a device that
+// holds it (X1) keeps every contact's trust: that device opens "add a
+// device", and this browser is offered the pairing in a banner (issue 2537)
+// — the only way in since issue 2549 took the link and its paste field away.
+// A new identity is the other way out, folded away under "none of your
+// devices can pair this browser" and behind a confirmation that says what it
+// destroys, and only one at a time: a second would delete the first.
+const IdentityElsewhere: Component<{ slug: string; reason: ElsewhereReason }> = (props) => {
   const [armed, setArmed] = createSignal(false);
   const [replacing, setReplacing] = createSignal(false);
   const [replaceError, setReplaceError] = createSignal<string | null>(null);
+  // A failed read leaves the line out: the card's way out does not need it.
+  const [held] = createResource(
+    () => props.slug,
+    (slug) =>
+      identityDevices(slug).catch((err: unknown) => {
+        console.warn(`[e2e] could not read the devices grappa holds on ${slug}`, err);
+        return null;
+      }),
+  );
 
   const replace = async () => {
     setArmed(false);
@@ -343,32 +388,43 @@ const IdentityElsewhere: Component<{ slug: string }> = (props) => {
 
   return (
     <>
-      <p class="e2e-error" data-testid="e2e-identity-elsewhere">
-        this account's encryption identity for this network lives on another device, or was lost. To
-        use it here, pair this browser with a device that holds it.
+      <p class="e2e-error" data-testid="e2e-identity-elsewhere" data-reason={props.reason}>
+        {ELSEWHERE_WHY[props.reason]}
       </p>
-      <p class="muted" data-testid="e2e-identity-pair-how">
-        on a device that holds it, open "add a device": a banner then offers the pairing here, and
-        "Pair this browser" takes it.
-      </p>
-      <div class="e2e-step-actions">
-        <InlineConfirmButton
-          idleLabel="start a new identity here"
-          confirmLabel={REPLACE_CONFIRM}
-          armed={armed()}
-          onArm={() => setArmed(true)}
-          onConfirm={replace}
-          testId="e2e-identity-replace"
-          disabled={replacing()}
-        />
-      </div>
-      <Show when={replaceError()}>
-        {(message) => (
-          <div class="e2e-error" data-testid="e2e-identity-replace-error">
-            {message()}
-          </div>
+      <Show when={held()}>
+        {(h) => (
+          <p class="muted" data-testid="e2e-identity-devices">
+            {heldDevicesLine(h(), Date.now())}
+          </p>
         )}
       </Show>
+      <p data-testid="e2e-identity-pair-how">
+        to use it here, pair this browser with a device that holds it: on that device, open "add a
+        device", and a banner then offers the pairing here; "Pair this browser" takes it.
+      </p>
+      <details class="e2e-other-way">
+        <summary data-testid="e2e-identity-other-way">
+          none of your devices can pair this browser
+        </summary>
+        <div class="e2e-step-actions">
+          <InlineConfirmButton
+            idleLabel="start a new identity here"
+            confirmLabel={REPLACE_CONFIRM}
+            armed={armed()}
+            onArm={() => setArmed(true)}
+            onConfirm={replace}
+            testId="e2e-identity-replace"
+            disabled={replacing()}
+          />
+        </div>
+        <Show when={replaceError()}>
+          {(message) => (
+            <div class="e2e-error" data-testid="e2e-identity-replace-error">
+              {message()}
+            </div>
+          )}
+        </Show>
+      </details>
     </>
   );
 };
@@ -886,8 +942,8 @@ const EncryptedChatPane: Component<Props> = (props) => {
             {(s) => (
               <section class="e2e-step" data-testid="e2e-step" data-step={s()}>
                 <Switch>
-                  <Match when={s() === "elsewhere"}>
-                    <IdentityElsewhere slug={props.networkSlug} />
+                  <Match when={s() === "elsewhere" && elsewhereReason(props.networkSlug)}>
+                    {(reason) => <IdentityElsewhere slug={props.networkSlug} reason={reason()} />}
                   </Match>
                   <Match when={s() === "alarm" && alarm()}>
                     {(key) => (
