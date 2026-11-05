@@ -91,7 +91,11 @@ export type CommandContext = {
    * whether it may go in clear depends on the window it was typed in: aimed at
    * the peer of the encrypted query it was typed in, it is what `/me` is
    * there, one message inside Olm; anywhere else it is the clear CTCP ACTION.
-   * (`/me` itself stays the dispatcher's, with its paced fan-out.)
+   * (`/me` itself stays the dispatcher's, with its paced fan-out.) A new
+   * caller extends `actsToPeer` in `compose.ts` too: the paste guard asks that
+   * same question before the submit, and a guard that answers "no" for an
+   * encrypted send offers the text file that puts the block on the upload
+   * host in clear.
    */
   sendAction: (target: string, text: string) => Promise<void>;
 };
