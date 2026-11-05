@@ -4,7 +4,7 @@ import type { Page } from "@playwright/test";
 //
 // A spec that must answer or count a fetch() the page makes does it here, not
 // with `page.route`. `page.route` lives on Playwright's view of the network,
-// and that view has lost requests twice, measured:
+// and that view has lost requests three times, measured:
 //
 //   - #1702, WebKit (webkit-iphone-15): with the now-playing feed on
 //     `page.route`, the spec reached the REAL api.somafm.com. That spec's
@@ -17,6 +17,10 @@ import type { Page } from "@playwright/test";
 //     `page.route` every one of them (220 of 220, three runs), and two
 //     replays of CI's shard 2 kept #666 green. Why Chromium lost them in CI
 //     is not established (#2461); the claim on its own does not do it.
+//   - #904, the same Chromium cut in CI (main 7bb576f25, PR #2551, issue
+//     2555): the send POST the spec meant to hold open answered 201 and
+//     rendered, while the route counted none. The trace's page-level
+//     requests end right after the device key upload, as in #666.
 //
 // This wraps `window.fetch` before any page script runs, in the page's own
 // realm, so no network layer sits between the stub and the call: whatever
@@ -24,7 +28,9 @@ import type { Page } from "@playwright/test";
 // absolute URL matches `match.url` (and `match.method`, when given) is handed
 // to `answer`, which runs here in the spec: what it keeps survives a reload,
 // and the spec reads it directly. `answer` returns the response to fake, or
-// `undefined` to let the request through to the real fetch. Every other
+// `undefined` to let the request through to the real fetch. It may return
+// either as a promise, and the page's fetch waits for it: that is how a spec
+// holds a request open (a slow link) and then lets it through. Every other
 // request goes straight to the real fetch, untouched.
 //
 // `serviceWorkers: "block"` is no alternative: cic then raises its "Service
@@ -50,11 +56,14 @@ let bindings = 0;
 export async function answerFetchInPage(
   page: Page,
   match: { url: RegExp; method: string | null },
-  answer: (request: StubbedFetch) => FetchAnswer | undefined,
+  answer: (request: StubbedFetch) => FetchAnswer | undefined | Promise<FetchAnswer | undefined>,
 ): Promise<void> {
   bindings += 1;
   const binding = `__answerFetch${bindings}`;
-  await page.exposeFunction(binding, (request: StubbedFetch) => answer(request) ?? null);
+  await page.exposeFunction(
+    binding,
+    async (request: StubbedFetch) => (await answer(request)) ?? null,
+  );
   await page.addInitScript(
     (seed: { binding: string; source: string; flags: string; method: string | null }) => {
       const pattern = new RegExp(seed.source, seed.flags);
