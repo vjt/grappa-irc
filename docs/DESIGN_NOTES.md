@@ -2935,3 +2935,81 @@ green; 2543 against a mutant whose encrypted branch sends the clear ACTION
 instead went red at Alice's first action never reaching `sent`.
 
 **Deploy class:** cic bundle only (`--cic`).
+<!-- entry #2529 -->
+
+---
+
+## 2026-11-05 — #2529: a multipart body is parsed by the route that takes it
+
+The operator raised the video per-file cap to 500 MiB on prod (2026-11-03)
+and uploads above 128 MiB still failed with a 413: the endpoint parsed every
+multipart body with one compiled ceiling of 128 MiB, and the 250 MiB cap
+before it had never been reachable either. That is the third time a per-file
+cap sat above the transport (a 100 MiB cap met a 64 MiB ceiling on
+2026-06-10).
+
+* **One maximum, owned by policy.** `ServerSettings.max_upload_per_file_cap_bytes/0`
+  is 512 MiB, and `put_upload_per_file_cap_bytes/2` refuses anything above
+  it. The admin door names the field on that refusal (422
+  `invalid_setting`, the cap keeps its old value) instead of restating the
+  guard, the posture `apply_auto_away_key/2` already takes. Keys applied
+  before it in the same body are still written: the door applies keys one
+  at a time, for every invalid value, which predates this change and is
+  issue 2546. A row stored above the maximum before this change reads as
+  the maximum: that is what an upload can get, and the admin form, which
+  sends every cap on every save, would otherwise have every save refused on
+  a cap nobody touched. Prod's 500 MiB is below it.
+* **Multipart leaves the endpoint.** The endpoint's `Plug.Parsers` now
+  carries only `:urlencoded` and `:json`; with `pass: ["*/*"]` a multipart
+  body crosses it unread, `body_params` still unfetched, and
+  `Plug.MethodOverride` skips an unfetched body. The route that takes a file
+  parses it in a router pipeline after `:authn`: `:upload_body` for the two
+  routes whose body a per-file cap polices (`POST /api/uploads`, every
+  category, and `PUT /networks/:network_id/avatar`, the `:image` cap), up to
+  the maximum plus 8 MiB of framing room (520 MiB); `:multipart_body` for
+  `POST /themes/background` (8 MiB cap of its own), up to 128 MiB, the old
+  ceiling. A body is read only for an authenticated subject, and only on a
+  route that takes a file. Both numbers live in `GrappaWeb.MultipartLimits`
+  as literals rather than computed from `ServerSettings`: the router reads
+  them at compile time, and a compile-time call into a module with runtime
+  dependencies would recompile the router and the endpoint whenever that
+  module's graph changed. The test holds the upload ceiling above the
+  maximum instead.
+* **Considered and set aside: a parser wrapper in the endpoint** that picks
+  the ceiling by method and `path_info`. It works, but it runs before the
+  router, so the doors are a copy of two router facts that has to be pinned,
+  and the doors still read before authentication. The router pipeline makes
+  the router itself the list.
+* **The price, made loud where it can be.** A route whose action takes a
+  file but forgets its pipeline gets `params` without the body, silently.
+  `MultipartBodyTest` reads each routed controller action from its module's
+  debug info and follows the functions of that module it reaches (local
+  calls, `&fun/n`, `__MODULE__.fun`): an action that matches
+  `%Plug.Upload{}` must pipe through one of the two pipelines, and nothing
+  else may; the pipeline must come after `:authn`; `:upload_body` reaches
+  only the two per-file-capped actions. It does not see a file taken only
+  through another module's function, or matched as a bare map without the
+  struct; every file route here matches the struct in its own controller.
+  `route_info/4` supplies the pipelines, since `__routes__/0` does not carry
+  them, and each pipeline's ceiling is read from the compiled router, where
+  `plug` options sit as literals. The endpoint is checked with the real
+  numbers: a body just over 128 MiB reaches the per-file cap on both doors
+  (a controller's 413 `file_too_large`), stops at the parser on the theme
+  background, and is never read without a bearer.
+* **nginx carries the same two numbers.** The shared snippet and the TLS
+  front door example set 128m for the server and 520m in two locations
+  nested in `location /` (nested, so they inherit its proxy headers; each
+  repeats `proxy_pass`, which never inherits). nginx cannot tell methods
+  apart, so every method on those two paths gets 520m at the edge. The same
+  test holds both files to the BEAM's numbers, the locations to the
+  router's upload paths and inside a `location /`, and fails on a size that
+  is not whole megabytes. The e2e stack's nginx gates the snippet's syntax;
+  nothing gates the TLS example's. The commented k8s Ingress example gains
+  a second Ingress for the two doors, because ingress-nginx applies
+  `proxy-body-size` per Ingress; it was written from the documentation, not
+  run on a cluster.
+* **Not covered here.** m42's host vhost is the operator's and outside this
+  repo: it needs the same two locations, and until it has them its 160m
+  ceiling stays the limit on prod. The issue's check (a 400 MiB video
+  through nginx on prod) was not run: neither prod nor a real nginx is
+  reachable from the worker.
