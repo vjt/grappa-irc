@@ -28,6 +28,10 @@ defmodule Grappa.ServerSettings do
   | `"dcc.global_cap_bytes"`                | `pos_integer()`            | 10_737_418_240 (10GiB) | 2185 |
   | `"auto_away.default_debounce_seconds"`  | `0 \\| 60 \\| 300 \\| 600 \\| 1800 \\| 3600` (`0` = off) | no row → boot fallback (`auto_away_fallback_ms/0`, 600_000 ms) | issue 2359 |
 
+  The four per-file caps accept at most `max_upload_per_file_cap_bytes/0`
+  (512 MiB, issue 2529): the upload doors' multipart ceiling is derived
+  from it, so no cap can save that the transport cannot deliver.
+
   `addressing.*` and `dcc.*` are **admin-only** — deliberately NOT in
   `public_view/0` (that broadcasts to every cic client); the admin
   settings surface reads the accessors directly.
@@ -111,6 +115,14 @@ defmodule Grappa.ServerSettings do
   # code default — like video + document, NO seed-row migration (see
   # 20260609204800_rename_per_file_cap_setting_to_image.exs).
   @default_upload_audio_per_file_cap_bytes 25 * 1024 * 1024
+  # issue 2529 — the highest value ANY per-file cap may be set to. The
+  # upload doors' multipart ceiling (`GrappaWeb.MultipartLimits`) is
+  # derived from it, so a cap at this value is always reachable. A cap
+  # above it would be policy the parser refuses first with a 413 that names
+  # no setting, which is how the 250 MiB and then the 500 MiB video caps
+  # went unreachable behind a 128 MiB parser. The write refuses it instead.
+  # 512 MiB clears the 500 MiB video cap set on prod (2026-11-03).
+  @max_upload_per_file_cap_bytes 512 * 1024 * 1024
   @default_upload_global_cap_bytes 10 * 1024 * 1024 * 1024
   # issue 2175 — the per-subject ceilings. TWO keys, deliberately: a
   # visitor is disposable and reaped, a user is not, so one shared
@@ -259,7 +271,7 @@ defmodule Grappa.ServerSettings do
 
   def put_upload_active_host(_), do: {:error, :invalid_value}
 
-  # ---- upload.{image,video,document}_per_file_cap_bytes ------------
+  # ---- upload.{image,video,document,audio}_per_file_cap_bytes ------
 
   @doc "Returns the per-file upload byte cap for `category`."
   @spec get_upload_per_file_cap_bytes(upload_category()) :: pos_integer()
@@ -279,11 +291,23 @@ defmodule Grappa.ServerSettings do
   def get_upload_per_file_cap_bytes(:audio),
     do: read_cap(@key_upload_audio_per_file_cap_bytes, @default_upload_audio_per_file_cap_bytes)
 
-  @doc "Pins the per-file upload byte cap for `category`. Positive integer only."
+  @doc """
+  The highest per-file cap any category accepts (issue 2529). The upload
+  doors' multipart ceiling is derived from it, so every cap that saves is
+  one the transport can deliver.
+  """
+  @spec max_upload_per_file_cap_bytes() :: unquote(@max_upload_per_file_cap_bytes)
+  def max_upload_per_file_cap_bytes, do: @max_upload_per_file_cap_bytes
+
+  @doc """
+  Pins the per-file upload byte cap for `category`. A positive integer no
+  larger than `max_upload_per_file_cap_bytes/0`.
+  """
   @spec put_upload_per_file_cap_bytes(upload_category(), pos_integer()) ::
           :ok | {:error, :invalid_value | :db_unavailable}
   def put_upload_per_file_cap_bytes(category, n)
-      when category in @upload_categories and is_integer(n) and n > 0 do
+      when category in @upload_categories and is_integer(n) and n > 0 and
+             n <= @max_upload_per_file_cap_bytes do
     put_raw(cap_key_for(category), Integer.to_string(n))
   end
 

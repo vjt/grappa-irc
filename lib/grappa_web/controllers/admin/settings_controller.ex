@@ -271,29 +271,10 @@ defmodule GrappaWeb.Admin.SettingsController do
   defp apply_upload_key("active_host", "litterbox"), do: ServerSettings.put_upload_active_host(:litterbox)
   defp apply_upload_key("active_host", _), do: {:error, {:invalid_setting, "upload.active_host"}}
 
-  defp apply_upload_key("image_per_file_cap_bytes", n) when is_integer(n) and n > 0,
-    do: ServerSettings.put_upload_per_file_cap_bytes(:image, n)
-
-  defp apply_upload_key("image_per_file_cap_bytes", _),
-    do: {:error, {:invalid_setting, "upload.image_per_file_cap_bytes"}}
-
-  defp apply_upload_key("video_per_file_cap_bytes", n) when is_integer(n) and n > 0,
-    do: ServerSettings.put_upload_per_file_cap_bytes(:video, n)
-
-  defp apply_upload_key("video_per_file_cap_bytes", _),
-    do: {:error, {:invalid_setting, "upload.video_per_file_cap_bytes"}}
-
-  defp apply_upload_key("document_per_file_cap_bytes", n) when is_integer(n) and n > 0,
-    do: ServerSettings.put_upload_per_file_cap_bytes(:document, n)
-
-  defp apply_upload_key("document_per_file_cap_bytes", _),
-    do: {:error, {:invalid_setting, "upload.document_per_file_cap_bytes"}}
-
-  defp apply_upload_key("audio_per_file_cap_bytes", n) when is_integer(n) and n > 0,
-    do: ServerSettings.put_upload_per_file_cap_bytes(:audio, n)
-
-  defp apply_upload_key("audio_per_file_cap_bytes", _),
-    do: {:error, {:invalid_setting, "upload.audio_per_file_cap_bytes"}}
+  defp apply_upload_key("image_per_file_cap_bytes", n), do: put_per_file_cap(:image, n)
+  defp apply_upload_key("video_per_file_cap_bytes", n), do: put_per_file_cap(:video, n)
+  defp apply_upload_key("document_per_file_cap_bytes", n), do: put_per_file_cap(:document, n)
+  defp apply_upload_key("audio_per_file_cap_bytes", n), do: put_per_file_cap(:audio, n)
 
   defp apply_upload_key("global_cap_bytes", n) when is_integer(n) and n > 0,
     do: ServerSettings.put_upload_global_cap_bytes(n)
@@ -456,6 +437,20 @@ defmodule GrappaWeb.Admin.SettingsController do
   # → continue; `{:error, _}` → halt with the error preserved.
   defp halt_or_cont(:ok), do: {:cont, :ok}
   defp halt_or_cont({:error, _} = err), do: {:halt, err}
+
+  # The per-file caps are validated by `ServerSettings` alone — positive,
+  # integer, and no larger than the maximum the upload doors' transport can
+  # deliver (issue 2529) — so this door only names the field, the posture
+  # `apply_auto_away_key/2` already takes. The guard it replaces restated
+  # `n > 0` and nothing else, so a cap above the maximum would have reached
+  # `FallbackController` as a bare `:invalid_value`, which it has no clause
+  # for.
+  defp put_per_file_cap(category, n) do
+    case ServerSettings.put_upload_per_file_cap_bytes(category, n) do
+      {:error, :invalid_value} -> {:error, {:invalid_setting, "upload.#{category}_per_file_cap_bytes"}}
+      other -> other
+    end
+  end
 
   # Admin settings view. The `upload` subtree comes from public_view/0 via
   # the shared Wire projection; the `dcc` (issue 2185) and `addressing`
