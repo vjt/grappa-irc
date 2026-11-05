@@ -3169,3 +3169,118 @@ that into an apt refusal; that is a separate change and not made here.
 
 **Not done here:** republishing the 1.6.2 amd64 `.deb` to the apt repo. That
 is a repair dispatch from main once this lands, owned by whoever cuts it.
+<!-- entry #2547 -->
+
+---
+
+## 2026-11-05 — #2547: a browser with no keys says why, and leads to pairing
+
+**What happened (prod, 1.6.1, 2026-11-05 04:37–04:43 CET).** After vjt
+force-quit and relaunched the installed PWA on their phone (the master
+device), the encrypted query showed "this account's encryption identity
+… lives on another device, or was lost". The only visible way out was
+"start a new identity here". They pressed it twice (04:42:05 and 04:43:15).
+Each press deleted the identity on grappa and made a new master, and the
+peer bot raised a key alarm.
+
+**What the investigation established.** The code was not at fault and
+1.6.1 did not cause it: `accountStore.ts`, `identity.ts`, `parseRecord`,
+the server's e2e code and the service worker are byte-identical across
+v1.6.0..v1.6.1. The m42 log, read by device id (the log names no subject,
+and the address is a home NAT), rules out two of the three code paths to
+"elsewhere":
+
+* **M2 ruled out:** a paired device plus a 404 on `GET /e2e/list`. Every
+  list GET answered 200.
+* **M3 ruled out:** grappa's list moving under the device. The only
+  `DELETE /e2e/keys` are the two presses.
+* **M1, refined:** the context that showed "identity lost" held NO e2e
+  record. The original records were NOT destroyed: at 04:42:38 another
+  context of the same account drained with the original azzurra device
+  (404, the first press had just deleted it) and the original libera
+  device (200, in use until 05:02). The device made by the first press
+  was polled again at 04:49 and 04:51, while the second press's device was
+  current. Two storage contexts of one subject were alive on the phone,
+  and vjt was looking at the empty one. Why a relaunch landed in an empty
+  context is platform-side (iOS 27, installed PWA). It is not reproducible
+  here, and this entry does not explain it.
+
+**The ruling (orchestrator, 2026-11-05).** The window must say WHY, in
+the shape "this browser has no keys; grappa lists N of your devices, one
+active X minutes ago", and lead to PAIRING. Replacing stays possible but
+stops being the main path.
+
+**What changed.**
+
+* **The reason.** `syncIdentity` answers `{ elsewhere: reason }` instead
+  of the bare word: `no-keys` (M1, and the bootstrap race lost),
+  `replaced` (another master), `left-out` (the list leaves this device
+  out), `no-list` (M2: a paired device with no list on grappa). The card
+  says it in words and carries it as `data-reason`. An operation that
+  finds a record without an identity (`IdentityElsewhereError`) reads
+  `no-keys`.
+* **What grappa holds.** `heldDevices` counts the devices grappa's signed
+  list names, and takes the latest `last_seen_at` among them. An unlisted
+  device is a pairing under way, not a device of the identity, so its
+  reads count for nothing.
+* **`last_seen_at` is new server state (protocol 56).**
+  `e2e_devices.last_seen_at` is stamped when a device reads its own
+  inbox. Every device does that on page load, on reconnect, and at every
+  e2e push, so it is the one per-device heartbeat grappa already sees.
+  * **Why not the count alone:** "grappa lists 1 of your devices" reads
+    the same whether the keys are gone or were in use one minute ago in
+    another context. Only the second answer tells the user to pair rather
+    than start over, and on 2026-11-05 it would have read "active 46m ago"
+    at 04:42, then seconds.
+  * **The write lock is spent once a minute per device at most:** the
+    compare runs in memory on the row the inbox door already loaded, so
+    the steady poll costs no write.
+  * **The field is `optional` on the wire, as `dm_with` was in 36:** a new
+    bundle still validates a pre-56 server's device list (the copies'
+    sibling listing depends on it) and only omits the "active" clause.
+* **Pairing first.** The pairing guidance comes right after the reason
+  and the devices, and it is #2549's: on a device that holds the identity,
+  open "add a device", and this browser's banner takes the pairing. "start
+  a new identity here" moved inside a `<details>` that starts closed
+  ("none of your devices can pair this browser"), still behind its two-tap
+  confirmation. `replaceIdentity`, the e2e fixture four specs start over
+  with, opens the disclosure first.
+
+**Known gaps, accepted.**
+
+* **"Active" means "read its inbox", not "a page is open".** A page left
+  open and idle has no reason to drain until an e2e push or a reconnect,
+  so its stamp ages while it is open.
+* **The devices line is read once, when the card opens.** It neither
+  refetches nor ticks; a card left open shows the age it had when it
+  appeared. A failed read logs `[e2e] could not read the devices grappa
+  holds on <slug>` and leaves the line out, since the way out does not
+  need it.
+* **Nothing flags a second context of the same device.** The card says
+  only that a listed device was active recently, and the user has to draw
+  the conclusion. grappa cannot tell two storage contexts of one phone
+  from two phones.
+* **Not reproduced: the platform cause** (why the relaunch opened an empty
+  storage context). The two-context e2e reproduces its consequence, two
+  storages logged in as one account, not the cause.
+
+### Tests
+
+* `issue2547-identity-elsewhere-why.spec.ts`: two contexts of one account.
+  B makes the identity and talks to Bob. A, with empty storage, opens the
+  same query. The card says `no-keys`, "grappa lists 1 of your devices,
+  active Ns ago", shows pairing first and hides the replace until the
+  disclosure is opened, and pairing from the banner (`pairFromBanner`)
+  keeps B's master: grappa lists B's device and the one the pairing added,
+  and no new identity.
+* Server: `E2eKeys.seen/1` (never seen → stamped; younger than a minute →
+  untouched; a minute old → moved; a dropped device → `:ok`), and the
+  inbox door's stamp read back through `GET /e2e/devices`.
+* cic: each reason off its own path in `e2eIdentity.test.ts`,
+  `heldDevices` (listed count, latest listed stamp, unlisted ignored, no
+  list → 0), the fake grappa's stamp against the server's rule, and the
+  card in `EncryptedChatPane.test.tsx`: each reason's sentence and
+  `data-reason`, the devices line read from grappa and a refused read left
+  out, the pairing guidance ahead of a closed disclosure holding the
+  replace, and `heldDevicesLine` for none, one and several devices, with
+  and without an activity it can read.
