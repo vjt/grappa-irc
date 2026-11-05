@@ -68,6 +68,7 @@ const context = (): CommandContext => ({
   requireChannel: unread("requireChannel"),
   requireNetworkId: unread("requireNetworkId"),
   resolveBareWhoisNick: unread("resolveBareWhoisNick"),
+  sendAction: unread("sendAction"),
 });
 
 describe("service-modal arm (#290/#1518)", () => {

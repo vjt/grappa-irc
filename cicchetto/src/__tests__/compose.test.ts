@@ -678,6 +678,24 @@ describe("compose history (up/down recall)", () => {
   });
 });
 
+/** #1698 — tune `RADIO_STATIONS[0]` with `fetch` answering `body`, and hand
+    back the station so a case can name it in its expectation. Drives the REAL
+    `nowPlaying` store; the caller unstubs `fetch` in its own `afterEach`. */
+const tuneWith = async (body: unknown): Promise<{ title: string }> => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => body } as Response),
+  );
+  const { RADIO_STATIONS } = await import("../lib/radioStations");
+  const station = RADIO_STATIONS[0];
+  if (station === undefined) throw new Error("the curated table must carry a station");
+  const { tuneStation } = await import("../lib/radio");
+  const { nowPlaying } = await import("../lib/nowPlaying");
+  tuneStation(station);
+  await vi.waitFor(() => expect(nowPlaying().status).not.toBe("unanswered"));
+  return station;
+};
+
 describe("compose submit — slash command dispatch", () => {
   it(":privmsg sends via scrollback.sendMessage", async () => {
     localStorage.setItem("grappa-token", "tok");
@@ -1500,23 +1518,6 @@ describe("compose submit — slash command dispatch", () => {
       // exactly the contract its header describes.
       vi.unstubAllGlobals();
     });
-
-    /** Tune `RADIO_STATIONS[0]` with `fetch` answering `body`, and hand back
-        the station so a case can name it in its expectation. */
-    const tuneWith = async (body: unknown): Promise<{ title: string }> => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => body } as Response),
-      );
-      const { RADIO_STATIONS } = await import("../lib/radioStations");
-      const station = RADIO_STATIONS[0];
-      if (station === undefined) throw new Error("the curated table must carry a station");
-      const { tuneStation } = await import("../lib/radio");
-      const { nowPlaying } = await import("../lib/nowPlaying");
-      tuneStation(station);
-      await vi.waitFor(() => expect(nowPlaying().status).not.toBe("unanswered"));
-      return station;
-    };
 
     it("sends an ACTION naming artist, track and station into the current window", async () => {
       // ACTION, not PRIVMSG: `* nick is now playing: …` is the verb's whole
@@ -7613,6 +7614,148 @@ describe("compose in an encrypted window (issues 2512, 2536)", () => {
     expect(compose.sentEncrypted("freenode", e2eWindow, "/me uno\ndue")).toBe(true);
     expect(compose.sentEncrypted("freenode", e2eWindow, "/msg carol uno\ndue")).toBe(false);
     expect(compose.sentEncrypted("freenode", "bob", "uno\ndue")).toBe(false);
+  });
+
+  // issue 2543 — `/me` is not the only command that sends an ACTION: `/np`
+  // sends one to the window it was typed in, `/ctcp <nick> ACTION` to the
+  // nick. Aimed at the peer, each is what `/me` is here, said through Olm;
+  // nothing ACTION-shaped reaches the peer in clear.
+  describe("every ACTION to the peer goes encrypted (issue 2543)", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("/np goes to the peer encrypted, the now-playing ACTION inside the message", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const encrypted = await import("../lib/encryptedChats");
+      const sb = await import("../lib/scrollback");
+      const station = await tuneWith({ songs: [{ title: "A Land Unknown", artist: "Trestal" }] });
+      const compose = await import("../lib/compose");
+      const k = channelKey("freenode", e2eWindow);
+
+      compose.setDraft(k, "/np");
+      expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
+
+      expect(vi.mocked(encrypted.sendEncrypted).mock.calls).toEqual([
+        [
+          "freenode",
+          "Bob",
+          `\x01ACTION is now playing: Trestal — A Land Unknown [${station.title}]\x01`,
+        ],
+      ]);
+      expect(sb.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it("/np that has nothing to say sends nothing, to the peer or in clear", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const encrypted = await import("../lib/encryptedChats");
+      const sb = await import("../lib/scrollback");
+      const compose = await import("../lib/compose");
+      const k = channelKey("freenode", e2eWindow);
+
+      compose.setDraft(k, "/np");
+      expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({
+        error: "/np: nothing is playing — tune a station from the radio picker first",
+      });
+
+      expect(encrypted.sendEncrypted).not.toHaveBeenCalled();
+      expect(sb.sendMessage).not.toHaveBeenCalled();
+    });
+
+    // The peer by any case of their nick: a nick's case is presentation.
+    it("/ctcp <peer> ACTION goes to the peer encrypted, whatever case the nick is typed in", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const encrypted = await import("../lib/encryptedChats");
+      const sb = await import("../lib/scrollback");
+      const compose = await import("../lib/compose");
+      const k = channelKey("freenode", e2eWindow);
+
+      compose.setDraft(k, "/ctcp Bob ACTION waves");
+      expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
+      compose.setDraft(k, "/ctcp bob action waves again");
+      expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
+
+      expect(vi.mocked(encrypted.sendEncrypted).mock.calls).toEqual([
+        ["freenode", "Bob", "\x01ACTION waves\x01"],
+        ["freenode", "Bob", "\x01ACTION waves again\x01"],
+      ]);
+      expect(sb.sendMessage).not.toHaveBeenCalled();
+    });
+
+    // As `/me` there: the ACTION is the only frame, and nothing to say sends
+    // nothing.
+    it("/ctcp <peer> ACTION carries no delimiter the text held, and an empty one sends nothing", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const encrypted = await import("../lib/encryptedChats");
+      const sb = await import("../lib/scrollback");
+      const compose = await import("../lib/compose");
+      const k = channelKey("freenode", e2eWindow);
+
+      compose.setDraft(k, "/ctcp Bob ACTION a\x01VERSION\x01b");
+      await compose.submit(k, "freenode", e2eWindow);
+      compose.setDraft(k, "/ctcp Bob ACTION");
+      expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
+
+      expect(vi.mocked(encrypted.sendEncrypted).mock.calls).toEqual([
+        ["freenode", "Bob", "\x01ACTION aVERSIONb\x01"],
+      ]);
+      expect(sb.sendMessage).not.toHaveBeenCalled();
+    });
+
+    // An ACTION to someone else is not the encrypted conversation, and another
+    // CTCP is a request to the peer's client, not something said (the issue's
+    // scope): both run as they would in the plain query.
+    it("an ACTION to another nick, and any other CTCP, run in clear as in the plain query", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const encrypted = await import("../lib/encryptedChats");
+      const sb = await import("../lib/scrollback");
+      vi.mocked(sb.sendMessage).mockResolvedValue();
+      const compose = await import("../lib/compose");
+      const k = channelKey("freenode", e2eWindow);
+
+      compose.setDraft(k, "/ctcp carol ACTION waves");
+      expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
+      compose.setDraft(k, "/ctcp Bob VERSION");
+      expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ ok: true });
+
+      expect(vi.mocked(sb.sendMessage).mock.calls).toEqual([
+        ["freenode", "carol", "\x01ACTION waves\x01"],
+        ["freenode", "Bob", "\x01VERSION\x01", { kind: "ctcp", target: "Bob" }],
+      ]);
+      expect(encrypted.sendEncrypted).not.toHaveBeenCalled();
+    });
+
+    it("a /np the engine never took comes back to the box, said so, and logged", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const encrypted = await import("../lib/encryptedChats");
+      const cause = new Error("no network freenode to use");
+      vi.mocked(encrypted.sendEncrypted).mockRejectedValueOnce(cause);
+      await tuneWith({ songs: [{ title: "A Land Unknown", artist: "Trestal" }] });
+      const compose = await import("../lib/compose");
+      const k = channelKey("freenode", e2eWindow);
+
+      compose.setDraft(k, "/np");
+      expect(await compose.submit(k, "freenode", e2eWindow)).toEqual({ error: "send failed" });
+
+      expect(compose.getDraft(k)).toBe("/np");
+      expect(warn).toHaveBeenCalledWith("[e2e] could not send to Bob", cause);
+      warn.mockRestore();
+    });
+
+    // The paste guard's question again: a block handed to an ACTION for the
+    // peer is said as one encrypted message, so it is no burst and must not be
+    // offered the way out that puts it on the upload host in clear.
+    it("sentEncrypted: an ACTION for the peer is said there, one for another nick is not", async () => {
+      const compose = await import("../lib/compose");
+      expect(compose.sentEncrypted("freenode", e2eWindow, "/ctcp bob ACTION uno\ndue")).toBe(true);
+      expect(compose.sentEncrypted("freenode", e2eWindow, "/np")).toBe(true);
+      expect(compose.sentEncrypted("freenode", e2eWindow, "/ctcp carol ACTION uno\ndue")).toBe(
+        false,
+      );
+      expect(compose.sentEncrypted("freenode", e2eWindow, "/ctcp Bob VERSION")).toBe(false);
+      expect(compose.sentEncrypted("freenode", "bob", "/ctcp bob ACTION uno\ndue")).toBe(false);
+    });
   });
 
   it("sends a body of several lines as the one message it is", async () => {

@@ -1,6 +1,6 @@
-import { ctcpFrame } from "../ctcpAction";
 import { sendCtcpQuery } from "../ctcpQuery";
 import { sendMessage as sendWindowMessage } from "../scrollback";
+import type { SlashCommand } from "../slashCommands";
 import type { CommandHandler } from "./context";
 
 /**
@@ -15,6 +15,13 @@ import type { CommandHandler } from "./context";
  */
 
 /**
+ * Whether a `/ctcp` is an ACTION, the one CTCP that is conversation. The parser
+ * upper-cases the verb; asked case-insensitively regardless.
+ */
+export const isActionCtcp = (cmd: Extract<SlashCommand, { kind: "ctcp" }>): boolean =>
+  cmd.verb.toUpperCase() === "ACTION";
+
+/**
  * #591 — `/ctcp <target> <VERB> [args]`: a single CTCP frame to an EXPLICIT
  * target (not the current window). Non-ACTION CTCP is single-line by convention
  * (Grappa.IRC.LineSplit) so there is no multiline fan-out. AWAIT the send: a
@@ -24,10 +31,11 @@ export const ctcpCommand: CommandHandler<"ctcp"> = async (cmd, ctx) => {
   // ACTION is the exception this door keeps for itself: it IS conversation
   // (`/me` to an explicit target), so it belongs in the TARGET window and rides
   // the normal send path (the server also rejects an ACTION through the CTCP
-  // route — `Session.send_ctcp`'s non-ACTION gate). The parser upper-cases the
-  // verb; guard case-insensitively regardless.
-  if (cmd.verb.toUpperCase() === "ACTION") {
-    await sendWindowMessage(ctx.networkSlug, cmd.target, ctcpFrame(cmd.verb, cmd.args));
+  // route — `Session.send_ctcp`'s non-ACTION gate). issue 2543 — through
+  // `sendAction`, so an ACTION to the peer of the encrypted query it was typed
+  // in goes encrypted, as `/me` there does.
+  if (isActionCtcp(cmd)) {
+    await ctx.sendAction(cmd.target, cmd.args);
     return { ok: true };
   }
   const networkId = ctx.requireNetworkId(ctx.networkSlug, "ctcp");

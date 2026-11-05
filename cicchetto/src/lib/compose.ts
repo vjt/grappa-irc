@@ -2,7 +2,7 @@ import { createEffect, createSignal, on } from "solid-js";
 import { aliases } from "./aliasList";
 import { ownNickForNetwork } from "./api";
 import { token } from "./auth";
-import { chantypesForSlug } from "./casemapping";
+import { casemappingForSlug, chantypesForSlug } from "./casemapping";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import type { CommandContext, DispatchOutcome, SubmitResult } from "./commands/context";
 import { fanOutCommand } from "./commands/fanout";
@@ -38,7 +38,7 @@ import {
   voiceCommand,
 } from "./commands/ops";
 import { npCommand } from "./commands/radio";
-import { ctcpCommand, noticeCommand, pingCommand } from "./commands/relay";
+import { ctcpCommand, isActionCtcp, noticeCommand, pingCommand } from "./commands/relay";
 import {
   adminCommand,
   infoCommand,
@@ -74,7 +74,7 @@ import {
   partCommand,
   queryCommand,
 } from "./commands/window";
-import { scrubCtcpDelimiters } from "./ctcpAction";
+import { ctcpFrame, scrubCtcpDelimiters } from "./ctcpAction";
 import { documentTeardownEpoch, documentTornDownSince } from "./documentTeardown";
 import { encryptedChatDeleted, sendEncrypted } from "./encryptedChats";
 import { type FramePreview, framePreview } from "./frameBudget";
@@ -83,6 +83,7 @@ import { identityScopedStore } from "./identityScopedStore";
 import { sigilRankForNetwork } from "./isupport";
 import { splitMessageLines } from "./messageLines";
 import { networkBySlug, networkIdBySlug, user } from "./networks";
+import { nickEquals } from "./nickEquals";
 import { ensureQueryTopicJoined } from "./queryTopicJoin";
 import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
 // #1225 — the seam sends a PRIVMSG to the window OR relays a NOTICE/CTCP to a
@@ -248,16 +249,60 @@ export const draftFramePreview = (
 const isSaid = (cmd: SlashCommand): cmd is Extract<SlashCommand, { kind: "privmsg" | "me" }> =>
   cmd.kind === "privmsg" || cmd.kind === "me";
 
+// issue 2543 — whether `nick` is the encrypted query's `peer`: a nick's case
+// is presentation, so the network's casemapping decides.
+const isPeer = (networkSlug: string, peer: string, nick: string): boolean =>
+  nickEquals(nick, peer, casemappingForSlug(networkSlug));
+
+// issue 2543 — …and every other ACTION aimed at the peer, which is what `/me`
+// is there: `/np`, which aims at the window it was typed in, and `/ctcp <peer>
+// ACTION`. They run through their handlers, which send through
+// `CommandContext.sendAction`; this is that door's answer, asked beforehand.
+const actsToPeer = (networkSlug: string, peer: string, cmd: SlashCommand): boolean =>
+  cmd.kind === "np" ||
+  (cmd.kind === "ctcp" && isActionCtcp(cmd) && isPeer(networkSlug, peer, cmd.target));
+
 /**
  * issue 2536 — whether `draft`, submitted from `channelName`, goes to an
  * encrypted query's peer as ONE encrypted message: the question `submit`
  * answers, for a door that must know before it. The paste guard asks it: a
  * block said there is no burst, a block handed to a command (`/msg x ` and
- * twenty lines) fans out in clear as anywhere.
+ * twenty lines) fans out in clear as anywhere. issue 2543 — an ACTION for the
+ * peer is said there too, so a block handed to one is never offered the
+ * guard's way out, the text file that would put it on the upload host.
  */
-export const sentEncrypted = (networkSlug: string, channelName: string, draft: string): boolean =>
-  encryptedWindowPeer(channelName) !== null &&
-  isSaid(parseSlash(draft, aliases(), chantypesForSlug(networkSlug)));
+export const sentEncrypted = (networkSlug: string, channelName: string, draft: string): boolean => {
+  const peer = encryptedWindowPeer(channelName);
+  if (peer === null) return false;
+  const cmd = parseSlash(draft, aliases(), chantypesForSlug(networkSlug));
+  return isSaid(cmd) || actsToPeer(networkSlug, peer, cmd);
+};
+
+/**
+ * issue 2512 — say `body` to an encrypted query's peer: ONE message through
+ * Olm however many lines it holds (a line renders its newlines), an ACTION
+ * when `action` (issue 2536: the receiver draws it as one). Typed text frames
+ * nothing (the #1126 exit scrub), so only `action` makes an ACTION and a
+ * pasted delimiter cannot pass for one; nothing left to say sends nothing, as
+ * an empty `/me` in any window. A send that never reached the engine (which
+ * marks its own failures on the row) is logged and rethrown: the caller's
+ * pump hands the text back.
+ */
+const sayEncrypted = async (
+  networkSlug: string,
+  peer: string,
+  body: string,
+  action: boolean,
+): Promise<void> => {
+  const said = scrubCtcpDelimiters(body);
+  if (said.trim() === "") return;
+  try {
+    await sendEncrypted(networkSlug, peer, wireBody(said, action));
+  } catch (e) {
+    console.warn(`[e2e] could not send to ${peer}`, e);
+    throw e;
+  }
+};
 
 const exports_ = identityScopedStore((onIdentityChange) => {
   // #772 — seeded from the previous document's unsent drafts. The textarea is
@@ -657,10 +702,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     if (cmd.kind === "empty") return { error: "empty" };
 
     // issue 2512 — in an encrypted query, what is said goes to the peer,
-    // encrypted, as ONE message however many lines it holds (Olm carries the
-    // body whole, and a line renders its newlines). A failure here never
-    // reached the engine (which marks its own on the row): the pump hands the
-    // text back.
+    // encrypted, as ONE message (`sayEncrypted`).
     //
     // issue 2536 (vjt's ruling, reversing 2512's "an encrypted query takes no
     // command") — what is said is plain text and `/me`, nothing else. `/me`
@@ -669,19 +711,14 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // Every other command runs in clear, on purpose: a command is not part of
     // the encrypted conversation, and treating it as text handed the peer a
     // `/ns identify <password>`. So 2512's "nothing typed in that window
-    // reaches grappa's send door in clear" now holds for what is said only.
+    // reaches grappa's send door in clear" now holds for what is said only —
+    // and, issue 2543, for every other ACTION to the peer (`sendAction`).
     const peer = encryptedWindowPeer(submittedFrom);
     if (peer !== null && isSaid(cmd)) {
-      // Typed text frames nothing (the #1126 exit scrub): only `/me` makes an
-      // ACTION, so a pasted delimiter cannot pass for one.
-      const said = scrubCtcpDelimiters(cmd.body);
-      // Nothing left to say (an empty `/me`) sends nothing, as in any window.
-      if (said.trim() === "") return { ok: true };
       try {
-        await sendEncrypted(networkSlug, peer, wireBody(said, cmd.kind === "me"));
+        await sayEncrypted(networkSlug, peer, cmd.body, cmd.kind === "me");
         return { ok: true };
       } catch (e) {
-        console.warn(`[e2e] could not send to ${peer}`, e);
         return { error: friendlyError(e) };
       }
     }
@@ -803,6 +840,14 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       return own;
     };
 
+    // issue 2543 — an ACTION to `target`. To the peer of the encrypted query
+    // it was typed in, it is what `/me` is there: said through Olm, never a
+    // clear CTCP. To anyone else, and from any other window, the clear ACTION.
+    const sendAction = (target: string, text: string): Promise<void> =>
+      peer !== null && isPeer(networkSlug, peer, target)
+        ? sayEncrypted(networkSlug, peer, text, true)
+        : sendWindowMessage(networkSlug, target, ctcpFrame("ACTION", text));
+
     // #1396 — the per-submission values a handler cannot import for itself.
     // Built once, here, so every handler reads the SAME window: resolving any
     // of these inside a handler would re-read the store at handler time and
@@ -819,6 +864,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       requireChannel,
       requireNetworkId,
       resolveBareWhoisNick,
+      sendAction,
     };
 
     let result: SubmitResult;
