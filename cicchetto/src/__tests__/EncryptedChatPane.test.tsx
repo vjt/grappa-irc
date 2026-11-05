@@ -7,6 +7,7 @@ import { setDraft } from "../lib/compose";
 import { acceptConfirm, confirmRequest, dismissConfirm } from "../lib/confirmDialog";
 import type { Chat, ChatRow, IdentityCheck } from "../lib/e2e/chatStore";
 import type { PeerTrust } from "../lib/e2e/client";
+import type { ElsewhereReason } from "../lib/e2e/identity";
 import type { SasView } from "../lib/e2e/sas";
 import { SAS_EMOJI } from "../lib/e2e/sasEmoji";
 import { friendlyApiError } from "../lib/friendlyApiError";
@@ -32,7 +33,9 @@ const [trust, setTrust] = createSignal<PeerTrust | null>(null);
 const [own, setOwn] = createSignal<string | undefined>(undefined);
 const [visible, setVisible] = createSignal(true);
 const [sas, setSas] = createSignal<SasView | null>(null);
-const [elsewhere, setElsewhere] = createSignal(false);
+// issue 2547 — why the network's identity is elsewhere, or null while it is
+// not: `identityElsewhere` is derived from it, as encryptedChats derives it.
+const [elsewhere, setElsewhere] = createSignal<ElsewhereReason | null>(null);
 // issue 2513 — the one chat (`slug/nick`) the sidebar's toggle shows as its
 // ciphertext, or none.
 const [wireView, setWireView] = createSignal<string | null>(null);
@@ -44,6 +47,7 @@ const pinEncryptedKey = vi.hoisted(() => vi.fn());
 const verifyEncrypted = vi.hoisted(() => vi.fn());
 const deleteEncryptedChat = vi.hoisted(() => vi.fn());
 const replaceEncryptedIdentity = vi.hoisted(() => vi.fn());
+const identityDevices = vi.hoisted(() => vi.fn());
 const rekeyEncrypted = vi.hoisted(() => vi.fn());
 const copyText = vi.hoisted(() => vi.fn());
 const holdsMasterHere = vi.hoisted(() => vi.fn());
@@ -67,7 +71,9 @@ vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   encryptedTrust: () => trust(),
   encryptedSas: () => sas(),
   ownKey: () => own(),
-  identityElsewhere: () => elsewhere(),
+  identityElsewhere: () => elsewhere() !== null,
+  elsewhereReason: () => elsewhere(),
+  identityDevices,
   // issue 2513 — the sidebar's toggle (its own tests drive it): the pane reads
   // it for its own chat, never another's.
   encryptedWireView: (slug: string, nick: string) => wireView() === `${slug}/${nick}`,
@@ -146,7 +152,13 @@ vi.mock("../lib/scrollback", async (importOriginal) => ({
   refreshScrollback,
 }));
 
-const { default: EncryptedChatPane, NO_CIPHERTEXT, UNSENT } = await import("../EncryptedChatPane");
+const {
+  default: EncryptedChatPane,
+  ELSEWHERE_WHY,
+  heldDevicesLine,
+  NO_CIPHERTEXT,
+  UNSENT,
+} = await import("../EncryptedChatPane");
 const { default: EncryptedRail } = await import("../EncryptedRail");
 const { formatTime } = await import("../ScrollbackPane");
 
@@ -167,6 +179,7 @@ beforeEach(() => {
     fn.mockResolvedValue(undefined);
   }
   pinEncryptedKey.mockResolvedValue("pinned");
+  identityDevices.mockResolvedValue({ listed: 1, lastActive: null });
   holdsMasterHere.mockResolvedValue(true);
   panel.mounted = 0;
   panel.unmounted = 0;
@@ -176,7 +189,7 @@ beforeEach(() => {
   setOwn(OWN);
   setVisible(true);
   setSas(null);
-  setElsewhere(false);
+  setElsewhere(null);
   setWireView(null);
   dismissConfirm();
   // The compose store is the app's one (issue 2512): each test starts on an
@@ -957,7 +970,7 @@ describe("EncryptedChatPane, the emoji comparison", () => {
     expect(door()).toBeNull();
 
     setSas(null);
-    setElsewhere(true);
+    setElsewhere("no-keys");
     expect(door()).toBeNull();
     fireEvent.click(screen.getByTestId("e2e-peer-trust"));
     expect(verifyEncrypted).not.toHaveBeenCalled();
@@ -1472,30 +1485,43 @@ describe("EncryptedChatPane, compose and the chat's tools", () => {
 
 // The account's identity for the network is held elsewhere (another device,
 // or a wiped browser): never replaced silently. A card in the chat says so
-// (vjt's ruling 4), offers pairing this browser first, then a new identity
-// behind a confirmation that names what it destroys; nothing can be sent
-// meanwhile, and the rail can act on nothing.
+// (vjt's ruling 4) and, since issue 2547, says WHY and what grappa holds,
+// then leads to pairing this browser; a new identity stays behind a
+// disclosure and a confirmation that names what it destroys. Nothing can be
+// sent meanwhile, and the rail can act on nothing.
 describe("EncryptedChatPane, an identity held elsewhere", () => {
-  it("says the identity is held elsewhere, offers both ways out, and keeps compose shut", () => {
+  it("says why, offers pairing first and a new identity only behind a disclosure, and keeps compose shut", () => {
     setTrust({ master: KEY, verified: false, devices: 1 });
-    setElsewhere(true);
+    setElsewhere("no-keys");
     renderPane();
 
-    expect(screen.getByTestId("e2e-identity-elsewhere").textContent).toContain(
-      "lives on another device, or was lost",
-    );
+    const why = screen.getByTestId("e2e-identity-elsewhere");
+    expect(why.dataset.reason).toBe("no-keys");
+    expect(why.textContent).toContain("this browser holds no keys");
     expect(within("e2e-step").dataset.step).toBe("elsewhere");
-    expect(within("e2e-step").contains(screen.getByTestId("e2e-identity-replace"))).toBe(true);
     expect(screen.getByTestId("e2e-rail-elsewhere")).toBeTruthy();
     // Issue 2549: pairing starts on the device that holds the identity and is
     // accepted here from the banner; there is no link to paste.
-    const how = screen.getByTestId("e2e-identity-pair-how").textContent ?? "";
-    expect(how).toContain('"add a device"');
-    expect(how).toContain('"Pair this browser"');
+    const how = screen.getByTestId("e2e-identity-pair-how");
+    expect(how.textContent).toContain("pair this browser with a device that holds it");
+    expect(how.textContent).toContain('"add a device"');
+    expect(how.textContent).toContain('"Pair this browser"');
     expect(within("e2e-step").querySelector("input")).toBeNull();
-    expect(screen.getByTestId("e2e-identity-replace").textContent).toBe(
-      "start a new identity here",
+    // The new identity sits in a disclosure that starts closed, after the
+    // pairing guidance: the other way, not the first one.
+    const replace = screen.getByTestId("e2e-identity-replace");
+    const other = replace.closest("details");
+    expect(other).not.toBeNull();
+    expect(other?.open).toBe(false);
+    expect(within("e2e-step").contains(other)).toBe(true);
+    expect(other?.querySelector("summary")).toBe(screen.getByTestId("e2e-identity-other-way"));
+    expect(screen.getByTestId("e2e-identity-other-way").textContent).toBe(
+      "none of your devices can pair this browser",
     );
+    expect(how.compareDocumentPosition(other as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(replace.textContent).toBe("start a new identity here");
     // Nothing that needs the identity: no key to copy or pin, no SAS.
     expect(screen.queryByTestId("e2e-own-identity")).toBeNull();
     expect(screen.queryByTestId("e2e-pin-input")).toBeNull();
@@ -1503,22 +1529,74 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     expect(composeShut()).toBe(true);
   });
 
+  it("says, for each reason the sync found, its own why", () => {
+    const anchors: Record<ElsewhereReason, string> = {
+      "no-keys": "this browser holds no keys",
+      replaced: "was replaced on another device",
+      "left-out": "no longer one of the devices",
+      "no-list": "no longer holds the list",
+    };
+    for (const reason of Object.keys(anchors) as ElsewhereReason[]) {
+      setElsewhere(reason);
+      const { unmount } = renderPane();
+      const why = screen.getByTestId("e2e-identity-elsewhere");
+
+      expect(why.dataset.reason).toBe(reason);
+      expect(why.textContent).toBe(ELSEWHERE_WHY[reason]);
+      expect(why.textContent).toContain(anchors[reason]);
+      unmount();
+    }
+    expect(new Set(Object.values(ELSEWHERE_WHY)).size).toBe(4);
+  });
+
+  it("says how many devices grappa lists for the identity, and when one was last active", async () => {
+    // 4h 12m and a few seconds ago: the line reads the same for a minute.
+    const lastActive = new Date(Date.now() - (4 * 3600 + 12 * 60 + 5) * 1000).toISOString();
+    identityDevices.mockResolvedValue({ listed: 2, lastActive });
+    setElsewhere("no-keys");
+    renderPane();
+
+    expect((await screen.findByTestId("e2e-identity-devices")).textContent).toBe(
+      "grappa lists 2 of your devices, one active 4h 12m ago",
+    );
+    expect(identityDevices).toHaveBeenCalledWith("azzurra");
+  });
+
+  it("a devices read grappa refused is logged and leaves the line out, the rest of the card stays", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const refused = new ApiError(503, "unavailable");
+    identityDevices.mockRejectedValue(refused);
+    setElsewhere("no-keys");
+    renderPane();
+
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(
+        "[e2e] could not read the devices grappa holds on azzurra",
+        refused,
+      ),
+    );
+    expect(screen.queryByTestId("e2e-identity-devices")).toBeNull();
+    expect(screen.getByTestId("e2e-identity-pair-how")).toBeTruthy();
+    expect(screen.getByTestId("e2e-identity-replace")).toBeTruthy();
+    warn.mockRestore();
+  });
+
   it("shuts the compose box on what was typed before, and opens it again once the network reads ready", () => {
     renderPane();
     type("typed");
     expect(composeShut()).toBe(false);
-    setElsewhere(true);
+    setElsewhere("no-keys");
 
     expect(composeShut()).toBe(true);
     expect(composer().value).toBe("typed");
-    setElsewhere(false);
+    setElsewhere(null);
     expect(composeShut()).toBe(false);
   });
 
   it("offers no control that needs the identity: the alarm's key cannot be taken, the chat cannot be deleted", () => {
     setTrust({ master: KEY, verified: true, devices: 1 });
     setRows([{ kind: "key_alarm", id: "a", at, nick: "Bob", presented: OWN }]);
-    setElsewhere(true);
+    setElsewhere("no-keys");
     renderPane();
     const remove = screen.getByTestId("e2e-delete-chat") as HTMLButtonElement;
 
@@ -1530,14 +1608,14 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     expect(deleteEncryptedChat).not.toHaveBeenCalled();
 
     // Once the network reads ready again, they come back.
-    setElsewhere(false);
+    setElsewhere(null);
     expect(screen.getByTestId("e2e-alarm-accept")).toBeTruthy();
     expect(screen.getByTestId("e2e-rail-alarm-accept")).toBeTruthy();
     expect(remove.disabled).toBe(false);
   });
 
   it("a new identity takes two taps, the second naming what it destroys", () => {
-    setElsewhere(true);
+    setElsewhere("no-keys");
     renderPane();
     const button = screen.getByTestId("e2e-identity-replace");
 
@@ -1552,9 +1630,9 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
 
   it("confirmed, starts the new identity, and once the network reads ready, compose opens", async () => {
     replaceEncryptedIdentity.mockImplementation(async () => {
-      setElsewhere(false);
+      setElsewhere(null);
     });
-    setElsewhere(true);
+    setElsewhere("no-keys");
     renderPane();
     const button = screen.getByTestId("e2e-identity-replace");
 
@@ -1575,7 +1653,7 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
           done = resolve;
         }),
     );
-    setElsewhere(true);
+    setElsewhere("no-keys");
     renderPane();
     const button = screen.getByTestId("e2e-identity-replace") as HTMLButtonElement;
 
@@ -1594,7 +1672,7 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const refused = new ApiError(503, "unavailable");
     replaceEncryptedIdentity.mockRejectedValue(refused);
-    setElsewhere(true);
+    setElsewhere("no-keys");
     renderPane();
     const button = screen.getByTestId("e2e-identity-replace");
 
@@ -1614,7 +1692,7 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const broken = new Error("the database is closing");
     replaceEncryptedIdentity.mockRejectedValue(broken);
-    setElsewhere(true);
+    setElsewhere("no-keys");
     renderPane();
     const button = screen.getByTestId("e2e-identity-replace");
 
@@ -1626,5 +1704,42 @@ describe("EncryptedChatPane, an identity held elsewhere", () => {
     );
     expect(warn).toHaveBeenCalledWith("[e2e] could not start a new identity on azzurra", broken);
     warn.mockRestore();
+  });
+});
+
+// issue 2547 — the card's line on what grappa holds: the count of devices its
+// list names, and how long ago one of them read its inbox.
+describe("heldDevicesLine", () => {
+  const now = Date.parse("2026-11-05T04:42:30Z");
+  const ago = (seconds: number) => new Date(now - seconds * 1000).toISOString();
+
+  it("says grappa lists none of the devices when its list names none", () => {
+    expect(heldDevicesLine({ listed: 0, lastActive: null }, now)).toBe(
+      "grappa lists none of your devices",
+    );
+  });
+
+  it("names the one device's activity, or only the count when none is known", () => {
+    expect(heldDevicesLine({ listed: 1, lastActive: ago(45) }, now)).toBe(
+      "grappa lists 1 of your devices, active 45s ago",
+    );
+    expect(heldDevicesLine({ listed: 1, lastActive: null }, now)).toBe(
+      "grappa lists 1 of your devices",
+    );
+  });
+
+  it("says one of several was active, or only the count when none is known", () => {
+    expect(heldDevicesLine({ listed: 3, lastActive: ago(4 * 3600 + 12 * 60) }, now)).toBe(
+      "grappa lists 3 of your devices, one active 4h 12m ago",
+    );
+    expect(heldDevicesLine({ listed: 2, lastActive: null }, now)).toBe(
+      "grappa lists 2 of your devices",
+    );
+  });
+
+  it("drops an activity it cannot read rather than guess one", () => {
+    expect(heldDevicesLine({ listed: 2, lastActive: "not a time" }, now)).toBe(
+      "grappa lists 2 of your devices",
+    );
   });
 });
