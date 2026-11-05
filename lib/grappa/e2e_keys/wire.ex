@@ -18,8 +18,8 @@ defmodule Grappa.E2eKeys.Wire do
   frame's `<from>`/`<to>` names), and its id block — `curve25519`,
   `ed25519`, and `sig`, the device's signature over its Curve25519 key and
   the master. `last_seen_at` (issue 2547, protocol 56): when the device
-  last read its own inbox, to the minute (`E2eKeys.seen/1`), or `nil` when
-  it has not since grappa records it.
+  last read its own inbox, to the second and moved at most once a minute
+  (`E2eKeys.seen/1`), or `nil` when it has not since grappa records it.
 
   `last_seen_at` is `optional` because a server predating protocol 56
   omits it: a client still lists the devices of such a server, and only
