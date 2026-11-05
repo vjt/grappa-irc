@@ -17,15 +17,20 @@
 // server in order once the first ack lands (`feedback_cicchetto_browser_smoke`
 // — jsdom can observe none of that against a live grappa + leaf).
 //
-// The slow link is synthesized with `page.route`: the FIRST send POST is held
-// open until the spec releases it, which is exactly the ~5s mobile ack the
-// issue was reported on, made deterministic. Everything else — the queueing,
-// the dispatch, the ordering — is the real client and the real server.
+// The slow link is synthesized inside the page (`answerFetchInPage`): the
+// FIRST send POST is held open until the spec releases it, which is exactly
+// the ~5s mobile ack the issue was reported on, made deterministic.
+// Everything else — the queueing, the dispatch, the ordering — is the real
+// client and the real server. Not `page.route` (issue 2555): in CI Chromium's
+// view of the page's requests went blind after the device key upload, the
+// first send went straight through to a 201, and the spec counted no POST at
+// all (#2461, the same cut that hit #666).
 //
 // Subject-/platform-agnostic (store state + one `readOnly` binding), so one
 // desktop chromium run with the registered seed is sufficient.
 
 import { composeTextarea, loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
+import { answerFetchInPage } from "../fixtures/fetchInPage";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
@@ -41,9 +46,6 @@ test("#904 — a slow send frees the composer, queues ONE more, refuses the thir
   page,
 }) => {
   if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
-  const vjt = specUser();
-  await loginAs(page, vjt);
-  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 
   const tag = crypto.randomUUID().slice(0, 8);
   const first = `q904 ${tag} first`;
@@ -52,23 +54,23 @@ test("#904 — a slow send frees the composer, queues ONE more, refuses the thir
 
   // The slow link: hold the FIRST send POST open until this spec releases it.
   // Every later send goes through untouched — the queue drains at full speed
-  // once the ack that was blocking it lands.
+  // once the ack that was blocking it lands. Installed before the login: the
+  // wrapper rides in on the page's first load.
   let releaseFirst: () => void = () => {};
   const firstHeld = new Promise<void>((resolve) => {
     releaseFirst = resolve;
   });
   const sentBodies: string[] = [];
-  await page.route(SEND_POST_RE, async (route) => {
-    const request = route.request();
-    if (request.method() !== "POST") {
-      await route.continue();
-      return;
-    }
-    const body = JSON.parse(request.postData() ?? "{}") as { body?: string };
-    sentBodies.push(body.body ?? "");
+  await answerFetchInPage(page, { url: SEND_POST_RE, method: "POST" }, async ({ body }) => {
+    const parsed = JSON.parse(body ?? "{}") as { body?: string };
+    sentBodies.push(parsed.body ?? "");
     if (sentBodies.length === 1) await firstHeld;
-    await route.continue();
+    return undefined;
   });
+
+  const vjt = specUser();
+  await loginAs(page, vjt);
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 
   const ta = composeTextarea(page);
 
