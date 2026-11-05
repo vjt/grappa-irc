@@ -17,6 +17,7 @@ defmodule GrappaWeb.E2eControllerTest do
   use GrappaWeb.ConnCase, async: false
 
   import Ecto.Query
+  import ExUnit.CaptureLog
   import Grappa.AuthFixtures
 
   alias Grappa.{E2eFixtures, E2eInbox, E2eKeys, E2eRequests, IRCServer, Repo, Session}
@@ -325,6 +326,29 @@ defmodule GrappaWeb.E2eControllerTest do
       for bad <- ["x", "-1", "1.5", "", "9223372036854775808"] do
         assert json_response(get(conn, path, %{after: bad}), 400) == %{"error" => "bad_request"}, inspect(bad)
       end
+    end
+
+    # The stamp is best-effort: a write lock held past the retry budget costs
+    # the card its "active" clause, never the device its messages. The faults
+    # reach the stamp alone, the one write on this door.
+    test "GET serves the messages when the activity stamp cannot be written (issue 2547)", %{
+      conn: conn,
+      vjt: vjt
+    } do
+      network = idle_network(vjt)
+      device = listed_device!(vjt, network)
+      waiting = queue!(device, "alice", :msg)
+      Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+
+      log =
+        capture_log(fn ->
+          assert [%{"id" => id}] = json_response(get(conn, inbox_path(network, device)), 200)["messages"]
+          assert id == waiting.id
+        end)
+
+      Grappa.Repo.BusyRetry.inject_transient_faults(0)
+      assert log =~ "e2e device activity not recorded; serving the inbox anyway"
+      assert {:ok, %{last_seen_at: nil}} = E2eKeys.device({:user, vjt.id}, network.id, device.did)
     end
 
     test "GET marks the device active, and the device list says when (issue 2547)", %{conn: conn, vjt: vjt} do

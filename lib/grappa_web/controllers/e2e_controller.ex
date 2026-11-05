@@ -121,15 +121,17 @@ defmodule GrappaWeb.E2eController do
   Each is the `e2e_message` the user topic pushes, `id` included.
   `?after=<id>` pages past the last id seen; 400 for one that is not a
   non-negative integer, 404 for a `did` that is not one of this subject's
-  devices here. The read marks the device active (`E2eKeys.seen/1`,
-  issue 2547): the `last_seen_at` the device list carries.
+  devices here. The read then marks the device active (`E2eKeys.seen/1`,
+  issue 2547): the `last_seen_at` the device list carries. Best-effort:
+  a stamp grappa cannot write never withholds the messages.
   """
-  @spec inbox(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request | :not_found | :db_unavailable}
+  @spec inbox(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request | :not_found}
   def inbox(conn, %{"did" => did} = params) do
     with {:ok, after_id} <- cursor(Map.get(params, "after", "0")),
-         {:ok, device} <- E2eKeys.device(subject(conn), conn.assigns.network.id, did),
-         :ok <- E2eKeys.seen(device) do
-      json(conn, SessionWire.e2e_inbox(conn.assigns.network.slug, device.did, E2eInbox.list(device, after_id)))
+         {:ok, device} <- E2eKeys.device(subject(conn), conn.assigns.network.id, did) do
+      messages = E2eInbox.list(device, after_id)
+      :ok = E2eKeys.seen(device)
+      json(conn, SessionWire.e2e_inbox(conn.assigns.network.slug, device.did, messages))
     end
   end
 
