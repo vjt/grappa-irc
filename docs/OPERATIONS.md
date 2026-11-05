@@ -225,7 +225,7 @@ package would be attached to a real release. Sibling of the older
 `docker_validation`, same posture.
 
 **One limit stands.** GitHub offers no FreeBSD runner — every `runs-on:`
-in this repo is `ubuntu-latest` — so the bastille jail stays covered by
+in this repo is an Ubuntu one — so the bastille jail stays covered by
 the manual probe alone.
 
 ### Per-server outbound source address (`--source`)

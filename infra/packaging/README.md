@@ -176,6 +176,23 @@ packaged migrate run for real), asserts the migration count and that the
 artifact reports the bare `X.Y.Z`, then uploads `dist/*.deb` to the GitHub
 Release. `build.sh` downloads a pinned nfpm if it is not on PATH.
 
+**The glibc floor is Debian trixie (13), and CI proves it (#2553).** The
+bundled ERTS and `shottino` link the glibc of the runner that builds them,
+so both `deb` legs run on one PINNED Ubuntu release (`ubuntu-24.04` /
+`ubuntu-24.04-arm`), never `ubuntu-latest` — that label moved to 26.04 and
+the amd64 packages of 1.6.1 and 1.6.2 needed `GLIBC_2.43`, which no Debian
+stable carries. Before uploading, the job also runs
+[`deb_floor_proof.sh`](deb_floor_proof.sh): both packages installed on a
+stock `debian:trixie`, the BEAM and the client started there. So the `.deb`
+is proven on Ubuntu 24.04 and Debian 13, the two installs CI performs;
+bookworm (glibc 2.36) and Ubuntu 22.04 (2.35) are not supported. Run the
+floor proof locally against any built pair:
+
+```sh
+infra/packaging/deb_floor_proof.sh debian:trixie dist/grappa_*.deb dist-shottino/shottino_*.deb
+# a foreign-arch pair: prefix DOCKER_DEFAULT_PLATFORM=linux/amd64
+```
+
 ## Building the `.rpm`
 
 Same substrate, same `build.sh` — set `GRAPPA_PKG_FORMAT=rpm`. The ONLY

@@ -8,10 +8,12 @@ name: release
 # authoritative gate for the packaging work: R1/R2 proved the model by
 # hand in containers; R3 runs that proof in CI on every tag.
 #
-#   * deb    — nfpm binary package (amd64), built by infra/packaging/build.sh
-#              on a glibc setup-beam runner (Elixir 1.19 / OTP 28), then
-#              INSTALLED (apt) so postinstall's openssl secrets + packaged
-#              migrate run for real.
+#   * deb    — nfpm binary package (amd64 + arm64), built by
+#              infra/packaging/build.sh on a glibc setup-beam runner (Elixir
+#              1.19 / OTP 28) PINNED to one Ubuntu release, then INSTALLED (apt)
+#              so postinstall's openssl secrets + packaged migrate run for
+#              real — on the runner AND on a stock debian:trixie, the glibc
+#              floor the package must run on (#2553).
 #   * arch   — source package built by `makepkg` on a real x86_64 Arch
 #              container (Elixir 1.20 / OTP 29 — the toolchain delta R2
 #              could only prove on a like-for-like image, never a full
@@ -186,12 +188,24 @@ jobs:
     # EXACT name, `build + prove .deb (amd64)`, because `name:` is spelled with
     # the matrix value rather than left to the default suffix. The new leg is
     # `build + prove .deb (arm64)`.
+    #
+    # ── BOTH LEGS NAME ONE UBUNTU RELEASE, never `ubuntu-latest` (#2553) ─────
+    #
+    # The bundled ERTS and shottino link the glibc of the runner that builds
+    # them, so the runner IS the package's glibc floor. The amd64 leg used to
+    # run on `ubuntu-latest`, GitHub moved that label from 24.04 to 26.04
+    # between v1.6.0 and v1.6.1, and beam.smp's highest symbol went from
+    # GLIBC_2.38 to GLIBC_2.43 — past trixie's 2.41, so the amd64 .deb of 1.6.1
+    # and 1.6.2 ran on no Debian stable. The arm64 leg, already pinned, stayed
+    # on 2.38. Bump BOTH together, and only to a release whose glibc the floor
+    # proof below still accepts; test/infra/release_deb_glibc_floor_test.bats
+    # holds the pin and the pairing.
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
@@ -275,6 +289,28 @@ jobs:
 
       - name: Build the .deb
         run: infra/packaging/build.sh
+
+      # ── #2553: the glibc FLOOR, before anything can be published ──────────
+      #
+      # Every other proof in this job installs on the runner, the host that
+      # built the package and the one host a glibc mismatch cannot show up on:
+      # 1.6.1 and 1.6.2 passed all of them with an amd64 beam.smp no Debian
+      # stable could start. This installs both packages on a stock
+      # `debian:trixie`, the oldest Debian the .deb supports, and boots the
+      # BEAM and the client there (deb_floor_proof.sh says what each check
+      # runs). Bookworm (2.36) gets no step: no 24.04 build has ever run there.
+      #
+      # It sits AHEAD of the upload steps, and that position is the gate. A
+      # failed floor proof stops the leg before it uploads, so the package is
+      # absent from the run, and `publish` refuses to CREATE a release from an
+      # incomplete set (#1591). A separate job named in `publish`'s needs would
+      # NOT gate: `publish` runs on `!cancelled()` and attaches whatever a leg
+      # already uploaded.
+      - name: Prove both packages install and boot on Debian trixie (the glibc floor)
+        run: |
+          deb="$(find dist -name 'grappa_*.deb' -print -quit)"
+          client="$(find dist-shottino -name 'shottino_*.deb' -print -quit)"
+          infra/packaging/deb_floor_proof.sh debian:trixie "$deb" "$client"
 
       # BOTH packages, one transaction — which is itself the proof that #1447
       # landed whole: while the bouncer still owned /usr/bin/shottino this
