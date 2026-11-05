@@ -52,7 +52,12 @@ import {
   send,
 } from "../fixtures/encryptedQuery";
 import { fetchE2eInbox } from "../fixtures/grappaApi";
-import { awaitBundleOf, newBrowserOf, pairByLink, type SecondBrowser } from "../fixtures/pairing";
+import {
+  awaitBundleOf,
+  newBrowserOf,
+  pairFromBanner,
+  type SecondBrowser,
+} from "../fixtures/pairing";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { provisionPeerSubject, teardownSpecSubject } from "../fixtures/specSubject";
 import { expect, specNick, specUser, test } from "../fixtures/test";
@@ -79,7 +84,7 @@ test("a text sent on one device of an account shows on its other device as sent,
     await equery(page, aliceNick, bob.nick);
     second = await newBrowserOf(browser, alice);
     const aliceB = second.page;
-    const bDid = await pairByLink(page, aliceB, alice.token);
+    const bDid = await pairFromBanner(page, aliceB, alice.token);
 
     // B back on the shell, a device of the identity, with a key of its own
     // on grappa for A to claim. It opens no encrypted query.

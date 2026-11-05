@@ -1,12 +1,13 @@
 // issue 2430 X1 — a second browser of one user paired into the user's E2E
-// identity, the way a person pairs it: the holder shows the link in the
-// encrypted pane, the new browser opens it and shows a two-digit code, the
+// identity, the way a person pairs it: the holder opens "add a device" in the
+// encrypted pane, the new browser takes the pairing from the banner grappa
+// shows it (issue 2549: there is no link) and shows a two-digit code, the
 // holder's user types it, the new browser confirms. For the specs that need
 // two devices of ONE account as their setup (S1's copies), and for the
 // pairing's own acceptance, `issue2430-pairing.spec.ts`, which drives the
 // same steps one by one with its own assertions in between.
 
-import type { Browser, Page } from "@playwright/test";
+import type { Browser, Locator, Page } from "@playwright/test";
 import { loginAs } from "./cicchettoPage";
 import { KEYS_TIMEOUT, peerPage } from "./encryptedQuery";
 import { fetchE2eDevices, fetchE2eKeys, login, type SeededUser } from "./grappaApi";
@@ -34,19 +35,25 @@ export async function newBrowserOf(browser: Browser, user: SeededUser): Promise<
   return second;
 }
 
-/**
- * The holder shows the pairing link in the panel; the new browser opens it,
- * the way its OS camera would land it on `/pair`. Resolves with the code the
- * new browser shows.
- */
-export async function joinWithLink(holder: Page, joiner: Page): Promise<string> {
-  await holder.getByTestId("e2e-add-device").click();
-  const link = holder.getByTestId("pair-url");
-  await expect(link).toContainText("#pair=", { timeout: STEP });
-  const url = (await link.textContent())?.trim() ?? "";
-  expect(url).toMatch(/\/pair#pair=/);
+/** The banner offering a pairing, on a browser that can take it. */
+export const offerBanner = (page: Page): Locator =>
+  page.locator('.error-banner[data-source="pairing-offer"]');
 
-  await joiner.goto(url);
+/** The holder opens "add a device", and the pairing waits for a browser to accept it. */
+export async function openAddDevice(holder: Page): Promise<void> {
+  await holder.getByTestId("e2e-add-device").click();
+  await expect(holder.getByTestId("pair-waiting")).toBeVisible({ timeout: STEP });
+}
+
+/**
+ * The holder opens "add a device"; the new browser, already on the shell,
+ * takes the pairing from its banner. Resolves with the code it shows.
+ */
+export async function joinFromBanner(holder: Page, joiner: Page): Promise<string> {
+  await openAddDevice(holder);
+  const banner = offerBanner(joiner);
+  await expect(banner).toBeVisible({ timeout: STEP });
+  await banner.locator(".error-banner-action").click();
   return readCheckCode(joiner);
 }
 
@@ -90,9 +97,9 @@ export async function awaitBundleOf(token: string, did: string): Promise<void> {
  * Resolves, once both browsers report the device added, with the did grappa
  * lists for it: the one device the pairing added to the account's list.
  */
-export async function pairByLink(holder: Page, joiner: Page, token: string): Promise<string> {
+export async function pairFromBanner(holder: Page, joiner: Page, token: string): Promise<string> {
   const before = await fetchE2eDevices(token, NETWORK_SLUG);
-  const code = await joinWithLink(holder, joiner);
+  const code = await joinFromBanner(holder, joiner);
   await typeCode(holder, code);
 
   // The joiner is offered the networks only once the holder's offer arrived,
@@ -109,7 +116,7 @@ export async function pairByLink(holder: Page, joiner: Page, token: string): Pro
   );
   const [device] = added;
   if (added.length !== 1 || device === undefined) {
-    throw new Error(`pairByLink: the pairing listed ${added.length} new devices, not 1`);
+    throw new Error(`pairFromBanner: the pairing listed ${added.length} new devices, not 1`);
   }
   return device.did;
 }

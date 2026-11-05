@@ -1,14 +1,16 @@
 // issue 2430, X1-crypto — a second browser of one user pairs into the user's
-// E2E identity by QR, end to end: three browser contexts, two grappa users,
-// real vodozemac engines (ECIES for the channel, Olm for the chat), one real
-// ircd, grappa's relay carrying the pairing channel without reading it.
+// E2E identity, end to end: three browser contexts, two grappa users, real
+// vodozemac engines (ECIES for the channel, Olm for the chat), one real ircd,
+// grappa's relay carrying the pairing channel without reading it.
 //
 // The first test is the acceptance the thread names (2430 comment
 // 6345727309): two browsers of one user pair, a peer sees two devices, and
-// one message reaches both. Browser A holds the identity and shows the link;
-// browser B (a second login of the same user, fresh storage) opens it, shows
-// a two-digit code, and A's user TYPES that code. B's "Pair this browser" tap
-// then lets A sign B into the device list. The second test types a wrong code.
+// one message reaches both. Browser A holds the identity and opens "add a
+// device"; browser B (a second login of the same user, fresh storage) takes
+// the pairing from the banner grappa shows it (issue 2549: there is no link
+// or QR any more), shows a two-digit code, and A's user TYPES that code. B's
+// "Pair this browser" tap then lets A sign B into the device list. The second
+// test types a wrong code.
 //
 // ## What makes this spec able to fail
 //
@@ -33,7 +35,7 @@ import {
   send,
 } from "../fixtures/encryptedQuery";
 import { fetchE2eDevices, soleE2eDevice } from "../fixtures/grappaApi";
-import { awaitBundleOf, joinWithLink, newBrowserOf, typeCode } from "../fixtures/pairing";
+import { awaitBundleOf, joinFromBanner, newBrowserOf, typeCode } from "../fixtures/pairing";
 import { NETWORK_SLUG } from "../fixtures/seedData";
 import { provisionPeerSubject, teardownSpecSubject } from "../fixtures/specSubject";
 import { expect, specNick, specUser, test } from "../fixtures/test";
@@ -42,7 +44,7 @@ import { expect, specNick, specUser, test } from "../fixtures/test";
 // long as a key exchange does.
 const STEP = KEYS_TIMEOUT;
 
-test("a second browser of one user pairs by QR: the peer sees two devices and one line reaches both", async ({
+test("a second browser of one user pairs from the banner: the peer sees two devices and one line reaches both", async ({
   page,
   browser,
 }, testInfo) => {
@@ -65,8 +67,8 @@ test("a second browser of one user pairs by QR: the peer sees two devices and on
     const before = await fetchE2eDevices(alice.token, NETWORK_SLUG);
     expect(before).toHaveLength(1);
 
-    // B opens the link and shows the code; A's user types it.
-    const code = await joinWithLink(page, aliceB);
+    // B takes the pairing from its banner and shows the code; A's user types it.
+    const code = await joinFromBanner(page, aliceB);
     await typeCode(page, code);
 
     // B is offered the networks only once A's offer arrived, which proves the
@@ -126,7 +128,7 @@ test("a wrong code typed on the holder: nothing is offered, the new browser ends
     second = await newBrowserOf(browser, alice);
     const aliceB = second.page;
 
-    const code = await joinWithLink(page, aliceB);
+    const code = await joinFromBanner(page, aliceB);
     const wrong = String((Number(code) + 1) % 100).padStart(2, "0");
     expect(wrong).not.toBe(code);
     await typeCode(page, wrong);

@@ -224,12 +224,11 @@ test("after the test-only wipe the browser reads 'elsewhere' and writes nothing;
     .poll(() => page.getByTestId("e2e-compose").evaluate((el) => (el as HTMLElement).inert))
     .toBe(true);
 
-  // The primary way out is a pairing link: a paste that is not one is
-  // refused where it was typed, and nothing is navigated or written.
-  await page.getByTestId("e2e-identity-pair-code").fill("not a pairing link");
-  await page.getByTestId("e2e-identity-pair-submit").click();
-  await expect(page.getByTestId("e2e-identity-pair-error")).toBeVisible();
-  await expect(page).not.toHaveURL(/\/pair/);
+  // The primary way out is pairing, started on a device that holds the
+  // identity and accepted here from the banner (issue 2549): the card says
+  // so, and holds no field to paste a pairing link into.
+  await expect(page.getByTestId("e2e-identity-pair-how")).toBeVisible();
+  await expect(page.getByTestId("e2e-step").locator("input")).toHaveCount(0);
 
   // Only reads so far, on every E2E door (no key, list or device written, no
   // inbox acknowledged, nothing sent), and grappa still holds the same device
