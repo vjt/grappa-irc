@@ -11,6 +11,7 @@ import {
   e2eBundleUploaded,
   loginAs,
   selectChannel,
+  sidebarWindow,
 } from "./cicchettoPage";
 import type { SeededUser } from "./grappaApi";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "./seedData";
@@ -114,6 +115,33 @@ export const row = (page: Page, kind: "in" | "out", text: string) =>
 /** The `/me` lines in the open encrypted query that read `text` (issue 2536), ours or the peer's. */
 export const actionRow = (page: Page, kind: "in" | "out", text: string) =>
   lineOf(page, "action", kind, text);
+
+// issue 2513 — one payload, as the ciphertext view writes it: the verb, the
+// msgid, the compact JSON.
+export const FRAME = /^E2E (PKMSG|MSG) [A-Za-z0-9+/]{11} \{\S+\}$/;
+
+/** What each line of the open encrypted window reads, top to bottom. */
+export const bodies = (page: Page) =>
+  chatLines(page).evaluateAll((lines) =>
+    lines.map((line) => line.querySelector(".scrollback-body")?.textContent ?? null),
+  );
+
+/** `label` in the open context menu. */
+export const menuItem = (page: Page, label: string) =>
+  page.locator(".context-menu .context-menu-item", { hasText: new RegExp(`^${label}$`) });
+
+/**
+ * A right-click on the encrypted window's sidebar row, and `label` in its menu
+ * (issue 2513: "Show ciphertext" / "Show plaintext").
+ */
+export async function flip(page: Page, nick: string, label: string): Promise<void> {
+  await sidebarWindow(page, NETWORK_SLUG, e2eWindow(nick))
+    .locator(".sidebar-window-btn")
+    .click({ button: "right" });
+  await expect(menuItem(page, label)).toBeVisible();
+  await menuItem(page, label).click();
+  await expect(page.locator(".context-menu")).toHaveCount(0);
+}
 
 /** The window's trust badge: verified, unverified, or alarm (`data-trust`). */
 export const trust = (page: Page) => page.getByTestId("e2e-peer-trust");
