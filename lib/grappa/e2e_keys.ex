@@ -51,6 +51,8 @@ defmodule Grappa.E2eKeys do
   alias Grappa.E2eKeys.{Device, DeviceList, Key}
   alias Grappa.{Repo, Subject}
 
+  require Logger
+
   @max_one_time_keys 50
 
   # issue 2547: how stale a device's activity stamp gets before an inbox
@@ -180,10 +182,14 @@ defmodule Grappa.E2eKeys do
   the stamp `device` carries: a read inside that window writes nothing,
   so the inbox's steady traffic costs no write lock. A device dropped
   since the caller read it is `:ok` and nothing is written.
-  `{:error, :db_unavailable}` when the write lock stays taken past the
-  retry budget.
+
+  Best-effort, and always `:ok`: the stamp is what a card shows, while
+  the inbox read it rides on is how the device gets its messages, and a
+  write lock held past the retry budget must not cost it those (the
+  posture of `Grappa.Accounts.authenticate_client_token/5`). The miss is
+  logged, here and by `Repo.BusyRetry`.
   """
-  @spec seen(Device.t()) :: :ok | {:error, :db_unavailable}
+  @spec seen(Device.t()) :: :ok
   def seen(%Device{id: id, last_seen_at: last_seen_at}) do
     now = DateTime.utc_now(:second)
 
@@ -193,8 +199,12 @@ defmodule Grappa.E2eKeys do
       stamp = fn -> {:ok, Device |> where([d], d.id == ^id) |> Repo.update_all(set: [last_seen_at: now])} end
 
       case Repo.BusyRetry.run(stamp) do
-        {:ok, {_, _}} -> :ok
-        {:error, :db_unavailable} = err -> err
+        {:ok, {_, _}} ->
+          :ok
+
+        {:error, :db_unavailable} ->
+          Logger.warning("e2e device activity not recorded; serving the inbox anyway", reason: :db_unavailable)
+          :ok
       end
     end
   end

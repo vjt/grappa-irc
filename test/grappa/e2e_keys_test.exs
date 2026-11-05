@@ -10,6 +10,7 @@ defmodule Grappa.E2eKeysTest do
   """
   use Grappa.DataCase, async: true
 
+  import ExUnit.CaptureLog
   import Grappa.AuthFixtures
 
   alias Grappa.{E2eFixtures, E2eInbox, E2eKeys, Repo}
@@ -590,6 +591,18 @@ defmodule Grappa.E2eKeysTest do
 
       assert :ok = E2eKeys.seen(old)
       assert DateTime.compare(last_seen(subject, network, dev), before) != :lt
+    end
+
+    test "a stamp the write lock keeps out is :ok and logged, and the old stamp stays",
+         %{subject: subject, network: network, dev: dev} do
+      old = seen_ago(dev, 120)
+      Repo.BusyRetry.inject_transient_faults(10_000)
+
+      log = capture_log(fn -> assert :ok = E2eKeys.seen(old) end)
+
+      Repo.BusyRetry.inject_transient_faults(0)
+      assert log =~ "e2e device activity not recorded; serving the inbox anyway"
+      assert last_seen(subject, network, dev) == old.last_seen_at
     end
 
     test "a device dropped since the caller read it is :ok, and nothing comes back",
