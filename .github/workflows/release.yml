@@ -305,12 +305,22 @@ jobs:
       # absent from the run, and `publish` refuses to CREATE a release from an
       # incomplete set (#1591). A separate job named in `publish`'s needs would
       # NOT gate: `publish` runs on `!cancelled()` and attaches whatever a leg
-      # already uploaded.
+      # already uploaded. For the same reason neither this step nor the uploads
+      # may carry an `if:` or `continue-on-error:` — either one lets a package
+      # that failed here reach the release. The bats suite holds all of it.
+      #
+      # The proof is taken from the DISPATCHED ref, not the checked-out tree.
+      # A repair builds an existing tag, and no tag cut before #2553 carries
+      # the script: the tag's copy would die 127 and turn the repair of 1.6.2
+      # itself red. On a tag push and a deb_validation dispatch the two are the
+      # same commit. `git show` into RUNNER_TEMP leaves the tag's tree clean.
       - name: Prove both packages install and boot on Debian trixie (the glibc floor)
         run: |
+          git show "${GITHUB_SHA}:infra/packaging/deb_floor_proof.sh" > "$RUNNER_TEMP/deb_floor_proof.sh"
+          chmod +x "$RUNNER_TEMP/deb_floor_proof.sh"
           deb="$(find dist -name 'grappa_*.deb' -print -quit)"
           client="$(find dist-shottino -name 'shottino_*.deb' -print -quit)"
-          infra/packaging/deb_floor_proof.sh debian:trixie "$deb" "$client"
+          "$RUNNER_TEMP/deb_floor_proof.sh" debian:trixie "$deb" "$client"
 
       # BOTH packages, one transaction — which is itself the proof that #1447
       # landed whole: while the bouncer still owned /usr/bin/shottino this

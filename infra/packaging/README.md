@@ -189,7 +189,8 @@ bookworm (glibc 2.36) and Ubuntu 22.04 (2.35) are not supported. Run the
 floor proof locally against any built pair:
 
 ```sh
-infra/packaging/deb_floor_proof.sh debian:trixie dist/grappa_*.deb dist-shottino/shottino_*.deb
+infra/packaging/deb_floor_proof.sh debian:trixie \
+  dist/grappa_<version>_<arch>.deb dist-shottino/shottino_<version>_<arch>.deb
 # a foreign-arch pair: prefix DOCKER_DEFAULT_PLATFORM=linux/amd64
 ```
 

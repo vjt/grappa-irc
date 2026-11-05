@@ -58,8 +58,8 @@ overrides:
       # (noble) and forward, WITHOUT a `Provides: libssl3` — the pre-t64
       # names are being decrufted, so a hard-coded `libssl3` is
       # UNINSTALLABLE there. The release job builds AND `apt install`s the
-      # .deb on ubuntu-24.04 (noble), then installs it again on a stock
-      # debian:trixie (#2553). The alternation resolves libssl3t64 on
+      # .deb on the ubuntu-24.04 (noble) runners, and installs it on a stock
+      # debian:trixie as well (#2553). The alternation resolves libssl3t64 on
       # noble/trixie, falls back to libssl3 on bookworm/pre-t64. Same
       # libssl.so.3 SONAME either way. (Bookworm resolves the dependency but
       # its glibc 2.36 cannot run the bundled ERTS — trixie is the floor.)

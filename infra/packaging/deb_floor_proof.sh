@@ -42,7 +42,12 @@ trap 'rm -rf "$stage"' EXIT
 chmod 0755 "$stage"
 cp "$@" "$stage/"
 
-docker run --rm -i -v "$stage:/pkg:ro" "$image" bash -euo pipefail -s <<'EOF'
+# The in-container script travels as an ARGUMENT, never on stdin. A script
+# that bash reads from a pipe shares that pipe with every child it starts, and
+# the postinst boots the BEAM twice: anything that drains stdin would swallow
+# the checks below and leave a green that ran none of them. No -i either, so
+# the container's stdin is empty.
+IFS= read -r -d '' script <<'EOF' || true
 . /etc/os-release
 echo "floor: ${PRETTY_NAME}, $(ldd --version | head -n1)"
 
@@ -57,7 +62,11 @@ apt-get install -y -q --no-install-recommends /pkg/*.deb || {
 }
 
 want="grappa-floor=$(printf '' | sha256sum | cut -d' ' -f1)"
-grappa eval 'IO.puts("grappa-floor=" <> Base.encode16(:crypto.hash(:sha256, ""), case: :lower))' > /tmp/eval.txt
+grappa eval 'IO.puts("grappa-floor=" <> Base.encode16(:crypto.hash(:sha256, ""), case: :lower))' > /tmp/eval.txt || {
+	echo "::error::grappa eval failed on the floor image"
+	cat /tmp/eval.txt
+	exit 1
+}
 got="$(grep '^grappa-floor=' /tmp/eval.txt | tail -n1 | tr -d '\r' || true)"
 echo "beam on the floor: '${got}' (want '${want}')"
 [ "$got" = "$want" ] || {
@@ -66,7 +75,11 @@ echo "beam on the floor: '${got}' (want '${want}')"
 	exit 1
 }
 
-shottino --help > /tmp/shottino-help.txt
+shottino --help > /tmp/shottino-help.txt || {
+	echo "::error::shottino --help failed on the floor image"
+	cat /tmp/shottino-help.txt
+	exit 1
+}
 grep -q '^usage: ' /tmp/shottino-help.txt || {
 	echo "::error::shottino --help produced no usage output on the floor image"
 	cat /tmp/shottino-help.txt
@@ -74,3 +87,5 @@ grep -q '^usage: ' /tmp/shottino-help.txt || {
 }
 echo "shottino on the floor: $(head -n1 /tmp/shottino-help.txt)"
 EOF
+
+docker run --rm -v "$stage:/pkg:ro" "$image" bash -euo pipefail -c "$script"
