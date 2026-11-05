@@ -107,6 +107,28 @@ defmodule GrappaWeb.Router do
     plug GrappaWeb.Plugs.RequestBudget
   end
 
+  # issue 2529 — a multipart body is parsed HERE, by the route that takes
+  # it, never by the endpoint (whose `Plug.Parsers` lets it through
+  # unread). Both pipelines go after `:authn`, so a body is read only for
+  # an authenticated subject, and only up to what the route needs.
+  # `:upload_body` is for the two doors whose body a per-file cap polices:
+  # its ceiling is derived from the largest cap an operator can set.
+  # `:multipart_body` is for any other route that takes a file.
+  # `GrappaWeb.MultipartBodyTest` fails when a route whose action can
+  # receive a `%Plug.Upload{}` pipes through neither, when either comes
+  # before `:authn`, and when `:upload_body` reaches any other action.
+  pipeline :upload_body do
+    plug Plug.Parsers,
+      parsers: [{:multipart, length: GrappaWeb.MultipartLimits.upload_length()}],
+      pass: ["*/*"]
+  end
+
+  pipeline :multipart_body do
+    plug Plug.Parsers,
+      parsers: [{:multipart, length: GrappaWeb.MultipartLimits.default_length()}],
+      pass: ["*/*"]
+  end
+
   scope "/", GrappaWeb do
     pipe_through []
 
@@ -517,12 +539,12 @@ defmodule GrappaWeb.Router do
     # active theme. Every theme is public by id (share-link target); authz
     # (owner-or-admin edit/delete, rate-limited create/copy) lives in
     # `Grappa.Themes`. `/themes*` rides the new nginx `themes` REST alt;
-    # `/me/theme` + `/me/themes` ride the existing `me` alt. `/themes/background`
-    # is a 2-segment literal that never collides with `/themes/:id/*` (3-seg).
+    # `/me/theme` + `/me/themes` ride the existing `me` alt. `POST
+    # /themes/background` (scope below, issue 2529) is a 2-segment literal
+    # that never collides with `/themes/:id/*` (3-seg).
     get "/themes", ThemesController, :index
     get "/me/themes", ThemesController, :mine
     post "/themes", ThemesController, :create
-    post "/themes/background", ThemesController, :background
     # #294 — built-in background catalog for the picker. A 2-segment literal
     # that MUST precede `/themes/:id` (else "backgrounds" is parsed as an id and
     # 404s). Static assets themselves are served by nginx at /backgrounds/*.
@@ -557,12 +579,27 @@ defmodule GrappaWeb.Router do
     patch "/push/subscriptions/:id", PushSubscriptionController, :update
     delete "/push/subscriptions/:id", PushSubscriptionController, :delete
 
-    # UX-6-B1 (2026-05-20): embedded image uploader — authenticated
-    # POST + operator-visible settings snapshot. Visitor OR user
-    # subject can upload; the cic ComposeBox triggers this from the
-    # same picker/drag-drop/paste paths as litterbox.
-    post "/api/uploads", UploadsController, :create
+    # UX-6-B1 (2026-05-20): operator-visible settings snapshot, the
+    # sibling of the upload door below.
     get "/api/server-settings", ServerSettingsController, :show
+  end
+
+  # issue 2529 — the routes that take a file, each in a scope of its own
+  # so its multipart pipeline applies to it alone.
+  scope "/", GrappaWeb do
+    pipe_through [:api, :authn, :request_budget, :upload_body]
+
+    # UX-6-B1 (2026-05-20): embedded uploader — authenticated POST.
+    # Visitor OR user subject can upload; the cic ComposeBox triggers
+    # this from the same picker/drag-drop/paste paths as litterbox.
+    post "/api/uploads", UploadsController, :create
+  end
+
+  scope "/", GrappaWeb do
+    pipe_through [:api, :authn, :request_budget, :multipart_body]
+
+    # #75 — a theme's background image, from an upload or a URL.
+    post "/themes/background", ThemesController, :background
   end
 
   # UX-6-B1 (2026-05-20): public file-fetch surface for embedded
@@ -629,10 +666,8 @@ defmodule GrappaWeb.Router do
     # ResolveNetwork pipeline (ownership) + no proxy change.
     patch "/profile", NetworksController, :profile
 
-    # M3a — own avatar upload, sibling of `/profile` in the same sense
-    # (never bounces the live upstream connection). Same ResolveNetwork
-    # pipeline (ownership) + no proxy change.
-    put "/avatar", NetworksController, :avatar
+    # M3a — own avatar removal; the upload (`PUT /avatar`) is in the scope
+    # below, with its multipart pipeline (issue 2529).
     delete "/avatar", NetworksController, :delete_avatar
 
     # M3b — authenticated serving route for a cached PEER avatar
@@ -786,6 +821,16 @@ defmodule GrappaWeb.Router do
     # build, and there is deliberately no parameter for it.
     get "/dcc-auto-accept", DccAutoAcceptController, :show
     put "/dcc-auto-accept", DccAutoAcceptController, :update
+  end
+
+  scope "/networks/:network_id", GrappaWeb do
+    pipe_through [:api, :authn, :request_budget, :resolve_network, :upload_body]
+
+    # M3a — own avatar upload, sibling of `/profile` in the same sense
+    # (never bounces the live upstream connection). Same ResolveNetwork
+    # pipeline (ownership) + no proxy change; its body is parsed after
+    # both, by `:upload_body` (issue 2529).
+    put "/avatar", NetworksController, :avatar
   end
 
   # Test-only FORCE read-cursor surface. Compile-gated to dev/test Mix

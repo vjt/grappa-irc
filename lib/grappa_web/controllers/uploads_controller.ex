@@ -350,10 +350,11 @@ defmodule GrappaWeb.UploadsController do
 
   # S4: enforce the per-file cap against the on-disk size (`File.stat`)
   # BEFORE `read_file/1` pulls the whole temp file into the BEAM heap.
-  # The transport ceiling is 128 MiB (endpoint.ex:79) but the image cap
-  # is 10 MiB — without this pre-read gate an authenticated user OR a
-  # visitor can buffer ~127 MiB into the heap before the policy rejects
-  # it (~12× amplification, repeatable concurrently, visitor-eligible).
+  # This door's transport ceiling (`GrappaWeb.MultipartLimits.upload_length/0`,
+  # issue 2529) is set by the LARGEST per-file cap, while the cap that
+  # applies is the upload's own category's, usually far smaller — so the
+  # policy has to be checked against the temp file before the bytes are
+  # read, not after.
   # The cap is checked on the RAW file size, identical to the previous
   # post-read `byte_size(bytes)` semantics (the cap always applied to the
   # pre-strip bytes) — only the ordering moved earlier. A stat failure

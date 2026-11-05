@@ -10,9 +10,10 @@
 // stream it; this one reads the bytes itself, so it is the one place where a
 // large file becomes a large DOM. The ceiling above it is real: an upload is
 // capped per category by `ServerSettings.get_upload_per_file_cap_bytes/1`
-// (`:document` defaults to 10 MiB and an operator can raise it) under a hard
-// 128 MB multipart roof (`endpoint.ex`, matched by `client_max_body_size 128m`
-// in the nginx snippets). A naive viewer would pull all of it in.
+// (`:document` defaults to 10 MiB and an operator can raise it as far as
+// `ServerSettings.max_upload_per_file_cap_bytes/0`, 512 MiB, which the upload
+// doors' multipart ceiling in `GrappaWeb.MultipartLimits` clears). A naive
+// viewer would pull all of it in.
 //
 // So the cap is enforced HERE, by reading the response through a reader and
 // hanging up, rather than by trusting the `Range` header to be honoured. The
