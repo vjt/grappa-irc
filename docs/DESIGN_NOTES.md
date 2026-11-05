@@ -3235,6 +3235,13 @@ stops being the main path.
   * **The write lock is spent once a minute per device at most:** the
     compare runs in memory on the row the inbox door already loaded, so
     the steady poll costs no write.
+  * **The stamp is best-effort and never withholds the inbox** (found in
+    review: the first cut ran `:ok <- seen` ahead of the read, turning a
+    pure read into one that answered 503 under a held write lock). The
+    door reads first and stamps after; `seen/1` is always `:ok` and logs
+    a miss, the posture `authenticate_client_token/5` takes for the same
+    kind of stamp. A due stamp under a held lock still delays that one
+    response by up to BusyRetry's budget.
   * **The field is `optional` on the wire, as `dm_with` was in 36:** a new
     bundle still validates a pre-56 server's device list (the copies'
     sibling listing depends on it) and only omits the "active" clause.
@@ -3274,8 +3281,11 @@ stops being the main path.
   keeps B's master: grappa lists B's device and the one the pairing added,
   and no new identity.
 * Server: `E2eKeys.seen/1` (never seen → stamped; younger than a minute →
-  untouched; a minute old → moved; a dropped device → `:ok`), and the
-  inbox door's stamp read back through `GET /e2e/devices`.
+  untouched; a minute old → moved; a dropped device → `:ok`; a write the
+  lock keeps out → `:ok`, logged, the old stamp kept), the inbox door's
+  stamp read back through `GET /e2e/devices`, and the door serving the
+  waiting message while the stamp's write fails. Both failure tests went
+  red on the first cut (`{:error, :db_unavailable}`; a 503).
 * cic: each reason off its own path in `e2eIdentity.test.ts`,
   `heldDevices` (listed count, latest listed stamp, unlisted ignored, no
   list → 0), the fake grappa's stamp against the server's rule, and the
@@ -3283,4 +3293,6 @@ stops being the main path.
   `data-reason`, the devices line read from grappa and a refused read left
   out, the pairing guidance ahead of a closed disclosure holding the
   replace, and `heldDevicesLine` for none, one and several devices, with
-  and without an activity it can read.
+  and without an activity it can read; and `identityDevices` rejecting,
+  never throwing, on a network the browser cannot use (red on the first
+  cut, whose synchronous throw would escape the card's catch).
