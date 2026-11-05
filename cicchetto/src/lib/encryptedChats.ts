@@ -323,7 +323,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const elsewhereReason = (slug: string): ElsewhereReason | null => elsewhereBySlug()[slug] ?? null;
 
   /** What grappa holds of the network's identity: what a browser holding none of it shows (issue 2547). */
-  function identityDevices(slug: string): Promise<HeldDevices> {
+  async function identityDevices(slug: string): Promise<HeldDevices> {
     return heldDevices(contextFor(slug).bearer, slug);
   }
 

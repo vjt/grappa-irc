@@ -967,6 +967,16 @@ describe("encrypted chats, an identity held elsewhere", () => {
     vi.mocked(api.registerE2eDevice).mockClear();
   }
 
+  // The card's devices line catches a refused read (issue 2547); a throw
+  // before the promise exists would escape that catch and take the pane down.
+  it("reads what grappa holds as a rejection, never a throw, on a network it cannot use", async () => {
+    let devices: Promise<unknown> | undefined;
+    expect(() => {
+      devices = chats.identityDevices("nowhere");
+    }).not.toThrow();
+    await expect(devices).rejects.toThrow("no network nowhere to use");
+  });
+
   it("reads elsewhere, writes nothing here or on grappa, and runs nothing more on the network", async () => {
     await madeElsewhere();
     const before = await grappa.api.getE2eList(net.nick, net.slug);
