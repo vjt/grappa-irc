@@ -137,9 +137,10 @@ patches:
 #     # Keep idle Channels WebSockets alive past the 60s default.
 #     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
 #     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-#     # Match the 128MiB body ceiling the BEAM itself enforces
-#     # (`Plug.Parsers` in GrappaWeb.Endpoint), or large uploads 413 at the
-#     # proxy before the app's own per-type caps ever apply.
+#     # The BEAM's default multipart ceiling (`GrappaWeb.MultipartLimits`,
+#     # issue 2529). The two upload doors read up to 520 MiB, and
+#     # ingress-nginx applies this annotation per Ingress, not per path, so
+#     # they get the Ingress of their own below.
 #     nginx.ingress.kubernetes.io/proxy-body-size: "128m"
 # spec:
 #   ingressClassName: nginx
@@ -153,6 +154,49 @@ patches:
 #         paths:
 #           - path: /
 #             pathType: Prefix
+#             backend:
+#               service:
+#                 name: grappa
+#                 port:
+#                   name: http
+#
+# The two upload doors, POST /api/uploads and PUT /networks/:id/avatar, on the
+# same host with the upload ceiling; without this Ingress every upload over
+# 128 MiB is refused at the proxy whatever the admin caps say. `use-regex` is
+# what lets the avatar path carry the network segment; ingress-nginx then reads
+# every path of this host as a regex, which leaves `/` above matching what it
+# matched. Written from ingress-nginx's documented behaviour, not exercised on a
+# cluster here.
+#
+# ---
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: grappa-uploads
+#   labels:
+#     app.kubernetes.io/name: grappa
+#   annotations:
+#     nginx.ingress.kubernetes.io/proxy-body-size: "520m"
+#     nginx.ingress.kubernetes.io/use-regex: "true"
+# spec:
+#   ingressClassName: nginx
+#   tls:
+#     - hosts:
+#         - grappa.example.org
+#       secretName: grappa-tls
+#   rules:
+#     - host: grappa.example.org
+#       http:
+#         paths:
+#           - path: /api/uploads$
+#             pathType: ImplementationSpecific
+#             backend:
+#               service:
+#                 name: grappa
+#                 port:
+#                   name: http
+#           - path: /networks/[^/]+/avatar$
+#             pathType: ImplementationSpecific
 #             backend:
 #               service:
 #                 name: grappa

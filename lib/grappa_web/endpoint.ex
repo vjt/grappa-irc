@@ -205,20 +205,15 @@ defmodule GrappaWeb.Endpoint do
 
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
-  # Multipart :length default is 8_000_000 bytes — below the 10MB
-  # per-file upload cap, so a 9MB upload 413'd at the parser before
-  # reaching the controller. 128MiB is a static transport ceiling that
-  # must clear the LARGEST admin-tunable per-type cap with margin
-  # (2026-06-10: a 100MiB video cap met the old 64MiB ceiling — the
-  # transport silently outranked policy). Policy stays in the
-  # ServerSettings caps. Scoped to :multipart only — raising the
-  # top-level :length would let 128MiB JSON bodies buffer into the
-  # BEAM. #485 — this 128MiB IS the single body ceiling now: the docker
-  # nginx that carried `client_max_body_size 160m` is gone, and the jail's
-  # dumb-proxy `client_max_body_size` was reconciled DOWN to 128m to match
-  # (infra/snippets/locations-api.conf). One number, defined here.
+  # No multipart parser here (issue 2529). A multipart body crosses the
+  # endpoint unread (`pass: ["*/*"]` leaves `body_params` unfetched) and is
+  # parsed by the route that takes it, in the router, after `:authn`:
+  # `:upload_body` for the two upload doors, `:multipart_body` for the rest
+  # (`GrappaWeb.MultipartLimits` holds both ceilings). A route that takes a
+  # file without one of those pipelines gets params without the body, which
+  # is why `GrappaWeb.MultipartBodyTest` fails on any such route.
   plug Plug.Parsers,
-    parsers: [:urlencoded, {:multipart, length: 128 * 1024 * 1024}, :json],
+    parsers: [:urlencoded, :json],
     pass: ["*/*"],
     json_decoder: Phoenix.json_library()
 
