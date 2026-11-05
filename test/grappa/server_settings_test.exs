@@ -109,6 +109,32 @@ defmodule Grappa.ServerSettingsTest do
                ServerSettings.put_upload_per_file_cap_bytes(:image, "5000000")
     end
 
+    # issue 2529 — the transport reads an upload door's body up to a fixed
+    # ceiling (`GrappaWeb.MultipartLimits`), so a per-file cap above it was
+    # policy nothing could reach: the parser 413'd first, whatever the
+    # setting said. The ceiling is derived from this maximum, and the
+    # maximum is refused at the write, so the two cannot drift apart again.
+    test "every category accepts a cap at the per-file maximum and refuses one byte more" do
+      max = ServerSettings.max_upload_per_file_cap_bytes()
+
+      for category <- [:image, :video, :document, :audio] do
+        assert :ok = ServerSettings.put_upload_per_file_cap_bytes(category, max)
+
+        assert {:error, :invalid_value} =
+                 ServerSettings.put_upload_per_file_cap_bytes(category, max + 1)
+
+        assert ServerSettings.get_upload_per_file_cap_bytes(category) == max
+      end
+    end
+
+    # The value the operator set on prod on 2026-11-03, the reason the
+    # issue exists. A maximum below it would refuse the very setting the
+    # fix is for.
+    test "the 500 MiB video cap set on prod is accepted" do
+      assert :ok = ServerSettings.put_upload_per_file_cap_bytes(:video, 500 * 1024 * 1024)
+      assert ServerSettings.get_upload_per_file_cap_bytes(:video) == 500 * 1024 * 1024
+    end
+
     test "public_view carries the four cap fields" do
       assert %{
                upload: %{

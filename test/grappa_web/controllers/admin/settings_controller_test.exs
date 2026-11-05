@@ -303,6 +303,49 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
              }
     end
 
+    # issue 2529 — a per-file cap above what the upload doors' transport
+    # reads used to save, and then every upload between the ceiling and the
+    # cap died at the parser with a 413 that named no setting. Now the cap
+    # is refused: the 422 names the field the form highlights, and the cap
+    # keeps its old value. (Keys applied before it in the same body are
+    # still written — the door applies keys one at a time, for every
+    # invalid value, not only this one.)
+    test "422 invalid_setting for a per-file cap above the maximum, every category", %{
+      conn: conn,
+      session: session
+    } do
+      max = ServerSettings.max_upload_per_file_cap_bytes()
+
+      for category <- ~w(image video document audio) do
+        key = category <> "_per_file_cap_bytes"
+        before = ServerSettings.public_view().upload[String.to_existing_atom(key)]
+
+        resp =
+          conn
+          |> put_bearer(session.id)
+          |> put("/admin/settings", %{"upload" => %{key => max + 1}})
+
+        assert json_response(resp, 422) == %{
+                 "error" => "invalid_setting",
+                 "field" => "upload." <> key
+               }
+
+        assert ServerSettings.public_view().upload[String.to_existing_atom(key)] == before
+      end
+    end
+
+    test "a per-file cap AT the maximum saves", %{conn: conn, session: session} do
+      max = ServerSettings.max_upload_per_file_cap_bytes()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{"upload" => %{"video_per_file_cap_bytes" => max}})
+
+      assert %{"settings" => %{"upload" => %{"video_per_file_cap_bytes" => ^max}}} =
+               json_response(conn, 200)
+    end
+
     test "422 invalid_setting for zero video_max_duration_seconds (#201)", %{
       conn: conn,
       session: session
