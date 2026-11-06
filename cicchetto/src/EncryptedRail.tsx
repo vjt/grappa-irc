@@ -1,6 +1,7 @@
 import { type Component, createResource, createSignal, For, Show } from "solid-js";
 import AddDevicePanel from "./AddDevicePanel";
 import E2eCopyButton from "./E2eCopyButton";
+import { atKey, keysOf } from "./lib/byKey";
 import { isChannelName } from "./lib/chantypes";
 import { requestConfirm } from "./lib/confirmDialog";
 import { formatDateTime } from "./lib/dateFormat";
@@ -75,7 +76,8 @@ const PIN_REFUSED: Record<Exclude<PinOutcome, "pinned">, string> = {
   "own-key": "that is your own key",
 };
 
-const SAS_REASON: Record<SasCancelReason, string> = {
+// Read by the reason a peer sent, its own string, so a `ByKey` (issue 2453).
+const SAS_REASON = keysOf<string>({
   user: "cancelled",
   mismatch: "the emoji did not match",
   timeout: "no answer in 10 minutes",
@@ -85,12 +87,11 @@ const SAS_REASON: Record<SasCancelReason, string> = {
   "key-changed": "the nick was pinned to another key",
   "page-gone": "the page running it was closed or reloaded",
   "bad-key": "a key could not be used",
-};
+} satisfies Record<SasCancelReason, string>);
 
 // A reason that is not one of ours is the peer's own words: quoted, so
 // that it does not read as cic's.
-const reasonText = (reason: string): string =>
-  (SAS_REASON as Record<string, string | undefined>)[reason] ?? `"${reason}"`;
+const reasonText = (reason: string): string => atKey(SAS_REASON, reason) ?? `"${reason}"`;
 
 /**
  * How the last emoji comparison of the key now pinned ended, from the rows

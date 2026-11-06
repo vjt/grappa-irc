@@ -1244,6 +1244,24 @@ describe("EncryptedChatPane, the emoji comparison", () => {
     expect(screen.getByTestId("e2e-rail-comparison").textContent).toBe(text);
   });
 
+  // issue 2453 — a peer's cancel reason is its own string, case kept, and the
+  // names of Object.prototype members are valid ones; "bob" runs first as the
+  // control.
+  it.each(["bob", "constructor", "__proto__", "toString"])(
+    "the rail quotes a peer's reason %s, which is not one of ours",
+    (reason) => {
+      setTrust({ master: KEY, verified: false, devices: 1 });
+      setRows([
+        { kind: "sas_asked", id: "a", at, nick: "Bob", by: "you" },
+        { kind: "sas_cancelled", id: "c", at, nick: "Bob", by: "peer", reason },
+      ]);
+      renderPane();
+      expect(screen.getByTestId("e2e-rail-comparison").textContent).toBe(
+        `stopped by them: "${reason}"`,
+      );
+    },
+  );
+
   it.each([
     ["taken off an alarm", { kind: "accepted", id: "p", at, nick: "Bob", ed25519: OWN }],
     ["pinned by hand", { kind: "pinned", id: "p", at, nick: "Bob", ed25519: OWN }],
