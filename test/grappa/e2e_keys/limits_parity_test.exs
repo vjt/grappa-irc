@@ -3,9 +3,11 @@ defmodule Grappa.E2eKeys.LimitsParityTest do
   issue 2430, multi-device — two limits grappa owns and cicchetto mirrors
   as literals, because cic applies them without asking grappa first:
 
-    * `Grappa.E2eKeys.DeviceList.max_devices/0` ↔ `MAX_DEVICES` in
-      `cicchetto/src/lib/e2e/wire.ts`: the most keys a list may name and the
-      most bodies one message carries;
+    * `Grappa.E2eKeys.DeviceList.max_devices/0` ↔ `DEVICE_CAP` in
+      `cicchetto/src/lib/e2e/wire.ts`: the most devices one identity holds
+      (issue 2576), so the most keys grappa registers and stores a list of.
+      Not `MAX_DEVICES`, the most a list on the wire may name, which stays
+      above it so a receiver still reads what an older client signed;
     * `Grappa.E2eKeys.max_one_time_keys/0` ↔ `MAX_HOSTED_ONE_TIME_KEYS` in
       `cicchetto/src/lib/e2e/keyBundle.ts`: what a device tops its bundle up
       to, since grappa refuses an upload past it whole.
@@ -31,8 +33,8 @@ defmodule Grappa.E2eKeys.LimitsParityTest do
   @wire_source File.read!(@wire_path)
   @key_bundle_source File.read!(@key_bundle_path)
 
-  test "MAX_DEVICES in wire.ts equals DeviceList.max_devices/0" do
-    assert cic_integer(@wire_source, @wire, "MAX_DEVICES") == DeviceList.max_devices()
+  test "DEVICE_CAP in wire.ts equals DeviceList.max_devices/0" do
+    assert cic_integer(@wire_source, @wire, "DEVICE_CAP") == DeviceList.max_devices()
   end
 
   test "MAX_HOSTED_ONE_TIME_KEYS in keyBundle.ts equals E2eKeys.max_one_time_keys/0" do

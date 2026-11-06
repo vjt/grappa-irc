@@ -165,7 +165,7 @@ defmodule GrappaWeb.E2eController do
   as its `from` and its own routes' `:did`.
 
   400 `bad_request` for an id block that is not two keys and a signature;
-  409 `too_many_devices` when the subject already holds four other devices
+  409 `too_many_devices` when the subject already holds three other devices
   there (`DELETE` an unlisted one to make room).
   """
   @spec register_device(Plug.Conn.t(), map()) ::

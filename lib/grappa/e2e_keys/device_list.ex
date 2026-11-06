@@ -4,8 +4,8 @@ defmodule Grappa.E2eKeys.DeviceList do
   network (issue 2430, multi-device; wire v2, 2430 comment 6346236542).
 
   `master` is the subject's master Ed25519 key, `devices` the Ed25519 keys
-  of the devices it vouches for (1 to 4, sorted strictly ascending in plain
-  string order), `ver` the list's version, and `sig` the master's signature
+  of the devices it vouches for (1 to `max_devices/0`, sorted strictly
+  ascending in plain string order), `ver` the list's version, and `sig` the master's signature
   over `signed_string/2`. Peers decide trust from it; grappa serves it and
   routes by it.
 
@@ -32,7 +32,7 @@ defmodule Grappa.E2eKeys.DeviceList do
   alias Grappa.Visitors.Visitor
 
   @max_ver 2_147_483_647
-  @max_devices 4
+  @max_devices 3
 
   @type t :: %__MODULE__{
           id: pos_integer() | nil,
@@ -64,13 +64,16 @@ defmodule Grappa.E2eKeys.DeviceList do
 
   @doc """
   Devices one subject may hold on one network, and so one list may name
-  (wire v2, 2430 comment 6346236542). A message to a user carries one
-  encrypted body per device, and every body costs real IRC fake lag, so
-  the fan-out is bounded; peers refuse a longer list on the wire, so
-  grappa refuses to store one, and `Grappa.E2eKeys` registers no more
-  devices than that.
+  (issue 2576). A message to a user carries one encrypted body per device,
+  and every body costs real IRC fake lag, on every message and on every
+  order challenge, whose window that time comes out of; so grappa stores
+  no longer list and `Grappa.E2eKeys` registers no more devices than that.
+
+  Policy, below the wire's own limit: peers take a list of up to 4 (wire
+  v2, 2430 comment 6346236542), so a list of 4 stored before the cap is
+  still served and still read.
   """
-  @spec max_devices() :: 4
+  @spec max_devices() :: 3
   def max_devices, do: @max_devices
 
   @doc """

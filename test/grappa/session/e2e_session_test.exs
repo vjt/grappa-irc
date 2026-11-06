@@ -428,9 +428,10 @@ defmodule Grappa.Session.E2eSessionTest do
       {server, pid, user, network} = connected_session()
       subject = {:user, user.id}
       [first] = listed(user, network)
-      # Four devices: a KEYS of about six lines, which drips for half a
-      # minute on the fake-lag bank.
-      devices = [first | for(_ <- 1..3, do: add_listed_device!(subject, network))]
+      # Three devices, the most one identity holds (issue 2576): a KEYS of
+      # about five lines, still dripping on the fake-lag bank when the
+      # second KEYREQ comes (`waiting?` below).
+      devices = [first | for(_ <- 1..2, do: add_listed_device!(subject, network))]
       Enum.each(devices, &upload_otks!(&1, 2))
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 

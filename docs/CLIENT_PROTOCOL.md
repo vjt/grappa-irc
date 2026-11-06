@@ -707,10 +707,12 @@ path as it is. Keys and signatures stay standard base64; only the `did` is
 URL-safe. Two vectors: the RFC 8032 test-1 key
 `11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo` has the `did` `If4x36FUomE`,
 and `7l01yXGoarYtEU3nwHF01/CIo8/r8U0lJ01TnULT9IY` has `_Uw_z3-OAsk`. The list's `devices` are the
-devices' `ed25519` keys, 1 to 4, sorted strictly ascending (plain string
+devices' `ed25519` keys, 1 to 3, sorted strictly ascending (plain string
 order), and its `sig` is the master's signature over
 `"irc-e2e:v2:list:" + ver + ":" +` those keys joined by `","` (`ver` in
-decimal, 1 to 2³¹−1).
+decimal, 1 to 2³¹−1). Three is the most an identity holds (issue 2576); a
+list of 4 put before that is still served, and a peer still takes a list
+or a message naming up to 4 devices, which is the wire's own limit.
 
 grappa decides no trust, and verifies exactly one signature: the list's. A
 list must also name only registered devices and raise `ver` above the held
@@ -719,7 +721,7 @@ grappa forgets it with everything stored for it. A device registered and
 not listed yet (one being paired) is left alone, but nothing is routed to
 it and it cannot send. 400 `bad_request` for an id block or a list that is
 malformed, or a list whose signature does not verify; 409
-`too_many_devices` for a fifth device (drop an unlisted one first); 409
+`too_many_devices` for a fourth device (drop an unlisted one first); 409
 `master_mismatch` for a list under another master (start over with
 `DELETE …/e2e/keys`); 409 `stale_list` when `ver` does not rise, except
 that the very list held, put again, answers 200 and changes nothing (a
@@ -842,7 +844,8 @@ irc-olm's, which grappa follows to the letter.
 
 **An order's deadline (v46).** On a `"control"` `msg`/`pkmsg`, an optional
 `"expires_at"` is the deadline of the order it answers, in unix seconds:
-the CHAL's own `expires_at`. grappa starts the message only if its last line
+the CHAL's own `expires_at`, whatever life the bot gave it: grappa holds no
+window of its own (issue 2575). grappa starts the message only if its last line
 can leave 2 s before that instant, so your ACK can still reach the bot in
 time; one that waits past that point is dropped unsent, and you are told
 (`e2e_send_dropped`, below). The deadline is read against grappa's clock,
@@ -1118,7 +1121,7 @@ the new device joins the offer (the outbound side), and posts first.
 | From | `t` | Body (besides `v`, `t`) | When |
 |---|---|---|---|
 | joiner | `hello` | none | the initial plaintext |
-| holder | `offer` | `networks: [{network, master}]`, `full: [network…]` | after the typed code matched. `master` is the master Ed25519 key. `full` lists networks whose list already holds 4 devices; they are not offered |
+| holder | `offer` | `networks: [{network, master}]`, `full: [network…]` | after the typed code matched. `master` is the master Ed25519 key. `full` lists networks whose list already holds 3 devices or more; they are not offered |
 | joiner | `join` | `devices: [{network, id: {curve25519, ed25519, sig}}]`, `skipped: [{network, reason}]` | after the user taps "Pair this browser". `sig` is the device's own Ed25519 signature (S1, §4f) over `irc-e2e:v2:id:<curve25519>:<master>`, `master` being the offered master key |
 | holder | `signed` | `devices: [{network, cert, list: {ver, devices, sig}}]`, `refused: [{network, reason}]` | `list` is the master's signed list with the device added: `devices` sorted ascending, `sig` the list signature of §4f. `cert` is the device's certificate: the master's Ed25519 signature over `irc-e2e:v2:dev:<ver>:<ed25519>`, where `<ver>` is the `ver` of the `list` in the same entry and `<ed25519>` the device's key (`docs/DESIGN_NOTES.md` #2430k) |
 | joiner | `done` | `paired: [network…]` | after it verified and kept what `signed` carried; `paired` names the networks where it took its place, and a network the holder added that `paired` leaves out is reported failed by the holder; then the HOLDER closes the rendezvous |

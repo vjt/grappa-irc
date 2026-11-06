@@ -493,16 +493,17 @@ defmodule Grappa.E2eKeysTest do
       assert [%Device{sig: ^sig}] = E2eKeys.devices(subject, network.id)
     end
 
-    test "holds at most 4 devices per (subject, network); a fifth is refused",
+    # issue 2576: 3 is policy, below the 4 a list on the wire may name.
+    test "holds at most 3 devices per (subject, network); a fourth is refused",
          %{subject: subject, network: network, master: master} do
-      for _ <- 1..DeviceList.max_devices() do
+      for _ <- 1..3 do
         assert {:ok, _} = E2eKeys.register_device(subject, network.id, E2eFixtures.device(master).attrs)
       end
 
       assert {:error, :too_many_devices} =
                E2eKeys.register_device(subject, network.id, E2eFixtures.device(master).attrs)
 
-      assert length(E2eKeys.devices(subject, network.id)) == 4
+      assert length(E2eKeys.devices(subject, network.id)) == 3
 
       # Another subject, or another network, has room of its own.
       other = {:user, user_fixture().id}
@@ -664,8 +665,8 @@ defmodule Grappa.E2eKeysTest do
       assert {:error, :not_found} = E2eKeys.list(subject, network.id)
     end
 
-    test "more than 4 devices is refused even when signed", %{subject: subject, network: network, master: master} do
-      keys = for _ <- 1..5, do: E2eFixtures.identity().public
+    test "more than 3 devices is refused even when signed", %{subject: subject, network: network, master: master} do
+      keys = for _ <- 1..4, do: E2eFixtures.identity().public
       assert {:error, :bad_request} = E2eKeys.put_list(subject, network.id, E2eFixtures.list(master, 1, keys))
     end
 
