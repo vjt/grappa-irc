@@ -7,7 +7,7 @@ defmodule GrappaWeb.MultipartLimits do
   A multipart body is parsed by the route that takes it, after
   authentication (`GrappaWeb.Router`'s `:upload_body` and
   `:multipart_body`); the endpoint's `Plug.Parsers` carries no multipart
-  parser at all. The two upload doors, whose body a per-file cap polices
+  parser at all. The three upload doors, whose body a per-file cap polices
   (`Grappa.ServerSettings.get_upload_per_file_cap_bytes/1`), read up to
   `upload_length/0`, sized to clear the largest cap an operator can set
   (`Grappa.ServerSettings.max_upload_per_file_cap_bytes/0`) with room for
@@ -38,7 +38,7 @@ defmodule GrappaWeb.MultipartLimits do
   @spec default_length() :: unquote(@default_length)
   def default_length, do: @default_length
 
-  @doc "The multipart body ceiling of the two upload doors."
+  @doc "The multipart body ceiling of the three upload doors."
   @spec upload_length() :: unquote(@upload_length)
   def upload_length, do: @upload_length
 end
