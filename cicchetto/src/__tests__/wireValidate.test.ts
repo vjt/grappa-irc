@@ -78,6 +78,22 @@ describe("validate — containers", () => {
     expect(validate({ r: "i" }, [])).toBeNull();
   });
 
+  // issue 2453 — a record's keys are data (a nick, a window), and
+  // `constructor` and `__proto__` are valid ones; "bob" runs first as the control.
+  it.each(["bob", "constructor", "__proto__"])(
+    "keeps the entry under %s, its value a scalar or an object",
+    (key) => {
+      const scalars = validate({ r: "i" }, JSON.parse(`{"${key}": 1, "carol": 2}`));
+      const objects = validate({ r: { o: { n: "i" } } }, JSON.parse(`{"${key}": {"n": 1}}`));
+
+      expect(Object.entries(scalars ?? {})).toEqual([
+        [key, 1],
+        ["carol", 2],
+      ]);
+      expect(Object.entries(objects ?? {})).toEqual([[key, { n: 1 }]]);
+    },
+  );
+
   it("requires a tuple to match arity and member types", () => {
     const node = { p: ["s", "i"] } as const;
     expect(validate(node, ["a", 1])).toEqual(["a", 1]);

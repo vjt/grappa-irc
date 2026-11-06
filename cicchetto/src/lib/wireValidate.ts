@@ -38,6 +38,8 @@
 // that is the wire contract (CLAUDE.md, GH #447), and it is enforced here
 // once rather than re-argued in each hand-written arm.
 
+import { noKeys, setKey } from "./byKey";
+
 /**
  * A node of the generated schema grammar. Mirrors the emission in
  * `Mix.Tasks.Grappa.GenWireTypes.schema_ir/2` — change one, change both
@@ -317,16 +319,18 @@ function walkArray(inner: WireNode, raw: unknown): unknown | typeof REJECT {
   return out;
 }
 
+// A record's keys are data (a nick, a window), so its entries are set as own
+// properties (issue 2453).
 function walkRecord(inner: WireNode, raw: unknown): unknown | typeof REJECT {
   if (!isPlainObject(raw)) return reject("object", describeGot(raw));
-  const out: Record<string, unknown> = {};
+  const out = noKeys<unknown>();
   for (const [k, el] of Object.entries(raw)) {
     const v = walk(inner, el);
     if (v === REJECT) {
       rejectionSegments.push(keySegment(k));
       return REJECT;
     }
-    out[k] = v;
+    setKey(out, k, v);
   }
   return out;
 }
