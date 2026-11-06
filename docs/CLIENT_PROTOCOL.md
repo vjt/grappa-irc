@@ -1372,6 +1372,50 @@ itself waits up to 7 days.
 
 Check `protocol_version >= 58`.
 
+### 4l. An encrypted message on its way (issue 2577, v59)
+
+A peer's encrypted message (§4f) reaches grappa line by line, and the
+sender paces those lines, so a long one, or a first one that opens a
+session, can take many seconds to come whole. grappa reassembles it and
+you see only the result (`e2e_message`). From v59 it also tells you when
+such a message begins to arrive:
+
+```json
+{"kind": "e2e_incoming", "network": "azzurra", "from": "vjt-claude",
+ "from_did": "AaZaARRDyBk", "to": "*", "msgid": "q83vEjRWeJA"}
+```
+
+It comes once per message, at its first line, and only for a PKMSG or a
+MSG spanning more than one line: a one-line message is whole the moment
+it arrives, and key material is not a message. `to` is the address its
+lines carry, a device id or `*` for every listed device: take it only when
+it is your device's id or `*`. `from` is the RAW nick. It says that a
+message is on its way and nothing about what it says; grappa has queued
+nothing yet.
+
+One of two things ends it. The `e2e_message` with the same `from_did` and
+`msgid`, for your device (`to_did`), is the message itself. Or:
+
+```json
+{"kind": "e2e_incoming_lost", "network": "azzurra",
+ "from_did": "AaZaARRDyBk", "to": "*", "msgid": "q83vEjRWeJA"}
+```
+
+That message will not reach the device `to` names (`*`: none of them).
+Either it never came whole (no new line for 60 s, a line that contradicted
+it, or a line past a cap), or it came whole and that device's queue did not
+take it, or no listed device could read it (§4f says what the peer and you
+are told then). There is no `from`: grappa no longer holds the nick's
+spelling once the message is gone. Match it to its announcement by
+`from_did` and `msgid`.
+
+Neither event is replayed: a client that connects, or reloads, while a
+message is arriving hears no announcement for it, and the message simply
+lands. Keep no clock of your own to expire an announcement; grappa's is
+the one that counts.
+
+Check `protocol_version >= 59`.
+
 ---
 
 ## 5. Wire format
@@ -2067,6 +2111,8 @@ forever.
 | `directory_complete` | user | the `/LIST` channel-directory scan finished |
 | `directory_failed` | user | the `/LIST` scan failed or timed out |
 | `directory_progress` | user | `/LIST` scan progress count |
+| `e2e_incoming` | user | a peer's PKMSG or MSG spanning several lines began to arrive: `from`, `from_did`, `to` (a device id or `*`), `msgid`; ended by its `e2e_message` or by `e2e_incoming_lost` (§4l, v59) |
+| `e2e_incoming_lost` | user | a message `e2e_incoming` announced will not reach the device `to` names: `from_did`, `to`, `msgid` (§4l, v59) |
 | `e2e_message` | user | one whole end-to-end encrypted message for one of your devices (`to_did`, v49): from a peer, or, with `own: true` (v50), a copy of one your other device sent; payload never decoded; queued until that device acks (§4f) |
 | `e2e_pairing_closed` | user | a pairing rendezvous is gone: `closed` by a side, `expired`, or `replaced` by a newer open (§4g, v48) |
 | `e2e_pairing_message` | user | a side posted message `seq` on a pairing rendezvous; no payload, fetch it (§4g, v48) |
