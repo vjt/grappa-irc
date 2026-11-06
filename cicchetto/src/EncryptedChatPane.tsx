@@ -20,6 +20,7 @@ import {
   checkLook,
   checkPlace,
   TRUST_LABEL,
+  VerifyKeyButton,
 } from "./EncryptedRail";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { ApiError, type ScrollbackMessage } from "./lib/api";
@@ -30,7 +31,6 @@ import { formatDateTime } from "./lib/dateFormat";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { formatDurationSince } from "./lib/duration";
 import {
-  type ChatRow,
   countsAsUnread,
   type IdentityCheck,
   isMessage,
@@ -63,6 +63,7 @@ import {
   verifyEncrypted,
 } from "./lib/encryptedChats";
 import { friendlyApiError } from "./lib/friendlyApiError";
+import { createOverlayLock } from "./lib/overlayScrollLock";
 import type { ScrollbackSource } from "./lib/scrollbackSource";
 import { formatTimestamp } from "./lib/timeFormat";
 import { encryptedWindowName } from "./lib/windowKinds";
@@ -92,9 +93,9 @@ import ScrollbackPane from "./ScrollbackPane";
 //   * the TOP BAR is the peer's verification only: verified or not (or the
 //     key changed), the last identity check a bot made, compact, and two
 //     buttons for the chat itself, a magnifier (search) and a shredder
-//     (delete this chat). Issue 2507 (vjt's ruling): the verification badge
-//     is also where the emoji comparison starts, one tap on `not verified`,
-//     or on `verified` to check again;
+//     (delete this chat). Issue 2544 (vjt's ruling, replacing 2507's emoji
+//     door): a tap on the badge shows the peer's whole key, with the verify
+//     button and the emoji comparison beside it while it is not verified;
 //   * the CHAT BODY holds messages, and while the key exchange is not done,
 //     the one step still needed, as a card: an identity held on another
 //     device (pair this browser, or start a new identity), a key alarm (take
@@ -104,19 +105,20 @@ import ScrollbackPane from "./ScrollbackPane";
 //     leaves a card too (issue 2491): asking for their keys again is the
 //     user's choice, never made for them, and the compose line stays usable
 //     meanwhile. The emoji comparison runs here too, modal-like over the
-//     body, and nothing can be sent until it ends. Issue 2507 (vjt's ruling):
-//     no card holds a key to paste or copy; they say in words that a bot's
-//     key, and ours for it, are the rail's;
+//     body, and nothing can be sent until it ends; so does the badge's key.
+//     Issue 2507 (vjt's ruling): no card holds a key to copy; they say in
+//     words that ours, for a bot's operator, is the rail's;
 //   * everything technical (keys, devices, pins, the check in full) is the
 //     right rail's (`EncryptedRail`). The key events the chat used to list as
 //     rows (pinned, taken, compared, alarmed) stay in the store, where the
 //     badge reads them, and show only as the rail's state.
 //
-// Bots are pinned by hand (2430 ruling 6253162964): the user reads the bot's
-// master key off the bot and pastes it; our own master is copied for the
-// other direction. People verify each other by comparing emoji (SAS,
-// `lib/e2e/sas.ts`); a key the alarm showed can be taken unverified, to be
-// verified that way (fork 7, 2430 comment 6339695571). A key here is always a
+// A key is verified by comparing it out of band and pressing verify (issue
+// 2544, which retired 2430's pasted pin): a bot prints its master key, a
+// person reads theirs out, and our own master is copied for a bot's operator.
+// People can also compare emoji (SAS, `lib/e2e/sas.ts`) while both are
+// online; a key the alarm showed can be taken unverified, to be verified
+// either way (fork 7, 2430 comment 6339695571). A key here is always a
 // master: what a peer pins, whichever of its devices writes (wire v2).
 //
 // An identity grappa holds and this browser cannot speak for is never
@@ -161,9 +163,10 @@ type Props = {
    */
   windowsOpener: JSX.Element;
   /**
-   * Called each time the emoji comparison's dialog opens, or `null`. Mobile
-   * passes the drawer's close: the rail is a drawer OVER the pane there, and
-   * the dialog opens behind it. Desktop passes `null`: its rail is beside.
+   * Called each time a dialog over the body opens (the emoji comparison's,
+   * the badge's key), or `null`. Mobile passes the drawer's close: the rail
+   * is a drawer OVER the pane there, and the dialog opens behind it. Desktop
+   * passes `null`: its rail is beside.
    */
   onDialogOpen: (() => void) | null;
 };
@@ -461,9 +464,9 @@ function sasPhase(view: SasView): SasPhase {
 // drops SAS), so the wait says what to do instead.
 //
 // Modal over the BODY only: the top bar and the rail stay usable (the wait
-// sends the user to the rail's pin form), so it is no `aria-modal` dialog,
-// which would tell assistive tech the rail is out of reach. It takes the
-// focus when it opens, which the compose line it makes inert would drop.
+// sends the user to verify a bot's key by hand), so it is no `aria-modal`
+// dialog, which would tell assistive tech the rail is out of reach. It takes
+// the focus when it opens, which the compose line it makes inert would drop.
 const SasDialog: Component<{
   view: SasView;
   peer: string;
@@ -503,8 +506,8 @@ const SasDialog: Component<{
         <Switch>
           <Match when={phase() === "waiting"}>
             <p>
-              waiting for {props.peer} to accept the emoji comparison. A bot never answers: pin the
-              key it prints instead.
+              waiting for {props.peer} to accept the emoji comparison. A bot never answers: compare
+              the key it prints with theirs here, and verify it instead.
             </p>
             <div class="e2e-step-actions">{button("cancel", "cancel")}</div>
           </Match>
@@ -555,23 +558,92 @@ const SasDialog: Component<{
   );
 };
 
-/**
- * issue 2507 — whether the key now pinned was verified by comparing emoji:
- * the newest row that chose or checked a key is a `verified`. A key pasted by
- * hand (`pinned`) was checked at its source, and a bot's always is, since a
- * bot answers only once pinned that way: comparing emoji with a bot can only
- * time out (irc-olm drops SAS), so such a key offers no "check again". Taken
- * unverified (`accepted`), or with no row left (a deleted chat keeps the pin,
- * not the rows), it reads false.
- */
-function verifiedByEmoji(rows: readonly ChatRow[]): boolean {
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const kind = rows[i]?.kind;
-    if (kind === "verified") return true;
-    if (kind === "pinned" || kind === "accepted") return false;
-  }
-  return false;
-}
+// issue 2544 (vjt's ruling) — what a tap on the top bar's badge shows: the
+// key the peer's nick is pinned to, whole, all 43 characters, to compare with
+// the peer out of band. It is the full Ed25519 key, 256 bits, and needs no
+// protocol around it. The emoji are a summary of about 42 bits, safe only
+// inside the synchronous comparison, where the commitment leaves an attacker
+// one try; shown on their own, a key of the attacker's that gives the same
+// emoji could be searched for. So a verified key shows the key alone, and one
+// not verified adds the rail's verify button and, second, the emoji
+// comparison, for when both sides are online.
+//
+// Over the body like the comparison's dialog, and for the same reason no
+// `aria-modal`: the top bar and the rail stay usable. "close" or Esc ends it:
+// it covers the scrollback, so it is a covering overlay (`createOverlayLock`
+// in the pane), and Esc reaches it through the shared stack.
+const KeyDialog: Component<{
+  networkSlug: string;
+  nick: string;
+  peer: string;
+  peerKey: string;
+  verified: boolean;
+  onCompare: () => void;
+  onClose: () => void;
+  onOpen: (() => void) | null;
+}> = (props) => {
+  let dialog: HTMLDivElement | undefined;
+  onMount(() => {
+    dialog?.focus();
+    props.onOpen?.();
+  });
+  return (
+    <div
+      ref={dialog}
+      class="e2e-sas-modal e2e-key-modal"
+      role="dialog"
+      tabindex="-1"
+      aria-labelledby="e2e-key-title"
+      data-testid="e2e-key-dialog"
+    >
+      <div class="e2e-sas">
+        <h3 class="e2e-sas-title" id="e2e-key-title">
+          {props.peer}'s key
+        </h3>
+        <code class="e2e-key" data-testid="e2e-key-dialog-key">
+          {props.peerKey}
+        </code>
+        <Show
+          when={!props.verified}
+          fallback={<p>verified: this is the key {props.peer}'s messages are encrypted to.</p>}
+        >
+          <p>
+            compare it with the key {props.peer} gives you out of band (in person, by voice, or what
+            a bot prints): if it is the same, verify it. Or compare emoji, while {props.peer} is
+            online too.
+          </p>
+        </Show>
+        <div class="e2e-step-actions">
+          <Show when={!props.verified}>
+            <VerifyKeyButton
+              networkSlug={props.networkSlug}
+              nick={props.nick}
+              peerKey={props.peerKey}
+              testId="e2e-key-verify"
+              onVerified={props.onClose}
+            />
+            <button
+              type="button"
+              class="e2e-sas-button"
+              data-testid="e2e-key-compare"
+              onClick={props.onCompare}
+            >
+              compare emoji
+            </button>
+          </Show>
+          <button
+            type="button"
+            class="e2e-sas-button"
+            data-testid="e2e-key-close"
+            onClick={props.onClose}
+          >
+            close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 /** The check's moment, compact: the time today, the date and time before. */
 function checkWhen(at: number): string {
@@ -618,15 +690,22 @@ const EncryptedChatPane: Component<Props> = (props) => {
   const check = () => encryptedChat(props.networkSlug, props.nick)?.check;
   const windowName = () => encryptedWindowName(props.nick);
   const windowKey = () => channelKey(props.networkSlug, windowName());
-  // issue 2507 — the badge starts the emoji comparison for a pinned key not
-  // verified, or one verified by emoji (to check again), while no alarm is
-  // open, none runs, and the identity is here. A key verified by pasting it
-  // (every bot's) offers none: see `verifiedByEmoji`.
-  const canCompare = () => {
-    const peer = peerTrust();
-    if (elsewhere() || peer === null || alarm() !== null || sas() !== null) return false;
-    return !peer.verified || verifiedByEmoji(rows());
+  // issue 2544 — the badge shows the pinned key (`KeyDialog`) while no alarm
+  // is open (the card answers that), no comparison runs (its dialog holds the
+  // body), and the identity is here. Once that stops holding, an open key
+  // dialog closes with it: a comparison the peer asks for takes its place.
+  const [showingKey, setShowingKey] = createSignal(false);
+  let keyDoor: HTMLButtonElement | undefined;
+  const canShowKey = () =>
+    !elsewhere() && peerTrust() !== null && alarm() === null && sas() === null;
+  createEffect(() => {
+    if (!canShowKey()) setShowingKey(false);
+  });
+  const closeKey = () => {
+    setShowingKey(false);
+    keyDoor?.focus();
   };
+  createOverlayLock(showingKey, ".e2e-key-modal", closeKey);
 
   // The step still needed, read once the chat is loaded (before, a pinned
   // peer would flash as one with no key).
@@ -777,9 +856,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
       {TRUST_LABEL[trust()]}
     </span>
   );
-  const compareLabel = () =>
-    `${TRUST_LABEL[trust()]}: compare emoji with ${display()}` +
-    (trust() === "verified" ? " again" : "");
+  const keyLabel = () => `${TRUST_LABEL[trust()]}: show ${display()}'s key`;
 
   const toggleSearch = () => {
     const open = !searching();
@@ -826,13 +903,16 @@ const EncryptedChatPane: Component<Props> = (props) => {
               <NickText nick={display()} extraClass="e2e-heading" />
             </span>
             <span class="e2e-title-line">
-              <Show when={canCompare()} fallback={badge()}>
+              <Show when={canShowKey()} fallback={badge()}>
                 <button
+                  ref={keyDoor}
                   type="button"
                   class="e2e-trust-door"
-                  aria-label={compareLabel()}
-                  title={compareLabel()}
-                  onClick={() => sasStep("start")}
+                  aria-label={keyLabel()}
+                  title={keyLabel()}
+                  aria-haspopup="dialog"
+                  aria-expanded={showingKey()}
+                  onClick={() => setShowingKey(true)}
                 >
                   {badge()}
                 </button>
@@ -931,7 +1011,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
         </Show>
       </header>
       <div class="e2e-body">
-        <div class="e2e-body-content" inert={sas() !== null}>
+        <div class="e2e-body-content" inert={sas() !== null || showingKey()}>
           <ScrollbackPane
             networkSlug={props.networkSlug}
             channelName={windowName()}
@@ -950,8 +1030,8 @@ const EncryptedChatPane: Component<Props> = (props) => {
                       <>
                         <p class="e2e-error">
                           {display()} wrote with a key that is not the one pinned, and it was
-                          ignored. If they changed it, take the new key and compare emoji to verify
-                          it; otherwise pin the key they give you in the side panel.
+                          ignored. If they changed it, take the new key and verify it. If they did
+                          not, someone else may be writing in their name: close this chat.
                         </p>
                         <div class="e2e-step-actions">
                           <button
@@ -968,10 +1048,10 @@ const EncryptedChatPane: Component<Props> = (props) => {
                   </Match>
                   <Match when={s() === "no-key"}>
                     <p>
-                      no keys exchanged with {display()} yet. Send a message: a person's key is
-                      taken when they answer. A bot answers only once its key is pinned here, and
-                      yours there: the side panel pins the key it prints, and copies yours for its
-                      operator.
+                      no keys exchanged with {display()} yet. Send a message: their key is taken
+                      when they answer. A bot answers only once your key is pinned there: the side
+                      panel copies it for its operator. Then compare the key the bot prints with the
+                      one its badge shows, and verify it.
                     </p>
                   </Match>
                   <Match when={s() === "unreadable"}>
@@ -1028,6 +1108,23 @@ const EncryptedChatPane: Component<Props> = (props) => {
               view={view()}
               peer={display()}
               onStep={sasStep}
+              onOpen={props.onDialogOpen}
+            />
+          )}
+        </Show>
+        <Show when={showingKey() ? peerTrust() : null}>
+          {(peer) => (
+            <KeyDialog
+              networkSlug={props.networkSlug}
+              nick={props.nick}
+              peer={display()}
+              peerKey={peer().master}
+              verified={peer().verified}
+              onCompare={() => {
+                setShowingKey(false);
+                sasStep("start");
+              }}
+              onClose={closeKey}
               onOpen={props.onDialogOpen}
             />
           )}

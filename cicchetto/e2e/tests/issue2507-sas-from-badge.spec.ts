@@ -7,21 +7,27 @@
 // kept as it is, starts from a tap on the top bar's `not verified` or
 // `verified` badge, with no more taps and screens than the protocol needs.
 //
+// Issue 2544 (vjt's rulings) moved two things this spec walked: a tap on the
+// badge now shows the peer's key, with the comparison as that dialog's second
+// action, and only while the key is not verified (a verified key shows the
+// key alone: no "check again"); and the rail's form that pinned a pasted key
+// is gone.
+//
 // Two browsers, two grappa users, two real vodozemac engines, one real ircd.
 // The desktop test walks the chat before the exchange (no key to paste in
-// the chat area, the rail's pin form still there), then one tap on
-// `not verified` to a match, then one tap on `verified` to check again. The
-// phone test walks the same tap where the rail is a drawer: before 2507 the
-// comparison was behind the ☰, now the badge is one tap in the top bar, and
-// a tap target.
+// the chat area, nor in the rail), then the badge on `not verified` to a
+// match, then the badge on `verified`, from the keyboard: the key, and no
+// comparison. The phone test walks the same tap where the rail is a drawer:
+// before 2507 the comparison was behind the ☰, now the badge is in the top
+// bar, and a tap target.
 //
 // ## What makes this spec able to fail
 //
 //   * The chat area holds a key input again (the no-key card's pin form, the
 //     alarm card's): an `input` under the chat body.
-//   * The badge is not the comparison's door: a click on it opens no dialog,
-//     or opens it only while not verified (no check again), or the button
-//     does not answer the keyboard.
+//   * The badge is not the comparison's door: a click on it and the key
+//     dialog's second action open no comparison; or a verified badge still
+//     offers one; or the button does not answer the keyboard.
 //   * The rail still offers its own start: a button naming the comparison.
 //   * On a phone, the badge's tap area is shorter than the tap floor (issue
 //     2511: an area around the badge, so the title's line does not grow), or
@@ -33,6 +39,7 @@ import {
   compareEmoji,
   equery,
   KEYS_TIMEOUT,
+  keyDialog,
   ownKey,
   peerPage,
   row,
@@ -72,7 +79,7 @@ async function exchangeKeys(alice: Page, bob: Page): Promise<void> {
   }
 }
 
-test("a new encrypted chat has no key to paste in the chat area, and the emoji comparison is one tap on the top bar's badge, verified or not", async ({
+test("a new encrypted chat has no key to paste, and the emoji comparison starts from the top bar's badge while the key is not verified", async ({
   page,
   browser,
 }, testInfo) => {
@@ -88,38 +95,34 @@ test("a new encrypted chat has no key to paste in the chat area, and the emoji c
     await equery(peer.page, bob.nick, aliceNick);
 
     await noKeyInputInChat(page, bob.nick);
-    await expect(rail(page).getByTestId("e2e-pin-input")).toBeVisible();
+    await expect(rail(page).locator("input")).toHaveCount(0);
     await expect(rail(page).getByTestId("e2e-own-identity-copy")).toBeVisible();
 
     await exchangeKeys(page, peer.page);
     await expect(rail(page).getByRole("button", { name: /compar/ })).toHaveCount(0);
 
-    // `not verified`: one click on the badge is the whole start. The fixture
-    // clicks it once, then walks accept, compare and match to verified.
+    // `not verified`: the badge, then the key dialog's "compare emoji". The
+    // fixture walks that, then accept, compare and match to verified.
     await compareEmoji(page, peer.page, await ownKey(page), await ownKey(peer.page), KEYS_TIMEOUT);
 
-    // `verified` by emoji: the same badge checks again, from the keyboard
-    // this time (the handler is the button's). Bob declines, and nothing
-    // changes but the dialogs going.
-    await page
-      .getByRole("button", { name: /^verified: compare emoji with .* again$/ })
-      .press("Enter");
-    await expect(dialog(page)).toHaveAttribute("data-phase", "waiting", { timeout: KEYS_TIMEOUT });
-    await expect(dialog(peer.page)).toHaveAttribute("data-phase", "asked", {
-      timeout: KEYS_TIMEOUT,
-    });
-    await dialog(peer.page).getByTestId("e2e-sas-cancel").click();
-    for (const p of [page, peer.page]) {
-      await expect(dialog(p)).toHaveCount(0, { timeout: KEYS_TIMEOUT });
-      await expect(trust(p)).toHaveAttribute("data-trust", "verified");
-    }
+    // `verified`: the same badge, from the keyboard this time (the handler is
+    // the button's), shows the key and offers no comparison.
+    await page.getByRole("button", { name: /^verified: show .*'s key$/ }).press("Enter");
+    await expect(keyDialog(page).getByTestId("e2e-key-dialog-key")).toHaveText(
+      await ownKey(peer.page),
+    );
+    await expect(keyDialog(page).getByTestId("e2e-key-compare")).toHaveCount(0);
+    await expect(keyDialog(page).getByTestId("e2e-key-verify")).toHaveCount(0);
+    await keyDialog(page).getByTestId("e2e-key-close").click();
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(dialog(peer.page)).toHaveCount(0);
   } finally {
     await peer.context.close();
     await teardownSpecSubject(bob);
   }
 });
 
-test("@touch on a phone, the emoji comparison is one tap on the top bar's badge, a tap target, and the rail's drawer stays shut", async ({
+test("@touch on a phone, the emoji comparison starts from the top bar's badge, a tap target, and the rail's drawer stays shut", async ({
   page,
   browser,
 }, testInfo) => {
@@ -140,7 +143,7 @@ test("@touch on a phone, the emoji comparison is one tap on the top bar's badge,
     // The door is the button the badge sits in, with a finger's tap floor:
     // its tap area (an `::after` growing up from the badge, issue 2511) is at
     // least 44px tall, and a tap at either end of it lands on the door.
-    const door = page.getByRole("button", { name: /^not verified: compare emoji with / });
+    const door = page.getByRole("button", { name: /^not verified: show .*'s key$/ });
     await expect(door).toBeVisible();
     const reach = await door.evaluate((el) => {
       const r = el.getBoundingClientRect();
@@ -155,6 +158,7 @@ test("@touch on a phone, the emoji comparison is one tap on the top bar's badge,
     const drawer = page.locator(".shell-members.open");
     await expect(drawer).toHaveCount(0);
     await trust(page).tap();
+    await keyDialog(page).getByTestId("e2e-key-compare").tap();
     await expect(dialog(page)).toHaveAttribute("data-phase", "waiting", { timeout: KEYS_TIMEOUT });
     await expect(dialog(page)).toBeInViewport();
     await expect(drawer).toHaveCount(0);

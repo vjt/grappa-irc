@@ -10,11 +10,14 @@
 // --tap-min floor (#306) that both carried, and the WHOIS card sat 7px (its
 // 0.5rem margin) inside the key sections on both sides. vjt's ruling on the
 // first point: the buttons are sized to their content, the input keeps its
-// 44px, and `pin`, on the input's row, takes the input's height.
+// 44px, and `pin`, on the input's row, takes the input's height. Issue 2544
+// took the input and `pin` away with the form that pasted a key; the verify
+// button that replaced them shows only beside a key taken, which the plain
+// IRC peer here never sends, and shares the rail's button rule with the two
+// measured.
 //
 // Asserted as the geometry a person reads, on the desktop rail and in the
 // phone drawer:
-//   * `pin` is as tall as the input on its row;
 //   * `copy your key` and `add a device` are one line of text, and their
 //     content box no taller than that line (no floor holding them open);
 //   * the WHOIS card's left and right edges are the key sections' own.
@@ -24,7 +27,6 @@
 //
 //   * A floor comes back on the rail's buttons (44px for a 14px line).
 //   * A label wraps to a second line.
-//   * `pin` stops matching the input beside it.
 //   * The WHOIS card keeps a horizontal margin the rail's cards do not have.
 
 import type { Locator, Page, TestInfo } from "@playwright/test";
@@ -57,8 +59,6 @@ const RAIL_PARTS = {
   peer: '[data-testid="e2e-rail-peer"]',
   own: '[data-testid="e2e-rail-own"]',
   whois: '[data-testid="rail-query-context"] [data-testid="whois-card"]',
-  input: '[data-testid="e2e-pin-input"]',
-  pin: '[data-testid="e2e-pin-submit"]',
   copy: '[data-testid="e2e-own-identity-copy"]',
   addDevice: '[data-testid="e2e-add-device"]',
 } as const;
@@ -115,11 +115,9 @@ async function expectRailGeometry(page: Page, testInfo: TestInfo): Promise<void>
     contentType: "application/json",
   });
 
-  // 1. `pin` sits on the input's row and takes its height; the other two
-  //    stand alone, one line, and their content box is that line: at most
-  //    1.6 of the font size (the line height of a single line), where the
-  //    44px floor held a 14px line open at three times that.
-  expect(Math.abs(boxes.pin.height - boxes.input.height)).toBeLessThanOrEqual(1);
+  // 1. The buttons stand alone, one line, and their content box is that
+  //    line: at most 1.6 of the font size (the line height of a single
+  //    line), where the 44px floor held a 14px line open at three times that.
   for (const button of [boxes.copy, boxes.addDevice]) {
     expect(button.lines).toBe(1);
     expect(button.content).toBeLessThanOrEqual(1.6 * button.fontSize);
@@ -131,7 +129,7 @@ async function expectRailGeometry(page: Page, testInfo: TestInfo): Promise<void>
   expect(Math.abs(boxes.whois.right - boxes.peer.right)).toBeLessThanOrEqual(1);
 }
 
-test("issue 2506 — the encrypted rail's buttons are sized to their content, pin to its input, and the WHOIS card sits on the key sections' edges", async ({
+test("issue 2506 — the encrypted rail's buttons are sized to their content, and the WHOIS card sits on the key sections' edges", async ({
   page,
 }, testInfo) => {
   const peer = await IrcPeer.connect({ nick: `E2506${crypto.randomUUID().slice(0, 8)}` });
@@ -144,7 +142,7 @@ test("issue 2506 — the encrypted rail's buttons are sized to their content, pi
   }
 });
 
-test("@touch @webkit issue 2506 — on a phone, the drawer's encrypted rail: buttons sized to their content, pin to its input, the WHOIS card on the key sections' edges", async ({
+test("@touch @webkit issue 2506 — on a phone, the drawer's encrypted rail: buttons sized to their content, the WHOIS card on the key sections' edges", async ({
   page,
 }, testInfo) => {
   const peer = await IrcPeer.connect({ nick: `E2506${crypto.randomUUID().slice(0, 8)}` });

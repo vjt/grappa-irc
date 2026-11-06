@@ -1,8 +1,8 @@
 // issue 2430 — the encrypted query, driven the way a person drives it: log
 // in and wait for the key bundle, open the query with `/equery`, read our own
-// key off the rail (issue 2485: the keys live there), pin a key by hand, send,
-// compare emoji. Shared by the specs that put two people (two browser
-// contexts, two grappa users) in one encrypted query.
+// key off the rail (issue 2485: the keys live there), send, verify the key
+// taken by hand (issue 2544) or compare emoji. Shared by the specs that put
+// two people (two browser contexts, two grappa users) in one encrypted query.
 
 import type { Browser, Page } from "@playwright/test";
 import {
@@ -79,12 +79,18 @@ export async function replaceIdentity(page: Page): Promise<void> {
   await expect(page.getByTestId("e2e-identity-elsewhere")).toHaveCount(0);
 }
 
-/** Pastes `key` as the peer's in the rail's pin form and pins it: verified. */
-export async function pin(page: Page, key: string): Promise<void> {
-  await page.getByTestId("e2e-pin-input").fill(key);
-  await page.getByTestId("e2e-pin-submit").click();
-  await expect(page.getByTestId("e2e-peer-key")).toHaveText(key);
+/**
+ * issue 2544 — the peer's key, as the rail shows it, is `key` (what the peer
+ * reads off its own rail, or a bot prints: compared out of band), and the
+ * rail's verify button verifies it. The key is taken on first use, so this
+ * waits for it to come; call it once the keys can have. On a phone the rail
+ * is a drawer: open it first.
+ */
+export async function verify(page: Page, key: string): Promise<void> {
+  await expect(page.getByTestId("e2e-peer-key")).toHaveText(key, { timeout: KEYS_TIMEOUT });
+  await page.getByTestId("e2e-peer-verify").click();
   await expect(page.getByTestId("e2e-peer-trust")).toHaveAttribute("data-trust", "verified");
+  await expect(page.getByTestId("e2e-peer-verify")).toHaveCount(0);
 }
 
 /** The open encrypted query's compose box: the one every window has (issue 2512). */
@@ -148,6 +154,20 @@ export async function flip(page: Page, nick: string, label: string): Promise<voi
 /** The window's trust badge: verified, unverified, or alarm (`data-trust`). */
 export const trust = (page: Page) => page.getByTestId("e2e-peer-trust");
 
+/** What a tap on the badge shows (issue 2544): the peer's key, over the chat body. */
+export const keyDialog = (page: Page) => page.getByTestId("e2e-key-dialog");
+
+/**
+ * Asks to compare emoji the way issue 2544 leaves it: a click on the badge
+ * shows the peer's key, and the comparison is that dialog's second action.
+ * Resolves once the key's dialog has given way.
+ */
+export async function askToCompare(page: Page): Promise<void> {
+  await trust(page).click();
+  await keyDialog(page).getByTestId("e2e-key-compare").click();
+  await expect(keyDialog(page)).toHaveCount(0);
+}
+
 const phase = (page: Page, value: string, timeout: number) =>
   expect(page.getByTestId("e2e-sas")).toHaveAttribute("data-phase", value, { timeout });
 
@@ -156,10 +176,10 @@ const emoji = (page: Page): Promise<(string | null)[]> =>
     .getByTestId("e2e-sas-emoji")
     .evaluateAll((els) => els.map((el) => el.getAttribute("data-index")));
 
-// Alice asks, from a tap on her top bar's trust badge (issue 2507), Bob
-// accepts, both compare the same 7 emoji and both say they match: each one's
-// key reads verified on the other side. The request reaches Bob within
-// `askedWithin`.
+// Alice asks, from her top bar's trust badge (issue 2507; since 2544 the
+// key's dialog it opens), Bob accepts, both compare the same 7 emoji and both
+// say they match: each one's key reads verified on the other side. The
+// request reaches Bob within `askedWithin`.
 export async function compareEmoji(
   alice: Page,
   bob: Page,
@@ -167,7 +187,7 @@ export async function compareEmoji(
   bobKey: string,
   askedWithin: number,
 ): Promise<void> {
-  await trust(alice).click();
+  await askToCompare(alice);
   await phase(alice, "waiting", KEYS_TIMEOUT);
 
   await phase(bob, "asked", askedWithin);

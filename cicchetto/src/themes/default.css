@@ -5001,12 +5001,6 @@ html.is-ios27-band .shell {
   color: var(--error, #e06c75);
 }
 
-.e2e-pin {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.e2e-pin-input,
 .e2e-search-input {
   flex: 1;
   min-width: 0;
@@ -5074,7 +5068,6 @@ html.is-ios27-band .shell {
 }
 
 .e2e-copy,
-.e2e-pin-submit,
 .e2e-sas-button,
 .e2e-request-card-action,
 .rail-encrypted-chat-button {
@@ -5099,7 +5092,8 @@ html.is-ios27-band .shell {
 /* issue 2430 slice d — the SAS panel: where the emoji comparison stands,
    with its buttons, and while comparing the 7 emoji, each over its name, in
    a row that wraps on a phone. issue 2485 — a dialog over the chat body
-   (vjt: "tipo modale"), the body dimmed beneath it. */
+   (vjt: "tipo modale"), the body dimmed beneath it. issue 2544 — the
+   badge's key dialog (`.e2e-key-modal`) takes the same frame. */
 .e2e-sas-modal {
   position: absolute;
   inset: 0;
@@ -13326,15 +13320,12 @@ html.is-ios27-band .shell {
 }
 
 /* issue 2506 — the rail's key buttons are sized to their content (vjt's
-   ruling): one line and the input's own 0.5rem above and below, instead of
-   the --tap-min floor every e2e button carries. Measured before this rule on
-   desktop chromium, Pixel 7 and iPhone 15: buttons and input all 44px, a
-   14px line held open at three times its height. The input keeps its 44px
-   (the global form-control floor), and `pin`, on its row, stretches to it
-   (`.e2e-pin` is a flex row), so the two still line up. Rail-scoped: the
-   chat body's step card and the request card keep the floor. */
+   ruling): one line and 0.5rem above and below, instead of the --tap-min
+   floor every e2e button carries. Measured before this rule on desktop
+   chromium, Pixel 7 and iPhone 15: every button 44px, a 14px line held open
+   at three times its height. Rail-scoped: the chat body's step card, the
+   dialogs over it and the request card keep the floor. */
 .rail-e2e .e2e-copy,
-.rail-e2e .e2e-pin-submit,
 .rail-e2e .e2e-sas-button {
   min-height: 0;
   padding: 0.5rem 1rem;
