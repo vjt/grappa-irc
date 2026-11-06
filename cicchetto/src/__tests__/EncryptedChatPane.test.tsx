@@ -1505,6 +1505,30 @@ describe("EncryptedChatPane, the rail", () => {
     expect(screen.queryByTestId("e2e-own-devices-error")).toBeNull();
   });
 
+  // issue 2576: an identity holds 3 devices, so the master's browser at the
+  // cap is told, beside the revokes, that adding one means revoking one.
+  it("tells the master's browser at three devices to revoke one before adding another, and stops once one is revoked", async () => {
+    renderPane();
+    const full = await screen.findByTestId("e2e-own-devices-full");
+    expect(full.textContent).toBe(
+      "An identity holds at most 3 devices: revoke one to add another.",
+    );
+    expect(within("e2e-rail-own").contains(full)).toBe(true);
+
+    ownDevicesHere.mockResolvedValue([DEVICES[0], DEVICES[2]]);
+    fireEvent.click(screen.getAllByTestId("e2e-own-device-revoke")[0] as HTMLElement);
+    acceptConfirm();
+    await waitFor(() => expect(deviceRows()).toHaveLength(2));
+    expect(screen.queryByTestId("e2e-own-devices-full")).toBeNull();
+  });
+
+  it("gives no revoke advice to another browser at three devices: it cannot revoke", async () => {
+    holdsMasterHere.mockResolvedValue(false);
+    renderPane();
+    await waitFor(() => expect(deviceRows()).toHaveLength(3));
+    expect(screen.queryByTestId("e2e-own-devices-full")).toBeNull();
+  });
+
   it("another browser lists the devices read-only, under the hint that says where they are revoked", async () => {
     holdsMasterHere.mockResolvedValue(false);
     renderPane();

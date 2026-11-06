@@ -18,7 +18,7 @@ import {
   wrapInitial,
 } from "../lib/e2e/pairingMessages";
 import type { EstablishedEcies } from "../lib/e2e/vodozemac/vodozemac_binding";
-import { type IdBlock, listSigText } from "../lib/e2e/wire";
+import { DEVICE_CAP, type IdBlock, listSigText } from "../lib/e2e/wire";
 import { Grappa, routeApi } from "./helpers/e2eGrappa";
 import { type MemoryVault, memoryLock, memoryVault } from "./helpers/e2eVault";
 import { olm } from "./helpers/olm";
@@ -201,10 +201,10 @@ async function strangers(n: Net, M: string, count: number): Promise<IdBlock[]> {
   return ids;
 }
 
-/** `n`'s list grown to four devices, put by the master `holder` holds there over three others. */
+/** `n`'s list grown to the cap, put by the master `holder` holds there over its own and others. */
 async function fillUp(holder: AccountStore, n: Net): Promise<void> {
   const M = await masterKey(holder, n);
-  const others = (await strangers(n, M, 3)).map((id) => id.ed25519);
+  const others = (await strangers(n, M, DEVICE_CAP - 1)).map((id) => id.ed25519);
   const devices = [(await ownOf(holder, n)).E, ...others].sort();
   const sig = await holder.withAccount(slotOf(n), async ({ master }) =>
     master?.sign(listSigText(2, devices)),
@@ -437,7 +437,7 @@ describe("a pairing between the holder and a new browser", () => {
     expect(j.vault.records.size).toBe(0);
   });
 
-  // Review Focus 5: master on A, not on B, A2 at 4 devices, the joiner already
+  // Review Focus 5: master on A, not on B, A2 at the cap, the joiner already
   // listed on C. The holder cannot know the joiner's keys before `join`, so C
   // is offered and comes back skipped.
   it("the holder offers only its master networks and reports a full list", async () => {
@@ -510,7 +510,7 @@ describe("a pairing between the holder and a new browser", () => {
     await settle();
     expect(p.joiner.state().stage).toBe("ended");
     expect(vi.mocked(api.registerE2eDevice).mock.calls.length).toBe(registered);
-    expect(await devicesOn(A2)).toHaveLength(4);
+    expect(await devicesOn(A2)).toHaveLength(DEVICE_CAP);
     expect(warn).toHaveBeenCalledWith(
       `[e2e] pairing: judging the network failed on ${D.slug}`,
       expect.any(api.ApiError),

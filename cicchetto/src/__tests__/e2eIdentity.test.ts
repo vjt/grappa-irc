@@ -11,7 +11,7 @@ import type { AccountStore } from "../lib/e2e/accountStore";
 import { nicksFrom } from "../lib/e2e/byNick";
 import type { E2eState } from "../lib/e2e/engine";
 import type { Account } from "../lib/e2e/vodozemac/vodozemac_binding";
-import type { IdBlock } from "../lib/e2e/wire";
+import { DEVICE_CAP, type IdBlock } from "../lib/e2e/wire";
 import { Grappa, routeApi } from "./helpers/e2eGrappa";
 import { type MemoryVault, memoryLock, memoryVault } from "./helpers/e2eVault";
 import { olm } from "./helpers/olm";
@@ -639,9 +639,9 @@ describe("syncIdentity", () => {
     expect((await grappa.api.listE2eDevices(NICK, SLUG)).map((d) => d.ed25519)).toEqual([mine.E]);
   });
 
-  it("four orphan devices filling every room with no list held are dropped, and the registration goes through", async () => {
+  it("orphan devices filling every room with no list held are dropped, and the registration goes through", async () => {
     const stranger = new (olm().Account)();
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < DEVICE_CAP; i++) {
       const orphan = new (olm().Account)();
       await grappa.api.registerE2eDevice(NICK, SLUG, idBlock(orphan, stranger.ed25519_key()));
       orphan.free();
@@ -655,10 +655,7 @@ describe("syncIdentity", () => {
       "GET list",
       "POST devices",
       "GET devices",
-      "DELETE device",
-      "DELETE device",
-      "DELETE device",
-      "DELETE device",
+      ...Array.from({ length: DEVICE_CAP }, () => "DELETE device"),
       "POST devices",
       "PUT list",
       "POST keys",
@@ -670,7 +667,7 @@ describe("syncIdentity", () => {
   it("an orphan device that cannot be dropped is logged, the others go, and the registration goes through", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const stranger = new (olm().Account)();
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < DEVICE_CAP; i++) {
       const orphan = new (olm().Account)();
       await grappa.api.registerE2eDevice(NICK, SLUG, idBlock(orphan, stranger.ed25519_key()));
       orphan.free();
@@ -694,9 +691,9 @@ describe("syncIdentity", () => {
     ]);
   });
 
-  it("a fifth device refused again after the orphans went fails the sync", async () => {
+  it("a device past the cap refused again after the orphans went fails the sync", async () => {
     const stranger = new (olm().Account)();
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < DEVICE_CAP; i++) {
       const orphan = new (olm().Account)();
       await grappa.api.registerE2eDevice(NICK, SLUG, idBlock(orphan, stranger.ed25519_key()));
       orphan.free();
@@ -1179,16 +1176,16 @@ describe("the pairing doors", () => {
 
   // No list-held orphan sweep here: the holder's list is held, and every
   // device grappa holds may be one of its own.
-  it("prepareJoin answers full when grappa holds 4 devices, and drops none of them", async () => {
+  it("prepareJoin answers full when grappa holds 3 devices, and drops none of them", async () => {
     const a = await holder();
     const M = await offered(a.store);
-    await strangers(3, M);
+    await strangers(2, M);
     vi.clearAllMocks();
 
     expect(await prepareJoin(browser().store, NICK, SLOT, SLUG, M)).toBe("full");
 
     expect(calls()).toEqual(["GET list", "POST devices"]);
-    expect(await grappa.api.listE2eDevices(NICK, SLUG)).toHaveLength(4);
+    expect(await grappa.api.listE2eDevices(NICK, SLUG)).toHaveLength(3);
   });
 
   it("addDevice re-syncs once when another device put a list first, and keeps that device", async () => {
@@ -1228,11 +1225,10 @@ describe("the pairing doors", () => {
     const M = await offered(a.store);
     const j = await joined(browser().store, M);
     const E = (await stored(a.store)).E;
-    const [third = "", fourth = ""] = await strangers(2, M);
-    const lists = [
-      await listBy(a.store, 2, [E, third]),
-      await listBy(a.store, 3, [E, third, fourth]),
-    ];
+    // The joiner and the holder hold two rooms, the cap three: the list
+    // moves by a device in, then by it out again.
+    const [third = ""] = await strangers(1, M);
+    const lists = [await listBy(a.store, 2, [E, third]), await listBy(a.store, 3, [E])];
     vi.clearAllMocks();
     for (const behind of lists) {
       vi.mocked(api.putE2eList).mockImplementationOnce(async (t, s, list) => {
@@ -1409,10 +1405,12 @@ describe("the pairing doors", () => {
     const b = browser();
     const { M } = await paired(a.store, b.store);
     const [mineA, mineB] = [await stored(a.store), await stored(b.store)];
-    const [third = "", fourth = ""] = await strangers(2, M);
+    // Two devices paired, the cap three: the list moves by a device in, then
+    // by it out again.
+    const [third = ""] = await strangers(1, M);
     const lists = [
       await listBy(a.store, 3, [mineA.E, mineB.E, third]),
-      await listBy(a.store, 4, [mineA.E, mineB.E, third, fourth]),
+      await listBy(a.store, 4, [mineA.E, mineB.E]),
     ];
     vi.clearAllMocks();
     for (const behind of lists) {
@@ -1613,10 +1611,10 @@ describe("the pairing doors", () => {
     expect(await offerable(a.store, NICK, SLOT, SLUG)).toBeNull();
   });
 
-  it("offerable answers full on a list of 4", async () => {
+  it("offerable answers full on a list of 3", async () => {
     const a = await holder();
     const M = await offered(a.store);
-    const others = await strangers(3, M);
+    const others = await strangers(2, M);
     // Put by another device: the record learns of it from offerable's sync.
     await grappa.api.putE2eList(
       NICK,

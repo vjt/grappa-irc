@@ -3,6 +3,7 @@ import AddDeviceOffer from "./AddDeviceOffer";
 import { token } from "./lib/auth";
 import { pairingDeps } from "./lib/e2e/pairingDeps";
 import { type HolderState, holderPairing } from "./lib/e2e/pairingSession";
+import { DEVICE_CAP } from "./lib/e2e/wire";
 import { errorMessage } from "./lib/friendlyApiError";
 import PairResults from "./PairResults";
 
@@ -75,7 +76,7 @@ const AddDevicePanel: Component<{ onClose: () => void }> = (props) => {
       <PairResults results={s.results} />
       <Show when={s.full.length > 0}>
         <p class="muted" data-testid="pair-full">
-          Not offered, already 4 devices: {s.full.join(", ")}
+          Not offered, already {DEVICE_CAP} devices (revoke one first): {s.full.join(", ")}
         </p>
       </Show>
       <Show when={s.notMaster.length > 0}>

@@ -339,9 +339,9 @@ describe("fake grappa v2: refusals", () => {
     ).rejects.toMatchObject({ status: 422, code: "unknown_device" });
   });
 
-  it("refuses a fifth device (409 too_many_devices); registering one again keeps it one device", async () => {
+  it("refuses a fourth device (409 too_many_devices); registering one again keeps it one device", async () => {
     const grappa = new Grappa();
-    const bob = await identity(grappa, "Bob", 4);
+    const bob = await identity(grappa, "Bob", 3);
     const again = bob.devices[0] as Device;
     await expect(
       grappa.api.registerE2eDevice("Bob", SLUG, idBlock(again.account, bob.list.master)),
@@ -350,7 +350,7 @@ describe("fake grappa v2: refusals", () => {
     await expect(
       grappa.api.registerE2eDevice("Bob", SLUG, idBlock(new (olm().Account)(), bob.list.master)),
     ).rejects.toMatchObject({ status: 409, code: "too_many_devices" });
-    expect(await grappa.api.listE2eDevices("Bob", SLUG)).toHaveLength(4);
+    expect(await grappa.api.listE2eDevices("Bob", SLUG)).toHaveLength(3);
   });
 
   it("stamps a device's last_seen_at when it reads its inbox, at most once a minute, as E2eKeys.seen/1 does (issue 2547)", async () => {

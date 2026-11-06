@@ -5671,20 +5671,39 @@ describe("S1 sibling copies — send", () => {
     ).toEqual([b.own.did]);
   });
 
+  // Three devices, the cap (issue 2576): the sibling that holds a session
+  // goes first, the one still waiting for keys after it.
   it("a sibling removed by setSiblings drops its waiting copies as sibling-gone", async () => {
     const g = new Grappa();
-    const alice = ownAccount("alice", 4);
-    const [a, b, c, d] = alice.devices as [OwnDevice, OwnDevice, OwnDevice, OwnDevice];
+    const alice = ownAccount("alice", 3);
+    const [a, b, c] = alice.devices as [OwnDevice, OwnDevice, OwnDevice];
     await enrolledAccount(g, alice);
     const claim = (sibling: OwnDevice) => g.door("alice", a.own.did).claim(sibling.own.did);
     engineFor(alice, a).setSiblings(await g.api.listE2eDevices("alice", SLUG));
     engineFor(alice, a).copy("bob", "one");
     engineFor(alice, a).copy("carol", "two");
-    // c holds a session now; b and d still wait for keys.
+    // c holds a session now; b still waits for keys.
     expect(engineFor(alice, a).siblingKeys(c.own.did, await claim(c)).copies).toHaveLength(2);
 
-    // Our master puts a list without c and d, and grappa drops both.
+    // Our master puts a list without c, and grappa drops it: its session
+    // goes, and nothing of b's waiting copies.
     a.own.list = signedList(alice.master, 2, [a.account, b.account]);
+    await enlist(g, "alice", alice.master, [], a.own.list);
+    expect(engineFor(alice, a).setSiblings(await g.api.listE2eDevices("alice", SLUG))).toEqual({
+      events: [],
+      outbound: [],
+    });
+    expect(Object.keys(a.state.siblings)).toEqual([keyOf(b.account)]);
+    expect(a.state.sessions[curveOf(c.account)]).toBeUndefined();
+    expect(a.state.copyq[keyOf(b.account)]?.length).toBe(2);
+    expect(
+      engineFor(alice, a)
+        .copy("bob", "three")
+        .copies.map((x) => x.to),
+    ).toEqual([]);
+
+    // Then a list without b: what waited for it drops.
+    a.own.list = signedList(alice.master, 3, [a.account]);
     await enlist(g, "alice", alice.master, [], a.own.list);
     const res = engineFor(alice, a).setSiblings(await g.api.listE2eDevices("alice", SLUG));
 
@@ -5692,23 +5711,12 @@ describe("S1 sibling copies — send", () => {
       events: [
         { kind: "dropped", nick: "bob", reason: "sibling-gone" },
         { kind: "dropped", nick: "carol", reason: "sibling-gone" },
+        { kind: "dropped", nick: "bob", reason: "sibling-gone" },
       ],
       outbound: [],
     });
-    expect(Object.keys(a.state.siblings)).toEqual([keyOf(b.account)]);
-    expect(a.state.sessions[curveOf(c.account)]).toBeUndefined();
-    expect(a.state.copyq[keyOf(d.account)]).toBeUndefined();
-    // b's copies still wait, and go once its keys come.
-    const sent = engineFor(alice, a).siblingKeys(b.own.did, await claim(b));
-    expect(sent.copies.map((x) => [x.to, opened(b.account, x.verb, x.payload).body])).toEqual([
-      [b.own.did, "one"],
-      [b.own.did, "two"],
-    ]);
-    expect(
-      engineFor(alice, a)
-        .copy("bob", "three")
-        .copies.map((x) => x.to),
-    ).toEqual([b.own.did]);
+    expect(a.state.siblings).toEqual({});
+    expect(a.state.copyq[keyOf(b.account)]).toBeUndefined();
   });
 
   it("siblingKeys refuses a KEYS of our master whose list it did not sign, or whose entry is not the sibling admitted", () => {

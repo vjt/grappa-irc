@@ -17,7 +17,7 @@ import { friendlyApiError, operatorApiError } from "../lib/friendlyApiError";
 const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknown> }> = [
   { code: "invalid_credentials", matches: /invalid name or password/i },
   // U-3: ip_cap_exceeded → device-scoped copy
-  { code: "too_many_devices", matches: /already has four devices/i },
+  { code: "too_many_devices", matches: /already has three devices/i },
   { code: "master_mismatch", matches: /another device started an encryption identity/i },
   { code: "stale_list", matches: /device list is out of date/i },
   { code: "listed_device", matches: /still on your device list/i },

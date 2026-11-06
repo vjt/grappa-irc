@@ -30,8 +30,21 @@ export const LIST_SIG_PREFIX = "irc-e2e:v2:list:";
 export const CERT_PREFIX = "irc-e2e:v2:dev:";
 /** The binding of a PKMSG's sender to its recipient, see `fb`. */
 export const BIND_PREFIX = "irc-e2e:v2:bind:";
-/** The most devices one master lists (grappa's `DeviceList.max_devices/0`). */
+/**
+ * The most devices a list on the wire may name, and the most bodies one
+ * message carries (wire v2): what a receiver takes. A list of 4 that an
+ * older client signed, or a bot's message to 4 of a user's devices, still
+ * reads; raising it would be a new wire version.
+ */
 export const MAX_DEVICES = 4;
+/**
+ * The most devices one identity holds (grappa's `DeviceList.max_devices/0`,
+ * issue 2576): pairing a fourth asks to revoke one first. Below the wire's
+ * `MAX_DEVICES`, so every list signed here is one any receiver takes. Each
+ * device costs a body, about one IRC line, on every message to the user and
+ * on every order challenge, whose window that time comes out of.
+ */
+export const DEVICE_CAP = 3;
 
 const MAX_VER = 2 ** 31 - 1;
 const DID = /^[A-Za-z0-9_-]{11}$/;
