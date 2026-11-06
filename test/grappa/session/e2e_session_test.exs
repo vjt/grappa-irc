@@ -779,6 +779,25 @@ defmodule Grappa.Session.E2eSessionTest do
       }
     end
 
+    # issue 2575: the bot's CHAL now lives 15 s plus its own wire time at
+    # an empty bank, 29 s for a CHAL to 4 devices. grappa takes the
+    # deadline from the CHAL and holds no ceiling of its own.
+    test "an order's answer to a CHAL that lives past 15 s is taken, and goes when the window opens" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      send = &Session.send_e2e(subject, network.id, "alice", &1, :control, &2, @small, &3)
+
+      for _ <- 1..3, do: {:ok, _} = send.(:keyreq, {device.did, "*"}, nil)
+
+      expires_at = System.os_time(:second) + 29
+      assert {:ok, ack} = send.(:msg, {device.did, @alice}, expires_at)
+
+      assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, ack), 10_000)
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_send_dropped, msgid: ^ack}}
+    end
+
     test "an order's answer already too late to make its deadline is refused at the door" do
       {server, _, user, network} = connected_session()
       [device] = listed(user, network)
