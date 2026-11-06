@@ -53,8 +53,8 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v55 -> v56 (issue 2547): `last_seen_at` on the E2E device
- * shape of `GET /e2e/devices`, when each device last read its inbox. A
+ * Last read, v56 -> v57 (issue 2544): `inserted_at` on the E2E device
+ * shape of `GET /e2e/devices`, when grappa first registered each device. A
  * terminal holds no E2E identity and reads no device list, so nothing it
  * renders changed.
  *
