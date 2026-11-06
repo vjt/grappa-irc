@@ -716,10 +716,11 @@ export class Engine {
   /**
    * grappa refused the send of `ref`: it never left, so no NACK will name it.
    * One message can be several payloads (a MSG and a PKMSG, more than
-   * `MAX_DEVICES` devices), and a copy of it can still wait for keys: answers
-   * who it was for and the caller's tag once nothing of it is on its way or
-   * waiting (`pending`), so it reached no device; undefined while something
-   * is, for a ref it does not know, and for the engine's own list traffic.
+   * `MAX_DEVICES` devices, bodies too long for one payload), and a copy of it
+   * can still wait for keys: answers who it was for and the caller's tag once
+   * nothing of it is on its way or waiting (`pending`), so it reached no
+   * device; undefined while something is, for a ref it does not know, and for
+   * the engine's own list traffic.
    */
   discard(ref: string): { nick: string; tag: string } | undefined {
     const record = this.state.sent.find((s) => s.ref === ref);
@@ -855,7 +856,7 @@ export class Engine {
     res: Result,
   ): boolean {
     const { ready, lacking } = this.split(master, only, done);
-    // A message grappa would refuse is refused for every device.
+    // A body grappa would refuse even alone refuses the message for every device.
     const refused = ready.length > 0 ? this.encrypt(nick, master, ready, msg, res) : undefined;
     if (refused !== undefined) {
       this.lost(nick, refused, [msg]);
@@ -1024,7 +1025,8 @@ export class Engine {
    * `MAX_DEVICES` bodies each, each `to` its device's did when it holds one
    * body, else `*`; every one of them gets its own msgid. A pre-key body names
    * both devices (`fb`). Sized before anything is stored: a message grappa
-   * would refuse (413), or one it cannot be sized for yet, leaves every
+   * would refuse (413) goes as one message per body instead, and a body too
+   * long even alone, or a message that cannot be sized yet, leaves every
    * session where it was, so no peer has a message key to skip; the answer is
    * why (the caller reports it), else undefined.
    */
@@ -1044,34 +1046,32 @@ export class Engine {
         sessions.push(encrypted.session);
         return { ...encrypted, device };
       });
+      const messageOf = (preKey: boolean, group: Body[], to: string) => ({
+        ...this.wireOf(preKey, Object.fromEntries(group.map((b) => [b.device.did, b.body]))),
+        to,
+        group,
+      });
+      const fits = (m: { verb: MessageVerb; payload: string; to: string }): boolean =>
+        linesNeeded(m.verb, m.payload, lineBudget, this.own.did, m.to) <= MAX_FRAGMENTS;
       // The MSG first: a device that answered on its session is one in use.
       // A message holds `MAX_DEVICES` bodies, and a master's trusted devices
       // can be more: a full list, and the devices certificates admit past
-      // it. Each kind goes in as many messages as it fills.
+      // it. Each kind goes in as many messages as it fills, and a message
+      // too long for grappa goes as one message per body instead: the same
+      // bodies regrouped, each session moved once.
       const messages = [false, true].flatMap((preKey) =>
         chunked(
           bodies.filter((b) => b.preKey === preKey),
           MAX_DEVICES,
         ).flatMap((group) => {
-          const [first] = group;
-          if (first === undefined) return [];
-          const wire = Object.fromEntries(group.map((b) => [b.device.did, b.body]));
-          return [
-            {
-              ...this.wireOf(preKey, wire),
-              to: group.length === 1 ? first.device.did : "*",
-              group,
-            },
-          ];
+          if (group.length > 1) {
+            const together = messageOf(preKey, group, "*");
+            if (fits(together)) return [together];
+          }
+          return group.map((b) => messageOf(preKey, [b], b.device.did));
         }),
       );
-      if (
-        messages.some(
-          (m) => linesNeeded(m.verb, m.payload, lineBudget, this.own.did, m.to) > MAX_FRAGMENTS,
-        )
-      ) {
-        return "too-long";
-      }
+      if (!messages.every(fits)) return "too-long";
       for (const b of bodies) this.sessionsOf(b.device.curve25519)[0] = b.session.pickle();
       for (const { verb, to, payload, group } of messages) {
         const ref = String(this.state.nextRef++);
