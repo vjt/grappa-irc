@@ -139,6 +139,18 @@ describe("classifyMediaLink", () => {
         classifyMediaLink(`https://grappa.example:4000/uploads/${SLUG}`, "📸 ", ORIGIN, NO_ALIASES),
       ).toBeNull();
     });
+
+    // issue 2453 — a path is the poster's to choose, and `constructor` and
+    // `__proto__` are valid extensions; "bob" runs first as the control.
+    it.each(["bob", "constructor", "__proto__"])(
+      "an extension .%s is null, on the page origin and on a third-party host",
+      (ext) => {
+        expect(classifyMediaLink(`${ORIGIN}/files/x.${ext}`, "", ORIGIN, NO_ALIASES)).toBeNull();
+        expect(
+          classifyMediaLink(`https://other.example/files/x.${ext}`, "", ORIGIN, NO_ALIASES),
+        ).toBeNull();
+      },
+    );
   });
 
   // #607 — a third-party host is admitted for an https AUDIO link, so it
