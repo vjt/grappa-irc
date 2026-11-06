@@ -1237,6 +1237,11 @@ describe("EncryptedChatPane, the emoji comparison", () => {
       { kind: "sas_cancelled", id: "c", at, nick: "Bob", by: "peer", reason: "its own words" },
       'stopped by them: "its own words"',
     ],
+    // issue 2457: another device of this account answered the request.
+    [
+      { kind: "sas_cancelled", id: "c", at, nick: "Bob", by: "peer", reason: "other-device" },
+      "stopped by them: answered on another device",
+    ],
   ] as [ChatRow, string][])("the rail says how the last comparison ended (%o)", (last, text) => {
     setTrust({ master: KEY, verified: false, devices: 1 });
     setRows([{ kind: "sas_asked", id: "a", at, nick: "Bob", by: "you" }, last]);

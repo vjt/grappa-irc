@@ -889,7 +889,7 @@ describe("SAS with a peer of several devices", () => {
     return { w, a, b1, b2 };
   }
 
-  it("asks every device; the first to accept is the one it runs with, an accept from another device of the master is ignored, and the master is verified", async () => {
+  it("asks every device; the first to accept is the one it runs with, the others are told it is not theirs, and the master is verified", async () => {
     const { w, a, b1, b2 } = await trio();
     await step(w, a, "bob", "start");
     expect(a.sasOut.map((o) => o.to)).toEqual(["*"]);
@@ -900,18 +900,20 @@ describe("SAS with a peer of several devices", () => {
 
     await step(w, b1, "alice", "accept");
     await drain(w, a);
-    const fixed = { ...(a.state.sas[b1.own.master] as SasRecord) };
-    expect(fixed).toEqual(expect.objectContaining({ device: keyOf(b1), phase: "keyed" }));
-    const sent = a.sasOut.length;
+    expect(a.state.sas[b1.own.master]).toEqual(
+      expect.objectContaining({ device: keyOf(b1), phase: "keyed" }),
+    );
+    // issue 2457: the cancel to the device it does not run with, then the key to b1.
+    expect(a.sasOut.slice(1).map((o) => o.to)).toEqual([b2.own.did, b1.own.did]);
 
-    await step(w, b2, "alice", "accept");
-    // A debug line, no alarm: the same person, on another of its devices.
-    expect(await debugged(() => drain(w, a))).toEqual([
-      "[e2e] ignored a sas.accept from a device of bob the SAS does not run with",
+    // b2's prompt goes: the request is no longer its own.
+    await drain(w, b2);
+    expect(b2.state.sas[a.own.master]).toBeUndefined();
+    expect(await view(w, b2, "alice")).toBeNull();
+    expect(sasRows(b2, "alice")).toEqual([
+      ["sas_asked", "peer"],
+      ["sas_cancelled", "peer", "other-device"],
     ]);
-
-    expect(a.state.sas[b1.own.master]).toEqual(fixed);
-    expect(a.sasOut).toHaveLength(sent);
     expect(sasRows(a, "bob")).toEqual([["sas_asked", "you"]]);
 
     // It goes on with b1 alone.
@@ -935,16 +937,100 @@ describe("SAS with a peer of several devices", () => {
       ["sas_asked", "you"],
       ["verified", b1.own.master],
     ]);
-    // Every step after the start went to b1's device; b2 read the start alone.
+    // Every step after the start and b2's cancel went to b1's device; b2 read
+    // the start and its cancel alone.
     expect(
       a.sasOut
         .slice(1)
         .filter((o) => o.tag !== LIST_TAG)
         .map((o) => o.to),
-    ).toEqual([b1.own.did, b1.own.did]);
+    ).toEqual([b2.own.did, b1.own.did, b1.own.did]);
     await drain(w, b2);
-    expect(stepsRead(b2)).toEqual(["sas.start"]);
+    expect(stepsRead(b2)).toEqual(["sas.start", "sas.cancel"]);
     expect(failedOf(a)).toEqual([]);
+  });
+
+  it("two devices accepting at once: the first accept heard runs it, and the other device is told and lets its secret go", async () => {
+    const { w, a, b1, b2 } = await trio();
+    await step(w, a, "bob", "start");
+    await drain(w, b1);
+    await drain(w, b2);
+    await step(w, b1, "alice", "accept");
+    await step(w, b2, "alice", "accept");
+    expect(b2.host.secrets.size).toBe(1);
+
+    // A debug line, no alarm: the same person, on another of its devices.
+    expect(await debugged(() => drain(w, a))).toEqual([
+      "[e2e] ignored a sas.accept from a device of bob the SAS does not run with",
+    ]);
+    expect(a.state.sas[b1.own.master]?.device).toBe(keyOf(b1));
+    expect(a.sasOut.slice(1).map((o) => o.to)).toEqual([b2.own.did, b1.own.did]);
+
+    await drain(w, b2);
+    expect(b2.state.sas[a.own.master]).toBeUndefined();
+    expect(b2.host.secrets.size).toBe(0);
+    expect(sasRows(b2, "alice")).toEqual([
+      ["sas_asked", "peer"],
+      ["sas_cancelled", "peer", "other-device"],
+    ]);
+    // b1 goes on: alice's key reached it.
+    await drain(w, b1);
+    expect((await view(w, b1, "alice"))?.phase).toBe("compare");
+  });
+
+  it("a device declining before any accepted ends it on the side that asked and on every other device", async () => {
+    const { w, a, b1, b2 } = await trio();
+    await step(w, a, "bob", "start");
+    await drain(w, b1);
+    await drain(w, b2);
+
+    await step(w, b2, "alice", "cancel");
+    await drain(w, a);
+    await drain(w, b1);
+
+    expect(await view(w, a, "bob")).toBeNull();
+    expect(sasRows(a, "bob")).toEqual([
+      ["sas_asked", "you"],
+      ["sas_cancelled", "peer", "user"],
+    ]);
+    expect(a.sasOut.map((o) => o.to)).toEqual(["*", b1.own.did]);
+    expect(b1.state.sas[a.own.master]).toBeUndefined();
+    expect(sasRows(b1, "alice")).toEqual([
+      ["sas_asked", "peer"],
+      ["sas_cancelled", "peer", "other-device"],
+    ]);
+    expect(sasRows(b2, "alice")).toEqual([
+      ["sas_asked", "peer"],
+      ["sas_cancelled", "you", "user"],
+    ]);
+  });
+
+  it("a step out of order from one device before any accepted ends it on that device and tells the others", async () => {
+    const { w, a, b1, b2 } = await trio();
+    await step(w, a, "bob", "start");
+    const { tx } = a.state.sas[b1.own.master] as SasRecord;
+    await drain(w, b1);
+    await drain(w, b2);
+
+    const mac = "A".repeat(43);
+    await inject(w, b2, "alice", { t: "sas.mac", tx, mac, mmac: mac }, keyOf(a));
+    await drain(w, a);
+    await drain(w, b1);
+    await drain(w, b2);
+
+    expect(sasRows(a, "bob")).toEqual([
+      ["sas_asked", "you"],
+      ["sas_cancelled", "you", "unexpected-message"],
+    ]);
+    expect(a.sasOut.map((o) => o.to)).toEqual(["*", b1.own.did, b2.own.did]);
+    expect(sasRows(b1, "alice")).toEqual([
+      ["sas_asked", "peer"],
+      ["sas_cancelled", "peer", "other-device"],
+    ]);
+    expect(sasRows(b2, "alice")).toEqual([
+      ["sas_asked", "peer"],
+      ["sas_cancelled", "peer", "unexpected-message"],
+    ]);
   });
 
   it("ignores every step of its tx from another device of the master: a start, a key, a cancel", async () => {
@@ -987,9 +1073,14 @@ describe("SAS with a peer of several devices", () => {
     }
   });
 
-  it("both asking at once: the side whose start lost answers the device whose start won, alone", async () => {
-    const { w, a, b1 } = await trio();
+  it("both asking at once: the side whose start lost answers the device whose start won, alone, and tells the others its start is over", async () => {
+    const { w, a, b1, b2 } = await trio();
     await step(w, a, "bob", "start");
+    const lost = a.state.sas[b1.own.master]?.tx;
+    await drain(w, b2);
+    expect(b2.state.sas[a.own.master]).toEqual(
+      expect.objectContaining({ tx: lost, phase: "asked" }),
+    );
     // b1's start, under the smallest tx there is: it wins over alice's.
     await inject(w, b1, "alice", { t: "sas.start", tx: "+++++++++++" }, null);
 
@@ -998,7 +1089,14 @@ describe("SAS with a peer of several devices", () => {
     expect(a.state.sas[b1.own.master]).toEqual(
       expect.objectContaining({ tx: "+++++++++++", role: "b", device: keyOf(b1) }),
     );
-    expect(a.sasOut.map((o) => o.to)).toEqual(["*", b1.own.did]);
+    // The cancel of alice's start to b2, then the accept of b1's to b1.
+    expect(a.sasOut.map((o) => o.to)).toEqual(["*", b2.own.did, b1.own.did]);
+    await drain(w, b2);
+    expect(b2.state.sas[a.own.master]).toBeUndefined();
+    expect(sasRows(b2, "alice")).toEqual([
+      ["sas_asked", "peer"],
+      ["sas_cancelled", "peer", "other-device"],
+    ]);
   });
 
   it("runs with a device its master's certificate admits before any list names it", async () => {
