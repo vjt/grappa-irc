@@ -117,4 +117,38 @@ bool json_str_is(const json_value *v, const char *expect);
  * decimal point. */
 bool json_write(const json_value *v, char *out, size_t out_sz);
 
+/* ── Building ──────────────────────────────────────────────────────────
+ * A growable compact writer, for documents whose size is the caller's
+ * data rather than a known bound: the E2E payloads (e2e.c) carry Olm
+ * bodies and pickles of any length. Commas are placed by the builder —
+ * a member or element after another gets one — so a caller writes only
+ * the structure. Allocation failure is sticky: every later call is a
+ * no-op and jb_take answers NULL, so a half-written document is never
+ * mistaken for a whole one. Strings are escaped as json_write escapes
+ * them and numbers spelled as it spells them. */
+typedef struct {
+    char *ptr;
+    size_t len;
+    size_t cap;
+    bool failed;
+} json_buf;
+
+void jb_init(json_buf *b);
+void jb_free(json_buf *b);
+/* The text written so far, malloc'd and NUL-terminated ("" when nothing
+ * was), or NULL after an allocation failure; the builder is reset. */
+char *jb_take(json_buf *b);
+void jb_obj_open(json_buf *b);
+void jb_obj_close(json_buf *b);
+void jb_arr_open(json_buf *b);
+void jb_arr_close(json_buf *b);
+void jb_key(json_buf *b, const char *key);
+void jb_str(json_buf *b, const char *s);
+void jb_strn(json_buf *b, const char *s, size_t len);
+void jb_num(json_buf *b, double v);
+void jb_bool(json_buf *b, bool v);
+void jb_null(json_buf *b);
+/* A parsed value, written compact. */
+void jb_value(json_buf *b, const json_value *v);
+
 #endif /* SHOTTINO_JSON_H */

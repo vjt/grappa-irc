@@ -643,26 +643,51 @@ static bool put(char *out, size_t out_sz, size_t *n, const char *src, size_t len
     return true;
 }
 
+/* The escaped spelling of one byte of a string, into `esc`; its length.
+ * Shared by both writers so a quoting rule is written once. */
+static size_t escape_byte(unsigned char c, char esc[8]) {
+    switch (c) {
+    case '"':  memcpy(esc, "\\\"", 2); return 2;
+    case '\\': memcpy(esc, "\\\\", 2); return 2;
+    case '\n': memcpy(esc, "\\n", 2); return 2;
+    case '\r': memcpy(esc, "\\r", 2); return 2;
+    case '\t': memcpy(esc, "\\t", 2); return 2;
+    default:
+        if (c < 0x20) return (size_t)snprintf(esc, 8, "\\u%04x", c);
+        esc[0] = (char)c;
+        return 1;
+    }
+}
+
+/* A number's JSON spelling into `buf` (40 bytes); its length, 0 on failure.
+ *
+ * RANGE FIRST, then the cast.
+ *
+ * `d == (double)(long long)d` performs the conversion before the
+ * comparison, and converting a double outside long long's range — or an
+ * infinity, or a NaN — is undefined behaviour, not a defined wrong
+ * answer. It is reachable: a tool-call argument of 1e300 comes back
+ * through here on its way to the handler.
+ *
+ * A non-finite value has no JSON spelling at all (the grammar has no
+ * `inf`), so it is written as 0 rather than as something no parser on the
+ * other end would accept. */
+static size_t format_number(double d, char buf[40]) {
+    int w;
+    if (!isfinite(d))
+        w = snprintf(buf, 40, "0");
+    else if (d >= -9.0e18 && d <= 9.0e18 && d == (double)(long long)d)
+        w = snprintf(buf, 40, "%lld", (long long)d);
+    else
+        w = snprintf(buf, 40, "%.17g", d);
+    return w > 0 ? (size_t)w : 0;
+}
+
 static bool put_string(char *out, size_t out_sz, size_t *n, const char *s, size_t len) {
     if (!put(out, out_sz, n, "\"", 1)) return false;
     for (size_t i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)s[i];
         char esc[8];
-        size_t elen;
-        switch (c) {
-        case '"':  memcpy(esc, "\\\"", 2); elen = 2; break;
-        case '\\': memcpy(esc, "\\\\", 2); elen = 2; break;
-        case '\n': memcpy(esc, "\\n", 2); elen = 2; break;
-        case '\r': memcpy(esc, "\\r", 2); elen = 2; break;
-        case '\t': memcpy(esc, "\\t", 2); elen = 2; break;
-        default:
-            if (c < 0x20) {
-                elen = (size_t)snprintf(esc, sizeof(esc), "\\u%04x", c);
-            } else {
-                esc[0] = (char)c;
-                elen = 1;
-            }
-        }
+        size_t elen = escape_byte((unsigned char)s[i], esc);
         if (!put(out, out_sz, n, esc, elen)) return false;
     }
     return put(out, out_sz, n, "\"", 1);
@@ -677,26 +702,8 @@ static bool write_value(const json_value *v, char *out, size_t out_sz, size_t *n
         return v->u.boolean ? put(out, out_sz, n, "true", 4) : put(out, out_sz, n, "false", 5);
     case JSON_NUMBER: {
         char buf[40];
-        double d = v->u.number;
-        /* RANGE FIRST, then the cast.
-         *
-         * `d == (double)(long long)d` performs the conversion before the
-         * comparison, and converting a double outside long long's range —
-         * or an infinity, or a NaN — is undefined behaviour, not a
-         * defined wrong answer. It is reachable: a tool-call argument of
-         * 1e300 comes back through here on its way to the handler.
-         *
-         * A non-finite value has no JSON spelling at all (the grammar has
-         * no `inf`), so it is written as 0 rather than as something no
-         * parser on the other end would accept. */
-        int w;
-        if (!isfinite(d))
-            w = snprintf(buf, sizeof(buf), "0");
-        else if (d >= -9.0e18 && d <= 9.0e18 && d == (double)(long long)d)
-            w = snprintf(buf, sizeof(buf), "%lld", (long long)d);
-        else
-            w = snprintf(buf, sizeof(buf), "%.17g", d);
-        return w > 0 && put(out, out_sz, n, buf, (size_t)w);
+        size_t w = format_number(v->u.number, buf);
+        return w > 0 && put(out, out_sz, n, buf, w);
     }
     case JSON_STRING:
         return put_string(out, out_sz, n, v->u.string.ptr, v->u.string.len);
@@ -728,4 +735,134 @@ bool json_write(const json_value *v, char *out, size_t out_sz) {
     if (write_value(v, out, out_sz, &n)) return true;
     out[0] = 0; /* a truncated document is not a document */
     return false;
+}
+
+/* ── Building ──────────────────────────────────────────────────────────
+ * The growable twin of json_write: see json.h. */
+
+static void jb_put(json_buf *b, const char *src, size_t len) {
+    if (b->failed) return;
+    if (b->len + len + 1 > b->cap) {
+        size_t cap = b->cap ? b->cap : 256;
+        while (cap < b->len + len + 1) cap *= 2;
+        char *p = realloc(b->ptr, cap);
+        if (!p) {
+            b->failed = true;
+            return;
+        }
+        b->ptr = p;
+        b->cap = cap;
+    }
+    memcpy(b->ptr + b->len, src, len);
+    b->len += len;
+    b->ptr[b->len] = 0;
+}
+
+/* The comma between two members or elements: needed unless what came
+ * last opened a container or was a key. */
+static void jb_sep(json_buf *b) {
+    if (b->failed || b->len == 0) return;
+    char last = b->ptr[b->len - 1];
+    if (last != '{' && last != '[' && last != ':') jb_put(b, ",", 1);
+}
+
+void jb_init(json_buf *b) {
+    b->ptr = NULL;
+    b->len = 0;
+    b->cap = 0;
+    b->failed = false;
+}
+
+void jb_free(json_buf *b) {
+    free(b->ptr);
+    jb_init(b);
+}
+
+char *jb_take(json_buf *b) {
+    char *out = b->failed ? NULL : b->ptr;
+    if (b->failed) free(b->ptr);
+    else if (!out) out = calloc(1, 1);
+    jb_init(b);
+    return out;
+}
+
+void jb_obj_open(json_buf *b) {
+    jb_sep(b);
+    jb_put(b, "{", 1);
+}
+
+void jb_obj_close(json_buf *b) { jb_put(b, "}", 1); }
+
+void jb_arr_open(json_buf *b) {
+    jb_sep(b);
+    jb_put(b, "[", 1);
+}
+
+void jb_arr_close(json_buf *b) { jb_put(b, "]", 1); }
+
+static void jb_string(json_buf *b, const char *s, size_t len) {
+    jb_put(b, "\"", 1);
+    for (size_t i = 0; i < len; i++) {
+        char esc[8];
+        size_t elen = escape_byte((unsigned char)s[i], esc);
+        jb_put(b, esc, elen);
+    }
+    jb_put(b, "\"", 1);
+}
+
+void jb_key(json_buf *b, const char *key) {
+    jb_sep(b);
+    jb_string(b, key, strlen(key));
+    jb_put(b, ":", 1);
+}
+
+void jb_strn(json_buf *b, const char *s, size_t len) {
+    jb_sep(b);
+    jb_string(b, s, len);
+}
+
+void jb_str(json_buf *b, const char *s) { jb_strn(b, s, strlen(s)); }
+
+void jb_num(json_buf *b, double d) {
+    char buf[40];
+    size_t w = format_number(d, buf);
+    jb_sep(b);
+    if (w == 0) b->failed = true;
+    else jb_put(b, buf, w);
+}
+
+void jb_bool(json_buf *b, bool v) {
+    jb_sep(b);
+    jb_put(b, v ? "true" : "false", v ? 4 : 5);
+}
+
+void jb_null(json_buf *b) {
+    jb_sep(b);
+    jb_put(b, "null", 4);
+}
+
+void jb_value(json_buf *b, const json_value *v) {
+    if (!v) {
+        jb_null(b);
+        return;
+    }
+    switch (v->type) {
+    case JSON_NULL: jb_null(b); break;
+    case JSON_BOOL: jb_bool(b, v->u.boolean); break;
+    case JSON_NUMBER: jb_num(b, v->u.number); break;
+    case JSON_STRING: jb_strn(b, v->u.string.ptr, v->u.string.len); break;
+    case JSON_ARRAY:
+        jb_arr_open(b);
+        for (size_t i = 0; i < v->u.array.count; i++) jb_value(b, v->u.array.items[i]);
+        jb_arr_close(b);
+        break;
+    case JSON_OBJECT:
+        jb_obj_open(b);
+        for (size_t i = 0; i < v->u.object.count; i++) {
+            jb_key(b, v->u.object.keys[i]);
+            jb_value(b, v->u.object.values[i]);
+        }
+        jb_obj_close(b);
+        break;
+    }
 }

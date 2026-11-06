@@ -296,6 +296,51 @@ TEST(empty_containers) {
     json_free(d);
 }
 
+/* The growable builder: commas placed by structure, strings escaped as
+ * json_write escapes them, and what it writes parses back to the same. */
+TEST(builder_writes_compact_json_that_parses_back) {
+    json_buf b;
+    jb_init(&b);
+    jb_obj_open(&b);
+    jb_key(&b, "v");
+    jb_num(&b, 2);
+    jb_key(&b, "s");
+    jb_str(&b, "a\"b\\c\n\x01");
+    jb_key(&b, "arr");
+    jb_arr_open(&b);
+    jb_num(&b, 1.5);
+    jb_bool(&b, true);
+    jb_null(&b);
+    jb_obj_open(&b);
+    jb_obj_close(&b);
+    jb_arr_close(&b);
+    jb_key(&b, "empty");
+    jb_arr_open(&b);
+    jb_arr_close(&b);
+    jb_obj_close(&b);
+    char *text = jb_take(&b);
+    CHECK_STR(text, "{\"v\":2,\"s\":\"a\\\"b\\\\c\\n\\u0001\",\"arr\":[1.5,true,null,{}],\"empty\":[]}");
+    json_doc *d = parse_ok(text);
+    CHECK(d != NULL);
+    CHECK_STR(json_string(json_get(json_root(d), "s")), "a\"b\\c\n\x01");
+
+    /* A parsed value goes back out member for member. */
+    json_buf again;
+    jb_init(&again);
+    jb_value(&again, json_root(d));
+    char *text2 = jb_take(&again);
+    CHECK_STR(text2, text);
+    free(text2);
+    free(text);
+    json_free(d);
+
+    /* Nothing written is the empty text, not NULL. */
+    jb_init(&b);
+    text = jb_take(&b);
+    CHECK_STR(text, "");
+    free(text);
+}
+
 int main(void) {
     RUN(scalars);
     RUN(nested_keys_do_not_leak);
@@ -311,5 +356,6 @@ int main(void) {
     RUN(numbers);
     RUN(a_number_nobody_can_represent_is_refused);
     RUN(empty_containers);
+    RUN(builder_writes_compact_json_that_parses_back);
     return test_report();
 }
