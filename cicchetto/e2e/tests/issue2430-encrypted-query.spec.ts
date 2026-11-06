@@ -103,11 +103,20 @@ test("two people talk in an encrypted query: real Olm both ways, keys verified b
     await expect(sidebarMessageBadge(page, NETWORK_SLUG, e2eWindow(bob.nick))).toHaveCount(0);
 
     // grappa relayed and kept nothing: both inboxes drained and acknowledged,
-    // and no DM history either way.
+    // and no DM history either way. Polled: each verify asked the other side
+    // for its list (O1), and the answer, paced, may still be on its way here.
     const aliceDevice = await soleE2eDevice(alice.token, NETWORK_SLUG);
     const bobDevice = await soleE2eDevice(bob.user.token, NETWORK_SLUG);
-    expect(await fetchE2eInbox(alice.token, NETWORK_SLUG, aliceDevice.did)).toEqual([]);
-    expect(await fetchE2eInbox(bob.user.token, NETWORK_SLUG, bobDevice.did)).toEqual([]);
+    await expect
+      .poll(() => fetchE2eInbox(alice.token, NETWORK_SLUG, aliceDevice.did), {
+        timeout: KEYS_TIMEOUT,
+      })
+      .toEqual([]);
+    await expect
+      .poll(() => fetchE2eInbox(bob.user.token, NETWORK_SLUG, bobDevice.did), {
+        timeout: KEYS_TIMEOUT,
+      })
+      .toEqual([]);
     expect(await fetchAllMessagesAsc(alice.token, NETWORK_SLUG, bob.nick)).toEqual([]);
     expect(await fetchAllMessagesAsc(bob.user.token, NETWORK_SLUG, aliceNick)).toEqual([]);
   } finally {

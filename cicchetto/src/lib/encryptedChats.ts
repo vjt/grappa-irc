@@ -609,7 +609,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     return run(slug, (client, ctx) => client.device(ctx));
   }
 
-  /** Pins the master `key` to `nick`: `verified` when pasted, not when taken off the alarm. */
+  /** Pins the master `key` to `nick`: `verified` when the user verified it by hand (issue 2544), not when taken off the alarm. */
   async function pinEncryptedKey(
     slug: string,
     nick: string,

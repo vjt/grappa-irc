@@ -17,7 +17,8 @@
 // peer's MASTER key, never on one of its devices. A bot pins only masters its
 // operator pasted; a person in cic has no configuration to paste into, so the
 // first valid master a nick presents is pinned (trust on first use) and is
-// "unverified" until the user pastes it by hand or compares a SAS (`sas.ts`).
+// "unverified" until the user verifies it by hand (issue 2544: the shown key,
+// compared out of band, pinned again verified) or compares a SAS (`sas.ts`).
 // A different master on a pinned nick is an alarm, ignored, never a silent
 // replace; only the user re-pinning moves a pin. Each master keeps the highest
 // list of its devices that it signed and we accepted, and a device is trusted
@@ -565,9 +566,10 @@ export class Engine {
   /**
    * Pins the master `master` to `nick` by hand: the one way a pin moves to
    * another master (`checkMaster` never does it). `verified` when the user
-   * pasted the key the peer printed (a bot prints its master: 2430 ruling
-   * 6253162964); not when the user only took a master the alarm showed, which
-   * a SAS then verifies (fork 7, 2430 comment 6339695571). Taking a master
+   * compared the key with the peer out of band and verified it (issue 2544:
+   * the key already pinned, pinned again; a bot's is the one it prints); not
+   * when the user only took a master the alarm showed, which is then verified
+   * either way (fork 7, 2430 comment 6339695571). Taking a master
    * never unverifies it. A master never seen has no list until its first
    * valid block; one seen before keeps its list (rule 3). The master the nick
    * leaves loses its devices' sessions (rule 6) once no nick is pinned to it

@@ -803,7 +803,7 @@ describe("EncryptedChatPane, the key-exchange step", () => {
 
     expect(within("e2e-step").dataset.step).toBe("alarm");
     expect(within("e2e-step").textContent).toContain("take the new key and verify it");
-    expect(within("e2e-step").textContent).toContain("close this chat");
+    expect(within("e2e-step").textContent).toContain("delete this chat");
     expect(within("e2e-pane").querySelector("input")).toBeNull();
     expect(within("e2e-rail").querySelector("input")).toBeNull();
     // The alarm is answered first: the pinned key offers no verify meanwhile.
@@ -1014,6 +1014,26 @@ describe("EncryptedChatPane, the emoji comparison", () => {
     // Over, the key does not come back by itself.
     setSas(null);
     expect(keyDialog()).toBeNull();
+  });
+
+  // The pin is a round trip: one that lands once the dialog it came from is
+  // gone closes nothing, not even the dialog opened since.
+  it("a verify that lands after its dialog closed leaves the one opened since alone", async () => {
+    let land: (outcome: string) => void = () => undefined;
+    pinEncryptedKey.mockReturnValue(new Promise((resolve) => (land = resolve)));
+    setTrust({ master: KEY, verified: false, devices: 1 });
+    renderPane();
+    fireEvent.click(door() as HTMLButtonElement);
+    fireEvent.click(screen.getByTestId("e2e-key-verify"));
+    fireEvent.click(screen.getByTestId("e2e-key-close"));
+    fireEvent.click(door() as HTMLButtonElement);
+    const reopened = keyDialog();
+    expect(reopened).not.toBeNull();
+
+    land("pinned");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(keyDialog()).toBe(reopened);
+    expect(document.activeElement).toBe(reopened);
   });
 
   it("a verify that fails keeps the key on screen and says what failed", async () => {
@@ -1379,10 +1399,15 @@ describe("EncryptedChatPane, the rail", () => {
     expect(screen.queryByTestId("e2e-peer-verify")).toBeNull();
   });
 
-  it("offers no verify with no key yet, or the identity elsewhere", () => {
+  it("offers no verify with no key yet, while a comparison runs, or with the identity elsewhere", () => {
     renderPane();
     expect(screen.queryByTestId("e2e-peer-verify")).toBeNull();
     setTrust({ master: KEY, verified: false, devices: 1 });
+    expect(screen.getByTestId("e2e-peer-verify")).toBeTruthy();
+    // The badge's door is shut while one runs; the rail's is too.
+    setSas({ role: "a", phase: "started", confirmed: false, here: true, emoji: null });
+    expect(screen.queryByTestId("e2e-peer-verify")).toBeNull();
+    setSas(null);
     expect(screen.getByTestId("e2e-peer-verify")).toBeTruthy();
     setElsewhere("no-keys");
     expect(screen.queryByTestId("e2e-peer-verify")).toBeNull();
