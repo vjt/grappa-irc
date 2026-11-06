@@ -4029,8 +4029,10 @@ defmodule Grappa.Session.Server do
   end
 
   # issue 2430 — frees the memory of E2E messages that will never complete.
+  # Issue 2577: and tells the client each of them will not arrive.
   def handle_info(:e2e_reassembly_sweep, state) do
-    {buffer, _} = E2eReassembly.expire(state.e2e_reassembly, System.monotonic_time(:millisecond))
+    {buffer, expired} = E2eReassembly.expire(state.e2e_reassembly, System.monotonic_time(:millisecond))
+    :ok = Enum.each(expired, &lose_e2e_incoming(state, &1, &1.to))
     {:noreply, arm_e2e_reassembly_sweep(%{state | e2e_reassembly: buffer, e2e_reassembly_timer: nil})}
   end
 
@@ -8156,22 +8158,77 @@ defmodule Grappa.Session.Server do
 
   # Expiry first, so the caps count only messages that can still complete.
   # The sender is keyed folded, like every nick KEY, and shown raw.
+  #
+  # Issue 2577: the client never sees a line, so the session tells it what
+  # it would otherwise learn only from the last one. A fragment that opens a
+  # message the client may show as arriving (`e2e_arriving?/1`) announces it;
+  # one that drops a buffered message, and each message that expires, says
+  # it will not arrive. `in_flight/3` is asked BEFORE `put/4`: afterwards an
+  # opened message and a dropped one both look like nothing buffered.
   @spec receive_e2e_fragment(t(), String.t(), E2e.Fragment.t()) :: t()
   defp receive_e2e_fragment(state, from, fragment) do
     now = System.monotonic_time(:millisecond)
-    {live, _} = E2eReassembly.expire(state.e2e_reassembly, now)
+    {live, expired} = E2eReassembly.expire(state.e2e_reassembly, now)
+    :ok = Enum.each(expired, &lose_e2e_incoming(state, &1, &1.to))
+    key = fold_key(state, from)
+    before = E2eReassembly.in_flight(live, key, fragment.msgid)
 
-    case E2eReassembly.put(live, fold_key(state, from), fragment, now) do
+    case E2eReassembly.put(live, key, fragment, now) do
       {:complete, message, buffer} ->
         deliver_e2e(arm_e2e_reassembly_sweep(%{state | e2e_reassembly: buffer}), from, message)
 
       {:pending, buffer} ->
+        :ok = if before == :error, do: announce_e2e_incoming(state, from, fragment), else: :ok
         arm_e2e_reassembly_sweep(%{state | e2e_reassembly: buffer})
 
       # Debug, not info: the sender decides how often this fires.
       {:dropped, reason, buffer} ->
         Logger.debug("e2e message dropped", sender: from, reason: reason)
+        # A fragment refused before its message was ever buffered took
+        # nothing announced with it.
+        :ok =
+          case before do
+            {:ok, dropped} -> lose_e2e_incoming(state, dropped, dropped.to)
+            :error -> :ok
+          end
+
         arm_e2e_reassembly_sweep(%{state | e2e_reassembly: buffer})
+    end
+  end
+
+  # issue 2577 — what a client may show as arriving: a message a person
+  # wrote (PKMSG or MSG) that spans more than one line. A one-line message
+  # completes the instant it arrives; key material, NACKs and consent are
+  # the protocol talking to itself. One rule for the announcement and for
+  # every way such a message can then fail to arrive, so a loss is never
+  # told of a message that was not announced.
+  # Open map: a frame, a message part-way in and a whole one all qualify.
+  @spec e2e_arriving?(%{:verb => E2e.verb(), :total => pos_integer(), optional(any()) => any()}) :: boolean()
+  defp e2e_arriving?(%{verb: verb, total: total}), do: verb in [:pkmsg, :msg] and total > 1
+
+  @spec announce_e2e_incoming(t(), String.t(), E2e.Fragment.t()) :: :ok
+  defp announce_e2e_incoming(state, from, fragment) do
+    if e2e_arriving?(fragment) do
+      :ok =
+        Broadcaster.to_user(
+          state,
+          SessionWire.e2e_incoming(state.network_slug, from, fragment.from, fragment.to, fragment.msgid)
+        )
+    else
+      :ok
+    end
+  end
+
+  # `to` is the device the message will not reach: the one its frames named
+  # for a message that never came whole, a device whose queue refused it for
+  # one that did (`queue_e2e_copy/4`).
+  @spec lose_e2e_incoming(t(), E2eReassembly.in_flight() | E2eReassembly.message(), E2e.address()) :: :ok
+  defp lose_e2e_incoming(state, message, to) do
+    if e2e_arriving?(message) do
+      :ok =
+        Broadcaster.to_user(state, SessionWire.e2e_incoming_lost(state.network_slug, message.from, to, message.msgid))
+    else
+      :ok
     end
   end
 
@@ -8285,6 +8342,7 @@ defmodule Grappa.Session.Server do
   defp deliver_e2e(state, from, %{verb: verb, to: to} = message) do
     case e2e_recipients(state, to) do
       [] when verb in [:pkmsg, :msg] ->
+        :ok = lose_e2e_incoming(state, message, to)
         nack_unreadable(state, from, message)
 
       [] ->
@@ -8382,11 +8440,15 @@ defmodule Grappa.Session.Server do
     if to == "*", do: listed, else: Enum.filter(listed, &(&1.did == to))
   end
 
+  # Issue 2577: a device whose queue did not take the message gets no
+  # `e2e_message` for it, so it is told the message will not arrive.
   @spec queue_e2e_copy(String.t(), E2eReassembly.message(), E2eKeys.Device.t(), {t(), boolean()}) :: {t(), boolean()}
   defp queue_e2e_copy(from, message, device, {state, queued?}) do
     attrs = %{sender: from, from_did: message.from, verb: message.verb, msgid: message.msgid, payload: message.payload}
+    put = put_e2e_entry(state, device, attrs)
+    :ok = if match?({:error, _}, put), do: lose_e2e_incoming(state, message, device.did), else: :ok
 
-    case put_e2e_entry(state, device, attrs) do
+    case put do
       {:ok, _} ->
         {state, true}
 

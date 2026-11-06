@@ -1170,6 +1170,8 @@ export const SESSION_WIRE_WIRE_EVENT_KIND = [
   "dcc_offer_resolved",
   "e2e_message",
   "e2e_send_dropped",
+  "e2e_incoming",
+  "e2e_incoming_lost",
   "join_failed",
   "kicked",
   "away_confirmed",
@@ -1439,6 +1441,23 @@ export type SessionWireE2eSendDroppedPayload = {
   reason: SessionWireE2eDropReason;
 };
 
+export type SessionWireE2eIncomingPayload = {
+  kind: "e2e_incoming";
+  network: string;
+  from: string;
+  from_did: string;
+  to: string;
+  msgid: string;
+};
+
+export type SessionWireE2eIncomingLostPayload = {
+  kind: "e2e_incoming_lost";
+  network: string;
+  from_did: string;
+  to: string;
+  msgid: string;
+};
+
 export type SessionWireJoinFailedPayload = {
   kind: "join_failed";
   network: string;
@@ -1694,6 +1713,8 @@ export type WireSessionEvent =
   | SessionWireDccOfferResolvedPayload
   | SessionWireE2eMessagePayload
   | SessionWireE2eSendDroppedPayload
+  | SessionWireE2eIncomingPayload
+  | SessionWireE2eIncomingLostPayload
   | SessionWireJoinFailedPayload
   | SessionWireKickedPayload
   | SessionWireAwayConfirmedPayload

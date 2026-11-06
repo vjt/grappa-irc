@@ -1215,6 +1215,16 @@ export const S_SessionWireE2eInboxPayload = {
   o: { messages: { a: S_SessionWireE2eMessagePayload } },
 } as const;
 
+// Grappa.Session.Wire.e2e_incoming_lost_payload/0
+export const S_SessionWireE2eIncomingLostPayload = {
+  o: { kind: { l: "e2e_incoming_lost" }, network: "s", from_did: "s", to: "s", msgid: "s" },
+} as const;
+
+// Grappa.Session.Wire.e2e_incoming_payload/0
+export const S_SessionWireE2eIncomingPayload = {
+  o: { kind: { l: "e2e_incoming" }, network: "s", from: "s", from_did: "s", to: "s", msgid: "s" },
+} as const;
+
 // Grappa.Session.Wire.e2e_send_dropped_payload/0
 export const S_SessionWireE2eSendDroppedPayload = {
   o: {

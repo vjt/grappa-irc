@@ -113,6 +113,8 @@ defmodule Grappa.Session.Wire do
           | :dcc_offer_resolved
           | :e2e_message
           | :e2e_send_dropped
+          | :e2e_incoming
+          | :e2e_incoming_lost
           | :join_failed
           | :kicked
           | :away_confirmed
@@ -614,6 +616,33 @@ defmodule Grappa.Session.Wire do
           target: String.t(),
           msgid: String.t(),
           reason: e2e_drop_reason()
+        }
+
+  # issue 2577 — a peer's PKMSG or MSG that spans several lines has begun to
+  # arrive: its first line reached the session, which reassembles the rest.
+  # `from` is the RAW nick, `from_did` and `to` the addresses its frames
+  # carry (`to` a device id, or `*` for every listed device), `msgid` the
+  # one its `e2e_message` will carry once it is whole. Nothing is queued:
+  # it says only that a message is on its way, never what it says.
+  @type e2e_incoming_payload :: %{
+          kind: :e2e_incoming,
+          network: String.t(),
+          from: String.t(),
+          from_did: String.t(),
+          to: String.t(),
+          msgid: String.t()
+        }
+
+  # issue 2577 — a message announced by `e2e_incoming` will not reach the
+  # device `to` names (`*`: none of them). No `from`: a message the sweep
+  # discards is keyed on the FOLDED nick, which is a key and never goes on
+  # the wire; `from_did` and `msgid` name the message as its announcement did.
+  @type e2e_incoming_lost_payload :: %{
+          kind: :e2e_incoming_lost,
+          network: String.t(),
+          from_did: String.t(),
+          to: String.t(),
+          msgid: String.t()
         }
 
   @type join_failed_payload :: %{
@@ -1726,6 +1755,34 @@ defmodule Grappa.Session.Wire do
       when is_binary(network_slug) and is_binary(target) and is_binary(msgid) and
              reason in [:late, :send_failed, :session_ended] do
     %{kind: :e2e_send_dropped, network: network_slug, target: target, msgid: msgid, reason: reason}
+  end
+
+  @doc """
+  issue 2577 — a peer's encrypted message spanning several lines has begun
+  to arrive, so a client can show it as on its way from that instant rather
+  than from the last line, which the sender's pacing may hold back for many
+  seconds. Pushed on `Topic.user(...)`, beside the `e2e_message` it
+  precedes; every client hears it, and a device takes only one whose `to`
+  is itself or `*`. What ends it is that `e2e_message`, or
+  `e2e_incoming_lost/4`.
+  """
+  @spec e2e_incoming(String.t(), String.t(), String.t(), String.t(), String.t()) :: e2e_incoming_payload()
+  def e2e_incoming(network_slug, from, from_did, to, msgid)
+      when is_binary(network_slug) and is_binary(from) and is_binary(from_did) and is_binary(to) and
+             is_binary(msgid) do
+    %{kind: :e2e_incoming, network: network_slug, from: from, from_did: from_did, to: to, msgid: msgid}
+  end
+
+  @doc """
+  issue 2577 — a message `e2e_incoming/5` announced will not reach the
+  device `to` names: its lines stopped coming, or one contradicted it, or it
+  came whole and that device's queue did not take it. The device stops
+  showing it as on its way; nothing else is said about it here.
+  """
+  @spec e2e_incoming_lost(String.t(), String.t(), String.t(), String.t()) :: e2e_incoming_lost_payload()
+  def e2e_incoming_lost(network_slug, from_did, to, msgid)
+      when is_binary(network_slug) and is_binary(from_did) and is_binary(to) and is_binary(msgid) do
+    %{kind: :e2e_incoming_lost, network: network_slug, from_did: from_did, to: to, msgid: msgid}
   end
 
   @doc """

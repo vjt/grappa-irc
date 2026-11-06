@@ -414,7 +414,13 @@ let _socket: Socket | null = null;
 // server door alone; nothing in cicchetto calls it yet. A pre-58 server
 // answers the route 404, so the encrypted window keeps refusing uploads there;
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 58;
+//
+// 59 (issue 2577) — `e2e_incoming` / `e2e_incoming_lost` on the user topic: a
+// peer's encrypted message spanning several lines began to arrive, or will not
+// reach this device. The encrypted window shows it as on its way until it
+// lands. A pre-59 server never pushes either, so the message simply appears
+// when whole, as before; `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 59;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

@@ -36,7 +36,7 @@ defmodule Grappa.Session.E2eSessionTest do
   alias Grappa.Networks.{Credentials, SessionPlan}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Message
-  alias Grappa.Session.{Backoff, E2eKeyAnswers, E2ePacer}
+  alias Grappa.Session.{Backoff, E2eKeyAnswers, E2ePacer, E2eReassembly}
 
   @nick "grappa-test"
 
@@ -494,6 +494,193 @@ defmodule Grappa.Session.E2eSessionTest do
 
       assert {:ok, _} =
                Session.send_e2e(subject, network.id, "alice", :keyreq, :control, {device.did, "*"}, @small, nil)
+    end
+  end
+
+  # issue 2577 — a client shows an encrypted message as arriving from its
+  # first line until it lands (`e2e_message`) or the session says it will not
+  # (`e2e_incoming_lost`). grappa reassembles and the client never sees a
+  # line, so both facts can only come from here.
+  describe "arriving" do
+    test "a multi-line message is announced at its first line, once, then pushed whole" do
+      {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      [first | rest] = lines_from("alice", :msg, "q83vEjRWeJA", {@alice, device.did}, payload(900))
+      assert rest != []
+
+      IRCServer.feed(server, first)
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming} = event}, @wire_timeout
+
+      assert event == %{
+               kind: :e2e_incoming,
+               network: network.slug,
+               from: "alice",
+               from_did: @alice,
+               to: device.did,
+               msgid: "q83vEjRWeJA"
+             }
+
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}
+
+      Enum.each(rest, &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, msgid: "q83vEjRWeJA"}}, @wire_timeout
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming}}
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming_lost}}
+      assert Process.alive?(pid)
+    end
+
+    test "a one-line message and multi-line key material are never announced" do
+      {server, _, user, network} = connected_session()
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      keys = lines_from("alice", :keys, "AAAAAAAAAAA", {"*", device.did}, payload(900))
+      assert length(keys) > 1
+
+      Enum.each(lines_from("alice", :msg, "BBBBBBBBBBB", {@alice, device.did}, @small), &IRCServer.feed(server, &1))
+      Enum.each(keys, &IRCServer.feed(server, &1))
+      # bob's message is the barrier: once it is out, alice's lines are in.
+      Enum.each(lines_from("bob", :msg, "CCCCCCCCCCC", {@bob, device.did}, @small), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: "bob"}}, @wire_timeout
+      assert_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, msgid: "AAAAAAAAAAA"}}
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming}}
+    end
+
+    test "a line that contradicts its message drops it, and the client is told it will not arrive" do
+      {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      [first | _] = short = lines_from("alice", :msg, "q83vEjRWeJA", {@alice, device.did}, payload(900))
+      # The same msgid claiming another total.
+      [_, other | _] = long = lines_from("alice", :msg, "q83vEjRWeJA", {@alice, device.did}, payload(2_000))
+      assert length(long) != length(short)
+
+      IRCServer.feed(server, first)
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming, msgid: "q83vEjRWeJA"}}, @wire_timeout
+      IRCServer.feed(server, other)
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming_lost} = lost}, @wire_timeout
+
+      assert lost == %{
+               kind: :e2e_incoming_lost,
+               network: network.slug,
+               from_did: @alice,
+               to: device.did,
+               msgid: "q83vEjRWeJA"
+             }
+
+      assert Process.alive?(pid)
+    end
+
+    test "a message whose lines stop coming expires on the sweep, and the client is told" do
+      {server, pid, user, network} = connected_session()
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      [first | _] = lines_from("alice", :pkmsg, "q83vEjRWeJA", {@alice, "*"}, payload(900))
+
+      IRCServer.feed(server, first)
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming, to: "*"}}, @wire_timeout
+      age_reassembly!(pid)
+      send(pid, :e2e_reassembly_sweep)
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming_lost} = lost}, @wire_timeout
+
+      assert lost == %{
+               kind: :e2e_incoming_lost,
+               network: network.slug,
+               from_did: @alice,
+               to: "*",
+               msgid: "q83vEjRWeJA"
+             }
+    end
+
+    test "a message that expired is told of before the next line is handled, without waiting for the sweep" do
+      {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      [first | _] = lines_from("alice", :msg, "q83vEjRWeJA", {@alice, device.did}, payload(900))
+
+      IRCServer.feed(server, first)
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming, msgid: "q83vEjRWeJA"}}, @wire_timeout
+      age_reassembly!(pid)
+      Enum.each(lines_from("bob", :msg, "CCCCCCCCCCC", {@bob, device.did}, @small), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming_lost, msgid: "q83vEjRWeJA"}},
+                     @wire_timeout
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: "bob"}}, @wire_timeout
+    end
+
+    # A whole message reaches the client only as an `e2e_message` for the
+    # device whose queue took it. One that a device never gets would leave
+    # that device showing it as arriving for good: the client keeps no
+    # clock of its own.
+    test "a whole message one device's queue refuses is lost to that device and pushed to the other" do
+      {server, _, user, network} = connected_session()
+      [full] = listed(user, network)
+      other = add_listed_device!({:user, user.id}, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      fill_share!(full, "alice", false)
+
+      Enum.each(lines_from("alice", :msg, "q83vEjRWeJA", {@alice, "*"}, payload(900)), &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, to_did: to_did}}, @wire_timeout
+      assert to_did == other.did
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming_lost} = lost}, @wire_timeout
+
+      assert lost == %{
+               kind: :e2e_incoming_lost,
+               network: network.slug,
+               from_did: @alice,
+               to: full.did,
+               msgid: "q83vEjRWeJA"
+             }
+
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming_lost}}
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}
+    end
+
+    test "a whole message no listed device can read is lost to the device it named" do
+      {server, _, user, network} = connected_session()
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      Enum.each(
+        lines_from("alice", :msg, "q83vEjRWeJA", {@alice, "AAAAAAAAAAA"}, payload(900)),
+        &IRCServer.feed(server, &1)
+      )
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming, to: "AAAAAAAAAAA"}}, @wire_timeout
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming_lost} = lost}, @wire_timeout
+
+      assert lost == %{
+               kind: :e2e_incoming_lost,
+               network: network.slug,
+               from_did: @alice,
+               to: "AAAAAAAAAAA",
+               msgid: "q83vEjRWeJA"
+             }
+
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}
+    end
+
+    # The one rule (`e2e_arriving?/1`) holds for a loss as for an
+    # announcement: a one-line message was never announced, so no device is
+    # told it will not arrive, even when none can read it.
+    test "a one-line message no listed device can read is NACKed and never told lost" do
+      {server, _, user, _} = connected_session()
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      msgid = E2e.new_msgid()
+      [line] = lines_from("alice", :msg, msgid, {@alice, "AAAAAAAAAAA"}, @small)
+
+      IRCServer.feed(server, line)
+
+      # The NACK proves the line reached the no-device branch; a loss, had
+      # there been one, was broadcast before it (same callback, earlier).
+      assert {:ok, _} = IRCServer.wait_for_line(server, &nack_of?(&1, "alice", msgid), @nack_timeout)
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming_lost}}
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_incoming}}
     end
   end
 
@@ -1837,6 +2024,24 @@ defmodule Grappa.Session.E2eSessionTest do
   defp age!(%E2eInbox.Entry{id: id}, seconds) do
     at = DateTime.truncate(DateTime.add(DateTime.utc_now(), -seconds, :second), :second)
     {1, _} = E2eInbox.Entry |> where([e], e.id == ^id) |> Repo.update_all(set: [inserted_at: at])
+    :ok
+  end
+
+  # issue 2577 — every message part-way through reassembly made one timeout
+  # older, as if its last line came that long ago: the session's clock is
+  # monotonic and not injectable, and a test does not wait a minute.
+  defp age_reassembly!(pid) do
+    :sys.replace_state(pid, fn state ->
+      buffer = state.e2e_reassembly
+
+      older =
+        Map.new(buffer.entries, fn {key, entry} ->
+          {key, %{entry | last_ms: entry.last_ms - E2eReassembly.timeout_ms()}}
+        end)
+
+      %{state | e2e_reassembly: %{buffer | entries: older}}
+    end)
+
     :ok
   end
 

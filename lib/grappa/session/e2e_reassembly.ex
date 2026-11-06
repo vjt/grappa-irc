@@ -44,7 +44,10 @@ defmodule Grappa.Session.E2eReassembly do
   also makes a duplicated line on the wire harmless.
 
   Incomplete is never delivered: the client either gets the whole payload
-  or nothing.
+  or nothing. What it can be told meanwhile (issue 2577) is that a message
+  is arriving, and later that it will not: `in_flight/3` describes a
+  message part-way in, and `expire/2` hands back what it discarded, both in
+  the shape the frames gave them.
   """
 
   alias Grappa.IRC.E2e
@@ -54,12 +57,22 @@ defmodule Grappa.Session.E2eReassembly do
   @max_total_bytes 1024 * 1024
   @fragment_overhead_bytes 64
 
-  @typedoc "A whole message, ready to hand to the client: its verb, msgid, addresses and payload."
+  @typedoc "A message part-way through reassembly, as its frames described it (issue 2577)."
+  @type in_flight :: %{
+          verb: E2e.verb(),
+          msgid: String.t(),
+          from: E2e.address(),
+          to: E2e.address(),
+          total: pos_integer()
+        }
+
+  @typedoc "A whole message, ready to hand to the client: its verb, msgid, addresses, line count and payload."
   @type message :: %{
           verb: E2e.verb(),
           msgid: String.t(),
           from: E2e.address(),
           to: E2e.address(),
+          total: pos_integer(),
           payload: String.t()
         }
 
@@ -145,13 +158,30 @@ defmodule Grappa.Session.E2eReassembly do
       end)
 
   @doc """
-  Discards every message whose last accepted fragment is `timeout_ms/0` or
-  more old at `now_ms`. Returns the buffer and how many messages went.
+  The message from the folded `sender` with `msgid` that is part-way
+  through reassembly, or `:error` when none is (never begun, complete,
+  dropped or expired). The session asks it before each fragment: a
+  fragment that finds none opens a message, one that finds one belongs to
+  it, whatever `put/4` then makes of it.
   """
-  @spec expire(t(), integer()) :: {t(), non_neg_integer()}
+  @spec in_flight(t(), String.t(), String.t()) :: {:ok, in_flight()} | :error
+  def in_flight(%__MODULE__{entries: entries}, sender, msgid) when is_binary(sender) and is_binary(msgid) do
+    case Map.fetch(entries, {sender, msgid}) do
+      {:ok, entry} -> {:ok, describe({sender, msgid}, entry)}
+      :error -> :error
+    end
+  end
+
+  @doc """
+  Discards every message whose last accepted fragment is `timeout_ms/0` or
+  more old at `now_ms`. Returns the buffer and the messages that went.
+  """
+  @spec expire(t(), integer()) :: {t(), [in_flight()]}
   def expire(%__MODULE__{} = buffer, now_ms) do
     {stale, _} = Enum.split_with(buffer.entries, fn {_, entry} -> now_ms - entry.last_ms >= @timeout_ms end)
-    {Enum.reduce(stale, buffer, fn {key, _}, acc -> remove(acc, key) end), length(stale)}
+
+    {Enum.reduce(stale, buffer, fn {key, _}, acc -> remove(acc, key) end),
+     Enum.map(stale, fn {key, entry} -> describe(key, entry) end)}
   end
 
   @spec new_entry(Fragment.t(), integer()) :: entry()
@@ -218,8 +248,12 @@ defmodule Grappa.Session.E2eReassembly do
     do: message(msgid, entry, Enum.map_join(1..entry.total, &Map.fetch!(entry.parts, &1)))
 
   @spec message(String.t(), Fragment.t() | entry(), String.t()) :: message()
-  defp message(msgid, %{verb: verb, from: from, to: to}, payload),
-    do: %{verb: verb, msgid: msgid, from: from, to: to, payload: payload}
+  defp message(msgid, %{verb: verb, from: from, to: to, total: total}, payload),
+    do: %{verb: verb, msgid: msgid, from: from, to: to, total: total, payload: payload}
+
+  @spec describe({String.t(), String.t()}, entry()) :: in_flight()
+  defp describe({_, msgid}, entry),
+    do: %{verb: entry.verb, msgid: msgid, from: entry.from, to: entry.to, total: entry.total}
 
   @spec put_entry(t(), String.t(), {String.t(), String.t()}, entry(), pos_integer()) :: t()
   defp put_entry(buffer, sender, key, entry, size) do
