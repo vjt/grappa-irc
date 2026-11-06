@@ -104,8 +104,9 @@ static void scan(const char *needle) {
          * that stopped at the '-' harvested "/preview" and then threw it
          * away for not ending at a quote — so the one verb missing from
          * the completion table was also the one verb this suite could
-         * not see. */
-        while (*q && (islower((unsigned char)*q) || *q == '-') && n + 1 < sizeof(verb))
+         * not see. Digits too, for the same reason: /e2e. */
+        while (*q && (islower((unsigned char)*q) || isdigit((unsigned char)*q) || *q == '-') &&
+               n + 1 < sizeof(verb))
             verb[n++] = *q++;
         verb[n] = '\0';
         /* A real verb ends at the quote, or at the space that separates it
@@ -388,10 +389,15 @@ TEST(every_kind_cicchetto_narrows_is_known_here) {
             size_t n = (size_t)(end - p);
             memcpy(kind, p, n);
             kind[n] = 0;
-            /* Only the event-kind shape: lowercase and underscores. */
-            bool plausible = n > 2;
+            /* Only the event-kind shape: lowercase, underscores, and the
+             * digits of `e2e_*` — the shape once stopped at the digit, so
+             * the nine E2E kinds slid past this test unread. A leading
+             * digit is no kind. */
+            bool plausible = n > 2 && kind[0] >= 'a' && kind[0] <= 'z';
             for (size_t i = 0; i < n; i++)
-                if (!((kind[i] >= 'a' && kind[i] <= 'z') || kind[i] == '_')) plausible = false;
+                if (!((kind[i] >= 'a' && kind[i] <= 'z') || (kind[i] >= '0' && kind[i] <= '9') ||
+                      kind[i] == '_'))
+                    plausible = false;
             if (!plausible) continue;
             if (!wire_kind_name_known(kind))
                 fprintf(stderr, "  cicchetto narrows \"%s\"; wire.c does not know it\n", kind);
@@ -403,6 +409,68 @@ TEST(every_kind_cicchetto_narrows_is_known_here) {
     CHECK(checked > 20);
     free(cic);
     free(cic2);
+}
+
+/* The E2E closed sets are cicchetto's generated ones, value for value and
+ * in order: `SESSION_WIRE_E2E_VERB = ["keys", "pkmsg", "msg", "nack"] as
+ * const;` and its four siblings in wireTypes.ts, which the server's
+ * typespecs generate. A value the server adds there reddens here, rather
+ * than every event that carries it being dropped as malformed. */
+static void pin_closed_set(const char *src, const char *name, const char *(*spell)(size_t),
+                           size_t count) {
+    char needle[96];
+    snprintf(needle, sizeof(needle), "export const %s = [", name);
+    const char *at = strstr(src, needle);
+    if (!at) fprintf(stderr, "  %s not found in wireTypes.ts\n", name);
+    CHECK(at != NULL);
+    if (!at) return;
+    const char *close = strchr(at, ']');
+    CHECK(close != NULL);
+    if (!close) return;
+    size_t quoted = 0;
+    const char *p = at + strlen(needle);
+    for (;;) {
+        const char *q = memchr(p, '"', (size_t)(close - p));
+        if (!q) break;
+        const char *e = memchr(q + 1, '"', (size_t)(close - q - 1));
+        if (!e) break;
+        char value[64];
+        size_t n = (size_t)(e - q - 1);
+        if (n >= sizeof(value)) n = sizeof(value) - 1;
+        memcpy(value, q + 1, n);
+        value[n] = 0;
+        const char *ours = quoted < count ? spell(quoted) : "(none)";
+        if (strcmp(value, ours) != 0)
+            fprintf(stderr, "  %s[%zu]: server says \"%s\", wire.c says \"%s\"\n", name, quoted,
+                    value, ours);
+        CHECK_STR(ours, value);
+        quoted++;
+        p = e + 1;
+    }
+    CHECK_LONG(quoted, count);
+}
+
+static const char *spell_verb(size_t i) { return wire_e2e_verb_name((wire_e2e_verb)i); }
+static const char *spell_drop(size_t i) { return wire_e2e_drop_reason_name((wire_e2e_drop_reason)i); }
+static const char *spell_side(size_t i) { return wire_pairing_side_name((wire_pairing_side)i); }
+static const char *spell_close(size_t i) {
+    return wire_pairing_close_reason_name((wire_pairing_close_reason)i);
+}
+static const char *spell_req(size_t i) {
+    return wire_e2e_request_state_name((wire_e2e_request_state)i);
+}
+
+TEST(the_e2e_closed_sets_are_the_servers) {
+    char *src = read_repo_file("cicchetto/src/lib/wireTypes.ts");
+    CHECK(src != NULL);
+    if (!src) return;
+    pin_closed_set(src, "SESSION_WIRE_E2E_VERB", spell_verb, wire_e2e_verb_count());
+    pin_closed_set(src, "SESSION_WIRE_E2E_DROP_REASON", spell_drop, wire_e2e_drop_reason_count());
+    pin_closed_set(src, "E2E_PAIRING_WIRE_SIDE", spell_side, wire_pairing_side_count());
+    pin_closed_set(src, "E2E_PAIRING_WIRE_CLOSE_REASON", spell_close,
+                   wire_pairing_close_reason_count());
+    pin_closed_set(src, "E2E_REQUESTS_WIRE_WIRE_STATE", spell_req, wire_e2e_request_state_count());
+    free(src);
 }
 
 /* The number shottino declares is the number the server publishes.
@@ -708,6 +776,7 @@ int main(void) {
     RUN(the_declared_protocol_is_the_one_the_server_publishes);
     RUN(the_closed_sets_are_the_servers_in_the_servers_order);
     RUN(every_kind_cicchetto_narrows_is_known_here);
+    RUN(the_e2e_closed_sets_are_the_servers);
     RUN(the_call_defaults_move_the_page_and_the_sfu_together);
     RUN(leaving_stops_a_running_call);
     RUN(a_stopped_call_marks_its_invite_spent);

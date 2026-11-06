@@ -628,6 +628,414 @@ TEST(isupport) {
            "\"chanmodes_b\":[],\"chanmodes_c\":[],\"chanmodes_d\":[],\"prefix\":{\"o\":7}}");
 }
 
+/* The two fields E2E reads off the 005 edge (issue 2430): lenient, as
+ * wireNarrow.ts reads them — absent or malformed is ABSENT, never a
+ * refused envelope, because the prefix table rides the same payload. */
+#define ISUPPORT_HEAD                                                                              \
+    "{\"kind\":\"isupport_changed\",\"network_id\":3,\"chanmodes_a\":[],\"chanmodes_b\":[],"       \
+    "\"chanmodes_c\":[],\"chanmodes_d\":[],\"prefix\":{\"o\":\"@\"}"
+TEST(isupport_frame_budget_and_network_name) {
+    struct wire_event ev;
+    bool ok;
+    json_doc *d = narrow(ISUPPORT_HEAD ",\"frame_budget_base\":448,\"network\":\"Azzurra\"}", &ev,
+                         &ok);
+    CHECK(ok);
+    CHECK(ev.u.isupport.has_frame_budget_base);
+    CHECK_LONG(ev.u.isupport.frame_budget_base, 448);
+    CHECK_STR(ev.u.isupport.network, "Azzurra");
+    json_free(d);
+    /* A server predating both: still narrowed, both absent. */
+    d = narrow(ISUPPORT_HEAD "}", &ev, &ok);
+    CHECK(ok);
+    CHECK(!ev.u.isupport.has_frame_budget_base);
+    CHECK(ev.u.isupport.network == NULL);
+    json_free(d);
+    /* Malformed: absent, not a refusal. An empty NETWORK= is no name. */
+    d = narrow(ISUPPORT_HEAD ",\"frame_budget_base\":\"448\",\"network\":\"\"}", &ev, &ok);
+    CHECK(ok);
+    CHECK(!ev.u.isupport.has_frame_budget_base);
+    CHECK(ev.u.isupport.network == NULL);
+    json_free(d);
+    d = narrow(ISUPPORT_HEAD ",\"frame_budget_base\":null,\"network\":7}", &ev, &ok);
+    CHECK(ok);
+    CHECK(!ev.u.isupport.has_frame_budget_base);
+    CHECK(ev.u.isupport.network == NULL);
+    json_free(d);
+}
+
+/* The undeliverable row (CLIENT_PROTOCOL §4f): a server_event whose meta
+ * counts the encrypted messages a peer sent that no device of ours can
+ * read, and names the device. Read only when typed as cic reads it. */
+TEST(server_event_carries_the_undeliverable_count) {
+    struct wire_event ev;
+    bool ok;
+    json_doc *d = narrow("{\"kind\":\"message\",\"message\":{\"id\":9,\"network\":\"azz\","
+                         "\"channel\":\"alice\",\"server_time\":1,\"kind\":\"server_event\","
+                         "\"sender\":\"alice\",\"body\":null,"
+                         "\"meta\":{\"e2e_undeliverable\":3,\"e2e_device\":\"If4x36FUomE\"}}}",
+                         &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.u.message.kind == MSG_SERVER_EVENT);
+    CHECK(ev.u.message.has_e2e_undeliverable);
+    CHECK_LONG(ev.u.message.e2e_undeliverable, 3);
+    CHECK_STR(ev.u.message.e2e_device, "If4x36FUomE");
+    json_free(d);
+    d = narrow(MSG_OK, &ev, &ok);
+    CHECK(ok);
+    CHECK(!ev.u.message.has_e2e_undeliverable);
+    CHECK(ev.u.message.e2e_device == NULL);
+    json_free(d);
+    /* Mistyped: the row survives, the facts do not. */
+    d = narrow("{\"kind\":\"message\",\"message\":{\"id\":9,\"network\":\"azz\","
+               "\"channel\":\"alice\",\"server_time\":1,\"kind\":\"server_event\","
+               "\"sender\":\"alice\",\"body\":null,"
+               "\"meta\":{\"e2e_undeliverable\":\"3\",\"e2e_device\":4}}}",
+               &ev, &ok);
+    CHECK(ok);
+    CHECK(!ev.u.message.has_e2e_undeliverable);
+    CHECK(ev.u.message.e2e_device == NULL);
+    json_free(d);
+}
+
+#define E2E_MESSAGE_OK                                                                             \
+    "{\"kind\":\"e2e_message\",\"id\":41,\"network\":\"azzurra\",\"from\":\"Alice\","              \
+    "\"from_did\":\"If4x36FUomE\",\"to_did\":\"_Uw_z3-OAsk\",\"verb\":\"pkmsg\","                  \
+    "\"msgid\":\"AAAAAAAAAAA\",\"payload\":\"{\\\"v\\\":2}\",\"own\":false}"
+
+/* e2e_message (§4f), field by field as S_SessionWireE2eMessagePayload:
+ * every field required, `verb` closed at keys/pkmsg/msg/nack. */
+TEST(e2e_message) {
+    struct wire_event ev;
+    bool ok;
+    json_doc *d = narrow(E2E_MESSAGE_OK, &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.kind == WIRE_E2E_MESSAGE);
+    CHECK_LONG(ev.u.e2e_message.id, 41);
+    CHECK_STR(ev.u.e2e_message.network, "azzurra");
+    CHECK_STR(ev.u.e2e_message.from, "Alice");
+    CHECK_STR(ev.u.e2e_message.from_did, "If4x36FUomE");
+    CHECK_STR(ev.u.e2e_message.to_did, "_Uw_z3-OAsk");
+    CHECK(ev.u.e2e_message.verb == WIRE_E2E_PKMSG);
+    CHECK_STR(ev.u.e2e_message.msgid, "AAAAAAAAAAA");
+    CHECK_STR(ev.u.e2e_message.payload, "{\"v\":2}");
+    CHECK_LONG(ev.u.e2e_message.payload_len, 7);
+    CHECK(!ev.u.e2e_message.own);
+    json_free(d);
+    /* grappa speaks for the user as "*": a KEYS, or a NACK nobody read. */
+    d = narrow("{\"kind\":\"e2e_message\",\"id\":1,\"network\":\"n\",\"from\":\"a\","
+               "\"from_did\":\"*\",\"to_did\":\"_Uw_z3-OAsk\",\"verb\":\"keys\","
+               "\"msgid\":\"m\",\"payload\":\"{}\",\"own\":true}",
+               &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.u.e2e_message.verb == WIRE_E2E_KEYS);
+    CHECK(ev.u.e2e_message.own);
+    json_free(d);
+    /* A KEYREQ never reaches a client (grappa answers it): not a verb here. */
+    reject("{\"kind\":\"e2e_message\",\"id\":1,\"network\":\"n\",\"from\":\"a\","
+           "\"from_did\":\"*\",\"to_did\":\"x\",\"verb\":\"keyreq\",\"msgid\":\"m\","
+           "\"payload\":\"{}\",\"own\":false}");
+    /* Each required field, missing or mistyped. */
+    reject("{\"kind\":\"e2e_message\",\"network\":\"n\",\"from\":\"a\",\"from_did\":\"*\","
+           "\"to_did\":\"x\",\"verb\":\"msg\",\"msgid\":\"m\",\"payload\":\"{}\",\"own\":false}");
+    reject("{\"kind\":\"e2e_message\",\"id\":\"1\",\"network\":\"n\",\"from\":\"a\","
+           "\"from_did\":\"*\",\"to_did\":\"x\",\"verb\":\"msg\",\"msgid\":\"m\","
+           "\"payload\":\"{}\",\"own\":false}");
+    reject("{\"kind\":\"e2e_message\",\"id\":1,\"network\":\"n\",\"from\":\"a\","
+           "\"from_did\":\"*\",\"to_did\":\"x\",\"verb\":\"msg\",\"msgid\":\"m\","
+           "\"payload\":{\"v\":2},\"own\":false}");
+    reject("{\"kind\":\"e2e_message\",\"id\":1,\"network\":\"n\",\"from\":\"a\","
+           "\"from_did\":\"*\",\"to_did\":\"x\",\"verb\":\"msg\",\"msgid\":\"m\","
+           "\"payload\":\"{}\",\"own\":\"false\"}");
+    reject("{\"kind\":\"e2e_message\",\"id\":1,\"network\":\"n\",\"from\":\"a\","
+           "\"to_did\":\"x\",\"verb\":\"msg\",\"msgid\":\"m\",\"payload\":\"{}\",\"own\":false}");
+    reject("{\"kind\":\"e2e_message\",\"id\":1,\"network\":\"n\",\"from\":\"a\","
+           "\"from_did\":\"*\",\"verb\":\"msg\",\"msgid\":\"m\",\"payload\":\"{}\",\"own\":false}");
+}
+
+/* e2e_send_dropped (v46): `reason` closed at late/send_failed/session_ended. */
+TEST(e2e_send_dropped) {
+    struct wire_event ev;
+    bool ok;
+    json_doc *d = narrow("{\"kind\":\"e2e_send_dropped\",\"network\":\"azzurra\","
+                         "\"target\":\"alice\",\"msgid\":\"QUJDREVGR0g\",\"reason\":\"late\"}",
+                         &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.kind == WIRE_E2E_SEND_DROPPED);
+    CHECK_STR(ev.u.e2e_send_dropped.network, "azzurra");
+    CHECK_STR(ev.u.e2e_send_dropped.target, "alice");
+    CHECK_STR(ev.u.e2e_send_dropped.msgid, "QUJDREVGR0g");
+    CHECK(ev.u.e2e_send_dropped.reason == WIRE_E2E_DROP_LATE);
+    json_free(d);
+    d = narrow("{\"kind\":\"e2e_send_dropped\",\"network\":\"n\",\"target\":\"t\","
+               "\"msgid\":\"m\",\"reason\":\"session_ended\"}",
+               &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.u.e2e_send_dropped.reason == WIRE_E2E_DROP_SESSION_ENDED);
+    json_free(d);
+    reject("{\"kind\":\"e2e_send_dropped\",\"network\":\"n\",\"target\":\"t\","
+           "\"msgid\":\"m\",\"reason\":\"gone\"}");
+    reject("{\"kind\":\"e2e_send_dropped\",\"network\":\"n\",\"target\":\"t\",\"reason\":\"late\"}");
+    reject("{\"kind\":\"e2e_send_dropped\",\"network\":\"n\",\"msgid\":\"m\",\"reason\":\"late\"}");
+}
+
+/* e2e_incoming / e2e_incoming_lost (v59): `from` is on the first only. */
+TEST(e2e_incoming_and_lost) {
+    struct wire_event ev;
+    bool ok;
+    json_doc *d = narrow("{\"kind\":\"e2e_incoming\",\"network\":\"azzurra\",\"from\":\"alice\","
+                         "\"from_did\":\"If4x36FUomE\",\"to\":\"*\",\"msgid\":\"m1\"}",
+                         &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.kind == WIRE_E2E_INCOMING);
+    CHECK_STR(ev.u.e2e_incoming.from, "alice");
+    CHECK_STR(ev.u.e2e_incoming.from_did, "If4x36FUomE");
+    CHECK_STR(ev.u.e2e_incoming.to, "*");
+    CHECK_STR(ev.u.e2e_incoming.msgid, "m1");
+    json_free(d);
+    d = narrow("{\"kind\":\"e2e_incoming_lost\",\"network\":\"azzurra\","
+               "\"from_did\":\"If4x36FUomE\",\"to\":\"_Uw_z3-OAsk\",\"msgid\":\"m1\"}",
+               &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.kind == WIRE_E2E_INCOMING_LOST);
+    CHECK(ev.u.e2e_incoming.from == NULL);
+    CHECK_STR(ev.u.e2e_incoming.to, "_Uw_z3-OAsk");
+    json_free(d);
+    reject("{\"kind\":\"e2e_incoming\",\"network\":\"n\",\"from_did\":\"d\",\"to\":\"*\","
+           "\"msgid\":\"m\"}");
+    reject("{\"kind\":\"e2e_incoming_lost\",\"network\":\"n\",\"from_did\":\"d\",\"msgid\":\"m\"}");
+    reject("{\"kind\":\"e2e_incoming_lost\",\"network\":\"n\",\"from_did\":\"d\",\"to\":null,"
+           "\"msgid\":\"m\"}");
+}
+
+/* The pairing relay's three pushes (v48, v55). */
+TEST(e2e_pairing_events) {
+    struct wire_event ev;
+    bool ok;
+    json_doc *d = narrow("{\"kind\":\"e2e_pairing_message\",\"rendezvous_id\":\"r1\",\"seq\":4,"
+                         "\"from\":\"joiner\"}",
+                         &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.kind == WIRE_E2E_PAIRING_MESSAGE);
+    CHECK_STR(ev.u.e2e_pairing.rendezvous_id, "r1");
+    CHECK_LONG(ev.u.e2e_pairing.seq, 4);
+    CHECK(ev.u.e2e_pairing.from == WIRE_PAIRING_JOINER);
+    json_free(d);
+    d = narrow("{\"kind\":\"e2e_pairing_closed\",\"rendezvous_id\":\"r1\",\"reason\":\"replaced\"}",
+               &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.kind == WIRE_E2E_PAIRING_CLOSED);
+    CHECK(ev.u.e2e_pairing.reason == WIRE_PAIRING_REPLACED);
+    json_free(d);
+    d = narrow("{\"kind\":\"e2e_pairing_offered\",\"rendezvous_id\":\"r1\","
+               "\"curve\":\"11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo\","
+               "\"expires_at\":\"2026-11-07T10:00:00Z\"}",
+               &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.kind == WIRE_E2E_PAIRING_OFFERED);
+    CHECK_STR(ev.u.e2e_pairing.curve, "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo");
+    CHECK_STR(ev.u.e2e_pairing.expires_at, "2026-11-07T10:00:00Z");
+    json_free(d);
+    reject("{\"kind\":\"e2e_pairing_message\",\"rendezvous_id\":\"r1\",\"seq\":4,"
+           "\"from\":\"holder\"}");
+    reject("{\"kind\":\"e2e_pairing_message\",\"rendezvous_id\":\"r1\",\"from\":\"creator\"}");
+    reject("{\"kind\":\"e2e_pairing_closed\",\"rendezvous_id\":\"r1\",\"reason\":\"gone\"}");
+    reject("{\"kind\":\"e2e_pairing_offered\",\"rendezvous_id\":\"r1\",\"curve\":\"c\"}");
+    reject("{\"kind\":\"e2e_pairing_offered\",\"curve\":\"c\",\"expires_at\":\"t\"}");
+}
+
+/* e2e_request / e2e_request_gone (v53). */
+TEST(e2e_request_events) {
+    struct wire_event ev;
+    bool ok;
+    json_doc *d = narrow("{\"kind\":\"e2e_request\",\"network\":\"azzurra\",\"request\":{"
+                         "\"id\":5,\"peer\":\"bob\",\"state\":\"incoming\","
+                         "\"payload\":\"{\\\"v\\\":2}\",\"at\":\"2026-11-07T10:00:00Z\","
+                         "\"expires_at\":\"2026-11-08T10:00:00Z\"}}",
+                         &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.kind == WIRE_E2E_REQUEST);
+    CHECK_STR(ev.u.e2e_request.network, "azzurra");
+    CHECK_LONG(ev.u.e2e_request.request.id, 5);
+    CHECK_STR(ev.u.e2e_request.request.peer, "bob");
+    CHECK(ev.u.e2e_request.request.state == WIRE_E2E_REQ_INCOMING);
+    CHECK_STR(ev.u.e2e_request.request.payload, "{\"v\":2}");
+    CHECK_STR(ev.u.e2e_request.request.expires_at, "2026-11-08T10:00:00Z");
+    json_free(d);
+    /* payload and expires_at are nullable. */
+    d = narrow("{\"kind\":\"e2e_request\",\"network\":\"n\",\"request\":{\"id\":5,"
+               "\"peer\":\"bob\",\"state\":\"refused\",\"payload\":null,\"at\":\"t\","
+               "\"expires_at\":null}}",
+               &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.u.e2e_request.request.state == WIRE_E2E_REQ_REFUSED);
+    CHECK(ev.u.e2e_request.request.payload == NULL);
+    CHECK(ev.u.e2e_request.request.expires_at == NULL);
+    json_free(d);
+    d = narrow("{\"kind\":\"e2e_request_gone\",\"network\":\"azzurra\",\"id\":5}", &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.kind == WIRE_E2E_REQUEST_GONE);
+    CHECK_LONG(ev.u.e2e_request_gone.id, 5);
+    json_free(d);
+    reject("{\"kind\":\"e2e_request\",\"network\":\"n\",\"request\":{\"id\":5,\"peer\":\"bob\","
+           "\"state\":\"pending\",\"payload\":null,\"at\":\"t\",\"expires_at\":null}}");
+    reject("{\"kind\":\"e2e_request\",\"network\":\"n\",\"request\":{\"id\":5,\"peer\":\"bob\","
+           "\"state\":\"incoming\",\"payload\":null,\"expires_at\":null}}");
+    reject("{\"kind\":\"e2e_request\",\"network\":\"n\"}");
+    reject("{\"kind\":\"e2e_request_gone\",\"network\":\"n\"}");
+    reject("{\"kind\":\"e2e_request_gone\",\"id\":5}");
+}
+
+static json_doc *parse_body(const char *text) {
+    return json_parse(text, strlen(text), NULL, 0);
+}
+
+/* The REST bodies of the identity doors (§3.1-3.5), each as a unit. */
+TEST(e2e_rest_bodies) {
+    json_doc *d = parse_body("{\"master\":\"M\",\"ver\":2,\"devices\":[\"A\",\"B\"],\"sig\":\"S\"}");
+    struct wire_e2e_list l;
+    CHECK(wire_narrow_e2e_list(json_root(d), &l));
+    CHECK_STR(l.master, "M");
+    CHECK(l.ver == 2);
+    CHECK_LONG(l.device_count, 2);
+    CHECK_STR(wire_string_at(l.devices, 1), "B");
+    CHECK_STR(l.sig, "S");
+    json_free(d);
+    /* `ver` is kept as parsed: the list rule judges 1.5, not the reader. */
+    d = parse_body("{\"master\":\"M\",\"ver\":1.5,\"devices\":[],\"sig\":\"S\"}");
+    CHECK(wire_narrow_e2e_list(json_root(d), &l));
+    CHECK(l.ver == 1.5);
+    json_free(d);
+    d = parse_body("{\"master\":\"M\",\"ver\":true,\"devices\":[],\"sig\":\"S\"}");
+    CHECK(!wire_narrow_e2e_list(json_root(d), &l));
+    json_free(d);
+    d = parse_body("{\"master\":\"M\",\"ver\":1,\"devices\":[\"A\",3],\"sig\":\"S\"}");
+    CHECK(!wire_narrow_e2e_list(json_root(d), &l));
+    json_free(d);
+
+    d = parse_body("{\"devices\":[{\"did\":\"D\",\"ed25519\":\"E\",\"curve25519\":\"K\","
+                   "\"sig\":\"S\",\"last_seen_at\":null,\"inserted_at\":\"2026-11-07T10:00:00Z\"},"
+                   "{\"did\":\"D2\",\"ed25519\":\"E2\",\"curve25519\":\"K2\",\"sig\":\"S2\"}]}");
+    const json_value *arr;
+    size_t n;
+    CHECK(wire_narrow_e2e_devices(json_root(d), &arr, &n));
+    CHECK_LONG(n, 2);
+    struct wire_e2e_device dev;
+    CHECK(wire_e2e_device_at(arr, 0, &dev));
+    CHECK_STR(dev.did, "D");
+    CHECK(dev.last_seen_at == NULL);
+    CHECK_STR(dev.inserted_at, "2026-11-07T10:00:00Z");
+    CHECK(wire_e2e_device_at(arr, 1, &dev));
+    CHECK(dev.inserted_at == NULL);
+    json_free(d);
+    /* One bad device refuses the listing. */
+    d = parse_body("{\"devices\":[{\"did\":\"D\",\"ed25519\":\"E\",\"curve25519\":\"K\","
+                   "\"sig\":\"S\"},{\"did\":\"D2\",\"ed25519\":\"E2\",\"sig\":\"S2\"}]}");
+    CHECK(!wire_narrow_e2e_devices(json_root(d), &arr, &n));
+    json_free(d);
+    d = parse_body("{\"did\":\"D\",\"ed25519\":\"E\",\"curve25519\":\"K\",\"sig\":\"S\","
+                   "\"inserted_at\":null}");
+    CHECK(!wire_narrow_e2e_device(json_root(d), &dev));
+    json_free(d);
+
+    d = parse_body("{\"one_time_keys\":50,\"fallback\":true}");
+    long otks = 0;
+    bool fb = false;
+    CHECK(wire_narrow_e2e_key_status(json_root(d), &otks, &fb));
+    CHECK_LONG(otks, 50);
+    CHECK(fb);
+    json_free(d);
+    d = parse_body("{\"one_time_keys\":50}");
+    CHECK(!wire_narrow_e2e_key_status(json_root(d), &otks, &fb));
+    json_free(d);
+
+    d = parse_body("{\"messages\":[" E2E_MESSAGE_OK "]}");
+    CHECK(wire_narrow_e2e_inbox(json_root(d), &arr, &n));
+    CHECK_LONG(n, 1);
+    struct wire_e2e_message m;
+    CHECK(wire_e2e_message_at(arr, 0, &m));
+    CHECK_LONG(m.id, 41);
+    json_free(d);
+    /* An inbox item carries the push's own kind. */
+    d = parse_body("{\"messages\":[{\"id\":41,\"network\":\"n\",\"from\":\"a\",\"from_did\":\"*\","
+                   "\"to_did\":\"x\",\"verb\":\"msg\",\"msgid\":\"m\",\"payload\":\"{}\","
+                   "\"own\":false}]}");
+    CHECK(!wire_narrow_e2e_inbox(json_root(d), &arr, &n));
+    json_free(d);
+
+    d = parse_body("{\"requests\":[{\"id\":1,\"peer\":\"bob\",\"state\":\"outgoing\","
+                   "\"payload\":null,\"at\":\"t\",\"expires_at\":\"u\"}]}");
+    CHECK(wire_narrow_e2e_requests(json_root(d), &arr, &n));
+    struct wire_e2e_request r;
+    CHECK(wire_e2e_request_at(arr, 0, &r));
+    CHECK(r.state == WIRE_E2E_REQ_OUTGOING);
+    json_free(d);
+
+    const char *s = NULL;
+    long id = 0;
+    d = parse_body("{\"keys\":\"{\\\"v\\\":2}\"}");
+    CHECK(wire_narrow_e2e_claimed(json_root(d), &s));
+    CHECK_STR(s, "{\"v\":2}");
+    json_free(d);
+    d = parse_body("{\"id\":12,\"msgid\":\"QUJDREVGR0g\"}");
+    CHECK(wire_narrow_e2e_copied(json_root(d), &id, &s));
+    CHECK_LONG(id, 12);
+    CHECK_STR(s, "QUJDREVGR0g");
+    CHECK(wire_narrow_e2e_sent(json_root(d), &s));
+    json_free(d);
+    d = parse_body("{\"msgid\":5}");
+    CHECK(!wire_narrow_e2e_sent(json_root(d), &s));
+    CHECK(wire_e2e_error(json_root(d)) == NULL);
+    json_free(d);
+    d = parse_body("{\"error\":\"too_many_devices\"}");
+    CHECK_STR(wire_e2e_error(json_root(d)), "too_many_devices");
+    json_free(d);
+}
+
+/* Every door spelled once: method, path, body. */
+TEST(e2e_doors) {
+    char path[256];
+    CHECK(wire_e2e_door_path(WIRE_E2E_LIST_GET, "azzurra", NULL, -1, path, sizeof(path)));
+    CHECK_STR(path, "/networks/azzurra/e2e/list");
+    CHECK_STR(wire_e2e_door_method(WIRE_E2E_LIST_PUT), "PUT");
+    CHECK(wire_e2e_door_path(WIRE_E2E_BUNDLE_UPLOAD, "azzurra", "_Uw_z3-OAsk", -1, path,
+                             sizeof(path)));
+    CHECK_STR(path, "/networks/azzurra/e2e/devices/_Uw_z3-OAsk/keys");
+    CHECK(wire_e2e_door_path(WIRE_E2E_INBOX, "a%20b", "If4x36FUomE", 17, path, sizeof(path)));
+    CHECK_STR(path, "/networks/a%20b/e2e/devices/If4x36FUomE/inbox?after=17");
+    CHECK(wire_e2e_door_path(WIRE_E2E_INBOX, "n", "If4x36FUomE", -1, path, sizeof(path)));
+    CHECK_STR(path, "/networks/n/e2e/devices/If4x36FUomE/inbox");
+    CHECK(wire_e2e_door_path(WIRE_E2E_DEVICE_DELETE, "n", "If4x36FUomE", -1, path, sizeof(path)));
+    CHECK_STR(path, "/networks/n/e2e/devices/If4x36FUomE");
+    CHECK_STR(wire_e2e_door_method(WIRE_E2E_DEVICE_DELETE), "DELETE");
+    CHECK(!wire_e2e_door_has_body(WIRE_E2E_DEVICE_DELETE));
+    CHECK(!wire_e2e_door_has_body(WIRE_E2E_INBOX_ACK));
+    CHECK(!wire_e2e_door_has_body(WIRE_E2E_KEYS_DELETE));
+    CHECK(wire_e2e_door_has_body(WIRE_E2E_SEND));
+    CHECK(wire_e2e_door_path(WIRE_E2E_SEND, "n", NULL, -1, path, sizeof(path)));
+    CHECK_STR(path, "/networks/n/e2e/messages");
+    CHECK(wire_e2e_door_path(WIRE_E2E_CLAIM, "n", "If4x36FUomE", -1, path, sizeof(path)));
+    CHECK_STR(path, "/networks/n/e2e/devices/If4x36FUomE/claim");
+    CHECK(wire_e2e_door_path(WIRE_E2E_COPY, "n", "If4x36FUomE", -1, path, sizeof(path)));
+    CHECK_STR(path, "/networks/n/e2e/devices/If4x36FUomE/copies");
+    CHECK(wire_e2e_door_path(WIRE_E2E_INBOX_ACK, "n", "If4x36FUomE", -1, path, sizeof(path)));
+    CHECK_STR(path, "/networks/n/e2e/devices/If4x36FUomE/inbox/ack");
+    /* A device door with no did, or a did that could leave the path. */
+    CHECK(!wire_e2e_door_path(WIRE_E2E_CLAIM, "n", NULL, -1, path, sizeof(path)));
+    CHECK(!wire_e2e_door_path(WIRE_E2E_CLAIM, "n", "", -1, path, sizeof(path)));
+    CHECK(!wire_e2e_door_path(WIRE_E2E_CLAIM, "n", "../keys", -1, path, sizeof(path)));
+    CHECK(!wire_e2e_door_path(WIRE_E2E_CLAIM, "n", "a/b", -1, path, sizeof(path)));
+    /* Does not fit: refused, never truncated. */
+    CHECK(!wire_e2e_door_path(WIRE_E2E_LIST_GET, "azzurra", NULL, -1, path, 10));
+    CHECK_STR(path, "");
+    /* The closed sets spell the server's names. */
+    CHECK_STR(wire_e2e_verb_name(WIRE_E2E_NACK), "nack");
+    CHECK_STR(wire_e2e_drop_reason_name(WIRE_E2E_DROP_SEND_FAILED), "send_failed");
+    CHECK_STR(wire_pairing_side_name(WIRE_PAIRING_CREATOR), "creator");
+    CHECK_STR(wire_pairing_close_reason_name(WIRE_PAIRING_EXPIRED), "expired");
+    CHECK_STR(wire_e2e_request_state_name(WIRE_E2E_REQ_EXPIRED), "expired");
+    CHECK_STR(wire_e2e_verb_name((wire_e2e_verb)99), "unknown");
+}
+
 /* A network joined or left the session (CLIENT_PROTOCOL §4e, v28). Both
  * name what moved and NOTHING else — no state, by contract: `GET
  * /networks` owns the answer, and a client that infers an attach from
@@ -1011,7 +1419,7 @@ TEST(phoenix_frame) {
 /* Every kind in the table must round-trip through its name, so a new arm
  * cannot be added to the enum without a name entry. */
 TEST(kind_names_are_total) {
-    for (int k = WIRE_MESSAGE; k <= WIRE_DIRECTORY_FAILED; k++) {
+    for (int k = WIRE_MESSAGE; k <= WIRE_E2E_REQUEST_GONE; k++) {
         const char *name = wire_kind_name((wire_kind)k);
         CHECK(strcmp(name, "unknown") != 0);
     }
@@ -1173,6 +1581,15 @@ int main(void) {
     RUN(presence);
     RUN(maps_keyed_by_data);
     RUN(isupport);
+    RUN(isupport_frame_budget_and_network_name);
+    RUN(server_event_carries_the_undeliverable_count);
+    RUN(e2e_message);
+    RUN(e2e_send_dropped);
+    RUN(e2e_incoming_and_lost);
+    RUN(e2e_pairing_events);
+    RUN(e2e_request_events);
+    RUN(e2e_rest_bodies);
+    RUN(e2e_doors);
     RUN(network_attached_and_detached);
     RUN(severed_and_invite_declined);
     RUN(dcc_offer_and_its_resolution);

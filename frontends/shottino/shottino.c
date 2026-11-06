@@ -325,6 +325,12 @@ struct network {
      * display data — absent does not mean unidentified). */
     bool identified;
     char account[MAX_CHANNEL];
+    /* From isupport_changed, for the encrypted query: the bytes one
+     * relayed line leaves before its target (§6.4 sizing), and the 005
+     * NETWORK= name an order challenge names (empty: unadvertised). */
+    long frame_budget_base;
+    bool has_frame_budget_base;
+    char network_name[MAX_SLUG];
     bool connecting;
     /* Which own-nick topic this network's DM listener is subscribed to,
      * or empty for none. Recorded rather than derived from `nick`
@@ -4064,6 +4070,21 @@ static void format_presence_line(const struct wire_scrollback_message *m, const 
         else snprintf(out, out_sz, "--- %s cleared the topic", sender);
         break;
     case MSG_SERVER_EVENT:
+        if (m->has_e2e_undeliverable) {
+            /* §4f "Undeliverable", in cic's words (ScrollbackPane.tsx).
+             * The device is named whenever the row names one: true
+             * whichever device this is, where "here" could be false. */
+            int k = snprintf(out, out_sz, "*** %s sent you %ld encrypted %s that cannot be read ",
+                             sender, m->e2e_undeliverable,
+                             m->e2e_undeliverable == 1 ? "message" : "messages");
+            if (k > 0 && (size_t)k < out_sz) {
+                if (m->e2e_device)
+                    snprintf(out + k, out_sz - (size_t)k, "on your device %s", m->e2e_device);
+                else
+                    snprintf(out + k, out_sz - (size_t)k, "here");
+            }
+            break;
+        }
         snprintf(out, out_sz, "--- %s", body ? body : "");
         break;
     default:
@@ -8842,6 +8863,10 @@ static void handle_wire_event(struct app *app, const char *topic_network,
                     n->prefix_count++;
                 }
             }
+            n->has_frame_budget_base = ev->u.isupport.has_frame_budget_base;
+            n->frame_budget_base = ev->u.isupport.frame_budget_base;
+            snprintf(n->network_name, sizeof(n->network_name), "%s",
+                     ev->u.isupport.network ? ev->u.isupport.network : "");
         }
         pthread_mutex_unlock(&app->lock);
         break;
@@ -8952,6 +8977,22 @@ static void handle_wire_event(struct app *app, const char *topic_network,
          * is still a `notice` row, in the open query or on $server, and
          * that row is rendered like any other; a second line here would
          * say it twice. Dropped deliberately, as the avatar above. */
+        break;
+
+    /* E2E (§4f-§4l): narrowed, and consumed by the slices that read them —
+     * the inbox drain (e2e_message, e2e_incoming*), sending
+     * (e2e_send_dropped), pairing (e2e_pairing_*: the joiner's hook is
+     * e2e_sync_slot's ELSEWHERE arm) and consent (e2e_request*). Until
+     * then each is KNOWN and deliberately dropped, as the avatar above. */
+    case WIRE_E2E_MESSAGE:
+    case WIRE_E2E_SEND_DROPPED:
+    case WIRE_E2E_INCOMING:
+    case WIRE_E2E_INCOMING_LOST:
+    case WIRE_E2E_PAIRING_MESSAGE:
+    case WIRE_E2E_PAIRING_CLOSED:
+    case WIRE_E2E_PAIRING_OFFERED:
+    case WIRE_E2E_REQUEST:
+    case WIRE_E2E_REQUEST_GONE:
         break;
 
     case WIRE_AUTO_AWAY_DEBOUNCE_CHANGED:

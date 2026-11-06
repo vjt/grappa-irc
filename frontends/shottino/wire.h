@@ -110,8 +110,45 @@ typedef enum {
  * side (#992), one hop out. Pinned to session/wire.ex. */
 typedef enum { REPLY_INFO, REPLY_VERSION, REPLY_MOTD, REPLY_ADMIN } wire_reply_source;
 
+/* The E2E closed sets (cicchetto/src/lib/wireTypes.ts SESSION_WIRE_E2E_VERB,
+ * SESSION_WIRE_E2E_DROP_REASON, E2E_PAIRING_WIRE_SIDE,
+ * E2E_PAIRING_WIRE_CLOSE_REASON, E2E_REQUESTS_WIRE_WIRE_STATE), each in its
+ * server order; test_commands pins the tables to those lists. An inbox
+ * item is never a keyreq: grappa answers KEYREQs itself. */
+typedef enum { WIRE_E2E_KEYS, WIRE_E2E_PKMSG, WIRE_E2E_MSG, WIRE_E2E_NACK } wire_e2e_verb;
+typedef enum {
+    WIRE_E2E_DROP_LATE,
+    WIRE_E2E_DROP_SEND_FAILED,
+    WIRE_E2E_DROP_SESSION_ENDED
+} wire_e2e_drop_reason;
+typedef enum { WIRE_PAIRING_CREATOR, WIRE_PAIRING_JOINER } wire_pairing_side;
+typedef enum {
+    WIRE_PAIRING_CLOSED,
+    WIRE_PAIRING_EXPIRED,
+    WIRE_PAIRING_REPLACED
+} wire_pairing_close_reason;
+typedef enum {
+    WIRE_E2E_REQ_INCOMING,
+    WIRE_E2E_REQ_OUTGOING,
+    WIRE_E2E_REQ_ACCEPTED,
+    WIRE_E2E_REQ_REFUSED,
+    WIRE_E2E_REQ_EXPIRED
+} wire_e2e_request_state;
+
 const char *wire_message_kind_name(wire_message_kind k);
 const char *wire_connection_state_name(wire_connection_state s);
+/* The server's spelling of each E2E closed-set value; "unknown" out of range. */
+const char *wire_e2e_verb_name(wire_e2e_verb v);
+const char *wire_e2e_drop_reason_name(wire_e2e_drop_reason r);
+const char *wire_pairing_side_name(wire_pairing_side s);
+const char *wire_pairing_close_reason_name(wire_pairing_close_reason r);
+const char *wire_e2e_request_state_name(wire_e2e_request_state s);
+/* How many values each table holds, for the pin. */
+size_t wire_e2e_verb_count(void);
+size_t wire_e2e_drop_reason_count(void);
+size_t wire_pairing_side_count(void);
+size_t wire_pairing_close_reason_count(void);
+size_t wire_e2e_request_state_count(void);
 
 /* ── Event kinds ─────────────────────────────────────────────────────── */
 
@@ -177,7 +214,17 @@ typedef enum {
     WIRE_DIRECTORY_COMPLETE,
     WIRE_DIRECTORY_FAILED,
     WIRE_AWAY_NICK_SUFFIX_CHANGED,
-    WIRE_NO_SUCH_NICK
+    WIRE_NO_SUCH_NICK,
+    /* E2E, user topic (CLIENT_PROTOCOL §4f-§4l) */
+    WIRE_E2E_MESSAGE,
+    WIRE_E2E_SEND_DROPPED,
+    WIRE_E2E_INCOMING,
+    WIRE_E2E_INCOMING_LOST,
+    WIRE_E2E_PAIRING_MESSAGE,
+    WIRE_E2E_PAIRING_CLOSED,
+    WIRE_E2E_PAIRING_OFFERED,
+    WIRE_E2E_REQUEST,
+    WIRE_E2E_REQUEST_GONE
 } wire_kind;
 
 const char *wire_kind_name(wire_kind k);
@@ -258,6 +305,39 @@ struct wire_scrollback_message {
     const char *target;       /* kick: the nick kicked */
     const char *modes;        /* mode: "+ov" */
     const json_value *mode_args; /* mode: array of strings, or NULL */
+    /* server_event (CLIENT_PROTOCOL §4f "Undeliverable"): a peer sent
+     * this many encrypted messages no device of ours can read, and the
+     * device they were for (a did; NULL on a row before wire v2). */
+    long e2e_undeliverable;
+    bool has_e2e_undeliverable;
+    const char *e2e_device;
+};
+
+/* One whole E2E message for device `to_did` (`e2e_message` push, and each
+ * item of `GET …/inbox`): the same shape both ways. `own` marks a copy a
+ * sibling device of ours sent. `payload` is compact JSON text, never
+ * logged: it is the ciphertext. */
+struct wire_e2e_message {
+    long id;
+    const char *network;
+    const char *from;
+    const char *from_did; /* a did, or "*" (grappa) */
+    const char *to_did;
+    wire_e2e_verb verb;
+    const char *msgid;
+    const char *payload;
+    size_t payload_len;
+    bool own;
+};
+
+/* A consent request (§4i). `payload` and `expires_at` nullable. */
+struct wire_e2e_request {
+    long id;
+    const char *peer;
+    wire_e2e_request_state state;
+    const char *payload;
+    const char *at;
+    const char *expires_at;
 };
 
 /* A mode row as it reads on IRC: "+ov carol dave". False (and `out`
@@ -320,6 +400,14 @@ struct wire_event {
             const json_value *chanmodes_c;
             const json_value *chanmodes_d;
             const json_value *prefix; /* object: mode letter -> sigil */
+            /* Both lenient, as wireNarrow.ts reads them: absent or
+             * malformed is ABSENT, never a refused envelope. The budget
+             * sizes an E2E message (§6.4); `network` is the 005 NETWORK=
+             * token an order challenge names (NULL when unadvertised or
+             * empty: a challenge is then answered nowhere). */
+            long frame_budget_base;
+            bool has_frame_budget_base;
+            const char *network;
         } isupport;
 
         /* joined / join_failed / kicked share a head so the common
@@ -631,6 +719,53 @@ struct wire_event {
             const char *network;
             const char *nick; /* RAW, as the 401 carries it */
         } no_such_nick;
+
+        /* e2e_message (§4f): a doorbell as much as a message — cic drains
+         * the inbox on it. At least once: dedupe by `id`. */
+        struct wire_e2e_message e2e_message;
+
+        /* e2e_send_dropped (v46): an accepted send dropped unsent. May
+         * arrive BEFORE the 202 that names `msgid`. */
+        struct {
+            const char *network;
+            const char *target;
+            const char *msgid;
+            wire_e2e_drop_reason reason;
+        } e2e_send_dropped;
+
+        /* e2e_incoming / e2e_incoming_lost (v59): a multi-line message on
+         * its way, and its loss. `from` is on the first only. `to` a did
+         * or "*". */
+        struct {
+            const char *network;
+            const char *from; /* e2e_incoming only */
+            const char *from_did;
+            const char *to;
+            const char *msgid;
+        } e2e_incoming;
+
+        /* e2e_pairing_message / e2e_pairing_closed / e2e_pairing_offered
+         * (v48, v55): subject-wide, no network. */
+        struct {
+            const char *rendezvous_id;
+            long seq;                         /* message */
+            wire_pairing_side from;           /* message */
+            wire_pairing_close_reason reason; /* closed */
+            const char *curve;                /* offered */
+            const char *expires_at;           /* offered */
+        } e2e_pairing;
+
+        /* e2e_request (v53): a request made or changed state. */
+        struct {
+            const char *network;
+            struct wire_e2e_request request;
+        } e2e_request;
+
+        /* e2e_request_gone (v53). */
+        struct {
+            const char *network;
+            long id;
+        } e2e_request_gone;
     } u;
 };
 
@@ -707,6 +842,77 @@ const char *wire_string_at(const json_value *arr, size_t i);
 
 /* Presence value of a `presence_snapshot` entry, by position. */
 bool wire_presence_at(const json_value *nicks, size_t i, const char **nick, wire_presence *out);
+
+/* ── E2E REST (CLIENT_PROTOCOL §4f-§4k) ───────────────────────────────
+ * Every E2E door shottino calls, as a closed set: the method, the path
+ * and the shape of a 2xx answer live in ONE table, so a door is spelled
+ * once and the app glue has one call path for all of them. Paths are
+ * without `/api`; `:n` is the network SLUG, already URL-encoded by the
+ * caller; a did goes in raw (it is base64url). */
+typedef enum {
+    WIRE_E2E_DEVICE_REGISTER, /* POST   …/e2e/devices                 → device */
+    WIRE_E2E_DEVICES,         /* GET    …/e2e/devices                 → {devices} */
+    WIRE_E2E_DEVICE_DELETE,   /* DELETE …/e2e/devices/:did            → 204 */
+    WIRE_E2E_LIST_PUT,        /* PUT    …/e2e/list                    → list */
+    WIRE_E2E_LIST_GET,        /* GET    …/e2e/list                    → list | 404 */
+    WIRE_E2E_KEYS_DELETE,     /* DELETE …/e2e/keys                    → 204 */
+    WIRE_E2E_BUNDLE_UPLOAD,   /* POST   …/e2e/devices/:did/keys       → status */
+    WIRE_E2E_BUNDLE_STATUS,   /* GET    …/e2e/devices/:did/keys       → status */
+    WIRE_E2E_INBOX,           /* GET    …/e2e/devices/:did/inbox?after → {messages} */
+    WIRE_E2E_INBOX_ACK,       /* POST   …/e2e/devices/:did/inbox/ack  → 204 */
+    WIRE_E2E_CLAIM,           /* POST   …/e2e/devices/:did/claim      → {keys} */
+    WIRE_E2E_COPY,            /* POST   …/e2e/devices/:did/copies     → {id, msgid} */
+    WIRE_E2E_SEND             /* POST   …/e2e/messages                → {msgid} */
+} wire_e2e_door;
+
+const char *wire_e2e_door_method(wire_e2e_door d);
+/* Whether a 2xx answer of the door carries a JSON body (false: 204). */
+bool wire_e2e_door_has_body(wire_e2e_door d);
+/* The door's path for network `slug_enc` (URL-encoded) and device `did`
+ * (ignored by the doors that take none); `after` is the inbox cursor
+ * (ignored elsewhere; < 0 = none). False when the path does not fit, or a
+ * door that names a device was given no did. */
+bool wire_e2e_door_path(wire_e2e_door d, const char *slug_enc, const char *did, long after,
+                        char *out, size_t out_sz);
+
+/* A device as grappa holds it. `last_seen_at` (v56) and `inserted_at`
+ * (v57) may be absent; the first is nullable. */
+struct wire_e2e_device {
+    const char *did;
+    const char *ed25519;
+    const char *curve25519;
+    const char *sig;
+    const char *last_seen_at;
+    const char *inserted_at;
+};
+
+/* A master's list as grappa holds it. `ver` stays the parsed number: the
+ * list rule judges it (an integer value in 1..2^31-1), not this reader. */
+struct wire_e2e_list {
+    const char *master;
+    double ver;
+    const json_value *devices; /* array of strings; wire_string_at */
+    size_t device_count;
+    const char *sig;
+};
+
+/* Each narrows a whole 2xx body as a unit (false: not that shape). */
+bool wire_narrow_e2e_device(const json_value *v, struct wire_e2e_device *out);
+bool wire_narrow_e2e_devices(const json_value *root, const json_value **devices, size_t *count);
+bool wire_e2e_device_at(const json_value *devices, size_t i, struct wire_e2e_device *out);
+bool wire_narrow_e2e_list(const json_value *root, struct wire_e2e_list *out);
+bool wire_narrow_e2e_key_status(const json_value *root, long *one_time_keys, bool *fallback);
+bool wire_narrow_e2e_message(const json_value *v, struct wire_e2e_message *out);
+bool wire_narrow_e2e_inbox(const json_value *root, const json_value **messages, size_t *count);
+bool wire_e2e_message_at(const json_value *messages, size_t i, struct wire_e2e_message *out);
+bool wire_narrow_e2e_request(const json_value *v, struct wire_e2e_request *out);
+bool wire_narrow_e2e_requests(const json_value *root, const json_value **requests, size_t *count);
+bool wire_e2e_request_at(const json_value *requests, size_t i, struct wire_e2e_request *out);
+bool wire_narrow_e2e_claimed(const json_value *root, const char **keys);
+bool wire_narrow_e2e_copied(const json_value *root, long *id, const char **msgid);
+bool wire_narrow_e2e_sent(const json_value *root, const char **msgid);
+/* The `{"error": "<token>"}` of a refusal, or NULL. */
+const char *wire_e2e_error(const json_value *root);
 
 /* ── Phoenix framing ───────────────────────────────────────────────────
  * A v2 socket frame is `[join_ref, ref, topic, event, payload]`. Splits it

@@ -61,6 +61,48 @@ static bool presence_of(const json_value *v, wire_presence *out) {
     return false;
 }
 
+/* The E2E closed sets, one table each, in the server's order (wire.h). */
+#define TABLE_LEN(t) (sizeof(t) / sizeof((t)[0]))
+static const char *const E2E_VERB_NAMES[] = {"keys", "pkmsg", "msg", "nack"};
+static const char *const E2E_DROP_REASON_NAMES[] = {"late", "send_failed", "session_ended"};
+static const char *const PAIRING_SIDE_NAMES[] = {"creator", "joiner"};
+static const char *const PAIRING_CLOSE_REASON_NAMES[] = {"closed", "expired", "replaced"};
+static const char *const E2E_REQUEST_STATE_NAMES[] = {"incoming", "outgoing", "accepted",
+                                                      "refused", "expired"};
+
+static const char *name_in(const char *const *names, size_t n, size_t i) {
+    return i < n ? names[i] : "unknown";
+}
+
+/* The index of `v`'s string in `names`; false for anything else. */
+static bool index_in(const char *const *names, size_t n, const json_value *v, int *out) {
+    const char *s = json_string(v);
+    if (!s) return false;
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(s, names[i]) == 0) {
+            *out = (int)i;
+            return true;
+        }
+    }
+    return false;
+}
+
+#define CLOSED_SET(fn, type, table)                                                                \
+    const char *wire_##fn##_name(type v) { return name_in(table, TABLE_LEN(table), (size_t)v); }    \
+    size_t wire_##fn##_count(void) { return TABLE_LEN(table); }                                    \
+    static bool fn##_of(const json_value *v, type *out) {                                          \
+        int i;                                                                                     \
+        if (!index_in(table, TABLE_LEN(table), v, &i)) return false;                               \
+        *out = (type)i;                                                                            \
+        return true;                                                                               \
+    }
+
+CLOSED_SET(e2e_verb, wire_e2e_verb, E2E_VERB_NAMES)
+CLOSED_SET(e2e_drop_reason, wire_e2e_drop_reason, E2E_DROP_REASON_NAMES)
+CLOSED_SET(pairing_side, wire_pairing_side, PAIRING_SIDE_NAMES)
+CLOSED_SET(pairing_close_reason, wire_pairing_close_reason, PAIRING_CLOSE_REASON_NAMES)
+CLOSED_SET(e2e_request_state, wire_e2e_request_state, E2E_REQUEST_STATE_NAMES)
+
 /* Severity is deliberately LENIENT: an unrecognised value degrades to
  * "none" rather than dropping the event, because the counts are the
  * load-bearing part and a stale server mid-deploy must not blank them.
@@ -136,6 +178,15 @@ static const struct {
     {"directory_failed", WIRE_DIRECTORY_FAILED},
     {"away_nick_suffix_changed", WIRE_AWAY_NICK_SUFFIX_CHANGED},
     {"no_such_nick", WIRE_NO_SUCH_NICK},
+    {"e2e_message", WIRE_E2E_MESSAGE},
+    {"e2e_send_dropped", WIRE_E2E_SEND_DROPPED},
+    {"e2e_incoming", WIRE_E2E_INCOMING},
+    {"e2e_incoming_lost", WIRE_E2E_INCOMING_LOST},
+    {"e2e_pairing_message", WIRE_E2E_PAIRING_MESSAGE},
+    {"e2e_pairing_closed", WIRE_E2E_PAIRING_CLOSED},
+    {"e2e_pairing_offered", WIRE_E2E_PAIRING_OFFERED},
+    {"e2e_request", WIRE_E2E_REQUEST},
+    {"e2e_request_gone", WIRE_E2E_REQUEST_GONE},
 };
 
 const char *wire_kind_name(wire_kind k) {
@@ -292,6 +343,11 @@ bool wire_narrow_message(const json_value *m, struct wire_scrollback_message *ou
     s.modes = json_string(json_get(s.meta, "modes"));
     s.mode_args = json_get(s.meta, "args");
     if (json_type_of(s.mode_args) != JSON_ARRAY) s.mode_args = NULL;
+    /* cic reads the count only when it is a number, and the device only
+     * when it is a string (ScrollbackPane.tsx); anything else renders the
+     * row as a plain server_event. */
+    s.has_e2e_undeliverable = json_long(json_get(s.meta, "e2e_undeliverable"), &s.e2e_undeliverable);
+    s.e2e_device = json_string(json_get(s.meta, "e2e_device"));
     *out = s;
     return true;
 }
@@ -326,6 +382,12 @@ static bool narrow_isupport(const json_value *p, struct wire_event *ev) {
     for (size_t i = 0; i < json_len(prefix); i++)
         if (!json_string(json_value_at(prefix, i))) return false;
     ev->u.isupport.prefix = prefix;
+    /* Lenient, both (narrowIsupportChanged): a server predating either
+     * field must still seed the prefix table. */
+    ev->u.isupport.has_frame_budget_base =
+        json_long(json_get(p, "frame_budget_base"), &ev->u.isupport.frame_budget_base);
+    const char *name = json_string(json_get(p, "network"));
+    ev->u.isupport.network = name && name[0] ? name : NULL;
     ev->kind = WIRE_ISUPPORT_CHANGED;
     return true;
 }
@@ -913,11 +975,271 @@ bool wire_narrow(const json_value *p, struct wire_event *ev) {
         if (!json_str_req(p, "nick", &e.u.no_such_nick.nick)) return false;
         break;
 
+    case WIRE_E2E_MESSAGE:
+        if (!wire_narrow_e2e_message(p, &e.u.e2e_message)) return false;
+        break;
+
+    case WIRE_E2E_SEND_DROPPED:
+        if (!json_str_req(p, "network", &e.u.e2e_send_dropped.network)) return false;
+        if (!json_str_req(p, "target", &e.u.e2e_send_dropped.target)) return false;
+        if (!json_str_req(p, "msgid", &e.u.e2e_send_dropped.msgid)) return false;
+        if (!e2e_drop_reason_of(json_get(p, "reason"), &e.u.e2e_send_dropped.reason)) return false;
+        break;
+
+    case WIRE_E2E_INCOMING:
+    case WIRE_E2E_INCOMING_LOST:
+        if (!json_str_req(p, "network", &e.u.e2e_incoming.network)) return false;
+        if (kind == WIRE_E2E_INCOMING && !json_str_req(p, "from", &e.u.e2e_incoming.from))
+            return false;
+        if (!json_str_req(p, "from_did", &e.u.e2e_incoming.from_did)) return false;
+        if (!json_str_req(p, "to", &e.u.e2e_incoming.to)) return false;
+        if (!json_str_req(p, "msgid", &e.u.e2e_incoming.msgid)) return false;
+        break;
+
+    case WIRE_E2E_PAIRING_MESSAGE:
+        if (!json_str_req(p, "rendezvous_id", &e.u.e2e_pairing.rendezvous_id)) return false;
+        if (!json_long_req(p, "seq", &e.u.e2e_pairing.seq)) return false;
+        if (!pairing_side_of(json_get(p, "from"), &e.u.e2e_pairing.from)) return false;
+        break;
+
+    case WIRE_E2E_PAIRING_CLOSED:
+        if (!json_str_req(p, "rendezvous_id", &e.u.e2e_pairing.rendezvous_id)) return false;
+        if (!pairing_close_reason_of(json_get(p, "reason"), &e.u.e2e_pairing.reason)) return false;
+        break;
+
+    case WIRE_E2E_PAIRING_OFFERED:
+        if (!json_str_req(p, "rendezvous_id", &e.u.e2e_pairing.rendezvous_id)) return false;
+        if (!json_str_req(p, "curve", &e.u.e2e_pairing.curve)) return false;
+        if (!json_str_req(p, "expires_at", &e.u.e2e_pairing.expires_at)) return false;
+        break;
+
+    case WIRE_E2E_REQUEST:
+        if (!json_str_req(p, "network", &e.u.e2e_request.network)) return false;
+        if (!wire_narrow_e2e_request(json_get(p, "request"), &e.u.e2e_request.request)) return false;
+        break;
+
+    case WIRE_E2E_REQUEST_GONE:
+        if (!json_str_req(p, "network", &e.u.e2e_request_gone.network)) return false;
+        if (!json_long_req(p, "id", &e.u.e2e_request_gone.id)) return false;
+        break;
+
     case WIRE_UNKNOWN:
         return false;
     }
 
     *ev = e;
+    return true;
+}
+
+/* ── E2E: elements and REST bodies ────────────────────────────────────── */
+
+bool wire_narrow_e2e_message(const json_value *v, struct wire_e2e_message *out) {
+    if (json_type_of(v) != JSON_OBJECT) return false;
+    /* The inbox items carry the push's own `kind` (one typespec, both
+     * doors), and cic's schema requires it there too. */
+    if (!json_str_is(json_get(v, "kind"), "e2e_message")) return false;
+    struct wire_e2e_message m = {0};
+    if (!json_long_req(v, "id", &m.id)) return false;
+    if (!json_str_req(v, "network", &m.network)) return false;
+    if (!json_str_req(v, "from", &m.from)) return false;
+    if (!json_str_req(v, "from_did", &m.from_did)) return false;
+    if (!json_str_req(v, "to_did", &m.to_did)) return false;
+    if (!e2e_verb_of(json_get(v, "verb"), &m.verb)) return false;
+    if (!json_str_req(v, "msgid", &m.msgid)) return false;
+    if (!json_str_req(v, "payload", &m.payload)) return false;
+    m.payload_len = json_string_len(json_get(v, "payload"));
+    if (!json_bool_req(v, "own", &m.own)) return false;
+    *out = m;
+    return true;
+}
+
+bool wire_narrow_e2e_request(const json_value *v, struct wire_e2e_request *out) {
+    if (json_type_of(v) != JSON_OBJECT) return false;
+    struct wire_e2e_request r = {0};
+    if (!json_long_req(v, "id", &r.id)) return false;
+    if (!json_str_req(v, "peer", &r.peer)) return false;
+    if (!e2e_request_state_of(json_get(v, "state"), &r.state)) return false;
+    if (!json_str_opt(v, "payload", &r.payload)) return false;
+    if (!json_str_req(v, "at", &r.at)) return false;
+    if (!json_str_opt(v, "expires_at", &r.expires_at)) return false;
+    *out = r;
+    return true;
+}
+
+bool wire_narrow_e2e_device(const json_value *v, struct wire_e2e_device *out) {
+    if (json_type_of(v) != JSON_OBJECT) return false;
+    struct wire_e2e_device d = {0};
+    if (!json_str_req(v, "did", &d.did)) return false;
+    if (!json_str_req(v, "ed25519", &d.ed25519)) return false;
+    if (!json_str_req(v, "curve25519", &d.curve25519)) return false;
+    if (!json_str_req(v, "sig", &d.sig)) return false;
+    /* Both optional keys (v56, v57); the first nullable, the second not. */
+    if (!json_str_opt(v, "last_seen_at", &d.last_seen_at)) return false;
+    const json_value *ins = json_get(v, "inserted_at");
+    if (ins && !json_string(ins)) return false;
+    d.inserted_at = json_string(ins);
+    *out = d;
+    return true;
+}
+
+static bool check_e2e_device(const json_value *v) {
+    struct wire_e2e_device d;
+    return wire_narrow_e2e_device(v, &d);
+}
+
+static bool check_e2e_message(const json_value *v) {
+    struct wire_e2e_message m;
+    return wire_narrow_e2e_message(v, &m);
+}
+
+static bool check_e2e_request(const json_value *v) {
+    struct wire_e2e_request r;
+    return wire_narrow_e2e_request(v, &r);
+}
+
+/* `{"<key>": [element…]}`, every element valid. */
+static bool narrow_wrapped_array(const json_value *root, const char *key,
+                                 bool (*check)(const json_value *), const json_value **arr,
+                                 size_t *count) {
+    if (json_type_of(root) != JSON_OBJECT) return false;
+    const json_value *a = json_get(root, key);
+    if (!validate_array(a, check)) return false;
+    *arr = a;
+    *count = json_len(a);
+    return true;
+}
+
+bool wire_narrow_e2e_devices(const json_value *root, const json_value **devices, size_t *count) {
+    return narrow_wrapped_array(root, "devices", check_e2e_device, devices, count);
+}
+
+bool wire_e2e_device_at(const json_value *devices, size_t i, struct wire_e2e_device *out) {
+    return wire_narrow_e2e_device(json_at(devices, i), out);
+}
+
+bool wire_narrow_e2e_inbox(const json_value *root, const json_value **messages, size_t *count) {
+    return narrow_wrapped_array(root, "messages", check_e2e_message, messages, count);
+}
+
+bool wire_e2e_message_at(const json_value *messages, size_t i, struct wire_e2e_message *out) {
+    return wire_narrow_e2e_message(json_at(messages, i), out);
+}
+
+bool wire_narrow_e2e_requests(const json_value *root, const json_value **requests,
+                              size_t *count) {
+    return narrow_wrapped_array(root, "requests", check_e2e_request, requests, count);
+}
+
+bool wire_e2e_request_at(const json_value *requests, size_t i, struct wire_e2e_request *out) {
+    return wire_narrow_e2e_request(json_at(requests, i), out);
+}
+
+bool wire_narrow_e2e_list(const json_value *root, struct wire_e2e_list *out) {
+    if (json_type_of(root) != JSON_OBJECT) return false;
+    struct wire_e2e_list l = {0};
+    if (!json_str_req(root, "master", &l.master)) return false;
+    if (!json_number(json_get(root, "ver"), &l.ver)) return false;
+    const json_value *d = json_get(root, "devices");
+    if (!validate_array(d, check_string)) return false;
+    l.devices = d;
+    l.device_count = json_len(d);
+    if (!json_str_req(root, "sig", &l.sig)) return false;
+    *out = l;
+    return true;
+}
+
+bool wire_narrow_e2e_key_status(const json_value *root, long *one_time_keys, bool *fallback) {
+    if (json_type_of(root) != JSON_OBJECT) return false;
+    long n;
+    bool fb;
+    if (!json_long_req(root, "one_time_keys", &n)) return false;
+    if (!json_bool_req(root, "fallback", &fb)) return false;
+    *one_time_keys = n;
+    *fallback = fb;
+    return true;
+}
+
+bool wire_narrow_e2e_claimed(const json_value *root, const char **keys) {
+    return json_type_of(root) == JSON_OBJECT && json_str_req(root, "keys", keys);
+}
+
+bool wire_narrow_e2e_copied(const json_value *root, long *id, const char **msgid) {
+    if (json_type_of(root) != JSON_OBJECT) return false;
+    long i;
+    const char *m;
+    if (!json_long_req(root, "id", &i) || !json_str_req(root, "msgid", &m)) return false;
+    *id = i;
+    *msgid = m;
+    return true;
+}
+
+bool wire_narrow_e2e_sent(const json_value *root, const char **msgid) {
+    return json_type_of(root) == JSON_OBJECT && json_str_req(root, "msgid", msgid);
+}
+
+const char *wire_e2e_error(const json_value *root) {
+    return json_string(json_get(root, "error"));
+}
+
+/* The door table: the path is `/networks/<slug>/e2e` + head, then for a
+ * door that names a device, the did and `rest`. */
+static const struct {
+    const char *method;
+    const char *head;
+    const char *rest;
+    bool did;
+    bool body;
+} E2E_DOORS[] = {
+    [WIRE_E2E_DEVICE_REGISTER] = {"POST", "/devices", "", false, true},
+    [WIRE_E2E_DEVICES] = {"GET", "/devices", "", false, true},
+    [WIRE_E2E_DEVICE_DELETE] = {"DELETE", "/devices/", "", true, false},
+    [WIRE_E2E_LIST_PUT] = {"PUT", "/list", "", false, true},
+    [WIRE_E2E_LIST_GET] = {"GET", "/list", "", false, true},
+    [WIRE_E2E_KEYS_DELETE] = {"DELETE", "/keys", "", false, false},
+    [WIRE_E2E_BUNDLE_UPLOAD] = {"POST", "/devices/", "/keys", true, true},
+    [WIRE_E2E_BUNDLE_STATUS] = {"GET", "/devices/", "/keys", true, true},
+    [WIRE_E2E_INBOX] = {"GET", "/devices/", "/inbox", true, true},
+    [WIRE_E2E_INBOX_ACK] = {"POST", "/devices/", "/inbox/ack", true, false},
+    [WIRE_E2E_CLAIM] = {"POST", "/devices/", "/claim", true, true},
+    [WIRE_E2E_COPY] = {"POST", "/devices/", "/copies", true, true},
+    [WIRE_E2E_SEND] = {"POST", "/messages", "", false, true},
+};
+
+const char *wire_e2e_door_method(wire_e2e_door d) {
+    return (size_t)d < TABLE_LEN(E2E_DOORS) ? E2E_DOORS[d].method : "GET";
+}
+
+bool wire_e2e_door_has_body(wire_e2e_door d) {
+    return (size_t)d < TABLE_LEN(E2E_DOORS) && E2E_DOORS[d].body;
+}
+
+bool wire_e2e_door_path(wire_e2e_door d, const char *slug_enc, const char *did, long after,
+                        char *out, size_t out_sz) {
+    if ((size_t)d >= TABLE_LEN(E2E_DOORS) || !out_sz) return false;
+    out[0] = '\0';
+    if (E2E_DOORS[d].did && (!did || !did[0])) return false;
+    const char *id = "";
+    if (E2E_DOORS[d].did) {
+        /* A did is 11 characters of base64url; anything that could leave
+         * the path is refused rather than sent. */
+        if (strlen(did) > 32) return false;
+        for (const char *c = did; *c; c++)
+            if (!((*c >= 'A' && *c <= 'Z') || (*c >= 'a' && *c <= 'z') ||
+                  (*c >= '0' && *c <= '9') || *c == '-' || *c == '_'))
+                return false;
+        id = did;
+    }
+    int n;
+    if (d == WIRE_E2E_INBOX && after >= 0)
+        n = snprintf(out, out_sz, "/networks/%s/e2e%s%s%s?after=%ld", slug_enc,
+                     E2E_DOORS[d].head, id, E2E_DOORS[d].rest, after);
+    else
+        n = snprintf(out, out_sz, "/networks/%s/e2e%s%s%s", slug_enc, E2E_DOORS[d].head, id,
+                     E2E_DOORS[d].rest);
+    if (n < 0 || (size_t)n >= out_sz) {
+        out[0] = '\0';
+        return false;
+    }
     return true;
 }
 
