@@ -3502,3 +3502,57 @@ the confirmation, checks grappa's list one version up and the device gone,
 and finds the revoked browser left out. Desktop only: the list is the same
 component in the phone's drawer. Not run locally: the stack is not this
 worker's; the PR's integration job is the gate.
+<!-- entry #2453 -->
+
+---
+
+## 2026-11-06 — #2453: a record cic keys by nick is read and written through one helper
+
+cicchetto's encrypted chats kept their per-nick state in plain objects keyed
+by the folded nick. A nick is the peer's to choose, and two valid ones fold
+to the name of an Object.prototype member: `constructor` and `__proto__`.
+Indexed with them, a plain object answers `Object` / `Object.prototype`
+where it holds no entry, and an assignment to `__proto__` runs the prototype
+setter instead of storing anything. Measured on the old code: nothing could
+be sent to either nick (the queue read the prototype and the send threw), and
+neither had a chat of its own in the chat index.
+
+**The rule.** A record keyed by nick in cic's E2E state is a
+`ByNick<T>` (`cicchetto/src/lib/e2e/byNick.ts`) and is touched only through
+that module: `Object.hasOwn` to read, a defined own property to write, the
+fold inside. `ByNick` is an interface with no index signature, so on a record
+typed with it `rec[nick]` and `rec.bob` do not compile, and neither does
+handing it to a `Record<string, X>`. It is an interface and not a type alias
+for that last one: an alias converts to any `Record<string, X>` without a cast,
+and the record would be indexed again where it lands (measured: tsc took
+`const r: Record<string, number> = noNicks<string>()` from the alias, and
+refuses it from the interface).
+
+What the type cannot do is find a record nobody typed: a new nick-keyed
+`Record<string, X>` compiles as it always did, so typing it `ByNick` is the
+rule, and checking that is review's job. Nor does it see `nick in rec` or
+`Object.assign(rec, …)`, which take any object; neither is used on one.
+
+- **Why not a `Map`, prefixed keys or null-prototype objects.** The engine
+  state and the chat index are sealed as JSON. A `Map` serialises to `{}`
+  and prefixed keys change the stored shape: both need a migration of every
+  sealed record. A null-prototype object is undone by the first spread,
+  `JSON.parse` or test literal, and nothing tells you. The helper keeps the
+  plain object: `JSON.parse` makes `__proto__` an own property and
+  `JSON.stringify` writes it back, so no stored record changes shape and no
+  read path for old ones is needed. A `constructor` entry an old build stored
+  (a plain assignment makes it own) reads as it was; a `__proto__` one never
+  got stored at all.
+- **Out of scope, on purpose.** Records keyed by an Ed25519 or Curve25519 key:
+  the engine looks one up only once it has passed as a canonical key (43
+  characters of base64, while the longest Object.prototype member,
+  `propertyIsEnumerable`, has 20). A did does come from the wire, as a frame's
+  `from`. But grappa relays only the canonical base64url of 8 bytes
+  (`IRC.E2e.did?/1`), and no member is one: only `constructor` has the 11
+  characters, and its last one carries padding bits. cic reads `bodies` only
+  with dids it derives itself. A network slug is the operator's to name.
+  `listAnsweredAt` keys a `${nick} ${did}` pair, and no Object.prototype
+  member holds a space; the page's per-chat signals in `encryptedChats.ts` key
+  on `${slug} ${nick}` for the same reason.
+- **Outside the E2E state.** `conversationMute.ts` already read its map with
+  `Object.hasOwn` for the same cause. cic's other stores were not swept here.
