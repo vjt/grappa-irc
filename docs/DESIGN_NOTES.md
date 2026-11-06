@@ -4073,3 +4073,115 @@ cic with its e2e spec.
   the `application/*` family can stand in for the marker. Found in review:
   the cap boundary first held the largest cap on one category, which let a
   door reading that category alone pass; each category now takes its turn.
+<!-- entry #2517b -->
+
+---
+
+## 2026-11-06 — #2517b: cic strips an encrypted attachment's metadata, or does not send it
+
+An end-to-end encrypted attachment reaches grappa as ciphertext (#2517a), so
+#39's server strip (`Grappa.Uploads.MetadataStrip`) cannot touch it. vjt's
+ruling F2 = A (2026-11-06): cic strips the file BEFORE it encrypts it, and a
+file that cannot be stripped is not sent. That reverses #39's "clients never
+participate" for the encrypted window alone, because the server physically
+cannot participate there; plain uploads keep the server strip and never reach
+the new code. This second slice of three is the library, with no caller yet:
+`cicchetto/src/lib/metadataStrip.ts` and a parameter on `transcodeVideo`.
+Slice 3 wires both into the compose doors.
+
+* **A container walk, not a canvas re-encode** (design option C, rejected): a
+  canvas keeps one frame of an animated GIF, APNG or WebP, drops the colour
+  profile (#416's washed-out Display-P3) and costs JPEG quality.
+  `stripImageMetadata(bytes, declaredMime)` is pure and synchronous, and
+  answers `{ok}` or `{refused}` with a typed reason the compose box can say.
+* **An allowlist per container, with #39's scope and kept tags.** Orientation
+  stays (#39 round 2: without it a portrait photo renders sideways) and so
+  does the ICC profile (#416); everything off the list goes, wherever it
+  sits, inside an animation frame too.
+
+| container | kept | dropped |
+|---|---|---|
+| JPEG | the markers a decoder reads (T.81 Table B.1: SOFn, DHT, DAC, DQT, DRI, DNL, DHP, EXP, SOS) and the scans (a stuffed `FF00` and RST0-7 do not end one); ICC_PROFILE APP2; Adobe APP14 (the colour transform a CMYK, YCCK or RGB-coded JPEG decodes by); Orientation | every other APPn (JFIF, XMP, MPF, IPTC…) and COM, before the scan or after it; any other marker is refused |
+| PNG, APNG | IHDR PLTE IDAT IEND tRNS; iCCP gAMA sRGB cHRM sBIT cICP mDCv cLLI; acTL fcTL fdAT; Orientation in a fresh eXIf | text, tIME, pHYs bKGD hIST sPLT, every chunk not listed |
+| WebP | VP8X (XMP flag cleared, EXIF flag set only when Orientation comes back); VP8, VP8L, ALPH, ANIM, ICCP; each ANMF's header, ALPH and bitstream; Orientation | XMP, every chunk not listed, every other chunk inside an ANMF (RFC 9649 lets unknown ones follow a frame's bitstream); the RIFF and frame sizes are written afresh |
+| GIF | header and colour tables, every frame, Graphic Control, Plain Text, the NETSCAPE2.0 / ANIMEXTS1.0 loop and ICCRGBG1012 | Comment, XMP and every other extension |
+
+* **Orientation comes back as ONE big-endian IFD0 entry**, and only for 1-8
+  (anything else rotates nothing). An EXIF whose TIFF does not parse is
+  dropped whole, never refused: it costs a sideways photo, never a leak.
+* **Fail-closed.** The container comes from the magic bytes and must agree
+  with the declared type (`file.type` comes from the OS and can lie). A type
+  outside the upload allowlist's five image types, bytes that are no known
+  container, a mismatch, a truncated file, a length past the end or junk where
+  a block belongs is a refusal, never a strip from a guess. Bytes after the
+  container's end (a phone's MPF secondary image after the EOI) are dropped,
+  for every container alike.
+* **Video: the transcode's output or nothing.** `transcodeVideo` takes a
+  required `MetadataStripper`. `"server"` is the plain path, unchanged: its
+  skip-gate may send an mp4 already in target shape as it is, because grappa
+  strips it. `"transcode"` never takes the skip-gate. `encryptedVideoOutcome`
+  turns the answer into a send or a refusal: a fresh file goes; the original
+  coming back is refused, and so are `too_long`, `unsupported` and `failed`,
+  since the plain path's "send the original" fallback has nobody to strip it
+  here. **Owed by slice 3, a third original-sending path the design did not
+  name** (orchestrator, 2026-11-06): the processing-off switch (issue 2157,
+  `prepareVideo`'s `originalUnderPolicy`) does not apply in the encrypted
+  window either; video there is always transcoded. Documents and audio pass
+  through, as in #39.
+* **A named track is refused too.** `tags: {}` clears the container's
+  metadata, but mediabunny's `Conversion` copies every track's name into its
+  output and has no option to drop it: measured on 1.62.1, a track named
+  `TRACK-SECRET` came out of `Conversion({ tags: {} })` with the name in the
+  bytes. Under `"transcode"` a source whose track carries a name is
+  `unsupported`, and so refused. The names mediabunny reads are the track's
+  `udta/name` or `©nam` (and Matroska's `Name`), never the `hdlr` handler
+  name; the five sample videos in the repo carry none, and no phone video was
+  available to measure.
+* **A second implementation as the oracle**: exiftool 13.55 in `grappa:latest`
+  with the server strip's argv (`-all= -tagsfromfile @ -Orientation
+  -ICC_Profile`), run on the fixtures. The committed fixtures are byte copies
+  of the server tests' `gps.jpg`, `gps.png`, `oriented.jpg` and `p3.jpg`, plus
+  a tagged APNG, animated WebP and animated GIF, each beside its `.exiftool.`
+  twin, which `generate.sh` rebuilds in the image (rerun once: all 15 files
+  came out byte-identical). In vitest cic's output equals the twin byte for
+  byte, apart from the fixed `YCbCrPositioning=1` exiftool writes beside
+  Orientation (and, for WebP, the RIFF size that changes with it), inside the
+  gate.
+* **Why the PNG list reads as it does.** gAMA and sRGB stay beside the ICC
+  profile: colour description with no provenance, #416's class. bKGD, hIST,
+  sPLT, oFFs, sTER, pCAL, sCAL, dSIG, gIFg, gIFx, fRAc and iDOT go: none is
+  drawn, and some carry free text.
+* **Read back outside the gate, on 19 files**: the fixtures, the crafted
+  samples, and a ten-scan progressive JPEG with restart markers (`jpegtran
+  -progressive -restart 1` over the richest sample). exiftool finds only
+  structure, Orientation (on all 10 files that carried 1-8; the 9 is gone)
+  and the ICC profile (9 of 9): no GPS, ExifIFD, XMP, IPTC or JFIF tag,
+  against 69 GPS and 22 XMP lines in the inputs. macOS ImageIO (`sips`, the
+  decoder Safari uses) decodes all 19, and `webpinfo` validates the WebPs.
+  Measured before the review round; the review's changes leave all 19
+  outputs byte-identical (a JPEG with an injected `FFF0` segment, the
+  positive control, does not).
+  What survives as text is what the kept blocks carry by design: the ICC
+  profile's description and copyright (a display's profile names the
+  display), the iCCP profile name, and GIF's Plain Text extension, which
+  GIF89a defines as text rendered into the image (mainstream browsers are
+  said not to draw it; not measured here).
+* **The boundary: metadata as tools write it.** A kept block is copied
+  whole, never checked against its expected shape, so a payload someone
+  deliberately hid inside one (an oversized gAMA, an extra sub-block in a
+  loop extension, an iCCP whose length swallows the next chunk) goes through,
+  as one hidden in the pixels would. A container its own header declares
+  empty comes out empty: the library strips, it does not judge whether an
+  image decodes.
+* **Found in review** (an unanchored reviewer, then fixed here): ANMF was
+  first copied whole, JPEG kept every marker that was not APPn or COM (a
+  denylist where the design asked for an allowlist), and the track name
+  above. The review also asked for the GIF colour tables and the JPEG fill
+  bytes to get tests of their own, which no test had reached.
+* **Mutation-checked:** 73 mutants over the three files, one per rule, each
+  with its expected red tests registered before it ran. Every one turned at
+  least one test red, and 71 matched their registration exactly. The other two
+  turned more reds than registered, each for a reason the construction
+  explains: APNG mapped to the JPEG container also reddened the APNG
+  animation test, which declares `image/apng` itself, and keeping GIF Comments
+  also reddened the two colour-table tests, which each drop one.
