@@ -87,8 +87,6 @@ test("#904 — a slow send frees the composer, queues ONE more, refuses the thir
   await ta.fill(second);
   await ta.press("Enter");
   await expect(ta).toHaveValue("", { timeout: 5_000 });
-  // Queued, NOT sent: the link is still blocked on the first message.
-  expect(sentBodies).toEqual([first]);
 
   // 3. Queue full (one in flight + one queued) → the refusal is VISIBLE: the
   //    textarea goes read-only rather than accepting a third message it would
@@ -96,6 +94,10 @@ test("#904 — a slow send frees the composer, queues ONE more, refuses the thir
   //    collapses the on-screen keyboard (#59).
   await expect(ta).toHaveJSProperty("readOnly", true);
   await expect(ta).toHaveJSProperty("disabled", false);
+  // Queued, NOT sent: the link is still blocked on the first message. Read
+  // once the composer says the second line is parked: an empty textarea
+  // alone does not say where it went.
+  expect(sentBodies).toEqual([first]);
 
   // 4. The ack lands. The queued line goes out — after the first, never before
   //    it — and both render in the channel.
