@@ -3556,3 +3556,89 @@ rule, and checking that is review's job. Nor does it see `nick in rec` or
   on `${slug} ${nick}` for the same reason.
 - **Outside the E2E state.** `conversationMute.ts` already read its map with
   `Object.hasOwn` for the same cause. cic's other stores were not swept here.
+<!-- entry #2356 -->
+
+---
+
+## 2026-11-06 — #2356: on iOS a compose swipe that starts over the typed text reaches the page as a touch that never moved
+
+vjt's report (2026-11-04, iOS): swipe right, up and down on the compose box
+work when the finger lands at the left of the input and are ignored when it
+lands over the middle of the typed text.
+
+### Measured on vjt's iPhone (iOS 18.7 PWA, DiagFloat ring, 2026-11-06)
+
+* Each of three failed swipes reads `TS … sel=38,38`, then `END claimed=no
+  act=none dy=0 dx=0 moves=0 sel=38,38`. The page got a touchstart and a
+  touchend, no touchmove and no touchcancel, and the caret did not move.
+* END's `dx`/`dy` are touchend's own `changedTouches[0]` point minus the
+  touchstart point. So all three touchends came at their touchstart's
+  point. The drag never reached the page, and recognising the swipe at
+  touchend from the start→end delta would find zero travel: that route is
+  closed on this data.
+* Three swipes that worked, in the same session, had 6 to 8 touchmoves
+  each. The ring did not record where any of the six started.
+
+### Still open, and what the ring records for it now
+
+* **Where the finger landed.** TS carries `cx`, in px from the left edge of
+  the textarea's text (its content box), so a negative `cx` is the padding
+  or the border. It is measured, not derived from the CSS: the padding is
+  `0.5rem` and the root font size is the user's.
+* **When the touchend came.** END carries `ms`, the touchend's event
+  timestamp minus the touchstart's, read off the events rather than the
+  handler clock. A touchend that comes about when the finger lifts, and one
+  that comes before the drag is over, are two different platform
+  behaviours.
+* **The cheapest device check of the glyph reading below:** a swipe that
+  starts in the blank space right of a short draft should behave like one
+  from the left padding.
+
+### What WebKit's source says (main, read 2026-11-05/06; not iOS 18.7's build)
+
+* `-[WKContentView hasSelectablePositionAtPoint:]` returns
+  `isSelectable()` from a hit test at the point. That is `Selectable` for a
+  hit on a text node, a glyph, and `UnselectableDueToFocusableElement` for
+  a hit on an element `WebPage::isAssistableElement` accepts
+  (`PositionInformationForWebPage.mm`; `WebPageIOS.mm`: a textarea, or
+  anything `isContentEditable`). In the padding
+  `RenderTextControlMultiLine::nodeAtPoint` remaps the hit to the inner
+  editor (`hitInnerTextElement`), which is editable, so the answer is NO; so
+  is it in the blank space after short text. That split matches vjt's
+  report. Not every UIKit
+  question splits there: `textInteractionGesture:shouldBeginAtPoint:` answers
+  YES anywhere on the focused element (`isSameElement` against it). What
+  UIKit does with the two answers is closed source.
+* WebKit makes two explicit calls that cancel the page's touch,
+  `_longPressRecognized` and the context-menu preview, both through
+  `_cancelTouchEventGestureRecognizer`. A touchcancel can also come from
+  UIKit's own `touchesCancelled:` and from removing the default gesture
+  recognizers. `WKTouchEventsGestureRecognizer` cannot be prevented by other
+  recognizers. All of that fits the device data, which shows a touchend, not
+  a touchcancel.
+* The levers the page already pulls cancel touchmoves (the claim, the #2465
+  shell guard). A touch that delivers none is out of their reach. WebKit
+  defers native gestures for the page's verdict at touchstart, at the first
+  touchmove (pans and pinches only) and at touchend (taps only).
+  `user-select: none` is forced back to `text` on editable content
+  (`StyleAdjuster.cpp`), and `touch-action` gates pan and zoom.
+
+### Ruling (vjt, 2026-11-05)
+
+No `preventDefault` on the composer's touchstart. It would fail every
+gesture WebKit defers at touchstart, and with them caret placement by tap,
+the loupe, long-press selection and the edit menu (Paste).
+
+### What landed
+
+* Diag only, behind `cic_diag`: TS `cx=`, END `ms=`, and a `CANCEL …` line
+  for a touchcancel. For a one-finger touch, a TS with no END already meant
+  that no touchend arrived (the ring is newest-first and drops its OLDEST
+  lines, so an END cannot scroll out while its TS shows); CANCEL tells a
+  cancel apart from a touch that got neither event. `moves=` and `sel=` were already on main
+  (684ddea3d).
+* e2e, `issue2356-swipe-complete-nonempty.spec.ts`: up, down and right, each
+  from the left padding and from the centre of a glyph in the middle of the
+  draft, through CDP trusted touches on `chromium-pixel-touch`. All six claim
+  and act: Chromium has no dependence on the start point. Real Android and
+  desktop touch screens were not measured.
