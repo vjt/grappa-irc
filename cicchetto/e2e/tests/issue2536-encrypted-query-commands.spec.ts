@@ -25,9 +25,7 @@ import {
   chatLines,
   equery,
   KEYS_TIMEOUT,
-  ownKey,
   peerPage,
-  pin,
   send,
 } from "../fixtures/encryptedQuery";
 import { fetchAllMessagesAsc } from "../fixtures/grappaApi";
@@ -62,8 +60,6 @@ test("issue 2536 — in an encrypted query a command runs in clear and never rea
     await boot(peer.page, bob.user);
     await equery(page, aliceNick, bob.nick);
     await equery(peer.page, bob.nick, aliceNick);
-    await pin(page, await ownKey(peer.page));
-    await pin(peer.page, await ownKey(page));
 
     const before = await nickServNotices(alice.token, aliceNick);
     await send(page, "/ns identify notforbob");

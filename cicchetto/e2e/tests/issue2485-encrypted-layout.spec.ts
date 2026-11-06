@@ -15,7 +15,9 @@
 // the pane, reached from the top bar's ☰, and a comparison the peer asks for
 // while it is open opens its dialog in the pane behind it, so the drawer has
 // to go. Issue 2507: the comparison starts from the top bar's trust badge,
-// no longer from the rail.
+// no longer from the rail; issue 2544: the badge shows the key first, the
+// comparison is the second action there, and verifying the key by hand is
+// the rail's button.
 //
 // ## What makes this spec able to fail
 //
@@ -32,6 +34,7 @@
 
 import type { Page } from "@playwright/test";
 import {
+  askToCompare,
   boot,
   equery,
   KEYS_TIMEOUT,
@@ -102,7 +105,9 @@ test("the encrypted window: key steps in the chat until the exchange is done, se
     const peerSection = rail(page).getByTestId("e2e-rail-peer");
     const ownSection = rail(page).getByTestId("e2e-rail-own");
     await expect(peerSection.getByTestId("e2e-peer-key")).toHaveText("none yet");
-    await expect(peerSection.getByTestId("e2e-pin-input")).toBeVisible();
+    // Nothing to verify yet, and nothing pastes a key (issue 2544).
+    await expect(peerSection.getByTestId("e2e-peer-verify")).toHaveCount(0);
+    await expect(rail(page).locator("input")).toHaveCount(0);
     await expect(ownSection.getByTestId("e2e-own-identity")).toHaveText(aliceKey);
     await expect(ownSection.getByTestId("e2e-own-identity-copy")).toBeVisible();
     await expect(ownSection.getByTestId("e2e-add-device")).toBeVisible();
@@ -131,11 +136,12 @@ test("the encrypted window: key steps in the chat until the exchange is done, se
       "data-trust",
       "unverified",
     );
+    await expect(peerSection.getByTestId("e2e-peer-verify")).toBeVisible();
 
-    // The comparison starts from the top bar's badge (issue 2507) and runs
-    // over each chat body: a dialog inside the window, the body inert
-    // beneath it.
-    await trust(page).click();
+    // The comparison starts from the top bar's badge (issue 2507, through the
+    // key's dialog since 2544) and runs over each chat body: a dialog inside
+    // the window, the body inert beneath it.
+    await askToCompare(page);
     const aliceDialog = body(page).getByRole("dialog");
     await expect(aliceDialog).toHaveAttribute("data-phase", "waiting", { timeout: KEYS_TIMEOUT });
     const bobDialog = body(peer.page).getByRole("dialog");
@@ -163,6 +169,7 @@ test("the encrypted window: key steps in the chat until the exchange is done, se
       await expect(trust(p)).toHaveAttribute("data-trust", "verified", { timeout: KEYS_TIMEOUT });
       await expect(body(p).getByRole("dialog")).toHaveCount(0);
       await expect(rail(p).getByTestId("e2e-rail-comparison")).toHaveText("matched");
+      await expect(rail(p).getByTestId("e2e-peer-verify")).toHaveCount(0);
       await expect
         .poll(() =>
           body(p)
@@ -213,12 +220,12 @@ test("@touch on a phone, the encrypted window's top bar opens the rail, and a co
     await expect(drawer).toHaveCount(0);
     await topBar(page).locator(".topic-bar-hamburger").tap();
     await expect(drawer).toHaveCount(1);
-    await expect(rail(page).getByTestId("e2e-pin-input")).toBeVisible();
+    await expect(rail(page).getByTestId("e2e-peer-verify")).toBeVisible();
 
     // Bob asks while the phone shows the rail: the request opens its dialog
     // over the chat body, behind the drawer, so the drawer goes and the
     // dialog is what the phone shows.
-    await trust(peer.page).click();
+    await askToCompare(peer.page);
     await expect(body(peer.page).getByRole("dialog")).toHaveAttribute("data-phase", "waiting", {
       timeout: KEYS_TIMEOUT,
     });

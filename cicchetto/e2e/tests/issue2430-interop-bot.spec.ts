@@ -9,14 +9,14 @@
 //   1. the cic user's nick is registered with NickServ, because the bot's
 //      trust layer 1 needs a 307 in its WHOIS, and the bot comes up trusting
 //      it;
-//   2. each side pins the other's master key by hand, the bot's operator
-//      first: cic's pin sends a listreq at once (O1), behind a KEYREQ, and
-//      the bot answers no KEYREQ from a nick it has no pin for
-//      (E2E_DROPPED REASON=unpinned-nick); then cic pastes the bot's in the
-//      pane;
+//   2. the bot's operator pins cic's master key first: the bot answers no
+//      KEYREQ from a nick it has no pin for (E2E_DROPPED REASON=unpinned-nick).
+//      cic pins nothing by hand (issue 2544 took the pasted pin away);
 //   3. cic → bot, first contact: KEYREQ, KEYS naming the bot's one device
 //      under its master, a pre-key message, and the bot shows the text as a
-//      TRUSTED encrypted message;
+//      TRUSTED encrypted message. cic took the bot's master on first use, not
+//      verified; the user compares it with the key the bot prints and
+//      verifies it by hand, which sends a listreq (O1);
 //   4. bot → cic on the session that opened, shown in the query;
 //   5. a message longer than one IRC line, both ways: fragmented by one
 //      engine, reassembled by the other, paced by the bot without the ircd
@@ -40,8 +40,10 @@
 //   * The two engines disagree on the framing, the inner message, the key
 //     encoding or the Olm session: the text never shows on the other side,
 //     or shows as undecryptable, or the bot raises the key alarm.
-//   * A pin is not applied: cic's badge does not read verified, or the bot
-//     drops the message as from a key it did not pin.
+//   * cic does not take the bot's key on first use, or takes another, or the
+//     verify is not applied: the rail does not show the key the bot prints,
+//     the badge does not read verified, or the bot drops the message as from
+//     a key it did not pin.
 //   * The bot's KEYS do not name its device under its master in a shape
 //     cic reads: the pane does not count one device for it.
 //   * Reassembly or pacing breaks: the long message never shows, or the bot
@@ -84,9 +86,10 @@ import {
   e2eWindow,
   equery,
   ownKey,
-  pin,
   row,
   send,
+  trust,
+  verify,
 } from "../fixtures/encryptedQuery";
 import { joinChannel, sendPrivmsg } from "../fixtures/grappaApi";
 import { NETWORK_SLUG } from "../fixtures/seedData";
@@ -128,7 +131,7 @@ test.setTimeout(BUDGET);
 const longBody = (from: string): string =>
   `${from}: ${Array.from({ length: 60 }, (_, i) => `parola${i} è cifrata`).join(" ")} fine`;
 
-test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand both ways, both directions, long messages, an order confirmed and one refused", async ({
+test("cicchetto and the irc-olm bot talk in an encrypted query: cic's key pinned in the bot, the bot's verified by hand, both directions, long messages, an order confirmed and one refused", async ({
   page,
   e2eBot,
   cic,
@@ -148,13 +151,12 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
     "VERIFIED",
   );
 
-  // 2. Pins, both ways, by hand: the bot's first, loaded before cic's goes
-  //    (its ticker reloads the file once a second).
+  // 2. cic's key pinned in the bot, loaded before cic writes (its ticker
+  //    reloads the file once a second).
   await boot(page, cic.user);
   await equery(page, cic.nick, bot.nick);
   await botPins({ [cic.nick]: await ownKey(page) });
   await botWaitFor(/ E2E_PINS_LOADED N=1$/, bot.since, PINS_RELOAD, "cic's pin loaded");
-  await pin(page, bot.ed25519);
 
   // 3. cic → bot, first contact.
   const hello = "hello bot";
@@ -172,6 +174,11 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
   );
   // The keys cic took from the Python engine named the bot's one device.
   await expect(page.getByTestId("e2e-peer-devices")).toHaveText("1 device");
+  // Taken on first use, not verified; the key is the one the bot prints, and
+  // the user verifies it by hand. Before any order: cic answers no challenge
+  // from a key it has not verified.
+  await expect(trust(page)).toHaveAttribute("data-trust", "unverified");
+  await verify(page, bot.ed25519);
 
   // 4. bot → cic.
   const reply = "hello cic";
@@ -292,8 +299,12 @@ test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand b
   await expect(page.getByTestId("e2e-pane")).toBeVisible();
   await expect(row(page, "in", longIn)).toHaveCount(1);
   await expect(page.getByTestId("e2e-pane").getByTestId("e2e-undeliverable")).toHaveCount(0);
-  await expect(page.getByTestId("e2e-peer-trust")).toHaveAttribute("data-trust", "verified");
-  // issue 2507 — a key pinned by hand, as a bot's always is, offers no emoji
-  // comparison from the badge: the bot would never answer one.
+  await expect(trust(page)).toHaveAttribute("data-trust", "verified");
+  // issue 2544 — the verified badge shows the bot's key, whole, and offers no
+  // emoji comparison: the bot would never answer one.
+  await trust(page).click();
+  const keyDialog = page.getByTestId("e2e-key-dialog");
+  await expect(keyDialog.getByTestId("e2e-key-dialog-key")).toHaveText(bot.ed25519);
+  await expect(keyDialog.getByTestId("e2e-key-compare")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /compare emoji/ })).toHaveCount(0);
 });

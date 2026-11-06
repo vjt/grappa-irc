@@ -12,8 +12,9 @@
 // off, so the bar carries the `#` door too, all four buttons; a bot's nick 26
 // characters long; and an identity check, so the stamp is there. The stamp
 // comes only from a bot (`IdentityCheck`: the last order challenge a bot sent),
-// so the bot is the real irc-olm one (fixtures/e2eBot.ts), pinned both ways,
-// and an order typed in a channel they share gives the check.
+// so the bot is the real irc-olm one (fixtures/e2eBot.ts), its key verified
+// by hand and ours pinned there, and an order typed in a channel they share
+// gives the check.
 //
 // ## What makes this spec able to fail
 //
@@ -54,7 +55,7 @@ import {
   UNDER_WAY_BOUND,
   WHOIS_ASK,
 } from "../fixtures/e2eBot";
-import { boot, e2eWindow, equery, ownKey, pin, row, send } from "../fixtures/encryptedQuery";
+import { boot, e2eWindow, equery, ownKey, row, send, verify } from "../fixtures/encryptedQuery";
 import { joinChannel } from "../fixtures/grappaApi";
 import { NETWORK_SLUG } from "../fixtures/seedData";
 import { expect } from "../fixtures/test";
@@ -147,16 +148,15 @@ test("@webkit @touch on a phone, the encrypted top bar keeps its four buttons on
     "VERIFIED",
   );
 
-  // Pins both ways, the bot's first; then one message, which opens the
-  // session the order's challenge travels in. On a phone the pin form is in
+  // Ours pinned in the bot; then one message, which takes the bot's key on
+  // first use and opens the session the order's challenge travels in; then
+  // the bot's key verified by hand against the one it prints (issue 2544), or
+  // the bot's challenge goes unanswered. On a phone the verify button is in
   // the rail's drawer, behind the bar's ☰.
   await boot(page, cic.user);
   await equery(page, cic.nick, bot.nick);
   await botPins({ [cic.nick]: await ownKey(page) });
   await botWaitFor(/ E2E_PINS_LOADED N=1$/, bot.since, PINS_RELOAD, "cic's pin loaded");
-  await openMembersDrawer(page);
-  await pin(page, bot.ed25519);
-  await closeMembersDrawer(page);
   const hello = "2511 ciao bot";
   await send(page, hello);
   await expect(row(page, "out", hello).getByTestId("e2e-row-state")).toHaveAttribute(
@@ -170,6 +170,9 @@ test("@webkit @touch on a phone, the encrypted top bar keeps its four buttons on
     UNDER_WAY_BOUND,
     "cic's message",
   );
+  await openMembersDrawer(page);
+  await verify(page, bot.ed25519);
+  await closeMembersDrawer(page);
 
   // An order in a channel both are in: challenged, ACKed, confirmed. That is
   // the identity check the stamp shows.

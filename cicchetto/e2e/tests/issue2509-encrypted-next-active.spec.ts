@@ -24,7 +24,7 @@
 //     button stays after the jump, a stop no jump can clear.
 
 import type { Page } from "@playwright/test";
-import { selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
+import { confirmModalYes, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
 import {
   boot,
   e2eWindow,
@@ -32,7 +32,6 @@ import {
   KEYS_TIMEOUT,
   ownKey,
   peerPage,
-  pin,
   replaceIdentity,
   row,
   send,
@@ -126,27 +125,28 @@ test("@webkit @touch mobile: the next-active button counts an encrypted query wi
   }
 });
 
-// The alarm's chat has no line: Alice pinned Bob's key by hand and nobody
-// wrote, then Bob comes back with a new identity, and what its key writes is
-// ignored and shown as the alarm, which counts. There is no last line to see,
-// so the window shown is what reads it: one jump, and the button goes.
+// The alarm's chat has no line: Alice took Bob's key on first use and then
+// deleted the chat, which keeps the pin and drops the rows (issue 2544 took
+// away the pasted pin this used to start from), then Bob comes back with a
+// new identity, and what its key writes is ignored and shown as the alarm,
+// which counts and reopens the window. There is no last line to see, so the
+// window shown is what reads it: one jump, and the button goes.
 //
-// Issue 2535: the pin asks Bob for his keys (a KEYREQ), and his grappa answers
-// over IRC under its send budget. Bob comes back only once that answer has
-// landed, his one device listed in Alice's rail. Left racing, the answer was
-// built either after his new identity (and raised the alarm itself) or before
-// it (his old keys, the pin's): then the alarm had to wait for his message,
-// queued in his grappa behind those old keys, and twice it was still unsent
-// when the 30 s ran out (runs 41887617372 and 41900042768). So the alarm now
-// always comes with his message, and that takes `ALARM_TIMEOUT`.
+// Issue 2535: Bob comes back only once the exchange has landed, his one
+// device listed in Alice's rail and her line read on his side. Left racing,
+// an answer to Alice's ask for keys was built either after his new identity
+// (and raised the alarm itself) or before it (his old keys): then the alarm
+// had to wait for his message, queued in his grappa behind those old keys,
+// and twice it was still unsent when the 30 s ran out (runs 41887617372 and
+// 41900042768). So the alarm always comes with his message, and that takes
+// `ALARM_TIMEOUT`.
 //
-// When Bob writes, eight paced lines stand between his message and Alice's
-// count: the pin's listreq to his old device (3 lines, sent once his keys
-// land), Alice's KEYS answer to his new one, queued behind that listreq (2),
-// and his PKMSG (3). The pacer lets a 405-byte E2E line out about every 5 s
-// (the bank's reserve), so about 40 s at worst. 6 runs measured 26 to 28 s,
-// which left 2 to 4 s of `KEYS_TIMEOUT`: a measured budget, not a raised
-// timeout.
+// When Bob writes, paced lines stand between his message and Alice's count:
+// Alice's KEYS answer to his new device and his PKMSG. The pacer lets a
+// 405-byte E2E line out about every 5 s (the bank's reserve). Measured under
+// 2535 with three more lines in the way (the pasted pin's listreq): 26 to 28
+// s in 6 runs, which left 2 to 4 s of `KEYS_TIMEOUT`: a measured budget, not
+// a raised timeout.
 const ALARM_TIMEOUT = 60_000;
 
 test("desktop: a key alarm in a chat with no line is one stop, cleared by the jump that lands on it", async ({
@@ -164,11 +164,15 @@ test("desktop: a key alarm in a chat with no line is one stop, cleared by the ju
     await boot(peer.page, bob.user);
     await equery(page, aliceNick, bob.nick);
     await equery(peer.page, bob.nick, aliceNick);
-    await pin(page, await ownKey(peer.page));
-    await expect(page.getByTestId("e2e-peer-devices")).toHaveText("1 device", {
-      timeout: KEYS_TIMEOUT,
-    });
-    await expect(trust(page)).toHaveAttribute("data-trust", "verified");
+    const hello = "2509 prima del nuovo browser";
+    await send(page, hello);
+    await expect(row(peer.page, "in", hello)).toHaveCount(1, { timeout: KEYS_TIMEOUT });
+    await expect(page.getByTestId("e2e-peer-devices")).toHaveText("1 device");
+    await expect(page.getByTestId("e2e-peer-key")).toHaveText(await ownKey(peer.page));
+    // The chat goes, with its one line; the key stays pinned.
+    await page.getByTestId("e2e-delete-chat").click();
+    await confirmModalYes(page);
+    await expect(sidebarWindow(page, NETWORK_SLUG, e2eWindow(bob.nick))).toHaveCount(0);
     await selectChannel(page, NETWORK_SLUG, NETWORK_SLUG, { awaitWsReady: false });
     await expect(page.locator(NEXT_ACTIVE_BTN)).toHaveCount(0);
 

@@ -3,10 +3,11 @@
 //
 // Each cic is one device of its user's identity: it keeps its own Olm account
 // and fills its device's key bundle on grappa. Alice opens the query with
-// `/equery`, both pin the other's master key by hand (read off the other's
-// pane, the way a person reads it off a peer), and the
-// messages go KEYREQ → KEYS → PKMSG → MSG through grappa, which relays the
-// lines and reads none of them.
+// `/equery`, the messages go KEYREQ → KEYS → PKMSG → MSG through grappa,
+// which relays the lines and reads none of them, and each side takes the
+// other's master key on first use, then verifies it by hand against the key
+// the other reads off its own pane, the way a person compares it with a peer
+// (issue 2544: the pasted pin is gone).
 //
 // ## What makes this spec able to fail
 //
@@ -16,7 +17,8 @@
 //     inbox: the text never shows, or the inbox is not empty at the end.
 //   * Something plaintext reaches grappa's scrollback: the DM history with
 //     the peer is not empty.
-//   * The pin is not applied: the badge does not read verified.
+//   * The key taken is not the peer's, or the verify is not applied: the
+//     rail shows another key, or the badge does not read verified.
 //   * The unread count or the read-on-view is wrong: the badge never shows,
 //     or stays after the window is opened.
 //
@@ -32,16 +34,16 @@ import {
   KEYS_TIMEOUT,
   ownKey,
   peerPage,
-  pin,
   row,
   send,
+  verify,
 } from "../fixtures/encryptedQuery";
 import { fetchAllMessagesAsc, fetchE2eInbox, soleE2eDevice } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { provisionPeerSubject, teardownSpecSubject } from "../fixtures/specSubject";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
-test("two people talk in an encrypted query: real Olm both ways, pinned by hand, nothing in grappa's scrollback", async ({
+test("two people talk in an encrypted query: real Olm both ways, keys verified by hand, nothing in grappa's scrollback", async ({
   page,
   browser,
 }, testInfo) => {
@@ -58,12 +60,10 @@ test("two people talk in an encrypted query: real Olm both ways, pinned by hand,
     await equery(peer.page, bob.nick, aliceNick);
     await expect(page.getByTestId("e2e-peer-trust")).toHaveAttribute("data-trust", "unverified");
 
-    // Each reads the other's key off the other's pane and pins it.
+    // Each reads the other's key off the other's pane: what they compare.
     const aliceKey = await ownKey(page);
     const bobKey = await ownKey(peer.page);
     expect(aliceKey).not.toBe(bobKey);
-    await pin(page, bobKey);
-    await pin(peer.page, aliceKey);
 
     // Alice → Bob: no session yet, so the message waits for Bob's keys, then
     // goes as a pre-key message.
@@ -74,9 +74,16 @@ test("two people talk in an encrypted query: real Olm both ways, pinned by hand,
       timeout: KEYS_TIMEOUT,
     });
     await expect(row(peer.page, "in", first)).toHaveCount(1, { timeout: KEYS_TIMEOUT });
-    await expect(peer.page.getByTestId("e2e-peer-trust")).toHaveAttribute("data-trust", "verified");
     // The keys Alice took named Bob's one device.
     await expect(page.getByTestId("e2e-peer-devices")).toHaveText("1 device");
+
+    // Each side took the other's key on first use, not verified; compared
+    // with what the other reads off its pane, it is verified by hand.
+    for (const p of [page, peer.page]) {
+      await expect(p.getByTestId("e2e-peer-trust")).toHaveAttribute("data-trust", "unverified");
+    }
+    await verify(page, bobKey);
+    await verify(peer.page, aliceKey);
 
     // Bob → Alice, on the session Alice's message opened.
     const reply = "ciao alice, ricevuto";

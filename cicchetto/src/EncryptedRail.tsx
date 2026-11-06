@@ -30,8 +30,8 @@ import { networkBySlug } from "./lib/networks";
 // every rail card uses (#857):
 //   * the peer: the key their nick is pinned to, how far it is trusted, how
 //     many of its devices, how the last emoji comparison ended, the last
-//     identity check a bot made; and the key actions: take the key an alarm
-//     showed, pin a pasted key;
+//     identity check a bot made; and the key actions: verify the key shown,
+//     take the key an alarm showed;
 //   * this browser's identity: our own key, to copy for a bot's operator, and
 //     the door to add a device (only from the browser that holds the master).
 //
@@ -42,17 +42,20 @@ import { networkBySlug } from "./lib/networks";
 // is elsewhere, nothing here can act: no key could be pinned or verified.
 //
 // issue 2507 (vjt's rulings): the comparison starts from a tap on the top
-// bar's trust badge, so the rail no longer offers it; and pinning a key by
-// hand, with our own key to copy for a bot's operator, lives HERE ONLY. The
-// chat's step cards say what to do in words and hold no key to paste or copy:
-// it is what a bot needs, or someone who knows what they are doing, and it
-// was the most prominent thing on a new chat's screen.
+// bar's trust badge, so the rail no longer offers it; and our own key, to
+// copy for a bot's operator, lives HERE ONLY. The chat's step cards say what
+// to do in words and hold no key to copy.
 //
-// Mounted by RailContext, keyed on the window, so a key half pasted for one
-// peer never follows into another peer's rail and gets pinned there. Issue
-// 2499: it mounts inside the query context, as an addition to the query rail
-// and not a replacement for it: under the context's heading, which names the
-// conversation (so none here), and above the peer's WHOIS card.
+// issue 2544 (vjt's rulings): the key shown is verified with a button beside
+// it, for when the user compared it with the peer out of band, a bot's
+// printed key included; the form that pinned a pasted key is gone. Either the
+// key shown is the peer's, or someone is in the middle and the chat must be
+// closed: pasting the "right" key over a different one fixes neither.
+//
+// Mounted by RailContext, keyed on the window. Issue 2499: it mounts inside
+// the query context, as an addition to the query rail and not a replacement
+// for it: under the context's heading, which names the conversation (so none
+// here), and above the peer's WHOIS card.
 
 type Props = { networkSlug: string; nick: string };
 
@@ -62,7 +65,7 @@ export const TRUST_LABEL: Record<Trust, string> = {
   alarm: "key changed",
 };
 
-const PIN_ERROR: Record<"bad-key" | "own-key", string> = {
+const PIN_REFUSED: Record<Exclude<PinOutcome, "pinned">, string> = {
   "bad-key": "that is not an Ed25519 key (43 characters of base64)",
   "own-key": "that is your own key",
 };
@@ -136,50 +139,53 @@ export function checkPlace(check: IdentityCheck, slug: string): string {
   return `${where} on ${check.network}`;
 }
 
-/** Pastes a key as the peer's and pins it, verified. */
-const PinForm: Component<{ networkSlug: string; nick: string; display: string }> = (props) => {
-  const [pin, setPin] = createSignal("");
+/**
+ * issue 2544 — verifies `peerKey`, the key the peer's nick is pinned to and
+ * the one shown beside the button: the user compared it with the peer out of
+ * band. Pinning that very key again, verified, is the whole act
+ * (`Engine.pin`): the pin stays where it is, the SAS under way on it too, and
+ * the badge reads verified. The rail's and the badge's door are this one
+ * button; a failure says so under it.
+ */
+export const VerifyKeyButton: Component<{
+  networkSlug: string;
+  nick: string;
+  peerKey: string;
+  testId: string;
+  onVerified: (() => void) | null;
+}> = (props) => {
+  const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
-  const submit = async (event: SubmitEvent) => {
-    event.preventDefault();
-    const key = pin().trim();
-    if (key === "") return;
+  const verify = async () => {
+    setBusy(true);
+    setError(null);
     let result: PinOutcome;
     try {
-      result = await pinEncryptedKey(props.networkSlug, props.nick, key, true);
+      result = await pinEncryptedKey(props.networkSlug, props.nick, props.peerKey, true);
     } catch (err) {
-      console.warn(`[e2e] could not pin a key to ${props.nick}`, err);
-      setError(`could not pin the key: ${errorMessage(err)}`);
+      console.warn(`[e2e] could not verify the key of ${props.nick}`, err);
+      setError(`could not verify the key: ${errorMessage(err)}`);
       return;
+    } finally {
+      setBusy(false);
     }
-    if (result === "pinned") {
-      setPin("");
-      setError(null);
-    } else {
-      setError(PIN_ERROR[result]);
-    }
+    if (result === "pinned") props.onVerified?.();
+    else setError(`could not verify the key: ${PIN_REFUSED[result]}`);
   };
   return (
     <>
-      <form class="e2e-pin" onSubmit={(event) => void submit(event)}>
-        <input
-          type="text"
-          class="e2e-pin-input"
-          data-testid="e2e-pin-input"
-          aria-label={`pin ${props.display}'s key`}
-          placeholder="paste their key"
-          autocomplete="off"
-          spellcheck={false}
-          value={pin()}
-          onInput={(event) => setPin(event.currentTarget.value)}
-        />
-        <button type="submit" class="e2e-pin-submit" data-testid="e2e-pin-submit">
-          pin
-        </button>
-      </form>
+      <button
+        type="button"
+        class="e2e-sas-button"
+        data-testid={props.testId}
+        disabled={busy()}
+        onClick={() => void verify()}
+      >
+        verify
+      </button>
       <Show when={error()}>
         {(message) => (
-          <div class="e2e-error" data-testid="e2e-pin-error">
+          <div class="e2e-error" data-testid={`${props.testId}-error`}>
             {message()}
           </div>
         )}
@@ -223,6 +229,13 @@ const EncryptedRail: Component<Props> = (props) => {
   const comparison = () => lastComparison(rows());
   const check = () => encryptedChat(props.networkSlug, props.nick)?.check;
   const elsewhere = () => identityElsewhere(props.networkSlug);
+  // The key to verify, where the badge reads `not verified`: a key pinned,
+  // not verified, and no alarm open (that is answered first: take the new
+  // key, or close the chat).
+  const unverifiedKey = () => {
+    const peer = peerTrust();
+    return peer !== null && trust() === "unverified" ? peer.master : null;
+  };
 
   return (
     <div class="rail-e2e selectable-text" data-testid="e2e-rail">
@@ -295,6 +308,17 @@ const EncryptedRail: Component<Props> = (props) => {
           </Show>
         </dl>
         <Show when={!elsewhere()}>
+          <Show when={unverifiedKey()}>
+            {(key) => (
+              <VerifyKeyButton
+                networkSlug={props.networkSlug}
+                nick={props.nick}
+                peerKey={key()}
+                testId="e2e-peer-verify"
+                onVerified={null}
+              />
+            )}
+          </Show>
           <Show when={alarm()}>
             {(key) => (
               <button
@@ -307,7 +331,6 @@ const EncryptedRail: Component<Props> = (props) => {
               </button>
             )}
           </Show>
-          <PinForm networkSlug={props.networkSlug} nick={props.nick} display={display()} />
         </Show>
       </section>
       <section class="rail-e2e-section" data-testid="e2e-rail-own">
