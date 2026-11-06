@@ -893,7 +893,234 @@ defmodule GrappaWeb.UploadsControllerTest do
     end
   end
 
+  describe "POST /api/uploads/encrypted — the encrypted-file door (issue 2517)" do
+    # The client encrypts the file (AES-256-GCM, a fresh key per file) and
+    # the key travels inside Olm, so what reaches this door is ciphertext.
+    # Random bytes stand in for it: nothing here may look inside.
+    test "201 stores the bytes as sent, typed application/octet-stream, with no filename",
+         %{conn: conn, root: root} do
+      {_, session} = user_and_session([])
+      ciphertext = :crypto.strong_rand_bytes(4096)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads/encrypted", %{
+          "file" => upload_fixture("blob", "application/octet-stream", ciphertext)
+        })
+
+      assert %{"slug" => slug, "url" => url, "expires_at" => expires_at} = json_response(conn, 201)
+      assert Uploads.valid_slug?(slug)
+      # No type, so no extension (#418): the URL says nothing about the file.
+      assert String.ends_with?(url, "/uploads/" <> slug)
+      assert {:ok, _, _} = DateTime.from_iso8601(expires_at)
+
+      assert File.read!(Uploads.storage_path(root, slug)) == ciphertext
+
+      {:ok, row} = Uploads.get_by_slug(slug, DateTime.utc_now())
+      assert row.mime == "application/octet-stream"
+      assert row.charset == nil
+      assert row.original_filename == nil
+      assert row.bytes == byte_size(ciphertext)
+    end
+
+    test "a declared image/jpeg carrying GPS EXIF is neither typed nor stripped",
+         %{conn: conn, root: root} do
+      # The plain door would strip this (#39) and store image/jpeg. Here the
+      # declared type is ignored, so the strip never sees an image and the
+      # bytes land exactly as sent, filename dropped.
+      {_, session} = user_and_session([])
+      input = Grappa.UploadFixtures.bytes(:gps_jpeg)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads/encrypted", %{"file" => upload_fixture("IMG_1234.jpg", "image/jpeg", input)})
+
+      assert %{"slug" => slug} = json_response(conn, 201)
+      assert File.read!(Uploads.storage_path(root, slug)) == input
+
+      {:ok, row} = Uploads.get_by_slug(slug, DateTime.utc_now())
+      assert row.mime == "application/octet-stream"
+      assert row.original_filename == nil
+    end
+
+    test "a declared charset never reaches the row", %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads/encrypted", %{
+          "file" => upload_fixture("notes.txt", "text/plain; charset=utf-8", :crypto.strong_rand_bytes(64))
+        })
+
+      assert %{"slug" => slug} = json_response(conn, 201)
+
+      {:ok, row} = Uploads.get_by_slug(slug, DateTime.utc_now())
+      assert row.mime == "application/octet-stream"
+      assert row.charset == nil
+    end
+
+    # The cap is derived: the largest of the four category caps, plus the
+    # 16 bytes of the GCM tag. The largest is put on audio, the LAST
+    # category, so a door that reads any single category, or the smallest,
+    # answers a different number.
+    test "exactly the largest per-file cap plus the 16-byte tag is accepted", %{conn: conn} do
+      {_, session} = user_and_session([])
+      :ok = put_category_caps(image: 10, video: 20, document: 30, audio: 40)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads/encrypted", %{
+          "file" => upload_fixture("blob", "application/octet-stream", :crypto.strong_rand_bytes(56))
+        })
+
+      assert %{"slug" => _} = json_response(conn, 201)
+    end
+
+    test "one byte more is a 413 naming that cap", %{conn: conn} do
+      {_, session} = user_and_session([])
+      :ok = put_category_caps(image: 10, video: 20, document: 30, audio: 40)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads/encrypted", %{
+          "file" => upload_fixture("blob", "application/octet-stream", :crypto.strong_rand_bytes(57))
+        })
+
+      assert json_response(conn, 413) == %{"error" => "file_too_large", "max_bytes" => 56}
+    end
+
+    test "507 when the uploader's own quota is exceeded", %{conn: conn} do
+      {_, session} = user_and_session([])
+      :ok = ServerSettings.put_upload_global_cap_bytes(1_000_000_000)
+      :ok = ServerSettings.put_upload_per_user_cap_bytes(2)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads/encrypted", %{
+          "file" => upload_fixture("blob", "application/octet-stream", :crypto.strong_rand_bytes(64))
+        })
+
+      assert json_response(conn, 507) == %{"error" => "insufficient_storage"}
+    end
+
+    test "201 under the uploader's own quota (negative control)", %{conn: conn} do
+      {_, session} = user_and_session([])
+      :ok = ServerSettings.put_upload_global_cap_bytes(1_000_000_000)
+      :ok = ServerSettings.put_upload_per_user_cap_bytes(1_000_000)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads/encrypted", %{
+          "file" => upload_fixture("blob", "application/octet-stream", :crypto.strong_rand_bytes(64))
+        })
+
+      assert %{"slug" => _} = json_response(conn, 201)
+    end
+
+    test "an expire on the ladder sets expires_at", %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads/encrypted", %{
+          "file" => upload_fixture("blob", "application/octet-stream", :crypto.strong_rand_bytes(64)),
+          "expire" => "3600"
+        })
+
+      %{"expires_at" => iso} = json_response(conn, 201)
+      {:ok, dt, _} = DateTime.from_iso8601(iso)
+      assert DateTime.diff(dt, DateTime.utc_now(), :second) in (3600 - 5)..(3600 + 5)
+    end
+
+    test "the default expiry is 24h", %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads/encrypted", %{
+          "file" => upload_fixture("blob", "application/octet-stream", :crypto.strong_rand_bytes(64))
+        })
+
+      %{"expires_at" => iso} = json_response(conn, 201)
+      {:ok, dt, _} = DateTime.from_iso8601(iso)
+      assert DateTime.diff(dt, DateTime.utc_now(), :second) in (86_400 - 5)..(86_400 + 5)
+    end
+
+    test "400 for an expire off the ladder", %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads/encrypted", %{
+          "file" => upload_fixture("blob", "application/octet-stream", :crypto.strong_rand_bytes(64)),
+          "expire" => "9999"
+        })
+
+      assert json_response(conn, 400) == %{"error" => "bad_request"}
+    end
+
+    test "400 when the file is missing", %{conn: conn} do
+      {_, session} = user_and_session([])
+      conn = conn |> put_bearer(session.id) |> post("/api/uploads/encrypted", %{})
+      assert json_response(conn, 400) == %{"error" => "bad_request"}
+    end
+
+    test "401 without bearer", %{conn: conn} do
+      conn = post(conn, "/api/uploads/encrypted", %{})
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+  end
+
+  describe "GET /uploads/:slug — an encrypted file (issue 2517)" do
+    test "served as application/octet-stream, as an attachment, nosniff", %{conn: conn} do
+      {_, session} = user_and_session([])
+      ciphertext = :crypto.strong_rand_bytes(4096)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads/encrypted", %{
+          "file" => upload_fixture("blob", "application/octet-stream", ciphertext)
+        })
+
+      %{"slug" => slug} = json_response(conn, 201)
+
+      get_conn = get(Phoenix.ConnTest.build_conn(), "/uploads/" <> slug)
+
+      assert response(get_conn, 200) == ciphertext
+      assert get_resp_header(get_conn, "content-type") == ["application/octet-stream"]
+      assert get_resp_header(get_conn, "content-disposition") == ["attachment"]
+      assert get_resp_header(get_conn, "x-content-type-options") == ["nosniff"]
+    end
+
+    # Negative control: the attachment is the encrypted file's, never every
+    # upload's.
+    test "a plain upload is still served inline, with its filename", %{conn: conn} do
+      slug = uploaded_slug(conn, "notes.txt", "text/plain", "plain words")
+
+      get_conn = get(Phoenix.ConnTest.build_conn(), "/uploads/" <> slug)
+
+      assert response(get_conn, 200) == "plain words"
+      assert [disposition] = get_resp_header(get_conn, "content-disposition")
+      assert String.starts_with?(disposition, ~s|inline; filename="notes.txt"|)
+    end
+  end
+
   # ---- helpers ------------------------------------------------------
+
+  defp put_category_caps(caps) do
+    Enum.each(caps, fn {category, n} -> :ok = ServerSettings.put_upload_per_file_cap_bytes(category, n) end)
+  end
 
   # Uploads `bytes` as an authenticated user, returns the public slug.
   defp uploaded_slug(conn, filename, mime, bytes) do
