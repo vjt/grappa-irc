@@ -13319,6 +13319,25 @@ html.is-ios27-band .shell {
   margin: 0;
 }
 
+/* issue 2544 — the identity's devices under "your identity": one entry per
+   device, its id, when it was added and its revoke stacked, so a button
+   never squeezes the id in the capped rail track (#605). */
+.rail-e2e-devices {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rail-e2e-device {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+}
+
 /* issue 2506 — the rail's key buttons are sized to their content (vjt's
    ruling): one line and 0.5rem above and below, instead of the --tap-min
    floor every e2e button carries. Measured before this rule on desktop

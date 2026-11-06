@@ -1,12 +1,14 @@
-import { type Component, createResource, createSignal, Show } from "solid-js";
+import { type Component, createResource, createSignal, For, Show } from "solid-js";
 import AddDevicePanel from "./AddDevicePanel";
 import E2eCopyButton from "./E2eCopyButton";
 import { isChannelName } from "./lib/chantypes";
+import { requestConfirm } from "./lib/confirmDialog";
 import { formatDateTime } from "./lib/dateFormat";
 import type { ChatRow, CheckFailure, IdentityCheck } from "./lib/e2e/chatStore";
 import type { PinOutcome } from "./lib/e2e/engine";
+import type { OwnDevice } from "./lib/e2e/identity";
 import { UNCONFIRMED } from "./lib/e2e/orders";
-import { holdsMasterHere } from "./lib/e2e/pairingDeps";
+import { holdsMasterHere, ownDevicesHere, revokeDeviceHere } from "./lib/e2e/pairingDeps";
 import type { SasCancelReason } from "./lib/e2e/sas";
 import {
   encryptedChat,
@@ -33,8 +35,10 @@ import { networkBySlug } from "./lib/networks";
 //     many of its devices, how the last emoji comparison ended, the last
 //     identity check a bot made; and the key actions: verify the key shown,
 //     take the key an alarm showed;
-//   * this browser's identity: our own key, to copy for a bot's operator, and
-//     the door to add a device (only from the browser that holds the master).
+//   * this browser's identity: our own key, to copy for a bot's operator, the
+//     identity's devices, and the doors to add one and revoke one (only from
+//     the browser that holds the master; issue 2544 for the list and the
+//     revoke).
 //
 // What the rail does NOT hold, by vjt's rulings on this issue: the emoji
 // comparison itself (it runs in the chat window, modal-like), search and
@@ -198,6 +202,134 @@ export const VerifyKeyButton: Component<{
   );
 };
 
+const REVOKE_REFUSED: Record<"failed" | "list-changed", string> = {
+  failed: "this browser could not sign a new list without it",
+  "list-changed": "the device list changed meanwhile: try again",
+};
+
+/**
+ * issue 2544 (vjt's ruling) — the identity's devices on the network: the id
+ * grappa routes each by (a device has no name), when grappa added it, and
+ * which one is this browser. From the browser that holds the master each
+ * other one has a revoke, behind a confirmation that says what it does: the
+ * master signs the list without it, and grappa drops it. Elsewhere the list
+ * is read-only (the add-device row's hint says where devices are managed).
+ * Read again when the key shown changes, after a revoke, and when `reload`
+ * moves (the add-device panel closed: a device may have joined).
+ */
+const OwnDevices: Component<{ networkSlug: string; master: boolean; reload: number }> = (props) => {
+  const [loadError, setLoadError] = createSignal<string | null>(null);
+  const [revokeError, setRevokeError] = createSignal<string | null>(null);
+  const [revoking, setRevoking] = createSignal(false);
+  const [devices, { refetch }] = createResource(
+    () => {
+      const key = ownKey(props.networkSlug);
+      return key === undefined ? false : ([props.networkSlug, key, props.reload] as const);
+    },
+    async ([slug]) => {
+      setLoadError(null);
+      try {
+        return await ownDevicesHere(slug);
+      } catch (err) {
+        console.warn(`[e2e] could not list the devices of ${slug}`, err);
+        setLoadError(`could not list the devices: ${errorMessage(err)}`);
+        return null;
+      }
+    },
+  );
+
+  const revoke = async (device: OwnDevice) => {
+    setRevoking(true);
+    setRevokeError(null);
+    try {
+      const result = await revokeDeviceHere(props.networkSlug, device.ed25519);
+      if (result !== "revoked") {
+        setRevokeError(`could not revoke ${device.did}: ${REVOKE_REFUSED[result]}`);
+      }
+    } catch (err) {
+      console.warn(`[e2e] could not revoke the device ${device.did} on ${props.networkSlug}`, err);
+      setRevokeError(`could not revoke ${device.did}: ${errorMessage(err)}`);
+    } finally {
+      setRevoking(false);
+      void refetch();
+    }
+  };
+
+  const confirmRevoke = (device: OwnDevice) =>
+    requestConfirm({
+      title: "Revoke device",
+      body:
+        `Revoke device ${device.did} from your encryption identity on this network? ` +
+        `grappa drops it and delivers nothing more to it, and your contacts stop ` +
+        `trusting it once they have the new device list. Messages already on it stay ` +
+        `there. To use it again, add it again from this browser.`,
+      confirmLabel: "Revoke",
+      onConfirm: () => void revoke(device),
+      alternative: null,
+      attachments: null,
+      choice: null,
+      toggle: null,
+      defaultButton: "cancel",
+    });
+
+  return (
+    <>
+      <Show when={devices()}>
+        {(list) => (
+          <dl class="rail-e2e-fields">
+            <dt>devices</dt>
+            <dd>
+              <ul class="rail-e2e-devices" data-testid="e2e-own-devices">
+                <For each={list()}>
+                  {(device) => (
+                    <li
+                      class="rail-e2e-device"
+                      data-testid="e2e-own-device"
+                      data-did={device.did}
+                      data-here={device.here ? "true" : "false"}
+                    >
+                      <span>
+                        <code>{device.did}</code>
+                        <Show when={device.here}>
+                          <span class="muted"> this browser</span>
+                        </Show>
+                      </span>
+                      <Show when={device.addedAt}>
+                        {(at) => (
+                          <span class="muted">added {formatDateTime(Date.parse(at()))}</span>
+                        )}
+                      </Show>
+                      <Show when={props.master && !device.here}>
+                        <button
+                          type="button"
+                          class="e2e-sas-button"
+                          data-testid="e2e-own-device-revoke"
+                          aria-label={`revoke device ${device.did}`}
+                          disabled={revoking()}
+                          onClick={() => confirmRevoke(device)}
+                        >
+                          revoke
+                        </button>
+                      </Show>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </dd>
+          </dl>
+        )}
+      </Show>
+      <Show when={loadError() ?? revokeError()}>
+        {(message) => (
+          <div class="e2e-error" data-testid="e2e-own-devices-error">
+            {message()}
+          </div>
+        )}
+      </Show>
+    </>
+  );
+};
+
 /** Takes the key an alarm showed for the nick: written to now, not verified. */
 export function acceptAlarmKey(slug: string, nick: string, key: string): void {
   void pinEncryptedKey(slug, nick, key, false).catch((err: unknown) => {
@@ -207,6 +339,12 @@ export function acceptAlarmKey(slug: string, nick: string, key: string): void {
 
 const EncryptedRail: Component<Props> = (props) => {
   const [adding, setAdding] = createSignal(false);
+  // Moves each time the add-device panel closes: the device list reads again.
+  const [panelsClosed, setPanelsClosed] = createSignal(0);
+  const closePanel = () => {
+    setAdding(false);
+    setPanelsClosed((n) => n + 1);
+  };
   // Whether this browser holds the master: only it may add a device. Asked
   // again when the key shown changes (a new identity, or a pairing, lands).
   // Unknown (still asking, or no key yet: the sync that makes it is what
@@ -361,8 +499,13 @@ const EncryptedRail: Component<Props> = (props) => {
             label="copy your key"
             testId="e2e-own-identity-copy"
           />
+          <OwnDevices
+            networkSlug={props.networkSlug}
+            master={answered() === true}
+            reload={panelsClosed()}
+          />
           <Show when={answered() === true}>
-            <Show when={!adding()} fallback={<AddDevicePanel onClose={() => setAdding(false)} />}>
+            <Show when={!adding()} fallback={<AddDevicePanel onClose={closePanel} />}>
               <button
                 type="button"
                 class="e2e-copy"
@@ -375,7 +518,7 @@ const EncryptedRail: Component<Props> = (props) => {
           </Show>
           <Show when={answered() === false}>
             <p class="muted rail-e2e-hint" data-testid="e2e-add-device-hint">
-              Devices are added from the browser that started this identity.
+              Devices are added and revoked from the browser that started this identity.
             </p>
           </Show>
         </Show>

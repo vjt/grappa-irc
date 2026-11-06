@@ -460,8 +460,22 @@ export async function offerable(
   });
 }
 
-// One try of `addDevice` met a list on grappa above the one it signed over.
+// One try of `addDevice` or `revokeDevice` met a list on grappa above the one
+// it signed over.
 const STALE = Symbol("stale_list");
+
+// Runs `attempt` again, once, when grappa refused its list as stale: the
+// retry's sync takes the list that landed first, and signs over it, so a
+// retry never puts a list that drops a device another put listed. Moved
+// under the retry too, the list "changed".
+async function onceMoreIfStale<T>(
+  attempt: () => Promise<T | typeof STALE>,
+): Promise<T | "list-changed"> {
+  const first = await attempt();
+  if (first !== STALE) return first;
+  const retried = await attempt();
+  return retried === STALE ? "list-changed" : retried;
+}
 
 /**
  * The holder: lists the joiner's device `id` on the network, at one version
@@ -475,17 +489,14 @@ const STALE = Symbol("stale_list");
  * vouch for the master, or grappa holds no such device), "paired", "full",
  * and "list-changed" when the list moved under the retry too.
  */
-export async function addDevice(
+export function addDevice(
   store: AccountStore,
   bearer: string,
   slot: string,
   slug: string,
   id: IdBlock,
 ): Promise<{ cert: string; list: SignedList } | PairRefusal> {
-  const first = await listDevice(store, bearer, slot, slug, id);
-  if (first !== STALE) return first;
-  const retried = await listDevice(store, bearer, slot, slug, id);
-  return retried === STALE ? "list-changed" : retried;
+  return onceMoreIfStale(() => listDevice(store, bearer, slot, slug, id));
 }
 
 async function listDevice(
@@ -519,6 +530,93 @@ async function listDevice(
     }
     session.own = { ...own, list: issued.list };
     return issued;
+  });
+}
+
+/** One device of the slot's identity on a network, as the rail lists it (issue 2544). */
+export type OwnDevice = {
+  did: string;
+  ed25519: string;
+  /** When grappa first registered it; null from a server before protocol 57. */
+  addedAt: string | null;
+  /** Whether it is this browser's device. */
+  here: boolean;
+};
+
+/**
+ * The devices of the slot's identity on the network (issue 2544): the ones
+ * the list this browser holds names (its master signed it, and a sync took
+ * grappa's latest), each as grappa lists it, oldest first, and which one is
+ * this browser. A device registered and never listed (a pairing that did not
+ * finish) is no device of the identity. Null when this browser holds no
+ * identity for the slot. Stores nothing.
+ */
+export async function ownDevices(
+  store: AccountStore,
+  bearer: string,
+  slot: string,
+  slug: string,
+): Promise<OwnDevice[] | null> {
+  const placed = await peek(store, slot, ({ account, own }) =>
+    own === null ? null : { listed: own.list.devices, here: account.ed25519_key() },
+  );
+  if (placed === null) return null;
+  return (await listE2eDevices(bearer, slug))
+    .filter((device) => placed.listed.includes(device.ed25519))
+    .map((device) => ({
+      did: device.did,
+      ed25519: device.ed25519,
+      addedAt: device.inserted_at ?? null,
+      here: device.ed25519 === placed.here,
+    }));
+}
+
+/**
+ * The holder: revokes the device `ed25519` from the identity on the network
+ * (issue 2544). The master signs the list one version up without it, and
+ * grappa, taking that list, drops the device with its keys and its queue
+ * (`E2eKeys.put_list/3`): no removal of its own follows. After a sync, so the
+ * list shrinks from grappa's latest; a put refused as `stale_list` syncs and
+ * signs again, once, as `addDevice` does. Peers stop trusting the device once
+ * they hold the new list (the engine's `revoked`), and its own browser's
+ * next sync finds itself left out. Refusals: "failed" (no master here, the
+ * sync is not "ready", the key is this browser's own device or one the list
+ * does not name), "list-changed" when the list moved under the retry too.
+ */
+export function revokeDevice(
+  store: AccountStore,
+  bearer: string,
+  slot: string,
+  slug: string,
+  ed25519: string,
+): Promise<"revoked" | "failed" | "list-changed"> {
+  return onceMoreIfStale(() => unlistDevice(store, bearer, slot, slug, ed25519));
+}
+
+async function unlistDevice(
+  store: AccountStore,
+  bearer: string,
+  slot: string,
+  slug: string,
+  ed25519: string,
+): Promise<"revoked" | "failed" | typeof STALE> {
+  if ((await syncIdentity(store, bearer, slot, slug)) !== "ready") return "failed";
+  return store.withAccount(slot, async (session) => {
+    const { master, own } = session;
+    if (master === null || own === null) return "failed";
+    if (ed25519 === session.account.ed25519_key() || !own.list.devices.includes(ed25519)) {
+      return "failed";
+    }
+    const devices = own.list.devices.filter((key) => key !== ed25519);
+    let list: SignedList;
+    try {
+      list = await putList(master, bearer, slug, own.list.ver + 1, devices);
+    } catch (err) {
+      if (refusedAs(err, "stale_list")) return STALE;
+      throw err;
+    }
+    session.own = { ...own, list };
+    return "revoked";
   });
 }
 
