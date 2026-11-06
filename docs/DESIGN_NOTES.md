@@ -3338,8 +3338,13 @@ device list) is #2544b.
   wrong one. A verify is a `pinned` row, so like the SAS match and the old
   form it settles a "they could not read your last message" card
   (`unreadableStep`); the next failed send brings the card back. The pin is a
-  round trip: one that lands after its dialog closed closes nothing (the
-  button is gone, so is its callback).
+  round trip: one that lands after its dialog closed closes nothing, not
+  even a dialog opened since; one that lands while its dialog is open closes
+  it, even though the button has gone by then. Measured on both phone
+  projects in CI: the refresh the pin sets off reads the key verified BEFORE
+  the pin answers, which takes the button away, so a guard keyed on the
+  button's life (the first cut) left the dialog open showing the verified
+  key. The guard is the dialog's, not the button's.
 * **The badge shows the key.** A tap opens a dialog over the chat body with
   the peer's whole key, 43 characters: verified, the key alone; not
   verified, the key, the same verify button, and "compare emoji" second. The

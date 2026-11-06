@@ -8,6 +8,7 @@ import {
   type JSX,
   Match,
   on,
+  onCleanup,
   onMount,
   Show,
   Switch,
@@ -587,6 +588,15 @@ const KeyDialog: Component<{
     dialog?.focus();
     props.onOpen?.();
   });
+  // A verify closes the dialog it was asked from, and no other: its pin may
+  // answer once this one is closed, and another opened since.
+  let open = true;
+  onCleanup(() => {
+    open = false;
+  });
+  const verified = () => {
+    if (open) props.onClose();
+  };
   return (
     <div
       ref={dialog}
@@ -620,7 +630,7 @@ const KeyDialog: Component<{
               nick={props.nick}
               peerKey={props.peerKey}
               testId="e2e-key-verify"
-              onVerified={props.onClose}
+              onVerified={verified}
             />
             <button
               type="button"

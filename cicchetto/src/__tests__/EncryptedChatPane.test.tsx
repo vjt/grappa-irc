@@ -1036,6 +1036,24 @@ describe("EncryptedChatPane, the emoji comparison", () => {
     expect(document.activeElement).toBe(reopened);
   });
 
+  // Measured on both phone projects (CI): the refresh the pin sets off lands
+  // before the pin answers, so the button goes with the unverified state
+  // while its dialog is still open.
+  it("a verify whose key reads verified before the pin answers still closes its dialog", async () => {
+    let land: (outcome: string) => void = () => undefined;
+    pinEncryptedKey.mockReturnValue(new Promise((resolve) => (land = resolve)));
+    setTrust({ master: KEY, verified: false, devices: 1 });
+    renderPane();
+    fireEvent.click(door() as HTMLButtonElement);
+    fireEvent.click(screen.getByTestId("e2e-key-verify"));
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    expect(screen.queryByTestId("e2e-key-verify")).toBeNull();
+
+    land("pinned");
+    await waitFor(() => expect(keyDialog()).toBeNull());
+    expect(document.activeElement).toBe(door());
+  });
+
   it("a verify that fails keeps the key on screen and says what failed", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     pinEncryptedKey.mockRejectedValue(new Error("the network is gone"));
