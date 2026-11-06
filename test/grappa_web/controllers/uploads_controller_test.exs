@@ -963,35 +963,40 @@ defmodule GrappaWeb.UploadsControllerTest do
     end
 
     # The cap is derived: the largest of the four category caps, plus the
-    # 16 bytes of the GCM tag. The largest is put on audio, the LAST
-    # category, so a door that reads any single category, or the smallest,
-    # answers a different number.
-    test "exactly the largest per-file cap plus the 16-byte tag is accepted", %{conn: conn} do
-      {_, session} = user_and_session([])
-      :ok = put_category_caps(image: 10, video: 20, document: 30, audio: 40)
+    # 16 bytes of the GCM tag. Each category takes its turn as the largest
+    # (40 bytes, the others 10), so a door that reads one category, or the
+    # smallest, answers a different number in at least one of the four.
+    for largest <- [:image, :video, :document, :audio] do
+      @largest largest
 
-      conn =
-        conn
-        |> put_bearer(session.id)
-        |> post("/api/uploads/encrypted", %{
-          "file" => upload_fixture("blob", "application/octet-stream", :crypto.strong_rand_bytes(56))
-        })
+      test "with #{largest} the largest cap, exactly that cap plus the 16-byte tag is accepted",
+           %{conn: conn} do
+        {_, session} = user_and_session([])
+        :ok = put_category_caps(@largest, 40, 10)
 
-      assert %{"slug" => _} = json_response(conn, 201)
-    end
+        conn =
+          conn
+          |> put_bearer(session.id)
+          |> post("/api/uploads/encrypted", %{
+            "file" => upload_fixture("blob", "application/octet-stream", :crypto.strong_rand_bytes(56))
+          })
 
-    test "one byte more is a 413 naming that cap", %{conn: conn} do
-      {_, session} = user_and_session([])
-      :ok = put_category_caps(image: 10, video: 20, document: 30, audio: 40)
+        assert %{"slug" => _} = json_response(conn, 201)
+      end
 
-      conn =
-        conn
-        |> put_bearer(session.id)
-        |> post("/api/uploads/encrypted", %{
-          "file" => upload_fixture("blob", "application/octet-stream", :crypto.strong_rand_bytes(57))
-        })
+      test "with #{largest} the largest cap, one byte more is a 413 naming that cap", %{conn: conn} do
+        {_, session} = user_and_session([])
+        :ok = put_category_caps(@largest, 40, 10)
 
-      assert json_response(conn, 413) == %{"error" => "file_too_large", "max_bytes" => 56}
+        conn =
+          conn
+          |> put_bearer(session.id)
+          |> post("/api/uploads/encrypted", %{
+            "file" => upload_fixture("blob", "application/octet-stream", :crypto.strong_rand_bytes(57))
+          })
+
+        assert json_response(conn, 413) == %{"error" => "file_too_large", "max_bytes" => 56}
+      end
     end
 
     test "507 when the uploader's own quota is exceeded", %{conn: conn} do
@@ -1103,7 +1108,7 @@ defmodule GrappaWeb.UploadsControllerTest do
       assert get_resp_header(get_conn, "x-content-type-options") == ["nosniff"]
     end
 
-    # Negative control: the attachment is the encrypted file's, never every
+    # Negative controls: the attachment is the encrypted file's, never every
     # upload's.
     test "a plain upload is still served inline, with its filename", %{conn: conn} do
       slug = uploaded_slug(conn, "notes.txt", "text/plain", "plain words")
@@ -1114,12 +1119,43 @@ defmodule GrappaWeb.UploadsControllerTest do
       assert [disposition] = get_resp_header(get_conn, "content-disposition")
       assert String.starts_with?(disposition, ~s|inline; filename="notes.txt"|)
     end
+
+    # Avatars and theme backgrounds are stored with no filename, so "no
+    # filename" must not read as "encrypted"; and the row is an
+    # `application/*` type, so neither may the type's family.
+    test "a plain upload with no filename is still served inline", %{conn: conn, root: root} do
+      {user, _} = user_and_session([])
+
+      {:ok, row} =
+        Uploads.create(
+          "%PDF-1.4 plain",
+          %{
+            subject: {:user, user.id},
+            mime: "application/pdf",
+            expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
+          },
+          ServerSettings.upload_caps(),
+          storage_root: root
+        )
+
+      assert row.original_filename == nil
+
+      get_conn = get(conn, "/uploads/" <> row.slug)
+
+      assert response(get_conn, 200) == "%PDF-1.4 plain"
+      assert get_resp_header(get_conn, "content-disposition") == ["inline"]
+    end
   end
 
   # ---- helpers ------------------------------------------------------
 
-  defp put_category_caps(caps) do
-    Enum.each(caps, fn {category, n} -> :ok = ServerSettings.put_upload_per_file_cap_bytes(category, n) end)
+  # `largest` gets `big`, every other category `small`.
+  defp put_category_caps(largest, big, small) do
+    for category <- [:image, :video, :document, :audio] do
+      :ok = ServerSettings.put_upload_per_file_cap_bytes(category, if(category == largest, do: big, else: small))
+    end
+
+    :ok
   end
 
   # Uploads `bytes` as an authenticated user, returns the public slug.
