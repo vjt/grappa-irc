@@ -274,25 +274,20 @@ defmodule Grappa.Dcc.TransferTest do
     # Our socket's send buffer is shrunk to the kernel floor from outside,
     # and one large write of filler goes out on it, also from outside: the
     # code under test is not told. The sender takes what its receive
-    # buffer holds (fixed at 64 KiB, so the amount is bounded), our kernel
+    # buffer holds (set to 64 KiB, so the amount is bounded), our kernel
     # holds some more, and the driver queues the rest, far past its high
-    # watermark. Every ack the transfer sends then meets that queue.
+    # watermark. The transfer's first ack then meets that queue.
     #
     # 🔴 Filled by one large write, not by the acks themselves (issue
     # 2554). The acks used to fill it, against a sender with a 1 KiB
     # receive buffer, and the test failed now and then with
-    # `:idle_timeout`. Measured, the cause was the SENDER'S kernel, not a
-    # slow runner. Each 4-byte ack costs it far more memory than its
-    # payload, and a buffer full of them sometimes made it DROP one its
-    # window had admitted (`TCPRcvQDrop` in /proc/net/netstat). Every
-    # segment we sent after that started past what it expected, the
-    # window updates saying we had drained included, so it discarded them
-    # unread (`BeyondWindow`), never learned we had room, and sent nothing
-    # more. Under 24 CPU hogs 8 runs in 30 failed that way, each with the
-    # drop. No buffer size tried cured it: 16 KiB passed 30 of 30 loaded,
-    # then failed once in 27 unloaded. The filler goes out in full-sized
-    # segments instead, and once the window is shut our acks wait in our
-    # own queue and never reach the sender at all.
+    # `:idle_timeout`: thousands of 4-byte segments sometimes made the
+    # SENDER'S kernel drop one its window had admitted, after which it
+    # discarded everything we sent, window updates included, and never
+    # sent again. No buffer size tried cured it. The filler goes out in
+    # full-sized segments instead, and once the window is shut our acks
+    # wait in our own queue and never reach the sender at all. The
+    # measurements are in DESIGN_NOTES, `entry #2554`.
     #
     # The payload no longer has to fill anything, but it still has to last:
     # the queue is sampled every 5 ms, and at 8 MiB the transfer was over
@@ -341,6 +336,7 @@ defmodule Grappa.Dcc.TransferTest do
       transfer = Task.async(fn -> Transfer.run(offer(port, @unread_ack_payload), path, opts()) end)
       assert_receive :accepted, 5_000
       socket = socket_of(transfer.pid)
+      :ok = await_connected(socket)
       :ok = :inet.setopts(socket, sndbuf: 1_024)
       {:ok, [high_watermark: high]} = :inet.getopts(socket, [:high_watermark])
 
@@ -395,6 +391,21 @@ defmodule Grappa.Dcc.TransferTest do
   defp socket_of(pid) do
     [socket] = Enum.filter(Port.list(), &(Port.info(&1, :connected) == {:connected, pid}))
     socket
+  end
+
+  # Waits for the transfer's own connect to complete. The sender's accept
+  # can come back first, and until the driver has seen the connect finish,
+  # a write on the socket answers `:enotconn` (`inet_drv.c`); `peername`
+  # turns `{:ok, _}` at the same moment.
+  defp await_connected(socket) do
+    case :inet.peername(socket) do
+      {:ok, _} ->
+        :ok
+
+      {:error, :enotconn} ->
+        Process.sleep(1)
+        await_connected(socket)
+    end
   end
 
   # Yields on `task` in 5 ms steps, sampling the socket's driver queue
