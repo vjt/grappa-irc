@@ -13,6 +13,10 @@ its nfpm **renderers** (`.deb` and `.rpm`, selected by
 tag-driven release CI ship it too — see **Building the `.rpm`** and the
 shipped list below.
 
+**Packaging grappa downstream?** The stable contract (asset names, paths,
+checksums, and how a change to them is announced) is `PACKAGING.md` at the
+root of the repository. This file describes how the packages are built.
+
 ## FHS layout
 
 | Path                                   | What                                                        |
@@ -180,8 +184,11 @@ Release. `build.sh` downloads a pinned nfpm if it is not on PATH.
 bundled ERTS and `shottino` link the glibc of the runner that builds them,
 so both `deb` legs run on one PINNED Ubuntu release (`ubuntu-24.04` /
 `ubuntu-24.04-arm`), never `ubuntu-latest` — that label moved to 26.04 and
-the amd64 packages of 1.6.1 and 1.6.2 needed `GLIBC_2.43`, which no Debian
-stable carries. Before uploading, the job also runs
+the amd64 packages of 1.6.1 and 1.6.2 were built needing `GLIBC_2.43`, which
+no Debian stable carries. 1.6.1's still do. 1.6.2's were rebuilt on 24.04 and
+republished by a repair dispatch on 2026-11-06, and its packages on the
+release now top out at `GLIBC_2.38`, the same as arm64 (issue 2570 measured
+it). Before uploading, the job also runs
 [`deb_floor_proof.sh`](deb_floor_proof.sh): both packages installed on a
 stock `debian:trixie`, the BEAM and the client started there. So the `.deb`
 is proven on Ubuntu 24.04 and Debian 13, the two installs CI performs;

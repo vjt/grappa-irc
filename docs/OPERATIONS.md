@@ -1808,6 +1808,14 @@ sequence:
    `X.Y.Z`; anything else → `X.Y.Z-<shortsha>`, `-dev` if git is absent). A
    released build reports the bare version; an unreleased build carries the
    suffix. Keep the `VERSION` file and the tag in lockstep at cut time.
+   **The release body's hand-written top follows
+   [`.github/release-notes-template.md`](../.github/release-notes-template.md)**
+   (issue 2570), above the `---` that separates it from the generated "What's
+   Changed". Its **Packaging** section is in EVERY release: one bullet per
+   change to the `PACKAGING.md` contract, or the line "No change to the
+   packaging contract." Downstream packagers read that section to learn whether
+   to touch their package, and an incompatible contract change needs a MAJOR
+   bump (`PACKAGING.md` § Change policy), so size the semver bump with it.
 3. **Ping vjt** (via the ircbot) with **the tag + the release URL + 2 lines of
    highlight**. vjt then writes the site's News entry (next step) from that.
 4. **News/Releases `news.json` entry.** An entry that LINKS the GitHub release
@@ -4940,6 +4948,34 @@ kind, and the run stops before creating anything — a re-run after the fix
 then creates the release cleanly, which the old order could not do at
 all. An incomplete set against `present` proceeds and marks the release
 partial, unchanged.
+
+### `sha256sums.sh` — the `SHA256SUMS` every release carries (issue 2570)
+
+`PACKAGING.md` promises downstream packagers a `SHA256SUMS` on every release,
+and the publish job's last step attaches it. **The names in it are the
+PUBLISHED names, read back from the GitHub API after the upload, never the
+names of the files on the runner**, because GitHub renames on upload: the
+bouncer's `.SRCINFO` is published as `default.SRCINFO`, and on a pre-release
+the `~` nfpm writes becomes `.` (v1.3.0-rc2: `grappa_1.3.0.rc2_amd64.deb`). A
+file written from local names would fail `sha256sum -c` on exactly those
+assets.
+
+The digests are GitHub's own (`digest` on each asset, "generated at upload
+time" per GitHub's changelog of 2025-06-03). On their own they would only show
+GitHub agreeing with itself, so the script also hashes every file the run
+attached (`release_assets.sh found`, the same set) and refuses unless each one
+matches a digest on the release. It covers everything the release holds except
+`SHA256SUMS` itself, including `shottino-debug` and any asset an earlier run
+left that a failed repair leg did not replace: the file describes what can be
+downloaded, and which assets are the contract is `PACKAGING.md`'s business.
+
+It refuses on a missing or malformed digest. Whether the API reports every
+digest the moment `gh release upload` returns is **not measured** (no release
+has run this step yet). If it ever does not, the step goes red with the asset
+named, the release stays without `SHA256SUMS`, and a repair dispatch attaches
+it. Pure shell like its sibling, so it runs under bats
+(`test/infra/release_sha256sums_test.bats`, which also pins the step's wiring
+in `release.yml`).
 
 ### `prerelease_flag.sh` — the release marker, derived from the tag (#1636)
 
