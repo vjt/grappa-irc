@@ -1486,7 +1486,26 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: an older client ignores a field it
   # does not know.
-  @protocol_version 57
+  #
+  # ---------------------------------------------------------------------------
+  # 58 — issue 2517: the encrypted-file upload door
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: the route `POST /api/uploads/encrypted` (multipart `file`, optional
+  # `expire` on the plain door's ladder), answering the plain door's 201
+  # `{slug, url, expires_at}`. It stores the ciphertext of a file the client
+  # sealed end to end: the declared type and filename are ignored, the row is
+  # `application/octet-stream`, the cap is the largest per-category cap plus
+  # the 16-byte GCM tag (413 `file_too_large` names it), and `GET
+  # /uploads/:slug` serves such a row as an `attachment`. Bumped on the #1393d
+  # rule: a client that sends an encrypted file cannot do it against a server
+  # predating the door, which answers the route 404.
+  #
+  # Checked for a collision before claiming 58: origin/main carries 57, and
+  # no open PR edits this file.
+  #
+  # @min_protocol_version stays at 1: an older client never calls the door.
+  @protocol_version 58
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1527,7 +1546,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 57
+  @spec version() :: 58
   def version, do: @protocol_version
 
   @doc """
