@@ -1699,6 +1699,46 @@ static bool cell_colors(int y, int x, short *fg, short *bg) {
         CHECK_LONG(bg_, mirc_terminal_color(bot_rgb));                                             \
     } while (0)
 
+/* Typing an accented letter showed `M-)`: the input box placed every
+ * BYTE of the line in a column of its own, so the two bytes of `é` were
+ * drawn as two meta glyphs, and the cursor and the wrap counted bytes as
+ * columns. Reported on an Italian layout — `perché` came out `perch M )`. */
+TEST(the_input_box_draws_characters_not_bytes) {
+    if (MB_CUR_MAX < 2) {
+        printf("  skip: not a UTF-8 locale\n");
+        return;
+    }
+    init_theme();
+    erase();
+    int cy = -1, cx = -1;
+    /* inner_x is x + 1; the prompt is 5 columns, `perché` 6. */
+    draw_input_box(0, 0, 40, 1, "#ai> ", "perché è", -1, &cy, &cx);
+    cchar_t cell;
+    wchar_t wc[CCHARW_MAX + 1];
+    attr_t a;
+    short pair;
+    CHECK(mvin_wch(0, 1 + 5 + 5, &cell) == OK);
+    getcchar(&cell, wc, &a, &pair, NULL);
+    CHECK(wc[0] == L'é');
+    CHECK(mvin_wch(0, 1 + 5 + 7, &cell) == OK);
+    getcchar(&cell, wc, &a, &pair, NULL);
+    CHECK(wc[0] == L'è');
+    /* The cursor sits after `perché è`: 8 characters, not 10 bytes. */
+    CHECK_LONG(cy, 0);
+    CHECK_LONG(cx, 1 + 5 + 8);
+    /* The cursor in the middle is a BYTE offset into the input, and lands
+     * on the character it names: after `perché` is byte 7, column 6. */
+    draw_input_box(0, 0, 40, 1, "#ai> ", "perché è", 7, &cy, &cx);
+    CHECK_LONG(cx, 1 + 5 + 6);
+    /* Wrapping counts columns too: 30 accented letters fit a 36-wide box
+     * on one line with the prompt (35 columns), though they are 60 bytes. */
+    char thirty[64] = "";
+    for (int i = 0; i < 30; i++) strcat(thirty, "è");
+    CHECK_LONG(input_display_lines("#ai> ", thirty, 36), 1);
+    /* Exactly full: the cursor after the last column needs a row. */
+    CHECK_LONG(input_display_lines("#ai> ", thirty, 35), 2);
+}
+
 /* The theme paints with the palette the terminal HAS, and leaves it
  * alone.
  *
@@ -1886,6 +1926,7 @@ int main(void) {
     RUN(the_sidebar_records_a_row_for_every_window);
     RUN(the_sidebar_folds_every_network_but_the_focused_one);
     RUN(a_modal_over_the_settings_panel_is_drawn);
+    RUN(the_input_box_draws_characters_not_bytes);
     RUN(wrapped_text_tail_matches_full_draw);
     RUN(message_line_tail_matches_full_draw);
     RUN(zero_skip_is_the_ordinary_draw);

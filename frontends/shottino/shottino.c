@@ -5578,11 +5578,74 @@ static void draw_message_line(int y, int x, int width, int skip_rows, int max_li
     }
 }
 
+/* Lay the input line out by CHARACTER and display width.
+ *
+ * The box used to put every BYTE in a column of its own, so `é` (two
+ * bytes) drew as two `M-x` meta glyphs and pushed the cursor and the wrap
+ * a column further per accented letter — typed on an Italian layout, the
+ * line read `perch M )`. Chat rows were never affected: they add their
+ * bytes in sequence, which ncursesw reassembles, whereas the box addressed
+ * each byte to its own cell.
+ *
+ * One walker serves the height, the drawing and the cursor, so the three
+ * cannot disagree about where a character is. `draw` NULL measures only.
+ * `cursor_byte` is an offset into prompt+input; its cell is reported
+ * through `cur_line`/`cur_col` when they are non-NULL. Returns the number
+ * of lines. */
+struct input_draw {
+    int y, x, height, first_line, prompt_len;
+};
+
+static int input_layout(const char *s, int width, int cursor_byte, int *cur_line, int *cur_col,
+                        const struct input_draw *draw) {
+    int line = 0, col = 0;
+    size_t len = strlen(s);
+    mbstate_t st;
+    memset(&st, 0, sizeof(st));
+    size_t i = 0;
+    while (i < len) {
+        if (cur_line && (int)i == cursor_byte) *cur_line = line, *cur_col = col;
+        wchar_t wc;
+        size_t n = mbrtowc(&wc, s + i, len - i, &st);
+        int w = 1;
+        if (n == (size_t)-1 || n == (size_t)-2 || n == 0) {
+            /* Not a character: one byte, one cell, and start afresh. */
+            n = 1;
+            memset(&st, 0, sizeof(st));
+        } else {
+            w = wcwidth(wc);
+            if (w < 1) w = 1;
+        }
+        if (col + w > width && col > 0) {
+            line++;
+            col = 0;
+            if (cur_line && (int)i == cursor_byte) *cur_line = line, *cur_col = col;
+        }
+        if (draw && line >= draw->first_line && line < draw->first_line + draw->height) {
+            bool bold = (int)i < draw->prompt_len;
+            attron(COLOR_PAIR(CP_INPUT) | (bold ? A_BOLD : 0));
+            mvaddnstr(draw->y + line - draw->first_line, draw->x + col, s + i, (int)n);
+            attroff(COLOR_PAIR(CP_INPUT) | A_BOLD);
+        }
+        col += w;
+        i += n;
+    }
+    if (cur_line && (int)len <= cursor_byte) {
+        if (col >= width) line++, col = 0;
+        *cur_line = line, *cur_col = col;
+    }
+    return line + 1;
+}
+
 static int input_display_lines(const char *prompt, const char *input, int width) {
     if (width <= 0) return 1;
-    size_t total = strlen(prompt) + strlen(input);
-    int lines = (int)(total / (size_t)width) + 1;
-    return lines < 1 ? 1 : lines;
+    char *joined = xasprintf("%s%s", prompt, input);
+    /* Measured with the cursor at the end: a line that exactly fills the
+     * box puts the cursor on the next row, which must exist. */
+    int cl = 0, cc = 0;
+    int lines = input_layout(joined, width, (int)strlen(joined), &cl, &cc, NULL);
+    free(joined);
+    return cl + 1 > lines ? cl + 1 : lines;
 }
 
 static void draw_input_box(int y, int x, int width, int height, const char *prompt,
@@ -5594,36 +5657,19 @@ static void draw_input_box(int y, int x, int width, int height, const char *prom
     if (inner_w <= 0) inner_w = width;
 
     char *joined = xasprintf("%s%s", prompt, input);
-    int total_lines = input_display_lines(prompt, input, inner_w);
-    int first_line = total_lines > height ? total_lines - height : 0;
-    int pos = 0;
-    int row = 0;
     const int prompt_len = (int)strlen(prompt);
     const int joined_len = (int)strlen(joined);
-    while (row < height && pos < joined_len) {
-        int line_no = pos / inner_w;
-        int take = inner_w - (pos % inner_w);
-        if (take > joined_len - pos) take = joined_len - pos;
-        if (line_no >= first_line) {
-            attron(COLOR_PAIR(CP_INPUT) | A_BOLD);
-            for (int i = 0; i < take; i++) {
-                if (pos + i == prompt_len) attroff(COLOR_PAIR(CP_INPUT) | A_BOLD), attron(COLOR_PAIR(CP_INPUT));
-                mvaddch(y + row, inner_x + (pos % inner_w) + i, (unsigned char)joined[pos + i]);
-            }
-            attroff(COLOR_PAIR(CP_INPUT) | A_BOLD);
-            attroff(COLOR_PAIR(CP_INPUT));
-            row++;
-        }
-        pos += take;
-    }
-    if (joined_len == 0) draw_text(y, inner_x, inner_w, CP_INPUT, 0, "%s", "");
-
-    /* Where the cursor actually IS, not the end of the line. It used to
-     * be pinned to the end because there was nowhere else it could be. */
+    /* Where the cursor actually IS, not the end of the line. */
     int cursor_pos = prompt_len + (cursor_at < 0 ? (int)strlen(input) : cursor_at);
     if (cursor_pos > joined_len) cursor_pos = joined_len;
-    int cursor_line = cursor_pos / inner_w;
-    int cursor_col = cursor_pos % inner_w;
+    int cursor_line = 0, cursor_col = 0;
+    int total_lines = input_layout(joined, inner_w, cursor_pos, &cursor_line, &cursor_col, NULL);
+    if (cursor_line + 1 > total_lines) total_lines = cursor_line + 1;
+    int first_line = total_lines > height ? total_lines - height : 0;
+    struct input_draw d = {.y = y, .x = inner_x, .height = height, .first_line = first_line,
+                           .prompt_len = prompt_len};
+    input_layout(joined, inner_w, -1, NULL, NULL, &d);
+
     if (cursor_line < first_line) {
         cursor_line = first_line;
         cursor_col = 0;
