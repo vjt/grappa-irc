@@ -3316,7 +3316,9 @@ device list) is #2544b.
   nick, `E2E_DROPPED REASON=unpinned-nick`), not once we pinned its key;
   the interop spec now proves it against the real bot. The no-key card says
   so, and the alarm card says the other half of the ruling: take the new
-  key and verify it, or close the chat.
+  key and verify it, or delete the chat (the shredder; closing the window
+  would leave the alarm open, and deleting keeps the pinned key, so the
+  impostor's next line raises a new one).
 * **Verify is the pin verb, not a new one.** It pins the shown key again,
   verified (`pinEncryptedKey(…, true)`): the pin stays where it is, a SAS on
   that master is not ended (`Verifier.repinned` ends only those on another
@@ -3328,11 +3330,16 @@ device list) is #2544b.
   BroadcastChannel lag. It needs a verb, a store wrapper and a row kind of
   its own to say "verified by hand", and the stale case it guards is the
   user's own statement about the key on screen.
-* **Where it shows: wherever the badge reads `not verified`.** A key pinned,
-  not verified, no alarm open, the identity here. While an alarm is open the
-  pinned key offers no verify: the alarm is answered first, and a verify
-  beside the old key while a new one is speaking invites verifying the wrong
-  one.
+* **Where it shows: wherever the badge's door would offer it.** A key
+  pinned, not verified, no alarm open, no emoji comparison running, the
+  identity here; the rail and the badge apply the one rule. While an alarm is
+  open the pinned key offers no verify: the alarm is answered first, and a
+  verify beside the old key while a new one is speaking invites verifying the
+  wrong one. A verify is a `pinned` row, so like the SAS match and the old
+  form it settles a "they could not read your last message" card
+  (`unreadableStep`); the next failed send brings the card back. The pin is a
+  round trip: one that lands after its dialog closed closes nothing (the
+  button is gone, so is its callback).
 * **The badge shows the key.** A tap opens a dialog over the chat body with
   the peer's whole key, 43 characters: verified, the key alone; not
   verified, the key, the same verify button, and "compare emoji" second. The
