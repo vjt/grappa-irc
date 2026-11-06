@@ -17,10 +17,10 @@
     "sync:radio-logos": "bun scripts/sync-radio-logos.ts"
   },
   "dependencies": {
-    "@solidjs/router": "^1.0.0",
+    "@solidjs/router": "^1.0.1",
     "mediabunny": "^1.62.1",
     "phoenix": "^1.8.16",
-    "solid-js": "^1.9.17",
+    "solid-js": "^1.9.18",
     "uqr": "^0.1.3"
   },
   "devDependencies": {
