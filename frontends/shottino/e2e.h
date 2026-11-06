@@ -759,4 +759,124 @@ void e2e_copy(const e2e_ctx *c, const char *peer, const char *body, size_t body_
 /* What the claim door brought for sibling `did`: its KEYS text, or NULL. */
 void e2e_sibling_keys(const e2e_ctx *c, const char *did, const char *keys, e2e_result *res);
 
+/* ── Pairing (pairingMessages.ts, identity.ts prepareJoin/completeJoin) ──
+ * What two devices of one account say over the ECIES channel grappa's
+ * relay carries blind (CLIENT_PROTOCOL §4g). The roles: the HOLDER holds
+ * the master (rendezvous creator, ECIES inbound side) and signs; the
+ * JOINER is the new device (ECIES outbound side, speaks first). Only
+ * public keys and signatures cross; the master never leaves the holder.
+ * Pure like the rest of this file: the relay doors are the app's. */
+
+#define E2E_PAIRING_INFO "irc-e2e:v2:pair"
+/* grappa's lifetime of a rendezvous, for a client that lost its expires_at. */
+#define E2E_PAIRING_LIFETIME_S 300
+
+/* Why a network was left out of a pairing (cic's PairRefusal). */
+typedef enum { E2E_PAIR_FULL, E2E_PAIR_PAIRED, E2E_PAIR_LIST_CHANGED, E2E_PAIR_FAILED } e2e_pair_refusal;
+const char *e2e_pair_refusal_name(e2e_pair_refusal r); /* "full", "paired", "list-changed", "failed" */
+
+typedef enum {
+    E2E_PAIR_HELLO = 1,
+    E2E_PAIR_OFFER,
+    E2E_PAIR_JOIN,
+    E2E_PAIR_SIGNED,
+    E2E_PAIR_DONE
+} e2e_pair_kind;
+
+typedef struct {
+    const char *network, *master;
+} e2e_pair_offered;
+
+typedef struct {
+    const char *network;
+    e2e_id_block id;
+} e2e_pair_device;
+
+/* `list.ed25519` is not on the wire (the offer named the master);
+ * `list.ndevices` is the count on the wire, the first E2E_MAX_DEVICES kept. */
+typedef struct {
+    const char *network, *cert;
+    e2e_master_list list;
+} e2e_pair_signed_entry;
+
+typedef struct {
+    const char *network;
+    e2e_pair_refusal reason;
+} e2e_pair_refused;
+
+/* One decoded message; every pointer borrowed from `doc`. Only the
+ * fields of `kind` are set: offer (networks, full), join (devices,
+ * refused = `skipped`), signed (signed_, refused), done (paired). */
+typedef struct {
+    json_doc *doc;
+    e2e_pair_kind kind;
+    e2e_pair_offered *networks;
+    size_t nnetworks;
+    const char **full;
+    size_t nfull;
+    e2e_pair_device *devices;
+    size_t ndevices;
+    e2e_pair_refused *refused;
+    size_t nrefused;
+    e2e_pair_signed_entry *signed_;
+    size_t nsigned;
+    const char **paired;
+    size_t npaired;
+} e2e_pair_msg;
+
+/* decodePairMessage: strict UTF-8, a JSON object with `v` 1 and one of
+ * the five `t`, every field present and well typed, every key canonical,
+ * every `network` a non-empty string, every `reason` one of the four.
+ * Unknown extra fields are ignored; anything else is false (the pairing
+ * fails). Duplicate member names refuse the document. */
+bool e2e_pair_decode(const uint8_t *bytes, size_t len, e2e_pair_msg *out);
+void e2e_pair_msg_free(e2e_pair_msg *m);
+/* The five messages as compact JSON, in cic's member order. */
+char *e2e_pair_hello(void);
+char *e2e_pair_offer(const e2e_pair_offered *networks, size_t n, const char *const *full,
+                     size_t nfull);
+char *e2e_pair_join(const e2e_pair_device *devices, size_t n, const e2e_pair_refused *skipped,
+                    size_t nskipped);
+char *e2e_pair_signed(const e2e_pair_signed_entry *devices, size_t n,
+                      const e2e_pair_refused *refused, size_t nrefused);
+char *e2e_pair_done(const char *const *paired, size_t n);
+/* The joiner's first payload: vodozemac's InitialMessage.encode() holds a
+ * `|` the relay refuses, so it travels as base64url of its UTF-8,
+ * unpadded. Every later payload is the ECIES message as is. */
+char *e2e_pair_wrap_initial(const char *message);
+/* The inverse; NULL for anything but ^[A-Za-z0-9_-]+$ that decodes to
+ * UTF-8 (without NUL). */
+char *e2e_pair_unwrap_initial(const char *payload);
+/* The joiner's id block for `master` (S1), malloc'd; false when vodozemac refuses. */
+bool e2e_pair_id_block(vz_account *device, const char *master, char **curve25519, char **ed25519,
+                       char **sig);
+
+/* issueDevice — the HOLDER: the list at own.list_ver + 1 with the joiner's
+ * device added (sorted by bytes) and its certificate at that version.
+ * `joiner` comes off the channel, so it is judged first: canonical keys
+ * and its S1 vouching for own->master. False with `why`: FAILED (either
+ * check), PAIRED (already listed), FULL (E2E_DEVICE_CAP reached). */
+typedef struct {
+    long ver;
+    e2e_strv devices;
+    char *sig, *cert;
+} e2e_pair_issued;
+bool e2e_pair_issue(vz_account *master_acct, const e2e_own *own, const e2e_id_block *joiner,
+                    e2e_pair_issued *out, e2e_pair_refusal *why);
+void e2e_pair_issued_free(e2e_pair_issued *i);
+/* acceptSigned — the JOINER: this device's place from what the holder
+ * signed, or false: the list must be a valid one signed by `master` and
+ * name `device`, and the certificate the master's over the device at that
+ * list's version. `out` (cert_ver = list ver) is the caller's to free. */
+bool e2e_pair_accept_signed(const char *master, vz_account *device,
+                            const e2e_pair_signed_entry *entry, e2e_own *out);
+/* identity.ts startOver: a new device account and no place, no master;
+ * of the state only the trust placed in others stays (their masters,
+ * devices and the pins). */
+void e2e_record_start_over(e2e_record *r);
+
+/* An ISO-8601 UTC instant as grappa writes one ("2026-11-07T10:05:00Z",
+ * fractional seconds and a +hh:mm offset allowed) in unix seconds. */
+bool e2e_iso8601_seconds(const char *s, int64_t *out);
+
 #endif /* SHOTTINO_E2E_H */

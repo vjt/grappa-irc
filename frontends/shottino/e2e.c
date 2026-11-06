@@ -4584,3 +4584,492 @@ void e2e_receive_copy(const e2e_ctx *c, const char *from_did, e2e_verb verb, con
     json_free(d);
     step_end(&s);
 }
+
+/* ── Pairing (pairingMessages.ts; identity.ts startOver/prepareJoin/completeJoin) ── */
+
+static const char *const PAIR_REFUSALS[] = {
+    [E2E_PAIR_FULL] = "full",
+    [E2E_PAIR_PAIRED] = "paired",
+    [E2E_PAIR_LIST_CHANGED] = "list-changed",
+    [E2E_PAIR_FAILED] = "failed",
+};
+
+const char *e2e_pair_refusal_name(e2e_pair_refusal r) {
+    return (size_t)r < sizeof(PAIR_REFUSALS) / sizeof(PAIR_REFUSALS[0]) ? PAIR_REFUSALS[r] : "failed";
+}
+
+static bool pair_refusal_of(const char *s, e2e_pair_refusal *out) {
+    for (size_t i = 0; s && i < sizeof(PAIR_REFUSALS) / sizeof(PAIR_REFUSALS[0]); i++) {
+        if (strcmp(s, PAIR_REFUSALS[i]) == 0) {
+            *out = (e2e_pair_refusal)i;
+            return true;
+        }
+    }
+    return false;
+}
+
+char *e2e_pair_wrap_initial(const char *message) {
+    return e2e_base64url((const uint8_t *)message, strlen(message));
+}
+
+char *e2e_pair_unwrap_initial(const char *payload) {
+    if (!payload || !payload[0]) return NULL;
+    char *std = xstrdup(payload);
+    for (char *p = std; *p; p++) {
+        if (*p == '-') *p = '+';
+        else if (*p == '_') *p = '/';
+        else if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9'))) {
+            free(std);
+            return NULL;
+        }
+    }
+    uint8_t *bytes;
+    size_t len;
+    bool ok = e2e_unbase64(std, &bytes, &len);
+    free(std);
+    if (!ok) return NULL;
+    /* A fatal TextDecoder's UTF-8; and no NUL, which vodozemac's C side
+     * would read as the end of the message. */
+    if (!utf8_valid(bytes, len) || memchr(bytes, 0, len)) {
+        free(bytes);
+        return NULL;
+    }
+    char *out = xstrndup((const char *)bytes, len);
+    free(bytes);
+    return out;
+}
+
+/* `key` when it is the canonical spelling of an Ed25519 / Curve25519 key. */
+static const char *pair_ed(const json_value *v) {
+    const char *s = str_of(v);
+    return s && e2e_ed25519_canonical(s) ? s : NULL;
+}
+
+static const char *pair_curve(const json_value *v) {
+    const char *s = str_of(v);
+    return s && e2e_curve25519_canonical(s) ? s : NULL;
+}
+
+static const char *pair_slug(const json_value *v) {
+    const char *s = str_of(v);
+    return s && s[0] ? s : NULL;
+}
+
+static const json_value *pair_array(const json_value *obj, const char *key) {
+    const json_value *v = json_get(obj, key);
+    return json_type_of(v) == JSON_ARRAY ? v : NULL;
+}
+
+/* Every element of `key` read as a slug; false for anything else. */
+static bool pair_slugs(const json_value *obj, const char *key, const char ***out, size_t *n) {
+    const json_value *a = pair_array(obj, key);
+    if (!a) return false;
+    *n = json_len(a);
+    *out = xmalloc((*n ? *n : 1) * sizeof(**out));
+    for (size_t i = 0; i < *n; i++)
+        if (!((*out)[i] = pair_slug(json_at(a, i)))) return false;
+    return true;
+}
+
+static bool pair_refusals(const json_value *obj, const char *key, e2e_pair_refused **out,
+                          size_t *n) {
+    const json_value *a = pair_array(obj, key);
+    if (!a) return false;
+    *n = json_len(a);
+    *out = xmalloc((*n ? *n : 1) * sizeof(**out));
+    for (size_t i = 0; i < *n; i++) {
+        const json_value *r = json_at(a, i);
+        if (json_type_of(r) != JSON_OBJECT) return false;
+        (*out)[i].network = pair_slug(json_get(r, "network"));
+        if (!(*out)[i].network || !pair_refusal_of(str_field(r, "reason"), &(*out)[i].reason))
+            return false;
+    }
+    return true;
+}
+
+static bool pair_id_block(const json_value *v, e2e_id_block *out) {
+    if (json_type_of(v) != JSON_OBJECT) return false;
+    out->curve25519 = pair_curve(json_get(v, "curve25519"));
+    out->ed25519 = pair_ed(json_get(v, "ed25519"));
+    out->sig = str_field(v, "sig");
+    return out->curve25519 && out->ed25519 && out->sig;
+}
+
+/* signedList: a number `ver`, every device a canonical key, a string sig.
+ * The rules (sorted, 1..4, ver range, the signature) are acceptSigned's. */
+static bool pair_signed_list(const json_value *v, e2e_master_list *out) {
+    memset(out, 0, sizeof(*out));
+    if (json_type_of(v) != JSON_OBJECT || !number_field(v, "ver", &out->ver)) return false;
+    const json_value *devs = pair_array(v, "devices");
+    out->sig = str_field(v, "sig");
+    if (!devs || !out->sig) return false;
+    out->ndevices = json_len(devs);
+    for (size_t i = 0; i < out->ndevices; i++) {
+        const char *k = pair_ed(json_at(devs, i));
+        if (!k) return false;
+        if (i < E2E_MAX_DEVICES) out->devices[i] = k;
+    }
+    return true;
+}
+
+static bool pair_fields(const json_value *o, e2e_pair_msg *m) {
+    const char *t = str_field(o, "t");
+    if (!t) return false;
+    if (strcmp(t, "hello") == 0) {
+        m->kind = E2E_PAIR_HELLO;
+        return true;
+    }
+    if (strcmp(t, "offer") == 0) {
+        m->kind = E2E_PAIR_OFFER;
+        const json_value *a = pair_array(o, "networks");
+        if (!a) return false;
+        m->nnetworks = json_len(a);
+        m->networks = xmalloc((m->nnetworks ? m->nnetworks : 1) * sizeof(*m->networks));
+        for (size_t i = 0; i < m->nnetworks; i++) {
+            const json_value *n = json_at(a, i);
+            if (json_type_of(n) != JSON_OBJECT) return false;
+            m->networks[i].network = pair_slug(json_get(n, "network"));
+            m->networks[i].master = pair_ed(json_get(n, "master"));
+            if (!m->networks[i].network || !m->networks[i].master) return false;
+        }
+        return pair_slugs(o, "full", &m->full, &m->nfull);
+    }
+    if (strcmp(t, "join") == 0) {
+        m->kind = E2E_PAIR_JOIN;
+        const json_value *a = pair_array(o, "devices");
+        if (!a) return false;
+        m->ndevices = json_len(a);
+        m->devices = xmalloc((m->ndevices ? m->ndevices : 1) * sizeof(*m->devices));
+        for (size_t i = 0; i < m->ndevices; i++) {
+            const json_value *d = json_at(a, i);
+            if (json_type_of(d) != JSON_OBJECT) return false;
+            m->devices[i].network = pair_slug(json_get(d, "network"));
+            if (!m->devices[i].network || !pair_id_block(json_get(d, "id"), &m->devices[i].id))
+                return false;
+        }
+        return pair_refusals(o, "skipped", &m->refused, &m->nrefused);
+    }
+    if (strcmp(t, "signed") == 0) {
+        m->kind = E2E_PAIR_SIGNED;
+        const json_value *a = pair_array(o, "devices");
+        if (!a) return false;
+        m->nsigned = json_len(a);
+        m->signed_ = xmalloc((m->nsigned ? m->nsigned : 1) * sizeof(*m->signed_));
+        for (size_t i = 0; i < m->nsigned; i++) {
+            const json_value *d = json_at(a, i);
+            if (json_type_of(d) != JSON_OBJECT) return false;
+            m->signed_[i].network = pair_slug(json_get(d, "network"));
+            m->signed_[i].cert = str_field(d, "cert");
+            if (!m->signed_[i].network || !m->signed_[i].cert ||
+                !pair_signed_list(json_get(d, "list"), &m->signed_[i].list))
+                return false;
+        }
+        return pair_refusals(o, "refused", &m->refused, &m->nrefused);
+    }
+    if (strcmp(t, "done") == 0) {
+        m->kind = E2E_PAIR_DONE;
+        return pair_slugs(o, "paired", &m->paired, &m->npaired);
+    }
+    return false;
+}
+
+bool e2e_pair_decode(const uint8_t *bytes, size_t len, e2e_pair_msg *out) {
+    memset(out, 0, sizeof(*out));
+    if (!bytes || !utf8_valid(bytes, len)) return false;
+    json_doc *d = decode_object((const char *)bytes, len);
+    if (!d) return false;
+    out->doc = d;
+    const json_value *o = json_root(d);
+    double v;
+    if (!number_field(o, "v", &v) || v != 1 || !pair_fields(o, out)) {
+        e2e_pair_msg_free(out);
+        return false;
+    }
+    return true;
+}
+
+void e2e_pair_msg_free(e2e_pair_msg *m) {
+    json_free(m->doc);
+    free(m->networks);
+    free(m->full);
+    free(m->devices);
+    free(m->refused);
+    free(m->signed_);
+    free(m->paired);
+    memset(m, 0, sizeof(*m));
+}
+
+static void pair_open(json_buf *b, const char *t) {
+    jb_init(b);
+    jb_obj_open(b);
+    jb_key(b, "v");
+    jb_num(b, 1);
+    jb_key(b, "t");
+    jb_str(b, t);
+}
+
+static void pair_write_slugs(json_buf *b, const char *key, const char *const *s, size_t n) {
+    jb_key(b, key);
+    jb_arr_open(b);
+    for (size_t i = 0; i < n; i++) jb_str(b, s[i]);
+    jb_arr_close(b);
+}
+
+static void pair_write_refusals(json_buf *b, const char *key, const e2e_pair_refused *r,
+                                size_t n) {
+    jb_key(b, key);
+    jb_arr_open(b);
+    for (size_t i = 0; i < n; i++) {
+        jb_obj_open(b);
+        jb_key(b, "network");
+        jb_str(b, r[i].network);
+        jb_key(b, "reason");
+        jb_str(b, e2e_pair_refusal_name(r[i].reason));
+        jb_obj_close(b);
+    }
+    jb_arr_close(b);
+}
+
+static char *pair_close(json_buf *b) {
+    jb_obj_close(b);
+    return take(b);
+}
+
+char *e2e_pair_hello(void) {
+    json_buf b;
+    pair_open(&b, "hello");
+    return pair_close(&b);
+}
+
+char *e2e_pair_offer(const e2e_pair_offered *networks, size_t n, const char *const *full,
+                     size_t nfull) {
+    json_buf b;
+    pair_open(&b, "offer");
+    jb_key(&b, "networks");
+    jb_arr_open(&b);
+    for (size_t i = 0; i < n; i++) {
+        jb_obj_open(&b);
+        jb_key(&b, "network");
+        jb_str(&b, networks[i].network);
+        jb_key(&b, "master");
+        jb_str(&b, networks[i].master);
+        jb_obj_close(&b);
+    }
+    jb_arr_close(&b);
+    pair_write_slugs(&b, "full", full, nfull);
+    return pair_close(&b);
+}
+
+char *e2e_pair_join(const e2e_pair_device *devices, size_t n, const e2e_pair_refused *skipped,
+                    size_t nskipped) {
+    json_buf b;
+    pair_open(&b, "join");
+    jb_key(&b, "devices");
+    jb_arr_open(&b);
+    for (size_t i = 0; i < n; i++) {
+        jb_obj_open(&b);
+        jb_key(&b, "network");
+        jb_str(&b, devices[i].network);
+        write_id_block(&b, devices[i].id.curve25519, devices[i].id.ed25519, devices[i].id.sig);
+        jb_obj_close(&b);
+    }
+    jb_arr_close(&b);
+    pair_write_refusals(&b, "skipped", skipped, nskipped);
+    return pair_close(&b);
+}
+
+char *e2e_pair_signed(const e2e_pair_signed_entry *devices, size_t n,
+                      const e2e_pair_refused *refused, size_t nrefused) {
+    json_buf b;
+    pair_open(&b, "signed");
+    jb_key(&b, "devices");
+    jb_arr_open(&b);
+    for (size_t i = 0; i < n; i++) {
+        const e2e_master_list *l = &devices[i].list;
+        jb_obj_open(&b);
+        jb_key(&b, "network");
+        jb_str(&b, devices[i].network);
+        jb_key(&b, "cert");
+        jb_str(&b, devices[i].cert);
+        jb_key(&b, "list");
+        jb_obj_open(&b);
+        jb_key(&b, "ver");
+        jb_num(&b, l->ver);
+        pair_write_slugs(&b, "devices", l->devices, l->ndevices < E2E_MAX_DEVICES ? l->ndevices : E2E_MAX_DEVICES);
+        jb_key(&b, "sig");
+        jb_str(&b, l->sig);
+        jb_obj_close(&b);
+        jb_obj_close(&b);
+    }
+    jb_arr_close(&b);
+    pair_write_refusals(&b, "refused", refused, nrefused);
+    return pair_close(&b);
+}
+
+char *e2e_pair_done(const char *const *paired, size_t n) {
+    json_buf b;
+    pair_open(&b, "done");
+    pair_write_slugs(&b, "paired", paired, n);
+    return pair_close(&b);
+}
+
+bool e2e_pair_id_block(vz_account *device, const char *master, char **curve25519, char **ed25519,
+                       char **sig) {
+    return id_block_sign(device, master, curve25519, ed25519, sig);
+}
+
+static int cmp_str(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+void e2e_pair_issued_free(e2e_pair_issued *i) {
+    strv_free(&i->devices);
+    free(i->sig);
+    free(i->cert);
+    memset(i, 0, sizeof(*i));
+}
+
+bool e2e_pair_issue(vz_account *master_acct, const e2e_own *own, const e2e_id_block *joiner,
+                    e2e_pair_issued *out, e2e_pair_refusal *why) {
+    memset(out, 0, sizeof(*out));
+    *why = E2E_PAIR_FAILED;
+    if (!joiner->curve25519 || !joiner->ed25519 || !joiner->sig ||
+        !e2e_curve25519_canonical(joiner->curve25519) || !e2e_ed25519_canonical(joiner->ed25519))
+        return false;
+    char *text = e2e_id_sig_text(joiner->curve25519, own->master);
+    bool vouches = vz_verify_ed25519(joiner->ed25519, text, joiner->sig) == 1;
+    free(text);
+    if (!vouches) return false;
+    if (strv_has(&own->list_devices, joiner->ed25519)) {
+        *why = E2E_PAIR_PAIRED;
+        return false;
+    }
+    if (own->list_devices.n >= E2E_DEVICE_CAP) {
+        *why = E2E_PAIR_FULL;
+        return false;
+    }
+    long ver = own->list_ver + 1;
+    if (ver > E2E_MAX_VER) return false;
+    out->ver = ver;
+    out->devices = strv_dup(&own->list_devices);
+    strv_push(&out->devices, joiner->ed25519);
+    qsort(out->devices.v, out->devices.n, sizeof(*out->devices.v), cmp_str);
+    out->sig = e2e_sign_list(master_acct, ver, (const char *const *)out->devices.v, out->devices.n);
+    out->cert = e2e_sign_cert(master_acct, ver, joiner->ed25519);
+    if (!out->sig || !out->cert) {
+        e2e_pair_issued_free(out);
+        return false;
+    }
+    return true;
+}
+
+bool e2e_pair_accept_signed(const char *master, vz_account *device,
+                            const e2e_pair_signed_entry *entry, e2e_own *out) {
+    memset(out, 0, sizeof(*out));
+    e2e_master_list l = entry->list;
+    l.ed25519 = master;
+    if (!e2e_valid_master_list(&l)) return false;
+    char *e = vzs(vz_account_ed25519_key(device));
+    if (!e) abort();
+    char did[E2E_DID_LEN + 1];
+    bool ok = list_names(&l, e) && e2e_did(e, did);
+    long ver = (long)l.ver;
+    char *text = e2e_cert_sig_text(ver, e);
+    ok = ok && entry->cert && vz_verify_ed25519(master, text, entry->cert) == 1;
+    free(text);
+    free(e);
+    if (!ok) return false;
+    out->master = xstrdup(master);
+    out->cert = xstrdup(entry->cert);
+    out->cert_ver = ver;
+    out->list_ver = ver;
+    for (size_t i = 0; i < l.ndevices; i++) strv_push(&out->list_devices, l.devices[i]);
+    out->list_sig = xstrdup(l.sig);
+    out->did = xstrdup(did);
+    return true;
+}
+
+void e2e_record_start_over(e2e_record *r) {
+    vz_account_free(r->account);
+    r->account = vz_account_new();
+    if (!r->account) abort();
+    vz_account_free(r->master);
+    r->master = NULL;
+    if (r->own) {
+        e2e_own_free(r->own);
+        free(r->own);
+        r->own = NULL;
+    }
+    /* The trust placed in others stays: their masters, devices and pins.
+     * Everything bound to the old device account goes. */
+    e2e_state kept;
+    e2e_state_init(&kept);
+    kept.masters = r->state.masters;
+    kept.nmasters = r->state.nmasters;
+    kept.devices = r->state.devices;
+    kept.ndevices = r->state.ndevices;
+    r->state.masters = NULL;
+    r->state.nmasters = 0;
+    r->state.devices = NULL;
+    r->state.ndevices = 0;
+    for (size_t i = 0; i < r->state.npeers; i++) {
+        e2e_peer *p = &r->state.peers[i];
+        if (!p->pin) continue;
+        kept.peers = xrealloc(kept.peers, (kept.npeers + 1) * sizeof(*kept.peers));
+        e2e_peer *q = &kept.peers[kept.npeers++];
+        memset(q, 0, sizeof(*q));
+        q->key = xstrdup(p->key);
+        q->pin = xstrdup(p->pin);
+    }
+    e2e_state_free(&r->state);
+    r->state = kept;
+}
+
+/* Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's
+ * days_from_civil). */
+static int64_t days_from_civil(int64_t y, int64_t m, int64_t d) {
+    y -= m <= 2;
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    int64_t yoe = y - era * 400;
+    int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+static bool digits(const char *s, int n, int *out) {
+    int v = 0;
+    for (int i = 0; i < n; i++) {
+        if (s[i] < '0' || s[i] > '9') return false;
+        v = v * 10 + (s[i] - '0');
+    }
+    *out = v;
+    return true;
+}
+
+bool e2e_iso8601_seconds(const char *s, int64_t *out) {
+    int y, mo, d, h, mi, se;
+    if (!s || strlen(s) < 20 || !digits(s, 4, &y) || s[4] != '-' || !digits(s + 5, 2, &mo) ||
+        s[7] != '-' || !digits(s + 8, 2, &d) || (s[10] != 'T' && s[10] != ' ') ||
+        !digits(s + 11, 2, &h) || s[13] != ':' || !digits(s + 14, 2, &mi) || s[16] != ':' ||
+        !digits(s + 17, 2, &se))
+        return false;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || se > 60) return false;
+    const char *p = s + 19;
+    if (*p == '.') {
+        p++;
+        if (*p < '0' || *p > '9') return false;
+        while (*p >= '0' && *p <= '9') p++;
+    }
+    int64_t offset = 0;
+    if (*p == 'Z' && !p[1]) {
+        /* UTC */
+    } else if ((*p == '+' || *p == '-') && strlen(p) == 6 && p[3] == ':') {
+        int oh, om;
+        if (!digits(p + 1, 2, &oh) || !digits(p + 4, 2, &om) || oh > 23 || om > 59) return false;
+        offset = (oh * 3600 + om * 60) * (*p == '+' ? 1 : -1);
+    } else {
+        return false;
+    }
+    *out = days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se - offset;
+    return true;
+}

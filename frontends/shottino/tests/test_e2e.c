@@ -1615,6 +1615,330 @@ TEST(record_refuses_what_it_did_not_write) {
     e2e_record_free(&r);
 }
 
+/* ── pairing (pairingMessages.ts) ── */
+
+static bool pair_decodes(const char *json, e2e_pair_msg *m) {
+    return e2e_pair_decode((const uint8_t *)json, strlen(json), m);
+}
+
+static bool pair_refused(const char *json) {
+    e2e_pair_msg m;
+    bool ok = pair_decodes(json, &m);
+    if (ok) e2e_pair_msg_free(&m);
+    return !ok;
+}
+
+/* The two ends of the channel, as cic's two roles open it: the joiner's
+ * first payload travels base64url (the relay refuses its `|`), opens on
+ * the holder, and both derive the same 2-digit code. */
+TEST(pair_initial_payload_crosses_the_relay) {
+    vz_ecies *holder = vz_ecies_new(E2E_PAIRING_INFO);
+    char *curve = vz(vz_ecies_public_key(holder));
+    char *hello = e2e_pair_hello();
+    CHECK_STR(hello, "{\"v\":1,\"t\":\"hello\"}");
+    char *initial = NULL;
+    vz_established_ecies *out = vz_ecies_establish_outbound(
+        vz_ecies_new(E2E_PAIRING_INFO), curve, (const uint8_t *)hello, strlen(hello), &initial);
+    CHECK(out && initial && strchr(initial, '|'));
+    char *wrapped = e2e_pair_wrap_initial(initial);
+    CHECK(strspn(wrapped, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") ==
+          strlen(wrapped));
+    char *back = e2e_pair_unwrap_initial(wrapped);
+    CHECK_STR(back, initial);
+    vz_buf plain;
+    vz_established_ecies *in = vz_ecies_establish_inbound(holder, back, &plain);
+    CHECK(in != NULL);
+    e2e_pair_msg m;
+    CHECK(in && e2e_pair_decode(plain.ptr, plain.len, &m) && m.kind == E2E_PAIR_HELLO);
+    if (in) e2e_pair_msg_free(&m);
+    CHECK(in && vz_established_ecies_check_code(in) == vz_established_ecies_check_code(out));
+    CHECK(in && vz_established_ecies_check_code(in) >= 0 && vz_established_ecies_check_code(in) <= 99);
+    /* After the initial, both ways are the ECIES message as is. */
+    char *done = e2e_pair_done(NULL, 0);
+    char *ct = vz(vz_established_ecies_encrypt(out, (const uint8_t *)done, strlen(done)));
+    vz_buf p2;
+    CHECK(in && vz_established_ecies_decrypt(in, ct, &p2) == 0 && p2.len == strlen(done) &&
+          memcmp(p2.ptr, done, p2.len) == 0);
+    vz_buf_free(p2);
+    vz_buf_free(plain);
+    /* What the relay charset or UTF-8 refuses. */
+    CHECK(e2e_pair_unwrap_initial("") == NULL);
+    CHECK(e2e_pair_unwrap_initial("abc+def") == NULL);
+    CHECK(e2e_pair_unwrap_initial("abc/def") == NULL);
+    CHECK(e2e_pair_unwrap_initial("abcd==") == NULL);
+    CHECK(e2e_pair_unwrap_initial("A") == NULL);
+    const uint8_t bad[] = {0xff, 0xfe, 0x41};
+    char *badw = e2e_base64url(bad, sizeof(bad));
+    CHECK(e2e_pair_unwrap_initial(badw) == NULL);
+    free(badw);
+    const uint8_t nul[] = {'a', 0, 'b'};
+    char *nulw = e2e_base64url(nul, sizeof(nul));
+    CHECK(e2e_pair_unwrap_initial(nulw) == NULL);
+    free(nulw);
+    free(ct);
+    free(done);
+    free(back);
+    free(wrapped);
+    vz_str_free(initial);
+    vz_established_ecies_free(in);
+    vz_established_ecies_free(out);
+    free(hello);
+    free(curve);
+}
+
+TEST(pair_messages_decode_strictly) {
+    vz_account *a = vz_account_new(), *b = vz_account_new();
+    char *ea = vz(vz_account_ed25519_key(a)), *ca = vz(vz_account_curve25519_key(a));
+    char *eb = vz(vz_account_ed25519_key(b));
+    e2e_pair_msg m;
+
+    char *offer = xfmt("{\"v\":1,\"t\":\"offer\",\"networks\":[{\"network\":\"azzurra\",\"master\":"
+                       "\"%s\",\"extra\":1}],\"full\":[\"libera\"],\"ignored\":true}",
+                       ea);
+    CHECK(pair_decodes(offer, &m));
+    CHECK(m.kind == E2E_PAIR_OFFER && m.nnetworks == 1 && m.nfull == 1);
+    CHECK_STR(m.networks[0].network, "azzurra");
+    CHECK_STR(m.networks[0].master, ea);
+    CHECK_STR(m.full[0], "libera");
+    e2e_pair_msg_free(&m);
+    /* JSON.parse reads 1.0 as 1. */
+    CHECK(!pair_refused("{\"v\":1.0,\"t\":\"hello\"}"));
+    CHECK(pair_refused("{\"v\":2,\"t\":\"hello\"}"));
+    CHECK(pair_refused("{\"t\":\"hello\"}"));
+    CHECK(pair_refused("{\"v\":\"1\",\"t\":\"hello\"}"));
+    CHECK(pair_refused("{\"v\":1,\"t\":\"howdy\"}"));
+    CHECK(pair_refused("{\"v\":1}"));
+    CHECK(pair_refused("[1]"));
+    CHECK(pair_refused("not json"));
+    CHECK(pair_refused("{\"v\":1,\"v\":1,\"t\":\"hello\"}"));
+    CHECK(pair_refused("{\"v\":1,\"t\":\"offer\",\"networks\":[]}"));
+    /* A key that is not vodozemac's one spelling: the last character of
+     * 32 bytes carries two zero bits, and one past it sets them. */
+    static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char skew[64];
+    snprintf(skew, sizeof(skew), "%s", ea);
+    skew[42] = B64[(strchr(B64, ea[42]) - B64) + 1];
+    CHECK(!e2e_ed25519_canonical(skew));
+    char *noncanon = xfmt("{\"v\":1,\"t\":\"offer\",\"networks\":[{\"network\":\"x\",\"master\":"
+                          "\"%s\"}],\"full\":[]}",
+                          skew);
+    CHECK(pair_refused(noncanon));
+    free(noncanon);
+    CHECK(pair_refused("{\"v\":1,\"t\":\"offer\",\"networks\":[{\"network\":\"x\",\"master\":"
+                       "\"nokey\"}],\"full\":[]}"));
+    CHECK(pair_refused("{\"v\":1,\"t\":\"offer\",\"networks\":[],\"full\":[\"\"]}"));
+    CHECK(pair_refused("{\"v\":1,\"t\":\"offer\",\"networks\":[7],\"full\":[]}"));
+    CHECK(pair_refused("{\"v\":1,\"t\":\"done\",\"paired\":[\"a\",3]}"));
+    CHECK(!pair_refused("{\"v\":1,\"t\":\"done\",\"paired\":[]}"));
+    CHECK(pair_refused("{\"v\":1,\"t\":\"join\",\"devices\":[],\"skipped\":[{\"network\":\"a\","
+                       "\"reason\":\"nope\"}]}"));
+    CHECK(!pair_refused("{\"v\":1,\"t\":\"join\",\"devices\":[],\"skipped\":[{\"network\":\"a\","
+                        "\"reason\":\"list-changed\"}]}"));
+    char *join_nosig = xfmt("{\"v\":1,\"t\":\"join\",\"devices\":[{\"network\":\"a\",\"id\":{"
+                            "\"curve25519\":\"%s\",\"ed25519\":\"%s\"}}],\"skipped\":[]}",
+                            ca, ea);
+    CHECK(pair_refused(join_nosig));
+    free(join_nosig);
+    /* A curve in the ed25519 slot is still a 32-byte key; the swap of the
+     * two is caught by S1, not here. A signed list's ver must be a number. */
+    char *signed_badver = xfmt("{\"v\":1,\"t\":\"signed\",\"devices\":[{\"network\":\"a\",\"cert\":"
+                               "\"c\",\"list\":{\"ver\":\"2\",\"devices\":[\"%s\"],\"sig\":\"s\"}}],"
+                               "\"refused\":[]}",
+                               ea);
+    CHECK(pair_refused(signed_badver));
+    free(signed_badver);
+    const uint8_t bad_utf8[] = "{\"v\":1,\"t\":\"hello\",\"x\":\"\xff\"}";
+    CHECK(!e2e_pair_decode(bad_utf8, sizeof(bad_utf8) - 1, &m));
+
+    /* The builders' output decodes to what went in. */
+    char *eaj = NULL, *caj = NULL, *sig = NULL;
+    CHECK(e2e_pair_id_block(a, eb, &caj, &eaj, &sig));
+    e2e_pair_device dev = {"azzurra", {caj, eaj, sig}};
+    e2e_pair_refused skip = {"libera", E2E_PAIR_FULL};
+    char *join = e2e_pair_join(&dev, 1, &skip, 1);
+    char *want = xfmt("{\"v\":1,\"t\":\"join\",\"devices\":[{\"network\":\"azzurra\",\"id\":{"
+                      "\"curve25519\":\"%s\",\"ed25519\":\"%s\",\"sig\":\"%s\"}}],\"skipped\":[{"
+                      "\"network\":\"libera\",\"reason\":\"full\"}]}",
+                      caj, eaj, sig);
+    CHECK_STR(join, want);
+    CHECK(pair_decodes(join, &m) && m.kind == E2E_PAIR_JOIN && m.ndevices == 1 &&
+          m.nrefused == 1 && m.refused[0].reason == E2E_PAIR_FULL);
+    CHECK_STR(m.devices[0].id.sig, sig);
+    e2e_pair_msg_free(&m);
+    e2e_pair_offered on = {"azzurra", eb};
+    const char *full[] = {"libera"};
+    char *built = e2e_pair_offer(&on, 1, full, 1);
+    CHECK(pair_decodes(built, &m) && m.kind == E2E_PAIR_OFFER && m.nnetworks == 1);
+    e2e_pair_msg_free(&m);
+    const char *paired[] = {"azzurra"};
+    char *done = e2e_pair_done(paired, 1);
+    CHECK_STR(done, "{\"v\":1,\"t\":\"done\",\"paired\":[\"azzurra\"]}");
+    free(done);
+    free(built);
+    free(join);
+    free(want);
+    free(eaj);
+    free(caj);
+    free(sig);
+    free(offer);
+    free(ea);
+    free(ca);
+    free(eb);
+    vz_account_free(a);
+    vz_account_free(b);
+}
+
+/* issueDevice on the holder, acceptSigned on the joiner: what one signs
+ * the other takes, and what either refuses. */
+TEST(pair_issue_and_accept) {
+    vz_account *hdev = vz_account_new(), *master = vz_account_new(), *jdev = vz_account_new();
+    e2e_own own;
+    e2e_own_bootstrap(hdev, master, &own);
+    char *je = vz(vz_account_ed25519_key(jdev));
+    char *curve, *ed, *sig;
+    CHECK(e2e_pair_id_block(jdev, own.master, &curve, &ed, &sig));
+    CHECK_STR(ed, je);
+    e2e_id_block id = {curve, ed, sig};
+    e2e_pair_issued is;
+    e2e_pair_refusal why;
+    CHECK(e2e_pair_issue(master, &own, &id, &is, &why));
+    CHECK_LONG(is.ver, 2);
+    CHECK_LONG(is.devices.n, 2);
+    CHECK(strcmp(is.devices.v[0], is.devices.v[1]) < 0);
+
+    e2e_pair_signed_entry entry = {"azzurra", is.cert, {NULL, (double)is.ver, is.devices.n,
+                                                        {is.devices.v[0], is.devices.v[1]}, is.sig}};
+    /* Through the wire and back, as the joiner reads it. */
+    char *msg = e2e_pair_signed(&entry, 1, NULL, 0);
+    e2e_pair_msg m;
+    CHECK(e2e_pair_decode((const uint8_t *)msg, strlen(msg), &m) && m.kind == E2E_PAIR_SIGNED &&
+          m.nsigned == 1);
+    e2e_own placed;
+    CHECK(e2e_pair_accept_signed(own.master, jdev, &m.signed_[0], &placed));
+    CHECK_LONG(placed.cert_ver, 2);
+    CHECK_LONG(placed.list_ver, 2);
+    CHECK_STR(placed.master, own.master);
+    CHECK(e2e_own_verify(&placed, jdev));
+    e2e_own_free(&placed);
+    /* Another master, a list not naming this device, a cert at another
+     * version or over another key: refused. */
+    CHECK(!e2e_pair_accept_signed(je, jdev, &m.signed_[0], &placed));
+    CHECK(!e2e_pair_accept_signed(own.master, hdev, &m.signed_[0], &placed));
+    e2e_pair_signed_entry forged = m.signed_[0];
+    char *cert1 = e2e_sign_cert(master, 1, je);
+    forged.cert = cert1;
+    CHECK(!e2e_pair_accept_signed(own.master, jdev, &forged, &placed));
+    forged = m.signed_[0];
+    forged.list.ver = 3;
+    CHECK(!e2e_pair_accept_signed(own.master, jdev, &forged, &placed));
+    free(cert1);
+    e2e_pair_msg_free(&m);
+    free(msg);
+
+    /* Already listed; an S1 over another master; a full list. */
+    e2e_own two;
+    memset(&two, 0, sizeof(two));
+    two.master = strdup(own.master);
+    two.list_ver = is.ver;
+    for (size_t i = 0; i < is.devices.n; i++) {
+        two.list_devices.v = realloc(two.list_devices.v, (two.list_devices.n + 1) * sizeof(char *));
+        two.list_devices.v[two.list_devices.n++] = strdup(is.devices.v[i]);
+    }
+    e2e_pair_issued again;
+    CHECK(!e2e_pair_issue(master, &two, &id, &again, &why) && why == E2E_PAIR_PAIRED);
+    char *c2, *e2, *s2;
+    vz_account *other = vz_account_new();
+    CHECK(e2e_pair_id_block(other, je, &c2, &e2, &s2));
+    e2e_id_block wrong = {c2, e2, s2};
+    CHECK(!e2e_pair_issue(master, &own, &wrong, &again, &why) && why == E2E_PAIR_FAILED);
+    e2e_id_block swapped = {ed, curve, sig};
+    CHECK(!e2e_pair_issue(master, &own, &swapped, &again, &why) && why == E2E_PAIR_FAILED);
+    free(c2);
+    free(e2);
+    free(s2);
+    vz_account *third = vz_account_new();
+    char *e3 = vz(vz_account_ed25519_key(third));
+    two.list_devices.v = realloc(two.list_devices.v, 3 * sizeof(char *));
+    two.list_devices.v[two.list_devices.n++] = e3;
+    vz_account *fourth = vz_account_new();
+    char *c4, *e4, *s4;
+    CHECK(e2e_pair_id_block(fourth, own.master, &c4, &e4, &s4));
+    e2e_id_block id4 = {c4, e4, s4};
+    CHECK(!e2e_pair_issue(master, &two, &id4, &again, &why) && why == E2E_PAIR_FULL);
+    free(c4);
+    free(e4);
+    free(s4);
+    e2e_own_free(&two);
+    e2e_pair_issued_free(&is);
+    vz_account_free(fourth);
+    vz_account_free(third);
+    vz_account_free(other);
+    free(curve);
+    free(ed);
+    free(sig);
+    free(je);
+    e2e_own_free(&own);
+    vz_account_free(hdev);
+    vz_account_free(master);
+    vz_account_free(jdev);
+}
+
+/* startOver: a new device account, no place, no master; the trust placed
+ * in others (masters, devices, pins) stays, nothing bound to the old
+ * device account does. */
+TEST(record_start_over_keeps_only_trust) {
+    e2e_record r;
+    e2e_record_new(&r);
+    char *old = vz(vz_account_ed25519_key(r.account));
+    r.master = vz_account_new();
+    r.own = calloc(1, sizeof(*r.own));
+    e2e_own_bootstrap(r.account, r.master, r.own);
+    e2e_ctx c = {&r, "me", -1, 1000};
+    vz_account *peer = vz_account_new();
+    char *pm = vz(vz_account_ed25519_key(peer));
+    e2e_result res;
+    e2e_result_init(&res);
+    CHECK(e2e_pin(&c, "Alice", pm, true, &res) == E2E_PIN_PINNED);
+    e2e_result_free(&res);
+    r.state.inbox = 42;
+    r.state.next_ref = 7;
+    size_t masters = r.state.nmasters;
+    e2e_record_start_over(&r);
+    char *fresh = vz(vz_account_ed25519_key(r.account));
+    CHECK(strcmp(old, fresh) != 0);
+    CHECK(r.master == NULL && r.own == NULL);
+    CHECK_LONG(r.state.inbox, 0);
+    CHECK_LONG(r.state.nmasters, masters);
+    CHECK_LONG(r.state.npeers, 1);
+    CHECK_STR(r.state.peers[0].key, "alice");
+    CHECK_STR(r.state.peers[0].pin, pm);
+    /* It still writes and reads back as a record. */
+    char *json = e2e_record_to_json(&r);
+    e2e_record back;
+    CHECK(json && e2e_record_from_json(json, strlen(json), &back));
+    if (json) e2e_record_free(&back);
+    free(json);
+    free(fresh);
+    free(old);
+    free(pm);
+    vz_account_free(peer);
+    e2e_record_free(&r);
+}
+
+TEST(iso8601_instants) {
+    int64_t t;
+    CHECK(e2e_iso8601_seconds("1970-01-01T00:00:00Z", &t) && t == 0);
+    CHECK(e2e_iso8601_seconds("2026-11-07T10:05:00Z", &t) && t == 1794045900LL);
+    CHECK(e2e_iso8601_seconds("2026-11-07T10:05:00.123456Z", &t) && t == 1794045900LL);
+    CHECK(e2e_iso8601_seconds("2026-11-07T12:05:00+02:00", &t) && t == 1794045900LL);
+    CHECK(e2e_iso8601_seconds("2000-02-29T00:00:00Z", &t) && t == 951782400LL);
+    CHECK(!e2e_iso8601_seconds("2026-11-07", &t));
+    CHECK(!e2e_iso8601_seconds("2026-13-07T10:05:00Z", &t));
+    CHECK(!e2e_iso8601_seconds("2026-11-07T10:05:00", &t));
+    CHECK(!e2e_iso8601_seconds("2026-11-07T10:05:00Zjunk", &t));
+    CHECK(!e2e_iso8601_seconds(NULL, &t));
+}
+
 int main(void) {
     RUN(did_vectors);
     RUN(fb_vectors_are_cicchettos);
@@ -1638,5 +1962,10 @@ int main(void) {
     RUN(sending_refusals);
     RUN(store_atomic_locked_private);
     RUN(record_refuses_what_it_did_not_write);
+    RUN(pair_initial_payload_crosses_the_relay);
+    RUN(pair_messages_decode_strictly);
+    RUN(pair_issue_and_accept);
+    RUN(record_start_over_keeps_only_trust);
+    RUN(iso8601_instants);
     return test_report();
 }
