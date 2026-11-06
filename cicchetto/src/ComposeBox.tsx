@@ -249,6 +249,10 @@ const ComposeBox: Component<Props> = (props) => {
   // issue 2356 — touchmoves received this touch, claimed or not. Diag only:
   // it splits "no touchmove ever arrived" from "moved, but not claimed".
   let moveCount = 0;
+  // issue 2356 — touchstart's own event timestamp. Diag only: END prints the
+  // touchend's timestamp minus this one, read off the events rather than off
+  // the handler clock, so events queued behind other work don't shrink it.
+  let swipeStartStamp = 0;
   // On-device gesture diagnostics (#123): captured once per touch at
   // touchstart so the flag is read a single time, not per move. When on,
   // touchstart / claim / touchend push a line into diagLog for DiagFloat to
@@ -338,13 +342,22 @@ const ComposeBox: Component<Props> = (props) => {
     const t = e.touches.length === 1 ? e.touches[0] : undefined;
     swipeStart = t ? { x: t.clientX, y: t.clientY } : null;
     swipeStartTime = performance.now();
+    swipeStartStamp = e.timeStamp;
     claimedAxis = null;
     moveCount = 0;
     diagOn = isDiagEnabled();
     if (diagOn && textareaEl && t) {
       const el = textareaEl;
+      // issue 2356 — `cx` is where the finger landed, in px from the left
+      // edge of the textarea's text (its content box): negative is the
+      // padding or the border, positive is over the typed text or past its
+      // end. END's dx/dy are touchend's own point measured from this one.
+      const textLeft =
+        el.getBoundingClientRect().left +
+        el.clientLeft +
+        Number.parseFloat(getComputedStyle(el).paddingLeft);
       diagPush(
-        `TS y=${Math.round(t.clientY)} st=${el.scrollTop} sh=${el.scrollHeight} ch=${el.clientHeight} sel=${el.selectionStart},${el.selectionEnd}`,
+        `TS cx=${Math.round(t.clientX - textLeft)} y=${Math.round(t.clientY)} st=${el.scrollTop} sh=${el.scrollHeight} ch=${el.clientHeight} sel=${el.selectionStart},${el.selectionEnd}`,
       );
     }
   };
@@ -399,10 +412,12 @@ const ComposeBox: Component<Props> = (props) => {
       const st = textareaEl ? textareaEl.scrollTop : -1;
       // issue 2356 — dx, the move count and the selection are what separate
       // the three ways a horizontal drag goes unclaimed (#1205 selection, no
-      // touchmove, under the slop) from each other and from a tap.
+      // touchmove, under the slop) from each other and from a tap. `ms` is
+      // this touchend's timestamp minus touchstart's, which times the
+      // touchend against the drag the finger made.
       const sel = textareaEl ? `${textareaEl.selectionStart},${textareaEl.selectionEnd}` : "-";
       diagPush(
-        `END claimed=${claimed ?? "no"} act=${action ?? "none"} dy=${Math.round(end.y - start.y)} st=${st} dx=${Math.round(end.x - start.x)} moves=${moveCount} sel=${sel}`,
+        `END claimed=${claimed ?? "no"} act=${action ?? "none"} dy=${Math.round(end.y - start.y)} st=${st} dx=${Math.round(end.x - start.x)} moves=${moveCount} ms=${Math.round(e.timeStamp - swipeStartStamp)} sel=${sel}`,
       );
     }
     switch (action) {
@@ -433,6 +448,22 @@ const ComposeBox: Component<Props> = (props) => {
     }
   };
 
+  // issue 2356 — a touch the platform takes away ends here instead of at
+  // touchend, so it fires nothing. For a one-finger touch, a TS with no END
+  // already says that no touchend arrived (the ring drops its OLDEST lines,
+  // so an END cannot scroll out while its TS is still shown); this line
+  // tells a cancel apart from a touch that got neither event.
+  const onTouchCancel = (e: TouchEvent) => {
+    const start = swipeStart;
+    const t = e.changedTouches[0];
+    if (!diagOn || start === null || t === undefined) return;
+    const st = textareaEl ? textareaEl.scrollTop : -1;
+    const sel = textareaEl ? `${textareaEl.selectionStart},${textareaEl.selectionEnd}` : "-";
+    diagPush(
+      `CANCEL claimed=${claimedAxis ?? "no"} dy=${Math.round(t.clientY - start.y)} st=${st} dx=${Math.round(t.clientX - start.x)} moves=${moveCount} sel=${sel}`,
+    );
+  };
+
   // Bind the swipe listeners on the textarea element itself, bypassing
   // Solid's passive document-level event delegation (touchmove MUST be
   // non-passive for preventDefault to take). onCleanup removes them when the
@@ -442,10 +473,12 @@ const ComposeBox: Component<Props> = (props) => {
     el.addEventListener("touchstart", onTouchStart, { passive: true });
     el.addEventListener("touchmove", onTouchMove, { passive: false });
     el.addEventListener("touchend", onTouchEnd, { passive: true });
+    el.addEventListener("touchcancel", onTouchCancel, { passive: true });
     onCleanup(() => {
       el.removeEventListener("touchstart", onTouchStart);
       el.removeEventListener("touchmove", onTouchMove);
       el.removeEventListener("touchend", onTouchEnd);
+      el.removeEventListener("touchcancel", onTouchCancel);
       textareaEl = undefined;
     });
   };
