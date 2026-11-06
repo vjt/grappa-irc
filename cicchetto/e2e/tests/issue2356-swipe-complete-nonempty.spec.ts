@@ -15,7 +15,7 @@
 // members pane lives in a drawer) and that the completion engine completes
 // this prefix. After it, a red on the swipe can only be the gesture door.
 import type { CDPSession } from "@playwright/test";
-import { composeTextarea, loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import { composeSend, composeTextarea, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
@@ -29,11 +29,19 @@ const CHANNEL = AUTOJOIN_CHANNELS[0];
 // trip costs ~30-40ms of the page's clock: measured, 12 moves of 10px took
 // 448ms for 120px (0.27px/ms) and the production diag read `act=none` — the
 // harness was a slow drag, not a flick. Two moves keep it a flick.
-async function cdpSwipeRight(cdp: CDPSession, x: number, y: number, dx: number): Promise<void> {
-  const point = (at: number) => [{ x: at, y, radiusX: 8, radiusY: 8, force: 1, id: 1 }];
-  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: point(x) });
-  await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: point(x + dx / 2) });
-  await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: point(x + dx) });
+async function cdpSwipe(
+  cdp: CDPSession,
+  x: number,
+  y: number,
+  dx: number,
+  dy: number,
+): Promise<void> {
+  const point = (f: number) => [
+    { x: x + dx * f, y: y + dy * f, radiusX: 8, radiusY: 8, force: 1, id: 1 },
+  ];
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: point(0) });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: point(0.5) });
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: point(1) });
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 }
 
@@ -108,8 +116,9 @@ test("@touch issue 2356 — a swipe right completes the nick at the caret", asyn
 
     const box = await ta.boundingBox();
     if (box === null) throw new Error("compose textarea has no box");
-    // Start over the typed text — the reported shape — and drag right.
-    await cdpSwipeRight(cdp, box.x + 12, box.y + box.height / 2, 120);
+    // Start 12px in from the left edge, over the first character. Where the
+    // start sits relative to the text is the next test's subject.
+    await cdpSwipe(cdp, box.x + 12, box.y + box.height / 2, 120, 0);
 
     await expect.soft(ta, `${c.name}: swipe`).toHaveValue(completed);
     const log = await page.evaluate(
@@ -121,5 +130,88 @@ test("@touch issue 2356 — a swipe right completes the nick at the caret", asyn
     // green case is evidence too.
     console.log(`[2356] ${c.name}\n${body}`);
     await test.info().attach(`touch-log ${c.name}`, { body, contentType: "text/plain" });
+  }
+});
+
+// The x, in client px, of the centre of a glyph in the middle of a one-line
+// draft: the first character at or right of the middle that is not a space,
+// located from the textarea's left content edge by the rendered width in its
+// own font. A canvas measures it because a textarea's glyphs live in a UA
+// shadow tree no Range can reach.
+async function overGlyphX(ta: ReturnType<typeof composeTextarea>, text: string): Promise<number> {
+  return ta.evaluate((el: HTMLTextAreaElement, t: string) => {
+    let i = Math.floor(t.length / 2);
+    while (t.charAt(i) === " ") i += 1;
+    if (i >= t.length) throw new Error(`no glyph right of the middle of ${JSON.stringify(t)}`);
+    const cs = getComputedStyle(el);
+    const ctx = document.createElement("canvas").getContext("2d");
+    if (ctx === null) throw new Error("no 2d context");
+    ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    // A font string the canvas cannot parse is dropped without a word, and
+    // the measure would then come from its 10px default.
+    if (!ctx.font.includes(cs.fontSize)) throw new Error(`canvas refused font: ${ctx.font}`);
+    const r = el.getBoundingClientRect();
+    const left = r.left + Number.parseFloat(cs.borderLeftWidth) + Number.parseFloat(cs.paddingLeft);
+    return left + ctx.measureText(t.slice(0, i)).width + ctx.measureText(t.charAt(i)).width / 2;
+  }, text);
+}
+
+// vjt, 2026-11-04: the swipe is recognised when it starts in the left part of
+// the input, left of the text, and ignored when it starts over the middle of
+// the typed text — for right, up AND down. Each direction is driven from both
+// starting points; the left-padding start is the control.
+test("@touch issue 2356 — a swipe that starts over the typed text acts like one that starts left of it", async ({
+  page,
+}) => {
+  if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+  const nick = specNick();
+  await page.addInitScript(() => localStorage.setItem("cic_diag", "1"));
+  await loginAs(page, specUser());
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: nick });
+
+  const ta = composeTextarea(page);
+  await expect(ta).toBeVisible();
+  const sent = `swipe over text ${crypto.randomUUID().slice(0, 8)}`;
+  await composeSend(page, sent); // history = [sent]
+  await ta.click();
+  const cdp = await page.context().newCDPSession(page);
+
+  const box = await ta.boundingBox();
+  if (box === null) throw new Error("compose textarea has no box");
+  const y = box.y + box.height / 2;
+  const starts = {
+    "left of the text": async () => box.x + 3,
+    "over the text": async () => overGlyphX(ta, await ta.inputValue()),
+  };
+
+  for (const [where, startX] of Object.entries(starts)) {
+    const swipe = async (what: string, dx: number, dy: number) => {
+      const x = await startX();
+      await cdpSwipe(cdp, x, y, dx, dy);
+      const diag = await page.getByTestId("diag-float-swipe").innerText();
+      const final = JSON.stringify(await ta.inputValue());
+      console.log(`[2356] ${where} ${what} x=${Math.round(x - box.x)} final=${final}\n${diag}`);
+    };
+
+    // UP over a one-line draft recalls the last sent line.
+    const draft = "una bozza ancora corta";
+    await ta.fill(draft);
+    await expect(ta).toHaveValue(draft);
+    await swipe("up", 0, -120);
+    await expect.soft(ta, `${where}: swipe up recalls`).toHaveValue(sent);
+
+    // DOWN walks back to the stashed draft, so it runs only from a recalled
+    // line. A failed UP is already reported above, and RIGHT still runs.
+    if ((await ta.inputValue()) === sent) {
+      await swipe("down", 0, 120);
+      await expect.soft(ta, `${where}: swipe down returns to the draft`).toHaveValue(draft);
+    }
+
+    // RIGHT completes the nick prefix at the caret.
+    const lead = "ciao ";
+    await ta.fill(`${lead}${nick.slice(0, 3)}`);
+    await expect(ta).toHaveValue(`${lead}${nick.slice(0, 3)}`);
+    await swipe("right", 120, 0);
+    await expect.soft(ta, `${where}: swipe right completes`).toHaveValue(`${lead}${nick} `);
   }
 });
