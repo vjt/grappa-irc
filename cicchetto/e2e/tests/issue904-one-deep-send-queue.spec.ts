@@ -36,8 +36,8 @@ import { expect, specNick, specUser, test } from "../fixtures/test";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
-// POST /networks/{slug}/channels/{channel}/messages (no query string); the GET
-// pagination variant carries `?before=`/`?after=` and is let through untouched.
+// POST /networks/{slug}/channels/{channel}/messages; the GET pagination
+// variant carries `?before=`/`?after=` and is let through by the method.
 const SEND_POST_RE = /\/channels\/[^/]+\/messages(\?|$)/;
 
 test.setTimeout(60_000);
