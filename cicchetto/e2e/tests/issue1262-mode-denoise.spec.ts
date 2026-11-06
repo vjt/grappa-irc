@@ -64,6 +64,7 @@
 //
 // Desktop project (untagged → chromium; NO @webkit).
 
+import type { Page } from "@playwright/test";
 import { composeSend, loginAs, openRailMenu, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
@@ -76,6 +77,63 @@ test.setTimeout(90_000);
 // what its name says.
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// A MODE row's `body` is NULL on the wire — measured, not assumed:
+// `EventRouter` persists it as `build_persist(…, nil, %{modes:, args:})`, so
+// the token and its arguments live in `meta`. Asserting on `body` would
+// compare `undefined` and pass for the wrong reason.
+type ServedRow = { id: number; kind: string; meta?: { modes?: string; args?: string[] } };
+
+// THE SERVER HALF of both tests reads the RESPONSE BODY, not the pane.
+// Measured, because the first shape of the #1262 arm did the latter and was
+// VACUOUS: with only `message.ex` reverted and cic's own filter intact, the
+// render filter hides the row the server still sends, so the pane shows 0
+// either way and the spec passed with the server defect fully present. A
+// server-only mutant survived it; that is what promoted it from a DOM count
+// to a wire assertion.
+//
+// Watches every `GET .../channels/<channel>/messages` the server answers from
+// now on, and hands back the rows it served, ONCE EACH, by id. The cold load
+// issues more than one GET for a channel (measured: a first shape that awaited
+// one response read an array with no privmsg in it), and which one carries the
+// rows is not something these specs should pin, so the subject is the union of
+// what was served. A union, not a concatenation (issue 2328): cic has been
+// measured sending the SAME `?after=<cursor>&limit=200` twice, 20 ms apart,
+// after one reload (CI, PR 2565). Both answers carried the `+b` row once, and
+// summing them counted that one row twice. Rows are deduped by id; two
+// DISTINCT rows still count as two.
+//
+// The path must be ANCHORED, not `includes`-matched: the cold load also
+// issues `/messages/count`, whose URL contains `/messages` and whose body is
+// `{count: N}` (measured: a loose predicate matched it first and the arm died
+// on a TypeError). The page body itself is a BARE ARRAY (api.ts's
+// `fetchMessages`), not an envelope.
+//
+// The reader awaits every body still being read: the DOM barrier the tests
+// take first proves cic has the rows, not that this side has parsed them.
+function watchServedRows(page: Page, channel: string): () => Promise<ServedRow[]> {
+  const bodies: Promise<ServedRow[]>[] = [];
+  page.on("response", (r) => {
+    if (
+      r.request().method() !== "GET" ||
+      r.status() !== 200 ||
+      !new URL(r.url()).pathname.endsWith(`/channels/${encodeURIComponent(channel)}/messages`)
+    ) {
+      return;
+    }
+    bodies.push(
+      r.json().then(
+        (body) => (Array.isArray(body) ? (body as ServedRow[]) : []),
+        () => [],
+      ),
+    );
+  });
+  return async () => {
+    const byId = new Map<number, ServedRow>();
+    for (const row of (await Promise.all(bodies)).flat()) byId.set(row.id, row);
+    return [...byId.values()];
+  };
 }
 
 test("#1262 — a channel MODE row folds when denoised (server-side too), the $server umode row stays", async ({
@@ -135,44 +193,10 @@ test("#1262 — a channel MODE row folds when denoised (server-side too), the $s
     await expect(contentRow).toHaveCount(1); // a filter, not a blanket drop
 
     // --- THE SERVER HALF: the cold-load PAGE arrives without the mode row -
-    //
-    // Asserted on the RESPONSE BODY, not on the pane. Measured, because the
-    // first shape of this arm did the latter and was VACUOUS: with only
-    // `message.ex` reverted and cic's own filter intact, the render filter
-    // hides the row the server still sends, so the pane shows 0 either way
-    // and the spec passed with the server defect fully present. A server-only
-    // mutant survived it; that is what promoted this from a DOM count to a
-    // wire assertion. The pane count below stays as the operator-visible
-    // half, but it is the JSON that speaks for the server.
-    // The path must be ANCHORED, not `includes`-matched: the cold load also
-    // issues `/messages/count`, whose URL contains `/messages` and whose body
-    // is `{count: N}` — an object with no `.some`. Measured, not foreseen: the
-    // loose predicate matched it first and the arm died on a TypeError.
-    // EVERY such response is collected, not just the first one awaited. The
-    // first shape awaited a single response and read an array with no privmsg
-    // in it — the cold load issues more than one GET for a channel, and which
-    // one carries the rows is not something this spec should be pinning. The
-    // claim is about what the server served for this channel, so the subject
-    // is the UNION of what it served.
-    const servedPages: { kind: string }[][] = [];
-    page.on("response", (r) => {
-      if (
-        r.request().method() !== "GET" ||
-        r.status() !== 200 ||
-        !new URL(r.url()).pathname.endsWith(`/channels/${encodeURIComponent(channel)}/messages`)
-      ) {
-        return;
-      }
-      // `GET .../messages` answers a BARE ARRAY (api.ts's `fetchMessages`),
-      // not an envelope. Anchored on the path because `/messages/count`
-      // answers `{count: N}` and an `includes` match ate it first.
-      void r
-        .json()
-        .then((body) => {
-          if (Array.isArray(body)) servedPages.push(body as { kind: string }[]);
-        })
-        .catch(() => {});
-    });
+    // Read off the wire (`watchServedRows`). The pane count below stays as
+    // the operator-visible half, but it is the JSON that speaks for the
+    // server.
+    const readServed = watchServedRows(page, channel);
 
     await page.reload();
     await selectChannel(page, NETWORK_SLUG, channel, { awaitWsReady: false });
@@ -183,10 +207,10 @@ test("#1262 — a channel MODE row folds when denoised (server-side too), the $s
     await expect(contentRow).toHaveCount(1, { timeout: 15_000 });
     await expect(modeRows).toHaveCount(0);
 
-    const served = servedPages.flat();
-    // Non-vacuity, twice over: a page set that was never populated, or one
-    // that carried nothing, would satisfy "no mode row" for the wrong reason.
-    expect(servedPages.length).toBeGreaterThan(0);
+    const served = await readServed();
+    // Non-vacuity: no page answered, or pages that carried nothing, would
+    // satisfy "no mode row" for the wrong reason. The content row on the wire
+    // rules out both.
     expect(served.some((m) => m.kind === "privmsg")).toBe(true);
     expect(served.filter((m) => m.kind === "mode")).toEqual([]);
 
@@ -279,27 +303,7 @@ test("#2176 — a structural channel MODE row survives the denoise and the reloa
   // Same wire-level assertion as the churn test, and for the same measured
   // reason: a DOM-only check passes while the server-side filter is wrong,
   // because cic's render filter would be honouring the tag on its own.
-  // A MODE row's `body` is NULL on the wire — measured, not assumed:
-  // `EventRouter` persists it as `build_persist(…, nil, %{modes:, args:})`, so
-  // the token and its arguments live in `meta`. Asserting on `body` here would
-  // have compared `undefined` and passed for the wrong reason.
-  type ServedRow = { kind: string; meta?: { modes?: string; args?: string[] } };
-  const servedPages: ServedRow[][] = [];
-  page.on("response", (r) => {
-    if (
-      r.request().method() !== "GET" ||
-      r.status() !== 200 ||
-      !new URL(r.url()).pathname.endsWith(`/channels/${encodeURIComponent(channel)}/messages`)
-    ) {
-      return;
-    }
-    void r
-      .json()
-      .then((body) => {
-        if (Array.isArray(body)) servedPages.push(body as ServedRow[]);
-      })
-      .catch(() => {});
-  });
+  const readServed = watchServedRows(page, channel);
 
   await page.reload();
   await selectChannel(page, NETWORK_SLUG, channel, { awaitWsReady: false });
@@ -308,8 +312,7 @@ test("#2176 — a structural channel MODE row survives the denoise and the reloa
   await expect(banRow).toHaveCount(1);
   await expect(churnRow).toHaveCount(0);
 
-  const served = servedPages.flat();
-  expect(servedPages.length).toBeGreaterThan(0);
+  const served = await readServed();
   expect(served.some((m) => m.kind === "privmsg")).toBe(true);
   // The server SERVED the ban row and WITHHELD the churn one — the two
   // halves of the split, read off the wire rather than off the pane.
