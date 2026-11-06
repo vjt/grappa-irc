@@ -1271,9 +1271,48 @@ describe("the pairing doors", () => {
     ]);
   });
 
-  it("ownDevices answers null on a browser that holds no identity, and stores nothing", async () => {
-    await holder();
+  it("ownDevices names each device by its own key, never by the id grappa sends with it", async () => {
+    const a = await holder();
     const b = browser();
+    const { j } = await paired(a.store, b.store);
+    const [mineA, mineB] = [await stored(a.store), await stored(b.store)];
+    // A server that swaps the ids of two rows would have the confirmation
+    // name one device while the master signs the other out.
+    vi.mocked(api.listE2eDevices).mockImplementationOnce(async (t, s) => {
+      const rows = await grappa.api.listE2eDevices(t, s);
+      const swapped = rows.map((d) => d.did).reverse();
+      return rows.map((d, i) => ({ ...d, did: swapped[i] as string }));
+    });
+
+    const devices = await ownDevices(a.store, NICK, SLOT, SLUG);
+
+    expect(devices?.map(({ did, ed25519 }) => ({ did, ed25519 }))).toEqual([
+      { did: mineA.own?.did, ed25519: mineA.E },
+      { did: j.did, ed25519: mineB.E },
+    ]);
+  });
+
+  it("ownDevices takes grappa's latest list first: a browser without the master sees a device listed since it last synced", async () => {
+    const a = await holder();
+    const b = browser();
+    const { M } = await paired(a.store, b.store);
+    const [mineA, mineB] = [await stored(a.store), await stored(b.store)];
+    const [third = ""] = await strangers(1, M);
+    await grappa.api.putE2eList(NICK, SLUG, await listBy(a.store, 3, [mineA.E, mineB.E, third]));
+
+    const devices = await ownDevices(b.store, NICK, SLOT, SLUG);
+
+    expect(devices?.map((d) => d.ed25519)).toContain(third);
+    expect((await stored(b.store)).own?.list.ver).toBe(3);
+  });
+
+  it("ownDevices answers null on a browser that holds no identity, makes none, and stores nothing", async () => {
+    const b = browser();
+    // No identity anywhere: a sync would make one.
+    expect(await ownDevices(b.store, NICK, SLOT, SLUG)).toBeNull();
+    expect(await grappa.api.getE2eList(NICK, SLUG)).toBeNull();
+    // One held by another browser.
+    await holder();
     expect(await ownDevices(b.store, NICK, SLOT, SLUG)).toBeNull();
     expect(b.vault.records.has(SLOT)).toBe(false);
   });
@@ -1317,9 +1356,11 @@ describe("the pairing doors", () => {
     // The revoked browser's next sync finds a list that leaves it out.
     expect(await sync(b.store)).not.toBe("ready");
     expect(j.did).toBe(mineB.own?.did);
+    // Revoked again (from a tab that still showed it): the list no longer names it.
+    expect(await revokeDevice(a.store, NICK, SLOT, SLUG, mineB.E)).toBe("unlisted");
   });
 
-  it("revokeDevice refuses this browser's own device, a key the list does not name, and a browser without the master; it puts nothing", async () => {
+  it("revokeDevice refuses this browser's own device and a browser without the master as failed, a key the list does not name as unlisted; it puts nothing", async () => {
     const a = await holder();
     const b = browser();
     const { M } = await paired(a.store, b.store);
@@ -1328,7 +1369,7 @@ describe("the pairing doors", () => {
     vi.clearAllMocks();
 
     expect(await revokeDevice(a.store, NICK, SLOT, SLUG, mineA.E)).toBe("failed");
-    expect(await revokeDevice(a.store, NICK, SLOT, SLUG, stranger)).toBe("failed");
+    expect(await revokeDevice(a.store, NICK, SLOT, SLUG, stranger)).toBe("unlisted");
     expect(await revokeDevice(b.store, NICK, SLOT, SLUG, mineA.E)).toBe("failed");
 
     expect(api.putE2eList).not.toHaveBeenCalled();

@@ -9,7 +9,14 @@ import { me } from "../api";
 import { token } from "../auth";
 import { networkBySlug, networks } from "../networks";
 import { browserE2e } from "./browser";
-import { accountSlot, masterOf, type OwnDevice, ownDevices, revokeDevice } from "./identity";
+import {
+  accountSlot,
+  masterOf,
+  type OwnDevice,
+  ownDevices,
+  type RevokeOutcome,
+  revokeDevice,
+} from "./identity";
 import type { HolderDeps } from "./pairingSession";
 
 // The account is read from grappa (`/me`, shared with the networks resource),
@@ -72,10 +79,7 @@ export async function ownDevicesHere(slug: string): Promise<OwnDevice[] | null> 
 }
 
 /** Revokes the device `ed25519` from the network's identity, from the master's browser (`revokeDevice`). */
-export async function revokeDeviceHere(
-  slug: string,
-  ed25519: string,
-): Promise<"revoked" | "failed" | "list-changed"> {
+export async function revokeDeviceHere(slug: string, ed25519: string): Promise<RevokeOutcome> {
   const here = await slotHere(slug);
   return here === null
     ? "failed"

@@ -59,7 +59,10 @@ const DEVICES = [
 const [chat, setChat] = createSignal<Chat | undefined>(undefined);
 const [rows, setRows] = createSignal<ChatRow[] | undefined>(undefined);
 const [trust, setTrust] = createSignal<PeerTrust | null>(null);
-const [own, setOwn] = createSignal<string | undefined>(undefined);
+// Never equal to itself, as `ownKey` is not: encryptedChats writes the whole
+// record again on every refresh, so a refresh that keeps the key still wakes
+// whatever reads it.
+const [own, setOwn] = createSignal<string | undefined>(undefined, { equals: false });
 const [visible, setVisible] = createSignal(true);
 const [sas, setSas] = createSignal<SasView | null>(null);
 // issue 2547 — why the network's identity is elsewhere, or null while it is
@@ -1488,6 +1491,7 @@ describe("EncryptedChatPane, the rail", () => {
 
   it.each([
     ["list-changed", "the device list changed meanwhile"],
+    ["unlisted", "it is no longer on the device list"],
     ["failed", "this browser could not sign a new list"],
   ])("a revoke refused as %s says why", async (result, message) => {
     revokeDeviceHere.mockResolvedValue(result);
@@ -1531,6 +1535,40 @@ describe("EncryptedChatPane, the rail", () => {
     fireEvent.click(await screen.findByTestId("e2e-add-device"));
     panel.onClose?.();
     await waitFor(() => expect(ownDevicesHere).toHaveBeenCalledTimes(2));
+  });
+
+  it("a refresh that keeps the key reads neither the list nor the master again; a new key reads both", async () => {
+    renderPane();
+    await waitFor(() => expect(deviceRows()).toHaveLength(3));
+    const phone = deviceRows()[1];
+    expect(ownDevicesHere).toHaveBeenCalledTimes(1);
+    expect(holdsMasterHere).toHaveBeenCalledTimes(1);
+
+    setOwn(OWN);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ownDevicesHere).toHaveBeenCalledTimes(1);
+    expect(holdsMasterHere).toHaveBeenCalledTimes(1);
+    // The rows stay the same nodes: a focused revoke keeps its focus.
+    expect(deviceRows()[1]).toBe(phone);
+
+    setOwn(KEY);
+    await waitFor(() => expect(ownDevicesHere).toHaveBeenCalledTimes(2));
+    expect(holdsMasterHere).toHaveBeenCalledTimes(2);
+  });
+
+  it("a revoke's refusal stays through the read that follows it, and goes with the next read", async () => {
+    revokeDeviceHere.mockResolvedValue("list-changed");
+    renderPane();
+    await waitFor(() => expect(screen.getAllByTestId("e2e-own-device-revoke")).toHaveLength(2));
+    fireEvent.click(screen.getAllByTestId("e2e-own-device-revoke")[0] as HTMLElement);
+    acceptConfirm();
+    await screen.findByTestId("e2e-own-devices-error");
+    expect(ownDevicesHere).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(await screen.findByTestId("e2e-add-device"));
+    panel.onClose?.();
+    await waitFor(() => expect(ownDevicesHere).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.queryByTestId("e2e-own-devices-error")).toBeNull());
   });
 
   it("asks for no list while there is no key, nor while the identity is elsewhere", async () => {
