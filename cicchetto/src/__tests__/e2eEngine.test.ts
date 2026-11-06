@@ -39,14 +39,17 @@ import {
   ID_SIG_PREFIX,
   type IdBlock,
   type KeysEntry,
+  linesNeeded,
   listSigText,
   MAX_DEVICES,
+  MAX_FRAGMENTS,
   type MasterList,
   OTK_SIG_PREFIX,
   type ReceiveVerb,
   unbase64,
   validMasterList,
 } from "../lib/e2e/wire";
+import { frameBudgetForTarget } from "../lib/frameBudget";
 import {
   enlist,
   FRAME_BUDGET_BASE,
@@ -1406,6 +1409,40 @@ describe("curve rules on a KEYS entry (trust rule 4)", () => {
   });
 });
 
+/**
+ * `size` characters of text from `side` to bob's `device` alone, as the engine
+ * writes it on a copy of `side`'s state: the one message that goes. Throws
+ * when the engine sends nothing, i.e. when the text does not reach the device
+ * even alone.
+ */
+function aloneTo(side: Me, device: Account, size: number): Outbound {
+  const probe: Me = { ...side, state: structuredClone(side.state), events: [] };
+  const [message] = engineOf(probe).send(
+    "bob",
+    text("x".repeat(size)),
+    "probe",
+    null,
+    keyOf(device),
+  ).outbound;
+  if (message === undefined) throw new Error("the text does not reach the device alone");
+  return message;
+}
+
+/**
+ * The lines one message carrying `devices`' bodies of `size` characters of
+ * text (all of one kind) takes from `side`'s device to `*` on bob's line
+ * budget, built from what each device alone gets (`aloneTo`).
+ */
+function linesTogether(side: Me, devices: Account[], size: number): number {
+  const messages = devices.map((device) => aloneTo(side, device, size));
+  const [first] = messages;
+  if (first === undefined) throw new Error("no device");
+  const bodies = Object.assign({}, ...messages.map((m) => bodiesOf(m.payload)));
+  const payload = encodePayload({ ...decodePayload(first.payload), bodies });
+  const budget = frameBudgetForTarget(FRAME_BUDGET_BASE, "bob") as number;
+  return linesNeeded(first.verb, payload, budget, side.own.did, "*");
+}
+
 describe("sending to every trusted device", () => {
   it("asks for keys once, then sends one PKMSG to * with a body for each device, bound to it by fb", async () => {
     const g = new Grappa();
@@ -1902,6 +1939,68 @@ describe("sending to every trusted device", () => {
     expect(a.state.sessions).toEqual(sessions);
     expect(a.state.sent).toEqual(sent);
     expect(a.state.outq).toEqual({});
+  });
+
+  it("sends each device a message of its own when the bodies of all four are too long for one, each read on its device and recorded for it alone", () => {
+    const a = me("alice");
+    const bob = peerWith(MAX_DEVICES);
+    talking(a, "bob", bob, ...bob.devices);
+    for (const device of bob.devices) answers(a, device);
+    // The first size, 64 characters at a time, whose four bodies no longer
+    // fit one message; the probe also sends it to each device alone, which goes.
+    let size = 1_000;
+    while (linesTogether(a, bob.devices, size) <= MAX_FRAGMENTS) size += 64;
+    const body = "x".repeat(size);
+
+    const res = sends(a, "bob", body, null);
+
+    expect(res.events).toEqual([]);
+    expect(res.outbound.map((o) => [o.verb, o.to, Object.keys(bodiesOf(o.payload))])).toEqual(
+      bob.devices.map((device) => ["msg", didOf(device), [didOf(device)]]),
+    );
+    bob.devices.forEach((device, i) => {
+      expect(opened(device, "msg", res.outbound[i]?.payload ?? "")).toEqual(ours(a, body));
+    });
+    // Each message has its own msgid and its own record, of its one device.
+    const msgids = named(a, res);
+    expect(a.state.sent.slice(-MAX_DEVICES).map((s) => [s.msgid, Object.keys(s.devices)])).toEqual(
+      bob.devices.map((device, i) => [msgids[i], [didOf(device)]]),
+    );
+    // Each session moved once: the next message reads on every device.
+    const next = sends(a, "bob", "after", null);
+    for (const device of bob.devices) {
+      expect(opened(device, "msg", next.outbound[0]?.payload ?? "")).toEqual(ours(a, "after"));
+    }
+  });
+
+  it("sends a kind's bodies one a message only when that kind's message is too long: two MSG bodies stay together beside two PKMSGs", () => {
+    const a = me("alice");
+    const bob = peerWith(MAX_DEVICES);
+    const [one, two, three, four] = bob.devices as [Account, Account, Account, Account];
+    talking(a, "bob", bob, ...bob.devices);
+    answers(a, one);
+    answers(a, two);
+    // The first size, 64 characters at a time, whose two pre-key bodies no
+    // longer fit one message; the two normal bodies still do, and each
+    // pre-key body goes alone.
+    let size = 1_000;
+    while (linesTogether(a, [three, four], size) <= MAX_FRAGMENTS) size += 64;
+    expect(linesTogether(a, [one, two], size)).toBeLessThanOrEqual(MAX_FRAGMENTS);
+    const body = "x".repeat(size);
+
+    const res = sends(a, "bob", body, null);
+
+    expect(res.events).toEqual([]);
+    expect(res.outbound.map((o) => [o.verb, o.to, Object.keys(bodiesOf(o.payload))])).toEqual([
+      ["msg", "*", [didOf(one), didOf(two)]],
+      ["pkmsg", didOf(three), [didOf(three)]],
+      ["pkmsg", didOf(four), [didOf(four)]],
+    ]);
+    const [pair, toThree, toFour] = res.outbound as [Outbound, Outbound, Outbound];
+    expect(opened(one, "msg", pair.payload).body).toBe(body);
+    expect(opened(two, "msg", pair.payload).body).toBe(body);
+    expect(opened(three, "pkmsg", toThree.payload).body).toBe(body);
+    expect(opened(four, "pkmsg", toFour.payload).body).toBe(body);
   });
 
   it("sends five trusted devices two messages, of four bodies and of one, each with its own msgid and record of the devices it covered", () => {
