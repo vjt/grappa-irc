@@ -137,9 +137,11 @@ import ScrollbackPane from "./ScrollbackPane";
 // instead: each message as the payloads it crossed IRC as (`ciphertextOf`),
 // on the line it holds in the plaintext view, so the unread marker and the
 // delivery state stay on it (the lines are longer: the scroll may move). The
-// door is the window's row in the sidebar (`EncryptedChatMenu`), never the top
-// bar; the compose box stays, so a line typed there shows up as the
-// ciphertext it went as, and the search looks in what is shown.
+// doors are the window's row in the sidebar (`EncryptedChatMenu`) and, since
+// issue 2583, the `ciphertext` entry of the right rail's actions menu
+// (`RailActions`), never the top bar; the compose box stays, so a line typed
+// there shows up as the ciphertext it went as, and the search looks in what is
+// shown.
 
 type Props = {
   networkSlug: string;

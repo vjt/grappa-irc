@@ -8,6 +8,8 @@ import { type ChannelKey, channelKey } from "./lib/channelKey";
 import { conversationMuteKey, isConversationMuted } from "./lib/conversationMute";
 import { createDismissOnOutsidePointer } from "./lib/dismissOnOutsidePointer";
 import { syncedSetChannelPresencePref } from "./lib/displayPrefs";
+import { encryptedWireView, toggleEncryptedWireView } from "./lib/encryptedChats";
+import { focusedEncryptedWindow } from "./lib/encryptedWindow";
 import { canDetach, confirmDetach, confirmQuit } from "./lib/lifecycle";
 import { membersByChannel } from "./lib/members";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
@@ -99,11 +101,15 @@ import {
 // a modal and must not leave a live menu waiting underneath it for the
 // Cancel. `denoise` does NOT close it — it is a per-channel state toggle the
 // operator flips in place (watching the accent flip, re-toggling), not a
-// navigation away.
+// navigation away. `ciphertext` is the same kind of toggle, per encrypted chat,
+// and stays open for the same reason (issue 2583, on the phone too, where the
+// drawer still covers the pane it flipped, as it does for denoise).
 //
-// Buttons, in order: home · rooms · mentions · radio · themes · archive ·
-// settings · admin · refresh · denoise · detach · quit. Each carries its NAME as visible
+// Buttons, in order: home · rooms · mentions · player · radio · themes ·
+// archive · settings · admin · refresh · denoise · ciphertext · mute · detach ·
+// quit. Each carries its NAME as visible
 // text next to the glyph (#473: bare emoji had to be guessed / long-pressed).
+// `ciphertext` is the second state toggle that stays open (issue 2583).
 //
 // Gating is CAPABILITY-only — no form-factor gates (#473):
 //   * home / radio / themes / settings / archive / quit — always. The radio
@@ -118,6 +124,8 @@ import {
 //     is the button's home (the phone; on desktop it renders in the data
 //     card's own head instead).
 //   * denoise — channel-gated (a channel window is selected).
+//   * ciphertext — issue 2583, an encrypted window is selected
+//     (`focusedEncryptedWindow()`).
 //   * detach — `canDetach()`: a persistent identity has a bouncer to leave
 //     running, an ephemeral visitor does not.
 //
@@ -687,6 +695,38 @@ const RailActions: Component<Props> = (props) => {
                     {presenceShown() ? "\u{1F441}" : "\u{1F648}"}
                   </span>
                   <span class="rail-action-label">denoise</span>
+                </button>
+              );
+            }}
+          </Show>
+
+          {/* issue 2583 — the encrypted chat's ciphertext view (issue 2513):
+              vjt, "il right rail magari una nuova voce in actions menu". Gated
+              on the kind like denoise and mute, through the accessor Shell's
+              pane and RailContext's rail are keyed on, and shaped like denoise:
+              a state toggle flipped in place, so it does NOT close the menu,
+              and the accent, the icon and `aria-pressed` say which view is
+              showing while `title` says what a tap does. The state is the
+              chat's own in lib/encryptedChats, so the window list's row menu
+              (EncryptedChatMenu), which stays, flips the same view. */}
+          <Show when={focusedEncryptedWindow()}>
+            {(w) => {
+              const on = (): boolean => encryptedWireView(w().networkSlug, w().nick);
+              return (
+                <button
+                  type="button"
+                  class="shell-chrome-btn rail-action rail-action-wire-view"
+                  classList={{ "wire-view-on": on() }}
+                  data-testid="rail-action-wire-view"
+                  aria-pressed={on()}
+                  title={on() ? "Show plaintext" : "Show ciphertext"}
+                  aria-label="ciphertext view"
+                  onClick={() => toggleEncryptedWireView(w().networkSlug, w().nick)}
+                >
+                  <span class="rail-action-icon" aria-hidden="true">
+                    {on() ? "\u{1F523}" : "\u{1F512}"}
+                  </span>
+                  <span class="rail-action-label">ciphertext</span>
                 </button>
               );
             }}

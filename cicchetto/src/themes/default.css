@@ -3223,13 +3223,17 @@ html.resize-dragging * {
    `.action-cluster-presence-toggle` treatment. `flex: none` on the row is not
    wanted here (rows are full-width), so only the accent state is bespoke. The
    0,3,0 hover rule preserves the accent on hover (see the #305 note on the old
-   toggle) — `.shell-chrome-btn:hover` would otherwise flip it to var(--fg). */
-.rail-action-presence-toggle.presence-hidden {
+   toggle) — `.shell-chrome-btn:hover` would otherwise flip it to var(--fg).
+   issue 2583 — the encrypted chat's `ciphertext` entry is the same kind of
+   toggle and takes the same accent while the chat shows its ciphertext. */
+.rail-action-presence-toggle.presence-hidden,
+.rail-action-wire-view.wire-view-on {
   color: var(--accent);
   border-color: var(--accent);
 }
 
-.rail-action-presence-toggle.presence-hidden:hover {
+.rail-action-presence-toggle.presence-hidden:hover,
+.rail-action-wire-view.wire-view-on:hover {
   color: var(--accent);
 }
 
