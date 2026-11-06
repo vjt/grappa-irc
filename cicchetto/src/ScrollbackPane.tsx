@@ -35,6 +35,7 @@ import { type DaySeparatorSighting, pillDayAt, placeOf, topBandRootMargin } from
 import { diagPush } from "./lib/diagLog";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { e2eRequestWith } from "./lib/e2eRequests";
+import { ownDevice } from "./lib/encryptedChats";
 import { highlightPatterns } from "./lib/highlightList";
 import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { chantypesForNetwork, prefixForNetwork } from "./lib/isupport";
@@ -1169,12 +1170,29 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       // never read: they waited past the offline queue's TTL, or the queue
       // refused them. Told to the recipient only, in the peer's query
       // window. A typed row with no body — the server never words it.
+      // issue 2454 — since wire v2 the row names the device that missed them
+      // (`meta.e2e_device`, its id: one row per device, and every browser of
+      // the user shows the window). Only this browser's own device's row is
+      // "here"; another's names that device, by its id as the rail does. A
+      // row without one (before wire v2, or the encrypted pane's own line)
+      // is this browser's. With this browser's id not known yet, the row
+      // names the device: true either way, where "here" could be false.
       const undeliverable = msg.meta.e2e_undeliverable;
       if (typeof undeliverable === "number") {
+        const device = msg.meta.e2e_device;
+        const elsewhere = () =>
+          typeof device === "string" && device !== ownDevice(msg.network) ? device : null;
         return (
           <span class="scrollback-body" data-testid="e2e-undeliverable">
             *** {recordSenderSpan(msg.sender)} sent you {undeliverable} encrypted{" "}
-            {undeliverable === 1 ? "message" : "messages"} that cannot be read here
+            {undeliverable === 1 ? "message" : "messages"} that cannot be read{" "}
+            <Show when={elsewhere()} fallback="here">
+              {(did) => (
+                <>
+                  on your device <code>{did()}</code>
+                </>
+              )}
+            </Show>
           </span>
         );
       }

@@ -312,6 +312,14 @@ vi.mock("../lib/api", async (importOriginal) => {
 vi.mock("../lib/auth", () => ({
   token: () => "test-token",
 }));
+// issue 2454 — this browser's device id per network, as the identity sync
+// finds it (`encryptedChats.ownDevice`): a signal here, so a test can name
+// the device, or leave it unknown, and change it under a rendered row.
+const [ownDevices, setOwnDevices] = createSignal<Record<string, string>>({});
+vi.mock("../lib/encryptedChats", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/encryptedChats")>()),
+  ownDevice: (slug: string): string | undefined => ownDevices()[slug],
+}));
 
 import { type ChannelKey, channelKey } from "../lib/channelKey";
 // #325 — the REAL channelTopic store (not mocked). `seedTopic` stages a topic
@@ -5057,6 +5065,83 @@ describe("ScrollbackPane", () => {
       expect(screen.getByTestId("scrollback-line")).toHaveTextContent(
         "Alice sent you 1 encrypted message that cannot be read here",
       );
+    });
+
+    // issue 2454 — since wire v2 the row names the device that missed the
+    // messages (`meta.e2e_device`, its id), one row per device, in a query
+    // window every browser of the user shows. Only this browser's own
+    // device's row is "here"; a sibling's names that device, as the rail
+    // names a device (by its id: a device has no name). A row without the
+    // key (written before wire v2) stays "here".
+    describe("on a device (issue 2454)", () => {
+      const OWN = "b3duZGV2aWM";
+      const SIBLING = "c2libGluZzE";
+      const onDevice = (count: number, device: string): ScrollbackMessage => {
+        const row = notice(count);
+        return { ...row, meta: { ...row.meta, e2e_device: device } };
+      };
+
+      afterEach(() => setOwnDevices({}));
+
+      it("a sibling device's row names that device, not here", () => {
+        setOwnDevices({ azzurra: OWN });
+        setScrollback({ "azzurra alice": [onDevice(3, SIBLING)] });
+        render(() => <ScrollbackPane networkSlug="azzurra" channelName="alice" kind="query" />);
+        const notice_ = screen.getByTestId("e2e-undeliverable");
+        expect(notice_).toHaveTextContent(
+          `Alice sent you 3 encrypted messages that cannot be read on your device ${SIBLING}`,
+        );
+        expect(notice_.querySelector("code")).toHaveTextContent(SIBLING);
+        expect(notice_).not.toHaveTextContent("here");
+      });
+
+      it("this browser's own device's row is here", () => {
+        setOwnDevices({ azzurra: OWN });
+        setScrollback({ "azzurra alice": [onDevice(2, OWN)] });
+        render(() => <ScrollbackPane networkSlug="azzurra" channelName="alice" kind="query" />);
+        expect(screen.getByTestId("e2e-undeliverable")).toHaveTextContent(
+          "Alice sent you 2 encrypted messages that cannot be read here",
+        );
+      });
+
+      it("with this browser's device not known (yet, or none here), names the device: never a false here", () => {
+        setScrollback({ "azzurra alice": [onDevice(1, OWN)] });
+        render(() => <ScrollbackPane networkSlug="azzurra" channelName="alice" kind="query" />);
+        expect(screen.getByTestId("e2e-undeliverable")).toHaveTextContent(
+          `Alice sent you 1 encrypted message that cannot be read on your device ${OWN}`,
+        );
+      });
+
+      it("turns here once the sync names this browser's device, on the row already shown", () => {
+        setScrollback({
+          "azzurra alice": [onDevice(1, OWN), { ...onDevice(1, SIBLING), id: 301 }],
+        });
+        render(() => <ScrollbackPane networkSlug="azzurra" channelName="alice" kind="query" />);
+        const texts = () =>
+          screen
+            .getAllByTestId("e2e-undeliverable")
+            .map((n) => (n.textContent ?? "").replace(/\s+/g, " ").trim());
+        expect(texts()).toEqual([
+          `*** Alice sent you 1 encrypted message that cannot be read on your device ${OWN}`,
+          `*** Alice sent you 1 encrypted message that cannot be read on your device ${SIBLING}`,
+        ]);
+
+        setOwnDevices({ azzurra: OWN });
+
+        expect(texts()).toEqual([
+          "*** Alice sent you 1 encrypted message that cannot be read here",
+          `*** Alice sent you 1 encrypted message that cannot be read on your device ${SIBLING}`,
+        ]);
+      });
+
+      it("a row with no device (before wire v2) is here whatever this browser's device is", () => {
+        setOwnDevices({ azzurra: OWN });
+        setScrollback({ "azzurra alice": [notice(2)] });
+        render(() => <ScrollbackPane networkSlug="azzurra" channelName="alice" kind="query" />);
+        expect(screen.getByTestId("e2e-undeliverable")).toHaveTextContent(
+          "Alice sent you 2 encrypted messages that cannot be read here",
+        );
+      });
     });
   });
 

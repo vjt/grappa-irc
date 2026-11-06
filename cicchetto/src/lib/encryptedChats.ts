@@ -70,6 +70,7 @@ import {
   type HeldDevices,
   heldDevices,
   type IdentityState,
+  ownDidOf,
   replaceIdentity,
   syncIdentity,
 } from "./e2e/identity";
@@ -224,6 +225,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const [rowsByChat, setRowsByChat] = createSignal<Record<string, ChatRow[]>>({});
   const [trustByChat, setTrustByChat] = createSignal<Record<string, PeerTrust | null>>({});
   const [ownKeyBySlug, setOwnKeyBySlug] = createSignal<Record<string, string>>({});
+  /** This device's id on each network whose identity is ready here (issue 2454). */
+  const [ownDidBySlug, setOwnDidBySlug] = createSignal<Record<string, string>>({});
   const [sasByChat, setSasByChat] = createSignal<Record<string, SasView | null>>({});
   /** Networks whose identity grappa holds and this browser cannot speak for, and why. */
   const [elsewhereBySlug, setElsewhereBySlug] = createSignal<Record<string, ElsewhereReason>>({});
@@ -264,6 +267,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     setRowsByChat({});
     setTrustByChat({});
     setOwnKeyBySlug({});
+    setOwnDidBySlug({});
     setSasByChat({});
     setElsewhereBySlug({});
     setEncryptedSendSubmitted(null);
@@ -306,7 +310,11 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     };
   }
 
-  /** Where a sync, or an operation, found the network's identity: what the window shows. */
+  /**
+   * Where a sync, or an operation, found the network's identity: what the
+   * window shows. Ready, this device's id is read again (a sync may have
+   * registered it anew); elsewhere, no device here is ours.
+   */
   function identitySynced(slug: string, state: IdentityState): void {
     const reason = state === "ready" ? undefined : state.elsewhere;
     setElsewhereBySlug((prev) => {
@@ -316,6 +324,32 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       else next[slug] = reason;
       return next;
     });
+    if (reason === undefined) void readOwnDevice(slug);
+    else setOwnDid(slug, undefined);
+  }
+
+  function setOwnDid(slug: string, did: string | undefined): void {
+    setOwnDidBySlug((prev) => {
+      if (prev[slug] === did) return prev;
+      const next = { ...prev };
+      if (did === undefined) delete next[slug];
+      else next[slug] = did;
+      return next;
+    });
+  }
+
+  // A look at the record, never an operation: an operation on a slot with no
+  // account would sync, and so make an identity. A read that lands after the
+  // network went elsewhere keeps none.
+  async function readOwnDevice(slug: string): Promise<void> {
+    try {
+      const { slot } = contextFor(slug);
+      const { accounts } = await browserE2e();
+      const did = await ownDidOf(accounts, slot);
+      if (!identityElsewhere(slug)) setOwnDid(slug, did ?? undefined);
+    } catch (err) {
+      console.warn(`[e2e] could not read this device's id on ${slug}`, err);
+    }
   }
 
   const identityElsewhere = (slug: string): boolean => elsewhereBySlug()[slug] !== undefined;
@@ -703,6 +737,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     trustByChat()[chatId(slug, nick)] ?? null;
 
   const ownKey = (slug: string): string | undefined => ownKeyBySlug()[slug];
+  /** This device's id on the network, once a sync found its identity ready here (issue 2454). */
+  const ownDevice = (slug: string): string | undefined => ownDidBySlug()[slug];
 
   // None while the identity is elsewhere: nothing runs on the network, and
   // the window's dialog over the card that leads out of that state would
@@ -771,6 +807,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     encryptedWireView,
     toggleEncryptedWireView,
     ownKey,
+    ownDevice,
     mountEncryptedChats,
   };
 });
@@ -809,4 +846,5 @@ export const encryptedSas = exports_.encryptedSas;
 export const encryptedWireView = exports_.encryptedWireView;
 export const toggleEncryptedWireView = exports_.toggleEncryptedWireView;
 export const ownKey = exports_.ownKey;
+export const ownDevice = exports_.ownDevice;
 export const mountEncryptedChats = exports_.mountEncryptedChats;
