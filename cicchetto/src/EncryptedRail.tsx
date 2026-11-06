@@ -6,7 +6,7 @@ import { requestConfirm } from "./lib/confirmDialog";
 import { formatDateTime } from "./lib/dateFormat";
 import type { ChatRow, CheckFailure, IdentityCheck } from "./lib/e2e/chatStore";
 import type { PinOutcome } from "./lib/e2e/engine";
-import type { OwnDevice } from "./lib/e2e/identity";
+import type { OwnDevice, RevokeOutcome } from "./lib/e2e/identity";
 import { UNCONFIRMED } from "./lib/e2e/orders";
 import { holdsMasterHere, ownDevicesHere, revokeDeviceHere } from "./lib/e2e/pairingDeps";
 import type { SasCancelReason } from "./lib/e2e/sas";
@@ -202,8 +202,9 @@ export const VerifyKeyButton: Component<{
   );
 };
 
-const REVOKE_REFUSED: Record<"failed" | "list-changed", string> = {
+const REVOKE_REFUSED: Record<Exclude<RevokeOutcome, "revoked">, string> = {
   failed: "this browser could not sign a new list without it",
+  unlisted: "it is no longer on the device list",
   "list-changed": "the device list changed meanwhile: try again",
 };
 
@@ -215,19 +216,25 @@ const REVOKE_REFUSED: Record<"failed" | "list-changed", string> = {
  * master signs the list without it, and grappa drops it. Elsewhere the list
  * is read-only (the add-device row's hint says where devices are managed).
  * Read again when the key shown changes, after a revoke, and when `reload`
- * moves (the add-device panel closed: a device may have joined).
+ * moves (the add-device panel closed: a device may have joined). A revoke's
+ * refusal shows once the read after it is done, and goes with the next read.
  */
 const OwnDevices: Component<{ networkSlug: string; master: boolean; reload: number }> = (props) => {
   const [loadError, setLoadError] = createSignal<string | null>(null);
   const [revokeError, setRevokeError] = createSignal<string | null>(null);
   const [revoking, setRevoking] = createSignal(false);
   const [devices, { refetch }] = createResource(
+    // One string, which Solid compares by value: `ownKey` wakes its readers
+    // on every refresh of any network (encryptedChats writes its whole record
+    // again), and a tuple, new each time, would read the list again each time.
     () => {
       const key = ownKey(props.networkSlug);
-      return key === undefined ? false : ([props.networkSlug, key, props.reload] as const);
+      return key === undefined ? false : `${props.networkSlug}\n${key}\n${props.reload}`;
     },
-    async ([slug]) => {
+    async () => {
+      const slug = props.networkSlug;
       setLoadError(null);
+      setRevokeError(null);
       try {
         return await ownDevicesHere(slug);
       } catch (err) {
@@ -240,19 +247,18 @@ const OwnDevices: Component<{ networkSlug: string; master: boolean; reload: numb
 
   const revoke = async (device: OwnDevice) => {
     setRevoking(true);
-    setRevokeError(null);
+    let refused: string | null = null;
     try {
       const result = await revokeDeviceHere(props.networkSlug, device.ed25519);
-      if (result !== "revoked") {
-        setRevokeError(`could not revoke ${device.did}: ${REVOKE_REFUSED[result]}`);
-      }
+      if (result !== "revoked") refused = REVOKE_REFUSED[result];
     } catch (err) {
       console.warn(`[e2e] could not revoke the device ${device.did} on ${props.networkSlug}`, err);
-      setRevokeError(`could not revoke ${device.did}: ${errorMessage(err)}`);
-    } finally {
-      setRevoking(false);
-      void refetch();
+      refused = errorMessage(err);
     }
+    // The read clears what a revoke said: say it once the read is done.
+    await refetch();
+    if (refused !== null) setRevokeError(`could not revoke ${device.did}: ${refused}`);
+    setRevoking(false);
   };
 
   const confirmRevoke = (device: OwnDevice) =>
@@ -351,15 +357,18 @@ const EncryptedRail: Component<Props> = (props) => {
   // settles whether this browser holds a master) offers neither the button
   // nor the hint, so a real master never sees the hint first.
   const [master] = createResource(
+    // One string, as `OwnDevices` sources its list: compared by value.
     () => {
       const key = ownKey(props.networkSlug);
-      return key === undefined ? false : ([props.networkSlug, key] as const);
+      return key === undefined ? false : `${props.networkSlug}\n${key}`;
     },
-    ([slug]) =>
-      holdsMasterHere(slug).catch((err: unknown) => {
+    () => {
+      const slug = props.networkSlug;
+      return holdsMasterHere(slug).catch((err: unknown) => {
         console.warn(`[e2e] could not tell whether this browser holds the master of ${slug}`, err);
         return false;
-      }),
+      });
+    },
   );
   const answered = () => (ownKey(props.networkSlug) === undefined ? undefined : master());
 

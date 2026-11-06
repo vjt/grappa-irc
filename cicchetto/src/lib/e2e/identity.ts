@@ -535,6 +535,7 @@ async function listDevice(
 
 /** One device of the slot's identity on a network, as the rail lists it (issue 2544). */
 export type OwnDevice = {
+  /** Worked out here from `ed25519`, never taken from grappa. */
   did: string;
   ed25519: string;
   /** When grappa first registered it; null from a server before protocol 57. */
@@ -544,12 +545,16 @@ export type OwnDevice = {
 };
 
 /**
- * The devices of the slot's identity on the network (issue 2544): the ones
- * the list this browser holds names (its master signed it, and a sync took
- * grappa's latest), each as grappa lists it, oldest first, and which one is
- * this browser. A device registered and never listed (a pairing that did not
- * finish) is no device of the identity. Null when this browser holds no
- * identity for the slot. Stores nothing.
+ * The devices of the slot's identity on the network (issue 2544), after a
+ * sync, so the list a browser without the master holds names a device paired
+ * since: the ones that list names (the master signed it), oldest first as
+ * grappa lists them, and which one is this browser. Each id is worked out
+ * here from the key, as the revoke targets the key: a server that swapped
+ * two rows' ids would otherwise have the confirmation name one device while
+ * the master signs the other out. A device registered and never listed (a
+ * pairing that did not finish) is no device of the identity. Null when this
+ * browser holds no identity for the slot, without a sync (a sync would make
+ * one), or when the sync finds the identity elsewhere.
  */
 export async function ownDevices(
   store: AccountStore,
@@ -557,14 +562,17 @@ export async function ownDevices(
   slot: string,
   slug: string,
 ): Promise<OwnDevice[] | null> {
+  if (!(await peek(store, slot, ({ own }) => own !== null))) return null;
+  if ((await syncIdentity(store, bearer, slot, slug)) !== "ready") return null;
   const placed = await peek(store, slot, ({ account, own }) =>
     own === null ? null : { listed: own.list.devices, here: account.ed25519_key() },
   );
   if (placed === null) return null;
+  const olm = await loadOlm();
   return (await listE2eDevices(bearer, slug))
     .filter((device) => placed.listed.includes(device.ed25519))
     .map((device) => ({
-      did: device.did,
+      did: didOf(olm, device.ed25519),
       ed25519: device.ed25519,
       addedAt: device.inserted_at ?? null,
       here: device.ed25519 === placed.here,
@@ -580,8 +588,9 @@ export async function ownDevices(
  * signs again, once, as `addDevice` does. Peers stop trusting the device once
  * they hold the new list (the engine's `revoked`), and its own browser's
  * next sync finds itself left out. Refusals: "failed" (no master here, the
- * sync is not "ready", the key is this browser's own device or one the list
- * does not name), "list-changed" when the list moved under the retry too.
+ * sync is not "ready", the key is this browser's own device), "unlisted"
+ * (grappa's latest list does not name the key: revoked meanwhile, from
+ * another tab say), "list-changed" when the list moved under the retry too.
  */
 export function revokeDevice(
   store: AccountStore,
@@ -589,9 +598,12 @@ export function revokeDevice(
   slot: string,
   slug: string,
   ed25519: string,
-): Promise<"revoked" | "failed" | "list-changed"> {
+): Promise<RevokeOutcome> {
   return onceMoreIfStale(() => unlistDevice(store, bearer, slot, slug, ed25519));
 }
+
+/** What `revokeDevice` answers. */
+export type RevokeOutcome = "revoked" | "failed" | "unlisted" | "list-changed";
 
 async function unlistDevice(
   store: AccountStore,
@@ -599,14 +611,13 @@ async function unlistDevice(
   slot: string,
   slug: string,
   ed25519: string,
-): Promise<"revoked" | "failed" | typeof STALE> {
+): Promise<Exclude<RevokeOutcome, "list-changed"> | typeof STALE> {
   if ((await syncIdentity(store, bearer, slot, slug)) !== "ready") return "failed";
   return store.withAccount(slot, async (session) => {
     const { master, own } = session;
     if (master === null || own === null) return "failed";
-    if (ed25519 === session.account.ed25519_key() || !own.list.devices.includes(ed25519)) {
-      return "failed";
-    }
+    if (ed25519 === session.account.ed25519_key()) return "failed";
+    if (!own.list.devices.includes(ed25519)) return "unlisted";
     const devices = own.list.devices.filter((key) => key !== ed25519);
     let list: SignedList;
     try {
