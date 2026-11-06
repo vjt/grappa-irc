@@ -440,9 +440,9 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // 410 Gone — the visitor share link was already redeemed (one-shot).
       return "This share link has already been used.";
     case "too_many_devices":
-      // issue 2430 — 409: `E2eKeys` caps a subject at four devices per
-      // network and this would be a fifth.
-      return "This account already has four devices for this network. Remove one first.";
+      // issue 2430 — 409: `E2eKeys` caps a subject at three devices per
+      // network (issue 2576) and this would be a fourth.
+      return "This account already has three devices for this network. Remove one first.";
     case "master_mismatch":
       // 409 — a device list signed by another master than the one grappa
       // holds: another device put its list first. No advice to reset: a

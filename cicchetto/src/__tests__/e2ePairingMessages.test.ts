@@ -13,7 +13,7 @@ import {
   unwrapInitial,
   wrapInitial,
 } from "../lib/e2e/pairingMessages";
-import { certSigText, idSigText, listSigText, MAX_DEVICES } from "../lib/e2e/wire";
+import { certSigText, idSigText, listSigText } from "../lib/e2e/wire";
 import { olm } from "./helpers/olm";
 
 const enc = new TextEncoder();
@@ -174,10 +174,14 @@ describe("issueDevice", () => {
     expect(issueDevice(olm(), master, listed, id)).toBe("paired");
   });
 
-  it("answers full for a list of 4", () => {
-    const { master, own } = holder(MAX_DEVICES);
-    const { id } = joiner(own.master);
-    expect(issueDevice(olm(), master, own, id)).toBe("full");
+  // issue 2576: an identity holds 3 devices, under the 4 the wire allows.
+  it("answers full for a list of 3, and lists a third device beside 2", () => {
+    const full = holder(3);
+    expect(issueDevice(olm(), full.master, full.own, joiner(full.own.master).id)).toBe("full");
+    const room = holder(2);
+    const third = issueDevice(olm(), room.master, room.own, joiner(room.own.master).id);
+    if (typeof third === "string") throw new Error(third);
+    expect(third.list.devices).toHaveLength(3);
   });
 });
 

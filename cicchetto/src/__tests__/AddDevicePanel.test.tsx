@@ -153,9 +153,11 @@ describe("AddDevicePanel", () => {
     );
     expect(screen.getByTestId("pair-result-rizon").textContent).toContain("failed");
     expect(screen.getByTestId("pair-result-snoonet").textContent).toContain(
-      "already has 4 devices",
+      "already has 3 devices, revoke one first",
     );
-    expect(screen.getByTestId("pair-full").textContent).toContain("oftc");
+    expect(screen.getByTestId("pair-full").textContent).toBe(
+      "Not offered, already 3 devices (revoke one first): oftc",
+    );
     expect(screen.getByTestId("pair-not-master").textContent).toContain("efnet");
     expect(screen.queryByTestId("pair-unconfirmed")).toBeNull();
   });

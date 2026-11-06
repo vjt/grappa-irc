@@ -1,5 +1,6 @@
 import { type Component, For, Show } from "solid-js";
 import type { NetworkResult } from "./lib/e2e/pairingSession";
+import { DEVICE_CAP } from "./lib/e2e/wire";
 
 // issue 2430, X1-crypto — what a pairing came to on each network, one line
 // each. Both screens (AddDevicePanel, PairJoin) show the same results in the
@@ -7,7 +8,7 @@ import type { NetworkResult } from "./lib/e2e/pairingSession";
 
 const OUTCOME: Record<NetworkResult["outcome"], string> = {
   added: "added",
-  full: "already has 4 devices",
+  full: `already has ${DEVICE_CAP} devices, revoke one first`,
   paired: "already paired",
   "list-changed": "the list changed, try again",
   failed: "failed",

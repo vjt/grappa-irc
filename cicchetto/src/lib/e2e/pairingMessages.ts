@@ -17,10 +17,10 @@ import type { Account } from "./vodozemac/vodozemac_binding";
 import {
   base64Url,
   certSigText,
+  DEVICE_CAP,
   type IdBlock,
   idSigText,
   listSigText,
-  MAX_DEVICES,
   type SignedList,
   unbase64,
   validMasterList,
@@ -244,7 +244,7 @@ export function issueDevice(
   if (id(olm, joinerId) === undefined) return "failed";
   if (!olm.verify_ed25519(ed25519, idSigText(curve25519, own.master), sig)) return "failed";
   if (own.list.devices.includes(ed25519)) return "paired";
-  if (own.list.devices.length >= MAX_DEVICES) return "full";
+  if (own.list.devices.length >= DEVICE_CAP) return "full";
   const ver = own.list.ver + 1;
   const devices = [...own.list.devices, ed25519].sort();
   return {

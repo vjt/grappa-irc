@@ -153,7 +153,9 @@ describe("PairJoin", () => {
     });
     expect(screen.getByTestId("pair-offered-azzurra")).toBeTruthy();
     expect(screen.getByTestId("pair-offered-libera")).toBeTruthy();
-    expect(screen.getByTestId("pair-full").textContent).toContain("oftc");
+    expect(screen.getByTestId("pair-full").textContent).toBe(
+      "Not offered, already 3 devices (one must be revoked first): oftc",
+    );
     expect(screen.queryByTestId("pair-check-code")).toBeNull();
     const confirm = screen.getByTestId("pair-confirm");
     expect(confirm.textContent).toBe("Pair this browser");

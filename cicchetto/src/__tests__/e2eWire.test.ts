@@ -8,6 +8,7 @@ import {
   base64Url,
   CERT_PREFIX,
   certSigText,
+  DEVICE_CAP,
   decodePayload,
   did,
   encodePayload,
@@ -114,6 +115,14 @@ describe("the signed strings", () => {
   it("is protocol 2 with at most 4 devices", () => {
     expect(WIRE_VERSION).toBe(2);
     expect(MAX_DEVICES).toBe(4);
+  });
+
+  // issue 2576: the cap is what an identity holds, the wire bound what a
+  // receiver takes (a list of 4 an older client signed still reads); a cap
+  // above the bound would sign lists no peer accepts.
+  it("caps an identity at 3 devices, within the wire's bound", () => {
+    expect(DEVICE_CAP).toBe(3);
+    expect(DEVICE_CAP).toBeLessThanOrEqual(MAX_DEVICES);
   });
 });
 

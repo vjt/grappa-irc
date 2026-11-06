@@ -116,7 +116,7 @@ const PRIORITIES = ["control", "reactive", "text"];
 // `Grappa.E2eKeys.max_one_time_keys/0`, `DeviceList.max_devices/0`,
 // `Grappa.IRC.E2e.max_payload_bytes/0`, `E2eInbox.page_size/0`.
 const MAX_ONE_TIME_KEYS = 50;
-const MAX_DEVICES = 4;
+const DEVICE_CAP = 3;
 const MAX_PAYLOAD_BYTES = 32 * 1024;
 // `E2eInbox.max_sender_bytes/0` and `row_overhead_bytes/0`: a sender's share of one queue.
 const MAX_SENDER_BYTES = 1_048_576;
@@ -325,7 +325,7 @@ export class Grappa {
       held.sig = id.sig;
       return held;
     }
-    if (subject.devices.length >= MAX_DEVICES) throw new ApiError(409, "too_many_devices");
+    if (subject.devices.length >= DEVICE_CAP) throw new ApiError(409, "too_many_devices");
     const device: Device = {
       did: did(olm(), id.ed25519),
       ed25519: id.ed25519,

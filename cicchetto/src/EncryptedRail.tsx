@@ -11,6 +11,7 @@ import type { OwnDevice, RevokeOutcome } from "./lib/e2e/identity";
 import { UNCONFIRMED } from "./lib/e2e/orders";
 import { holdsMasterHere, ownDevicesHere, revokeDeviceHere } from "./lib/e2e/pairingDeps";
 import type { SasCancelReason } from "./lib/e2e/sas";
+import { DEVICE_CAP } from "./lib/e2e/wire";
 import {
   encryptedChat,
   encryptedRows,
@@ -219,7 +220,9 @@ const REVOKE_REFUSED: Record<Exclude<RevokeOutcome, "revoked">, string> = {
  * other one has a revoke, behind a confirmation that says what it does: the
  * master signs the list without it, and grappa drops it. Elsewhere the list
  * is read-only (the add-device row's hint says where devices are managed).
- * Read again when the key shown changes, after a revoke, and when `reload`
+ * At the cap (`DEVICE_CAP`, issue 2576) the master's browser is told that
+ * adding a device means revoking one first: the pairing would offer this
+ * network nothing. Read again when the key shown changes, after a revoke, and when `reload`
  * moves (the add-device panel closed: a device may have joined). A revoke's
  * refusal shows once the read after it is done, and goes with the next read.
  */
@@ -328,6 +331,11 @@ const OwnDevices: Component<{ networkSlug: string; master: boolean; reload: numb
             </dd>
           </dl>
         )}
+      </Show>
+      <Show when={props.master && (devices()?.length ?? 0) >= DEVICE_CAP}>
+        <p class="muted rail-e2e-hint" data-testid="e2e-own-devices-full">
+          An identity holds at most {DEVICE_CAP} devices: revoke one to add another.
+        </p>
       </Show>
       <Show when={loadError() ?? revokeError()}>
         {(message) => (

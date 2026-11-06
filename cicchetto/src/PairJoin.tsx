@@ -6,6 +6,7 @@ import { joinPairing, openChannel, type PairingChannel } from "./lib/e2e/pairing
 import { pairingDeps } from "./lib/e2e/pairingDeps";
 import { takeAcceptedPairing } from "./lib/e2e/pairingOffer";
 import { type JoinerState, joinerPairing, type NetworkResult } from "./lib/e2e/pairingSession";
+import { DEVICE_CAP } from "./lib/e2e/wire";
 import { pairedHere } from "./lib/encryptedChats";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import PairResults from "./PairResults";
@@ -135,7 +136,8 @@ const PairJoin: Component = () => {
           const full = () => (
             <Show when={j().full.length > 0}>
               <p class="muted" data-testid="pair-full">
-                Not offered, already 4 devices: {j().full.join(", ")}
+                Not offered, already {DEVICE_CAP} devices (one must be revoked first):{" "}
+                {j().full.join(", ")}
               </p>
             </Show>
           );

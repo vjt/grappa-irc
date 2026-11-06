@@ -57,10 +57,10 @@ import { acceptSigned, issueDevice, type PairRefusal } from "./pairingMessages";
 import type { Account } from "./vodozemac/vodozemac_binding";
 import {
   certSigText,
+  DEVICE_CAP,
   did as didOf,
   type IdBlock,
   listSigText,
-  MAX_DEVICES,
   type SignedList,
   validMasterList,
 } from "./wire";
@@ -327,7 +327,7 @@ async function adopt(
 
 // Registers `device` and puts the list `master` signs over it at `ver`, while
 // grappa holds no list. A device registered and never listed holds one of
-// the subject's four rooms on grappa for good, so a put that fails drops it
+// the subject's `DEVICE_CAP` rooms on grappa for good, so a put that fails drops it
 // again, best effort: the put's own error is the outcome, and a drop that
 // fails too leaves its trace in the console.
 async function enlist(
@@ -447,7 +447,7 @@ export function ownDidOf(store: AccountStore, slot: string): Promise<string | nu
 /**
  * The holder: whether it can offer the network to a joiner, judged on the
  * list after a sync, grappa's latest: the master's key; "full" when the list
- * already names the four devices grappa allows; null when this browser holds
+ * already names the `DEVICE_CAP` devices grappa allows; null when this browser holds
  * no master for the slot (nothing is synced or stored then) or the sync does
  * not answer "ready".
  */
@@ -461,7 +461,7 @@ export async function offerable(
   if ((await syncIdentity(store, bearer, slot, slug)) !== "ready") return null;
   return peek(store, slot, ({ master, own }) => {
     if (master === null || own === null) return null;
-    return own.list.devices.length >= MAX_DEVICES ? "full" : { master: master.ed25519_key() };
+    return own.list.devices.length >= DEVICE_CAP ? "full" : { master: master.ed25519_key() };
   });
 }
 
@@ -642,10 +642,10 @@ async function unlistDevice(
  * grappa registered it as. The slot's device account is kept only when the
  * record holds no identity and grappa's list does not name its key, so a page
  * reloaded mid-pairing registers the same key again, which grappa takes as
- * the same device rather than one more of the subject's four; any other
+ * the same device rather than one more of the subject's `DEVICE_CAP`; any other
  * account starts over, keeping only the trust placed in others. The record is
  * stored before the id block leaves. Refusals: "paired" (already listed under
- * that master), "full" (grappa holds four devices), "failed" (grappa holds
+ * that master), "full" (grappa holds `DEVICE_CAP` devices), "failed" (grappa holds
  * the list of another master, nothing touched; or the registration refused
  * otherwise, logged).
  */
@@ -730,7 +730,7 @@ export async function completeJoin(
 
 /**
  * The joiner: drops its device `did` from grappa when the pairing ended before
- * the holder listed it, so it holds none of the subject's four rooms. One gone
+ * the holder listed it, so it holds none of the subject's `DEVICE_CAP` rooms. One gone
  * already (`not_found`), or listed after all (`listed_device`: the holder's
  * put went through), is left as it is; any other failure is logged, the
  * device left behind.
