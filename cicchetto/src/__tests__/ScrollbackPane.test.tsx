@@ -347,7 +347,11 @@ import {
 } from "../lib/presenceFilter";
 // issue 2512 — the pane draws whichever source it is handed; grappa's is the
 // one every window but an encrypted query has, built on the mocks above.
-import { grappaScrollback, type ScrollbackSource } from "../lib/scrollbackSource";
+import {
+  type ArrivingLine,
+  grappaScrollback,
+  type ScrollbackSource,
+} from "../lib/scrollbackSource";
 // #310 — the #243 re-tap command signal. NOT mocked (real module): driving
 // it exercises the SAME `scrollToBottomGesture` the floating scroll-to-bottom
 // button's onClick invokes, so the unit test can prove the shared gesture
@@ -358,6 +362,7 @@ import { appendTopicShow } from "../lib/topicShow";
 import { dismissWhoisCard, setWhoisBundle } from "../lib/whoisCard";
 import type { E2eRequestsWireRequest } from "../lib/wireTypes";
 import SourcedPane, {
+  formatTime,
   type Props as PaneProps,
   resetAutoFocusedJoinsForTest,
   samePlainData,
@@ -8385,6 +8390,7 @@ describe("issue 2512 — a source that holds every line", () => {
         marker: <span data-testid="source-marker" />,
         trailer: <span data-testid="source-trailer">{msg.body}</span>,
       }),
+      arriving: () => [],
     };
   };
   const renderDevice = (source: ScrollbackSource) =>
@@ -8430,5 +8436,134 @@ describe("issue 2512 — a source that holds every line", () => {
     expect(loadNewer).not.toHaveBeenCalled();
     const scrollback = await import("../lib/scrollback");
     expect(scrollback.refreshScrollback).not.toHaveBeenCalled();
+  });
+});
+
+// issue 2577 — a message on its way to the window: an encrypted peer's message
+// grappa announced at its first line (`ScrollbackSource.arriving`). The pane
+// draws each after every line, in the order they began to arrive, as no line
+// at all: no message id, no unread, nothing the line gestures reach. When one
+// lands, its line takes the arrival's place, and a pane that was following the
+// tail keeps following it although the row count did not move.
+describe("issue 2577 — messages on their way to the window", () => {
+  const name = "$e2e:bob";
+  const key = `freenode ${name}`;
+  const line = (id: number, body: string): ScrollbackMessage => ({
+    id,
+    network: "freenode",
+    channel: name,
+    server_time: 1_700_000_000_000 + id * 1_000,
+    kind: "privmsg",
+    sender: "bob",
+    body,
+    meta: {},
+  });
+  const [lines, setLines] = createSignal<ScrollbackMessage[]>([]);
+  const [arriving, setArriving] = createSignal<ArrivingLine[]>([]);
+  // Read up to the first line: the divider sits above the second, and stays
+  // there (the freeze contract), so a line landing in place of an arrival
+  // changes no row count.
+  const source: ScrollbackSource = {
+    messages: (k) => (k === key ? lines() : undefined),
+    getReadCursor: () => 1,
+    setCursorIfAdvances: vi.fn(),
+    ownSendSubmitted: () => null,
+    lastOwnSend: () => null,
+    history: null,
+    slots: () => ({ marker: null, trailer: null }),
+    arriving: (k) => (k === key ? arriving() : []),
+  };
+  const renderDevice = () =>
+    render(() => (
+      <SourcedPane source={source} networkSlug="freenode" channelName={name} kind="encrypted" />
+    ));
+  const rowsOf = (list: HTMLElement) => Array.from(list.children) as HTMLElement[];
+
+  let origScrollIntoView: typeof Element.prototype.scrollIntoView;
+  beforeEach(() => {
+    setLines([line(1, "uno"), line(2, "due")]);
+    setArriving([]);
+    origScrollIntoView = Element.prototype.scrollIntoView;
+    // biome-ignore lint/suspicious/noExplicitAny: jsdom Element type compat
+    (Element.prototype as any).scrollIntoView = vi.fn();
+  });
+  afterEach(() => {
+    Element.prototype.scrollIntoView = origScrollIntoView;
+  });
+
+  it("draws each arrival after every line, in the order they began, with its sender and no message id", () => {
+    setArriving([
+      { id: "AaZaARRDyBk-m1", nick: "bob", at: 1_700_000_010_000 },
+      { id: "AaZaARRDyBk-m2", nick: "bob", at: 1_700_000_011_000 },
+    ]);
+    renderDevice();
+    const list = screen.getByTestId("scrollback");
+    const shown = screen.getAllByTestId("scrollback-arriving");
+
+    expect(shown).toHaveLength(2);
+    expect(rowsOf(list).slice(-2)).toEqual(shown);
+    expect(shown.map((row) => row.dataset.nick)).toEqual(["bob", "bob"]);
+    expect(shown[0]?.querySelector(".scrollback-time")?.textContent).toBe(
+      formatTime(1_700_000_010_000),
+    );
+    expect(shown[0]?.querySelector(".scrollback-arriving-sender")?.textContent).toContain("bob");
+    // In place of a text: a cloud with a name, so a screen reader hears what it is.
+    const cloud = shown[0]?.querySelector(".scrollback-arriving-cloud");
+    expect(cloud?.getAttribute("role")).toBe("img");
+    expect(cloud?.getAttribute("aria-label")).toBe("an encrypted message from bob is arriving");
+    expect(cloud?.textContent).toBe("");
+    // No line: nothing a message query, the unread math or a gesture reaches.
+    expect(shown.every((row) => !row.hasAttribute("data-msg-id"))).toBe(true);
+    expect(screen.getAllByTestId("scrollback-line")).toHaveLength(2);
+    expect(screen.getByTestId("unread-marker").nextElementSibling).toBe(
+      screen.getAllByTestId("scrollback-line")[1],
+    );
+  });
+
+  it("a line landing in place of its arrival is followed to the tail, one row in and one out", async () => {
+    setArriving([{ id: "AaZaARRDyBk-m3", nick: "bob", at: 1_700_000_010_000 }]);
+    renderDevice();
+    const list = screen.getByTestId("scrollback") as HTMLDivElement;
+    const oneFrame = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => r()));
+    const flushFrames = async (n: number): Promise<void> => {
+      for (let i = 0; i < n; i += 1) await oneFrame();
+    };
+    await flushFrames(3);
+    // The operator has touched the pane: the divider's activation is handed
+    // back, so what moves the pane below can only be the tail-follow.
+    list.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+
+    const CLIENT = 500;
+    let height = 1000;
+    Object.defineProperty(list, "clientHeight", { value: CLIENT, configurable: true });
+    Object.defineProperty(list, "scrollHeight", { get: () => height, configurable: true });
+    Object.defineProperty(list, "scrollTop", {
+      value: height - CLIENT,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(list.lastElementChild, "offsetHeight", { value: 36, configurable: true });
+    // Past the mount's own settle poll (at most SETTLE_MAX_FRAMES, 30): a poll
+    // still running when the line lands would catch the growth by itself and
+    // tail the pane whether or not the landing re-ran the tail-follow.
+    await flushFrames(40);
+    const before = rowsOf(list).length;
+    // Pre-state: following, at the tail, the arrival the last row.
+    expect(list.scrollTop).toBe(height - CLIENT);
+    expect(list.lastElementChild?.getAttribute("data-testid")).toBe("scrollback-arriving");
+
+    // The message lands, and wraps: taller than the cloud it replaces.
+    batch(() => {
+      setLines([line(1, "uno"), line(2, "due"), line(3, "a message long enough to wrap")]);
+      setArriving([]);
+    });
+    height += 30;
+    Object.defineProperty(list.lastElementChild, "offsetHeight", { value: 66, configurable: true });
+    await flushFrames(3);
+
+    expect(rowsOf(list)).toHaveLength(before);
+    expect(screen.queryByTestId("scrollback-arriving")).toBeNull();
+    expect(list.lastElementChild?.getAttribute("data-testid")).toBe("scrollback-line");
+    expect(list.scrollTop).toBe(height - CLIENT);
   });
 });

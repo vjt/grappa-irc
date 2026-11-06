@@ -16,12 +16,8 @@ import { diagPush } from "./diagLog";
 import { catchUpPairings, deliverPairingEvent } from "./e2e/pairing";
 import { deliverPairingOffer, pairingOfferEnded } from "./e2e/pairingOffer";
 import { dropE2eRequest, putE2eRequest, reloadE2eRequests } from "./e2eRequests";
-import {
-  drainE2e,
-  drainEveryNetwork,
-  encryptedPeerAbsent,
-  encryptedSendDropped,
-} from "./encryptedChats";
+import { e2eIncoming, e2eIncomingLost, e2eMessageQueued } from "./encryptedArriving";
+import { drainEveryNetwork, encryptedPeerAbsent, encryptedSendDropped } from "./encryptedChats";
 import { setSeveredForFlood } from "./floodSever";
 import { refreshHighlights } from "./highlightList";
 import { patchHomeNetwork } from "./home";
@@ -111,6 +107,8 @@ import {
   S_SessionWireDirectoryCompletePayload,
   S_SessionWireDirectoryFailedPayload,
   S_SessionWireDirectoryProgressPayload,
+  S_SessionWireE2eIncomingLostPayload,
+  S_SessionWireE2eIncomingPayload,
   S_SessionWireE2eMessagePayload,
   S_SessionWireE2eSendDroppedPayload,
   S_SessionWireInviteAckPayload,
@@ -533,6 +531,11 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // issue 2430 (protocol 46) — a message grappa accepted and then
       // dropped unsent; the dispatch arm below hands it to the E2E client.
       return validate(S_SessionWireE2eSendDroppedPayload, r);
+    case "e2e_incoming":
+      // issue 2577 (protocol 59) — a peer's encrypted message on its way.
+      return validate(S_SessionWireE2eIncomingPayload, r);
+    case "e2e_incoming_lost":
+      return validate(S_SessionWireE2eIncomingLostPayload, r);
     case "e2e_pairing_message":
       // issue 2430 X1 (protocol 48) — the pairing relay's doorbell.
       return validate(S_E2ePairingWireE2ePairingMessagePayload, r);
@@ -1310,10 +1313,23 @@ moduleRoot(() => {
         case "e2e_message":
           // issue 2430 — the push says a message is queued; the drain takes
           // it from the inbox, in id order with anything else waiting, so a
-          // missed push never leaves a gap (encryptedChats.ts).
-          void drainE2e(payload.network).catch((err: unknown) =>
+          // missed push never leaves a gap (encryptedChats.ts). Issue 2577:
+          // a copy for this device ends its arrival once that drain has run
+          // (encryptedArriving.ts).
+          void e2eMessageQueued(payload).catch((err: unknown) =>
             console.warn(`[userTopic] encrypted inbox drain failed on ${payload.network}`, err),
           );
+          return;
+
+        case "e2e_incoming":
+          // issue 2577 — a peer's encrypted message began to arrive: the
+          // encrypted window shows it as on its way (encryptedArriving.ts).
+          e2eIncoming(payload);
+          return;
+
+        case "e2e_incoming_lost":
+          // issue 2577 — that message will not reach the device it names.
+          e2eIncomingLost(payload);
           return;
 
         case "e2e_send_dropped":

@@ -41,6 +41,7 @@ import {
 import type { ElsewhereReason, HeldDevices } from "./lib/e2e/identity";
 import type { SasStep, SasView } from "./lib/e2e/sas";
 import { SAS_EMOJI } from "./lib/e2e/sasEmoji";
+import { encryptedArriving } from "./lib/encryptedArriving";
 import {
   deleteEncryptedChat,
   elsewhereReason,
@@ -65,7 +66,7 @@ import {
 } from "./lib/encryptedChats";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { createOverlayLock } from "./lib/overlayScrollLock";
-import type { ScrollbackSource } from "./lib/scrollbackSource";
+import type { ArrivingLine, ScrollbackSource } from "./lib/scrollbackSource";
 import { formatTimestamp } from "./lib/timeFormat";
 import { encryptedWindowName } from "./lib/windowKinds";
 import NickText from "./NickText";
@@ -816,6 +817,17 @@ const EncryptedChatPane: Component<Props> = (props) => {
     if ((encryptedChat(props.networkSlug, props.nick)?.unread ?? 0) > 0) read();
   });
 
+  // issue 2577 — the peer's messages grappa announced and that have not landed
+  // yet (lib/encryptedArriving.ts): drawn after every line, each until its own
+  // line takes its place.
+  const arriving = createMemo((): ArrivingLine[] =>
+    encryptedArriving(props.networkSlug, props.nick).map((a) => ({
+      id: `${a.fromDid}-${a.msgid}`,
+      nick: a.nick,
+      at: a.at,
+    })),
+  );
+
   const ours = (slug: string, name: string): boolean => channelKey(slug, name) === windowKey();
   const source: ScrollbackSource = {
     messages: (key) => (key === windowKey() ? shownMessages() : undefined),
@@ -830,6 +842,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
       marker: <Lock />,
       trailer: <Trailer row={rowBySeq().get(msg.id)} pinned={peerTrust()?.master} />,
     }),
+    arriving: (key) => (key === windowKey() ? arriving() : []),
   };
 
   createEffect(
