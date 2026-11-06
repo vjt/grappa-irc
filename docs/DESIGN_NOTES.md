@@ -3999,3 +3999,71 @@ one-line MSG. 3 of 3 green locally, about 60 s each; with `release` emptied,
 in the served bundle.
 
 Client-only: the cic bundle.
+<!-- entry #2517a -->
+
+---
+
+## 2026-11-06 — #2517a: an upload door for end-to-end encrypted files
+
+The encrypted query refused every upload (#2512, "No uploads"): the upload
+host is not end-to-end encrypted. #2517 gives it files. The client seals a
+file with AES-256-GCM under a fresh random key and IV, uploads the
+ciphertext, and sends the URL, key and IV to the peer inside Olm. This
+first slice of three is grappa's half: `POST /api/uploads/encrypted`
+(protocol 58). Slice 2 is cic's metadata strip, slice 3 the attachment in
+cic with its e2e spec.
+
+* **No digest, against the issue's text** ("URL + key + digest";
+  orchestrator's ruling F1 = A). The GCM tag already authenticates the
+  ciphertext, and grappa, which never holds the key, cannot forge a tag that
+  verifies. A SHA-256 beside it protects nothing more. Matrix pairs CTR with
+  a hash for interop and streaming decryption; we need neither, and at the
+  caps a one-shot decryption in memory is affordable.
+* **The same verbs, one new door.** `Uploads.create/4` under the same storage
+  caps (#2403's in-transaction check), the TTL ladder, the reaper, the 201
+  body and the public `GET /uploads/:slug`, whose 128-bit slug hands out
+  bytes useless without the key. Reusing `POST /api/uploads` with
+  octet-stream was rejected: it collides with the audio rescue, and with no
+  marker every plaintext file the OS mislabels would pass as "encrypted". The
+  file always lands in grappa's own store, whatever upload host the admin
+  picked: litterbox would be a cross-origin fetch, which F6 (same instance
+  only, cic's slices) rules out. Visitors may use it, as they may the plain
+  door, under the same per-visitor quota.
+* **What the server can no longer do, stated as the price:** check the type,
+  strip metadata, apply the right category's cap, or look inside. It did no
+  content scanning before either, and an account could already store an
+  opaque blob labelled as a PDF; the quota and the TTL bound both. Stripping
+  moves to cic before it encrypts, fail-closed: no strip, no send (vjt's
+  ruling F2 = A, 2026-11-06, slice 2). That reverses #39's "clients never
+  participate" for the encrypted window alone, because there the server
+  physically cannot.
+* **What it learns:** the uploading account, the time, the size (the
+  plaintext's plus 16) and the address of whoever fetches the URL, which cic
+  will do on a click, never on arrival.
+* **The type is the marker, derived.** The door ignores the declared type and
+  filename and stores `application/octet-stream`, no charset, no filename (it
+  travels inside Olm). No other door stores that type: the plain allowlist
+  never held it (`git log -S` finds no key for it, ever), its audio rescue
+  rewrites it, and the avatar and theme doors store image types. So
+  `Uploads.encrypted?/1` reads it off the MIME with no column to keep in
+  step, and `show/2` serves such a row as an `attachment`. `MetadataStrip`
+  passes the type through, so the bytes land as sent; a test pins a GPS
+  JPEG declared `image/jpeg` landing byte-identical.
+* **The cap is derived too:** the largest of the four category caps plus the
+  16-byte tag, read per request, over the categories of the plain door's own
+  allowlist. A setting of its own would move the server-settings wire and
+  drift from the caps the operator does set. cic applies the plaintext
+  category's cap before it encrypts.
+* **The expiry stays the upload's** (vjt's ruling, 2026-11-06): 1 to 72 h,
+  24 h by default, independent of the encrypted inbox's 7 days. A peer
+  offline past the TTL finds the file gone; accepted, and the ladder's
+  maximum is not raised.
+* **The third upload door.** Its body is policed by a per-file cap, so it
+  pipes through `:upload_body`, `MultipartBodyTest` lists it, and the two
+  in-repo nginx configs give `= /api/uploads/encrypted` the 520m ceiling. The
+  m42 host vhost is outside the repo (OPERATIONS.md); until it learns the
+  path, the 128m default applies there, which a cap only reaches once an
+  admin raises it.
+* **Found on the way:** no test pinned the plain door's `inline`
+  disposition, so a change making every upload an attachment would have
+  passed. A negative control now rides beside the encrypted one.

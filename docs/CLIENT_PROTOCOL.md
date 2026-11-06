@@ -1328,6 +1328,47 @@ an answer stay.
 
 Check `protocol_version >= 54`.
 
+### 4k. An encrypted file's ciphertext (issue 2517, v58)
+
+A file sent in an encrypted query (§4f) is encrypted by your client, and
+grappa stores the result without being able to read it. Seal the file
+with AES-256-GCM under a fresh random key and IV, upload the ciphertext
+(the GCM tag included) here, and send the key, the IV and the returned
+`url` to the peer inside the encrypted message. grappa never sees the key.
+
+| Request | Answer |
+|---|---|
+| `POST /api/uploads/encrypted`, multipart: `file` (required), `expire` (optional: `3600`, `43200`, `86400` or `259200` seconds; default `86400`) | **201** `{"slug", "url", "expires_at"}`, the same body as `POST /api/uploads` |
+| `GET /uploads/:slug`, no auth | the bytes as uploaded, `content-type: application/octet-stream`, `content-disposition: attachment`, `x-content-type-options: nosniff` |
+
+What grappa does with what you send:
+
+- **The declared content type and filename are ignored.** The file is
+  stored as `application/octet-stream` with no filename and no charset,
+  and its `url` carries no extension. Send the real name and type to the
+  peer inside the encrypted message, never in the multipart part.
+- **Nothing is stripped.** The plain door removes image and video
+  metadata (EXIF, GPS); grappa cannot do that on ciphertext, so the
+  bytes are stored exactly as uploaded. Strip before you encrypt.
+- **One size cap**: the largest of the four per-category caps
+  (`upload.*_per_file_cap_bytes` in `GET /api/server-settings`) plus 16 bytes,
+  the GCM tag. Over it is **413** `{"error": "file_too_large",
+  "max_bytes": N}` with that cap. grappa cannot tell which category the
+  file was, so apply the right category's cap to the plaintext yourself.
+- The storage quota and the expiry work as on the plain door: **507**
+  `insufficient_storage`, **400** `bad_request` for a missing `file` or an
+  `expire` off the ladder, **401** without a bearer.
+- The file always lands in grappa's own store, whatever upload host the
+  admin picked for plain uploads.
+
+What grappa learns is the uploading account, the time, the size (the
+plaintext's plus 16) and the address of whoever fetches the `url`. The
+file expires like any upload: a peer who reads the message after
+`expires_at` finds it gone (`GET` answers 404), even though the message
+itself waits up to 7 days.
+
+Check `protocol_version >= 58`.
+
 ---
 
 ## 5. Wire format
