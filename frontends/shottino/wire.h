@@ -914,6 +914,57 @@ bool wire_narrow_e2e_sent(const json_value *root, const char **msgid);
 /* The `{"error": "<token>"}` of a refusal, or NULL. */
 const char *wire_e2e_error(const json_value *root);
 
+/* ── E2E pairing relay (CLIENT_PROTOCOL §4g, v48; the offer v55) ───────
+ * Subject-wide, so NOT under /networks: one pairing covers every network.
+ * The routes take a full session (403 client_token_scope to a per-client
+ * token, 403 forbidden to an incognito visitor). A rendezvous id goes into
+ * the path raw, and only when it is url-safe base64 (grappa mints 22
+ * characters of it). */
+typedef enum {
+    WIRE_PAIR_OPEN,     /* POST   /e2e/pairings                     → {rendezvous} */
+    WIRE_PAIR_OFFER,    /* GET    /e2e/pairings/offer               → {offer|null} */
+    WIRE_PAIR_JOIN,     /* POST   /e2e/pairings/:id/join            → {rendezvous} */
+    WIRE_PAIR_POST,     /* POST   /e2e/pairings/:id/messages        → {message} */
+    WIRE_PAIR_MESSAGES, /* GET    /e2e/pairings/:id/messages?after= → {messages} */
+    WIRE_PAIR_CLOSE     /* DELETE /e2e/pairings/:id                 → 204 */
+} wire_pair_door;
+
+const char *wire_pair_door_method(wire_pair_door d);
+bool wire_pair_door_has_body(wire_pair_door d);
+/* False when the path does not fit, or a door that names a rendezvous was
+ * given no id, or one that is not ^[A-Za-z0-9_-]{1,64}$. `after` (< 0 =
+ * none) is the MESSAGES cursor, ignored elsewhere. */
+bool wire_pair_door_path(wire_pair_door d, const char *id, long after, char *out, size_t out_sz);
+bool wire_pair_id_valid(const char *id);
+
+struct wire_pair_rendezvous {
+    const char *id;
+    wire_pairing_side role;
+    const char *expires_at;
+};
+
+struct wire_pair_offer {
+    const char *rendezvous_id;
+    const char *curve;
+    const char *expires_at;
+};
+
+struct wire_pair_message {
+    long seq;
+    wire_pairing_side from;
+    const char *payload;
+};
+
+/* `{rendezvous: {id, role, expires_at}}`. */
+bool wire_narrow_pair_rendezvous(const json_value *root, struct wire_pair_rendezvous *out);
+/* `{offer: {…}}` (*present true) or `{offer: null}` (*present false). */
+bool wire_narrow_pair_offer(const json_value *root, bool *present, struct wire_pair_offer *out);
+/* `{message: {seq, from, payload}}`, POST's answer. */
+bool wire_narrow_pair_posted(const json_value *root, struct wire_pair_message *out);
+/* `{messages: [{seq, from, payload}…]}`, every element valid. */
+bool wire_narrow_pair_messages(const json_value *root, const json_value **messages, size_t *count);
+bool wire_pair_message_at(const json_value *messages, size_t i, struct wire_pair_message *out);
+
 /* ── Phoenix framing ───────────────────────────────────────────────────
  * A v2 socket frame is `[join_ref, ref, topic, event, payload]`. Splits it
  * without assuming any field is non-null (join_ref and ref are null on

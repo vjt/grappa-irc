@@ -1243,6 +1243,116 @@ bool wire_e2e_door_path(wire_e2e_door d, const char *slug_enc, const char *did, 
     return true;
 }
 
+/* ── E2E pairing relay ───────────────────────────────────────────────── */
+
+static const struct {
+    const char *method;
+    const char *tail; /* after /e2e/pairings/<id>, or the whole rest */
+    bool id;
+    bool body;
+} PAIR_DOORS[] = {
+    [WIRE_PAIR_OPEN] = {"POST", "", false, true},
+    [WIRE_PAIR_OFFER] = {"GET", "/offer", false, true},
+    [WIRE_PAIR_JOIN] = {"POST", "/join", true, true},
+    [WIRE_PAIR_POST] = {"POST", "/messages", true, true},
+    [WIRE_PAIR_MESSAGES] = {"GET", "/messages", true, true},
+    [WIRE_PAIR_CLOSE] = {"DELETE", "", true, false},
+};
+
+const char *wire_pair_door_method(wire_pair_door d) {
+    return (size_t)d < TABLE_LEN(PAIR_DOORS) ? PAIR_DOORS[d].method : "GET";
+}
+
+bool wire_pair_door_has_body(wire_pair_door d) {
+    return (size_t)d < TABLE_LEN(PAIR_DOORS) && PAIR_DOORS[d].body;
+}
+
+bool wire_pair_id_valid(const char *id) {
+    if (!id || !id[0] || strlen(id) > 64) return false;
+    for (const char *c = id; *c; c++)
+        if (!((*c >= 'A' && *c <= 'Z') || (*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') ||
+              *c == '-' || *c == '_'))
+            return false;
+    return true;
+}
+
+bool wire_pair_door_path(wire_pair_door d, const char *id, long after, char *out, size_t out_sz) {
+    if ((size_t)d >= TABLE_LEN(PAIR_DOORS) || !out_sz) return false;
+    out[0] = '\0';
+    int n;
+    if (!PAIR_DOORS[d].id) {
+        n = snprintf(out, out_sz, "/e2e/pairings%s", PAIR_DOORS[d].tail);
+    } else {
+        if (!wire_pair_id_valid(id)) return false;
+        if (d == WIRE_PAIR_MESSAGES && after >= 0)
+            n = snprintf(out, out_sz, "/e2e/pairings/%s%s?after=%ld", id, PAIR_DOORS[d].tail, after);
+        else
+            n = snprintf(out, out_sz, "/e2e/pairings/%s%s", id, PAIR_DOORS[d].tail);
+    }
+    if (n < 0 || (size_t)n >= out_sz) {
+        out[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+bool wire_narrow_pair_rendezvous(const json_value *root, struct wire_pair_rendezvous *out) {
+    const json_value *r = json_get(root, "rendezvous");
+    if (json_type_of(root) != JSON_OBJECT || json_type_of(r) != JSON_OBJECT) return false;
+    struct wire_pair_rendezvous v = {0};
+    if (!json_str_req(r, "id", &v.id) || !pairing_side_of(json_get(r, "role"), &v.role) ||
+        !json_str_req(r, "expires_at", &v.expires_at))
+        return false;
+    *out = v;
+    return true;
+}
+
+bool wire_narrow_pair_offer(const json_value *root, bool *present, struct wire_pair_offer *out) {
+    if (json_type_of(root) != JSON_OBJECT) return false;
+    const json_value *o = json_get(root, "offer");
+    if (!o) return false; /* absent is not null */
+    if (json_type_of(o) == JSON_NULL) {
+        *present = false;
+        return true;
+    }
+    if (json_type_of(o) != JSON_OBJECT) return false;
+    struct wire_pair_offer v = {0};
+    if (!json_str_req(o, "rendezvous_id", &v.rendezvous_id) || !json_str_req(o, "curve", &v.curve) ||
+        !json_str_req(o, "expires_at", &v.expires_at))
+        return false;
+    *present = true;
+    *out = v;
+    return true;
+}
+
+static bool narrow_pair_message(const json_value *m, struct wire_pair_message *out) {
+    if (json_type_of(m) != JSON_OBJECT) return false;
+    struct wire_pair_message v = {0};
+    if (!json_long_req(m, "seq", &v.seq) || !pairing_side_of(json_get(m, "from"), &v.from) ||
+        !json_str_req(m, "payload", &v.payload))
+        return false;
+    *out = v;
+    return true;
+}
+
+static bool check_pair_message(const json_value *v) {
+    struct wire_pair_message m;
+    return narrow_pair_message(v, &m);
+}
+
+bool wire_narrow_pair_posted(const json_value *root, struct wire_pair_message *out) {
+    return json_type_of(root) == JSON_OBJECT && narrow_pair_message(json_get(root, "message"), out);
+}
+
+bool wire_narrow_pair_messages(const json_value *root, const json_value **messages,
+                               size_t *count) {
+    return narrow_wrapped_array(root, "messages", check_pair_message, messages, count);
+}
+
+bool wire_pair_message_at(const json_value *messages, size_t i, struct wire_pair_message *out) {
+    return narrow_pair_message(json_at(messages, i), out);
+}
+
 /* ── Element accessors ────────────────────────────────────────────────── */
 
 bool wire_member_at(const json_value *members, size_t i, struct wire_member *out) {

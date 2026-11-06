@@ -1560,6 +1560,88 @@ TEST(presence_rows_read_their_facts_from_meta) {
     json_free(d);
 }
 
+/* The relay's doors: subject-wide paths, and only a url-safe id in them. */
+TEST(pair_doors) {
+    char path[256];
+    CHECK(wire_pair_door_path(WIRE_PAIR_OPEN, NULL, -1, path, sizeof(path)));
+    CHECK_STR(path, "/e2e/pairings");
+    CHECK_STR(wire_pair_door_method(WIRE_PAIR_OPEN), "POST");
+    CHECK(wire_pair_door_path(WIRE_PAIR_OFFER, NULL, -1, path, sizeof(path)));
+    CHECK_STR(path, "/e2e/pairings/offer");
+    CHECK_STR(wire_pair_door_method(WIRE_PAIR_OFFER), "GET");
+    CHECK(wire_pair_door_path(WIRE_PAIR_JOIN, "Ab-_09xyzABCDEFGHIJKLM", -1, path, sizeof(path)));
+    CHECK_STR(path, "/e2e/pairings/Ab-_09xyzABCDEFGHIJKLM/join");
+    CHECK(wire_pair_door_path(WIRE_PAIR_MESSAGES, "abc", 3, path, sizeof(path)));
+    CHECK_STR(path, "/e2e/pairings/abc/messages?after=3");
+    CHECK(wire_pair_door_path(WIRE_PAIR_POST, "abc", 3, path, sizeof(path)));
+    CHECK_STR(path, "/e2e/pairings/abc/messages");
+    CHECK_STR(wire_pair_door_method(WIRE_PAIR_POST), "POST");
+    CHECK(wire_pair_door_path(WIRE_PAIR_CLOSE, "abc", -1, path, sizeof(path)));
+    CHECK_STR(path, "/e2e/pairings/abc");
+    CHECK_STR(wire_pair_door_method(WIRE_PAIR_CLOSE), "DELETE");
+    CHECK(!wire_pair_door_has_body(WIRE_PAIR_CLOSE));
+    CHECK(wire_pair_door_has_body(WIRE_PAIR_MESSAGES));
+    CHECK(!wire_pair_door_path(WIRE_PAIR_JOIN, NULL, -1, path, sizeof(path)));
+    CHECK(!wire_pair_door_path(WIRE_PAIR_JOIN, "", -1, path, sizeof(path)));
+    CHECK(!wire_pair_door_path(WIRE_PAIR_JOIN, "a/b", -1, path, sizeof(path)));
+    CHECK(!wire_pair_door_path(WIRE_PAIR_JOIN, "a+b", -1, path, sizeof(path)));
+    CHECK(!wire_pair_door_path(WIRE_PAIR_JOIN, "a?b", -1, path, sizeof(path)));
+    CHECK(!wire_pair_door_path(WIRE_PAIR_JOIN, "abc", -1, path, 8));
+}
+
+TEST(pair_bodies) {
+    const char *rv = "{\"rendezvous\":{\"id\":\"abc\",\"role\":\"joiner\",\"expires_at\":"
+                     "\"2026-11-07T10:05:00Z\"}}";
+    json_doc *d = json_parse(rv, strlen(rv), NULL, 0);
+    struct wire_pair_rendezvous r;
+    CHECK(wire_narrow_pair_rendezvous(json_root(d), &r));
+    CHECK_STR(r.id, "abc");
+    CHECK(r.role == WIRE_PAIRING_JOINER);
+    CHECK_STR(r.expires_at, "2026-11-07T10:05:00Z");
+    json_free(d);
+    const char *badrole = "{\"rendezvous\":{\"id\":\"abc\",\"role\":\"guest\",\"expires_at\":\"x\"}}";
+    d = json_parse(badrole, strlen(badrole), NULL, 0);
+    CHECK(!wire_narrow_pair_rendezvous(json_root(d), &r));
+    json_free(d);
+
+    bool present = true;
+    struct wire_pair_offer o;
+    d = json_parse("{\"offer\":null}", 14, NULL, 0);
+    CHECK(wire_narrow_pair_offer(json_root(d), &present, &o) && !present);
+    json_free(d);
+    const char *offer = "{\"offer\":{\"rendezvous_id\":\"abc\",\"curve\":\"K\",\"expires_at\":\"T\"}}";
+    d = json_parse(offer, strlen(offer), NULL, 0);
+    CHECK(wire_narrow_pair_offer(json_root(d), &present, &o) && present);
+    CHECK_STR(o.curve, "K");
+    json_free(d);
+    const char *partial = "{\"offer\":{\"rendezvous_id\":\"abc\"}}";
+    d = json_parse(partial, strlen(partial), NULL, 0);
+    CHECK(!wire_narrow_pair_offer(json_root(d), &present, &o));
+    json_free(d);
+    d = json_parse("{}", 2, NULL, 0);
+    CHECK(!wire_narrow_pair_offer(json_root(d), &present, &o));
+    json_free(d);
+
+    const char *msgs = "{\"messages\":[{\"seq\":2,\"from\":\"creator\",\"payload\":\"QUJD\"},"
+                       "{\"seq\":4,\"from\":\"creator\",\"payload\":\"REVG\"}]}";
+    d = json_parse(msgs, strlen(msgs), NULL, 0);
+    const json_value *arr;
+    size_t n;
+    CHECK(wire_narrow_pair_messages(json_root(d), &arr, &n) && n == 2);
+    struct wire_pair_message m;
+    CHECK(wire_pair_message_at(arr, 1, &m) && m.seq == 4 && m.from == WIRE_PAIRING_CREATOR);
+    CHECK_STR(m.payload, "REVG");
+    json_free(d);
+    const char *badmsgs = "{\"messages\":[{\"seq\":2,\"from\":\"creator\"}]}";
+    d = json_parse(badmsgs, strlen(badmsgs), NULL, 0);
+    CHECK(!wire_narrow_pair_messages(json_root(d), &arr, &n));
+    json_free(d);
+    const char *posted = "{\"message\":{\"seq\":1,\"from\":\"joiner\",\"payload\":\"QQ\"}}";
+    d = json_parse(posted, strlen(posted), NULL, 0);
+    CHECK(wire_narrow_pair_posted(json_root(d), &m) && m.seq == 1 && m.from == WIRE_PAIRING_JOINER);
+    json_free(d);
+}
+
 int main(void) {
     RUN(subject_key_shapes);
     RUN(subject_key_refuses_half_formed);
@@ -1590,6 +1672,8 @@ int main(void) {
     RUN(e2e_request_events);
     RUN(e2e_rest_bodies);
     RUN(e2e_doors);
+    RUN(pair_doors);
+    RUN(pair_bodies);
     RUN(network_attached_and_detached);
     RUN(severed_and_invite_declined);
     RUN(dcc_offer_and_its_resolution);
