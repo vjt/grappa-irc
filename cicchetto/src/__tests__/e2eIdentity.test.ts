@@ -1643,7 +1643,8 @@ describe("mountIdentitySync", () => {
   const until = (assertion: () => void) => vi.waitFor(assertion, { timeout: 4000 });
 
   // The signals are module state: each case starts from no network list, and
-  // uses its own subject, since the page-wide record of synced slots stays.
+  // uses its own subject, since the record of synced slots stays for as long
+  // as the bearer does.
   // Each network is a grappa of its own: an identity is per network.
   beforeEach(() => {
     setList(undefined);
@@ -1655,7 +1656,7 @@ describe("mountIdentitySync", () => {
     });
   });
 
-  it("syncs each network once per page, and a network that appears later", async () => {
+  it("syncs each network once per login, and a network that appears later", async () => {
     setBearer("tok");
     setMe({ kind: "user", id: "a1" });
     const found = vi.fn();
@@ -1741,6 +1742,29 @@ describe("mountIdentitySync", () => {
     setList([{ id: 1, slug: "azzurra" }]);
     await until(() => expect(api.uploadE2eDeviceKeys).toHaveBeenCalledTimes(1));
     await until(() => expect(found.mock.calls).toEqual([["azzurra", "ready"]]));
+    dispose();
+  });
+
+  // issue 2454 — what a sync tells `found` lives in stores a login resets
+  // (`identityScopedStore`), and a logout does not reload the page: a new
+  // login that skipped the sync would leave them empty until a reload.
+  it("syncs each network again on a new login, without a reload", async () => {
+    setBearer("tok-1");
+    setMe({ kind: "user", id: "e5" });
+    const found = vi.fn();
+    const dispose = createRoot((d) => {
+      mountIdentitySync(found);
+      return d;
+    });
+    setList([{ id: 1, slug: "azzurra" }]);
+    await until(() => expect(found.mock.calls).toEqual([["azzurra", "ready"]]));
+
+    // Logged out, then in again as the same user: a new bearer, same page.
+    setBearer(null);
+    setBearer("tok-2");
+    await until(() => expect(found).toHaveBeenCalledTimes(2));
+    expect(found.mock.calls[1]).toEqual(["azzurra", "ready"]);
+    expect(vi.mocked(api.getE2eList).mock.calls.map((call) => call[0])).toEqual(["tok-1", "tok-2"]);
     dispose();
   });
 

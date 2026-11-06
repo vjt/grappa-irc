@@ -317,6 +317,21 @@ describe("encrypted chats", () => {
     await vi.waitFor(() => expect(chats.ownDevice(net.slug)).toBe(did));
   });
 
+  it("a read of this device's id that lands after the identity went elsewhere keeps none (issue 2454)", async () => {
+    await chats.drainE2e(net.slug);
+    const { did } = await own();
+    await vi.waitFor(() => expect(chats.ownDevice(net.slug)).toBe(did));
+
+    // A ready starts a read; the identity is elsewhere before it lands.
+    chats.identitySynced(net.slug, "ready");
+    chats.identitySynced(net.slug, { elsewhere: "left-out" });
+    // The stores here are in-memory twins, all promises: a macrotask later,
+    // the read has landed.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(chats.ownDevice(net.slug)).toBeUndefined();
+  });
+
   it("a message while grappa has published no line size for the network fails at once, and asks for nothing", async () => {
     await chats.drainE2e(net.slug);
     await bob();

@@ -8,17 +8,23 @@
 // window, carrying `meta.e2e_device` (that device's id). The window is the
 // account's, so every browser shows every device's row. Browser A starts the
 // identity; browser B is paired into it. The peer sends a message to B's
-// device alone, B does not read it (its inbox reads empty, as the offline
-// queue spec holds it), and the sweep ages it out. A shows the row naming
-// B's device; B shows the same row as "here".
+// device alone while B has no page open (nothing drains B's queue: A drains
+// only its own), and the sweep ages it out. A shows the row naming B's
+// device; B, opened again, shows the same row as "here".
+//
+// B is closed rather than held with `page.route` on its inbox: a route can
+// miss a fetch from a page cic's service worker controls (see
+// `fixtures/fetchInPage.ts`, #666 / #1702), and a missed one would drain the
+// message. A closed page drains nothing. Opening B again also runs its
+// page-load identity sync, which is what hands the scrollback B's own id.
 //
 // ## What makes this spec able to fail
 //
 //   * cic ignores `meta.e2e_device` (the bug): A reads "cannot be read here"
 //     for a message only B missed, and the A assertion goes red.
 //   * cic never learns this browser's own device id (the identity sync does
-//     not hand it to the scrollback): B names its own device instead of
-//     "here", and the B assertion goes red. A's row would pass without it,
+//     not hand it to the scrollback): B, opened again, names its own device
+//     instead of "here", and the B assertion goes red. A's row would pass without it,
 //     since a row names its device while the own id is not known: that half
 //     is B's to prove.
 //   * The message never reaches B's queue: `awaitE2eQueued` times out, so the
@@ -28,12 +34,7 @@
 // offline queue spec, `issue2430-e2e-offline-queue.spec.ts`.
 
 import { randomBytes } from "node:crypto";
-import {
-  awaitServiceWorkerActive,
-  holdE2eInbox,
-  selectChannel,
-  sidebarWindow,
-} from "../fixtures/cicchettoPage";
+import { awaitServiceWorkerActive, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
 import { boot, equery } from "../fixtures/encryptedQuery";
 import { awaitE2eQueued, expireE2eInbox } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
@@ -87,14 +88,15 @@ test("a device's undeliverable row reads 'here' on that device and names it on t
     const bDid = await pairFromBanner(page, aliceB, alice.token);
 
     // B back on the shell, a device of the identity, its sync done (its keys
-    // are up). It reads nothing: grappa's queue for it stays grappa's.
-    await holdE2eInbox(aliceB, NETWORK_SLUG);
+    // are up, so its record is stored). Then closed: grappa's queue for it
+    // stays grappa's. Its context keeps the login and the identity.
     await aliceB.goto("/");
     await awaitServiceWorkerActive(aliceB);
     await expect(sidebarWindow(aliceB, NETWORK_SLUG, AUTOJOIN_CHANNELS[0])).toBeVisible({
       timeout: SHOWN_TIMEOUT_MS,
     });
     await awaitBundleOf(alice.token, bDid);
+    await aliceB.close();
 
     // A message for B's device alone, queued for it.
     const msgid = newMsgid();
@@ -116,14 +118,17 @@ test("a device's undeliverable row reads 'here' on that device and names it on t
     await expect(onA).toHaveText(wording(`on your device ${bDid}`));
     await expect(onA.locator("code")).toHaveText(bDid);
 
-    // B: the same row, its own.
-    await expect(sidebarWindow(aliceB, NETWORK_SLUG, peer.nick)).toHaveCount(1, {
+    // B, opened again: the same row, its own.
+    const reopened = await second.context.newPage();
+    await reopened.goto("/");
+    await expect(sidebarWindow(reopened, NETWORK_SLUG, peer.nick)).toHaveCount(1, {
       timeout: SHOWN_TIMEOUT_MS,
     });
-    await selectChannel(aliceB, NETWORK_SLUG, peer.nick);
-    const onB = aliceB.getByTestId("e2e-undeliverable");
+    await selectChannel(reopened, NETWORK_SLUG, peer.nick);
+    const onB = reopened.getByTestId("e2e-undeliverable");
     await expect(onB).toHaveCount(1, { timeout: SHOWN_TIMEOUT_MS });
-    await expect(onB).toHaveText(wording("here"));
+    // "here" waits on the page's identity sync, which reads B's own id.
+    await expect(onB).toHaveText(wording("here"), { timeout: SHOWN_TIMEOUT_MS });
   } finally {
     await second?.context.close();
     await peer.disconnect("2454 undeliverable device done");
