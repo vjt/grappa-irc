@@ -10,6 +10,10 @@ import type { Point } from "./lib/swipe";
 // which delivers the same `contextmenu` where iOS sends none). The chrome is
 // `ContextMenu`, shared with the nick and message menus.
 //
+// issue 2583 — the second door to the same view is the `ciphertext` entry in
+// the right rail's actions menu (`RailActions`), for the window on screen; this
+// menu stays, for any encrypted row in the list.
+//
 // What is open is held here and not in the Sidebar, which keeps no state of
 // its own: Shell remounts it on every swipe (#1041). The menu goes with the
 // Sidebar that mounted it, so a remount never brings back a stale one.

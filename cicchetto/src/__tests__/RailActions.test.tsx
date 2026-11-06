@@ -159,6 +159,23 @@ vi.mock("../lib/archiveRollup", () => ({
   archivedUnread: () => archiveRollupHolder.value,
 }));
 
+// issue 2583 — the ciphertext view of an encrypted chat is one state per chat
+// in lib/encryptedChats (its own suite pins it: per chat, folded, reset on a
+// delete or a new identity). Here it is a real signal behind a spied toggle,
+// so a flip from either door, this entry or the window list's menu, re-renders
+// the entry the way the store's own signal would.
+const [wireViewOn, setWireViewOn] = createSignal<ReadonlySet<string>>(new Set());
+const toggleEncryptedWireView = vi.fn((slug: string, nick: string) => {
+  const next = new Set(wireViewOn());
+  const id = `${slug}/${nick}`;
+  if (!next.delete(id)) next.add(id);
+  setWireViewOn(next);
+});
+vi.mock("../lib/encryptedChats", () => ({
+  encryptedWireView: (slug: string, nick: string) => wireViewOn().has(`${slug}/${nick}`),
+  toggleEncryptedWireView: (slug: string, nick: string) => toggleEncryptedWireView(slug, nick),
+}));
+
 const openHomePanel = vi.fn();
 const openListPanel = vi.fn();
 const openThemesPanel = vi.fn();
@@ -208,6 +225,7 @@ beforeEach(() => {
   refreshHolder.value = null;
   inCardHeadHolder.value = false;
   archiveRollupHolder.value = { messages: 0, events: 0 };
+  setWireViewOn(new Set<string>());
   dismissConfirm();
 });
 
@@ -417,6 +435,84 @@ describe("RailActions (#473)", () => {
     fireEvent.click(toggle);
     expect(toggle).toHaveClass("presence-hidden");
     expect(toggle).toHaveClass("shell-chrome-btn");
+  });
+});
+
+// issue 2583 (vjt: "il right rail magari una nuova voce in actions menu") —
+// the encrypted chat's ciphertext view (issue 2513) gets an entry in this menu,
+// gated on the kind like denoise and mute, and shaped like denoise: a state
+// toggle flipped in place, so the menu stays open and the entry says which
+// view is showing. The window list's menu stays the second door to the SAME
+// state.
+describe("RailActions — the ciphertext view of an encrypted chat (issue 2583)", () => {
+  const encryptedSel: Sel = {
+    networkSlug: "freenode",
+    channelName: "$e2e:Bob",
+    kind: "encrypted",
+  };
+  const entry = () => screen.getByTestId("rail-action-wire-view");
+
+  it("is offered on an encrypted window and on no other kind, showing the plaintext to start", () => {
+    const others: Sel[] = [
+      null,
+      channelSel,
+      { networkSlug: "freenode", channelName: "Bob", kind: "query" },
+      { networkSlug: "$home", channelName: "$home", kind: "home" },
+      adminSel,
+    ];
+    for (const other of others) {
+      selHolder.value = other;
+      render(() => <RailActions setters={setters} />);
+      openMenu();
+      // The menu IS open (a gated entry is absent from a shut one too).
+      expect(screen.getByTestId("action-cluster-cog")).toBeInTheDocument();
+      expect(screen.queryByTestId("rail-action-wire-view")).toBeNull();
+      cleanup();
+    }
+
+    selHolder.value = encryptedSel;
+    render(() => <RailActions setters={setters} />);
+    openMenu();
+    expect(entry()).toHaveTextContent("ciphertext");
+    expect(entry()).toHaveAttribute("aria-pressed", "false");
+    expect(entry()).toHaveAttribute("title", "Show ciphertext");
+  });
+
+  it("a tap shows the chat's ciphertext and leaves the menu open; a second shows its plaintext", () => {
+    selHolder.value = encryptedSel;
+    render(() => <RailActions setters={setters} />);
+    openMenu();
+
+    fireEvent.click(entry());
+    // The peer the window is named after, not the window's name.
+    expect(toggleEncryptedWireView).toHaveBeenCalledWith("freenode", "Bob");
+    expect(entry()).toHaveAttribute("aria-pressed", "true");
+    expect(entry()).toHaveAttribute("title", "Show plaintext");
+    expect(entry()).toHaveClass("wire-view-on");
+    // Flipped in place, like denoise: the menu did not close under it.
+    expect(screen.getByTestId(LAUNCHER)).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(entry());
+    expect(toggleEncryptedWireView).toHaveBeenCalledTimes(2);
+    expect(entry()).toHaveAttribute("aria-pressed", "false");
+    expect(entry()).toHaveAttribute("title", "Show ciphertext");
+    expect(entry()).not.toHaveClass("wire-view-on");
+  });
+
+  it("says the view the window list's menu chose for this chat, and not another chat's", () => {
+    selHolder.value = encryptedSel;
+    render(() => <RailActions setters={setters} />);
+    openMenu();
+
+    // Another chat flipped from the other door: this entry keeps its view.
+    setWireViewOn(new Set(["freenode/carol"]));
+    expect(entry()).toHaveAttribute("aria-pressed", "false");
+
+    // This chat flipped from the other door: one state, so this entry says it.
+    setWireViewOn(new Set(["freenode/carol", "freenode/Bob"]));
+    expect(entry()).toHaveAttribute("aria-pressed", "true");
+    expect(entry()).toHaveAttribute("title", "Show plaintext");
+    expect(toggleEncryptedWireView).not.toHaveBeenCalled();
   });
 });
 
