@@ -37,8 +37,9 @@ defmodule GrappaWeb.MultipartBodyTest do
 
   # One body just over the real default ceiling, built once: allocating it
   # per test would multiply the cost. An image part, so it is refused by
-  # the `:image` cap on both doors (10 MiB by default) — a refusal only a
-  # controller that received the parsed file can give.
+  # the `:image` cap on the plain and avatar doors (10 MiB by default), and
+  # by its own cap on the encrypted one — a refusal only a controller that
+  # received the parsed file can give.
   setup_all do
     file = :binary.copy(<<0>>, MultipartLimits.default_length() + @mib)
     %{over_default: multipart_body(file)}
