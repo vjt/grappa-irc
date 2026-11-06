@@ -87,6 +87,7 @@ const SAS_REASON = keysOf<string>({
   "key-changed": "the nick was pinned to another key",
   "page-gone": "the page running it was closed or reloaded",
   "bad-key": "a key could not be used",
+  "other-device": "answered on another device",
 } satisfies Record<SasCancelReason, string>);
 
 // A reason that is not one of ours is the peer's own words: quoted, so

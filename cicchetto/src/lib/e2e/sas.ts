@@ -25,6 +25,14 @@
 // is what binds the master: a wrong one fails the SAS as a wrong `mac` does,
 // and is no key alarm.
 //
+// Issue 2457: the side whose start went to every device tells the others
+// the moment one device is the peer device, by its first step or by its own
+// start winning the tie below: `sas.cancel {tx, reason: "other-device"}`,
+// under our start's tx, to every device of the master but that one, so no
+// prompt stays asked for a SAS that runs, or ended, elsewhere. A first step
+// that ends it (a decline, a step out of order) ends it for every device:
+// one person declined.
+//
 // irc-olm drops sas.* (a bot never answers), so only cics run it, and the
 // rules no wire fixes are cic's: both asking at once, the smaller tx wins
 // on both sides; 600 s from the start, then a cancel.
@@ -126,7 +134,9 @@ export type SasCancelReason =
   | "mac-mismatch"
   | "key-changed"
   | "page-gone"
-  | "bad-key";
+  | "bad-key"
+  /** Another device of the master answered it: the SAS is not this device's (issue 2457). */
+  | "other-device";
 
 /** A SAS as the window shows it. `emoji` only where the secret is, while comparing. */
 export type SasView = {
@@ -343,7 +353,8 @@ export class Verifier {
    * `rowId`, derived from the inbox message, so a message processed again
    * writes nothing twice. One that does not parse, names another tx, or comes
    * from another device of the master than the one the SAS runs with, is
-   * ignored: only that device's own SAS answers to it.
+   * ignored: only that device's own SAS answers to it. The first step that
+   * names our start fixes that device, and tells the others (`release`).
    */
   async receive(
     nick: string,
@@ -366,8 +377,10 @@ export class Verifier {
       console.debug(`[e2e] ignored a ${msg.t} from ${nick} for no SAS of ours`);
       return;
     }
-    rec.device ??= device;
-    if (rec.device !== device) {
+    if (rec.device === null) {
+      this.release(rec, device);
+      rec.device = device;
+    } else if (rec.device !== device) {
       console.debug(`[e2e] ignored a ${msg.t} from a device of ${nick} the SAS does not run with`);
       return;
     }
@@ -422,8 +435,9 @@ export class Verifier {
       // Both asked at once. Both sides keep the smaller tx: if it is ours,
       // the peer turns its start into our B; if theirs, ours becomes their B,
       // with the device that sent it, and our key, not sent yet, is the one
-      // we commit to.
+      // we commit to; the other devices our start reached are told it ended.
       if (tx > rec.tx) return;
+      this.release(rec, device);
       rec.tx = tx;
       rec.role = "b";
       rec.phase = "accepted";
@@ -599,6 +613,17 @@ export class Verifier {
   /** A step of `rec`, through the engine: to its peer device, to every device of the master before one is known. */
   private send(rec: SasRecord, inner: Record<string, unknown>): void {
     this.collect(this.engine.send(rec.nick, inner, SAS_TAG, null, rec.device));
+  }
+
+  /**
+   * Our start of `rec` went to every device of the master, and `device` is
+   * now the one it runs with, or ended with: the others are told it is not
+   * theirs, under the start's tx (issue 2457).
+   */
+  private release(rec: SasRecord, device: string): void {
+    const reason: SasCancelReason = "other-device";
+    const inner = { t: "sas.cancel", tx: rec.tx, reason };
+    this.collect(this.engine.sendExcept(rec.nick, inner, SAS_TAG, device));
   }
 
   /** What the engine answered, for the caller to take: never dropped. */
