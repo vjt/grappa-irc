@@ -33,6 +33,7 @@
 
 import { createSignal } from "solid-js";
 import type { NotifyEntry } from "./api";
+import { atKey, type ByKey, keysOf, withKey } from "./byKey";
 import { identityScopedStore } from "./identityScopedStore";
 import { asciiFold } from "./nickEquals";
 import { createToastQueue } from "./toasts";
@@ -62,8 +63,10 @@ export type PresenceToast =
 
 const exports_ = identityScopedStore((onIdentityChange) => {
   const [watchByNetwork, setWatchByNetwork] = createSignal<Record<number, NotifyEntry[]>>({});
+  // Network id → folded nick → state. A watched nick is the user's to
+  // choose, so the inner record is a `ByKey` (issue 2453).
   const [presenceByNetwork, setPresenceByNetwork] = createSignal<
-    Record<number, Record<string, PresenceState>>
+    Record<number, ByKey<PresenceState>>
   >({});
   // Scoped WITH the watch list: presence is a property of the identity that
   // asked to watch those nicks, so an account switch must take the dots and
@@ -97,7 +100,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   // `presence_snapshot` — authoritative per-network dot map on
   // (re)attach. Keys arrive server-folded; stored verbatim.
   const applyPresenceSnapshot = (networkId: number, nicks: Record<string, PresenceState>): void => {
-    setPresenceByNetwork((prev) => ({ ...prev, [networkId]: { ...nicks } }));
+    setPresenceByNetwork((prev) => ({ ...prev, [networkId]: keysOf(nicks) }));
   };
 
   // `presence_changed` — one live report. Updates the dot map always;
@@ -115,7 +118,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
     setPresenceByNetwork((prev) => ({
       ...prev,
-      [payload.network_id]: { ...(prev[payload.network_id] ?? {}), [key]: payload.presence },
+      [payload.network_id]: withKey(prev[payload.network_id], key, payload.presence),
     }));
 
     if (payload.initial) return;
@@ -141,7 +144,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   // Dot state for a display-form nick (the Watched panel iterates the
   // watch list, whose entries are display-cased).
   const presenceFor = (networkId: number, nick: string): PresenceState => {
-    return presenceByNetwork()[networkId]?.[asciiFold(nick)] ?? "unknown";
+    return atKey(presenceByNetwork()[networkId], asciiFold(nick)) ?? "unknown";
   };
 
   return {

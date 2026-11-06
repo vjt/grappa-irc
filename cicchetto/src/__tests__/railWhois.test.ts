@@ -231,6 +231,39 @@ describe("railWhois", () => {
     expect(railWhoisFor("azzurra", "Guest87449")?.host).toBe("Guest87449.host");
   });
 
+  // issue 2453 — a nick is the peer's to choose, and `constructor` and
+  // `__proto__` are valid ones; "bob" runs first as the control. Another nick
+  // is cached first, so the network's record holds an entry already.
+  it.each(["bob", "constructor", "__proto__", "Constructor"])(
+    "asks once about %s with another nick of the network cached, and shows the answer",
+    async (nick) => {
+      const { requestRailWhois, ingestRailWhois, railWhoisFor } = await import("../lib/railWhois");
+      ingestRailWhois("azzurra", "alice", bundle("alice"));
+      expect(railWhoisFor("azzurra", nick)).toBeUndefined();
+
+      requestRailWhois("azzurra", nick);
+      requestRailWhois("azzurra", nick);
+
+      expect(pushWhoisMock).toHaveBeenCalledTimes(1);
+      expect(pushWhoisMock).toHaveBeenCalledWith(1, nick, null, "rail");
+      ingestRailWhois("azzurra", nick, bundle(nick));
+      expect(railWhoisFor("azzurra", nick)?.host).toBe(`${nick}.host`);
+    },
+  );
+
+  it.each(["bob", "constructor", "__proto__"])(
+    "copyRailWhois copies a known bundle to the new nick %s",
+    async (newNick) => {
+      const { copyRailWhois, ingestRailWhois, railWhoisFor } = await import("../lib/railWhois");
+      ingestRailWhois("azzurra", "Guest87449", bundle("Guest87449"));
+
+      copyRailWhois("azzurra", "Guest87449", newNick);
+
+      expect(railWhoisFor("azzurra", newNick)?.host).toBe("Guest87449.host");
+      expect(railWhoisFor("azzurra", newNick)?.target).toBe(newNick);
+    },
+  );
+
   it("wipes the cache on identity rotation (logout/token change)", async () => {
     const { requestRailWhois, ingestRailWhois, railWhoisFor } = await import("../lib/railWhois");
     const auth = await import("../lib/auth");

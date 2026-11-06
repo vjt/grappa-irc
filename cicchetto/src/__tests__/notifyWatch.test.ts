@@ -43,6 +43,27 @@ describe("notifyWatch store", () => {
     expect(presenceFor(42, "stranger")).toBe("unknown");
   });
 
+  // issue 2453 — a watched nick is the user's to choose, and `constructor` and
+  // `__proto__` are valid ones; "bob" runs first as the control.
+  it.each(["bob", "constructor", "__proto__"])(
+    "reads %s as unknown beside a reported nick, then as reported",
+    (nick) => {
+      applyPresenceSnapshot(42, { carol: "online" });
+      expect(presenceFor(42, nick)).toBe("unknown");
+
+      applyPresenceChange({
+        network_id: 42,
+        nick,
+        presence: "offline",
+        initial: true,
+        ts: "2026-07-18T12:00:00Z",
+      });
+
+      expect(presenceFor(42, nick)).toBe("offline");
+      expect(presenceFor(42, "carol")).toBe("online");
+    },
+  );
+
   it("initial reports paint the dot but never toast", () => {
     applyPresenceChange({
       network_id: 42,
