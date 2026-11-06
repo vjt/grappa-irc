@@ -211,10 +211,14 @@ defmodule GrappaWeb.UploadsController do
   the server-settings wire does not move.
   """
   @spec encrypted_per_file_cap_bytes() :: pos_integer()
-  def encrypted_per_file_cap_bytes do
-    largest = @categories |> Enum.map(&ServerSettings.get_upload_per_file_cap_bytes/1) |> Enum.max()
-    largest + @gcm_tag_bytes
-  end
+  def encrypted_per_file_cap_bytes, do: largest_cap(@categories, 0) + @gcm_tag_bytes
+
+  # A walk rather than `Enum.max/1`, whose `element` return reaches the
+  # sum as any number, a float included, for Dialyzer.
+  defp largest_cap([], largest), do: largest
+
+  defp largest_cap([category | rest], largest),
+    do: largest_cap(rest, max(largest, ServerSettings.get_upload_per_file_cap_bytes(category)))
 
   # ------------------------------------------------------------------
   # POST /api/uploads
