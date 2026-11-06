@@ -6,6 +6,7 @@
 // binding, and WebCrypto's AES-GCM.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { accountStore, type OwnIdentity, seal } from "../lib/e2e/accountStore";
+import { nickEntries, setNick } from "../lib/e2e/byNick";
 import { newState } from "../lib/e2e/engine";
 import { certSigText, listSigText } from "../lib/e2e/wire";
 import { type MemoryVault, memoryLock, memoryVault } from "./helpers/e2eVault";
@@ -130,7 +131,7 @@ describe("accountStore", () => {
 
     const fresh = await store.withAccount(SLOT, async ({ state }) => {
       const before = structuredClone(state);
-      state.pins.bob = "a-pinned-key";
+      setNick(state.pins, "bob", "a-pinned-key");
       return before;
     });
     const restored = await store.withAccount(SLOT, async ({ state }) => state);
@@ -145,16 +146,34 @@ describe("accountStore", () => {
     );
   });
 
+  // issue 2453 — a nick named after an Object.prototype member is an entry of
+  // its own in the sealed JSON, and comes back as one.
+  it("restores the pins of nicks named after Object.prototype members", async () => {
+    const store = accountStore(olm(), memoryVault(), memoryLock());
+
+    await store.withAccount(SLOT, async ({ state }) => {
+      setNick(state.pins, "__proto__", "a-key");
+      setNick(state.pins, "constructor", "another-key");
+    });
+    const restored = await store.withAccount(SLOT, async ({ state }) => state);
+
+    expect(nickEntries(restored.pins)).toEqual([
+      ["__proto__", "a-key"],
+      ["constructor", "another-key"],
+    ]);
+    expect(Object.getPrototypeOf(restored.pins)).toBe(Object.prototype);
+  });
+
   it("persist() stores the state with the account, so a failing session keeps both as persisted", async () => {
     const store = accountStore(olm(), memoryVault(), memoryLock());
 
     await expect(
       store.withAccount(SLOT, async ({ account, state, persist }) => {
         account.generate_one_time_keys(1);
-        state.pins.bob = "kept";
+        setNick(state.pins, "bob", "kept");
         await persist();
         account.generate_one_time_keys(1);
-        state.pins.carol = "lost";
+        setNick(state.pins, "carol", "lost");
         throw new Error("send failed");
       }),
     ).rejects.toThrow("send failed");

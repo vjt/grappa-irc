@@ -45,6 +45,15 @@
 import { frameBudgetForTarget } from "../frameBudget";
 import type { E2eKeysWireDevice } from "../wireTypes";
 import type { OwnIdentity } from "./accountStore";
+import {
+  atNick,
+  type ByNick,
+  deleteNick,
+  nickEntries,
+  nickValues,
+  noNicks,
+  setNick,
+} from "./byNick";
 import { idBlock } from "./keyBundle";
 import type { Olm } from "./olm";
 import type { SasRecord } from "./sas";
@@ -219,19 +228,19 @@ export type E2eState = {
   /** Device Ed25519 key → the device. */
   devices: Record<string, PeerDevice>;
   /** Folded nick → the master pinned to it. */
-  pins: Record<string, string>;
+  pins: ByNick<string>;
   /** Curve25519 → session pickles, newest first. */
   sessions: Record<string, string[]>;
   /** Session ids already opened from a pre-key message, oldest first. */
   seen: string[];
   /** Folded nick → messages waiting for keys, oldest first. */
-  outq: Record<string, Queued[]>;
+  outq: ByNick<Queued[]>;
   /** Folded nick → when a KEYREQ last went to it: the budget, which a KEYS never resets. */
-  keyreqSentAt: Record<string, number>;
+  keyreqSentAt: ByNick<number>;
   /** Folded nicks a KEYS is due from: a KEYREQ went and no KEYS answered it yet. */
-  keysAwaited: Record<string, true>;
+  keysAwaited: ByNick<true>;
   /** Folded nick → when it was last re-keyed after a NACK. */
-  rekeyAt: Record<string, number>;
+  rekeyAt: ByNick<number>;
   /**
    * Device Ed25519 keys that NACKed their newest session: none of their
    * sessions is sent on until a KEYS opens a fresh one (W: "no working
@@ -239,14 +248,17 @@ export type E2eState = {
    */
   rekeying: Record<string, true>;
   /** Folded nick → when a `listreq` last went to it, and for which `lv`s. */
-  listreqAt: Record<string, { at: number; lv: number[] }>;
+  listreqAt: ByNick<{ at: number; lv: number[] }>;
   /**
    * Folded nick → nick: the `listreq` a pin or a SAS asked of it (O1) that
    * has not gone yet, the per-nick minute or a missing line budget holding it
    * back; `tick` sends it.
    */
-  listreqHeld: Record<string, string>;
-  /** `${folded nick} ${did}` → when a `listreq` from that device was last answered. */
+  listreqHeld: ByNick<string>;
+  /**
+   * `${folded nick} ${did}` → when a `listreq` from that device was last
+   * answered. Not a `ByNick`: no Object.prototype member holds a space.
+   */
   listAnsweredAt: Record<string, number>;
   /** Oldest first. */
   sent: Sent[];
@@ -272,7 +284,7 @@ export type E2eState = {
    * (`rekey`, issue 2491): its answer is due, and `tick` asks again until it
    * comes or `OUTQ_TTL_MS` passes.
    */
-  keysAsked: Record<string, { nick: string; at: number }>;
+  keysAsked: ByNick<{ nick: string; at: number }>;
 };
 
 export function newState(): E2eState {
@@ -280,16 +292,16 @@ export function newState(): E2eState {
     v: 2,
     masters: {},
     devices: {},
-    pins: {},
+    pins: noNicks(),
     sessions: {},
     seen: [],
-    outq: {},
-    keyreqSentAt: {},
-    keysAwaited: {},
-    rekeyAt: {},
+    outq: noNicks(),
+    keyreqSentAt: noNicks(),
+    keysAwaited: noNicks(),
+    rekeyAt: noNicks(),
     rekeying: {},
-    listreqAt: {},
-    listreqHeld: {},
+    listreqAt: noNicks(),
+    listreqHeld: noNicks(),
     listAnsweredAt: {},
     sent: [],
     nextRef: 1,
@@ -297,7 +309,7 @@ export function newState(): E2eState {
     sas: {},
     siblings: {},
     copyq: {},
-    keysAsked: {},
+    keysAsked: noNicks(),
   };
 }
 
@@ -548,7 +560,7 @@ export class Engine {
    * last seen under another nick is not reached here.
    */
   pinned(nick: string): { master: string; verified: boolean; devices: number } | undefined {
-    const master = this.state.pins[fold(nick)];
+    const master = atNick(this.state.pins, nick);
     const record = master === undefined ? undefined : this.state.masters[master];
     if (master === undefined || record === undefined) return undefined;
     return { master, verified: record.verified, devices: this.trustedDevices(master).length };
@@ -591,13 +603,12 @@ export class Engine {
     }
     if (canonical !== master) return { ...res, outcome: "bad-key" };
     if (master === this.own.master) return { ...res, outcome: "own-key" };
-    const key = fold(nick);
-    const before = this.state.pins[key];
+    const before = atNick(this.state.pins, nick);
     const known = this.state.masters[master];
     if (known === undefined) this.state.masters[master] = newMaster(nick, verified);
     else known.verified ||= verified;
-    this.state.pins[key] = master;
-    if (before !== undefined && !Object.values(this.state.pins).includes(before)) {
+    setNick(this.state.pins, nick, master);
+    if (before !== undefined && !nickValues(this.state.pins).includes(before)) {
       for (const device of Object.values(this.state.devices)) {
         if (device.master === before) this.dropSessions(device);
       }
@@ -616,7 +627,7 @@ export class Engine {
     const record = this.state.masters[master];
     if (record === undefined) return res;
     record.verified = true;
-    if (this.state.pins[fold(nick)] === master) this.askList(nick, res);
+    if (atNick(this.state.pins, nick) === master) this.askList(nick, res);
     return this.end(res);
   }
 
@@ -690,7 +701,7 @@ export class Engine {
       tag,
       expiresAt,
     };
-    const master = this.state.pins[fold(nick)];
+    const master = atNick(this.state.pins, nick);
     return master === undefined
       ? this.enqueue(nick, "", only, [], msg, res)
       : this.sendTo(nick, master, only, [], msg, res);
@@ -728,8 +739,8 @@ export class Engine {
    */
   forget(nick: string): void {
     const key = fold(nick);
-    delete this.state.outq[key];
-    delete this.state.keysAsked[key];
+    deleteNick(this.state.outq, nick);
+    deleteNick(this.state.keysAsked, nick);
     this.state.sent = this.state.sent.filter((s) => fold(s.nick) !== key);
     for (const [ed25519, waiting] of Object.entries(this.state.copyq)) {
       const rest = waiting.filter((c) => fold(c.peer) !== key);
@@ -779,11 +790,11 @@ export class Engine {
     const res = emptyResult();
     const key = fold(nick);
     if (key === fold(this.ownNick)) return res;
-    const master = this.state.pins[key];
+    const master = atNick(this.state.pins, nick);
     for (const device of master === undefined ? [] : this.trustedDevices(master)) {
       this.state.rekeying[device.ed25519] = true;
     }
-    this.state.keysAsked[key] = { nick, at: this.now() };
+    setNick(this.state.keysAsked, nick, { nick, at: this.now() });
     res.events.push({ kind: "keys_asked", nick });
     this.maybeKeyreq(nick, res);
     return this.end(res);
@@ -816,15 +827,14 @@ export class Engine {
    */
   absent(nick: string): Result {
     const res = emptyResult();
-    const key = fold(nick);
-    const waiting = this.state.outq[key] ?? [];
-    delete this.state.outq[key];
-    delete this.state.keysAwaited[key];
-    delete this.state.keyreqSentAt[key];
+    const waiting = atNick(this.state.outq, nick) ?? [];
+    deleteNick(this.state.outq, nick);
+    deleteNick(this.state.keysAwaited, nick);
+    deleteNick(this.state.keyreqSentAt, nick);
     for (const q of waiting) this.lost(q.nick, "no-such-nick", [q.msg]);
-    const asked = this.state.keysAsked[key];
+    const asked = atNick(this.state.keysAsked, nick);
     if (asked !== undefined) {
-      delete this.state.keysAsked[key];
+      deleteNick(this.state.keysAsked, nick);
       res.events.push({ kind: "keys_unanswered", nick: asked.nick });
     }
     return this.end(res);
@@ -916,14 +926,13 @@ export class Engine {
     msg: Outgoing,
     res: Result,
   ): boolean {
-    const key = fold(nick);
-    const q = this.liveQueue(key);
+    const q = this.liveQueue(nick);
     if (q.length >= OUTQ_MAX) {
       this.lost(nick, "queue-full", [msg]);
       return false;
     }
     q.push({ nick, master, only, done, msg, at: this.now() });
-    this.state.outq[key] = q;
+    setNick(this.state.outq, nick, q);
     if (msg.tag !== LIST_TAG && !this.wentOut(msg.id)) {
       res.events.push({ kind: "send_queued", nick, queued: q.length, tag: msg.tag });
     }
@@ -931,12 +940,12 @@ export class Engine {
     return true;
   }
 
-  /** The queue for a folded nick, minus what waited too long (`lost`: judged at the end of the step). */
-  private liveQueue(key: string): Queued[] {
-    const q = this.state.outq[key] ?? [];
+  /** The queue for `nick`, minus what waited too long (`lost`: judged at the end of the step). */
+  private liveQueue(nick: string): Queued[] {
+    const q = atNick(this.state.outq, nick) ?? [];
     const live = q.filter((x) => x.at > this.now() - OUTQ_TTL_MS);
-    if (live.length > 0) this.state.outq[key] = live;
-    else delete this.state.outq[key];
+    if (live.length > 0) setNick(this.state.outq, nick, live);
+    else deleteNick(this.state.outq, nick);
     const first = q[0];
     if (first !== undefined) {
       this.lost(
@@ -950,11 +959,10 @@ export class Engine {
 
   /** A KEYREQ to `nick`, unless one went less than `KEYREQ_RETRY_MS` ago. */
   private maybeKeyreq(nick: string, res: Result): void {
-    const key = fold(nick);
-    const last = this.state.keyreqSentAt[key];
+    const last = atNick(this.state.keyreqSentAt, nick);
     if (last !== undefined && this.now() - last < KEYREQ_RETRY_MS) return;
-    this.state.keyreqSentAt[key] = this.now();
-    this.state.keysAwaited[key] = true;
+    setNick(this.state.keyreqSentAt, nick, this.now());
+    setNick(this.state.keysAwaited, nick, true);
     res.outbound.push({
       target: nick,
       verb: "keyreq",
@@ -976,16 +984,18 @@ export class Engine {
    * when it went or waits: only then are the minute and the `lv` spent.
    */
   private requestList(nick: string, only: string | null, lv: number | null, res: Result): boolean {
-    const key = fold(nick);
-    const master = this.state.pins[key];
+    const master = atNick(this.state.pins, nick);
     const ver = master === undefined ? 0 : (this.state.masters[master]?.ver ?? 0);
-    const last = this.state.listreqAt[key];
+    const last = atNick(this.state.listreqAt, nick);
     const asked = (last?.lv ?? []).filter((v) => v > ver);
     if (last !== undefined) last.lv = asked;
     if (lv !== null && asked.includes(lv)) return false;
     if (last !== undefined && this.now() - last.at < LISTREQ_INTERVAL_MS) return false;
     if (!this.dispatch(nick, { t: "listreq" }, LIST_TAG, null, only, res)) return false;
-    this.state.listreqAt[key] = { at: this.now(), lv: lv === null ? asked : [...asked, lv] };
+    setNick(this.state.listreqAt, nick, {
+      at: this.now(),
+      lv: lv === null ? asked : [...asked, lv],
+    });
     return true;
   }
 
@@ -999,13 +1009,12 @@ export class Engine {
    * clock for good.
    */
   private askList(nick: string, res: Result): void {
-    const key = fold(nick);
-    if (key === fold(this.ownNick)) {
-      delete this.state.listreqHeld[key];
+    if (fold(nick) === fold(this.ownNick)) {
+      deleteNick(this.state.listreqHeld, nick);
       return;
     }
-    if (this.requestList(nick, null, null, res)) delete this.state.listreqHeld[key];
-    else this.state.listreqHeld[key] = nick;
+    if (this.requestList(nick, null, null, res)) deleteNick(this.state.listreqHeld, nick);
+    else setNick(this.state.listreqHeld, nick, nick);
   }
 
   /**
@@ -1598,8 +1607,7 @@ export class Engine {
    * again when the budget allows (`tick`).
    */
   private onKeys(nick: string, payload: Record<string, unknown>, res: Result): void {
-    const key = fold(nick);
-    if (this.state.keysAwaited[key] !== true) {
+    if (atNick(this.state.keysAwaited, nick) !== true) {
       res.events.push({ kind: "dropped", nick, reason: "unsolicited-keys", verb: "keys" });
       return;
     }
@@ -1611,12 +1619,12 @@ export class Engine {
     const master = keys.master.ed25519;
     // The KEYREQ is answered; its budget stands (`maybeKeyreq`). So are keys
     // the user asked for again (`rekey`), whichever master answered.
-    delete this.state.keysAwaited[key];
-    const asked = this.state.keysAsked[key] !== undefined;
-    delete this.state.keysAsked[key];
+    deleteNick(this.state.keysAwaited, nick);
+    const asked = atNick(this.state.keysAsked, nick) !== undefined;
+    deleteNick(this.state.keysAsked, nick);
     if (this.checkMaster(nick, master, res) === "alarm") {
-      const queue = this.liveQueue(key);
-      delete this.state.outq[key];
+      const queue = this.liveQueue(nick);
+      deleteNick(this.state.outq, nick);
       this.lost(
         nick,
         "key-mismatch",
@@ -1649,9 +1657,8 @@ export class Engine {
    * cannot go is `lost`.
    */
   private flush(nick: string, master: string, res: Result): void {
-    const key = fold(nick);
-    const queue = this.liveQueue(key);
-    delete this.state.outq[key];
+    const queue = this.liveQueue(nick);
+    deleteNick(this.state.outq, nick);
     const waiting: Queued[] = [];
     for (const q of queue) {
       if (q.master !== master && q.master !== "") {
@@ -1671,7 +1678,7 @@ export class Engine {
       // device this master's list does not name.
       else this.lost(nick, "unpinned-key", [q.msg]);
     }
-    if (waiting.length > 0) this.state.outq[key] = waiting;
+    if (waiting.length > 0) setNick(this.state.outq, nick, waiting);
   }
 
   /**
@@ -1785,7 +1792,7 @@ export class Engine {
   private pending(id: string): boolean {
     return (
       this.wentOut(id) ||
-      Object.values(this.state.outq).some((queue) => queue.some((q) => q.msg.id === id))
+      nickValues(this.state.outq).some((queue) => queue.some((q) => q.msg.id === id))
     );
   }
 
@@ -1908,7 +1915,7 @@ export class Engine {
       return;
     }
     const body = unbase64(mine);
-    const master = this.state.pins[fold(nick)];
+    const master = atNick(this.state.pins, nick);
     const record = master === undefined ? undefined : this.state.masters[master];
     if (record?.revokedCurves.includes(curve)) {
       drop("revoked-device");
@@ -2278,7 +2285,7 @@ export class Engine {
       lose("nack-from-another-nick", sent.nick);
       return;
     }
-    if (this.state.pins[fold(nick)] !== sent.master) {
+    if (atNick(this.state.pins, nick) !== sent.master) {
       lose("repinned", nick);
       return;
     }
@@ -2307,14 +2314,13 @@ export class Engine {
     }
     const newest = this.sessionsOf(device.curve25519)[0];
     if (newest === undefined || this.sessionId(newest) === body.sessionId) {
-      const key = fold(nick);
-      if (!this.keysUnderWay(key)) {
-        const last = this.state.rekeyAt[key];
+      if (!this.keysUnderWay(nick)) {
+        const last = atNick(this.state.rekeyAt, nick);
         if (last !== undefined && this.now() - last < REKEY_INTERVAL_MS) {
           lose("rekey-throttled", nick);
           return;
         }
-        this.state.rekeyAt[key] = this.now();
+        setNick(this.state.rekeyAt, nick, this.now());
         res.events.push({ kind: "rekeying", nick, master: sent.master, device: device.ed25519 });
       }
       this.state.rekeying[device.ed25519] = true;
@@ -2354,24 +2360,24 @@ export class Engine {
   }
 
   /**
-   * Whether keys are being asked of the folded nick `key`: a KEYREQ went
+   * Whether keys are being asked of `nick`: a KEYREQ went
    * within the retry and no KEYS answered it, or a re-key started since the
    * last KEYREQ, whose own waits out the budget (`rekeyDue`). A NACK then
    * joins it: the KEYS brings every device's keys.
    */
-  private keysUnderWay(key: string): boolean {
-    const asked = this.state.keyreqSentAt[key];
+  private keysUnderWay(nick: string): boolean {
+    const asked = atNick(this.state.keyreqSentAt, nick);
     const awaited =
-      this.state.keysAwaited[key] === true &&
+      atNick(this.state.keysAwaited, nick) === true &&
       asked !== undefined &&
       this.now() - asked < KEYREQ_RETRY_MS;
-    return awaited || this.rekeyDue(key);
+    return awaited || this.rekeyDue(nick);
   }
 
-  /** Whether a re-key of the folded nick `key` started after its last KEYREQ: its own is still to go. */
-  private rekeyDue(key: string): boolean {
-    const rekeyed = this.state.rekeyAt[key];
-    const asked = this.state.keyreqSentAt[key];
+  /** Whether a re-key of `nick` started after its last KEYREQ: its own is still to go. */
+  private rekeyDue(nick: string): boolean {
+    const rekeyed = atNick(this.state.rekeyAt, nick);
+    const asked = atNick(this.state.keyreqSentAt, nick);
     return rekeyed !== undefined && (asked === undefined || rekeyed > asked);
   }
 
@@ -2423,7 +2429,7 @@ export class Engine {
    */
   tick(): Result {
     const res = emptyResult();
-    for (const key of Object.keys(this.state.outq)) {
+    for (const [key] of nickEntries(this.state.outq)) {
       // grappa answers a nick's KEYREQ at most so often and drops the rest
       // without a word (`E2eKeyAnswers`). What reached no device asks again,
       // as does a re-key whose KEYREQ waited out the budget; a message a
@@ -2434,15 +2440,15 @@ export class Engine {
       if (asking !== undefined) this.maybeKeyreq(asking.nick, res);
     }
     for (const ed25519 of Object.keys(this.state.copyq)) this.liveCopies(ed25519, res);
-    for (const nick of Object.values(this.state.listreqHeld)) this.askList(nick, res);
+    for (const nick of nickValues(this.state.listreqHeld)) this.askList(nick, res);
     // Keys the user asked for again (`rekey`): asked again under the budget
     // until a KEYS answers, and given up on as the queue gives up on keys.
-    for (const [key, asked] of Object.entries(this.state.keysAsked)) {
+    for (const [key, asked] of nickEntries(this.state.keysAsked)) {
       if (this.now() - asked.at < OUTQ_TTL_MS) {
         this.maybeKeyreq(asked.nick, res);
         continue;
       }
-      delete this.state.keysAsked[key];
+      deleteNick(this.state.keysAsked, key);
       res.events.push({ kind: "keys_unanswered", nick: asked.nick });
     }
     return this.end(res);
@@ -2458,10 +2464,10 @@ export class Engine {
    */
   waitsOnTheClock(): boolean {
     return (
-      Object.keys(this.state.outq).length > 0 ||
+      nickEntries(this.state.outq).length > 0 ||
       Object.keys(this.state.copyq).length > 0 ||
-      Object.keys(this.state.listreqHeld).length > 0 ||
-      Object.keys(this.state.keysAsked).length > 0 ||
+      nickEntries(this.state.listreqHeld).length > 0 ||
+      nickEntries(this.state.keysAsked).length > 0 ||
       Object.keys(this.state.sas).length > 0
     );
   }
@@ -2486,15 +2492,14 @@ export class Engine {
       res.events.push({ kind: "dropped", nick, reason: "own-identity" });
       return "alarm";
     }
-    const key = fold(nick);
-    const pinned = this.state.pins[key];
+    const pinned = atNick(this.state.pins, nick);
     if (pinned === master) return "ok";
     if (pinned !== undefined) {
       res.events.push({ kind: "key_alarm", nick, pinned, presented: master });
       return "alarm";
     }
     this.state.masters[master] ??= newMaster(nick, false);
-    this.state.pins[key] = master;
+    setNick(this.state.pins, nick, master);
     return "ok";
   }
 
@@ -2736,7 +2741,7 @@ export class Engine {
    */
   private trimSent(): void {
     const cutoff = this.now() - SENT_MEMORY_MS;
-    const queued = new Set(Object.values(this.state.outq).flatMap((q) => q.map((x) => x.msg.id)));
+    const queued = new Set(nickValues(this.state.outq).flatMap((q) => q.map((x) => x.msg.id)));
     const waiting = (s: Sent): boolean => queued.has(s.msg.id);
     const fresh = this.state.sent.filter((s) => s.at >= cutoff || waiting(s));
     let excess = fresh.length - SENT_MAX;

@@ -3,6 +3,7 @@
 // and the lock are the in-memory twins of IndexedDB and Web Locks; the
 // sealing is the real AES-GCM.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { atNick, nickEntries } from "../lib/e2e/byNick";
 import {
   CHAT_ROWS_MAX,
   type ChatChange,
@@ -11,6 +12,7 @@ import {
   type IdentityCheck,
   type WirePayload,
 } from "../lib/e2e/chatStore";
+import { fold } from "../lib/e2e/wire";
 import { memoryLock, memoryVault } from "./helpers/e2eVault";
 
 const SLOT = "user:0b5e:1";
@@ -61,7 +63,7 @@ describe("chatStore", () => {
     await chats.apply(SLOT, [add("bob", inRow("in:1:0", "one"))]);
 
     expect(await chats.rows(SLOT, "bob")).toHaveLength(1);
-    expect((await chats.chats(SLOT)).bob?.unread).toBe(1);
+    expect(atNick(await chats.chats(SLOT), "bob")?.unread).toBe(1);
   });
 
   it("moves an outgoing row along; an `out` for a chat that does not exist creates nothing", async () => {
@@ -171,13 +173,13 @@ describe("chatStore", () => {
     const chats = chatStore(memoryVault(), memoryLock());
     await chats.apply(SLOT, [add("Bob", inRow("in:1:0", "one"))]);
     await chats.close(SLOT, "bob");
-    expect((await chats.chats(SLOT)).bob).toEqual({ nick: "Bob", open: false, unread: 1 });
+    expect(atNick(await chats.chats(SLOT), "bob")).toEqual({ nick: "Bob", open: false, unread: 1 });
 
     await chats.apply(SLOT, [add("bob", inRow("in:2:0", "two"))]);
-    expect((await chats.chats(SLOT)).bob).toEqual({ nick: "Bob", open: true, unread: 2 });
+    expect(atNick(await chats.chats(SLOT), "bob")).toEqual({ nick: "Bob", open: true, unread: 2 });
 
     await chats.read(SLOT, "bob");
-    expect((await chats.chats(SLOT)).bob?.unread).toBe(0);
+    expect(atNick(await chats.chats(SLOT), "bob")?.unread).toBe(0);
     expect(await chats.rows(SLOT, "bob")).toHaveLength(2);
   });
 
@@ -197,7 +199,7 @@ describe("chatStore", () => {
       add("bob", { kind: "accepted", id: "p2", at: 6, nick: "bob", ed25519: KEY }, false),
     ]);
 
-    expect((await chats.chats(SLOT)).bob).toEqual({ nick: "Bob", open: false, unread: 1 });
+    expect(atNick(await chats.chats(SLOT), "bob")).toEqual({ nick: "Bob", open: false, unread: 1 });
     expect(await chats.rows(SLOT, "bob")).toHaveLength(6);
   });
 
@@ -209,13 +211,13 @@ describe("chatStore", () => {
     await chats.apply(SLOT, [
       add("bob", { kind: "sas_asked", id: "s1", at: 2, nick: "bob", by: "peer" }),
     ]);
-    expect((await chats.chats(SLOT)).bob).toEqual({ nick: "Bob", open: true, unread: 2 });
+    expect(atNick(await chats.chats(SLOT), "bob")).toEqual({ nick: "Bob", open: true, unread: 2 });
 
     await chats.close(SLOT, "bob");
     await chats.apply(SLOT, [
       add("bob", { kind: "key_alarm", id: "a1", at: 3, nick: "bob", presented: KEY }),
     ]);
-    expect((await chats.chats(SLOT)).bob).toEqual({ nick: "Bob", open: true, unread: 3 });
+    expect(atNick(await chats.chats(SLOT), "bob")).toEqual({ nick: "Bob", open: true, unread: 3 });
   });
 
   it("a row the window does not show, for a nick with no chat, keeps it on a closed one", async () => {
@@ -272,7 +274,7 @@ describe("chatStore", () => {
     await chats.apply(SLOT, [{ op: "check", nick: "bob", check: second }]);
 
     expect(touched).toEqual(["bob"]);
-    expect((await chats.chats(SLOT)).bob).toEqual({
+    expect(atNick(await chats.chats(SLOT), "bob")).toEqual({
       nick: "Bob",
       open: false,
       unread: 1,
@@ -418,5 +420,43 @@ describe("chatStore", () => {
     expect(warn).toHaveBeenCalled();
     await chats.apply(SLOT, [add("bob", inRow("in:2:0", "two"))]);
     expect((await chats.rows(SLOT, "bob")).map((r) => r.id)).toEqual(["in:2:0"]);
+  });
+});
+
+// issue 2453 — the index keys its chats by folded nick, and a peer may be
+// nicked after an Object.prototype member: "bob" runs every case first, as
+// the control. Every step loads the index from its sealed JSON again.
+const NICKS = ["bob", "constructor", "__proto__", "Constructor"];
+
+describe("a chat with a peer nicked after an Object.prototype member (issue 2453)", () => {
+  it.each(NICKS)("%s: kept, listed, read, closed and deleted as any chat", async (nick) => {
+    const chats = chatStore(memoryVault(), memoryLock());
+    expect(atNick(await chats.chats(SLOT), nick)).toBeUndefined();
+    expect(await chats.rows(SLOT, nick)).toEqual([]);
+
+    const touched = await chats.apply(SLOT, [
+      add(nick, inRow("in:1:0", "one")),
+      add("carol", inRow("in:2:0", "two")),
+    ]);
+
+    expect(touched).toEqual([fold(nick), "carol"]);
+    expect(nickEntries(await chats.chats(SLOT))).toEqual([
+      [fold(nick), { nick, open: true, unread: 1 }],
+      ["carol", { nick: "carol", open: true, unread: 1 }],
+    ]);
+    expect((await chats.rows(SLOT, nick)).map((r) => r.id)).toEqual(["in:1:0"]);
+    // Each write went to the chat's own entry.
+    expect(({} as Record<string, unknown>).open).toBeUndefined();
+    expect((Object as unknown as Record<string, unknown>).open).toBeUndefined();
+
+    await chats.read(SLOT, nick);
+    await chats.close(SLOT, nick);
+    expect(atNick(await chats.chats(SLOT), nick)).toEqual({ nick, open: false, unread: 0 });
+    await chats.open(SLOT, nick);
+    expect(atNick(await chats.chats(SLOT), nick)?.open).toBe(true);
+    await chats.remove(SLOT, nick);
+
+    expect(nickEntries(await chats.chats(SLOT)).map(([key]) => key)).toEqual(["carol"]);
+    expect(await chats.rows(SLOT, nick)).toEqual([]);
   });
 });

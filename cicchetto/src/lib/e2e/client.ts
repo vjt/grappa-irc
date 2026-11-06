@@ -48,6 +48,7 @@
 import { ApiError } from "../api";
 import type { E2eKeysWireDevice } from "../wireTypes";
 import type { AccountStore } from "./accountStore";
+import { type ByNick, noNicks, setNick } from "./byNick";
 import type {
   ChatChange,
   ChatStore,
@@ -256,8 +257,8 @@ export type E2eClient = {
     nicks: string[],
   ): Promise<{
     own: string;
-    peers: Record<string, PeerTrust | null>;
-    sas: Record<string, SasView | null>;
+    peers: ByNick<PeerTrust | null>;
+    sas: ByNick<SasView | null>;
   }>;
 };
 
@@ -1019,12 +1020,11 @@ export function e2eClient(
 
     identity: (ctx, nicks) =>
       withEngine(ctx, async (engine, persist, verifier, door) => {
-        const peers: Record<string, PeerTrust | null> = {};
-        const sas: Record<string, SasView | null> = {};
+        const peers = noNicks<PeerTrust | null>();
+        const sas = noNicks<SasView | null>();
         for (const nick of nicks) {
-          const peer = engine.pinned(nick);
-          peers[fold(nick)] = peer ?? null;
-          sas[fold(nick)] = verifier.view(nick);
+          setNick(peers, nick, engine.pinned(nick) ?? null);
+          setNick(sas, nick, verifier.view(nick));
         }
         if (!verifier.idle()) await finish(ctx, engine, verifier, persist, door, [], []);
         return { own: engine.fingerprint(), peers, sas };

@@ -47,6 +47,7 @@ import {
 import { token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { browserE2e } from "./e2e/browser";
+import { atNick, type ByNick, nickEntries, nickValues, noNicks } from "./e2e/byNick";
 import { type Chat, type ChatRow, isMessage, type SendDropped } from "./e2e/chatStore";
 import {
   claimAnswer,
@@ -219,7 +220,7 @@ function unlessElsewhere(err: unknown): undefined {
 type Changed = { slug: string; slot: string; chats: string[] };
 
 const exports_ = identityScopedStore((onIdentityChange) => {
-  const [chatsBySlug, setChatsBySlug] = createSignal<Record<string, Record<string, Chat>>>({});
+  const [chatsBySlug, setChatsBySlug] = createSignal<Record<string, ByNick<Chat>>>({});
   const [rowsByChat, setRowsByChat] = createSignal<Record<string, ChatRow[]>>({});
   const [trustByChat, setTrustByChat] = createSignal<Record<string, PeerTrust | null>>({});
   const [ownKeyBySlug, setOwnKeyBySlug] = createSignal<Record<string, string>>({});
@@ -405,10 +406,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       };
     setRowsByChat(each((_key, i) => rows[i] ?? []));
     setOwnKeyBySlug((prev) => ({ ...prev, [slug]: identity.own }));
-    setTrustByChat(each((key) => identity.peers[key] ?? null));
-    setSasByChat(each((key) => identity.sas[key] ?? null));
+    setTrustByChat(each((key) => atNick(identity.peers, key) ?? null));
+    setSasByChat(each((key) => atNick(identity.sas, key) ?? null));
     // A SAS another tab runs waits on this tab's clock too: that tab may go.
-    if (Object.values(identity.sas).some((view) => view !== null)) waiting.add(slug);
+    if (nickValues(identity.sas).some((view) => view !== null)) waiting.add(slug);
   }
 
   // Tells this browser's other tabs that the network changed: its chats
@@ -529,7 +530,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
    */
   async function encryptedChatNick(slug: string, nick: string): Promise<string> {
     const { chats } = await browserE2e();
-    return (await chats.chats(contextFor(slug).slot))[fold(nick)]?.nick ?? nick;
+    return atNick(await chats.chats(contextFor(slug).slot), nick)?.nick ?? nick;
   }
 
   async function closeEncryptedChat(slug: string, nick: string): Promise<void> {
@@ -575,7 +576,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   }
 
   async function readEncryptedChat(slug: string, nick: string): Promise<void> {
-    if ((chatsBySlug()[slug]?.[fold(nick)]?.unread ?? 0) === 0) return;
+    if ((encryptedChat(slug, nick)?.unread ?? 0) === 0) return;
     const { chats } = await browserE2e();
     await chats.read(contextFor(slug).slot, nick);
     await changed(slug, [fold(nick)]);
@@ -688,12 +689,12 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
   /** The open encrypted chats of a network, in the order they were first opened. */
   const encryptedChatsFor = (slug: string): EncryptedChatEntry[] =>
-    Object.entries(chatsBySlug()[slug] ?? {})
+    nickEntries(chatsBySlug()[slug] ?? noNicks<Chat>())
       .filter(([, chat]) => chat.open)
       .map(([key, chat]) => ({ key, nick: chat.nick, unread: chat.unread }));
 
   const encryptedChat = (slug: string, nick: string): Chat | undefined =>
-    chatsBySlug()[slug]?.[fold(nick)];
+    atNick(chatsBySlug()[slug] ?? noNicks<Chat>(), nick);
 
   const encryptedRows = (slug: string, nick: string): ChatRow[] | undefined =>
     rowsByChat()[chatId(slug, nick)];
