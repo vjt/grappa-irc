@@ -765,8 +765,11 @@ from that peer the device will never read, and `meta.e2e_device` (v49) =
 that device's `did`. Only `pkmsg` and `msg` are counted; key material and
 NACKs expire, or are refused, silently. Because a refused message is never
 pushed either, a device that never acks stops receiving a peer's messages
-once that peer's share is full. cicchetto words it "*** <peer> sent you N
-encrypted messages that cannot be read here".
+once that peer's share is full. Every device of the account sees every
+device's row, so tell your own `did` from a sibling's: cicchetto words its
+own device's row (and a row without `e2e_device`, written before v49) "***
+<peer> sent you N encrypted messages that cannot be read here", and a
+sibling's "… that cannot be read on your device <did>".
 
 A queued `pkmsg` or `msg` also raises a Web Push notification, once per
 message however many devices it was queued for, under the same
