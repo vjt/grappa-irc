@@ -3374,3 +3374,67 @@ pin outlives the rows); `issue2544-verify-shown-key.spec.ts` walks both
 doors on desktop and the badge on a phone. None of them ran locally: the
 stack is not this worker's to take, and the PR's integration job is the
 gate.
+<!-- entry #2554 -->
+
+---
+
+## 2026-11-06 — #2554: the unread-ack test fills its path with one large write
+
+`Dcc.TransferTest`'s "a sender that never reads its acks" (issue 2405) failed
+now and then in CI with `transfer: {:ok, {:error, :idle_timeout}}`. The issue
+read it as the idle timer racing the sender's write pacing under load, and
+asked for the test to wait on real progress rather than a longer timeout.
+Measured, there was no race to wait out.
+
+**The cause was the fake sender's kernel.** The test narrowed the path by
+giving the sender a 1 KiB receive buffer and letting our acks fill it. A
+4-byte ack costs the receiving kernel far more memory than its payload, and a
+buffer that small full of them sometimes made it drop one its window had
+admitted. Every segment we sent after that began past what it expected, the
+window updates saying we had drained included, so it discarded them unread,
+never learned we had room, and sent nothing more. The drain then timed out
+with bytes still owed: the CI message, byte for byte. The signature, diffed
+from `/proc/net/netstat` around each run, was in every failure and in no
+success: `TCPRcvQDrop` 1, `BeyondWindow` 5 to 18, `RcvPruned` 1. Kernel
+7.0.14-linuxkit (Docker Desktop's VM).
+
+- **Measured, not raced.** Under 24 CPU hogs the old fixture failed 8 runs in
+  30, each with the drop. Freezing the whole BEAM for 2.5 s mid-drain did not
+  reproduce it (17 of 17 survived), and load did not make the drain go silent
+  (worst wait for a read, 13 ms). A longer idle allowance only delays the
+  failure: given 30 s, a 2 KiB sender passed no byte after its drop, through
+  seven retransmission timeouts.
+- **No buffer size tried cures it.** 16 KiB reached the stall in 30 of 30 loaded
+  runs, then the real test failed once in 27 unloaded. 32 KiB dropped once in
+  three. `TCP_WINDOW_CLAMP` on a default buffer never closed the window.
+
+**What the test does now.** Before the first byte flows it still shrinks our
+send buffer from outside, then writes one MiB of filler on our socket, also
+from outside. The sender (receive buffer fixed at 64 KiB) takes what that
+holds, in full-sized segments; our kernel keeps some more; the driver queues
+the rest, far past its high watermark. The transfer's first ack meets that
+queue, comes back `:timeout`, and acking stops. Once the window is shut our
+acks wait in our own queue and never reach the sender at all, so the
+thousands of 4-byte segments that set off the drop are gone. The filler write
+itself answers `:ok`: `tcp_sendv` (`inet_drv.c`, OTP 28) weighs the watermark
+only against a queue that was already there.
+
+- **The check is a rise, not a peak.** Once the sender starts talking, its
+  segments carry a fresh window and our kernel takes more filler (measured,
+  47 KB), which hid an ack's four bytes from a peak taken against the
+  pre-transfer level: the keep-acking mutant survived three runs that way. The
+  test now asserts the queue never stood 64 bytes above its lowest earlier
+  sample. The payload stays at 128 MiB for the same reason: at 8 MiB the
+  transfer ended in about 6 ms, between two 5 ms samples, and the mutant
+  passed.
+- **Evidence.** 101 of 101 unloaded and 200 of 200 under 8 hogs at 128 MiB;
+  200 of 200 under 24 hogs with an 8 MiB payload (at 128 MiB that load runs
+  past the test's 15 s budget, as it did before this change, so the budget
+  rather than the fixture answers there). Mutants: without `send_timeout: 0`
+  the transfer parks after its first chunk (red), and an ack that ignores
+  `:timeout` raises the queue 57,380 bytes (red).
+
+**The price.** The queue the transfer meets is filled by the test, not by
+acks, so the test no longer shows acks filling the path: it shows that an ack
+meeting a full queue neither blocks nor keeps queueing, and that what is
+queued at the end is discarded. That is the property 2405 fixed.
