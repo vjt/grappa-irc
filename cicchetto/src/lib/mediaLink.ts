@@ -95,6 +95,8 @@
 // scrollback renders. No previews, no on-arrival rendering — the
 // modal is on-click only (vjt-approved spec, 2026-06-10).
 
+import { atKey, keysOf } from "./byKey";
+
 export type MediaKind = "image" | "video" | "audio" | "text";
 
 // Mirrors Grappa.Uploads @slug_regex (26 chars of lowercase base32).
@@ -123,7 +125,9 @@ const EMOJI_KIND: Record<string, MediaKind> = {
 // This half is the ELEMENT-BACKED set (an `<img>` / `<video>` / `<audio>`
 // src), and it is the one the external branch may use. The fetch-backed
 // text set is separate, right below, for the CSP reason in the moduledoc.
-const EXTENSION_KIND: Record<string, Exclude<MediaKind, "text">> = {
+// Both tables are read by an extension the link's author chose, so each is
+// a `ByKey` (issue 2453).
+const EXTENSION_KIND = keysOf<Exclude<MediaKind, "text">>({
   png: "image",
   jpg: "image",
   jpeg: "image",
@@ -144,7 +148,7 @@ const EXTENSION_KIND: Record<string, Exclude<MediaKind, "text">> = {
   opus: "audio",
   flac: "audio",
   wav: "audio",
-};
+});
 
 // #1764 — the FETCH-backed half, admitted-host only. Same cross-language
 // contract as EXTENSION_KIND (MimeExt mints text/plain → .txt and
@@ -158,10 +162,10 @@ const EXTENSION_KIND: Record<string, Exclude<MediaKind, "text">> = {
 // outright (#sbiffo 2026-08-24, "nono nessun rendering di gesu,
 // assolutamente solo il sorgente txt e md"), which also keeps generated
 // HTML out of a client that has no sanitisation surface anywhere today.
-const TEXT_EXTENSION_KIND: Record<string, Extract<MediaKind, "text">> = {
+const TEXT_EXTENSION_KIND = keysOf<Extract<MediaKind, "text">>({
   txt: "text",
   md: "text",
-};
+});
 
 export type MediaLink = { kind: MediaKind; href: string };
 
@@ -292,7 +296,7 @@ function extensionOf(url: URL): string {
 // Element-backed kinds only — safe for a foreign host under the widened
 // `img-src`/`media-src`. See the moduledoc's CSP note.
 function extensionKind(url: URL): MediaKind | null {
-  return EXTENSION_KIND[extensionOf(url)] ?? null;
+  return atKey(EXTENSION_KIND, extensionOf(url)) ?? null;
 }
 
 function kindOf(url: URL, precedingText: string): MediaKind | null {
@@ -305,7 +309,7 @@ function kindOf(url: URL, precedingText: string): MediaKind | null {
   }
 
   // Admitted host: both halves are in play, the fetch-backed one included.
-  return extensionKind(url) ?? TEXT_EXTENSION_KIND[extensionOf(url)] ?? null;
+  return extensionKind(url) ?? atKey(TEXT_EXTENSION_KIND, extensionOf(url)) ?? null;
 }
 
 /**

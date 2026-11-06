@@ -5,6 +5,7 @@ import {
   DOCUMENT_MIMES_OFFICE,
   DOCUMENT_MIMES_PORTABLE,
   IMAGE_MIMES,
+  normalizeUploadFile,
   type UploadCategory,
   VIDEO_MIMES,
 } from "../lib/uploadCategory";
@@ -72,7 +73,31 @@ describe("categoryOf — boundary rejection", () => {
     "application/octet-stream",
     "text/html",
     "",
+    // issue 2453 — a file's type is whatever the source declared, and
+    // `constructor` and `__proto__` are valid strings.
+    "constructor",
+    "__proto__",
   ])("unknown MIME %j → null", (mime) => {
     expect(categoryOf(mime)).toBeNull();
   });
+});
+
+// The audio-extension rescue: an untyped file is relabelled by its
+// extension. issue 2453 — a file name is the user's to choose; "bob" runs
+// first as the control.
+describe("normalizeUploadFile — extension rescue", () => {
+  it("relabels an untyped .m4r as audio/mp4", () => {
+    const ringtone = new File([new Uint8Array(1)], "ring.m4r", { type: "" });
+
+    expect(normalizeUploadFile(ringtone).type).toBe("audio/mp4");
+  });
+
+  it.each(["bob", "constructor", "__proto__"])(
+    "leaves an untyped file named x.%s as it was",
+    (ext) => {
+      const file = new File([new Uint8Array(1)], `x.${ext}`, { type: "" });
+
+      expect(normalizeUploadFile(file)).toBe(file);
+    },
+  );
 });

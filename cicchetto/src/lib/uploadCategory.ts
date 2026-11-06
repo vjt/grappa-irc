@@ -11,6 +11,8 @@
 // in the SAME ORDER so a side-by-side diff stays trivial. Adding a
 // MIME means touching both files in the same commit.
 
+import { atKey, keysOf } from "./byKey";
+
 export type UploadCategory = "image" | "video" | "document" | "audio";
 
 export const IMAGE_MIMES = [
@@ -59,13 +61,17 @@ export const AUDIO_MIMES = [
   "audio/x-flac",
 ] as const;
 
-const MIME_CATEGORIES: Record<string, UploadCategory> = Object.fromEntries([
-  ...IMAGE_MIMES.map((m) => [m, "image"] as const),
-  ...VIDEO_MIMES.map((m) => [m, "video"] as const),
-  ...DOCUMENT_MIMES_PORTABLE.map((m) => [m, "document"] as const),
-  ...DOCUMENT_MIMES_OFFICE.map((m) => [m, "document"] as const),
-  ...AUDIO_MIMES.map((m) => [m, "audio"] as const),
-]);
+// Read by a type the file's source declared, and the audio table below by an
+// extension of the user's file name, so both are a `ByKey` (issue 2453).
+const MIME_CATEGORIES = keysOf<UploadCategory>(
+  Object.fromEntries([
+    ...IMAGE_MIMES.map((m) => [m, "image"] as const),
+    ...VIDEO_MIMES.map((m) => [m, "video"] as const),
+    ...DOCUMENT_MIMES_PORTABLE.map((m) => [m, "document"] as const),
+    ...DOCUMENT_MIMES_OFFICE.map((m) => [m, "document"] as const),
+    ...AUDIO_MIMES.map((m) => [m, "audio"] as const),
+  ]),
+);
 
 /**
  * Strip the parameter run off a content type, leaving `type/subtype`
@@ -83,7 +89,7 @@ export function baseMime(mime: string): string {
  *  Parameter-tolerant: the category is a property of the type, not of
  *  the charset the client declared alongside it. */
 export function categoryOf(mime: string): UploadCategory | null {
-  return MIME_CATEGORIES[baseMime(mime)] ?? null;
+  return atKey(MIME_CATEGORIES, baseMime(mime)) ?? null;
 }
 
 // Audio extension → canonical MIME — 1:1 mirror of the server's
@@ -93,13 +99,13 @@ export function categoryOf(mime: string): UploadCategory | null {
 // octet-stream too. The server has an octet-stream→canonical rescue,
 // but cic's categoryOf would reject these BEFORE upload — so cic must
 // relabel by extension to the canonical audio MIME first.
-const AUDIO_EXT_CANONICAL_MIME: Record<string, string> = {
+const AUDIO_EXT_CANONICAL_MIME = keysOf<string>({
   mp3: "audio/mpeg",
   m4a: "audio/mp4",
   m4r: "audio/mp4",
   wav: "audio/wav",
   flac: "audio/flac",
-};
+});
 
 /**
  * Relabel a File whose browser-assigned `type` is not a recognized
@@ -113,7 +119,7 @@ const AUDIO_EXT_CANONICAL_MIME: Record<string, string> = {
 export function normalizeUploadFile(file: File): File {
   if (categoryOf(file.type) !== null) return file;
   const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-  const canonical = AUDIO_EXT_CANONICAL_MIME[ext];
+  const canonical = atKey(AUDIO_EXT_CANONICAL_MIME, ext);
   if (canonical === undefined) return file;
   return new File([file], file.name, { type: canonical, lastModified: file.lastModified });
 }
