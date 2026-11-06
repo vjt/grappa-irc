@@ -3449,17 +3449,25 @@ counted the PEER's devices and still does; under "your identity" nothing
 listed ours.
 
 * **What the list shows.** The devices the identity's list names, as this
-  browser's record holds that list (its master signed it, and a sync took
-  grappa's latest), joined with `GET /e2e/devices`: the did, since a device
-  has no name or label anywhere; when it was added; and which one is this
-  browser. A device registered and never listed, a pairing that did not
-  finish, is no device of the identity and is not shown. "When it was
+  browser's record holds that list once a sync has taken grappa's latest
+  (signed by the master; without the sync a browser that does not hold the
+  master would hide a device paired since its last one), joined with `GET
+  /e2e/devices`: the did, since a device has no name or label anywhere;
+  when it was added; and which one is this browser. The did is worked out
+  here from the device's key, never taken from grappa's row: the revoke
+  targets the key, and a server that swapped two rows' dids would have the
+  confirmation name one device while the master signs the other out. A
+  device registered and never listed, a pairing that did not finish, is no
+  device of the identity and is not shown. "When it was
   added" is grappa's `inserted_at` on the device row, which a registration
   of the same key keeps; it was never on the wire, so it is now
   (`E2eKeys.Wire.device/1`, **protocol 57**, optional as #2547's
   `last_seen_at` is, so a client lists an older server's devices without a
   date). The list reads again when the key shown changes, after a revoke,
-  and when the add-device panel closes.
+  and when the add-device panel closes, and at no other refresh: its
+  source is one string compared by value, since encryptedChats writes the
+  whole own-key record on every refresh of any network and a tuple would
+  read the list (and take the slot's lock) at each one.
 * **Who revokes.** Only the browser that holds the master, as with "add a
   device": every other device has a revoke, behind a confirmation that
   names it and says what it does; this browser's own has none. Elsewhere
@@ -3477,7 +3485,9 @@ listed ours.
   nothing else (`identity.revokeDevice`). It goes through the same sync and
   once-more-if-stale retry as `addDevice`, now one helper,
   `onceMoreIfStale`, for both: a retry never puts a list that drops a
-  device another put listed.
+  device another put listed. A key grappa's latest list no longer names
+  (revoked meanwhile, from another tab) is refused as `unlisted`, and says
+  so, rather than as a signing failure.
 * **What a revoke does elsewhere.** Peers drop the device once they hold the
   new list: the engine's `revoked` / `revokedCurves` already apply on
   receipt. The revoked browser's next sync finds a list that leaves it out
