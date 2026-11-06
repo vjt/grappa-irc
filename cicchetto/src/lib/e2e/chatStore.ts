@@ -16,6 +16,15 @@
 // under the slot's chat lock, so two tabs never write over each other.
 
 import { type Lock, open, type Sealed, seal, type Vault } from "./accountStore";
+import {
+  atNick,
+  type ByNick,
+  deleteNick,
+  nickEntries,
+  nicksFrom,
+  noNicks,
+  setNick,
+} from "./byNick";
 import type { SendFailure } from "./engine";
 import type { OrderVerdict } from "./orders";
 import { fold, type MessageVerb } from "./wire";
@@ -170,7 +179,7 @@ export const CHAT_ROWS_MAX = 1000;
 
 export type ChatStore = {
   /** Folded nick → chat. */
-  chats(slot: string): Promise<Record<string, Chat>>;
+  chats(slot: string): Promise<ByNick<Chat>>;
   rows(slot: string, nick: string): Promise<ChatRow[]>;
   /** Applies `changes` in order; answers the folded nicks of the chats they touched. */
   apply(slot: string, changes: ChatChange[]): Promise<string[]>;
@@ -190,7 +199,7 @@ type IndexEntry = {
   unread: number;
   check?: IdentityCheck;
 };
-type ChatIndex = { v: 1; chats: Record<string, IndexEntry> };
+type ChatIndex = { v: 1; chats: ByNick<IndexEntry> };
 type ChatRecord = { v: 1; rows: ChatRow[] };
 
 /**
@@ -224,7 +233,7 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
     await vault.store(key, await seal(await vault.wrappingKey(), key, JSON.stringify(record)));
   }
 
-  const loadIndex = (slot: string) => load<ChatIndex>(indexKey(slot), { v: 1, chats: {} });
+  const loadIndex = (slot: string) => load<ChatIndex>(indexKey(slot), { v: 1, chats: noNicks() });
   const loadRows = async (id: string) =>
     (await load<ChatRecord>(chatKey(id), { v: 1, rows: [] })).rows;
 
@@ -239,19 +248,18 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
   }
 
   function entry(index: ChatIndex, nick: string, open: boolean): IndexEntry {
-    const key = fold(nick);
-    const found = index.chats[key];
+    const found = atNick(index.chats, nick);
     if (found !== undefined) return found;
     const created = { id: crypto.randomUUID(), nick, open, unread: 0 };
-    index.chats[key] = created;
+    setNick(index.chats, nick, created);
     return created;
   }
 
   return {
     chats: async (slot) => {
       const index = await loadIndex(slot);
-      return Object.fromEntries(
-        Object.entries(index.chats).map(([key, e]) => [
+      return nicksFrom(
+        nickEntries(index.chats).map(([key, e]): [string, Chat] => [
           key,
           { nick: e.nick, open: e.open, unread: e.unread, check: e.check },
         ]),
@@ -259,7 +267,7 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
     },
 
     rows: async (slot, nick) => {
-      const found = (await loadIndex(slot)).chats[fold(nick)];
+      const found = atNick((await loadIndex(slot)).chats, nick);
       return found === undefined ? [] : loadRows(found.id);
     },
 
@@ -274,7 +282,7 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
         for (const [key, own] of byChat) {
           // An `out` or a `drop` alone never creates a chat: its row would not be there.
           if (
-            index.chats[key] === undefined &&
+            atNick(index.chats, key) === undefined &&
             own.every((c) => c.op === "out" || c.op === "drop")
           ) {
             continue;
@@ -328,7 +336,7 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
 
     close: (slot, nick) =>
       withIndex(slot, async (index) => {
-        const chat = index.chats[fold(nick)];
+        const chat = atNick(index.chats, nick);
         if (chat !== undefined) chat.open = false;
       }),
 
@@ -337,16 +345,15 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
     // never sealed rows that no index names and nothing would delete.
     remove: (slot, nick) =>
       withIndex(slot, async (index) => {
-        const key = fold(nick);
-        const chat = index.chats[key];
+        const chat = atNick(index.chats, nick);
         if (chat === undefined) return;
         await vault.remove(chatKey(chat.id));
-        delete index.chats[key];
+        deleteNick(index.chats, nick);
       }),
 
     read: (slot, nick) =>
       withIndex(slot, async (index) => {
-        const chat = index.chats[fold(nick)];
+        const chat = atNick(index.chats, nick);
         if (chat !== undefined) chat.unread = 0;
       }),
   };

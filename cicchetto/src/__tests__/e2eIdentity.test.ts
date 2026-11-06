@@ -8,6 +8,7 @@
 import { createRoot, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AccountStore } from "../lib/e2e/accountStore";
+import { nicksFrom } from "../lib/e2e/byNick";
 import type { E2eState } from "../lib/e2e/engine";
 import type { Account } from "../lib/e2e/vodozemac/vodozemac_binding";
 import type { IdBlock } from "../lib/e2e/wire";
@@ -195,16 +196,18 @@ function lived(): E2eState {
         certVer: 2,
       },
     },
-    pins: { bob: "M-bob" },
+    pins: nicksFrom([["bob", "M-bob"]]),
     sessions: { "K-bob": ["a-session-pickle"] },
     seen: ["a-session-id"],
-    outq: { bob: [{ nick: "bob", master: "M-bob", only: null, done: [], msg, at: 1 }] },
-    keyreqSentAt: { bob: 1 },
-    keysAwaited: { bob: true },
-    rekeyAt: { bob: 1 },
+    outq: nicksFrom([
+      ["bob", [{ nick: "bob", master: "M-bob", only: null, done: [], msg, at: 1 }]],
+    ]),
+    keyreqSentAt: nicksFrom([["bob", 1]]),
+    keysAwaited: nicksFrom([["bob", true]]),
+    rekeyAt: nicksFrom([["bob", 1]]),
     rekeying: { "E-bob": true },
-    listreqAt: { bob: { at: 1, lv: [4] } },
-    listreqHeld: { bob: "bob" },
+    listreqAt: nicksFrom([["bob", { at: 1, lv: [4] }]]),
+    listreqHeld: nicksFrom([["bob", "bob"]]),
     listAnsweredAt: { "bob AaZaARRDyBk": 1 },
     sent: [
       {
@@ -239,7 +242,7 @@ function lived(): E2eState {
     },
     siblings: { "E-sib": { did: "AbZbARRDyBk", curve25519: "K-sib" } },
     copyq: { "E-sib": [{ peer: "bob", body: "hi", at: 1 }] },
-    keysAsked: { bob: { nick: "bob", at: 1 } },
+    keysAsked: nicksFrom([["bob", { nick: "bob", at: 1 }]]),
   };
 }
 

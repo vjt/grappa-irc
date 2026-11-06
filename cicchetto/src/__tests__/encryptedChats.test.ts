@@ -12,6 +12,7 @@ import { createRoot, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { channelKey } from "../lib/channelKey";
 import type { OwnIdentity } from "../lib/e2e/accountStore";
+import { atNick } from "../lib/e2e/byNick";
 import type { ChatRow, OutFailure, OutState } from "../lib/e2e/chatStore";
 import { IdentityElsewhereError } from "../lib/e2e/client";
 import { Engine } from "../lib/e2e/engine";
@@ -466,6 +467,34 @@ describe("encrypted chats", () => {
     expect(chats.encryptedChat(net.slug, "ghost")).toBeUndefined();
   });
 
+  // issue 2453 — the chats, and the trust shown on them, are keyed by folded
+  // nick, and a nick may be named after an Object.prototype member: "bob"
+  // runs the case first, as the control.
+  it.each(["bob", "constructor", "__proto__"])(
+    "a chat with %s is one of its own: none until opened, then listed, and its pin shown",
+    async (nick) => {
+      await chats.drainE2e(net.slug);
+      const b = await bob();
+      await chats.openEncryptedChat(net.slug, "carol");
+      expect(chats.encryptedChat(net.slug, nick)).toBeUndefined();
+
+      await chats.openEncryptedChat(net.slug, nick);
+      await chats.loadEncryptedChat(net.slug, nick);
+      expect(await chats.pinEncryptedKey(net.slug, nick, await b.master(), true)).toBe("pinned");
+
+      expect(chats.encryptedChatsFor(net.slug)).toEqual([
+        { key: "carol", nick: "carol", unread: 0 },
+        { key: nick, nick, unread: 0 },
+      ]);
+      expect(chats.encryptedChat(net.slug, nick)).toEqual({ nick, open: true, unread: 0 });
+      expect(chats.encryptedTrust(net.slug, nick)).toEqual({
+        master: await b.master(),
+        verified: true,
+        devices: 0,
+      });
+    },
+  );
+
   it("pins Bob's master by hand: the pin is shown and the badge reads verified", async () => {
     await chats.drainE2e(net.slug);
     const b = await bob();
@@ -540,7 +569,7 @@ describe("encrypted chats", () => {
 
     const emoji = chats.encryptedSas(net.slug, "Bob")?.emoji;
     expect(emoji).toHaveLength(7);
-    expect((await b.client.identity(b.ctx, [net.nick])).sas.alice?.emoji).toEqual(emoji);
+    expect(atNick((await b.client.identity(b.ctx, [net.nick])).sas, "alice")?.emoji).toEqual(emoji);
 
     await chats.verifyEncrypted(net.slug, "Bob", "match");
     await b.client.drain(b.ctx);

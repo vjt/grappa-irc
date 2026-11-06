@@ -5,6 +5,7 @@
 // passes here passed through Olm.
 import { describe, expect, it } from "vitest";
 import type { OwnIdentity } from "../lib/e2e/accountStore";
+import { atNick, nickEntries } from "../lib/e2e/byNick";
 import {
   type CopyResult,
   type DropReason,
@@ -34,6 +35,7 @@ import {
   did,
   encodePayload,
   fb,
+  fold,
   ID_SIG_PREFIX,
   type IdBlock,
   type KeysEntry,
@@ -929,7 +931,7 @@ describe("a KEYS (W receiver checks, in order)", () => {
     expect(res.outbound).toEqual([]);
     expect(dropsOf(a)).toEqual(["bad-payload"]);
     expect(a.state.pins).toEqual({});
-    expect(a.state.outq.bob).toHaveLength(1);
+    expect(atNick(a.state.outq, "bob")).toHaveLength(1);
     expect(a.state.keysAwaited).toEqual({ bob: true });
   });
 
@@ -950,7 +952,7 @@ describe("a KEYS (W receiver checks, in order)", () => {
     expect(a.state.pins).toEqual({});
     expect(a.state.masters).toEqual({});
     expect(a.state.devices).toEqual({});
-    expect(a.state.outq.bob).toHaveLength(1);
+    expect(atNick(a.state.outq, "bob")).toHaveLength(1);
     // Still waiting: the message is reported once it waited too long.
     a.now += OUTQ_TTL_MS;
     record(a, engineOf(a).tick());
@@ -1123,7 +1125,7 @@ describe("a KEYS (W receiver checks, in order)", () => {
     expect(dropsOf(a)).toEqual(["bad-otk-signature"]);
     expect(a.state.devices).toEqual({});
     expect(a.state.sessions).toEqual({});
-    expect(a.state.outq.bob).toHaveLength(1);
+    expect(atNick(a.state.outq, "bob")).toHaveLength(1);
   });
 
   it("skips an entry whose one-time key vodozemac cannot read, and reaches the others", () => {
@@ -1315,7 +1317,7 @@ describe("curve rules on a KEYS entry (trust rule 4)", () => {
     expect(dropsOf(a)).toEqual(["identity-curve-mismatch"]);
     expect(a.state.devices[keyOf(device)]?.curve25519).toBe(device.curve25519_key());
     expect(a.state.sessions).toEqual({});
-    expect(a.state.outq.bob).toHaveLength(1);
+    expect(atNick(a.state.outq, "bob")).toHaveLength(1);
     other.free();
   });
 
@@ -1594,7 +1596,7 @@ describe("sending to every trusted device", () => {
     // budget is spent), and a copy of each waits for the other device.
     const next = record(a, engineOf(a).send("bob", text("again"), "again", null, null));
     expect(next.outbound.map((o) => [o.verb, o.to])).toEqual([["pkmsg", didOf(keyed)]]);
-    expect(a.state.outq.bob?.map((q) => [q.msg.tag, q.done])).toEqual([
+    expect(atNick(a.state.outq, "bob")?.map((q) => [q.msg.tag, q.done])).toEqual([
       ["hello", [keyOf(keyed)]],
       ["again", [keyOf(keyed)]],
     ]);
@@ -1954,7 +1956,9 @@ describe("sending to every trusted device", () => {
     ]);
     const listedSessions = listed.map((device) => sessionTo(a, device));
     expect(verbsOf(nackBy(a, "bob", fifth, msgids[1]))).toEqual(["keyreq"]);
-    expect(a.state.outq.bob?.map((q) => [q.msg.tag, q.only])).toEqual([["all", keyOf(fifth)]]);
+    expect(atNick(a.state.outq, "bob")?.map((q) => [q.msg.tag, q.only])).toEqual([
+      ["all", keyOf(fifth)],
+    ]);
     // grappa's list now names it, in the place of one it held.
     const keys = keysFrom(a, "bob", bob, 2, [...listed.slice(1), fifth], [fifth]);
     expect(keys.outbound.map((o) => [o.verb, o.to, o.tag])).toEqual([
@@ -2067,7 +2071,7 @@ describe("sending to every trusted device", () => {
       record(a, engineOf(a).send("nobody", text(`m${i}`), `m${i}`, null, null));
     }
 
-    expect(a.state.outq.nobody).toHaveLength(OUTQ_MAX);
+    expect(atNick(a.state.outq, "nobody")).toHaveLength(OUTQ_MAX);
     expect(failedOf(a)).toEqual([["queue-full", [`m${OUTQ_MAX}`]]]);
   });
 
@@ -2645,7 +2649,7 @@ describe("a PKMSG (W receiver checks, in order)", () => {
     expect(a.state.devices).toEqual({});
     expect(a.state.sessions).toEqual({});
     expect(a.state.seen).toEqual([]);
-    expect(a.state.outq.bob?.map((q) => q.msg.tag)).toEqual(["waiting"]);
+    expect(atNick(a.state.outq, "bob")?.map((q) => q.msg.tag)).toEqual(["waiting"]);
   });
 
   it("drops a certificate its master did not sign as bad-cert before its version is judged: never stale, never admitted", () => {
@@ -2974,7 +2978,7 @@ describe("a PKMSG (W receiver checks, in order)", () => {
     expect(a.state.devices).toEqual({});
     expect(a.state.sessions).toEqual({});
     expect(a.state.seen).toEqual([sessionIdOf(inbound.get(device))]);
-    expect(a.state.outq.bob?.map((q) => q.msg.tag)).toEqual(["waiting"]);
+    expect(atNick(a.state.outq, "bob")?.map((q) => q.msg.tag)).toEqual(["waiting"]);
     const msgid = newMsgid();
     expect(takes(a, "bob", "pkmsg", didOf(device), pkmsg, msgid)).toEqual({
       events: [
@@ -3074,7 +3078,9 @@ describe("a PKMSG (W receiver checks, in order)", () => {
       keysPayload(bob, 1, [keyed, silent], [entryOf(keyed, bob.master)]),
     );
     expect(first.outbound.map((o) => [o.tag, o.to])).toEqual([["hello", didOf(keyed)]]);
-    expect(a.state.outq.bob?.map((q) => [q.msg.tag, q.done])).toEqual([["hello", [keyOf(keyed)]]]);
+    expect(atNick(a.state.outq, "bob")?.map((q) => [q.msg.tag, q.done])).toEqual([
+      ["hello", [keyOf(keyed)]],
+    ]);
 
     const res = takes(
       a,
@@ -3527,9 +3533,9 @@ describe("a NACK (W receiver checks, rev 2)", () => {
     });
     expect(a.state.sessions[failing.curve25519_key()]).toBeUndefined();
     // It waits for the keys, for that device alone, unannounced: the other one has it.
-    expect(a.state.outq.bob?.map((q) => [q.msg.tag, q.msg.sends, q.only, q.done])).toEqual([
-      ["hello", 2, keyOf(failing), []],
-    ]);
+    expect(
+      atNick(a.state.outq, "bob")?.map((q) => [q.msg.tag, q.msg.sends, q.only, q.done]),
+    ).toEqual([["hello", 2, keyOf(failing), []]]);
 
     const keys = keysFrom(a, "bob", bob, 1, bob.devices, [failing]);
 
@@ -3701,7 +3707,7 @@ describe("a NACK (W receiver checks, rev 2)", () => {
 
     expect(verbsOf(nackBy(a, "bob", device, msgid))).toEqual(["keyreq"]);
     expect((a.state.sessions[curve] ?? []).map(sessionIdOf)).toEqual([older]);
-    expect(a.state.outq.bob?.map((q) => q.msg.tag)).toEqual(["lost"]);
+    expect(atNick(a.state.outq, "bob")?.map((q) => q.msg.tag)).toEqual(["lost"]);
 
     const keys = keysFrom(a, "bob", bob, 1, bob.devices, [device]);
 
@@ -3737,7 +3743,9 @@ describe("a NACK (W receiver checks, rev 2)", () => {
 
     expect(verbsOf(nackBy(a, "bob", fresh, msgid))).toEqual(["keyreq"]);
 
-    expect(a.state.outq.bob?.map((q) => [q.msg.tag, q.only])).toEqual([["welcome", keyOf(fresh)]]);
+    expect(atNick(a.state.outq, "bob")?.map((q) => [q.msg.tag, q.only])).toEqual([
+      ["welcome", keyOf(fresh)],
+    ]);
     expect(failedOf(a)).toEqual([]);
   });
 
@@ -3965,7 +3973,7 @@ describe("a message none of the nick's devices can read (issue 2491)", () => {
         presented: keyOf(elsewhere.master),
       },
     ]);
-    expect(a.state.pins.bob).toBe(keyOf(bob.master));
+    expect(atNick(a.state.pins, "bob")).toBe(keyOf(bob.master));
     expect(a.state.keysAsked).toEqual({});
   });
 
@@ -4029,7 +4037,7 @@ describe("a message none of the nick's devices can read (issue 2491)", () => {
       { kind: "dropped", nick: "bob", reason: "own-identity" },
       { kind: "keys_unanswered", nick: "bob" },
     ]);
-    expect(a.state.pins.bob).toBe(keyOf(bob.master));
+    expect(atNick(a.state.pins, "bob")).toBe(keyOf(bob.master));
   });
 
   it("asks again under the budget while the answer is due, and reports the keys unanswered past OUTQ_TTL_MS", () => {
@@ -4281,7 +4289,7 @@ describe("device lists inside Olm (lv, t:list, t:listreq)", () => {
     const pin = engineOf(a).pin("bob", keyOf(bob.master), true);
 
     expect(pin).toEqual({ outcome: "pinned", events: [], outbound: [keyreqOf(a, "bob")] });
-    expect(a.state.outq.bob?.map((q) => [q.msg.tag, q.only, q.done])).toEqual([
+    expect(atNick(a.state.outq, "bob")?.map((q) => [q.msg.tag, q.only, q.done])).toEqual([
       [LIST_TAG, null, []],
     ]);
     await toDoor(g, a, pin);
@@ -4383,7 +4391,7 @@ describe("device lists inside Olm (lv, t:list, t:listreq)", () => {
     expect(record(a, unsized.tick()).outbound).toEqual([]);
     expect(record(a, engineOf(a).tick()).outbound).toEqual([keyreqOf(a, "bot")]);
 
-    expect(a.state.outq.bot?.map((q) => q.msg.tag)).toEqual([LIST_TAG]);
+    expect(atNick(a.state.outq, "bot")?.map((q) => q.msg.tag)).toEqual([LIST_TAG]);
     expect(a.events).toEqual([]);
   });
 
@@ -4451,7 +4459,7 @@ describe("device lists inside Olm (lv, t:list, t:listreq)", () => {
     const tick = record(a, engineOf(a).tick());
 
     expect(tick.outbound).toEqual([keyreqOf(a, "bot")]);
-    expect(a.state.outq.bot?.map((q) => q.msg.tag)).toEqual([LIST_TAG]);
+    expect(atNick(a.state.outq, "bot")?.map((q) => q.msg.tag)).toEqual([LIST_TAG]);
   });
 
   it("never reports its own list traffic lost: a listreq to a nick that never answers lapses without a word", () => {
@@ -4505,7 +4513,9 @@ describe("what a copy that went somewhere changes", () => {
     keysFrom(a, "bob", bob, 1, bob.devices, [k]);
     // The message reaches k and waits for the other device, which has no keys on grappa.
     const [msgid] = named(a, sends(a, "bob", "second", null));
-    expect(a.state.outq.bob?.map((q) => [q.msg.tag, q.only])).toEqual([["second", null]]);
+    expect(atNick(a.state.outq, "bob")?.map((q) => [q.msg.tag, q.only])).toEqual([
+      ["second", null],
+    ]);
 
     expect(nackBy(a, "bob", k, msgid).outbound).toEqual([]);
     expect(failedOf(a)).toEqual([]);
@@ -4525,11 +4535,11 @@ describe("what a copy that went somewhere changes", () => {
     a.now += KEYREQ_RETRY_MS + 10_000;
     // d1 NACKs it once that KEYREQ is old: a re-key, and a copy for d1 waits beside the first.
     expect(verbsOf(nackBy(a, "bob", d1, msgid))).toEqual(["keyreq"]);
-    expect(a.state.outq.bob?.map((q) => q.only)).toEqual([null, keyOf(d1)]);
+    expect(atNick(a.state.outq, "bob")?.map((q) => q.only)).toEqual([null, keyOf(d1)]);
 
     a.now = NOW + OUTQ_TTL_MS;
     record(a, engineOf(a).tick());
-    expect(a.state.outq.bob?.map((q) => q.only)).toEqual([keyOf(d1)]);
+    expect(atNick(a.state.outq, "bob")?.map((q) => q.only)).toEqual([keyOf(d1)]);
     expect(failedOf(a)).toEqual([]);
     a.now += OUTQ_TTL_MS;
     record(a, engineOf(a).tick());
@@ -4548,7 +4558,7 @@ describe("what a copy that went somewhere changes", () => {
 
     // The keys bring a list that drops one device, and no keys for the other.
     expect(keysFrom(a, "bob", bob, 2, [kept], []).outbound).toEqual([]);
-    expect(a.state.outq.bob?.map((q) => q.only)).toEqual([keyOf(kept)]);
+    expect(atNick(a.state.outq, "bob")?.map((q) => q.only)).toEqual([keyOf(kept)]);
     expect(failedOf(a)).toEqual([]);
     a.now += OUTQ_TTL_MS;
     record(a, engineOf(a).tick());
@@ -4588,7 +4598,7 @@ describe("what a copy that went somewhere changes", () => {
     // It reaches d1 and waits for the other device; d1's NACK joins the KEYREQ out.
     const [msgid] = named(a, sends(a, "bob", "late", null));
     expect(nackBy(a, "bob", d1, msgid).outbound).toEqual([]);
-    expect(a.state.outq.bob?.map((q) => q.only)).toEqual([null, keyOf(d1)]);
+    expect(atNick(a.state.outq, "bob")?.map((q) => q.only)).toEqual([null, keyOf(d1)]);
     // The keys come to an engine with no line budget, with a list dropping the
     // other device: the first copy has nowhere to go, the second cannot be sized.
     const unsized = new Engine(olm(), a.account, a.own, a.state, a.nick, null, () => a.now);
@@ -4617,7 +4627,7 @@ describe("what a copy that went somewhere changes", () => {
     const [msgid] = named(a, sends(a, "bob", "both", null));
     nackBy(a, "bob", d1, msgid);
     nackBy(a, "bob", d2, msgid);
-    expect(a.state.outq.bob).toHaveLength(2);
+    expect(atNick(a.state.outq, "bob")).toHaveLength(2);
 
     a.now += OUTQ_TTL_MS;
     record(a, engineOf(a).tick());
@@ -4690,7 +4700,7 @@ describe("what a copy that went somewhere changes", () => {
       talking(a, "bob", bob, one, two);
       expect(verbsOf(sends(a, "bob", "went", null))).toEqual(["pkmsg", "keyreq"]);
       keysFrom(a, "bob", bob, 1, bob.devices, []);
-      expect(a.state.outq.bob?.map((q) => q.done.length)).toEqual([2]);
+      expect(atNick(a.state.outq, "bob")?.map((q) => q.done.length)).toEqual([2]);
       return { a, bob, one, two, keyless };
     };
 
@@ -4968,6 +4978,108 @@ describe("two cic devices, first contact", () => {
     expect(b.state.outq).toEqual({});
     expect(failedOf(a)).toEqual([]);
     expect(failedOf(b)).toEqual([]);
+  });
+});
+
+// issue 2453 — a nick is the peer's to choose, and two valid ones fold to the
+// name of an Object.prototype member. Each record the state keys by nick
+// answers for them as it does for any other nick, and so does the JSON the
+// account store seals: "bob" runs every case first, as the control.
+const NICKS = ["bob", "constructor", "__proto__", "Constructor"];
+
+describe("a peer nicked after an Object.prototype member (issue 2453)", () => {
+  it.each(NICKS)(
+    "%s: its master is pinned on first use, and the two talk both ways",
+    async (nick) => {
+      const g = new Grappa();
+      const a = me("alice");
+      const b = me(nick);
+      await joined(g, a);
+      await joined(g, b);
+      await uploadKeys(g, "alice", a.account);
+      await uploadKeys(g, nick, b.account);
+
+      await say(g, a, nick, "hello");
+      await pump(g, b);
+
+      expect(eventsOf(b, "received").map((e) => [e.nick, e.inner])).toEqual([
+        ["alice", text("hello")],
+      ]);
+      expect(engineOf(a).pinned(nick)).toEqual({
+        master: b.own.master,
+        verified: false,
+        devices: 1,
+      });
+      expect(nickEntries(a.state.pins)).toEqual([[fold(nick), b.own.master]]);
+      expect(nickEntries(a.state.outq)).toEqual([]);
+      expect(nickEntries(a.state.keysAwaited)).toEqual([]);
+      // What the account store seals, opened again.
+      a.state = JSON.parse(JSON.stringify(a.state)) as E2eState;
+
+      const reply = engineOf(b).send("alice", text("hi alice"), "hi", null, null);
+      await toDoor(g, b, reply);
+      await pump(g, b);
+      await pump(g, a);
+      const again = engineOf(a).send(nick, text("again"), "again", null, null);
+      expect(again.outbound.map((o) => o.verb)).toEqual(["msg"]);
+      await toDoor(g, a, again);
+      await pump(g, b);
+
+      expect(eventsOf(a, "received").map((e) => [e.nick, e.master, e.inner])).toEqual([
+        [nick, b.own.master, text("hi alice")],
+      ]);
+      expect(eventsOf(b, "received").map((e) => e.inner.body)).toEqual(["hello", "again"]);
+      expect(eventsOf(a, "key_alarm")).toEqual([]);
+      expect(failedOf(a)).toEqual([]);
+      expect(failedOf(b)).toEqual([]);
+    },
+  );
+
+  it.each(NICKS)("%s: a pin by hand, its keys asked again, and the nick gone", (nick) => {
+    const a = me("alice");
+    const bob = peerWith(1);
+
+    expect(engineOf(a).pinned(nick)).toBeUndefined();
+    const pinned = engineOf(a).pin(nick, keyOf(bob.master), true);
+    record(a, pinned);
+
+    expect(pinned.outcome).toBe("pinned");
+    expect(engineOf(a).pinned(nick)).toEqual({
+      master: keyOf(bob.master),
+      verified: true,
+      devices: 0,
+    });
+    expect(nickEntries(a.state.pins)).toEqual([[fold(nick), keyOf(bob.master)]]);
+    // The pin's listreq waits behind the keys it asked for.
+    expect(nickEntries(a.state.outq).map(([key, q]) => [key, q.map((x) => x.msg.tag)])).toEqual([
+      [fold(nick), [LIST_TAG]],
+    ]);
+    expect(nickEntries(a.state.listreqAt).map(([key]) => key)).toEqual([fold(nick)]);
+
+    record(a, engineOf(a).send(nick, text("hello"), "hello", null, null));
+    record(a, engineOf(a).rekey(nick));
+    expect(nickEntries(a.state.keysAsked)).toEqual([[fold(nick), { nick, at: NOW }]]);
+    record(a, engineOf(a).absent(nick));
+
+    expect(failedOf(a)).toEqual([["no-such-nick", ["hello"]]]);
+    expect(eventsOf(a, "keys_unanswered")).toEqual([{ kind: "keys_unanswered", nick }]);
+    expect(nickEntries(a.state.outq)).toEqual([]);
+    expect(nickEntries(a.state.keysAwaited)).toEqual([]);
+    expect(nickEntries(a.state.keyreqSentAt)).toEqual([]);
+    expect(nickEntries(a.state.keysAsked)).toEqual([]);
+  });
+
+  it.each(NICKS)("%s: a message whose keys never come fails when it waited too long", (nick) => {
+    const a = me("alice");
+
+    record(a, engineOf(a).send(nick, text("hello"), "hello", null, null));
+    expect(nickEntries(a.state.keysAwaited)).toEqual([[fold(nick), true]]);
+    expect(nickEntries(a.state.keyreqSentAt)).toEqual([[fold(nick), NOW]]);
+    a.now += OUTQ_TTL_MS;
+    record(a, engineOf(a).tick());
+
+    expect(failedOf(a)).toEqual([["keys-timeout", ["hello"]]]);
+    expect(nickEntries(a.state.outq)).toEqual([]);
   });
 });
 
@@ -6129,7 +6241,7 @@ describe("a nick grappa says is not on the network (issue 2497)", () => {
     record(a, engineOf(a).absent("ghost"));
 
     expect(failedOf(a)).toEqual([["no-such-nick", ["lost"]]]);
-    expect(a.state.outq.carol).toHaveLength(1);
+    expect(atNick(a.state.outq, "carol")).toHaveLength(1);
     expect(a.state.keysAwaited).toEqual({ carol: true });
   });
 
@@ -6150,7 +6262,7 @@ describe("a nick grappa says is not on the network (issue 2497)", () => {
     talking(a, "bob", bob, d1);
     // It reaches d1 and waits for the other device, which has no keys on grappa.
     named(a, sends(a, "bob", "half", null));
-    expect(a.state.outq.bob).toHaveLength(1);
+    expect(atNick(a.state.outq, "bob")).toHaveLength(1);
 
     expect(record(a, engineOf(a).absent("bob"))).toEqual({ events: [], outbound: [] });
     expect(a.state.outq).toEqual({});

@@ -6,6 +6,7 @@
 // REST is mocked at the api module (the boundary) and answered by the fake.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { accountStore, open, seal } from "../lib/e2e/accountStore";
+import { atNick, nickEntries } from "../lib/e2e/byNick";
 import { type ChatRow, chatStore } from "../lib/e2e/chatStore";
 import {
   e2eClient,
@@ -107,7 +108,11 @@ describe("e2eClient", () => {
     expect(await rowsOf(b, "alice")).toEqual([
       expect.objectContaining({ kind: "in", nick: "alice", body: "hello", ed25519: alice.master }),
     ]);
-    expect((await b.chats.chats(SLOT)).alice).toEqual({ nick: "alice", open: true, unread: 1 });
+    expect(atNick(await b.chats.chats(SLOT), "alice")).toEqual({
+      nick: "alice",
+      open: true,
+      unread: 1,
+    });
 
     // Bob's device asked alice's for the list her message named; she answers it.
     await a.client.drain(a.ctx);
@@ -154,7 +159,7 @@ describe("e2eClient", () => {
     expect((await rowsOf(a, "bob"))[1]).toEqual(
       expect.objectContaining({ kind: "in", nick: "Bob", ed25519: bob.master }),
     );
-    expect((await a.client.identity(a.ctx, ["bob"])).peers.bob).toEqual({
+    expect(atNick((await a.client.identity(a.ctx, ["bob"])).peers, "bob")).toEqual({
       master: bob.master,
       verified: false,
       devices: 2,
@@ -530,7 +535,7 @@ describe("e2eClient", () => {
     expect((await rowsOf(a, "bob")).at(-1)).toEqual(
       expect.objectContaining({ kind: "rekey", nick: "bob", phase: "asked" }),
     );
-    expect((await a.chats.chats(SLOT)).bob?.unread).toBe(1);
+    expect(atNick(await a.chats.chats(SLOT), "bob")?.unread).toBe(1);
 
     await a.client.drain(a.ctx);
 
@@ -570,7 +575,7 @@ describe("e2eClient", () => {
     // The KEYS writes no row, and still names the chat: its trust moved.
     expect((await a.client.drain(a.ctx)).chats).toEqual(["bob"]);
 
-    expect((await a.client.identity(a.ctx, ["bob"])).peers.bob).toEqual({
+    expect(atNick((await a.client.identity(a.ctx, ["bob"])).peers, "bob")).toEqual({
       master: bob.master,
       verified: false,
       devices: 1,
@@ -612,7 +617,7 @@ describe("e2eClient", () => {
     expect(identity.own).not.toBe(device);
     // The keys the pin asked for bring its device.
     await a.client.drain(a.ctx);
-    expect((await a.client.identity(a.ctx, ["bob"])).peers.bob?.devices).toBe(1);
+    expect(atNick((await a.client.identity(a.ctx, ["bob"])).peers, "bob")?.devices).toBe(1);
   });
 
   it("takes the alarm's master unverified: the chat says so, and the identity reads not verified", async () => {
@@ -649,6 +654,28 @@ describe("e2eClient", () => {
     expect((await a.client.identity(a.ctx, ["bob"])).peers).toEqual({
       bob: { master: bob.master, verified: true, devices: 0 },
     });
+  });
+
+  // issue 2453 — the identity answers by folded nick, and a nick may be
+  // named after an Object.prototype member: each is an entry of its own.
+  it("answers the pin and the SAS of nicks named after Object.prototype members as entries of their own", async () => {
+    const { a, b } = await pair();
+    const bob = await ownOf(b);
+    await a.client.pin(a.ctx, "__proto__", bob.master, true);
+
+    const identity = await a.client.identity(a.ctx, ["__proto__", "Constructor", "bob"]);
+
+    expect(Object.getPrototypeOf(identity.peers)).toBe(Object.prototype);
+    expect(nickEntries(identity.peers)).toEqual([
+      ["__proto__", { master: bob.master, verified: true, devices: 0 }],
+      ["constructor", null],
+      ["bob", null],
+    ]);
+    expect(nickEntries(identity.sas)).toEqual([
+      ["__proto__", null],
+      ["constructor", null],
+      ["bob", null],
+    ]);
   });
 
   it("writes nothing for a key it refuses", async () => {
@@ -700,7 +727,7 @@ describe("e2eClient", () => {
 
     await a.client.pin(a.ctx, "bob", (await ownOf(carol)).master, true);
 
-    expect((await a.client.identity(a.ctx, ["bob"])).sas.bob).toBeNull();
+    expect(atNick((await a.client.identity(a.ctx, ["bob"])).sas, "bob")).toBeNull();
     expect(await a.accounts.withAccount(SLOT, async ({ state }) => state.sas)).toEqual({});
     expect((await rowsOf(a, "bob")).map((r) => r.kind)).toEqual([
       "out",
@@ -721,7 +748,7 @@ describe("e2eClient", () => {
 
     await a.client.pin(a.ctx, "bob", (await ownOf(b)).master, true);
 
-    expect((await a.client.identity(a.ctx, ["bob"])).sas.bob).toEqual(
+    expect(atNick((await a.client.identity(a.ctx, ["bob"])).sas, "bob")).toEqual(
       expect.objectContaining({ role: "a", phase: "started" }),
     );
   });
@@ -738,12 +765,12 @@ describe("e2eClient", () => {
       "[e2e] a SAS step to bob was not sent (rate-limited); the SAS will time out",
     );
     expect((await rowsOf(a, "bob")).map((r) => r.kind)).toEqual(["out", "in", "sas_asked"]);
-    expect((await a.client.identity(a.ctx, ["bob"])).sas.bob).toEqual(
+    expect(atNick((await a.client.identity(a.ctx, ["bob"])).sas, "bob")).toEqual(
       expect.objectContaining({ phase: "started" }),
     );
     w.grappa.refuse = () => undefined;
     await b.client.drain(b.ctx);
-    expect((await b.client.identity(b.ctx, ["alice"])).sas.alice).toBeNull();
+    expect(atNick((await b.client.identity(b.ctx, ["alice"])).sas, "alice")).toBeNull();
     expect(w.grappa.sends.filter((s) => s.tag === SAS_TAG)).toEqual([]);
   });
 
@@ -940,7 +967,7 @@ describe("e2eClient, order challenges", () => {
     await a.chats.read(SLOT, "Bob");
     const rows = await rowsOf(a, "Bob");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const checkOf = async () => (await a.chats.chats(SLOT)).bob;
+    const checkOf = async () => atNick(await a.chats.chats(SLOT), "bob");
 
     await sent(w, a, LINE);
     w.now += 2_000;
@@ -986,11 +1013,11 @@ describe("e2eClient, order challenges", () => {
 
     await inject(w, b, "alice", { ...(await chal(w, LINE)), nonce: "" });
     await a.client.drain(a.ctx);
-    expect((await a.chats.chats(SLOT)).bob?.check).toBeUndefined();
+    expect(atNick(await a.chats.chats(SLOT), "bob")?.check).toBeUndefined();
 
     await inject(w, b, "alice", await chal(w, LINE));
     await a.client.drain(a.ctx);
-    expect((await a.chats.chats(SLOT)).bob?.check).toEqual({
+    expect(atNick(await a.chats.chats(SLOT), "bob")?.check).toEqual({
       at: w.now,
       network: "AzzurraNet",
       channel: "#grappa",
@@ -1252,7 +1279,11 @@ describe("e2eClient, copies to our other devices", () => {
       copied("hi Bob", w.now),
     ]);
     // alice's own text: the chat counts only Bob's as unread.
-    expect((await a2.chats.chats(SLOT)).bob).toEqual({ nick: "Bob", open: true, unread: 1 });
+    expect(atNick(await a2.chats.chats(SLOT), "bob")).toEqual({
+      nick: "Bob",
+      open: true,
+      unread: 1,
+    });
     // Only grappa's copy door carried it: nothing alice handed the send door
     // (IRC) is for her own nick or her other device.
     expect(w.grappa.sends.filter((s) => s.by === "alice" && s.target !== "Bob")).toEqual([]);
@@ -1279,7 +1310,7 @@ describe("e2eClient, copies to our other devices", () => {
     expect(await states(a, "nobody")).toEqual([["failed", "keys-timeout"]]);
     expect(copies).not.toHaveBeenCalled();
     expect(await bodies(a2, "bob")).toEqual(["hi alice"]);
-    expect((await a2.chats.chats(SLOT)).nobody).toBeUndefined();
+    expect(atNick(await a2.chats.chats(SLOT), "nobody")).toBeUndefined();
 
     // The next text grappa takes is copied, and only that one.
     w.grappa.refuse = () => undefined;
