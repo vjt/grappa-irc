@@ -26,7 +26,7 @@ defmodule Grappa.DccTestSender do
 
   `opts` are extra `:gen_tcp` options for the listener, which the accepted
   socket inherits — a sender that must look like a particular PEER (one
-  with a small receive window, say) sets that here, on its own socket,
+  with a receive buffer of a known size, say) sets that here, on its own socket,
   before the handshake advertises it.
   """
   @spec listen([:gen_tcp.listen_option()]) :: {:gen_tcp.socket(), :inet.port_number()}
