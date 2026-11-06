@@ -4273,3 +4273,121 @@ only when the contract changes: a missing section cannot tell a packager "no
 change" from "forgotten". The rule that an incompatible change takes a major
 bump is the issue's text, written on vjt's behalf and awaiting his
 confirmation.
+<!-- entry #2575 -->
+
+---
+
+## 2026-11-06 — #2575 + #2576: a CHAL lives past 15 s, and an identity holds 3 devices
+
+The bot (irc-olm, the peer's code, not touched here) could not get a CHAL
+to 4 devices out inside its 15 s window, so it gives a CHAL 15 s plus the
+wire time of the CHAL's own lines at an empty bank. Two issues follow from
+that on this side: issue 2575 for the window, issue 2576 for the device
+count that made the CHAL long. The 2430 spec's decision 5 still says 15 s.
+Its replacement text went to the orchestrator, who edits the issue.
+
+### cicchetto confirms a line sent in the 30 s before the CHAL arrived
+
+`SENT_WINDOW_MS` (`cicchetto/src/lib/e2e/orders.ts`) is now 30 s, up from
+15 s, and is still measured from the CHAL's ARRIVAL. The answer must still
+come before `expires_at`. The issue offered two choices, anchoring to
+`expires_at` or about 30 s. Anchoring was rejected for two reasons:
+
+* The wire carries only the END of a CHAL's life. Anchoring to `expires_at`
+  still needs a constant at least as long as the bot's longest window plus
+  the line's latency, so the dependency on the bot's TTL stays.
+* Comparing a line's send time with `expires_at` sets cic's clock against
+  the bot's on the old-line side too. Today that side has no skew
+  sensitivity. Measuring from arrival uses cic's clock alone.
+
+Sizing: a legitimate gap is at most the window minus the bot's 2 s, plus
+latencies. A CHAL to 3 devices takes 8-9 s of wire, so the gap is at most
+about 25 s. A CHAL to 4 devices (an older identity that has not revoked one)
+takes 13-14 s, so the gap is at most about 30 s. That leaves about 1 s of
+margin, and **no claim is made that 30 s covers 4 devices in every bank
+state**. The cap below is what gives the margin back. Test: `e2eOrders`
+"issue 2575" (a CHAL arriving 23.5 s and 28.5 s after the line), red at
+15 s and green at 30 s; the existing edge cases (`SENT_WINDOW_MS` exactly,
+and 1 ms past it) follow the constant.
+
+### grappa: verified, and no code changed
+
+grappa reads the deadline from the ACK and keeps no window of its own. The
+chain: `E2eController.create/2` → `Session.send_e2e/8` (`deadline_ok?/3`:
+positive, control MSG/PKMSG only, NO ceiling) → `Session.Server`
+`queue_e2e_message/7` → `e2e_deadline_ms/2` (the CHAL's own value, no pad)
+→ `E2ePacer` `drop_at/4`. That last step starts the ACK only if its last
+line leaves 2 s before the deadline: `:too_late` (422) at the door, `late`
+via `e2e_send_dropped` after acceptance. The cut-off is relative to the
+CHAL's value, so a longer window only buys margin. In the E2E path, `15_000`
+appears only as `@recover_timeout_ms` (#581, unrelated). One test was added
+in `e2e_session_test.exs`: an ACK with `expires_at` 29 s out, behind a full
+FLUD window, is taken and goes out when the window opens. All it can kill
+is a ceiling added at the door or in the session, because grappa has no
+other code here to kill.
+
+### An identity holds 3 devices: a policy, and the wire still takes 4
+
+`DeviceList.max_devices/0` is now 3, mirrored in cic as `DEVICE_CAP`. The
+parity test now compares those two, not `MAX_DEVICES`. grappa refuses a list
+PUT naming more than 3, and refuses to register a fourth device (409
+`too_many_devices`). The holder in the pairing reports a full list. The
+master's browser says beside its device list that revoking one makes room.
+
+cic's `MAX_DEVICES` stays 4 and keeps a different job: what a RECEIVER
+takes, as a list or as bodies. Lowering it too would make every peer drop
+as invalid the list of a user who still holds 4 devices, along with the
+bot's CHALs to those 4 (irc-olm is at 4 on the wire). That is a flag day
+with the bot, for a cap that only has to hold where a list is signed. A
+list of 4 stored before this change is still served. The wire shape is
+unchanged (a tighter validation plus text), so `protocol_version` does not
+move.
+
+### Prune-on-sight
+
+A message is decrypted only once our own body in it decrypts, from a
+trusted device of the pinned master. If its bodies then name a `did` that
+our current signed list does not, the receiving device sends that list
+(`t:list`, reactive) to the sending device. The send shares the per-(nick,
+device) one-per-minute limiter with the `listreq` answer, so a request and
+a prune in the same minute get ONE list.
+
+* **Only after a successful decrypt:** an unauthenticated message must not
+  make us spend three lines. A message not addressed to our devices already
+  heals another way: NACK, re-key, then KEYS with the current list.
+* **Never an unsigned notice:** the only thing sent is the master-signed
+  list.
+* **Every listed device answers,** so one event can cost up to 3 lists, once
+  a minute each. No single device is elected to answer: if the elected one
+  were offline, the peer would stay stale.
+* Applying a pushed list already worked: `onList` does not need a pending
+  `listreq`. An engine-to-engine test now covers the whole path, from a
+  revoke to a peer that never asked.
+
+### Open point: the bot holding 5 of vjt's devices while cic shows 3
+
+The data that settles it was NOT read, and prod was not touched:
+
+1. the bot's `Book` for vjt's master on that network: `ver`, `listed`,
+   `ever`, and each device's `cert_ver` and `heard_at`;
+2. grappa's list and devices for vjt, through `GET …/e2e/list` and
+   `GET …/e2e/devices` with vjt's bearer (no DB read);
+3. the bot's log: `listreq` sent, `t:list` applied, drops.
+
+How to read it:
+
+* The bot's `ver` is below grappa's, and the extra devices are in the bot's
+  `listed`, or carry a `cert_ver` above the bot's `ver`: revocations that
+  never reached the bot.
+* Equal `ver`, equal `listed`, and the extras still trusted: a bot defect.
+  Its own rules revoke an unlisted device whose `cert_ver` is at or below
+  `ver`.
+* grappa lists keys that cic does not show: cic shows only `listed` ∩
+  registered rows, so these are abandoned devices or missing rows.
+
+From the code alone: a list on the wire holds at most 4, so a bot holding 5
+trusts at least one device by certificate beyond the list it has. A bot
+holding the current list would have revoked it. **Not affirmed:** in irc-olm
+1606c85, `_maybe_listreq` marks a list version as asked BEFORE
+`_send_reactive` sends, and nothing is sent if the device is not ready. So
+a lost `listreq` for a given version would never be repeated.
