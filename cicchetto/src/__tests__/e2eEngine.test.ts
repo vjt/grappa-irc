@@ -4541,6 +4541,139 @@ describe("device lists inside Olm (lv, t:list, t:listreq)", () => {
     expect(readBy(a)).toEqual([]);
   });
 
+  // issue 2576, prune on sight: a body for a device our list does not name
+  // (revoked, or never certified) says the writer holds a list of ours that
+  // nothing else will correct. It gets our signed list, under the limit a
+  // listreq's answer has: never an unsigned word, which anyone holding the
+  // nick could send.
+  const withBodies = (
+    payload: Record<string, unknown>,
+    extra: Record<string, string>,
+  ): Record<string, unknown> => ({
+    ...payload,
+    bodies: { ...(payload.bodies as Record<string, string>), ...extra },
+  });
+  const staleBody = (): Record<string, string> => ({
+    [didOf(new (olm().Account)())]: "c3RhbGU",
+  });
+
+  it("answers a message with a body for a device our list does not name with our list, to the writing device alone, once per device a minute (issue 2576)", () => {
+    const a = me("alice");
+    const bob = peerWith(2);
+    const [one, two] = bob.devices as [Account, Account];
+    talking(a, "bob", bob, one, two);
+    const stale = staleBody();
+    const writes = (device: Account, body: string): Result =>
+      takes(
+        a,
+        "bob",
+        "msg",
+        didOf(device),
+        withBodies(msgFrom(a, device, JSON.stringify({ t: "text", body, lv: 1 })), stale),
+        newMsgid(),
+      );
+
+    const pushed = writes(one, "one");
+
+    expect(pushed.outbound.map((o) => [o.verb, o.to, o.priority, o.tag])).toEqual([
+      ["msg", didOf(one), "reactive", LIST_TAG],
+    ]);
+    expect(opened(one, "msg", pushed.outbound[0]?.payload ?? "")).toEqual({
+      t: "list",
+      master: {
+        ed25519: a.own.master,
+        list: { ver: 1, devices: a.own.list.devices },
+        sig: a.own.list.sig,
+      },
+      lv: 1,
+    });
+    expect(writes(one, "again").outbound).toEqual([]);
+    expect(verbsOf(writes(two, "two"))).toEqual(["msg"]);
+    a.now += LISTREQ_INTERVAL_MS;
+    expect(verbsOf(writes(one, "later"))).toEqual(["msg"]);
+    expect(readBy(a).map((inner) => inner.body)).toEqual(["one", "again", "two", "later"]);
+    expect(dropsOf(a)).toEqual([]);
+  });
+
+  it("answers a pre-key message with a body for a device our list does not name the same way (issue 2576)", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    listedPeer(a, "bob", bob, 1);
+
+    const res = takes(
+      a,
+      "bob",
+      "pkmsg",
+      didOf(device),
+      withBodies(written(a, bob, device, text("hello"), "one-time"), staleBody()),
+      newMsgid(),
+    );
+
+    expect(res.outbound.map((o) => [o.verb, o.to, o.priority, o.tag])).toEqual([
+      ["msg", didOf(device), "reactive", LIST_TAG],
+    ]);
+    expect(opened(device, "msg", res.outbound[0]?.payload ?? "")).toMatchObject({
+      t: "list",
+      master: { ed25519: a.own.master, list: { ver: 1, devices: a.own.list.devices } },
+    });
+    expect(readBy(a)).toEqual([text("hello")]);
+  });
+
+  it("pushes nothing for bodies our list names, nor for a message whose body for us does not decrypt (issue 2576)", () => {
+    const a = me("alice");
+    const sibling = new (olm().Account)();
+    const devices = [keyOf(a.account), keyOf(sibling)].sort();
+    a.own.list = { ver: 2, devices, sig: a.master.sign(listSigText(2, devices)) };
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    talking(a, "bob", bob, device);
+    const says = (body: string): Record<string, unknown> =>
+      msgFrom(a, device, JSON.stringify({ t: "text", body, lv: 1 }));
+
+    const siblings = takes(
+      a,
+      "bob",
+      "msg",
+      didOf(device),
+      withBodies(says("for both of us"), { [didOf(sibling)]: "c2libGluZw" }),
+      newMsgid(),
+    );
+    const unread = takes(
+      a,
+      "bob",
+      "msg",
+      didOf(device),
+      spoiled(a, withBodies(says("spoiled"), staleBody())),
+      newMsgid(),
+    );
+
+    expect(siblings.outbound).toEqual([]);
+    expect(verbsOf(unread)).toEqual(["nack"]);
+    expect(readBy(a).map((inner) => inner.body)).toEqual(["for both of us"]);
+  });
+
+  it("gives one list for a listreq that also carries a body for a device our list does not name (issue 2576)", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    talking(a, "bob", bob, device);
+
+    const res = takes(
+      a,
+      "bob",
+      "msg",
+      didOf(device),
+      withBodies(msgFrom(a, device, '{"t":"listreq","lv":1}'), staleBody()),
+      newMsgid(),
+    );
+
+    expect(res.outbound.map((o) => [o.verb, o.to, o.tag])).toEqual([
+      ["msg", didOf(device), LIST_TAG],
+    ]);
+    expect(dropsOf(a)).toEqual([]);
+  });
+
   it("asks a nick pinned by hand for its list, waiting behind the keys it asks for, then on the reactive lane to every device, and says nothing of it", async () => {
     const g = new Grappa();
     const a = me("alice");
