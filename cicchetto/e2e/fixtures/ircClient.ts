@@ -70,6 +70,18 @@ const AWAY_TIMEOUT_MS = 5_000;
 // ceiling rather than at `waitForLine`'s 8s default.
 const WHOIS_TIMEOUT_MS = 15_000;
 
+/** The verbs of an `E2E` line (wire v2, issue 2430). */
+type E2eVerb =
+  | "KEYREQ"
+  | "KEYS"
+  | "PKMSG"
+  | "MSG"
+  | "NACK"
+  | "REQUEST"
+  | "ACCEPT"
+  | "REFUSE"
+  | "CANCEL";
+
 export class IrcPeer {
   private readonly client: Client;
 
@@ -427,16 +439,34 @@ export class IrcPeer {
   // the sender, by ruling.
   e2eSend(
     targetNick: string,
-    verb: "KEYREQ" | "KEYS" | "PKMSG" | "MSG" | "NACK" | "REQUEST" | "ACCEPT" | "REFUSE" | "CANCEL",
+    verb: E2eVerb,
     msgid: string,
     from: string,
     to: string,
     payload: string,
   ): void {
+    this.e2eFragment(targetNick, verb, msgid, 1, 1, from, to, payload);
+  }
+
+  // issue 2577 — one line of a message that spans `total` lines, the
+  // `index`-th: what a peer's client sends when a payload does not fit one
+  // line. A spec that sends some of the lines and never the rest, or a line
+  // that contradicts the others, makes a message that never completes,
+  // which no real client does on purpose.
+  e2eFragment(
+    targetNick: string,
+    verb: E2eVerb,
+    msgid: string,
+    index: number,
+    total: number,
+    from: string,
+    to: string,
+    chunk: string,
+  ): void {
     this.client.raw([
       "PRIVMSG",
       targetNick,
-      `\u0001E2E ${verb} ${msgid} 1/1 ${from} ${to} ${payload}\u0001`,
+      `\u0001E2E ${verb} ${msgid} ${index}/${total} ${from} ${to} ${chunk}\u0001`,
     ]);
   }
 
