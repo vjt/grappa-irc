@@ -777,6 +777,7 @@ async function prepareVideo(
     file,
     capBytes,
     maxDurationSeconds,
+    "server",
     (fraction) => {
       if (inflight.get(key)?.controller !== controller) return;
       setEntry(key, { filename: file.name, loaded: fraction, total: 1, phase: "transcoding" });

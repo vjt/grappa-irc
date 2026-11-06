@@ -26,12 +26,20 @@
 // files. (The picker's own "preparing" pie is iOS's pre-File export,
 // unsuppressable from the web.)
 //
+// The gate stands only where the server strips (#2517b): an end-to-end
+// encrypted attachment reaches grappa as ciphertext, so its caller passes
+// `"transcode"` as the `MetadataStripper` and the gate never fires — the
+// transcode's tag-free output is the only file that comes back, and a source
+// with a named track, whose name the transcode would copy, does not.
+//
 // Policy vs capability split (the orchestrator's fallback contract):
 // - `too_long` is POLICY — duration is read via a <video> element's
 //   loadedmetadata, which works WITHOUT WebCodecs, so the 2-minute
 //   ceiling binds on the fallback path too. Hard reject, no fallback.
 // - `unsupported` / `failed` are CAPABILITY — the orchestrator falls
-//   back to uploading the original under the same policy gates.
+//   back to uploading the original under the same policy gates. Never
+//   for an encrypted attachment: there the original is unstripped, and
+//   `encryptedVideoOutcome` (metadataStrip.ts) refuses it.
 //
 // Adaptive resolution: bitrate budget = (95% × cap × 8) / duration −
 // 128kbps audio reserve; a comfortable budget (≥ 2 Mbps) gets 720p,
@@ -70,6 +78,13 @@ export type TranscodeError =
   // no console, so a console-only reason is no reason at all.
   | { kind: "unsupported"; detail: string }
   | { kind: "failed"; message: string }; // capability — fallback eligible
+
+/** Who removes the source's metadata, and so whether a source already in
+ *  target shape may go up as it is. `"server"`: grappa strips every plain
+ *  upload (#39), so the skip-gate is pure performance. `"transcode"`:
+ *  nothing else will (an end-to-end encrypted attachment, #2517b), so the
+ *  transcode's tag-free output is the only file this module returns. */
+export type MetadataStripper = "server" | "transcode";
 
 // --------------------------------------------------------------------
 // Support gate — WebCodecs presence + avc encodability, session-cached.
@@ -161,6 +176,7 @@ export async function transcodeVideo(
   file: File,
   capBytes: number,
   maxDurationSeconds: number,
+  stripper: MetadataStripper,
   onProgress: (fraction: number) => void,
   signal: AbortSignal,
 ): Promise<{ ok: File } | { error: TranscodeError }> {
@@ -173,10 +189,14 @@ export async function transcodeVideo(
   }
 
   // Skip-gate (2026-06-10): a source already in target shape uploads
-  // as-is. Checked BEFORE the capability gate on purpose — a
-  // compliant file on a no-WebCodecs platform skips the
-  // unsupported-fallback dance entirely.
-  if (durationSeconds !== null && (await alreadyTargetShape(file, durationSeconds, capBytes))) {
+  // as-is — when the server strips it. Checked BEFORE the capability
+  // gate on purpose — a compliant file on a no-WebCodecs platform skips
+  // the unsupported-fallback dance entirely.
+  if (
+    stripper === "server" &&
+    durationSeconds !== null &&
+    (await alreadyTargetShape(file, durationSeconds, capBytes))
+  ) {
     console.info("video already H.264/mp4 within policy — skipping transcode");
     return { ok: file };
   }
@@ -192,6 +212,18 @@ export async function transcodeVideo(
 
   const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(file) });
   try {
+    // `tags: {}` below clears the container's metadata, but the conversion
+    // copies every track's name and offers no option to drop it (measured on
+    // mediabunny 1.62.1). Where nothing strips after us, a named track is not
+    // sent.
+    if (stripper === "transcode") {
+      const names = await Promise.all((await input.getTracks()).map((t) => t.getName()));
+      if (names.some((name) => name)) {
+        return {
+          error: { kind: "unsupported", detail: "a track's name, which the transcode copies" },
+        };
+      }
+    }
     const track = await input.getPrimaryVideoTrack();
     if (track === null) {
       return { error: { kind: "unsupported", detail: "no video track in file" } };

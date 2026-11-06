@@ -17,6 +17,9 @@ const h = vi.hoisted(() => ({
   // test opens it explicitly — pre-gate tests keep their behavior.
   format: "mov" as "mp4" | "mov",
   codec: "avc" as string | null,
+  // Per-test track names: mediabunny's Conversion copies each into its
+  // output whatever `tags` says (#2517b).
+  trackNames: [null] as (string | null)[],
   getFormatThrows: false,
   // Captured Conversion.init options for assertion.
   lastInitOptions: null as null | {
@@ -50,6 +53,9 @@ vi.mock("mediabunny", () => {
       codec: string | null;
     }> {
       return { getDisplayHeight: async () => h.sourceHeight, codec: h.codec };
+    }
+    async getTracks(): Promise<{ getName: () => Promise<string | null> }[]> {
+      return h.trackNames.map((name) => ({ getName: async () => name }));
     }
     dispose(): void {}
   }
@@ -132,6 +138,7 @@ beforeEach(() => {
   h.sourceHeight = 1080;
   h.format = "mov";
   h.codec = "avc";
+  h.trackNames = [null];
   h.getFormatThrows = false;
   h.lastInitOptions = null;
   h.canEncodeVideo.mockClear();
@@ -238,6 +245,7 @@ describe("transcodeVideo", () => {
       sampleClip(),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       controller.signal,
     );
@@ -255,6 +263,7 @@ describe("transcodeVideo", () => {
       sampleClip(),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -271,6 +280,7 @@ describe("transcodeVideo", () => {
       sampleClip(),
       cap,
       60,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -289,6 +299,7 @@ describe("transcodeVideo", () => {
       sampleClip(),
       cap,
       600,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -303,6 +314,7 @@ describe("transcodeVideo", () => {
       sampleClip(),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -321,6 +333,7 @@ describe("transcodeVideo", () => {
       sampleClip(),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -337,6 +350,7 @@ describe("transcodeVideo", () => {
       sampleClip(),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -369,6 +383,7 @@ describe("transcodeVideo", () => {
       sampleClip(),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -397,6 +412,7 @@ describe("transcodeVideo", () => {
       sampleClip(),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       (f) => seen.push(f),
       new AbortController().signal,
     );
@@ -422,6 +438,7 @@ describe("transcodeVideo", () => {
       sampleClip(),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -450,6 +467,7 @@ describe("transcodeVideo", () => {
       sampleClip(),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -476,6 +494,7 @@ describe("transcodeVideo", () => {
       sampleClip(),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -505,6 +524,7 @@ describe("transcodeVideo", () => {
       sampleClip(),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       controller.signal,
     );
@@ -549,6 +569,7 @@ describe("transcodeVideo skip-gate", () => {
       file,
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -556,6 +577,25 @@ describe("transcodeVideo skip-gate", () => {
     if (!("ok" in result)) throw new Error(`expected ok, got ${JSON.stringify(result)}`);
     expect(result.ok).toBe(file); // same File identity — untouched
     expect(h.conversionInit).not.toHaveBeenCalled();
+  });
+
+  it("#2517b: with the transcode as the only metadata strip, the same file is transcoded with no tags, never returned as-is", async () => {
+    stubWebCodecs();
+    h.format = "mp4";
+    const file = mp4Clip(16);
+
+    const result = await transcodeVideo(
+      file,
+      cap,
+      MAX_DURATION_SECONDS,
+      "transcode",
+      noProgress,
+      new AbortController().signal,
+    );
+
+    if (!("ok" in result)) throw new Error(`expected ok, got ${JSON.stringify(result)}`);
+    expect(result.ok).not.toBe(file);
+    expect(h.lastInitOptions?.tags).toEqual({});
   });
 
   it("mov container does NOT skip — same ISOBMFF family, wrong target shape", async () => {
@@ -566,6 +606,7 @@ describe("transcodeVideo skip-gate", () => {
       mp4Clip(16),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -584,6 +625,7 @@ describe("transcodeVideo skip-gate", () => {
       sampleClip(),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -600,6 +642,7 @@ describe("transcodeVideo skip-gate", () => {
       mp4Clip(16),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -616,6 +659,7 @@ describe("transcodeVideo skip-gate", () => {
       mp4Clip(16 * MiB),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -636,6 +680,7 @@ describe("transcodeVideo skip-gate", () => {
       mp4Clip(2 * MiB),
       smallCap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
@@ -652,11 +697,51 @@ describe("transcodeVideo skip-gate", () => {
       mp4Clip(16),
       cap,
       MAX_DURATION_SECONDS,
+      "server",
       noProgress,
       new AbortController().signal,
     );
 
     expect("ok" in result).toBe(true);
     expect(h.conversionInit).toHaveBeenCalled();
+  });
+});
+
+describe("transcodeVideo: a track's name", () => {
+  const cap = 50 * MiB;
+  const noProgress = (): void => {};
+
+  it("#2517b: with the transcode as the only metadata strip, refuses a source whose track carries a name, which the conversion would copy", async () => {
+    stubWebCodecs();
+    h.trackNames = [null, "Holiday in Rome"];
+
+    const result = await transcodeVideo(
+      sampleClip(),
+      cap,
+      MAX_DURATION_SECONDS,
+      "transcode",
+      noProgress,
+      new AbortController().signal,
+    );
+
+    expect(result).toEqual({
+      error: { kind: "unsupported", detail: expect.stringContaining("name") },
+    });
+  });
+
+  it("leaves a named track to grappa's strip when the server strips", async () => {
+    stubWebCodecs();
+    h.trackNames = ["Holiday in Rome"];
+
+    const result = await transcodeVideo(
+      sampleClip(),
+      cap,
+      MAX_DURATION_SECONDS,
+      "server",
+      noProgress,
+      new AbortController().signal,
+    );
+
+    expect("ok" in result).toBe(true);
   });
 });

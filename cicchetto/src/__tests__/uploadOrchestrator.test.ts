@@ -45,6 +45,7 @@ const vt = vi.hoisted(() => ({
     file: File;
     capBytes: number;
     maxDurationSeconds: number;
+    stripper: string;
     onProgress: (fraction: number) => void;
     signal: AbortSignal;
     resolve: (
@@ -69,11 +70,20 @@ vi.mock("../lib/videoTranscode", () => ({
       file: File,
       capBytes: number,
       maxDurationSeconds: number,
+      stripper: string,
       onProgress: (fraction: number) => void,
       signal: AbortSignal,
     ) =>
       new Promise((resolve) => {
-        vt.transcodes.push({ file, capBytes, maxDurationSeconds, onProgress, signal, resolve });
+        vt.transcodes.push({
+          file,
+          capBytes,
+          maxDurationSeconds,
+          stripper,
+          onProgress,
+          signal,
+          resolve,
+        });
       }),
   ),
 }));
@@ -813,6 +823,13 @@ describe("video transcode branch", () => {
 
     await awaitTranscodeStart(1);
     expect(vt.transcodes[0]?.maxDurationSeconds).toBe(45);
+  });
+
+  it("#2517b: a plain upload names the server as the metadata strip, so the skip-gate stands", async () => {
+    triggerUploadConfirmed(key, slug, channel, videoClip());
+
+    await awaitTranscodeStart(1);
+    expect(vt.transcodes[0]?.stripper).toBe("server");
   });
 
   it("#201: with no settings snapshot yet, the 120s fallback reaches transcodeVideo", async () => {
