@@ -1,4 +1,5 @@
 import { type Component, Show } from "solid-js";
+import { atKey } from "./lib/byKey";
 import { casemappingForSlug } from "./lib/casemapping";
 import { normalizeNick } from "./lib/nickEquals";
 import { dismissPeerAway, peerAwayBySlug } from "./lib/peerAway";
@@ -7,7 +8,7 @@ import NickText from "./NickText";
 // P-0b — peer-away banner. Renders inline at the top of the scrollback
 // pane when:
 //   * the selected window is a DM window (channel name == peer nick), and
-//   * `peerAwayBySlug()[networkSlug][peerLower]` exists.
+//   * `peerAwayBySlug()[networkSlug]` holds an entry for the folded peer.
 //
 // Triggered by upstream's standalone 301 RPL_AWAY when the operator
 // /msg'd an away peer. Per `feedback_no_localized_strings_server_side`
@@ -26,7 +27,7 @@ export type Props = {
 const PeerAwayBanner: Component<Props> = (props) => {
   const message = (): string | undefined => {
     const peerKey = normalizeNick(props.peer, casemappingForSlug(props.networkSlug));
-    return peerAwayBySlug()[props.networkSlug]?.[peerKey];
+    return atKey(peerAwayBySlug()[props.networkSlug], peerKey);
   };
 
   return (

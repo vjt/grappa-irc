@@ -1,5 +1,6 @@
 import { createSignal, untrack } from "solid-js";
 import type { WhoisBundle } from "./api";
+import { atKey, type ByKey, withKey } from "./byKey";
 import { casemappingForSlug } from "./casemapping";
 import { identityScopedStore } from "./identityScopedStore";
 import { networkIdBySlug } from "./networks";
@@ -105,19 +106,21 @@ type RailWhoisEntry = {
 };
 
 const exports_ = identityScopedStore((onIdentityChange) => {
-  const [byNick, setByNick] = createSignal<Record<string, Record<string, RailWhoisEntry>>>({});
+  // Slug → normalized nick → entry. A nick is the peer's to choose, so the
+  // inner record is a `ByKey` (issue 2453).
+  const [byNick, setByNick] = createSignal<Record<string, ByKey<RailWhoisEntry>>>({});
 
   onIdentityChange(() => setByNick({}));
 
   const put = (slug: string, key: string, entry: RailWhoisEntry): void => {
-    setByNick((prev) => ({ ...prev, [slug]: { ...(prev[slug] ?? {}), [key]: entry } }));
+    setByNick((prev) => ({ ...prev, [slug]: withKey(prev[slug], key, entry) }));
   };
 
   // Reactive getter for the card — tracks `byNick` so the rail re-renders
   // when the bundle lands or is refreshed. Case-folded (#525) so `Alice`
   // and `alice` share one cache entry, matching the ircd + server fold.
   const railWhoisFor = (slug: string, nick: string): WhoisBundle | undefined =>
-    byNick()[slug]?.[normalizeNick(nick, casemappingForSlug(slug))]?.bundle ?? undefined;
+    atKey(byNick()[slug], normalizeNick(nick, casemappingForSlug(slug)))?.bundle ?? undefined;
 
   // Called by `RailContext` when the query card comes ON SCREEN (#782), which
   // is the ONLY caller. A nick we already know short-circuits FOREVER (no
@@ -132,7 +135,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const requestRailWhois = (slug: string, nick: string): void => {
     const key = normalizeNick(nick, casemappingForSlug(slug));
     const now = Date.now();
-    const entry = untrack(() => byNick()[slug]?.[key]);
+    const entry = untrack(() => atKey(byNick()[slug], key));
     if (entry) {
       // Answered — the nick is known, and known is forever.
       if (entry.bundle !== null && whoisBundleHasFields(entry.bundle)) return;
@@ -186,25 +189,20 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     if (oldKey === newKey) return;
     setByNick((prev) => {
       const net = prev[slug];
-      const known = net?.[oldKey];
-      if (net === undefined || known?.bundle == null || !whoisBundleHasFields(known.bundle)) {
-        return prev;
-      }
-      if (newKey in net) return prev;
+      const known = atKey(net, oldKey);
+      if (known?.bundle == null || !whoisBundleHasFields(known.bundle)) return prev;
+      if (atKey(net, newKey) !== undefined) return prev;
       return {
         ...prev,
-        [slug]: {
-          ...net,
-          [newKey]: {
-            at: known.at,
-            // 307 RPL_WHOISREGNICK is "identified for THIS nick", not for the
-            // person, so it is the one bahamut field a rename invalidates:
-            // carrying it would badge the renamed peer "registered" on no
-            // evidence. A services `account` (330) is connection-scoped and
-            // legitimately survives.
-            bundle: { ...known.bundle, target: newNick, is_registered: false },
-          },
-        },
+        [slug]: withKey(net, newKey, {
+          at: known.at,
+          // 307 RPL_WHOISREGNICK is "identified for THIS nick", not for the
+          // person, so it is the one bahamut field a rename invalidates:
+          // carrying it would badge the renamed peer "registered" on no
+          // evidence. A services `account` (330) is connection-scoped and
+          // legitimately survives.
+          bundle: { ...known.bundle, target: newNick, is_registered: false },
+        }),
       };
     });
   };

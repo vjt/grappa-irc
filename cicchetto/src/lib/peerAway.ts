@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js";
+import { atKey, type ByKey, keyEntries, withKey, withoutKey } from "./byKey";
 import { casemappingForSlug } from "./casemapping";
 import { identityScopedStore } from "./identityScopedStore";
 import { normalizeNick } from "./nickEquals";
@@ -26,9 +27,9 @@ import { normalizeNick } from "./nickEquals";
 // only.
 
 const exports_ = identityScopedStore((onIdentityChange) => {
-  const [peerAwayBySlug, setPeerAwayBySlug] = createSignal<Record<string, Record<string, string>>>(
-    {},
-  );
+  // Slug → folded peer nick → message. A nick is the peer's to choose, so the
+  // inner record is a `ByKey` (issue 2453).
+  const [peerAwayBySlug, setPeerAwayBySlug] = createSignal<Record<string, ByKey<string>>>({});
 
   onIdentityChange(() => setPeerAwayBySlug({}));
 
@@ -36,7 +37,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     const peerKey = normalizeNick(peer, casemappingForSlug(networkSlug));
     setPeerAwayBySlug((prev) => ({
       ...prev,
-      [networkSlug]: { ...(prev[networkSlug] ?? {}), [peerKey]: message },
+      [networkSlug]: withKey(prev[networkSlug], peerKey, message),
     }));
   };
 
@@ -44,11 +45,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     const peerKey = normalizeNick(peer, casemappingForSlug(networkSlug));
     setPeerAwayBySlug((prev) => {
       const networkEntries = prev[networkSlug];
-      if (!networkEntries || !(peerKey in networkEntries)) return prev;
-      const nextNetwork = { ...networkEntries };
-      delete nextNetwork[peerKey];
+      if (!networkEntries || atKey(networkEntries, peerKey) === undefined) return prev;
+      const nextNetwork = withoutKey(networkEntries, peerKey);
       const next = { ...prev };
-      if (Object.keys(nextNetwork).length === 0) {
+      if (keyEntries(nextNetwork).length === 0) {
         delete next[networkSlug];
       } else {
         next[networkSlug] = nextNetwork;

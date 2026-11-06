@@ -6,12 +6,32 @@ import PeerAwayBanner from "../PeerAwayBanner";
 // P-0b — peer-away banner. Render assertions only — store wiring +
 // userTopic dispatch is covered by the userTopic narrow test.
 
+const CHOSEN = ["bob", "constructor", "__proto__"];
+
 describe("PeerAwayBanner", () => {
   afterEach(() => {
     dismissPeerAway("azzurra", "alice");
     dismissPeerAway("azzurra", "ALICE");
     dismissPeerAway("azzurra", "Foo[1]");
+    for (const peer of CHOSEN) dismissPeerAway("azzurra", peer);
   });
+
+  // issue 2453 — a nick is the peer's to choose, and `constructor` and
+  // `__proto__` are valid ones; "bob" runs first as the control.
+  it.each(CHOSEN)(
+    "renders no banner for %s while another peer is away, then its own until dismissed",
+    (peer) => {
+      setPeerAway("azzurra", "alice", "Gone fishing");
+      render(() => <PeerAwayBanner networkSlug="azzurra" peer={peer} />);
+      expect(screen.queryByTestId("peer-away-banner")).toBeNull();
+
+      setPeerAway("azzurra", peer, "brb");
+      expect(screen.getByTestId("peer-away-banner").textContent).toContain("brb");
+
+      screen.getByLabelText("Dismiss away notice").click();
+      expect(screen.queryByTestId("peer-away-banner")).toBeNull();
+    },
+  );
 
   it("renders no DOM node when no entry exists for (slug, peer)", () => {
     const { container } = render(() => <PeerAwayBanner networkSlug="azzurra" peer="alice" />);
