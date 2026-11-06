@@ -1808,20 +1808,112 @@ describe("sending to every trusted device", () => {
     expect(a.state.outq).toEqual({});
   });
 
-  it("sends, stores and reports nothing for every device but one when there is no other: a master of one device, or no master pinned", () => {
+  it("sends, queues and reports nothing for every device but one when its master's list names no other", () => {
     const a = me("alice");
     const bob = peerWith(1);
     const [only] = bob.devices as [Account];
     knownPeer(a, "bob", bob, 1);
-    const before = structuredClone(a.state);
+    const { outq, sent } = structuredClone(a.state);
 
     expect(engineOf(a).sendExcept("bob", text("nobody"), "others", keyOf(only))).toEqual(
       noResult(),
     );
-    expect(engineOf(a).sendExcept("carol", text("nobody"), "others", keyOf(only))).toEqual(
-      noResult(),
+    expect(a.state.outq).toEqual(outq);
+    expect(a.state.sent).toEqual(sent);
+  });
+
+  // Bob wrote first: his master pinned on first use, its list not yet held,
+  // his device `b1` trusted on its certificate alone.
+  function certifiedOnly(a: Me, bob: PeerIdentity, b1: Account): void {
+    pinnedTo(a, "bob", keyOf(bob.master));
+    bind(a, bob.master, b1);
+    const device = a.state.devices[keyOf(b1)];
+    if (device === undefined) throw new Error("not bound");
+    device.certVer = 1;
+  }
+
+  it("before the master's list is held, a message for every device but one waits for the KEYS behind what was queued first, and goes to the devices it brings, never the one left out", () => {
+    const a = me("alice");
+    const bob = peerWith(2);
+    const [b1, b2] = bob.devices as [Account, Account];
+    certifiedOnly(a, bob, b1);
+    const first = record(a, engineOf(a).send("bob", text("for all"), "first", null, null));
+    expect(first.outbound.map((o) => [o.verb, o.to])).toEqual([
+      ["pkmsg", didOf(b1)],
+      ["keyreq", "*"],
+    ]);
+
+    const queued = record(a, engineOf(a).sendExcept("bob", text("not b1"), "others", keyOf(b1)));
+    expect(queued.outbound).toEqual([]);
+
+    const entries = bob.devices.map((device) => entryOf(device, bob.master));
+    const res = record(
+      a,
+      engineOf(a).receive(
+        "bob",
+        "keys",
+        newMsgid(),
+        "*",
+        keysPayload(bob, 1, bob.devices, entries),
+      ),
     );
-    expect(a.state).toEqual(before);
+
+    expect(res.outbound.map((o) => [o.verb, o.to, o.tag])).toEqual([
+      ["pkmsg", didOf(b2), "first"],
+      ["pkmsg", didOf(b2), "others"],
+    ]);
+    expect(opened(b2, "pkmsg", res.outbound[0]?.payload ?? "").body).toBe("for all");
+    expect(opened(b2, "pkmsg", res.outbound[1]?.payload ?? "").body).toBe("not b1");
+    expect(failedOf(a)).toEqual([]);
+    expect(a.state.outq).toEqual({});
+  });
+
+  it("a KEYS that brings no device but the one left out ends a message for every device but one without a word", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [b1] = bob.devices as [Account];
+    certifiedOnly(a, bob, b1);
+    record(a, engineOf(a).sendExcept("bob", text("nobody"), "others", keyOf(b1)));
+
+    const res = record(
+      a,
+      engineOf(a).receive(
+        "bob",
+        "keys",
+        newMsgid(),
+        "*",
+        keysPayload(bob, 1, [b1], [entryOf(b1, bob.master)]),
+      ),
+    );
+
+    expect(res.outbound).toEqual([]);
+    expect(failedOf(a)).toEqual([]);
+    expect(a.state.outq).toEqual({});
+  });
+
+  it("to a nick with no master pinned, a message for every device but one asks for keys as any does, and goes to every device the KEYS brings but that one", () => {
+    const a = me("alice");
+    const bob = peerWith(2);
+    const [left, other] = bob.devices as [Account, Account];
+
+    const queued = record(a, engineOf(a).sendExcept("bob", text("not you"), "others", keyOf(left)));
+    expect(queued.outbound.map((o) => o.verb)).toEqual(["keyreq"]);
+
+    const entries = bob.devices.map((device) => entryOf(device, bob.master));
+    const res = record(
+      a,
+      engineOf(a).receive(
+        "bob",
+        "keys",
+        newMsgid(),
+        "*",
+        keysPayload(bob, 1, bob.devices, entries),
+      ),
+    );
+
+    expect(res.outbound.map((o) => [o.verb, o.to])).toEqual([["pkmsg", didOf(other)]]);
+    expect(opened(other, "pkmsg", res.outbound[0]?.payload ?? "").body).toBe("not you");
+    expect(failedOf(a)).toEqual([]);
   });
 
   it("keeps its list tag to itself for every device but one too", () => {

@@ -75,7 +75,15 @@ import {
   parseChallenge,
   UNCONFIRMED,
 } from "./orders";
-import { isSas, SAS_TAG, type SasHost, type SasStep, type SasView, Verifier } from "./sas";
+import {
+  isSas,
+  SAS_RELEASE_TAG,
+  SAS_TAG,
+  type SasHost,
+  type SasStep,
+  type SasView,
+  Verifier,
+} from "./sas";
 import { fold, type ReceiveVerb, type SendVerb } from "./wire";
 
 /** One whole message grappa holds for this device (the `e2e_message` wire shape, minus its envelope). */
@@ -491,19 +499,29 @@ function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): Ch
 
 // A SAS step and an ACK have no row to mark: the SAS waits for its step until
 // its time runs out, and the bot refuses the order once its challenge expires.
-// The engine never reports its own list traffic (`LIST_TAG`), so it never
-// gets here.
-type RowlessTag = typeof SAS_TAG | typeof ORDER_TAG;
+// A SAS's cancel to the devices it does not run with leaves their request to
+// its own time; the SAS goes on. The engine never reports its own list
+// traffic (`LIST_TAG`), so it never gets here.
+type RowlessTag = typeof SAS_TAG | typeof SAS_RELEASE_TAG | typeof ORDER_TAG;
 
-const rowless = (tag: string): tag is RowlessTag => tag === SAS_TAG || tag === ORDER_TAG;
+const rowless = (tag: string): tag is RowlessTag =>
+  tag === SAS_TAG || tag === SAS_RELEASE_TAG || tag === ORDER_TAG;
 
 function rowlessLost(tag: RowlessTag, nick: string, reason: string): void {
-  if (tag === SAS_TAG) {
-    console.warn(`[e2e] a SAS step to ${nick} was not sent (${reason}); the SAS will time out`);
-  } else {
-    console.warn(
-      `[e2e] the ACK of an order to ${nick} was not sent (${reason}); it goes unconfirmed`,
-    );
+  switch (tag) {
+    case SAS_TAG:
+      console.warn(`[e2e] a SAS step to ${nick} was not sent (${reason}); the SAS will time out`);
+      break;
+    case SAS_RELEASE_TAG:
+      console.warn(
+        `[e2e] the other devices of ${nick} were not told the SAS is not theirs (${reason}); their request stays until it times out`,
+      );
+      break;
+    case ORDER_TAG:
+      console.warn(
+        `[e2e] the ACK of an order to ${nick} was not sent (${reason}); it goes unconfirmed`,
+      );
+      break;
   }
 }
 

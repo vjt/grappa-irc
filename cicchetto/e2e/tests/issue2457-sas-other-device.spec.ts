@@ -18,7 +18,7 @@
 //   * It tells every device, A1 included, or tells them before A1's accept
 //     fixed the device: A1's comparison ends, and Bob and A1 never compare.
 //   * The reason reaches A2 but the rail has no words for it: the rail reads
-//     the reason quoted, as a peer's own words.
+//     the reason quoted, as a peer's own words, or says Bob stopped it.
 //
 // ## What it does not cover
 //
@@ -102,9 +102,7 @@ test("a request accepted on one device of the account goes from its other device
     // A1 accepts. A2's request goes, and its rail says another device took it.
     await page.getByTestId("e2e-sas-accept").click();
     await expect(a2.getByTestId("e2e-sas")).toHaveCount(0, { timeout: KEYS_TIMEOUT });
-    await expect(a2.getByTestId("e2e-rail-comparison")).toHaveText(
-      "stopped by them: answered on another device",
-    );
+    await expect(a2.getByTestId("e2e-rail-comparison")).toHaveText("answered on another device");
 
     // Bob and A1 go on to compare the same 7 emoji.
     await phase(bobContext.page, "compare", KEYS_TIMEOUT);

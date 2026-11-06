@@ -774,6 +774,31 @@ describe("e2eClient", () => {
     expect(w.grappa.sends.filter((s) => s.tag === SAS_TAG)).toEqual([]);
   });
 
+  it("a cancel to the devices a SAS does not run with that grappa refuses is logged as theirs: the SAS goes on", async () => {
+    const { w, a, b } = await pair();
+    const a2 = await w.pairDevice(a);
+    // Bob writes alice first: both her devices read him, and each holds a session with him.
+    await b.client.send(b.ctx, "alice", "hi alice");
+    for (const side of [b, a, a2, b, a, a2]) await side.client.drain(side.ctx);
+    await b.client.verify(b.ctx, "alice", "start");
+    for (const side of [a, a2]) await side.client.drain(side.ctx);
+    await a.client.verify(a.ctx, "Bob", "accept");
+    const second = (await ownOf(a2)).did;
+    w.grappa.refuse = (o) => (o.to === second ? "rate-limited" : undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await b.client.drain(b.ctx);
+
+    expect(warn.mock.calls).toEqual([
+      [
+        "[e2e] the other devices of alice were not told the SAS is not theirs (rate-limited); their request stays until it times out",
+      ],
+    ]);
+    expect(atNick((await b.client.identity(b.ctx, ["alice"])).sas, "alice")).toEqual(
+      expect.objectContaining({ phase: "keyed" }),
+    );
+  });
+
   it("deletes a chat: its rows and the plaintext go, the pin and the sessions stay", async () => {
     const { w, a, b } = await pair();
     const bob = await ownOf(b);

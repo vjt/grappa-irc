@@ -193,14 +193,18 @@ function newMaster(nick: string, verified: boolean): Master {
 /**
  * Waiting for keys. `master` is the master it is meant for, "" whatever master
  * answers; `only` the one device (Ed25519 key) of it it is for, null all;
- * `done` the devices (Ed25519 keys) it already went to, or is not for
- * (`sendExcept`), which it never goes to. Whether the message is lost is
- * never read off `done`: it is asked across every copy of it (`pending`).
+ * `except` the one device it is never for (`sendExcept`), absent for any
+ * other message (and on what was queued before it existed); `done` the
+ * devices (Ed25519 keys) it already went to, and `except`, which it never
+ * goes to. Whether the message is lost is never read off `done`: it is asked
+ * across every copy of it (`pending`). A message with an `except` and no
+ * device left past `done` had nobody else to go to: never a loss.
  */
 type Queued = {
   nick: string;
   master: string;
   only: string | null;
+  except?: string;
   done: string[];
   msg: Outgoing;
   at: number;
@@ -662,33 +666,29 @@ export class Engine {
   ): Result {
     callersTag(tag);
     const res = emptyResult();
-    this.dispatch(nick, inner, tag, expiresAt, only, [], res);
+    this.dispatch(nick, inner, tag, expiresAt, only, null, res);
     return this.end(res);
   }
 
   /**
    * `send` to every device of the master pinned to `nick` but `except` (its
-   * Ed25519 key), never to that one: a SAS's cancel to the devices its start
-   * reached and it does not run with (issue 2457). With no master pinned, or
-   * no device of it past `except`, there is nobody to tell: nothing goes,
-   * nothing waits, nothing is reported.
+   * Ed25519 key), never to that one, now or after a KEYS: a SAS's cancel to
+   * the devices its start reached and it does not run with (issue 2457).
+   * What waits for keys waits behind what was queued before it, as any
+   * message does. No device left past `except` is nothing to send, and no
+   * loss to report.
    */
   sendExcept(nick: string, inner: Record<string, unknown>, tag: string, except: string): Result {
     callersTag(tag);
     const res = emptyResult();
-    const master = atNick(this.state.pins, nick);
-    if (master !== undefined) {
-      const { ready, lacking } = this.split(master, null, [except]);
-      if (ready.length + lacking.length > 0) {
-        this.dispatch(nick, inner, tag, null, null, [except], res);
-      }
-    }
+    this.dispatch(nick, inner, tag, null, null, except, res);
     return this.end(res);
   }
 
   /**
-   * `send`'s work, past the devices in `done`: true when the message went to
-   * a device or waits for keys, false when refused (reported).
+   * `send`'s work, and `sendExcept`'s (`except`, null for `send`): true when
+   * the message went to a device, waits for keys, or has nobody left but
+   * `except`; false when refused (reported).
    */
   private dispatch(
     nick: string,
@@ -696,7 +696,7 @@ export class Engine {
     tag: string,
     expiresAt: number | null,
     only: string | null,
-    done: string[],
+    except: string | null,
     res: Result,
   ): boolean {
     const refuse = (reason: SendFailure): false => {
@@ -732,8 +732,8 @@ export class Engine {
     };
     const master = atNick(this.state.pins, nick);
     return master === undefined
-      ? this.enqueue(nick, "", only, done, msg, res)
-      : this.sendTo(nick, master, only, done, msg, res);
+      ? this.enqueue(nick, "", only, except, except === null ? [] : [except], msg, res)
+      : this.sendTo(nick, master, only, except, msg, res);
   }
 
   /** grappa accepted the send of `ref` as `msgid`: a NACK may name it. */
@@ -871,19 +871,20 @@ export class Engine {
   }
 
   /**
-   * `msg` now to the devices of `master` ready for it, past those in `done`
-   * (it went to them already), and queued for the ones that are not, keys
-   * asked for. True when it went to a device or waits; what cannot go is
+   * `msg` now to the devices of `master` ready for it, never to `except`, and
+   * queued for the ones that are not, keys asked for. True when it went to a
+   * device, waits, or has nobody left but `except`; what cannot go is
    * reported (`lost`), and the answer is false.
    */
   private sendTo(
     nick: string,
     master: string,
     only: string | null,
-    done: string[],
+    except: string | null,
     msg: Outgoing,
     res: Result,
   ): boolean {
+    const done = except === null ? [] : [except];
     const { ready, lacking } = this.split(master, only, done);
     // A body grappa would refuse even alone refuses the message for every device.
     const refused = ready.length > 0 ? this.encrypt(nick, master, ready, msg, res) : undefined;
@@ -895,9 +896,11 @@ export class Engine {
     // Without a list, a KEYS brings it: a message for every device waits for
     // it, one for a single device only if it reached nothing.
     if (lacking.length > 0 || (!this.listHeld(master) && (only === null || ready.length === 0))) {
-      return this.enqueue(nick, master, only, reached, msg, res) || ready.length > 0;
+      return this.enqueue(nick, master, only, except, reached, msg, res) || ready.length > 0;
     }
     if (ready.length > 0) return true;
+    // Nobody but `except` to go to: nothing to send, and nothing lost.
+    if (except !== null) return true;
     // `only` names a device this master does not vouch for: no KEYS brings it.
     this.lost(nick, "unpinned-key", [msg]);
     return false;
@@ -952,6 +955,7 @@ export class Engine {
     nick: string,
     master: string,
     only: string | null,
+    except: string | null,
     done: string[],
     msg: Outgoing,
     res: Result,
@@ -961,7 +965,15 @@ export class Engine {
       this.lost(nick, "queue-full", [msg]);
       return false;
     }
-    q.push({ nick, master, only, done, msg, at: this.now() });
+    q.push({
+      nick,
+      master,
+      only,
+      ...(except === null ? {} : { except }),
+      done,
+      msg,
+      at: this.now(),
+    });
     setNick(this.state.outq, nick, q);
     if (msg.tag !== LIST_TAG && !this.wentOut(msg.id)) {
       res.events.push({ kind: "send_queued", nick, queued: q.length, tag: msg.tag });
@@ -1021,7 +1033,7 @@ export class Engine {
     if (last !== undefined) last.lv = asked;
     if (lv !== null && asked.includes(lv)) return false;
     if (last !== undefined && this.now() - last.at < LISTREQ_INTERVAL_MS) return false;
-    if (!this.dispatch(nick, { t: "listreq" }, LIST_TAG, null, only, [], res)) return false;
+    if (!this.dispatch(nick, { t: "listreq" }, LIST_TAG, null, only, null, res)) return false;
     setNick(this.state.listreqAt, nick, {
       at: this.now(),
       lv: lv === null ? asked : [...asked, lv],
@@ -1704,8 +1716,9 @@ export class Engine {
       const done = [...q.done, ...ready.map((d) => d.ed25519)];
       if (lacking.length > 0) waiting.push({ ...q, master, done });
       // Gone to every device it was for; or, reaching none, it was for a
-      // device this master's list does not name.
-      else this.lost(nick, "unpinned-key", [q.msg]);
+      // device this master's list does not name. One with an `except` had
+      // nobody else left: no loss.
+      else if (q.except === undefined) this.lost(nick, "unpinned-key", [q.msg]);
     }
     if (waiting.length > 0) setNick(this.state.outq, nick, waiting);
   }
@@ -2221,7 +2234,7 @@ export class Engine {
     this.state.listAnsweredAt[asker] = now;
     const { ver, devices, sig } = this.own.list;
     const master = { ed25519: this.own.master, list: { ver, devices }, sig };
-    this.dispatch(nick, { t: "list", master }, LIST_TAG, null, device.ed25519, [], res);
+    this.dispatch(nick, { t: "list", master }, LIST_TAG, null, device.ed25519, null, res);
   }
 
   /**
@@ -2360,7 +2373,7 @@ export class Engine {
       nick,
       sent.master,
       device.ed25519,
-      [],
+      null,
       { ...sent.msg, sends: sent.msg.sends + 1 },
       res,
     );
