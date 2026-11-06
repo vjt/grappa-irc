@@ -3744,17 +3744,44 @@ against `encryptedDevice`, it fails on `expected 'I3Lb03lEsV4' to be
 undefined`. `ownKey` could not serve: it is the master key, and it fills
 only once an encrypted chat is shown.
 
+**The identity sync now runs once per login, not once per page load.**
+`identityScopedStore` resets on every token change, which clears
+`ownDevice` along with the rest, and only the sync fills it again. A
+logout does not reload the page, so a login that skipped the sync left
+`ownDevice` empty until a reload. The elsewhere flag had the same gap, but
+a failing operation refills it. The record of synced slots
+(`mountIdentitySync`) now empties when the bearer changes. Found by the
+review.
+
+**Known gap, rare, never a false "here":** the holder's own syncs inside a
+pairing (`offerable`, `addDevice`) call `syncIdentity` directly, not
+through `identitySynced`. If grappa has dropped the list, that sync's
+relist registers this device under a new did, and `ownDevice` keeps the
+old one until the next sync. In the meantime rows for the new did name it.
+The elsewhere flag has the same blind spot on those paths.
+
 No server change and no protocol bump: `e2e_device` has been on the meta
 allowlist and in `wireTypes.ts` since wire v2.
 
 ### Tests
 
 The new unit tests were run red first: 6 failing (three pane rows still
-saying "here", three store tests missing `ownDevice`). Two pane mutants
-each turn two tests red: an unknown did read as "here", and the own did
-ignored. The e2e spec (`issue2454-undeliverable-device.spec.ts`) pairs
-two browsers of one account, queues a message for the second device alone
-and ages it out; the first browser must name the second's did, and the
-second must read "here". Locally it only type-checked: it was not run (the
-stack is not this worker's to take), and the PR's integration job is the
-gate.
+saying "here", three store tests missing `ownDevice`), and the re-login
+sync test 1 failing (`found` called once, not twice). Mutants:
+
+- two pane mutants each turn two tests red: an unknown did read as
+  "here", and the own did ignored;
+- the did read through `run()` turns the "makes no identity" test red;
+- dropping the stale-write guard (a read landing after the identity went
+  elsewhere) turns its own test red. The review caught that this guard
+  was untested.
+
+The e2e spec (`issue2454-undeliverable-device.spec.ts`) pairs two
+browsers of one account and queues a message for the second device alone
+while that device's page is closed. A closed page drains nothing, where a
+`page.route` hold can miss a fetch from a page the service worker
+controls (`fixtures/fetchInPage.ts`). It ages the message out, then
+reopens the second device. The first browser must name the second's did,
+and the second must read "here", which its page-load sync supplies.
+Locally it only type-checked: it was not run (the stack is not this
+worker's to take), and the PR's integration job is the gate.
