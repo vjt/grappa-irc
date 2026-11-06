@@ -105,6 +105,8 @@ export function lastComparison(rows: readonly ChatRow[]): string | null {
     if (row?.kind === "pinned" || row?.kind === "accepted") return null;
     if (row?.kind === "verified") return "matched";
     if (row?.kind === "sas_cancelled") {
+      // Another device of ours answered it: nobody stopped it, them least of all.
+      if (row.reason === "other-device") return reasonText(row.reason);
       const who = row.by === "you" ? "stopped" : "stopped by them";
       return `${who}: ${reasonText(row.reason)}`;
     }

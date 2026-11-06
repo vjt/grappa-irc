@@ -67,6 +67,11 @@ const MAC_INFO = "irc-e2e:v1:sas-mac:";
 const MMAC_INFO = "irc-e2e:v2:sas-mmac:";
 /** The tag of every SAS step the engine sends: none has a row to move. */
 export const SAS_TAG = "sas";
+/**
+ * The tag of a SAS's cancel to the devices it does not run with (`release`):
+ * no row either, and its loss leaves their request to time out, not the SAS.
+ */
+export const SAS_RELEASE_TAG = "sas-release";
 
 /** Where a SAS stands on one side. */
 export type SasPhase =
@@ -623,7 +628,7 @@ export class Verifier {
   private release(rec: SasRecord, device: string): void {
     const reason: SasCancelReason = "other-device";
     const inner = { t: "sas.cancel", tx: rec.tx, reason };
-    this.collect(this.engine.sendExcept(rec.nick, inner, SAS_TAG, device));
+    this.collect(this.engine.sendExcept(rec.nick, inner, SAS_RELEASE_TAG, device));
   }
 
   /** What the engine answered, for the caller to take: never dropped. */
