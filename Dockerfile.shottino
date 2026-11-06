@@ -10,7 +10,8 @@ FROM alpine:3.24 AS build
 # pkgconf is required: build-base does not carry pkg-config on alpine, and
 # `configure` fails at its first check without it. ncurses-dev ships
 # ncursesw.pc (shottino links the WIDE build) and openssl-dev ships openssl.pc.
-RUN apk add --no-cache build-base ncurses-dev openssl-dev pkgconf
+# cargo builds the vodozemac staticlib shottino's E2E links (e2e/vodozemac-c).
+RUN apk add --no-cache build-base ncurses-dev openssl-dev pkgconf cargo
 
 WORKDIR /src
 # Only what the client needs. The vendored libdatachannel submodule belongs to

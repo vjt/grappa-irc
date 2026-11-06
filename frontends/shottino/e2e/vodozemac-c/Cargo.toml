@@ -1,0 +1,27 @@
+[package]
+name = "vodozemac-c"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "shottino's C binding over vodozemac: the native twin of cicchetto/wasm/vodozemac-binding"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+# The SAME version cicchetto pins (cicchetto/wasm/vodozemac-binding): the
+# two clients must speak one Olm, and a version drift between them is an
+# interop question nobody should have to ask.
+vodozemac = { version = "=0.11.1" }
+serde_json = "1"
+sha2 = "=0.11.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# unwind, not abort: every exported function catches a panic and turns it
+# into an error return. An abort would take the whole terminal down, raw
+# mode and all, over one malformed message from the wire.
+panic = "unwind"
+strip = true

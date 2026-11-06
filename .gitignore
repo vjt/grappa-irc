@@ -110,6 +110,8 @@ Thumbs.db
 /frontends/shottino/*.o
 # Header dependencies the compiler writes (-MMD -MP).
 /frontends/shottino/*.d
+/frontends/shottino/e2e/vodozemac-c/target/
+/frontends/shottino/e2e/vodozemac-c/.cargo-home/
 # Test binaries — `make check` rebuilds these from tests/*.c on demand.
 # The sources and the header are tracked; the binaries are not.
 /frontends/shottino/tests/test_*

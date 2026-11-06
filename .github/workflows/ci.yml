@@ -255,6 +255,11 @@ jobs:
           sudo apt-get install -y -q --no-install-recommends \
             pkg-config libncurses-dev libssl-dev ffmpeg
 
+      # E2E is vodozemac through a Rust staticlib (e2e/vodozemac-c): the
+      # pinned toolchain, the same rustc cicchetto's wasm build uses.
+      - name: Install the Rust toolchain
+        run: scripts/ci-rust.sh
+
       - name: Configure
         run: ./configure
 

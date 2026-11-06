@@ -45,10 +45,13 @@ license=('MIT')
 # calls SSL_CTX_set_default_verify_paths + SSL_VERIFY_PEER, so the system CA
 # store is a RUNTIME dependency, not a copied one.
 depends=('ncurses' 'openssl' 'ca-certificates')
-# No makedepends: the C toolchain and pkgconf come from base-devel, which
-# makepkg assumes. Deliberately no elixir/erlang/bun — this package builds one
+# rust: E2E links vodozemac through a Rust staticlib (e2e/vodozemac-c), built
+# by cargo at package time and linked in — not a runtime dependency. The C
+# toolchain and pkgconf come from base-devel, which makepkg assumes.
+# Deliberately no elixir/erlang/bun — this package builds one
 # C binary and must not drag the bouncer's build stack onto a client-only host,
 # which is the entire point of #1447.
+makedepends=('rust')
 optdepends=('grappa: the bouncer this client talks to, if you run one locally')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${_grappaver}.tar.gz")
 # SKIP until the vX.Y.Z tag exists: ../regen.sh replaces this with the real

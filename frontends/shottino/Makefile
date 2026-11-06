@@ -26,6 +26,18 @@ CFLAGS += $(CFLAGS_DEPS)
 LDLIBS += $(LDLIBS_DEPS)
 
 BIN := shottino
+
+# End-to-end encryption is vodozemac — the crate and version cicchetto
+# uses, so the two clients speak one Olm — linked as a Rust staticlib with
+# a C ABI (e2e/vodozemac-c). Built with the host's `cargo` when there is
+# one, else with scripts/shottino-cargo.sh, which runs the same command in
+# the digest-pinned rust image. --locked: Cargo.lock is committed, and a
+# build that would move it is a build that is not the one reviewed.
+VZ_DIR := e2e/vodozemac-c
+VZ_LIB := $(VZ_DIR)/target/release/libvodozemac_c.a
+# What Rust's std needs from the C runtime when linked statically.
+VZ_LDLIBS := -lpthread -ldl -lm
+CARGO ?= $(shell command -v cargo 2>/dev/null || echo $(abspath $(ROOT))/scripts/shottino-cargo.sh)
 # call/whip.c is in the CLIENT's link set, not only the helper's: the
 # client probes an arriving invite to decide whether the URL is a WHIP
 # endpoint at all, and "what a WHIP endpoint looks like" must have ONE
@@ -52,7 +64,7 @@ OBJS := shottino.o json.o wire.o alias.o mirc.o termcolor.o http.o media.o ircd.
 # reaches, which is the drawing primitives and nothing else. Do not trust
 # this net for changes elsewhere in that file; add a test or reason about
 # the path by hand.
-TESTS := tests/test_unfurl tests/test_llm tests/test_ws tests/test_json tests/test_wire tests/test_alias tests/test_mirc tests/test_termcolor tests/test_http tests/test_media tests/test_whip tests/test_callmedia tests/test_callnote tests/test_callmain tests/test_layout tests/test_keys tests/test_ircd tests/test_commands tests/test_windows tests/test_call
+TESTS := tests/test_vodozemac tests/test_unfurl tests/test_llm tests/test_ws tests/test_json tests/test_wire tests/test_alias tests/test_mirc tests/test_termcolor tests/test_http tests/test_media tests/test_whip tests/test_callmedia tests/test_callnote tests/test_callmain tests/test_layout tests/test_keys tests/test_ircd tests/test_commands tests/test_windows tests/test_call
 SANITIZE ?= -fsanitize=address,undefined -fno-omit-frame-pointer
 TEST_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O1 -g $(SANITIZE)
 
@@ -60,8 +72,14 @@ TEST_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O1 -g $(SANITIZE)
 
 all: $(BIN)
 
-$(BIN): $(OBJS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(OBJS) $(LDLIBS)
+$(BIN): $(OBJS) $(VZ_LIB)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $(OBJS) $(VZ_LIB) $(LDLIBS) $(VZ_LDLIBS)
+
+$(VZ_LIB): $(VZ_DIR)/Cargo.toml $(VZ_DIR)/Cargo.lock $(VZ_DIR)/src/lib.rs
+	cd $(VZ_DIR) && $(CARGO) build --release --locked
+
+tests/test_vodozemac: tests/test_vodozemac.c tests/test.h $(VZ_DIR)/include/vodozemac.h $(VZ_LIB)
+	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) -o $@ tests/test_vodozemac.c $(VZ_LIB) $(VZ_LDLIBS)
 
 # -MMD -MP makes the compiler write the header dependencies, because a
 # hand-maintained list rots: shottino.o's named nine headers while

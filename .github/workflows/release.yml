@@ -288,6 +288,11 @@ jobs:
             libimage-exiftool-perl ffmpeg sqlite3 \
             pkg-config libncurses-dev libssl-dev
 
+      # shottino's E2E links vodozemac through a Rust staticlib; build.sh
+      # compiles it with this toolchain (see scripts/ci-rust.sh).
+      - name: Install the Rust toolchain (shottino E2E)
+        run: scripts/ci-rust.sh
+
       - name: Build the .deb
         run: infra/packaging/build.sh
 
@@ -918,7 +923,7 @@ jobs:
           # install_weak_deps=False keeps optional recommends off the CI box.
           dnf install -y --setopt=install_weak_deps=False \
             elixir erlang \
-            git gcc make pkgconf-pkg-config ncurses-devel openssl-devel \
+            git gcc make pkgconf-pkg-config ncurses-devel openssl-devel cargo \
             tar gzip unzip findutils sqlite openssl util-linux
 
       - name: Setup bun (cicchetto build)

@@ -81,6 +81,14 @@ Dependencies checked by `./configure`:
 - OpenSSL (`libssl`, `libcrypto`)
 - pthread support
 
+Also needed by `make`, not probed by `./configure`:
+
+- Rust (`cargo`, 1.85 or newer). End-to-end encryption is vodozemac, the
+  same crate and version cicchetto uses, linked as a small Rust static
+  library (`e2e/vodozemac-c`). It is a build dependency only. Without a
+  host `cargo`, `make` runs the same build in the pinned Rust Docker image
+  through `scripts/shottino-cargo.sh`.
+
 Optional runtime dependencies (only for media link previews — see below):
 
 - `ffmpeg` — fetches and decodes the linked image, or a video/GIF into the

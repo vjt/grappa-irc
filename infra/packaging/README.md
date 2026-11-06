@@ -215,7 +215,7 @@ Elixir/OTP:
 docker run --rm -v "$PWD:/src" -w /src fedora:43 bash -c '
   dnf install -y --setopt=install_weak_deps=False \
     elixir erlang git gcc make pkgconf-pkg-config ncurses-devel \
-    openssl-devel tar gzip unzip findutils sqlite openssl util-linux &&
+    openssl-devel cargo tar gzip unzip findutils sqlite openssl util-linux &&
   curl -fsSL https://bun.sh/install | bash && export PATH="$HOME/.bun/bin:$PATH" &&
   GRAPPA_PKG_FORMAT=rpm infra/packaging/build.sh'
 ```
