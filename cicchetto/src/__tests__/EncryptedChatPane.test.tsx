@@ -1379,7 +1379,7 @@ describe("EncryptedChatPane, the last identity check", () => {
     expect(full.textContent).not.toContain("failed");
     expect(full.querySelector(".e2e-check-failed")).toBeNull();
     expect(full.textContent).toContain("a private message on AzzurraNet");
-    expect(full.textContent).toContain("this cic sent no such line there in the last 15 s");
+    expect(full.textContent).toContain("this cic sent no such line there in the last 30 s");
   });
 });
 

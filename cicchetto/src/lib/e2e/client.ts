@@ -187,7 +187,7 @@ export type E2eContext = {
   frameBudgetBase: number | null;
   /** The doors of this subject's device `did` on the network. */
   door: (did: string) => Door;
-  /** Whether this cic sent the line `chal` from `challenger` names, there, in the 15 s before `at` (`SendLog.confirms`). */
+  /** Whether this cic sent the line `chal` from `challenger` names, there, in the `SENT_WINDOW_MS` before `at` (`SendLog.confirms`). */
   orders: (chal: Challenge, challenger: string, at: number) => OrderVerdict;
 };
 
