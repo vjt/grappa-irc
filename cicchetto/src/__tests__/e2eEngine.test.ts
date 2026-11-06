@@ -5343,6 +5343,50 @@ describe("two cic devices, end to end", () => {
   });
 });
 
+describe("a stale list corrected on sight, end to end (issue 2576)", () => {
+  it("a peer still writing to a device revoked since gets the new list from the device it reached, and writes to the revoked one no more", async () => {
+    const g = new Grappa();
+    const a = me("alice");
+    const b = me("bob");
+    const old = new (olm().Account)();
+    a.own.list = signedList(a.master, 1, [a.account, old]);
+    await enlist(g, "alice", a.master, [a.account, old], a.own.list);
+    await uploadKeys(g, "alice", a.account);
+    await uploadKeys(g, "alice", old);
+    await joined(g, b);
+    // Bob's texts: his list traffic (a listreq alice's first message draws) aside.
+    const bodiesSent = (): string[][] =>
+      g.sends
+        .filter((s) => s.by === "bob" && s.priority === "text")
+        .map((s) => Object.keys(bodiesOf(s.payload)).sort());
+    const both = [didOf(a.account), didOf(old)].sort();
+
+    // Bob's KEYS holds alice's list at 1: a body for each device.
+    await say(g, b, "alice", "hello");
+    await pump(g, a);
+    // Alice revokes the old device. Nothing tells bob, who never asks.
+    a.own.list = signedList(a.master, 2, [a.account]);
+    await g.api.putE2eList("alice", SLUG, { master: a.own.master, ...a.own.list });
+    await say(g, b, "alice", "again");
+    expect(bodiesSent()).toEqual([both, both]);
+
+    await pump(g, a); // "again", with a body for the revoked device: alice's list goes back
+    await pump(g, b); // bob applies it
+    expect(b.state.masters[a.own.master]).toMatchObject({
+      ver: 2,
+      devices: [keyOf(a.account)],
+      revoked: [keyOf(old)],
+    });
+    await say(g, b, "alice", "third");
+    await pump(g, a);
+
+    expect(bodiesSent()).toEqual([both, both, [didOf(a.account)]]);
+    expect(eventsOf(a, "received").map((e) => e.inner.body)).toEqual(["hello", "again", "third"]);
+    expect(failedOf(a)).toEqual([]);
+    expect(failedOf(b)).toEqual([]);
+  });
+});
+
 describe("two cic devices, first contact", () => {
   it("reads a first message from a master it never saw on its device's certificate, and its answer reaches that device at once", async () => {
     const g = new Grappa();
