@@ -4672,3 +4672,76 @@ deploy answers `409 stale_toolchain`, and `--force-cold` applies it.
 * A real rpm or Arch upgrade: none was run.
 * That the jail is safe from the deleted-ERTS halt: that is w2's measurement on
   an OCI surrogate, not on FreeBSD.
+<!-- entry #2583 -->
+
+---
+
+## 2026-11-06 — #2583: the ciphertext view gets a door in the rail's actions menu
+
+vjt's words, relayed from an encrypted DM and not seen first-hand: «sposta lo
+show cyphertext nella sidebar, con un bottone dedicato. può anche rimanere come
+right click sul nick»; then, asked which sidebar: «il right rail magari una
+nuova voce in actions menu».
+
+* **Where, and why it was asked first.** A `ciphertext` entry in
+  `RailActions`, the right rail's actions menu. "Sidebar" names both columns
+  here (Shell's own comment calls the right one the "right (members)
+  sidebar"), and the request said "move" while the only door was already in
+  the window list, so the place went back to vjt before anything was built.
+  The window list's row menu (#2513) stays: one state, two doors, the row
+  menu for any encrypted row and the entry for the window on screen.
+* **The gate.** `focusedEncryptedWindow()`, the accessor Shell's pane and
+  RailContext's rail are keyed on: the same capability-by-kind gate that
+  denoise (`channel`) and mute (`channel` or `query`) use. "Only on an
+  encrypted window" was the relay's reading of vjt's words; the code agrees
+  with it, and it is the reading taken.
+* **The shape is denoise's**, the menu's other state toggle. It flips in
+  place and does not close the menu. The accent (denoise's CSS rule, with a
+  second selector), the icon (🔒, then 🔣) and `aria-pressed` say which view
+  shows; `title` says what a tap does, in the row menu's words. The label is
+  "ciphertext".
+* **On a phone the menu stays open too**, as denoise's does, although the
+  right drawer still covers the pane it flipped. `refresh` closes the drawer
+  because its result is behind it; this entry follows denoise instead, so it
+  behaves the same on both form factors. Put to vjt on the PR.
+
+### Tests
+
+vitest (`RailActions.test.tsx`, the toggle a spied signal):
+
+* the entry is absent on null, channel, query, home and admin, and present
+  on an encrypted window, off to start;
+* a tap flips the window's peer (not the window's name), says on and keeps
+  the menu open, and a second tap says off;
+* a flip from the other door shows on the entry, another chat's does not.
+
+The three were red first, on the missing entry, with 70 others green.
+
+Six mutants, with the reds written before they ran:
+
+* gate widened to `query`: 1;
+* gate removed: 2. One was predicted. The other was not: the existing
+  order test on a channel window, where the leaked entry landed between
+  denoise and mute. A real kill the prediction missed;
+* toggle on the window's name: 1;
+* `title` fixed: 2;
+* `close()` after the toggle: 1;
+* `aria-pressed` inverted: 3.
+
+Full vitest: 419 files, 9201 tests.
+
+e2e: a test added to `issue2513-encrypted-ciphertext-view.spec.ts`, sharing
+its conversation rather than copying its helper into a second file. On the
+desktop, the entry shows the two payloads and no plaintext, with the menu
+still open around it. Then the row menu offers "Show plaintext", which brings
+both messages back and leaves the entry off.
+
+Run on 912db69d2, before the rebase over 2030b4a44 (shottino and this log
+only, no file under `cicchetto/`):
+`scripts/integration.sh issue2513-encrypted-ciphertext-view
+issue2543-encrypted-query-actions`, 4 passed in 2.3 min. On chromium: the
+row-menu test (28.6 s), the new rail test (28.3 s) and 2543's actions test
+(46.5 s). On chromium-pixel-touch: the phone hold (29.4 s). No webkit
+project collects these files. The bundle served was the branch's: the new
+test clicks a testid only this branch has. It was not run red on the code
+before the entry.
