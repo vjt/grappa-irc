@@ -119,9 +119,15 @@ const REACTIVE_INNER = new Set(["list", "listreq"]);
 /**
  * The tag of the engine's own list traffic (`t:list`, `t:listreq`): its
  * payloads carry it for `sent()` and `discard()`, and nothing is ever
- * reported about it, since no caller wrote it. `send` refuses it to a caller.
+ * reported about it, since no caller wrote it. `send` and `sendExcept` refuse
+ * it to a caller.
  */
 export const LIST_TAG = "list";
+
+/** A caller's message under `LIST_TAG` would go unreported, and pass for ours: refused. */
+function callersTag(tag: string): void {
+  if (tag === LIST_TAG) throw new Error(`the tag ${LIST_TAG} is the engine's own`);
+}
 
 /** The lane of grappa's send door a payload takes (CLIENT_PROTOCOL §4f). */
 type Priority = "control" | "reactive" | "text";
@@ -187,9 +193,9 @@ function newMaster(nick: string, verified: boolean): Master {
 /**
  * Waiting for keys. `master` is the master it is meant for, "" whatever master
  * answers; `only` the one device (Ed25519 key) of it it is for, null all;
- * `done` the devices (Ed25519 keys) it already went to, which it never goes
- * to again. Whether the message is lost is never read off `done`: it is
- * asked across every copy of it (`pending`).
+ * `done` the devices (Ed25519 keys) it already went to, or is not for
+ * (`sendExcept`), which it never goes to. Whether the message is lost is
+ * never read off `done`: it is asked across every copy of it (`pending`).
  */
 type Queued = {
   nick: string;
@@ -654,20 +660,43 @@ export class Engine {
     expiresAt: number | null,
     only: string | null,
   ): Result {
-    // A caller's message under it would go unreported, and pass for ours.
-    if (tag === LIST_TAG) throw new Error(`the tag ${LIST_TAG} is the engine's own`);
+    callersTag(tag);
     const res = emptyResult();
-    this.dispatch(nick, inner, tag, expiresAt, only, res);
+    this.dispatch(nick, inner, tag, expiresAt, only, [], res);
     return this.end(res);
   }
 
-  /** `send`'s work: true when the message went to a device or waits for keys, false when refused (reported). */
+  /**
+   * `send` to every device of the master pinned to `nick` but `except` (its
+   * Ed25519 key), never to that one: a SAS's cancel to the devices its start
+   * reached and it does not run with (issue 2457). With no master pinned, or
+   * no device of it past `except`, there is nobody to tell: nothing goes,
+   * nothing waits, nothing is reported.
+   */
+  sendExcept(nick: string, inner: Record<string, unknown>, tag: string, except: string): Result {
+    callersTag(tag);
+    const res = emptyResult();
+    const master = atNick(this.state.pins, nick);
+    if (master !== undefined) {
+      const { ready, lacking } = this.split(master, null, [except]);
+      if (ready.length + lacking.length > 0) {
+        this.dispatch(nick, inner, tag, null, null, [except], res);
+      }
+    }
+    return this.end(res);
+  }
+
+  /**
+   * `send`'s work, past the devices in `done`: true when the message went to
+   * a device or waits for keys, false when refused (reported).
+   */
   private dispatch(
     nick: string,
     inner: Record<string, unknown>,
     tag: string,
     expiresAt: number | null,
     only: string | null,
+    done: string[],
     res: Result,
   ): boolean {
     const refuse = (reason: SendFailure): false => {
@@ -703,8 +732,8 @@ export class Engine {
     };
     const master = atNick(this.state.pins, nick);
     return master === undefined
-      ? this.enqueue(nick, "", only, [], msg, res)
-      : this.sendTo(nick, master, only, [], msg, res);
+      ? this.enqueue(nick, "", only, done, msg, res)
+      : this.sendTo(nick, master, only, done, msg, res);
   }
 
   /** grappa accepted the send of `ref` as `msgid`: a NACK may name it. */
@@ -992,7 +1021,7 @@ export class Engine {
     if (last !== undefined) last.lv = asked;
     if (lv !== null && asked.includes(lv)) return false;
     if (last !== undefined && this.now() - last.at < LISTREQ_INTERVAL_MS) return false;
-    if (!this.dispatch(nick, { t: "listreq" }, LIST_TAG, null, only, res)) return false;
+    if (!this.dispatch(nick, { t: "listreq" }, LIST_TAG, null, only, [], res)) return false;
     setNick(this.state.listreqAt, nick, {
       at: this.now(),
       lv: lv === null ? asked : [...asked, lv],
@@ -2192,7 +2221,7 @@ export class Engine {
     this.state.listAnsweredAt[asker] = now;
     const { ver, devices, sig } = this.own.list;
     const master = { ed25519: this.own.master, list: { ver, devices }, sig };
-    this.dispatch(nick, { t: "list", master }, LIST_TAG, null, device.ed25519, res);
+    this.dispatch(nick, { t: "list", master }, LIST_TAG, null, device.ed25519, [], res);
   }
 
   /**

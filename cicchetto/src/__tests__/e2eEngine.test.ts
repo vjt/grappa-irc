@@ -1761,6 +1761,78 @@ describe("sending to every trusted device", () => {
     expect(a.state.sessions[other.curve25519_key()]).toEqual(untouched);
   });
 
+  // issue 2457 — a SAS's word to the devices its start reached and it no
+  // longer runs with.
+  it("sends a message for every device but one to the others alone", () => {
+    const a = me("alice");
+    const bob = peerWith(3);
+    const [left, d2, d3] = bob.devices as [Account, Account, Account];
+    knownPeer(a, "bob", bob, 1);
+    const untouched = structuredClone(a.state.sessions[left.curve25519_key()]);
+
+    const res = record(a, engineOf(a).sendExcept("bob", text("not you"), "others", keyOf(left)));
+
+    expect(res.outbound.map((o) => [o.verb, o.to, o.tag])).toEqual([["pkmsg", "*", "others"]]);
+    const payload = res.outbound[0]?.payload ?? "";
+    expect(Object.keys(bodiesOf(payload)).sort()).toEqual([didOf(d2), didOf(d3)].sort());
+    for (const device of [d2, d3]) expect(opened(device, "pkmsg", payload).body).toBe("not you");
+    expect(a.state.sessions[left.curve25519_key()]).toEqual(untouched);
+    expect(failedOf(a)).toEqual([]);
+  });
+
+  it("queues a message for every device but one for the others with no session, and a KEYS sends it to them, never to the one left out", () => {
+    const a = me("alice");
+    const bob = peerWith(2);
+    const [left, lacking] = bob.devices as [Account, Account];
+    listedPeer(a, "bob", bob, 1);
+    bind(a, bob.master, left);
+
+    const queued = record(a, engineOf(a).sendExcept("bob", text("later"), "others", keyOf(left)));
+    expect(queued.outbound.map((o) => o.verb)).toEqual(["keyreq"]);
+
+    const entries = bob.devices.map((device) => entryOf(device, bob.master));
+    const res = record(
+      a,
+      engineOf(a).receive(
+        "bob",
+        "keys",
+        newMsgid(),
+        "*",
+        keysPayload(bob, 1, bob.devices, entries),
+      ),
+    );
+
+    expect(res.outbound.map((o) => [o.verb, o.to])).toEqual([["pkmsg", didOf(lacking)]]);
+    expect(opened(lacking, "pkmsg", res.outbound[0]?.payload ?? "").body).toBe("later");
+    expect(failedOf(a)).toEqual([]);
+    expect(a.state.outq).toEqual({});
+  });
+
+  it("sends, stores and reports nothing for every device but one when there is no other: a master of one device, or no master pinned", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [only] = bob.devices as [Account];
+    knownPeer(a, "bob", bob, 1);
+    const before = structuredClone(a.state);
+
+    expect(engineOf(a).sendExcept("bob", text("nobody"), "others", keyOf(only))).toEqual(
+      noResult(),
+    );
+    expect(engineOf(a).sendExcept("carol", text("nobody"), "others", keyOf(only))).toEqual(
+      noResult(),
+    );
+    expect(a.state).toEqual(before);
+  });
+
+  it("keeps its list tag to itself for every device but one too", () => {
+    const a = me("alice");
+    const bob = peerWith(2);
+    const [left] = bob.devices as [Account, Account];
+    knownPeer(a, "bob", bob, 1);
+
+    expect(() => engineOf(a).sendExcept("bob", text("x"), LIST_TAG, keyOf(left))).toThrow(LIST_TAG);
+  });
+
   it("sends first contact to a master pinned by hand before it, verified as the user said", async () => {
     const g = new Grappa();
     const a = me("alice");
