@@ -81,18 +81,35 @@ defmodule Grappa.HotReload do
         }
 
   @typedoc """
+  What the running node is built from, versus what the release on disk
+  declares (issue 1112).
+
+  `release` is the release root. `moved` names each component whose version
+  differs: `erts` (from field 1 of `start_erl.data` and from the `.rel`) and
+  every application the `.rel` has the boot script load. `running` is `nil`
+  for an application the node never loaded. `moved` is `nil` when the `.rel`
+  could not be read, which refuses as well.
+  """
+  @type toolchain_drift :: %{
+          release: Path.t(),
+          moved: [%{name: String.t(), running: String.t() | nil, built: String.t()}] | nil
+        }
+
+  @typedoc """
   Refusal to migrate. Either the named migration files are pending and at
   least one of their ops is contract (or unprovable), a version is
-  claimed by two files (#1348), or the fresh beams landed in a lib
-  directory the running node never reads (#1850). Nothing ran, in all
-  three cases — and they need DIFFERENT operator moves: the first and the
-  third are what a cold deploy is for, the second is a repo defect a cold
-  deploy walks straight back into.
+  claimed by two files (#1348), the fresh beams landed in a lib
+  directory the running node never reads (#1850), or the release on disk
+  was built on a toolchain the running node does not run (issue 1112).
+  Nothing ran, in all four cases — and they need DIFFERENT operator moves:
+  the first, the third and the fourth are what a cold deploy is for, the
+  second is a repo defect a cold deploy walks straight back into.
   """
   @type refusal ::
           {:contract_migrations, [Path.t()]}
           | {:duplicate_migration_versions, [MigrationAudit.duplicate()]}
           | {:stale_code_path, code_path_drift()}
+          | {:stale_toolchain, toolchain_drift()}
 
   @doc """
   Apply pending migrations on the live pool, THEN reload modules (#41).
@@ -227,11 +244,13 @@ defmodule Grappa.HotReload do
 
   @doc """
   Refuse a hot reload whose fresh beams landed somewhere the running node
-  does not read (#1850).
+  does not read (#1850), or were built on a toolchain it does not run
+  (issue 1112).
 
   Takes the lib directory the node resolves for `:grappa` — the parent of
-  the ebin `reload_modified/0` walks — and answers `:ok` or
-  `{:error, {:stale_code_path, drift}}`.
+  the ebin `reload_modified/0` walks — and answers `:ok`,
+  `{:error, {:stale_code_path, drift}}` or
+  `{:error, {:stale_toolchain, drift}}`, in that order of checking.
 
   ## The silence this breaks
 
@@ -287,18 +306,53 @@ defmodule Grappa.HotReload do
   refuses. The path says "this is a mix release", so the metadata is
   expected; reading `:ok` out of its absence would restore exactly the
   silence this audit exists to break.
+
+  ## The toolchain (issue 1112)
+
+  The frozen app vsn keeps the lib dir still; it does not keep the
+  toolchain still. A release carries its own ERTS and OTP and Elixir
+  applications, and the rpm, the Arch package and the OCI image rebuild
+  them from whatever their builder ships, with no change in this repo
+  (measured on real artefacts: Arch 1.5.6 → 1.6.0 moved ERTS 17.0.6 →
+  17.1 and Elixir 1.20.2 → 1.20.4; the rpm moved Elixir alone). The jail
+  does the same after a `pkg upgrade` of erlang or elixir, since the next
+  `mix release --overwrite` bundles the new toolchain. Nothing makes beams
+  compiled by one Elixir safe to load into a node running another, and a
+  package upgrade deletes the old ERTS directory under the live node,
+  which then halts the VM the first time it relaunches `inet_gethost`
+  (measured on a release tree swapped under a live node, issue 1112). A
+  toolchain move is a restart.
+
+  So once the vsn agrees, the node compares its own toolchain — the ERTS it
+  runs (`:erlang.system_info(:version)`) and the vsn of every application
+  it loaded — with what the release on disk declares: field 1 of
+  `start_erl.data` and `releases/<vsn>/<rel>.rel`. Every application the
+  `.rel` has the boot script load must be loaded here at that vsn; one
+  listed as `none` (`iex`) is never loaded, so it is not compared. A `.rel`
+  that is missing, or not exactly one, or not in the shape `mix release`
+  writes, refuses: in doubt, cold.
   """
-  @spec audit_code_path(Path.t()) :: :ok | {:error, {:stale_code_path, code_path_drift()}}
+  @spec audit_code_path(Path.t()) ::
+          :ok
+          | {:error, {:stale_code_path, code_path_drift()}}
+          | {:error, {:stale_toolchain, toolchain_drift()}}
   def audit_code_path(lib_dir) when is_binary(lib_dir) do
     case booted_vsn(lib_dir) do
-      nil -> :ok
-      booted -> compare_vsn(lib_dir, booted, built_vsn(lib_dir))
+      nil ->
+        :ok
+
+      booted ->
+        release_root = release_root(lib_dir)
+
+        case start_erl(release_root) do
+          {erts, ^booted} -> audit_toolchain(release_root, erts, booted)
+          {_, built} -> stale_code_path(lib_dir, booted, built)
+          nil -> stale_code_path(lib_dir, booted, nil)
+        end
     end
   end
 
-  defp compare_vsn(_, vsn, vsn), do: :ok
-
-  defp compare_vsn(lib_dir, booted, built),
+  defp stale_code_path(lib_dir, booted, built),
     do: {:error, {:stale_code_path, %{booted: booted, built: built, lib_dir: lib_dir}}}
 
   # The vsn a `mix release` layout carries in the code path itself
@@ -311,27 +365,86 @@ defmodule Grappa.HotReload do
     end
   end
 
-  # The vsn the release metadata names — what the last `mix release
-  # --overwrite` produced. `nil` when the file is missing or is not the
-  # documented `"<erts_vsn> <release_vsn>"` pair, which is a refusal (see
-  # the @doc): on a versioned path, unreadable metadata is doubt, not
-  # absence of drift.
-  defp built_vsn(lib_dir) do
-    # `Path.dirname/1` twice, NOT `Path.join([lib_dir, "..", "..", …])`:
-    # dirname is lexical, while `..` is resolved by the OS at open time and
-    # is ENOENT when a path component is missing. The component missing is
-    # exactly the case that matters — a boot dir the build removed — and
-    # the naive form lost the new vsn there while still refusing. Caught by
-    # `code_path_audit_test.exs`'s vanished-boot-dir case, not reasoned out.
-    release_root = lib_dir |> Path.dirname() |> Path.dirname()
+  # `Path.dirname/1` twice, NOT `Path.join([lib_dir, "..", "..", …])`:
+  # dirname is lexical, while `..` is resolved by the OS at open time and
+  # is ENOENT when a path component is missing. The component missing is
+  # exactly the case that matters — a boot dir the build removed — and
+  # the naive form lost the new vsn there while still refusing. Caught by
+  # `code_path_audit_test.exs`'s vanished-boot-dir case, not reasoned out.
+  defp release_root(lib_dir), do: lib_dir |> Path.dirname() |> Path.dirname()
 
+  # `{erts_vsn, release_vsn}` from `releases/start_erl.data`: what the last
+  # `mix release --overwrite` produced. `nil` when the file is missing or is
+  # not the documented `"<erts_vsn> <release_vsn>"` pair, which is a refusal
+  # (see the @doc): on a versioned path, unreadable metadata is doubt, not
+  # absence of drift.
+  defp start_erl(release_root) do
     with {:ok, contents} <- File.read(Path.join([release_root, "releases", "start_erl.data"])),
-         [_, vsn] <- contents |> String.trim() |> String.split(" ", trim: true) do
-      vsn
+         [erts, vsn] <- contents |> String.trim() |> String.split(" ", trim: true) do
+      {erts, vsn}
     else
       _ -> nil
     end
   end
+
+  # Reached once the vsn agrees, with field 1 of start_erl.data.
+  defp audit_toolchain(release_root, start_erl_erts, vsn) do
+    moved =
+      case read_rel(release_root, vsn) do
+        {:ok, rel_erts, apps} -> toolchain_moved(running_toolchain(), [start_erl_erts, rel_erts], apps)
+        :error -> nil
+      end
+
+    case moved do
+      [] -> :ok
+      _ -> {:error, {:stale_toolchain, %{release: release_root, moved: moved}}}
+    end
+  end
+
+  # What this node runs: its ERTS and the vsn of every application it loaded.
+  defp running_toolchain do
+    apps = Map.new(Application.loaded_applications(), fn {app, _, vsn} -> {app, to_string(vsn)} end)
+    {to_string(:erlang.system_info(:version)), apps}
+  end
+
+  # Every component whose declared version is not the running one, ERTS
+  # first, then the applications in the order the `.rel` lists them.
+  defp toolchain_moved({running_erts, running_apps}, declared_erts, apps) do
+    erts =
+      for built <- Enum.uniq(declared_erts),
+          built != running_erts,
+          do: %{name: "erts", running: running_erts, built: built}
+
+    erts ++
+      for {app, built} <- apps,
+          Map.get(running_apps, app) != built,
+          do: %{name: Atom.to_string(app), running: Map.get(running_apps, app), built: built}
+  end
+
+  # The `.rel` of release `vsn`: its ERTS and the `{app, vsn}` of every
+  # application the boot script loads (type `none` is never loaded).
+  # `:error` for no `.rel`, more than one, or one that is not the
+  # `{release, {Name, Vsn}, {erts, Vsn}, Apps}` term `mix release` writes.
+  defp read_rel(release_root, vsn) do
+    with [path] <- Path.wildcard(Path.join([release_root, "releases", vsn, "*.rel"])),
+         {:ok, [{:release, {_, _}, {:erts, erts}, apps}]} when is_list(erts) and is_list(apps) <- :file.consult(path),
+         {:ok, loaded} <- rel_apps(apps, []) do
+      {:ok, to_string(erts), loaded}
+    else
+      _ -> :error
+    end
+  end
+
+  defp rel_apps([], acc), do: {:ok, Enum.reverse(acc)}
+  defp rel_apps([{_, _, :none} | rest], acc), do: rel_apps(rest, acc)
+
+  defp rel_apps([{app, vsn, type} | rest], acc) when is_atom(app) and is_list(vsn) and is_atom(type),
+    do: rel_apps(rest, [{app, to_string(vsn)} | acc])
+
+  defp rel_apps([{app, vsn} | rest], acc) when is_atom(app) and is_list(vsn),
+    do: rel_apps(rest, [{app, to_string(vsn)} | acc])
+
+  defp rel_apps(_, _), do: :error
 
   @doc """
   Walk the grappa app's ebin and reload every new or changed module.
