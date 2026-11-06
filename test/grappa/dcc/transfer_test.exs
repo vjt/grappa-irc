@@ -270,16 +270,34 @@ defmodule Grappa.Dcc.TransferTest do
     # driver's queue. Before 2405 the ack that found the queue past its
     # high watermark BLOCKED, with no timeout, and the transfer with it.
     #
-    # On loopback, Linux sizes our send buffer from the 64 KiB MSS
-    # (`tcp_sndbuf_expand`), megabytes that would take hundreds of
-    # thousands of acks to fill. So the test makes the path a narrow one:
-    # the sender listens with a 1 KiB receive buffer (its own socket,
-    # advertised in the handshake), and our socket's send buffer is shrunk
-    # to the kernel floor from outside — the code under test is not told.
-    # Against the old code the spool file stood at 28,436,480 bytes when
-    # the first CI run gave up on it; at most 9216 bytes per chunk (the
-    # driver's receive buffer), 128 MiB is at least 14.5k chunks, each
-    # acked, so the stall arrives early.
+    # The test puts the path in that state before the first byte flows.
+    # Our socket's send buffer is shrunk to the kernel floor from outside,
+    # and one large write of filler goes out on it, also from outside: the
+    # code under test is not told. The sender takes what its receive
+    # buffer holds (fixed at 64 KiB, so the amount is bounded), our kernel
+    # holds some more, and the driver queues the rest, far past its high
+    # watermark. Every ack the transfer sends then meets that queue.
+    #
+    # 🔴 Filled by one large write, not by the acks themselves (issue
+    # 2554). The acks used to fill it, against a sender with a 1 KiB
+    # receive buffer, and the test failed now and then with
+    # `:idle_timeout`. Measured, the cause was the SENDER'S kernel, not a
+    # slow runner. Each 4-byte ack costs it far more memory than its
+    # payload, and a buffer full of them sometimes made it DROP one its
+    # window had admitted (`TCPRcvQDrop` in /proc/net/netstat). Every
+    # segment we sent after that started past what it expected, the
+    # window updates saying we had drained included, so it discarded them
+    # unread (`BeyondWindow`), never learned we had room, and sent nothing
+    # more. Under 24 CPU hogs 8 runs in 30 failed that way, each with the
+    # drop. No buffer size tried cured it: 16 KiB passed 30 of 30 loaded,
+    # then failed once in 27 unloaded. The filler goes out in full-sized
+    # segments instead, and once the window is shut our acks wait in our
+    # own queue and never reach the sender at all.
+    #
+    # The payload no longer has to fill anything, but it still has to last:
+    # the queue is sampled every 5 ms, and at 8 MiB the transfer was over
+    # in about 6, so a mutant that kept acking passed. 128 MiB takes about
+    # 0.1 s unloaded.
     @unread_ack_payload 128 * 1024 * 1024
 
     test "the transfer neither hangs nor fails: acking stops, the bytes keep landing", %{path: path} do
@@ -292,7 +310,7 @@ defmodule Grappa.Dcc.TransferTest do
       # ended. Discarding on the sender's side resets the connection, which
       # fails our side's queued write and frees both. `show_econnreset`
       # makes a reset read as one.
-      {listen, port} = DccTestSender.listen(recbuf: 1_024, linger: {true, 0}, show_econnreset: true)
+      {listen, port} = DccTestSender.listen(recbuf: 65_536, linger: {true, 0}, show_econnreset: true)
       mib = :binary.copy("A", 1024 * 1024)
 
       sender =
@@ -309,7 +327,7 @@ defmodule Grappa.Dcc.TransferTest do
           :ok = :gen_tcp.send(socket, List.duplicate(mib, div(@unread_ack_payload, byte_size(mib))))
 
           # Not a byte read until the transfer is over. Reading earlier
-          # would drain the acks and release the stall this test is about.
+          # would drain the queue and release the stall this test is about.
           receive do
             :release -> :ok
           end
@@ -325,27 +343,33 @@ defmodule Grappa.Dcc.TransferTest do
       socket = socket_of(transfer.pid)
       :ok = :inet.setopts(socket, sndbuf: 1_024)
       {:ok, [high_watermark: high]} = :inet.getopts(socket, [:high_watermark])
+
+      # A MiB is far more than the sender's buffer and our kernel will take
+      # together, so the driver keeps most of it. This write still answers
+      # `:ok`: the driver weighs its watermark only against a queue that was
+      # already there (`tcp_sendv` in `inet_drv.c`), which is exactly what
+      # the transfer's first ack finds.
+      :ok = :gen_tcp.send(socket, :binary.copy(<<0>>, 1024 * 1024))
+      {:ok, [send_pend: filled]} = :inet.getstat(socket, [:send_pend])
+      assert filled >= high, "the filler left #{filled} bytes queued, under #{high}"
       send(sender.pid, :go)
 
       # It must finish on its own while the sender is STILL holding off —
       # before 2405 the drain parked on an ack and this never returned.
-      # Meanwhile, the driver's ack queue as seen from outside.
-      {result, most_queued} = await_watching_queue(transfer, socket, 15_000)
+      # Meanwhile, the driver's queue as seen from outside.
+      {result, rise} = await_watching_queue(transfer, socket, 15_000)
 
       assert result == {:ok, {:ok, @unread_ack_payload}},
              "transfer: #{inspect(result)}; spooled: #{inspect(File.stat(path))}"
 
-      # The queue reached the high watermark, which with `send_timeout: 0`
-      # only the ack that came back `:timeout` can do — so the stall
-      # HAPPENED — and then stopped growing, so acking STOPPED. An ack per
-      # chunk past that point would have added four bytes for each of the
-      # thousands of chunks left.
-      assert most_queued >= high, "the ack queue peaked at #{most_queued} bytes, under #{high}"
-      assert most_queued < high + 64, "the ack queue kept growing to #{most_queued} bytes"
+      # The first ack came back `:timeout` and joined the queue; nothing
+      # after it did, so acking STOPPED. An ack per chunk would have added
+      # four bytes for each of the thousands of chunks that followed.
+      assert rise < 64, "the queue rose #{rise} bytes above its low point"
 
-      # And the acks still queued at the end were DISCARDED: our side reset
+      # And what was still queued at the end was DISCARDED: our side reset
       # the connection. A graceful close would have waited on the sender to
-      # read them and ended with a FIN, which reads as `:closed`.
+      # read it and ended with a FIN, which reads as `:closed`.
       send(sender.pid, :release)
       assert Task.await(sender, 10_000) == :econnreset
     end
@@ -374,22 +398,30 @@ defmodule Grappa.Dcc.TransferTest do
   end
 
   # Yields on `task` in 5 ms steps, sampling the socket's driver queue
-  # (`send_pend`) at each; returns the yield and the largest sample. A
+  # (`send_pend`) at each; returns the yield and the most the queue ever
+  # stood above its lowest earlier sample. A rise rather than a peak,
+  # because the queue also DRAINS while the transfer runs: once the sender
+  # starts talking, its segments carry a fresh window and our kernel takes
+  # more filler — measured, 47 KB of it, against four bytes an ack. A
   # sample after the socket closed is skipped, not an error.
-  defp await_watching_queue(task, socket, budget_ms), do: await_watching_queue(task, socket, budget_ms, 0)
+  defp await_watching_queue(task, socket, budget_ms), do: await_watching_queue(task, socket, budget_ms, nil, 0)
 
-  defp await_watching_queue(_, _, budget_ms, most) when budget_ms <= 0, do: {nil, most}
+  defp await_watching_queue(_, _, budget_ms, _, rise) when budget_ms <= 0, do: {nil, rise}
 
-  defp await_watching_queue(task, socket, budget_ms, most) do
-    most =
+  defp await_watching_queue(task, socket, budget_ms, low, rise) do
+    {low, rise} =
       case :inet.getstat(socket, [:send_pend]) do
-        {:ok, [send_pend: queued]} -> max(most, queued)
-        {:error, _} -> most
+        {:ok, [send_pend: queued]} ->
+          low = min(low || queued, queued)
+          {low, max(rise, queued - low)}
+
+        {:error, _} ->
+          {low, rise}
       end
 
     case Task.yield(task, 5) do
-      nil -> await_watching_queue(task, socket, budget_ms - 5, most)
-      result -> {result, most}
+      nil -> await_watching_queue(task, socket, budget_ms - 5, low, rise)
+      result -> {result, rise}
     end
   end
 
