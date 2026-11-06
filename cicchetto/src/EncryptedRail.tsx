@@ -1,4 +1,4 @@
-import { type Component, createResource, createSignal, Show } from "solid-js";
+import { type Component, createResource, createSignal, onCleanup, Show } from "solid-js";
 import AddDevicePanel from "./AddDevicePanel";
 import E2eCopyButton from "./E2eCopyButton";
 import { isChannelName } from "./lib/chantypes";
@@ -11,6 +11,7 @@ import type { SasCancelReason } from "./lib/e2e/sas";
 import {
   encryptedChat,
   encryptedRows,
+  encryptedSas,
   encryptedTrust,
   identityElsewhere,
   openAlarm,
@@ -145,7 +146,9 @@ export function checkPlace(check: IdentityCheck, slug: string): string {
  * band. Pinning that very key again, verified, is the whole act
  * (`Engine.pin`): the pin stays where it is, the SAS under way on it too, and
  * the badge reads verified. The rail's and the badge's door are this one
- * button; a failure says so under it.
+ * button; a failure says so under it. The pin takes a round trip: one that
+ * lands after the button went (the dialog closed, maybe opened again) shows
+ * nothing and closes nothing.
  */
 export const VerifyKeyButton: Component<{
   networkSlug: string;
@@ -156,6 +159,10 @@ export const VerifyKeyButton: Component<{
 }> = (props) => {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  let gone = false;
+  onCleanup(() => {
+    gone = true;
+  });
   const verify = async () => {
     setBusy(true);
     setError(null);
@@ -164,11 +171,12 @@ export const VerifyKeyButton: Component<{
       result = await pinEncryptedKey(props.networkSlug, props.nick, props.peerKey, true);
     } catch (err) {
       console.warn(`[e2e] could not verify the key of ${props.nick}`, err);
-      setError(`could not verify the key: ${errorMessage(err)}`);
+      if (!gone) setError(`could not verify the key: ${errorMessage(err)}`);
       return;
     } finally {
-      setBusy(false);
+      if (!gone) setBusy(false);
     }
+    if (gone) return;
     if (result === "pinned") props.onVerified?.();
     else setError(`could not verify the key: ${PIN_REFUSED[result]}`);
   };
@@ -229,12 +237,13 @@ const EncryptedRail: Component<Props> = (props) => {
   const comparison = () => lastComparison(rows());
   const check = () => encryptedChat(props.networkSlug, props.nick)?.check;
   const elsewhere = () => identityElsewhere(props.networkSlug);
-  // The key to verify, where the badge reads `not verified`: a key pinned,
-  // not verified, and no alarm open (that is answered first: take the new
-  // key, or close the chat).
+  // The key to verify, where the badge's door offers it: a key pinned, not
+  // verified, no alarm open (that is answered first: take the new key, or
+  // delete the chat), and no emoji comparison running (it ends first).
   const unverifiedKey = () => {
     const peer = peerTrust();
-    return peer !== null && trust() === "unverified" ? peer.master : null;
+    if (peer === null || trust() !== "unverified") return null;
+    return encryptedSas(props.networkSlug, props.nick) === null ? peer.master : null;
   };
 
   return (

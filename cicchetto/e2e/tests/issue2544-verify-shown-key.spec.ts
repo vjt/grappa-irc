@@ -27,7 +27,9 @@
 //     not verified does not offer both.
 //   * The rail still holds a field to paste a key, or no verify button beside
 //     a key not verified.
-//   * On a phone, the key's dialog opens out of view, or behind the drawer.
+//   * On a phone, the key's dialog opens out of view, or the tap opens the
+//     drawer. (A drawer already open when a dialog opens is closed by the
+//     pane's `onDialogOpen`, pinned by the unit suite, not walked here.)
 
 import type { Page } from "@playwright/test";
 import {

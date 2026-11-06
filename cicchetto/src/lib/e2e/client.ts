@@ -230,7 +230,7 @@ export type E2eClient = {
    * line goes from and names as a hint (issue 2486).
    */
   device(ctx: E2eContext): Promise<{ did: string; master: string }>;
-  /** Pins `master` to `nick` by hand (`Engine.pin`); a pin is written to their chat. */
+  /** Pins `master` to `nick` by the user's hand (`Engine.pin`): a verify, or a key taken off the alarm; a pin is written to their chat. */
   pin(
     ctx: E2eContext,
     nick: string,

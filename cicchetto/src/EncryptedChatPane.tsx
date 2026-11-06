@@ -1031,7 +1031,8 @@ const EncryptedChatPane: Component<Props> = (props) => {
                         <p class="e2e-error">
                           {display()} wrote with a key that is not the one pinned, and it was
                           ignored. If they changed it, take the new key and verify it. If they did
-                          not, someone else may be writing in their name: close this chat.
+                          not, someone else may be writing in their name: delete this chat with the
+                          shredder above, and the pinned key stays.
                         </p>
                         <div class="e2e-step-actions">
                           <button
