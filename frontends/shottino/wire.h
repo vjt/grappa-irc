@@ -252,7 +252,18 @@ struct wire_scrollback_message {
     const char *body;         /* nullable */
     const char *dm_with;      /* nullable: nil off a DM, absent below protocol 36 */
     const json_value *meta;   /* object; opaque bag, read per call site */
+    /* A presence row's facts, lifted out of `meta` once, here (server
+     * Grappa.Scrollback.Meta). `body` does NOT carry them: it is null on
+     * nick_change and mode, and the REASON on kick. NULL when absent. */
+    const char *new_nick;     /* nick_change: the nick taken */
+    const char *target;       /* kick: the nick kicked */
+    const char *modes;        /* mode: "+ov" */
+    const json_value *mode_args; /* mode: array of strings, or NULL */
 };
+
+/* A mode row as it reads on IRC: "+ov carol dave". False (and `out`
+ * empty) when the row carries no modes. */
+bool wire_mode_text(const struct wire_scrollback_message *m, char *out, size_t out_sz);
 
 /* ── The event ───────────────────────────────────────────────────────── */
 

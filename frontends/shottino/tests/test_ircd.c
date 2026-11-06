@@ -945,7 +945,78 @@ TEST(archive_mode_asks_grappa_only_when_the_ring_falls_short) {
     free(app);
 }
 
+/* A presence row's facts live in `meta`, not `body`. All three readers
+ * of the row — the screen line, the roster, the bridge — used `body`, so
+ * a nick change read "is now known as ?", the roster kept the old nick,
+ * and a downstream IRC client was sent `NICK :` with nothing after it. */
+static json_doc *presence_row(const char *json, struct wire_scrollback_message *m) {
+    char err[160];
+    json_doc *d = json_parse(json, strlen(json), err, sizeof(err));
+    CHECK(d != NULL);
+    if (!d) return NULL;
+    CHECK(wire_narrow_message(json_root(d), m));
+    return d;
+}
+
+static bool roster_has(const struct window *w, const char *nick) {
+    for (size_t i = 0; i < w->member_count; i++)
+        if (strcmp(w->members[i].nick, nick) == 0) return true;
+    return false;
+}
+
+static const char *bridged(struct app *app, const struct wire_scrollback_message *m, char *out,
+                           size_t out_sz) {
+    ircd_history_add_locked(app, m, "#sniffo");
+    const struct ircd_hist *h =
+        &app->ircd.hist[(app->ircd.hist_next + IRCD_HISTORY - 1) % IRCD_HISTORY];
+    ircd_message_line(h, "vjt", false, false, NULL, out, out_sz);
+    return out;
+}
+
+TEST(presence_rows_render_route_and_bridge_what_meta_says) {
+    struct app *app = bridge_app();
+    CHECK(app != NULL);
+    if (!app) return;
+    struct window *w = &app->windows[0];
+    roster_add_locked(w, "bob");
+    roster_add_locked(w, "carol");
+    struct wire_scrollback_message m;
+    char line[MAX_LINE], wire[1024];
+
+    json_doc *d = presence_row("{\"id\":1,\"network\":\"azzurra\",\"channel\":\"#sniffo\","
+                               "\"server_time\":1,\"kind\":\"nick_change\",\"sender\":\"bob\","
+                               "\"body\":null,\"meta\":{\"new_nick\":\"bobby\"}}", &m);
+    format_presence_line(&m, m.sender, line, sizeof(line));
+    CHECK_STR(line, "--- bob is now known as bobby");
+    apply_membership_event(app, "azzurra", "#sniffo", &m);
+    CHECK(roster_has(w, "bobby"));
+    CHECK(!roster_has(w, "bob"));
+    CHECK(strstr(bridged(app, &m, wire, sizeof(wire)), " NICK :bobby") != NULL);
+    json_free(d);
+
+    d = presence_row("{\"id\":2,\"network\":\"azzurra\",\"channel\":\"#sniffo\","
+                     "\"server_time\":1,\"kind\":\"kick\",\"sender\":\"bobby\","
+                     "\"body\":\"flooding\",\"meta\":{\"target\":\"carol\"}}", &m);
+    format_presence_line(&m, m.sender, line, sizeof(line));
+    CHECK_STR(line, "<-- carol was kicked by bobby (flooding)");
+    apply_membership_event(app, "azzurra", "#sniffo", &m);
+    CHECK(!roster_has(w, "carol"));
+    CHECK(strstr(bridged(app, &m, wire, sizeof(wire)), " KICK #sniffo carol :flooding") != NULL);
+    json_free(d);
+
+    d = presence_row("{\"id\":3,\"network\":\"azzurra\",\"channel\":\"#sniffo\","
+                     "\"server_time\":1,\"kind\":\"mode\",\"sender\":\"ChanServ\","
+                     "\"body\":null,\"meta\":{\"modes\":\"+o\",\"args\":[\"bobby\"]}}", &m);
+    format_presence_line(&m, m.sender, line, sizeof(line));
+    CHECK_STR(line, "--- ChanServ sets mode +o bobby");
+    CHECK(strstr(bridged(app, &m, wire, sizeof(wire)), " MODE #sniffo +o bobby") != NULL);
+    json_free(d);
+
+    free(app);
+}
+
 int main(void) {
+    RUN(presence_rows_render_route_and_bridge_what_meta_says);
     test_use_temp_home();
 
     RUN(bind_spec_reads_ports_addresses_and_both_families);

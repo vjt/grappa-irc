@@ -285,7 +285,26 @@ bool wire_narrow_message(const json_value *m, struct wire_scrollback_message *ou
     if (!json_str_opt(m, "dm_with", &s.dm_with)) return false;
     s.meta = json_get(m, "meta");
     if (json_type_of(s.meta) != JSON_OBJECT) return false;
+    /* Tolerated when missing or mistyped: the line is cosmetic, and
+     * rejecting the row would lose its id and time with it. */
+    s.new_nick = json_string(json_get(s.meta, "new_nick"));
+    s.target = json_string(json_get(s.meta, "target"));
+    s.modes = json_string(json_get(s.meta, "modes"));
+    s.mode_args = json_get(s.meta, "args");
+    if (json_type_of(s.mode_args) != JSON_ARRAY) s.mode_args = NULL;
     *out = s;
+    return true;
+}
+
+bool wire_mode_text(const struct wire_scrollback_message *m, char *out, size_t out_sz) {
+    if (!out_sz) return false;
+    out[0] = '\0';
+    if (!m->modes || !m->modes[0]) return false;
+    size_t len = (size_t)snprintf(out, out_sz, "%s", m->modes);
+    for (size_t i = 0; i < json_len(m->mode_args) && len < out_sz; i++) {
+        const char *a = json_string(json_at(m->mode_args, i));
+        if (a) len += (size_t)snprintf(out + len, out_sz - len, " %s", a);
+    }
     return true;
 }
 

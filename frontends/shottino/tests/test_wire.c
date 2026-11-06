@@ -1101,11 +1101,63 @@ TEST(subject_key_refuses_half_formed) {
     CHECK(!wire_subject_key(NULL, NULL, 0));
 }
 
+/* Presence rows carry their facts in `meta`, not `body` (server
+ * Grappa.Scrollback.Meta): nick_change → new_nick, kick → target (body is
+ * the REASON), mode → modes + args. shottino read `body` for all three, so
+ * a nick change rendered "is now known as ?", a mode change named no
+ * modes, the roster never followed a rename, and the ircd bridge sent a
+ * downstream client `NICK :` with nothing after it. */
+#define PRESENCE(kind, body, meta)                                                                 \
+    "{\"kind\":\"message\",\"message\":{\"id\":9,\"network\":\"azz\",\"channel\":\"#dev\","     \
+    "\"server_time\":1,\"kind\":\"" kind "\",\"sender\":\"bob\",\"body\":" body ","          \
+    "\"meta\":" meta "}}"
+
+TEST(presence_rows_read_their_facts_from_meta) {
+    struct wire_event ev;
+    bool ok;
+    char text[256];
+
+    json_doc *d = narrow(PRESENCE("nick_change", "null", "{\"new_nick\":\"bobby\"}"), &ev, &ok);
+    CHECK(ok);
+    CHECK_STR(ev.u.message.new_nick, "bobby");
+    json_free(d);
+
+    d = narrow(PRESENCE("kick", "\"flooding\"", "{\"target\":\"carol\"}"), &ev, &ok);
+    CHECK(ok);
+    CHECK_STR(ev.u.message.target, "carol");
+    CHECK_STR(ev.u.message.body, "flooding");
+    json_free(d);
+
+    d = narrow(PRESENCE("mode", "null", "{\"modes\":\"+ov\",\"args\":[\"carol\",\"dave\"]}"),
+               &ev, &ok);
+    CHECK(ok);
+    CHECK(wire_mode_text(&ev.u.message, text, sizeof(text)));
+    CHECK_STR(text, "+ov carol dave");
+    json_free(d);
+
+    d = narrow(PRESENCE("mode", "null", "{\"modes\":\"+nt\",\"args\":[],\"structural\":true}"),
+               &ev, &ok);
+    CHECK(ok);
+    CHECK(wire_mode_text(&ev.u.message, text, sizeof(text)));
+    CHECK_STR(text, "+nt");
+    json_free(d);
+
+    /* Tolerated, not rejected: a presence row missing its fact still
+     * narrows (the line is cosmetic; dropping the whole row would lose its
+     * id and time), and the fact reads as absent rather than as "". */
+    d = narrow(PRESENCE("nick_change", "null", "{}"), &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.u.message.new_nick == NULL);
+    CHECK(!wire_mode_text(&ev.u.message, text, sizeof(text)));
+    json_free(d);
+}
+
 int main(void) {
     RUN(subject_key_shapes);
     RUN(subject_key_refuses_half_formed);
     RUN(message);
     RUN(message_rejects_bad_shapes);
+    RUN(presence_rows_read_their_facts_from_meta);
     RUN(every_message_kind_round_trips);
     RUN(window_state);
     RUN(join_failed_tolerates_null_numeric);

@@ -1093,6 +1093,9 @@ struct ircd_hist {
     char network[MAX_SLUG];
     char channel[MAX_CHANNEL];
     char sender[MAX_CHANNEL];
+    /* NICK: the new nick; KICK: the victim. Body is then the KICK reason,
+     * or the MODE text ("+o bob") — what each line puts last. */
+    char target[MAX_CHANNEL];
     char body[MAX_LINE];
 };
 
@@ -3697,7 +3700,9 @@ static void enqueue_members(struct app *app, const char *network, const char *ch
  * own channel; QUIT and NICK are network-wide, so they sweep every window
  * of that network — IRC delivers them once, not per channel. */
 static void apply_membership_event(struct app *app, const char *network, const char *channel,
-                                   wire_message_kind kind, const char *sender, const char *body) {
+                                   const struct wire_scrollback_message *m) {
+    const char *sender = m->sender;
+    wire_message_kind kind = m->kind;
     if (!network[0] || !sender) return;
     bool refetch = false;
     pthread_mutex_lock(&app->lock);
@@ -3714,14 +3719,15 @@ static void apply_membership_event(struct app *app, const char *network, const c
             if (this_channel) touched = roster_remove_locked(w, sender);
             break;
         case MSG_KICK:
-            /* The KICKED nick is the body; the sender is whoever did it. */
-            if (this_channel && body && body[0]) touched = roster_remove_locked(w, body);
+            /* The KICKED nick is meta.target; the sender is whoever did
+             * it, and the body is the reason. */
+            if (this_channel && m->target && m->target[0]) touched = roster_remove_locked(w, m->target);
             break;
         case MSG_QUIT:
             touched = roster_remove_locked(w, sender);
             break;
         case MSG_NICK_CHANGE:
-            if (body && body[0]) touched = roster_rename_locked(w, sender, body);
+            if (m->new_nick && m->new_nick[0]) touched = roster_rename_locked(w, sender, m->new_nick);
             break;
         case MSG_MODE:
             /* Might be a prefix change; the server knows, this client
@@ -3787,15 +3793,20 @@ static bool url_is_first_party(struct app *app, const char *url) {
 
 /* Render one scrollback row.
  *
+ * Their facts are in `meta` (the narrower lifts them: new_nick, target,
+ * modes), never `body`, which is null on nick_change and mode and the
+ * REASON on kick — reading `body` is what printed "is now known as ?".
+ *
  * Presence kinds (join/part/quit/nick_change/mode/kick/topic/server_event)
  * carry a NULL body — the event IS the row. The old reader bailed on an
  * empty body, so shottino showed no joins, parts, quits or nick changes at
  * all; they were parsed and thrown away. Each kind now gets its own line
  * shape, marked with a leading sigil so presence noise is visually
  * separable from conversation. */
-static void format_presence_line(wire_message_kind kind, const char *sender, const char *body,
+static void format_presence_line(const struct wire_scrollback_message *m, const char *sender,
                                  char *out, size_t out_sz) {
-    switch (kind) {
+    const char *body = m->body;
+    switch (m->kind) {
     case MSG_JOIN:
         snprintf(out, out_sz, "--> %s has joined", sender);
         break;
@@ -3808,15 +3819,21 @@ static void format_presence_line(wire_message_kind kind, const char *sender, con
         else snprintf(out, out_sz, "<-- %s has quit", sender);
         break;
     case MSG_NICK_CHANGE:
-        snprintf(out, out_sz, "--- %s is now known as %s", sender, body ? body : "?");
+        snprintf(out, out_sz, "--- %s is now known as %s", sender, m->new_nick ? m->new_nick : "?");
         break;
-    case MSG_MODE:
-        snprintf(out, out_sz, "--- %s sets mode %s", sender, body ? body : "");
+    case MSG_MODE: {
+        char modes[512]; /* bounded under the line: a mode row is never that long */
+        wire_mode_text(m, modes, sizeof(modes));
+        snprintf(out, out_sz, "--- %s sets mode %s", sender, modes);
         break;
-    case MSG_KICK:
-        snprintf(out, out_sz, "<-- %s was kicked%s%s", body ? body : "?", sender[0] ? " by " : "",
-                 sender[0] ? sender : "");
+    }
+    case MSG_KICK: {
+        int n = snprintf(out, out_sz, "<-- %s was kicked%s%s", m->target ? m->target : "?",
+                         sender[0] ? " by " : "", sender[0] ? sender : "");
+        if (body && body[0] && n > 0 && (size_t)n < out_sz)
+            snprintf(out + n, out_sz - (size_t)n, " (%s)", body);
         break;
+    }
     case MSG_TOPIC:
         if (body && body[0]) snprintf(out, out_sz, "--- %s changed the topic to: %s", sender, body);
         else snprintf(out, out_sz, "--- %s cleared the topic", sender);
@@ -4910,7 +4927,7 @@ static void render_message(struct app *app, const struct wire_scrollback_message
         break;
     default: {
         char line[MAX_LINE];
-        format_presence_line(m->kind, sender, m->body, line, sizeof(line));
+        format_presence_line(m, sender, line, sizeof(line));
         if (line[0] && !hidden) {
             log_line_mention(app, false, "[%s/%s] %s %s", network, display_channel, clock, line);
             wrote = true;
@@ -4919,7 +4936,7 @@ static void render_message(struct app *app, const struct wire_scrollback_message
          * someone who just left. True even for a blocked person — the
          * nicklist answers "who is here", which is not a matter of
          * taste. */
-        apply_membership_event(app, network, display_channel, m->kind, sender, m->body);
+        apply_membership_event(app, network, display_channel, m);
         break;
     }
     }
@@ -22264,6 +22281,9 @@ static void ircd_history_add_locked(struct app *app, const struct wire_scrollbac
     snprintf(h->channel, sizeof(h->channel), "%s", channel);
     snprintf(h->sender, sizeof(h->sender), "%s", m->sender ? m->sender : "");
     snprintf(h->body, sizeof(h->body), "%s", m->body ? m->body : "");
+    if (m->kind == MSG_NICK_CHANGE && m->new_nick) snprintf(h->target, sizeof(h->target), "%s", m->new_nick);
+    if (m->kind == MSG_KICK && m->target) snprintf(h->target, sizeof(h->target), "%s", m->target);
+    if (m->kind == MSG_MODE) wire_mode_text(m, h->body, sizeof(h->body));
     app->ircd.hist_next = (app->ircd.hist_next + 1) % IRCD_HISTORY;
     if (app->ircd.hist_count < IRCD_HISTORY) app->ircd.hist_count++;
 }
@@ -22313,7 +22333,7 @@ static void ircd_message_line(const struct ircd_hist *h, const char *own, bool t
         snprintf(out, out_sz, "%s:%s QUIT :%s", tag, prefix, body);
         break;
     case MSG_NICK_CHANGE:
-        snprintf(out, out_sz, "%s:%s NICK :%s", tag, prefix, body);
+        snprintf(out, out_sz, "%s:%s NICK :%s", tag, prefix, h->target);
         break;
     case MSG_MODE:
         snprintf(out, out_sz, "%s:%s MODE %.64s %s", tag, prefix, h->channel, body);
@@ -22322,9 +22342,10 @@ static void ircd_message_line(const struct ircd_hist *h, const char *own, bool t
         snprintf(out, out_sz, "%s:%s TOPIC %.64s :%s", tag, prefix, h->channel, body);
         break;
     case MSG_KICK:
-        /* grappa carries the victim in the body and the kicker in the
-         * sender; there is no reason field on the wire. */
-        snprintf(out, out_sz, "%s:%s KICK %.64s %.64s :kicked", tag, prefix, h->channel, body);
+        /* grappa carries the victim in meta.target, the kicker in the
+         * sender and the reason in the body. */
+        snprintf(out, out_sz, "%s:%s KICK %.64s %.64s :%s", tag, prefix, h->channel, h->target,
+                 body[0] ? body : "kicked");
         break;
     case MSG_SERVER_EVENT:
         snprintf(out, out_sz, "%s:%s NOTICE %.64s :%s", tag, IRCD_SERVER,
