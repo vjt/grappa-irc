@@ -3,8 +3,9 @@
 // plaintext line on its own: it sends the peer, inside the verified Olm
 // session, a CHAL naming the line (`network`, `channel`, its SHA-256), and
 // the peer's client answers ACK only if it sent exactly that line, on that
-// network, in that channel, in the last 15 s. This module is the "it sent":
-// the PRIVMSGs this device itself sent, as hashes, matched for 15 s.
+// network, in that channel, shortly before. This module is the "it sent":
+// the PRIVMSGs this device itself sent, as hashes, matched for
+// `SENT_WINDOW_MS`.
 //
 // Written where cicchetto sends (`scrollback.ts` `sendMessage`), never from
 // the echo: grappa echoes the lines every client of the user sends, and a
@@ -17,14 +18,14 @@
 // the line to its nonce, the same nonce again is answered again, and
 // another nonce for the same line is not. The bot challenges every copy of
 // a line it sees, so a copy someone else made in the user's nick inside the
-// 15 s would otherwise run the order twice.
+// window would otherwise run the order twice.
 //
 // Fail closed, by design (DESIGN_NOTES #2430w2c), and the bot then refuses
 // the order once its challenge expires:
 //   * a line grappa split into several PRIVMSGs: the bot hashes one of them;
 //   * a line sent from another device or client, or another login in this
 //     browser: only that one would know;
-//   * a reload inside the 15 s: the log is memory;
+//   * a reload inside the window: the log is memory;
 //   * a network with no 005 `NETWORK=`, or a server before protocol 47: no
 //     name to match the CHAL's `network` against.
 
@@ -32,8 +33,17 @@ import { isChannelName } from "../chantypes";
 import type { Casemapping } from "../isupport";
 import { nickEquals } from "../nickEquals";
 
-/** How long a sent line can be confirmed: the bot's own challenge TTL (irc-olm). */
-export const SENT_WINDOW_MS = 15_000;
+/**
+ * How long after it was sent a line can still be confirmed, counted to the
+ * CHAL's arrival by this device's own clock (issue 2575). The bot's window
+ * is 15 s plus the CHAL's own wire time at an empty bank, and a CHAL may
+ * reach us as late as 2 s before it ends, so the age a line can have here
+ * grows with the devices the CHAL is for: about 25 s for 3, about 29 s for
+ * 4. Not a copy of the bot's window, which is not on the wire: only its end
+ * is, as `expiresAt`, and a bound counted back from that end would need
+ * this same number and read the bot's clock besides.
+ */
+export const SENT_WINDOW_MS = 30_000;
 
 /** The tag of an ACK: it has no row to mark, so what becomes of it is logged. */
 export const ORDER_TAG = "order";
@@ -96,7 +106,7 @@ export const UNCONFIRMED: Record<Exclude<OrderVerdict, "confirmed">, string> = {
   "other-network": "it names another network",
   expired: "it has expired by this device's clock",
   "pm-to-another": "it names a private message to someone other than the bot asking",
-  "not-sent": "this cic sent no such line there in the last 15 s, or it already confirmed it",
+  "not-sent": `this cic sent no such line there in the last ${SENT_WINDOW_MS / 1000} s, or it already confirmed it`,
 };
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;

@@ -1,6 +1,6 @@
 // issue 2430 "Authorising orders" — the send log an order challenge is
 // checked against: cicchetto ACKs a CHAL only for a line THIS cic sent, on
-// that network, in that channel, in the last 15 s, once.
+// that network, in that channel, in the last `SENT_WINDOW_MS`, once.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
@@ -32,6 +32,10 @@ const LINE: Sending = {
 // The bot's hash, by an implementation that is not the one under test.
 const sha256 = (body: string): string => createHash("sha256").update(body, "utf8").digest("hex");
 
+// A challenge still live once the window has passed: what tells the window
+// apart from the challenge's own expiry.
+const PAST_THE_WINDOW = Math.floor((AT + SENT_WINDOW_MS) / 1000) + 15;
+
 const chalFor = (line: Sending, over: Partial<Challenge> = {}): Challenge => ({
   network: "AzzurraNet",
   channel: line.target,
@@ -53,10 +57,31 @@ describe("SendLog.confirms", () => {
     const log = await logWith(LINE);
     expect(log.confirms(chalFor(LINE), BOT, SCOPE, AT + 2_000)).toBe("confirmed");
     // The window's own edge, under a challenge that lives past it.
-    const later = chalFor(LINE, { expiresAt: Math.floor(AT / 1000) + 30, nonce: "bGF0ZXI" });
+    const later = chalFor(LINE, { expiresAt: PAST_THE_WINDOW, nonce: "bGF0ZXI" });
     expect((await logWith(LINE)).confirms(later, BOT, SCOPE, AT + SENT_WINDOW_MS)).toBe(
       "confirmed",
     );
+  });
+
+  // issue 2575: the bot's window is 15 s plus the CHAL's own wire time at an
+  // empty bank, and it starts a CHAL as long as its last line leaves 2 s
+  // before `expires_at`. A CHAL reaches cic as late as that last line, so a
+  // line sent `t` before it can be: for 3 devices (4 lines, 8-9 s on the
+  // wire) a CHAL made 1 s after the send, expiring at +25 s, leaving at
+  // +23 s behind a bank the bot had just filled; for 4 (5 lines, 13-14 s),
+  // expiring at +30 s and leaving at +28 s. Both older than the bot's old
+  // 15 s, which is the copy cic used to keep.
+  it("confirms a line the CHAL reaches as late as the bot's window lets it start (issue 2575)", async () => {
+    const late: [string, number, number][] = [
+      ["3 devices, the bot just talking", 25, 23_500],
+      ["4 devices", 30, 28_500],
+    ];
+    for (const [what, expiresIn, arrivesAfter] of late) {
+      const chal = chalFor(LINE, { expiresAt: Math.floor(AT / 1000) + expiresIn });
+      expect((await logWith(LINE)).confirms(chal, BOT, SCOPE, AT + arrivesAfter), what).toBe(
+        "confirmed",
+      );
+    }
   });
 
   it("matches the channel as the network folds it, and a plaintext PM by the bot's nick", async () => {
@@ -101,7 +126,7 @@ describe("SendLog.confirms", () => {
       ["a network with no name", chalFor(LINE), { ...SCOPE, network: null }, AT, "unnamed-network"],
       [
         "a line older than the window",
-        chalFor(LINE, { expiresAt: Math.floor(AT / 1000) + 30 }),
+        chalFor(LINE, { expiresAt: PAST_THE_WINDOW }),
         SCOPE,
         AT + SENT_WINDOW_MS + 1,
         "not-sent",
