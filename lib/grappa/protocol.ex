@@ -1530,7 +1530,24 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: an older client drops an event kind it
   # does not know, and sees the message when it lands, as before.
-  @protocol_version 59
+  #
+  # ---------------------------------------------------------------------------
+  # 60 — issue 1112 (slice S1): the toolchain audit
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: a fourth refusal token on `POST /admin/reload`, `stale_toolchain`
+  # (409, `{release, moved}`): the release on disk was built on an ERTS or an
+  # application vsn the running node does not run. Same reasoning as v13: the
+  # endpoint is loopback-gated and no bundle is ever handed the token, but
+  # `GrappaWeb.ErrorTokens` feeds the generated wire artefacts, so the digest
+  # moved and the number follows it.
+  #
+  # Checked for a collision before claiming 60: this branch had taken 59 as
+  # well, and issue 2577's PR merged first with it by the orchestrator's
+  # order, so this one rebased and re-bumped.
+  #
+  # @min_protocol_version stays at 1: nothing a client can reach changed.
+  @protocol_version 60
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1571,7 +1588,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 59
+  @spec version() :: 60
   def version, do: @protocol_version
 
   @doc """

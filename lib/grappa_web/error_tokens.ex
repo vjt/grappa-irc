@@ -184,6 +184,11 @@ defmodule GrappaWeb.ErrorTokens do
           # `lib/grappa-<new>/ebin` while the node still reads the boot
           # directory, so the reload could only have loaded stale code.
           | :stale_code_path
+          # Operator-facing, same endpoint, same "nothing ran", cold deploy
+          # as the fix (issue 1112): the release on disk was built on a
+          # toolchain (ERTS, OTP or Elixir application vsns) the running
+          # node does not run.
+          | :stale_toolchain
           | :invalid_message
           | :anon_collision
           | :nick_in_use

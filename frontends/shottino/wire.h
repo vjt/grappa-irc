@@ -53,14 +53,13 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v58 -> v59 (issue 2577): the user-topic events `e2e_incoming`
- * and `e2e_incoming_lost`, a peer's encrypted message on its way and its
- * loss. A terminal holds no E2E identity and ignores an event kind it does
- * not know, so nothing it renders changed.
+ * Last read, v59 -> v60 (issue 1112): `stale_toolchain`, a fourth refusal
+ * of the loopback-only `POST /admin/reload`. A terminal never calls that
+ * route, so nothing it renders changed.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 59
+#define WIRE_PROTOCOL_VERSION 60
 
 #include <stdbool.h>
 #include <stddef.h>
