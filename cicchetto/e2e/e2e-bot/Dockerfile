@@ -18,30 +18,35 @@ COPY requirements.txt /opt/e2e-bot/requirements.txt
 RUN pip install --no-cache-dir --require-hashes --only-binary=:all: \
         -r /opt/e2e-bot/requirements.txt
 
-# irc-olm at 1606c85 (wire v2: main's squash merge of vjt/irc-olm#4), the
-# commit claude-ircbot 5267471 pins.
+# irc-olm at 8e64be5 (main, still wire v2): a CHAL's window is 15 s plus its
+# own wire time at an empty bank, so it grows with the devices it goes to
+# (grappa-irc 2575/2576). The one exception to bumping the two together:
+# claude-ircbot 5267471 below pins 1606c85, and its master (f1d47a5), which
+# pins 8e64be5, also rewrites bot.py and e2e_bridge.py (a pinned key replaces
+# layer 1), which these specs do not take yet. The engine names the bridge
+# uses are the same at both irc-olm commits.
 ADD --checksum=sha256:beab9b51847365ff7719930409b32e1afd220e1ae34687373069b04e0108dafa \
-    https://raw.githubusercontent.com/vjt/irc-olm/1606c8506df699b3102186c12a0402415814da46/src/irc_olm/__init__.py /opt/irc-olm/irc_olm/__init__.py
+    https://raw.githubusercontent.com/vjt/irc-olm/8e64be53ce03ea5c44ae6ed9e438854ac1db3321/src/irc_olm/__init__.py /opt/irc-olm/irc_olm/__init__.py
 ADD --checksum=sha256:2be196d4baedd4153353580557679588c6de4b98adb309bef613a8eb0a46f263 \
-    https://raw.githubusercontent.com/vjt/irc-olm/1606c8506df699b3102186c12a0402415814da46/src/irc_olm/__main__.py /opt/irc-olm/irc_olm/__main__.py
-ADD --checksum=sha256:eb20254bc93b1a35d760ba305ee1c8fe301cb9636776f2c6039b024559a49e01 \
-    https://raw.githubusercontent.com/vjt/irc-olm/1606c8506df699b3102186c12a0402415814da46/src/irc_olm/challenge.py /opt/irc-olm/irc_olm/challenge.py
+    https://raw.githubusercontent.com/vjt/irc-olm/8e64be53ce03ea5c44ae6ed9e438854ac1db3321/src/irc_olm/__main__.py /opt/irc-olm/irc_olm/__main__.py
+ADD --checksum=sha256:189bb87a10bd8ec7780302be2e0dcbd35efa9a243a3ee78fc5195de610cee030 \
+    https://raw.githubusercontent.com/vjt/irc-olm/8e64be53ce03ea5c44ae6ed9e438854ac1db3321/src/irc_olm/challenge.py /opt/irc-olm/irc_olm/challenge.py
 ADD --checksum=sha256:d669067415979bb61a2df0ed297c5a349251ad403f6d9213fea7009f44c0c478 \
-    https://raw.githubusercontent.com/vjt/irc-olm/1606c8506df699b3102186c12a0402415814da46/src/irc_olm/devices.py /opt/irc-olm/irc_olm/devices.py
-ADD --checksum=sha256:d8bcd519c17ebd90a1145e0c48f61c637050de737d211fa4a7aa84bd67c7837e \
-    https://raw.githubusercontent.com/vjt/irc-olm/1606c8506df699b3102186c12a0402415814da46/src/irc_olm/engine.py /opt/irc-olm/irc_olm/engine.py
+    https://raw.githubusercontent.com/vjt/irc-olm/8e64be53ce03ea5c44ae6ed9e438854ac1db3321/src/irc_olm/devices.py /opt/irc-olm/irc_olm/devices.py
+ADD --checksum=sha256:ff3ed70d5a87bf3acacf90746a515febedbcb06ef5a45c0a0526d51f4470026d \
+    https://raw.githubusercontent.com/vjt/irc-olm/8e64be53ce03ea5c44ae6ed9e438854ac1db3321/src/irc_olm/engine.py /opt/irc-olm/irc_olm/engine.py
 ADD --checksum=sha256:4dda6cfe94f92ce4b93f77ca3d3a672a743a622a5a2e978d061e9895a335a544 \
-    https://raw.githubusercontent.com/vjt/irc-olm/1606c8506df699b3102186c12a0402415814da46/src/irc_olm/framing.py /opt/irc-olm/irc_olm/framing.py
+    https://raw.githubusercontent.com/vjt/irc-olm/8e64be53ce03ea5c44ae6ed9e438854ac1db3321/src/irc_olm/framing.py /opt/irc-olm/irc_olm/framing.py
 ADD --checksum=sha256:3c01ec0ebdadc8320c470d044e225c35e5e6b3abcf28798ccab5b8de2f01e5a7 \
-    https://raw.githubusercontent.com/vjt/irc-olm/1606c8506df699b3102186c12a0402415814da46/src/irc_olm/keys.py /opt/irc-olm/irc_olm/keys.py
-ADD --checksum=sha256:9defb6bf41ebc01cce70d2b54da9d85698f4f570f1291d79a2498d1f252b93fb \
-    https://raw.githubusercontent.com/vjt/irc-olm/1606c8506df699b3102186c12a0402415814da46/src/irc_olm/pacing.py /opt/irc-olm/irc_olm/pacing.py
+    https://raw.githubusercontent.com/vjt/irc-olm/8e64be53ce03ea5c44ae6ed9e438854ac1db3321/src/irc_olm/keys.py /opt/irc-olm/irc_olm/keys.py
+ADD --checksum=sha256:61f73f48a736b6de224b3feb12d9eb6389d8f11ba3739241916c2a3d58c8656a \
+    https://raw.githubusercontent.com/vjt/irc-olm/8e64be53ce03ea5c44ae6ed9e438854ac1db3321/src/irc_olm/pacing.py /opt/irc-olm/irc_olm/pacing.py
 ADD --checksum=sha256:46554865e187256f4ed8eee0447772bb6ff6a67d56890b4e897f27b3858131bb \
-    https://raw.githubusercontent.com/vjt/irc-olm/1606c8506df699b3102186c12a0402415814da46/src/irc_olm/pins.py /opt/irc-olm/irc_olm/pins.py
+    https://raw.githubusercontent.com/vjt/irc-olm/8e64be53ce03ea5c44ae6ed9e438854ac1db3321/src/irc_olm/pins.py /opt/irc-olm/irc_olm/pins.py
 ADD --checksum=sha256:78752010b4f2af531352b8c8f18c895c168f8755ee5c907c06f0a7adeb0b04fb \
-    https://raw.githubusercontent.com/vjt/irc-olm/1606c8506df699b3102186c12a0402415814da46/src/irc_olm/reassembly.py /opt/irc-olm/irc_olm/reassembly.py
+    https://raw.githubusercontent.com/vjt/irc-olm/8e64be53ce03ea5c44ae6ed9e438854ac1db3321/src/irc_olm/reassembly.py /opt/irc-olm/irc_olm/reassembly.py
 ADD --checksum=sha256:83a04bd9ae7a32950a43092ffacfbee882d8adedc17c2776ffa51c918dfb03db \
-    https://raw.githubusercontent.com/vjt/irc-olm/1606c8506df699b3102186c12a0402415814da46/src/irc_olm/store.py /opt/irc-olm/irc_olm/store.py
+    https://raw.githubusercontent.com/vjt/irc-olm/8e64be53ce03ea5c44ae6ed9e438854ac1db3321/src/irc_olm/store.py /opt/irc-olm/irc_olm/store.py
 
 # claude-ircbot at 5267471: master's squash merge of vjt/claude-ircbot#7, the bridge on wire v2.
 ADD --checksum=sha256:ed04960e0305aaf5ed02139fce9e5fbb63824d73f05ac60159c99f63f4df936b \

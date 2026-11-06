@@ -57,7 +57,10 @@
 //     it: the chip and the rail do not read passed, then failed for not-sent.
 //
 // Timeouts are the 2430 bounds, never sleeps: KEYS within 32 s of a KEYREQ,
-// a message under way within 46 s, an order challenge answered within 15 s.
+// a message under way within 46 s, an order challenge answered within its
+// window: 15 s plus what its lines cost the bot's flood bank past the
+// ceiling, which is 15 s for the one device cic has here (fixtures/e2eBot.ts,
+// ORDER_VERDICT).
 
 import {
   composeSend,
