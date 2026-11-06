@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireTouch } from "./helpers/touchEvents";
+import { fireTouch, fireTouchAt } from "./helpers/touchEvents";
 
 // #904 — the send queue lives in the store, keyed on the window, and
 // ComposeBox is a VIEW over it: the spinner, the readOnly refusal and the
@@ -836,7 +836,7 @@ describe("ComposeBox", () => {
       // Newest first: END, CLAIM, TS.
       const [end, , ts] = diagLog();
       expect(ts).toMatch(/^TS .* sel=5,5$/);
-      expect(end).toMatch(/^END claimed=horizontal .* dx=60 moves=2 sel=5,5$/);
+      expect(end).toMatch(/^END claimed=horizontal .* dx=60 moves=2 ms=\d+ sel=5,5$/);
     });
 
     it("an unclaimed drag over a live selection says so: the selection and the moves are in the line", async () => {
@@ -848,7 +848,73 @@ describe("ComposeBox", () => {
       fireTouch(ta, "touchend", { clientX: 160, clientY: 302 });
       const [end, ts] = diagLog();
       expect(ts).toMatch(/^TS .* sel=0,5$/);
-      expect(end).toMatch(/^END claimed=no act=none .* dx=60 moves=1 sel=0,5$/);
+      expect(end).toMatch(/^END claimed=no act=none .* dx=60 moves=1 ms=\d+ sel=0,5$/);
+    });
+
+    // A touch the platform takes away ends in `touchcancel`, never `touchend`.
+    // For a one-finger touch, a TS with no END already said no touchend
+    // arrived (the ring drops its OLDEST lines, so an END cannot scroll out
+    // while its TS is shown); CANCEL tells a cancel apart from a touch that
+    // got neither event.
+    it("a cancelled touch says so: CANCEL with the claim, the travel and the moves, and no END", async () => {
+      localStorage.setItem(DIAG_FLAG_KEY, "1");
+      const ta = await composerWith("hello world");
+      ta.setSelectionRange(5, 5);
+      fireTouch(ta, "touchstart", { clientX: 100, clientY: 300 });
+      fireTouch(ta, "touchmove", { clientX: 160, clientY: 302 });
+      fireTouch(ta, "touchcancel", { clientX: 160, clientY: 302 });
+      const [cancel, claim, ts] = diagLog();
+      expect(ts).toMatch(/^TS /);
+      expect(claim).toMatch(/^CLAIM horizontal /);
+      expect(cancel).toMatch(/^CANCEL claimed=horizontal dy=2 st=0 dx=60 moves=1 sel=5,5$/);
+    });
+
+    it("a touch cancelled before any touchmove reads claimed=no and moves=0", async () => {
+      localStorage.setItem(DIAG_FLAG_KEY, "1");
+      const ta = await composerWith("hello world");
+      ta.setSelectionRange(5, 5);
+      fireTouch(ta, "touchstart", { clientX: 100, clientY: 300 });
+      fireTouch(ta, "touchcancel", { clientX: 100, clientY: 300 });
+      const [cancel, ts] = diagLog();
+      expect(ts).toMatch(/^TS /);
+      expect(cancel).toMatch(/^CANCEL claimed=no dy=0 st=0 dx=0 moves=0 sel=5,5$/);
+    });
+
+    it("without cic_diag a cancelled touch pushes nothing into the ring", async () => {
+      localStorage.removeItem(DIAG_FLAG_KEY);
+      const ta = await composerWith("hello world");
+      const before = diagLog();
+      fireTouch(ta, "touchstart", { clientX: 100, clientY: 300 });
+      fireTouch(ta, "touchmove", { clientX: 160, clientY: 302 });
+      fireTouch(ta, "touchcancel", { clientX: 160, clientY: 302 });
+      expect(diagLog()).toBe(before);
+    });
+
+    // vjt's failing swipes over the typed text (iOS 18.7, 2026-11-06) read
+    // `END claimed=no act=none dy=0 dx=0 moves=0`: the touchend came at the
+    // touchstart's own point. `cx` says where on the text the finger landed
+    // and `ms` when that touchend came, which is what the next ring needs to
+    // place the swipe and to time the touchend against the drag.
+    it("TS names where the finger landed: cx is measured from the left edge of the text", async () => {
+      localStorage.setItem(DIAG_FLAG_KEY, "1");
+      const ta = await composerWith("hello world");
+      // The padding scales with the user's font size, so the line measures it
+      // instead of assuming the default: 100 - 40 (box) - 7 (padding) = 53.
+      ta.style.paddingLeft = "7px";
+      vi.spyOn(ta, "getBoundingClientRect").mockReturnValue(new DOMRect(40, 280, 300, 42));
+      fireTouch(ta, "touchstart", { clientX: 100, clientY: 300 });
+      const [ts] = diagLog();
+      expect(ts).toMatch(/^TS cx=53 y=300 /);
+    });
+
+    it("END carries touchend's timestamp minus touchstart's, also for a touch with no touchmove", async () => {
+      localStorage.setItem(DIAG_FLAG_KEY, "1");
+      const ta = await composerWith("hello world");
+      ta.setSelectionRange(5, 5);
+      fireTouchAt(ta, "touchstart", 1000, { clientX: 100, clientY: 300 });
+      fireTouchAt(ta, "touchend", 1137, { clientX: 100, clientY: 300 });
+      const [end] = diagLog();
+      expect(end).toMatch(/^END claimed=no act=none dy=0 st=0 dx=0 moves=0 ms=137 sel=5,5$/);
     });
   });
 
