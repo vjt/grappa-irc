@@ -300,6 +300,23 @@ describe("encrypted chats", () => {
     expect(await chats.encryptedDevice(net.slug)).toEqual({ did, master });
   });
 
+  // issue 2454 — what the scrollback tells this device's undeliverable rows
+  // from a sibling's by: known once a sync finds the identity ready here,
+  // and no device of ours while it is held elsewhere.
+  it("knows this device's id once the identity is ready here, and none while it is elsewhere (issue 2454)", async () => {
+    expect(chats.ownDevice(net.slug)).toBeUndefined();
+
+    await chats.drainE2e(net.slug);
+    const { did } = await own();
+    await vi.waitFor(() => expect(chats.ownDevice(net.slug)).toBe(did));
+
+    chats.identitySynced(net.slug, { elsewhere: "left-out" });
+    expect(chats.ownDevice(net.slug)).toBeUndefined();
+
+    chats.identitySynced(net.slug, "ready");
+    await vi.waitFor(() => expect(chats.ownDevice(net.slug)).toBe(did));
+  });
+
   it("a message while grappa has published no line size for the network fails at once, and asks for nothing", async () => {
     await chats.drainE2e(net.slug);
     await bob();
@@ -928,14 +945,16 @@ describe("encrypted chats", () => {
     expect(chats.encryptedWireView(net.slug, "Bob")).toBe(false);
   });
 
-  it("a new identity sees none of the last one's chats", async () => {
+  it("a new identity sees none of the last one's chats, nor its device", async () => {
     await chats.drainE2e(net.slug);
     await chats.openEncryptedChat(net.slug, "Bob");
     expect(chats.encryptedChatsFor(net.slug)).toHaveLength(1);
+    await vi.waitFor(() => expect(chats.ownDevice(net.slug)).toBeDefined());
 
     setBearer("another-token");
 
     expect(chats.encryptedChatsFor(net.slug)).toEqual([]);
+    expect(chats.ownDevice(net.slug)).toBeUndefined();
   });
 
   // issue 2515 — a notification names the peer as the wire spells it; the
@@ -1077,6 +1096,22 @@ describe("encrypted chats, an identity held elsewhere", () => {
     expect(chats.elsewhereReason(net.slug)).toBeNull();
   });
 
+  // issue 2454 — "ready" reads this device's id off the record, and a look
+  // makes nothing: a slot with no account (no sync ran here) stays without
+  // one, and grappa is asked nothing.
+  it("a ready with no identity here reads no device, and makes no identity to read one", async () => {
+    chats.identitySynced(net.slug, "ready");
+    // The stores here are in-memory twins, all promises: a macrotask later,
+    // the look has answered (and a sync it started would have asked grappa).
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const { accounts } = await browserE2e();
+
+    expect(chats.ownDevice(net.slug)).toBeUndefined();
+    expect(api.getE2eList).not.toHaveBeenCalled();
+    expect(api.registerE2eDevice).not.toHaveBeenCalled();
+    expect(await accounts.withAccount(slot(), async (session) => session.created)).toBe(true);
+  });
+
   it("pairedHere clears the elsewhere flag and tells the other tabs", async () => {
     chats.identitySynced(net.slug, { elsewhere: "no-keys" });
     const other = new BroadcastChannel("grappa-e2e-chats");
@@ -1106,8 +1141,11 @@ describe("encrypted chats, an identity held elsewhere", () => {
     const now = await grappa.api.getE2eList(net.nick, net.slug);
     expect(now?.master).toBe((await own()).master);
     expect(now?.master).not.toBe(old?.master);
-    // The window shown reads the new identity.
+    // The window shown reads the new identity, and the scrollback this
+    // device's new id (issue 2454).
     expect(chats.ownKey(net.slug)).toBe((await own()).master);
+    const { did } = await own();
+    await vi.waitFor(() => expect(chats.ownDevice(net.slug)).toBe(did));
     const b = await bob();
     await b.client.send(b.ctx, net.nick, "welcome back");
     await b.client.drain(b.ctx);

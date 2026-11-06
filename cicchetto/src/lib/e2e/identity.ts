@@ -439,6 +439,11 @@ export function masterOf(store: AccountStore, slot: string): Promise<string | nu
   return peek(store, slot, ({ master }) => master?.ed25519_key() ?? null);
 }
 
+/** This browser's device id in the slot's identity (issue 2454), or null when it holds none. Stores nothing. */
+export function ownDidOf(store: AccountStore, slot: string): Promise<string | null> {
+  return peek(store, slot, ({ own }) => own?.did ?? null);
+}
+
 /**
  * The holder: whether it can offer the network to a joiner, judged on the
  * list after a sync, grappa's latest: the master's key; "full" when the list
