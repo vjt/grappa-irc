@@ -4060,10 +4060,16 @@ cic with its e2e spec.
   maximum is not raised.
 * **The third upload door.** Its body is policed by a per-file cap, so it
   pipes through `:upload_body`, `MultipartBodyTest` lists it, and the two
-  in-repo nginx configs give `= /api/uploads/encrypted` the 520m ceiling. The
-  m42 host vhost is outside the repo (OPERATIONS.md); until it learns the
-  path, the 128m default applies there, which a cap only reaches once an
-  admin raises it.
+  in-repo nginx configs give `= /api/uploads/encrypted` the 520m ceiling, as
+  does the commented ingress example in `overlays/default` (which no test
+  reads). The m42 host vhost is outside the repo (OPERATIONS.md); until it
+  learns the path, the 128m default applies there, which a cap only reaches
+  once an admin raises it.
 * **Found on the way:** no test pinned the plain door's `inline`
   disposition, so a change making every upload an attachment would have
-  passed. A negative control now rides beside the encrypted one.
+  passed. Two negative controls now ride beside the encrypted one: a plain
+  upload with a filename, and an `application/pdf` row with none (avatars
+  and theme backgrounds are stored nameless), so neither "no filename" nor
+  the `application/*` family can stand in for the marker. Found in review:
+  the cap boundary first held the largest cap on one category, which let a
+  door reading that category alone pass; each category now takes its turn.

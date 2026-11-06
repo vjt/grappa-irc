@@ -11,6 +11,13 @@ defmodule Grappa.Uploads.MetadataStrip do
   Clients never participate in the decision — cic's transcode gate
   is pure performance and explicitly does NOT consult metadata.
 
+  Carve-out — the encrypted file (issue 2517, DESIGN_NOTES #2517a):
+  `POST /api/uploads/encrypted` stores ciphertext, typed
+  `application/octet-stream`, which this module passes through like a
+  document. The image inside it is NOT stripped here and cannot be: the
+  server never holds the key. For that window alone the strip moves to
+  cic, before it encrypts, fail-closed (vjt 2026-11-06).
+
   Exception — the `@kept_tags` allowlist (#39 round 2): presentation-
   critical tags with no provenance payload are copied back after the
   wipe, for image/* mimes only. Today that is EXIF Orientation (a 1-8
@@ -117,6 +124,8 @@ defmodule Grappa.Uploads.MetadataStrip do
 
   # Documents pass through (vjt 2026-06-10: strip scope = images +
   # videos). PDF/office metadata is a known, accepted leak class.
+  # So does an encrypted file's ciphertext (issue 2517): there is
+  # nothing to strip in bytes the server cannot read.
   defp run_unmapped(bytes, _), do: {:ok, bytes}
 
   defp unmapped_error(mime) do

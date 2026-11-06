@@ -138,7 +138,7 @@ patches:
 #     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
 #     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 #     # The BEAM's default multipart ceiling (`GrappaWeb.MultipartLimits`,
-#     # issue 2529). The two upload doors read up to 520 MiB, and
+#     # issue 2529). The three upload doors read up to 520 MiB, and
 #     # ingress-nginx applies this annotation per Ingress, not per path, so
 #     # they get the Ingress of their own below.
 #     nginx.ingress.kubernetes.io/proxy-body-size: "128m"
@@ -160,9 +160,10 @@ patches:
 #                 port:
 #                   name: http
 #
-# The two upload doors, POST /api/uploads and PUT /networks/:id/avatar, on the
-# same host with the upload ceiling; without this Ingress every upload over
-# 128 MiB is refused at the proxy whatever the admin caps say. `use-regex` is
+# The three upload doors, POST /api/uploads, POST /api/uploads/encrypted (issue
+# 2517) and PUT /networks/:id/avatar, on the same host with the upload ceiling;
+# without this Ingress every upload over 128 MiB is refused at the proxy
+# whatever the admin caps say. `use-regex` is
 # what lets the avatar path carry the network segment; ingress-nginx then reads
 # every path of this host as a regex, which leaves `/` above matching what it
 # matched. Written from ingress-nginx's documented behaviour, not exercised on a
@@ -189,6 +190,13 @@ patches:
 #       http:
 #         paths:
 #           - path: /api/uploads$
+#             pathType: ImplementationSpecific
+#             backend:
+#               service:
+#                 name: grappa
+#                 port:
+#                   name: http
+#           - path: /api/uploads/encrypted$
 #             pathType: ImplementationSpecific
 #             backend:
 #               service:

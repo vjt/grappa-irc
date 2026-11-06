@@ -183,6 +183,14 @@ defmodule GrappaWeb.UploadsController do
   # What AES-256-GCM appends to the ciphertext: the authentication tag.
   @gcm_tag_bytes 16
 
+  # What `store/4` can refuse with, on either door.
+  @typep store_error ::
+           :bad_request
+           | :insufficient_storage
+           | {:fs, File.posix()}
+           | {:metadata_strip, String.t()}
+           | Ecto.Changeset.t()
+
   @doc """
   The closed MIME → cap-category allowlist. Public so the
   `Grappa.Uploads.MetadataStrip` lockstep test can assert every
@@ -213,7 +221,8 @@ defmodule GrappaWeb.UploadsController do
   # ------------------------------------------------------------------
 
   @doc false
-  @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, atom()}
+  @spec create(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :unsupported_media_type | {:file_too_large, pos_integer()} | store_error()}
   def create(conn, params) do
     with {:ok, upload} <- extract_upload_field(params),
          {:ok, ttl_seconds} <- parse_ttl(params),
@@ -228,7 +237,8 @@ defmodule GrappaWeb.UploadsController do
   # ------------------------------------------------------------------
 
   @doc false
-  @spec create_encrypted(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, atom()}
+  @spec create_encrypted(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, {:file_too_large, pos_integer()} | store_error()}
   def create_encrypted(conn, params) do
     with {:ok, upload} <- extract_upload_field(params),
          {:ok, ttl_seconds} <- parse_ttl(params),
