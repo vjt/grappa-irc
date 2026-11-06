@@ -213,6 +213,16 @@ restarts it. Removal stops and disables the service and leaves
 `/var/lib/grappa` and the `grappa` user in place. A Debian `purge` also
 deletes `/etc/grappa/grappa.env`.
 
+**An upgrade that changes the toolchain needs the restart.** The release in
+`/usr/lib/grappa/` carries its own ERTS and OTP and Elixir applications, and
+the rpm and Arch packages are built with their builder's Erlang and Elixir,
+so two consecutive versions can bundle different ones. When they do, the
+running service refuses to load the new code in place: `POST /admin/reload`
+answers `409 stale_toolchain` and names each component that moved (issue
+1112). Restart soon after such an upgrade. It removes the previous ERTS
+directory, and a node left running from a removed one was measured to halt
+the first time it restarted its native DNS resolver.
+
 ## Configuration
 
 `/etc/grappa/grappa.env` uses systemd `EnvironmentFile=` syntax: `KEY=VALUE`
