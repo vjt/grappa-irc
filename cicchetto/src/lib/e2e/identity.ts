@@ -14,8 +14,8 @@
 // tell a user whose keys live on in another browser to pair this one
 // rather than start over.
 //
-// Once per page load and per (subject, network), and again for a network
-// that appears later: the identity needs no live IRC link (grappa stores it
+// Once per login and per (subject, network), and again for a network that
+// appears later: the identity needs no live IRC link (grappa stores it
 // per binding), so this does not wait for one. The chat glue
 // (`lib/encryptedChats.ts`) calls `syncIdentity` too: after a drain that
 // opened pre-key messages (each used up a one-time key), for a slot with no
@@ -744,14 +744,17 @@ export async function abandonJoin(bearer: string, slug: string, did: string): Pr
   }
 }
 
-// Slots synced (or syncing) on this page. A failed sync leaves the set, so the
-// next change to the network list tries it again.
+// Slots synced (or syncing) under the login `syncedUnder` names. A failed
+// sync leaves the set, so the next change to the network list tries it again.
+// A new login empties it (issue 2454): what `found` was told lives in stores a
+// login resets (`identityScopedStore`), and a logout does not reload the page.
 const synced = new Set<string>();
+let syncedUnder: string | null = null;
 
 /**
- * Syncs every network's identity once per page load, and tells `found`
- * what each one found (the chat glue shows an identity held elsewhere).
- * Registered by main.tsx in a root.
+ * Syncs every network's identity once per login, and tells `found` what each
+ * one found (the chat glue shows an identity held elsewhere, and the
+ * scrollback this device's id). Registered by main.tsx in a root.
  */
 export function mountIdentitySync(found: (slug: string, state: IdentityState) => void): void {
   createEffect(() => {
@@ -759,6 +762,10 @@ export function mountIdentitySync(found: (slug: string, state: IdentityState) =>
     const me = user();
     const list = networks();
     if (!bearer || !me || !list) return;
+    if (bearer !== syncedUnder) {
+      synced.clear();
+      syncedUnder = bearer;
+    }
     for (const network of list) {
       const slot = accountSlot(me, network.id);
       if (synced.has(slot)) continue;
