@@ -3296,3 +3296,69 @@ stops being the main path.
   and without an activity it can read; and `identityDevices` rejecting,
   never throwing, on a network the browser cannot use (red on the first
   cut, whose synchronous throw would escape the card's catch).
+<!-- entry #2544a -->
+
+---
+
+## 2026-11-06 — #2544a: the key shown is verified by a button, the badge shows the key, the pasted pin is gone
+
+vjt's rulings on the issue (2026-11-05), points 1 and 3; point 2 (the own
+device list) is #2544b.
+
+* **The paste-and-pin form goes.** Either the key the rail shows is the
+  peer's, or someone is in the middle and the chat must be closed: pasting
+  the "right" key over a different one fixes neither. In its place, a
+  **verify** button beside the shown key, for when the user compared it
+  with the peer out of band. This retires 2430 ruling 6253162964's "bots are
+  pinned by hand": a bot's key is taken on first use like anyone's and
+  verified against the key it prints. That works because the bot answers a
+  KEYREQ once OUR key is pinned there (irc-olm drops one from an unpinned
+  nick, `E2E_DROPPED REASON=unpinned-nick`), not once we pinned its key;
+  the interop spec now proves it against the real bot. The no-key card says
+  so, and the alarm card says the other half of the ruling: take the new
+  key and verify it, or close the chat.
+* **Verify is the pin verb, not a new one.** It pins the shown key again,
+  verified (`pinEncryptedKey(…, true)`): the pin stays where it is, a SAS on
+  that master is not ended (`Verifier.repinned` ends only those on another
+  master), the list is asked for as after any pin (O1), and the row is a
+  `pinned`. Not a `verified`: that row means a SAS matched, and the rail
+  would then report an emoji comparison that never ran. Considered and
+  dropped: a client verb over `Engine.verify`, the SAS's own outcome, which
+  would never move a pin even if the shown key were stale by a tab's
+  BroadcastChannel lag. It needs a verb, a store wrapper and a row kind of
+  its own to say "verified by hand", and the stale case it guards is the
+  user's own statement about the key on screen.
+* **Where it shows: wherever the badge reads `not verified`.** A key pinned,
+  not verified, no alarm open, the identity here. While an alarm is open the
+  pinned key offers no verify: the alarm is answered first, and a verify
+  beside the old key while a new one is speaking invites verifying the wrong
+  one.
+* **The badge shows the key.** A tap opens a dialog over the chat body with
+  the peer's whole key, 43 characters: verified, the key alone; not
+  verified, the key, the same verify button, and "compare emoji" second. The
+  key is the full Ed25519 key, 256 bits, and needs no protocol around it;
+  the emoji are ~42 bits, safe only inside the synchronous comparison where
+  the commitment leaves an attacker one try, so they are never an
+  asynchronous check. **This retires #2507's "check again"** on a key
+  verified by emoji, and `verifiedByEmoji` with it: a verified badge offers
+  no comparison at all. The peer can still start one on a verified key,
+  so #2507's open question (a failed re-check leaves the badge verified)
+  stands for that door only. The door is a button whenever a key is pinned,
+  no alarm is open, no comparison runs and the identity is here; it closes
+  itself if any of that stops holding (a comparison the peer asks for takes
+  its place).
+* **The dialog is a covering overlay.** It sits over the scrollback, so it
+  registers with `createOverlayLock` (#219-general's freeze, #232's Esc
+  stack) instead of a private keydown listener. The SAS dialog, its
+  sibling, does not, and was left as it is.
+
+e2e: the `pin` fixture became `verify` (wait for the key taken on first use
+to be the one the peer reads off its own pane, press the rail's button).
+Specs that pinned before any message now exchange first; the bot specs
+(interop, 2511) verify the bot's key after first contact and before any
+order, since cic answers no challenge from an unverified key; 2509's
+lineless alarm chat now starts from a chat deleted after the exchange (the
+pin outlives the rows); `issue2544-verify-shown-key.spec.ts` walks both
+doors on desktop and the badge on a phone. None of them ran locally: the
+stack is not this worker's to take, and the PR's integration job is the
+gate.
