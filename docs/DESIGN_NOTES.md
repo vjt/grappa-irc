@@ -3980,7 +3980,22 @@ one; `flush` reading an `except` entry as lost, 1; the list tag let through,
 End to end (`issue2457-sas-other-device.spec.ts`): Alice pairs a second
 browser and Bob asks to compare. Both of her browsers show the request; the
 first accepts. The second browser's request goes and its rail says why, and
-Bob and the first compare the same 7 emoji. Not run locally: the stack is not
-this worker's, and the PR's integration job is the gate.
+Bob and the first compare the same 7 emoji.
+
+That spec went red on its first CI run (42209838523) at A1's "asked", and
+locally 3 of 3 one wait earlier, at the hello. One cause: a peer of two
+devices doubles what each step puts through grappa's E2E pacer, at about 5 s
+a 405-byte line, and the spec gave each stretch one 30 s `KEYS_TIMEOUT`. From
+the CI artefacts: the hello was Alice's keys (a KEYS of four lines, the first
+8 s after the KEYREQ, her fake-lag bank full) plus four lines of pre-key
+bodies, 29.9 s. Then Bob asked before he had read either of her devices, so
+the start to A1 went as a pre-key message again, behind the two `t:list`
+answers A1 and A2 had asked for on reading the hello (reactive lane, ahead of
+text): its first line left 26 s after the ask. No product change: the hello
+has a wait per leg (Bob's row `sent`, then delivery), and each device answers
+it and Bob reads both before he asks, so every later step to them is a
+one-line MSG. 3 of 3 green locally, about 60 s each; with `release` emptied,
+2 of 2 red at A2's `e2e-sas` count (1, expected 0), the mutant's marker read
+in the served bundle.
 
 Client-only: the cic bundle.
