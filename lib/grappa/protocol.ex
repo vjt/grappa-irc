@@ -1505,7 +1505,32 @@ defmodule Grappa.Protocol do
   # no open PR edits this file.
   #
   # @min_protocol_version stays at 1: an older client never calls the door.
-  @protocol_version 58
+  #
+  # ---------------------------------------------------------------------------
+  # 59 — issue 2577: an encrypted message on its way
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: two user-topic events. `e2e_incoming` `{network, from, from_did,
+  # to, msgid}` (`Session.Wire.e2e_incoming/5`): the first line of a peer's
+  # PKMSG or MSG that spans more than one line reached the session, which
+  # reassembles the rest. `e2e_incoming_lost` `{network, from_did, to,
+  # msgid}` (`Session.Wire.e2e_incoming_lost/4`): that message will not
+  # reach the device `to` names — its lines stopped coming (the 60 s window
+  # from the last one), one contradicted it or broke a cap, or it came whole
+  # and that device's queue did not take it (or no listed device could read
+  # it). What ends an announcement otherwise is the `e2e_message` v42
+  # already carries, with the same `from_did` and `msgid`. The IRC framing
+  # (`E2E <VERB> <msgid> <i>/<n> …`) is untouched: this is the bouncer
+  # telling its own client what only the bouncer sees, since the client
+  # never sees a line. Bumped on the #1393d rule: a client that shows a
+  # message as arriving cannot get that from a server predating it.
+  #
+  # Checked for a collision before claiming 59: origin/main carries 58, and
+  # no open PR edits this file.
+  #
+  # @min_protocol_version stays at 1: an older client drops an event kind it
+  # does not know, and sees the message when it lands, as before.
+  @protocol_version 59
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1546,7 +1571,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 58
+  @spec version() :: 59
   def version, do: @protocol_version
 
   @doc """

@@ -61,8 +61,8 @@ defmodule Grappa.Session.E2eReassemblyTest do
     payload = ~s({"v":2})
     [fragment] = fragments(:keyreq, "q83vEjRWeJA", payload)
 
-    assert {:complete, %{verb: :keyreq, msgid: "q83vEjRWeJA", from: @alice, to: "*", payload: ^payload}, buffer} =
-             E2eReassembly.put(E2eReassembly.new(), "vjt-claude", fragment, 0)
+    assert {:complete, %{verb: :keyreq, msgid: "q83vEjRWeJA", from: @alice, to: "*", total: 1, payload: ^payload},
+            buffer} = E2eReassembly.put(E2eReassembly.new(), "vjt-claude", fragment, 0)
 
     assert E2eReassembly.empty?(buffer)
   end
@@ -76,7 +76,8 @@ defmodule Grappa.Session.E2eReassemblyTest do
     {buffer, results} = feed(E2eReassembly.new(), "vjt-claude", Enum.reverse(frags), 0)
 
     assert List.last(results) ==
-             {:complete, %{verb: :msg, msgid: "q83vEjRWeJA", from: @alice, to: "*", payload: payload}}
+             {:complete,
+              %{verb: :msg, msgid: "q83vEjRWeJA", from: @alice, to: "*", total: length(frags), payload: payload}}
 
     assert Enum.all?(Enum.drop(results, -1), &(&1 == :pending))
     assert E2eReassembly.empty?(buffer)
@@ -132,6 +133,25 @@ defmodule Grappa.Session.E2eReassemblyTest do
     refute E2eReassembly.pending?(whole, "alice", :keys, 0)
   end
 
+  # issue 2577 — the session asks before each fragment whether it opens a
+  # message (the client is told one is arriving) or belongs to one already
+  # buffered (whose loss the client is told of, should the fragment drop it).
+  test "in_flight/3 describes a message part-way in, by sender and msgid, and nothing else" do
+    [f1, f2 | rest] = frags = fragments(:pkmsg, "q83vEjRWeJA", payload(800))
+    assert E2eReassembly.in_flight(E2eReassembly.new(), "alice", "q83vEjRWeJA") == :error
+
+    {partial, _} = feed(E2eReassembly.new(), "alice", [f1, f2], 0)
+
+    assert E2eReassembly.in_flight(partial, "alice", "q83vEjRWeJA") ==
+             {:ok, %{verb: :pkmsg, msgid: "q83vEjRWeJA", from: @alice, to: @bob, total: length(frags)}}
+
+    assert E2eReassembly.in_flight(partial, "bob", "q83vEjRWeJA") == :error
+    assert E2eReassembly.in_flight(partial, "alice", "AAAAAAAAAAA") == :error
+
+    {whole, _} = feed(partial, "alice", rest, 0)
+    assert E2eReassembly.in_flight(whole, "alice", "q83vEjRWeJA") == :error
+  end
+
   test "expire/2 discards a message whose last fragment is 60 s old, and only that one" do
     [old1 | _] = fragments(:msg, "AAAAAAAAAAA", payload(800))
     [new1 | _] = fragments(:msg, "BBBBBBBBBBB", payload(800))
@@ -140,10 +160,13 @@ defmodule Grappa.Session.E2eReassemblyTest do
     {old_only, _} = feed(E2eReassembly.new(), "vjt-claude", [old1], 0)
     {both, _} = feed(old_only, "vjt-claude", [new1], 1_000)
 
-    assert {^both, 0} = E2eReassembly.expire(both, timeout - 1)
-    {new_only, 1} = E2eReassembly.expire(both, timeout)
+    assert {^both, []} = E2eReassembly.expire(both, timeout - 1)
+    {new_only, [old]} = E2eReassembly.expire(both, timeout)
+    # issue 2577 — what went, as its frames described it: the session tells
+    # the client that this message will not arrive.
+    assert old == %{verb: :msg, msgid: "AAAAAAAAAAA", from: @alice, to: "*", total: old1.total}
     refute E2eReassembly.empty?(new_only)
-    assert {drained, 1} = E2eReassembly.expire(new_only, timeout + 1_000)
+    assert {drained, [%{msgid: "BBBBBBBBBBB"}]} = E2eReassembly.expire(new_only, timeout + 1_000)
     assert E2eReassembly.empty?(drained)
   end
 
@@ -175,7 +198,7 @@ defmodule Grappa.Session.E2eReassemblyTest do
 
     {started, _} = feed(E2eReassembly.new(), "vjt-claude", [f1, f2], 0)
     {repeated, [:pending]} = feed(started, "vjt-claude", [f2], timeout - 1)
-    assert {_, 1} = E2eReassembly.expire(repeated, timeout)
+    assert {_, [_]} = E2eReassembly.expire(repeated, timeout)
   end
 
   test "a late fragment after expiry starts over and never completes the old message" do
@@ -183,7 +206,7 @@ defmodule Grappa.Session.E2eReassemblyTest do
     timeout = E2eReassembly.timeout_ms()
 
     {started, _} = feed(E2eReassembly.new(), "vjt-claude", [f1], 0)
-    {expired, 1} = E2eReassembly.expire(started, timeout)
+    {expired, [_]} = E2eReassembly.expire(started, timeout)
     {_, results} = feed(expired, "vjt-claude", [f2 | rest], timeout)
 
     # Without fragment 1 the message cannot complete: nothing is delivered.
