@@ -53,14 +53,14 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v56 -> v57 (issue 2544): `inserted_at` on the E2E device
- * shape of `GET /e2e/devices`, when grappa first registered each device. A
- * terminal holds no E2E identity and reads no device list, so nothing it
- * renders changed.
+ * Last read, v57 -> v58 (issue 2517): `POST /api/uploads/encrypted`, the
+ * upload door for an end-to-end encrypted file's ciphertext, and
+ * `GET /uploads/:slug` serving such a file as an attachment. A terminal
+ * uploads nothing and holds no E2E identity, so nothing it renders changed.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 57
+#define WIRE_PROTOCOL_VERSION 58
 
 #include <stdbool.h>
 #include <stddef.h>

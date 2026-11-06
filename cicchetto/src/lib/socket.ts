@@ -407,7 +407,14 @@ let _socket: Socket | null = null;
 // registered each device. The encrypted query's rail lists the identity's
 // own devices with it. A pre-57 server leaves it out, so the list shows no
 // date; `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 57;
+//
+// 58 (issue 2517) — `POST /api/uploads/encrypted`, the door for an end-to-end
+// encrypted file's ciphertext: stored as sent, typed
+// `application/octet-stream`, served as an attachment. Slice 1 of 3 is the
+// server door alone; nothing in cicchetto calls it yet. A pre-58 server
+// answers the route 404, so the encrypted window keeps refusing uploads there;
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 58;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //
