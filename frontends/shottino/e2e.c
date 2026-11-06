@@ -1168,6 +1168,120 @@ static void write_signed_key(json_buf *b, vz_account *device, const char *key) {
     free(sig);
 }
 
+/* ── Identity sync ───────────────────────────────────────────────────── */
+
+const char *e2e_sync_plan_name(e2e_sync_plan p) {
+    switch (p) {
+    case E2E_SYNC_NONE: return "none";
+    case E2E_SYNC_ELSEWHERE_NO_KEYS: return "no-keys";
+    case E2E_SYNC_ELSEWHERE_NO_LIST: return "no-list";
+    case E2E_SYNC_ELSEWHERE_REPLACED: return "replaced";
+    case E2E_SYNC_ELSEWHERE_LEFT_OUT: return "left-out";
+    case E2E_SYNC_RELIST: return "relist";
+    case E2E_SYNC_ADOPT: return "adopt";
+    case E2E_SYNC_READY: return "ready";
+    }
+    return "unknown";
+}
+
+bool e2e_sync_plan_elsewhere(e2e_sync_plan p) {
+    return p == E2E_SYNC_ELSEWHERE_NO_KEYS || p == E2E_SYNC_ELSEWHERE_NO_LIST ||
+           p == E2E_SYNC_ELSEWHERE_REPLACED || p == E2E_SYNC_ELSEWHERE_LEFT_OUT;
+}
+
+static bool list_names(const e2e_master_list *m, const char *key) {
+    for (size_t i = 0; i < m->ndevices && i < E2E_MAX_DEVICES; i++)
+        if (strcmp(m->devices[i], key) == 0) return true;
+    return false;
+}
+
+/* runSync's branches, in its order. `held` is taken as grappa sent it:
+ * only an ADOPT, the one branch that stores what it read, checks the
+ * master's signature first (an adopt that does not verify keeps ours). */
+e2e_sync_plan e2e_sync_decide(const e2e_record *r, const e2e_master_list *held) {
+    if (!r->own) return held ? E2E_SYNC_ELSEWHERE_NO_KEYS : E2E_SYNC_NONE;
+    if (!held) return r->master ? E2E_SYNC_RELIST : E2E_SYNC_ELSEWHERE_NO_LIST;
+    if (!held->ed25519 || strcmp(held->ed25519, r->own->master) != 0)
+        return E2E_SYNC_ELSEWHERE_REPLACED;
+    char *e = vzs(vz_account_ed25519_key(r->account));
+    if (!e) abort();
+    bool named = list_names(held, e);
+    free(e);
+    if (!named || held->ndevices > E2E_MAX_DEVICES) return E2E_SYNC_ELSEWHERE_LEFT_OUT;
+    if (held->ver > (double)r->own->list_ver && e2e_valid_master_list(held)) return E2E_SYNC_ADOPT;
+    return E2E_SYNC_READY;
+}
+
+static void own_copy(const e2e_own *own, e2e_own *out) {
+    memset(out, 0, sizeof(*out));
+    out->master = xstrdup(own->master);
+    out->cert = xstrdup(own->cert);
+    out->cert_ver = own->cert_ver;
+    out->list_ver = own->list_ver;
+    out->list_devices = strv_dup(&own->list_devices);
+    out->list_sig = xstrdup(own->list_sig);
+    out->did = xstrdup(own->did);
+}
+
+bool e2e_own_relisted(const e2e_record *r, e2e_own *out) {
+    if (!r->own || !r->master) return false;
+    char *e = vzs(vz_account_ed25519_key(r->account));
+    if (!e) abort();
+    long ver = r->own->list_ver + 1;
+    if (ver > E2E_MAX_VER) {
+        free(e);
+        return false;
+    }
+    const char *const devices[] = {e};
+    char *sig = e2e_sign_list(r->master, ver, devices, 1);
+    if (!sig) {
+        free(e);
+        return false;
+    }
+    own_copy(r->own, out);
+    strv_free(&out->list_devices);
+    strv_push(&out->list_devices, e);
+    free(out->list_sig);
+    out->list_sig = sig;
+    out->list_ver = ver;
+    char did[E2E_DID_LEN + 1];
+    if (!e2e_did(e, did)) abort();
+    free(out->did);
+    out->did = xstrdup(did);
+    free(e);
+    return true;
+}
+
+void e2e_own_adopted(const e2e_own *own, const e2e_master_list *held, e2e_own *out) {
+    own_copy(own, out);
+    strv_free(&out->list_devices);
+    for (size_t i = 0; i < held->ndevices && i < E2E_MAX_DEVICES; i++)
+        strv_push(&out->list_devices, held->devices[i]);
+    free(out->list_sig);
+    out->list_sig = xstrdup(held->sig);
+    out->list_ver = (long)held->ver;
+}
+
+bool e2e_own_verify(const e2e_own *own, vz_account *device) {
+    if (own->list_devices.n == 0 || own->list_devices.n > E2E_MAX_DEVICES) return false;
+    e2e_master_list m = {.ed25519 = own->master,
+                         .ver = (double)own->list_ver,
+                         .ndevices = own->list_devices.n,
+                         .sig = own->list_sig};
+    for (size_t i = 0; i < own->list_devices.n; i++) m.devices[i] = own->list_devices.v[i];
+    if (!e2e_valid_master_list(&m)) return false;
+    char *e = vzs(vz_account_ed25519_key(device));
+    if (!e) abort();
+    bool ok = list_names(&m, e);
+    char did[E2E_DID_LEN + 1];
+    ok = ok && e2e_did(e, did) && strcmp(did, own->did) == 0;
+    char *text = e2e_cert_sig_text(own->cert_ver, e);
+    ok = ok && vz_verify_ed25519(own->master, text, own->cert) == 1;
+    free(text);
+    free(e);
+    return ok;
+}
+
 char *e2e_top_up(vz_account *device, long held_otks, bool held_fallback) {
     long room = E2E_MAX_HOSTED_ONE_TIME_KEYS - held_otks;
     if (room < 0) room = 0;

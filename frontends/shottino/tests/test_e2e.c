@@ -598,6 +598,84 @@ TEST(bootstrap_identity_signs_v1) {
     vz_account_free(m);
 }
 
+/* identity.ts runSync's table, branch by branch. */
+static e2e_master_list held_of(const e2e_own *own) {
+    e2e_master_list m = {.ed25519 = own->master, .ver = (double)own->list_ver,
+                         .ndevices = own->list_devices.n, .sig = own->list_sig};
+    for (size_t i = 0; i < own->list_devices.n && i < E2E_MAX_DEVICES; i++)
+        m.devices[i] = own->list_devices.v[i];
+    return m;
+}
+
+TEST(sync_decides_as_run_sync) {
+    e2e_record r;
+    e2e_record_new(&r);
+    /* No place here: nothing on grappa is NONE (an init makes one), an
+     * identity there is somebody else's device. */
+    CHECK(e2e_sync_decide(&r, NULL) == E2E_SYNC_NONE);
+    vz_account *other = vz_account_new(), *other_dev = vz_account_new();
+    e2e_own theirs;
+    e2e_own_bootstrap(other_dev, other, &theirs);
+    e2e_master_list held_theirs = held_of(&theirs);
+    CHECK(e2e_sync_decide(&r, &held_theirs) == E2E_SYNC_ELSEWHERE_NO_KEYS);
+    CHECK(e2e_sync_plan_elsewhere(E2E_SYNC_ELSEWHERE_NO_KEYS));
+    CHECK_STR(e2e_sync_plan_name(E2E_SYNC_ELSEWHERE_NO_KEYS), "no-keys");
+
+    /* A first device: the master here. */
+    r.master = vz_account_new();
+    r.own = calloc(1, sizeof(*r.own));
+    e2e_own_bootstrap(r.account, r.master, r.own);
+    CHECK(e2e_own_verify(r.own, r.account));
+    e2e_master_list held = held_of(r.own);
+    CHECK(e2e_sync_decide(&r, &held) == E2E_SYNC_READY);
+    CHECK(!e2e_sync_plan_elsewhere(E2E_SYNC_READY));
+    /* grappa lost the list: the master lists again, one above. */
+    CHECK(e2e_sync_decide(&r, NULL) == E2E_SYNC_RELIST);
+    e2e_own re;
+    CHECK(e2e_own_relisted(&r, &re));
+    CHECK_LONG(re.list_ver, 2);
+    CHECK_LONG(re.cert_ver, 1); /* the cert names the FIRST list */
+    CHECK_STR(re.cert, r.own->cert);
+    CHECK_STR(re.did, r.own->did);
+    CHECK(e2e_own_verify(&re, r.account));
+    e2e_master_list held2 = held_of(&re);
+    CHECK(e2e_valid_master_list(&held2));
+    /* grappa took that relist and the answer was lost: adopt it. */
+    CHECK(e2e_sync_decide(&r, &held2) == E2E_SYNC_ADOPT);
+    e2e_own ad;
+    e2e_own_adopted(r.own, &held2, &ad);
+    CHECK_LONG(ad.list_ver, 2);
+    CHECK_STR(ad.list_sig, re.list_sig);
+    CHECK(e2e_own_verify(&ad, r.account));
+    e2e_own_free(&ad);
+    /* A higher list that does not verify is never adopted. */
+    char *bad_sig = strdup(held2.sig);
+    bad_sig[0] = bad_sig[0] == 'A' ? 'B' : 'A';
+    held2.sig = bad_sig;
+    CHECK(e2e_sync_decide(&r, &held2) == E2E_SYNC_READY);
+    free(bad_sig);
+    e2e_own_free(&re);
+    /* Another master's list on grappa: replaced. */
+    CHECK(e2e_sync_decide(&r, &held_theirs) == E2E_SYNC_ELSEWHERE_REPLACED);
+    /* Our master's list, naming somebody else: left out. */
+    e2e_master_list left = held;
+    left.devices[0] = theirs.list_devices.v[0];
+    CHECK(e2e_sync_decide(&r, &left) == E2E_SYNC_ELSEWHERE_LEFT_OUT);
+    /* Without the master here (a paired device), grappa losing the list
+     * cannot be repaired here. */
+    vz_account_free(r.master);
+    r.master = NULL;
+    CHECK(e2e_sync_decide(&r, NULL) == E2E_SYNC_ELSEWHERE_NO_LIST);
+    CHECK(!e2e_own_relisted(&r, &re));
+    /* A tampered certificate fails the self-check. */
+    r.own->cert[0] = r.own->cert[0] == 'A' ? 'B' : 'A';
+    CHECK(!e2e_own_verify(r.own, r.account));
+    e2e_own_free(&theirs);
+    vz_account_free(other);
+    vz_account_free(other_dev);
+    e2e_record_free(&r);
+}
+
 /* ── the fake world: devices, a grappa, a network ── */
 
 #define NOW0 1700000000000LL
@@ -1553,6 +1631,7 @@ int main(void) {
     RUN(consent_and_small_payloads);
     RUN(top_up_fills_grappa_and_stops);
     RUN(bootstrap_identity_signs_v1);
+    RUN(sync_decides_as_run_sync);
     RUN(two_engines_talk);
     RUN(two_devices_one_message);
     RUN(receiver_checks);

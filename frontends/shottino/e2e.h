@@ -545,6 +545,41 @@ char *e2e_record_to_json(const e2e_record *r);
 /* False (and *out untouched) for anything but a record this writer wrote. */
 bool e2e_record_from_json(const char *json, size_t len, e2e_record *out);
 
+/* ── Identity sync (identity.ts runSync) ─────────────────────────────────
+ * What to do about this device's place, given the record and the list
+ * grappa holds (`held`, NULL on its 404). The decision only: the doors
+ * around it are the application's. An identity is NEVER replaced
+ * silently (vjt 6344779758): every ELSEWHERE blocks E2E on the network
+ * until the user pairs, or explicitly starts over. */
+typedef enum {
+    E2E_SYNC_NONE,               /* no place here, no list on grappa */
+    E2E_SYNC_ELSEWHERE_NO_KEYS,  /* no place here; grappa holds an identity */
+    E2E_SYNC_ELSEWHERE_NO_LIST,  /* grappa lost the list, and the master is not here */
+    E2E_SYNC_ELSEWHERE_REPLACED, /* grappa holds another master's list */
+    E2E_SYNC_ELSEWHERE_LEFT_OUT, /* our master's list no longer names this device */
+    E2E_SYNC_RELIST,             /* grappa lost the list; the master is here: list again */
+    E2E_SYNC_ADOPT,              /* our master's list above ours, naming us, verified */
+    E2E_SYNC_READY
+} e2e_sync_plan;
+
+/* cic's spelling of each: "none", "no-keys", "no-list", "replaced",
+ * "left-out", "relist", "adopt", "ready". */
+const char *e2e_sync_plan_name(e2e_sync_plan p);
+bool e2e_sync_plan_elsewhere(e2e_sync_plan p);
+e2e_sync_plan e2e_sync_decide(const e2e_record *r, const e2e_master_list *held);
+/* This device's place after a relist: `r->own` with the list the master
+ * signs at own.list_ver + 1 naming this device alone; the certificate
+ * stays (it names the first list that held the device). False when the
+ * record holds no master or no place. `out` is the caller's to free. */
+bool e2e_own_relisted(const e2e_record *r, e2e_own *out);
+/* This device's place with `held` (ADOPT) as its list; `out` is the
+ * caller's to free. */
+void e2e_own_adopted(const e2e_own *own, const e2e_master_list *held, e2e_own *out);
+/* Whether `own`'s list (as stored) carries the master's signature and
+ * names this device, and its certificate verifies over this device's key
+ * at cert_ver: the self-check of a record read back from disk. */
+bool e2e_own_verify(const e2e_own *own, vz_account *device);
+
 /* ── Store: one record in a directory, atomic, locked ──────────────────────
  * `dir` is the caller's (the app computes <state>/e2e-<hash>/<network_id>);
  * it and any missing parent are made 0700. The record is `record.json`,
