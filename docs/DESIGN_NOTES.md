@@ -3404,13 +3404,13 @@ success: `TCPRcvQDrop` 1, `BeyondWindow` 5 to 18, `RcvPruned` 1. Kernel
   (worst wait for a read, 13 ms). A longer idle allowance only delays the
   failure: given 30 s, a 2 KiB sender passed no byte after its drop, through
   seven retransmission timeouts.
-- **No buffer size tried cures it.** 16 KiB reached the stall in 30 of 30 loaded
-  runs, then the real test failed once in 27 unloaded. 32 KiB dropped once in
+- **No buffer size tried cures it.** 16 KiB passed 30 of 30 loaded runs, then
+  the real test failed once in 27 unloaded. 32 KiB dropped once in
   three. `TCP_WINDOW_CLAMP` on a default buffer never closed the window.
 
 **What the test does now.** Before the first byte flows it still shrinks our
 send buffer from outside, then writes one MiB of filler on our socket, also
-from outside. The sender (receive buffer fixed at 64 KiB) takes what that
+from outside. The sender (receive buffer set to 64 KiB) takes what that
 holds, in full-sized segments; our kernel keeps some more; the driver queues
 the rest, far past its high watermark. The transfer's first ack meets that
 queue, comes back `:timeout`, and acking stops. Once the window is shut our
