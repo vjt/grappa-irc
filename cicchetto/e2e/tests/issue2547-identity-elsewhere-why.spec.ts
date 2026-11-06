@@ -36,7 +36,6 @@ import {
   KEYS_TIMEOUT,
   ownKey,
   peerPage,
-  pin,
   row,
   send,
 } from "../fixtures/encryptedQuery";
@@ -68,8 +67,6 @@ test("a browser with no keys says why, counts grappa's devices and when one was 
     await equery(page, aliceNick, bob.nick);
     await equery(peer.page, bob.nick, aliceNick);
     const master = await ownKey(page);
-    await pin(page, await ownKey(peer.page));
-    await pin(peer.page, master);
     const line = "ciao bob, da B";
     await send(page, line);
     await expect(row(page, "out", line).getByTestId("e2e-row-state")).toHaveAttribute(
