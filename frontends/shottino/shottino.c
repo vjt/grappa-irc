@@ -56,6 +56,7 @@
 #include "mirc.h"
 #include "termcolor.h"
 #include "wire.h"
+#include "e2e.h"
 
 #define MAX_TOKEN 4096
 #define MAX_SUBJECT 512
@@ -414,6 +415,8 @@ struct window {
 };
 
 enum job_kind {
+    JOB_E2E_SYNC,
+    JOB_E2E_INIT,
     JOB_FETCH,
     JOB_SEND,
     JOB_JOIN,
@@ -1138,6 +1141,66 @@ struct ircd {
 };
 
 
+/* ── E2E: one slot per network (docs/plans §8.1, CLIENT_PROTOCOL §4f) ──
+ *
+ * A network's encrypted-query identity, as this device holds it. Two
+ * halves with two owners, and the split is the whole locking story:
+ *
+ *   - the store and the record (the device account, the master if this
+ *     device made the identity, its place, the engine state) belong to
+ *     the JOB WORKER alone. It is the one thread that opens, steps, saves
+ *     and talks to grappa about them, so they need no lock — and no HTTP
+ *     ever runs under app->lock, which every frame takes;
+ *   - `view` is what the UI shows of it (/e2e), copied out by the worker
+ *     under app->lock after each step.
+ *
+ * Slots are appended, never moved or removed (a detached network keeps
+ * its slot, closed or not), so a pointer to one stays valid for the run. */
+enum e2e_slot_state {
+    E2E_SLOT_UNSYNCED, /* not looked at yet this run */
+    E2E_SLOT_OFF,      /* the server cannot speak it (protocol), or nothing asked */
+    E2E_SLOT_BUSY,     /* another shottino holds this device: never fought */
+    E2E_SLOT_ERROR,    /* the last sync failed; /e2e sync tries again */
+    E2E_SLOT_NONE,     /* no identity on the network: /e2e init makes one */
+    E2E_SLOT_ELSEWHERE, /* the account's identity does not include this device */
+    E2E_SLOT_READY     /* this device is one of the identity's */
+};
+
+struct e2e_view {
+    enum e2e_slot_state state;
+    char why[256];      /* OFF / BUSY / ERROR: what was observed */
+    e2e_sync_plan plan; /* ELSEWHERE: cic's reason */
+    char did[E2E_DID_LEN + 1];
+    char master[64];
+    bool holder; /* this device holds the master */
+    long list_ver;
+    size_t list_devices;
+    /* What grappa holds for this device's key bundle, as last read. */
+    bool keys_known;
+    long one_time_keys;
+    bool fallback;
+    /* ELSEWHERE: the list grappa holds, for the user to recognise. */
+    bool held_known;
+    long held_ver;
+    size_t held_devices;
+};
+
+struct e2e_slot {
+    char slug[MAX_SLUG];
+    int network_id;
+    /* worker only */
+    e2e_store *store;
+    e2e_record rec;
+    bool have_rec;
+    /* app->lock */
+    struct e2e_view view;
+};
+
+/* Below this the server has no device identities (wire v2): E2E stays off,
+ * and /e2e init refuses (§14). Claim and copies (v50) and the consent
+ * requests (v53) gate on their own numbers where they are used. */
+#define E2E_MIN_PROTOCOL 49
+
 struct app {
     struct url url;
     char token[MAX_TOKEN];
@@ -1830,6 +1893,10 @@ struct app {
      * sidebar says so instead of counting down. */
     bool ws_severed;
     SSL_CTX *ssl_ctx;
+    /* The server's protocol_version from GET /api/config, -1 unknown. */
+    long server_protocol;
+    struct e2e_slot e2e[MAX_NETWORKS];
+    size_t e2e_count;
 };
 
 static void die(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -7507,6 +7574,9 @@ static void report_protocol(struct app *app) {
         log_line(app, "GET /api/config: no protocol_version in the reply");
         return;
     }
+    pthread_mutex_lock(&app->lock);
+    app->server_protocol = server;
+    pthread_mutex_unlock(&app->lock);
     char line[256];
     protocol_report(server, floor, WIRE_PROTOCOL_VERSION, line, sizeof(line));
     log_line(app, "%s", line);
@@ -14598,12 +14668,713 @@ static bool dequeue_job(struct app *app, struct job *job) {
     return true;
 }
 
+/* ── E2E: the identity on each network (docs/plans §8.1, §7) ───────────
+ *
+ * The doors around e2e.c's pure decisions. Everything below runs on the
+ * JOB WORKER (JOB_E2E_SYNC, JOB_E2E_INIT): it owns every slot's store and
+ * record (see struct e2e_slot), so nothing here takes app->lock around a
+ * record, and no door is ever called under it. The boot path only
+ * ENQUEUES the syncs — the UI comes up without waiting for a single E2E
+ * round trip.
+ *
+ * What a sync does, per identity.ts runSync, and what it never does: it
+ * lists this device again when grappa lost the list and the master is
+ * here (relist), takes our master's newer list (adopt), and tops the key
+ * bundle up. It never creates an identity (that is /e2e init, a person's
+ * decision), never pairs (a later slice), and never deletes anything on
+ * grappa but this device's own registration when the list put that was
+ * to follow it failed — cic's enlist rollback, without which the
+ * unlisted row holds one of the account's three device rooms for good. */
+
+/* One E2E door's answer: the status (0 = transport), the error token of a
+ * refusal (or the transport's reason), and the parsed 2xx body when the
+ * door has one. */
+struct e2e_reply {
+    int status;
+    char error[128];
+    json_doc *doc;
+};
+
+static void e2e_reply_free(struct e2e_reply *r) {
+    json_free(r->doc);
+    r->doc = NULL;
+}
+
+/* "HTTP 409 too_many_devices", "unreachable (…)": what a refusal says. */
+static void e2e_reply_describe(const struct e2e_reply *r, char *out, size_t out_sz) {
+    if (r->status == 0) snprintf(out, out_sz, "unreachable (%s)", r->error);
+    else if (r->error[0]) snprintf(out, out_sz, "HTTP %d %s", r->status, r->error);
+    else snprintf(out, out_sz, "HTTP %d", r->status);
+}
+
+static bool e2e_refused_as(const struct e2e_reply *r, const char *token) {
+    return r->status >= 400 && strcmp(r->error, token) == 0;
+}
+
+/* The one call path every E2E door takes (wire.h's door table). True on a
+ * 2xx — with `doc` set when the door answers a body, which must parse. */
+static bool e2e_door(struct app *app, wire_e2e_door door, const char *slug, const char *did,
+                     long after, const char *body, struct e2e_reply *out) {
+    memset(out, 0, sizeof(*out));
+    char *enc = url_encode(slug);
+    char path[512];
+    bool shaped = wire_e2e_door_path(door, enc, did, after, path, sizeof(path));
+    free(enc);
+    if (!shaped) {
+        snprintf(out->error, sizeof(out->error), "no such path");
+        return false;
+    }
+    struct http_response r = http_request(app, wire_e2e_door_method(door), path, body);
+    out->status = r.status;
+    bool ok = r.status >= 200 && r.status < 300;
+    json_doc *d = r.status && r.body_len ? json_parse(r.body, r.body_len, NULL, 0) : NULL;
+    if (r.status == 0) {
+        snprintf(out->error, sizeof(out->error), "%.100s", r.body ? r.body : "");
+    } else if (!ok) {
+        const char *token = d ? wire_e2e_error(json_root(d)) : NULL;
+        if (token) snprintf(out->error, sizeof(out->error), "%.100s", token);
+    } else if (wire_e2e_door_has_body(door)) {
+        out->doc = d;
+        d = NULL;
+        if (!out->doc) {
+            snprintf(out->error, sizeof(out->error), "unreadable reply");
+            ok = false;
+        }
+    }
+    json_free(d);
+    free(r.body);
+    return ok;
+}
+
+static struct e2e_slot *e2e_slot_by_slug_locked(struct app *app, const char *slug) {
+    for (size_t i = 0; i < app->e2e_count; i++)
+        if (irc_name_eq(app->e2e[i].slug, slug)) return &app->e2e[i];
+    return NULL;
+}
+
+/* The slot for a network the session lists, made on first use. NULL when
+ * the network is not listed (or the table is full). */
+static struct e2e_slot *e2e_slot_for(struct app *app, const char *slug) {
+    pthread_mutex_lock(&app->lock);
+    struct e2e_slot *s = e2e_slot_by_slug_locked(app, slug);
+    struct network *n = network_by_slug_locked(app, slug);
+    if (!s && n && app->e2e_count < MAX_NETWORKS) {
+        s = &app->e2e[app->e2e_count++];
+        memset(s, 0, sizeof(*s));
+        snprintf(s->slug, sizeof(s->slug), "%s", n->slug);
+        s->network_id = n->id;
+    }
+    pthread_mutex_unlock(&app->lock);
+    return s;
+}
+
+static void e2e_view_put(struct app *app, struct e2e_slot *s, const struct e2e_view *v) {
+    pthread_mutex_lock(&app->lock);
+    s->view = *v;
+    pthread_mutex_unlock(&app->lock);
+}
+
+/* The view of a slot whose record holds a place on the identity. */
+static void e2e_view_ready(struct e2e_slot *s, struct e2e_view *v) {
+    const e2e_own *own = s->rec.own;
+    v->state = E2E_SLOT_READY;
+    v->why[0] = '\0';
+    snprintf(v->did, sizeof(v->did), "%s", own->did);
+    snprintf(v->master, sizeof(v->master), "%s", own->master);
+    v->holder = s->rec.master != NULL;
+    v->list_ver = own->list_ver;
+    v->list_devices = own->list_devices.n;
+}
+
+/* <state>/e2e-<identity hash>/<network id>: per identity like the bot
+ * directory, per network like cic's slot (one identity per network). */
+static void e2e_slot_dir(struct app *app, const struct e2e_slot *s, char *out, size_t out_sz) {
+    char *state = shottino_state_dir();
+    char key[32];
+    token_key_hash(app->url.base, app->subject, key, sizeof(key));
+    snprintf(out, out_sz, "%s/e2e-%s/%d", state, key, s->network_id);
+    free(state);
+}
+
+/* Persist the slot's record: the step BEFORE anything it enables leaves
+ * this process (an OTK published, a ratchet step sent). */
+static bool e2e_save(struct app *app, struct e2e_slot *s) {
+    char err[256];
+    if (e2e_store_save(s->store, &s->rec, err, sizeof(err))) return true;
+    card(app, s->slug, "--- e2e: could not store this device's record: %s", err);
+    return false;
+}
+
+/* Open the slot's store and read its record, once per run. False (with
+ * the view set) when this run cannot hold the device: off, busy, or the
+ * disk refused. A record that is not one (CORRUPT) is set aside as cic
+ * sets it aside: this device starts with none, and the file is left as
+ * it is until an /e2e init replaces it. */
+static bool e2e_slot_open(struct app *app, struct e2e_slot *s, struct e2e_view *v) {
+    pthread_mutex_lock(&app->lock);
+    long proto = app->server_protocol;
+    pthread_mutex_unlock(&app->lock);
+    if (proto < E2E_MIN_PROTOCOL) {
+        v->state = E2E_SLOT_OFF;
+        if (proto < 0)
+            snprintf(v->why, sizeof(v->why),
+                     "the server's protocol version is unknown (GET /api/config failed)");
+        else
+            snprintf(v->why, sizeof(v->why),
+                     "the server speaks protocol v%ld; encrypted queries need v%d", proto,
+                     E2E_MIN_PROTOCOL);
+        return false;
+    }
+    if (s->store && s->have_rec) return true;
+    char dir[PATH_MAX];
+    e2e_slot_dir(app, s, dir, sizeof(dir));
+    char err[256];
+    if (!s->store) {
+        e2e_store_status st = e2e_store_open(dir, &s->store, err, sizeof(err));
+        if (st == E2E_STORE_BUSY) {
+            v->state = E2E_SLOT_BUSY;
+            snprintf(v->why, sizeof(v->why), "another shottino holds this device (%.200s)", dir);
+            card(app, s->slug,
+                 "--- e2e: another shottino holds this device (%s) — encrypted queries are off on "
+                 "%s for this run",
+                 dir, s->slug);
+            return false;
+        }
+        if (st != E2E_STORE_OK) {
+            v->state = E2E_SLOT_ERROR;
+            snprintf(v->why, sizeof(v->why), "cannot open %.120s: %.120s", dir, err);
+            return false;
+        }
+    }
+    e2e_load_status ld = e2e_store_load(s->store, &s->rec, err, sizeof(err));
+    switch (ld) {
+    case E2E_LOAD_OK:
+        if (s->rec.own && !e2e_own_verify(s->rec.own, s->rec.account)) {
+            /* The place on disk does not hold together (its list's
+             * signature, its certificate, its did). Nothing is sent with
+             * it, and nothing replaces it behind the user's back. */
+            e2e_record_free(&s->rec);
+            v->state = E2E_SLOT_ERROR;
+            snprintf(v->why, sizeof(v->why),
+                     "the identity stored in %.150s does not verify; left as it is", dir);
+            return false;
+        }
+        break;
+    case E2E_LOAD_NONE:
+        e2e_record_new(&s->rec);
+        break;
+    case E2E_LOAD_CORRUPT:
+        card(app, s->slug,
+             "--- e2e: %s/record.json is not a record this shottino wrote (%s); starting with "
+             "none — the file stays until /e2e init replaces it",
+             dir, err);
+        e2e_record_new(&s->rec);
+        break;
+    case E2E_LOAD_ERROR:
+        v->state = E2E_SLOT_ERROR;
+        snprintf(v->why, sizeof(v->why), "cannot read %.120s: %.120s", dir, err);
+        return false;
+    }
+    s->have_rec = true;
+    return true;
+}
+
+/* grappa's list as the decision reads it; `held` borrows from `doc`. */
+static bool e2e_held_list(const json_value *root, e2e_master_list *held) {
+    struct wire_e2e_list l;
+    if (!wire_narrow_e2e_list(root, &l)) return false;
+    memset(held, 0, sizeof(*held));
+    held->ed25519 = l.master;
+    held->ver = l.ver;
+    held->ndevices = l.device_count;
+    for (size_t i = 0; i < l.device_count && i < E2E_MAX_DEVICES; i++)
+        held->devices[i] = wire_string_at(l.devices, i);
+    held->sig = l.sig;
+    return true;
+}
+
+/* keyBundle.ts topUp, in identity.ts's order: the record is stored with
+ * the new keys BEFORE they leave, and they are marked published only once
+ * grappa has them — an upload that fails sends the same keys next time
+ * (grappa skips the ones it holds). `held_otks` < 0: ask grappa first. */
+static void e2e_top_up_keys(struct app *app, struct e2e_slot *s, struct e2e_view *v,
+                            long held_otks, bool held_fallback) {
+    const char *did = s->rec.own->did;
+    struct e2e_reply r;
+    char why[200];
+    if (held_otks < 0) {
+        if (!e2e_door(app, WIRE_E2E_BUNDLE_STATUS, s->slug, did, -1, NULL, &r) ||
+            !wire_narrow_e2e_key_status(json_root(r.doc), &held_otks, &held_fallback)) {
+            e2e_reply_describe(&r, why, sizeof(why));
+            card(app, s->slug, "--- e2e: cannot read this device's key bundle (%s)", why);
+            e2e_reply_free(&r);
+            return;
+        }
+        e2e_reply_free(&r);
+    }
+    v->keys_known = true;
+    v->one_time_keys = held_otks;
+    v->fallback = held_fallback;
+    char *upload = e2e_top_up(s->rec.account, held_otks, held_fallback);
+    if (!upload) return;
+    if (!e2e_save(app, s)) {
+        free(upload);
+        return;
+    }
+    bool ok = e2e_door(app, WIRE_E2E_BUNDLE_UPLOAD, s->slug, did, -1, upload, &r) &&
+              wire_narrow_e2e_key_status(json_root(r.doc), &held_otks, &held_fallback);
+    free(upload);
+    if (!ok) {
+        e2e_reply_describe(&r, why, sizeof(why));
+        card(app, s->slug, "--- e2e: key upload refused (%s) — the same keys go next sync", why);
+        e2e_reply_free(&r);
+        return;
+    }
+    e2e_reply_free(&r);
+    vz_account_mark_keys_as_published(s->rec.account);
+    e2e_save(app, s);
+    v->one_time_keys = held_otks;
+    v->fallback = held_fallback;
+}
+
+/* identity.ts enlist: register this device, then put `own`'s list. A put
+ * that fails drops the registration again, best effort — a device
+ * registered and never listed holds one of the account's rooms for good.
+ * False with `why` set. */
+static bool e2e_enlist(struct app *app, struct e2e_slot *s, const e2e_own *own, bool *mismatch,
+                       char *why, size_t why_sz) {
+    *mismatch = false;
+    char *reg = e2e_register_body(s->rec.account, own->master);
+    struct e2e_reply r;
+    struct wire_e2e_device dev;
+    bool ok = reg && e2e_door(app, WIRE_E2E_DEVICE_REGISTER, s->slug, NULL, -1, reg, &r) &&
+              wire_narrow_e2e_device(json_root(r.doc), &dev);
+    free(reg);
+    if (!ok) {
+        char said[160];
+        e2e_reply_describe(&r, said, sizeof(said));
+        if (e2e_refused_as(&r, "too_many_devices"))
+            snprintf(why, why_sz,
+                     "grappa already holds the most devices this account may have (%s); "
+                     "remove one from cicchetto first",
+                     said);
+        else
+            snprintf(why, why_sz, "registering this device: %s", said);
+        e2e_reply_free(&r);
+        return false;
+    }
+    bool same = strcmp(dev.did, own->did) == 0;
+    e2e_reply_free(&r);
+    if (!same) {
+        snprintf(why, why_sz, "grappa registered this device under another did");
+        return false;
+    }
+    char *put = e2e_list_put_body(own);
+    ok = put && e2e_door(app, WIRE_E2E_LIST_PUT, s->slug, NULL, -1, put, &r);
+    free(put);
+    if (ok) {
+        e2e_reply_free(&r);
+        return true;
+    }
+    char said[160];
+    e2e_reply_describe(&r, said, sizeof(said));
+    *mismatch = e2e_refused_as(&r, "master_mismatch");
+    snprintf(why, why_sz, "putting the device list: %s", said);
+    e2e_reply_free(&r);
+    struct e2e_reply d;
+    if (!e2e_door(app, WIRE_E2E_DEVICE_DELETE, s->slug, own->did, -1, NULL, &d) && d.status != 404)
+        card(app, s->slug, "--- e2e: could not drop the unlisted device %s again", own->did);
+    e2e_reply_free(&d);
+    return false;
+}
+
+static void e2e_replace_own(struct e2e_slot *s, e2e_own *fresh) {
+    if (!s->rec.own) s->rec.own = calloc(1, sizeof(*s->rec.own));
+    if (!s->rec.own) die("out of memory");
+    e2e_own_free(s->rec.own);
+    *s->rec.own = *fresh;
+    memset(fresh, 0, sizeof(*fresh));
+}
+
+/* The plan's view and the line that says it, for the four ELSEWHEREs. */
+static void e2e_view_elsewhere(struct app *app, struct e2e_slot *s, struct e2e_view *v,
+                               e2e_sync_plan plan, const e2e_master_list *held) {
+    v->state = E2E_SLOT_ELSEWHERE;
+    v->plan = plan;
+    v->held_known = held != NULL;
+    v->held_ver = held ? (long)held->ver : 0;
+    v->held_devices = held ? held->ndevices : 0;
+    card(app, s->slug,
+         "--- e2e: the account's encrypted identity on %s does not include this device (%s) — "
+         "pair it from cicchetto; /e2e shows the details",
+         s->slug, e2e_sync_plan_name(plan));
+}
+
+/* One network's sync (identity.ts runSync), on the worker. */
+static void e2e_sync_slot(struct app *app, struct e2e_slot *s) {
+    struct e2e_view v;
+    memset(&v, 0, sizeof(v));
+    if (!e2e_slot_open(app, s, &v)) {
+        e2e_view_put(app, s, &v);
+        return;
+    }
+    struct e2e_reply r;
+    char why[200];
+    bool got = e2e_door(app, WIRE_E2E_LIST_GET, s->slug, NULL, -1, NULL, &r);
+    e2e_master_list held;
+    bool have_held = false;
+    if (got) {
+        have_held = e2e_held_list(json_root(r.doc), &held);
+        if (!have_held) {
+            v.state = E2E_SLOT_ERROR;
+            snprintf(v.why, sizeof(v.why), "grappa's device list is not one");
+            goto done;
+        }
+    } else if (r.status != 404) {
+        e2e_reply_describe(&r, why, sizeof(why));
+        v.state = E2E_SLOT_ERROR;
+        snprintf(v.why, sizeof(v.why), "reading the device list: %s", why);
+        goto done;
+    }
+    e2e_sync_plan plan = e2e_sync_decide(&s->rec, have_held ? &held : NULL);
+    switch (plan) {
+    case E2E_SYNC_NONE:
+        v.state = E2E_SLOT_NONE;
+        goto done;
+    case E2E_SYNC_ELSEWHERE_NO_KEYS:
+    case E2E_SYNC_ELSEWHERE_NO_LIST:
+    case E2E_SYNC_ELSEWHERE_REPLACED:
+    case E2E_SYNC_ELSEWHERE_LEFT_OUT:
+        /* PAIRING HOOK (slice C): a joiner starts from here. */
+        e2e_view_elsewhere(app, s, &v, plan, have_held ? &held : NULL);
+        goto done;
+    case E2E_SYNC_RELIST: {
+        e2e_own fresh;
+        bool mismatch;
+        if (!e2e_own_relisted(&s->rec, &fresh)) {
+            v.state = E2E_SLOT_ERROR;
+            snprintf(v.why, sizeof(v.why), "cannot sign the list again");
+            goto done;
+        }
+        if (!e2e_enlist(app, s, &fresh, &mismatch, why, sizeof(why))) {
+            e2e_own_free(&fresh);
+            v.state = E2E_SLOT_ERROR;
+            snprintf(v.why, sizeof(v.why), "listing this device again: %s", why);
+            goto done;
+        }
+        e2e_replace_own(s, &fresh);
+        if (!e2e_save(app, s)) {
+            v.state = E2E_SLOT_ERROR;
+            snprintf(v.why, sizeof(v.why), "the relisted identity could not be stored");
+            goto done;
+        }
+        card(app, s->slug, "--- e2e: grappa had lost the device list on %s; listed this device "
+                           "again at v%ld",
+             s->slug, s->rec.own->list_ver);
+        break;
+    }
+    case E2E_SYNC_ADOPT: {
+        e2e_own fresh;
+        e2e_own_adopted(s->rec.own, &held, &fresh);
+        e2e_replace_own(s, &fresh);
+        if (!e2e_save(app, s)) {
+            v.state = E2E_SLOT_ERROR;
+            snprintf(v.why, sizeof(v.why), "the newer list could not be stored");
+            goto done;
+        }
+        break;
+    }
+    case E2E_SYNC_READY:
+        /* runSync takes grappa's list on its word here; a list for our
+         * master that does not carry its signature is not one, so this
+         * device does nothing with it until a sync reads one that does. */
+        if (!e2e_valid_master_list(&held)) {
+            v.state = E2E_SLOT_ERROR;
+            snprintf(v.why, sizeof(v.why),
+                     "grappa's device list for our master does not verify");
+            goto done;
+        }
+        break;
+    }
+    e2e_reply_free(&r);
+    e2e_view_ready(s, &v);
+    e2e_top_up_keys(app, s, &v, -1, false);
+done:
+    e2e_reply_free(&r);
+    e2e_view_put(app, s, &v);
+}
+
+/* /e2e init: a new identity with this device as its first, the master
+ * here (identity.ts bootstrap). Only when grappa holds none: an identity
+ * is never replaced from here. The record is stored with the master and
+ * the place BEFORE grappa hears of them, so a crash midway leaves the
+ * master on disk and the next sync lists it (relist) instead of losing
+ * it; a clean refusal takes them back out. */
+static void e2e_init_slot(struct app *app, struct e2e_slot *s) {
+    struct e2e_view v;
+    memset(&v, 0, sizeof(v));
+    if (!e2e_slot_open(app, s, &v)) {
+        e2e_view_put(app, s, &v);
+        card(app, s->slug, "--- /e2e init %s: refused — %s", s->slug, v.why);
+        return;
+    }
+    struct e2e_reply r;
+    char why[256];
+    if (e2e_door(app, WIRE_E2E_LIST_GET, s->slug, NULL, -1, NULL, &r)) {
+        struct wire_e2e_list l;
+        bool shaped = wire_narrow_e2e_list(json_root(r.doc), &l);
+        card(app, s->slug,
+             "--- /e2e init %s: refused — the account already has an encrypted identity here "
+             "(list v%ld, %zu device%s); it is never replaced from shottino",
+             s->slug, shaped ? (long)l.ver : 0L, shaped ? l.device_count : 0,
+             shaped && l.device_count == 1 ? "" : "s");
+        e2e_reply_free(&r);
+        e2e_sync_slot(app, s);
+        return;
+    }
+    if (r.status != 404) {
+        e2e_reply_describe(&r, why, sizeof(why));
+        card(app, s->slug, "--- /e2e init %s: cannot read the device list (%s)", s->slug, why);
+        e2e_reply_free(&r);
+        return;
+    }
+    e2e_reply_free(&r);
+    if (s->rec.own && s->rec.master) {
+        /* Ours, and grappa lost it: that is a relist, which a sync does. */
+        e2e_sync_slot(app, s);
+        return;
+    }
+    if (s->rec.own) {
+        /* A place in an identity grappa no longer holds, without its
+         * master: nothing of it can be repaired from here. */
+        card(app, s->slug, "--- e2e: dropping this device's place in an identity grappa no "
+                           "longer holds, to start a new one");
+        e2e_record_free(&s->rec);
+        e2e_record_new(&s->rec);
+    }
+    vz_account *master = vz_account_new();
+    e2e_own *own = calloc(1, sizeof(*own));
+    if (!master || !own) die("out of memory");
+    e2e_own_bootstrap(s->rec.account, master, own);
+    s->rec.master = master;
+    s->rec.own = own;
+    if (!e2e_save(app, s)) {
+        vz_account_free(s->rec.master);
+        s->rec.master = NULL;
+        e2e_own_free(s->rec.own);
+        free(s->rec.own);
+        s->rec.own = NULL;
+        card(app, s->slug, "--- /e2e init %s: nothing was sent", s->slug);
+        return;
+    }
+    bool mismatch;
+    if (!e2e_enlist(app, s, own, &mismatch, why, sizeof(why))) {
+        vz_account_free(s->rec.master);
+        s->rec.master = NULL;
+        e2e_own_free(s->rec.own);
+        free(s->rec.own);
+        s->rec.own = NULL;
+        e2e_save(app, s);
+        if (mismatch) {
+            card(app, s->slug, "--- /e2e init %s: another device made the identity first; it "
+                               "stands",
+                 s->slug);
+            e2e_sync_slot(app, s);
+        } else {
+            card(app, s->slug, "--- /e2e init %s: failed — %s", s->slug, why);
+            memset(&v, 0, sizeof(v));
+            v.state = E2E_SLOT_NONE;
+            e2e_view_put(app, s, &v);
+        }
+        return;
+    }
+    e2e_view_ready(s, &v);
+    e2e_top_up_keys(app, s, &v, 0, false);
+    e2e_view_put(app, s, &v);
+    card(app, s->slug,
+         "--- e2e: encrypted identity created on %s — this device (%s) holds its master key; "
+         "list v1, 1 device, %ld one-time key%s published",
+         s->slug, v.did, v.one_time_keys, v.one_time_keys == 1 ? "" : "s");
+    card(app, s->slug, "--- e2e: master key %s (what a peer, or a bot's operator, pins)", v.master);
+}
+
+/* JOB_E2E_SYNC / JOB_E2E_INIT. An empty network is every listed one. */
+static void e2e_job(struct app *app, const struct job *job) {
+    char slugs[MAX_NETWORKS][MAX_SLUG];
+    size_t n = 0;
+    pthread_mutex_lock(&app->lock);
+    for (size_t i = 0; i < app->network_count && n < MAX_NETWORKS; i++)
+        if (!job->network[0] || irc_name_eq(app->networks[i].slug, job->network))
+            snprintf(slugs[n++], sizeof(slugs[0]), "%s", app->networks[i].slug);
+    pthread_mutex_unlock(&app->lock);
+    for (size_t i = 0; i < n; i++) {
+        struct e2e_slot *s = e2e_slot_for(app, slugs[i]);
+        if (!s) continue;
+        if (job->kind == JOB_E2E_INIT) e2e_init_slot(app, s);
+        else e2e_sync_slot(app, s);
+    }
+}
+
+static void e2e_enqueue(struct app *app, enum job_kind kind, const char *slug) {
+    struct job job = {.kind = kind};
+    snprintf(job.network, sizeof(job.network), "%s", slug ? slug : "");
+    enqueue_job(app, job);
+}
+
+/* After the worker is joined: nothing else holds a slot. */
+static void e2e_slots_free(struct app *app) {
+    for (size_t i = 0; i < app->e2e_count; i++) {
+        struct e2e_slot *s = &app->e2e[i];
+        if (s->have_rec) e2e_record_free(&s->rec);
+        s->have_rec = false;
+        if (s->store) e2e_store_close(s->store);
+        s->store = NULL;
+    }
+    app->e2e_count = 0;
+}
+
+/* One network's /e2e status line (or two: the master key of a ready one),
+ * from its view. Pure: test_windows reads it. */
+static size_t e2e_status_lines(const char *slug, const struct e2e_view *v, char out[2][MAX_LINE]) {
+    out[1][0] = '\0';
+    switch (v->state) {
+    case E2E_SLOT_UNSYNCED:
+        snprintf(out[0], MAX_LINE, "e2e %s: not looked at yet (/e2e sync %s)", slug, slug);
+        return 1;
+    case E2E_SLOT_OFF:
+        snprintf(out[0], MAX_LINE, "e2e %s: off — %s", slug, v->why);
+        return 1;
+    case E2E_SLOT_BUSY:
+        snprintf(out[0], MAX_LINE, "e2e %s: off — %s", slug, v->why);
+        return 1;
+    case E2E_SLOT_ERROR:
+        snprintf(out[0], MAX_LINE, "e2e %s: error — %s; /e2e sync %s tries again", slug, v->why,
+                 slug);
+        return 1;
+    case E2E_SLOT_NONE:
+        snprintf(out[0], MAX_LINE,
+                 "e2e %s: none — the account has no encrypted identity here; /e2e init %s makes "
+                 "one, with this device holding its master key",
+                 slug, slug);
+        return 1;
+    case E2E_SLOT_ELSEWHERE: {
+        const char *what = "";
+        switch (v->plan) {
+        case E2E_SYNC_ELSEWHERE_NO_KEYS: what = "the account's identity lives on other devices"; break;
+        case E2E_SYNC_ELSEWHERE_NO_LIST: what = "grappa lost the list of the identity this device was part of, and its master is not here"; break;
+        case E2E_SYNC_ELSEWHERE_REPLACED: what = "the identity this device was part of was replaced"; break;
+        case E2E_SYNC_ELSEWHERE_LEFT_OUT: what = "this device was removed from the identity"; break;
+        default: break;
+        }
+        char held[64] = "";
+        if (v->held_known)
+            snprintf(held, sizeof(held), " (list v%ld, %zu device%s)", v->held_ver,
+                     v->held_devices, v->held_devices == 1 ? "" : "s");
+        snprintf(out[0], MAX_LINE, "e2e %s: elsewhere, %s — %s%s; pair this device from cicchetto",
+                 slug, e2e_sync_plan_name(v->plan), what, held);
+        return 1;
+    }
+    case E2E_SLOT_READY: {
+        char keys[96] = "key bundle not read";
+        if (v->keys_known)
+            snprintf(keys, sizeof(keys), "%ld one-time key%s%s on grappa", v->one_time_keys,
+                     v->one_time_keys == 1 ? "" : "s", v->fallback ? " + fallback" : ", no fallback");
+        snprintf(out[0], MAX_LINE, "e2e %s: %s — device %s, list v%ld, %zu device%s, %s; %s",
+                 slug, v->holder ? "holder" : "paired", v->did, v->list_ver, v->list_devices,
+                 v->list_devices == 1 ? "" : "s",
+                 v->holder ? "this device holds the master key" : "the master key is elsewhere",
+                 keys);
+        snprintf(out[1], MAX_LINE, "  master key %s", v->master);
+        return 2;
+    }
+    }
+    return 0;
+}
+
+/* /e2e [status [network]] | init [network] | sync [network]. */
+static void e2e_command(struct app *app, const char *args) {
+    while (*args == ' ') args++;
+    char sub[16] = "", net[MAX_SLUG] = "";
+    sscanf(args, "%15s %127s", sub, net);
+    bool status = !sub[0] || strcmp(sub, "status") == 0;
+    if (!status && strcmp(sub, "init") != 0 && strcmp(sub, "sync") != 0) {
+        log_line(app, "usage: /e2e [status [network]] | init [network] | sync [network]");
+        return;
+    }
+    if (!net[0] && !status) current_window_key(app, net, sizeof(net), NULL, 0);
+    struct {
+        char slug[MAX_SLUG];
+        struct e2e_view view;
+    } rows[MAX_NETWORKS];
+    size_t n = 0;
+    bool known = !net[0];
+    long proto;
+    pthread_mutex_lock(&app->lock);
+    proto = app->server_protocol;
+    for (size_t i = 0; i < app->network_count; i++) {
+        if (net[0] && !irc_name_eq(app->networks[i].slug, net)) continue;
+        known = true;
+        snprintf(rows[n].slug, sizeof(rows[n].slug), "%s", app->networks[i].slug);
+        struct e2e_slot *s = e2e_slot_by_slug_locked(app, app->networks[i].slug);
+        if (s) rows[n].view = s->view;
+        else memset(&rows[n].view, 0, sizeof(rows[n].view));
+        n++;
+    }
+    pthread_mutex_unlock(&app->lock);
+    if (!known) {
+        log_line(app, "/e2e: no network %s", net);
+        return;
+    }
+    if (!status && n != 1) {
+        log_line(app, "/e2e %s: name the network (/e2e %s <network>)", sub, sub);
+        return;
+    }
+    if (status) {
+        for (size_t i = 0; i < n; i++) {
+            char lines[2][MAX_LINE];
+            size_t k = e2e_status_lines(rows[i].slug, &rows[i].view, lines);
+            for (size_t j = 0; j < k; j++) log_line(app, "%s", lines[j]);
+        }
+        if (n == 0) log_line(app, "e2e: no networks");
+        return;
+    }
+    if (proto < E2E_MIN_PROTOCOL) {
+        log_line(app, "/e2e %s %s: refused — %s; encrypted queries need protocol v%d", sub,
+                 rows[0].slug, proto < 0 ? "the server's protocol version is unknown"
+                                         : "the server speaks an older protocol",
+                 E2E_MIN_PROTOCOL);
+        return;
+    }
+    if (strcmp(sub, "init") == 0) {
+        const struct e2e_view *v = &rows[0].view;
+        if (v->state == E2E_SLOT_READY || v->state == E2E_SLOT_ELSEWHERE) {
+            log_line(app, "/e2e init %s: refused — the account already has an encrypted identity "
+                          "here; it is never replaced from shottino (/e2e shows it)",
+                     rows[0].slug);
+            return;
+        }
+        if (v->state == E2E_SLOT_BUSY) {
+            log_line(app, "/e2e init %s: refused — %s", rows[0].slug, v->why);
+            return;
+        }
+        log_line(app, "/e2e init %s: creating an encrypted identity…", rows[0].slug);
+        e2e_enqueue(app, JOB_E2E_INIT, rows[0].slug);
+        return;
+    }
+    log_line(app, "/e2e sync %s…", net[0] ? rows[0].slug : "(every network)");
+    e2e_enqueue(app, JOB_E2E_SYNC, net[0] ? rows[0].slug : "");
+}
+
 static void attach_network_target(struct app *app, const char *slug);
 static void *worker_main(void *arg) {
     struct app *app = arg;
     struct job job;
     while (dequeue_job(app, &job)) {
         switch (job.kind) {
+        case JOB_E2E_SYNC:
+        case JOB_E2E_INIT:
+            e2e_job(app, &job);
+            break;
         case JOB_FETCH:
             refresh_window(app, job.network, job.channel);
             break;
@@ -14732,6 +15503,9 @@ static void attach_network_target(struct app *app, const char *slug) {
     free(ch.body);
     ws_sync_dm_listeners(app);
     log_line(app, "--- network %s attached to the session", slug);
+    /* On this same worker, so right after: what seed_state's boot queue
+     * gives every network. */
+    e2e_enqueue(app, JOB_E2E_SYNC, slug);
 }
 
 /* Queue a read-cursor publish. Deliberately fire-and-forget: the cursor
@@ -16229,7 +17003,7 @@ static const char *commands[] = {
     "/admin", "/alias", "/answer", "/approve", "/archive", "/away", "/ban", "/banlist", "/block",
     "/bot", "/call", "/camera",
     "/chat", "/clear", "/close", "/connect", "/cs", "/ctcp", "/dcc", "/dehilight", "/deny", "/deop",
-    "/devoice", "/dictate", "/die", "/disconnect", "/exec", "/exit", "/focus", "/focus-off", "/globops",
+    "/devoice", "/dictate", "/die", "/disconnect", "/e2e", "/exec", "/exit", "/focus", "/focus-off", "/globops",
     "/hangup", "/help",
     "/highlight",
     "/hilight", "/hs", "/ignore", "/info", "/invite", "/j", "/join", "/kb", "/keys", "/kick",
@@ -18917,6 +19691,7 @@ static void show_help(struct app *app) {
     log_line(app, "network: /connect slug /disconnect [slug] [reason] /nick nick /away [reason] /umode +modes /mode [#chan] +modes [params]");
     log_line(app, "info: /topic [text|-delete] /members [/users] /whois nick /whowas nick /who [#chan] /names [#chan] /lusers /list [-refresh|query] /links /motd /info /version /stats [q] /rehash [opt]");
     log_line(app, "oper: /kill nick reason /kline [secs] user@host reason /unkline mask /wallops text /globops text /locops text /trace [target] /squit server reason /sconnect server [port] /die /restart");
+    log_line(app, "encryption: /e2e [status] shows each network's encrypted-query identity; /e2e init [network] creates one with this device; /e2e sync [network] reads it again");
     log_line(app, "people: /ping nick times the round trip; /block [nick] (/ignore) hides somebody HERE only and bare /block lists them; /unblock nick (/unignore) shows them again");
     log_line(app, "ops: /op nicks /deop nicks /voice nicks /devoice nicks /kick nick [reason] /kb nick [reason] /ban mask /unban mask /banlist /invite nick");
     log_line(app, "watch: /notify [nick...|del nick|list] watches PEOPLE; /hilight pattern, /dehilight pattern watch WORDS (/watch add|del|list is the older spelling)");
@@ -18974,6 +19749,7 @@ static void show_command_help(struct app *app, const char *raw) {
     else if (strcmp(cmd, "exec") == 0) log_line(app, "/exec <command> — run it in a shell and SEND its stdout to the current window (everyone sees it); capped at 20 lines / 16 KiB, killed after 15s, stderr discarded");
     else if (strcmp(cmd, "ctcp") == 0) log_line(app, "/ctcp <nick|#channel> <VERB> [args] — send any CTCP query (VERSION, TIME, FINGER…); the reply lands in the window you asked from. /ping is the timed special case");
     else if (strcmp(cmd, "ping") == 0) log_line(app, "/ping nick — CTCP PING somebody and time the round trip; the answer lands in the window you asked from");
+    else if (strcmp(cmd, "e2e") == 0) log_line(app, "/e2e [status [network]] — per network: whether this device is part of the account's end-to-end encrypted identity (none, elsewhere, holder, paired), its device id, the device list version and size, whether it holds the master key, and its key bundle on grappa. /e2e init [network] creates the identity when the account has none (this device becomes its first and holds the master key; never replaces one). /e2e sync [network] reads it again. Needs server protocol v49");
     else if (strcmp(cmd, "block") == 0 || strcmp(cmd, "ignore") == 0) log_line(app, "/block [nick], /ignore [nick] — hide somebody's messages in THIS client only (nothing is sent to the server); bare /block lists who is blocked");
     else if (strcmp(cmd, "unblock") == 0 || strcmp(cmd, "unignore") == 0) log_line(app, "/unblock nick, /unignore nick — show somebody's messages again");
     else if (strcmp(cmd, "whowas") == 0) log_line(app, "/whowas nick — request WHOWAS for nick");
@@ -21378,6 +22154,8 @@ static void handle_command_dispatch(struct app *app, char *line) {
             ping_remember(app, net_now, target, stamp);
             card(app, net_now, "--- PING sent to %s", target);
         }
+    } else if (verb_args(line, "/e2e")) {
+        e2e_command(app, verb_args(line, "/e2e"));
     } else if ((strncmp(line, "/block", 6) == 0 && (line[6] == ' ' || line[6] == '\0')) ||
                (strncmp(line, "/ignore", 7) == 0 && (line[7] == ' ' || line[7] == '\0'))) {
         /* /ignore is the spelling irssi and hexchat users already have in
@@ -24505,6 +25283,7 @@ int main(int argc, char **argv) {
     pthread_mutex_init(&app->ws_lock, NULL);
     pthread_cond_init(&app->jobs_cond, NULL);
     app->ws.fd = -1;
+    app->server_protocol = -1;
     /* Mouse tracking ON by default.
      *
      * It costs the terminal's own click-drag selection, which is a real
@@ -24775,6 +25554,11 @@ int main(int argc, char **argv) {
         }
         if (!foreground) ircd_daemonize(app);
     }
+    /* Queued, never awaited: each network's E2E identity is read on the
+     * worker once it starts, behind nothing and ahead of nothing the UI
+     * waits on — boot does not pay a round trip for it. */
+    for (size_t i = 0; i < app->network_count; i++)
+        e2e_enqueue(app, JOB_E2E_SYNC, app->networks[i].slug);
     startup("starting background worker");
     /* Checked, like the model thread six lines below. Without a worker
      * every enqueued job silently never runs, and the shutdown join
@@ -24806,6 +25590,9 @@ int main(int argc, char **argv) {
     pthread_cond_signal(&app->jobs_cond);
     pthread_mutex_unlock(&app->jobs_lock);
     pthread_join(app->worker, NULL);
+    /* The worker owned them; it is gone, so the locks on the E2E
+     * devices are let go here. */
+    e2e_slots_free(app);
     /* The model thread. It was never stopped and never joined: llm_stop
      * was declared, read in the loop below, and assigned NOWHERE, so
      * shutdown went on to free every log line, destroy app->lock, free

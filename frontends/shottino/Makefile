@@ -64,7 +64,11 @@ OBJS := shottino.o json.o wire.o e2e.o alias.o mirc.o termcolor.o http.o media.o
 # reaches, which is the drawing primitives and nothing else. Do not trust
 # this net for changes elsewhere in that file; add a test or reason about
 # the path by hand.
-TESTS := tests/test_vodozemac tests/test_e2e tests/test_unfurl tests/test_llm tests/test_ws tests/test_json tests/test_wire tests/test_alias tests/test_mirc tests/test_termcolor tests/test_http tests/test_media tests/test_whip tests/test_callmedia tests/test_callnote tests/test_callmain tests/test_layout tests/test_keys tests/test_ircd tests/test_commands tests/test_windows tests/test_call
+TESTS := tests/test_vodozemac tests/test_e2e tests/test_unfurl tests/test_llm tests/test_ws tests/test_json tests/test_wire tests/test_alias tests/test_mirc tests/test_termcolor tests/test_http tests/test_media tests/test_whip tests/test_callmedia tests/test_callnote tests/test_callmain tests/test_layout tests/test_keys tests/test_ircd tests/test_commands tests/test_windows tests/test_e2eapp tests/test_call
+# What a suite that compiles shottino.c links beside it: every module the
+# binary links, the E2E core and vodozemac included.
+APP_TEST_SRCS := json.c wire.c e2e.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c
+APP_TEST_LIBS = $(VZ_LIB) $(LDLIBS) $(VZ_LDLIBS)
 SANITIZE ?= -fsanitize=address,undefined -fno-omit-frame-pointer
 TEST_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O1 -g $(SANITIZE)
 
@@ -185,8 +189,8 @@ tests/test_media: tests/test_media.c tests/test.h media.c media.h termcolor.c te
 # Those macros are NOT something configure detects — they ride in from
 # `pkg-config --cflags ncursesw` and differ per distribution, so no source
 # file may rely on a particular one being set.
-tests/test_layout: tests/test_layout.c tests/test.h shottino.c call/whip.c call/whip.h json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c
-	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_layout.c call/whip.c json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c $(LDLIBS)
+tests/test_layout: tests/test_layout.c tests/test.h shottino.c call/whip.c call/whip.h $(APP_TEST_SRCS) e2e.h $(VZ_LIB)
+	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_layout.c call/whip.c $(APP_TEST_SRCS) $(APP_TEST_LIBS)
 
 # test_keys needs a pty (-lutil): it feeds real byte sequences through the
 # client's own key decoding, because every key bug so far has been about
@@ -194,31 +198,36 @@ tests/test_layout: tests/test_layout.c tests/test.h shottino.c call/whip.c call/
 # test_ircd opens a real socket to the bridge and speaks IRC to it: a
 # bridge is judged by what a client sees, and that cannot be asserted
 # from the inside.
-tests/test_ircd: tests/test_ircd.c tests/test.h shottino.c call/whip.c call/whip.h json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c
-	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_ircd.c call/whip.c json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c $(LDLIBS)
+tests/test_ircd: tests/test_ircd.c tests/test.h shottino.c call/whip.c call/whip.h $(APP_TEST_SRCS) e2e.h $(VZ_LIB)
+	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_ircd.c call/whip.c $(APP_TEST_SRCS) $(APP_TEST_LIBS)
 
 # test_commands reads shottino.c off disk as well as compiling it: the
 # invariant it guards is that three lists inside that file agree, and the
 # only honest source for "what the dispatcher accepts" is the dispatcher.
-tests/test_commands: tests/test_commands.c tests/test.h shottino.c call/whip.c call/whip.h json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c
-	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_commands.c call/whip.c json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c $(LDLIBS)
+tests/test_commands: tests/test_commands.c tests/test.h shottino.c call/whip.c call/whip.h $(APP_TEST_SRCS) e2e.h $(VZ_LIB)
+	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_commands.c call/whip.c $(APP_TEST_SRCS) $(APP_TEST_LIBS)
 
 # test_windows drives the app's own window bookkeeping — no screen, no
 # socket, just state — because "which window does this name mean" is the
 # question every other bug in the sidebar has turned out to be.
-tests/test_windows: tests/test_windows.c tests/test.h shottino.c call/whip.c call/whip.h json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c
-	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_windows.c call/whip.c json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c $(LDLIBS)
+tests/test_windows: tests/test_windows.c tests/test.h shottino.c call/whip.c call/whip.h $(APP_TEST_SRCS) e2e.h $(VZ_LIB)
+	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_windows.c call/whip.c $(APP_TEST_SRCS) $(APP_TEST_LIBS)
 
 # test_call is the only suite linked against BOTH binaries: it compiles
 # shottino.c for the call helpers and links call/media.c so the codec
 # word shottino puts in the helper's argv can be handed to the helper's
 # own parser. Asserting that word against a literal here would only say
 # what this side already believes.
-tests/test_call: tests/test_call.c tests/test.h shottino.c call/media.c call/media.h call/whip.c call/whip.h json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c
-	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_call.c call/media.c call/whip.c json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c $(LDLIBS)
+tests/test_call: tests/test_call.c tests/test.h shottino.c call/media.c call/media.h call/whip.c call/whip.h $(APP_TEST_SRCS) e2e.h $(VZ_LIB)
+	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_call.c call/media.c call/whip.c $(APP_TEST_SRCS) $(APP_TEST_LIBS)
 
-tests/test_keys: tests/test_keys.c tests/test.h shottino.c call/whip.c call/whip.h json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c
-	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_keys.c call/whip.c json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c $(LDLIBS) -lutil
+# test_e2eapp: the E2E identity doors against a fake grappa on loopback —
+# what reached grappa, in which order, and what the record on disk holds.
+tests/test_e2eapp: tests/test_e2eapp.c tests/test.h shottino.c call/whip.c call/whip.h $(APP_TEST_SRCS) e2e.h $(VZ_LIB)
+	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_e2eapp.c call/whip.c $(APP_TEST_SRCS) $(APP_TEST_LIBS)
+
+tests/test_keys: tests/test_keys.c tests/test.h shottino.c call/whip.c call/whip.h $(APP_TEST_SRCS) e2e.h $(VZ_LIB)
+	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_keys.c call/whip.c $(APP_TEST_SRCS) $(APP_TEST_LIBS) -lutil
 
 # Compiling shottino.c means inheriting its reach into $HOME: anything
 # that calls shottino_state_dir() mkdirs there, and prefs_save writes the
