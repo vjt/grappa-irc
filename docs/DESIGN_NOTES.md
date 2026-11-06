@@ -4185,3 +4185,91 @@ Slice 3 wires both into the compose doors.
   explains: APNG mapped to the JPEG container also reddened the APNG
   animation test, which declares `image/apng` itself, and keeping GIF Comments
   also reddened the two colour-table tests, which each drop one.
+<!-- entry #2570 -->
+
+---
+
+## 2026-11-06 — #2570: PACKAGING.md, the packager contract, and a SHA256SUMS on every release
+
+Downstream packagers (the community AUR `grappa-bin` / `shottino-bin` today)
+build from our release assets, and nothing told them what was stable.
+`PACKAGING.md` at the repository root is now that contract: asset names and
+URLs, the package layout, the runtime user and directories, the install steps
+a repackager must replicate, the env keys, the supported platforms, the
+checksum file, the change policy, and how to follow releases.
+
+**Verified against the release, not the branch.** The release is v1.6.2 as its
+page stands today. Its 15 assets were republished on 2026-11-06T00:48Z by
+repair dispatch run 42139049819 (main at 6e3d9a884). They were downloaded into
+an empty directory and listed; nothing was executed. Results:
+
+* The local sha256 equals GitHub's `digest` for all 15 assets.
+* The deb, rpm and Arch bouncer packages install the same files outside the
+  bundled release and frontend trees. Arch adds `sysusers.d`, `tmpfiles.d` and
+  the licence, and does not own `/etc/grappa` or `/var/lib/grappa`.
+* The packaged unit and env template are byte-identical to `infra/packaging/`
+  on main.
+* `grappa-bin`'s PKGBUILD (read, not built) downloads
+  `grappa-<v>-1-x86_64.pkg.tar.zst`, extracts `usr/` only and skips our
+  `.INSTALL`. That is why the install steps are part of the contract.
+
+**Where the release disagrees with the recipe.**
+
+* `.SRCINFO` is published as `default.SRCINFO`. On a pre-release, nfpm's `~`
+  becomes `.` in the asset name (v1.3.0-rc2: `grappa_1.3.0.rc2_amd64.deb`).
+  The contract names the published spellings.
+* `shottino-debug-*.pkg.tar.zst` is published because the
+  `shottino-*.pkg.tar.zst` glob matches it; it is not an expected kind. The
+  contract declares it outside. `release_assets.sh` does not treat an extra
+  file as an error. Measured on a complete tree plus `SHA256SUMS`, an
+  unexpected file and the debug package: `missing` prints nothing,
+  `publishable … absent` exits 0, and `found` attaches the debug package and
+  ignores the other two. So nothing needed reconciling there.
+* `grappa version` prints `grappa 0.0.0`. The boot script echoes `RELEASE_VSN`
+  from `releases/start_erl.data`, which reads `16.4 0.0.0` in the 1.6.2 deb
+  (the vsn frozen by issue 2057). This was read off the script, not run. The
+  contract sends packagers to the package manager for the version instead.
+* The `GLIBC_2.43` in the #2553 entry is true of 1.6.2's FIRST upload, which
+  the repair replaced. On the republished assets, the highest `GLIBC_` symbol
+  across every ELF file (read with `strings`) is 2.38 in both bouncer
+  packages, amd64 and arm64, and 2.34 in shottino. 1.6.1 was never
+  republished. The #2553 entry is dated history and stays as written; the
+  packaging README, which speaks of the present, is corrected.
+
+**SHA256SUMS takes its names from the API and is cross-checked locally.**
+Because of those renames, a file written from the runner's names would fail
+`sha256sum -c` on `default.SRCINFO` and on every pre-release package.
+`sha256sums.sh` therefore:
+
+* takes names and digests from the release as the API lists it after the
+  upload;
+* refuses unless every file the run attached hashes to one of those digests;
+* covers everything the release holds except a `SHA256SUMS` itself, which a
+  repair dispatch finds left over from the run before.
+
+GitHub's changelog of 2025-06-03 says digests are "generated at upload time".
+That the REST API returns them the moment the upload returns is NOT measured.
+A missing digest is refused with the asset named, and a repair dispatch
+attaches the file afterwards. The file is not signed, and `PACKAGING.md` says
+so.
+
+The step sits in `publish` after the attach step, with no `if:`; the job's
+`if:` and `needs` are unchanged. `release_sha256sums_test.bats` pins both
+halves, reading the recipe with comment lines dropped. Mutations on the real
+`release.yml`:
+
+* key line deleted, its seven comment mentions kept: 2 reds;
+* key line commented out: 2 reds;
+* `continue-on-error: true` added: 1 red;
+* upload line removed: 1 red.
+
+Five mutants of the script were each killed by the case named for them.
+
+**The Packaging section is in every release's notes**
+(`.github/release-notes-template.md`, modelled on the last four bodies). It
+says "No change to the packaging contract." when there is none. This is the
+orchestrator's choice and stricter than the issue, which asks for a section
+only when the contract changes: a missing section cannot tell a packager "no
+change" from "forgotten". The rule that an incompatible change takes a major
+bump is the issue's text, written on vjt's behalf and awaiting his
+confirmation.
