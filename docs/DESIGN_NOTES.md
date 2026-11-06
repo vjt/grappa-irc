@@ -4391,3 +4391,113 @@ holding the current list would have revoked it. **Not affirmed:** in irc-olm
 1606c85, `_maybe_listreq` marks a list version as asked BEFORE
 `_send_reactive` sends, and nothing is sent if the device is not ready. So
 a lost `listreq` for a given version would never be repeated.
+<!-- entry #2577 -->
+
+---
+
+## 2026-11-06 — #2577: an encrypted message on its way
+
+A peer's PKMSG or MSG that spans several IRC lines can take many seconds to
+come whole: the sender paces its lines against the ircd's fake lag. Until
+now the encrypted window showed nothing until the last line. It now shows
+the sender and, in place of the text, a faint cloud of squares about two
+lines tall, from the first line on; the message takes the cloud's place when
+it lands, and the cloud goes if it never does.
+
+**The receiving side includes grappa.** The brief scoped this to cicchetto,
+on the reading that the issue's "no wire change" ruled grappa out. Measured:
+cicchetto never sees a fragment. The reassembly is grappa's
+(`EventRouter.route_e2e/2` → `Session.Server` → `E2eReassembly.put/4`), and
+on `:pending` it emitted nothing; cic's own code says so (the header
+comment of `cicchetto/src/lib/e2e/wire.ts`, and the comment on
+`SessionWireE2eMessagePayload` in `api.ts`'s `WireUserEvent`). The orchestrator's ruling read "no wire
+change" as the IRC E2E framing, which is untouched (`E2E <VERB> <msgid>
+<i>/<n> …`), and let grappa tell its own client what only grappa sees.
+Protocol 59, additive.
+
+**Two event kinds, not one with a state field.**
+`e2e_incoming {network, from, from_did, to, msgid}` at the first line of a
+PKMSG/MSG whose total is above 1, and
+`e2e_incoming_lost {network, from_did, to, msgid}` when it will not arrive.
+The user topic already pairs its announcements this way
+(`e2e_request`/`e2e_request_gone`, `dcc_offer`/`dcc_offer_resolved`), and a
+`state` field would make `from` nullable for one value of it. `lost` carries
+no `from` because the sweep has only the FOLDED nick, which is a key and
+never goes on the wire. What ends an announcement on success is the
+`e2e_message` that already exists, with the same `from_did` and `msgid`.
+One rule (`e2e_arriving?/1`: verb PKMSG or MSG, total > 1) decides both the
+announcement and every loss, so a loss is never told of a message that was
+not announced. A one-line message completes the instant it arrives; KEYS,
+NACK and consent lines are the protocol talking to itself.
+
+**Losses, including one the ruling did not list.** The ruling named two:
+a dropped message (a contradicting line, a cap) and the 60 s sweep from the
+last line, so that the timeout stays the server's and cic keeps no clock.
+There is a third. A message that comes WHOLE does not always produce an
+`e2e_message` for the device showing the cloud: no listed device can read it
+(answered with a NACK), or that device's queue refused it (`inbox_full`,
+`db_unavailable`, `removed_device`). Without a signal there, the cloud would
+hang until a reload, since cic has no timer by ruling. So
+`e2e_incoming_lost` is emitted there too, with `to` set to the device that
+did not get it (or the frame's `to` in the NACK case). Seen from a device
+it means the same thing: this message will not reach you.
+
+**Which device shows it.** Every client of the subject hears both events;
+a device takes one whose `to` is its own device id on the network or `*`,
+and shows nothing until it knows that id. An `e2e_message` ends the arrival
+only when its `to_did` is this device, after the drain that follows it has
+run (whether or not the drain wrote a row: an order challenge or a SAS step
+writes none, and another tab may have drained first). A row of the chat that
+carries the msgid in its `wire` hides the arrival in the same reactive
+update that adds the row, so the replacement is derived, not a removal racing
+an insert. The same derivation hides a ghost: a line repeated after its
+message completed opens a new buffer entry and a second announcement, but
+the landed row already carries that msgid; the sweep then reports it lost.
+
+**Placement, and a premise that was false.** Arrivals are not woven by
+time: each sits after every other row, in the order it began, so a message
+lands where its own cloud was. They carry string ids and no message id, so
+they stay out of the unread and cursor math, and their own class (not
+`.scrollback-line`) keeps the line gestures off them. The first draft also
+re-keyed the pane's tail-follow on the last row's identity, on the reading
+that the effect fired only when `rows().length` changed, so a landing (one
+row out, one in) would leave a wrapped message under the fold. The reading
+was wrong: Solid's `on` does not compare what its source returns, so the
+effect re-runs on every notification of the `rows` memo, replacement
+included. Measured: with the re-key reverted, the vitest that pins the
+follow across a landing stayed green, and a trace showed the length-effect
+calling the applier with the length unchanged; disabling the effect turned
+the same test red. The re-key was deleted, and the effect's comment now says
+what triggers it.
+
+**Not persisted.** The arrival is this tab's UI state: never a scrollback
+row, never a window opened or an unread counted, cleared on an identity
+change. A reload mid-message forgets it and the message simply lands (the
+ruling accepts this).
+
+**Hot-safety.** No field is added to `Session.Server`'s or
+`E2eReassembly`'s defstruct, nor to the shape of a buffer entry.
+`E2eReassembly.expire/2` now returns the expired messages instead of their
+count; both callers destructure `{buffer, _}` in the old code, so old code
+against the new module ignores the list. During the reload itself, new
+`Session.Server` code reaching an old `E2eReassembly` would crash the session
+(an integer where a list is expected, or `in_flight/3` undefined). That
+window exists for every hot deploy that adds a function a caller uses; it
+does not make this one cold.
+
+**Measured.** Server, red first: with `lib/` put back at the base and the
+new tests in place, `e2e_reassembly_test` failed 6 of 16 and
+`e2e_session_test` 6 of 66 (every `arriving` test but the one asserting an
+absence, green on the base by construction); green after. Eleven server
+mutants, each killed by the test written for it: taking the announcement out
+turns 5 tests red; each of the five ways to lose a message, the one-line
+rule, the verb rule, the once-only announcement, the device a queue loss
+names and `in_flight/3` turns its own test red. On cic, seven mutants, six
+killed; the seventh is the tail-follow premise above.
+
+**Known gaps, accepted.** A device that cic still believes is its own but
+grappa no longer lists gets neither an `e2e_message` nor a loss for a `*`
+message, so its cloud hangs until a reload. With two tabs in one browser,
+the tab that did not drain loses the cloud when its drain ends and gets the
+row a moment later over the BroadcastChannel. The cloud is about two lines
+tall, so a one-line message that replaces it shortens the pane.
