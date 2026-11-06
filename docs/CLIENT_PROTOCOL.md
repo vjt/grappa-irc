@@ -646,7 +646,7 @@ Check `protocol_version >= 28`. ⚠️ There is no 27 — the shape moved twice
 before this version was published, and the pin gate requires a number per
 move. Nothing ever spoke 27.
 
-### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46; network name v47; devices v49; copies to your other devices v50; NACK from `*` v52; a device's `inserted_at` v57)
+### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46; network name v47; devices v49; copies to your other devices v50; NACK from `*` v52; a device's `last_seen_at` v56 and `inserted_at` v57)
 
 An encrypted query is a conversation grappa carries and cannot read. The
 endpoints (cicchetto, or a bot using the shared Python package) run Olm via

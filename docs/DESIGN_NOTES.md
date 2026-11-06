@@ -3438,3 +3438,57 @@ only against a queue that was already there.
 acks, so the test no longer shows acks filling the path: it shows that an ack
 meeting a full queue neither blocks nor keeps queueing, and that what is
 queued at the end is discarded. That is the property 2405 fixed.
+<!-- entry #2544b -->
+
+---
+
+## 2026-11-06 — #2544b: the rail lists the identity's devices, and the master's browser revokes them
+
+vjt's ruling on the issue (2026-11-05), point 2. The rail's `devices` row
+counted the PEER's devices and still does; under "your identity" nothing
+listed ours.
+
+* **What the list shows.** The devices the identity's list names, as this
+  browser's record holds that list (its master signed it, and a sync took
+  grappa's latest), joined with `GET /e2e/devices`: the did, since a device
+  has no name or label anywhere; when it was added; and which one is this
+  browser. A device registered and never listed, a pairing that did not
+  finish, is no device of the identity and is not shown. "When it was
+  added" is grappa's `inserted_at` on the device row, which a registration
+  of the same key keeps; it was never on the wire, so it is now
+  (`E2eKeys.Wire.device/1`, **protocol 57**, optional as #2547's
+  `last_seen_at` is, so a client lists an older server's devices without a
+  date). The list reads again when the key shown changes, after a revoke,
+  and when the add-device panel closes.
+* **Who revokes.** Only the browser that holds the master, as with "add a
+  device": every other device has a revoke, behind a confirmation that
+  names it and says what it does; this browser's own has none. Elsewhere
+  the list is read-only, and the add-device hint now says devices are
+  added *and revoked* from the browser that started the identity.
+* **A revoke is one signed act, and the issue's second step is grappa's
+  own.** The issue reads "a revoke signs a new list version with the device
+  revoked, then removes the device from the server" and names `DELETE
+  /e2e/devices/:did` as an existing piece. Measured in the code, the
+  removal already happens inside the put: `E2eKeys.put_list/3` drops every
+  device the previous list held and the new one leaves out, with its keys
+  and queue, in the same transaction. A `DELETE` afterwards would answer
+  404, and before the put it answers 409 `listed_device`. So the revoke is
+  the master's signature over the list one version up without the device,
+  nothing else (`identity.revokeDevice`). It goes through the same sync and
+  once-more-if-stale retry as `addDevice`, now one helper,
+  `onceMoreIfStale`, for both: a retry never puts a list that drops a
+  device another put listed.
+* **What a revoke does elsewhere.** Peers drop the device once they hold the
+  new list: the engine's `revoked` / `revokedCurves` already apply on
+  receipt. The revoked browser's next sync finds a list that leaves it out
+  and reads the identity as held elsewhere (#2547's `left-out`). What was
+  already on that device stays there; the confirmation says so.
+
+Per network, as the identity is: a device paired across several networks is
+revoked on the one whose rail did it. e2e: `issue2544-own-devices.spec.ts`
+pairs a second browser, reads both lists (the master's with one revoke, the
+other read-only under the hint), revokes from the master's browser through
+the confirmation, checks grappa's list one version up and the device gone,
+and finds the revoked browser left out. Desktop only: the list is the same
+component in the phone's drawer. Not run locally: the stack is not this
+worker's; the PR's integration job is the gate.
