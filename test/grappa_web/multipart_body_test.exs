@@ -2,7 +2,7 @@ defmodule GrappaWeb.MultipartBodyTest do
   # issue 2529 — a multipart body is parsed by the route that takes it, in
   # the router, after authentication. The endpoint's `Plug.Parsers` has no
   # multipart parser, so such a body crosses it unread. A route that takes
-  # one pipes through `:upload_body` (the two doors whose body a per-file
+  # one pipes through `:upload_body` (the three doors whose body a per-file
   # cap polices, up to `MultipartLimits.upload_length/0`) or
   # `:multipart_body` (anything else, up to `MultipartLimits.default_length/0`).
   #
@@ -21,11 +21,14 @@ defmodule GrappaWeb.MultipartBodyTest do
 
   @mib 1024 * 1024
 
-  # The two actions whose multipart body is policed by a per-file upload
+  # The three actions whose multipart body is policed by a per-file upload
   # cap (`ServerSettings.get_upload_per_file_cap_bytes/1`): every category
-  # through `POST /api/uploads`, and `:image` through the own-avatar door.
+  # through `POST /api/uploads`, the largest of them plus the GCM tag
+  # through `POST /api/uploads/encrypted` (issue 2517), and `:image`
+  # through the own-avatar door.
   @upload_actions [
     {GrappaWeb.UploadsController, :create},
+    {GrappaWeb.UploadsController, :create_encrypted},
     {GrappaWeb.NetworksController, :avatar}
   ]
 
@@ -98,7 +101,7 @@ defmodule GrappaWeb.MultipartBodyTest do
 
     # Without this the tests above pass vacuously for an action that is no
     # longer routed at all.
-    test "both upload actions are routed" do
+    test "every upload action is routed" do
       routed = Enum.map(GrappaWeb.Router.__routes__(), &{&1.plug, &1.plug_opts})
 
       for action <- @upload_actions do
@@ -123,6 +126,22 @@ defmodule GrappaWeb.MultipartBodyTest do
       assert json_response(conn, 413) == %{
                "error" => "file_too_large",
                "max_bytes" => ServerSettings.get_upload_per_file_cap_bytes(:image)
+             }
+    end
+
+    # Refused by the encrypted door's own cap (the largest category cap plus
+    # the 16-byte GCM tag), a refusal only a controller that received the
+    # parsed file can give.
+    test "POST /api/uploads/encrypted reads a body past the default ceiling", %{
+      conn: conn,
+      session: session,
+      over_default: body
+    } do
+      conn = conn |> put_bearer(session.id) |> send_multipart(:post, "/api/uploads/encrypted", body)
+
+      assert json_response(conn, 413) == %{
+               "error" => "file_too_large",
+               "max_bytes" => GrappaWeb.UploadsController.encrypted_per_file_cap_bytes()
              }
     end
 
@@ -156,12 +175,13 @@ defmodule GrappaWeb.MultipartBodyTest do
 
     # Without a bearer the body is never read: the parser sits after
     # :authn, and the endpoint has none. Before issue 2529 the endpoint
-    # parsed every multipart body and this answered 413 on both routes.
+    # parsed every multipart body and this answered 413 on the two routes
+    # that existed then.
     test "without a bearer the body is not read, whatever its size", %{
       conn: conn,
       over_default: body
     } do
-      for path <- ["/api/uploads", "/themes/background"] do
+      for path <- ["/api/uploads", "/api/uploads/encrypted", "/themes/background"] do
         assert conn |> send_multipart(:post, path, body) |> json_response(401)
       end
     end
