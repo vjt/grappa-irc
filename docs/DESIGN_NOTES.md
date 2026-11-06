@@ -4542,3 +4542,133 @@ exact, not tinted.
 palette entry (measured: one `init_color` call re-inserted turns it red),
 and checks that no pair draws in its own background on `xterm` (8 colours).
 `test_termcolor` maps every cube and ramp colour back to itself.
+<!-- entry #1112a -->
+
+---
+
+## 2026-11-06 — #1112a: a hot reload refuses a release built on another toolchain
+
+Issue 1112, slice S1 (D7 in vjt's decisions of 2026-11-06, relayed, not seen
+first-hand). `HotReload.audit_code_path/1` used to compare one thing: field 2
+of `releases/start_erl.data` against the vsn in the lib directory's name. Since
+issue 2057 froze the app vsn, that comparison passes on every build. The
+toolchain still moves under it. Phase 1 measured it on real artefacts: Arch
+1.5.6 → 1.6.0 moved ERTS 17.0.6 → 17.1 and Elixir 1.20.2 → 1.20.4, the rpm
+moved Elixir 1.19.5 → 1.19.6 alone, the OCI image moved both, and the repo
+changed in none of those hops. The jail does the same after a `pkg upgrade` of
+erlang or elixir, since its next `mix release --overwrite` bundles the new
+toolchain. The audit called every one of them clean.
+
+### What the audit compares now
+
+Once the vsn agrees, the node compares its own toolchain with what the release
+on disk declares:
+
+* its ERTS (`:erlang.system_info(:version)`) against field 1 of
+  `start_erl.data` AND the `{erts, Vsn}` of `releases/<vsn>/<rel>.rel`. Both are
+  read: a coherent build writes the same ERTS into each, and one that does not
+  is doubt;
+* the vsn of every application it loaded (`Application.loaded_applications/0`)
+  against every application the `.rel` has the boot script load. One listed as
+  `none` (`iex` in every real `.rel`) is never loaded, so it is not compared.
+  An application the `.rel` loads and the node never loaded refuses too: that
+  is a dependency added under `--force-hot`.
+
+Any difference is `{:error, {:stale_toolchain, %{release: root, moved: [...]}}}`,
+each moved component as `%{name, running, built}` (`running: nil` for an
+application the node never loaded). `AdminController.reload/2` answers it as a
+fourth 409, `stale_toolchain`, distinct from the three it had.
+
+A `.rel` that is missing, not exactly one, or not the term `mix release` writes
+refuses with `moved: nil`. The path already says this is a mix release, so the
+metadata is expected, and reading `:ok` out of its absence would be the silence
+#1850 broke. In doubt, cold.
+
+### Why in HotReload and not in Preflight
+
+The slice's brief asked for the same difference to be a COLD reason "where a
+verdict exists today (Preflight)". That does not hold on the current code: on the jail
+and on linux, `deploy_common.sh` runs `_deploy_resolve_mode` (the preflight
+over the git range), THEN `substrate_build` (`mix release --overwrite`), THEN
+the reload. When the preflight runs, the artefact whose `.rel` it would have to
+read does not exist yet. A preflight proxy (the build VM's toolchain against
+the installed release) was considered and declined: it needs a different rule,
+because the preflight VM does not load the dependencies, so the applications
+cannot be compared the same way; it needs the release root passed from the
+shell; and it would still be a proxy, with HotReload the real gate either way.
+The audit sits in `migrate_and_reload/2`, which `--force-hot` does not skip, so
+it is the last line of defence on every hot path. The COLD verdict where the
+artefact is on disk before anything is applied belongs to S2, the package
+scripts (D2 revised: "always restart, hot when possible"), which can call the
+same audit after the unpack.
+
+### Why a toolchain move is a restart
+
+Nothing makes beams compiled by one Elixir safe to load into a node running
+another. And a package upgrade deletes the old ERTS directory under the live
+node: measured by w2 on 57de2bd3c on an OCI arm64 surrogate (a release tree
+swapped under a live node with rsync), the VM halts with `erlang:halt` the
+first time it relaunches `inet_gethost`, 3 out of 3. That was not measured on
+FreeBSD.
+
+### Protocol 60
+
+`:stale_toolchain` joins `GrappaWeb.ErrorTokens`, which the drift test
+requires, so the generated wire shape moves and the protocol bumps 59 → 60,
+the same reasoning as v13. This branch first took 59; issue 2577 took it as
+well and merged first, by the orchestrator's order, so this one rebased onto
+it and re-bumped. A client sees the token only in a 409 body from a
+loopback-only route; nothing cic sends or renders changes, and
+`docs/CLIENT_PROTOCOL.md` gains nothing, as it did not for v13.
+
+### Measured
+
+On the branch rebased onto fc8cfd58a, `code_path_audit_test.exs` (15 tests):
+
+* **Red first**, with `hot_reload.ex` put back to main's and everything else
+  in place: 6 failures, exactly the six toolchain tests that refuse. The
+  `none` test and the eight older tests stayed green. Each refusing test got
+  `:ok`.
+* **Green** with the audit: 15 tests, 0 failures, no warnings.
+* **Five mutants of the audit**, each with its expected reds written down
+  before it ran, on the text before the formatter split two comprehension
+  lines (same code, not rerun after). Every one turned exactly those red, no
+  more and no fewer:
+  the ERTS leg dropped, 3 (the Arch hop, "each read", the JSON body);
+  `start_erl.data`'s ERTS ignored, 1 (the first half of "each read"); the
+  applications ignored, 2 (the rpm hop, the application never loaded); a
+  missing `.rel` read as clean, 1; the `none` clause removed, 1 (the test
+  that was the negative control).
+* The generated artefacts moved by one line each (`stale_toolchain` in
+  `wireTypes.ts` and `wireSchema.ts`). After the rebase onto 5b8e13903
+  (issue 2577's 59), `wire_pin --update` wrote protocol 60 with digest
+  `sha256:ba0030d2…7e27`. The rebase kept this entry's contribution at 122
+  additions and 0 deletions, pinned before and after.
+* `scripts/check.sh` on the rebased tree (69b75ffa3, protocol 60): rc=0.
+  8623 tests, 8 doctests and 77 properties with 0 failures; dialyzer 0
+  errors; doctor 419 modules passed; credo and `deps.audit` clean; the
+  three generated artefacts `in sync.`; `priv/wire/shape.pin: wire shape
+  and protocol 60 agree.`; bats 811/811. The tree that carries this entry
+  differs from it by this bullet alone. An earlier green, before the
+  rebase, was on d9b0141e9 at protocol 59; two runs before that one died
+  at the formatter and at credo, both fixed without changing what the
+  tests assert.
+
+### Hot or cold, for this slice
+
+Server: hot (stateless modules: `HotReload`, `AdminController`, `ErrorTokens`,
+`Protocol`; no `application.ex`, config, migration or `mix.lock`). cic: a
+constant and a comment in `socket.ts`, a bundle deploy. shottino's `wire.h` is
+not deployed to the server. The first hot deploy after the merge runs the new
+audit: if the jail's toolchain on disk moved since its last cold boot, that
+deploy answers `409 stale_toolchain`, and `--force-cold` applies it.
+
+### Not claimed
+
+* That the controller's 409 arm is tested: it is not, like `stale_code_path`
+  before it. The lib dir it audits is the real one, and making it injectable
+  would weaken production to suit a test.
+* The state of m42's toolchain.
+* A real rpm or Arch upgrade: none was run.
+* That the jail is safe from the deleted-ERTS halt: that is w2's measurement on
+  an OCI surrogate, not on FreeBSD.
