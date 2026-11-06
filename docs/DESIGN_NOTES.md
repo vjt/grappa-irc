@@ -3785,3 +3785,68 @@ reopens the second device. The first browser must name the second's did,
 and the second must read "here", which its page-load sync supplies.
 Locally it only type-checked: it was not run (the stack is not this
 worker's to take), and the PR's integration job is the gate.
+<!-- entry #2456 -->
+
+---
+
+## 2026-11-06 — #2456: a message too long for one outer message goes to each device on its own
+
+cic's engine encrypts a text once for each trusted device of the peer's
+master and groups the bodies by Olm kind, at most `MAX_DEVICES` (4) bodies
+a message (the rule in `docs/design_notes/2026-10.md`, "One message, one
+body per trusted device", which stays as it was written). Until now, when
+any of those messages needed more than `MAX_FRAGMENTS` (64) lines on the
+network's line budget, the whole send was refused as `too-long`. So the
+longest text cic could send shrank with the peer's device count: a text
+that went to a peer with one device was refused for the same peer with
+four.
+
+**The rule now.** `Engine.encrypt()` sizes each group on its own, a group
+being the up to `MAX_DEVICES` bodies of one kind that would share a
+message (a fifth device of that kind is a group of its own). A group of
+more than one body whose message does not fit goes as one message per
+body, `to` that device's did, each with its own msgid and its own `sent`
+record, so a NACK still acts on its one device. A group that fits stays
+one message: two MSG bodies that fit stay one `*` message even when the
+two PKMSG bodies beside them are split. Only a body that does not fit even
+alone refuses the send, and it refuses all of it, as before: no session
+stored, no `sent` record, `send_failed` with `too-long`.
+
+- **Regrouped, never encrypted again.** The split reuses the bodies already
+  written, so each session moves once and the pickle stored is the one
+  each body was written on. Encrypting again would not be harmless.
+  A session that has decrypted an answer writes its next message on a
+  fresh random ratchet key, so a second encryption hands the device a body
+  on a ratchet key the stored session does not hold, and the device then
+  cannot read our next message. A session still waiting for its answer
+  writes the same pre-key body again, so only normal messages show it.
+  Measured: two encryptions from one pickle differ in the ratchet key for
+  an answered session and are identical for a silent one. A mutant that
+  encrypts each body of a split group again, sends the new bodies and
+  stores the first sessions fails one test of the six test files that drive
+  the engine: "sends each device a message of its own when the bodies of
+  all four are too long for one…", on each device's read of the message
+  after the split (Olm's MAC check). One that stores the second sessions
+  instead passes all 486 tests of those files: it only wastes the first
+  encryption.
+- **One body a message, not halves.** irc-olm's `_emit_group` does the same
+  (the group together, else each body alone), and it is less code. The
+  cost: up to four messages where halving could send two, and a split
+  PKMSG repeats the id block and the master certificate in each message,
+  so a few more upstream lines. Same order of magnitude.
+- **Where cic and irc-olm still differ.** When a body does not fit even
+  alone, irc-olm sends the bodies that do and reports the message lost;
+  cic refuses the whole send, as it did before this change ("refuses a
+  message whose PKMSG is too long though its MSG fits" pins it). That is
+  unchanged here.
+- **A split text is several payloads, and grappa takes or refuses each one
+  on its own** (429 `rate_limited`, `E2eController.create/2`). That was
+  already true of a text that went as a MSG and a PKMSG, or to five
+  devices, and the rule for it is unchanged: the row reads sent once one
+  payload went, and failed only once none did. What changes is that a long
+  text to a peer with several devices now meets it too.
+- **No wire change.** A one-body message `to` a did already existed (any
+  one-device peer, the fifth device of a five-device peer), and receivers
+  take it as they always did. This is how cic chooses to send, so there is
+  no `protocol_version` bump and nothing changes in
+  `docs/CLIENT_PROTOCOL.md`.
