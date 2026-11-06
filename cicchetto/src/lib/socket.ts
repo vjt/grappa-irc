@@ -420,7 +420,11 @@ let _socket: Socket | null = null;
 // reach this device. The encrypted window shows it as on its way until it
 // lands. A pre-59 server never pushes either, so the message simply appears
 // when whole, as before; `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 59;
+//
+// 60 (issue 1112) — `stale_toolchain`, a fourth refusal of the loopback-only
+// `POST /admin/reload`. No browser reaches that route, so nothing in
+// cicchetto changes; `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 60;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

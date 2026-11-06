@@ -7,7 +7,7 @@ defmodule GrappaWeb.AdminController do
   Delegates to `Grappa.HotReload.migrate_and_reload/0`, which applies
   pending migrations on the already-open `Grappa.Repo` pool and only
   THEN reloads modules (GH #41 — see that function for why the order is
-  load-bearing and why it refuses a pending contract migration). Three
+  load-bearing and why it refuses a pending contract migration). Four
   outcomes join the pre-#41 one:
 
     * `409` `%{"error" => "contract_migrations_pending", "migrations" =>
@@ -34,6 +34,14 @@ defmodule GrappaWeb.AdminController do
       OTP app vsn a bump no longer moves the lib directory and that class is
       gone, so what remains here is the general case the audit always
       covered — any other way the built and booted vsns come apart.
+    * `409` `%{"error" => "stale_toolchain", "release" => dir, "moved" =>
+      [%{"name" => "erts" | app, "running" => vsn | null, "built" => vsn},
+      ...] | null}` — the release on disk was built on an ERTS or an
+      OTP/Elixir application vsn this node does not run (issue 1112);
+      nothing ran, and a cold deploy is the fix. Checked right after the
+      code-path vsn and before the migration audit; `moved` is `null` when
+      the release's `.rel` could not be read. It holds with `--force-hot`
+      too, which skips the preflight and never this.
     * a raising migration is NOT rescued: it 5xxes, the transaction
       rolls back, and no module is reloaded.
 
@@ -184,6 +192,16 @@ defmodule GrappaWeb.AdminController do
           built: drift.built,
           code_path: drift.lib_dir
         })
+
+      {:error, {:stale_toolchain, drift}} ->
+        # 409 a fourth time, nothing ran, and a cold deploy is the fix again
+        # (issue 1112): the release on disk was built on an ERTS or an
+        # OTP/Elixir application vsn this node does not run. The body names
+        # each component that moved, or `moved: null` when the release's
+        # `.rel` could not be read.
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "stale_toolchain", release: drift.release, moved: drift.moved})
     end
   end
 
