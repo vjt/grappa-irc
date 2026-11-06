@@ -1,3 +1,4 @@
+import { atKey, type ByKey, keysOf, noKeys, setKey } from "./byKey";
 import { DEFAULT_CHANTYPES, isChannelName } from "./chantypes";
 import {
   DEFAULT_NOTIFICATION_SOUND,
@@ -542,7 +543,8 @@ function parseNetworkReason(kind: NetworkReasonKind, rest: string): SlashCommand
 // that does not care about sigils simply declares two parameters.
 type Handler = (verb: string, rest: string, chantypes: readonly string[]) => SlashCommand;
 
-const DISPATCH: Readonly<Record<string, Handler>> = {
+// Read by the verb the user typed, so a `ByKey` (issue 2453).
+const DISPATCH = keysOf<Handler>({
   me: (_verb, rest) => ({ kind: "me", body: rest }),
 
   // #431 — the fan-out pair. Registered as BUILTINS, which is the whole of what
@@ -1123,7 +1125,7 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
       );
     return { kind: "oper", name, password };
   },
-};
+});
 
 function parseServiceShortcut(_verb: string, target: string, rest: string): SlashCommand {
   // #290 — a BARE services command opens the dedicated services console
@@ -1193,21 +1195,18 @@ export const MAX_ALIAS_DEPTH = 5;
 
 export type AliasExpansion = { verb: string; rest: string } | { error: string };
 
-export function expandAlias(
-  verb: string,
-  rest: string,
-  aliases: Readonly<Record<string, string>>,
-): AliasExpansion {
+export function expandAlias(verb: string, rest: string, aliases: ByKey<string>): AliasExpansion {
   let curVerb = verb;
   let curRest = rest;
   const chain: string[] = [verb.toLowerCase()];
 
   for (let depth = 0; ; depth++) {
     const lower = curVerb.toLowerCase();
+    const stored = atKey(aliases, lower);
     // #427 — non-shadowable verb (/alias, /unalias) wins; not an alias →
     // nothing to expand. Either way, done. Any OTHER builtin with a same-named
     // alias falls through and expands (the alias shadows it).
-    if (isNonShadowableVerb(lower) || !(lower in aliases)) {
+    if (isNonShadowableVerb(lower) || stored === undefined) {
       return { verb: curVerb, rest: curRest };
     }
     if (depth >= MAX_ALIAS_DEPTH) {
@@ -1217,7 +1216,7 @@ export function expandAlias(
     // path strips it, but a settings-sub-page edit submits raw, so the map
     // may hold `/whois`. The expander is the one choke-point every expansion
     // flows through, so normalise here too.
-    const template = (aliases[lower] as string).replace(/^\//, "");
+    const template = stored.replace(/^\//, "");
     const expanded = substituteAlias(template, curRest).trim();
     const sp = expanded.search(/\s/);
     curVerb = sp === -1 ? expanded : expanded.slice(0, sp);
@@ -1262,36 +1261,35 @@ function substituteAlias(template: string, rest: string): string {
 }
 
 // Post-init aliases. Adding to DISPATCH after the literal initializer
-// keeps the type narrowed in the original block while still surfacing
-// aliases through the same Handler indirection.
+// surfaces aliases through the same Handler indirection.
 //   /q → /query (same handler)
 //   /j → /join  (same handler)
 //   /w → /whois (same handler)   — #122
 //   /n → /names (same handler)   — #122
 // All six service-msg shortcuts (/cs /ns /ms /os /hs /rs) live as
 // independent DISPATCH entries below; they rewrite to {kind: "msg"}.
-const queryHandler = DISPATCH.query;
+const queryHandler = atKey(DISPATCH, "query");
 if (queryHandler) {
-  (DISPATCH as Record<string, Handler>).q = queryHandler;
+  setKey(DISPATCH, "q", queryHandler);
 }
-const joinHandler = DISPATCH.join;
+const joinHandler = atKey(DISPATCH, "join");
 if (joinHandler) {
-  (DISPATCH as Record<string, Handler>).j = joinHandler;
+  setKey(DISPATCH, "j", joinHandler);
 }
 // #122 — /w → /whois, /n → /names. Context-aware defaults (bare → current
 // query nick / current channel) live in the compose consumers, not here.
-const whoisHandler = DISPATCH.whois;
+const whoisHandler = atKey(DISPATCH, "whois");
 if (whoisHandler) {
-  (DISPATCH as Record<string, Handler>).w = whoisHandler;
+  setKey(DISPATCH, "w", whoisHandler);
 }
-const namesHandler = DISPATCH.names;
+const namesHandler = atKey(DISPATCH, "names");
 if (namesHandler) {
-  (DISPATCH as Record<string, Handler>).n = namesHandler;
+  setKey(DISPATCH, "n", namesHandler);
 }
 // #386 — /kickban → /kb (irssi spelling; both produce {kind: "kb"}).
-const kbHandler = DISPATCH.kb;
+const kbHandler = atKey(DISPATCH, "kb");
 if (kbHandler) {
-  (DISPATCH as Record<string, Handler>).kickban = kbHandler;
+  setKey(DISPATCH, "kickban", kbHandler);
 }
 // issue 2230 — /raw → /quote (both produce {kind: "quote"}). compose.ts's
 // server-window refusal already advertises "Try /raw <line>", so the
@@ -1300,19 +1298,19 @@ if (kbHandler) {
 // and mIRC all take, so the message was right and the dispatcher was short a
 // verb. The error text /raw inherits still names /quote — that is what an
 // alias is, and the alternative (a bespoke message) would fork the handler.
-const quoteHandler = DISPATCH.quote;
+const quoteHandler = atKey(DISPATCH, "quote");
 if (quoteHandler) {
-  (DISPATCH as Record<string, Handler>).raw = quoteHandler;
+  setKey(DISPATCH, "raw", quoteHandler);
 }
 
 // `aliases` (#385) is the user's `%{name => expansion}` map, passed in by
-// compose.ts from the aliasList store. It defaults to `{}` (no aliases → no
+// compose.ts from the aliasList store. It defaults to none (no aliases → no
 // expansion, the correct production behavior when the user has defined none),
 // which also keeps the many pure `parseSlash(input)` call sites in tests
 // working unchanged.
 export function parseSlash(
   input: string,
-  aliases: Readonly<Record<string, string>> = {},
+  aliases: ByKey<string> = noKeys(),
   chantypes: readonly string[] = DEFAULT_CHANTYPES,
 ): SlashCommand {
   const trimmed = input.trim();
@@ -1342,7 +1340,7 @@ export function parseSlash(
   if ("error" in expanded) return err(verb, expanded.error);
 
   const verbLower = expanded.verb.toLowerCase();
-  const handler = DISPATCH[verbLower];
+  const handler = atKey(DISPATCH, verbLower);
   if (!handler) {
     return err(expanded.verb, `unknown command: /${expanded.verb}`);
   }

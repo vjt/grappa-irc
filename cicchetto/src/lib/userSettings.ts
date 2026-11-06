@@ -16,6 +16,7 @@
 
 import { ApiError, readError } from "./api";
 import { type BanMaskForm, isBanMaskForm } from "./banMask";
+import type { ByKey } from "./byKey";
 import type { DateFormatKey } from "./dateFormat";
 import { DEFAULT_NOTIFICATION_SOUND, type NotificationSound } from "./notificationSound";
 import type { PresencePref } from "./presenceFilter";
@@ -285,7 +286,9 @@ export async function putVhostSelection(
 // friendlyApiError can render the per-field summary inline.
 // ---------------------------------------------------------------------------
 
-export type Aliases = Record<string, string>;
+// Keyed by a name the user chose, so a `ByKey` (issue 2453). The parsed JSON
+// already holds every name as an own property.
+export type Aliases = ByKey<string>;
 
 export type AliasesResponse = {
   aliases: Aliases;

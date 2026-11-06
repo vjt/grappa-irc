@@ -22,14 +22,15 @@
 
 import { createSignal } from "solid-js";
 import { token } from "./auth";
+import { noKeys, withKey, withoutKey } from "./byKey";
 import { identityScopedStore } from "./identityScopedStore";
 import { type Aliases, getAliases, putAliases } from "./userSettings";
 
 const exports_ = identityScopedStore((onIdentityChange) => {
-  const [aliases, setAliases] = createSignal<Aliases>({});
+  const [aliases, setAliases] = createSignal<Aliases>(noKeys());
 
   // Logout / account switch — clear the mirror (no broadcast self-heals it).
-  onIdentityChange(() => setAliases({}));
+  onIdentityChange(() => setAliases(noKeys()));
 
   const requireToken = (): string => {
     const t = token();
@@ -57,7 +58,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // when `wii` exists would PUT two keys (`wii` + `WII`); the server folds
     // both to `wii` via Map.put over an unordered list, so the winner is
     // term-order-dependent and the new expansion could be silently dropped.
-    const map = await putAliases(t, { ...current, [name.toLowerCase()]: expansion });
+    const map = await putAliases(t, withKey(current, name.toLowerCase(), expansion));
     setAliases(map);
     return map;
   };
@@ -66,9 +67,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const delAlias = async (name: string): Promise<Aliases> => {
     const t = requireToken();
     const current = await getAliases(t);
-    const next = { ...current };
-    delete next[name.toLowerCase()]; // server keys are lowercase; match them
-    const map = await putAliases(t, next);
+    // Server keys are lowercase; match them.
+    const map = await putAliases(t, withoutKey(current, name.toLowerCase()));
     setAliases(map);
     return map;
   };
@@ -87,12 +87,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   ): Promise<Aliases> => {
     const t = requireToken();
     const current = await getAliases(t);
-    const next = { ...current };
     const oldKey = oldName.toLowerCase();
     const newKey = newName.toLowerCase();
-    if (oldKey !== newKey) delete next[oldKey];
-    next[newKey] = expansion;
-    const map = await putAliases(t, next);
+    const kept = oldKey === newKey ? current : withoutKey(current, oldKey);
+    const map = await putAliases(t, withKey(kept, newKey, expansion));
     setAliases(map);
     return map;
   };
