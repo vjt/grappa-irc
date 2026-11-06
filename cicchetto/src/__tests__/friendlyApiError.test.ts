@@ -171,6 +171,10 @@ const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknow
   // 409 asking for a ceremony with nothing registered to answer it — the
   // mirror of the above, and the door that used to answer 500.
   { code: "passkey_not_configured", matches: /don't have a passkey yet/i },
+  // issue 1112 — 409 from the loopback-only POST /admin/reload: no browser
+  // reaches it, but the arm exists because the union is exhaustive, and the
+  // header above asks every new arm for a row.
+  { code: "stale_toolchain", matches: /another Erlang or Elixir/i },
 ];
 
 describe("friendlyApiError", () => {

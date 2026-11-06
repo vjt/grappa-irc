@@ -550,6 +550,13 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // wrong with the database here, the new code simply is not on the
       // path the running node reads.
       return "The server needs a full restart to pick up the new code.";
+    case "stale_toolchain":
+      // issue 1112 — 409 from the same loopback-gated POST /admin/reload, so
+      // likewise unreachable from a browser; the arm exists because the
+      // union is exhaustive. The ASK is the code-path arm's (a full restart),
+      // the REASON its own: the code is on the path, but the release was
+      // built on an Erlang or Elixir the running node does not run.
+      return "The server needs a full restart: the new release was built on another Erlang or Elixir.";
     case "client_token_scope":
       // #1196 — 403 for a per-client token on a credential-management
       // route. cic authenticates with a browser session, so this arm is
