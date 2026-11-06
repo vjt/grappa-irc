@@ -3693,3 +3693,68 @@ interfaces, for the reason the #2453 entry gives.
 - **What the type cannot do** is what #2453 says: it does not find a record
   nobody typed `ByKey`, and it does not see `key in rec`. A new record keyed
   by a chosen string is a `ByKey`, and checking that is review's job.
+<!-- entry #2454 -->
+
+---
+
+## 2026-11-06 — #2454: the undeliverable row names its device, and only this browser's own reads "here"
+
+Since wire v2 the sweep writes one undeliverable row per (sender, device),
+with `meta.e2e_device` naming the device's did (2026-10 multi-device
+entry: "a client tells its own device's loss from a sibling's"). The row
+sits in the peer's query window, which every browser of the user shows.
+cic ignored the key, so every browser called every device's row its own.
+
+**The wording (the orchestrator's call, 2026-11-06; vjt has not ruled on
+it).** Three options were weighed for a row whose device is not this
+browser's: hide it, name the device, or name it and mute it. The row now
+names the device by its did, as the rail names a device (#2544, vjt's
+ruling: a device has no name): "*** bob sent you 2 encrypted messages that
+cannot be read on your device `<did>`". Only this browser's own device's
+row says "cannot be read here". Hiding was rejected for two reasons:
+
+- grappa counts `:server_event` in the `events` unread tier
+  (`WindowCounts`), so a row hidden in cic would leave a badge with nothing
+  behind it;
+- another device's loss can be the user's only copy: a device paired later
+  may hold no session with the peer.
+
+Muting is cosmetic and was left out.
+
+**Three cases read the same as before, or err toward the true one:**
+
+- a row with no `e2e_device` reads "here": rows written before wire v2,
+  and the encrypted pane's own undecryptable line (`EncryptedChatPane`
+  `lineOf`), which is this browser's by construction;
+- while this browser's did is not known yet (the read is async), a row with
+  a device names it. "On your device X" is true even when X turns out to be
+  this browser, whereas "here" on another device's row would be false;
+- a browser holding no identity on the network (elsewhere) names every
+  device, which is right: none of them is this browser.
+
+**How the did reaches the pane.** `encryptedChats.ownDevice(slug)` holds
+this device's did per network. It is set each time `identitySynced` sees
+"ready" (the page-load sync, `sync()`, `pairedHere`, a replace: one funnel)
+and cleared on "elsewhere" and on an identity change. It is read with a
+pure peek of the account record (`identity.ownDidOf`, beside `masterOf`),
+not with the existing `encryptedDevice`. That one goes through `run()`,
+which syncs a slot that has no account, so a stray "ready" would create an
+identity just to read its id. A test pins that the read makes nothing: run
+against `encryptedDevice`, it fails on `expected 'I3Lb03lEsV4' to be
+undefined`. `ownKey` could not serve: it is the master key, and it fills
+only once an encrypted chat is shown.
+
+No server change and no protocol bump: `e2e_device` has been on the meta
+allowlist and in `wireTypes.ts` since wire v2.
+
+### Tests
+
+The new unit tests were run red first: 6 failing (three pane rows still
+saying "here", three store tests missing `ownDevice`). Two pane mutants
+each turn two tests red: an unknown did read as "here", and the own did
+ignored. The e2e spec (`issue2454-undeliverable-device.spec.ts`) pairs
+two browsers of one account, queues a message for the second device alone
+and ages it out; the first browser must name the second's did, and the
+second must read "here". Locally it only type-checked: it was not run (the
+stack is not this worker's to take), and the PR's integration job is the
+gate.
