@@ -1588,6 +1588,19 @@ export async function fetchE2eDevices(token: string, networkSlug: string): Promi
   return ((await res.json()) as { devices: E2eDevice[] }).devices;
 }
 
+/** The account's signed device list on `networkSlug` (`GET …/e2e/list`): its version and the keys it names. */
+export async function fetchE2eList(
+  token: string,
+  networkSlug: string,
+): Promise<{ master: string; ver: number; devices: string[]; sig: string }> {
+  const res = await fetch(
+    `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/e2e/list`,
+    { headers: { authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) throw new Error(`fetchE2eList: ${res.status} ${await res.text()}`);
+  return (await res.json()) as { master: string; ver: number; devices: string[]; sig: string };
+}
+
 // The one device a single browser has made. Throws on any other count: a spec
 // that reads "the" device of an account with two would test a coin toss.
 export async function soleE2eDevice(token: string, networkSlug: string): Promise<E2eDevice> {

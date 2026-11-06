@@ -1,13 +1,15 @@
 // issue 2430 — what a pairing screen hands the session (`pairingSession.ts`):
 // this browser's E2E stores, the login, the account, and the networks this
 // account has. Kept out of the screens so they stay a view over the session.
+// The rail's device verbs (whether this browser holds the master, the
+// identity's devices, a revoke: issue 2544) bind the same three here.
 
 import { createEffect, createRoot } from "solid-js";
 import { me } from "../api";
 import { token } from "../auth";
 import { networkBySlug, networks } from "../networks";
 import { browserE2e } from "./browser";
-import { accountSlot, masterOf } from "./identity";
+import { accountSlot, masterOf, type OwnDevice, ownDevices, revokeDevice } from "./identity";
 import type { HolderDeps } from "./pairingSession";
 
 // The account is read from grappa (`/me`, shared with the networks resource),
@@ -47,11 +49,35 @@ export async function pairingDeps(bearer: string): Promise<HolderDeps> {
   };
 }
 
-/** Whether this browser holds the master of the network's identity, so it may add devices to it. */
-export async function holdsMasterHere(slug: string): Promise<boolean> {
+// This browser's account store, the login, and the network's account slot;
+// null without a login or a network of that slug.
+async function slotHere(slug: string) {
   const bearer = token();
   const network = networkBySlug(slug);
-  if (bearer === null || network === undefined) return false;
+  if (bearer === null || network === undefined) return null;
   const [{ accounts }, subject] = await Promise.all([browserE2e(), subjectOf(bearer)]);
-  return (await masterOf(accounts, accountSlot(subject, network.id))) !== null;
+  return { accounts, bearer, slot: accountSlot(subject, network.id) };
+}
+
+/** Whether this browser holds the master of the network's identity, so it may add devices to it. */
+export async function holdsMasterHere(slug: string): Promise<boolean> {
+  const here = await slotHere(slug);
+  return here !== null && (await masterOf(here.accounts, here.slot)) !== null;
+}
+
+/** The devices of the network's identity, this browser's marked (`ownDevices`); null without one here. */
+export async function ownDevicesHere(slug: string): Promise<OwnDevice[] | null> {
+  const here = await slotHere(slug);
+  return here === null ? null : ownDevices(here.accounts, here.bearer, here.slot, slug);
+}
+
+/** Revokes the device `ed25519` from the network's identity, from the master's browser (`revokeDevice`). */
+export async function revokeDeviceHere(
+  slug: string,
+  ed25519: string,
+): Promise<"revoked" | "failed" | "list-changed"> {
+  const here = await slotHere(slug);
+  return here === null
+    ? "failed"
+    : revokeDevice(here.accounts, here.bearer, here.slot, slug, ed25519);
 }

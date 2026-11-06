@@ -192,6 +192,7 @@ const wireDevice = (d: Device): E2eKeysWireDevice => ({
   curve25519: d.curve25519,
   sig: d.sig,
   last_seen_at: d.last_seen_at ?? null,
+  inserted_at: d.inserted_at,
 });
 
 // A device read its inbox (issue 2547): its activity stamp moves to now, to
@@ -204,6 +205,10 @@ function seen(device: Device): void {
     device.last_seen_at = new Date(now).toISOString();
   }
 }
+
+// `E2eKeys.Wire.device/1`'s `inserted_at`: ISO 8601 to the second, as
+// `DateTime.to_iso8601/1` writes a `:utc_datetime`.
+const nowToTheSecond = (): string => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 
 const status = (device: Device): E2eKeysWireStatus => ({
   one_time_keys: device.otks.length,
@@ -327,6 +332,7 @@ export class Grappa {
       curve25519: id.curve25519,
       sig: id.sig,
       last_seen_at: null,
+      inserted_at: nowToTheSecond(),
       otks: [],
       fallback: null,
       inbox: [],

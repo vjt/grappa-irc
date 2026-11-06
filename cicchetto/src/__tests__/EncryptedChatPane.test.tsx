@@ -32,6 +32,30 @@ import { ruleBody, themeCss } from "./helpers/themeCss";
 const KEY = "J2bCqN5ukKUq1qDNgzWbn9GZ7xjzM2bA0f9yqkvq0Ss";
 const OWN = "7hPz0kdkCq0cH1L2oW9i3l0gq3uM8V8vxa5w8Kq2yYk";
 
+// issue 2544 — this identity's devices as `ownDevicesHere` answers them:
+// this browser's, then a phone paired to it, and one a server before
+// protocol 57 listed without a date.
+const DEVICES = [
+  {
+    did: "8oQnELjX3ZU",
+    ed25519: "74fc4YABO7QlCkzBkjhbhdhM4xdZRNIi99r8JCw40vg",
+    addedAt: "2026-11-01T10:00:00Z",
+    here: true,
+  },
+  {
+    did: "AaZaARRDyBk",
+    ed25519: "C1pM3r0jxW8Rf9yq0sJx4pSgq0dKkq9iYwXv2Lh7aNQ",
+    addedAt: "2026-11-03T18:30:00Z",
+    here: false,
+  },
+  {
+    did: "AbZbARRDyBk",
+    ed25519: "dU7mV2kq3Fq0xRrJ8p1Kc5bN9sWg4hT6yZaE0iLoMvA",
+    addedAt: null,
+    here: false,
+  },
+];
+
 const [chat, setChat] = createSignal<Chat | undefined>(undefined);
 const [rows, setRows] = createSignal<ChatRow[] | undefined>(undefined);
 const [trust, setTrust] = createSignal<PeerTrust | null>(null);
@@ -56,6 +80,8 @@ const identityDevices = vi.hoisted(() => vi.fn());
 const rekeyEncrypted = vi.hoisted(() => vi.fn());
 const copyText = vi.hoisted(() => vi.fn());
 const holdsMasterHere = vi.hoisted(() => vi.fn());
+const ownDevicesHere = vi.hoisted(() => vi.fn());
+const revokeDeviceHere = vi.hoisted(() => vi.fn());
 const openQueryWindowState = vi.hoisted(() => vi.fn());
 const sendCtcpQuery = vi.hoisted(() => vi.fn(async () => undefined));
 const loadMore = vi.hoisted(() => vi.fn(async () => undefined));
@@ -99,7 +125,12 @@ vi.mock("../lib/encryptedChats", async (importOriginal) => ({
 }));
 // Whether this browser holds the network's master, and the add-a-device
 // panel itself (its own tests drive it): the pane decides only what to offer.
-vi.mock("../lib/e2e/pairingDeps", () => ({ holdsMasterHere, pairingDeps: vi.fn() }));
+vi.mock("../lib/e2e/pairingDeps", () => ({
+  holdsMasterHere,
+  ownDevicesHere,
+  revokeDeviceHere,
+  pairingDeps: vi.fn(),
+}));
 vi.mock("../AddDevicePanel", async () => {
   const { onCleanup } = await import("solid-js");
   return {
@@ -166,6 +197,7 @@ const {
 } = await import("../EncryptedChatPane");
 const { default: EncryptedRail } = await import("../EncryptedRail");
 const { formatTime } = await import("../ScrollbackPane");
+const { formatDateTime } = await import("../lib/dateFormat");
 
 const at = 1_700_000_000_000;
 
@@ -186,6 +218,8 @@ beforeEach(() => {
   pinEncryptedKey.mockResolvedValue("pinned");
   identityDevices.mockResolvedValue({ listed: 1, lastActive: null });
   holdsMasterHere.mockResolvedValue(true);
+  ownDevicesHere.mockResolvedValue(DEVICES);
+  revokeDeviceHere.mockResolvedValue("revoked");
   panel.mounted = 0;
   panel.unmounted = 0;
   setChat({ nick: "Bob", open: true, unread: 0 });
@@ -1361,7 +1395,9 @@ describe("EncryptedChatPane, the rail", () => {
     holdsMasterHere.mockResolvedValue(false);
     renderPane();
     const hint = await screen.findByTestId("e2e-add-device-hint");
-    expect(hint.textContent).toBe("Devices are added from the browser that started this identity.");
+    expect(hint.textContent).toBe(
+      "Devices are added and revoked from the browser that started this identity.",
+    );
     expect(screen.queryByTestId("e2e-add-device")).toBeNull();
   });
 
@@ -1390,6 +1426,123 @@ describe("EncryptedChatPane, the rail", () => {
     expect(screen.queryByTestId("add-device-panel")).toBeNull();
     expect(panel.unmounted).toBe(1);
     expect(screen.getByTestId("e2e-add-device")).toBeTruthy();
+  });
+
+  // issue 2544 (vjt's ruling, point 2): under "your identity", this
+  // identity's devices, and a revoke for each but this browser's, behind a
+  // confirmation, from the browser that holds the master only.
+  const deviceRows = () => screen.getAllByTestId("e2e-own-device");
+
+  it("lists this identity's devices: the id, when it was added, and which one is this browser", async () => {
+    renderPane();
+    await waitFor(() => expect(deviceRows()).toHaveLength(3));
+    expect(ownDevicesHere).toHaveBeenCalledWith("azzurra");
+    expect(within("e2e-rail-own").contains(screen.getByTestId("e2e-own-devices"))).toBe(true);
+    const [mine, phone, undated] = deviceRows();
+    expect(mine?.dataset.did).toBe("8oQnELjX3ZU");
+    expect(mine?.dataset.here).toBe("true");
+    expect(mine?.textContent).toContain("this browser");
+    expect(mine?.textContent).toContain(
+      `added ${formatDateTime(Date.parse("2026-11-01T10:00:00Z"))}`,
+    );
+    expect(phone?.textContent).toContain("AaZaARRDyBk");
+    expect(phone?.textContent).not.toContain("this browser");
+    expect(phone?.textContent).toContain(
+      `added ${formatDateTime(Date.parse("2026-11-03T18:30:00Z"))}`,
+    );
+    expect(undated?.textContent).not.toContain("added");
+  });
+
+  it("the master's browser revokes another device, only once the confirmation says yes, then reads the list again", async () => {
+    renderPane();
+    await waitFor(() => expect(screen.getAllByTestId("e2e-own-device-revoke")).toHaveLength(2));
+    const [mine, phone] = deviceRows();
+    expect(mine?.querySelector("[data-testid=e2e-own-device-revoke]")).toBeNull();
+
+    fireEvent.click(phone?.querySelector("[data-testid=e2e-own-device-revoke]") as HTMLElement);
+    const asked = confirmRequest();
+    expect(asked?.title).toBe("Revoke device");
+    expect(asked?.body).toContain("AaZaARRDyBk");
+    expect(asked?.defaultButton).toBe("cancel");
+    expect(revokeDeviceHere).not.toHaveBeenCalled();
+    dismissConfirm();
+    expect(revokeDeviceHere).not.toHaveBeenCalled();
+
+    ownDevicesHere.mockClear();
+    ownDevicesHere.mockResolvedValue([DEVICES[0], DEVICES[2]]);
+    fireEvent.click(phone?.querySelector("[data-testid=e2e-own-device-revoke]") as HTMLElement);
+    acceptConfirm();
+    expect(revokeDeviceHere).toHaveBeenCalledWith("azzurra", DEVICES[1]?.ed25519);
+    await waitFor(() => expect(deviceRows()).toHaveLength(2));
+    expect(ownDevicesHere).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("e2e-own-devices-error")).toBeNull();
+  });
+
+  it("another browser lists the devices read-only, under the hint that says where they are revoked", async () => {
+    holdsMasterHere.mockResolvedValue(false);
+    renderPane();
+    await screen.findByTestId("e2e-add-device-hint");
+    await waitFor(() => expect(deviceRows()).toHaveLength(3));
+    expect(screen.queryByTestId("e2e-own-device-revoke")).toBeNull();
+  });
+
+  it.each([
+    ["list-changed", "the device list changed meanwhile"],
+    ["failed", "this browser could not sign a new list"],
+  ])("a revoke refused as %s says why", async (result, message) => {
+    revokeDeviceHere.mockResolvedValue(result);
+    renderPane();
+    await waitFor(() => expect(screen.getAllByTestId("e2e-own-device-revoke")).toHaveLength(2));
+    fireEvent.click(screen.getAllByTestId("e2e-own-device-revoke")[0] as HTMLElement);
+    acceptConfirm();
+    const error = await screen.findByTestId("e2e-own-devices-error");
+    expect(error.textContent).toContain("could not revoke AaZaARRDyBk");
+    expect(error.textContent).toContain(message);
+  });
+
+  it("a revoke that fails says what failed and logs the cause", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    revokeDeviceHere.mockRejectedValue(new Error("the network is gone"));
+    renderPane();
+    await waitFor(() => expect(screen.getAllByTestId("e2e-own-device-revoke")).toHaveLength(2));
+    fireEvent.click(screen.getAllByTestId("e2e-own-device-revoke")[0] as HTMLElement);
+    acceptConfirm();
+    expect((await screen.findByTestId("e2e-own-devices-error")).textContent).toBe(
+      "could not revoke AaZaARRDyBk: the network is gone",
+    );
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("a list that cannot be read says so", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    ownDevicesHere.mockRejectedValue(new Error("grappa is away"));
+    renderPane();
+    expect((await screen.findByTestId("e2e-own-devices-error")).textContent).toBe(
+      "could not list the devices: grappa is away",
+    );
+    warn.mockRestore();
+  });
+
+  it("reads the list again when the add-device panel closes: a device may have joined", async () => {
+    renderPane();
+    await waitFor(() => expect(deviceRows()).toHaveLength(3));
+    expect(ownDevicesHere).toHaveBeenCalledTimes(1);
+    fireEvent.click(await screen.findByTestId("e2e-add-device"));
+    panel.onClose?.();
+    await waitFor(() => expect(ownDevicesHere).toHaveBeenCalledTimes(2));
+  });
+
+  it("asks for no list while there is no key, nor while the identity is elsewhere", async () => {
+    setOwn(undefined);
+    renderPane();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ownDevicesHere).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("e2e-own-devices")).toBeNull();
+    setElsewhere("no-keys");
+    setOwn(OWN);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByTestId("e2e-own-devices")).toBeNull();
   });
 
   it("says why a copy failed", async () => {

@@ -67,8 +67,10 @@ const {
   masterOf,
   mountIdentitySync,
   offerable,
+  ownDevices,
   prepareJoin,
   replaceIdentity,
+  revokeDevice,
   syncIdentity,
 } = await import("../lib/e2e/identity");
 
@@ -109,7 +111,12 @@ const stored = (store: AccountStore) =>
 
 /** The id block grappa registered for device key `E`, as `GET …/devices` lists it, minus its did. */
 function idBlockOf(E: string) {
-  return { ed25519: E, curve25519: expect.any(String), sig: expect.any(String) };
+  return {
+    ed25519: E,
+    curve25519: expect.any(String),
+    sig: expect.any(String),
+    inserted_at: expect.any(String),
+  };
 }
 
 const DOORS = [
@@ -1234,6 +1241,144 @@ describe("the pairing doors", () => {
     expect(await addDevice(a.store, NICK, SLOT, SLUG, j.id)).toBe("list-changed");
 
     expect(api.putE2eList).toHaveBeenCalledTimes(2);
+    expect(await grappa.api.getE2eList(NICK, SLUG)).toEqual(lists[1]);
+  });
+
+  // issue 2544 — the rail lists the identity's own devices and the master's
+  // browser revokes them.
+  it("ownDevices lists the identity's devices, oldest first, when grappa added each and which is this browser", async () => {
+    const a = await holder();
+    const b = browser();
+    const { M, j } = await paired(a.store, b.store);
+    // Registered under the master and never listed: no device of the identity.
+    await strangers(1, M);
+    const [mineA, mineB] = [await stored(a.store), await stored(b.store)];
+    const held = await grappa.api.listE2eDevices(NICK, SLUG);
+    const addedAt = (E: string) => held.find((d) => d.ed25519 === E)?.inserted_at;
+    expect(addedAt(mineA.E)).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+
+    const listed = [
+      { did: mineA.own?.did, ed25519: mineA.E, addedAt: addedAt(mineA.E) },
+      { did: j.did, ed25519: mineB.E, addedAt: addedAt(mineB.E) },
+    ];
+    expect(await ownDevices(a.store, NICK, SLOT, SLUG)).toEqual([
+      { ...listed[0], here: true },
+      { ...listed[1], here: false },
+    ]);
+    expect(await ownDevices(b.store, NICK, SLOT, SLUG)).toEqual([
+      { ...listed[0], here: false },
+      { ...listed[1], here: true },
+    ]);
+  });
+
+  it("ownDevices answers null on a browser that holds no identity, and stores nothing", async () => {
+    await holder();
+    const b = browser();
+    expect(await ownDevices(b.store, NICK, SLOT, SLUG)).toBeNull();
+    expect(b.vault.records.has(SLOT)).toBe(false);
+  });
+
+  it("ownDevices says when a device was added only where grappa says it (a server before protocol 57 does not)", async () => {
+    const a = await holder();
+    vi.mocked(api.listE2eDevices).mockImplementationOnce(async (t, s) =>
+      (await grappa.api.listE2eDevices(t, s)).map(({ inserted_at: _, ...rest }) => rest),
+    );
+    expect(await ownDevices(a.store, NICK, SLOT, SLUG)).toEqual([
+      expect.objectContaining({ addedAt: null, here: true }),
+    ]);
+  });
+
+  it("revokeDevice signs the list one version up without the device; grappa drops it, and that browser is left out", async () => {
+    const a = await holder();
+    const b = browser();
+    const { M, j } = await paired(a.store, b.store);
+    const [mineA, mineB] = [await stored(a.store), await stored(b.store)];
+    vi.clearAllMocks();
+
+    expect(await revokeDevice(a.store, NICK, SLOT, SLUG, mineB.E)).toBe("revoked");
+
+    // One put, and no DELETE: grappa drops a device a new list leaves out.
+    expect(calls().filter((c) => c !== "GET list" && c !== "GET keys")).toEqual(["PUT list"]);
+    const held = await grappa.api.getE2eList(NICK, SLUG);
+    expect(held).toEqual({ master: M, ver: 3, devices: [mineA.E], sig: expect.any(String) });
+    if (held === null) throw new Error("no list");
+    expect(olm().verify_ed25519(M, listSigText(3, [mineA.E]), held.sig)).toBe(true);
+    expect((await grappa.api.listE2eDevices(NICK, SLUG)).map((d) => d.did)).toEqual([
+      mineA.own?.did,
+    ]);
+    expect((await stored(a.store)).own?.list).toEqual({
+      ver: 3,
+      devices: [mineA.E],
+      sig: held.sig,
+    });
+    expect((await ownDevices(a.store, NICK, SLOT, SLUG))?.map((d) => d.did)).toEqual([
+      mineA.own?.did,
+    ]);
+    // The revoked browser's next sync finds a list that leaves it out.
+    expect(await sync(b.store)).not.toBe("ready");
+    expect(j.did).toBe(mineB.own?.did);
+  });
+
+  it("revokeDevice refuses this browser's own device, a key the list does not name, and a browser without the master; it puts nothing", async () => {
+    const a = await holder();
+    const b = browser();
+    const { M } = await paired(a.store, b.store);
+    const [mineA, mineB] = [await stored(a.store), await stored(b.store)];
+    const [stranger = ""] = await strangers(1, M);
+    vi.clearAllMocks();
+
+    expect(await revokeDevice(a.store, NICK, SLOT, SLUG, mineA.E)).toBe("failed");
+    expect(await revokeDevice(a.store, NICK, SLOT, SLUG, stranger)).toBe("failed");
+    expect(await revokeDevice(b.store, NICK, SLOT, SLUG, mineA.E)).toBe("failed");
+
+    expect(api.putE2eList).not.toHaveBeenCalled();
+    expect(await grappa.api.getE2eList(NICK, SLUG)).toMatchObject({
+      ver: 2,
+      devices: [mineA.E, mineB.E].sort(),
+    });
+  });
+
+  it("revokeDevice re-syncs once when another put lands first, and keeps the device that put listed", async () => {
+    const a = await holder();
+    const b = browser();
+    const { M } = await paired(a.store, b.store);
+    const [mineA, mineB] = [await stored(a.store), await stored(b.store)];
+    const [third = ""] = await strangers(1, M);
+    const behind = await listBy(a.store, 3, [mineA.E, mineB.E, third]);
+    vi.clearAllMocks();
+    vi.mocked(api.putE2eList).mockImplementationOnce(async (t, s, list) => {
+      await grappa.api.putE2eList(t, s, behind);
+      return grappa.api.putE2eList(t, s, list);
+    });
+
+    expect(await revokeDevice(a.store, NICK, SLOT, SLUG, mineB.E)).toBe("revoked");
+
+    expect(api.putE2eList).toHaveBeenCalledTimes(2);
+    expect(await grappa.api.getE2eList(NICK, SLUG)).toMatchObject({
+      ver: 4,
+      devices: [mineA.E, third].sort(),
+    });
+  });
+
+  it("revokeDevice answers list-changed when the list moves twice", async () => {
+    const a = await holder();
+    const b = browser();
+    const { M } = await paired(a.store, b.store);
+    const [mineA, mineB] = [await stored(a.store), await stored(b.store)];
+    const [third = "", fourth = ""] = await strangers(2, M);
+    const lists = [
+      await listBy(a.store, 3, [mineA.E, mineB.E, third]),
+      await listBy(a.store, 4, [mineA.E, mineB.E, third, fourth]),
+    ];
+    vi.clearAllMocks();
+    for (const behind of lists) {
+      vi.mocked(api.putE2eList).mockImplementationOnce(async (t, s, list) => {
+        await grappa.api.putE2eList(t, s, behind);
+        return grappa.api.putE2eList(t, s, list);
+      });
+    }
+
+    expect(await revokeDevice(a.store, NICK, SLOT, SLUG, mineB.E)).toBe("list-changed");
     expect(await grappa.api.getE2eList(NICK, SLUG)).toEqual(lists[1]);
   });
 
