@@ -646,7 +646,7 @@ Check `protocol_version >= 28`. ⚠️ There is no 27 — the shape moved twice
 before this version was published, and the pin gate requires a number per
 move. Nothing ever spoke 27.
 
-### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46; network name v47; devices v49; copies to your other devices v50; NACK from `*` v52)
+### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46; network name v47; devices v49; copies to your other devices v50; NACK from `*` v52; a device's `inserted_at` v57)
 
 An encrypted query is a conversation grappa carries and cannot read. The
 endpoints (cicchetto, or a bot using the shared Python package) run Olm via
@@ -689,8 +689,8 @@ only from them:
 
 | route | answer |
 |---|---|
-| `POST /networks/:network_id/e2e/devices` `{"ed25519", "curve25519", "sig"}` | **200** the device: `{"did", "ed25519", "curve25519", "sig", "last_seen_at"}`. Registering the same `ed25519` again replaces its id block and stays one device |
-| `GET /networks/:network_id/e2e/devices` | **200** `{"devices": [device…]}`, oldest first, listed or not. `last_seen_at` (protocol 56, issue 2547) is when that device last read its own inbox (`GET …/devices/:did/inbox`), ISO 8601, moved at most once a minute; `null` for a device that has not read it since grappa records it, and absent from a server older than 56 |
+| `POST /networks/:network_id/e2e/devices` `{"ed25519", "curve25519", "sig"}` | **200** the device: `{"did", "ed25519", "curve25519", "sig", "last_seen_at", "inserted_at"}`. Registering the same `ed25519` again replaces its id block and stays one device, with its first `inserted_at` |
+| `GET /networks/:network_id/e2e/devices` | **200** `{"devices": [device…]}`, oldest first, listed or not. `last_seen_at` (protocol 56, issue 2547) is when that device last read its own inbox (`GET …/devices/:did/inbox`), ISO 8601, moved at most once a minute; `null` for a device that has not read it since grappa records it, and absent from a server older than 56. `inserted_at` (protocol 57, issue 2544) is when grappa first registered the device, ISO 8601 to the second, kept when it registers again; absent from a server older than 57 |
 | `DELETE /networks/:network_id/e2e/devices/:did` | **204** — a device the list does NOT name (a pairing that never finished) is dropped with its keys and queue, freeing its room; 404 `not_found` for a `did` that is not yours there, 409 `listed_device` for one the list names (that one goes with a list that leaves it out) |
 | `PUT /networks/:network_id/e2e/list` `{"master", "ver", "devices", "sig"}` | **200** the list as held |
 | `GET /networks/:network_id/e2e/list` | **200** the list; 404 `not_found` before one is put |

@@ -609,6 +609,7 @@ export type E2eKeysWireDevice = {
   curve25519: string;
   sig: string;
   last_seen_at?: string | null;
+  inserted_at?: string;
 };
 
 export type E2eKeysWireDevices = {

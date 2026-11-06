@@ -1467,7 +1467,26 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: an older client ignores a field it
   # does not know.
-  @protocol_version 56
+  #
+  # ---------------------------------------------------------------------------
+  # 57 — issue 2544: when each E2E device was added
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `inserted_at` (ISO 8601) on the E2E device shape
+  # (`E2eKeys.Wire.device/1`), so on `GET /e2e/devices` and the
+  # `POST /e2e/devices` answer: when grappa first registered the device,
+  # kept when it registers again. The encrypted query's rail lists the
+  # identity's own devices with it ("added"), and the browser holding the
+  # master revokes them from there. Bumped on the #1393d rule: a client
+  # that shows it cannot get it from a server predating it.
+  #
+  # Checked for a collision before claiming 57: origin/main carries 56
+  # (issue 2547, landed while this was written), and no open PR edits this
+  # file.
+  #
+  # @min_protocol_version stays at 1: an older client ignores a field it
+  # does not know.
+  @protocol_version 57
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1508,7 +1527,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 56
+  @spec version() :: 57
   def version, do: @protocol_version
 
   @doc """

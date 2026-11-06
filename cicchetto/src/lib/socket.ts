@@ -402,7 +402,12 @@ let _socket: Socket | null = null;
 // long ago a listed device was active. A pre-56 server leaves it out, so the
 // window says how many devices grappa lists and not when one was active;
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 56;
+//
+// 57 (issue 2544) — `inserted_at` on the E2E device shape: when grappa first
+// registered each device. The encrypted query's rail lists the identity's
+// own devices with it. A pre-57 server leaves it out, so the list shows no
+// date; `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 57;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //
