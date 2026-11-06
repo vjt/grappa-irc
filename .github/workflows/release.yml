@@ -48,7 +48,8 @@ name: release
 #              PKGBUILD/.SRCINFO to the GitHub Release. Runs even if a package
 #              job FAILED and attaches ONLY what built (#504): a broken distro
 #              never withholds the artifacts that succeeded; the failed leg
-#              stays red on its own.
+#              stays red on its own. Then attaches SHA256SUMS over every asset
+#              the release holds, under its published name (issue 2570).
 #
 # Version proof (#419 R3 / #391): the packaged build must report the BARE
 # `X.Y.Z`, never `-dev`. Two paths, both asserted on the real artifact:
@@ -1875,6 +1876,25 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --notes "$new_body"
           fi
+
+      # issue 2570 — SHA256SUMS, the checksum file PACKAGING.md promises. It
+      # is built from the release as the API lists it AFTER the upload, not
+      # from the files on this runner, because GitHub renames on upload
+      # (`.SRCINFO` -> `default.SRCINFO`; `~` -> `.` in a pre-release's
+      # package names) and a packager downloads the published name. The
+      # script cross-checks every file this run attached against the digests
+      # GitHub reports and refuses on a mismatch, and it leaves out a
+      # SHA256SUMS an earlier run attached. No `if:`: a red attach step skips
+      # this, and a failure here leaves the release without the file until a
+      # repair dispatch re-runs publish.
+      - name: Attach SHA256SUMS (every asset on the release, by its published name)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.assets[] | [.name, (.digest // "")] | @tsv' > "$RUNNER_TEMP/release-assets.tsv"
+          infra/packaging/sha256sums.sh assets < "$RUNNER_TEMP/release-assets.tsv" > "$RUNNER_TEMP/SHA256SUMS"
+          cat "$RUNNER_TEMP/SHA256SUMS"
+          gh release upload "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --clobber "$RUNNER_TEMP/SHA256SUMS"
 
   apt-repo:
     name: refresh the apt and rpm repositories
