@@ -110,8 +110,9 @@ type ServedRow = { id: number; kind: string; meta?: { modes?: string; args?: str
 // on a TypeError). The page body itself is a BARE ARRAY (api.ts's
 // `fetchMessages`), not an envelope.
 //
-// The reader awaits every body still being read: the DOM barrier the tests
-// take first proves cic has the rows, not that this side has parsed them.
+// The reader awaits the body of every response seen by the time it is called:
+// the DOM barrier the tests take first proves cic has the rows, not that this
+// side has parsed them.
 function watchServedRows(page: Page, channel: string): () => Promise<ServedRow[]> {
   const bodies: Promise<ServedRow[]>[] = [];
   page.on("response", (r) => {
