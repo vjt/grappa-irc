@@ -107,6 +107,8 @@ import type {
   SessionWireBanlistEntry,
   SessionWireE2eCopiedPayload,
   SessionWireE2eInboxPayload,
+  SessionWireE2eIncomingLostPayload,
+  SessionWireE2eIncomingPayload,
   SessionWireE2eMessagePayload,
   SessionWireE2eSendDroppedPayload,
   SessionWireE2eSentPayload,
@@ -1311,6 +1313,11 @@ export type WireUserEvent =
   // failed to reach the socket, `session_ended` when the session stopped
   // with it still queued. Generated shape verbatim.
   | SessionWireE2eSendDroppedPayload
+  // issue 2577 (protocol 59) — a peer's encrypted message spanning several
+  // lines began to arrive, or will not reach the device `to` names.
+  // lib/encryptedArriving.ts is their only reader. Generated shape verbatim.
+  | SessionWireE2eIncomingPayload
+  | SessionWireE2eIncomingLostPayload
   // issue 2430 X1 (protocol 48) — the pairing relay: a side posted on a
   // rendezvous (a doorbell, no payload: fetch it), or the rendezvous is
   // gone. lib/e2e/pairing.ts is their only reader. Generated shape verbatim.

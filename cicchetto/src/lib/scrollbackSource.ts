@@ -30,6 +30,14 @@ import { setCursorIfAdvances } from "./selection";
 // The members keep the names of grappa's own verbs, so the pane reads the same
 // with either source behind it.
 
+/**
+ * issue 2577 — a message on its way to the window, not yet a line: who sends
+ * it, when it began to arrive, and an id unique among the window's arrivals.
+ */
+export type ArrivingLine = { id: string; nick: string; at: number };
+
+const NONE_ARRIVING: readonly ArrivingLine[] = Object.freeze([]);
+
 export type ScrollbackSource = {
   /** The window's lines, oldest first; undefined until any are known. */
   messages: (key: ChannelKey) => ScrollbackMessage[] | undefined;
@@ -45,6 +53,12 @@ export type ScrollbackSource = {
   history: typeof grappaHistory | null;
   /** What a line carries beside its time and after its body (`ScrollbackLine`'s slots). */
   slots: (msg: ScrollbackMessage) => LineSlots;
+  /**
+   * issue 2577 — messages on their way to the window, in the order they began
+   * to arrive: drawn after every line until each lands. Only an encrypted
+   * window has any (a peer's message grappa announced line by line).
+   */
+  arriving: (key: ChannelKey) => readonly ArrivingLine[];
 };
 
 type LineSlots = { marker: JSX.Element; trailer: JSX.Element };
@@ -73,4 +87,5 @@ export const grappaScrollback: ScrollbackSource = {
   lastOwnSend,
   history: grappaHistory,
   slots: () => NO_SLOTS,
+  arriving: () => NONE_ARRIVING,
 };

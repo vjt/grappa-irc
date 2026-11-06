@@ -10,6 +10,7 @@ import type { PeerTrust } from "../lib/e2e/client";
 import type { ElsewhereReason } from "../lib/e2e/identity";
 import type { SasView } from "../lib/e2e/sas";
 import { SAS_EMOJI } from "../lib/e2e/sasEmoji";
+import type { Arriving } from "../lib/encryptedArriving";
 import { friendlyApiError } from "../lib/friendlyApiError";
 import {
   overlayCount,
@@ -126,6 +127,12 @@ vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   lastEncryptedSend: () => null,
   encryptedChatDeleted: () => null,
 }));
+// issue 2577 — the peer's messages on their way, as lib/encryptedArriving
+// answers them per chat (its own suite drives the store): keyed `slug/nick`.
+const [arrivals, setArrivals] = createSignal<Record<string, Arriving[]>>({});
+vi.mock("../lib/encryptedArriving", () => ({
+  encryptedArriving: (slug: string, nick: string) => arrivals()[`${slug}/${nick}`] ?? [],
+}));
 // Whether this browser holds the network's master, and the add-a-device
 // panel itself (its own tests drive it): the pane decides only what to offer.
 vi.mock("../lib/e2e/pairingDeps", () => ({
@@ -233,6 +240,7 @@ beforeEach(() => {
   setSas(null);
   setElsewhere(null);
   setWireView(null);
+  setArrivals({});
   dismissConfirm();
   // The compose store is the app's one (issue 2512): each test starts on an
   // empty draft for the window.
@@ -2129,5 +2137,50 @@ describe("heldDevicesLine", () => {
     expect(heldDevicesLine({ listed: 2, lastActive: "not a time" }, now)).toBe(
       "grappa lists 2 of your devices",
     );
+  });
+});
+
+// issue 2577 — a peer's message grappa announced at its first line: the window
+// hands the scrollback its own chat's arrivals, which the pane draws after the
+// lines, and follows the store as each one lands or is lost.
+describe("EncryptedChatPane — messages on their way (issue 2577)", () => {
+  const arrivingRows = () =>
+    Array.from(
+      within("e2e-pane").querySelectorAll<HTMLElement>("[data-testid=scrollback-arriving]"),
+    );
+
+  it("draws this chat's arrivals after its lines, none of another chat's, until the store lets them go", () => {
+    setRows([{ kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "ciao" }]);
+    setArrivals({
+      "azzurra/bob": [
+        { nick: "Bob", fromDid: "AaZaARRDyBk", msgid: "q83vEjRWeJA", at: at + 5_000 },
+        { nick: "Bob", fromDid: "AaZaARRDyBk", msgid: "r94wFkSXfKB", at: at + 6_000 },
+      ],
+      "azzurra/carol": [{ nick: "carol", fromDid: "AbZbARRDyBk", msgid: "s05xGlTYgLC", at }],
+      "libera/bob": [{ nick: "bob", fromDid: "AbZbARRDyBk", msgid: "t16yHmUZhMD", at }],
+    });
+    renderPane();
+
+    const shown = arrivingRows();
+    expect(shown.map((row) => row.dataset.nick)).toEqual(["Bob", "Bob"]);
+    expect(shown.map((row) => row.querySelector(".scrollback-time")?.textContent)).toEqual([
+      formatTime(at + 5_000),
+      formatTime(at + 6_000),
+    ]);
+    const last = lines().at(-1);
+    expect(body(last)).toBe("ciao");
+    expect(
+      (last?.compareDocumentPosition(shown[0] as Node) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+
+    // The first lands (the store hides it), the second is lost: both go.
+    setArrivals({
+      "azzurra/bob": [
+        { nick: "Bob", fromDid: "AaZaARRDyBk", msgid: "r94wFkSXfKB", at: at + 6_000 },
+      ],
+    });
+    expect(arrivingRows()).toHaveLength(1);
+    setArrivals({});
+    expect(arrivingRows()).toHaveLength(0);
   });
 });

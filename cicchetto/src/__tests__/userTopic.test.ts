@@ -183,10 +183,17 @@ vi.mock("../lib/e2eRequests", () => ({
 }));
 
 vi.mock("../lib/encryptedChats", () => ({
-  drainE2e: vi.fn(async () => undefined),
   drainEveryNetwork: vi.fn(),
   encryptedSendDropped: vi.fn(async () => undefined),
   encryptedPeerAbsent: vi.fn(async () => undefined),
+}));
+
+// issue 2577 — a peer's encrypted message on its way: the store owns what it
+// shows (its own suite); the topic hands it the three pushes that drive it.
+vi.mock("../lib/encryptedArriving", () => ({
+  e2eIncoming: vi.fn(),
+  e2eIncomingLost: vi.fn(),
+  e2eMessageQueued: vi.fn(async () => undefined),
 }));
 
 vi.mock("../lib/supportedUmodes", () => ({
@@ -345,6 +352,63 @@ describe("userTopic", () => {
       reason: "late",
     });
     expect(encrypted.encryptedSendDropped).toHaveBeenCalledWith("azzurra", "Zm9vYmFyMDE", "late");
+  });
+
+  // issue 2577 — grappa announces a peer's message at its first line, says
+  // when it will not arrive, and queues it when whole: each push reaches the
+  // store that shows it, whole, and nothing else does.
+  it("hands e2e_incoming, e2e_incoming_lost and e2e_message to the arriving store, payload whole", async () => {
+    const arriving = await import("../lib/encryptedArriving");
+    const incoming = {
+      kind: "e2e_incoming",
+      network: "azzurra",
+      from: "Bob",
+      from_did: "AaZaARRDyBk",
+      to: "*",
+      msgid: "q83vEjRWeJA",
+    };
+    const lost = {
+      kind: "e2e_incoming_lost",
+      network: "azzurra",
+      from_did: "AaZaARRDyBk",
+      to: "8oQnELjX3ZU",
+      msgid: "q83vEjRWeJA",
+    };
+    channelMock.fireEvent(incoming);
+    expect(arriving.e2eIncoming).toHaveBeenCalledWith(incoming);
+    expect(arriving.e2eIncomingLost).not.toHaveBeenCalled();
+    channelMock.fireEvent(lost);
+    expect(arriving.e2eIncomingLost).toHaveBeenCalledWith(lost);
+
+    const queued = {
+      kind: "e2e_message",
+      id: 7,
+      network: "azzurra",
+      from: "Bob",
+      from_did: "AaZaARRDyBk",
+      to_did: "8oQnELjX3ZU",
+      verb: "msg",
+      msgid: "q83vEjRWeJA",
+      payload: '{"ck":"x","bodies":{"a":"b"}}',
+      own: false,
+    };
+    channelMock.fireEvent(queued);
+    expect(arriving.e2eMessageQueued).toHaveBeenCalledWith(queued);
+    expect(arriving.e2eIncoming).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops an e2e_incoming missing its msgid before the store sees it", async () => {
+    const arriving = await import("../lib/encryptedArriving");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    channelMock.fireEvent({
+      kind: "e2e_incoming",
+      network: "azzurra",
+      from: "Bob",
+      from_did: "AaZaARRDyBk",
+      to: "*",
+    });
+    expect(arriving.e2eIncoming).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   // issue 2497 — a 401 named a nick: what waits for its keys fails now.

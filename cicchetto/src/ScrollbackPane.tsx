@@ -1368,6 +1368,14 @@ type CommandOutputRow = {
 // derived, so it reads in place). What the card says is `E2eRequestCard`'s,
 // read from the requests mirror: the row carries only where it sits.
 type E2eRequestRow = { type: "e2e-request"; id: string; at: number };
+// issue 2577 — a message on its way to the window (`ScrollbackSource.arriving`):
+// an encrypted peer's message grappa announced at its first line. Not woven by
+// time: every one sits after every other row, in the order they began to
+// arrive, so a message landing takes the place its own arrival held. String
+// id, so never in the unread/cursor math.
+type ArrivingRow = { type: "arriving"; id: string; nick: string; at: number };
+/** The arriving row's cloud: two rows of twelve squares (the theme lays them out and animates them). */
+const ARRIVING_SQUARES = Array.from({ length: 24 }, (_, i) => i);
 type Row =
   | SeparatorRow
   | UnreadMarkerRow
@@ -1376,7 +1384,8 @@ type Row =
   | TopicRow
   | TopicShowRow
   | CommandOutputRow
-  | E2eRequestRow;
+  | E2eRequestRow
+  | ArrivingRow;
 
 /**
  * The wallclock a row can be anchored on when weaving ephemeral rows into
@@ -2017,12 +2026,14 @@ const ScrollbackPane: Component<Props> = (props) => {
     const request =
       props.kind === "query" ? e2eRequestWith(props.networkSlug, props.channelName) : undefined;
     const requestCard = request !== undefined && request.state !== "incoming" ? request : null;
+    const arriving = props.source.arriving(key());
     if (
       msgs.length === 0 &&
       inviteAckEntries.length === 0 &&
       topicShowEntries.length === 0 &&
       commandOutputEntries.length === 0 &&
-      requestCard === null
+      requestCard === null &&
+      arriving.length === 0
     )
       return [];
     // Freeze contract: read the FROZEN snapshot, not live getReadCursor.
@@ -2291,6 +2302,11 @@ const ScrollbackPane: Component<Props> = (props) => {
         }
       }
       result.splice(insertAt, 0, row);
+    }
+    // issue 2577 — after everything, so none is ever above a line that landed
+    // after it began to arrive.
+    for (const line of arriving) {
+      result.push({ type: "arriving", id: `arriving-${line.id}`, nick: line.nick, at: line.at });
     }
     return result;
   };
@@ -4055,6 +4071,12 @@ const ScrollbackPane: Component<Props> = (props) => {
   // `rows().length` catches the marker insertion as a length delta and
   // re-runs the tail-follow on the same cycle.
   //
+  // issue 2577 — what re-runs it is every notification of the `rows` memo,
+  // not a change in the length it reads: Solid's `on` does not compare what
+  // its source returns. So a row REPLACED by another (a message landing where
+  // its arriving row was: one out, one in) re-runs it too. Measured: keying
+  // the source on the last row's identity as well changed no test outcome.
+  //
   // #168 (2026-07-02) — this length-effect (post-append / cursor-hydration)
   // is TAIL-ONLY and stays so. The former C7.3 scroll-to-marker branch here
   // was a second scrollTop authority that parked the viewport on the divider
@@ -4921,6 +4943,31 @@ const ScrollbackPane: Component<Props> = (props) => {
               }
               if (row.type === "e2e-request") {
                 return <E2eRequestCard networkSlug={props.networkSlug} peer={props.channelName} />;
+              }
+              if (row.type === "arriving") {
+                // issue 2577 — the sender, and in place of the text a cloud of
+                // squares: a message on its way, not one being typed. Its own
+                // class, not `.scrollback-line`: the line queries (the visible
+                // tail, the gestures) are about messages, and this is none.
+                return (
+                  <div
+                    class="scrollback-arriving"
+                    data-testid="scrollback-arriving"
+                    data-nick={row.nick}
+                  >
+                    <span class="scrollback-time">{formatTime(row.at)}</span>{" "}
+                    <span class="scrollback-arriving-sender">
+                      <NickText nick={row.nick} />
+                    </span>{" "}
+                    <span
+                      class="scrollback-arriving-cloud"
+                      role="img"
+                      aria-label={`an encrypted message from ${row.nick} is arriving`}
+                    >
+                      <For each={ARRIVING_SQUARES}>{() => <i />}</For>
+                    </span>
+                  </div>
+                );
               }
               if (row.type === "topic-show") {
                 // #1914 — the `/topic` answer. Wears the join line's classes on

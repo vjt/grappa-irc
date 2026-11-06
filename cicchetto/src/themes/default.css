@@ -4477,6 +4477,80 @@ html.is-ios27-band .shell {
   }
 }
 
+/* issue 2577 — an encrypted message on its way: the sender, and in place of
+   the text a faint cloud of squares about two lines tall. It says "something
+   sealed is coming", not "someone is typing", so nothing in it reads as text
+   or as a caret. Its own class, not `.scrollback-line`: no swipe, no hold, no
+   mention tint can reach a row that has no message behind it. The pan-y is
+   declared for the reason `.scrollback-line` gives (#1067). */
+.scrollback-arriving {
+  white-space: pre-wrap;
+  padding: 0.05rem 0;
+  touch-action: pan-y;
+}
+
+.scrollback-arriving-sender {
+  font-style: italic;
+}
+
+/* Two rows of twelve, each row a line tall, so the placeholder holds roughly
+   the room a short message will take. `top` keeps the time and the nick on
+   the first line beside it. */
+.scrollback-arriving-cloud {
+  display: inline-grid;
+  grid-template-columns: repeat(12, 0.85em);
+  grid-auto-rows: 1.1em;
+  vertical-align: top;
+  color: var(--muted);
+}
+
+.scrollback-arriving-cloud > i {
+  width: 0.55em;
+  height: 0.55em;
+  align-self: center;
+  background: currentColor;
+  opacity: 0.15;
+  animation: scrollback-arriving-shimmer 2.4s ease-in-out infinite;
+}
+
+/* The stagger: a negative delay starts each square part-way through the same
+   cycle, and the overlapping steps scatter the phases, so the cloud shimmers
+   instead of sweeping in a line. Later rules win where they overlap. */
+.scrollback-arriving-cloud > i:nth-child(2n) {
+  animation-delay: -0.6s;
+}
+
+.scrollback-arriving-cloud > i:nth-child(3n) {
+  animation-delay: -1.2s;
+}
+
+.scrollback-arriving-cloud > i:nth-child(5n) {
+  animation-delay: -1.8s;
+}
+
+.scrollback-arriving-cloud > i:nth-child(7n) {
+  animation-delay: -0.3s;
+}
+
+@keyframes scrollback-arriving-shimmer {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* Still squares, still the cloud: reduced motion takes the shimmer away, not
+   the sign that a message is on its way. */
+@media (prefers-reduced-motion: reduce) {
+  .scrollback-arriving-cloud > i {
+    animation: none;
+    opacity: 0.3;
+  }
+}
+
 /* #237: on-JOIN inline topic line. Presentational row (not .scrollback-line)
    derived from the topic store; prints the FULL topic in the buffer flow so
    the mobile-truncated TopicBar is no longer the only surface. The row wraps
