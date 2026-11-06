@@ -111,7 +111,7 @@ defmodule GrappaWeb.Router do
   # it, never by the endpoint (whose `Plug.Parsers` lets it through
   # unread). Both pipelines go after `:authn`, so a body is read only for
   # an authenticated subject, and only up to what the route needs.
-  # `:upload_body` is for the two doors whose body a per-file cap polices:
+  # `:upload_body` is for the three doors whose body a per-file cap polices:
   # its ceiling clears the largest cap an operator can set.
   # `:multipart_body` is for any other route that takes a file.
   # `GrappaWeb.MultipartBodyTest` fails when a route whose action (or a
@@ -594,6 +594,10 @@ defmodule GrappaWeb.Router do
     # Visitor OR user subject can upload; the cic ComposeBox triggers
     # this from the same picker/drag-drop/paste paths as litterbox.
     post "/api/uploads", UploadsController, :create
+    # issue 2517: an end-to-end encrypted file's ciphertext. Always this
+    # store, whatever the admin's active upload host: the receiving client
+    # fetches it from its own origin.
+    post "/api/uploads/encrypted", UploadsController, :create_encrypted
   end
 
   scope "/", GrappaWeb do

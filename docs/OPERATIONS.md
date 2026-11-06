@@ -1698,10 +1698,12 @@ reloads an nginx config any more, and `infra/snippets/*` is not read on
 this substrate. The host vhost (TLS termination, `/socket` upgrade,
 `X-Forwarded-For`, body ceiling) is the operator's, lives outside this
 repo, and is the ONLY proxy hop. Its body ceiling must mirror the BEAM's
-two (issue 2529): 128m for the server and 520m on the two upload doors,
+two (issue 2529): 128m for the server and 520m on the three upload doors,
 exactly as `infra/nginx-tls-frontend.example.conf` sets them — lower and
 uploads the admin caps allow die at the edge, higher and nginx spools
-bodies the BEAM refuses.
+bodies the BEAM refuses. The third door, `= /api/uploads/encrypted`, came
+with issue 2517: a host vhost written before it sends that path the 128m
+default, which only bites once an admin raises a per-file cap past it.
 
 **Push first.** The jail scripts `git pull --ff-only` from origin/main,
 so push before deploying. `deploy-m42.sh` fetches origin and refuses to

@@ -55,7 +55,31 @@ defmodule GrappaWeb.UploadsController do
   extension — `/uploads/<slug>.<ext>` (ext from `Grappa.Uploads.MimeExt`) —
   so the cic viewer reads the type from the URL, not a message-body emoji.
 
+  ## POST /api/uploads/encrypted (authenticated, issue 2517)
+
+  An end-to-end encrypted file: the client seals it with AES-256-GCM
+  under a fresh key, sends the ciphertext here and the key inside Olm,
+  so grappa holds bytes it cannot read. Same multipart `file` + `expire`
+  fields, the same TTL ladder, the same storage caps inside
+  `Grappa.Uploads.create/4` and the same 201 body as the plain door. What
+  differs is what a server can promise about ciphertext:
+
+    * The declared content type and filename are IGNORED. The row is
+      typed `Grappa.Uploads.encrypted_mime/0` with no charset and no
+      filename (the name travels inside Olm), which is also what marks
+      it encrypted. `MetadataStrip` passes that type through, so the
+      bytes land exactly as sent.
+    * One per-file cap, `encrypted_per_file_cap_bytes/0`: the largest of
+      the four category caps plus the 16-byte GCM tag. The server cannot
+      tell which category the plaintext was; the client applies that one
+      before it encrypts.
+    * Its `url` carries no extension (`MimeExt` maps no octet-stream), and
+      `GET /uploads/:slug` serves it as an `attachment`.
+
   ## GET /uploads/:slug[.ext] (public, NO auth)
+
+  An encrypted file (issue 2517) goes out as `content-disposition:
+  attachment`; every other upload goes out `inline`.
 
   Content-Type is REBUILT from the stored `{mime, charset}` pair
   (`Uploads.content_type_header/2`), never echoed from a client string
@@ -152,6 +176,13 @@ defmodule GrappaWeb.UploadsController do
   @allowed_ttl_seconds [3600, 43_200, 86_400, 259_200]
   @default_ttl_seconds 86_400
 
+  # The categories the plain door accepts, read off its own allowlist: an
+  # encrypted file can be any of them, and the server cannot tell which.
+  @categories @mime_categories |> Map.values() |> Enum.uniq()
+
+  # What AES-256-GCM appends to the ciphertext: the authentication tag.
+  @gcm_tag_bytes 16
+
   @doc """
   The closed MIME → cap-category allowlist. Public so the
   `Grappa.Uploads.MetadataStrip` lockstep test can assert every
@@ -164,29 +195,57 @@ defmodule GrappaWeb.UploadsController do
   @spec mime_categories() :: %{String.t() => :image | :video | :document | :audio}
   def mime_categories, do: @mime_categories
 
+  @doc """
+  The per-file cap of `POST /api/uploads/encrypted` (issue 2517): the
+  largest per-category cap (`ServerSettings.get_upload_per_file_cap_bytes/1`)
+  plus the 16-byte GCM tag, read at request time. Derived rather than an
+  admin setting of its own, so it follows the caps an operator sets and
+  the server-settings wire does not move.
+  """
+  @spec encrypted_per_file_cap_bytes() :: pos_integer()
+  def encrypted_per_file_cap_bytes do
+    largest = @categories |> Enum.map(&ServerSettings.get_upload_per_file_cap_bytes/1) |> Enum.max()
+    largest + @gcm_tag_bytes
+  end
+
   # ------------------------------------------------------------------
   # POST /api/uploads
   # ------------------------------------------------------------------
 
-  # @sobelow_skip ["Traversal.FileModule"]
-  # `read_file/1` reads `Plug.Upload.path`, a tmp file synthesized by
-  # `Plug.Parsers :multipart` — never user-controlled string input.
-  # Sobelow can't follow provenance through the multipart parser.
-  @sobelow_skip ["Traversal.FileModule"]
   @doc false
   @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, atom()}
   def create(conn, params) do
-    subject = Subject.from_assigns(conn.assigns)
-
     with {:ok, upload} <- extract_upload_field(params),
          {:ok, ttl_seconds} <- parse_ttl(params),
          {:ok, mime, charset, category} <- validate_mime(upload),
-         :ok <- check_per_file_cap(upload, category),
-         {:ok, bytes} <- read_file(upload),
+         :ok <- check_per_file_cap(upload, ServerSettings.get_upload_per_file_cap_bytes(category)) do
+      store(conn, upload, %{mime: mime, charset: charset, original_filename: upload.filename}, ttl_seconds)
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # POST /api/uploads/encrypted
+  # ------------------------------------------------------------------
+
+  @doc false
+  @spec create_encrypted(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, atom()}
+  def create_encrypted(conn, params) do
+    with {:ok, upload} <- extract_upload_field(params),
+         {:ok, ttl_seconds} <- parse_ttl(params),
+         :ok <- check_per_file_cap(upload, encrypted_per_file_cap_bytes()) do
+      attrs = %{mime: Uploads.encrypted_mime(), charset: nil, original_filename: nil}
+      store(conn, upload, attrs, ttl_seconds)
+    end
+  end
+
+  # Both doors end here: read the temp file, create the row under the
+  # storage caps, answer 201.
+  defp store(conn, upload, attrs, ttl_seconds) do
+    with {:ok, bytes} <- read_file(upload),
          {:ok, row} <-
            Uploads.create(
              bytes,
-             build_attrs(subject, {mime, charset}, upload, ttl_seconds),
+             build_attrs(Subject.from_assigns(conn.assigns), attrs, ttl_seconds),
              ServerSettings.upload_caps(),
              storage_root: storage_root()
            ) do
@@ -363,9 +422,7 @@ defmodule GrappaWeb.UploadsController do
   #
   # `path` is `Plug.Upload.path`, a tmp file synthesized by
   # `Plug.Parsers :multipart` — never user-controlled string input.
-  defp check_per_file_cap(%Plug.Upload{path: path}, category) do
-    cap = ServerSettings.get_upload_per_file_cap_bytes(category)
-
+  defp check_per_file_cap(%Plug.Upload{path: path}, cap) do
     case File.stat(path) do
       {:ok, %File.Stat{size: size}} when size <= cap -> :ok
       {:ok, %File.Stat{}} -> {:error, {:file_too_large, cap}}
@@ -373,19 +430,13 @@ defmodule GrappaWeb.UploadsController do
     end
   end
 
-  defp build_attrs(subject, {mime, charset}, %Plug.Upload{filename: filename}, ttl_seconds) do
+  defp build_attrs(subject, attrs, ttl_seconds) do
     now = DateTime.utc_now()
 
     # `:bytes` is set inside `Uploads.create/4` from the actual
     # binary size — passing 0 here would be ignored, but it's
     # cleaner to omit it entirely.
-    %{
-      subject: subject,
-      mime: mime,
-      charset: charset,
-      original_filename: filename,
-      expires_at: DateTime.add(now, ttl_seconds, :second)
-    }
+    Map.merge(attrs, %{subject: subject, expires_at: DateTime.add(now, ttl_seconds, :second)})
   end
 
   # #418/M3a: moved to `Grappa.Uploads.public_url/2` so a non-web caller
@@ -394,9 +445,15 @@ defmodule GrappaWeb.UploadsController do
   # keeps every existing call site in this file unchanged.
   defp public_url(slug, mime), do: Uploads.public_url(slug, mime)
 
-  defp disposition_header(%{original_filename: nil}), do: "inline"
+  # issue 2517: ciphertext is opened by the client holding its key, never
+  # by the browser, so a navigation to its URL downloads it.
+  defp disposition_header(row) do
+    if Uploads.encrypted?(row), do: "attachment", else: inline_disposition(row.original_filename)
+  end
 
-  defp disposition_header(%{original_filename: filename}) when is_binary(filename) do
+  defp inline_disposition(nil), do: "inline"
+
+  defp inline_disposition(filename) when is_binary(filename) do
     # RFC 5987 ext-value: ASCII-quoted filename + filename* with
     # percent-encoded UTF-8 fallback. Browsers honour the encoded form.
     #

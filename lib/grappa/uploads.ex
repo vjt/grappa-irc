@@ -45,6 +45,20 @@ defmodule Grappa.Uploads do
       read, by Reaper to unlink.
     * `list_all/0` — admin REST enumeration (descending insert time,
       includes soft-deleted rows since admins want the full picture).
+    * `encrypted_mime/0` + `encrypted?/1` — the encrypted-file marker
+      (issue 2517, below).
+
+  ## An encrypted file is an `application/octet-stream` row (issue 2517)
+
+  `POST /api/uploads/encrypted` stores ciphertext the client sealed with
+  a key grappa never sees. The row says so through its MIME, and nothing
+  else: the door stores `encrypted_mime/0` whatever the client declared,
+  and no other door stores it. The plain door's allowlist holds no
+  octet-stream (its audio rescue rewrites that label to an audio MIME and
+  refuses every other), and the avatar and theme-background doors store
+  image MIMEs. So the type IS the marker — derived, with no column to
+  keep in step. `MetadataStrip.run/2` passes the type through untouched,
+  which is the only thing it could do with ciphertext.
 
   ## Why slug = on-disk filename
 
@@ -96,6 +110,8 @@ defmodule Grappa.Uploads do
 
   @slug_byte_size 16
   @slug_regex ~r/\A[a-z2-7]{26}\z/
+
+  @encrypted_mime "application/octet-stream"
 
   @storage_root_key {__MODULE__, :storage_root}
   @base_url_key {__MODULE__, :base_url}
@@ -354,6 +370,20 @@ defmodule Grappa.Uploads do
       _ = File.rm(path)
       reraise e, __STACKTRACE__
   end
+
+  @doc """
+  The MIME every encrypted file is stored under (issue 2517), and no
+  other upload is. See "An encrypted file is an `application/octet-stream`
+  row" above.
+  """
+  @spec encrypted_mime() :: String.t()
+  def encrypted_mime, do: @encrypted_mime
+
+  @doc """
+  Whether `upload` is an encrypted file (issue 2517), read off its MIME.
+  """
+  @spec encrypted?(Upload.t()) :: boolean()
+  def encrypted?(%Upload{mime: mime}), do: mime == @encrypted_mime
 
   @doc """
   Look up an upload by slug. Returns `:not_found` for any

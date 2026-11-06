@@ -208,7 +208,7 @@ defmodule GrappaWeb.Endpoint do
   # No multipart parser here (issue 2529). A multipart body crosses the
   # endpoint unread (`pass: ["*/*"]` leaves `body_params` unfetched) and is
   # parsed by the route that takes it, in the router, after `:authn`:
-  # `:upload_body` for the two upload doors, `:multipart_body` for the rest
+  # `:upload_body` for the three upload doors, `:multipart_body` for the rest
   # (`GrappaWeb.MultipartLimits` holds both ceilings). A route that takes a
   # file without one of those pipelines gets params without the body;
   # `GrappaWeb.MultipartBodyTest` fails on such a route when its action, or
