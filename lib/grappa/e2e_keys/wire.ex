@@ -20,17 +20,21 @@ defmodule Grappa.E2eKeys.Wire do
   the master. `last_seen_at` (issue 2547, protocol 56): when the device
   last read its own inbox, to the second and moved at most once a minute
   (`E2eKeys.seen/1`), or `nil` when it has not since grappa records it.
+  `inserted_at` (issue 2544, protocol 57): when grappa first registered
+  the device, to the second; registering it again keeps it. What a client
+  lists as "added" among its own devices.
 
-  `last_seen_at` is `optional` because a server predating protocol 56
-  omits it: a client still lists the devices of such a server, and only
-  cannot say when one was active.
+  Both are `optional` because a server predating their protocol omits them:
+  a client still lists the devices of such a server, and only cannot say
+  when one was active or added.
   """
   @type device :: %{
           required(:did) => String.t(),
           required(:ed25519) => String.t(),
           required(:curve25519) => String.t(),
           required(:sig) => String.t(),
-          optional(:last_seen_at) => DateTime.t() | nil
+          optional(:last_seen_at) => DateTime.t() | nil,
+          optional(:inserted_at) => DateTime.t()
         }
 
   @typedoc "The subject's devices on a network, oldest first, listed or not."
@@ -58,8 +62,22 @@ defmodule Grappa.E2eKeys.Wire do
 
   @doc "Projects a `Grappa.E2eKeys.Device` onto the wire."
   @spec device(Device.t()) :: device()
-  def device(%Device{did: did, ed25519: ed25519, curve25519: curve25519, sig: sig, last_seen_at: last_seen_at}),
-    do: %{did: did, ed25519: ed25519, curve25519: curve25519, sig: sig, last_seen_at: last_seen_at}
+  def device(%Device{
+        did: did,
+        ed25519: ed25519,
+        curve25519: curve25519,
+        sig: sig,
+        last_seen_at: last_seen_at,
+        inserted_at: inserted_at
+      }),
+      do: %{
+        did: did,
+        ed25519: ed25519,
+        curve25519: curve25519,
+        sig: sig,
+        last_seen_at: last_seen_at,
+        inserted_at: inserted_at
+      }
 
   @doc "Projects `Grappa.E2eKeys.devices/2` onto the wire."
   @spec devices([Device.t()]) :: devices()

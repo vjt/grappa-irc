@@ -538,8 +538,15 @@ export const S_E2eKeysWireClaimed = { o: { keys: "s" } } as const;
 
 // Grappa.E2eKeys.Wire.device/0
 export const S_E2eKeysWireDevice = {
-  o: { did: "s", ed25519: "s", curve25519: "s", sig: "s", last_seen_at: { u: ["s", "z"] } },
-  q: ["last_seen_at"],
+  o: {
+    did: "s",
+    ed25519: "s",
+    curve25519: "s",
+    sig: "s",
+    last_seen_at: { u: ["s", "z"] },
+    inserted_at: "s",
+  },
+  q: ["last_seen_at", "inserted_at"],
 } as const;
 
 // Grappa.E2eKeys.Wire.device_list/0

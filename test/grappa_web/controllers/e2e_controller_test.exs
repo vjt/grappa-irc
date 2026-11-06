@@ -573,13 +573,15 @@ defmodule GrappaWeb.E2eControllerTest do
 
       assert %{"did" => did} = device = json_response(post(conn, "#{base}/devices", attrs), 200)
       assert {:ok, did} == E2eKeys.Device.did(attrs.ed25519)
+      [row] = E2eKeys.devices({:user, vjt.id}, network.id)
 
       assert device == %{
                "did" => did,
                "ed25519" => attrs.ed25519,
                "curve25519" => attrs.curve25519,
                "sig" => attrs.sig,
-               "last_seen_at" => nil
+               "last_seen_at" => nil,
+               "inserted_at" => DateTime.to_iso8601(row.inserted_at)
              }
 
       assert json_response(get(conn, "#{base}/devices"), 200) == %{"devices" => [device]}
@@ -608,6 +610,30 @@ defmodule GrappaWeb.E2eControllerTest do
       assert E2eKeys.devices({:user, vjt.id}, network.id) == []
       assert {:error, :not_found} = E2eKeys.list({:user, vjt.id}, network.id)
       assert json_response(get(conn, keys), 404) == %{"error" => "not_found"}
+    end
+
+    # issue 2544 — `inserted_at` is when the device was added: what the
+    # rail lists. Registering it again (a new id block under a new master)
+    # keeps it. The row is aged first, so a stamp taken anew would differ
+    # from it even inside the same second.
+    test "a device registered again keeps when it was first registered", %{conn: conn, vjt: vjt} do
+      network = bundle_network(vjt)
+      base = "/networks/#{network.slug}/e2e"
+      %{identity: identity, attrs: attrs} = E2eFixtures.device(E2eFixtures.identity())
+      %{"did" => did} = json_response(post(conn, "#{base}/devices", attrs), 200)
+      added = ~U[2026-01-02 03:04:05Z]
+      {1, _} = E2eKeys.Device |> where([d], d.did == ^did) |> Repo.update_all(set: [inserted_at: added])
+
+      # The same device key, a new Curve25519 key, signed under a new master.
+      curve = E2eFixtures.curve25519()
+      sig = E2eFixtures.sign(identity, "irc-e2e:v2:id:#{curve}:#{E2eFixtures.identity().public}")
+      again = %{ed25519: attrs.ed25519, curve25519: curve, sig: sig}
+
+      assert %{"did" => ^did, "sig" => ^sig, "inserted_at" => "2026-01-02T03:04:05Z"} =
+               json_response(post(conn, "#{base}/devices", again), 200)
+
+      assert %{"devices" => [%{"inserted_at" => "2026-01-02T03:04:05Z"}]} =
+               json_response(get(conn, "#{base}/devices"), 200)
     end
 
     test "every refusal is a status the client can act on", %{conn: conn, vjt: vjt} do
