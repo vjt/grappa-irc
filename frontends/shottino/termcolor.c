@@ -5,22 +5,39 @@
 #include <string.h>
 #include <strings.h>
 
+/* The six levels the xterm cube actually holds. Not a uniform grid: the
+ * first step is 95, every later one 40. */
+static const int cube_level[6] = {0, 95, 135, 175, 215, 255};
+
+static int nearest_cube_step(int v) {
+    int best = 0;
+    for (int i = 1; i < 6; i++)
+        if (abs(v - cube_level[i]) < abs(v - cube_level[best])) best = i;
+    return best;
+}
+
+static long dist2(int r, int g, int b, int r2, int g2, int b2) {
+    long dr = r - r2, dg = g - g2, db = b - b2;
+    return dr * dr + dg * dg + db * db;
+}
+
 int termcolor_xterm256(long rgb) {
     if (rgb < 0) return -1;
     int r = (int)((rgb >> 16) & 0xff), g = (int)((rgb >> 8) & 0xff), b = (int)(rgb & 0xff);
-    int max = r > g ? (r > b ? r : b) : (g > b ? g : b);
-    int min = r < g ? (r < b ? r : b) : (g < b ? g : b);
-    /* Near-neutral goes to the grey ramp: the cube's grey axis has only
-     * six steps and visibly tints greys toward whichever channel rounds
-     * up. */
-    if (max - min < 16) {
-        int level = (r + g + b) / 3;
-        if (level < 8) return 16;    /* cube black */
-        if (level > 238) return 231; /* cube white */
-        return 232 + (level - 8) / 10;
-    }
-    int qr = (r * 5 + 127) / 255, qg = (g * 5 + 127) / 255, qb = (b * 5 + 127) / 255;
-    return 16 + 36 * qr + 6 * qg + qb;
+    int qr = nearest_cube_step(r), qg = nearest_cube_step(g), qb = nearest_cube_step(b);
+    int cube = 16 + 36 * qr + 6 * qg + qb;
+    long cube_d = dist2(r, g, b, cube_level[qr], cube_level[qg], cube_level[qb]);
+    /* The grey ramp: 24 steps, 8 + 10*i. Rounded, not floored. */
+    int level = (r + g + b) / 3;
+    int step = (level - 8 + 5) / 10;
+    if (step < 0) step = 0;
+    if (step > 23) step = 23;
+    int grey = 8 + 10 * step;
+    long grey_d = dist2(r, g, b, grey, grey, grey);
+    /* Whichever is closer, and the ramp on a tie: the cube's grey axis has
+     * only six steps and visibly tints greys toward whichever channel
+     * rounds up. */
+    return grey_d <= cube_d ? 232 + step : cube;
 }
 
 int termcolor_basic8(long rgb) {

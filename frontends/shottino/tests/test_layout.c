@@ -1699,6 +1699,67 @@ static bool cell_colors(int y, int x, short *fg, short *bg) {
         CHECK_LONG(bg_, mirc_terminal_color(bot_rgb));                                             \
     } while (0)
 
+/* The theme paints with the palette the terminal HAS, and leaves it
+ * alone.
+ *
+ * Konsole is why: it reports it can change colours and then ignores the
+ * change, so a theme built on init_color() drew navy on black there and
+ * looked fine everywhere else. A test that asked "did the pair get the
+ * index we redefined" would pass on exactly that broken build. What it
+ * must ask is that no palette entry moved, and that every pair names the
+ * index nearest its colour. */
+static void theme_pairs_on(const char *term, bool rich) {
+    FILE *sink = fopen("/dev/null", "w");
+    CHECK(sink != NULL);
+    if (!sink) return;
+    SCREEN *prev = set_term(NULL);
+    set_term(prev);
+    SCREEN *scr = newterm(term, sink, stdin);
+    if (!scr) {
+        printf("  skip: no terminfo entry for %s\n", term);
+        fclose(sink);
+        return;
+    }
+    start_color();
+    CHECK(rich ? COLORS >= 256 : COLORS < 256);
+    short before[256][3];
+    int n = COLORS < 256 ? COLORS : 256;
+    for (short i = 0; i < n; i++) color_content(i, &before[i][0], &before[i][1], &before[i][2]);
+
+    init_theme();
+
+    for (short i = 0; i < n; i++) {
+        short r, g, b;
+        color_content(i, &r, &g, &b);
+        CHECK(r == before[i][0] && g == before[i][1] && b == before[i][2]);
+    }
+    short f, bg;
+    CHECK(pair_content(CP_MAIN, &f, &bg) == OK);
+    if (rich) {
+        CHECK_LONG(f, termcolor_xterm256(theme_rgb[TC_FG]));
+        CHECK_LONG(bg, termcolor_xterm256(theme_rgb[TC_BG]));
+        /* Two greys the design tells apart stay apart. */
+        short f2, alt;
+        pair_content(CP_ALT, &f2, &alt);
+        CHECK(alt != bg);
+    }
+    /* Nothing is drawn in its own background. */
+    for (short p = CP_MAIN; p <= CP_NICK15; p++) {
+        CHECK(pair_content(p, &f, &bg) == OK);
+        CHECK(f != bg || f == -1);
+    }
+    set_term(prev);
+    delscreen(scr);
+    fclose(sink);
+}
+
+TEST(the_theme_quantises_onto_the_palette_and_never_rewrites_it) {
+    theme_pairs_on("xterm-256color", true);
+    theme_pairs_on("xterm", false);
+    /* Leave the shared screen with the pairs the later tests expect. */
+    init_theme();
+}
+
 /* And the draw itself: it FILLS the box it was given, out of the pixels
  * the SAMPLER names.
  *
@@ -1856,6 +1917,7 @@ int main(void) {
     RUN(an_action_is_drawn_louder_than_system_noise);
     RUN(a_source_rectangle_is_clamped_into_the_picture);
     RUN(a_cell_samples_across_the_whole_rectangle);
+    RUN(the_theme_quantises_onto_the_palette_and_never_rewrites_it);
     RUN(the_sampling_draw_fills_its_box_from_the_pixels_it_sampled);
     endwin();
     fclose(sink);

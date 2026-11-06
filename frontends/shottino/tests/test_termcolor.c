@@ -36,11 +36,50 @@ TEST(xterm256_greys_use_the_ramp) {
     CHECK(mid >= 232 && mid <= 255);
     int dark = termcolor_xterm256(0x303030);
     CHECK(dark >= 232 && dark <= 255);
-    /* Ramp indices increase with luminance. */
-    CHECK(termcolor_xterm256(0x303030) < termcolor_xterm256(0xb0b0b0));
+    /* A grey never comes back TINTED, wherever it lands — the cube's own
+     * diagonal (0x5f5f5f, 0x878787, …) is neutral too, and nearer for
+     * some — and brighter in stays brighter out. */
+    static const int lv[6] = {0, 95, 135, 175, 215, 255};
+    int prev = -1;
+    for (int v = 0; v < 256; v++) {
+        int idx = termcolor_xterm256(((long)v << 16) | ((long)v << 8) | v);
+        int r, g, b;
+        if (idx >= 232) r = g = b = 8 + 10 * (idx - 232);
+        else r = lv[(idx - 16) / 36], g = lv[((idx - 16) / 6) % 6], b = lv[(idx - 16) % 6];
+        CHECK(r == g && g == b);
+        CHECK(r >= prev);
+        prev = r;
+    }
     /* A saturated colour must NOT be sent to the grey ramp. */
     int red = termcolor_xterm256(0xff0000);
     CHECK(red < 232);
+}
+
+/* The answer is the NEAREST index, measured against the levels the
+ * palette really holds. The cube is not a uniform grid — its six levels
+ * are 0, 95, 135, 175, 215, 255 — so rounding onto a uniform one lands a
+ * channel a whole step off (0x5f = 95 is a cube level and was being sent
+ * to 135). And the grey ramp's steps are 10 apart starting at 8, so its
+ * index has to ROUND, or 0x111111 floors onto the same index as 0x0a0a0a
+ * and two theme greys meant to be told apart become one. */
+TEST(xterm256_picks_the_nearest_index) {
+    CHECK_LONG(termcolor_xterm256(0x5fafd7), 74);  /* exactly cube (1,3,4) */
+    CHECK_LONG(termcolor_xterm256(0x87afd7), 110); /* exactly cube (2,3,4) */
+    CHECK_LONG(termcolor_xterm256(0xff8787), 210); /* exactly cube (5,2,2) */
+    CHECK_LONG(termcolor_xterm256(0x080808), 232); /* exactly ramp 0 */
+    CHECK_LONG(termcolor_xterm256(0x121212), 233); /* exactly ramp 1 */
+    CHECK_LONG(termcolor_xterm256(0x111111), 233); /* nearer 0x12 than 0x08 */
+    CHECK_LONG(termcolor_xterm256(0x0a0a0a), 232);
+    /* Every cube and ramp colour maps to itself. */
+    static const int lv[6] = {0, 95, 135, 175, 215, 255};
+    for (int i = 0; i < 216; i++) {
+        long rgb = ((long)lv[i / 36] << 16) | ((long)lv[(i / 6) % 6] << 8) | lv[i % 6];
+        CHECK_LONG(termcolor_xterm256(rgb), 16 + i);
+    }
+    for (int i = 0; i < 24; i++) {
+        long v = 8 + 10 * i;
+        CHECK_LONG(termcolor_xterm256((v << 16) | (v << 8) | v), 232 + i);
+    }
 }
 
 TEST(basic8) {
@@ -266,6 +305,7 @@ TEST(a_colour_that_already_reads_is_left_exactly_alone) {
 int main(void) {
     RUN(xterm256_primaries);
     RUN(xterm256_greys_use_the_ramp);
+    RUN(xterm256_picks_the_nearest_index);
     RUN(basic8);
     RUN(ramp_char_tracks_luminance);
     RUN(render_emits_one_row_per_two_pixel_rows);

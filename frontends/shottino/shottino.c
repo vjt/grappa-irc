@@ -198,8 +198,20 @@ enum color_pair {
     CP_NICK15
 };
 
+/* The theme, as RGB. These are NOT palette slots: the terminal's palette
+ * is never redefined. Every colour is quantised onto the index the
+ * terminal already has (theme_init), the same way a mIRC colour is.
+ *
+ * It used to be the other way round — indices 16-49 rewritten with
+ * init_color() — and that fails twice. Konsole (26.08, measured) answers
+ * an OSC 4 palette QUERY but ignores the SET, while terminfo still says
+ * it can change colours, so can_change_color() is true and every pair
+ * rendered in the stock xterm cube: the chat text in navy 0x000087 on
+ * black. And where the redefinition did take, it stole those indices
+ * from the mIRC and picture quantiser, which maps onto the same 16-255,
+ * so a bot colour or an image pixel near navy drew as the theme's grey. */
 enum theme_color {
-    TC_BG = 16,
+    TC_BG,
     TC_BG_ALT,
     TC_FG,
     TC_ACCENT,
@@ -235,7 +247,41 @@ enum theme_color {
     TC_NICK12,
     TC_NICK13,
     TC_NICK14,
-    TC_NICK15
+    TC_NICK15,
+    TC_COUNT
+};
+
+static const long theme_rgb[TC_COUNT] = {
+    [TC_BG] = 0x0a0a0a,
+    [TC_BG_ALT] = 0x111111,
+    [TC_FG] = 0xe0e0e0,
+    [TC_ACCENT] = 0x5fafd7,
+    [TC_MUTED] = 0x707070,
+    [TC_BORDER] = 0x1f1f1f,
+    [TC_MENTION] = 0x2a1f00,
+    [TC_ERROR] = 0xd77070,
+    [TC_BG_TITLE] = 0x152029,
+    [TC_TITLE_FG] = 0xc2dced,
+    [TC_TITLE_ACCENT] = 0x7fc8ea,
+    [TC_BG_STATUS] = 0x241c14,
+    [TC_STATUS_FG] = 0xc8b193,
+    [TC_BG_INPUT] = 0x1c1c1c,
+    [TC_NICK0] = 0xff8c8c,
+    [TC_NICK1] = 0xffb060,
+    [TC_NICK2] = 0xffd060,
+    [TC_NICK3] = 0xd8e060,
+    [TC_NICK4] = 0x90d870,
+    [TC_NICK5] = 0x60d8a8,
+    [TC_NICK6] = 0x60d8d8,
+    [TC_NICK7] = 0x60b8e8,
+    [TC_NICK8] = 0x88a8ff,
+    [TC_NICK9] = 0xb890ff,
+    [TC_NICK10] = 0xe088e0,
+    [TC_NICK11] = 0xff90c0,
+    [TC_NICK12] = 0xe0a888,
+    [TC_NICK13] = 0xc0c0c0,
+    [TC_NICK14] = 0xa0e8b8,
+    [TC_NICK15] = 0xf0d090,
 };
 
 struct url {
@@ -2560,12 +2606,24 @@ static int hexval(char c) {
     return -1;
 }
 
-static short rgb_component(int hex, int shift) {
-    return (short)((((hex >> shift) & 0xff) * 1000) / 255);
+/* The terminal index a theme colour draws in. On 256 colours, the
+ * nearest one. Below that the theme cannot survive: every band and grey
+ * in it is near-black, so the basic 8 turn it into black on black. There
+ * it steps aside for the terminal's own colours (-1), and keeps only a
+ * foreground that is a colour at all — the accent, the nicks, errors —
+ * since black text is the one thing guaranteed to vanish. */
+static short theme_fg(enum theme_color c) {
+    if (COLORS >= 256) return (short)termcolor_xterm256(theme_rgb[c]);
+    int idx = termcolor_basic8(theme_rgb[c]);
+    return (short)(idx == COLOR_BLACK || idx == COLOR_WHITE ? -1 : idx);
 }
 
-static void define_color(short id, int hex) {
-    if (can_change_color()) init_color(id, rgb_component(hex, 16), rgb_component(hex, 8), rgb_component(hex, 0));
+static short theme_bg(enum theme_color c) {
+    return COLORS >= 256 ? (short)termcolor_xterm256(theme_rgb[c]) : (short)-1;
+}
+
+static void theme_pair(short pair, enum theme_color fg, enum theme_color bg) {
+    init_pair(pair, theme_fg(fg), theme_bg(bg));
 }
 
 static void init_theme(void) {
@@ -2573,51 +2631,20 @@ static void init_theme(void) {
     start_color();
     use_default_colors();
 
-    define_color(TC_BG, 0x0a0a0a);
-    define_color(TC_BG_ALT, 0x111111);
-    define_color(TC_FG, 0xe0e0e0);
-    define_color(TC_ACCENT, 0x5fafd7);
-    define_color(TC_MUTED, 0x707070);
-    define_color(TC_BORDER, 0x1f1f1f);
-    define_color(TC_MENTION, 0x2a1f00);
-    define_color(TC_ERROR, 0xd77070);
-    define_color(TC_BG_TITLE, 0x152029);
-    define_color(TC_TITLE_FG, 0xc2dced);
-    define_color(TC_TITLE_ACCENT, 0x7fc8ea);
-    define_color(TC_BG_STATUS, 0x241c14);
-    define_color(TC_STATUS_FG, 0xc8b193);
-    define_color(TC_BG_INPUT, 0x1c1c1c);
-    define_color(TC_NICK0, 0xff8c8c);
-    define_color(TC_NICK1, 0xffb060);
-    define_color(TC_NICK2, 0xffd060);
-    define_color(TC_NICK3, 0xd8e060);
-    define_color(TC_NICK4, 0x90d870);
-    define_color(TC_NICK5, 0x60d8a8);
-    define_color(TC_NICK6, 0x60d8d8);
-    define_color(TC_NICK7, 0x60b8e8);
-    define_color(TC_NICK8, 0x88a8ff);
-    define_color(TC_NICK9, 0xb890ff);
-    define_color(TC_NICK10, 0xe088e0);
-    define_color(TC_NICK11, 0xff90c0);
-    define_color(TC_NICK12, 0xe0a888);
-    define_color(TC_NICK13, 0xc0c0c0);
-    define_color(TC_NICK14, 0xa0e8b8);
-    define_color(TC_NICK15, 0xf0d090);
-
-    init_pair(CP_MAIN, TC_FG, TC_BG);
-    init_pair(CP_ALT, TC_FG, TC_BG_ALT);
-    init_pair(CP_BORDER, TC_BORDER, TC_BG);
-    init_pair(CP_ACCENT, TC_ACCENT, TC_BG);
-    init_pair(CP_MUTED, TC_MUTED, TC_BG);
-    init_pair(CP_MENTION, TC_FG, TC_MENTION);
-    init_pair(CP_ERROR, TC_ERROR, TC_BG);
-    init_pair(CP_INPUT, TC_FG, TC_BG_INPUT);
-    init_pair(CP_SELECTED, TC_ACCENT, TC_BORDER);
-    init_pair(CP_TITLE, TC_TITLE_FG, TC_BG_TITLE);
-    init_pair(CP_TITLE_ACCENT, TC_TITLE_ACCENT, TC_BG_TITLE);
-    init_pair(CP_STATUS, TC_STATUS_FG, TC_BG_STATUS);
-    init_pair(CP_STATUS_ERROR, TC_ERROR, TC_BG_STATUS);
-    for (short i = 0; i < 16; i++) init_pair((short)(CP_NICK0 + i), (short)(TC_NICK0 + i), TC_BG);
+    theme_pair(CP_MAIN, TC_FG, TC_BG);
+    theme_pair(CP_ALT, TC_FG, TC_BG_ALT);
+    theme_pair(CP_BORDER, TC_BORDER, TC_BG);
+    theme_pair(CP_ACCENT, TC_ACCENT, TC_BG);
+    theme_pair(CP_MUTED, TC_MUTED, TC_BG);
+    theme_pair(CP_MENTION, TC_FG, TC_MENTION);
+    theme_pair(CP_ERROR, TC_ERROR, TC_BG);
+    theme_pair(CP_INPUT, TC_FG, TC_BG_INPUT);
+    theme_pair(CP_SELECTED, TC_ACCENT, TC_BORDER);
+    theme_pair(CP_TITLE, TC_TITLE_FG, TC_BG_TITLE);
+    theme_pair(CP_TITLE_ACCENT, TC_TITLE_ACCENT, TC_BG_TITLE);
+    theme_pair(CP_STATUS, TC_STATUS_FG, TC_BG_STATUS);
+    theme_pair(CP_STATUS_ERROR, TC_ERROR, TC_BG_STATUS);
+    for (int i = 0; i < 16; i++) theme_pair((short)(CP_NICK0 + i), (enum theme_color)(TC_NICK0 + i), TC_BG);
     bkgd(COLOR_PAIR(CP_MAIN));
 }
 

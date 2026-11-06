@@ -4501,3 +4501,44 @@ message, so its cloud hangs until a reload. With two tabs in one browser,
 the tab that did not drain loses the cloud when its drain ends and gets the
 row a moment later over the BroadcastChannel. The cloud is about two lines
 tall, so a one-line message that replaces it shortens the pane.
+<!-- entry shottino-palette-2026-11-06 -->
+
+---
+
+## 2026-11-06 — shottino: the theme quantises onto the palette, it never rewrites it
+
+**Reported:** a friend's Konsole showed shottino in navy and dark blue on
+black; confirmed on Konsole 26.08.2.
+
+**Cause, measured.** The theme lived in palette slots 16-49, rewritten with
+`init_color()` whenever `can_change_color()` said yes. Konsole answers an
+OSC 4 palette QUERY and ignores the SET: index 16 set to `rgb:e0/e0/e0`
+reads back `rgb:0000/0000/0000`. terminfo `xterm-256color` still advertises
+`ccc`/`initc`, so curses believed the write and every theme pair drew the
+stock xterm cube (the chat text in `0x000087`). There is no way to tell from
+inside curses that the write was dropped.
+
+**Second defect, the same mechanism.** Where the redefinition DID take, it
+took slots 16-49 away from the mIRC colour and picture quantiser, which maps
+onto the same 16-255 — a bot colour or an image pixel near navy drew as one
+of the theme's greys.
+
+**Ruling: the palette is never written.** `theme_rgb[]` holds the theme as
+RGB, and each pair names the nearest index the terminal already has
+(`termcolor_xterm256`, the one quantiser mIRC colours and pictures already
+use). Below 256 colours every band and grey in the theme collapses to
+black, so there the theme steps aside for the terminal's own fg/bg and keeps
+only coloured foregrounds (accent, nicks, errors).
+
+**The quantiser had to become exact for this.** It rounded onto a uniform
+grid, but the cube's levels are 0/95/135/175/215/255, so `0x5f` went to 135;
+and it FLOORED onto the grey ramp, so `0x111111` (BG_ALT) and `0x0a0a0a` (BG)
+became the same index. It now picks the nearest cube colour and the nearest
+ramp grey and takes the closer, with ties going to the ramp. A grey can now
+land on the cube's own neutral diagonal (`0xb0b0b0` → `0xafafaf`), which is
+exact, not tinted.
+
+**Pinned.** `test_layout`'s theme test fails if `init_theme` touches any
+palette entry (measured: one `init_color` call re-inserted turns it red),
+and checks that no pair draws in its own background on `xterm` (8 colours).
+`test_termcolor` maps every cube and ramp colour back to itself.
