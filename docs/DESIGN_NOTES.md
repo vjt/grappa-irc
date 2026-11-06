@@ -3642,3 +3642,54 @@ the loupe, long-press selection and the edit menu (Paste).
   draft, through CDP trusted touches on `chromium-pixel-touch`. All six claim
   and act: Chromium has no dependence on the start point. Real Android and
   desktop touch screens were not measured.
+<!-- entry #2453b -->
+
+---
+
+## 2026-11-06 — #2453b: lookups keyed by user- or peer-chosen strings read own properties only
+
+#2453 made cic's E2E state read and write its nick-keyed records through
+`ByNick`, and left cic's other stores unswept. The rule now holds across cic:
+a record whose key is a string a peer or the user chose is a `ByKey<T>`
+(`cicchetto/src/lib/byKey.ts`), read with `Object.hasOwn`, written by
+defining an own property and copied by a spread, in that module only. The
+records it covers:
+
+- the stores keyed by nick: the rail WHOIS cache (`railWhois.ts`), the away
+  banner (`peerAway.ts`), the presence dots (`notifyWatch.ts`);
+- the wire validator's record walk (`wireValidate.ts`), whose keys are data:
+  the presence snapshot's nicks, the `/me` read cursors and unread counts
+  keyed by window, and a query window is named after its peer;
+- the typed verb and the alias map: the command table and the alias lookup
+  in `slashCommands.ts`, the alias store's writes (`aliasList.ts`), and
+  `Aliases` itself, which the parsed REST body already is, so no copy is
+  made;
+- the lookups by a file's extension or declared type: `mediaLink.ts`'s
+  extension tables and `uploadCategory.ts`'s MIME and audio-extension
+  tables;
+- the rail's text for an emoji comparison a peer stopped
+  (`EncryptedRail.tsx`): its reason is the peer's own string.
+
+**One helper, and `ByNick` is a fold over it.** The stores outside the E2E
+state fold their keys differently, or not at all: the rail WHOIS and the away
+banner fold with the network's casemapping (`normalizeNick`), presence keys
+arrive server-folded, an alias, a verb, an extension or a MIME type is
+lowercased by its caller, and a peer's cancel reason keeps its case (so
+`toString` and the other mixed-case member names reach that table, beside
+`constructor` and `__proto__`). So `ByKey` takes the key as given, and
+`ByNick` is the E2E `fold` over it with a brand of its OWN, so a `ByKey`
+helper is never handed a record whose keys must be folded first. `ByNick`'s
+API and every stored record's JSON are unchanged. Both brands are
+interfaces, for the reason the #2453 entry gives.
+
+- **Out of scope, on purpose.** A key only the operator chooses: a network
+  slug, the upload host's accepted MIME list (`mimeExtLabel`), a radio
+  station id, the captcha provider. A key that cannot name an
+  Object.prototype member: a single mode or prefix letter, a numeric id, a
+  composite key holding a space (`ChannelKey`, `${nick} ${did}`).
+  `attachmentPreview.ts`'s document table is read only with a type
+  `categoryOf` has already admitted as a document, so its key is always one
+  of its own.
+- **What the type cannot do** is what #2453 says: it does not find a record
+  nobody typed `ByKey`, and it does not see `key in rec`. A new record keyed
+  by a chosen string is a `ByKey`, and checking that is review's job.
