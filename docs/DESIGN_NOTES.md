@@ -3850,3 +3850,100 @@ stored, no `sent` record, `send_failed` with `too-long`.
   take it as they always did. This is how cic chooses to send, so there is
   no `protocol_version` bump and nothing changes in
   `docs/CLIENT_PROTOCOL.md`.
+<!-- entry #2457 -->
+
+---
+
+## 2026-11-06 — #2457: a SAS request answered on one device of the peer leaves its other devices
+
+Follow-up from the review of #2452 (part of #2430). The three forks below are
+the orchestrator's call, made in the worker's pane on 2026-11-06 on the
+worker's recommendations; there was no vjt ruling to follow. The decision log
+and #2430's W v2 comments say only that a SAS runs between one device on each
+side.
+
+* **What was wrong.** A start goes to every device of the peer's master. The
+  first device whose step names the tx becomes the peer device, and a later
+  step from another device is dropped with a debug line. Nobody told the other
+  devices, so their prompt stayed "asked" for a SAS that ran, or had ended,
+  elsewhere, and accepting it there did nothing visible. The issue named two
+  cases. The same gap had five:
+  * the first accept;
+  * a decline before any accept, which ended the starter's SAS and nobody
+    else's;
+  * a step out of order before any accept, whose `unexpected-message` cancel
+    went to the sender alone;
+  * both sides asking at once: the losing start had reached every device of
+    the winner's master, and nobody cancelled it;
+  * two devices accepting at once: the one heard second stayed `accepted`,
+    holding its secret for the 600 s.
+* **Fork 1: the side whose start went to every device tells the others.** It
+  knows whom it asked, and all five cases pass through one moment on that
+  side: the moment the peer device is fixed, either in `receive` (`rec.device`
+  goes from null to the sender) or in `onStart`'s tie-break.
+  `Verifier.release` sends `sas.cancel {tx, reason: "other-device"}`, under
+  OUR start's tx, to every device of the master except that one. The
+  receiving device needs no new code: its record's device is the one the
+  start came from, so the existing peer-cancel path drops the record, frees
+  the secret and writes the row. Rejected: (b), the accepting device telling
+  its siblings. The sibling path reads only `{t:"copy"}` (anything else is
+  `sibling-not-a-copy`), SAS steps are never copied, and (b) would not cover
+  the decline, out-of-order or tie-break cases.
+* **The engine verb.** `Engine.sendExcept(nick, inner, tag, except)` is
+  `send` to every device of the pinned master except one. It is `dispatch`
+  with `done = [except]`, and `done` already meant "the devices it never goes
+  to again", queue flushes included. So a device with no session waits for
+  its keys behind the start, and still never gets the message once the KEYS
+  comes. With no master pinned, or no device left past `except`, it sends,
+  stores and reports nothing. Without that guard, `sendTo` would report
+  `unpinned-key` on every SAS with a one-device peer. `send`'s signature is
+  untouched, and both verbs refuse the engine's list tag (`callersTag`).
+* **Fork 2: a decline ends it for every device.** One person declined, and
+  keeping the other legs open would leave the starter waiting on the devices
+  of someone who said no. The starter already ended; now the other devices
+  end too.
+* **Fork 3: one neutral reason, `other-device`, labelled "answered on another
+  device".** It covers all five cases: another device of this master
+  answered, and this leg is over. Matrix's `m.accepted` names only one of the
+  five, and on the wire it would be wrong for the decline and the
+  out-of-order relay. A second reason that relays the decliner's own words
+  was also rejected: the other device would read "stopped by them:
+  cancelled", pinning the peer's own no on the starter.
+* **No wire change.** The inner `sas.*` vocabulary belongs to cic:
+  * W v1 (2430 comment 6252857813, step 8) leaves `reason` free;
+  * `CLIENT_PROTOCOL.md` and the generated wire types do not carry `sas.*`;
+  * irc-olm drops `sas.*` entirely.
+  A cic bundle older than this shows the reason as the peer's own words,
+  quoted: `stopped by them: "other-device"`. No protocol bump.
+
+**The price.** With three or more devices on the peer's master, the cancel
+goes as one `*` message carrying bodies for the others. The device it skips
+receives that message anyway, finds no body for itself and drops it as
+`not-for-us`, as with any group send.
+
+Tested:
+* `e2eSas` ("several devices"): the first accept, two accepts at once, a
+  decline, a step out of order, the tie-break;
+* `e2eEngine`: `sendExcept` leaves the one device out, queues for keyless
+  devices and still skips the excluded one after the KEYS, does nothing with
+  no other device or no master, and refuses the list tag;
+* the rail's label.
+
+Red first: 9 failed, 248 passed. Hand mutants over the verifier, the engine
+verb and the rail: 12 run, 11 killed. The release dropped kills 4 tests; on
+the tie-break alone, 1; after the tx switch (the winner's tx), 1. Sent to
+every device, 16; the reason changed, 5; `except` not excluded, 7; the
+nobody-left guard removed, 3, two of them tests that predate this one; the
+guard blind to keyless devices, 1; an unpinned nick falling through to
+`dispatch`, 1; the list tag let through, 1; the label gone, 1. The survivor is
+unreachable by construction: on the no-pin path, `dispatch` forwarding `done`
+cannot matter, since `sendExcept` stops before `dispatch` when nothing is
+pinned.
+
+End to end (`issue2457-sas-other-device.spec.ts`): Alice pairs a second
+browser and Bob asks to compare. Both of her browsers show the request; the
+first accepts. The second browser's request goes and its rail says why, and
+Bob and the first compare the same 7 emoji. Not run locally: the stack is not
+this worker's, and the PR's integration job is the gate.
+
+Client-only: the cic bundle.
