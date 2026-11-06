@@ -168,10 +168,12 @@ export async function askToCompare(page: Page): Promise<void> {
   await expect(keyDialog(page)).toHaveCount(0);
 }
 
-const phase = (page: Page, value: string, timeout: number) =>
+/** The comparison dialog reads `value` (`data-phase`) within `timeout`. */
+export const phase = (page: Page, value: string, timeout: number) =>
   expect(page.getByTestId("e2e-sas")).toHaveAttribute("data-phase", value, { timeout });
 
-const emoji = (page: Page): Promise<(string | null)[]> =>
+/** The emoji the comparison dialog shows, as their indices in the SAS table. */
+export const emoji = (page: Page): Promise<(string | null)[]> =>
   page
     .getByTestId("e2e-sas-emoji")
     .evaluateAll((els) => els.map((el) => el.getAttribute("data-index")));
