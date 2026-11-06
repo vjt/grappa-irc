@@ -3890,14 +3890,29 @@ side.
   `sibling-not-a-copy`), SAS steps are never copied, and (b) would not cover
   the decline, out-of-order or tie-break cases.
 * **The engine verb.** `Engine.sendExcept(nick, inner, tag, except)` is
-  `send` to every device of the pinned master except one. It is `dispatch`
-  with `done = [except]`, and `done` already meant "the devices it never goes
-  to again", queue flushes included. So a device with no session waits for
-  its keys behind the start, and still never gets the message once the KEYS
-  comes. With no master pinned, or no device left past `except`, it sends,
-  stores and reports nothing. Without that guard, `sendTo` would report
-  `unpinned-key` on every SAS with a one-device peer. `send`'s signature is
-  untouched, and both verbs refuse the engine's list tag (`callersTag`).
+  `send` to every device of the pinned master except one, now and after any
+  KEYS. `except` goes through `dispatch`, `sendTo` and `enqueue`, and the
+  queued entry keeps it (`Queued.except`, absent on every other message, and
+  on what a bundle queued before this). It also sits in `done`, which already
+  keeps a message away from a device, queue flushes included. So a device
+  with no session waits for its keys behind the start, and still never gets
+  the message once the KEYS comes. Before the master's list is held, the
+  message waits for the KEYS like the start it follows. Without that wait, a
+  start queued for a device the KEYS brings would reach it with no cancel
+  behind it (the review found this). `done` mixes "went there" with "never
+  goes there", and loss is never read off it. So the one rule that needs the
+  difference reads `except`: a message with nobody left but `except` had
+  nobody else to tell, which is complete, not lost. Without that rule,
+  `sendTo` would report `unpinned-key` on every SAS with a one-device peer,
+  and `flush` would do the same when a KEYS brings nobody else. `send`'s
+  signature is untouched, and both verbs refuse the engine's list tag
+  (`callersTag`).
+* **A lost cancel says what it lost.** The release goes under its own tag,
+  `SAS_RELEASE_TAG` (`sas-release`), rowless like every SAS step. If it is
+  lost (refused, queue full, keys never came), the client logs that the
+  other devices were not told and their request stays until it times out.
+  Under the step's tag the log said "the SAS will time out", which is false:
+  the SAS goes on with the device that answered.
 * **Fork 2: a decline ends it for every device.** One person declined, and
   keeping the other legs open would leave the starter waiting on the devices
   of someone who said no. The starter already ended; now the other devices
@@ -3908,7 +3923,10 @@ side.
   five, and on the wire it would be wrong for the decline and the
   out-of-order relay. A second reason that relays the decliner's own words
   was also rejected: the other device would read "stopped by them:
-  cancelled", pinning the peer's own no on the starter.
+  cancelled", pinning the peer's own no on the starter. For the same reason,
+  the rail shows this one reason bare, "answered on another device", without
+  the "stopped by them:" every other peer cancel gets. Nobody on the
+  starter's side stopped it.
 * **No wire change.** The inner `sas.*` vocabulary belongs to cic:
   * W v1 (2430 comment 6252857813, step 8) leaves `reason` free;
   * `CLIENT_PROTOCOL.md` and the generated wire types do not carry `sas.*`;
@@ -3916,29 +3934,48 @@ side.
   A cic bundle older than this shows the reason as the peer's own words,
   quoted: `stopped by them: "other-device"`. No protocol bump.
 
-**The price.** With three or more devices on the peer's master, the cancel
-goes as one `*` message carrying bodies for the others. The device it skips
-receives that message anyway, finds no body for itself and drops it as
-`not-for-us`, as with any group send.
+**The price.**
+* **A skipped device can receive the cancel anyway.** `encrypt` writes MSG
+  and PKMSG bodies in separate messages. When two or more bodies of one kind
+  go out, that message is addressed `*`, so the device the cancel skips
+  receives it too. That device finds no body for itself and drops it as
+  `not-for-us`. If its own list does not yet name the others, it NACKs
+  instead, and the starter drops that NACK (`unknown-nack-ref`). Any group
+  send does the same.
+* **A chased start still badges.** When the device is fixed while the start
+  still waits for a KEYS, the cancel chases the start rather than
+  withdrawing it. The other device then reads both together, and its
+  peer-asked row counts as unread for a request that was over before it
+  arrived. The unread "asked" row after a cancel predates this change: every
+  cancel leaves it.
 
 Tested:
 * `e2eSas` ("several devices"): the first accept, two accepts at once, a
   decline, a step out of order, the tie-break;
-* `e2eEngine`: `sendExcept` leaves the one device out, queues for keyless
-  devices and still skips the excluded one after the KEYS, does nothing with
-  no other device or no master, and refuses the list tag;
-* the rail's label.
+* `e2eEngine`: `sendExcept` leaves the one device out and queues for keyless
+  devices, still skipping the excluded one after the KEYS. Before the list
+  is held, it waits behind the start and follows it to the device the KEYS
+  brings. To an unpinned nick it asks for keys like `send`. With nobody else
+  left, now or after a KEYS, it reports nothing. It refuses the list tag;
+* `e2eClient`: a refused release is logged as the other devices', and the
+  SAS goes on;
+* the rail's bare label.
 
-Red first: 9 failed, 248 passed. Hand mutants over the verifier, the engine
-verb and the rail: 12 run, 11 killed. The release dropped kills 4 tests; on
-the tie-break alone, 1; after the tx switch (the winner's tx), 1. Sent to
-every device, 16; the reason changed, 5; `except` not excluded, 7; the
-nobody-left guard removed, 3, two of them tests that predate this one; the
-guard blind to keyless devices, 1; an unpinned nick falling through to
-`dispatch`, 1; the list tag let through, 1; the label gone, 1. The survivor is
-unreachable by construction: on the no-pin path, `dispatch` forwarding `done`
-cannot matter, since `sendExcept` stops before `dispatch` when nothing is
-pinned.
+Red first: 9 failed, 248 passed, then after the review 4 failed, 440 passed.
+Hand mutants, two rounds. Before the review, over the verifier, the engine
+verb and the rail: 12 run, 11 killed. Four of them concerned a nobody-left
+guard in `sendExcept` that the review then removed: three aimed at the guard,
+and the survivor, on a path the guard made unreachable. They are not counted
+below. From that round, and untouched since: the release on the tie-break
+dropped, 1; sent after the tx switch (the winner's tx), 1; sent to every
+device, 16; the reason changed, 5; the label gone, 1. After the review: 10
+run, 10 killed. The release dropped kills 5 tests, one of them the client's.
+Sent under the step's tag, 1; the release tag not rowless, 1; `except` ignored
+by `sendTo`, 21; not kept on the queued entry, 1; dropped on the unpinned
+path, 1, the first round's survivor, reachable now that the guard is gone. The
+nobody-but-`except` branch removed, 3, two of them tests that predate this
+one; `flush` reading an `except` entry as lost, 1; the list tag let through,
+1; the rail prefixing the reason, 1.
 
 End to end (`issue2457-sas-other-device.spec.ts`): Alice pairs a second
 browser and Bob asks to compare. Both of her browsers show the request; the
