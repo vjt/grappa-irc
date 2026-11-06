@@ -10,6 +10,7 @@ import {
   composeSend,
   e2eBundleUploaded,
   loginAs,
+  openRailMenu,
   selectChannel,
   sidebarWindow,
 } from "./cicchettoPage";
@@ -149,6 +150,23 @@ export async function flip(page: Page, nick: string, label: string): Promise<voi
   await expect(menuItem(page, label)).toBeVisible();
   await menuItem(page, label).click();
   await expect(page.locator(".context-menu")).toHaveCount(0);
+}
+
+/** The `ciphertext` entry of the right rail's actions menu (issue 2583). */
+export const railWireView = (page: Page) => page.getByTestId("rail-action-wire-view");
+
+/**
+ * A tap on the `ciphertext` entry of the right rail's actions menu, the
+ * second door to the same view (issue 2583), opening the menu first. The
+ * entry then says `showing` with `aria-pressed`.
+ */
+export async function flipFromRail(page: Page, showing: "ciphertext" | "plaintext"): Promise<void> {
+  await openRailMenu(page);
+  await railWireView(page).click();
+  await expect(railWireView(page)).toHaveAttribute(
+    "aria-pressed",
+    showing === "ciphertext" ? "true" : "false",
+  );
 }
 
 /** The window's trust badge: verified, unverified, or alarm (`data-trust`). */

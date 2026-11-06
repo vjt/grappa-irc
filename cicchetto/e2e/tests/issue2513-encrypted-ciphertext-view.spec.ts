@@ -21,8 +21,20 @@
 // the way iOS has to (it sends no `contextmenu` for a hold); a hold cannot be
 // synthesized on Playwright's WebKit (`new Touch` throws there), so the phone
 // arm runs on chromium only.
+//
+// issue 2583 — the view's second door, the `ciphertext` entry of the right
+// rail's actions menu (vjt: "il right rail magari una nuova voce in actions
+// menu"), shares this file's conversation. Its test fails when the entry is
+// missing, when a tap does not swap the lines for the payloads or the entry
+// does not say it is on, when the menu closes under the tap (a toggle flipped
+// in place), and when the two doors hold two states: after the entry's flip
+// the row menu offers "Show ciphertext" again instead of "Show plaintext", or
+// its "Show plaintext" leaves the entry saying on. Desktop only: the entry is
+// gated on the window's kind, never on the form factor, and the phone reaches
+// it the way it reaches every rail entry (openRailMenu, the right drawer).
 
 import type { Browser, Page, TestInfo } from "@playwright/test";
+import { openRailMenu } from "../fixtures/cicchettoPage";
 import {
   bodies,
   boot,
@@ -30,9 +42,11 @@ import {
   equery,
   FRAME,
   flip,
+  flipFromRail,
   KEYS_TIMEOUT,
   menuItem,
   peerPage,
+  railWireView,
   row,
   send,
 } from "../fixtures/encryptedQuery";
@@ -101,6 +115,34 @@ test("the sidebar row's menu shows an encrypted chat as the payloads that crosse
     await expect(row(page, "out", HELLO)).toBeVisible();
     await expect(row(page, "in", REPLY)).toBeVisible();
     await expect(page.getByTestId("e2e-pane")).not.toContainText("E2E ");
+  });
+});
+
+test("the rail's actions menu shows an encrypted chat as its payloads, and the row's menu, holding the same view, gives the plaintext back", async ({
+  page,
+  browser,
+}, testInfo) => {
+  await conversation(page, browser, testInfo, async ({ bobNick }) => {
+    await flipFromRail(page, "ciphertext");
+    // Flipped in place: the menu is still open around the entry.
+    await expect(page.getByTestId("rail-actions-launcher")).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await expect
+      .poll(() => bodies(page))
+      .toEqual([expect.stringMatching(FRAME), expect.stringMatching(FRAME)]);
+    const pane = page.getByTestId("e2e-pane");
+    await expect(pane).not.toContainText(HELLO);
+    await expect(pane).not.toContainText(REPLY);
+
+    // One state, two doors: the row's menu offers the plaintext back.
+    await flip(page, bobNick, "Show plaintext");
+    await expect(row(page, "out", HELLO)).toBeVisible();
+    await expect(row(page, "in", REPLY)).toBeVisible();
+    await expect(pane).not.toContainText("E2E ");
+    await openRailMenu(page);
+    await expect(railWireView(page)).toHaveAttribute("aria-pressed", "false");
   });
 });
 
