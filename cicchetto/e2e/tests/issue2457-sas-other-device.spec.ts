@@ -56,7 +56,9 @@ test("a request accepted on one device of the account goes from its other device
   page,
   browser,
 }, testInfo) => {
-  test.slow();
+  // A pairing, then a dozen waits in a row on what grappa's E2E pacer lets
+  // through, at about 5 s a line (bahamut's fake lag): about 60 s locally.
+  test.setTimeout(180_000);
   const alice = specUser();
   const aliceNick = specNick();
   const bob = await provisionPeerSubject(testInfo, "bob");
@@ -82,14 +84,35 @@ test("a request accepted on one device of the account goes from its other device
     await awaitBundleOf(alice.token, a2Did);
 
     // Bob writes first: both of Alice's devices read him, so each holds a
-    // session with his device.
+    // session with his device. Two waits, one per leg: grappa takes the
+    // hello once Alice's keys are in (`sent`), then paces it to her, a
+    // pre-key body per device, four lines at about 5 s each.
     await boot(bobContext.page, bob.user);
     await equery(bobContext.page, bob.nick, aliceNick);
     await equery(a2, aliceNick, bob.nick);
     const hello = "ciao alice, su quale dei tuoi browser confrontiamo?";
     await send(bobContext.page, hello);
+    await expect(row(bobContext.page, "out", hello).getByTestId("e2e-row-state")).toHaveAttribute(
+      "data-state",
+      "sent",
+      { timeout: KEYS_TIMEOUT },
+    );
     for (const device of [page, a2]) {
       await expect(row(device, "in", hello)).toHaveCount(1, { timeout: KEYS_TIMEOUT });
+    }
+
+    // Each of Alice's devices answers, and Bob reads both. Until he reads a
+    // device, what he sends it is a pre-key message again, two paced lines
+    // or more instead of one; and reading his hello made each of them ask
+    // him for his device list, and his answers go ahead of his start. Asked
+    // before he read them, the start had still not reached A1 30 s later
+    // (CI, PR 2564).
+    for (const [device, answer] of [
+      [a2, "da questo, magari"],
+      [page, "o da questo"],
+    ] as const) {
+      await send(device, answer);
+      await expect(row(bobContext.page, "in", answer)).toHaveCount(1, { timeout: KEYS_TIMEOUT });
     }
 
     // Bob asks: both of Alice's browsers show the request.
