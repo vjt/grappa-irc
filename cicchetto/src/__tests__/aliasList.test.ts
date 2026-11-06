@@ -90,6 +90,27 @@ describe("aliasList store — #385", () => {
     });
   });
 
+  // issue 2453 — an alias name is the user's to choose, and `constructor` and
+  // `__proto__` are valid ones; "bob" runs first as the control.
+  it.each(["bob", "constructor", "__proto__"])(
+    "editAlias renames an alias to %s in the PUT, siblings preserved",
+    async (name) => {
+      const spy = mockFetchSequence([
+        { aliases: { wii: "whois $1 $1", a: "join $*" } }, // GET
+        { aliases: { a: "join $*", [name]: "whois $1" } }, // PUT echo
+      ]);
+
+      await editAlias("wii", name, "whois $1");
+
+      const [, init] = spy.mock.calls[1] as [string, RequestInit];
+      const sent = JSON.parse(init.body as string) as { aliases: Record<string, string> };
+      expect(Object.entries(sent.aliases)).toEqual([
+        ["a", "join $*"],
+        [name, "whois $1"],
+      ]);
+    },
+  );
+
   it("editAlias with an unchanged name overwrites the expansion (no duplicate key)", async () => {
     const spy = mockFetchSequence([
       { aliases: { wii: "old", a: "join $*" } }, // GET

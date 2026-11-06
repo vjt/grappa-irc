@@ -1,5 +1,6 @@
 import { type Component, createSignal, For, onMount, Show } from "solid-js";
 import { addAlias, aliases, delAlias, editAlias, refreshAliases } from "./lib/aliasList";
+import { atKey } from "./lib/byKey";
 import { friendlyError } from "./lib/friendlyError";
 
 // #385 — user-defined command aliases settings SUB-PAGE. Mirrors the #356
@@ -74,7 +75,7 @@ const AliasSettings: Component<{ onBack: () => void }> = (props) => {
     setError(null);
     setEditingName(name);
     setEditNameDraft(name);
-    setEditExpansionDraft(aliases()[name] ?? "");
+    setEditExpansionDraft(atKey(aliases(), name) ?? "");
   };
 
   const cancelEdit = () => {
@@ -140,7 +141,7 @@ const AliasSettings: Component<{ onBack: () => void }> = (props) => {
                         <span class="aliases-arrow" aria-hidden="true">
                           →
                         </span>
-                        <span class="aliases-expansion">{aliases()[name]}</span>
+                        <span class="aliases-expansion">{atKey(aliases(), name)}</span>
                         <button
                           type="button"
                           class="aliases-edit"

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setOn401Handler } from "../lib/api";
+import { keysOf, noKeys } from "../lib/byKey";
 import {
   DEFAULT_NOTIFICATION_PREFS,
   getAliases,
@@ -237,7 +238,7 @@ describe("putAliases", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(JSON.stringify({ aliases: normalized }), { status: 200 }));
 
-    const result = await putAliases(TOKEN, { WII: "whois $1 $1" });
+    const result = await putAliases(TOKEN, keysOf({ WII: "whois $1 $1" }));
     expect(result).toEqual(normalized);
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -251,7 +252,7 @@ describe("putAliases", () => {
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(JSON.stringify({ aliases: {} }), { status: 200 }));
 
-    const result = await putAliases(TOKEN, {});
+    const result = await putAliases(TOKEN, noKeys());
     expect(result).toEqual({});
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -269,7 +270,7 @@ describe("putAliases", () => {
       ),
     );
 
-    await expect(putAliases(TOKEN, { "wi i": "whois" })).rejects.toMatchObject({
+    await expect(putAliases(TOKEN, keysOf({ "wi i": "whois" }))).rejects.toMatchObject({
       status: 422,
       code: "validation_failed",
     });

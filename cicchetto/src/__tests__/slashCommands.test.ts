@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { keysOf, noKeys } from "../lib/byKey";
 import {
   expandAlias,
   isNonShadowableVerb,
@@ -24,6 +25,19 @@ describe("parseSlash — basics", () => {
     const result = parseSlash("/notarealverbatall foo");
     expect(result).toMatchObject({ kind: "error", verb: "notarealverbatall" });
   });
+
+  // issue 2453 — a verb is the user's to type, and `constructor` and
+  // `__proto__` are valid ones; "bob" runs first as the control.
+  it.each(["bob", "constructor", "__proto__", "Constructor"])(
+    "/%s, neither a command nor an alias, is an unknown command",
+    (verb) => {
+      expect(parseSlash(`/${verb} x`)).toEqual({
+        kind: "error",
+        verb,
+        message: `unknown command: /${verb}`,
+      });
+    },
+  );
 });
 
 describe("parseSlash — /whois (C2)", () => {
@@ -260,7 +274,7 @@ describe("parseSlash — /join", () => {
   // The sigils are DATA (#1255): on a network advertising CHANTYPES=#, `&b`
   // is a NICK, so the list is refused there and accepted on the RFC default.
   it("/join #a,&b → refused when the network advertises CHANTYPES=# only (2229)", () => {
-    expect(parseSlash("/join #a,&b", {}, ["#"])).toMatchObject({
+    expect(parseSlash("/join #a,&b", noKeys(), ["#"])).toMatchObject({
       kind: "error",
       verb: "join",
     });
@@ -1307,7 +1321,7 @@ describe("parseSlash — /credits (#1958)", () => {
   // The issue's first open question, answered: /credits is NOT on the
   // non-shadowable deny list, so a user alias takes precedence over it.
   it("a user alias may shadow /credits", () => {
-    expect(parseSlash("/credits", { credits: "np" })).toEqual({ kind: "np" });
+    expect(parseSlash("/credits", keysOf({ credits: "np" }))).toEqual({ kind: "np" });
   });
 });
 
@@ -1691,7 +1705,7 @@ describe("#385 — expandAlias grammar", () => {
     // the rule: the expansion carries a placeholder, so the raw rest is not
     // appended on top of it — that would read `foo foo foo`. The sibling case
     // below pins the other half, the append when there is no placeholder.
-    expect(expandAlias("wii", "foo", { wii: "whois $1 $1" })).toEqual({
+    expect(expandAlias("wii", "foo", keysOf({ wii: "whois $1 $1" }))).toEqual({
       verb: "whois",
       rest: "foo foo",
     });
@@ -1699,14 +1713,14 @@ describe("#385 — expandAlias grammar", () => {
 
   it("implicit verbatim append when the expansion has no placeholder", () => {
     // alias w whois + /w foo bar → whois foo bar
-    expect(expandAlias("w2", "foo bar", { w2: "whois" })).toEqual({
+    expect(expandAlias("w2", "foo bar", keysOf({ w2: "whois" }))).toEqual({
       verb: "whois",
       rest: "foo bar",
     });
   });
 
   it("$* expands to all remaining args verbatim", () => {
-    expect(expandAlias("say", "hello there world", { say: "msg #chan $*" })).toEqual({
+    expect(expandAlias("say", "hello there world", keysOf({ say: "msg #chan $*" }))).toEqual({
       verb: "msg",
       rest: "#chan hello there world",
     });
@@ -1714,7 +1728,7 @@ describe("#385 — expandAlias grammar", () => {
 
   it("a missing positional expands to the empty string (silent)", () => {
     // /wii (no args) → whois  (both $1 empty) → trims to just the verb
-    expect(expandAlias("wii", "", { wii: "whois $1 $1" })).toEqual({
+    expect(expandAlias("wii", "", keysOf({ wii: "whois $1 $1" }))).toEqual({
       verb: "whois",
       rest: "",
     });
@@ -1722,14 +1736,14 @@ describe("#385 — expandAlias grammar", () => {
 
   it("matches alias names case-insensitively", () => {
     // typed /WII foo — the motivating example is upper-case
-    expect(expandAlias("WII", "foo", { wii: "whois $1 $1" })).toEqual({
+    expect(expandAlias("WII", "foo", keysOf({ wii: "whois $1 $1" }))).toEqual({
       verb: "whois",
       rest: "foo foo",
     });
   });
 
   it("leaves a non-alias verb untouched", () => {
-    expect(expandAlias("whois", "foo", { wii: "whois $1 $1" })).toEqual({
+    expect(expandAlias("whois", "foo", keysOf({ wii: "whois $1 $1" }))).toEqual({
       verb: "whois",
       rest: "foo",
     });
@@ -1739,7 +1753,7 @@ describe("#385 — expandAlias grammar", () => {
   // builtin now SHADOWS it: the alias expands (alias wins). The one exception
   // is the two-verb deny list (alias/unalias) covered below.
   it("a same-named alias shadows a builtin (alias wins) — #427", () => {
-    expect(expandAlias("whois", "foo", { whois: "quote EVIL" })).toEqual({
+    expect(expandAlias("whois", "foo", keysOf({ whois: "quote EVIL" }))).toEqual({
       verb: "quote",
       rest: "EVIL foo",
     });
@@ -1749,11 +1763,11 @@ describe("#385 — expandAlias grammar", () => {
   // shadowable. Even if the map holds one (settings UI can store a dead entry),
   // the expander refuses it: the real handler always wins.
   it("/alias and /unalias are never shadowed (repair path intact) — #427", () => {
-    expect(expandAlias("alias", "x y", { alias: "quote EVIL" })).toEqual({
+    expect(expandAlias("alias", "x y", keysOf({ alias: "quote EVIL" }))).toEqual({
       verb: "alias",
       rest: "x y",
     });
-    expect(expandAlias("unalias", "x", { unalias: "quote EVIL" })).toEqual({
+    expect(expandAlias("unalias", "x", keysOf({ unalias: "quote EVIL" }))).toEqual({
       verb: "unalias",
       rest: "x",
     });
@@ -1761,14 +1775,14 @@ describe("#385 — expandAlias grammar", () => {
 
   it("expands alias → alias chains", () => {
     // /a x → b x → whois x x
-    expect(expandAlias("a", "x", { a: "b $1", b: "whois $1 $1" })).toEqual({
+    expect(expandAlias("a", "x", keysOf({ a: "b $1", b: "whois $1 $1" }))).toEqual({
       verb: "whois",
       rest: "x x",
     });
   });
 
   it("errors (naming the chain) when a cycle exceeds MAX_ALIAS_DEPTH", () => {
-    const out = expandAlias("loop", "x", { loop: "loop $1" });
+    const out = expandAlias("loop", "x", keysOf({ loop: "loop $1" }));
     expect(out).toHaveProperty("error");
     if ("error" in out) {
       expect(out.error).toContain("too deep");
@@ -1780,14 +1794,14 @@ describe("#385 — expandAlias grammar", () => {
     // a1→a2→…→a5→whois — exactly MAX_ALIAS_DEPTH (5) expansions.
     const map: Record<string, string> = { a5: "whois" };
     for (let i = 1; i < MAX_ALIAS_DEPTH; i++) map[`a${i}`] = `a${i + 1}`;
-    expect(expandAlias("a1", "", map)).toEqual({ verb: "whois", rest: "" });
+    expect(expandAlias("a1", "", keysOf(map))).toEqual({ verb: "whois", rest: "" });
   });
 });
 
 describe("#385 — parseSlash with user aliases (end-to-end)", () => {
   it("an expanded alias flows through the normal DISPATCH path", () => {
     // /wii foo → whois foo foo → the whois command
-    expect(parseSlash("/wii foo", { wii: "whois $1 $1" })).toEqual({
+    expect(parseSlash("/wii foo", keysOf({ wii: "whois $1 $1" }))).toEqual({
       kind: "whois",
       nick: "foo",
       server: "foo",
@@ -1799,12 +1813,12 @@ describe("#385 — parseSlash with user aliases (end-to-end)", () => {
   });
 
   it("a cyclic alias surfaces an inline error", () => {
-    const out = parseSlash("/loop x", { loop: "loop $1" });
+    const out = parseSlash("/loop x", keysOf({ loop: "loop $1" }));
     expect(out).toMatchObject({ kind: "error", verb: "loop" });
   });
 
   it("tolerates a leading slash in the expansion (equivalent forms)", () => {
-    expect(parseSlash("/wii foo", { wii: "/whois $1 $1" })).toEqual({
+    expect(parseSlash("/wii foo", keysOf({ wii: "/whois $1 $1" }))).toEqual({
       kind: "whois",
       nick: "foo",
       server: "foo",
@@ -1814,7 +1828,7 @@ describe("#385 — parseSlash with user aliases (end-to-end)", () => {
   // #427 — a user alias shadowing a builtin flows through the shadow, not the
   // builtin. /join is aliased to /whois; typing /join <nick> runs whois.
   it("a builtin is shadowed end-to-end when a same-named alias exists — #427", () => {
-    expect(parseSlash("/join alice", { join: "whois" })).toEqual({
+    expect(parseSlash("/join alice", keysOf({ join: "whois" }))).toEqual({
       kind: "whois",
       nick: "alice",
       server: null,
@@ -1824,11 +1838,11 @@ describe("#385 — parseSlash with user aliases (end-to-end)", () => {
   // #427 — the deny list holds end-to-end: even with an alias entry, /alias and
   // /unalias resolve to their real handlers (repair path intact).
   it("/alias and /unalias resolve to their real handlers despite an alias entry — #427", () => {
-    expect(parseSlash("/alias", { alias: "whois" })).toEqual({
+    expect(parseSlash("/alias", keysOf({ alias: "whois" }))).toEqual({
       kind: "open-settings",
       section: "aliases",
     });
-    expect(parseSlash("/unalias wii", { unalias: "whois" })).toEqual({
+    expect(parseSlash("/unalias wii", keysOf({ unalias: "whois" }))).toEqual({
       kind: "unalias",
       name: "wii",
     });
@@ -1904,11 +1918,11 @@ describe("#385 — /alias + /unalias", () => {
 
 describe("#385 — expandAlias grammar edge cases", () => {
   it("$10 → arg1 then a literal 0 (only $1..$9 are placeholders)", () => {
-    expect(expandAlias("a", "x", { a: "cmd $10" })).toEqual({ verb: "cmd", rest: "x0" });
+    expect(expandAlias("a", "x", keysOf({ a: "cmd $10" }))).toEqual({ verb: "cmd", rest: "x0" });
   });
 
   it("adjacent placeholders $1$2 concatenate", () => {
-    expect(expandAlias("a", "foo bar", { a: "cmd $1$2" })).toEqual({
+    expect(expandAlias("a", "foo bar", keysOf({ a: "cmd $1$2" }))).toEqual({
       verb: "cmd",
       rest: "foobar",
     });
@@ -1916,11 +1930,14 @@ describe("#385 — expandAlias grammar edge cases", () => {
 
   it("a $ not followed by a digit/star is literal → no-placeholder append", () => {
     // `$x` is not a placeholder, so the template has NONE → rest is appended.
-    expect(expandAlias("e", "foo", { e: "echo $x" })).toEqual({ verb: "echo", rest: "$x foo" });
+    expect(expandAlias("e", "foo", keysOf({ e: "echo $x" }))).toEqual({
+      verb: "echo",
+      rest: "$x foo",
+    });
   });
 
   it("$* with empty rest collapses to nothing", () => {
-    expect(expandAlias("s", "", { s: "msg #c $*" })).toEqual({ verb: "msg", rest: "#c" });
+    expect(expandAlias("s", "", keysOf({ s: "msg #c $*" }))).toEqual({ verb: "msg", rest: "#c" });
   });
 });
 
@@ -1939,15 +1956,17 @@ describe("#385 — expandAlias grammar edge cases", () => {
 // documented contract, not an accident someone later "fixes".
 describe("#1047 — expandAlias `$N-` range placeholder", () => {
   it("$2- takes argument 2 and everything after it (the kick motivating example)", () => {
-    expect(expandAlias("k", "spammer go away and stay away", { k: "kick $1 $2-" })).toEqual({
-      verb: "kick",
-      rest: "spammer go away and stay away",
-    });
+    expect(expandAlias("k", "spammer go away and stay away", keysOf({ k: "kick $1 $2-" }))).toEqual(
+      {
+        verb: "kick",
+        rest: "spammer go away and stay away",
+      },
+    );
   });
 
   it("$2- is not $2: the tail is whole, not truncated to one word", () => {
     // Pre-#1047 this yielded "#chan hello-" ($2 substituted, `-` left literal).
-    expect(expandAlias("mm", "#chan hello there world", { mm: "msg $1 $2-" })).toEqual({
+    expect(expandAlias("mm", "#chan hello there world", keysOf({ mm: "msg $1 $2-" }))).toEqual({
       verb: "msg",
       rest: "#chan hello there world",
     });
@@ -1955,11 +1974,11 @@ describe("#1047 — expandAlias `$N-` range placeholder", () => {
 
   it("$1- and $* cover the same args and differ ONLY in spacing normalisation", () => {
     const rest = "one   two \t three";
-    expect(expandAlias("a", rest, { a: "cmd $1-" })).toEqual({
+    expect(expandAlias("a", rest, keysOf({ a: "cmd $1-" }))).toEqual({
       verb: "cmd",
       rest: "one two three",
     });
-    expect(expandAlias("a", rest, { a: "cmd $*" })).toEqual({
+    expect(expandAlias("a", rest, keysOf({ a: "cmd $*" }))).toEqual({
       verb: "cmd",
       rest: "one   two \t three",
     });
@@ -1967,19 +1986,19 @@ describe("#1047 — expandAlias `$N-` range placeholder", () => {
 
   it("an out-of-range $N- expands to the empty string (silent, matching $N)", () => {
     // Only two args, so `$5-` has nothing to join — no error, no literal left.
-    expect(expandAlias("a", "one two", { a: "cmd $1 $5-" })).toEqual({
+    expect(expandAlias("a", "one two", keysOf({ a: "cmd $1 $5-" }))).toEqual({
       verb: "cmd",
       rest: "one",
     });
   });
 
   it("$N- with no args at all is silently empty", () => {
-    expect(expandAlias("a", "", { a: "cmd $1-" })).toEqual({ verb: "cmd", rest: "" });
+    expect(expandAlias("a", "", keysOf({ a: "cmd $1-" }))).toEqual({ verb: "cmd", rest: "" });
   });
 
   it("$9- reaches the ninth argument and its tail", () => {
     const rest = "a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11";
-    expect(expandAlias("a", rest, { a: "cmd $9-" })).toEqual({
+    expect(expandAlias("a", rest, keysOf({ a: "cmd $9-" }))).toEqual({
       verb: "cmd",
       rest: "a9 a10 a11",
     });
@@ -1988,25 +2007,28 @@ describe("#1047 — expandAlias `$N-` range placeholder", () => {
   it("a template whose ONLY placeholder is $N- suppresses the verbatim append", () => {
     // The no-placeholder rule appends the rest; `$3-` must count as a
     // placeholder or `/a x y z` would expand to `cmd z x y z`.
-    expect(expandAlias("a", "x y z", { a: "cmd $3-" })).toEqual({ verb: "cmd", rest: "z" });
+    expect(expandAlias("a", "x y z", keysOf({ a: "cmd $3-" }))).toEqual({ verb: "cmd", rest: "z" });
   });
 
   it("$N- is greedy over a following literal dash", () => {
     // mIRC/irssi shape: the `-` binds to the placeholder, never to the text
     // after it. `$1-tail` is "all args" then "tail", not "$1" then "-tail".
-    expect(expandAlias("a", "x y", { a: "cmd $1-tail" })).toEqual({
+    expect(expandAlias("a", "x y", keysOf({ a: "cmd $1-tail" }))).toEqual({
       verb: "cmd",
       rest: "x ytail",
     });
   });
 
   it("$10 is still $1 then a literal 0 (the range dash didn't widen the digits)", () => {
-    expect(expandAlias("a", "x", { a: "cmd $10" })).toEqual({ verb: "cmd", rest: "x0" });
-    expect(expandAlias("a", "x y", { a: "cmd $1-0" })).toEqual({ verb: "cmd", rest: "x y0" });
+    expect(expandAlias("a", "x", keysOf({ a: "cmd $10" }))).toEqual({ verb: "cmd", rest: "x0" });
+    expect(expandAlias("a", "x y", keysOf({ a: "cmd $1-0" }))).toEqual({
+      verb: "cmd",
+      rest: "x y0",
+    });
   });
 
   it("end-to-end: an alias with $N- reaches DISPATCH with the whole reason", () => {
-    expect(parseSlash("/k spammer go away and stay away", { k: "kick $1 $2-" })).toEqual({
+    expect(parseSlash("/k spammer go away and stay away", keysOf({ k: "kick $1 $2-" }))).toEqual({
       kind: "kick",
       nick: "spammer",
       reason: "go away and stay away",
@@ -2115,7 +2137,7 @@ describe("parseSlash — /ame + /amsg fan-out (#431)", () => {
   // repair surface (/alias, /unalias). /ame is a builtin, so it inherits the
   // rule that actually exists. Adding "ame" to NON_SHADOWABLE_VERBS kills this.
   it("a user alias shadows /ame like any other builtin — #427", () => {
-    expect(parseSlash("/ame hello", { ame: "me" })).toEqual({ kind: "me", body: "hello" });
+    expect(parseSlash("/ame hello", keysOf({ ame: "me" }))).toEqual({ kind: "me", body: "hello" });
   });
 });
 
@@ -2140,7 +2162,7 @@ describe("parseSlash — network-advertised CHANTYPES (#1255)", () => {
     // The #1043 shape: `/part` with a non-channel first token must NOT
     // manufacture a channel — it parts the current window with that text as
     // the reason. On a `CHANTYPES=#` network, `&local` is not a channel.
-    expect(parseSlash("/part &local bye", {}, HASH_ONLY)).toEqual({
+    expect(parseSlash("/part &local bye", noKeys(), HASH_ONLY)).toEqual({
       kind: "part",
       channel: null,
       reason: "&local bye",
@@ -2148,7 +2170,7 @@ describe("parseSlash — network-advertised CHANTYPES (#1255)", () => {
   });
 
   it("/part still recognises an advertised sigil", () => {
-    expect(parseSlash("/part #italia bye", {}, HASH_ONLY)).toEqual({
+    expect(parseSlash("/part #italia bye", noKeys(), HASH_ONLY)).toEqual({
       kind: "part",
       channel: "#italia",
       reason: "bye",
@@ -2160,7 +2182,7 @@ describe("parseSlash — network-advertised CHANTYPES (#1255)", () => {
   // arm" is an implementation detail, and a future split that gave `/cycle` a
   // hardcoded sigil class would pass every test above this one.
   it("/cycle treats an unadvertised sigil as the start of the message", () => {
-    expect(parseSlash("/cycle &local bye", {}, HASH_ONLY)).toEqual({
+    expect(parseSlash("/cycle &local bye", noKeys(), HASH_ONLY)).toEqual({
       kind: "cycle",
       channel: null,
       reason: "&local bye",
@@ -2168,7 +2190,7 @@ describe("parseSlash — network-advertised CHANTYPES (#1255)", () => {
   });
 
   it("/cycle still recognises an advertised sigil", () => {
-    expect(parseSlash("/cycle #italia bye", {}, HASH_ONLY)).toEqual({
+    expect(parseSlash("/cycle #italia bye", noKeys(), HASH_ONLY)).toEqual({
       kind: "cycle",
       channel: "#italia",
       reason: "bye",
@@ -2178,7 +2200,7 @@ describe("parseSlash — network-advertised CHANTYPES (#1255)", () => {
   it("/join auto-prepends # to a name wearing an unadvertised sigil", () => {
     // `&local` is a bare name on this network, so it takes the same sugar a
     // bare `sniffo` takes rather than being passed through as a channel.
-    expect(parseSlash("/join &local", {}, HASH_ONLY)).toEqual({
+    expect(parseSlash("/join &local", noKeys(), HASH_ONLY)).toEqual({
       kind: "join",
       channels: ["#&local"],
       key: null,
@@ -2186,12 +2208,12 @@ describe("parseSlash — network-advertised CHANTYPES (#1255)", () => {
   });
 
   it("/topic reads an advertised sigil as the explicit channel, and an unadvertised one as body", () => {
-    expect(parseSlash("/topic #italia ciao", {}, HASH_ONLY)).toEqual({
+    expect(parseSlash("/topic #italia ciao", noKeys(), HASH_ONLY)).toEqual({
       kind: "topic-set",
       channel: "#italia",
       text: "ciao",
     });
-    expect(parseSlash("/topic &local ciao", {}, HASH_ONLY)).toEqual({
+    expect(parseSlash("/topic &local ciao", noKeys(), HASH_ONLY)).toEqual({
       kind: "topic-set",
       channel: null,
       text: "&local ciao",
@@ -2199,7 +2221,7 @@ describe("parseSlash — network-advertised CHANTYPES (#1255)", () => {
   });
 
   it("/mode reads an unadvertised sigil as a target nick, not a channel", () => {
-    expect(parseSlash("/mode &local +s", {}, HASH_ONLY)).toEqual({
+    expect(parseSlash("/mode &local +s", noKeys(), HASH_ONLY)).toEqual({
       kind: "mode",
       target: "&local",
       modes: "+s",
@@ -2211,7 +2233,7 @@ describe("parseSlash — network-advertised CHANTYPES (#1255)", () => {
     // Not the network disagreeing with the RFC: `+` is claimed by the
     // mode-sign disambiguation, so `+s` stays a mode string on a network
     // whose CHANTYPES contains `+`. Removing the filter makes `+s` a channel.
-    expect(parseSlash("/mode +s", {}, ["#", "+"])).toEqual({
+    expect(parseSlash("/mode +s", noKeys(), ["#", "+"])).toEqual({
       kind: "mode-apply-current",
       modes: "+s",
       params: [],
@@ -2240,7 +2262,7 @@ describe("parseSlash — /np (#1698)", () => {
   it("can be shadowed by a user alias, like every builtin but /alias", () => {
     // #427's rule, checked on the new verb rather than assumed to apply: the
     // non-shadowable set is a FIXED two names, and /np is not one of them.
-    expect(parseSlash("/np", { np: "me is listening" })).toEqual({
+    expect(parseSlash("/np", keysOf({ np: "me is listening" }))).toEqual({
       kind: "me",
       body: "is listening",
     });
