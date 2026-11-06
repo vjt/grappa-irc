@@ -3799,14 +3799,28 @@ that it lands after the reload-honesty check on purpose — a refused or
 partly-failed reload exits above, and seeding into a deploy that did
 not take is wasted work at best and confusing at worst.
 
-**When the reload POST fails, the message names two causes, not one.**
+**When the reload POST fails, the message names every cause, not one.**
 Every `substrate_reload` uses `curl -f`, which discards the response
 body on a non-2xx, so that branch knows the POST failed and nothing
-about why. It prints both live causes: the daemon is down or
-unreachable, OR it refused the hot reload — and HTTP 409 means a
-pending CONTRACT migration, which is an instruction to run a cold
-deploy (#41 added that second cause; before it the message asserted the
-one we used to guess).
+about why. It prints the live causes: the daemon is down or
+unreachable, OR it refused the hot reload with HTTP 409, which has four
+causes. A pending CONTRACT migration (#41) and a release on a toolchain
+the daemon does not run (issue 1112) are instructions to run a cold
+deploy, and so are fresh beams in a lib directory the daemon does not
+read (#1850). Two files claiming one migration version (#1348) is the
+opposite: a cold deploy migrates straight back into it, so the repo is
+fixed first.
+
+**A toolchain move is always cold (issue 1112).** The reload compares the
+daemon's own ERTS (`:erlang.system_info(:version)`) and the vsn of every
+application it loaded with what the release just built declares: field 1
+of `releases/start_erl.data` and `releases/<vsn>/grappa.rel`. Any
+difference answers `409 stale_toolchain` naming each component that
+moved, with or without `--force-hot`. On the jail that is the deploy after
+a `pkg upgrade` of erlang or elixir: the next `mix release --overwrite`
+bundles the new toolchain, the hot path refuses, and `--force-cold`
+applies it. The preflight cannot predict it, because it classifies the
+git range before the build exists.
 
 ### Waiting for the BEAM (`beam_wait.sh`) — defect #9
 

@@ -385,6 +385,12 @@ _deploy_hot() {
 		# in a shape indistinguishable from "nothing to do".
 		printf '[deploy]   HTTP 409, cause 3: the daemon reads lib/grappa-<booted>/ebin and this\n' >&2
 		printf '[deploy]   build wrote lib/grappa-<new>/ebin (a VERSION bump) → run a cold deploy\n' >&2
+		# Issue 1112: the release declares an ERTS or an application vsn the
+		# daemon does not run — on the jail, a `pkg upgrade` of erlang or
+		# elixir since the daemon last booted, or a dependency bump pushed
+		# through with --force-hot.
+		printf '[deploy]   HTTP 409, cause 4: this build declares an ERTS or application vsn the\n' >&2
+		printf '[deploy]   daemon does not run (toolchain or dependency moved) → run a cold deploy\n' >&2
 		exit 1
 	fi
 
