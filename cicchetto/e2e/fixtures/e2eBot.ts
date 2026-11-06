@@ -110,8 +110,12 @@ export const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, 
 // delivered within 46 s.
 export const KEYS_BOUND = 32_000;
 export const UNDER_WAY_BOUND = 46_000;
-// An order challenge lives 15 s (irc-olm CHALLENGE_TTL); the bot ends a held
-// line at its next tick past that, so its verdict is in well within 25 s.
+// An order challenge lives CHALLENGE_TTL (15 s) plus what its lines cost the
+// flood bank past the ceiling (irc-olm 8e64be5): one body per device, so the
+// window grows with the devices it goes to. One device stays at 15 s, and
+// every spec here challenges the one device a cic browser has. The bot ends a
+// held line at its next tick past that, so its verdict is in well within
+// 25 s; a spec that challenges more devices needs a longer bound.
 export const ORDER_VERDICT = 25_000;
 // The bot reloads its pins file at a 1 s tick.
 export const PINS_RELOAD = 15_000;
