@@ -103,7 +103,11 @@ export const OUTQ_TTL_MS = 90_000;
 export const OUTQ_MAX = 16;
 /** At most one re-key after NACKs per nick per minute, however many of its devices NACK (W "Sending"). */
 export const REKEY_INTERVAL_MS = 60_000;
-/** At most one `listreq` per nick per minute, and one answer per (nick, device) per minute (W). */
+/**
+ * At most one `listreq` per nick per minute, and our list to a device at most
+ * once per (nick, device) per minute (W), whether it asked or wrote a body
+ * for a device our list does not name (issue 2576).
+ */
 export const LISTREQ_INTERVAL_MS = 60_000;
 /** Plaintexts kept for a re-send after a NACK. */
 export const SENT_MEMORY_MS = 1_800_000;
@@ -266,8 +270,10 @@ export type E2eState = {
    */
   listreqHeld: ByNick<string>;
   /**
-   * `${folded nick} ${did}` → when a `listreq` from that device was last
-   * answered. Not a `ByNick`: no Object.prototype member holds a space.
+   * `${folded nick} ${did}` → when our list last went to that device: the
+   * answer to its `listreq`, or to a body of its for a device our list does
+   * not name (issue 2576). Not a `ByNick`: no Object.prototype member holds
+   * a space.
    */
   listAnsweredAt: Record<string, number>;
   /** Oldest first. */
@@ -1903,7 +1909,7 @@ export class Engine {
         return;
       }
       const inner = this.inner(nick, plaintext, id.ed25519, res);
-      if (inner !== undefined) this.deliver(nick, master, bound, inner, res);
+      if (inner !== undefined) this.deliver(nick, master, bound, inner, pkmsg.bodies, res);
       return;
     }
     const opened = this.openInbound(id.curve25519, body, sessionId);
@@ -1921,7 +1927,7 @@ export class Engine {
       if (inner === undefined) return;
       const device = this.bindProven(master, id, block.ver);
       this.addSession(id.curve25519, session.pickle());
-      this.deliver(nick, master, device, inner, res);
+      this.deliver(nick, master, device, inner, pkmsg.bodies, res);
     } finally {
       session.free();
     }
@@ -1981,7 +1987,7 @@ export class Engine {
         return;
       }
       const inner = this.inner(nick, plaintext, null, res);
-      if (inner !== undefined) this.deliver(nick, master, device, inner, res);
+      if (inner !== undefined) this.deliver(nick, master, device, inner, msg.bodies, res);
       return;
     }
     if (Object.values(this.state.devices).some((d) => d.curve25519 === curve)) {
@@ -2161,16 +2167,21 @@ export class Engine {
 
   /**
    * A decrypted inner message from `device` of `master`, the master pinned to
-   * `nick`: a `t:list` or a `t:listreq` is the engine's own and never handed
-   * on; anything else is, without its `lv`. W "After any decrypt": an `lv`
-   * above the version of the list stored for the master, read once a `t:list`
-   * in the very message is applied, asks that device for its list.
+   * `nick`, out of a message holding `bodies`: a `t:list` or a `t:listreq` is
+   * the engine's own and never handed on; anything else is, without its
+   * `lv`. Issue 2576: a body for a device our own list does not name means
+   * the writer holds an older list of ours, so it gets the current one
+   * (`sendList`, whose minute a `t:listreq` in the very message already
+   * spent). W "After any decrypt": an `lv` above the version of the list
+   * stored for the master, read once a `t:list` in the very message is
+   * applied, asks that device for its list.
    */
   private deliver(
     nick: string,
     master: string,
     device: PeerDevice,
     inner: Record<string, unknown>,
+    bodies: Record<string, string>,
     res: Result,
   ): void {
     const { lv, ...rest } = inner;
@@ -2189,6 +2200,8 @@ export class Engine {
         inner: rest,
       });
     }
+    const ours = new Set(this.own.list.devices.map((ed25519) => did(this.olm, ed25519)));
+    if (Object.keys(bodies).some((to) => !ours.has(to))) this.sendList(nick, device, res);
     if (validVer(lv) && lv > (this.state.masters[master]?.ver ?? 0)) {
       this.requestList(nick, device.ed25519, lv, res);
     }
@@ -2217,24 +2230,32 @@ export class Engine {
     this.applyList(list.ed25519, list.list);
   }
 
-  /**
-   * A `t:listreq` from `device`: our list, to that device alone, at most once
-   * per (nick, device) a minute; another ask within that minute is dropped.
-   */
+  /** A `t:listreq` from `device`: our list (`sendList`); an ask inside its minute is dropped. */
   private onListreq(nick: string, device: PeerDevice, res: Result): void {
+    if (!this.sendList(nick, device, res)) {
+      res.events.push({ kind: "dropped", nick, reason: "listreq-rate-limited" });
+    }
+  }
+
+  /**
+   * Our signed list, as `t:list`, to `device` of `nick` alone, at most once
+   * per (nick, device) a minute: false, and nothing sent, inside that minute.
+   * Only the list the master signed ever goes: a device is taken off a
+   * peer's view by a list leaving it out, never by a word anyone holding the
+   * nick could say.
+   */
+  private sendList(nick: string, device: PeerDevice, res: Result): boolean {
     const now = this.now();
     for (const [asker, at] of Object.entries(this.state.listAnsweredAt)) {
       if (now - at >= LISTREQ_INTERVAL_MS) delete this.state.listAnsweredAt[asker];
     }
     const asker = `${fold(nick)} ${device.did}`;
-    if (this.state.listAnsweredAt[asker] !== undefined) {
-      res.events.push({ kind: "dropped", nick, reason: "listreq-rate-limited" });
-      return;
-    }
+    if (this.state.listAnsweredAt[asker] !== undefined) return false;
     this.state.listAnsweredAt[asker] = now;
     const { ver, devices, sig } = this.own.list;
     const master = { ed25519: this.own.master, list: { ver, devices }, sig };
     this.dispatch(nick, { t: "list", master }, LIST_TAG, null, device.ed25519, null, res);
+    return true;
   }
 
   /**
