@@ -24,6 +24,9 @@
 
 #define KR_TIMEOUT_MS 30000
 
+/* The deadline of every run of the tool, KR_TIMEOUT_MS unless set. */
+void kr_set_timeout_ms(long ms);
+
 /* The key stored for `identity`, or false. */
 bool kr_lookup(const char *identity, uint8_t key[AR_KEY_LEN]);
 /* Stores `key` for `identity` (replacing any) and reads it back: true only

@@ -8,6 +8,7 @@
 
 #include <limits.h>
 #include <signal.h>
+#include <time.h>
 #include "test.h"
 
 static const uint8_t KEY[AR_KEY_LEN] = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11,
@@ -260,6 +261,22 @@ TEST(a_keyring_answer_that_is_no_key_is_refused) {
     CHECK(!kr_lookup("junk", got));
 }
 
+/* A tool that closes its stdout and then never exits is killed at the
+ * deadline: the wait for it cannot hang the client. */
+TEST(a_secret_tool_that_hangs_is_killed_at_the_deadline) {
+    keyring_use_fake("linger");
+    kr_set_timeout_ms(300);
+    struct timespec a, b;
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    uint8_t got[AR_KEY_LEN];
+    CHECK(!kr_lookup("idhash5", got));
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    long ms = (long)(b.tv_sec - a.tv_sec) * 1000 + (b.tv_nsec - a.tv_nsec) / 1000000;
+    CHECK(ms < 2000);
+    kr_set_timeout_ms(KR_TIMEOUT_MS);
+    keyring_use_fake(NULL);
+}
+
 int main(void) {
     RUN(a_sealed_file_opens_to_what_was_sealed);
     RUN(two_seals_of_one_body_differ);
@@ -280,6 +297,7 @@ int main(void) {
     RUN(a_keyring_that_refuses_or_forgets_is_no_keyring);
     RUN(no_secret_tool_is_no_keyring);
     RUN(a_keyring_answer_that_is_no_key_is_refused);
+    RUN(a_secret_tool_that_hangs_is_killed_at_the_deadline);
     char rm[PATH_MAX + 16];
     snprintf(rm, sizeof(rm), "rm -rf '%s'", keyring_dir);
     if (system(rm) != 0) FAIL("rm");

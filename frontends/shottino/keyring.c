@@ -20,6 +20,10 @@ static const char *tool(void) {
     return t && t[0] ? t : "secret-tool";
 }
 
+static long timeout_ms = KR_TIMEOUT_MS;
+
+void kr_set_timeout_ms(long ms) { timeout_ms = ms; }
+
 static long now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -28,7 +32,8 @@ static long now_ms(void) {
 
 /* Runs the tool with `argv` (argv[0] set here), `in` on its stdin, up to
  * `out_cap` - 1 bytes of its stdout into `out` (NUL-terminated). True when
- * it ran and exited 0 within KR_TIMEOUT_MS. */
+ * it ran and exited 0 within the deadline — the WHOLE run, the wait for its
+ * exit included: one that closes its stdout and stays is killed. */
 static bool run(const char **argv, const char *in, char *out, size_t out_cap) {
     int to_child[2], from_child[2];
     if (pipe(to_child) != 0) return false;
@@ -69,7 +74,7 @@ static bool run(const char **argv, const char *in, char *out, size_t out_cap) {
     }
     close(to_child[1]);
     size_t len = 0;
-    long deadline = now_ms() + KR_TIMEOUT_MS;
+    long deadline = now_ms() + timeout_ms;
     for (;;) {
         long left = deadline - now_ms();
         struct pollfd p = {.fd = from_child[0], .events = POLLIN};
@@ -92,7 +97,18 @@ static bool run(const char **argv, const char *in, char *out, size_t out_cap) {
     out[len] = 0;
     close(from_child[0]);
     int status = 0;
-    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    for (;;) {
+        pid_t w = waitpid(pid, &status, WNOHANG);
+        if (w == pid || (w < 0 && errno != EINTR)) break;
+        if (now_ms() >= deadline) {
+            kill(pid, SIGKILL);
+            ok = false;
+            while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+            break;
+        }
+        struct timespec nap = {0, 10 * 1000000L};
+        nanosleep(&nap, NULL);
+    }
     return ok && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 

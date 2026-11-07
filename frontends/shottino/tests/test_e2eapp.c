@@ -5268,6 +5268,39 @@ TEST(a_keyring_key_that_fails_the_check_falls_through_to_the_passphrase) {
     free_e2e_app(app);
 }
 
+static size_t keyring_calls(void) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/log", getenv("FAKE_KEYRING"));
+    size_t len = 0, n = 0;
+    char *buf = slurp(path, &len);
+    for (size_t i = 0; buf && i < len; i++) n += buf[i] == '\n';
+    free(buf);
+    return n;
+}
+
+/* A keyring that did not answer is not asked again on every key request
+ * of the run — each ask is a fork and an exec — until /e2e unlock asks. */
+TEST(a_keyring_that_failed_is_not_asked_again_until_unlock) {
+    fg_reset();
+    test_keyring_mode("fail");
+    struct app *app = e2e_app("user:atrest-quiet");
+    uint8_t k[AR_KEY_LEN];
+    size_t before = keyring_calls();
+    for (int i = 0; i < 3; i++) CHECK(!e2e_key_obtain(app, false, k));
+    CHECK_LONG(keyring_calls() - before, 1);
+    before = keyring_calls();
+    CHECK(!e2e_key_obtain(app, true, k)); /* looked at again under the lock, a store tried */
+    CHECK(!e2e_key_obtain(app, true, k));
+    CHECK(!e2e_key_obtain(app, false, k));
+    CHECK_LONG(keyring_calls() - before, 2);
+    before = keyring_calls();
+    type_line(app, "/e2e unlock");
+    CHECK_LONG(keyring_calls() - before, 1);
+    e2e_secret_cancel(app);
+    free_e2e_app(app);
+    test_keyring_mode(NULL);
+}
+
 int main(void) {
     test_use_temp_home();
     /* A keyring for every test (tests/fake-secret-tool, in the temp home):
@@ -5347,6 +5380,7 @@ int main(void) {
     RUN(a_sealed_record_this_shottino_cannot_read_is_left_alone);
     RUN(two_processes_make_one_key);
     RUN(a_keyring_key_that_fails_the_check_falls_through_to_the_passphrase);
+    RUN(a_keyring_that_failed_is_not_asked_again_until_unlock);
     th_free();
     fg_stop();
     return test_report();

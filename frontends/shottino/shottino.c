@@ -2157,6 +2157,10 @@ struct app {
     /* e2e_key_mu: the identity's data key and where it came from. */
     enum e2e_key_src e2e_key_src;
     uint8_t e2e_key[AR_KEY_LEN];
+    /* The keyring had no key of ours this run (a lookup failed), or would
+     * not take one (a store failed): not asked again — each ask is a fork
+     * and an exec — until /e2e unlock asks. */
+    bool e2e_kr_missed, e2e_kr_refused;
     /* UI thread: the passphrase prompt in the input line, the first entry
      * of a new one, and the command it was asked for, run once it is set. */
     struct {
@@ -15518,16 +15522,20 @@ static bool e2e_key_obtain(struct app *app, bool create, uint8_t out[AR_KEY_LEN]
         e2e_key_hash(app, hash, sizeof(hash));
         e2e_identity_dir(app, idir, sizeof(idir));
         uint8_t k[AR_KEY_LEN];
-        ok = e2e_key_from_keyring(app, idir, k);
-        if (!ok && create) {
+        ok = !app->e2e_kr_missed && e2e_key_from_keyring(app, idir, k);
+        if (!ok) app->e2e_kr_missed = true;
+        bool any = false, sealed = false;
+        if (!ok && create && !app->e2e_kr_refused) e2e_identity_state(idir, &any, &sealed);
+        if (!ok && create && !app->e2e_kr_refused && !sealed) {
             int lock = e2e_key_flock(idir);
-            /* Another process may have made it while this one waited. */
+            /* Another process may have made it while this one waited: the
+             * one lookup that is never skipped. */
             ok = lock >= 0 && e2e_key_from_keyring(app, idir, k);
             if (lock >= 0 && !ok) {
-                bool any, sealed;
                 e2e_identity_state(idir, &any, &sealed);
                 ok = !sealed && ar_random(k, sizeof(k)) && kr_store(hash, k) &&
                      e2e_key_mark(idir, k);
+                if (!ok && !sealed) app->e2e_kr_refused = true;
             }
             if (lock >= 0) close(lock); /* releases the flock */
         }
@@ -20098,7 +20106,9 @@ static void e2e_unlock_command(struct app *app) {
     e2e_identity_dir(app, idir, sizeof(idir));
     uint8_t k[AR_KEY_LEN];
     pthread_mutex_lock(&e2e_key_mu);
+    app->e2e_kr_missed = app->e2e_kr_refused = false; /* asked again, here */
     bool got = e2e_key_from_keyring(app, idir, k);
+    if (!got) app->e2e_kr_missed = true;
     if (got) e2e_key_set_locked(app, E2E_KEY_KEYRING, k);
     pthread_mutex_unlock(&e2e_key_mu);
     OPENSSL_cleanse(k, sizeof(k));
