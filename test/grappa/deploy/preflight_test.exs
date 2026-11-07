@@ -5,7 +5,7 @@ defmodule Grappa.Deploy.PreflightTest do
 
   alias Grappa.Deploy.Preflight
 
-  @substrates [:docker, :jail, :linux]
+  @substrates [:docker, :jail, :linux, :package]
 
   describe "classify_paths/2 — Class 1: dep / build config (substrate-independent)" do
     test "mix.lock → cold with :mix_deps reason on both substrates" do
@@ -100,6 +100,30 @@ defmodule Grappa.Deploy.PreflightTest do
 
     test "#{@systemd_unit} → hot on jail (FreeBSD has no systemd)" do
       assert {:hot, []} = Preflight.classify_paths([@systemd_unit], :jail)
+    end
+
+    test "#{@systemd_unit} → hot on package (the package ships its own unit)" do
+      assert {:hot, []} = Preflight.classify_paths([@systemd_unit], :package)
+    end
+  end
+
+  describe "classify_paths/2 — Class 4c: the PACKAGE's systemd unit (COLD package only)" do
+    # The deb/rpm/Arch packages install infra/packaging/grappa.service, a
+    # different file from the native-Linux unit above (issue 1112). Same
+    # class, same reason — a running unit's own definition reloads only on
+    # a restart — and the same scoping: no other substrate reads it.
+    @package_unit "infra/packaging/grappa.service"
+
+    test "#{@package_unit} → cold (:systemd_unit) on package" do
+      assert {:cold, reasons} = Preflight.classify_paths([@package_unit], :package)
+      assert {:systemd_unit, [@package_unit]} = List.keyfind(reasons, :systemd_unit, 0)
+    end
+
+    test "#{@package_unit} → hot on every substrate that does not install it" do
+      for substrate <- [:docker, :jail, :linux] do
+        assert {:hot, []} = Preflight.classify_paths([@package_unit], substrate),
+               "#{@package_unit} must be HOT on #{substrate}"
+      end
     end
   end
 
@@ -215,7 +239,7 @@ defmodule Grappa.Deploy.PreflightTest do
     @linux_nginx "infra/linux/nginx.conf"
     @snippet "infra/snippets/locations-api.conf"
     @nested_snippet "infra/snippets/admin/cors.conf"
-    @no_nginx_substrates [:jail, :docker]
+    @no_nginx_substrates [:jail, :docker, :package]
 
     test "#{@linux_nginx} → cold (:nginx) on linux (the host's own proxy config)" do
       assert {:cold, reasons} = Preflight.classify_paths([@linux_nginx], :linux)
@@ -1357,6 +1381,177 @@ defmodule Grappa.Deploy.PreflightTest do
 
       assert {:hot, []} = Preflight.classify("from", "to", :jail, diff_fn, show_fn)
     end
+  end
+
+  describe "classify_manifests/4 — the package verdict, in parity with classify/5" do
+    # Issue 1112: a package upgrade has no git range — the running node's
+    # manifest is the "from" and the new release's is the "to". The verdict
+    # must be the one classify/5 would give for the same two trees, so every
+    # case below builds the SAME pair of trees both ways and asserts the two
+    # verdicts are equal AND equal to the expected one: parity alone would
+    # hold for two classifiers that are wrong together.
+    @app "lib/grappa/application.ex"
+    @long_lived "lib/grappa/session/backoff.ex"
+    @expand_migration "priv/repo/migrations/20260901000000_add_thing.exs"
+    @contract_migration "priv/repo/migrations/20260901000001_drop_thing.exs"
+
+    test "two identical trees → hot" do
+      tree = %{"mix.lock" => "lock", @app => "defmodule A do end"}
+      assert {:hot, []} = both(tree, tree, :package)
+    end
+
+    test "the supervision tree changed → cold (:application)" do
+      assert {:cold, [{:application, [@app]}]} =
+               both(%{@app => "a"}, %{@app => "b"}, :package)
+    end
+
+    test "a config file changed → cold (:config)" do
+      assert {:cold, [{:config, ["config/runtime.exs"]}]} =
+               both(%{"config/runtime.exs" => "a"}, %{"config/runtime.exs" => "b"}, :package)
+    end
+
+    test "the dependency lock changed → cold (:mix_deps)" do
+      assert {:cold, [{:mix_deps, ["mix.lock"]}]} =
+               both(%{"mix.lock" => "a"}, %{"mix.lock" => "b"}, :package)
+    end
+
+    test "a long-lived module's state shape changed → cold (:state_shape)" do
+      from = %{@long_lived => "defmodule Grappa.Session.Backoff do\n  @type t :: %{a: integer()}\nend\n"}
+      to = %{@long_lived => "defmodule Grappa.Session.Backoff do\n  @type t :: %{a: integer(), b: atom()}\nend\n"}
+      assert {:cold, [{:state_shape, [@long_lived]}]} = both(from, to, :package)
+    end
+
+    test "a long-lived module changed in its BODY only → hot" do
+      # The file's hash moved, its state block did not: hashing the file
+      # instead of comparing the block would make this cold.
+      from = %{@long_lived => "defmodule Grappa.Session.Backoff do\n  def f, do: :a\nend\n"}
+      to = %{@long_lived => "defmodule Grappa.Session.Backoff do\n  def f, do: :b\nend\n"}
+      assert {:hot, []} = both(from, to, :package)
+    end
+
+    test "a new EXPAND migration → hot" do
+      assert {:hot, []} =
+               both(%{@expand_migration => nil}, %{@expand_migration => expand_source()}, :package)
+    end
+
+    test "a new CONTRACT migration → cold (:migration)" do
+      assert {:cold, [{:migration, [@contract_migration]}]} =
+               both(%{@contract_migration => nil}, %{@contract_migration => contract_source()}, :package)
+    end
+
+    test "the package's unit changed → cold on package, hot on the jail" do
+      from = %{"infra/packaging/grappa.service" => "[Service]\nTimeoutStartSec=30\n"}
+      to = %{"infra/packaging/grappa.service" => "[Service]\nTimeoutStartSec=300\n"}
+      assert {:cold, [{:systemd_unit, ["infra/packaging/grappa.service"]}]} = both(from, to, :package)
+      assert {:hot, []} = both(from, to, :jail)
+    end
+
+    test "a path the OLD manifest never listed counts as changed — in doubt, cold" do
+      # The old release did not watch this path at all (a class added later,
+      # a config file split out). Reading "absent" as "unchanged" would make
+      # the first upgrade that brings it HOT on no evidence.
+      from = Preflight.build_manifest(%{})
+      to = Preflight.build_manifest(%{"config/new.exs" => "import Config"})
+
+      assert {:cold, [{:config, ["config/new.exs"]}]} =
+               Preflight.classify_manifests(from, to, :package, fn _ -> nil end)
+    end
+
+    test "a path the NEW manifest no longer lists counts as changed too" do
+      from = Preflight.build_manifest(%{@app => "a"})
+      to = Preflight.build_manifest(%{})
+
+      assert {:cold, [{:application, [@app]}]} =
+               Preflight.classify_manifests(from, to, :package, fn _ -> nil end)
+    end
+
+    test "a migration is read from the NEW release, never inferred from its hash" do
+      # A changed migration's class is the classifier's verdict on its
+      # source, exactly as classify/5 reads it at the target rev.
+      from = Preflight.build_manifest(%{@expand_migration => nil})
+      to = Preflight.build_manifest(%{@expand_migration => expand_source()})
+
+      assert {:hot, []} =
+               Preflight.classify_manifests(from, to, :package, fn @expand_migration -> expand_source() end)
+
+      assert {:cold, [{:migration, [@expand_migration]}]} =
+               Preflight.classify_manifests(from, to, :package, fn @expand_migration -> nil end)
+    end
+  end
+
+  describe "manifest_paths/1 — the files a package verdict watches" do
+    test "every repo file classify_paths/2 calls COLD on :package is watched" do
+      # Derived, not listed: a path that can make a package upgrade cold but
+      # is missing from the manifest would change unseen, and the verdict
+      # would be HOT on no evidence. Content-blind classify_paths/2 calls
+      # every migration cold, so this covers the whole migrations dir.
+      root = File.cwd!()
+      watched = MapSet.new(Preflight.manifest_paths(root))
+
+      candidates =
+        for pattern <- ~w(mix.exs mix.lock config/**/* lib/**/* priv/**/* infra/**/* bin/**/*),
+            path <- Path.wildcard(Path.join(root, pattern)),
+            File.regular?(path),
+            do: Path.relative_to(path, root)
+
+      cold =
+        Enum.filter(candidates, &match?({:cold, _}, Preflight.classify_paths([&1], :package)))
+
+      assert length(cold) > 100, "expected the real tree, found #{length(cold)} cold paths"
+      assert Enum.reject(cold, &MapSet.member?(watched, &1)) == []
+    end
+
+    test "every long-lived module's file is watched — the state-shape check needs it" do
+      watched = MapSet.new(Preflight.manifest_paths(File.cwd!()))
+      assert Enum.reject(Preflight.long_lived_module_files(), &MapSet.member?(watched, &1)) == []
+    end
+
+    test "an ordinary module is not watched — the manifest is the cold classes, not the tree" do
+      refute "lib/grappa/scrollback.ex" in Preflight.manifest_paths(File.cwd!())
+    end
+  end
+
+  describe "build_manifest/1" do
+    test "a file's entry is the sha256 of its content; an absent file's is nil" do
+      manifest = Preflight.build_manifest(%{"mix.lock" => "lock", "mix.exs" => nil})
+      assert manifest.files["mix.lock"] == Base.encode16(:crypto.hash(:sha256, "lock"), case: :lower)
+      assert manifest.files["mix.exs"] == nil
+    end
+
+    test "state blocks are kept for long-lived modules only" do
+      src = "defmodule X do\n  defstruct [:a]\nend\n"
+      manifest = Preflight.build_manifest(%{"lib/grappa/session/backoff.ex" => src, @app => src})
+      assert Map.keys(manifest.state_blocks) == ["lib/grappa/session/backoff.ex"]
+    end
+  end
+
+  # Classify the same pair of trees (`path => source`, nil = absent) through
+  # the git door and the manifest door, require the two verdicts to agree,
+  # and return the verdict for the caller's own expectation.
+  defp both(from_tree, to_tree, substrate) do
+    changed =
+      (Map.keys(from_tree) ++ Map.keys(to_tree))
+      |> Enum.uniq()
+      |> Enum.filter(&(Map.get(from_tree, &1) != Map.get(to_tree, &1)))
+      |> Enum.sort()
+
+    show_fn = fn
+      "from", path -> Map.get(from_tree, path)
+      "to", path -> Map.get(to_tree, path)
+    end
+
+    git = Preflight.classify("from", "to", substrate, fn "from", "to" -> changed end, show_fn)
+
+    manifest =
+      Preflight.classify_manifests(
+        Preflight.build_manifest(from_tree),
+        Preflight.build_manifest(to_tree),
+        substrate,
+        &Map.get(to_tree, &1)
+      )
+
+    assert manifest == git, "manifest verdict #{inspect(manifest)} != git verdict #{inspect(git)}"
+    manifest
   end
 
   # A minimal well-formed migration module wrapping `body`.
