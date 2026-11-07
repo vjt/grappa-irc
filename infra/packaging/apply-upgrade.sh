@@ -59,8 +59,7 @@ warn() { printf 'grappa: %s\n' "$*" >&2; }
 # so the release, run as grappa, reads the manifest by its path. Removed on
 # every way out, a signal included.
 scratch=''
-cleanup() { [ -z "$scratch" ] || rm -rf "$scratch"; }
-trap cleanup EXIT
+trap '[ -z "$scratch" ] || rm -rf "$scratch"' EXIT
 trap 'exit 1' HUP INT TERM
 
 # The ERTS the running node executes, read off /proc/<MainPID>/exe
