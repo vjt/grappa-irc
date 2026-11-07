@@ -7,7 +7,9 @@
  * corrupting the heap. */
 #include "test.h"
 
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "../http.h"
 
@@ -96,6 +98,112 @@ TEST(chunk_size_exceeds_body_rejected) {
     free(out);
 }
 
+/* ── Framing: where one response ends on a kept-alive connection ──────
+ *
+ * The client used to read every reply until the server hung up, which is
+ * why every request paid a fresh TCP + TLS handshake (~0.6 s each to the
+ * real bouncer; ~40 of them at startup). Reusing the connection means the
+ * reader must stop at exactly the end of THIS response: by Content-Length,
+ * by the terminating chunk, or — when the server gave neither — by the
+ * close, in which case the connection cannot be reused. */
+static http_frame frame(const char *raw, size_t *total, bool *keep) {
+    return http_frame_response(raw, strlen(raw), total, keep);
+}
+
+TEST(framing_by_content_length) {
+    size_t total = 0;
+    bool keep = false;
+    const char *r = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+    CHECK(frame(r, &total, &keep) == HTTP_FRAME_COMPLETE);
+    CHECK_LONG(total, strlen(r));
+    CHECK(keep);
+    /* A response is complete at its length even when the next one's bytes
+     * already follow it. */
+    char two[256];
+    snprintf(two, sizeof(two), "%sHTTP/1.1 204 No Content\r\n\r\n", r);
+    CHECK(frame(two, &total, &keep) == HTTP_FRAME_COMPLETE);
+    CHECK_LONG(total, strlen(r));
+    /* Short of the length, or short of the headers: read more. */
+    CHECK(frame("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhel", &total, &keep) ==
+          HTTP_FRAME_PARTIAL);
+    CHECK(frame("HTTP/1.1 200 OK\r\nContent-Len", &total, &keep) == HTTP_FRAME_PARTIAL);
+    /* Header names are case-insensitive and values may carry spaces. */
+    CHECK(frame("HTTP/1.1 200 OK\r\ncontent-length:   2  \r\n\r\nok", &total, &keep) ==
+          HTTP_FRAME_COMPLETE);
+}
+
+TEST(framing_by_chunks) {
+    size_t total = 0;
+    bool keep = false;
+    const char *r = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                    "5\r\nhello\r\n0\r\n\r\n";
+    CHECK(frame(r, &total, &keep) == HTTP_FRAME_COMPLETE);
+    CHECK_LONG(total, strlen(r));
+    CHECK(keep);
+    /* The last chunk is there but not its closing blank line yet. */
+    CHECK(frame("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n",
+                &total, &keep) == HTTP_FRAME_PARTIAL);
+    /* Mid-chunk. */
+    CHECK(frame("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\na\r\nhel", &total,
+                &keep) == HTTP_FRAME_PARTIAL);
+    /* Trailers after the last chunk end at their own blank line. */
+    const char *t = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                    "1\r\nx\r\n0\r\nX-T: 1\r\n\r\n";
+    CHECK(frame(t, &total, &keep) == HTTP_FRAME_COMPLETE);
+    CHECK_LONG(total, strlen(t));
+    /* A chunk size that cannot be a size is not a frame. */
+    CHECK(frame("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n", &total,
+                &keep) == HTTP_FRAME_BAD);
+    CHECK(frame("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                "FFFFFFFFFFFFFFFFFF\r\n",
+                &total, &keep) == HTTP_FRAME_BAD);
+}
+
+TEST(framing_without_a_length_runs_to_the_close) {
+    size_t total = 0;
+    bool keep = true;
+    CHECK(frame("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nabc", &total, &keep) ==
+          HTTP_FRAME_UNTIL_CLOSE);
+    CHECK(!keep);
+    /* No body by definition: complete at the headers, and reusable. */
+    const char *nc = "HTTP/1.1 204 No Content\r\n\r\n";
+    CHECK(frame(nc, &total, &keep) == HTTP_FRAME_COMPLETE);
+    CHECK_LONG(total, strlen(nc));
+    CHECK(keep);
+    CHECK(frame("HTTP/1.1 304 Not Modified\r\n\r\n", &total, &keep) == HTTP_FRAME_COMPLETE);
+}
+
+TEST(framing_reads_the_servers_wish_to_close) {
+    size_t total = 0;
+    bool keep = true;
+    CHECK(frame("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n", &total,
+                &keep) == HTTP_FRAME_COMPLETE);
+    CHECK(!keep);
+    CHECK(frame("HTTP/1.1 200 OK\r\nconnection: Close\r\nContent-Length: 0\r\n\r\n", &total,
+                &keep) == HTTP_FRAME_COMPLETE);
+    CHECK(!keep);
+    /* HTTP/1.0 closes unless it says otherwise. */
+    CHECK(frame("HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n", &total, &keep) ==
+          HTTP_FRAME_COMPLETE);
+    CHECK(!keep);
+    CHECK(frame("HTTP/1.0 200 OK\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n",
+                &total, &keep) == HTTP_FRAME_COMPLETE);
+    CHECK(keep);
+}
+
+TEST(framing_refuses_what_is_not_a_response) {
+    size_t total = 0;
+    bool keep = false;
+    CHECK(frame("SSH-2.0-OpenSSH\r\n\r\n", &total, &keep) == HTTP_FRAME_BAD);
+    CHECK(frame("HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\n", &total, &keep) ==
+          HTTP_FRAME_BAD);
+    CHECK(frame("HTTP/1.1 200 OK\r\nContent-Length: 99999999999999999999999\r\n\r\n", &total,
+                &keep) == HTTP_FRAME_BAD);
+    /* Two lengths that disagree is the request-smuggling shape. */
+    CHECK(frame("HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nab", &total,
+                &keep) == HTTP_FRAME_BAD);
+}
+
 int main(void) {
     RUN(single_chunk);
     RUN(multiple_chunks);
@@ -105,5 +213,10 @@ int main(void) {
     RUN(chunk_size_overflow_rejected);
     RUN(good_prefix_then_absurd_chunk);
     RUN(chunk_size_exceeds_body_rejected);
+    RUN(framing_by_content_length);
+    RUN(framing_by_chunks);
+    RUN(framing_without_a_length_runs_to_the_close);
+    RUN(framing_reads_the_servers_wish_to_close);
+    RUN(framing_refuses_what_is_not_a_response);
     return test_report();
 }

@@ -11,6 +11,7 @@
 #ifndef SHOTTINO_HTTP_H
 #define SHOTTINO_HTTP_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 /* Decode an HTTP/1.1 `Transfer-Encoding: chunked` body.
@@ -27,5 +28,28 @@
  * out-of-bounds copy. Malformed framing stops decoding at the last good
  * chunk rather than aborting, matching lenient real-world HTTP clients. */
 char *http_decode_chunked(const char *body, size_t len, size_t *out_len);
+
+/* Where one HTTP/1.1 response ends, for a connection that is kept open.
+ *
+ * `buf`/`len` is what has been read so far (headers and whatever body
+ * followed). Answers:
+ *   HTTP_FRAME_COMPLETE    — `*total` is the length of the WHOLE response
+ *                            (headers + body); bytes past it are not ours.
+ *   HTTP_FRAME_PARTIAL     — read more.
+ *   HTTP_FRAME_UNTIL_CLOSE — the server named no length: the body runs to
+ *                            the close, and the connection is spent.
+ *   HTTP_FRAME_BAD         — not a response, or a length that cannot be
+ *                            one (negative, overflowing, two that disagree).
+ * `*keep_alive` says whether the connection may carry the next request:
+ * false on `Connection: close`, on HTTP/1.0 without keep-alive, and on a
+ * body that runs to the close. Pure: no socket, no allocation. */
+typedef enum {
+    HTTP_FRAME_PARTIAL,
+    HTTP_FRAME_COMPLETE,
+    HTTP_FRAME_UNTIL_CLOSE,
+    HTTP_FRAME_BAD
+} http_frame;
+
+http_frame http_frame_response(const char *buf, size_t len, size_t *total, bool *keep_alive);
 
 #endif /* SHOTTINO_HTTP_H */
