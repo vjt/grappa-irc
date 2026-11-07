@@ -1813,6 +1813,16 @@ TEST(store_seals_a_plaintext_record_on_load) {
     e2e_strv dg = {0};
     CHECK(e2e_store_read_index(dir, &dg) && dg.n == 1);
     e2e_strv_free(&dg);
+    /* What an old writer's crash left: its temp file, plaintext. Gone on a
+     * load, with the key or without; another name with .tmp in it stays. */
+    char *leftover = xfmt("%s/record.json.tmp.4242", dir), *other = xfmt("%s/notes.tmp.1", dir);
+    put_file(leftover, json, strlen(json));
+    put_file(other, "x", 1);
+    CHECK(e2e_store_load(st, NULL, &back, err, sizeof(err)) == E2E_LOAD_LOCKED);
+    CHECK(stat(leftover, &sb) != 0);
+    CHECK(stat(other, &sb) == 0);
+    free(leftover);
+    free(other);
     /* Half-migrated: the sealed record in, the plaintext not yet gone. */
     put_file(plain, "{\"stale\":true}", 14);
     CHECK(e2e_store_load(st, KEY, &back, err, sizeof(err)) == E2E_LOAD_OK);
@@ -2575,6 +2585,9 @@ TEST(history_is_sealed_and_refuses_what_does_not_open) {
     free(sealed_b);
     put_file(plain_c, tc, strlen(tc));
     put_file(plain_b, tb, strlen(tb));
+    /* A plaintext temp file an old writer's crash left: removed. */
+    char *tmp_left = xfmt("%s/chat-sha256-%s.jsonl.tmp.77", dir, sha_c);
+    put_file(tmp_left, tc, strlen(tc));
     /* A chat-…jsonl of no shape this writer knows: never read or moved. */
     char *stray = xfmt("%s/chat-notes.jsonl", dir);
     put_file(stray, "{\"stray\":1}\n", 12);
@@ -2592,7 +2605,9 @@ TEST(history_is_sealed_and_refuses_what_does_not_open) {
     char *sc = xfmt("%s/%s", dir, nc);
     CHECK(stat(sc, &sb) == 0 && (sb.st_mode & 0777) == 0600);
     CHECK(stat(stray, &sb) == 0);
+    CHECK(stat(tmp_left, &sb) != 0);
     free(stray);
+    free(tmp_left);
     CHECK(!file_has(sc, "clear") && !file_has(pb, "clear") && !file_has(pb, "sealed"));
     CHECK_LONG((long)count_lines(pb), 2);
     /* Nothing left to seal: the same rows again. */

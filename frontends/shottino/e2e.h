@@ -635,7 +635,8 @@ bool e2e_own_verify(const e2e_own *own, vz_account *device);
  * only it reads it and seals it at once (record.sealed renamed in, then
  * record.json removed, each step fsync'd); a load that finds both — a
  * crash between those two steps — reads the sealed one and removes the
- * other. Nothing here ever writes a plaintext record: a save without a
+ * other; a plaintext temp file (`record.json.tmp.<pid>`, `chat-…jsonl.tmp.<pid>`)
+ * an old writer's crash left is removed. Nothing here ever writes a plaintext record: a save without a
  * key is refused, and so is a load of anything on disk.
  *
  * Beside it, in the clear, E2E_INDEX_FILE: which queries are encrypted, as

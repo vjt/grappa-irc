@@ -2535,6 +2535,25 @@ bool e2e_store_read_index(const char *dir, e2e_strv *out) {
     return read_index(dir, out, salt);
 }
 
+/* The plaintext temp files a writer from before sealing left when it died
+ * between its write and its rename: names starting `prefix` with
+ * `infix` in them. Only ever plaintext, and nothing reads them. */
+static void remove_plain_leftovers(const char *dir, const char *prefix, const char *infix) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    bool any = false;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strncmp(ent->d_name, prefix, strlen(prefix)) != 0 || !strstr(ent->d_name, infix))
+            continue;
+        char *path = xprintf("%s/%s", dir, ent->d_name);
+        any |= unlink(path) == 0;
+        free(path);
+    }
+    closedir(d);
+    if (any) fsync_dir(dir);
+}
+
 bool e2e_store_has_record(const char *dir) {
     char *sealed = xprintf("%s/record.sealed", dir), *plain = xprintf("%s/record.json", dir);
     bool has = access(sealed, F_OK) == 0 || access(plain, F_OK) == 0;
@@ -2545,6 +2564,7 @@ bool e2e_store_has_record(const char *dir) {
 
 e2e_load_status e2e_store_load(e2e_store *st, const uint8_t *key, e2e_record *out, char *err,
                                size_t err_sz) {
+    remove_plain_leftovers(st->dir, "record.json.tmp.", ".tmp.");
     char *path = xprintf("%s/record.sealed", st->dir);
     char *plain = xprintf("%s/record.json", st->dir);
     bool sealed = true;
@@ -5822,6 +5842,7 @@ static bool chat_migrate_file(const char *dir, const char *rel, const uint8_t *k
 static bool chat_migrate(const char *dir, const char *rel, const uint8_t *key, bool *pending,
                          char *err, size_t err_sz) {
     *pending = false;
+    remove_plain_leftovers(dir, "chat-", ".jsonl.tmp.");
     DIR *d = opendir(dir);
     if (!d) return true; /* the load says why */
     char **names = NULL;
