@@ -62,9 +62,12 @@ running_erts() {
 	printf '%s' "${erts##*/erts-}"
 }
 
-# The ERTS the release on disk boots: field 1 of start_erl.data.
+# The ERTS the release on disk boots: field 1 of start_erl.data, read the way
+# the release's own start script reads field 2 (`cut -d' '`). Not `read`:
+# `mix release` writes the file with no trailing newline, and `read` reports
+# that as a failure even though it filled the variable.
 release_erts() {
-	read -r erts _ <"$START_ERL" || return 1
+	erts=$(cut -d' ' -f1 "$START_ERL" 2>/dev/null) || return 1
 	[ -n "$erts" ] || return 1
 	printf '%s' "$erts"
 }
