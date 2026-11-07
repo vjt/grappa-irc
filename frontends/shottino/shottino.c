@@ -15573,7 +15573,7 @@ static bool e2e_key_new_wrapped_locked(struct app *app, const char *pass, char *
     snprintf(path, sizeof(path), "%s/" E2E_WRAPPED_KEY, idir);
     int lock = e2e_key_flock(idir);
     if (lock < 0) {
-        snprintf(why, why_sz, "cannot lock %s/" E2E_KEY_LOCK, idir);
+        snprintf(why, why_sz, "cannot lock %.200s/" E2E_KEY_LOCK, idir);
         return false;
     }
     bool any, sealed;
