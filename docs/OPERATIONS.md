@@ -2995,11 +2995,18 @@ that is not `127.0.0.0/8` or `::1` is the client, a private-range address
 (RFC 1918, ULA) included. A user who reaches the front door from a LAN or
 over a VPN is recorded under that address.
 
-Keep ONE proxy hop in front of the BEAM — the shape of every config this
-repo ships (`infra/nginx-tls-frontend.example.conf`, and on m42 the host
-vhost). In a chain, the hop nearest the BEAM appends the address of the
-hop before it, and unless that address is loopback it is what gets
-recorded. There is no setting for a list of trusted proxy addresses.
+**Limit: one proxy hop in front of the BEAM, or inner hops on loopback.**
+Every config this repo ships has a single hop
+(`infra/nginx-tls-frontend.example.conf`, and on m42 the host vhost). In a
+chain of two, the hop nearest the BEAM appends the address of the hop
+before it, and unless that address is loopback it is what gets recorded —
+for EVERY user. Example: nginx on a Docker host at `172.17.0.1` in front of
+a second nginx inside the container. The inner one receives
+`X-Forwarded-For: <client>` and appends `172.17.0.1`, so every user resolves
+to `172.17.0.1` and they all share one per-IP bucket: one login throttle,
+one per-IP admission cap, one `sessions.ip` value. A public first hop (a
+CDN in front of your proxy) resolves the same way, to the CDN's addresses.
+There is no setting for a list of trusted proxy addresses.
 
 ## CSP / security headers (BEAM-emitted, NOT nginx — #485)
 
