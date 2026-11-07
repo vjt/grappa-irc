@@ -160,6 +160,17 @@ defmodule GrappaWeb.AdminChannel do
   end
 
   @spec authorize(Phoenix.Socket.t()) :: :ok | {:error, :forbidden}
+  defp authorize(socket) do
+    if admin_socket?(socket), do: :ok, else: {:error, :forbidden}
+  end
+
+  @doc """
+  Whether `socket` speaks for a grappa admin with a full web session — the
+  one predicate behind this channel's join and behind every other WS door
+  that answers an admin differently (issue 2597: the client addresses a
+  WHOIS bundle carries).
+  """
+  @spec admin_socket?(Phoenix.Socket.t()) :: boolean()
   # #1196 — admin-ness is necessary but no longer sufficient: a
   # per-client token minted by an admin is still a scoped credential, and
   # the operator console is the first surface it must not reach. The REST
@@ -167,6 +178,6 @@ defmodule GrappaWeb.AdminChannel do
   # same refusal on the door the console's live feed actually comes
   # through. Both conditions in ONE clause so neither can be satisfied
   # alone.
-  defp authorize(%{assigns: %{is_admin: true, current_session_kind: :web}}), do: :ok
-  defp authorize(_), do: {:error, :forbidden}
+  def admin_socket?(%{assigns: %{is_admin: true, current_session_kind: :web}}), do: true
+  def admin_socket?(_), do: false
 end
