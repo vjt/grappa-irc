@@ -61,6 +61,7 @@ EOF
 printf 'jail_release.sh %s\n' "$*" >> "$ARGV_LOG"
 case "$*" in
     *seed_themes*) exit "$SEED_RC" ;;
+    *check_migrations*) exit "${CHECK_RC:-0}" ;;
 esac
 exit 0
 EOF
@@ -354,22 +355,47 @@ EOF
     run_deploy
     [ "$status" -eq 0 ]
 
+    check_line=$(grep -n "Grappa.Release.check_migrations()" "$ARGV_LOG" | head -1 | cut -d: -f1)
     stop_line=$(grep -n "service grappa stop" "$ARGV_LOG" | head -1 | cut -d: -f1)
     wait_line=$(grep -n "jail_beam_wait.sh wait-stopped" "$ARGV_LOG" | head -1 | cut -d: -f1)
     mig_line=$(grep -n "Grappa.Release.migrate()" "$ARGV_LOG" | head -1 | cut -d: -f1)
     seed_line=$(grep -n "seed_themes" "$ARGV_LOG" | head -1 | cut -d: -f1)
     start_line=$(grep -n "service grappa start" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    [ -n "$check_line" ]
     [ -n "$stop_line" ]
     [ -n "$wait_line" ]
     [ -n "$mig_line" ]
     [ -n "$seed_line" ]
     [ -n "$start_line" ]
+    # The check is the one migration step that runs with the node UP: its
+    # whole point is to refuse while there is still a node serving (F2).
+    [ "$check_line" -lt "$stop_line" ]
     # The wait, not just the stop: rc.subr's stop returning is not the BEAM
     # gone, and a migrator next to a live BEAM is the state this removes.
     [ "$stop_line" -lt "$wait_line" ]
     [ "$wait_line" -lt "$mig_line" ]
     [ "$mig_line" -lt "$seed_line" ]
     [ "$seed_line" -lt "$start_line" ]
+}
+
+@test "issue 1112: a migration check that refuses stops NOTHING — exit 1, the node keeps serving" {
+    # vjt's ruling (F2 (a)): since the migration runs with the node stopped,
+    # a migration that fails is an outage. The duplicate-version audit runs
+    # first, through the migrator's own door, and a refusal there must leave
+    # the old node exactly as it was.
+    export PREFLIGHT_RC=3 CHECK_RC=1
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy
+    [ "$status" -eq 1 ]
+    grep -q "Grappa.Release.check_migrations()" "$ARGV_LOG"
+    refute grep -q "service grappa stop" "$ARGV_LOG"
+    refute grep -q "jail_install_rcd.sh" "$ARGV_LOG"
+    refute grep -q "Grappa.Release.migrate()" "$ARGV_LOG"
+    refute grep -q "seed_themes" "$ARGV_LOG"
+    refute grep -q "service grappa start" "$ARGV_LOG"
+    [ ! -f "$REPO_ROOT/runtime/last-deployed-sha" ]
+    [[ "$output" == *"NOTHING was stopped"* ]]
 }
 
 # --- #646: the source-alias wrapper is reconciled on EVERY deploy ------------
