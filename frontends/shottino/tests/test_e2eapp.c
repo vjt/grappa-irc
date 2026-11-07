@@ -3316,6 +3316,47 @@ TEST(an_encrypted_link_is_not_remembered_for_preview) {
     free_e2e_app(app);
 }
 
+/* An attachment in an encrypted query is refused BEFORE anything reaches
+ * grappa: /api/uploads stores the file in clear and serves it to anyone
+ * with the link, so uploading it and refusing only the link afterwards
+ * had already given the file away. /upload, /vmsg and /video all stop at
+ * the door, and the worker's upload door checks again. */
+TEST(an_attachment_is_refused_before_it_is_uploaded_to_an_encrypted_query) {
+    struct app *app = send_app("user:upload", "alice");
+    handle_command(app, "/e2e on");
+    run_jobs(app);
+    CHECK(e2e_query_encrypted(app, "azzurra", "alice"));
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/secret.png", getenv("HOME"));
+    FILE *f = fopen(path, "wb");
+    CHECK(f != NULL);
+    if (f) {
+        fputs("\x89PNG not really", f);
+        fclose(f);
+    }
+    char cmd[PATH_MAX + 16];
+    snprintf(cmd, sizeof(cmd), "/upload %s", path);
+    handle_command(app, cmd);
+    CHECK(said(app, "/upload: refused"));
+    CHECK(said(app, "encrypted attachments are not supported yet"));
+    pthread_mutex_lock(&app->jobs_lock);
+    CHECK(app->jobs_head == app->jobs_tail);
+    pthread_mutex_unlock(&app->jobs_lock);
+    /* The worker's door, should the mode have turned on after the queue. */
+    upload_file_to(app, path, "📸", "azzurra", "alice");
+    CHECK_LONG(said_count(app, "encrypted attachments are not supported yet"), 2);
+    CHECK(!said(app, "uploading secret.png"));
+    handle_command(app, "/vmsg");
+    CHECK(said(app, "/voice: refused"));
+    handle_command(app, "/video");
+    CHECK(said(app, "/video: refused"));
+    CHECK(!app->rec.active);
+    CHECK(!fg_logged("/api/uploads"));
+    CHECK_LONG(fg.nplain, 0);
+    unlink(path);
+    free_e2e_app(app);
+}
+
 /* What this device sends a peer reaches our other device as a copy
  * (claim, then the copy door — never IRC), after grappa took the text. */
 TEST(a_sent_text_is_copied_to_our_sibling) {
@@ -4417,6 +4458,7 @@ int main(void) {
     RUN(the_peer_turns_it_on_and_only_off_turns_it_off);
     RUN(no_model_tool_reads_an_encrypted_row);
     RUN(an_encrypted_link_is_not_remembered_for_preview);
+    RUN(an_attachment_is_refused_before_it_is_uploaded_to_an_encrypted_query);
     RUN(a_sent_text_is_copied_to_our_sibling);
     RUN(emsg_sends_one_encrypted_message);
     RUN(a_line_typed_before_the_slot_loads_never_goes_in_clear);

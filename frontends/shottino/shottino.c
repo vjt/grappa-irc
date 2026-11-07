@@ -24093,8 +24093,27 @@ static void multipart_filename(const char *in, char *out, size_t out_sz) {
     if (!n) snprintf(out, out_sz, "upload");
 }
 
+/* An attachment for an encrypted query is refused BEFORE it reaches
+ * grappa, said as `/<verb>: refused …`. /api/uploads stores the file in
+ * clear and serves it to anyone holding the link, so uploading it and
+ * letting the last door refuse only the link (send_message_target) had
+ * already given the file away. Encrypted attachments are issue 2517.
+ * True when refused. */
+static bool attachment_refused_encrypted(struct app *app, const char *verb, const char *net,
+                                         const char *chan) {
+    if (!e2e_query_encrypted(app, net, chan)) return false;
+    log_line(app, "[%s/%s] /%s: refused — this query is in encrypted mode, and encrypted "
+                  "attachments are not supported yet (issue 2517): nothing was uploaded. /e2e off "
+                  "first to send it in clear",
+             net, chan, verb);
+    return true;
+}
+
 static void upload_file_to(struct app *app, const char *path, const char *marker,
                            const char *up_net, const char *up_chan) {
+    /* Asked again on the worker: the query may have turned encrypted
+     * while the job waited (a peer's encrypted message does that). */
+    if (attachment_refused_encrypted(app, "upload", up_net, up_chan)) return;
     const char *mime = mime_for_path(path);
     if (!mime) {
         log_line(app, "/upload: unsupported file type — images (png jpg gif webp apng), "
@@ -24218,6 +24237,7 @@ static void upload_command(struct app *app, const char *path) {
         log_line(app, "/upload: the server window is read-only — switch to a channel or query first");
         return;
     }
+    if (attachment_refused_encrypted(app, "upload", up_net, up_chan)) return;
     /* On the WORKER. An upload is an HTTP round trip with a file
      * attached: on the UI thread that is a client frozen mid-keystroke
      * for as long as the network takes. */
@@ -24648,6 +24668,14 @@ static void record_start_for(struct app *app, bool video, enum record_purpose pu
     if (app->rec.active) {
         log_line(app, "already recording — Enter sends it, Esc throws it away");
         return;
+    }
+    /* A recording to SEND into an encrypted query would be uploaded in
+     * clear: refused before a second of it is recorded. */
+    if (purpose == RECORD_SEND) {
+        char enet[MAX_SLUG], echan[MAX_CHANNEL];
+        if (current_window_key(app, enet, sizeof(enet), echan, sizeof(echan)) &&
+            attachment_refused_encrypted(app, video ? "video" : "voice", enet, echan))
+            return;
     }
     if (!media_tool_available("ffmpeg")) {
         log_line(app, "/%s needs ffmpeg on PATH — it is what does the recording",
