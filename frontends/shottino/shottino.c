@@ -17052,7 +17052,7 @@ static char *e2e_sas_look(struct app *app, struct e2e_slot *s, const e2e_ctx *c,
                      s->slug, nick, nick, nick, emoji);
 }
 
-static void e2e_auto_on(struct app *app, struct e2e_slot *s, const char *nick);
+static void e2e_auto_on(struct app *app, struct e2e_slot *s, const char *nick, bool copy);
 static void e2e_report(struct app *app, struct e2e_slot *s, const e2e_result *res);
 static void e2e_after_step(struct app *app, struct e2e_slot *s, const e2e_ctx *c);
 
@@ -17187,9 +17187,15 @@ static void e2e_drain_slot(struct app *app, struct e2e_slot *s, int depth) {
             }
             size_t had = rows.n;
             e2e_rows_of(&res, id, c.now_ms, &rows);
-            /* A peer who writes encrypted is answered encrypted. */
-            for (size_t k = had; k < rows.n; k++)
-                if (rows.v[k].kind == E2E_ROW_IN) e2e_auto_on(app, s, rows.v[k].nick);
+            /* A peer who writes encrypted is answered encrypted, and so is
+             * one we write to encrypted from another device (a copy): the
+             * query shows that line locked, and the next one typed here
+             * must not go in clear. */
+            for (size_t k = had; k < rows.n; k++) {
+                const e2e_row *row = &rows.v[k];
+                bool copy = row->kind == E2E_ROW_OUT && strncmp(row->id, "copy:", 5) == 0;
+                if (row->kind == E2E_ROW_IN || copy) e2e_auto_on(app, s, row->nick, copy);
+            }
             /* A sas.* goes to the verifier (client.ts drain), its rows
              * derived from the same inbox item. */
             e2e_result sas;
@@ -17554,13 +17560,21 @@ static void e2e_mode_set(struct app *app, struct e2e_slot *s, const char *nick, 
     if (e2e_record_set_encrypted(&s->rec, nick, on) && save) e2e_save(app, s);
 }
 
-/* A peer's encrypted text arrived: the query answers encrypted from now. */
-static void e2e_auto_on(struct app *app, struct e2e_slot *s, const char *nick) {
+/* A peer's encrypted text arrived, or a copy of ours from another device
+ * (`copy`): the query answers encrypted from now. */
+static void e2e_auto_on(struct app *app, struct e2e_slot *s, const char *nick, bool copy) {
     if (e2e_record_encrypted(&s->rec, nick)) return;
     e2e_mode_set(app, s, nick, true, false);
-    log_line(app, "[%s/%s] --- e2e: %s writes encrypted, so this query is in encrypted mode now: "
-                  "what you type here goes encrypted (" E2E_LOCK "), never in clear; /e2e off for clear",
-             s->slug, nick, nick);
+    if (copy)
+        log_line(app, "[%s/%s] --- e2e: you write encrypted to %s from another device, so this "
+                      "query is in encrypted mode now: what you type here goes encrypted (" E2E_LOCK
+                      "), never in clear; /e2e off for clear",
+                 s->slug, nick, nick);
+    else
+        log_line(app, "[%s/%s] --- e2e: %s writes encrypted, so this query is in encrypted mode "
+                      "now: what you type here goes encrypted (" E2E_LOCK "), never in clear; /e2e "
+                      "off for clear",
+                 s->slug, nick, nick);
 }
 
 static void e2e_awaiting_drop(struct e2e_slot *s, size_t i) {

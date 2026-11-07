@@ -2425,11 +2425,19 @@ TEST(a_copy_from_a_sibling_reads_as_ours) {
     }
     e2e_result_free(&r);
     CHECK_LONG(app->e2e[0].rec.own->list_ver, 1);
+    CHECK(!e2e_query_encrypted(app, "azzurra", "alice"));
 
     drain(app);
     CHECK_LONG(app->e2e[0].rec.own->list_ver, 2);
     CHECK(said(app, LOCKED("<vjt> sent from my phone")));
     CHECK(has_window(app, "alice"));
+    /* Found pairing behind cicchetto: the copy showed in the query with
+     * alice, encrypted, while the query stayed in clear mode, so the next
+     * line typed here would have gone in clear. What we write encrypted
+     * from another device keeps the query encrypted here, as a peer's
+     * encrypted message does. */
+    CHECK(e2e_query_encrypted(app, "azzurra", "alice"));
+    CHECK(said(app, "you write encrypted to alice from another device"));
     pthread_mutex_lock(&fg.lock);
     CHECK(fg_item_by_id(id)->acked);
     /* Acknowledged once, after the sync: never while it stood unread. */
