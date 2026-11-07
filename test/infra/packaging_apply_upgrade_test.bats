@@ -71,7 +71,9 @@ case "$1" in
         ;;
     show) echo "$MAIN_PID" ;;
     restart)
-        if [ "$START_LIMIT_HIT" = 1 ] && ! grep -qx 'systemctl reset-failed grappa.service' "$CALL_LOG"; then
+        cleared=0
+        grep -qx 'systemctl reset-failed grappa.service' "$CALL_LOG" && cleared=1
+        if [ "$START_LIMIT_HIT" = 1 ] && [ "$cleared" = 0 ]; then
             echo "Job for grappa.service failed: start request repeated too quickly." >&2
             exit 1
         fi
