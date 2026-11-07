@@ -39,9 +39,12 @@ PROBE_TIMEOUT=5
 # the code it runs. The is_loaded guard is not decoration — on a node that
 # autoloads (interactive mode) the call would load the NEW beam the package
 # just wrote, report the new manifest as the old one and turn every upgrade
-# HOT. A release boots embedded and has the module loaded at boot; a node
-# without it is one older than this mechanism, and it must not answer.
-RPC_EXPR='if :code.is_loaded(Grappa.Deploy.Manifest), do: IO.write(Grappa.Deploy.Manifest.encode()), else: raise("Grappa.Deploy.Manifest is not loaded in the running node")'
+# HOT. The module is named through a variable and called with apply/3, so no
+# literal remote call to it is expanded — and nothing can load it — before
+# the guard has run. A release boots embedded and has the module loaded at
+# boot; a node without it is one older than this mechanism, and it must not
+# answer.
+RPC_EXPR='m = Grappa.Deploy.Manifest; if :code.is_loaded(m), do: IO.write(apply(m, :encode, [])), else: raise("Grappa.Deploy.Manifest is not loaded in the running node")'
 # Evaluated by the NEW release on disk: compares the reported manifest (the
 # file named in argv) with its own. Exit 0 hot, 3 cold, anything else a crash.
 VERDICT_EXPR='Grappa.Deploy.Manifest.cli(System.argv())'
