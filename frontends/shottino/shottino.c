@@ -4577,6 +4577,28 @@ static bool ctcp_request_line(const char *rest, char *out, size_t out_sz) {
     return true;
 }
 
+/* `/ctcp <target> ACTION …` into an encrypted query is a /me in clear:
+ * refused, and said. Every other verb is a protocol query and goes as a
+ * raw line, as it always did. `rest` is what ctcp_request_line reads, on
+ * the focused window's network. True when refused. */
+static bool current_window_key(struct app *app, char *net, size_t net_sz, char *chan,
+                               size_t chan_sz);
+
+static bool ctcp_action_refused_encrypted(struct app *app, const char *rest) {
+    char target[MAX_CHANNEL], verb[64], net[MAX_SLUG];
+    const char *after_target = split_head(rest, target, sizeof(target));
+    split_head(after_target, verb, sizeof(verb));
+    /* Upcased as ctcp_request_line upcases it: the verb that goes. */
+    for (char *v = verb; *v; v++) *v = (char)toupper((unsigned char)*v);
+    if (strcmp(verb, "ACTION") != 0) return false;
+    if (!current_window_key(app, net, sizeof(net), NULL, 0)) return false;
+    if (!e2e_query_encrypted(app, net, target)) return false;
+    log_line(app, "[%s/%s] /ctcp %s ACTION: refused — this query is in encrypted mode, and a CTCP "
+                  "goes in clear; /me sends it encrypted",
+             net, target, target);
+    return true;
+}
+
 /* Answer an inbound CTCP query.
  *
  * PING only, and deliberately so. VERSION is answered by GRAPPA, which
@@ -13297,6 +13319,9 @@ static char *tool_execute(struct app *app, const struct llm_req *req,
         snprintf(rest, sizeof(rest), "%s %s %s", target, verb, arg);
         char frame[MAX_LINE];
         if (!ctcp_request_line(rest, frame, sizeof(frame))) return xasprintf("error: bad ctcp");
+        if (ctcp_action_refused_encrypted(app, rest))
+            return xasprintf("refused: an ACTION to %.64s would go in clear into an encrypted query",
+                             target);
         char *raw = json_escape(frame);
         char *payload = xasprintf("{\"network_id\":%d,\"line\":\"%s\"}",
                                   current_network_id(app), raw);
@@ -14696,12 +14721,12 @@ static int64_t e2e_now_ms(void);
 
 static void send_message_target(struct app *app, const char *network, const char *channel, const char *body) {
     /* The last door to plaintext. A query in encrypted mode never gets a
-     * line in clear from here, whichever path forgot to ask (the typed
-     * ones route to e2e_type); a CTCP request (PING, VERSION) is protocol,
-     * not conversation, and goes as it always did. */
-    char act[MAX_LINE];
-    bool ctcp_request = body[0] == '\001' && !ctcp_action_text(body, act, sizeof(act));
-    if (!ctcp_request && e2e_query_encrypted(app, network, channel)) {
+     * body in clear from here, whichever path forgot to ask (the typed
+     * ones route to e2e_type) — a \x01-led one included: it is still words
+     * to the person the query is encrypted with, and nothing that is
+     * genuinely protocol comes this way (/ctcp and /ping go as raw lines,
+     * the PING answer as a raw NOTICE: ctcp_respond). */
+    if (e2e_query_encrypted(app, network, channel)) {
         clear_matching_pending_echo(app, network, channel, body);
         log_line(app, "[%s/%s] --- e2e: NOT sent — this query is in encrypted mode, and that "
                       "would have gone in clear (/e2e off first to send it in clear)",
@@ -26386,6 +26411,8 @@ static void handle_command_dispatch(struct app *app, char *line) {
         char frame[MAX_LINE];
         if (!ctcp_request_line(line + 6, frame, sizeof(frame))) {
             log_line(app, "/ctcp <nick|#channel> <VERB> [args] — e.g. /ctcp alice VERSION");
+        } else if (ctcp_action_refused_encrypted(app, line + 6)) {
+            /* said */
         } else {
             char *raw = json_escape(frame);
             char *payload = xasprintf("{\"network_id\":%d,\"line\":\"%s\"}",

@@ -3483,6 +3483,31 @@ TEST(an_attachment_is_refused_before_it_is_uploaded_to_an_encrypted_query) {
     free_e2e_app(app);
 }
 
+/* A CTCP body in an encrypted query is refused at the last door too: a
+ * \x01-led line is still words sent in clear to the person the query is
+ * encrypted with, and nothing legitimate needs the message door for one —
+ * /ctcp and /ping go as raw lines, and the PING answer is a raw NOTICE.
+ * Those stay; an ACTION through /ctcp is a /me in clear, and is refused. */
+TEST(a_ctcp_body_never_goes_in_clear_to_an_encrypted_query) {
+    struct app *app = send_app("user:ctcp", "alice");
+    handle_command(app, "/e2e on");
+    run_jobs(app);
+    send_message_target(app, "azzurra", "alice", "\001VERSION\001");
+    CHECK(said(app, "NOT sent — this query is in encrypted mode"));
+    send_message_target(app, "azzurra", "alice", "\001SECRET words in clear\001");
+    CHECK_LONG(said_count(app, "NOT sent — this query is in encrypted mode"), 2);
+    CHECK_LONG(fg.nplain, 0);
+    handle_command(app, "/ctcp alice action waves in clear");
+    CHECK(said(app, "/ctcp alice ACTION: refused"));
+    CHECK(!said(app, "--- sent: PRIVMSG alice :\001ACTION"));
+    handle_command(app, "/ctcp alice version");
+    CHECK(said(app, "--- sent: PRIVMSG alice :\001VERSION\001"));
+    /* A channel is not a query: its CTCPs are untouched. */
+    send_message_target(app, "azzurra", "#grappa", "\001VERSION\001");
+    CHECK_LONG(said_count(app, "NOT sent — this query is in encrypted mode"), 2);
+    free_e2e_app(app);
+}
+
 /* What this device sends a peer reaches our other device as a copy
  * (claim, then the copy door — never IRC), after grappa took the text. */
 TEST(a_sent_text_is_copied_to_our_sibling) {
@@ -4628,6 +4653,7 @@ int main(void) {
     RUN(no_model_tool_reads_an_encrypted_row);
     RUN(an_encrypted_link_is_not_remembered_for_preview);
     RUN(an_attachment_is_refused_before_it_is_uploaded_to_an_encrypted_query);
+    RUN(a_ctcp_body_never_goes_in_clear_to_an_encrypted_query);
     RUN(a_sent_text_is_copied_to_our_sibling);
     RUN(emsg_sends_one_encrypted_message);
     RUN(a_line_typed_before_the_slot_loads_never_goes_in_clear);
