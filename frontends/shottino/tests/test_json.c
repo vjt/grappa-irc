@@ -174,6 +174,8 @@ TEST(rejects_malformed) {
         "{\"a\":tru}",            /* malformed literal     */
         "{\"a\":1}trailing",      /* trailing bytes        */
         "{\"a\":\"\\q\"}",        /* unknown escape        */
+        "{\"t\\u0000x\":\"chal\"}", /* a key with a NUL      */
+        "{\"a\":{\"\\u0000\":1}}",    /* nested, all NUL       */
         "",                       /* empty input           */
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
@@ -182,6 +184,22 @@ TEST(rejects_malformed) {
         CHECK(err[0] != '\0');
         json_free(d);
     }
+}
+
+/* A NUL inside an object KEY makes the document unparseable. Keys are
+ * matched with strcmp, so {"t\u0000x":"chal"} read as t=chal here while
+ * JSON.parse keeps the whole key "t\0x": one document, two readings, and
+ * cicchetto is the other reader. No key on grappa's wire or in the E2E
+ * payloads contains a NUL, so refusing costs nothing; a VALUE may still
+ * carry one (an IRC body), read with json_string_len. */
+TEST(a_nul_in_a_key_is_refused_but_not_in_a_value) {
+    const char *key = "{\"t\\u0000x\":\"chal\"}";
+    CHECK(json_parse(key, strlen(key), NULL, 0) == NULL);
+    const char *val = "{\"t\":\"a\\u0000b\"}";
+    json_doc *d = json_parse(val, strlen(val), NULL, 0);
+    CHECK(d != NULL);
+    CHECK_LONG(json_string_len(json_get(json_root(d), "t")), 3);
+    json_free(d);
 }
 
 /* A hostile frame must not blow the C stack. */
@@ -351,6 +369,7 @@ int main(void) {
     RUN(phoenix_frame_envelope);
     RUN(field_helpers);
     RUN(rejects_malformed);
+    RUN(a_nul_in_a_key_is_refused_but_not_in_a_value);
     RUN(rejects_deep_nesting);
     RUN(null_safety);
     RUN(numbers);

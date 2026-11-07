@@ -223,6 +223,16 @@ TEST(payload_refuses_what_is_no_object) {
     CHECK(!parses(E2E_VERB_NACK, "{\"v\":\"2\",\"ref\":\"R\"}", &u));
     CHECK(!parses(E2E_VERB_MSG, "{\"v\":2,\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}", &u));
     CHECK(parses(E2E_VERB_MSG, "{\"v\":2,\"ck\":\"K\",\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}", &u));
+    /* A key with \u0000 in it reads as its prefix through strcmp, and as
+     * the whole key through JSON.parse: a did "aaaaaaaaaaa\0junk" passed
+     * e2e_did_valid here and names no device in cicchetto. Undecodable. */
+    u = false;
+    CHECK(!parses(E2E_VERB_MSG,
+                  "{\"v\":2,\"ck\":\"K\",\"bodies\":{\"aaaaaaaaaaa\\u0000junk\":\"B\"}}", &u));
+    CHECK(u);
+    u = false;
+    CHECK(!parses(E2E_VERB_NACK, "{\"v\":2,\"ref\\u0000x\":\"R\"}", &u));
+    CHECK(u);
 }
 
 #define ID "{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"}"

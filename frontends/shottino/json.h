@@ -25,7 +25,10 @@
  *   bytes, so the decoded string may embed NULs only if the server sent a
  *   literal `\u0000`; `json_string_len` gives the true length for callers
  *   that care. Everything in grappa's wire surface is text, so the
- *   NUL-terminated view is what the accessors expose.
+ *   NUL-terminated view is what the accessors expose. That holds for
+ *   VALUES only: an object KEY that decodes to a NUL makes the document
+ *   unparseable, because keys are matched as C strings and would answer
+ *   to their prefix — a reading JSON.parse (cicchetto) does not share.
  * - Numbers are parsed as `double` and exposed as both double and long.
  *   Every integer grappa puts on the wire (ids, counts, unix seconds) is
  *   well inside double's exact-integer range.

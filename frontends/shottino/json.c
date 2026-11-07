@@ -340,6 +340,14 @@ static bool parse_object(struct parser *ps, json_value **out) {
             ok = false;
             break;
         }
+        /* Keys are matched as C strings, so a key with a NUL in it would
+         * answer to its prefix here and to the whole key in JSON.parse —
+         * one document read two ways, and the other reader is cicchetto.
+         * No key anyone sends contains one; a VALUE may (an IRC body). */
+        if (memchr(key, '\0', key_len)) {
+            ok = fail(ps, "object key contains \\u0000");
+            break;
+        }
         skip_ws(ps);
         if (ps->p >= ps->end || *ps->p != ':') {
             ok = fail(ps, "expected ':' after object key");
