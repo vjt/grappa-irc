@@ -95,7 +95,20 @@ static struct {
     size_t ninbox;
     long next_inbox_id;
     char *sent[FG_SENT_MAX]; /* request bodies of POST …/messages, in order */
+    char sent_msgid[FG_SENT_MAX][12]; /* the msgid each was answered with */
+    /* What the disk held when each was posted: history rows, and how many
+     * sent records the saved state carried (the crash-safe order). */
+    size_t sent_disk_rows[FG_SENT_MAX];
+    long sent_disk_records[FG_SENT_MAX];
     size_t nsent;
+    /* The send door's next answer, scripted (0: accept); the frame
+     * budget it sizes payloads with (0: unchecked), as grappa's 413. */
+    int fail_send_status;
+    char fail_send_error[32];
+    long budget;
+    /* The PLAINTEXT door (POST …/channels/:c/messages): every body. */
+    char *plain[FG_SENT_MAX];
+    size_t nplain;
     long next_msgid;
     char acks[2048]; /* each ack's ids, "[1,2]\n" */
     /* What the disk held when each ack arrived (the slot dir, set by a
@@ -121,6 +134,10 @@ static void fg_reset(void) {
     fg.ninbox = 0;
     for (size_t i = 0; i < fg.nsent; i++) free(fg.sent[i]);
     fg.nsent = 0;
+    for (size_t i = 0; i < fg.nplain; i++) free(fg.plain[i]);
+    fg.nplain = 0;
+    fg.fail_send_status = 0;
+    fg.budget = 0;
     fg.acks[0] = 0;
     fg.watch_dir[0] = 0;
     fg.nack_disk = 0;
@@ -198,28 +215,35 @@ static char *fg_keys_locked(const char *only) {
 
 /* What reached disk, read as the next run would (no store: the app holds
  * its lock): the record's watermark, and the rows of every chat. */
-static void fg_watch_locked(void) {
-    if (!fg.watch_dir[0] || fg.nack_disk >= 16) return;
+static void fg_disk_locked(long *inbox, long *records, size_t *nrows) {
     char *path = xasprintf("%s/record.json", fg.watch_dir);
     FILE *f = fopen(path, "r");
     free(path);
-    long inbox = -1;
+    *inbox = *records = -1;
     if (f) {
         static char buf[1 << 20];
         size_t n = fread(buf, 1, sizeof(buf), f);
         fclose(f);
         e2e_record rec;
         if (e2e_record_from_json(buf, n, &rec)) {
-            inbox = rec.state.inbox;
+            *inbox = rec.state.inbox;
+            *records = (long)rec.state.nsent;
             e2e_record_free(&rec);
         }
     }
     char *dir = xasprintf("%s/chats", fg.watch_dir);
     e2e_rows rows;
-    size_t nrows = 0;
-    if (e2e_chat_load(dir, &rows, NULL, 0)) nrows = rows.n;
+    *nrows = 0;
+    if (e2e_chat_load(dir, &rows, NULL, 0)) *nrows = rows.n;
     e2e_rows_free(&rows);
     free(dir);
+}
+
+static void fg_watch_locked(void) {
+    if (!fg.watch_dir[0] || fg.nack_disk >= 16) return;
+    long inbox, records;
+    size_t nrows;
+    fg_disk_locked(&inbox, &records, &nrows);
     fg.ack_disk_inbox[fg.nack_disk] = inbox;
     fg.ack_disk_rows[fg.nack_disk] = nrows;
     fg.nack_disk++;
@@ -375,6 +399,12 @@ static char *fg_handle(const char *method, const char *path, const char *body, i
     *status = 200;
     if (strcmp(path, "/api/config") == 0) return xasprintf("{\"protocol_version\":59}");
     if (strncmp(path, "/e2e/pairings", 13) == 0) return fg_pairing(method, path + 13, body, status);
+    if (strncmp(path, "/networks/azzurra/channels/", 27) == 0 && strcmp(method, "POST") == 0) {
+        /* The clear door: kept, so a test can prove nothing went there. */
+        if (fg.nplain < FG_SENT_MAX) fg.plain[fg.nplain++] = xasprintf("%s", body ? body : "");
+        *status = 202;
+        return xasprintf("{}");
+    }
     if (strncmp(path, prefix, strlen(prefix)) != 0) FG_ERR(404, "not_found");
     const char *rest = path + strlen(prefix);
     json_doc *doc = body && body[0] ? json_parse(body, strlen(body), NULL, 0) : NULL;
@@ -440,11 +470,32 @@ static char *fg_handle(const char *method, const char *path, const char *body, i
             out = xasprintf("{\"error\":\"bad_request\"}");
             goto end;
         }
+        if (fg.fail_send_status) {
+            *status = fg.fail_send_status;
+            out = xasprintf("{\"error\":\"%s\"}", fg.fail_send_error);
+            fg.fail_send_status = 0;
+            goto end;
+        }
+        const char *verb = json_string(json_get(root, "verb"));
+        const char *payload = json_string(json_get(root, "payload"));
+        if (fg.budget > 0 && payload && strcmp(verb, "keyreq") != 0 &&
+            e2e_lines_needed(e2e_verb_parse(verb), payload,
+                             e2e_line_budget(fg.budget, json_string(json_get(root, "target"))),
+                             json_string(json_get(root, "from")),
+                             json_string(json_get(root, "to"))) > E2E_MAX_FRAGMENTS) {
+            *status = 413;
+            out = xasprintf("{\"error\":\"too_large\"}");
+            goto end;
+        }
+        size_t k = fg.nsent;
         fg.sent[fg.nsent++] = xasprintf("%s", body);
-        char msgid[12];
-        fg_msgid(msgid);
+        fg_msgid(fg.sent_msgid[k]);
+        long inbox;
+        fg.sent_disk_rows[k] = 0;
+        fg.sent_disk_records[k] = -1;
+        if (fg.watch_dir[0]) fg_disk_locked(&inbox, &fg.sent_disk_records[k], &fg.sent_disk_rows[k]);
         *status = 202;
-        out = xasprintf("{\"msgid\":\"%s\"}", msgid);
+        out = xasprintf("{\"msgid\":\"%s\"}", fg.sent_msgid[k]);
     } else if (strcmp(rest, "/devices") == 0 && strcmp(method, "POST") == 0) {
         const char *ed = json_string(json_get(root, "ed25519"));
         const char *curve = json_string(json_get(root, "curve25519"));
@@ -2315,6 +2366,746 @@ TEST(the_doorbell_rings_for_this_device_once) {
     free_e2e_app(app);
 }
 
+/* ── sending: typed lines in an encrypted query (slice E) ────────────── */
+
+/* What the worker would do with every job queued so far, in order (the
+ * UI thread enqueues; the worker owns the slot). */
+static void run_jobs(struct app *app) {
+    for (int guard = 0; guard < 64; guard++) {
+        pthread_mutex_lock(&app->jobs_lock);
+        bool any = app->jobs_head != app->jobs_tail;
+        pthread_mutex_unlock(&app->jobs_lock);
+        if (!any) return;
+        struct job job;
+        dequeue_job(app, &job);
+        switch (job.kind) {
+        case JOB_E2E_SEND: e2e_send_job(app, &job); break;
+        case JOB_E2E_DRAIN: e2e_drain_job(app, &job); break;
+        case JOB_E2E_SYNC:
+        case JOB_E2E_INIT: e2e_job(app, &job); break;
+        case JOB_SEND: send_message_target(app, job.network, job.channel, job.arg1); break;
+        default: break;
+        }
+    }
+}
+
+/* Typed into the focused window, as Enter takes it. */
+static void type_line(struct app *app, const char *line) {
+    pthread_mutex_lock(&app->lock);
+    snprintf(app->input, sizeof(app->input), "%s", line);
+    app->input_len = strlen(app->input);
+    app->input_pos = app->input_len;
+    pthread_mutex_unlock(&app->lock);
+    handle_enter(app);
+}
+
+/* The log row holding `needle` (the last one), or -1. */
+static long row_of(struct app *app, const char *needle) {
+    for (size_t i = app->log_count; i > 0; i--)
+        if (strstr(app->log[i - 1], needle)) return (long)(i - 1);
+    return -1;
+}
+
+static bool row_pending(struct app *app, const char *needle) {
+    long i = row_of(app, needle);
+    return i >= 0 && app->log_pending[i] != 0;
+}
+
+/* A device of a peer's identity, with its master's list naming `n`
+ * devices: devs[0] holds the master; each other is listed at v2 with a
+ * certificate, the way a pairing leaves them. */
+static void tpeer_identity(tpeer *devs, size_t n, const char *nick) {
+    tpeer_new(&devs[0], nick);
+    if (n < 2) return;
+    tpeer *m = &devs[0];
+    char *keys[E2E_MAX_DEVICES];
+    for (size_t i = 0; i < n; i++) {
+        if (i) {
+            memset(&devs[i], 0, sizeof(devs[i]));
+            e2e_record_new(&devs[i].rec);
+            snprintf(devs[i].nick, sizeof(devs[i].nick), "%s", nick);
+        }
+        keys[i] = vz_account_ed25519_key(devs[i].rec.account);
+    }
+    const char *sorted[E2E_MAX_DEVICES];
+    for (size_t i = 0; i < n; i++) sorted[i] = keys[i];
+    for (size_t i = 0; i < n; i++)
+        for (size_t k = i + 1; k < n; k++)
+            if (strcmp(sorted[i], sorted[k]) > 0) {
+                const char *t = sorted[i];
+                sorted[i] = sorted[k];
+                sorted[k] = t;
+            }
+    char *sig = e2e_sign_list(m->rec.master, 2, sorted, n);
+    for (size_t i = 0; i < n; i++) {
+        e2e_own *o = devs[i].rec.own;
+        if (!o) {
+            o = devs[i].rec.own = calloc(1, sizeof(*o));
+            o->master = xasprintf("%s", m->rec.own->master);
+            o->cert = e2e_sign_cert(m->rec.master, 2, keys[i]);
+            o->cert_ver = 2;
+            char did[E2E_DID_LEN + 1];
+            e2e_did(keys[i], did);
+            o->did = xasprintf("%s", did);
+        } else {
+            for (size_t k = 0; k < o->list_devices.n; k++) free(o->list_devices.v[k]);
+            free(o->list_devices.v);
+            free(o->list_sig);
+        }
+        o->list_ver = 2;
+        o->list_devices.v = calloc(n, sizeof(char *));
+        for (size_t k = 0; k < n; k++) o->list_devices.v[k] = xasprintf("%s", sorted[k]);
+        o->list_devices.n = n;
+        o->list_sig = xasprintf("%s", sig);
+    }
+    free(sig);
+    for (size_t i = 0; i < n; i++) vz_str_free(keys[i]);
+}
+
+/* The KEYS the peer's grappa answers a KEYREQ with: its master's list and
+ * one fresh one-time key per device. */
+static char *tpeer_keys(tpeer *devs, size_t n) {
+    e2e_keys_build_entry entries[E2E_MAX_DEVICES];
+    json_doc *ids[E2E_MAX_DEVICES], *ups[E2E_MAX_DEVICES];
+    char *regs[E2E_MAX_DEVICES], *upl[E2E_MAX_DEVICES];
+    const e2e_own *m = devs[0].rec.own;
+    for (size_t i = 0; i < n; i++) {
+        regs[i] = e2e_register_body(devs[i].rec.account, m->master);
+        upl[i] = e2e_top_up(devs[i].rec.account, E2E_MAX_HOSTED_ONE_TIME_KEYS - 1, true);
+        vz_account_mark_keys_as_published(devs[i].rec.account);
+        ids[i] = json_parse(regs[i], strlen(regs[i]), NULL, 0);
+        ups[i] = json_parse(upl[i], strlen(upl[i]), NULL, 0);
+        const json_value *id = json_root(ids[i]);
+        const json_value *otk = json_at(json_get(json_root(ups[i]), "one_time_keys"), 0);
+        entries[i] = (e2e_keys_build_entry){json_string(json_get(id, "curve25519")),
+                                            json_string(json_get(id, "ed25519")),
+                                            json_string(json_get(id, "sig")),
+                                            json_string(json_get(otk, "key")),
+                                            json_string(json_get(otk, "sig")), false};
+    }
+    char *keys = e2e_keys_payload(m->master, m->list_ver, (const char *const *)m->list_devices.v,
+                                  m->list_devices.n, m->list_sig, entries, n);
+    for (size_t i = 0; i < n; i++) {
+        json_free(ids[i]);
+        json_free(ups[i]);
+        free(regs[i]);
+        free(upl[i]);
+    }
+    return keys;
+}
+
+/* What reached the peer: each of our posts to its nick from `carried` on.
+ * A KEYREQ is answered (the peer's grappa's KEYS, in our inbox); a PKMSG
+ * or MSG opens on every device it carries a body for, and the texts they
+ * read are counted in `heard` (one row per device, the last kept). */
+static size_t carried;
+static char heard[E2E_MAX_DEVICES][2048];
+static size_t heard_n[E2E_MAX_DEVICES];
+static void tpeer_carry(struct app *app, tpeer *devs, size_t n) {
+    for (;;) {
+        pthread_mutex_lock(&fg.lock);
+        char *body = carried < fg.nsent ? xasprintf("%s", fg.sent[carried]) : NULL;
+        char msgid[12] = "";
+        if (body) snprintf(msgid, sizeof(msgid), "%s", fg.sent_msgid[carried++]);
+        pthread_mutex_unlock(&fg.lock);
+        if (!body) return;
+        json_doc *d = json_parse(body, strlen(body), NULL, 0);
+        const json_value *o = json_root(d);
+        const char *verb = json_string(json_get(o, "verb"));
+        const char *payload = json_string(json_get(o, "payload"));
+        if (json_str_is(json_get(o, "target"), devs[0].nick)) {
+            if (strcmp(verb, "keyreq") == 0) {
+                char *keys = tpeer_keys(devs, n);
+                char kid[12];
+                pthread_mutex_lock(&fg.lock);
+                fg_msgid(kid);
+                pthread_mutex_unlock(&fg.lock);
+                fg_inbox_push(our_did(app), devs[0].nick, "*", E2E_VERB_KEYS, kid, keys, false);
+                free(keys);
+            } else if (strcmp(verb, "pkmsg") == 0 || strcmp(verb, "msg") == 0) {
+                for (size_t i = 0; i < n; i++) {
+                    e2e_payload p;
+                    bool undec;
+                    if (!e2e_payload_parse(e2e_verb_parse(verb), payload, &p, &undec, NULL, 0))
+                        continue;
+                    bool mine = e2e_payload_body(&p, devs[i].rec.own->did) != NULL;
+                    e2e_payload_free(&p);
+                    if (!mine) continue;
+                    e2e_ctx c = tpeer_ctx(&devs[i]);
+                    e2e_result r;
+                    e2e_result_init(&r);
+                    e2e_receive(&c, "vjt", e2e_verb_parse(verb), msgid,
+                                json_string(json_get(o, "from")), payload, &r);
+                    for (size_t k = 0; k < r.nevents; k++) {
+                        e2e_inner in;
+                        if (r.events[k].kind != E2E_EV_RECEIVED ||
+                            !e2e_inner_parse(r.events[k].inner, strlen(r.events[k].inner), &in))
+                            continue;
+                        if (in.type == E2E_INNER_TEXT) {
+                            snprintf(heard[i], sizeof(heard[i]), "%.*s", (int)in.body_len, in.body);
+                            heard_n[i]++;
+                        }
+                        e2e_inner_free(&in);
+                    }
+                    tpeer_pump(app, &devs[i], &r, 0);
+                }
+            }
+        }
+        json_free(d);
+        free(body);
+    }
+}
+
+/* How many posts since `from` carry `verb`; the last such body (borrowed). */
+static size_t posted(size_t from, const char *verb, const char **last) {
+    char needle[32];
+    snprintf(needle, sizeof(needle), "\"verb\":\"%s\"", verb);
+    size_t n = 0;
+    pthread_mutex_lock(&fg.lock);
+    for (size_t i = from; i < fg.nsent; i++)
+        if (strstr(fg.sent[i], needle)) {
+            n++;
+            if (last) *last = fg.sent[i];
+        }
+    pthread_mutex_unlock(&fg.lock);
+    return n;
+}
+
+static bool grappa_saw(const char *text) {
+    pthread_mutex_lock(&fg.lock);
+    bool seen = strstr(fg.log, text) != NULL;
+    for (size_t i = 0; i < fg.nsent; i++) seen |= strstr(fg.sent[i], text) != NULL;
+    for (size_t i = 0; i < fg.nplain; i++) seen |= strstr(fg.plain[i], text) != NULL;
+    pthread_mutex_unlock(&fg.lock);
+    return seen;
+}
+
+static bool prompt_locked(struct app *app) {
+    char prompt[MAX_CHANNEL + 16];
+    pthread_mutex_lock(&app->lock);
+    input_prompt_locked(app, &app->windows[focused_window_locked(app)], prompt, sizeof(prompt));
+    pthread_mutex_unlock(&app->lock);
+    return strncmp(prompt, E2E_LOCK " ", strlen(E2E_LOCK) + 1) == 0;
+}
+
+/* A ready holder with the query with `nick` focused; carried/heard reset. */
+static struct app *send_app(const char *subject, const char *nick) {
+    fg_reset();
+    struct app *app = recv_app(subject);
+    run_jobs(app);
+    add_window_ex(app, "azzurra", nick, true);
+    pthread_mutex_lock(&fg.lock);
+    carried = fg.nsent;
+    pthread_mutex_unlock(&fg.lock);
+    memset(heard, 0, sizeof(heard));
+    memset(heard_n, 0, sizeof(heard_n));
+    return app;
+}
+
+/* /e2e on, a typed line: KEYREQ, KEYS, then the PKMSG the peer reads; the
+ * row pending until grappa took it, written down (and the state saved)
+ * before it left; never anything in clear. Then a MSG once the peer
+ * answered, and a /me as an encrypted ACTION. */
+TEST(a_typed_line_in_an_encrypted_query_goes_encrypted) {
+    struct app *app = send_app("user:send", "alice");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    CHECK(!prompt_locked(app));
+    handle_command(app, "/e2e on");
+    CHECK(said(app, "encrypted mode ON"));
+    CHECK(prompt_locked(app));
+    run_jobs(app);
+    CHECK(said(app, "asking alice for their keys"));
+    CHECK_LONG(posted(carried, "keyreq", NULL), 1);
+
+    type_line(app, "hello alice");
+    CHECK(said(app, "[azzurra/alice]"));
+    CHECK(said(app, LOCKED("<vjt> hello alice")));
+    CHECK(row_pending(app, "hello alice"));
+    run_jobs(app);
+    /* Waiting for the keys: still pending, nothing but the KEYREQ out. */
+    CHECK(row_pending(app, "hello alice"));
+    CHECK_LONG(posted(carried, "pkmsg", NULL), 0);
+    size_t before = fg.nsent;
+    tpeer_carry(app, &alice, 1);
+    drain(app);
+    run_jobs(app);
+    const char *pk = NULL;
+    CHECK_LONG(posted(before, "pkmsg", &pk), 1);
+    CHECK(!row_pending(app, "hello alice"));
+    CHECK(said(app, "alice answered with their key"));
+    /* Written down, and the state that spent the step saved, before it left. */
+    pthread_mutex_lock(&fg.lock);
+    for (size_t i = before; i < fg.nsent; i++) {
+        if (!strstr(fg.sent[i], "\"pkmsg\"")) continue;
+        CHECK(fg.sent_disk_rows[i] >= 1);
+        CHECK(fg.sent_disk_records[i] >= 1);
+    }
+    pthread_mutex_unlock(&fg.lock);
+    tpeer_carry(app, &alice, 1);
+    CHECK_STR(heard[0], "hello alice");
+    CHECK(!grappa_saw("hello alice"));
+    CHECK_LONG(fg.nplain, 0);
+    char *dir = xasprintf("%s/chats", fg.watch_dir);
+    e2e_rows rows;
+    CHECK(e2e_chat_load(dir, &rows, NULL, 0));
+    bool out = false;
+    for (size_t i = 0; i < rows.n; i++)
+        out |= rows.v[i].kind == E2E_ROW_OUT && strncmp(rows.v[i].id, "out:", 4) == 0 &&
+               strcmp(rows.v[i].body, "hello alice") == 0 && strcmp(rows.v[i].nick, "alice") == 0;
+    CHECK(out);
+    e2e_rows_free(&rows);
+    free(dir);
+
+    /* alice answers; our next goes on the session she has read: a MSG. */
+    tpeer_say(app, &alice, "hi back");
+    drain(app);
+    before = fg.nsent;
+    type_line(app, "second line");
+    run_jobs(app);
+    CHECK_LONG(posted(before, "msg", NULL), 1);
+    CHECK_LONG(posted(before, "pkmsg", NULL), 0);
+    CHECK(!row_pending(app, "second line"));
+    tpeer_carry(app, &alice, 1);
+    CHECK_STR(heard[0], "second line");
+
+    /* /me: an ACTION, encrypted, drawn as one. */
+    handle_command(app, "/me waves");
+    CHECK(said(app, LOCKED("* vjt waves")));
+    run_jobs(app);
+    tpeer_carry(app, &alice, 1);
+    CHECK_STR(heard[0], "\001ACTION waves\001");
+    CHECK(!grappa_saw("waves"));
+    CHECK_LONG(fg.nplain, 0);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* A long line fits grappa's 64 lines on the network's budget (the fake
+ * grappa 413s what does not); on a budget too small for it, it fails
+ * before anything leaves and before any session moves. */
+TEST(a_long_line_is_sized_on_the_networks_budget) {
+    struct app *app = send_app("user:long", "alice");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "hi");
+    drain(app);
+    pthread_mutex_lock(&fg.lock);
+    fg.budget = 394;
+    pthread_mutex_unlock(&fg.lock);
+    char line[1000];
+    memset(line, 'x', sizeof(line) - 1);
+    line[sizeof(line) - 1] = 0;
+    line[0] = 'L';
+    size_t before = fg.nsent;
+    type_line(app, line);
+    run_jobs(app);
+    CHECK_LONG(posted(before, "msg", NULL), 1);
+    CHECK(!said(app, "failed:"));
+    tpeer_carry(app, &alice, 1);
+    CHECK_STR(heard[0], line);
+
+    char *rec_before = e2e_record_to_json(&app->e2e[0].rec);
+    pthread_mutex_lock(&app->lock);
+    app->networks[0].frame_budget_base = 60;
+    pthread_mutex_unlock(&app->lock);
+    before = fg.nsent;
+    line[0] = 'M';
+    type_line(app, line);
+    run_jobs(app);
+    CHECK_LONG(fg.nsent, before);
+    CHECK(said(app, "(failed: too long for one encrypted message"));
+    CHECK(!row_pending(app, "Mxxx"));
+    /* No session stepped for a message that never left. */
+    char *rec_after = e2e_record_to_json(&app->e2e[0].rec);
+    char *s1 = strstr(rec_before, "\"sessions\""), *s2 = strstr(rec_after, "\"sessions\"");
+    char *e1 = strstr(rec_before, "\"seen\""), *e2 = strstr(rec_after, "\"seen\"");
+    CHECK(s1 && s2 && e1 && e2 && e1 - s1 == e2 - s2 && memcmp(s1, s2, (size_t)(e1 - s1)) == 0);
+    free(rec_before);
+    free(rec_after);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* A peer with two devices: one payload, a body for each; both read it. */
+TEST(a_peer_with_two_devices_gets_one_payload_two_bodies) {
+    struct app *app = send_app("user:two", "alice");
+    tpeer alice[2];
+    tpeer_identity(alice, 2, "alice");
+    handle_command(app, "/e2e on");
+    run_jobs(app);
+    type_line(app, "to both of you");
+    run_jobs(app);
+    size_t before = fg.nsent;
+    tpeer_carry(app, alice, 2);
+    drain(app);
+    const char *pk = NULL;
+    CHECK_LONG(posted(before, "pkmsg", &pk), 1);
+    if (pk) {
+        json_doc *d = json_parse(pk, strlen(pk), NULL, 0);
+        e2e_payload p;
+        bool undec;
+        CHECK(e2e_payload_parse(E2E_VERB_PKMSG, json_string(json_get(json_root(d), "payload")), &p,
+                                &undec, NULL, 0));
+        CHECK_LONG(p.nbodies, 2);
+        CHECK(json_str_is(json_get(json_root(d), "to"), "*"));
+        e2e_payload_free(&p);
+        json_free(d);
+    }
+    tpeer_carry(app, alice, 2);
+    CHECK_STR(heard[0], "to both of you");
+    CHECK_STR(heard[1], "to both of you");
+    CHECK(!row_pending(app, "to both of you"));
+    tpeer_free(&alice[0]);
+    tpeer_free(&alice[1]);
+    free_e2e_app(app);
+}
+
+/* The queue for queued messages is the engine's (90 s): once it gives up
+ * — or the server says the nick is gone — the row fails, nothing ever
+ * goes in clear, and a query turned on for nobody is off again, loudly. */
+static void age_queues(struct app *app) {
+    e2e_state *st = &app->e2e[0].rec.state;
+    for (size_t i = 0; i < st->npeers; i++)
+        for (size_t k = 0; k < st->peers[i].noutq; k++) st->peers[i].outq[k].at -= E2E_OUTQ_TTL_MS + 1000;
+    for (size_t i = 0; i < app->e2e[0].nawaiting; i++)
+        app->e2e[0].awaiting[i].until -= E2E_OUTQ_TTL_MS + 1000;
+}
+
+/* KEYREQs are one per nick per 30 s, whatever a KEYS did: the clock's. */
+static void age_keyreqs(struct app *app) {
+    e2e_state *st = &app->e2e[0].rec.state;
+    for (size_t i = 0; i < st->npeers; i++) st->peers[i].keyreq_sent_at -= E2E_KEYREQ_RETRY_MS + 1000;
+}
+
+static void tick(struct app *app) {
+    e2e_send_enqueue(app, "azzurra", "", "tick", "", 0);
+    run_jobs(app);
+}
+
+TEST(no_keys_fails_the_row_and_nothing_goes_in_clear) {
+    struct app *app = send_app("user:nokeys", "bob");
+    handle_command(app, "/e2e on");
+    run_jobs(app);
+    type_line(app, "a secret for bob");
+    run_jobs(app);
+    CHECK(row_pending(app, "a secret for bob"));
+    CHECK(said(app, "asked bob for their keys"));
+    CHECK(app->e2e[0].clock);
+    /* The main loop's clock rings the engine's tick. */
+    app->e2e[0].ticked_at = 0;
+    e2e_send_clock(app);
+    age_queues(app);
+    run_jobs(app);
+    CHECK(said(app, "(failed: no keys came from them in 90 s"));
+    CHECK(!row_pending(app, "a secret for bob"));
+    CHECK(said(app, "bob has no encrypted identity on azzurra"));
+    CHECK(!prompt_locked(app));
+    CHECK(!e2e_query_encrypted(app, "azzurra", "bob"));
+    CHECK(!grappa_saw("a secret for bob"));
+    CHECK_LONG(fg.nplain, 0);
+
+    /* The 401 (no_such_nick, v54) fails what waits at once. */
+    handle_command(app, "/e2e on carol");
+    run_jobs(app);
+    add_window_ex(app, "azzurra", "carol", true);
+    type_line(app, "for carol");
+    run_jobs(app);
+    e2e_absent_enqueue(app, "azzurra", "carol");
+    run_jobs(app);
+    CHECK(said(app, "(failed: no such nick on the network"));
+    CHECK(said(app, "carol is not on azzurra"));
+    CHECK(!grappa_saw("for carol"));
+    CHECK_LONG(fg.nplain, 0);
+    free_e2e_app(app);
+}
+
+/* The NACK in (§5.7): from a device the message went to, the engine
+ * re-keys that device and sends again, once; a second NACK fails it. */
+static void nack_from(struct app *app, tpeer *p, const char *ref) {
+    char *payload = e2e_nack_payload(ref);
+    char id[12];
+    pthread_mutex_lock(&fg.lock);
+    fg_msgid(id);
+    pthread_mutex_unlock(&fg.lock);
+    fg_inbox_push(our_did(app), p ? p->nick : "alice", p ? p->rec.own->did : "*", E2E_VERB_NACK, id,
+                  payload, false);
+    free(payload);
+}
+
+/* Both ways: our KEYREQ answered (alice's list held, so nothing of ours
+ * waits for more keys), then a line of hers read. */
+static void meet(struct app *app, tpeer *p) {
+    handle_command(app, "/e2e on");
+    run_jobs(app);
+    tpeer_carry(app, p, 1);
+    drain(app);
+    tpeer_say(app, p, "hi");
+    drain(app);
+    tpeer_carry(app, p, 1);
+    drain(app);
+    run_jobs(app);
+}
+
+/* The msgid our last text post (a PKMSG or MSG) got. */
+static void last_text_msgid(char out[12]) {
+    out[0] = 0;
+    pthread_mutex_lock(&fg.lock);
+    for (size_t i = 0; i < fg.nsent; i++)
+        if (strstr(fg.sent[i], "\"verb\":\"msg\"") || strstr(fg.sent[i], "\"verb\":\"pkmsg\""))
+            snprintf(out, 12, "%s", fg.sent_msgid[i]);
+    pthread_mutex_unlock(&fg.lock);
+}
+
+TEST(a_nack_rekeys_and_resends_once_then_fails) {
+    struct app *app = send_app("user:nackin", "alice");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    meet(app, &alice);
+    type_line(app, "read me");
+    run_jobs(app);
+    char ref[12];
+    last_text_msgid(ref);
+    CHECK(ref[0]);
+    pthread_mutex_lock(&fg.lock);
+    carried = fg.nsent;
+    pthread_mutex_unlock(&fg.lock);
+    nack_from(app, &alice, ref);
+    size_t before = fg.nsent;
+    drain(app);
+    CHECK(said(app, "a device of alice could not read your message"));
+    /* The KEYREQ for the new session waits out the 30 s since meet's. */
+    CHECK_LONG(posted(before, "keyreq", NULL), 0);
+    age_keyreqs(app);
+    tick(app);
+    CHECK_LONG(posted(before, "keyreq", NULL), 1);
+    before = fg.nsent;
+    tpeer_carry(app, &alice, 1);
+    drain(app);
+    CHECK_LONG(posted(before, "pkmsg", NULL), 1);
+    tpeer_carry(app, &alice, 1);
+    CHECK_STR(heard[0], "read me");
+    CHECK(!said(app, "not delivered"));
+    /* The resend NACKed too: that was its last send. */
+    last_text_msgid(ref);
+    nack_from(app, &alice, ref);
+    before = fg.nsent;
+    drain(app);
+    CHECK(said(app, "not delivered: \"read me\" (it could not be read even after a resend)"));
+    CHECK_LONG(posted(before, "pkmsg", NULL) + posted(before, "msg", NULL), 0);
+    CHECK_LONG(fg.nplain, 0);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* A NACK from `*` (v52: no device of theirs could read it): never re-keyed
+ * on its own. The user is asked; /e2e rekey asks for new keys and sends it
+ * again once they come. */
+TEST(a_nack_from_star_asks_the_user) {
+    struct app *app = send_app("user:star", "alice");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    meet(app, &alice);
+    type_line(app, "lost one");
+    run_jobs(app);
+    char ref[12];
+    last_text_msgid(ref);
+    pthread_mutex_lock(&fg.lock);
+    carried = fg.nsent;
+    pthread_mutex_unlock(&fg.lock);
+    nack_from(app, NULL, ref);
+    size_t before = fg.nsent;
+    drain(app);
+    CHECK(said(app, "alice cannot read your last message on any device — /e2e rekey alice"));
+    CHECK(said(app, "not delivered: \"lost one\""));
+    CHECK_LONG(fg.nsent, before);
+    handle_command(app, "/e2e rekey");
+    age_keyreqs(app);
+    run_jobs(app);
+    CHECK(said(app, "asked alice for new keys"));
+    CHECK_LONG(posted(before, "keyreq", NULL), 1);
+    tpeer_carry(app, &alice, 1);
+    drain(app);
+    tpeer_carry(app, &alice, 1);
+    CHECK_STR(heard[0], "lost one");
+    CHECK(!row_pending(app, "lost one"));
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* e2e_send_dropped (v46): what grappa took and then dropped unsent fails
+ * its row; /e2e resend sends it again. Another device's msgid is nothing. */
+TEST(a_dropped_send_fails_and_resend_sends_it_again) {
+    struct app *app = send_app("user:dropped", "alice");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    meet(app, &alice);
+    type_line(app, "drop me");
+    run_jobs(app);
+    CHECK(!row_pending(app, "drop me"));
+    char ref[12];
+    last_text_msgid(ref);
+    e2e_dropped_enqueue(app, "azzurra", "alice", "mSOMEONEELS", (int)WIRE_E2E_DROP_LATE);
+    run_jobs(app);
+    CHECK(!said(app, "not delivered"));
+    e2e_dropped_enqueue(app, "azzurra", "alice", ref, (int)WIRE_E2E_DROP_SESSION_ENDED);
+    run_jobs(app);
+    CHECK(said(app, "not delivered: \"drop me\" (grappa dropped it unsent (session_ended))"));
+    pthread_mutex_lock(&fg.lock);
+    carried = fg.nsent;
+    pthread_mutex_unlock(&fg.lock);
+    handle_command(app, "/e2e resend");
+    run_jobs(app);
+    tpeer_carry(app, &alice, 1);
+    CHECK_STR(heard[0], "drop me");
+    CHECK_LONG(heard_n[0], 1);
+    CHECK_LONG(said_count(app, LOCKED("<vjt> drop me")), 2);
+    CHECK(!row_pending(app, "drop me"));
+    /* Nothing failed any more. */
+    handle_command(app, "/e2e resend");
+    run_jobs(app);
+    CHECK(said(app, "nothing failed in this query to send again"));
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* A peer who writes encrypted turns the query encrypted (persisted); a
+ * refusal at the send door fails the row, never falls back; /e2e off warns
+ * and the next line goes in clear through the normal door. */
+TEST(the_peer_turns_it_on_and_only_off_turns_it_off) {
+    struct app *app = send_app("user:auto", "alice");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "psst");
+    drain(app);
+    CHECK(said(app, "alice writes encrypted"));
+    CHECK(e2e_query_encrypted(app, "azzurra", "ALICE"));
+    CHECK(prompt_locked(app));
+    type_line(app, "psst back");
+    run_jobs(app);
+    /* Her list is not held yet: what went also waits for her KEYS. */
+    tpeer_carry(app, &alice, 1);
+    drain(app);
+    tpeer_carry(app, &alice, 1);
+    CHECK_STR(heard[0], "psst back");
+    /* grappa refuses: the row fails, nothing goes in clear. */
+    pthread_mutex_lock(&fg.lock);
+    fg.fail_send_status = 429;
+    snprintf(fg.fail_send_error, sizeof(fg.fail_send_error), "rate_limited");
+    pthread_mutex_unlock(&fg.lock);
+    type_line(app, "too fast");
+    run_jobs(app);
+    CHECK(said(app, "(failed: grappa refused it: HTTP 429"));
+    CHECK_LONG(fg.nplain, 0);
+    /* The last door to plaintext refuses an encrypted query outright. */
+    send_message_target(app, "azzurra", "alice", "sneaky");
+    CHECK(said(app, "NOT sent — this query is in encrypted mode"));
+    CHECK_LONG(fg.nplain, 0);
+
+    /* It survives a restart. */
+    e2e_slots_free(app);
+    free_e2e_app(app);
+    app = e2e_app("user:auto");
+    run_job(app, JOB_E2E_SYNC);
+    add_window_ex(app, "azzurra", "alice", true);
+    CHECK(e2e_query_encrypted(app, "azzurra", "alice"));
+
+    handle_command(app, "/e2e off");
+    CHECK(said(app, "encrypted mode OFF — from now on what you type here goes in CLEAR"));
+    CHECK(!prompt_locked(app));
+    run_jobs(app);
+    type_line(app, "plain now");
+    run_jobs(app);
+    CHECK_LONG(fg.nplain, 1);
+    CHECK(grappa_saw("plain now"));
+    e2e_record rec;
+    e2e_slots_free(app);
+    CHECK(disk_record(app, &rec));
+    CHECK(!e2e_record_encrypted(&rec, "alice"));
+    e2e_record_free(&rec);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* What this device sends a peer reaches our other device as a copy
+ * (claim, then the copy door — never IRC), after grappa took the text. */
+TEST(a_sent_text_is_copied_to_our_sibling) {
+    struct app *app = send_app("user:sibsend", "alice");
+    tpeer sib;
+    sibling_of(app, &sib);
+    run_job(app, JOB_E2E_SYNC);
+    CHECK_LONG(app->e2e[0].rec.own->list_ver, 2);
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "hi");
+    drain(app);
+    pthread_mutex_lock(&fg.lock);
+    fg.log[0] = 0;
+    size_t inbox_before = fg.ninbox;
+    pthread_mutex_unlock(&fg.lock);
+    type_line(app, "and my phone too");
+    run_jobs(app);
+    char claim[128], copies[128];
+    snprintf(claim, sizeof(claim), "/devices/%s/claim\n", sib.rec.own->did);
+    snprintf(copies, sizeof(copies), "/devices/%s/copies\n", sib.rec.own->did);
+    pthread_mutex_lock(&fg.lock);
+    const char *m = strstr(fg.log, "POST /networks/azzurra/e2e/messages\n");
+    const char *cl = strstr(fg.log, claim), *cp = strstr(fg.log, copies);
+    CHECK(m && cl && cp && m < cl && cl < cp);
+    char *cjson = NULL;
+    e2e_verb verb = E2E_VERB_NONE;
+    for (size_t i = inbox_before; i < fg.ninbox; i++)
+        if (strcmp(fg.inbox[i].to, sib.rec.own->did) == 0 && strstr(fg.inbox[i].json, "\"own\":true")) {
+            cjson = xasprintf("%s", fg.inbox[i].json);
+            verb = fg.inbox[i].verb;
+        }
+    pthread_mutex_unlock(&fg.lock);
+    CHECK(cjson != NULL);
+    if (cjson) {
+        e2e_ctx sc = {&sib.rec, "vjt", 394, (int64_t)time(NULL) * 1000};
+        json_doc *d = json_parse(cjson, strlen(cjson), NULL, 0);
+        e2e_result r;
+        e2e_result_init(&r);
+        e2e_receive_copy(&sc, our_did(app), verb, json_string(json_get(json_root(d), "payload")), &r);
+        bool copied = false;
+        for (size_t i = 0; i < r.nevents; i++)
+            copied |= r.events[i].kind == E2E_EV_COPIED && strcmp(r.events[i].peer, "alice") == 0 &&
+                      r.events[i].body_len == 16 && memcmp(r.events[i].body, "and my phone too", 16) == 0;
+        CHECK(copied);
+        e2e_result_free(&r);
+        json_free(d);
+        free(cjson);
+    }
+    tpeer_free(&sib);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* /emsg: one encrypted message; the query stays as it was. */
+TEST(emsg_sends_one_encrypted_message) {
+    struct app *app = send_app("user:emsg", "alice");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "hi");
+    drain(app);
+    handle_command(app, "/e2e off alice");
+    run_jobs(app);
+    CHECK(!e2e_query_encrypted(app, "azzurra", "alice"));
+    handle_command(app, "/emsg alice just this one");
+    CHECK(said(app, LOCKED("<vjt> just this one")));
+    run_jobs(app);
+    tpeer_carry(app, &alice, 1);
+    CHECK_STR(heard[0], "just this one");
+    CHECK(!e2e_query_encrypted(app, "azzurra", "alice"));
+    CHECK_LONG(fg.nplain, 0);
+    handle_command(app, "/e2e on #chan");
+    CHECK(said(app, "/e2e on: type it in a query, or name the nick"));
+    handle_command(app, "/e2e on vjt");
+    CHECK(said(app, "/e2e on: vjt is your own nick"));
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
 int main(void) {
     test_use_temp_home();
     if (!fg_start()) {
@@ -2346,6 +3137,16 @@ int main(void) {
     RUN(a_copy_from_a_sibling_reads_as_ours);
     RUN(copying_to_a_new_sibling_claims_first);
     RUN(the_doorbell_rings_for_this_device_once);
+    RUN(a_typed_line_in_an_encrypted_query_goes_encrypted);
+    RUN(a_long_line_is_sized_on_the_networks_budget);
+    RUN(a_peer_with_two_devices_gets_one_payload_two_bodies);
+    RUN(no_keys_fails_the_row_and_nothing_goes_in_clear);
+    RUN(a_nack_rekeys_and_resends_once_then_fails);
+    RUN(a_nack_from_star_asks_the_user);
+    RUN(a_dropped_send_fails_and_resend_sends_it_again);
+    RUN(the_peer_turns_it_on_and_only_off_turns_it_off);
+    RUN(a_sent_text_is_copied_to_our_sibling);
+    RUN(emsg_sends_one_encrypted_message);
     th_free();
     fg_stop();
     return test_report();
