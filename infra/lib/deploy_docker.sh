@@ -189,6 +189,26 @@ substrate_build() {
 		# cold healthcheck loop is the patient one.
 		echo "Building grappa image..."
 		"${DOCKER_COMPOSE[@]}" --profile prod build grappa
+
+		# Sync host deps/ to mix.lock. The image is toolchain-only and the
+		# bind-mount puts deps/ + HEX_HOME on the host; a fresh checkout has
+		# neither. Idempotent + cheap when already in sync. HERE, while the
+		# old container still serves, and not in substrate_migrate: since
+		# issue 1112 the migrate runs with the container stopped, and the
+		# seconds a deps sync takes are not downtime.
+		echo "Syncing hex + deps to mix.lock..."
+		# Hex and rebar are installed by ONE mix process and used by the NEXT.
+		# A single `mix do local.hex --force, ..., deps.get` fails the first time
+		# a box needs a fresh hex (a new Elixir/OTP in the image): the archive is
+		# written mid-run and that same VM cannot start it — "Could not start
+		# Hex ... hex.app" — measured on a real 1.5.9 -> 1.6.2 docker upgrade.
+		# The rest of the tree already does it this way (Dockerfile.release,
+		# bin/start.sh, infra/linux/install.sh).
+		# shellcheck disable=SC1010  # `mix do` is a mix subcommand, not shell `do`
+		"${DOCKER_COMPOSE[@]}" --profile prod run --rm --no-deps grappa \
+			mix do local.hex --force + local.rebar --force
+		"${DOCKER_COMPOSE[@]}" --profile prod run --rm --no-deps grappa \
+			mix deps.get
 		return 0
 	fi
 
@@ -262,26 +282,9 @@ substrate_cic() {
 }
 
 substrate_migrate() {
-	# Sync host deps/ to mix.lock. The image is toolchain-only and the
-	# bind-mount puts deps/ + HEX_HOME on the host; a fresh checkout has
-	# neither. Idempotent + cheap when already in sync.
-	echo "Syncing hex + deps to mix.lock..."
-	# Hex and rebar are installed by ONE mix process and used by the NEXT.
-	# A single `mix do local.hex --force, ..., deps.get` fails the first time
-	# a box needs a fresh hex (a new Elixir/OTP in the image): the archive is
-	# written mid-run and that same VM cannot start it — "Could not start
-	# Hex ... hex.app" — measured on a real 1.5.9 -> 1.6.2 docker upgrade.
-	# The rest of the tree already does it this way (Dockerfile.release,
-	# bin/start.sh, infra/linux/install.sh).
-	# shellcheck disable=SC1010  # `mix do` is a mix subcommand, not shell `do`
-	"${DOCKER_COMPOSE[@]}" --profile prod run --rm --no-deps grappa \
-		mix do local.hex --force + local.rebar --force
-	"${DOCKER_COMPOSE[@]}" --profile prod run --rm --no-deps grappa \
-		mix deps.get
-
-	# Apply pending migrations BEFORE bringing the long-running container up:
-	# a one-shot `run` exits before Bootstrap's first DB hit can race an
-	# unapplied migration.
+	# Apply pending migrations with the old container STOPPED (issue 1112)
+	# and BEFORE bringing the new one up: a one-shot `run` exits before
+	# Bootstrap's first DB hit can race an unapplied migration.
 	#
 	# `grappa.migrate`, not `ecto.migrate`: same migrator, same footprint
 	# (the task starts the Repo and nothing else), preceded by the #1348
@@ -302,7 +305,13 @@ substrate_seed() {
 	"${DOCKER_COMPOSE[@]}" --profile prod run --rm --no-deps grappa mix grappa.seed_themes
 }
 
-substrate_restart() {
+substrate_stop() {
+	# Only the service container: the migrate + seed oneshots that follow
+	# run beside it STOPPED, and substrate_start recreates it.
+	"${DOCKER_COMPOSE[@]}" --profile prod stop grappa
+}
+
+substrate_start() {
 	# --no-deps avoids re-running cicchetto-build; --remove-orphans sweeps a
 	# stale grappa-nginx left by a pre-#485 two-container stack.
 	"${DOCKER_COMPOSE[@]}" --profile prod up -d --force-recreate --no-deps --remove-orphans grappa

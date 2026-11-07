@@ -14,9 +14,10 @@
 #   No systemctl call at all.
 #
 # Cold path (preflight returns COLD):
-#   git pull -> mix release --overwrite -> cic build -> migrate ->
-#   refresh systemd unit -> systemctl stop/start -> healthcheck loop.
-#   Sessions reset, ~seconds of downtime bounded by TimeoutStopSec.
+#   git pull -> mix release --overwrite -> cic build -> refresh systemd
+#   unit -> systemctl stop -> migrate -> seed -> systemctl start ->
+#   healthcheck loop. Sessions reset; the downtime is the stop (bounded
+#   by TimeoutStopSec), the migrate and seed tasks, and the boot.
 #
 # Usage: infra/linux/deploy.sh
 #
@@ -143,8 +144,8 @@ substrate_migrate() {
 	# crashes the BEAM on this substrate (see install.sh). `grappa.migrate`
 	# rather than `ecto.migrate` since #1348: it runs the same migrator with
 	# the same footprint (Repo started, nothing else — no Endpoint, no
-	# Bootstrap, so it stays safe against the live host) and adds the
-	# duplicate-version audit that `ecto.migrate` structurally cannot carry.
+	# Bootstrap) and adds the duplicate-version audit that `ecto.migrate`
+	# structurally cannot carry. The daemon is stopped by now (issue 1112).
 	deploy_log "migrate"
 	run_as_grappa "
 		set -a; . '${ENV_FILE}'; set +a
@@ -166,13 +167,15 @@ substrate_seed() {
 	"
 }
 
-substrate_restart() {
+substrate_stop() {
 	deploy_log "refresh systemd unit + grappa_beam_wait.sh (safe before stop — daemon-reload doesn't touch the already-running unit)"
 	"${SCRIPT_DIR}/install_systemd.sh"
 
 	deploy_log "systemctl stop grappa (blocks natively under Type=exec — no wait-loop needed)"
 	systemctl stop grappa
+}
 
+substrate_start() {
 	deploy_log "systemctl start grappa"
 	systemctl start grappa
 }

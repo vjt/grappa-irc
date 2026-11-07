@@ -336,7 +336,7 @@ cmd_install() {
 	say "Installing hex/rebar + fetching deps into the checkout"
 	# Hex installed by one mix process, used by the next: in a single
 	# `mix do` the archive written mid-run cannot be started by that same
-	# VM (see substrate_migrate in infra/lib/deploy_docker.sh).
+	# VM (see substrate_build in infra/lib/deploy_docker.sh).
 	# shellcheck disable=SC1010  # `mix do` is a mix subcommand, not shell `do`
 	"${COMPOSE[@]}" run --rm --no-deps -T -e MIX_ENV=dev grappa \
 		mix do local.hex --force + local.rebar --force
@@ -795,8 +795,9 @@ write_env_file() {
 # runtime knobs) rides in via --env-file, so nothing lands on argv.
 #
 # GRAPPA_AUTO_MIGRATE=0 is load-bearing: this path migrates itself from the
-# host (release_migrate), before the container is recreated. Two BEAMs
-# migrating one sqlite file is corruption, not contention (#867).
+# host (release_migrate), after any old container is removed and before this
+# one starts (issue 1112). Two BEAMs migrating one sqlite file is corruption,
+# not contention (#867).
 release_start_container() {
 	say "Starting $GRAPPA_CONTAINER from $GRAPPA_IMAGE"
 	docker run -d \
@@ -918,13 +919,13 @@ cmd_update_release() {
 	substrate_cic()           { :; }          # the cicchetto SPA is baked into the image
 	substrate_migrate()       { release_migrate; }
 	substrate_seed()          { release_seed_themes; }
-	substrate_restart() {
+	substrate_stop() {
 		if release_container_exists; then
 			say "Removing the running container ($GRAPPA_CONTAINER)"
 			docker rm -f "$GRAPPA_CONTAINER" >&2 || true
 		fi
-		release_start_container
 	}
+	substrate_start()         { release_start_container; }
 	substrate_healthcheck() {
 		# On a red probe re-ask WITHOUT `-f` so the 503 body (which names the
 		# failing check) reaches the loop instead of /dev/null — see #1656 and

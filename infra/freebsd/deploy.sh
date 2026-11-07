@@ -18,8 +18,9 @@
 #   restart.
 #
 # Cold path (preflight returns COLD or --force-cold):
-#   git pull → mix release --overwrite → vite build → migrate →
-#   service grappa restart → healthcheck loop. Sessions reset.
+#   git pull → mix release --overwrite → vite build → service grappa
+#   stop → migrate → seed → service grappa start → healthcheck loop.
+#   Sessions reset.
 #
 # Both paths reconcile the out-of-repo artifacts (the source-alias
 # privilege wrapper + its DB-rendered prefix scope) after the build and
@@ -181,9 +182,10 @@ substrate_seed() {
 	"${REPO_ROOT}/infra/freebsd/jail_release.sh" eval 'Grappa.Release.seed_themes()'
 }
 
-substrate_restart() {
+substrate_stop() {
 	# Re-assert the BEAM-exit + name-release conditions after the stop,
-	# even though the current rc.d wrapper's stop is synchronous.
+	# even though the current rc.d wrapper's stop is synchronous: the
+	# migrator runs next, and it must not share the DB with a live BEAM.
 	# Why: docs/OPERATIONS.md § "The FreeBSD jail rails (infra/freebsd/)".
 	deploy_log "service grappa stop"
 	service grappa stop || true
@@ -194,13 +196,16 @@ substrate_restart() {
 	# new one boots through the new wrapper. Runs as root.
 	deploy_log "refresh rc.d wrappers (jail_install_rcd.sh)"
 	"${REPO_ROOT}/infra/freebsd/jail_install_rcd.sh"
+}
 
-	# --defer-restart: BEAM stopped and the new release + rc.d wrappers
-	# staged, but deliberately no start, no healthcheck and no marker —
-	# the host's single `bastille restart grappa` completes the deploy.
+substrate_start() {
+	# --defer-restart: BEAM stopped, the new release + rc.d wrappers staged
+	# and the DB migrated + seeded, but deliberately no start, no
+	# healthcheck and no marker — the host's single `bastille restart
+	# grappa` completes the deploy.
 	# Why: docs/OPERATIONS.md § "The FreeBSD jail rails (infra/freebsd/)".
 	if [ "${DEFER}" -eq 1 ]; then
-		deploy_log "--defer-restart: BEAM stopped, new release+rc.d wrappers staged; host must bastille-restart ${BASTILLE_JAIL} to boot it (marker NOT written)"
+		deploy_log "--defer-restart: BEAM stopped, new release+rc.d wrappers staged, DB migrated+seeded; host must bastille-restart ${BASTILLE_JAIL} to boot it (marker NOT written)"
 		exit 0
 	fi
 
