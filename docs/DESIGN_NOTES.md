@@ -5313,3 +5313,59 @@ restart: its body cannot tell a failed migration from any other crash, and a
 restart cures those. A migration that fails after a COLD verdict still takes
 the service down in every case; only migrating before the stop (the cold-path
 slice) avoids that.
+<!-- entry #2589 -->
+
+---
+
+## 2026-11-07 — issue 2589: Shift+Enter breaks the line in an encrypted query
+
+vjt asked for it, knowing #974. In an encrypted query a bare Shift+Enter
+inserts a line break and Enter sends; what the window says (text, `/me`)
+goes out as **one** encrypted message. That is the one exception to #974 (every Enter sends). Every other
+window keeps #974, because there a newline cannot travel inside a PRIVMSG:
+CRLF ends the frame.
+
+**Why the encrypted query can take it.** Its body travels inside an E2E
+envelope, not as the PRIVMSG text, so a newline in the plaintext is no CRLF
+on the wire. The store already sent a body of several lines as one message
+there (the paste route, issues 2512 and 2536). Typing was the only route
+missing, so the change is one early return in `ComposeBox`'s Enter branch,
+before the `preventDefault`, keyed on the same `encryptedWindowPeer` the box
+already asks before it offers the paperclip. **Only a bare Shift:** with
+Ctrl, Cmd or Alt held too the chord keeps sending as #974 has it, rather
+than falling to whatever the engine does with it, which may be nothing (the
+eaten keystroke #974 removed). A command typed over several lines still
+runs in clear, one line per message, as a pasted one always did.
+
+**The price is #974's own.** Something arms `shiftKey` on vjt's device on
+presses he did not mean as Shift+Enter, and the cause is still unknown. In
+an encrypted query such a press now breaks the line instead of sending.
+Nothing is lost: the break stays in the box, and Enter sends it. It just
+does not go on that press. **The box does not grow** (the issue said it
+would): it is one row that scrolls inside (#123). On desktop Chromium the
+empty box is already about two lines tall, so two lines both show; on the
+iPhone WebKit project the second line is cut in half. Both seen in this
+issue's e2e screenshots. That more lines scroll the first ones out of sight
+is #123's behaviour as read in the code, not measured here. A growing
+composer would be its own change to #123. Recorded on the issue so nobody re-diagnoses it as a regression.
+
+**Unchanged on purpose.** The arrow keys already read the draft's own
+newlines (only the caret's first or last line walks the history), so a
+typed newline behaves as a pasted one always did. Read in the code, not
+measured: a recalled entry of k lines puts the caret at its end, so walking
+the history back past it takes k presses of ArrowUp; not ruled on. A line
+of the chat keeps its breaks because `.scrollback-line` is `white-space:
+pre-wrap`.
+
+**What the e2e asserts** (`issue2589-encrypted-shift-enter.spec.ts`, two
+browsers and two real engines, once on desktop Chromium and once on the
+iPhone WebKit project): the break lands in the box and nothing goes before
+Enter, Enter sends one message, and both sides render the break: the line's
+`innerText` (the rendered text) reads it, and reads a space once the line is
+set to `white-space: normal`. **No box geometry:** on WebKit a range that
+starts just after a line break returns a box from the first row's top
+spanning both rows (measured: the second line's first glyph read top 512.92,
+height 35.59, the first's top 512.92, height 16), so four box readings went
+red while the screenshots showed two rows. **Not covered:** the Android
+touch project (Blink again, the engine the desktop run already reads) and
+real devices.
