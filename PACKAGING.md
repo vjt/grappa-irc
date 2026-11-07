@@ -15,9 +15,11 @@ Read this file **at the tag you package**
 
 - A release is a git tag `vX.Y.Z` on
   [vjt/grappa-irc](https://github.com/vjt/grappa-irc) plus a GitHub Release of
-  the same name. The number follows semver and is the content of the repo-root
-  `VERSION` file at the tag. On an installed host, read it from the package
-  manager (`dpkg-query -W grappa`, `rpm -q grappa`, `pacman -Q grappa`).
+  the same name. The number has semver's form, `X.Y.Z`, and is the content of
+  the repo-root `VERSION` file at the tag. It does not carry semver's promise:
+  an incompatible packaging change can ship in a minor release
+  ([Change policy](#change-policy)). On an installed host, read it from the
+  package manager (`dpkg-query -W grappa`, `rpm -q grappa`, `pacman -Q grappa`).
 - A pre-release is tagged `vX.Y.Z-<pre>` (for example `v1.3.0-rc2`) and is
   marked as a pre-release on GitHub (`infra/packaging/prerelease_flag.sh`).
   GitHub's "Latest" release is never a pre-release. If you package stable
@@ -119,6 +121,8 @@ download; it does not protect against someone who can modify the release.
 The `.deb`, `.rpm` and Arch packages install the same files. This was
 measured on the v1.6.2 assets: the file lists match outside the bundled
 release and frontend trees. The rows marked "Arch only" are the exceptions.
+The two `apply-upgrade` rows are newer than v1.6.2; they are read from
+`infra/packaging/nfpm.yaml` and the `PKGBUILD`, not measured on an asset.
 
 | Path | What |
 | ---- | ---- |
@@ -129,11 +133,13 @@ release and frontend trees. The rows marked "Arch only" are the exceptions.
 | `/usr/share/grappa/cicchetto-dist/` | the web frontend, served by grappa itself (`CIC_DIST_ROOT`) |
 | `/usr/share/grappa/grappa.env.example` | the configuration template |
 | `/usr/share/grappa/gen-secrets.sh` | the secret generator (needs only `openssl`) |
+| `/usr/share/grappa/apply-upgrade.sh` | applies an upgrade to the running service ([Install and upgrade](#install-and-upgrade)) |
 | `/usr/share/doc/grappa/README.md` | the operator README for packaged installs |
 | `/etc/grappa/` | configuration directory, `root:grappa 0750`. deb and rpm own it; on Arch the install script creates it. |
 | `/var/lib/grappa/` | state, `grappa:grappa 0750`: the SQLite database `grappa.db` and `uploads/`. deb and rpm own it; on Arch `tmpfiles.d` creates it. |
 | `/usr/lib/sysusers.d/grappa.conf` | Arch only: declares the `grappa` user |
 | `/usr/lib/tmpfiles.d/grappa.conf` | Arch only: declares `/var/lib/grappa` and `uploads/` |
+| `/usr/share/libalpm/hooks/grappa-apply.hook` | Arch only: runs `apply-upgrade.sh` at the end of a pacman transaction that upgrades grappa |
 | `/usr/share/licenses/grappa/LICENSE` | Arch only |
 
 `/etc/grappa/grappa.env` is **not in any package**. The first install
@@ -175,6 +181,10 @@ The unit is `grappa.service`, installed at
 
 - `Type=exec` with `ExecStart=/usr/lib/grappa/bin/grappa start`. The release
   runs in the foreground, so the main PID is the BEAM.
+- `ExecStartPre=/usr/lib/grappa/bin/grappa eval 'Grappa.Release.migrate()'`.
+  Every start applies the pending migrations before the release boots, and a
+  failed migration fails the start.
+- `TimeoutStartSec=300`. It bounds the migration as well as the boot.
 - `User=grappa`, `Group=grappa`, `WorkingDirectory=/var/lib/grappa`.
 - `EnvironmentFile=/etc/grappa/grappa.env`. systemd reads it as root before
   dropping privileges.
@@ -201,27 +211,55 @@ the same steps itself:
 4. As root, run `/usr/share/grappa/gen-secrets.sh`. It is idempotent: it
    fills only secrets that are missing, empty or `REPLACE_ME`, which also
    covers a secret a newer version introduces.
-5. Run `grappa migrate`, on install **and on every upgrade**. It applies only
-   pending migrations. A failure must fail the install.
-6. Run `grappa seed-themes`, on install and on every upgrade. A failure is
+5. **If the service is not running** (always the case on a first install):
+   run `grappa migrate`. It applies only pending migrations. A failure must
+   fail the install.
+6. **If the service is not running:** run `grappa seed-themes`. A failure is
    reported but must not fail the install.
-7. `systemctl enable grappa.service`, but **do not start it**. The operator
-   must set `PHX_HOST` first.
+7. **If the service is running** (an upgrade): run
+   `/usr/share/grappa/apply-upgrade.sh` instead of steps 5 and 6, once every
+   file of the new release is on disk. Exit status 1 must fail the upgrade,
+   as a failed migration would.
+8. `systemctl enable grappa.service`, but **never start it** from the
+   install. The operator must set `PHX_HOST` before the first start.
 
-An upgrade neither stops nor restarts a running service; the operator
-restarts it. Removal stops and disables the service and leaves
-`/var/lib/grappa` and the `grappa` user in place. A Debian `purge` also
-deletes `/etc/grappa/grappa.env`.
+**An upgrade applies itself to a running service; the operator does
+nothing.** `apply-upgrade.sh` asks the running node which build it runs,
+compares that with the new release, and reloads the new code in place when
+nothing in between needs a restart (a hot reload, which applies the pending
+migrations itself). Anything else is applied by `systemctl restart`, and
+the unit migrates before the new release boots. The script exits 1 only
+when a restart was needed and did not take; it prints what failed and how
+to retry. A service that is not running is left stopped: its next start
+runs the new release and migrates first. Removal stops and disables the
+service and leaves `/var/lib/grappa` and the `grappa` user in place. A
+Debian `purge` also deletes `/etc/grappa/grappa.env`.
 
-**An upgrade that changes the toolchain needs the restart.** The release in
-`/usr/lib/grappa/` carries its own ERTS and OTP and Elixir applications, and
-the rpm and Arch packages are built with their builder's Erlang and Elixir,
-so two consecutive versions can bundle different ones. When they do, the
-running service refuses to load the new code in place: `POST /admin/reload`
-answers `409 stale_toolchain` and names each component that moved (issue
-1112). Restart soon after such an upgrade. It removes the previous ERTS
-directory, and a node left running from a removed one was measured to halt
-the first time it restarted its native DNS resolver.
+What failing the upgrade means differs by format, by each package manager's
+documentation. dpkg leaves the package half-configured. rpm reports the
+scriptlet failure and keeps the new package installed. pacman runs the hook
+after the transaction has committed, and a hook at that point cannot abort
+it (alpm-hooks(5)), so it prints the error and the new package stays
+installed.
+
+**An upgrade that changes the toolchain is applied by restart.** The
+release in `/usr/lib/grappa/` carries its own ERTS and OTP and Elixir
+applications, and the rpm and Arch packages are built with their builder's
+Erlang and Elixir, so two consecutive versions can bundle different ones.
+`apply-upgrade.sh` compares the running node's ERTS with the new release's
+before it contacts the node at all, and restarts when it moved. When only
+an application moved, `POST /admin/reload` refuses with
+`409 stale_toolchain` (issue 1112) and the script restarts. Before the
+script runs there is a window in which the service runs from a removed
+ERTS directory: on deb, from the moment dpkg removes the old files while it
+unpacks until the postinst, and on Arch, until the hook runs at the end of
+the transaction. On rpm there is none, because rpm runs the new package's
+`%post` before it removes the old package's files. These orders are the
+package managers' documented ones, not measured here. A node left running
+from a removed ERTS was measured to halt the first time it restarted its
+native DNS resolver. If that happens inside the window, systemd starts
+the service again (`Restart=on-failure`) and the script's restart follows.
+The window is accepted.
 
 ## Configuration
 
@@ -259,6 +297,13 @@ as root or as a member of the `grappa` group, because it reads
 `/etc/grappa/grappa.env`. Run as root, it drops to the `grappa` user through
 `runuser` (util-linux).
 
+`apply-upgrade.sh` runs as root. Besides `/usr/bin/grappa` (`rpc` and
+`eval`) it uses `systemctl`, `curl` and `timeout`, and it reaches the
+service on `127.0.0.1` at the `PORT` set in `grappa.env`, bare or quoted
+(4000 when unset). A `PORT` set in a unit drop-in is not read. Every wait on
+the service is bounded, so a service that does not answer is restarted
+rather than holding the package manager.
+
 ## Supported platforms
 
 The bundled Erlang runtime, the NIFs and `shottino` link against the glibc
@@ -272,9 +317,9 @@ names the platforms it runs on:
 | Arch | x86_64 | an `archlinux:latest` container | Arch Linux. Arch has no official ARM port, so there is no aarch64 package. |
 
 Runtime libraries: OpenSSL 3, ncurses 6, libstdc++, libgcc and the CA
-certificates, plus the `openssl` command (`gen-secrets.sh`) and util-linux
-(`runuser`). The exact package names for each format are in
-`infra/packaging/nfpm.yaml` and the `PKGBUILD`.
+certificates, plus the `openssl` command (`gen-secrets.sh`), util-linux
+(`runuser`) and `curl` (`apply-upgrade.sh`). The exact package names for
+each format are in `infra/packaging/nfpm.yaml` and the `PKGBUILD`.
 
 ## Change policy
 
@@ -285,15 +330,17 @@ certificates, plus the `openssl` command (`gen-secrets.sh`) and util-linux
   change the release carries, or reads "No change to the packaging contract."
   when there is none. A missing section would be ambiguous: no change, or a
   forgotten section?
-- **An incompatible change requires a major version bump.** Incompatible
+- **Each change is announced as compatible or incompatible.** Incompatible
   means a package built against the previous contract breaks, or silently
   changes behaviour, without being edited. Examples: an asset renamed or
   removed; a path, unit, user or directory moved or renamed; an env key
   renamed or removed, or a new one that must be set; an architecture or
   platform dropped; a new install step a repackager has to perform.
-- Compatible changes go in a minor or patch release and are still announced
-  in the Packaging section. Examples: a new asset, a new optional env key, a
-  new architecture, a wider platform range.
+  Compatible examples: a new asset, a new optional env key, a new
+  architecture, a wider platform range.
+- **The version number does not tell the two apart.** Either kind can ship
+  in a minor release, so read the Packaging section of every release, not
+  only of a major one.
 
 ## Following releases
 

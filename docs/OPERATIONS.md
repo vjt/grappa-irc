@@ -1450,6 +1450,31 @@ force-colds (`docker pull` → migrate → `rm -f` + `run -d` recreate) through 
 shared cold path. It is the one substrate with no hot branch at all; hot-on-image
 is #503 unit E. Runbook below.
 
+**A sixth door, with no git range and no `deploy_common.sh`: a deb/rpm/Arch
+package upgrade (`:package`, issue 1112).** The running node was built from
+one tree, the package has just written the release of another, and neither
+tree is on the host. So `Preflight.classify_manifests/4` compares two
+MANIFESTS instead of a diff: `Grappa.Deploy.Manifest` is a module compiled
+from exactly the files a verdict turns on (`Preflight.manifest_paths/1` —
+`mix.exs`, `mix.lock`, `application.ex`, `config/**/*.exs`, the migrations,
+the long-lived module files and the package's own unit), holding a sha256 per
+file and a digest of each long-lived module's state block. The running node
+reports its own over `grappa rpc`; the NEW release compares it with its own
+under `grappa eval` (`Grappa.Deploy.Manifest.cli/1`, 0 HOT / 3 COLD like
+`Preflight.cli/1`, anything else a crash). The changed paths go through the
+same `classify_paths/3`, so there is one rule set with two ways of finding
+what moved. Two departures from the git door, both toward COLD: a path only
+one manifest lists counts as changed, and the long-lived set is the union of
+both builds'. Why a compiled module and not a file beside the release: the
+package overwrites files, so a manifest on disk would describe the NEW tree by
+the time anyone read it as the old one. `@external_resource` follows each
+file's content and `__mix_recompile__?/0` follows the path SET (a new
+migration is in no `@external_resource` list) — measured: adding, editing and
+removing a migration each recompiles that one module and nothing else, a
+no-op compile recompiles nothing, and with the callback removed a new
+migration leaves the manifest stale. The script that drives it is in §
+"An upgrade applies itself" under Packaging.
+
 **Module reload uses `:code.modified_modules/0` + soft-purge +
 `:code.load_file/1` (`Grappa.HotReload`) — NOT `Phoenix.CodeReloader`.**
 A module can be hot-reloaded repeatedly between restarts: the context
@@ -1532,6 +1557,11 @@ downtime):
   #923 DELETED its three files after confirming nothing copied,
   installed, enabled, started or tested them. Recover them from the
   #628 commit if the service is ever needed again.
+- The systemd units — each scoped to the substrate that installs it, the
+  way rc.d is to the jail: `infra/linux/systemd/grappa.service` is COLD on
+  **`:linux` only**, and the packages' own `infra/packaging/grappa.service`
+  on **`:package` only** (issue 1112). A changed unit needs
+  `daemon-reload` + a restart; nothing reloads a running unit's definition.
 - `infra/freebsd/bin/*` (the source-alias privilege wrapper) — **HOT on
   purpose (#646)**. It is exec'd fresh by sudo on every call, so nothing
   about it lands in the running BEAM and a restart would buy nothing. It
@@ -1555,10 +1585,12 @@ downtime):
   and the next deploy heals it; the warning names the gallery, carries
   the retry command, and is repeated after the ✓ banner.
   **Since #1167 the same seed also runs on the doors that have no deploy
-  script at all** — the `.deb`/`.rpm` postinstall, the Arch `_bootstrap`
-  (both through the `grappa seed-themes` verb) and `release-entrypoint.sh`
-  for a bare `docker run` — each right after its own migrate, and each
-  keeping the non-fatal posture above. In the container it rides
+  script at all** — the `.deb`/`.rpm` postinstall, the Arch
+  `_migrate_and_seed` (both through the `grappa seed-themes` verb) and
+  `release-entrypoint.sh` for a bare `docker run` — each right after its own
+  migrate, and each keeping the non-fatal posture above. On a package upgrade
+  over a RUNNING service the scriptlets neither migrate nor seed (issue 1112):
+  `apply-upgrade.sh` seeds after the reload or the restart instead. In the container it rides
   `GRAPPA_AUTO_MIGRATE` rather than taking a knob of its own: an operator
   who sets that to 0 did so to keep boot from writing to the database, and
   seeding is a write. Guarded by
@@ -1814,8 +1846,10 @@ sequence:
    Changed". Its **Packaging** section is in EVERY release: one bullet per
    change to the `PACKAGING.md` contract, or the line "No change to the
    packaging contract." Downstream packagers read that section to learn whether
-   to touch their package, and an incompatible contract change needs a MAJOR
-   bump (`PACKAGING.md` § Change policy), so size the semver bump with it.
+   to touch their package. The version number does not tell them: an
+   incompatible contract change can ship in a minor release (issue 1112, which
+   retired the rule that it needs a MAJOR bump; `PACKAGING.md` § Change
+   policy).
 3. **Ping vjt** (via the ircbot) with **the tag + the release URL + 2 lines of
    highlight**. vjt then writes the site's News entry (next step) from that.
 4. **News/Releases `news.json` entry.** An entry that LINKS the GitHub release
@@ -3820,7 +3854,10 @@ moved, with or without `--force-hot`. On the jail that is the deploy after
 a `pkg upgrade` of erlang or elixir: the next `mix release --overwrite`
 bundles the new toolchain, the hot path refuses, and `--force-cold`
 applies it. The preflight cannot predict it, because it classifies the
-git range before the build exists.
+git range before the build exists. A package upgrade does not wait for the
+409: `apply-upgrade.sh` compares the ERTS itself before it contacts the node,
+and the 409 is its second net, for an application that moved alone (§ "An
+upgrade applies itself").
 
 ### Waiting for the BEAM (`beam_wait.sh`) — defect #9
 
@@ -5171,17 +5208,26 @@ root-owned `/etc/grappa` and never drops.
 same `Ecto.Migrator` the FreeBSD/Docker deploy paths call, reachable
 WITHOUT a dev toolchain. That is the #419 "packaged migrate": a packaged
 host has only the compiled release and its boot scripts, no mix and no
-project source. It runs on every (re)configure and every upgrade under
-BOTH `.deb`/`.rpm` postinstall and the Arch `_bootstrap`, because only
-PENDING migrations apply — and it FAILS LOUD in all three, so a broken
+project source. The `.deb`/`.rpm` postinstall and the Arch
+`_migrate_and_seed` run it whenever the service is NOT running — every first
+install, and an upgrade of a stopped service, which stays stopped — because
+only PENDING migrations apply; it FAILS LOUD in all three, so a broken
 migrate surfaces as a failed package transaction instead of a silently
-half-migrated install.
+half-migrated install. **Over a RUNNING service no scriptlet migrates (issue
+1112):** the node still serves the old code, and migrating under it is what
+used to make "restart soon" necessary. The migration rides with the code
+instead — in-process on a hot reload (#41), in the unit's `ExecStartPre` on a
+restart (§ "An upgrade applies itself" below). On Arch the old `_bootstrap`
+split in two for that reason: `_prepare` (sysusers, tmpfiles, the env file,
+`gen-secrets`) runs on every install and upgrade, `_migrate_and_seed` only
+where nothing is running.
 
 **`grappa seed-themes` is its twin over `Grappa.Release.seed_themes()`
-(#1167)**, and it is not sugar alone: the two install scriptlets INVOKE
-this verb, so it is the packaged host's only door to the built-in gallery
-and the command an operator re-runs to heal a failed seed. It sits right
-after the migrate in both, schema-then-data, and unlike the migrate it is
+(#1167)**, and it is not sugar alone: the two install scriptlets and
+`apply-upgrade.sh` INVOKE this verb, so it is the packaged host's only door
+to the built-in gallery and the command an operator re-runs to heal a failed
+seed. It sits right after the migrate in the scriptlets and after the reload
+or the restart in the script, schema-then-data, and unlike the migrate it is
 NON-FATAL — see the seed posture under the hot/cold classification above
 (#440). Before #1167 neither scriptlet seeded at all, so a `.deb`/`.rpm`
 or AUR install landed with an empty theme section while the palettes sat
@@ -5207,7 +5253,7 @@ file and not a conffile, so no upgrade can clobber an operator's live
 secrets, and rpm never touches it either way. `/var/lib/grappa` is never
 auto-deleted on any path.
 
-### `grappa.service` — `Type=exec`, and never auto-restart on upgrade
+### `grappa.service` — `Type=exec`, and the migration in `ExecStartPre`
 
 The unit installed by the package ships **fixed FHS paths because the
 package owns them**, unlike `infra/linux/systemd/grappa.service`, which is
@@ -5221,14 +5267,27 @@ SIGTERM and BLOCK until exit, which lets `Grappa.Session.Server`'s
 `terminate/2` QUIT upstream cleanly (#215). That closes the race at the
 root cause rather than papering over it.
 
-**No package path auto-restarts on upgrade** — the `.deb`/`.rpm`
-`preremove` stops the service only on a REAL removal (dpkg
-`remove`/`deconfigure`, rpm `0`), and the Arch `post_upgrade` only
-`daemon-reload`s. Both then tell the operator to run
-`systemctl restart grappa`. This keeps the same stop/start epmd-name race
-off the upgrade path; the Arch scriptlet's fail-loud posture is
-deliberately identical to the `.deb` postinstall, which runs the same code
-on install and upgrade under `set -e`.
+**`ExecStartPre` migrates before every start (issue 1112).** It runs
+`bin/grappa eval 'Grappa.Release.migrate()'` under the unit's own user, env
+file and sandbox, so a restart serves the new code on the schema it expects
+and never the other way round, and a failed migration fails the start rather
+than booting on a half-applied schema. A start with nothing pending costs one
+short eval. `TimeoutStartSec` bounds `ExecStartPre` too, which is why it is
+300 and not the 30 it was (R7 of issue 1112: sized for a migration; how long
+real migrations take is NOT measured). This is the PACKAGE unit only — the
+native-Linux unit (`infra/linux/systemd/`) is another slice's.
+
+**An upgrade restarts only through `apply-upgrade.sh`, never from
+`preremove`.** The `.deb`/`.rpm` `preremove` still stops the service only on
+a REAL removal (dpkg `remove`/`deconfigure`, rpm `0`). A stop there on
+upgrade would leave the service down either way: dpkg runs the old `prerm`
+BEFORE the new postinst, which would then find nothing running to apply to,
+and rpm runs the old `%preun` AFTER the new `%post`, stopping the service
+`%post` has just applied the upgrade to. The script's restart is one
+`systemctl restart`, the operator's own verb: with `Type=exec` it blocks on
+the old BEAM's exit before the new one starts, which is what closed the
+epmd-name race above — the reason the old text gave for never restarting on
+upgrade.
 
 `Environment=LANG=C.UTF-8` is load-bearing and pinned by
 `test/infra/service_locale_pin_test.bats`: systemd sets no `LANG`, and
@@ -5236,6 +5295,88 @@ without a UTF-8 locale the BEAM warns about latin1 native name encoding —
 a real risk when nicks, channels and filenames are UTF-8. The problem was
 first observed on the #419 R1 migrate-proof boot in a locale-less
 container.
+
+### An upgrade applies itself — `apply-upgrade.sh` (issue 1112)
+
+**A package upgrade needs nothing from the operator** (vjt's ruling on issue
+1112, relayed: «sempre restart, hot se si può»). `apply-upgrade.sh` is
+shipped at `/usr/share/grappa/apply-upgrade.sh` and called as root by the
+deb postinst / rpm `%post` when the unit is active, and on Arch by the alpm
+hook `aur/grappa-apply.hook` (`Operation = Upgrade`, `Type = Path`,
+`Target = usr/lib/grappa/*`, `When = PostTransaction`). Arch's
+`post_upgrade` does not apply as well — once is the rule. Hook and script
+both sit under `usr/` on purpose: a repackaging that keeps `usr/` and drops
+`.INSTALL` (the community `grappa-bin` does) still gets the apply without a
+change to its own PKGBUILD. That `grappa-bin` copies `usr/share/libalpm/`
+is read from what it is said to extract, not verified on the package.
+
+The steps, in order:
+
+0. **The unit is not running** → nothing is applied and nothing is started
+   (R5); exit 0. Its next start runs the new release, migrating first.
+1. **The ERTS, before any contact with the node.** The running ERTS is read
+   off `/proc/<MainPID>/exe` (`…/erts-X/bin/beam.smp`), the new one from
+   field 1 of `releases/start_erl.data` with `cut -d' '`, as the release's
+   own start script reads it — not with `read`, because `mix release`
+   writes that file with no trailing newline and `read` reports that as a
+   failure. Different or unreadable → restart
+   at once, with no `grappa rpc` and no HTTP: a node left running from a
+   removed ERTS directory was measured (phase 1) to halt the first time it
+   relaunches `inet_gethost`. Only the VERSION decides — dpkg replaces every
+   file on every upgrade, so a `(deleted)` suffix on the same ERTS is not a
+   move.
+2. **The verdict** (§ "Hot vs cold deploy", the `:package` door). The
+   running node prints its compiled manifest over `grappa rpc` into a
+   scratch directory of the script's own under `/run`; the new release
+   reads it under `grappa eval 'Grappa.Deploy.Manifest.cli(System.argv())'`
+   as the `grappa` user. An rpc that fails, prints nothing or does not
+   answer in time → restart: every node older than issue 1112 has no
+   manifest, so the FIRST upgrade onto this mechanism is always a restart.
+   Exit 3 → restart, naming the cold reasons; any other exit is a crash,
+   not a verdict → restart, saying so. The rpc expression is guarded by
+   `:code.is_loaded/1` and names the module through a variable (`apply/3`):
+   on a node that autoloads, calling the module would load the NEW beam the
+   package just wrote and report the new manifest as the old one. A release
+   boots embedded and has it loaded.
+3. **HOT.** `POST /admin/reload`, with the body AND the code captured
+   (`curl -f` would drop the body that says why a reload was refused).
+   200 with `"failed":[]` → `/healthz` → `POST /admin/cic-bundle-changed`
+   → `grappa seed-themes` → `applied HOT`. Anything else — any of the four
+   409s, a 200 with module failures, no answer, `/healthz` silent afterwards
+   → restart, naming it.
+4. **RESTART.** `daemon-reload`, `reset-failed` (a unit past its start limit
+   refuses `restart` until cleared), `restart` (the unit migrates in
+   `ExecStartPre`), `/healthz`, seed → `applied by RESTART: <reason>`.
+
+**Exit 1 is the ONLY failure, and it means "a restart was needed and did not
+take"** (R4): `systemctl restart` failed (a failed migration, the start
+timeout) or `/healthz` stayed silent. The script prints what failed, the
+state the unit is in and how to retry; the postinst turns it into a failed
+configuration, as a failed migrate. A failed seed stays non-fatal (#1167).
+`/healthz` is probed 60 times one second apart (`HEALTH_TRIES`), a
+PROVISIONAL figure: the packaged boot time is not measured. **Every wait on
+the node is bounded**, because the package manager holds its lock for as
+long as the script runs: the rpc 60 s and the eval 120 s under `timeout(1)`,
+the reload 300 s (it migrates in-process — the budget the unit gives a
+migration on a restart), each `/healthz` probe and the cic notice 5 s.
+`PORT` comes from `/etc/grappa/grappa.env`, bare or quoted, read with `sed`
+and never sourced by root; a `PORT` set in a unit drop-in is not read. Every
+HTTP call is `curl`, which is why all three formats declare it.
+
+**Why not `deploy_common.sh`.** Its `_deploy_hot` exits 1 on a refusal —
+"do a cold deploy" is the operator's next step there — whereas here a
+refusal IS the way into the restart, and `deploy_main` presumes a checkout,
+a marker and a sha. The price: the `"failed":[]` predicate lives in both
+files until the cold-path slice that reworks `deploy_common.sh` can take it.
+
+**The deleted-ERTS window (R3, accepted).** Between the package manager
+removing the old ERTS and the script running, the node runs from a removed
+directory: on deb from the unpack to the postinst, on Arch until the hook at
+the end of the transaction. On rpm there is none — rpm runs the new `%post`
+before it erases the old package's files, which is why the apply sits in
+`%post` and not `%posttrans`. If the node halts inside the window,
+`Restart=on-failure` brings it back and the script's restart follows. These
+orders are the managers' documented ones; none was measured here.
 
 ### Arch / AUR (`infra/packaging/aur/`)
 
