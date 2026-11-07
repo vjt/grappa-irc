@@ -17520,17 +17520,22 @@ static struct e2e_out *e2e_out_by_tag(struct e2e_slot *s, const char *tag) {
 }
 
 /* A new message of this run. A full table gives up its oldest settled
- * message first (a sent one, then a failed one): only its row remains. */
+ * message first (a sent one, then a failed one): only its row remains.
+ * A PENDING one is never given up — its row would wait forever for an
+ * answer nothing tracks any more — so a table of 64 messages all still on
+ * their way refuses the new one: NULL. */
 static struct e2e_out *e2e_out_new(struct e2e_slot *s, const char *peer, const char *body,
                                    unsigned long row) {
     if (s->nouts == E2E_OUTS_MAX) {
         size_t gone = 0;
-        for (size_t pass = 0, found = 0; pass < 2 && !found; pass++)
+        bool found = false;
+        for (size_t pass = 0; pass < 2 && !found; pass++)
             for (size_t i = 0; i < s->nouts && !found; i++)
                 if (s->outs[i].state == (pass ? E2E_OUT_FAILED : E2E_OUT_SENT)) {
                     gone = i;
-                    found = 1;
+                    found = true;
                 }
+        if (!found) return NULL;
         free(s->outs[gone].body);
         memmove(s->outs + gone, s->outs + gone + 1, (s->nouts - gone - 1) * sizeof(*s->outs));
         s->nouts--;
@@ -17798,6 +17803,17 @@ static void e2e_send_text(struct app *app, struct e2e_slot *s, bool usable, cons
         return;
     }
     struct e2e_out *o = e2e_out_new(s, peer, body, row);
+    if (!o) {
+        char *why = xasprintf(" (failed: %d encrypted messages are still on their way here, so "
+                              "this one was not taken; nothing was sent — type it again once "
+                              "they settle)",
+                              E2E_OUTS_MAX);
+        pthread_mutex_lock(&app->lock);
+        log_settle_pending_locked(app, row, why);
+        pthread_mutex_unlock(&app->lock);
+        free(why);
+        return;
+    }
     pthread_mutex_lock(&app->lock);
     bool unknown = s->on_unknown && !e2e_on_has(&s->on, peer);
     pthread_mutex_unlock(&app->lock);

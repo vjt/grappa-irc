@@ -3084,6 +3084,47 @@ TEST(no_keys_fails_the_row_and_nothing_goes_in_clear) {
     free_e2e_app(app);
 }
 
+/* Every message of this run still on its way is a row the user is
+ * waiting on: a full table never gives one of them up to make room — the
+ * NEW one is refused, said on its row, and nothing goes in clear. */
+TEST(a_full_table_refuses_a_new_message_and_keeps_every_pending_one) {
+    struct app *app = send_app("user:outs", "p0");
+    const char *peers[] = {"p0", "p1", "p2", "p3"};
+    char body[32];
+    for (size_t k = 0; k < 4; k++) {
+        char cmd[32];
+        snprintf(cmd, sizeof(cmd), "/e2e on %s", peers[k]);
+        handle_command(app, cmd);
+        run_jobs(app);
+        for (int i = 0; i < E2E_OUTQ_MAX; i++) {
+            snprintf(body, sizeof(body), "for %s %d", peers[k], i);
+            e2e_type(app, "azzurra", peers[k], body);
+            run_jobs(app);
+        }
+    }
+    CHECK_LONG(app->e2e[0].nouts, E2E_OUTS_MAX);
+    for (size_t i = 0; i < app->e2e[0].nouts; i++)
+        CHECK(app->e2e[0].outs[i].state == E2E_OUT_PENDING);
+    handle_command(app, "/e2e on p4");
+    run_jobs(app);
+    e2e_type(app, "azzurra", "p4", "one too many");
+    run_jobs(app);
+    CHECK(!row_pending(app, "one too many"));
+    CHECK(said(app, "one too many (failed: " "64 encrypted messages are still on their way"));
+    CHECK_LONG(app->e2e[0].nouts, E2E_OUTS_MAX);
+    for (size_t i = 0; i < app->e2e[0].nouts; i++)
+        CHECK(app->e2e[0].outs[i].state == E2E_OUT_PENDING);
+    /* The oldest is still tracked, so its row will settle. */
+    bool oldest = false;
+    for (size_t i = 0; i < app->e2e[0].nouts; i++)
+        oldest |= strcmp(app->e2e[0].outs[i].body, "for p0 0") == 0;
+    CHECK(oldest);
+    CHECK(row_pending(app, "for p0 0"));
+    CHECK(!grappa_saw("one too many"));
+    CHECK_LONG(fg.nplain, 0);
+    free_e2e_app(app);
+}
+
 /* The NACK in (§5.7): from a device the message went to, the engine
  * re-keys that device and sends again, once; a second NACK fails it. */
 static void nack_from(struct app *app, tpeer *p, const char *ref) {
@@ -4506,6 +4547,7 @@ int main(void) {
     RUN(a_line_past_a_clear_lines_size_goes_whole_when_encrypted);
     RUN(a_peer_with_two_devices_gets_one_payload_two_bodies);
     RUN(no_keys_fails_the_row_and_nothing_goes_in_clear);
+    RUN(a_full_table_refuses_a_new_message_and_keeps_every_pending_one);
     RUN(a_nack_rekeys_and_resends_once_then_fails);
     RUN(a_nack_from_star_asks_the_user);
     RUN(a_dropped_send_fails_and_resend_sends_it_again);
