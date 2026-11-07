@@ -29,10 +29,11 @@ vi.mock("../lib/networks", async () => {
 });
 
 import ComposeBox from "../ComposeBox";
+import { refreshAliases } from "../lib/aliasList";
 import { setToken } from "../lib/auth";
 import { channelKey } from "../lib/channelKey";
 import { setCommandMenuEnabled, setCommandMenuEntries } from "../lib/commandMenu";
-import { refreshCommandCounts } from "../lib/commandUsage";
+import { rankCommands, refreshCommandCounts } from "../lib/commandUsage";
 import { getDraft, setDraft, submit, tabComplete } from "../lib/compose";
 import { __resetForTest as resetOverlays, runTopmostOverlayEscape } from "../lib/overlayScrollLock";
 import { __resetServerProtocolForTests, setServerProtocol } from "../lib/serverProtocol";
@@ -110,6 +111,24 @@ describe("ComposeBox — the `/` command menu (issue 2584)", () => {
     expect(entries(container)).not.toEqual([]);
 
     type(textarea, draft);
+
+    expect(entries(container)).toEqual([]);
+  });
+
+  // The server takes an alias NAMED `/foo` (a verb is anything without
+  // whitespace, slice A's `normalize_verb/1`), and `//` is the literal-text
+  // escape: `//f` is text, so the menu must not offer that alias as `//foo`.
+  it("a `//` line offers nothing, not even an alias whose name starts with `/`", async () => {
+    setToken("tok");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ aliases: { "/foo": "whois $1" } }), { status: 200 }),
+    );
+    await refreshAliases();
+    // The pre-state: the alias IS a candidate for the prefix `//f` would hand in.
+    expect(rankCommands("/f", 5)).toEqual(["/foo"]);
+    const { container, textarea } = mount();
+
+    type(textarea, "//f");
 
     expect(entries(container)).toEqual([]);
   });
