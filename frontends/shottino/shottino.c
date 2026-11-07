@@ -417,6 +417,7 @@ struct window {
 enum job_kind {
     JOB_E2E_SYNC,
     JOB_E2E_INIT,
+    JOB_E2E_PAIR,
     JOB_FETCH,
     JOB_SEND,
     JOB_JOIN,
@@ -1201,6 +1202,73 @@ struct e2e_slot {
  * requests (v53) gate on their own numbers where they are used. */
 #define E2E_MIN_PROTOCOL 49
 
+/* ── E2E pairing: this device as the JOINER (docs/plans §8.2, CLIENT_PROTOCOL §4g)
+ *
+ * Another device of the account that holds an identity's master (cic's
+ * "add a device") opens a rendezvous and grappa OFFERS it to every device
+ * of the account (e2e_pairing_offered, v55 — since issue 2549 the only way
+ * a pairing reaches one). This device never joins on its own: a
+ * rendezvous takes ONE joiner, and the user says which screen it is.
+ *
+ *   OFFERED  --/e2e pair accept-->  CODE  (joined; the 2-digit code shown,
+ *            typed on the holder)  --holder's offer-->  CONFIRM
+ *            --/e2e pair confirm-->  JOINED (a device registered per
+ *            network)  --holder's signatures-->  done, back to IDLE.
+ *
+ * Every arrow but the user's is a payload read off the relay, once and in
+ * order (the ECIES counter). Anything that is not the message a step
+ * waits for ends it as failed; ending before the signatures DELETEs every
+ * device registered for it, so none holds one of the account's three
+ * rooms for good. Like the slots, the machine belongs to the JOB WORKER
+ * (JOB_E2E_PAIR): pushes, commands and the clock only enqueue. `view`,
+ * `deadline` and `tick_queued` are app->lock's: what /e2e shows and when
+ * the main loop's clock rings.
+ *
+ * HOLDER HOOK: this device holding a master cannot offer a pairing yet.
+ * e2e_pair_issue is the signing half of it; the doors (open with our
+ * curve, the typed code, offerable, PUT list with the stale retry) are
+ * cic's holderPairing and are not written. */
+#define E2E_PAIR_MIN_PROTOCOL 55
+
+enum pair_stage { PAIR_IDLE, PAIR_OFFERED, PAIR_CODE, PAIR_CONFIRM, PAIR_JOINED };
+
+/* A network's outcome: an e2e_pair_refusal, or one of these. */
+#define PAIR_PENDING (-1)
+#define PAIR_ADDED 100
+
+struct pair_net {
+    char slug[MAX_SLUG];
+    char master[64];
+    char did[E2E_DID_LEN + 1]; /* registered for this pairing, not listed yet; "" none */
+    int outcome;
+};
+
+struct pair_view {
+    enum pair_stage stage;
+    char code[3];
+    int64_t expires; /* unix seconds */
+    char networks[MAX_LINE / 2];
+    char full[MAX_LINE / 4];
+};
+
+struct e2e_pairing {
+    /* worker only */
+    enum pair_stage stage;
+    char id[72];
+    char curve[64];
+    int64_t expires;
+    char home[MAX_SLUG]; /* the network whose window says it */
+    vz_established_ecies *link;
+    long last_seq;
+    struct pair_net nets[MAX_NETWORKS];
+    size_t nnets;
+    char full[MAX_LINE / 4];
+    /* app->lock */
+    struct pair_view view;
+    int64_t deadline; /* the clock's: `expires` while a pairing is on, 0 idle */
+    bool tick_queued;
+};
+
 struct app {
     struct url url;
     char token[MAX_TOKEN];
@@ -1897,7 +1965,11 @@ struct app {
     long server_protocol;
     struct e2e_slot e2e[MAX_NETWORKS];
     size_t e2e_count;
+    struct e2e_pairing pair;
 };
+
+static void e2e_pair_enqueue(struct app *app, const char *verb, const char *words, int num);
+static void e2e_pair_clock(struct app *app);
 
 static void die(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void startup(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -9049,18 +9121,35 @@ static void handle_wire_event(struct app *app, const char *topic_network,
          * say it twice. Dropped deliberately, as the avatar above. */
         break;
 
+    /* E2E pairing (§4g): the joiner's machine runs on the worker; a push
+     * only rings it (the relay's payloads come from the fetch). */
+    case WIRE_E2E_PAIRING_OFFERED: {
+        char words[MAX_LINE];
+        snprintf(words, sizeof(words), "%.71s %.95s %.63s", ev->u.e2e_pairing.rendezvous_id,
+                 ev->u.e2e_pairing.curve, ev->u.e2e_pairing.expires_at);
+        e2e_pair_enqueue(app, "offered", words, 0);
+        break;
+    }
+    case WIRE_E2E_PAIRING_MESSAGE:
+        e2e_pair_enqueue(app, "message", ev->u.e2e_pairing.rendezvous_id,
+                         (int)ev->u.e2e_pairing.from);
+        break;
+    case WIRE_E2E_PAIRING_CLOSED: {
+        char words[MAX_LINE];
+        snprintf(words, sizeof(words), "%.71s %s", ev->u.e2e_pairing.rendezvous_id,
+                 wire_pairing_close_reason_name(ev->u.e2e_pairing.reason));
+        e2e_pair_enqueue(app, "closed", words, 0);
+        break;
+    }
+
     /* E2E (§4f-§4l): narrowed, and consumed by the slices that read them —
      * the inbox drain (e2e_message, e2e_incoming*), sending
-     * (e2e_send_dropped), pairing (e2e_pairing_*: the joiner's hook is
-     * e2e_sync_slot's ELSEWHERE arm) and consent (e2e_request*). Until
-     * then each is KNOWN and deliberately dropped, as the avatar above. */
+     * (e2e_send_dropped) and consent (e2e_request*). Until then each is
+     * KNOWN and deliberately dropped, as the avatar above. */
     case WIRE_E2E_MESSAGE:
     case WIRE_E2E_SEND_DROPPED:
     case WIRE_E2E_INCOMING:
     case WIRE_E2E_INCOMING_LOST:
-    case WIRE_E2E_PAIRING_MESSAGE:
-    case WIRE_E2E_PAIRING_CLOSED:
-    case WIRE_E2E_PAIRING_OFFERED:
     case WIRE_E2E_REQUEST:
     case WIRE_E2E_REQUEST_GONE:
         break;
@@ -9448,9 +9537,14 @@ static void ws_try_reconnect(struct app *app) {
     ws_join_topics(app);
     log_line(app, "websocket connected");
     enqueue_refresh_all(app);
+    /* A pairing doorbell missed while down is not replayed, and in a
+     * handshake each side waits for the other. */
+    e2e_pair_enqueue(app, "catchup", "", 0);
 }
 
 static void ws_pump(struct app *app) {
+    /* Both loops run the pump, so the pairing's clock rides it. */
+    e2e_pair_clock(app);
     if (!app->ws_connected) {
         ws_try_reconnect(app);
         return;
@@ -14711,8 +14805,32 @@ static bool e2e_refused_as(const struct e2e_reply *r, const char *token) {
     return r->status >= 400 && strcmp(r->error, token) == 0;
 }
 
-/* The one call path every E2E door takes (wire.h's door table). True on a
- * 2xx — with `doc` set when the door answers a body, which must parse. */
+/* The one call path every E2E door takes (the door tables of wire.h). True
+ * on a 2xx — with `doc` set when the door answers a body, which must parse. */
+static bool e2e_http(struct app *app, const char *method, const char *path, bool has_body,
+                     const char *body, struct e2e_reply *out) {
+    struct http_response r = http_request(app, method, path, body);
+    out->status = r.status;
+    bool ok = r.status >= 200 && r.status < 300;
+    json_doc *d = r.status && r.body_len ? json_parse(r.body, r.body_len, NULL, 0) : NULL;
+    if (r.status == 0) {
+        snprintf(out->error, sizeof(out->error), "%.100s", r.body ? r.body : "");
+    } else if (!ok) {
+        const char *token = d ? wire_e2e_error(json_root(d)) : NULL;
+        if (token) snprintf(out->error, sizeof(out->error), "%.100s", token);
+    } else if (has_body) {
+        out->doc = d;
+        d = NULL;
+        if (!out->doc) {
+            snprintf(out->error, sizeof(out->error), "unreadable reply");
+            ok = false;
+        }
+    }
+    json_free(d);
+    free(r.body);
+    return ok;
+}
+
 static bool e2e_door(struct app *app, wire_e2e_door door, const char *slug, const char *did,
                      long after, const char *body, struct e2e_reply *out) {
     memset(out, 0, sizeof(*out));
@@ -14724,26 +14842,20 @@ static bool e2e_door(struct app *app, wire_e2e_door door, const char *slug, cons
         snprintf(out->error, sizeof(out->error), "no such path");
         return false;
     }
-    struct http_response r = http_request(app, wire_e2e_door_method(door), path, body);
-    out->status = r.status;
-    bool ok = r.status >= 200 && r.status < 300;
-    json_doc *d = r.status && r.body_len ? json_parse(r.body, r.body_len, NULL, 0) : NULL;
-    if (r.status == 0) {
-        snprintf(out->error, sizeof(out->error), "%.100s", r.body ? r.body : "");
-    } else if (!ok) {
-        const char *token = d ? wire_e2e_error(json_root(d)) : NULL;
-        if (token) snprintf(out->error, sizeof(out->error), "%.100s", token);
-    } else if (wire_e2e_door_has_body(door)) {
-        out->doc = d;
-        d = NULL;
-        if (!out->doc) {
-            snprintf(out->error, sizeof(out->error), "unreadable reply");
-            ok = false;
-        }
+    return e2e_http(app, wire_e2e_door_method(door), path, wire_e2e_door_has_body(door), body, out);
+}
+
+/* The pairing relay's doors (subject-wide). */
+static bool pair_door(struct app *app, wire_pair_door door, const char *id, long after,
+                      const char *body, struct e2e_reply *out) {
+    memset(out, 0, sizeof(*out));
+    char path[256];
+    if (!wire_pair_door_path(door, id, after, path, sizeof(path))) {
+        snprintf(out->error, sizeof(out->error), "no such path");
+        return false;
     }
-    json_free(d);
-    free(r.body);
-    return ok;
+    return e2e_http(app, wire_pair_door_method(door), path, wire_pair_door_has_body(door), body,
+                    out);
 }
 
 static struct e2e_slot *e2e_slot_by_slug_locked(struct app *app, const char *slug) {
@@ -15006,7 +15118,8 @@ static void e2e_view_elsewhere(struct app *app, struct e2e_slot *s, struct e2e_v
     v->held_devices = held ? held->ndevices : 0;
     card(app, s->slug,
          "--- e2e: the account's encrypted identity on %s does not include this device (%s) — "
-         "pair it from cicchetto; /e2e shows the details",
+         "pair it from cicchetto (\"add a device\", then /e2e pair accept here); /e2e shows the "
+         "details",
          s->slug, e2e_sync_plan_name(plan));
 }
 
@@ -15198,6 +15311,769 @@ static void e2e_init_slot(struct app *app, struct e2e_slot *s) {
     card(app, s->slug, "--- e2e: master key %s (what a peer, or a bot's operator, pins)", v.master);
 }
 
+/* ── E2E pairing, the joiner (see struct e2e_pairing) ─────────────────── */
+
+static const char *pair_outcome_name(int outcome) {
+    if (outcome == PAIR_ADDED) return "added";
+    if (outcome == PAIR_PENDING) return "pending";
+    return e2e_pair_refusal_name((e2e_pair_refusal)outcome);
+}
+
+static const char *pair_stage_name(enum pair_stage st) {
+    switch (st) {
+    case PAIR_IDLE: return "idle";
+    case PAIR_OFFERED: return "offered";
+    case PAIR_CODE: return "code";
+    case PAIR_CONFIRM: return "confirm";
+    case PAIR_JOINED: return "joined";
+    }
+    return "?";
+}
+
+/* "azzurra, libera" from the pairing's networks. */
+static void pair_net_list(const struct e2e_pairing *p, bool outcomes, char *out, size_t out_sz) {
+    size_t n = 0;
+    out[0] = '\0';
+    for (size_t i = 0; i < p->nnets && n + 1 < out_sz; i++) {
+        int w = outcomes ? snprintf(out + n, out_sz - n, "%s%s %s", i ? ", " : "", p->nets[i].slug,
+                                    pair_outcome_name(p->nets[i].outcome))
+                         : snprintf(out + n, out_sz - n, "%s%s", i ? ", " : "", p->nets[i].slug);
+        if (w < 0) break;
+        n += (size_t)w;
+        if (n >= out_sz) n = out_sz - 1;
+    }
+}
+
+/* The check code, 0..99, shown as two digits on both screens. */
+static unsigned pair_code(const struct e2e_pairing *p) {
+    int c = p->link ? vz_established_ecies_check_code(p->link) : -1;
+    return c < 0 ? 0u : (unsigned)c % 100u;
+}
+
+/* Publish what /e2e shows and when the clock rings. */
+static void pair_view_put(struct app *app) {
+    struct e2e_pairing *p = &app->pair;
+    struct pair_view v;
+    memset(&v, 0, sizeof(v));
+    v.stage = p->stage;
+    v.expires = p->expires;
+    if (p->link && p->stage >= PAIR_CODE)
+        snprintf(v.code, sizeof(v.code), "%02u", pair_code(p));
+    pair_net_list(p, false, v.networks, sizeof(v.networks));
+    snprintf(v.full, sizeof(v.full), "%s", p->full);
+    pthread_mutex_lock(&app->lock);
+    p->view = v;
+    p->deadline = p->stage == PAIR_IDLE ? 0 : p->expires;
+    p->tick_queued = false;
+    pthread_mutex_unlock(&app->lock);
+}
+
+/* A pairing line, in the window of the network it concerns. */
+static void pair_say(struct app *app, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static void pair_say(struct app *app, const char *fmt, ...) {
+    char body[MAX_LINE];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(body, sizeof(body), fmt, ap);
+    va_end(ap);
+    if (app->pair.home[0]) card(app, app->pair.home, "%s", body);
+    else log_line(app, "%s", body);
+}
+
+/* HH:MM:SS local, of a unix instant. */
+static void pair_clock_text(int64_t t, char *out, size_t out_sz) {
+    time_t tt = (time_t)t;
+    struct tm tm;
+    if (localtime_r(&tt, &tm)) strftime(out, out_sz, "%H:%M:%S", &tm);
+    else snprintf(out, out_sz, "?");
+}
+
+/* Whether this device has a use for a pairing: some network where it holds
+ * no place in the account's identity (cic: identityElsewhere somewhere).
+ * A network another shottino holds (BUSY) is that one's to pair. */
+static bool pair_useful(struct app *app) {
+    bool useful = false;
+    pthread_mutex_lock(&app->lock);
+    for (size_t i = 0; i < app->network_count && !useful; i++) {
+        struct e2e_slot *s = e2e_slot_by_slug_locked(app, app->networks[i].slug);
+        if (!s) useful = true;
+        else if (s->view.state != E2E_SLOT_READY && s->view.state != E2E_SLOT_BUSY) useful = true;
+    }
+    pthread_mutex_unlock(&app->lock);
+    return useful;
+}
+
+/* The network the lines go to: the first whose identity is elsewhere. */
+static void pair_pick_home(struct app *app) {
+    struct e2e_pairing *p = &app->pair;
+    p->home[0] = '\0';
+    pthread_mutex_lock(&app->lock);
+    for (size_t i = 0; i < app->network_count && !p->home[0]; i++) {
+        struct e2e_slot *s = e2e_slot_by_slug_locked(app, app->networks[i].slug);
+        if (!s || s->view.state == E2E_SLOT_ELSEWHERE)
+            snprintf(p->home, sizeof(p->home), "%s", app->networks[i].slug);
+    }
+    if (!p->home[0] && app->network_count)
+        snprintf(p->home, sizeof(p->home), "%s", app->networks[0].slug);
+    pthread_mutex_unlock(&app->lock);
+}
+
+/* What a refusal of a relay door means to the user. */
+static void pair_describe(const struct e2e_reply *r, char *out, size_t out_sz) {
+    if (e2e_refused_as(r, "client_token_scope"))
+        snprintf(out, out_sz, "grappa refuses pairing to a per-client token (HTTP 403 "
+                              "client_token_scope): pairing adds a device to the account, which "
+                              "takes a full login — start shottino with the account's password");
+    else if (r->status == 403 && strcmp(r->error, "forbidden") == 0)
+        snprintf(out, out_sz, "grappa refuses pairing to this session (HTTP 403 forbidden): an "
+                              "incognito visitor's session is never made portable");
+    else if (e2e_refused_as(r, "pairing_already_joined"))
+        snprintf(out, out_sz, "another device joined that pairing first");
+    else if (e2e_refused_as(r, "pairing_own_rendezvous"))
+        snprintf(out, out_sz, "this session opened that pairing itself");
+    else if (r->status == 404)
+        snprintf(out, out_sz, "the pairing is gone (closed or expired)");
+    else e2e_reply_describe(r, out, out_sz);
+}
+
+/* Every device this pairing registered and nobody listed, dropped again
+ * (identity.ts abandonJoin): one already gone, or listed after all (the
+ * holder's put went through), is left as it is. */
+static void pair_abandon(struct app *app, struct pair_net *net) {
+    if (!net->did[0]) return;
+    struct e2e_reply d;
+    if (!e2e_door(app, WIRE_E2E_DEVICE_DELETE, net->slug, net->did, -1, NULL, &d) &&
+        !e2e_refused_as(&d, "not_found") && !e2e_refused_as(&d, "listed_device")) {
+        char why[160];
+        e2e_reply_describe(&d, why, sizeof(why));
+        card(app, net->slug, "--- e2e: could not drop the unpaired device %s on %s (%s)", net->did,
+             net->slug, why);
+    }
+    e2e_reply_free(&d);
+    net->did[0] = '\0';
+}
+
+static void pair_reset(struct app *app) {
+    struct e2e_pairing *p = &app->pair;
+    if (p->link) vz_established_ecies_free(p->link);
+    p->link = NULL;
+    p->stage = PAIR_IDLE;
+    p->id[0] = p->curve[0] = p->full[0] = '\0';
+    p->expires = 0;
+    p->last_seq = 0;
+    p->nnets = 0;
+    pair_view_put(app);
+}
+
+/* The pairing ends before the signatures: the relay is closed when this
+ * side ends it (`close_relay`; a close grappa announced needs none), and
+ * every device it registered goes. */
+static void pair_end(struct app *app, bool close_relay, const char *fmt, ...)
+    __attribute__((format(printf, 3, 4)));
+static void pair_end(struct app *app, bool close_relay, const char *fmt, ...) {
+    struct e2e_pairing *p = &app->pair;
+    if (p->stage == PAIR_IDLE) return;
+    char why[MAX_LINE / 2];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(why, sizeof(why), fmt, ap);
+    va_end(ap);
+    if (close_relay && p->stage >= PAIR_CODE) {
+        struct e2e_reply r;
+        if (!pair_door(app, WIRE_PAIR_CLOSE, p->id, -1, NULL, &r) && r.status != 404) {
+            char said[160];
+            e2e_reply_describe(&r, said, sizeof(said));
+            pair_say(app, "--- e2e: could not close the pairing on grappa (%s); it expires on its own",
+                     said);
+        }
+        e2e_reply_free(&r);
+    }
+    for (size_t i = 0; i < p->nnets; i++) {
+        if (p->nets[i].did[0] && p->nets[i].outcome == PAIR_PENDING) p->nets[i].outcome = E2E_PAIR_FAILED;
+        pair_abandon(app, &p->nets[i]);
+    }
+    pair_say(app, "--- e2e: pairing ended — %s; nothing was paired", why);
+    pair_reset(app);
+}
+
+/* Seal `plaintext` and post it to the relay. */
+static bool pair_send(struct app *app, const char *plaintext) {
+    struct e2e_pairing *p = &app->pair;
+    char *ct = p->link ? vz_established_ecies_encrypt(p->link, (const uint8_t *)plaintext,
+                                                     strlen(plaintext))
+                       : NULL;
+    if (!ct) return false;
+    char *body = xasprintf("{\"payload\":\"%s\"}", ct);
+    vz_str_free(ct);
+    struct e2e_reply r;
+    bool ok = pair_door(app, WIRE_PAIR_POST, p->id, -1, body, &r);
+    free(body);
+    if (!ok) {
+        char why[160];
+        pair_describe(&r, why, sizeof(why));
+        pair_say(app, "--- e2e: the pairing relay refused a message (%s)", why);
+    }
+    e2e_reply_free(&r);
+    return ok;
+}
+
+/* A pairing offer (the push, or GET …/offer). */
+static void pair_offered(struct app *app, const char *id, const char *curve, const char *expires_at) {
+    struct e2e_pairing *p = &app->pair;
+    pthread_mutex_lock(&app->lock);
+    long proto = app->server_protocol;
+    pthread_mutex_unlock(&app->lock);
+    if (proto < E2E_PAIR_MIN_PROTOCOL) return;
+    int64_t expires;
+    if (!wire_pair_id_valid(id) || !e2e_curve25519_canonical(curve) ||
+        !e2e_iso8601_seconds(expires_at, &expires))
+        return;
+    /* Every user-topic join snapshot pushes the same offer again. */
+    if (p->stage != PAIR_IDLE && strcmp(p->id, id) == 0) return;
+    /* A pairing already running here keeps going; grappa holds one live
+     * rendezvous per account, so a newer one closes ours (`replaced`). */
+    if (p->stage > PAIR_OFFERED) return;
+    if (expires <= (int64_t)time(NULL) || !pair_useful(app)) return;
+    snprintf(p->id, sizeof(p->id), "%s", id);
+    snprintf(p->curve, sizeof(p->curve), "%s", curve);
+    p->expires = expires;
+    p->stage = PAIR_OFFERED;
+    pair_pick_home(app);
+    char until[16];
+    pair_clock_text(expires, until, sizeof(until));
+    pair_say(app, "--- e2e: another device of this account (cicchetto's \"add a device\") offers to "
+                  "pair this one, until %s — /e2e pair accept to join it, /e2e pair decline to "
+                  "ignore it",
+             until);
+    pair_view_put(app);
+}
+
+static void pair_on_payload(struct app *app, const char *payload);
+
+/* Read what the holder posted after the last seq delivered (cic's
+ * catchUp). A 404 is the rendezvous gone while a push saying how was missed. */
+static void pair_fetch(struct app *app) {
+    struct e2e_pairing *p = &app->pair;
+    if (p->stage < PAIR_CODE) return;
+    struct e2e_reply r;
+    if (!pair_door(app, WIRE_PAIR_MESSAGES, p->id, p->last_seq, NULL, &r)) {
+        bool gone = r.status == 404;
+        char why[160];
+        e2e_reply_describe(&r, why, sizeof(why));
+        e2e_reply_free(&r);
+        if (gone) pair_end(app, false, "the pairing is gone from grappa");
+        else pair_say(app, "--- e2e: reading the pairing relay failed (%s); the next doorbell tries again", why);
+        return;
+    }
+    const json_value *msgs;
+    size_t n;
+    if (!wire_narrow_pair_messages(json_root(r.doc), &msgs, &n)) {
+        e2e_reply_free(&r);
+        pair_end(app, true, "grappa's relay answered something that is no list of messages");
+        return;
+    }
+    for (size_t i = 0; i < n && p->stage >= PAIR_CODE; i++) {
+        struct wire_pair_message m;
+        if (!wire_pair_message_at(msgs, i, &m) || m.seq <= p->last_seq) continue;
+        p->last_seq = m.seq;
+        if (m.from == WIRE_PAIRING_JOINER) continue;
+        pair_on_payload(app, m.payload);
+    }
+    e2e_reply_free(&r);
+}
+
+/* /e2e pair accept: join the offer, show the code, say hello. */
+static void pair_accept(struct app *app) {
+    struct e2e_pairing *p = &app->pair;
+    pthread_mutex_lock(&app->lock);
+    long proto = app->server_protocol;
+    pthread_mutex_unlock(&app->lock);
+    if (proto < E2E_PAIR_MIN_PROTOCOL) {
+        log_line(app, "/e2e pair accept: refused — pairing needs server protocol v%d (this server "
+                      "speaks %s%ld)",
+                 E2E_PAIR_MIN_PROTOCOL, proto < 0 ? "an unknown version, " : "v", proto);
+        return;
+    }
+    if (p->stage > PAIR_OFFERED) {
+        log_line(app, "/e2e pair accept: a pairing is already under way (%s) — /e2e shows it",
+                 pair_stage_name(p->stage));
+        return;
+    }
+    if (!pair_useful(app)) {
+        log_line(app, "/e2e pair accept: refused — this device already holds the account's "
+                      "encrypted identity on every network; nothing to pair");
+        if (p->stage == PAIR_OFFERED) pair_reset(app);
+        return;
+    }
+    struct e2e_reply r;
+    char why[MAX_LINE / 2];
+    if (p->stage == PAIR_IDLE) {
+        /* The push was missed (or came before this run): ask. */
+        bool present = false;
+        struct wire_pair_offer o;
+        if (!pair_door(app, WIRE_PAIR_OFFER, NULL, -1, NULL, &r) ||
+            !wire_narrow_pair_offer(json_root(r.doc), &present, &o)) {
+            pair_describe(&r, why, sizeof(why));
+            log_line(app, "/e2e pair accept: cannot read the account's pairing offer (%s)", why);
+            e2e_reply_free(&r);
+            return;
+        }
+        if (present) pair_offered(app, o.rendezvous_id, o.curve, o.expires_at);
+        e2e_reply_free(&r);
+        if (p->stage != PAIR_OFFERED) {
+            log_line(app, "/e2e pair accept: no pairing is on offer — open \"add a device\" on the "
+                          "device that holds the identity (cicchetto) first");
+            return;
+        }
+    }
+    if (p->expires <= (int64_t)time(NULL)) {
+        pair_say(app, "--- e2e: the pairing offer expired; nothing was sent");
+        pair_reset(app);
+        return;
+    }
+    struct wire_pair_rendezvous rv;
+    if (!pair_door(app, WIRE_PAIR_JOIN, p->id, -1, NULL, &r) ||
+        !wire_narrow_pair_rendezvous(json_root(r.doc), &rv) || rv.role != WIRE_PAIRING_JOINER) {
+        if (r.status >= 200 && r.status < 300) snprintf(why, sizeof(why), "grappa's answer is no joined rendezvous");
+        else pair_describe(&r, why, sizeof(why));
+        e2e_reply_free(&r);
+        pair_say(app, "--- e2e: could not join the pairing: %s", why);
+        pair_reset(app);
+        return;
+    }
+    int64_t expires;
+    if (e2e_iso8601_seconds(rv.expires_at, &expires)) p->expires = expires;
+    e2e_reply_free(&r);
+
+    char *hello = e2e_pair_hello();
+    char *initial = NULL;
+    vz_ecies *ecies = vz_ecies_new(E2E_PAIRING_INFO);
+    p->link = ecies ? vz_ecies_establish_outbound(ecies, p->curve, (const uint8_t *)hello,
+                                                  strlen(hello), &initial)
+                    : NULL;
+    free(hello);
+    if (!p->link || !initial) {
+        if (initial) vz_str_free(initial);
+        p->stage = PAIR_CODE; /* joined: the relay is ours to close */
+        pair_end(app, true, "the offered key opens no channel");
+        return;
+    }
+    p->stage = PAIR_CODE;
+    p->last_seq = 0;
+    pair_view_put(app);
+    char until[16];
+    pair_clock_text(p->expires, until, sizeof(until));
+    pair_say(app, "--- e2e: joined the pairing. CHECK CODE  %02u  — type it on the other device "
+                  "(cicchetto's \"add a device\" screen) before %s",
+             pair_code(p), until);
+    char *wrapped = e2e_pair_wrap_initial(initial);
+    vz_str_free(initial);
+    char *body = xasprintf("{\"payload\":\"%s\"}", wrapped);
+    free(wrapped);
+    bool sent = pair_door(app, WIRE_PAIR_POST, p->id, -1, body, &r);
+    free(body);
+    if (!sent) {
+        pair_describe(&r, why, sizeof(why));
+        e2e_reply_free(&r);
+        pair_end(app, true, "the relay refused this device's hello (%s)", why);
+        return;
+    }
+    e2e_reply_free(&r);
+    /* The holder may have answered before this side looked. */
+    pair_fetch(app);
+}
+
+/* grappa's list for the network as the join reads it: true with `held`
+ * (borrowing `r->doc`) or *none on a 404; false on anything else. */
+static bool pair_held(struct app *app, const char *slug, struct e2e_reply *r, e2e_master_list *held,
+                      bool *none) {
+    *none = false;
+    if (e2e_door(app, WIRE_E2E_LIST_GET, slug, NULL, -1, NULL, r)) return e2e_held_list(json_root(r->doc), held);
+    *none = r->status == 404;
+    return *none;
+}
+
+/* identity.ts prepareJoin, for one network: this device's id block for
+ * `net->master` and its did on grappa, or a refusal. The device account is
+ * kept only when the record holds no place and grappa's list does not name
+ * it, so a run that died mid-pairing registers the same key again (the same
+ * device row); otherwise it starts over, keeping only the trust placed in
+ * others. The record is stored before the id block leaves. */
+static int pair_prepare(struct app *app, struct pair_net *net, e2e_pair_device *dev,
+                        char **curve_out, char **ed_out, char **sig_out) {
+    struct e2e_slot *s = e2e_slot_for(app, net->slug);
+    struct e2e_view v;
+    memset(&v, 0, sizeof(v));
+    if (!s) {
+        card(app, net->slug, "--- e2e: %s was offered and is not among this session's networks",
+             net->slug);
+        return E2E_PAIR_FAILED;
+    }
+    if (!e2e_slot_open(app, s, &v)) {
+        e2e_view_put(app, s, &v);
+        card(app, net->slug, "--- e2e: not pairing %s — %s", net->slug, v.why);
+        return E2E_PAIR_FAILED;
+    }
+    struct e2e_reply r;
+    e2e_master_list held;
+    bool none;
+    if (!pair_held(app, net->slug, &r, &held, &none)) {
+        char why[160];
+        e2e_reply_describe(&r, why, sizeof(why));
+        e2e_reply_free(&r);
+        card(app, net->slug, "--- e2e: not pairing %s — reading its device list: %s", net->slug, why);
+        return E2E_PAIR_FAILED;
+    }
+    /* The identity was replaced since the offer: starting over could drop
+     * the master grappa holds now. Only the user moves it. */
+    if (!none && (!held.ed25519 || strcmp(held.ed25519, net->master) != 0)) {
+        e2e_reply_free(&r);
+        card(app, net->slug, "--- e2e: not pairing %s — grappa holds another master than the one "
+                             "offered",
+             net->slug);
+        return E2E_PAIR_FAILED;
+    }
+    char *e = vz_account_ed25519_key(s->rec.account);
+    if (!e) die("vodozemac: %s", vz_last_error());
+    bool listed = false;
+    for (size_t i = 0; !none && i < held.ndevices && i < E2E_MAX_DEVICES; i++)
+        if (strcmp(held.devices[i], e) == 0) listed = true;
+    vz_str_free(e);
+    e2e_reply_free(&r);
+    if (listed && s->rec.own && strcmp(s->rec.own->master, net->master) == 0) return E2E_PAIR_PAIRED;
+    if (s->rec.master) {
+        /* This device made an identity here once: its master is never
+         * dropped by a pairing. */
+        card(app, net->slug, "--- e2e: not pairing %s — this device holds the master key of "
+                             "another identity there, which a pairing never drops",
+             net->slug);
+        return E2E_PAIR_FAILED;
+    }
+    if (listed || s->rec.own) {
+        card(app, net->slug, "--- e2e: %s: this device's place in its old identity is dropped for "
+                             "the pairing (the keys it pinned stay)",
+             net->slug);
+        e2e_record_start_over(&s->rec);
+    }
+    if (!e2e_pair_id_block(s->rec.account, net->master, curve_out, ed_out, sig_out))
+        return E2E_PAIR_FAILED;
+    if (!e2e_save(app, s)) return E2E_PAIR_FAILED;
+    /* The same S1 as the join carries: Ed25519 signs deterministically. */
+    char *reg = e2e_register_body(s->rec.account, net->master);
+    struct wire_e2e_device d;
+    memset(&r, 0, sizeof(r));
+    bool ok = reg && e2e_door(app, WIRE_E2E_DEVICE_REGISTER, net->slug, NULL, -1, reg, &r) &&
+              wire_narrow_e2e_device(json_root(r.doc), &d);
+    free(reg);
+    char did[E2E_DID_LEN + 1];
+    bool ours = ok && e2e_did(*ed_out, did) && strcmp(d.did, did) == 0;
+    if (!ok) {
+        bool full = e2e_refused_as(&r, "too_many_devices");
+        char why[160];
+        e2e_reply_describe(&r, why, sizeof(why));
+        e2e_reply_free(&r);
+        if (full) return E2E_PAIR_FULL;
+        card(app, net->slug, "--- e2e: not pairing %s — registering this device: %s", net->slug, why);
+        return E2E_PAIR_FAILED;
+    }
+    e2e_reply_free(&r);
+    if (!ours) {
+        card(app, net->slug, "--- e2e: not pairing %s — grappa registered this device under "
+                             "another did",
+             net->slug);
+        return E2E_PAIR_FAILED;
+    }
+    snprintf(net->did, sizeof(net->did), "%s", did);
+    dev->network = net->slug;
+    dev->id.curve25519 = *curve_out;
+    dev->id.ed25519 = *ed_out;
+    dev->id.sig = *sig_out;
+    return PAIR_PENDING;
+}
+
+/* /e2e pair confirm: a device on each network offered, then `join`. */
+static void pair_confirm(struct app *app) {
+    struct e2e_pairing *p = &app->pair;
+    if (p->stage != PAIR_CONFIRM) {
+        log_line(app, "/e2e pair confirm: nothing to confirm (%s) — /e2e shows the pairing",
+                 pair_stage_name(p->stage));
+        return;
+    }
+    p->stage = PAIR_JOINED;
+    pair_view_put(app);
+    e2e_pair_device devices[MAX_NETWORKS];
+    e2e_pair_refused skipped[MAX_NETWORKS];
+    char *keys[MAX_NETWORKS][3];
+    size_t nd = 0, ns = 0;
+    memset(keys, 0, sizeof(keys));
+    for (size_t i = 0; i < p->nnets; i++) {
+        struct pair_net *net = &p->nets[i];
+        int got = pair_prepare(app, net, &devices[nd], &keys[nd][0], &keys[nd][1], &keys[nd][2]);
+        if (got == PAIR_PENDING) {
+            nd++;
+        } else {
+            net->outcome = got;
+            skipped[ns].network = net->slug;
+            skipped[ns].reason = (e2e_pair_refusal)got;
+            ns++;
+            for (int k = 0; k < 3; k++) {
+                free(keys[nd][k]);
+                keys[nd][k] = NULL;
+            }
+        }
+    }
+    char *join = e2e_pair_join(devices, nd, skipped, ns);
+    for (size_t i = 0; i < nd; i++)
+        for (int k = 0; k < 3; k++) free(keys[i][k]);
+    bool sent = pair_send(app, join);
+    free(join);
+    if (!sent) {
+        pair_end(app, true, "sending this device's keys failed");
+        return;
+    }
+    char list[MAX_LINE / 2];
+    pair_net_list(p, true, list, sizeof(list));
+    pair_say(app, "--- e2e: sent this device's keys (%s); waiting for the other device to sign it in",
+             list);
+}
+
+/* `signed`: take each place the holder signed (identity.ts completeJoin),
+ * drop each device it did not, then `done`. The place is stored before the
+ * sync that uploads its keys, and before `done` leaves. */
+static void pair_complete(struct app *app, const e2e_pair_msg *m) {
+    struct e2e_pairing *p = &app->pair;
+    const char *paired[MAX_NETWORKS];
+    size_t np = 0;
+    for (size_t i = 0; i < p->nnets; i++) {
+        struct pair_net *net = &p->nets[i];
+        if (!net->did[0]) continue;
+        const e2e_pair_signed_entry *entry = NULL;
+        for (size_t k = 0; k < m->nsigned && !entry; k++)
+            if (strcmp(m->signed_[k].network, net->slug) == 0) entry = &m->signed_[k];
+        struct e2e_slot *s = e2e_slot_for(app, net->slug);
+        bool placed = false;
+        if (entry && s && s->have_rec) {
+            e2e_own own;
+            if (e2e_pair_accept_signed(net->master, s->rec.account, entry, &own)) {
+                e2e_own *was = s->rec.own;
+                s->rec.own = NULL;
+                e2e_replace_own(s, &own);
+                placed = e2e_save(app, s);
+                if (!placed) {
+                    e2e_own_free(s->rec.own);
+                    free(s->rec.own);
+                    s->rec.own = was;
+                } else if (was) {
+                    e2e_own_free(was);
+                    free(was);
+                }
+            } else {
+                card(app, net->slug, "--- e2e: the list or certificate the other device signed "
+                                     "does not verify on %s",
+                     net->slug);
+            }
+        }
+        if (placed) {
+            net->outcome = PAIR_ADDED;
+            net->did[0] = '\0'; /* listed now: never dropped */
+            paired[np++] = net->slug;
+            /* The keys go up; one that fails goes at the next sync. */
+            e2e_sync_slot(app, s);
+        } else {
+            int why = E2E_PAIR_FAILED;
+            for (size_t k = 0; !entry && k < m->nrefused; k++)
+                if (strcmp(m->refused[k].network, net->slug) == 0) why = (int)m->refused[k].reason;
+            net->outcome = why;
+            pair_abandon(app, net);
+        }
+    }
+    char *done = e2e_pair_done(paired, np);
+    bool sent = pair_send(app, done);
+    free(done);
+    char list[MAX_LINE / 2];
+    pair_net_list(p, true, list, sizeof(list));
+    if (np)
+        pair_say(app, "--- e2e: pairing done — %s; this device is now part of the account's "
+                      "identity there (/e2e shows it)%s",
+                 list, sent ? "" : " (telling the other device failed; it reports those networks failed)");
+    else
+        pair_say(app, "--- e2e: pairing done, nothing paired — %s", list);
+    /* The holder closes the rendezvous. */
+    pair_reset(app);
+}
+
+/* One payload from the holder, in order. */
+static void pair_on_payload(struct app *app, const char *payload) {
+    struct e2e_pairing *p = &app->pair;
+    vz_buf plain = {0};
+    if (!p->link || vz_established_ecies_decrypt(p->link, payload, &plain) != 0) {
+        pair_end(app, true, "a message from the other device does not decrypt");
+        return;
+    }
+    e2e_pair_msg m;
+    bool read = e2e_pair_decode(plain.ptr, plain.len, &m);
+    vz_buf_free(plain);
+    if (!read) {
+        pair_end(app, true, "the other device sent something that is no pairing message");
+        return;
+    }
+    if (p->stage == PAIR_CODE && m.kind == E2E_PAIR_OFFER) {
+        for (size_t i = 0; i < m.nnetworks && p->nnets < MAX_NETWORKS; i++) {
+            bool seen = false;
+            for (size_t k = 0; k < p->nnets; k++)
+                if (strcmp(p->nets[k].slug, m.networks[i].network) == 0) seen = true;
+            if (seen || strlen(m.networks[i].network) >= MAX_SLUG) continue;
+            struct pair_net *net = &p->nets[p->nnets++];
+            memset(net, 0, sizeof(*net));
+            snprintf(net->slug, sizeof(net->slug), "%s", m.networks[i].network);
+            snprintf(net->master, sizeof(net->master), "%s", m.networks[i].master);
+            net->outcome = PAIR_PENDING;
+        }
+        size_t n = 0;
+        p->full[0] = '\0';
+        for (size_t i = 0; i < m.nfull && n + 1 < sizeof(p->full); i++) {
+            int w = snprintf(p->full + n, sizeof(p->full) - n, "%s%s", i ? ", " : "", m.full[i]);
+            if (w < 0) break;
+            n += (size_t)w;
+        }
+        e2e_pair_msg_free(&m);
+        if (p->nnets == 0) {
+            pair_end(app, true, "the other device has no network to pair%s%s",
+                     p->full[0] ? "; full: " : "", p->full);
+            return;
+        }
+        p->stage = PAIR_CONFIRM;
+        pair_view_put(app);
+        char list[MAX_LINE / 2];
+        pair_net_list(p, false, list, sizeof(list));
+        pair_say(app, "--- e2e: the code matched; the other device offers to pair this one on %s%s%s%s "
+                      "— /e2e pair confirm to pair it, /e2e pair decline to stop",
+                 list, p->full[0] ? " (full, not offered: " : "", p->full, p->full[0] ? ")" : "");
+        return;
+    }
+    if (p->stage == PAIR_JOINED && m.kind == E2E_PAIR_SIGNED) {
+        pair_complete(app, &m);
+        e2e_pair_msg_free(&m);
+        return;
+    }
+    e2e_pair_msg_free(&m);
+    pair_end(app, true, "the other device sent a message out of turn");
+}
+
+/* JOB_E2E_PAIR: arg1 the verb; arg2 its words (see the enqueuers). */
+static void e2e_pair_job(struct app *app, const struct job *job) {
+    struct e2e_pairing *p = &app->pair;
+    const char *verb = job->arg1;
+    char id[72] = "", w2[96] = "", w3[64] = "";
+    sscanf(job->arg2, "%71s %95s %63s", id, w2, w3);
+    bool ours = p->stage != PAIR_IDLE && strcmp(p->id, id) == 0;
+    if (strcmp(verb, "offered") == 0) {
+        pair_offered(app, id, w2, w3);
+    } else if (strcmp(verb, "message") == 0) {
+        if (!ours) return;
+        /* The first message of a rendezvous is its joiner's: another device
+         * took an offer this one held. */
+        if (p->stage == PAIR_OFFERED) {
+            pair_say(app, "--- e2e: another device took the pairing offer");
+            pair_reset(app);
+        } else if (job->num == WIRE_PAIRING_CREATOR) {
+            pair_fetch(app);
+        }
+    } else if (strcmp(verb, "closed") == 0) {
+        if (!ours) return;
+        if (p->stage == PAIR_OFFERED) {
+            pair_say(app, "--- e2e: the pairing offer is gone (%s)", w2);
+            pair_reset(app);
+        } else if (strcmp(w2, "expired") == 0) {
+            pair_end(app, false, "the pairing expired on grappa");
+        } else if (strcmp(w2, "replaced") == 0) {
+            pair_end(app, false, "a newer pairing replaced it");
+        } else {
+            pair_end(app, false, "the other device closed it");
+        }
+    } else if (strcmp(verb, "tick") == 0) {
+        if (p->stage == PAIR_IDLE || (int64_t)time(NULL) < p->expires) {
+            pair_view_put(app);
+        } else if (p->stage == PAIR_OFFERED) {
+            pair_say(app, "--- e2e: the pairing offer expired");
+            pair_reset(app);
+        } else {
+            pair_end(app, true, "timed out (a pairing lives %d s)", E2E_PAIRING_LIFETIME_S);
+        }
+    } else if (strcmp(verb, "catchup") == 0) {
+        pair_fetch(app);
+    } else if (strcmp(verb, "accept") == 0) {
+        pair_accept(app);
+    } else if (strcmp(verb, "confirm") == 0) {
+        pair_confirm(app);
+    } else if (strcmp(verb, "decline") == 0) {
+        if (p->stage == PAIR_IDLE) {
+            log_line(app, "/e2e pair decline: no pairing to decline");
+        } else if (p->stage == PAIR_OFFERED) {
+            pair_say(app, "--- e2e: pairing offer declined; nothing was sent");
+            pair_reset(app);
+        } else {
+            pair_end(app, true, "declined here");
+        }
+    }
+}
+
+static void e2e_pair_enqueue(struct app *app, const char *verb, const char *words, int num) {
+    struct job job = {.kind = JOB_E2E_PAIR, .num = num};
+    snprintf(job.arg1, sizeof(job.arg1), "%s", verb);
+    snprintf(job.arg2, sizeof(job.arg2), "%s", words ? words : "");
+    enqueue_job(app, job);
+}
+
+/* The main loop's half: ring the worker once the pairing's deadline passed. */
+static void e2e_pair_clock(struct app *app) {
+    pthread_mutex_lock(&app->lock);
+    bool due = app->pair.deadline && !app->pair.tick_queued &&
+               (int64_t)time(NULL) >= app->pair.deadline;
+    if (due) app->pair.tick_queued = true;
+    pthread_mutex_unlock(&app->lock);
+    if (due) e2e_pair_enqueue(app, "tick", "", 0);
+}
+
+/* After the worker is joined. A pairing cut off here is the rendezvous'
+ * to expire; its unlisted devices are what the next pairing re-registers
+ * (the same key: the record was stored before they left). */
+static void e2e_pair_free(struct app *app) {
+    if (app->pair.link) vz_established_ecies_free(app->pair.link);
+    app->pair.link = NULL;
+}
+
+/* /e2e's pairing line, from the view; false when idle. Pure: tests read it. */
+static bool e2e_pair_status_line(const struct pair_view *v, int64_t now, char *out, size_t out_sz) {
+    long left = (long)(v->expires - now);
+    if (left < 0) left = 0;
+    switch (v->stage) {
+    case PAIR_IDLE:
+        return false;
+    case PAIR_OFFERED:
+        snprintf(out, out_sz, "e2e pairing: another device offers to pair this one (%lds left) — "
+                              "/e2e pair accept | /e2e pair decline",
+                 left);
+        return true;
+    case PAIR_CODE:
+        snprintf(out, out_sz, "e2e pairing: joined, CHECK CODE %s — type it on the other device; "
+                              "waiting for its offer (%lds left)",
+                 v->code, left);
+        return true;
+    case PAIR_CONFIRM:
+        snprintf(out, out_sz, "e2e pairing: offered on %s%s%s — /e2e pair confirm | /e2e pair "
+                              "decline (%lds left)",
+                 v->networks, v->full[0] ? "; full: " : "", v->full, left);
+        return true;
+    case PAIR_JOINED:
+        snprintf(out, out_sz, "e2e pairing: this device's keys sent for %s; waiting for the other "
+                              "device to sign it in (%lds left)",
+                 v->networks, left);
+        return true;
+    }
+    return false;
+}
+
 /* JOB_E2E_SYNC / JOB_E2E_INIT. An empty network is every listed one. */
 static void e2e_job(struct app *app, const struct job *job) {
     char slugs[MAX_NETWORKS][MAX_SLUG];
@@ -15297,8 +16173,32 @@ static void e2e_command(struct app *app, const char *args) {
     char sub[16] = "", net[MAX_SLUG] = "";
     sscanf(args, "%15s %127s", sub, net);
     bool status = !sub[0] || strcmp(sub, "status") == 0;
+    if (strcmp(sub, "pair") == 0) {
+        /* Subject-wide: one pairing covers every network. */
+        if (!net[0]) {
+            pthread_mutex_lock(&app->lock);
+            struct pair_view pv = app->pair.view;
+            pthread_mutex_unlock(&app->lock);
+            char line[MAX_LINE];
+            if (e2e_pair_status_line(&pv, (int64_t)time(NULL), line, sizeof(line)))
+                log_line(app, "%s", line);
+            else
+                log_line(app, "e2e pairing: none — when cicchetto's \"add a device\" offers one, "
+                              "/e2e pair accept joins it");
+            return;
+        }
+        if (strcmp(net, "accept") != 0 && strcmp(net, "confirm") != 0 &&
+            strcmp(net, "decline") != 0) {
+            log_line(app, "usage: /e2e pair [accept|confirm|decline]");
+            return;
+        }
+        log_line(app, "/e2e pair %s…", net);
+        e2e_pair_enqueue(app, net, "", 0);
+        return;
+    }
     if (!status && strcmp(sub, "init") != 0 && strcmp(sub, "sync") != 0) {
-        log_line(app, "usage: /e2e [status [network]] | init [network] | sync [network]");
+        log_line(app, "usage: /e2e [status [network]] | init [network] | sync [network] | pair "
+                      "[accept|confirm|decline]");
         return;
     }
     if (!net[0] && !status) current_window_key(app, net, sizeof(net), NULL, 0);
@@ -15336,6 +16236,12 @@ static void e2e_command(struct app *app, const char *args) {
             for (size_t j = 0; j < k; j++) log_line(app, "%s", lines[j]);
         }
         if (n == 0) log_line(app, "e2e: no networks");
+        pthread_mutex_lock(&app->lock);
+        struct pair_view pv = app->pair.view;
+        pthread_mutex_unlock(&app->lock);
+        char line[MAX_LINE];
+        if (e2e_pair_status_line(&pv, (int64_t)time(NULL), line, sizeof(line)))
+            log_line(app, "%s", line);
         return;
     }
     if (proto < E2E_MIN_PROTOCOL) {
@@ -15374,6 +16280,9 @@ static void *worker_main(void *arg) {
         case JOB_E2E_SYNC:
         case JOB_E2E_INIT:
             e2e_job(app, &job);
+            break;
+        case JOB_E2E_PAIR:
+            e2e_pair_job(app, &job);
             break;
         case JOB_FETCH:
             refresh_window(app, job.network, job.channel);
@@ -17150,7 +18059,26 @@ static void complete_input(struct app *app) {
             set_def = setting_find(first);
         }
     }
-    if (typed == 0 || (stem_len == 0 && !set_values)) return;
+    /* /e2e's own words, and /e2e pair's: from the verbs e2e_command reads. */
+    static const char *const E2E_SUBS[] = {"init", "pair", "status", "sync"};
+    static const char *const E2E_PAIR_SUBS[] = {"accept", "confirm", "decline"};
+    const char *const *e2e_words = NULL;
+    size_t e2e_nwords = 0;
+    if (strncmp(prefix, "/e2e ", 5) == 0) {
+        const char *rest = prefix + 5;
+        while (*rest == ' ') rest++;
+        char first[16];
+        const char *after = split_head(rest, first, sizeof(first));
+        while (*after == ' ') after++;
+        if (stem == rest) {
+            e2e_words = E2E_SUBS;
+            e2e_nwords = sizeof(E2E_SUBS) / sizeof(E2E_SUBS[0]);
+        } else if (strcmp(first, "pair") == 0 && stem == after) {
+            e2e_words = E2E_PAIR_SUBS;
+            e2e_nwords = sizeof(E2E_PAIR_SUBS) / sizeof(E2E_PAIR_SUBS[0]);
+        }
+    }
+    if (typed == 0 || (stem_len == 0 && !set_values && !e2e_words)) return;
 
     char candidates[64][MAX_CHANNEL];
     size_t matches = 0;
@@ -17169,6 +18097,9 @@ static void complete_input(struct app *app) {
             snprintf(verb, sizeof(verb), "/%s", app->aliases.entries[i].name);
             add_completion_candidate(candidates, &matches, verb, stem);
         }
+    } else if (e2e_words) {
+        for (size_t i = 0; i < e2e_nwords; i++)
+            add_completion_candidate(candidates, &matches, e2e_words[i], stem);
     } else if (set_values) {
         /* On the VALUE. The words come from the same table /set
          * validates against, so what completes is what would be
@@ -19749,7 +20680,7 @@ static void show_command_help(struct app *app, const char *raw) {
     else if (strcmp(cmd, "exec") == 0) log_line(app, "/exec <command> — run it in a shell and SEND its stdout to the current window (everyone sees it); capped at 20 lines / 16 KiB, killed after 15s, stderr discarded");
     else if (strcmp(cmd, "ctcp") == 0) log_line(app, "/ctcp <nick|#channel> <VERB> [args] — send any CTCP query (VERSION, TIME, FINGER…); the reply lands in the window you asked from. /ping is the timed special case");
     else if (strcmp(cmd, "ping") == 0) log_line(app, "/ping nick — CTCP PING somebody and time the round trip; the answer lands in the window you asked from");
-    else if (strcmp(cmd, "e2e") == 0) log_line(app, "/e2e [status [network]] — per network: whether this device is part of the account's end-to-end encrypted identity (none, elsewhere, holder, paired), its device id, the device list version and size, whether it holds the master key, and its key bundle on grappa. /e2e init [network] creates the identity when the account has none (this device becomes its first and holds the master key; never replaces one). /e2e sync [network] reads it again. Needs server protocol v49");
+    else if (strcmp(cmd, "e2e") == 0) log_line(app, "/e2e [status [network]] — per network: whether this device is part of the account's end-to-end encrypted identity (none, elsewhere, holder, paired), its device id, the device list version and size, whether it holds the master key, and its key bundle on grappa. /e2e init [network] creates the identity when the account has none (this device becomes its first and holds the master key; never replaces one). /e2e sync [network] reads it again. Needs server protocol v49. /e2e pair [accept|confirm|decline] pairs this device onto an identity another device holds: when cicchetto's \"add a device\" offers a pairing, accept joins it and shows a 2-digit check code to type there; once it matched, confirm registers this device on the networks offered; decline stops at any step. Needs protocol v55 and a password login");
     else if (strcmp(cmd, "block") == 0 || strcmp(cmd, "ignore") == 0) log_line(app, "/block [nick], /ignore [nick] — hide somebody's messages in THIS client only (nothing is sent to the server); bare /block lists who is blocked");
     else if (strcmp(cmd, "unblock") == 0 || strcmp(cmd, "unignore") == 0) log_line(app, "/unblock nick, /unignore nick — show somebody's messages again");
     else if (strcmp(cmd, "whowas") == 0) log_line(app, "/whowas nick — request WHOWAS for nick");
@@ -25593,6 +26524,7 @@ int main(int argc, char **argv) {
     /* The worker owned them; it is gone, so the locks on the E2E
      * devices are let go here. */
     e2e_slots_free(app);
+    e2e_pair_free(app);
     /* The model thread. It was never stopped and never joined: llm_stop
      * was declared, read in the loop below, and assigned NOWHERE, so
      * shutdown went on to free every log line, destroy app->lock, free

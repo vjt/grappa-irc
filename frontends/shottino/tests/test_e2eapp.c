@@ -14,6 +14,13 @@
  * unknown_device, the cap of three devices), and it checks every
  * signature it is handed with the same vodozemac the client signs with —
  * a client that uploads a key it did not sign fails here, not in prod.
+ *
+ * Pairing (§4g): the fake grappa also runs the blind relay, and the HOLDER
+ * on the other end is scripted here the way cicchetto's holderPairing
+ * behaves, from vodozemac and hand-written JSON only — it does not use
+ * e2e.c's pairing code, so what it accepts is the joiner's bytes judged
+ * independently: the base64url of the initial message, the hello, the
+ * join's id block and its S1 over the offered master, the done.
  */
 #define main shottino_main_unused
 #include "../shottino.c"
@@ -50,6 +57,19 @@ static struct {
     int fail_put_status;
     char fail_put_error[32];
     int fail_upload_status;
+    /* the pairing relay: one rendezvous, the holder (creator) in-process */
+    struct {
+        bool live, joined;
+        char id[32], curve[64], expires[32];
+        struct {
+            long seq;
+            wire_pairing_side from;
+            char payload[8192];
+        } msg[16];
+        size_t n;
+        int fail_join_status;
+        char fail_join_error[32];
+    } rv;
     /* every request, "METHOD path\n" */
     char log[16384];
     size_t requests;
@@ -62,6 +82,7 @@ static void fg_reset(void) {
     fg.ndev = 0;
     fg.fail_put_status = 0;
     fg.fail_upload_status = 0;
+    memset(&fg.rv, 0, sizeof(fg.rv));
     fg.log[0] = 0;
     fg.requests = 0;
     pthread_mutex_unlock(&fg.lock);
@@ -109,12 +130,114 @@ static char *fg_device_json(const fg_device *d) {
         return xasprintf("{\"error\":\"%s\"}", token);                                             \
     } while (0)
 
+
+/* grappa's payload rule (lib/grappa/e2e_pairing.ex): base64 of either
+ * alphabet, at most 16 KiB. */
+static bool fg_payload_ok(const char *p) {
+    size_t n = p ? strlen(p) : 0;
+    if (n == 0 || n > 16384) return false;
+    size_t i = 0;
+    while (i < n && (isalnum((unsigned char)p[i]) || p[i] == '+' || p[i] == '/' || p[i] == '-' ||
+                     p[i] == '_'))
+        i++;
+    size_t pad = n - i;
+    if (pad > 2) return false;
+    for (; i < n; i++)
+        if (p[i] != '=') return false;
+    return true;
+}
+
+static char *fg_rendezvous_json(const char *role) {
+    return xasprintf("{\"rendezvous\":{\"id\":\"%s\",\"role\":\"%s\",\"expires_at\":\"%s\"}}",
+                     fg.rv.id, role, fg.rv.expires);
+}
+
+/* The relay's six doors, seen from the joiner's bearer (every HTTP
+ * request here is the joiner's: the holder is in-process). */
+static char *fg_pairing(const char *method, const char *rest, const char *body, int *status) {
+    *status = 200;
+    if (strcmp(rest, "/offer") == 0 && strcmp(method, "GET") == 0) {
+        if (!fg.rv.live || fg.rv.joined) return xasprintf("{\"offer\":null}");
+        return xasprintf("{\"offer\":{\"rendezvous_id\":\"%s\",\"curve\":\"%s\",\"expires_at\":"
+                         "\"%s\"}}",
+                         fg.rv.id, fg.rv.curve, fg.rv.expires);
+    }
+    if (rest[0] != '/') FG_ERR(404, "not_found");
+    char id[64] = "";
+    size_t n = strcspn(rest + 1, "/?");
+    if (n >= sizeof(id)) FG_ERR(404, "not_found");
+    memcpy(id, rest + 1, n);
+    id[n] = 0;
+    const char *tail = rest + 1 + n;
+    if (!fg.rv.live || strcmp(id, fg.rv.id) != 0) FG_ERR(404, "not_found");
+    if (strcmp(tail, "/join") == 0 && strcmp(method, "POST") == 0) {
+        if (fg.rv.fail_join_status) {
+            *status = fg.rv.fail_join_status;
+            return xasprintf("{\"error\":\"%s\"}", fg.rv.fail_join_error);
+        }
+        if (fg.rv.joined) FG_ERR(409, "pairing_already_joined");
+        fg.rv.joined = true;
+        return fg_rendezvous_json("joiner");
+    }
+    if (strcmp(tail, "/messages") == 0 && strcmp(method, "POST") == 0) {
+        json_doc *doc = body ? json_parse(body, strlen(body), NULL, 0) : NULL;
+        const char *payload = doc ? json_string(json_get(json_root(doc), "payload")) : NULL;
+        char *out;
+        if (!fg.rv.joined) {
+            *status = 409;
+            out = xasprintf("{\"error\":\"pairing_not_joined\"}");
+        } else if (!fg_payload_ok(payload)) {
+            *status = 422;
+            out = xasprintf("{\"error\":\"bad_request\"}");
+        } else if (fg.rv.n >= sizeof(fg.rv.msg) / sizeof(fg.rv.msg[0]) ||
+                   strlen(payload) >= sizeof(fg.rv.msg[0].payload)) {
+            *status = 413;
+            out = xasprintf("{\"error\":\"pairing_full\"}");
+        } else {
+            long seq = (long)fg.rv.n + 1;
+            fg.rv.msg[fg.rv.n].seq = seq;
+            fg.rv.msg[fg.rv.n].from = WIRE_PAIRING_JOINER;
+            snprintf(fg.rv.msg[fg.rv.n].payload, sizeof(fg.rv.msg[0].payload), "%s", payload);
+            fg.rv.n++;
+            *status = 201;
+            out = xasprintf("{\"message\":{\"seq\":%ld,\"from\":\"joiner\",\"payload\":\"%s\"}}",
+                            seq, payload);
+        }
+        json_free(doc);
+        return out;
+    }
+    if (strncmp(tail, "/messages", 9) == 0 && strcmp(method, "GET") == 0) {
+        const char *after = strstr(tail, "?after=");
+        long from = after ? strtol(after + 7, NULL, 10) : 0;
+        char *out = xasprintf("{\"messages\":[");
+        bool first = true;
+        for (size_t i = 0; i < fg.rv.n; i++) {
+            if (fg.rv.msg[i].seq <= from || fg.rv.msg[i].from != WIRE_PAIRING_CREATOR) continue;
+            char *joined = xasprintf("%s%s{\"seq\":%ld,\"from\":\"creator\",\"payload\":\"%s\"}",
+                                     out, first ? "" : ",", fg.rv.msg[i].seq, fg.rv.msg[i].payload);
+            free(out);
+            out = joined;
+            first = false;
+        }
+        char *closed = xasprintf("%s]}", out);
+        free(out);
+        return closed;
+    }
+    if (!tail[0] && strcmp(method, "DELETE") == 0) {
+        fg.rv.live = false;
+        *status = 204;
+        return xasprintf("%s", "");
+    }
+    FG_ERR(404, "not_found");
+}
+
 /* One request, under fg.lock. Returns the body (malloc'd, may be "") and
  * sets the status. */
 static char *fg_handle(const char *method, const char *path, const char *body, int *status) {
     const char *prefix = "/networks/azzurra/e2e";
     *status = 200;
     if (strcmp(path, "/api/config") == 0) return xasprintf("{\"protocol_version\":59}");
+    if (strncmp(path, "/e2e/pairings", 13) == 0) return fg_pairing(method, path + 13, body, status);
     if (strncmp(path, prefix, strlen(prefix)) != 0) FG_ERR(404, "not_found");
     const char *rest = path + strlen(prefix);
     json_doc *doc = body && body[0] ? json_parse(body, strlen(body), NULL, 0) : NULL;
@@ -725,6 +848,635 @@ TEST(the_command_reads_its_arguments) {
     free_e2e_app(app);
 }
 
+/* ── the holder: cicchetto's holderPairing, scripted ──────────────────── */
+
+#define TH_ID "Rv0123456789abcdefghij"
+
+static struct {
+    vz_account *master, *device;
+    char m[64], e[64];
+    vz_ecies *ecies;
+    char curve[64];
+    vz_established_ecies *link;
+    long seen; /* the last joiner seq read */
+    int code;
+} th;
+
+static char *th_vz(char *s) {
+    char *out = s ? strdup(s) : NULL;
+    vz_str_free(s);
+    return out;
+}
+
+static void th_free(void) {
+    vz_account_free(th.master);
+    vz_account_free(th.device);
+    vz_ecies_free(th.ecies);
+    vz_established_ecies_free(th.link);
+    memset(&th, 0, sizeof(th));
+}
+
+static void iso_in(long secs, char *out, size_t out_sz) {
+    time_t t = time(NULL) + secs;
+    struct tm tm;
+    gmtime_r(&t, &tm);
+    strftime(out, out_sz, "%Y-%m-%dT%H:%M:%SZ", &tm);
+}
+
+/* The account's identity on azzurra, made on the holder (cic's
+ * bootstrap): its device registered, the list v1 naming it alone. */
+static void th_identity(void) {
+    th_free();
+    th.master = vz_account_new();
+    th.device = vz_account_new();
+    char *m = th_vz(vz_account_ed25519_key(th.master));
+    char *e = th_vz(vz_account_ed25519_key(th.device));
+    char *c = th_vz(vz_account_curve25519_key(th.device));
+    snprintf(th.m, sizeof(th.m), "%s", m);
+    snprintf(th.e, sizeof(th.e), "%s", e);
+    char text[256];
+    snprintf(text, sizeof(text), "irc-e2e:v2:id:%s:%s", c, m);
+    char *s1 = th_vz(vz_account_sign(th.device, text));
+    snprintf(text, sizeof(text), "irc-e2e:v2:list:1:%s", e);
+    char *ls = th_vz(vz_account_sign(th.master, text));
+    pthread_mutex_lock(&fg.lock);
+    fg_device *d = &fg.dev[fg.ndev++];
+    memset(d, 0, sizeof(*d));
+    e2e_did(e, d->did);
+    snprintf(d->ed, sizeof(d->ed), "%s", e);
+    snprintf(d->curve, sizeof(d->curve), "%s", c);
+    snprintf(d->sig, sizeof(d->sig), "%s", s1);
+    fg.has_list = true;
+    snprintf(fg.master, sizeof(fg.master), "%s", m);
+    fg.ver = 1;
+    fg.ndevices = 1;
+    snprintf(fg.devices[0], sizeof(fg.devices[0]), "%s", e);
+    snprintf(fg.list_sig, sizeof(fg.list_sig), "%s", ls);
+    pthread_mutex_unlock(&fg.lock);
+    free(m);
+    free(e);
+    free(c);
+    free(s1);
+    free(ls);
+}
+
+/* "add a device": a fresh ECIES, its key on the open (v55's offer). */
+static void th_open(long lifetime) {
+    vz_ecies_free(th.ecies);
+    vz_established_ecies_free(th.link);
+    th.link = NULL;
+    th.seen = 0;
+    th.ecies = vz_ecies_new(E2E_PAIRING_INFO);
+    char *k = th_vz(vz_ecies_public_key(th.ecies));
+    snprintf(th.curve, sizeof(th.curve), "%s", k);
+    free(k);
+    pthread_mutex_lock(&fg.lock);
+    memset(&fg.rv, 0, sizeof(fg.rv));
+    fg.rv.live = true;
+    snprintf(fg.rv.id, sizeof(fg.rv.id), "%s", TH_ID);
+    snprintf(fg.rv.curve, sizeof(fg.rv.curve), "%s", th.curve);
+    iso_in(lifetime, fg.rv.expires, sizeof(fg.rv.expires));
+    pthread_mutex_unlock(&fg.lock);
+}
+
+/* The next payload the joiner posted, or NULL. */
+static char *th_next(void) {
+    char *out = NULL;
+    pthread_mutex_lock(&fg.lock);
+    for (size_t i = 0; i < fg.rv.n && !out; i++) {
+        if (fg.rv.msg[i].from != WIRE_PAIRING_JOINER || fg.rv.msg[i].seq <= th.seen) continue;
+        th.seen = fg.rv.msg[i].seq;
+        out = strdup(fg.rv.msg[i].payload);
+    }
+    pthread_mutex_unlock(&fg.lock);
+    return out;
+}
+
+static void th_post_raw(const char *payload) {
+    pthread_mutex_lock(&fg.lock);
+    size_t i = fg.rv.n++;
+    fg.rv.msg[i].seq = (long)fg.rv.n;
+    fg.rv.msg[i].from = WIRE_PAIRING_CREATOR;
+    snprintf(fg.rv.msg[i].payload, sizeof(fg.rv.msg[i].payload), "%s", payload);
+    pthread_mutex_unlock(&fg.lock);
+}
+
+static void th_post(const char *plaintext) {
+    char *ct = th_vz(vz_established_ecies_encrypt(th.link, (const uint8_t *)plaintext,
+                                                  strlen(plaintext)));
+    th_post_raw(ct);
+    free(ct);
+}
+
+/* The joiner's next message, opened; NULL when none or it does not open. */
+static char *th_read(void) {
+    char *payload = th_next();
+    if (!payload || !th.link) {
+        free(payload);
+        return NULL;
+    }
+    vz_buf plain;
+    int rc = vz_established_ecies_decrypt(th.link, payload, &plain);
+    free(payload);
+    if (rc != 0) return NULL;
+    char *out = strndup((const char *)plain.ptr, plain.len);
+    vz_buf_free(plain);
+    return out;
+}
+
+/* The holder's `hello` step (unwrapInitial + establish_inbound): true when
+ * the joiner's first payload is base64url of an initial message sealed to
+ * this pairing's key, carrying exactly {"v":1,"t":"hello"}. */
+static bool th_hello(void) {
+    char *payload = th_next();
+    if (!payload) return false;
+    bool ok = strspn(payload, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") ==
+              strlen(payload);
+    for (char *p = payload; *p; p++) {
+        if (*p == '-') *p = '+';
+        if (*p == '_') *p = '/';
+    }
+    vz_buf raw;
+    ok = ok && vz_base64_decode(payload, &raw) == 0;
+    free(payload);
+    if (!ok) return false;
+    char *initial = strndup((const char *)raw.ptr, raw.len);
+    vz_buf_free(raw);
+    vz_buf plain;
+    vz_ecies *once = th.ecies;
+    th.ecies = NULL;
+    th.link = vz_ecies_establish_inbound(once, initial, &plain);
+    free(initial);
+    if (!th.link) return false;
+    ok = plain.len == strlen("{\"v\":1,\"t\":\"hello\"}") &&
+         memcmp(plain.ptr, "{\"v\":1,\"t\":\"hello\"}", plain.len) == 0;
+    vz_buf_free(plain);
+    th.code = vz_established_ecies_check_code(th.link);
+    return ok;
+}
+
+static void th_offer(void) {
+    char *offer = xasprintf("{\"v\":1,\"t\":\"offer\",\"networks\":[{\"network\":\"azzurra\","
+                            "\"master\":\"%s\"}],\"full\":[]}",
+                            th.m);
+    th_post(offer);
+    free(offer);
+}
+
+/* The holder's reading of `join` (pairingMessages decode + issueDevice's
+ * checks): one device on azzurra whose keys are canonical and whose S1
+ * vouches for this master; its key into *joiner. */
+static bool th_join(char joiner[64]) {
+    char *text = th_read();
+    json_doc *d = text ? json_parse(text, strlen(text), NULL, 0) : NULL;
+    free(text);
+    const json_value *o = d ? json_root(d) : NULL;
+    double v;
+    bool ok = o && json_number(json_get(o, "v"), &v) && v == 1 &&
+              json_str_is(json_get(o, "t"), "join");
+    const json_value *devs = json_get(o, "devices");
+    const json_value *skipped = json_get(o, "skipped");
+    ok = ok && json_type_of(devs) == JSON_ARRAY && json_len(devs) == 1 &&
+         json_type_of(skipped) == JSON_ARRAY && json_len(skipped) == 0;
+    const json_value *dev = json_at(devs, 0);
+    const json_value *id = json_get(dev, "id");
+    const char *curve = json_string(json_get(id, "curve25519"));
+    const char *ed = json_string(json_get(id, "ed25519"));
+    const char *sig = json_string(json_get(id, "sig"));
+    ok = ok && json_str_is(json_get(dev, "network"), "azzurra") && curve && ed && sig;
+    if (ok) {
+        char *cc = th_vz(vz_canonical_curve25519(curve)), *ce = th_vz(vz_canonical_ed25519(ed));
+        ok = cc && ce && strcmp(cc, curve) == 0 && strcmp(ce, ed) == 0;
+        free(cc);
+        free(ce);
+        char s1[256];
+        snprintf(s1, sizeof(s1), "irc-e2e:v2:id:%s:%s", curve, th.m);
+        ok = ok && vz_verify_ed25519(ed, s1, sig) == 1;
+        snprintf(joiner, 64, "%s", ed);
+    }
+    json_free(d);
+    return ok;
+}
+
+/* addDevice + `signed`: the list at v2 with the joiner (sorted), its cert
+ * at 2, put on grappa first, then sent. `cert_ver` lets a test sign the
+ * certificate at the wrong version. */
+static void th_sign(const char *joiner, long cert_ver) {
+    const char *a = strcmp(th.e, joiner) < 0 ? th.e : joiner;
+    const char *b = a == th.e ? joiner : th.e;
+    char text[256];
+    snprintf(text, sizeof(text), "irc-e2e:v2:list:2:%s,%s", a, b);
+    char *ls = th_vz(vz_account_sign(th.master, text));
+    snprintf(text, sizeof(text), "irc-e2e:v2:dev:%ld:%s", cert_ver, joiner);
+    char *cert = th_vz(vz_account_sign(th.master, text));
+    char *put = xasprintf("{\"master\":\"%s\",\"ver\":2,\"devices\":[\"%s\",\"%s\"],\"sig\":\"%s\"}",
+                          th.m, a, b, ls);
+    pthread_mutex_lock(&fg.lock);
+    int status;
+    char *reply = fg_handle("PUT", "/networks/azzurra/e2e/list", put, &status);
+    pthread_mutex_unlock(&fg.lock);
+    CHECK_LONG(status, 200);
+    free(reply);
+    free(put);
+    char *msg = xasprintf("{\"v\":1,\"t\":\"signed\",\"devices\":[{\"network\":\"azzurra\",\"cert\":"
+                          "\"%s\",\"list\":{\"ver\":2,\"devices\":[\"%s\",\"%s\"],\"sig\":\"%s\"}}],"
+                          "\"refused\":[]}",
+                          cert, a, b, ls);
+    th_post(msg);
+    free(msg);
+    free(ls);
+    free(cert);
+}
+
+/* ── the joiner, driven ───────────────────────────────────────────────── */
+
+static void pair_run(struct app *app, const char *verb, const char *words, int num) {
+    struct job job = {.kind = JOB_E2E_PAIR, .num = num};
+    snprintf(job.arg1, sizeof(job.arg1), "%s", verb);
+    snprintf(job.arg2, sizeof(job.arg2), "%s", words ? words : "");
+    e2e_pair_job(app, &job);
+}
+
+/* The offer push as grappa sends it, for the rendezvous th_open made. */
+static void push_offer(struct app *app) {
+    char words[256];
+    pthread_mutex_lock(&fg.lock);
+    snprintf(words, sizeof(words), "%s %s %s", fg.rv.id, fg.rv.curve, fg.rv.expires);
+    pthread_mutex_unlock(&fg.lock);
+    pair_run(app, "offered", words, 0);
+}
+
+static void ring(struct app *app) { pair_run(app, "message", TH_ID, WIRE_PAIRING_CREATOR); }
+
+static struct pair_view pair_view_of(struct app *app) {
+    pthread_mutex_lock(&app->lock);
+    struct pair_view v = app->pair.view;
+    pthread_mutex_unlock(&app->lock);
+    return v;
+}
+
+static size_t fg_ndev(void) {
+    pthread_mutex_lock(&fg.lock);
+    size_t n = fg.ndev;
+    pthread_mutex_unlock(&fg.lock);
+    return n;
+}
+
+/* The joiner up to CONFIRM: an identity on the holder, this device synced
+ * (elsewhere), the offer pushed, accepted, the code matched, offered. */
+static struct app *pair_to_confirm(const char *subject) {
+    fg_reset();
+    th_identity();
+    struct app *app = e2e_app(subject);
+    run_job(app, JOB_E2E_SYNC);
+    CHECK(view_of(app).state == E2E_SLOT_ELSEWHERE);
+    th_open(300);
+    push_offer(app);
+    pair_run(app, "accept", "", 0);
+    CHECK(th_hello());
+    char code[3];
+    snprintf(code, sizeof(code), "%02d", th.code);
+    CHECK_STR(pair_view_of(app).code, code);
+    th_offer();
+    ring(app);
+    CHECK(pair_view_of(app).stage == PAIR_CONFIRM);
+    return app;
+}
+
+static void free_pair_app(struct app *app) {
+    e2e_pair_free(app);
+    free_e2e_app(app);
+}
+
+/* The whole joiner, against a cic-like holder: offer → accept → the same
+ * code on both sides → offer → confirm → registered and S1 over the
+ * offered master → signed → placed, keys up, done → paired on disk. */
+TEST(pairing_joins_an_identity_end_to_end) {
+    fg_reset();
+    th_identity();
+    struct app *app = e2e_app("user:pair-ok");
+    run_job(app, JOB_E2E_SYNC);
+    CHECK(view_of(app).state == E2E_SLOT_ELSEWHERE);
+    CHECK(said(app, "/e2e pair accept here"));
+
+    th_open(300);
+    push_offer(app);
+    CHECK(pair_view_of(app).stage == PAIR_OFFERED);
+    CHECK(said(app, "offers to pair this one"));
+    CHECK(said(app, "/e2e pair accept to join it, /e2e pair decline to ignore it"));
+    char line[MAX_LINE];
+    struct pair_view pv = pair_view_of(app);
+    CHECK(e2e_pair_status_line(&pv, (int64_t)time(NULL), line, sizeof(line)) &&
+          strstr(line, "/e2e pair accept"));
+    /* An offer joins nothing by itself. */
+    CHECK(!fg_logged("POST /e2e/pairings"));
+    /* The snapshot of the next user-topic join pushes it again: said once. */
+    size_t lines = app->log_count;
+    push_offer(app);
+    CHECK_LONG(app->log_count, lines);
+
+    pair_run(app, "accept", "", 0);
+    CHECK(fg_logged("POST /e2e/pairings/" TH_ID "/join"));
+    CHECK(pair_view_of(app).stage == PAIR_CODE);
+    CHECK(said(app, "CHECK CODE"));
+    CHECK(th_hello());
+    char code[3];
+    snprintf(code, sizeof(code), "%02d", th.code);
+    CHECK_STR(pair_view_of(app).code, code);
+    char shown[64];
+    snprintf(shown, sizeof(shown), "CHECK CODE  %s ", code);
+    CHECK(said(app, shown));
+    pv = pair_view_of(app);
+    CHECK(e2e_pair_status_line(&pv, (int64_t)time(NULL), line, sizeof(line)) && strstr(line, code));
+
+    th_offer();
+    ring(app);
+    CHECK(pair_view_of(app).stage == PAIR_CONFIRM);
+    CHECK(said(app, "offers to pair this one on azzurra"));
+    CHECK(said(app, "/e2e pair confirm"));
+    /* Nothing is registered before the user confirms. */
+    CHECK_LONG(fg_ndev(), 1);
+
+    pair_run(app, "confirm", "", 0);
+    CHECK(pair_view_of(app).stage == PAIR_JOINED);
+    CHECK_LONG(fg_ndev(), 2);
+    char joiner[64] = "";
+    CHECK(th_join(joiner));
+    /* The key it sent is the one it registered, and the one on its disk. */
+    pthread_mutex_lock(&fg.lock);
+    CHECK_STR(fg.dev[1].ed, joiner);
+    pthread_mutex_unlock(&fg.lock);
+    struct e2e_slot *s = &app->e2e[0];
+    char *mine = th_vz(vz_account_ed25519_key(s->rec.account));
+    CHECK_STR(mine, joiner);
+    free(mine);
+
+    th_sign(joiner, 2);
+    ring(app);
+    CHECK(pair_view_of(app).stage == PAIR_IDLE);
+    CHECK(said(app, "pairing done — azzurra added"));
+    char *done = th_read();
+    CHECK_STR(done, "{\"v\":1,\"t\":\"done\",\"paired\":[\"azzurra\"]}");
+    free(done);
+    /* The keys went up before `done` did. */
+    pthread_mutex_lock(&fg.lock);
+    char up[128];
+    snprintf(up, sizeof(up), "POST /networks/azzurra/e2e/devices/%s/keys\n", fg.dev[1].did);
+    const char *keys = strstr(fg.log, up);
+    const char *last_post = NULL;
+    for (const char *p = fg.log; (p = strstr(p, "POST /e2e/pairings/" TH_ID "/messages\n")); p++)
+        last_post = p;
+    CHECK(keys && last_post && keys < last_post);
+    CHECK_LONG(fg.dev[1].otks, E2E_MAX_HOSTED_ONE_TIME_KEYS);
+    CHECK(fg.dev[1].fallback);
+    pthread_mutex_unlock(&fg.lock);
+
+    struct e2e_view v = view_of(app);
+    CHECK(v.state == E2E_SLOT_READY);
+    CHECK(!v.holder);
+    CHECK_LONG(v.list_ver, 2);
+    CHECK_LONG(v.list_devices, 2);
+    CHECK_STR(v.master, th.m);
+    CHECK(status_says(app, "paired"));
+    CHECK(status_says(app, "the master key is elsewhere"));
+
+    /* The holder closes it; the joiner is done already. */
+    pthread_mutex_lock(&fg.lock);
+    fg.rv.live = false;
+    pthread_mutex_unlock(&fg.lock);
+    lines = app->log_count;
+    pair_run(app, "closed", TH_ID " closed", 0);
+    CHECK_LONG(app->log_count, lines);
+
+    /* What the next run reads. */
+    e2e_slots_free(app);
+    e2e_record rec;
+    CHECK(disk_record(app, &rec));
+    CHECK(rec.master == NULL);
+    CHECK(rec.own != NULL && rec.own->list_ver == 2 && rec.own->cert_ver == 2);
+    CHECK(rec.own && strcmp(rec.own->master, th.m) == 0);
+    CHECK(rec.own && e2e_own_verify(rec.own, rec.account));
+    e2e_record_free(&rec);
+    free_pair_app(app);
+}
+
+/* An already-paired device has no use for an offer: not announced, and
+ * an accept joins nothing. */
+TEST(pairing_refuses_a_device_already_in_the_identity) {
+    struct app *app = pair_to_confirm("user:pair-twice");
+    pair_run(app, "confirm", "", 0);
+    char joiner[64];
+    CHECK(th_join(joiner));
+    th_sign(joiner, 2);
+    ring(app);
+    CHECK(view_of(app).state == E2E_SLOT_READY);
+
+    th_open(300);
+    pthread_mutex_lock(&fg.lock);
+    snprintf(fg.rv.id, sizeof(fg.rv.id), "Rv2second000000000000x");
+    fg.log[0] = 0;
+    pthread_mutex_unlock(&fg.lock);
+    size_t lines = app->log_count;
+    push_offer(app);
+    CHECK_LONG(app->log_count, lines);
+    CHECK(pair_view_of(app).stage == PAIR_IDLE);
+    pair_run(app, "accept", "", 0);
+    CHECK(said(app, "already holds the account's encrypted identity on every network"));
+    CHECK(!fg_logged("/join"));
+    free_pair_app(app);
+}
+
+/* Declining an offer sends nothing; declining a joined pairing closes it. */
+TEST(pairing_decline) {
+    fg_reset();
+    th_identity();
+    struct app *app = e2e_app("user:pair-decline");
+    run_job(app, JOB_E2E_SYNC);
+    th_open(300);
+    push_offer(app);
+    pthread_mutex_lock(&fg.lock);
+    fg.log[0] = 0;
+    pthread_mutex_unlock(&fg.lock);
+    pair_run(app, "decline", "", 0);
+    CHECK(said(app, "pairing offer declined; nothing was sent"));
+    CHECK(pair_view_of(app).stage == PAIR_IDLE);
+    CHECK(fg_no("POST") && fg_no("DELETE"));
+    pair_run(app, "decline", "", 0);
+    CHECK(said(app, "no pairing to decline"));
+    free_pair_app(app);
+
+    app = pair_to_confirm("user:pair-decline2");
+    pair_run(app, "decline", "", 0);
+    CHECK(said(app, "pairing ended — declined here"));
+    CHECK(fg_logged("DELETE /e2e/pairings/" TH_ID "\n"));
+    CHECK(pair_view_of(app).stage == PAIR_IDLE);
+    CHECK_LONG(fg_ndev(), 1);
+    free_pair_app(app);
+}
+
+/* The holder closes after this device registered: the device goes again. */
+TEST(pairing_closed_by_the_holder_drops_the_device) {
+    struct app *app = pair_to_confirm("user:pair-closed");
+    pair_run(app, "confirm", "", 0);
+    CHECK_LONG(fg_ndev(), 2);
+    pthread_mutex_lock(&fg.lock);
+    fg.rv.live = false;
+    char gone[128];
+    snprintf(gone, sizeof(gone), "DELETE /networks/azzurra/e2e/devices/%s\n", fg.dev[1].did);
+    pthread_mutex_unlock(&fg.lock);
+    /* A close for another rendezvous is not ours. */
+    pair_run(app, "closed", "SomeOtherRendezvous000 closed", 0);
+    CHECK(pair_view_of(app).stage == PAIR_JOINED);
+    pair_run(app, "closed", TH_ID " closed", 0);
+    CHECK(said(app, "pairing ended — the other device closed it"));
+    CHECK(fg_logged(gone));
+    CHECK(!fg_logged("DELETE /e2e/pairings/"));
+    CHECK_LONG(fg_ndev(), 1);
+    CHECK(pair_view_of(app).stage == PAIR_IDLE);
+    CHECK(view_of(app).state == E2E_SLOT_ELSEWHERE);
+    free_pair_app(app);
+}
+
+/* 300 s: the clock rings the worker, which closes and drops. */
+TEST(pairing_times_out) {
+    struct app *app = pair_to_confirm("user:pair-timeout");
+    /* Not yet: the clock stays quiet. */
+    e2e_pair_clock(app);
+    CHECK(!app->pair.tick_queued);
+    app->pair.expires = (int64_t)time(NULL) - 1;
+    pair_view_put(app);
+    e2e_pair_clock(app);
+    CHECK(app->pair.tick_queued);
+    pair_run(app, "tick", "", 0);
+    CHECK(said(app, "pairing ended — timed out"));
+    CHECK(fg_logged("DELETE /e2e/pairings/" TH_ID "\n"));
+    CHECK(pair_view_of(app).stage == PAIR_IDLE);
+    CHECK(app->pair.deadline == 0);
+    free_pair_app(app);
+}
+
+/* A payload that does not open, or signatures that do not verify: the
+ * pairing fails and the device registered for it goes. */
+TEST(pairing_refuses_tampered_messages) {
+    struct app *app = pair_to_confirm("user:pair-tamper");
+    pair_run(app, "confirm", "", 0);
+    char joiner[64];
+    CHECK(th_join(joiner));
+    char *ct = th_vz(vz_established_ecies_encrypt(th.link, (const uint8_t *)"{}", 2));
+    ct[strlen(ct) / 2] = ct[strlen(ct) / 2] == 'A' ? 'B' : 'A';
+    th_post_raw(ct);
+    free(ct);
+    ring(app);
+    CHECK(said(app, "pairing ended — a message from the other device does not decrypt"));
+    CHECK_LONG(fg_ndev(), 1);
+    CHECK(pair_view_of(app).stage == PAIR_IDLE);
+    struct e2e_slot *s = &app->e2e[0];
+    CHECK(s->rec.own == NULL);
+    free_pair_app(app);
+
+    /* A certificate at the wrong version: nothing taken, done names nothing. */
+    app = pair_to_confirm("user:pair-badcert");
+    pair_run(app, "confirm", "", 0);
+    CHECK(th_join(joiner));
+    th_sign(joiner, 1);
+    ring(app);
+    CHECK(said(app, "does not verify on azzurra"));
+    CHECK(said(app, "pairing done, nothing paired — azzurra failed"));
+    char *done = th_read();
+    CHECK_STR(done, "{\"v\":1,\"t\":\"done\",\"paired\":[]}");
+    free(done);
+    s = &app->e2e[0];
+    CHECK(s->rec.own == NULL);
+    /* Listed by the holder's put, so grappa keeps it (listed_device). */
+    CHECK(fg_logged("DELETE /networks/azzurra/e2e/devices/"));
+    free_pair_app(app);
+
+    /* Out of turn: a second offer where the signatures are awaited. */
+    app = pair_to_confirm("user:pair-turn");
+    pair_run(app, "confirm", "", 0);
+    th_offer();
+    ring(app);
+    CHECK(said(app, "pairing ended — the other device sent a message out of turn"));
+    CHECK_LONG(fg_ndev(), 1);
+    free_pair_app(app);
+}
+
+/* What grappa refuses, said as what it means. */
+TEST(pairing_refusals_are_explained) {
+    fg_reset();
+    th_identity();
+    struct app *app = e2e_app("user:pair-refusals");
+    run_job(app, JOB_E2E_SYNC);
+    /* No offer pushed and none on grappa. */
+    pair_run(app, "accept", "", 0);
+    CHECK(fg_logged("GET /e2e/pairings/offer"));
+    CHECK(said(app, "no pairing is on offer"));
+    /* On grappa but missed as a push: GET …/offer finds it. */
+    th_open(300);
+    pthread_mutex_lock(&fg.lock);
+    fg.rv.fail_join_status = 403;
+    snprintf(fg.rv.fail_join_error, sizeof(fg.rv.fail_join_error), "client_token_scope");
+    pthread_mutex_unlock(&fg.lock);
+    pair_run(app, "accept", "", 0);
+    CHECK(said(app, "per-client token"));
+    CHECK(pair_view_of(app).stage == PAIR_IDLE);
+    pthread_mutex_lock(&fg.lock);
+    fg.rv.fail_join_status = 409;
+    snprintf(fg.rv.fail_join_error, sizeof(fg.rv.fail_join_error), "pairing_already_joined");
+    pthread_mutex_unlock(&fg.lock);
+    pair_run(app, "accept", "", 0);
+    CHECK(said(app, "another device joined that pairing first"));
+    /* An offer grappa no longer holds. */
+    push_offer(app);
+    pthread_mutex_lock(&fg.lock);
+    fg.rv.live = false;
+    pthread_mutex_unlock(&fg.lock);
+    pair_run(app, "accept", "", 0);
+    CHECK(said(app, "the pairing is gone"));
+    CHECK(fg_no("DELETE"));
+    /* An expired offer is no offer; an offer taken by another device ends. */
+    th_open(-5);
+    size_t lines = app->log_count;
+    push_offer(app);
+    CHECK_LONG(app->log_count, lines);
+    th_open(300);
+    push_offer(app);
+    pair_run(app, "message", TH_ID, WIRE_PAIRING_JOINER);
+    CHECK(said(app, "another device took the pairing offer"));
+    CHECK(pair_view_of(app).stage == PAIR_IDLE);
+    free_pair_app(app);
+
+    /* Below protocol 55 there is no offer to take. */
+    fg_reset();
+    app = e2e_app("user:pair-old");
+    app->server_protocol = 54;
+    th_open(300);
+    push_offer(app);
+    CHECK(pair_view_of(app).stage == PAIR_IDLE);
+    pair_run(app, "accept", "", 0);
+    CHECK(said(app, "pairing needs server protocol v55"));
+    CHECK_LONG(fg.requests, 0);
+    free_pair_app(app);
+}
+
+/* The command's doors: verbs reach the worker, /e2e pair alone reports. */
+TEST(pairing_command) {
+    fg_reset();
+    struct app *app = e2e_app("user:pair-cmd");
+    e2e_command(app, "pair");
+    CHECK(said(app, "e2e pairing: none"));
+    e2e_command(app, "pair frobnicate");
+    CHECK(said(app, "usage: /e2e pair [accept|confirm|decline]"));
+    e2e_command(app, "pair accept");
+    pthread_mutex_lock(&app->jobs_lock);
+    bool queued = app->jobs_head != app->jobs_tail &&
+                  app->jobs[app->jobs_head].kind == JOB_E2E_PAIR &&
+                  strcmp(app->jobs[app->jobs_head].arg1, "accept") == 0;
+    pthread_mutex_unlock(&app->jobs_lock);
+    CHECK(queued);
+    free_pair_app(app);
+}
+
 int main(void) {
     test_use_temp_home();
     if (!fg_start()) {
@@ -740,6 +1492,15 @@ int main(void) {
     RUN(a_held_device_is_not_fought);
     RUN(an_old_server_keeps_e2e_off);
     RUN(the_command_reads_its_arguments);
+    RUN(pairing_joins_an_identity_end_to_end);
+    RUN(pairing_refuses_a_device_already_in_the_identity);
+    RUN(pairing_decline);
+    RUN(pairing_closed_by_the_holder_drops_the_device);
+    RUN(pairing_times_out);
+    RUN(pairing_refuses_tampered_messages);
+    RUN(pairing_refusals_are_explained);
+    RUN(pairing_command);
+    th_free();
     fg_stop();
     return test_report();
 }
