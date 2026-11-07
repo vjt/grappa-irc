@@ -5906,22 +5906,54 @@ static void draw_text(int y, int x, int max, int pair, attr_t attrs, const char 
     attroff(COLOR_PAIR(pair) | attrs);
 }
 
+/* One character of `p` (at most `left` bytes): how many bytes it takes and,
+ * through `w`, how many cells it fills. A byte that starts no character is
+ * one byte and one cell, and the state starts afresh after it.
+ *
+ * Chat rows used to be walked a BYTE at a time with the wrap counted in
+ * bytes, so a wrap could fall between the two bytes of `è`, and ncursesw
+ * drew each half as a meta glyph: `perchè` read `perchM-C` on one line and
+ * `M-(` on the next. Copying the row looked right, because the text was
+ * never wrong. The measuring pass and both drawing loops step by this one
+ * function, so they cannot disagree about where a line breaks. */
+static size_t text_char(const char *p, size_t left, mbstate_t *st, int *w) {
+    wchar_t wc;
+    size_t n = mbrtowc(&wc, p, left, st);
+    if (n == (size_t)-1 || n == (size_t)-2 || n == 0) {
+        memset(st, 0, sizeof(*st));
+        *w = 1;
+        return 1;
+    }
+    *w = wcwidth(wc);
+    if (*w < 1) *w = 1;
+    return n;
+}
+
 static int wrapped_text_lines(const char *s, int width) {
     if (width <= 0) return 0;
     int lines = 1;
     int col = 0;
-    for (const char *p = s; *p; p++) {
+    mbstate_t st;
+    memset(&st, 0, sizeof(st));
+    size_t left = strlen(s);
+    for (const char *p = s; *p;) {
         if (*p == '\n' || *p == '\r') {
             lines++;
             col = 0;
-            if (*p == '\r' && p[1] == '\n') p++;
+            size_t n = (*p == '\r' && p[1] == '\n') ? 2 : 1;
+            p += n;
+            left -= n;
             continue;
         }
-        if (col >= width) {
+        int w;
+        size_t n = text_char(p, left, &st, &w);
+        if (col + w > width && col > 0) {
             lines++;
             col = 0;
         }
-        col++;
+        col += w;
+        p += n;
+        left -= n;
     }
     return lines;
 }
@@ -6102,28 +6134,31 @@ static void draw_wrapped_text(int y, int x, int width, int skip_rows, int max_li
     if (!mirc_has_formatting(s)) {
         attron(COLOR_PAIR(pair) | attrs);
         if (skip_rows == 0) move(y, x);
-        for (const char *p = s; *p && line < last; p++) {
-            if (*p == '\r') {
-                if (p[1] == '\n') p++;
+        mbstate_t st;
+        memset(&st, 0, sizeof(st));
+        size_t left = strlen(s);
+        for (const char *p = s; *p && line < last;) {
+            if (*p == '\r' || *p == '\n') {
+                size_t n = (*p == '\r' && p[1] == '\n') ? 2 : 1;
+                p += n;
+                left -= n;
                 line++;
                 col = 0;
                 if (line < last && line >= skip_rows) move(y + line - skip_rows, x);
                 continue;
             }
-            if (*p == '\n') {
-                line++;
-                col = 0;
-                if (line < last && line >= skip_rows) move(y + line - skip_rows, x);
-                continue;
-            }
-            if (col >= width) {
+            int w;
+            size_t n = text_char(p, left, &st, &w);
+            if (col + w > width && col > 0) {
                 line++;
                 col = 0;
                 if (line >= last) break;
                 if (line >= skip_rows) move(y + line - skip_rows, x);
             }
-            if (line >= skip_rows) addch((unsigned char)*p);
-            col++;
+            if (line >= skip_rows) addnstr(p, (int)n);
+            col += w;
+            p += n;
+            left -= n;
         }
         attroff(COLOR_PAIR(pair) | attrs);
         return;
@@ -6139,22 +6174,20 @@ static void draw_wrapped_text(int y, int x, int width, int skip_rows, int max_li
         int run_pair = mirc_pair_for(fg, bg, pair);
         attr_t run_attrs = mirc_run_attrs(r, attrs);
         attron(COLOR_PAIR(run_pair) | run_attrs);
-        for (size_t k = 0; k < r->len && line < last; k++) {
+        mbstate_t st;
+        memset(&st, 0, sizeof(st));
+        for (size_t k = 0; k < r->len && line < last;) {
             char ch = r->text[k];
-            if (ch == '\r') {
-                if (k + 1 < r->len && r->text[k + 1] == '\n') k++;
+            if (ch == '\r' || ch == '\n') {
+                k += (ch == '\r' && k + 1 < r->len && r->text[k + 1] == '\n') ? 2 : 1;
                 line++;
                 col = 0;
                 if (line < last && line >= skip_rows) move(y + line - skip_rows, x);
                 continue;
             }
-            if (ch == '\n') {
-                line++;
-                col = 0;
-                if (line < last && line >= skip_rows) move(y + line - skip_rows, x);
-                continue;
-            }
-            if (col >= width) {
+            int w;
+            size_t n = text_char(r->text + k, r->len - k, &st, &w);
+            if (col + w > width && col > 0) {
                 line++;
                 col = 0;
                 if (line >= last) break;
@@ -6164,8 +6197,9 @@ static void draw_wrapped_text(int y, int x, int width, int skip_rows, int max_li
              * land on a visible line: a run that opens in a skipped line
              * still owns the cells it reaches on a visible one, so the
              * tail keeps the colour the full row would have had. */
-            if (line >= skip_rows) addch((unsigned char)ch);
-            col++;
+            if (line >= skip_rows) addnstr(r->text + k, (int)n);
+            col += w;
+            k += n;
         }
         attroff(COLOR_PAIR(run_pair) | run_attrs);
     }

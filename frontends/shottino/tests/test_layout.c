@@ -1980,6 +1980,43 @@ static int no_screen(const char *why) {
     return 1;
 }
 
+/* An accented letter in a chat row is drawn as itself at any width.
+ * The body was walked byte by byte with the wrap counted in BYTES, so a
+ * wrap could fall between the two bytes of `è` and ncursesw drew each as
+ * a meta glyph — `perchè` read `perchM-C` / `M-(`. Copying the row looked
+ * right, because the text itself was never wrong. */
+static size_t cells_holding(wchar_t want, wchar_t bad, int rows, int cols, size_t *bad_n) {
+    size_t n = 0;
+    *bad_n = 0;
+    for (int y = 0; y < rows; y++)
+        for (int x = 0; x < cols; x++) {
+            cchar_t cc;
+            if (mvin_wch(y, x, &cc) != OK) continue;
+            if (cc.chars[0] == want) n++;
+            if (cc.chars[0] == bad) (*bad_n)++;
+        }
+    return n;
+}
+
+TEST(an_accented_letter_in_a_row_is_drawn_whole_at_any_width) {
+    const char *line = "10:16 <vash909> ma hai detto perch\xc3\xa8 \xc3\xa8 il tuo lavoro, bla bla bla "
+                       "perch\xc3\xa8 s\xc3\xac, citt\xc3\xa0 e caff\xc3\xa8 lol";
+    for (int width = 14; width <= 80; width++) {
+        erase();
+        draw_message_line(0, 0, width, 0, 12, line, false, false);
+        size_t bad = 0;
+        size_t e = cells_holding(L'\u00e8', L'M', 12, width, &bad);
+        CHECK_LONG((long)e, 4);
+        CHECK_LONG((long)bad, 0);
+        /* The plain-text arm (a system line) walks the same loop. */
+        erase();
+        draw_message_line(0, 0, width, 0, 12, line + 16, false, false);
+        e = cells_holding(L'\u00e8', L'M', 12, width, &bad);
+        CHECK_LONG((long)e, 4);
+        CHECK_LONG((long)bad, 0);
+    }
+}
+
 int main(void) {
     test_use_temp_home();
 
@@ -2004,6 +2041,7 @@ int main(void) {
         return no_screen("no usable terminfo entry");
     }
     RUN(a_page_link_earns_a_card_once_it_has_something_to_say);
+    RUN(an_accented_letter_in_a_row_is_drawn_whole_at_any_width);
     RUN(a_screen_of_links_does_not_thrash_the_media_pool);
     RUN(an_encrypted_rows_link_is_never_fetched_on_view);
     RUN(the_layout_log_is_private_and_holds_no_encrypted_words);
