@@ -698,6 +698,9 @@ typedef struct {
     /* for KEYS: the list as the device's master last put it */
     int user; /* index of its user: devices of one user share it */
     bool removed;
+    /* its SAS secrets, and the rows its SAS steps wrote */
+    e2e_sas_host *sas;
+    e2e_rows rows;
 } device;
 
 #define MAXDEV 6
@@ -714,6 +717,16 @@ typedef struct {
     bool tamper_next_msg;
     /* a device whose payloads the network loses */
     const device *mute;
+    /* the next sas.mac a device reads has one character of `mac` changed */
+    bool tamper_sas_mac;
+    /* while set, what devices send waits here, in order, for release_one */
+    bool hold;
+    struct {
+        device *from;
+        e2e_outbound o;
+    } held[32];
+    size_t nheld;
+    bool through; /* the next carry is release_one's: it goes, what it sets off is held */
 } world;
 
 static e2e_ctx ctx_of(world *w, device *d) {
@@ -785,6 +798,7 @@ static device *add_device(world *w, const char *name, const char *nick, int user
     e2e_record_new(&d->rec);
     d->e = vz(vz_account_ed25519_key(d->rec.account));
     d->k = vz(vz_account_curve25519_key(d->rec.account));
+    d->sas = e2e_sas_host_new();
     return d;
 }
 
@@ -923,6 +937,19 @@ static void pump(world *w, device *from, e2e_result *r, int depth);
 
 /* Hands one outbound payload to grappa: it names it, and carries it. */
 static void carry(world *w, device *from, const e2e_outbound *o, int depth) {
+    bool through = w->through;
+    w->through = false;
+    if (w->hold && !through && w->nheld < 32) {
+        e2e_outbound *h = &w->held[w->nheld].o;
+        w->held[w->nheld++].from = from;
+        *h = *o;
+        h->target = strdup(o->target);
+        h->from = strdup(o->from);
+        h->to = strdup(o->to);
+        h->payload = strdup(o->payload);
+        h->tag = o->tag ? strdup(o->tag) : NULL;
+        return;
+    }
     char msgid[12];
     snprintf(msgid, sizeof(msgid), "m%010ld", w->next_msgid++);
     e2e_ctx fc = ctx_of(w, from);
@@ -969,6 +996,53 @@ static void carry(world *w, device *from, const e2e_outbound *o, int depth) {
     }
 }
 
+/* The oldest payload held: carried now (what it sets off may be held). */
+static void release_one(world *w) {
+    if (w->nheld == 0) return;
+    device *from = w->held[0].from;
+    e2e_outbound o = w->held[0].o;
+    memmove(&w->held[0], &w->held[1], (w->nheld - 1) * sizeof(w->held[0]));
+    w->nheld--;
+    w->through = true;
+    carry(w, from, &o, 0);
+    free(o.target);
+    free(o.from);
+    free(o.to);
+    free(o.payload);
+    free(o.tag);
+}
+
+static void release_all(world *w) {
+    w->hold = false;
+    while (w->nheld) release_one(w);
+}
+
+/* A sas.* the engine delivered to `d`: its verifier reads it, as cic's
+ * client hands every received sas.* to the Verifier. */
+static void sas_hand(world *w, device *d, const e2e_event *e, int depth) {
+    char *inner = strdup(e->inner);
+    if (w->tamper_sas_mac && strstr(inner, "\"sas.mac\"")) {
+        char *m = strstr(inner, "\"mac\":\"");
+        if (m) m[8] = m[8] == 'A' ? 'B' : 'A';
+        w->tamper_sas_mac = false;
+    }
+    e2e_ctx c = ctx_of(w, d);
+    e2e_result sr;
+    e2e_result_init(&sr);
+    size_t before = d->rows.n;
+    e2e_sas_receive(&c, d->sas, e->nick, e->master, e->device, inner, NULL, &sr, &d->rows);
+    for (size_t i = before; i < d->rows.n; i++) {
+        const e2e_row *row = &d->rows.v[i];
+        logf_(w, "%s row %s%s%s%s", d->name, e2e_row_kind_name(row->kind),
+              row->kind == E2E_ROW_SAS_ASKED || row->kind == E2E_ROW_SAS_CANCELLED
+                  ? (row->by_peer ? " by peer" : " by you")
+                  : "",
+              row->body ? " " : "", row->body ? row->body : "");
+    }
+    free(inner);
+    pump(w, d, &sr, depth + 1);
+}
+
 /* Logs what a step said, carries what it sent, and frees it. */
 static void pump(world *w, device *from, e2e_result *r, int depth) {
     log_result(w, from, r);
@@ -977,6 +1051,9 @@ static void pump(world *w, device *from, e2e_result *r, int depth) {
         logf_(w, "%s lost %s", from->name, e2e_verb_name(r->outbound[i].verb));
     for (size_t i = 0; from != w->mute && i < r->noutbound; i++)
         carry(w, from, &r->outbound[i], depth);
+    for (size_t i = 0; i < r->nevents; i++)
+        if (r->events[i].kind == E2E_EV_RECEIVED && strstr(r->events[i].inner, "\"t\":\"sas."))
+            sas_hand(w, from, &r->events[i], depth);
     e2e_result_free(r);
 }
 
@@ -1005,6 +1082,8 @@ static void world_free(world *w) {
         }
         free(d->fallback.key);
         free(d->fallback.sig);
+        e2e_sas_host_free(d->sas);
+        e2e_rows_free(&d->rows);
     }
     free(w->last_pkmsg_payload);
     free(w->last_pkmsg_from);
@@ -2118,6 +2197,422 @@ TEST(history_appends_dedupes_and_survives_a_torn_tail) {
     free(rm);
 }
 
+/* ── SAS (slice F) ── */
+
+/* The pure halves both sides compute: the commitment is SHA-256 over
+ * "key|tx" (vector from Python's hashlib, not this code), the info
+ * strings exactly sas.ts's, the table Matrix's. */
+TEST(sas_pure_halves) {
+    char *c = e2e_sas_commitment(E1, "q83vEjRWeJA");
+    CHECK_STR(c, "XIFb95Im3c4aW857Wot8m7a5x0P6G65tGzhwThYCi04");
+    free(c);
+    char *info = e2e_sas_info("AK", "Akey", "BK", "Bkey", "q83vEjRWeJA");
+    CHECK_STR(info, "irc-e2e:v1:sas:AK|Akey|BK|Bkey|q83vEjRWeJA");
+    free(info);
+    char *mac = e2e_sas_mac_info(false, "own", "peer", "tx");
+    CHECK_STR(mac, "irc-e2e:v1:sas-mac:own|peer|tx");
+    free(mac);
+    char *mmac = e2e_sas_mac_info(true, "peer", "own", "tx");
+    CHECK_STR(mmac, "irc-e2e:v2:sas-mmac:peer|own|tx");
+    free(mmac);
+    CHECK_STR(e2e_sas_emoji_glyph(0), "\xF0\x9F\x90\xB6");
+    CHECK_STR(e2e_sas_emoji_name(0), "Dog");
+    CHECK_STR(e2e_sas_emoji_glyph(21), "\xE2\x98\x81\xEF\xB8\x8F"); /* ☁️ with its U+FE0F */
+    CHECK_STR(e2e_sas_emoji_name(36), "Thumbs Up");
+    CHECK_STR(e2e_sas_emoji_name(41), "Light Bulb");
+    CHECK_STR(e2e_sas_emoji_name(63), "Pin");
+    CHECK(e2e_sas_emoji_glyph(64) == NULL && e2e_sas_emoji_name(64) == NULL);
+    const uint8_t seven[7] = {0, 1, 21, 36, 46, 53, 63};
+    char line[256];
+    e2e_sas_emoji_line(seven, line, sizeof(line));
+    CHECK_STR(line, "\xF0\x9F\x90\xB6 Dog  \xF0\x9F\x90\xB1 Cat  \xE2\x98\x81\xEF\xB8\x8F Cloud  "
+                    "\xF0\x9F\x91\x8D Thumbs Up  \xF0\x9F\x94\x92 Lock  \xE2\x9C\x88\xEF\xB8\x8F "
+                    "Aeroplane  \xF0\x9F\x93\x8C Pin");
+    CHECK_STR(e2e_sas_reason_text("mismatch"), "the emoji did not match");
+    CHECK_STR(e2e_sas_reason_text("other-device"), "answered on another device");
+    CHECK(e2e_sas_reason_text("because") == NULL);
+    CHECK_STR(e2e_sas_phase_name(E2E_SAS_COMPARE), "compare");
+}
+
+static void log_rows(world *w, device *d, size_t from) {
+    for (size_t i = from; i < d->rows.n; i++) {
+        const e2e_row *row = &d->rows.v[i];
+        logf_(w, "%s row %s%s%s%s", d->name, e2e_row_kind_name(row->kind),
+              row->kind == E2E_ROW_SAS_ASKED || row->kind == E2E_ROW_SAS_CANCELLED
+                  ? (row->by_peer ? " by peer" : " by you")
+                  : "",
+              row->body ? " " : "", row->body ? row->body : "");
+    }
+}
+
+static void sas_user(world *w, device *d, const char *nick, e2e_sas_step step,
+                     e2e_sas_outcome want) {
+    e2e_ctx c = ctx_of(w, d);
+    e2e_result r;
+    e2e_result_init(&r);
+    size_t before = d->rows.n;
+    e2e_sas_outcome got = e2e_sas_user(&c, d->sas, nick, step, &r, &d->rows);
+    CHECK(got == want);
+    log_rows(w, d, before);
+    pump(w, d, &r, 0);
+}
+
+static bool sas_view(world *w, device *d, const char *nick, e2e_sas_view *v) {
+    e2e_ctx c = ctx_of(w, d);
+    e2e_result r;
+    e2e_result_init(&r);
+    size_t before = d->rows.n;
+    bool got = e2e_sas_view_of(&c, d->sas, nick, v, &r, &d->rows);
+    log_rows(w, d, before);
+    pump(w, d, &r, 0);
+    return got;
+}
+
+static bool verified_by(world *w, device *d, const char *nick) {
+    e2e_ctx c = ctx_of(w, d);
+    const char *m;
+    bool verified = false;
+    size_t trusted;
+    return e2e_pinned(&c, nick, &m, &verified, &trusted) && verified;
+}
+
+/* Both know each other: a text each way, so both hold sessions and pins. */
+static void sas_meet(world *w, device *a, const char *a_to, device *b, const char *b_to) {
+    send_text(w, a, a_to, "hi", "m1");
+    send_text(w, b, b_to, "hello", "m2");
+}
+
+static void sas_world(world *w, device **alice, device **bob) {
+    memset(w, 0, sizeof(*w));
+    w->now = NOW0;
+    w->next_msgid = 1;
+    *alice = add_user(w, "alice", "alice", 0);
+    *bob = add_user(w, "bob", "Bob", 1);
+    sas_meet(w, *alice, "bob", *bob, "alice");
+}
+
+/* A starts, B accepts, both see the same 7 emoji, both match: each
+ * verifies the other's MASTER, and nothing runs after. */
+TEST(sas_full_run_verifies_both_masters) {
+    static world w;
+    device *alice, *bob;
+    sas_world(&w, &alice, &bob);
+    CHECK(!verified_by(&w, alice, "bob") && !verified_by(&w, bob, "alice"));
+    e2e_ctx ac = ctx_of(&w, alice);
+    bool clock_before = e2e_waits_on_the_clock(&ac);
+
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_START, E2E_SAS_DONE);
+    CHECK(logged(&w, "alice row sas_asked by you"));
+    CHECK(logged(&w, "bob row sas_asked by peer"));
+    CHECK(alice->rec.state.nsas == 1 && bob->rec.state.nsas == 1);
+    CHECK_STR(alice->rec.state.sas[0].tx, bob->rec.state.sas[0].tx);
+    CHECK_STR(bob->rec.state.sas[0].master, alice->rec.own->master);
+    CHECK_STR(bob->rec.state.sas[0].device, alice->e);
+    ac = ctx_of(&w, alice);
+    CHECK(e2e_waits_on_the_clock(&ac)); /* the 600 s are on the clock */
+    /* One SAS per master. */
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_START, E2E_SAS_RUNNING);
+    sas_user(&w, alice, "nobody", E2E_SAS_STEP_START, E2E_SAS_NO_PIN);
+    sas_user(&w, bob, "alice", E2E_SAS_STEP_MATCH, E2E_SAS_NOT_NOW);
+    e2e_sas_view v;
+    CHECK(sas_view(&w, bob, "alice", &v) && v.phase == E2E_SAS_ASKED && !v.here && !v.role_a);
+    CHECK(sas_view(&w, alice, "bob", &v) && v.phase == E2E_SAS_STARTED && v.here && v.role_a);
+
+    sas_user(&w, bob, "alice", E2E_SAS_STEP_ACCEPT, E2E_SAS_DONE);
+    /* accept → A's key → B's key: both compare now. */
+    CHECK(alice->rec.state.sas[0].phase == E2E_SAS_COMPARE);
+    CHECK(bob->rec.state.sas[0].phase == E2E_SAS_COMPARE);
+    /* What B committed to is what B then showed. */
+    char *want = e2e_sas_commitment(bob->rec.state.sas[0].our_key, bob->rec.state.sas[0].tx);
+    CHECK_STR(alice->rec.state.sas[0].commitment, want);
+    free(want);
+    e2e_sas_view va, vb;
+    CHECK(sas_view(&w, alice, "bob", &va) && va.has_emoji && va.phase == E2E_SAS_COMPARE);
+    CHECK(sas_view(&w, bob, "alice", &vb) && vb.has_emoji && vb.here);
+    CHECK(memcmp(va.emoji, vb.emoji, 7) == 0);
+    for (int i = 0; i < 7; i++) CHECK(va.emoji[i] < 64);
+
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_MATCH, E2E_SAS_DONE);
+    CHECK(sas_view(&w, alice, "bob", &va) && va.confirmed);
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_MATCH, E2E_SAS_NOT_NOW); /* once */
+    CHECK(!verified_by(&w, alice, "bob") && !verified_by(&w, bob, "alice"));
+    CHECK(bob->rec.state.sas[0].their_mac != NULL); /* kept until bob's human says */
+    sas_user(&w, bob, "alice", E2E_SAS_STEP_MATCH, E2E_SAS_DONE);
+    CHECK(verified_by(&w, alice, "bob") && verified_by(&w, bob, "alice"));
+    CHECK(logged(&w, "alice row verified") && logged(&w, "bob row verified"));
+    CHECK(alice->rec.state.nsas == 0 && bob->rec.state.nsas == 0);
+    CHECK(!sas_view(&w, alice, "bob", &va));
+    ac = ctx_of(&w, alice);
+    CHECK(e2e_waits_on_the_clock(&ac) == clock_before);
+    /* The verified row names the peer MASTER. */
+    CHECK_STR(alice->rows.v[alice->rows.n - 1].key, bob->rec.own->master);
+    world_free(&w);
+}
+
+/* They do not match: a cancel `mismatch`, and nobody is verified. */
+TEST(sas_mismatch_cancels_and_verifies_nobody) {
+    static world w;
+    device *alice, *bob;
+    sas_world(&w, &alice, &bob);
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_START, E2E_SAS_DONE);
+    sas_user(&w, bob, "alice", E2E_SAS_STEP_ACCEPT, E2E_SAS_DONE);
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_MATCH, E2E_SAS_DONE);
+    sas_user(&w, bob, "alice", E2E_SAS_STEP_MISMATCH, E2E_SAS_DONE);
+    CHECK(logged(&w, "bob row sas_cancelled by you mismatch"));
+    CHECK(logged(&w, "alice row sas_cancelled by peer mismatch"));
+    CHECK(!verified_by(&w, alice, "bob") && !verified_by(&w, bob, "alice"));
+    CHECK(alice->rec.state.nsas == 0 && bob->rec.state.nsas == 0);
+    /* A declined request ends it the same way, `user`. */
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_START, E2E_SAS_DONE);
+    sas_user(&w, bob, "alice", E2E_SAS_STEP_CANCEL, E2E_SAS_DONE);
+    CHECK(logged(&w, "alice row sas_cancelled by peer user"));
+    CHECK(alice->rec.state.nsas == 0);
+    world_free(&w);
+}
+
+/* A MAC that is not the one expected: refused (`mac-mismatch`), and the
+ * side that read it verifies nothing. */
+TEST(sas_tampered_mac_is_refused) {
+    static world w;
+    device *alice, *bob;
+    sas_world(&w, &alice, &bob);
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_START, E2E_SAS_DONE);
+    sas_user(&w, bob, "alice", E2E_SAS_STEP_ACCEPT, E2E_SAS_DONE);
+    w.tamper_sas_mac = true; /* what alice sends bob */
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_MATCH, E2E_SAS_DONE);
+    sas_user(&w, bob, "alice", E2E_SAS_STEP_MATCH, E2E_SAS_DONE);
+    CHECK(logged(&w, "bob row sas_cancelled by you mac-mismatch"));
+    CHECK(!verified_by(&w, bob, "alice"));
+    CHECK(bob->rec.state.nsas == 0);
+    world_free(&w);
+}
+
+/* 600 s after the start, a cancel `timeout`; a step out of order ends it
+ * `unexpected-message`. */
+TEST(sas_times_out_and_refuses_steps_out_of_order) {
+    static world w;
+    device *alice, *bob;
+    sas_world(&w, &alice, &bob);
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_START, E2E_SAS_DONE);
+    w.now += E2E_SAS_TIMEOUT_MS - 1;
+    e2e_ctx ac = ctx_of(&w, alice);
+    e2e_result r;
+    e2e_result_init(&r);
+    e2e_sas_tick(&ac, alice->sas, &r, &alice->rows);
+    CHECK(r.noutbound == 0 && alice->rec.state.nsas == 1);
+    e2e_result_free(&r);
+    w.now += 1;
+    ac = ctx_of(&w, alice);
+    e2e_result_init(&r);
+    size_t before = alice->rows.n;
+    e2e_sas_tick(&ac, alice->sas, &r, &alice->rows);
+    log_rows(&w, alice, before);
+    pump(&w, alice, &r, 0);
+    CHECK(logged(&w, "alice row sas_cancelled by you timeout"));
+    CHECK(logged(&w, "bob row sas_cancelled by peer timeout"));
+    CHECK(alice->rec.state.nsas == 0 && bob->rec.state.nsas == 0);
+
+    /* Bob sends a key before accepting anything. */
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_START, E2E_SAS_DONE);
+    e2e_ctx bc = ctx_of(&w, bob);
+    e2e_result_init(&r);
+    char *inner = e2e_inner_sas_key(bob->rec.state.sas[0].tx, alice->k);
+    CHECK(e2e_send(&bc, "alice", inner, E2E_SAS_TAG, 0, NULL, &r));
+    free(inner);
+    pump(&w, bob, &r, 0);
+    CHECK(logged(&w, "alice row sas_cancelled by you unexpected-message"));
+    CHECK(alice->rec.state.nsas == 0);
+    world_free(&w);
+}
+
+/* Both ask at once: the smaller tx wins on both sides, and the one SAS
+ * left runs to the end. */
+TEST(sas_both_asking_keep_the_smaller_tx) {
+    static world w;
+    device *alice, *bob;
+    sas_world(&w, &alice, &bob);
+    w.hold = true;
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_START, E2E_SAS_DONE);
+    sas_user(&w, bob, "alice", E2E_SAS_STEP_START, E2E_SAS_DONE);
+    char ta[12], tb[12];
+    snprintf(ta, sizeof(ta), "%s", alice->rec.state.sas[0].tx);
+    snprintf(tb, sizeof(tb), "%s", bob->rec.state.sas[0].tx);
+    /* The two starts cross: each is read before either answer leaves. */
+    release_one(&w);
+    release_one(&w);
+    release_all(&w);
+    const char *win = strcmp(ta, tb) < 0 ? ta : tb;
+    CHECK(alice->rec.state.nsas == 1 && bob->rec.state.nsas == 1);
+    CHECK_STR(alice->rec.state.sas[0].tx, win);
+    CHECK_STR(bob->rec.state.sas[0].tx, win);
+    CHECK(alice->rec.state.sas[0].phase == E2E_SAS_COMPARE);
+    CHECK(bob->rec.state.sas[0].phase == E2E_SAS_COMPARE);
+    CHECK(alice->rec.state.sas[0].role_a != bob->rec.state.sas[0].role_a);
+    e2e_sas_view va, vb;
+    CHECK(sas_view(&w, alice, "bob", &va) && sas_view(&w, bob, "alice", &vb));
+    CHECK(va.has_emoji && vb.has_emoji && memcmp(va.emoji, vb.emoji, 7) == 0);
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_MATCH, E2E_SAS_DONE);
+    sas_user(&w, bob, "alice", E2E_SAS_STEP_MATCH, E2E_SAS_DONE);
+    CHECK(verified_by(&w, alice, "bob") && verified_by(&w, bob, "alice"));
+    world_free(&w);
+}
+
+/* The record keeps the public half (cic's choice); the secret is memory
+ * only, so a restart mid-SAS ends it `page-gone` at the next tick. A
+ * request not accepted yet needs no secret and survives a restart. */
+TEST(sas_survives_a_reload_only_without_its_secret) {
+    static world w;
+    device *alice, *bob;
+    sas_world(&w, &alice, &bob);
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_START, E2E_SAS_DONE);
+    reload(bob); /* asked: public only */
+    e2e_sas_host_free(bob->sas);
+    bob->sas = e2e_sas_host_new();
+    e2e_ctx bc = ctx_of(&w, bob);
+    e2e_result r;
+    e2e_result_init(&r);
+    e2e_sas_tick(&bc, bob->sas, &r, &bob->rows);
+    CHECK(r.noutbound == 0 && bob->rec.state.nsas == 1);
+    e2e_result_free(&r);
+    sas_user(&w, bob, "alice", E2E_SAS_STEP_ACCEPT, E2E_SAS_DONE);
+    CHECK(alice->rec.state.sas[0].phase == E2E_SAS_COMPARE);
+    reload(alice); /* the record round-trips exactly, SAS included */
+    e2e_sas_host_free(alice->sas);
+    alice->sas = e2e_sas_host_new(); /* a restart */
+    e2e_ctx ac = ctx_of(&w, alice);
+    e2e_result_init(&r);
+    size_t before = alice->rows.n;
+    e2e_sas_tick(&ac, alice->sas, &r, &alice->rows);
+    log_rows(&w, alice, before);
+    pump(&w, alice, &r, 0);
+    CHECK(logged(&w, "alice row sas_cancelled by you page-gone"));
+    CHECK(logged(&w, "bob row sas_cancelled by peer page-gone"));
+    CHECK(alice->rec.state.nsas == 0 && bob->rec.state.nsas == 0);
+    world_free(&w);
+}
+
+/* A start reaches every device of the master; the first to accept is the
+ * one it runs with, and the others are told `other-device`. */
+TEST(sas_releases_the_other_devices) {
+    static world w;
+    memset(&w, 0, sizeof(w));
+    w.now = NOW0;
+    w.next_msgid = 1;
+    device *carol = add_user(&w, "carol", "carol", 0);
+    device *bob1 = add_user(&w, "bob1", "bob", 1);
+    device *bob2 = pair_device(&w, bob1, "bob2");
+    upload(bob1);
+    send_text(&w, carol, "bob", "to both", "c1");
+    send_text(&w, bob1, "carol", "from 1", "b1");
+    send_text(&w, bob2, "carol", "from 2", "b2");
+    sas_user(&w, carol, "bob", E2E_SAS_STEP_START, E2E_SAS_DONE);
+    CHECK(bob1->rec.state.nsas == 1 && bob2->rec.state.nsas == 1);
+    sas_user(&w, bob2, "carol", E2E_SAS_STEP_ACCEPT, E2E_SAS_DONE);
+    CHECK(logged(&w, "bob1 row sas_cancelled by peer other-device"));
+    CHECK(bob1->rec.state.nsas == 0);
+    CHECK_STR(carol->rec.state.sas[0].device, bob2->e);
+    sas_user(&w, carol, "bob", E2E_SAS_STEP_MATCH, E2E_SAS_DONE);
+    sas_user(&w, bob2, "carol", E2E_SAS_STEP_MATCH, E2E_SAS_DONE);
+    CHECK(verified_by(&w, carol, "bob") && verified_by(&w, bob2, "carol"));
+    /* bob1 shares the master: carol's verification covers it too. */
+    world_free(&w);
+}
+
+/* A pin by hand to another master ends the SAS on the nick, nothing sent. */
+TEST(sas_ends_when_the_nick_is_repinned) {
+    static world w;
+    device *alice, *bob;
+    sas_world(&w, &alice, &bob);
+    sas_user(&w, alice, "bob", E2E_SAS_STEP_START, E2E_SAS_DONE);
+    e2e_ctx ac = ctx_of(&w, alice);
+    e2e_result r;
+    e2e_result_init(&r);
+    CHECK(e2e_pin(&ac, "bob", E1, false, &r) == E2E_PIN_PINNED);
+    e2e_result_free(&r);
+    size_t before = alice->rows.n;
+    e2e_sas_repinned(&ac, alice->sas, "bob", &alice->rows);
+    log_rows(&w, alice, before);
+    CHECK(logged(&w, "alice row sas_cancelled by you key-changed"));
+    CHECK(alice->rec.state.nsas == 0);
+    world_free(&w);
+}
+
+/* The holder signs a device out (identity.ts revokeDevice): one version
+ * up, the rest still listed, its own device never. */
+TEST(own_revoked_signs_the_rest_one_up) {
+    static world w;
+    memset(&w, 0, sizeof(w));
+    w.now = NOW0;
+    device *h = add_user(&w, "h", "vjt", 0);
+    device *p = pair_device(&w, h, "p");
+    e2e_own out;
+    bool unlisted;
+    CHECK(e2e_own_revoked(&h->rec, p->e, &out, &unlisted));
+    CHECK(out.list_ver == h->rec.own->list_ver + 1);
+    CHECK(out.list_devices.n == 1);
+    CHECK_STR(out.list_devices.v[0], h->e);
+    CHECK_STR(out.cert, h->rec.own->cert); /* the certificate stays */
+    e2e_master_list m = {.ed25519 = out.master, .ver = (double)out.list_ver, .ndevices = 1,
+                         .sig = out.list_sig};
+    m.devices[0] = out.list_devices.v[0];
+    CHECK(e2e_valid_master_list(&m));
+    e2e_own_free(&out);
+    CHECK(!e2e_own_revoked(&h->rec, h->e, &out, &unlisted) && !unlisted);
+    CHECK(!e2e_own_revoked(&h->rec, E1, &out, &unlisted) && unlisted);
+    CHECK(!e2e_own_revoked(&p->rec, h->e, &out, &unlisted)); /* no master here */
+    world_free(&w);
+}
+
+/* openAlarm / lastComparison over the history rows; the new kinds
+ * round-trip with their fields. */
+TEST(trust_rows_read_as_cic_reads_them) {
+    e2e_row rows_v[] = {
+        mkrow("1", E2E_ROW_IN, 1, "bob", "hi", E1),
+        mkrow("2", E2E_ROW_KEY_ALARM, 2, "Bob", NULL, E2),
+        mkrow("3", E2E_ROW_KEY_ALARM, 3, "carol", NULL, E1),
+    };
+    e2e_rows rows = {rows_v, 3};
+    CHECK_STR(e2e_open_alarm(&rows, "BOB"), E2);
+    CHECK_STR(e2e_open_alarm(&rows, "carol"), E1);
+    CHECK(e2e_open_alarm(&rows, "dave") == NULL);
+    e2e_row more_v[] = {
+        mkrow("1", E2E_ROW_KEY_ALARM, 1, "bob", NULL, E2),
+        mkrow("2", E2E_ROW_ACCEPTED, 2, "bob", NULL, E2),
+        mkrow("3", E2E_ROW_SAS_CANCELLED, 3, "bob", "mismatch", NULL),
+    };
+    more_v[2].by_peer = true;
+    e2e_rows more = {more_v, 3};
+    CHECK(e2e_open_alarm(&more, "bob") == NULL);
+    const e2e_row *last = e2e_last_comparison(&more, "bob");
+    CHECK(last && last->kind == E2E_ROW_SAS_CANCELLED);
+    more.n = 2;
+    CHECK(e2e_last_comparison(&more, "bob") == NULL); /* a key chosen since */
+
+    e2e_row kinds[] = {
+        mkrow("p", E2E_ROW_PINNED, 1, "bob", NULL, E1),
+        mkrow("a", E2E_ROW_ACCEPTED, 2, "bob", NULL, E2),
+        mkrow("v", E2E_ROW_VERIFIED, 3, "bob", NULL, E1),
+        mkrow("s", E2E_ROW_SAS_ASKED, 4, "bob", NULL, NULL),
+        mkrow("c", E2E_ROW_SAS_CANCELLED, 5, "bob", "timeout", NULL),
+    };
+    kinds[3].by_peer = true;
+    for (size_t i = 0; i < 5; i++) {
+        char *json = e2e_row_to_json(&kinds[i]);
+        e2e_row back;
+        CHECK(e2e_row_from_json(json, strlen(json), &back));
+        CHECK(back.kind == kinds[i].kind && back.by_peer == kinds[i].by_peer);
+        CHECK((back.key == NULL) == (kinds[i].key == NULL));
+        CHECK((back.body == NULL) == (kinds[i].body == NULL));
+        if (back.key) CHECK_STR(back.key, kinds[i].key);
+        if (back.body) CHECK_STR(back.body, kinds[i].body);
+        e2e_row_free(&back);
+        free(json);
+    }
+    const char *bad = "{\"v\":1,\"id\":\"x\",\"kind\":\"sas_asked\",\"at\":1,\"nick\":\"a\",\"by\":\"them\"}";
+    e2e_row r;
+    CHECK(!e2e_row_from_json(bad, strlen(bad), &r));
+}
+
 int main(void) {
     RUN(did_vectors);
     RUN(fb_vectors_are_cicchettos);
@@ -2149,5 +2644,16 @@ int main(void) {
     RUN(iso8601_instants);
     RUN(history_rows_round_trip);
     RUN(history_appends_dedupes_and_survives_a_torn_tail);
+    RUN(sas_pure_halves);
+    RUN(sas_full_run_verifies_both_masters);
+    RUN(sas_mismatch_cancels_and_verifies_nobody);
+    RUN(sas_tampered_mac_is_refused);
+    RUN(sas_times_out_and_refuses_steps_out_of_order);
+    RUN(sas_both_asking_keep_the_smaller_tx);
+    RUN(sas_survives_a_reload_only_without_its_secret);
+    RUN(sas_releases_the_other_devices);
+    RUN(sas_ends_when_the_nick_is_repinned);
+    RUN(own_revoked_signs_the_rest_one_up);
+    RUN(trust_rows_read_as_cic_reads_them);
     return test_report();
 }

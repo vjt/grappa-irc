@@ -1401,6 +1401,21 @@ static void sibling_free(e2e_sibling *s) {
     free(s->curve25519);
 }
 
+static void sas_free(e2e_sas *r) {
+    free(r->master);
+    free(r->tx);
+    free(r->nick);
+    free(r->device);
+    free(r->our_key);
+    free(r->their_key);
+    free(r->commitment);
+    free(r->expected);
+    free(r->expected_mmac);
+    free(r->their_mac);
+    free(r->their_mmac);
+    memset(r, 0, sizeof(*r));
+}
+
 static void copy_queue_free(e2e_copy_queue *q) {
     free(q->ed25519);
     for (size_t i = 0; i < q->ncopies; i++) {
@@ -1432,6 +1447,8 @@ void e2e_state_free(e2e_state *s) {
     free(s->siblings);
     for (size_t i = 0; i < s->ncopyq; i++) copy_queue_free(&s->copyq[i]);
     free(s->copyq);
+    for (size_t i = 0; i < s->nsas; i++) sas_free(&s->sas[i]);
+    free(s->sas);
     e2e_state_init(s);
 }
 
@@ -1859,6 +1876,35 @@ static void w_state(json_buf *b, const e2e_state *s) {
         jb_obj_close(b);
     }
     jb_arr_close(b);
+    jb_key(b, "sas");
+    jb_arr_open(b);
+    for (size_t i = 0; i < s->nsas; i++) {
+        const e2e_sas *r = &s->sas[i];
+        jb_obj_open(b);
+        jb_key(b, "master");
+        jb_str(b, r->master);
+        jb_key(b, "tx");
+        jb_str(b, r->tx);
+        jb_key(b, "nick");
+        jb_str(b, r->nick);
+        jb_key(b, "role");
+        jb_str(b, r->role_a ? "a" : "b");
+        jb_key(b, "phase");
+        jb_str(b, e2e_sas_phase_name(r->phase));
+        w_num(b, "at", (double)r->at);
+        w_str_or_null(b, "device", r->device);
+        jb_key(b, "held");
+        jb_bool(b, r->held);
+        w_str_or_null(b, "our_key", r->our_key);
+        w_str_or_null(b, "their_key", r->their_key);
+        w_str_or_null(b, "commitment", r->commitment);
+        w_str_or_null(b, "expected", r->expected);
+        w_str_or_null(b, "expected_mmac", r->expected_mmac);
+        w_str_or_null(b, "their_mac", r->their_mac);
+        w_str_or_null(b, "their_mmac", r->their_mmac);
+        jb_obj_close(b);
+    }
+    jb_arr_close(b);
     jb_obj_close(b);
 }
 
@@ -2093,6 +2139,31 @@ static void *grow(void **arr, size_t *n, size_t size) {
     return item;
 }
 
+static bool sas_phase_parse(const char *s, e2e_sas_phase *out) {
+    for (int p = E2E_SAS_STARTED; p <= E2E_SAS_COMPARE; p++)
+        if (streq(s, e2e_sas_phase_name((e2e_sas_phase)p))) {
+            *out = (e2e_sas_phase)p;
+            return true;
+        }
+    return false;
+}
+
+static bool r_sas(const json_value *o, e2e_sas *r) {
+    const char *role = str_field(o, "role");
+    if (!streq(role, "a") && !streq(role, "b")) return false;
+    r->role_a = streq(role, "a");
+    return r_str(o, "master", &r->master) && r_str(o, "tx", &r->tx) &&
+           r_str(o, "nick", &r->nick) && sas_phase_parse(str_field(o, "phase"), &r->phase) && r_i64(o, "at", &r->at) &&
+           r_str_or_null(o, "device", &r->device) && r_bool(o, "held", &r->held) &&
+           r_str_or_null(o, "our_key", &r->our_key) &&
+           r_str_or_null(o, "their_key", &r->their_key) &&
+           r_str_or_null(o, "commitment", &r->commitment) &&
+           r_str_or_null(o, "expected", &r->expected) &&
+           r_str_or_null(o, "expected_mmac", &r->expected_mmac) &&
+           r_str_or_null(o, "their_mac", &r->their_mac) &&
+           r_str_or_null(o, "their_mmac", &r->their_mmac);
+}
+
 static bool r_state(const json_value *o, e2e_state *s) {
     double v;
     if (!o || !number_field(o, "v", &v) || v != 2) return false;
@@ -2156,6 +2227,11 @@ static bool r_state(const json_value *o, e2e_state *s) {
             c->body_len = json_string_len(body);
         }
     }
+    /* `sas` came with slice F: a record written before it has none. */
+    if (!json_get(o, "sas")) return true;
+    if (!(a = r_arr(o, "sas"))) return false;
+    for (size_t i = 0; i < json_len(a); i++)
+        if (!r_sas(json_at(a, i), grow((void **)&s->sas, &s->nsas, sizeof(e2e_sas)))) return false;
     return true;
 }
 
@@ -4161,7 +4237,7 @@ void e2e_tick(const e2e_ctx *c, e2e_result *res) {
 
 bool e2e_waits_on_the_clock(const e2e_ctx *c) {
     const e2e_state *st = &c->record->state;
-    if (st->ncopyq > 0) return true;
+    if (st->ncopyq > 0 || st->nsas > 0) return true;
     for (size_t i = 0; i < st->npeers; i++)
         if (st->peers[i].noutq > 0 || st->peers[i].listreq_held || st->peers[i].keys_asked_nick)
             return true;
@@ -4226,6 +4302,17 @@ bool e2e_pinned(const e2e_ctx *c, const char *nick, const char **master, bool *v
     *trusted = t.n;
     free(t.v);
     return true;
+}
+
+const e2e_master *e2e_master_of(const e2e_ctx *c, const char *master) {
+    return master ? master_get(&c->record->state, master) : NULL;
+}
+
+bool e2e_trusted(const e2e_ctx *c, const char *master, const char *ed25519) {
+    step s = {0};
+    s.st = &c->record->state;
+    e2e_device *d = device_get(s.st, ed25519);
+    return d && streq(d->master, master) && standing(&s, master, ed25519, d->cert_ver) < 0;
 }
 
 /* ── siblings (S1: a copy of each text sent, to our own other devices) ── */
@@ -5104,6 +5191,11 @@ const char *e2e_row_kind_name(e2e_row_kind k) {
     case E2E_ROW_OUT: return "out";
     case E2E_ROW_UNDECRYPTABLE: return "undecryptable";
     case E2E_ROW_KEY_ALARM: return "key_alarm";
+    case E2E_ROW_PINNED: return "pinned";
+    case E2E_ROW_ACCEPTED: return "accepted";
+    case E2E_ROW_VERIFIED: return "verified";
+    case E2E_ROW_SAS_ASKED: return "sas_asked";
+    case E2E_ROW_SAS_CANCELLED: return "sas_cancelled";
     }
     return "unknown";
 }
@@ -5126,8 +5218,17 @@ void e2e_rows_free(e2e_rows *r) {
 
 /* Which fields each kind carries: what a row is written with, and what a
  * read refuses to be without. */
-static bool row_has_body(e2e_row_kind k) { return k != E2E_ROW_KEY_ALARM; }
-static bool row_has_key(e2e_row_kind k) { return k == E2E_ROW_IN || k == E2E_ROW_KEY_ALARM; }
+static bool row_has_body(e2e_row_kind k) {
+    return k == E2E_ROW_IN || k == E2E_ROW_OUT || k == E2E_ROW_UNDECRYPTABLE ||
+           k == E2E_ROW_SAS_CANCELLED;
+}
+static bool row_has_key(e2e_row_kind k) {
+    return k == E2E_ROW_IN || k == E2E_ROW_KEY_ALARM || k == E2E_ROW_PINNED ||
+           k == E2E_ROW_ACCEPTED || k == E2E_ROW_VERIFIED;
+}
+static bool row_has_by(e2e_row_kind k) {
+    return k == E2E_ROW_SAS_ASKED || k == E2E_ROW_SAS_CANCELLED;
+}
 
 char *e2e_row_to_json(const e2e_row *r) {
     json_buf b;
@@ -5151,6 +5252,10 @@ char *e2e_row_to_json(const e2e_row *r) {
         jb_key(&b, "key");
         jb_str(&b, r->key ? r->key : "");
     }
+    if (row_has_by(r->kind)) {
+        jb_key(&b, "by");
+        jb_str(&b, r->by_peer ? "peer" : "you");
+    }
     jb_obj_close(&b);
     char *out = jb_take(&b);
     if (!out) abort();
@@ -5171,16 +5276,20 @@ bool e2e_row_from_json(const char *text, size_t len, e2e_row *out) {
               at >= 0 && at < 9e15 && at == floor(at);
     e2e_row_kind k = E2E_ROW_IN;
     if (ok) {
-        if (strcmp(kind, "in") == 0) k = E2E_ROW_IN;
-        else if (strcmp(kind, "out") == 0) k = E2E_ROW_OUT;
-        else if (strcmp(kind, "undecryptable") == 0) k = E2E_ROW_UNDECRYPTABLE;
-        else if (strcmp(kind, "key_alarm") == 0) k = E2E_ROW_KEY_ALARM;
-        else ok = false;
+        bool named = false;
+        for (int i = E2E_ROW_IN; !named && i <= E2E_ROW_SAS_CANCELLED; i++)
+            if (strcmp(kind, e2e_row_kind_name((e2e_row_kind)i)) == 0) {
+                k = (e2e_row_kind)i;
+                named = true;
+            }
+        ok = named;
     }
     const json_value *body = json_get(o, "body");
     const char *key = json_string(json_get(o, "key"));
+    const char *by = json_string(json_get(o, "by"));
     if (ok && row_has_body(k) && !json_string(body)) ok = false;
     if (ok && row_has_key(k) && !key) ok = false;
+    if (ok && row_has_by(k) && !streq(by, "you") && !streq(by, "peer")) ok = false;
     if (ok) {
         out->id = xstrdup(id);
         out->kind = k;
@@ -5191,9 +5300,33 @@ bool e2e_row_from_json(const char *text, size_t len, e2e_row *out) {
             out->body = xstrndup(json_string(body), out->body_len);
         }
         if (row_has_key(k)) out->key = xstrdup(key);
+        out->by_peer = row_has_by(k) && streq(by, "peer");
     }
     json_free(d);
     return ok;
+}
+
+/* ── Trust as the history records it ─────────────────────────────────── */
+
+const char *e2e_open_alarm(const e2e_rows *rows, const char *nick) {
+    for (size_t i = rows->n; i > 0; i--) {
+        const e2e_row *r = &rows->v[i - 1];
+        if (!e2e_nick_eq(r->nick, nick)) continue;
+        if (r->kind == E2E_ROW_KEY_ALARM) return r->key;
+        if (r->kind == E2E_ROW_PINNED || r->kind == E2E_ROW_ACCEPTED || r->kind == E2E_ROW_VERIFIED)
+            return NULL;
+    }
+    return NULL;
+}
+
+const e2e_row *e2e_last_comparison(const e2e_rows *rows, const char *nick) {
+    for (size_t i = rows->n; i > 0; i--) {
+        const e2e_row *r = &rows->v[i - 1];
+        if (!e2e_nick_eq(r->nick, nick)) continue;
+        if (r->kind == E2E_ROW_PINNED || r->kind == E2E_ROW_ACCEPTED) return NULL;
+        if (r->kind == E2E_ROW_VERIFIED || r->kind == E2E_ROW_SAS_CANCELLED) return r;
+    }
+    return NULL;
 }
 
 char *e2e_chat_file_name(const char *nick) {
@@ -5412,4 +5545,736 @@ bool e2e_chat_load(const char *dir, e2e_rows *out, char *err, size_t err_sz) {
         free(o);
     }
     return ok;
+}
+
+/* ── Own devices (identity.ts revokeDevice) ──────────────────────────── */
+
+bool e2e_own_revoked(const e2e_record *r, const char *ed25519, e2e_own *out, bool *unlisted) {
+    *unlisted = false;
+    if (!r->own || !r->master || !ed25519) return false;
+    char *e = vzs(vz_account_ed25519_key(r->account));
+    if (!e) abort();
+    bool self = strcmp(e, ed25519) == 0;
+    free(e);
+    if (self) return false;
+    if (!strv_has(&r->own->list_devices, ed25519)) {
+        *unlisted = true;
+        return false;
+    }
+    long ver = r->own->list_ver + 1;
+    if (ver > E2E_MAX_VER) return false;
+    const char *rest[E2E_MAX_DEVICES];
+    size_t n = 0;
+    for (size_t i = 0; i < r->own->list_devices.n && n < E2E_MAX_DEVICES; i++)
+        if (strcmp(r->own->list_devices.v[i], ed25519) != 0) rest[n++] = r->own->list_devices.v[i];
+    char *sig = e2e_sign_list(r->master, ver, rest, n);
+    if (!sig) return false;
+    own_copy(r->own, out);
+    strv_free(&out->list_devices);
+    for (size_t i = 0; i < n; i++) strv_push(&out->list_devices, rest[i]);
+    free(out->list_sig);
+    out->list_sig = sig;
+    out->list_ver = ver;
+    return true;
+}
+
+/* ── SAS (sas.ts) ────────────────────────────────────────────────────── */
+
+/* Matrix's sas-emoji.json @7aaeac07, as sasEmoji.ts holds it: index,
+ * glyph (UTF-8 bytes), English name. */
+static const struct {
+    const char *glyph, *name;
+} SAS_EMOJI[64] = {
+    {"\xF0\x9F\x90\xB6", "Dog"}, /* 0 🐶 */
+    {"\xF0\x9F\x90\xB1", "Cat"}, /* 1 🐱 */
+    {"\xF0\x9F\xA6\x81", "Lion"}, /* 2 🦁 */
+    {"\xF0\x9F\x90\x8E", "Horse"}, /* 3 🐎 */
+    {"\xF0\x9F\xA6\x84", "Unicorn"}, /* 4 🦄 */
+    {"\xF0\x9F\x90\xB7", "Pig"}, /* 5 🐷 */
+    {"\xF0\x9F\x90\x98", "Elephant"}, /* 6 🐘 */
+    {"\xF0\x9F\x90\xB0", "Rabbit"}, /* 7 🐰 */
+    {"\xF0\x9F\x90\xBC", "Panda"}, /* 8 🐼 */
+    {"\xF0\x9F\x90\x93", "Rooster"}, /* 9 🐓 */
+    {"\xF0\x9F\x90\xA7", "Penguin"}, /* 10 🐧 */
+    {"\xF0\x9F\x90\xA2", "Turtle"}, /* 11 🐢 */
+    {"\xF0\x9F\x90\x9F", "Fish"}, /* 12 🐟 */
+    {"\xF0\x9F\x90\x99", "Octopus"}, /* 13 🐙 */
+    {"\xF0\x9F\xA6\x8B", "Butterfly"}, /* 14 🦋 */
+    {"\xF0\x9F\x8C\xB7", "Flower"}, /* 15 🌷 */
+    {"\xF0\x9F\x8C\xB3", "Tree"}, /* 16 🌳 */
+    {"\xF0\x9F\x8C\xB5", "Cactus"}, /* 17 🌵 */
+    {"\xF0\x9F\x8D\x84", "Mushroom"}, /* 18 🍄 */
+    {"\xF0\x9F\x8C\x8F", "Globe"}, /* 19 🌏 */
+    {"\xF0\x9F\x8C\x99", "Moon"}, /* 20 🌙 */
+    {"\xE2\x98\x81\xEF\xB8\x8F", "Cloud"}, /* 21 ☁️ */
+    {"\xF0\x9F\x94\xA5", "Fire"}, /* 22 🔥 */
+    {"\xF0\x9F\x8D\x8C", "Banana"}, /* 23 🍌 */
+    {"\xF0\x9F\x8D\x8E", "Apple"}, /* 24 🍎 */
+    {"\xF0\x9F\x8D\x93", "Strawberry"}, /* 25 🍓 */
+    {"\xF0\x9F\x8C\xBD", "Corn"}, /* 26 🌽 */
+    {"\xF0\x9F\x8D\x95", "Pizza"}, /* 27 🍕 */
+    {"\xF0\x9F\x8E\x82", "Cake"}, /* 28 🎂 */
+    {"\xE2\x9D\xA4\xEF\xB8\x8F", "Heart"}, /* 29 ❤️ */
+    {"\xF0\x9F\x98\x80", "Smiley"}, /* 30 😀 */
+    {"\xF0\x9F\xA4\x96", "Robot"}, /* 31 🤖 */
+    {"\xF0\x9F\x8E\xA9", "Hat"}, /* 32 🎩 */
+    {"\xF0\x9F\x91\x93", "Glasses"}, /* 33 👓 */
+    {"\xF0\x9F\x94\xA7", "Spanner"}, /* 34 🔧 */
+    {"\xF0\x9F\x8E\x85", "Santa"}, /* 35 🎅 */
+    {"\xF0\x9F\x91\x8D", "Thumbs Up"}, /* 36 👍 */
+    {"\xE2\x98\x82\xEF\xB8\x8F", "Umbrella"}, /* 37 ☂️ */
+    {"\xE2\x8C\x9B", "Hourglass"}, /* 38 ⌛ */
+    {"\xE2\x8F\xB0", "Clock"}, /* 39 ⏰ */
+    {"\xF0\x9F\x8E\x81", "Gift"}, /* 40 🎁 */
+    {"\xF0\x9F\x92\xA1", "Light Bulb"}, /* 41 💡 */
+    {"\xF0\x9F\x93\x95", "Book"}, /* 42 📕 */
+    {"\xE2\x9C\x8F\xEF\xB8\x8F", "Pencil"}, /* 43 ✏️ */
+    {"\xF0\x9F\x93\x8E", "Paperclip"}, /* 44 📎 */
+    {"\xE2\x9C\x82\xEF\xB8\x8F", "Scissors"}, /* 45 ✂️ */
+    {"\xF0\x9F\x94\x92", "Lock"}, /* 46 🔒 */
+    {"\xF0\x9F\x94\x91", "Key"}, /* 47 🔑 */
+    {"\xF0\x9F\x94\xA8", "Hammer"}, /* 48 🔨 */
+    {"\xE2\x98\x8E\xEF\xB8\x8F", "Telephone"}, /* 49 ☎️ */
+    {"\xF0\x9F\x8F\x81", "Flag"}, /* 50 🏁 */
+    {"\xF0\x9F\x9A\x82", "Train"}, /* 51 🚂 */
+    {"\xF0\x9F\x9A\xB2", "Bicycle"}, /* 52 🚲 */
+    {"\xE2\x9C\x88\xEF\xB8\x8F", "Aeroplane"}, /* 53 ✈️ */
+    {"\xF0\x9F\x9A\x80", "Rocket"}, /* 54 🚀 */
+    {"\xF0\x9F\x8F\x86", "Trophy"}, /* 55 🏆 */
+    {"\xE2\x9A\xBD", "Ball"}, /* 56 ⚽ */
+    {"\xF0\x9F\x8E\xB8", "Guitar"}, /* 57 🎸 */
+    {"\xF0\x9F\x8E\xBA", "Trumpet"}, /* 58 🎺 */
+    {"\xF0\x9F\x94\x94", "Bell"}, /* 59 🔔 */
+    {"\xE2\x9A\x93", "Anchor"}, /* 60 ⚓ */
+    {"\xF0\x9F\x8E\xA7", "Headphones"}, /* 61 🎧 */
+    {"\xF0\x9F\x93\x81", "Folder"}, /* 62 📁 */
+    {"\xF0\x9F\x93\x8C", "Pin"}, /* 63 📌 */
+};
+
+const char *e2e_sas_emoji_glyph(unsigned index) { return index < 64 ? SAS_EMOJI[index].glyph : NULL; }
+const char *e2e_sas_emoji_name(unsigned index) { return index < 64 ? SAS_EMOJI[index].name : NULL; }
+
+void e2e_sas_emoji_line(const uint8_t emoji[7], char *out, size_t out_sz) {
+    size_t n = 0;
+    if (out_sz) out[0] = 0;
+    for (int i = 0; i < 7 && n < out_sz; i++) {
+        const char *g = e2e_sas_emoji_glyph(emoji[i]), *name = e2e_sas_emoji_name(emoji[i]);
+        int w = snprintf(out + n, out_sz - n, "%s%s %s", i ? "  " : "", g ? g : "?",
+                         name ? name : "?");
+        if (w < 0 || (size_t)w >= out_sz - n) break;
+        n += (size_t)w;
+    }
+}
+
+char *e2e_sas_commitment(const char *key, const char *tx) {
+    char *text = xprintf("%s|%s", key, tx);
+    uint8_t digest[32];
+    if (vz_sha256((const uint8_t *)text, strlen(text), digest) != 0) abort();
+    free(text);
+    return e2e_base64(digest, 32);
+}
+
+char *e2e_sas_info(const char *a_curve, const char *a_key, const char *b_curve, const char *b_key,
+                   const char *tx) {
+    return xprintf("%s%s|%s|%s|%s|%s", E2E_SAS_INFO_PREFIX, a_curve, a_key, b_curve, b_key, tx);
+}
+
+char *e2e_sas_mac_info(bool master, const char *first_curve, const char *second_curve,
+                       const char *tx) {
+    return xprintf("%s%s|%s|%s", master ? E2E_SAS_MMAC_PREFIX : E2E_SAS_MAC_PREFIX, first_curve,
+                   second_curve, tx);
+}
+
+/* EncryptedRail.tsx SAS_REASON. */
+const char *e2e_sas_reason_text(const char *reason) {
+    static const char *const words[][2] = {
+        {"user", "cancelled"},
+        {"mismatch", "the emoji did not match"},
+        {"timeout", "no answer in 10 minutes"},
+        {"unexpected-message", "a step came out of order"},
+        {"commitment-mismatch", "a key was not the one promised"},
+        {"mac-mismatch", "the confirmation did not match"},
+        {"key-changed", "the nick was pinned to another key"},
+        {"page-gone", "the page running it was closed or reloaded"},
+        {"bad-key", "a key could not be used"},
+        {"other-device", "answered on another device"},
+    };
+    for (size_t i = 0; reason && i < sizeof(words) / sizeof(words[0]); i++)
+        if (strcmp(reason, words[i][0]) == 0) return words[i][1];
+    return NULL;
+}
+
+const char *e2e_sas_phase_name(e2e_sas_phase p) {
+    switch (p) {
+    case E2E_SAS_STARTED: return "started";
+    case E2E_SAS_KEYED: return "keyed";
+    case E2E_SAS_ASKED: return "asked";
+    case E2E_SAS_ACCEPTED: return "accepted";
+    case E2E_SAS_COMPARE: return "compare";
+    }
+    return "unknown";
+}
+
+/* Random bytes from the system, for a tx and a row id. vodozemac draws
+ * its own keys; this is only for the two labels sas.ts draws with
+ * crypto.getRandomValues / randomUUID. No randomness: no SAS. */
+static void random_bytes(uint8_t *out, size_t n) {
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) abort();
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = read(fd, out + got, n - got);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) abort();
+        got += (size_t)r;
+    }
+    close(fd);
+}
+
+/* The secret halves, by our SAS public key. */
+typedef struct {
+    char *key;
+    vz_sas *sas;              /* before the key exchange */
+    vz_established_sas *est;  /* after it */
+} sas_secret;
+
+struct e2e_sas_host {
+    sas_secret *v;
+    size_t n;
+};
+
+e2e_sas_host *e2e_sas_host_new(void) { return calloc(1, sizeof(e2e_sas_host)); }
+
+static void secret_free(sas_secret *s) {
+    free(s->key);
+    vz_sas_free(s->sas);
+    vz_established_sas_free(s->est);
+}
+
+void e2e_sas_host_free(e2e_sas_host *h) {
+    if (!h) return;
+    for (size_t i = 0; i < h->n; i++) secret_free(&h->v[i]);
+    free(h->v);
+    free(h);
+}
+
+static sas_secret *secret_get(e2e_sas_host *h, const char *key) {
+    for (size_t i = 0; key && i < h->n; i++)
+        if (strcmp(h->v[i].key, key) == 0) return &h->v[i];
+    return NULL;
+}
+
+static void secret_drop(e2e_sas_host *h, const char *key) {
+    for (size_t i = 0; key && i < h->n; i++) {
+        if (strcmp(h->v[i].key, key) != 0) continue;
+        secret_free(&h->v[i]);
+        memmove(&h->v[i], &h->v[i + 1], (h->n - i - 1) * sizeof(*h->v));
+        h->n--;
+        return;
+    }
+}
+
+/* A new Sas: its public key (malloc'd), the secret kept under it. */
+static char *new_secret(e2e_sas_host *h) {
+    vz_sas *sas = vz_sas_new();
+    char *key = sas ? vzs(vz_sas_public_key(sas)) : NULL;
+    if (!key) abort();
+    sas_secret *s = grow((void **)&h->v, &h->n, sizeof(*s));
+    s->key = xstrdup(key);
+    s->sas = sas;
+    return key;
+}
+
+/* One SAS call: the context, the host, and where its output goes. */
+typedef struct {
+    const e2e_ctx *c;
+    e2e_state *st;
+    e2e_sas_host *h;
+    e2e_result *res;
+    e2e_rows *rows;
+} sasop;
+
+static void sas_begin(sasop *op, const e2e_ctx *c, e2e_sas_host *h, e2e_result *res,
+                      e2e_rows *rows) {
+    op->c = c;
+    op->st = &c->record->state;
+    op->h = h;
+    op->res = res;
+    op->rows = rows;
+    /* The Verifier's constructor: a secret no held record names any more
+     * (its SAS ended, or the record was read back from disk) goes. */
+    for (size_t i = 0; i < h->n;) {
+        bool named = false;
+        for (size_t k = 0; k < op->st->nsas && !named; k++)
+            named = op->st->sas[k].held && streq(op->st->sas[k].our_key, h->v[i].key);
+        if (named) {
+            i++;
+            continue;
+        }
+        char *key = xstrdup(h->v[i].key);
+        secret_drop(h, key);
+        free(key);
+    }
+}
+
+static int64_t sas_now(const sasop *op) { return op->c->now_ms; }
+
+static e2e_sas *sas_of(e2e_state *st, const char *master) {
+    for (size_t i = 0; master && i < st->nsas; i++)
+        if (strcmp(st->sas[i].master, master) == 0) return &st->sas[i];
+    return NULL;
+}
+
+/* Forgets the secret of `rec` (where it is held), then the record. */
+static void sas_remove(sasop *op, e2e_sas *rec) {
+    if (rec->held) secret_drop(op->h, rec->our_key);
+    size_t i = (size_t)(rec - op->st->sas);
+    sas_free(rec);
+    memmove(&op->st->sas[i], &op->st->sas[i + 1], (op->st->nsas - i - 1) * sizeof(e2e_sas));
+    op->st->nsas--;
+}
+
+static void sas_row(sasop *op, const char *nick, e2e_row_kind kind, bool by_peer,
+                    const char *text, const char *row_id) {
+    op->rows->v = xrealloc(op->rows->v, (op->rows->n + 1) * sizeof(e2e_row));
+    e2e_row *r = &op->rows->v[op->rows->n++];
+    memset(r, 0, sizeof(*r));
+    if (row_id) {
+        r->id = xstrdup(row_id);
+    } else {
+        uint8_t b[8];
+        random_bytes(b, sizeof(b));
+        r->id = xprintf("sas:%02x%02x%02x%02x%02x%02x%02x%02x", b[0], b[1], b[2], b[3], b[4],
+                        b[5], b[6], b[7]);
+    }
+    r->kind = kind;
+    r->at = sas_now(op);
+    r->nick = xstrdup(nick);
+    r->by_peer = by_peer;
+    if (kind == E2E_ROW_SAS_CANCELLED) {
+        r->body = xstrdup(text);
+        r->body_len = strlen(text);
+    } else if (kind == E2E_ROW_VERIFIED) {
+        r->key = xstrdup(text);
+    }
+}
+
+/* A step of `rec`, through the engine: to its peer device, to every
+ * device of the master before one is known. A step that cannot go is
+ * reported by the engine like any message (tag "sas"); the SAS then times
+ * out, as cic's does. */
+static void sas_send(sasop *op, const e2e_sas *rec, char *inner) {
+    e2e_send(op->c, rec->nick, inner, E2E_SAS_TAG, 0, rec->device, op->res);
+    free(inner);
+}
+
+/* Issue 2457: our start of `rec` went to every device of the master, and
+ * `device` is now the one it runs with, or ended with: the others are told
+ * it is not theirs, under the start's tx. */
+static void sas_release(sasop *op, const e2e_sas *rec, const char *device) {
+    char *inner = e2e_inner_sas_cancel(rec->tx, "other-device");
+    e2e_send_except(op->c, rec->nick, inner, E2E_SAS_RELEASE_TAG, device, op->res);
+    free(inner);
+}
+
+/* Ends it with a cancel on the wire, and says so in the chat. */
+static void sas_end(sasop *op, e2e_sas *rec, const char *reason, const char *row_id) {
+    char *nick = xstrdup(rec->nick), *device = opt_dup(rec->device);
+    char *inner = e2e_inner_sas_cancel(rec->tx, reason);
+    sas_remove(op, rec);
+    e2e_send(op->c, nick, inner, E2E_SAS_TAG, 0, device, op->res);
+    free(inner);
+    sas_row(op, nick, E2E_ROW_SAS_CANCELLED, false, reason, row_id);
+    free(nick);
+    free(device);
+}
+
+/* The master pinned to `nick` (copied) and its SAS, if one runs. */
+static e2e_sas *sas_record_of(sasop *op, const char *nick, char **master) {
+    const char *pin = pin_of(op->st, nick);
+    *master = pin && master_get(op->st, pin) ? xstrdup(pin) : NULL;
+    return *master ? sas_of(op->st, *master) : NULL;
+}
+
+/* The peer device `rec` runs with, while its master vouches for it:
+ * copies of its keys. */
+static bool sas_peer(sasop *op, const char *master, const e2e_sas *rec, char **ed25519,
+                     char **curve) {
+    if (!rec->device) return false;
+    e2e_device *d = device_get(op->st, rec->device);
+    step s = {0};
+    s.st = op->st;
+    if (!d || !streq(d->master, master) || standing(&s, master, d->ed25519, d->cert_ver) >= 0)
+        return false;
+    *ed25519 = xstrdup(d->ed25519);
+    *curve = xstrdup(d->curve25519);
+    return true;
+}
+
+typedef enum { SAS_ESTABLISHED, SAS_NOT_YET, SAS_ENDED } sas_establishment;
+
+/* establish: the shared secret, once, with the peer device it binds.
+ * vodozemac refusing the key ends the SAS (`bad-key`); so does a peer
+ * device its master no longer vouches for. On ENDED `rec` is gone. */
+static sas_establishment sas_establish(sasop *op, const char *master, e2e_sas *rec,
+                                       vz_established_sas **est, char **peer_e,
+                                       char **peer_curve) {
+    if (!sas_peer(op, master, rec, peer_e, peer_curve)) {
+        sas_end(op, rec, "bad-key", NULL);
+        return SAS_ENDED;
+    }
+    sas_secret *secret = secret_get(op->h, rec->our_key);
+    if (secret && secret->est) {
+        *est = secret->est;
+        return SAS_ESTABLISHED;
+    }
+    if (!secret || !secret->sas || !rec->their_key) {
+        free(*peer_e);
+        free(*peer_curve);
+        return SAS_NOT_YET;
+    }
+    /* The exchange uses the secret up, whatever it answers. */
+    secret->est = vz_sas_diffie_hellman(secret->sas, rec->their_key);
+    secret->sas = NULL;
+    if (!secret->est) {
+        free(*peer_e);
+        free(*peer_curve);
+        secret_drop(op->h, rec->our_key);
+        sas_end(op, rec, "bad-key", NULL);
+        return SAS_ENDED;
+    }
+    *est = secret->est;
+    return SAS_ESTABLISHED;
+}
+
+/* Verified, once both halves are in: our human's match, and the peer's
+ * MACs, both the ones expected. */
+static void sas_settle(sasop *op, const char *master, e2e_sas *rec, const char *row_id) {
+    if (!rec->expected || !rec->their_mac) return;
+    if (strcmp(rec->their_mac, rec->expected) != 0 ||
+        strcmp(rec->their_mmac, rec->expected_mmac) != 0) {
+        sas_end(op, rec, "mac-mismatch", row_id);
+        return;
+    }
+    char *nick = xstrdup(rec->nick);
+    sas_remove(op, rec);
+    e2e_verify(op->c, nick, master, op->res);
+    sas_row(op, nick, E2E_ROW_VERIFIED, false, master, row_id);
+    free(nick);
+}
+
+static char *calc_mac(vz_established_sas *est, const char *input, const char *info) {
+    return vzs(vz_established_sas_calculate_mac(est, input, info));
+}
+
+static e2e_sas_outcome sas_confirm(sasop *op, const char *master, e2e_sas *rec) {
+    if (rec->phase != E2E_SAS_COMPARE || rec->expected || !rec->held) return E2E_SAS_NOT_NOW;
+    vz_established_sas *est = NULL;
+    char *peer_e = NULL, *peer_curve = NULL;
+    sas_establishment got = sas_establish(op, master, rec, &est, &peer_e, &peer_curve);
+    if (got == SAS_ENDED) return E2E_SAS_DONE;
+    if (got == SAS_NOT_YET) return E2E_SAS_NOT_NOW;
+    /* Each side's MACs bind its own curve first: ours, then the ones we expect. */
+    char *own_e = vzs(vz_account_ed25519_key(op->c->record->account));
+    char *own_k = vzs(vz_account_curve25519_key(op->c->record->account));
+    if (!own_e || !own_k) abort();
+    char *ours = e2e_sas_mac_info(false, own_k, peer_curve, rec->tx);
+    char *ours_m = e2e_sas_mac_info(true, own_k, peer_curve, rec->tx);
+    char *theirs = e2e_sas_mac_info(false, peer_curve, own_k, rec->tx);
+    char *theirs_m = e2e_sas_mac_info(true, peer_curve, own_k, rec->tx);
+    char *mac = calc_mac(est, own_e, ours);
+    char *mmac = calc_mac(est, op->c->record->own->master, ours_m);
+    char *expected = calc_mac(est, peer_e, theirs);
+    char *expected_m = calc_mac(est, master, theirs_m);
+    free(ours);
+    free(ours_m);
+    free(theirs);
+    free(theirs_m);
+    free(own_e);
+    free(own_k);
+    free(peer_e);
+    free(peer_curve);
+    if (!mac || !mmac || !expected || !expected_m) {
+        free(mac);
+        free(mmac);
+        free(expected);
+        free(expected_m);
+        sas_end(op, rec, "bad-key", NULL);
+        return E2E_SAS_DONE;
+    }
+    rec->expected = expected;
+    rec->expected_mmac = expected_m;
+    secret_drop(op->h, rec->our_key);
+    sas_send(op, rec, e2e_inner_sas_mac(rec->tx, mac, mmac));
+    free(mac);
+    free(mmac);
+    sas_settle(op, master, rec, NULL);
+    return E2E_SAS_DONE;
+}
+
+/* One SAS per master: a nick with none pinned, or with a SAS under way,
+ * starts none. */
+static e2e_sas_outcome sas_start(sasop *op, const char *nick) {
+    char *master = NULL;
+    e2e_sas *running = sas_record_of(op, nick, &master);
+    if (!master) return E2E_SAS_NO_PIN;
+    if (running) {
+        free(master);
+        return E2E_SAS_RUNNING;
+    }
+    uint8_t b[8];
+    random_bytes(b, sizeof(b));
+    e2e_sas *rec = grow((void **)&op->st->sas, &op->st->nsas, sizeof(*rec));
+    rec->master = master;
+    rec->tx = e2e_base64(b, sizeof(b));
+    rec->nick = xstrdup(nick);
+    rec->role_a = true;
+    rec->phase = E2E_SAS_STARTED;
+    rec->at = sas_now(op);
+    rec->held = true;
+    rec->our_key = new_secret(op->h);
+    sas_send(op, rec, e2e_inner_sas_start(rec->tx));
+    sas_row(op, nick, E2E_ROW_SAS_ASKED, false, NULL, NULL);
+    return E2E_SAS_DONE;
+}
+
+e2e_sas_outcome e2e_sas_user(const e2e_ctx *c, e2e_sas_host *h, const char *nick, e2e_sas_step step,
+                             e2e_result *res, e2e_rows *rows) {
+    sasop op;
+    sas_begin(&op, c, h, res, rows);
+    if (step == E2E_SAS_STEP_START) return sas_start(&op, nick);
+    char *master = NULL;
+    e2e_sas *rec = sas_record_of(&op, nick, &master);
+    if (!rec) {
+        free(master);
+        return E2E_SAS_NONE;
+    }
+    e2e_sas_outcome out = E2E_SAS_DONE;
+    switch (step) {
+    case E2E_SAS_STEP_ACCEPT:
+        if (rec->phase != E2E_SAS_ASKED) {
+            out = E2E_SAS_NOT_NOW;
+            break;
+        }
+        rec->our_key = new_secret(h);
+        rec->held = true;
+        rec->phase = E2E_SAS_ACCEPTED;
+        {
+            char *commitment = e2e_sas_commitment(rec->our_key, rec->tx);
+            sas_send(&op, rec, e2e_inner_sas_accept(rec->tx, commitment));
+            free(commitment);
+        }
+        break;
+    case E2E_SAS_STEP_MATCH:
+        out = sas_confirm(&op, master, rec);
+        break;
+    case E2E_SAS_STEP_MISMATCH:
+    case E2E_SAS_STEP_CANCEL:
+        sas_end(&op, rec, step == E2E_SAS_STEP_CANCEL ? "user" : "mismatch", NULL);
+        break;
+    case E2E_SAS_STEP_START:
+        break;
+    }
+    free(master);
+    return out;
+}
+
+void e2e_sas_repinned(const e2e_ctx *c, e2e_sas_host *h, const char *nick, e2e_rows *rows) {
+    e2e_result none;
+    e2e_result_init(&none);
+    sasop op;
+    sas_begin(&op, c, h, &none, rows);
+    const char *pinned = pin_of(op.st, nick);
+    for (size_t i = 0; i < op.st->nsas;) {
+        e2e_sas *rec = &op.st->sas[i];
+        if (streq(rec->master, pinned) || !e2e_nick_eq(rec->nick, nick)) {
+            i++;
+            continue;
+        }
+        char *at = xstrdup(rec->nick);
+        sas_remove(&op, rec);
+        sas_row(&op, at, E2E_ROW_SAS_CANCELLED, false, "key-changed", NULL);
+        free(at);
+    }
+    e2e_result_free(&none);
+}
+
+static void sas_compare(e2e_sas *rec, const char *their_key) {
+    free(rec->their_key);
+    rec->their_key = xstrdup(their_key);
+    rec->phase = E2E_SAS_COMPARE;
+}
+
+static void sas_on_start(sasop *op, const char *nick, const char *master, const char *device,
+                         e2e_sas *rec, const char *tx, const char *row_id) {
+    if (rec && strcmp(rec->tx, tx) == 0) return;
+    if (rec && rec->phase == E2E_SAS_STARTED && rec->our_key) {
+        /* Both asked at once. Both sides keep the smaller tx: if it is
+         * ours, the peer turns its start into our B; if theirs, ours
+         * becomes their B, with the device that sent it, and our key, not
+         * sent yet, is the one we commit to; the other devices our start
+         * reached are told it ended. */
+        if (strcmp(tx, rec->tx) > 0) return;
+        sas_release(op, rec, device);
+        free(rec->tx);
+        rec->tx = xstrdup(tx);
+        rec->role_a = false;
+        rec->phase = E2E_SAS_ACCEPTED;
+        rec->at = sas_now(op);
+        free(rec->device);
+        rec->device = xstrdup(device);
+        char *commitment = e2e_sas_commitment(rec->our_key, tx);
+        sas_send(op, rec, e2e_inner_sas_accept(tx, commitment));
+        free(commitment);
+        return;
+    }
+    /* A new start replaces whatever ran with this master: the device the
+     * old SAS ran with is not told, and its steps, naming the old tx, are
+     * ignored. */
+    if (rec) sas_remove(op, rec);
+    e2e_sas *n = grow((void **)&op->st->sas, &op->st->nsas, sizeof(*n));
+    n->master = xstrdup(master);
+    n->tx = xstrdup(tx);
+    n->nick = xstrdup(nick);
+    n->role_a = false;
+    n->phase = E2E_SAS_ASKED;
+    n->at = sas_now(op);
+    n->device = xstrdup(device);
+    sas_row(op, nick, E2E_ROW_SAS_ASKED, true, NULL, row_id);
+}
+
+void e2e_sas_receive(const e2e_ctx *c, e2e_sas_host *h, const char *nick, const char *master,
+                     const char *device, const char *inner_json, const char *row_id,
+                     e2e_result *res, e2e_rows *rows) {
+    e2e_inner in;
+    if (!inner_json || !master || !device || !e2e_inner_parse(inner_json, strlen(inner_json), &in))
+        return;
+    if (in.type < E2E_INNER_SAS_START || in.type > E2E_INNER_SAS_CANCEL) {
+        e2e_inner_free(&in);
+        return;
+    }
+    sasop op;
+    sas_begin(&op, c, h, res, rows);
+    e2e_sas *rec = sas_of(op.st, master);
+    if (in.type == E2E_INNER_SAS_START) {
+        sas_on_start(&op, nick, master, device, rec, in.tx, row_id);
+        e2e_inner_free(&in);
+        return;
+    }
+    if (!rec || strcmp(rec->tx, in.tx) != 0) {
+        e2e_inner_free(&in);
+        return;
+    }
+    if (!rec->device) {
+        sas_release(&op, rec, device);
+        rec->device = xstrdup(device);
+    } else if (strcmp(rec->device, device) != 0) {
+        e2e_inner_free(&in);
+        return;
+    }
+    bool handled = false;
+    switch (in.type) {
+    case E2E_INNER_SAS_ACCEPT:
+        if (rec->phase != E2E_SAS_STARTED || !rec->our_key) break;
+        free(rec->commitment);
+        rec->commitment = xstrdup(in.commitment);
+        rec->phase = E2E_SAS_KEYED;
+        sas_send(&op, rec, e2e_inner_sas_key(rec->tx, rec->our_key));
+        handled = true;
+        break;
+    case E2E_INNER_SAS_KEY:
+        if (rec->phase == E2E_SAS_KEYED) {
+            char *want = e2e_sas_commitment(in.key, rec->tx);
+            bool kept = streq(want, rec->commitment);
+            free(want);
+            if (kept) sas_compare(rec, in.key);
+            else sas_end(&op, rec, "commitment-mismatch", row_id);
+            handled = true;
+        } else if (rec->phase == E2E_SAS_ACCEPTED && rec->our_key) {
+            sas_send(&op, rec, e2e_inner_sas_key(rec->tx, rec->our_key));
+            sas_compare(rec, in.key);
+            handled = true;
+        }
+        break;
+    case E2E_INNER_SAS_MAC:
+        if (rec->phase != E2E_SAS_COMPARE || rec->their_mac) break;
+        rec->their_mac = xstrdup(in.mac);
+        rec->their_mmac = xstrdup(in.mmac);
+        {
+            char *m = xstrdup(master);
+            sas_settle(&op, m, rec, row_id);
+            free(m);
+        }
+        handled = true;
+        break;
+    case E2E_INNER_SAS_CANCEL: {
+        char *at = xstrdup(rec->nick);
+        sas_remove(&op, rec);
+        sas_row(&op, at, E2E_ROW_SAS_CANCELLED, true, in.reason, row_id);
+        free(at);
+        handled = true;
+        break;
+    }
+    default:
+        break;
+    }
+    if (!handled) sas_end(&op, rec, "unexpected-message", row_id);
+    e2e_inner_free(&in);
+}
+
+void e2e_sas_tick(const e2e_ctx *c, e2e_sas_host *h, e2e_result *res, e2e_rows *rows) {
+    sasop op;
+    sas_begin(&op, c, h, res, rows);
+    for (size_t i = 0; i < op.st->nsas;) {
+        e2e_sas *rec = &op.st->sas[i];
+        if (sas_now(&op) >= rec->at + E2E_SAS_TIMEOUT_MS) {
+            sas_end(&op, rec, "timeout", NULL);
+        } else if (rec->held && !rec->expected && !secret_get(h, rec->our_key)) {
+            sas_end(&op, rec, "page-gone", NULL);
+        } else {
+            i++;
+        }
+    }
+}
+
+bool e2e_sas_view_of(const e2e_ctx *c, e2e_sas_host *h, const char *nick, e2e_sas_view *out,
+                     e2e_result *res, e2e_rows *rows) {
+    memset(out, 0, sizeof(*out));
+    sasop op;
+    sas_begin(&op, c, h, res, rows);
+    char *master = NULL;
+    e2e_sas *rec = sas_record_of(&op, nick, &master);
+    if (!rec) {
+        free(master);
+        return false;
+    }
+    out->role_a = rec->role_a;
+    out->phase = rec->phase;
+    out->confirmed = rec->expected != NULL;
+    out->here = rec->held;
+    snprintf(out->tx, sizeof(out->tx), "%s", rec->tx);
+    if (rec->held && rec->phase == E2E_SAS_COMPARE && !rec->expected) {
+        vz_established_sas *est = NULL;
+        char *peer_e = NULL, *peer_curve = NULL;
+        sas_establishment got = sas_establish(&op, master, rec, &est, &peer_e, &peer_curve);
+        if (got == SAS_ENDED) {
+            free(master);
+            return false;
+        }
+        if (got == SAS_ESTABLISHED) {
+            /* A's device curve and SAS key, then B's, then the tx. */
+            char *own_k = vzs(vz_account_curve25519_key(c->record->account));
+            if (!own_k) abort();
+            char *info = rec->role_a
+                             ? e2e_sas_info(own_k, rec->our_key, peer_curve, rec->their_key, rec->tx)
+                             : e2e_sas_info(peer_curve, rec->their_key, own_k, rec->our_key, rec->tx);
+            out->has_emoji = vz_established_sas_emoji_indices(est, info, out->emoji) == 0;
+            free(info);
+            free(own_k);
+            free(peer_e);
+            free(peer_curve);
+        }
+    }
+    free(master);
+    return true;
 }

@@ -500,6 +500,33 @@ typedef struct {
     size_t ncopies;
 } e2e_copy_queue;
 
+/* A SAS under way with one peer master (sas.ts SasRecord), the public half
+ * only: it is stored with the record, as cic stores it with the account.
+ * The secret half (vodozemac's Sas/EstablishedSas) cannot be pickled and
+ * lives in an e2e_sas_host, in memory; `held` says this device made one
+ * (cic's `page` non-null). A held record whose secret is gone — the
+ * process that held it ended — is cancelled `page-gone` by the next tick,
+ * as cic's tick cancels the SAS of a page that went away. */
+typedef enum {
+    E2E_SAS_STARTED,  /* A: asked, waiting for the accept */
+    E2E_SAS_KEYED,    /* A: our key sent, waiting for theirs */
+    E2E_SAS_ASKED,    /* B: asked, waiting for our human */
+    E2E_SAS_ACCEPTED, /* B: accepted, waiting for their key */
+    E2E_SAS_COMPARE   /* both keys known: the humans compare */
+} e2e_sas_phase;
+
+typedef struct {
+    char *master; /* the peer master it runs with: one SAS per master */
+    char *tx;
+    char *nick; /* where its steps go and its rows are written */
+    bool role_a;
+    e2e_sas_phase phase;
+    int64_t at;
+    char *device; /* the peer device (its E), NULL until its first step names the tx */
+    bool held;
+    char *our_key, *their_key, *commitment, *expected, *expected_mmac, *their_mac, *their_mmac;
+} e2e_sas;
+
 typedef struct {
     e2e_master *masters;
     size_t nmasters;
@@ -521,6 +548,8 @@ typedef struct {
     size_t nsiblings;
     e2e_copy_queue *copyq;
     size_t ncopyq;
+    e2e_sas *sas;
+    size_t nsas;
 } e2e_state;
 
 void e2e_state_init(e2e_state *s);
@@ -757,6 +786,12 @@ void e2e_verify(const e2e_ctx *c, const char *nick, const char *master, e2e_resu
  * and how many of its devices are trusted; false when no pin. */
 bool e2e_pinned(const e2e_ctx *c, const char *nick, const char **master, bool *verified,
                 size_t *trusted);
+/* The record of the peer master `master` (borrowed from the state), NULL
+ * when none is known. */
+const e2e_master *e2e_master_of(const e2e_ctx *c, const char *master);
+/* engine.ts trusted: whether `master` vouches for its bound device
+ * `ed25519` now (listed, or certified past the stored list, never revoked). */
+bool e2e_trusted(const e2e_ctx *c, const char *master, const char *ed25519);
 
 /* Siblings (our own other devices: copies of each text we send). */
 /* From `GET …/e2e/devices`: each {ed25519, curve25519, sig}. */
@@ -911,7 +946,13 @@ typedef enum {
     E2E_ROW_IN,            /* a peer's text: key = the master its device is under */
     E2E_ROW_OUT,           /* ours: sent from here (`out:<tag>`) or a sibling's copy (`copy:`) */
     E2E_ROW_UNDECRYPTABLE, /* body = the reason (e2e_undecryptable_reason_name) */
-    E2E_ROW_KEY_ALARM      /* key = the master presented instead of the pinned one */
+    E2E_ROW_KEY_ALARM,     /* key = the master presented instead of the pinned one */
+    /* Trust (cic's rows of the same names): what the user chose or checked. */
+    E2E_ROW_PINNED,       /* key = the master pinned by hand, verified */
+    E2E_ROW_ACCEPTED,     /* key = the master taken off an alarm, not verified */
+    E2E_ROW_VERIFIED,     /* key = the master a SAS verified */
+    E2E_ROW_SAS_ASKED,    /* by_peer: who asked to compare emoji */
+    E2E_ROW_SAS_CANCELLED /* by_peer: who ended it; body = the reason (cut to 64) */
 } e2e_row_kind;
 
 /* `nick` is always the peer the chat is with. `id` is derived from the
@@ -922,9 +963,10 @@ typedef struct {
     e2e_row_kind kind;
     int64_t at;
     char *nick;
-    char *body; /* NULL on a key alarm */
+    char *body; /* IN, OUT, UNDECRYPTABLE, SAS_CANCELLED; NULL otherwise */
     size_t body_len;
-    char *key; /* NULL but on IN and KEY_ALARM */
+    char *key;    /* IN, KEY_ALARM, PINNED, ACCEPTED, VERIFIED; NULL otherwise */
+    bool by_peer; /* SAS_ASKED, SAS_CANCELLED: "peer" (true) or "you" */
 } e2e_row;
 
 typedef struct {
@@ -932,7 +974,9 @@ typedef struct {
     size_t n;
 } e2e_rows;
 
-const char *e2e_row_kind_name(e2e_row_kind k); /* "in", "out", "undecryptable", "key_alarm" */
+/* "in", "out", "undecryptable", "key_alarm", "pinned", "accepted",
+ * "verified", "sas_asked", "sas_cancelled". */
+const char *e2e_row_kind_name(e2e_row_kind k);
 void e2e_row_free(e2e_row *r);
 void e2e_rows_free(e2e_rows *r);
 /* One row as one line of compact JSON (no newline). */
@@ -953,5 +997,132 @@ bool e2e_chat_load(const char *dir, e2e_rows *out, char *err, size_t err_sz);
 /* An ISO-8601 UTC instant as grappa writes one ("2026-11-07T10:05:00Z",
  * fractional seconds and a +hh:mm offset allowed) in unix seconds. */
 bool e2e_iso8601_seconds(const char *s, int64_t *out);
+
+/* ── Trust as the history records it (encryptedChats.ts) ───────────────────
+ * Both read the rows of the chat with `nick` (folded compare) out of
+ * every row `rows` holds, oldest first as e2e_chat_load gives them. */
+
+/* openAlarm: the master the newest key alarm presented, when no pinned,
+ * accepted or verified row came after it (the user chose or checked a key
+ * since); else NULL. Borrowed from `rows`. */
+const char *e2e_open_alarm(const e2e_rows *rows, const char *nick);
+/* lastComparison: the row that says how the last emoji comparison of the
+ * key now pinned ended — a VERIFIED or a SAS_CANCELLED row — or NULL: none
+ * did, or a key was chosen since (a PINNED or ACCEPTED row ends the search,
+ * what came before was about the old key). Borrowed from `rows`. */
+const e2e_row *e2e_last_comparison(const e2e_rows *rows, const char *nick);
+
+/* ── SAS: comparing 7 emoji (sas.ts) ───────────────────────────────────────
+ * Two people compare 7 emoji over their Olm session, and a match verifies
+ * each one's master on the other side. A starts, B accepts; every step is
+ * an inner message (sas.*) through the engine (e2e_send), tag "sas":
+ *
+ *   A → sas.start  {tx}                    to every device of B's master
+ *   B → sas.accept {tx, commitment: b64(SHA-256(B_key + "|" + tx))}
+ *   A → sas.key    {tx, key: A_key}
+ *   B → sas.key    {tx, key: B_key}       A checks the commitment
+ *   both show the emoji of e2e_sas_info(A_curve, A_key, B_curve, B_key, tx)
+ *   each, once its human says they match → sas.mac {tx, mac, mmac}
+ *   either side, at any time → sas.cancel {tx, reason}
+ *
+ * The rules no wire fixes are cic's and are kept: one SAS per peer master;
+ * the peer device is the first that names the tx, the other devices of
+ * the master are told `other-device` (tag "sas-release"); both asking at
+ * once, the smaller tx wins on both sides; 600 s from the start, then a
+ * cancel `timeout`. Every function below changes `c->record->state` in
+ * place and appends to `res` (what the engine answered: payloads, events)
+ * and `rows` (sas_asked, sas_cancelled, verified) — the caller writes the
+ * rows, persists the record, then hands the payloads to grappa, exactly as
+ * after any engine step. */
+
+#define E2E_SAS_TIMEOUT_MS 600000
+#define E2E_SAS_TAG "sas"
+#define E2E_SAS_RELEASE_TAG "sas-release"
+#define E2E_SAS_INFO_PREFIX "irc-e2e:v1:sas:"
+#define E2E_SAS_MAC_PREFIX "irc-e2e:v1:sas-mac:"
+#define E2E_SAS_MMAC_PREFIX "irc-e2e:v2:sas-mmac:"
+
+/* The Matrix SAS emoji table (sas-emoji.json @7aaeac07, sasEmoji.ts): the
+ * glyph (UTF-8, with its U+FE0F where the source has one) and the English
+ * name of index 0..63; NULL past it. */
+const char *e2e_sas_emoji_glyph(unsigned index);
+const char *e2e_sas_emoji_name(unsigned index);
+/* "🐶 Dog  🐱 Cat  …": the 7 as a terminal line shows them, glyph and name. */
+void e2e_sas_emoji_line(const uint8_t emoji[7], char *out, size_t out_sz);
+
+/* The pure halves, as both sides must compute them byte for byte. */
+char *e2e_sas_commitment(const char *key, const char *tx); /* b64(SHA-256(key "|" tx)) */
+/* SAS_INFO + a_curve|a_key|b_curve|b_key|tx: what the emoji derive from. */
+char *e2e_sas_info(const char *a_curve, const char *a_key, const char *b_curve, const char *b_key,
+                   const char *tx);
+/* The info of a MAC (`master` false) or of an MMAC (true) the side whose
+ * curve is `first` computes: PREFIX + first|second|tx. A side sends the
+ * MACs of (own, peer) and expects those of (peer, own). */
+char *e2e_sas_mac_info(bool master, const char *first_curve, const char *second_curve,
+                       const char *tx);
+/* What the cic UI says of a cancel reason ("the emoji did not match", …);
+ * NULL for a reason that is not one of cic's (the peer's own words). */
+const char *e2e_sas_reason_text(const char *reason);
+const char *e2e_sas_phase_name(e2e_sas_phase p);
+
+/* The secret halves: in memory only, one host per record (slot), freed
+ * with it. A restart loses them, and the SAS they belonged to ends. */
+typedef struct e2e_sas_host e2e_sas_host;
+e2e_sas_host *e2e_sas_host_new(void);
+void e2e_sas_host_free(e2e_sas_host *h);
+
+typedef enum { E2E_SAS_STEP_START, E2E_SAS_STEP_ACCEPT, E2E_SAS_STEP_MATCH,
+               E2E_SAS_STEP_MISMATCH, E2E_SAS_STEP_CANCEL } e2e_sas_step;
+
+/* What a user step did. cic does nothing, silently, where this answers a
+ * refusal: a terminal says why. */
+typedef enum {
+    E2E_SAS_DONE,
+    E2E_SAS_NO_PIN,   /* start: no master pinned to the nick */
+    E2E_SAS_RUNNING,  /* start: a SAS with that master is under way */
+    E2E_SAS_NONE,     /* accept/match/…: no SAS with the nick's master */
+    E2E_SAS_NOT_NOW   /* accept outside `asked`; match outside `compare`, twice, or not held here */
+} e2e_sas_outcome;
+
+/* The user's step in the SAS with the master pinned to `nick`. */
+e2e_sas_outcome e2e_sas_user(const e2e_ctx *c, e2e_sas_host *h, const char *nick, e2e_sas_step step,
+                             e2e_result *res, e2e_rows *rows);
+/* A sas.* inner (`inner_json`, as a RECEIVED event carries it) from the
+ * device `device` of `master`, the master pinned to `nick`. Its rows take
+ * `row_id` (derived from the inbox: the same message twice writes one
+ * row). Malformed, another tx, or another device of the master than the
+ * one the SAS runs with: ignored. */
+void e2e_sas_receive(const e2e_ctx *c, e2e_sas_host *h, const char *nick, const char *master,
+                     const char *device, const char *inner_json, const char *row_id,
+                     e2e_result *res, e2e_rows *rows);
+/* `nick` was pinned by hand: a SAS with another master on it ends
+ * (`key-changed`), with nothing on the wire. */
+void e2e_sas_repinned(const e2e_ctx *c, e2e_sas_host *h, const char *nick, e2e_rows *rows);
+/* Cancels what ran out of time, and what lost its secret. */
+void e2e_sas_tick(const e2e_ctx *c, e2e_sas_host *h, e2e_result *res, e2e_rows *rows);
+
+/* A SAS as the window shows it (sas.ts SasView). The emoji are worked out
+ * here, where the secret is, while comparing; a key that makes no secret
+ * ends the SAS instead (`bad-key`, into res/rows) and the answer is false. */
+typedef struct {
+    bool role_a;
+    e2e_sas_phase phase;
+    bool confirmed; /* our human matched; waiting for the peer's MACs */
+    bool here;      /* this device holds the secret */
+    bool has_emoji;
+    uint8_t emoji[7];
+    char tx[12];
+} e2e_sas_view;
+bool e2e_sas_view_of(const e2e_ctx *c, e2e_sas_host *h, const char *nick, e2e_sas_view *out,
+                     e2e_result *res, e2e_rows *rows);
+
+/* ── Own devices (identity.ts ownDevices / revokeDevice) ─────────────────── */
+
+/* This device's place with `ed25519` signed out of its list: the master
+ * signs own.list_ver + 1 over the rest. False (nothing to free) when the
+ * record holds no master or no place, or `ed25519` is this device's own
+ * key or not on the list (cic's "failed" / "unlisted": `*unlisted` says
+ * which). `out` is the caller's to free. */
+bool e2e_own_revoked(const e2e_record *r, const char *ed25519, e2e_own *out, bool *unlisted);
 
 #endif /* SHOTTINO_E2E_H */
