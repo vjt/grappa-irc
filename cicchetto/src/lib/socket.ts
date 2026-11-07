@@ -424,7 +424,14 @@ let _socket: Socket | null = null;
 // 60 (issue 1112) — `stale_toolchain`, a fourth refusal of the loopback-only
 // `POST /admin/reload`. No browser reaches that route, so nothing in
 // cicchetto changes; `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 60;
+//
+// 61 (issue 2584) — `GET` / `POST /me/settings/command-counts`, how many times
+// the subject sent each command verb: the order of the `/` menu, synced across
+// devices with no event. Slice A is the server door alone; nothing in
+// cicchetto calls it yet. Below 61 the POST answers 404 and the GET answers the
+// SPA page (200 text/html), so the menu keys off this number, not a status;
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 61;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

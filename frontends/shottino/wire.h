@@ -53,13 +53,15 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v59 -> v60 (issue 1112): `stale_toolchain`, a fourth refusal
- * of the loopback-only `POST /admin/reload`. A terminal never calls that
- * route, so nothing it renders changed.
+ * Last read, v60 -> v61 (issue 2584): `GET` / `POST
+ * /me/settings/command-counts`, per-account counts of the command verbs a
+ * client sent, which cicchetto uses to order its `/` menu. No event and no
+ * change to anything shottino reads; a terminal that wants the same order
+ * would post its own verbs, which is a feature, not a catch-up.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 60
+#define WIRE_PROTOCOL_VERSION 61
 
 #include <stdbool.h>
 #include <stddef.h>

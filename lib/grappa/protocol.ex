@@ -1547,7 +1547,30 @@ defmodule Grappa.Protocol do
   # order, so this one rebased and re-bumped.
   #
   # @min_protocol_version stays at 1: nothing a client can reach changed.
-  @protocol_version 60
+  #
+  # ---------------------------------------------------------------------------
+  # 61 — issue 2584 (slice A): the command counts behind cic's `/` menu
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `GET /me/settings/command-counts` → `{command_counts: {verb =>
+  # count}}`, and `POST /me/settings/command-counts` `{verb}` → the same
+  # envelope after counting one use (`GrappaWeb.UserSettingsJSON.
+  # command_counts/1`). A count is how many times the subject SENT a command
+  # verb: the order of the `/` dropdown, most used first, shared by every
+  # device of the account. NO event (vjt's ruling on the issue): a device
+  # reads the counts at its (re)join of the user topic, so the topic is
+  # untouched and the generated artefacts are too; the digest moved through
+  # the view's `@spec`. Bumped on the #1393d rule: a client that orders its
+  # menu by the server's counts cannot get them from a server predating the
+  # door — whose POST answers 404 and whose GET answers 200 `text/html`, the
+  # SPA catch-all, which is why a client keys off this number and not off a
+  # status code.
+  #
+  # Checked for a collision before claiming 61: origin/main carries 60, and
+  # no open PR edits this file.
+  #
+  # @min_protocol_version stays at 1: an older client never calls the door.
+  @protocol_version 61
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1588,7 +1611,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 60
+  @spec version() :: 61
   def version, do: @protocol_version
 
   @doc """
