@@ -4903,6 +4903,23 @@ reads the sealed record and removes the stale one, and it appends a
 plaintext chat into the sealed one (the dedupe drops the repeats). Without
 a keyring, the boot asks for a new passphrase for that first seal.
 
+**What the seal does not stop: rollback and truncation (accepted, not
+built).** The AEAD proves that a file or a line was written by this
+identity under its name. It does NOT prove that it is the latest one, or
+that none is missing. Someone who can WRITE the state directory can:
+
+- put back an older `record.sealed`, rolling the ratchets and the trust
+  data back to that moment;
+- drop, reorder or duplicate whole history lines, which are sealed one at
+  a time with no sequence binding them.
+
+Defending against this needs state the attacker cannot also roll back: a
+monotonic counter somewhere else, a MAC chain over the history anchored
+outside the directory. That is more mechanism than this threat model asks
+for. The seal is against a READER of the disk, and a writer of the disk
+can already replace `key.wrapped`, delete index lines, or simply run code
+as the user.
+
 **One key per identity, and only the right one (revised after review).**
 Making a key happens under an exclusive flock on `key.lock`. Under it the
 keyring is looked up again and the state checked again, because two

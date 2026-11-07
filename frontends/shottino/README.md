@@ -1156,7 +1156,11 @@ passphrase.
 nick digests computed in advance does not read it. But someone who can
 read the disk can still test a nick they GUESS against it, and learn
 whether you have an encrypted query with that nick. Without the key, the
-chat file names say nothing.
+chat file names say nothing. The seal proves that a file is this identity's,
+not that it is the latest one: someone who can WRITE the directory can put
+back an older `record.sealed`, or drop, reorder or repeat history lines, and
+that goes unnoticed. The seal is against reading the disk. Against writing
+it, file modes are still the only defence.
 
 `/e2e status` opens with where the key lives: `in the OS keyring`, `under
 your passphrase`, `LOCKED`, or `none yet`. The key and the passphrase are
