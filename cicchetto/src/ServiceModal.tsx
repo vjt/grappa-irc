@@ -139,6 +139,9 @@ const ServiceModal: Component = () => {
             cycle: tabCycle,
             // The line opens with a command (`INFO vjt`), never an addressee.
             addressee: false,
+            // issue 2584 — and the command is the SERVICE's (`INFO`), not one
+            // of cic's slash verbs; completing those is a later issue.
+            commands: null,
           });
           if (step === null) return;
           tabCycle = step.cycle;

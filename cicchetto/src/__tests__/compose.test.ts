@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { noKeys } from "../lib/byKey";
+import { keysOf, noKeys } from "../lib/byKey";
 import { type ChannelKey, channelKey } from "../lib/channelKey";
 import { DEFAULT_CHANTYPES } from "../lib/chantypes";
 import type { SlashCommand } from "../lib/slashCommands";
@@ -147,6 +147,14 @@ vi.mock("../lib/aliasList", () => ({
   delAlias: vi.fn().mockResolvedValue(undefined),
   editAlias: vi.fn().mockResolvedValue(undefined),
   refreshAliases: vi.fn().mockResolvedValue({}),
+}));
+
+// issue 2584 — the command counter is a boundary here (its POST, gate and
+// mirror are pinned in commandUsage.test.ts); the RANKING stays real, since
+// the compose door's Tab cycles exactly the order the menu shows.
+vi.mock("../lib/commandUsage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/commandUsage")>()),
+  countCommand: vi.fn(),
 }));
 
 // #1396 — /notify, /watch, /hilight and friends deep-link into a settings
@@ -7841,5 +7849,106 @@ describe("compose in an encrypted window (issues 2512, 2536)", () => {
   it("previews no frame split: the encrypted message is sized by the engine, not as a PRIVMSG", async () => {
     const compose = await import("../lib/compose");
     expect(compose.draftFramePreview("freenode", e2eWindow, "a".repeat(25), 10)).toBeNull();
+  });
+});
+
+// issue 2584 — the command counter and the `/` completion, at the compose
+// door. What is counted is the verb AS TYPED, once per command that goes out
+// (CLIENT_PROTOCOL.md §8f): never text, never a line the parser refused.
+describe("compose — command counts and `/` completion (issue 2584)", () => {
+  const k = channelKey("freenode", "#a");
+
+  const send = async (draft: string) => {
+    const compose = await import("../lib/compose");
+    compose.setDraft(k, draft);
+    return compose.submit(k, "freenode", "#a");
+  };
+
+  const counted = async () => {
+    const usage = await import("../lib/commandUsage");
+    return vi.mocked(usage.countCommand).mock.calls.map(([verb]) => verb);
+  };
+
+  it("counts the verb as typed, folded to lower case, and only the verb", async () => {
+    await send("/W vjt");
+    await send("/ns identify secret");
+    expect(await counted()).toEqual(["w", "ns"]);
+  });
+
+  it("counts an alias under its own name, never under what it expands to", async () => {
+    const aliasList = await import("../lib/aliasList");
+    vi.mocked(aliasList.aliases).mockReturnValue(keysOf({ k: "kick $1 $2-" }));
+    await send("/k spammer go away");
+    expect(await counted()).toEqual(["k"]);
+  });
+
+  it.each([
+    ["plain text", "hello there"],
+    ["a //-escaped line", "//me is text"],
+    ["an unknown verb", "/notarealverbatall x"],
+    ["a line the parser refused", "/kick"],
+    ["an empty draft", "   "],
+  ])("counts nothing for %s", async (_label, draft) => {
+    await send(draft);
+    expect(await counted()).toEqual([]);
+  });
+
+  it("Tab on a line-start `/wh` cycles the commands in the menu's order", async () => {
+    const compose = await import("../lib/compose");
+    const first = compose.tabComplete(k, "/wh", 3, true);
+    expect(first?.newInput).toBe("/whois ");
+    const second = first && compose.tabComplete(k, first.newInput, first.newCursor, true);
+    expect(second?.newInput).toBe("/who ");
+  });
+
+  it("with the menu turned off on this device, `/wh` completes nothing", async () => {
+    const menu = await import("../lib/commandMenu");
+    menu.setCommandMenuEnabled(false);
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "/wh", 3, true)).toBeNull();
+  });
+
+  it("the cycle covers the entries the menu shows, not every match", async () => {
+    const menu = await import("../lib/commandMenu");
+    menu.setCommandMenuEntries(1);
+    const compose = await import("../lib/compose");
+    const first = compose.tabComplete(k, "/wh", 3, true);
+    const second = first && compose.tabComplete(k, first.newInput, first.newCursor, true);
+    expect([first?.newInput, second?.newInput]).toEqual(["/whois ", "/wh"]);
+  });
+
+  it("exposes the live command cycle, so the menu can mark the entry Tab put in the draft", async () => {
+    const compose = await import("../lib/compose");
+    expect(compose.commandCycle(k)).toBeNull();
+
+    const first = compose.tabComplete(k, "/wh", 3, true);
+    expect(compose.commandCycle(k)).toEqual({ prefix: "wh", idx: 0 });
+    expect(compose.commandCycle(channelKey("freenode", "#b"))).toBeNull();
+
+    if (first) compose.tabComplete(k, first.newInput, first.newCursor, true);
+    expect(compose.commandCycle(k)).toEqual({ prefix: "wh", idx: 1 });
+
+    compose.setDraft(k, "/who x");
+    expect(compose.commandCycle(k)).toBeNull();
+  });
+
+  it("a cycle whose text left the draft is not live (a history recall replaced it)", async () => {
+    const compose = await import("../lib/compose");
+    await send("earlier line");
+    compose.tabComplete(k, "/wh", 3, true);
+    expect(compose.commandCycle(k)).not.toBeNull();
+
+    compose.recallPrev(k);
+
+    expect(compose.getDraft(k)).toBe("earlier line");
+    expect(compose.commandCycle(k)).toBeNull();
+  });
+
+  it("a nick cycle is not a command cycle", async () => {
+    const members = await import("../lib/members");
+    vi.mocked(members.membersByChannel).mockReturnValue({ [k]: [{ nick: "vjt", modes: [] }] });
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "vj", 2, true)?.newInput).toBe("vjt: ");
+    expect(compose.commandCycle(k)).toBeNull();
   });
 });
