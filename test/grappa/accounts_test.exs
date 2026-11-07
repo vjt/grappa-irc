@@ -689,4 +689,32 @@ defmodule Grappa.AccountsTest do
       assert Accounts.newest_touch_by_subject_ids(:visitor, []) == %{}
     end
   end
+
+  # Issue 2597 — what a WHOIS shows an operator for a grappa user with no live
+  # socket: the same newest-session address the admin listings show, read for
+  # one subject of either kind.
+  describe "last_known_ip/1" do
+    test "answers the newest session's address for a user" do
+      {:ok, user} = Accounts.create_user(%{name: "lastip-two-devices", password: @password})
+      {:ok, old} = Accounts.create_session({:user, user.id}, "198.51.100.7", "ua", [])
+      {:ok, new} = Accounts.create_session({:user, user.id}, "203.0.113.9", "ua", [])
+      _ = move_last_seen(old, 60)
+      _ = move_last_seen(new, 3600)
+
+      assert Accounts.last_known_ip({:user, user.id}) == "198.51.100.7"
+    end
+
+    test "answers a visitor's address off visitor_id" do
+      visitor = visitor_fixture(nick: "lastip-visitor")
+      {:ok, _} = Accounts.create_session({:visitor, visitor.id}, "192.0.2.44", "ua", [])
+
+      assert Accounts.last_known_ip({:visitor, visitor.id}) == "192.0.2.44"
+    end
+
+    test "answers nil for a subject that never had a session" do
+      {:ok, user} = Accounts.create_user(%{name: "lastip-never", password: @password})
+
+      assert Accounts.last_known_ip({:user, user.id}) == nil
+    end
+  end
 end
