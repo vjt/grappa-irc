@@ -2434,45 +2434,94 @@ static char *record_aad_name(const e2e_store *st) {
     return xprintf("%s/record.sealed", slash ? slash + 1 : st->dir);
 }
 
-void e2e_nick_digest(const char *nick, char out[E2E_DIGEST_SZ]) {
+#define SALT_HEX 32
+
+/* "sha256:<salt>:<hex SHA-256(salt bytes || fold(nick))>", `salt` the
+ * index's 32 hex digits. */
+static void index_digest(const char *salt, const char *nick, char out[E2E_DIGEST_SZ]) {
     char *folded = e2e_fold(nick);
+    size_t fl = strlen(folded);
+    char *buf = xmalloc(SALT_HEX / 2 + fl);
+    for (size_t i = 0; i < SALT_HEX / 2; i++) {
+        unsigned v = 0;
+        sscanf(salt + 2 * i, "%2x", &v);
+        buf[i] = (char)v;
+    }
+    memcpy(buf + SALT_HEX / 2, folded, fl);
     char sha[65];
-    e2e_line_sha256(folded, strlen(folded), sha);
+    e2e_line_sha256(buf, SALT_HEX / 2 + fl, sha);
+    free(buf);
     free(folded);
-    snprintf(out, E2E_DIGEST_SZ, "sha256:%s", sha);
+    snprintf(out, E2E_DIGEST_SZ, "sha256:%.*s:%s", SALT_HEX, salt, sha);
+}
+
+bool e2e_index_entry_names(const char *entry, const char *nick) {
+    if (strncmp(entry, "sha256:", 7) != 0 || strlen(entry) != 7 + SALT_HEX + 1 + 64) return false;
+    char d[E2E_DIGEST_SZ];
+    index_digest(entry + 7, nick, d);
+    return strcmp(entry, d) == 0;
 }
 
 void e2e_strv_free(e2e_strv *v) { strv_free(v); }
 
-#define INDEX_HEADER "shottino-e2e-encrypted-queries 1\n"
+#define INDEX_HEADER "shottino-e2e-encrypted-queries 2 "
 
-/* Whether the index entry `entry` names `nick`. */
-static bool digest_names(const char *entry, const char *nick) {
-    char d[E2E_DIGEST_SZ];
-    e2e_nick_digest(nick, d);
-    return strcmp(entry, d) == 0;
+static bool is_hex(const char *p, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (!((p[i] >= '0' && p[i] <= '9') || (p[i] >= 'a' && p[i] <= 'f'))) return false;
+    return true;
+}
+
+/* The index under `dir`: its entries, and its salt (32 hex + NUL). */
+static bool read_index(const char *dir, e2e_strv *out, char salt[SALT_HEX + 1]) {
+    out->v = NULL;
+    out->n = 0;
+    char *path = xprintf("%s/" E2E_INDEX_FILE, dir);
+    size_t len = 0;
+    char *text = read_file(path, &len);
+    free(path);
+    size_t hl = strlen(INDEX_HEADER);
+    bool ok = text && len >= hl + SALT_HEX + 1 && memcmp(text, INDEX_HEADER, hl) == 0 &&
+              is_hex(text + hl, SALT_HEX) && text[hl + SALT_HEX] == '\n';
+    if (ok) {
+        memcpy(salt, text + hl, SALT_HEX);
+        salt[SALT_HEX] = 0;
+    }
+    for (char *p = ok ? text + hl + SALT_HEX + 1 : NULL; ok && p < text + len;) {
+        char *nl = memchr(p, '\n', (size_t)(text + len - p));
+        ok = nl && nl - p == 64 && is_hex(p, 64);
+        if (!ok) break;
+        *nl = 0;
+        char d[E2E_DIGEST_SZ];
+        snprintf(d, sizeof(d), "sha256:%s:%s", salt, p);
+        strv_push(out, d);
+        p = nl + 1;
+    }
+    free(text);
+    if (!ok) strv_free(out);
+    return ok;
 }
 
 static bool any_names(const e2e_strv *entries, const char *nick) {
     for (size_t i = 0; i < entries->n; i++)
-        if (digest_names(entries->v[i], nick)) return true;
+        if (e2e_index_entry_names(entries->v[i], nick)) return true;
     return false;
 }
 
-/* The index naming `nicks`, plus the entries of `keep` (old ones no nick
- * of `nicks` names), written over the old one. */
-static bool write_index(const e2e_store *st, const e2e_strv *nicks, const e2e_strv *keep,
-                        char *err, size_t err_sz) {
-    size_t cap = strlen(INDEX_HEADER) + (nicks->n + keep->n) * 66 + 1;
+/* The index naming `nicks` under `salt`, plus the entries of `keep` (old
+ * ones, same salt, no nick of `nicks` names), written over the old one. */
+static bool write_index(const e2e_store *st, const char *salt, const e2e_strv *nicks,
+                        const e2e_strv *keep, char *err, size_t err_sz) {
+    size_t cap = strlen(INDEX_HEADER) + SALT_HEX + 2 + (nicks->n + keep->n) * 66;
     char *text = xmalloc(cap);
-    size_t n = (size_t)snprintf(text, cap, "%s", INDEX_HEADER);
+    size_t n = (size_t)snprintf(text, cap, "%s%s\n", INDEX_HEADER, salt);
     for (size_t i = 0; i < nicks->n; i++) {
         char d[E2E_DIGEST_SZ];
-        e2e_nick_digest(nicks->v[i], d);
-        n += (size_t)snprintf(text + n, cap - n, "%s\n", d + 7);
+        index_digest(salt, nicks->v[i], d);
+        n += (size_t)snprintf(text + n, cap - n, "%s\n", d + 7 + SALT_HEX + 1);
     }
     for (size_t i = 0; i < keep->n; i++)
-        n += (size_t)snprintf(text + n, cap - n, "%s\n", keep->v[i] + 7);
+        n += (size_t)snprintf(text + n, cap - n, "%s\n", keep->v[i] + 7 + SALT_HEX + 1);
     char *path = xprintf("%s/" E2E_INDEX_FILE, st->dir);
     bool ok = replace_file(path, text, n, err, err_sz);
     if (ok) fsync_dir(st->dir);
@@ -2482,28 +2531,8 @@ static bool write_index(const e2e_store *st, const e2e_strv *nicks, const e2e_st
 }
 
 bool e2e_store_read_index(const char *dir, e2e_strv *out) {
-    out->v = NULL;
-    out->n = 0;
-    char *path = xprintf("%s/" E2E_INDEX_FILE, dir);
-    size_t len = 0;
-    char *text = read_file(path, &len);
-    free(path);
-    size_t hl = strlen(INDEX_HEADER);
-    bool ok = text && len >= hl && memcmp(text, INDEX_HEADER, hl) == 0;
-    for (char *p = ok ? text + hl : NULL; ok && p < text + len;) {
-        char *nl = memchr(p, '\n', (size_t)(text + len - p));
-        ok = nl && nl - p == 64;
-        for (char *c = p; ok && c < nl; c++) ok = (*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'f');
-        if (!ok) break;
-        *nl = 0;
-        char d[E2E_DIGEST_SZ];
-        snprintf(d, sizeof(d), "sha256:%s", p);
-        strv_push(out, d);
-        p = nl + 1;
-    }
-    free(text);
-    if (!ok) strv_free(out);
-    return ok;
+    char salt[SALT_HEX + 1];
+    return read_index(dir, out, salt);
 }
 
 bool e2e_store_has_record(const char *dir) {
@@ -2583,17 +2612,29 @@ bool e2e_store_save(e2e_store *st, const uint8_t *key, const e2e_record *r, char
      * current nick names (`gone`) are kept in a first write when anything
      * joins, and dropped only by a write after the record. Each rename is
      * made durable (the directory fsync'd) before the next. */
+    /* The salt stays the index's own across rewrites (a kept entry is
+     * under it); a new index takes a random one. */
     e2e_strv old = {0}, gone = {0}, none = {0};
-    bool had = e2e_store_read_index(st->dir, &old);
+    char salt[SALT_HEX + 1];
+    bool had = read_index(st->dir, &old, salt);
+    if (!had) {
+        uint8_t raw[SALT_HEX / 2];
+        if (!ar_random(raw, sizeof(raw))) {
+            SETERR("cannot make the index's salt");
+            return false;
+        }
+        for (size_t i = 0; i < sizeof(raw); i++) snprintf(salt + 2 * i, 3, "%02x", raw[i]);
+    }
     bool joins = !had;
     for (size_t i = 0; i < r->encrypted.n; i++) joins |= !any_names(&old, r->encrypted.v[i]);
     for (size_t i = 0; i < old.n; i++) {
         bool named = false;
-        for (size_t k = 0; k < r->encrypted.n; k++) named |= digest_names(old.v[i], r->encrypted.v[k]);
+        for (size_t k = 0; k < r->encrypted.n; k++)
+            named |= e2e_index_entry_names(old.v[i], r->encrypted.v[k]);
         if (!named) strv_push(&gone, old.v[i]);
     }
     strv_free(&old);
-    if (joins && !write_index(st, &r->encrypted, &gone, err, err_sz)) {
+    if (joins && !write_index(st, salt, &r->encrypted, &gone, err, err_sz)) {
         strv_free(&gone);
         return false;
     }
@@ -2617,7 +2658,7 @@ bool e2e_store_save(e2e_store *st, const uint8_t *key, const e2e_record *r, char
         free(plain);
         /* Failing here leaves an entry too many: the record is stored, and
          * the stale entry only keeps a query encrypted. */
-        if (gone.n) write_index(st, &r->encrypted, &none, NULL, 0);
+        if (gone.n) write_index(st, salt, &r->encrypted, &none, NULL, 0);
     }
     strv_free(&gone);
     return ok;
@@ -5535,10 +5576,12 @@ const e2e_row *e2e_last_comparison(const e2e_rows *rows, const char *nick) {
 #define CHAT_SEALED ".sealed"
 #define CHAT_PLAIN ".jsonl"
 
-char *e2e_chat_file_name(const char *nick) {
-    char d[E2E_DIGEST_SZ];
-    e2e_nick_digest(nick, d);
-    return xprintf("chat-sha256-%s" CHAT_SEALED, d + 7);
+char *e2e_chat_file_name(const uint8_t key[AR_KEY_LEN], const char *nick) {
+    char *folded = e2e_fold(nick);
+    char mac[65];
+    ar_name_mac(key, "chat-name", folded, strlen(folded), mac);
+    free(folded);
+    return xprintf("chat-hmac-%s" CHAT_SEALED, mac);
 }
 
 /* A torn last line — a crash inside a write — cut off, so the next line
@@ -5606,7 +5649,7 @@ bool e2e_chat_append(const char *dir, const char *rel, const uint8_t *key, const
         SETERR("cannot make %s: %s", dir, strerror(errno));
         return false;
     }
-    char *name = e2e_chat_file_name(r->nick);
+    char *name = e2e_chat_file_name(key, r->nick);
     char *path = xprintf("%s/%s", dir, name);
     char *line = sealed_row_line(key, rel, name, r);
     bool ok = line && append_lines(dir, path, line, strlen(line));
@@ -5663,132 +5706,149 @@ static int ordered_cmp(const void *a, const void *b) {
     return x->order < y->order ? -1 : x->order > y->order;
 }
 
-/* The shape chat files had before the digest: "chat-" + the
- * lowercase hex of the folded nick + ".jsonl" — two bytes a nick byte, so
- * past ~120 bytes no filesystem takes the name. The folded nick it names
- * into `nick` (malloc'd), or false. "chat-sha256-…" is never one: `s` is
- * not a hex digit. */
-static bool chat_legacy_name(const char *name, char **nick) {
-    size_t n = strlen(name);
-    if (n < 5 + 2 + 6 || strncmp(name, "chat-", 5) != 0 || strcmp(name + n - 6, CHAT_PLAIN) != 0)
-        return false;
-    size_t hexlen = n - 5 - 6;
-    if (hexlen % 2) return false;
-    char *out = xmalloc(hexlen / 2 + 1);
-    for (size_t i = 0; i < hexlen / 2; i++) {
-        int v = 0;
-        for (int k = 0; k < 2; k++) {
-            char c = name[5 + 2 * i + (size_t)k];
-            int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
-            if (d < 0) {
-                free(out);
-                return false;
-            }
-            v = v * 16 + d;
-        }
-        if (v == 0) {
-            free(out);
-            return false;
-        }
-        out[i] = (char)v;
-    }
-    out[hexlen / 2] = 0;
-    *nick = out;
-    return true;
-}
-
 static bool has_suffix(const char *s, const char *suffix) {
     size_t n = strlen(s), k = strlen(suffix);
     return n >= k && strcmp(s + n - k, suffix) == 0;
 }
 
-/* The plaintext file `from` (whole JSON lines; a torn or unreadable one is
- * dropped) sealed into `to`: written to a temp file and renamed in when
- * `to` is missing, appended to it when it exists; `from` removed only
- * after. False leaves `from` where it is. */
-static bool chat_seal_file(const char *dir, const char *rel, const uint8_t *key,
-                           const char *from, const char *to, const char *to_name) {
+/* What a name in a chats directory is. Every shape this writer ever wrote
+ * is known; anything else is left alone, never read and never moved. */
+typedef enum {
+    CHAT_OTHER,
+    CHAT_CURRENT,    /* chat-hmac-<64 hex>.sealed: read */
+    CHAT_OLD_SEALED, /* chat-sha256-<64 hex>.sealed: sealed under the plain digest's name */
+    CHAT_OLD_PLAIN   /* chat-sha256-<64 hex>.jsonl, or chat-<hex of the nick>.jsonl: plaintext */
+} chat_kind;
+
+static chat_kind chat_kind_of(const char *name) {
+    size_t n = strlen(name);
+    if (n == 10 + 64 + 7 && strncmp(name, "chat-hmac-", 10) == 0 && is_hex(name + 10, 64) &&
+        has_suffix(name, CHAT_SEALED))
+        return CHAT_CURRENT;
+    if (n == 12 + 64 + 7 && strncmp(name, "chat-sha256-", 12) == 0 && is_hex(name + 12, 64))
+        return has_suffix(name, CHAT_SEALED) ? CHAT_OLD_SEALED : CHAT_OTHER;
+    if (n == 12 + 64 + 6 && strncmp(name, "chat-sha256-", 12) == 0 && is_hex(name + 12, 64) &&
+        has_suffix(name, CHAT_PLAIN))
+        return CHAT_OLD_PLAIN;
+    /* The hex of the folded nick, two digits a byte: before the digest. */
+    if (n > 5 + 6 && (n - 11) % 2 == 0 && strncmp(name, "chat-", 5) == 0 &&
+        is_hex(name + 5, n - 11) && has_suffix(name, CHAT_PLAIN))
+        return CHAT_OLD_PLAIN;
+    return CHAT_OTHER;
+}
+
+/* Sealed lines bound for one current file. */
+typedef struct {
+    char *name;
+    char *text;
+    size_t len, cap;
+} chat_target;
+
+/* The file `name` of an older shape re-sealed under the current names:
+ * every row of it (plaintext, or opened under its old name) goes, sealed,
+ * to the file its nick names now — written whole when that is missing,
+ * appended when it exists — and only then is the old file removed. A
+ * sealed line that does not open stops it: the file is left as it is. */
+static bool chat_migrate_file(const char *dir, const char *rel, const uint8_t *key,
+                              const char *name, chat_kind kind) {
+    char *path = xprintf("%s/%s", dir, name);
+    char *aad = xprintf("%s/%s", rel, name);
     size_t len = 0;
-    char *text = read_file(from, &len);
-    if (!text) return false;
-    size_t out_len = 0, cap = 0;
-    char *out = NULL;
-    bool ok = true;
+    char *text = read_file(path, &len);
+    bool ok = text != NULL;
+    chat_target *t = NULL;
+    size_t nt = 0;
     for (char *p = text; ok && p < text + len;) {
         char *nl = memchr(p, '\n', (size_t)(text + len - p));
-        if (!nl) break;
+        if (!nl) break; /* torn */
+        char *json = p;
+        size_t json_len = (size_t)(nl - p);
+        char *opened = NULL;
+        if (kind == CHAT_OLD_SEALED) {
+            ok = ar_open_line(key, "chat", aad, p, json_len, &opened, &json_len) == AR_OK;
+            json = opened;
+        }
         e2e_row r;
-        if (e2e_row_from_json(p, (size_t)(nl - p), &r)) {
-            char *line = sealed_row_line(key, rel, to_name, &r);
+        if (ok && e2e_row_from_json(json, json_len, &r)) {
+            char *to = e2e_chat_file_name(key, r.nick);
+            size_t k = 0;
+            while (k < nt && strcmp(t[k].name, to) != 0) k++;
+            if (k == nt) {
+                t = xrealloc(t, (nt + 1) * sizeof(*t));
+                t[nt++] = (chat_target){to, NULL, 0, 0};
+            } else {
+                free(to);
+            }
+            char *line = sealed_row_line(key, rel, t[k].name, &r);
             e2e_row_free(&r);
             ok = line != NULL;
             size_t ll = ok ? strlen(line) : 0;
-            if (out_len + ll + 1 > cap) out = xrealloc(out, cap = (out_len + ll + 1) * 2);
-            if (ok) memcpy(out + out_len, line, ll);
-            out_len += ll;
+            if (t[k].len + ll + 1 > t[k].cap)
+                t[k].text = xrealloc(t[k].text, t[k].cap = (t[k].len + ll + 1) * 2);
+            if (ok) memcpy(t[k].text + t[k].len, line, ll);
+            t[k].len += ll;
             free(line);
         }
+        ar_free_secret(opened, opened ? json_len : 0);
         p = nl + 1;
     }
-    OPENSSL_cleanse(text, len);
+    if (text) OPENSSL_cleanse(text, len);
     free(text);
-    struct stat st;
-    if (ok && stat(to, &st) != 0) ok = replace_file(to, out ? out : "", out_len, NULL, 0);
-    else if (ok) ok = append_lines(dir, to, out ? out : "", out_len);
-    free(out);
+    for (size_t k = 0; k < nt; k++) {
+        char *to = xprintf("%s/%s", dir, t[k].name);
+        struct stat st;
+        const char *body = t[k].text ? t[k].text : "";
+        if (ok) ok = stat(to, &st) != 0 ? replace_file(to, body, t[k].len, NULL, 0)
+                                        : append_lines(dir, to, body, t[k].len);
+        free(to);
+        free(t[k].name);
+        free(t[k].text);
+    }
+    free(t);
     if (ok) {
         fsync_dir(dir);
-        ok = unlink(from) == 0;
+        ok = unlink(path) == 0;
     }
+    free(path);
+    free(aad);
     return ok;
 }
 
-/* Every plaintext chat file under `dir` sealed under its new name: the
- * digest-named ones (`.jsonl`), and the older hex-named ones. Collected
- * first and moved after the directory is closed: a rename while readdir
- * walks may show the same file twice. A failure leaves the plaintext, which
- * nothing reads, and is said in `err`. Without a key, only whether there is
- * any (`*plain`). */
-static bool chat_migrate(const char *dir, const char *rel, const uint8_t *key, bool *plain,
+/* Every chat file of an older shape under `dir` re-sealed under the
+ * current names. Collected first and moved after the directory is closed:
+ * a rename while readdir walks may show the same file twice. A failure
+ * leaves the old file, which nothing reads, and is said in `err`. Without
+ * a key, only whether there is any (`*pending`). */
+static bool chat_migrate(const char *dir, const char *rel, const uint8_t *key, bool *pending,
                          char *err, size_t err_sz) {
-    *plain = false;
+    *pending = false;
     DIR *d = opendir(dir);
     if (!d) return true; /* the load says why */
     char **names = NULL;
+    chat_kind *kinds = NULL;
     size_t n = 0;
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
-        if (strncmp(ent->d_name, "chat-", 5) != 0 || !has_suffix(ent->d_name, CHAT_PLAIN)) continue;
+        chat_kind k = chat_kind_of(ent->d_name);
+        if (k != CHAT_OLD_SEALED && k != CHAT_OLD_PLAIN) continue;
         names = xrealloc(names, (n + 1) * sizeof(*names));
+        kinds = xrealloc(kinds, (n + 1) * sizeof(*kinds));
+        kinds[n] = k;
         names[n++] = xstrdup(ent->d_name);
     }
     closedir(d);
-    *plain = n > 0;
+    *pending = n > 0;
     bool ok = true;
     for (size_t i = 0; i < n; i++) {
-        char *nick = NULL, *to_name;
-        if (chat_legacy_name(names[i], &nick)) {
-            to_name = e2e_chat_file_name(nick);
-        } else {
-            /* chat-sha256-<hex>.jsonl → chat-sha256-<hex>.sealed */
-            names[i][strlen(names[i]) - strlen(CHAT_PLAIN)] = 0;
-            to_name = xprintf("%s" CHAT_SEALED, names[i]);
-            names[i] = xrealloc(names[i], strlen(names[i]) + strlen(CHAT_PLAIN) + 1);
-            strcat(names[i], CHAT_PLAIN);
-        }
-        char *from = xprintf("%s/%s", dir, names[i]);
-        char *to = xprintf("%s/%s", dir, to_name);
-        if (key && !chat_seal_file(dir, rel, key, from, to, to_name) && ok) {
-            SETERR("cannot seal %s into %s: %s", from, to, strerror(errno));
+        if (key && !chat_migrate_file(dir, rel, key, names[i], kinds[i]) && ok) {
+            SETERR("cannot seal %s/%s under the current names: %s", dir, names[i],
+                   errno ? strerror(errno) : "a row does not open");
             ok = false;
         }
-        free(nick);
-        free(to_name);
-        free(from);
-        free(to);
         free(names[i]);
     }
     free(names);
+    free(kinds);
     if (n && key) fsync_dir(dir);
     return ok;
 }
@@ -5797,8 +5857,8 @@ bool e2e_chat_load(const char *dir, const char *rel, const uint8_t *key, e2e_row
                    char *err, size_t err_sz) {
     out->v = NULL;
     out->n = 0;
-    bool plain;
-    bool ok = chat_migrate(dir, rel, key, &plain, err, err_sz);
+    bool pending;
+    bool ok = chat_migrate(dir, rel, key, &pending, err, err_sz);
     DIR *d = opendir(dir);
     if (!d) {
         if (errno == ENOENT) return true;
@@ -5810,8 +5870,7 @@ bool e2e_chat_load(const char *dir, const char *rel, const uint8_t *key, e2e_row
     bool any = false;
     struct dirent *ent;
     while (key && (ent = readdir(d)) != NULL) {
-        if (strncmp(ent->d_name, "chat-sha256-", 12) != 0 || !has_suffix(ent->d_name, CHAT_SEALED))
-            continue;
+        if (chat_kind_of(ent->d_name) != CHAT_CURRENT) continue;
         char *path = xprintf("%s/%s", dir, ent->d_name);
         char *aad = xprintf("%s/%s", rel, ent->d_name);
         size_t len;
@@ -5866,12 +5925,9 @@ bool e2e_chat_load(const char *dir, const char *rel, const uint8_t *key, e2e_row
         free(aad);
     }
     /* Without a key: is there anything a key would have read? */
-    while (!key && (ent = readdir(d)) != NULL)
-        if (strncmp(ent->d_name, "chat-", 5) == 0 &&
-            (has_suffix(ent->d_name, CHAT_SEALED) || has_suffix(ent->d_name, CHAT_PLAIN)))
-            any = true;
+    while (!key && (ent = readdir(d)) != NULL) any |= chat_kind_of(ent->d_name) != CHAT_OTHER;
     closedir(d);
-    if (!key && (any || plain)) {
+    if (!key && (any || pending)) {
         SETERR("%s: the store is locked", dir);
         return false;
     }

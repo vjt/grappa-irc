@@ -639,18 +639,19 @@ bool e2e_own_verify(const e2e_own *own, vz_account *device);
  * key is refused, and so is a load of anything on disk.
  *
  * Beside it, in the clear, E2E_INDEX_FILE: which queries are encrypted, as
- * the digest e2e_nick_digest gives (the same SHA-256 the chat files are
- * named by, so it says nothing their names do not), ordered against the
- * record so that it always errs towards encrypted: a query joining the
- * set is in the index before the record, one leaving it leaves the index
- * only after the record. It is what a run without the key reads, at boot,
- * to keep those queries from sending in clear (shottino.c,
- * e2e_peek_modes). */
+ * SHA-256(salt || folded nick) under a random salt the file carries (kept
+ * across rewrites), so no table computed in advance reads it — though
+ * whoever reads the disk can still test a GUESSED nick against it. It is
+ * ordered against the record so that it always errs towards encrypted: a
+ * query joining the set is in the index before the record, one leaving it
+ * leaves the index only after the record. It is what a run without the
+ * key reads, at boot, to keep those queries from sending in clear
+ * (shottino.c, e2e_peek_modes). */
 typedef struct e2e_store e2e_store;
 
 #define E2E_INDEX_FILE "encrypted-queries"
-/* "sha256:" + 64 hex + NUL */
-#define E2E_DIGEST_SZ 72
+/* "sha256:" + 32 hex of salt + ":" + 64 hex + NUL */
+#define E2E_DIGEST_SZ 112
 
 typedef enum { E2E_STORE_OK, E2E_STORE_BUSY, E2E_STORE_ERROR } e2e_store_status;
 typedef enum {
@@ -679,11 +680,11 @@ bool e2e_store_save(e2e_store *st, const uint8_t *key, const e2e_record *r, char
                     size_t err_sz);
 /* Whether `dir` holds a record (sealed or plaintext), without its lock. */
 bool e2e_store_has_record(const char *dir);
-/* The index under `dir` as e2e_nick_digest strings into `out` (the
- * caller's: e2e_strv_free). False when it is missing or is not one. */
+/* The index under `dir` as entries "sha256:<salt>:<digest>" into `out`
+ * (the caller's: e2e_strv_free). False when it is missing or is not one. */
 bool e2e_store_read_index(const char *dir, e2e_strv *out);
-/* "sha256:<lowercase hex SHA-256 of e2e_fold(nick)>". */
-void e2e_nick_digest(const char *nick, char out[E2E_DIGEST_SZ]);
+/* Whether an index entry is the digest of `nick` (folded) under its salt. */
+bool e2e_index_entry_names(const char *entry, const char *nick);
 void e2e_strv_free(e2e_strv *v);
 /* `path` replaced by `data`, 0600, as the record is (temp, fsync, rename,
  * the directory fsync'd), its directory made 0700 when missing. */
@@ -976,8 +977,8 @@ void e2e_record_start_over(e2e_record *r);
  * key that opened a message is spent), so a row is written here BEFORE
  * the record that spent its key is saved.
  *
- * One file per chat, `<dir>/chat-sha256-<hex SHA-256 of the folded nick>.sealed`
- * (a fixed length whatever the nick), 0600 in a 0700 directory: one row a
+ * One file per chat, `<dir>/chat-hmac-<hex HMAC of the folded nick under the
+ * data key>.sealed` (e2e_chat_file_name), 0600 in a 0700 directory: one row a
  * line, each line SEALED on its own (atrest.h: "e1:…", role "chat", named
  * "<rel>/<file name>" in its AAD, `rel` being `dir` relative to the
  * identity directory, "<network_id>/chats"), APPENDED and fsync'd. Sealed
@@ -995,12 +996,14 @@ void e2e_record_start_over(e2e_record *r);
  * another chat, another key) is refused and said, and its file is then
  * not compacted: what is left of it stays for someone to look at.
  *
- * The plaintext files this replaces are sealed by the load that finds
- * them, with a key: `chat-sha256-<hex>.jsonl`, and the older
- * `chat-<hex of the folded nick>.jsonl` renamed to that first. Each is
- * written sealed to a temp file, fsync'd and renamed in (appended to the
- * sealed file when one exists — written since, or a crash after the
- * rename), and only then removed; a repeated row is the load's business.
+ * The files of older shapes are re-sealed under the current names by the
+ * load that finds them, with a key: the plaintext `chat-sha256-<hex>.jsonl`
+ * and `chat-<hex of the folded nick>.jsonl`, and `chat-sha256-<hex>.sealed`
+ * (sealed, but named by the plain digest). Each row goes to the file its
+ * nick names now, written to a temp file, fsync'd and renamed in (appended
+ * when that file exists — written since, or a crash after the rename),
+ * and only then is the old file removed; a repeated row is the load's
+ * business. A name of no shape this writer knows is left alone.
  * Every string is PLAINTEXT: never log one. */
 
 #define E2E_CHAT_ROWS_MAX 1000
@@ -1046,11 +1049,12 @@ void e2e_rows_free(e2e_rows *r);
 char *e2e_row_to_json(const e2e_row *r);
 /* False for anything but a row this writer wrote (its fields per kind). */
 bool e2e_row_from_json(const char *text, size_t len, e2e_row *out);
-/* "chat-sha256-<lowercase hex SHA-256 of e2e_fold(nick)>.sealed": one file
- * per peer, the fold so `Alice` and `alice` are one chat, a digest so no
- * byte of a nick can reach the filesystem's syntax and no nick, however
- * long, makes a name past NAME_MAX (the hex of the nick itself did). */
-char *e2e_chat_file_name(const char *nick);
+/* "chat-hmac-<lowercase hex HMAC-SHA256(key, "chat-name" || e2e_fold(nick))>.sealed":
+ * one file per peer, the fold so `Alice` and `alice` are one chat, a MAC
+ * under the data key so the name says nothing to whoever lacks the key (a
+ * plain digest of a nick is a dictionary away from the nick), and no byte
+ * of a nick reaches the filesystem's syntax or past NAME_MAX. */
+char *e2e_chat_file_name(const uint8_t key[AR_KEY_LEN], const char *nick);
 /* Appends `r` sealed under `key` to its chat's file under `dir` (made
  * 0700 when missing), fsync'd, the directory too when the file is new.
  * False, writing nothing, without a key. */

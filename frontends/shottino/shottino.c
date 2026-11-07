@@ -1321,25 +1321,24 @@ struct e2e_slot {
     unsigned long req_changes;
 };
 
-/* The encrypted-mode set of a slot, by folded nick — or by the digest of
- * one ("sha256:…", e2e_nick_digest), as the clear index names a query
+/* The encrypted-mode set of a slot, by folded nick — or by an index entry
+ * ("sha256:<salt>:<digest>", e2e.h), as the clear index names a query
  * while the record is out of reach (e2e_peek_modes). A nick never holds a
- * ':', so the two cannot be taken for each other. */
-static bool e2e_on_entry_is(const char *entry, const char *nick, const char *digest) {
-    return strncmp(entry, "sha256:", 7) == 0 ? strcmp(entry, digest) == 0
+ * ':', so the two cannot be taken for each other; an entry given as the
+ * "nick" matches itself. */
+static bool e2e_on_entry_is(const char *entry, const char *nick) {
+    if (strcmp(entry, nick) == 0) return true;
+    return strncmp(entry, "sha256:", 7) == 0 ? e2e_index_entry_names(entry, nick)
                                              : e2e_nick_eq(entry, nick);
 }
 
 static bool e2e_on_has(const e2e_strv *on, const char *nick) {
-    if (!nick) return false;
-    char digest[E2E_DIGEST_SZ];
-    e2e_nick_digest(nick, digest);
-    for (size_t i = 0; i < on->n; i++)
-        if (e2e_on_entry_is(on->v[i], nick, digest)) return true;
+    for (size_t i = 0; nick && i < on->n; i++)
+        if (e2e_on_entry_is(on->v[i], nick)) return true;
     return false;
 }
 
-/* Set: by the folded nick (or the digest as given). Unset: every entry
+/* Set: by the folded nick (or the entry as given). Unset: every entry
  * that names it, digest or nick. */
 static void e2e_on_set(e2e_strv *on, const char *nick, bool set) {
     bool has = e2e_on_has(on, nick);
@@ -1351,10 +1350,8 @@ static void e2e_on_set(e2e_strv *on, const char *nick, bool set) {
         on->v = grown;
         on->v[on->n++] = entry;
     } else if (!set && has) {
-        char digest[E2E_DIGEST_SZ];
-        e2e_nick_digest(nick, digest);
         for (size_t i = 0; i < on->n;) {
-            if (!e2e_on_entry_is(on->v[i], nick, digest)) {
+            if (!e2e_on_entry_is(on->v[i], nick)) {
                 i++;
                 continue;
             }
@@ -15563,12 +15560,12 @@ static void e2e_key_forget(struct app *app) {
  *
  * The record is sealed, and this runs where there may be no key at all
  * (LOCKED), so what it reads is the clear index beside it
- * (E2E_INDEX_FILE): the queries as digests of the folded nick, put into
- * the mode set as "sha256:…" entries, which e2e_on_has matches against a
- * nick's digest. The digest is the one the chat files are already named
- * by, so the index tells someone with the disk nothing those names did
- * not; the harsher alternative, every query refusing to send while
- * locked, would make a locked store unusable for clear queries too.
+ * (E2E_INDEX_FILE): the queries as salted digests of the folded nick,
+ * put into the mode set as "sha256:…" entries, which e2e_on_has matches
+ * against a nick. The salt stops a table computed in advance; whoever
+ * reads the disk can still test a nick they guess. The harsher
+ * alternative, every query refusing to send while locked, would make a
+ * locked store unusable for clear queries too.
  *
  * A read takes no lock (the lock is the `lock` file's, and the store
  * writes by rename, so a read sees a whole file), so it reads even a

@@ -75,6 +75,11 @@ uint8_t *ar_wrap(const char *passphrase, const uint8_t key[AR_KEY_LEN], size_t *
 ar_status ar_unwrap(const char *passphrase, const void *data, size_t len,
                     uint8_t key[AR_KEY_LEN]);
 
+/* Lowercase hex of HMAC-SHA256(key, label || data): a name only the key
+ * holder can derive (a chat file's, from the peer's folded nick). */
+void ar_name_mac(const uint8_t key[AR_KEY_LEN], const char *label, const void *data, size_t len,
+                 char out[65]);
+
 /* Base64 (standard alphabet, padded) of `n` bytes, malloc'd; and back,
  * false for anything that is not. `out` is the caller's to free. */
 char *ar_b64(const uint8_t *p, size_t n);

@@ -4852,10 +4852,24 @@ nothing:
 
 **How `e2e_peek_modes` knows which queries are encrypted without the key.**
 It used to read `record.json`, which is now ciphertext. Every save
-therefore writes a clear index first, `encrypted-queries`: one SHA-256 of
-the folded nick per encrypted query. These are the digests the chat files
-are already named by, so anyone holding the disk learns nothing that
-`ls chats/` did not already tell them.
+therefore also writes a clear index, `encrypted-queries`: one
+SHA-256(salt ‖ folded nick) per encrypted query, under a random salt the
+file carries and keeps across rewrites.
+
+- **Revised after review: the digests are salted, and the chat files are no
+  longer named by them.** The first cut used the unsalted SHA-256 of the
+  folded nick for both, on the argument that the index then said nothing
+  the chat file names did not. Both said too much: nicks are short and
+  guessable, so an unsalted digest is a dictionary lookup away from the
+  nick. The chat files are now named `chat-hmac-<HMAC-SHA256(data key,
+  "chat-name" ‖ fold(nick))>.sealed`. They need the key to be read
+  anyway, so their names now say nothing without it. Files written under
+  the old names are re-sealed under the new ones on the first load.
+- **The index cannot take a keyed name.** A locked run reads it without
+  the key, so it gets a salt instead. The salt stops precomputation, and
+  only that: whoever reads the disk can still test a GUESSED nick
+  against the index and learn whether there is an encrypted query with
+  it.
 
 - The index goes in the mode set as `sha256:…` entries, which
   `e2e_on_has` matches against a nick's digest. A nick cannot contain

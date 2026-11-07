@@ -153,6 +153,26 @@ TEST(base64_round_trips_and_refuses_junk) {
 }
 
 
+/* A name derived under the key: stable for one key, label and input,
+ * different for any other of the three, and no plain digest of the input. */
+TEST(a_keyed_name_needs_the_key) {
+    char a[65], b[65], c[65], d[65];
+    ar_name_mac(KEY, "chat-name", "alice", 5, a);
+    ar_name_mac(KEY, "chat-name", "alice", 5, b);
+    CHECK_STR(a, b);
+    CHECK_LONG(strlen(a), 64);
+    uint8_t other[AR_KEY_LEN];
+    memcpy(other, KEY, sizeof(other));
+    other[7] ^= 1;
+    ar_name_mac(other, "chat-name", "alice", 5, c);
+    CHECK(strcmp(a, c) != 0);
+    ar_name_mac(KEY, "other-use", "alice", 5, d);
+    CHECK(strcmp(a, d) != 0);
+    /* RFC 4231-style shape: HMAC-SHA256(KEY, "chat-name" || "alice"),
+     * computed independently with Python's hmac module. */
+    CHECK_STR(a, "ae642c92c30be49b28f0c9ef37f64809bad78fefacfa677c4aab20250e9732dc");
+}
+
 /* ── the keyring, through a fake secret-tool ──────────────────────────── */
 
 static char keyring_dir[PATH_MAX];
@@ -248,6 +268,7 @@ int main(void) {
     RUN(a_sealed_line_round_trips_and_binds_its_file);
     RUN(a_wrapped_key_opens_with_its_passphrase_only);
     RUN(base64_round_trips_and_refuses_junk);
+    RUN(a_keyed_name_needs_the_key);
     signal(SIGPIPE, SIG_IGN); /* as shottino's main does */
     char tmpl[] = "/tmp/shottino-keyring-XXXXXX";
     if (!mkdtemp(tmpl)) {

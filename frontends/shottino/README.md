@@ -1115,8 +1115,8 @@ another name or another network does not open.
 | File | What it is |
 | --- | --- |
 | `<network id>/record.sealed` | the account, sessions, trust and pending messages, sealed as one file |
-| `<network id>/chats/chat-sha256-<hex>.sealed` | one chat's history, one sealed line per message, so a new message is an append |
-| `<network id>/encrypted-queries` | in the clear: which queries are encrypted, as the SHA-256 of the folded nick (the same digest the chat files are named by) |
+| `<network id>/chats/chat-hmac-<hex>.sealed` | one chat's history, one sealed line per message, so a new message is an append; named by an HMAC of the peer's folded nick under the data key, so the name says nothing without the key |
+| `<network id>/encrypted-queries` | in the clear: which queries are encrypted, as SHA-256(salt ‖ folded nick) under a random salt the file carries |
 | `key.wrapped` | only without a keyring: the data key, sealed under your passphrase |
 | `<network id>/lock` | held while a shottino uses that network's device |
 
@@ -1145,11 +1145,18 @@ keyring again, then the passphrase, and reads every network's state once it
 has the key.
 
 **Upgrading.** Files from a version that wrote them in the clear
-(`record.json`, `chat-…jsonl`) are sealed by the first run that has a key,
+(`record.json`, `chat-…jsonl`), and the first sealed cut's `chat-sha256-…sealed`
+names, are sealed under the current names by the first run that has a key,
 then removed. Each one is written, fsync'd, renamed into place, and only
 then is the old file deleted, so a crash at any point leaves a state that
 still loads. Without a keyring, that first run asks you to choose a
 passphrase.
+
+**What the seal does not hide.** The clear index is salted, so a table of
+nick digests computed in advance does not read it. But someone who can
+read the disk can still test a nick they GUESS against it, and learn
+whether you have an encrypted query with that nick. Without the key, the
+chat file names say nothing.
 
 `/e2e status` opens with where the key lives: `in the OS keyring`, `under
 your passphrase`, `LOCKED`, or `none yet`. The key and the passphrase are

@@ -1720,11 +1720,29 @@ TEST(store_atomic_locked_private) {
     CHECK(!file_has(idx, "alice"));
     e2e_strv dg = {0};
     CHECK(e2e_store_read_index(dir, &dg));
-    char want[E2E_DIGEST_SZ];
-    e2e_nick_digest("ALICE", want);
-    CHECK(dg.n == 1 && dg.n && strcmp(dg.v[0], want) == 0);
-    CHECK(strncmp(want, "sha256:", 7) == 0 && strlen(want) == 7 + 64);
+    CHECK(dg.n == 1 && e2e_index_entry_names(dg.v[0], "ALICE"));
+    CHECK(dg.n == 1 && !e2e_index_entry_names(dg.v[0], "bob"));
+    /* Salted: the plain digest of the nick, which a table computed in
+     * advance holds, is not in it. */
+    char plain_sha[65];
+    e2e_line_sha256("alice", 5, plain_sha);
+    CHECK(!file_has(idx, plain_sha));
     e2e_strv_free(&dg);
+    /* Another index gets another salt: one nick, two different lines. */
+    {
+        char *dir9 = xfmt("%s/e2e-abc/9", base);
+        e2e_store *st9;
+        CHECK(e2e_store_open(dir9, &st9, err, sizeof(err)) == E2E_STORE_OK);
+        CHECK(e2e_store_save(st9, KEY, &rec, err, sizeof(err)));
+        e2e_strv dg9 = {0};
+        CHECK(e2e_store_read_index(dir, &dg) && e2e_store_read_index(dir9, &dg9));
+        CHECK(dg.n == 1 && dg9.n == 1 && strcmp(dg.v[0], dg9.v[0]) != 0);
+        CHECK(dg9.n == 1 && e2e_index_entry_names(dg9.v[0], "alice"));
+        e2e_strv_free(&dg);
+        e2e_strv_free(&dg9);
+        e2e_store_close(st9);
+        free(dir9);
+    }
     put_file(idx, "junk\n", 5);
     CHECK(!e2e_store_read_index(dir, &dg));
     free(idx);
@@ -1834,10 +1852,8 @@ TEST(store_seals_a_plaintext_record_on_load) {
 static bool index_names(const char *dir, const char *nick) {
     e2e_strv dg = {0};
     if (!e2e_store_read_index(dir, &dg)) return false;
-    char want[E2E_DIGEST_SZ];
-    e2e_nick_digest(nick, want);
     bool has = false;
-    for (size_t i = 0; i < dg.n; i++) has |= strcmp(dg.v[i], want) == 0;
+    for (size_t i = 0; i < dg.n; i++) has |= e2e_index_entry_names(dg.v[i], nick);
     e2e_strv_free(&dg);
     return has;
 }
@@ -2315,12 +2331,22 @@ TEST(history_rows_round_trip) {
         e2e_row r;
         CHECK(!e2e_row_from_json(bad[i], strlen(bad[i]), &r));
     }
-    /* SHA-256 of the folded nick (vector: Python's hashlib over
-     * "al/ice[]"): a fixed length whatever the nick, and no byte of it
-     * reaches the filesystem's syntax. */
-    char *name = e2e_chat_file_name("Al/ice[]");
-    CHECK_STR(name, "chat-sha256-32c6e69b6886b227b30ec01f74b196c896eeb7a5df33119a7018ce1e19031db0"
-                    ".sealed");
+    /* HMAC-SHA256 of "chat-name" + the folded nick under the data key
+     * (vector: Python's hmac over "al/ice[]"): a fixed length whatever the
+     * nick, no byte of it in the filesystem's syntax, and NOT the plain
+     * digest the first sealed cut used (32c6e69b…, a dictionary away from
+     * the nick). Another key, another name. */
+    char *name = e2e_chat_file_name(KEY, "Al/ice[]");
+    CHECK_STR(name, "chat-hmac-079e0b309dc6958f947be493a13db7b3bc0362ec2ca653f8369725bfa9eb7085.sealed");
+    CHECK(strstr(name, "32c6e69b6886b227") == NULL);
+    uint8_t other[AR_KEY_LEN];
+    memcpy(other, KEY, sizeof(other));
+    other[3] ^= 1;
+    char *again = e2e_chat_file_name(KEY, "AL/ICE[]"), *elsewhere = e2e_chat_file_name(other, "al/ice[]");
+    CHECK_STR(again, name);
+    CHECK(strcmp(elsewhere, name) != 0);
+    free(again);
+    free(elsewhere);
     free(name);
 }
 
@@ -2356,7 +2382,7 @@ TEST(history_appends_dedupes_and_survives_a_torn_tail) {
     CHECK(e2e_chat_append(dir, "7/chats", KEY, &a2, err, sizeof(err)));
     struct stat sb;
     CHECK(stat(dir, &sb) == 0 && (sb.st_mode & 0777) == 0700);
-    char *name = e2e_chat_file_name("alice");
+    char *name = e2e_chat_file_name(KEY, "alice");
     char *path = xfmt("%s/%s", dir, name);
     free(name);
     CHECK(stat(path, &sb) == 0 && (sb.st_mode & 0777) == 0600);
@@ -2399,7 +2425,7 @@ TEST(history_appends_dedupes_and_survives_a_torn_tail) {
     CHECK_STR(rows.v[rows.n - 1].id, "in:2999:0");
     CHECK_STR(rows.v[4].id, "in:2000:0");
     e2e_rows_free(&rows);
-    char *cname = e2e_chat_file_name("carol");
+    char *cname = e2e_chat_file_name(KEY, "carol");
     char *cpath = xfmt("%s/%s", dir, cname);
     free(cname);
     CHECK_LONG((long)count_lines(cpath), 2 * E2E_CHAT_ROWS_MAX);
@@ -2430,9 +2456,9 @@ TEST(history_names_are_fixed_length_and_old_names_migrate) {
     char nick[301];
     memset(nick, 'n', 300);
     nick[300] = 0;
-    char *name = e2e_chat_file_name(nick);
+    char *name = e2e_chat_file_name(KEY, nick);
     CHECK(strlen(name) <= NAME_MAX);
-    CHECK_LONG((long)strlen(name), (long)strlen("chat-sha256-.sealed") + 64);
+    CHECK_LONG((long)strlen(name), (long)strlen("chat-hmac-.sealed") + 64);
     free(name);
     e2e_row lng = mkrow("in:1:0", E2E_ROW_IN, 100, nick, "long", E1);
     CHECK(e2e_chat_append(dir, "7/chats", KEY, &lng, err, sizeof(err)));
@@ -2463,7 +2489,7 @@ TEST(history_names_are_fixed_length_and_old_names_migrate) {
     struct stat sb;
     CHECK(stat(old_a, &sb) != 0);
     CHECK(stat(old_b, &sb) != 0);
-    char *na = e2e_chat_file_name("alice"), *nb = e2e_chat_file_name("BOB");
+    char *na = e2e_chat_file_name(KEY, "alice"), *nb = e2e_chat_file_name(KEY, "BOB");
     char *pa = xfmt("%s/%s", dir, na), *pb = xfmt("%s/%s", dir, nb);
     CHECK(stat(pa, &sb) == 0 && (sb.st_mode & 0777) == 0600);
     CHECK_LONG((long)count_lines(pb), 2);
@@ -2500,7 +2526,7 @@ TEST(history_is_sealed_and_refuses_what_does_not_open) {
     CHECK(!e2e_chat_append(dir, "7/chats", NULL, &a1, err, sizeof(err)));
     CHECK(e2e_chat_load(dir, "7/chats", NULL, &rows, err, sizeof(err)) && rows.n == 0);
     CHECK(e2e_chat_append(dir, "7/chats", KEY, &a1, err, sizeof(err)));
-    char *na = e2e_chat_file_name("alice"), *nb = e2e_chat_file_name("bob");
+    char *na = e2e_chat_file_name(KEY, "alice"), *nb = e2e_chat_file_name(KEY, "bob");
     char *pa = xfmt("%s/%s", dir, na), *pb = xfmt("%s/%s", dir, nb);
     CHECK(!file_has(pa, "private") && !file_has(pa, "in:1:0") && file_has(pa, "e1:"));
     /* Locked: there is something to read, and it is not read. */
@@ -2530,18 +2556,28 @@ TEST(history_is_sealed_and_refuses_what_does_not_open) {
     CHECK(unlink(pa) == 0 && unlink(pb) == 0);
 
     /* The plaintext shape: carol's alone, bob's beside a sealed one. */
-    char *nc = e2e_chat_file_name("carol");
-    nc[strlen(nc) - strlen(".sealed")] = 0;
-    char *plain_c = xfmt("%s/%s.jsonl", dir, nc);
-    nb[strlen(nb) - strlen(".sealed")] = 0;
-    char *plain_b = xfmt("%s/%s.jsonl", dir, nb);
+    char *nc = e2e_chat_file_name(KEY, "carol");
+    char sha_c[65], sha_b[65];
+    e2e_line_sha256("carol", 5, sha_c);
+    e2e_line_sha256("bob", 3, sha_b);
+    char *plain_c = xfmt("%s/chat-sha256-%s.jsonl", dir, sha_c);
+    /* bob's in the shape the first sealed cut wrote: sealed, but named
+     * (and bound) by the plain digest. */
+    char *plain_b = xfmt("%s/chat-sha256-%s.sealed", dir, sha_b);
     e2e_row c1 = mkrow("in:2:0", E2E_ROW_IN, 200, "carol", "carol said this in clear", E1);
     e2e_row b1 = mkrow("in:3:0", E2E_ROW_IN, 300, "bob", "bob said this in clear", E2);
     e2e_row b2 = mkrow("in:4:0", E2E_ROW_IN, 400, "bob", "bob said this sealed", E2);
     char *jc = e2e_row_to_json(&c1), *jb = e2e_row_to_json(&b1);
-    char *tc = xfmt("%s\n", jc), *tb = xfmt("%s\n", jb);
+    char *old_aad = xfmt("7/chats/chat-sha256-%s.sealed", sha_b);
+    char *sealed_b = ar_seal_line(KEY, "chat", old_aad, jb, strlen(jb));
+    free(old_aad);
+    char *tc = xfmt("%s\n", jc), *tb = xfmt("%s\n", sealed_b);
+    free(sealed_b);
     put_file(plain_c, tc, strlen(tc));
     put_file(plain_b, tb, strlen(tb));
+    /* A chat-…jsonl of no shape this writer knows: never read or moved. */
+    char *stray = xfmt("%s/chat-notes.jsonl", dir);
+    put_file(stray, "{\"stray\":1}\n", 12);
     CHECK(e2e_chat_append(dir, "7/chats", KEY, &b2, err, sizeof(err)));
     /* No key: the plaintext is neither read nor moved. */
     CHECK(!e2e_chat_load(dir, "7/chats", NULL, &rows, err, sizeof(err)));
@@ -2553,8 +2589,10 @@ TEST(history_is_sealed_and_refuses_what_does_not_open) {
     for (size_t i = 0; i < rows.n && i < 3; i++) CHECK_STR(rows.v[i].id, want[i]);
     e2e_rows_free(&rows);
     CHECK(stat(plain_c, &sb) != 0 && stat(plain_b, &sb) != 0);
-    char *sc = xfmt("%s/%s.sealed", dir, nc);
+    char *sc = xfmt("%s/%s", dir, nc);
     CHECK(stat(sc, &sb) == 0 && (sb.st_mode & 0777) == 0600);
+    CHECK(stat(stray, &sb) == 0);
+    free(stray);
     CHECK(!file_has(sc, "clear") && !file_has(pb, "clear") && !file_has(pb, "sealed"));
     CHECK_LONG((long)count_lines(pb), 2);
     /* Nothing left to seal: the same rows again. */

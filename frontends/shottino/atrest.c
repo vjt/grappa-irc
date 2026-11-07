@@ -6,6 +6,7 @@
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <openssl/rand.h>
 
 #define FMT_FILE "file1"
@@ -222,6 +223,25 @@ ar_status ar_unwrap(const char *passphrase, const void *data, size_t len,
     if (ok) memcpy(key, got, AR_KEY_LEN);
     OPENSSL_cleanse(got, sizeof(got));
     return ok ? AR_OK : AR_REFUSED;
+}
+
+void ar_name_mac(const uint8_t key[AR_KEY_LEN], const char *label, const void *data, size_t len,
+                 char out[65]) {
+    size_t ll = strlen(label);
+    uint8_t *msg = xmalloc(ll + len);
+    memcpy(msg, label, ll);
+    if (len) memcpy(msg + ll, data, len);
+    uint8_t mac[32];
+    unsigned int mac_len = 0;
+    if (!HMAC(EVP_sha256(), key, AR_KEY_LEN, msg, ll + len, mac, &mac_len) || mac_len != 32)
+        abort();
+    ar_free_secret(msg, ll + len);
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < 32; i++) {
+        out[2 * i] = hex[mac[i] >> 4];
+        out[2 * i + 1] = hex[mac[i] & 15];
+    }
+    out[64] = 0;
 }
 
 char *ar_b64(const uint8_t *p, size_t n) {

@@ -4728,14 +4728,24 @@ static void unseal_to_plaintext(struct app *app) {
         if (n < 7 || strcmp(ent->d_name + n - 7, ".sealed") != 0) continue;
         char *from = xasprintf("%s/%s", chats, ent->d_name);
         char *aad = xasprintf("%d/chats/%s", net, ent->d_name);
-        char *to = xasprintf("%s/%.*s.jsonl", chats, (int)(n - 7), ent->d_name);
+        /* Before sealing, a chat was named by the plain digest of its nick. */
+        char *to = NULL;
         char *text = slurp(from, &len);
-        FILE *o = fopen(to, "wb");
-        for (char *p = text; o && p < text + len;) {
+        FILE *o = NULL;
+        for (char *p = text; p < text + len;) {
             char *nl = memchr(p, '\n', (size_t)(text + len - p));
             if (!nl) break;
             CHECK(ar_open_line(key, "chat", aad, p, (size_t)(nl - p), &pt, &pt_len) == AR_OK);
-            fprintf(o, "%s\n", pt);
+            e2e_row row;
+            if (!o && e2e_row_from_json(pt, pt_len, &row)) {
+                char *folded = e2e_fold(row.nick), sha[65];
+                e2e_line_sha256(folded, strlen(folded), sha);
+                to = xasprintf("%s/chat-sha256-%s.jsonl", chats, sha);
+                o = fopen(to, "wb");
+                free(folded);
+                e2e_row_free(&row);
+            }
+            if (o) fprintf(o, "%s\n", pt);
             ar_free_secret(pt, pt_len);
             p = nl + 1;
         }
@@ -4946,9 +4956,9 @@ TEST(a_half_migrated_state_still_loads) {
     CHECK(f && fputs(json, f) >= 0);
     if (f) fclose(f);
     free(json);
-    char *name = e2e_chat_file_name("alice");
-    name[strlen(name) - strlen(".sealed")] = 0;
-    char *chat = xasprintf("%s/chats/%s.jsonl", dir, name);
+    char name[65];
+    e2e_line_sha256("alice", 5, name);
+    char *chat = xasprintf("%s/chats/chat-sha256-%s.jsonl", dir, name);
     e2e_row r = {.id = "in:900:0", .kind = E2E_ROW_IN, .at = 1, .nick = "alice",
                  .body = "plaintext from before", .body_len = 21,
                  .key = alice.rec.own->master};
@@ -4972,7 +4982,6 @@ TEST(a_half_migrated_state_still_loads) {
     free_e2e_app(app);
     free(plain);
     free(chat);
-    free(name);
     tpeer_free(&alice);
 }
 
@@ -5008,7 +5017,7 @@ TEST(e2e_unlock_opens_a_locked_store_from_the_input_line) {
     char *index = xasprintf("%s/" E2E_INDEX_FILE, dir);
     FILE *f = fopen(index, "wb");
     free(index);
-    CHECK(f && fputs("shottino-e2e-encrypted-queries 1\n", f) >= 0);
+    CHECK(f && fputs("shottino-e2e-encrypted-queries 2 00112233445566778899aabbccddeeff\n", f) >= 0);
     if (f) fclose(f);
 
     fg_reset();
