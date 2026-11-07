@@ -5002,11 +5002,21 @@ TEST(e2e_unlock_opens_a_locked_store_from_the_input_line) {
     CHECK(e2e_write_private(path, w, wn, NULL, 0));
     free(w);
     test_keyring_mode("fail");
+    /* Someone with the disk drops alice's line from the clear index: while
+     * locked her query reads as clear (the known gap), and the unlock puts
+     * it back, from the sealed record. */
+    char *index = xasprintf("%s/" E2E_INDEX_FILE, dir);
+    FILE *f = fopen(index, "wb");
+    free(index);
+    CHECK(f && fputs("shottino-e2e-encrypted-queries 1\n", f) >= 0);
+    if (f) fclose(f);
 
     fg_reset();
     app = booted_app("user:atrest-unlock", 0, NULL);
     CHECK(e2e_key_source(app) == E2E_KEY_LOCKED);
     e2e_peek_modes(app, "azzurra");
+    add_window_ex(app, "azzurra", "alice", true);
+    CHECK(!prompt_locked(app));
     run_job(app, JOB_E2E_SYNC);
     CHECK(view_of(app).state == E2E_SLOT_LOCKED);
     type_line(app, "/e2e status");
@@ -5032,6 +5042,7 @@ TEST(e2e_unlock_opens_a_locked_store_from_the_input_line) {
     CHECK(e2e_key_source(app) == E2E_KEY_PASSPHRASE);
     run_jobs(app);
     CHECK(view_of(app).state == E2E_SLOT_READY);
+    CHECK(prompt_locked(app));
     drain(app);
     CHECK(said(app, "read after unlocking"));
     for (size_t i = 0; i < app->history_count; i++) CHECK(strstr(app->history[i], "sesam") == NULL);

@@ -15744,12 +15744,15 @@ static bool e2e_slot_open(struct app *app, struct e2e_slot *s, struct e2e_view *
     }
     s->have_rec = true;
     pthread_mutex_lock(&app->lock);
-    /* What the index named by digest is named by nick from here; a digest
-     * no nick of the record matches stays, and keeps its query encrypted. */
+    /* The record's set joins what the boot read, never replaces it: what
+     * the index named by digest is named by nick from here, a digest no
+     * nick of the record matches stays (and keeps its query encrypted), and
+     * a query the sealed record holds encrypted is encrypted whatever the
+     * clear index beside it said — an index line deleted on disk does not
+     * outlive the unlock. Only adding: nothing here puts a query in clear. */
     for (size_t i = 0; i < s->rec.encrypted.n; i++) {
-        bool keep = !s->on_loaded || e2e_on_has(&s->on, s->rec.encrypted.v[i]);
         e2e_on_set(&s->on, s->rec.encrypted.v[i], false);
-        if (keep) e2e_on_set(&s->on, s->rec.encrypted.v[i], true);
+        e2e_on_set(&s->on, s->rec.encrypted.v[i], true);
     }
     s->on_loaded = true;
     pthread_mutex_unlock(&app->lock);
