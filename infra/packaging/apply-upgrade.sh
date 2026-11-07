@@ -82,9 +82,10 @@ release_erts() {
 }
 
 # PORT from the env file, read and never sourced (it is root reading a file
-# the grappa group can write to). The template's value when absent.
+# the grappa group can write to), bare or in quotes as systemd's
+# EnvironmentFile= accepts it. The template's value when absent.
 http_port() {
-	port=$(sed -n 's/^[[:space:]]*PORT=\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$ENV_FILE" 2>/dev/null | tail -n 1)
+	port=$(sed -n "s/^[[:space:]]*PORT=[\"']\{0,1\}\([0-9][0-9]*\)[\"']\{0,1\}[[:space:]]*\$/\1/p" "$ENV_FILE" 2>/dev/null | tail -n 1)
 	printf '%s' "${port:-4000}"
 }
 
