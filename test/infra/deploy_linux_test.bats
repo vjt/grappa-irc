@@ -119,6 +119,7 @@ case "$*" in
     "deps.get"*) : > "$DEPS_MARKER" ;;
     "grappa.seed_themes"*) exit "$SEED_RC" ;;
     "grappa.migrate"*) exit "${MIGRATE_RC:-0}" ;;
+    "grappa.check_migrations"*) exit "${CHECK_RC:-0}" ;;
     "run --no-start"*)
         if [ "${STRICT_PREFLIGHT_DEPS:-0}" = 1 ] && [ ! -f "$DEPS_MARKER" ]; then
             echo "** (Mix) Can't continue due to errors on stale dependencies" >&2
@@ -291,7 +292,7 @@ run_deploy() {
 
 # --- cold path ---------------------------------------------------------------
 
-@test "cold path order: cic_build -> install_systemd -> stop -> migrate -> seed -> start, writes marker" {
+@test "cold path order: cic_build -> check -> install_systemd -> stop -> migrate -> seed -> start, writes marker" {
     # Issue 1112 (D4): the migration runs with the old node STOPPED. It used
     # to run first, so for the seconds before the stop the old code served
     # the new schema — an order nobody chose (vjt's ruling, F1/F3 (a)).
@@ -302,18 +303,22 @@ run_deploy() {
     [ "$status" -eq 0 ]
 
     cic_line=$(grep -n "cic_build.sh" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    check_line=$(grep -n "mix grappa.check_migrations" "$ARGV_LOG" | head -1 | cut -d: -f1)
     unit_line=$(grep -n "install_systemd.sh" "$ARGV_LOG" | head -1 | cut -d: -f1)
     stop_line=$(grep -n "systemctl stop grappa" "$ARGV_LOG" | head -1 | cut -d: -f1)
     mig_line=$(grep -n "mix grappa.migrate" "$ARGV_LOG" | head -1 | cut -d: -f1)
     seed_line=$(grep -n "mix grappa.seed_themes" "$ARGV_LOG" | head -1 | cut -d: -f1)
     start_line=$(grep -n "systemctl start grappa" "$ARGV_LOG" | head -1 | cut -d: -f1)
     [ -n "$cic_line" ]
+    [ -n "$check_line" ]
     [ -n "$unit_line" ]
     [ -n "$stop_line" ]
     [ -n "$mig_line" ]
     [ -n "$seed_line" ]
     [ -n "$start_line" ]
-    [ "$cic_line" -lt "$unit_line" ]
+    # The migration check (F2) runs while the old node still serves.
+    [ "$cic_line" -lt "$check_line" ]
+    [ "$check_line" -lt "$unit_line" ]
     [ "$unit_line" -lt "$stop_line" ]
     [ "$stop_line" -lt "$mig_line" ]
     [ "$mig_line" -lt "$seed_line" ]
@@ -338,6 +343,21 @@ run_deploy() {
     refute grep -q "mix grappa.seed_themes" "$ARGV_LOG"
     [ ! -f "$REPO_ROOT/runtime/last-deployed-sha" ]
     [[ "$output" == *"PRODUCTION IS DOWN"* ]]
+}
+
+@test "issue 1112: a migration check that refuses stops NOTHING — exit 1, the node keeps serving" {
+    export PREFLIGHT_RC=3 CHECK_RC=1
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy
+    [ "$status" -eq 1 ]
+    grep -q "mix grappa.check_migrations" "$ARGV_LOG"
+    refute grep -q "install_systemd.sh" "$ARGV_LOG"
+    refute grep -q "systemctl stop grappa" "$ARGV_LOG"
+    refute grep -q "mix grappa.migrate" "$ARGV_LOG"
+    refute grep -q "systemctl start grappa" "$ARGV_LOG"
+    [ ! -f "$REPO_ROOT/runtime/last-deployed-sha" ]
+    [[ "$output" == *"NOTHING was stopped"* ]]
 }
 
 # --- #503 enrich: --force-* flags (parity with jail + docker) ----------------

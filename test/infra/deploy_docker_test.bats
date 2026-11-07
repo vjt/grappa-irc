@@ -128,6 +128,7 @@ printf 'MIX_ENV=%s | docker %s\n' "${MIX_ENV-<unset>}" "$*" >> "$ENV_LOG"
 case "$*" in
     *"ps -q grappa"*)  echo fakecid ;;
     *"run --no-start"*) exit "$PREFLIGHT_RC" ;;
+    *"grappa.check_migrations"*) exit "${CHECK_RC:-0}" ;;
     *"run --rm cicchetto-build"*)
         # #1020 — model the oneshot: vite writes the bundle into whatever host
         # dir is bind-mounted at /app/dist, which is CIC_BUILD_OUT now. Without
@@ -273,7 +274,7 @@ run_deploy() {
     [[ "$output" == *".env"* ]]
 }
 
-@test "cold path order: build -> deps.get -> cicchetto-build -> stop -> migrate -> seed -> up" {
+@test "cold path order: build -> deps.get -> cicchetto-build -> check -> stop -> migrate -> seed -> up" {
     # Issue 1112 (D4): the migration runs with the old container STOPPED,
     # and the recreate starts the new one after the seed. It used to migrate
     # first, so the old code served the new schema until the recreate. The
@@ -288,6 +289,7 @@ run_deploy() {
     build_line=$(grep -n "build grappa" "$ARGV_LOG" | head -1 | cut -d: -f1)
     deps_line=$(grep -n "deps.get" "$ARGV_LOG" | head -1 | cut -d: -f1)
     cic_line=$(grep -n "cicchetto-build" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    check_line=$(grep -n "mix grappa.check_migrations" "$ARGV_LOG" | head -1 | cut -d: -f1)
     stop_line=$(grep -n "stop grappa" "$ARGV_LOG" | head -1 | cut -d: -f1)
     mig_line=$(grep -n "grappa.migrate" "$ARGV_LOG" | head -1 | cut -d: -f1)
     seed_line=$(grep -n "grappa.seed_themes" "$ARGV_LOG" | head -1 | cut -d: -f1)
@@ -295,16 +297,33 @@ run_deploy() {
     [ -n "$build_line" ]
     [ -n "$deps_line" ]
     [ -n "$cic_line" ]
+    [ -n "$check_line" ]
     [ -n "$stop_line" ]
     [ -n "$mig_line" ]
     [ -n "$seed_line" ]
     [ -n "$up_line" ]
     [ "$build_line" -lt "$deps_line" ]
     [ "$deps_line" -lt "$cic_line" ]
-    [ "$cic_line" -lt "$stop_line" ]
+    # The migration check (F2) runs while the old container still serves.
+    [ "$cic_line" -lt "$check_line" ]
+    [ "$check_line" -lt "$stop_line" ]
     [ "$stop_line" -lt "$mig_line" ]
     [ "$mig_line" -lt "$seed_line" ]
     [ "$seed_line" -lt "$up_line" ]
+}
+
+@test "issue 1112: a migration check that refuses stops NOTHING — exit 1, the container keeps serving" {
+    export PREFLIGHT_RC=3 CHECK_RC=1
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy
+    [ "$status" -eq 1 ]
+    grep -q "mix grappa.check_migrations" "$ARGV_LOG"
+    refute grep -q "stop grappa" "$ARGV_LOG"
+    refute grep -q "mix grappa.migrate" "$ARGV_LOG"
+    refute grep -q "up -d" "$ARGV_LOG"
+    [ ! -f "$REPO_ROOT/runtime/last-deployed-sha" ]
+    [[ "$output" == *"NOTHING was stopped"* ]]
 }
 
 @test "cold path installs hex in a mix run of its own, before deps.get" {

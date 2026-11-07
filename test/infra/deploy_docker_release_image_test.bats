@@ -51,6 +51,12 @@ setup() {
 #!/usr/bin/env bash
 printf 'docker %s\n' "$*" >> "$ARGV_LOG"
 case "$1" in
+  run)
+    # issue 1112 — the pre-stop migration check, refusable on demand.
+    case "$*" in
+      *check_migrations*) exit "${CHECK_RC:-0}" ;;
+    esac
+    exit 0 ;;
   inspect)
     [ -n "${FAKE_CONTAINER_EXISTS:-}" ] || exit 1
     # #1656 — liveness asks for the STATE, not for existence.
@@ -265,20 +271,36 @@ EOF
     [ "$status" -eq 0 ]
 
     pull_line=$(grep -n "pull ghcr.io/vjt/grappa:latest" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    check_line=$(grep -n "eval Grappa.Release.check_migrations()" "$ARGV_LOG" | head -1 | cut -d: -f1)
     rm_line=$(grep -n "rm -f grappa" "$ARGV_LOG" | head -1 | cut -d: -f1)
     mig_line=$(grep -n "eval Grappa.Release.migrate()" "$ARGV_LOG" | head -1 | cut -d: -f1)
     seed_line=$(grep -n "eval Grappa.Release.seed_themes()" "$ARGV_LOG" | head -1 | cut -d: -f1)
     run_line=$(grep -nE "run -d .*--name grappa" "$ARGV_LOG" | head -1 | cut -d: -f1)
     [ -n "$pull_line" ]
+    [ -n "$check_line" ]
     [ -n "$rm_line" ]
     [ -n "$mig_line" ]
     [ -n "$seed_line" ]
     [ -n "$run_line" ]
-    [ "$pull_line" -lt "$rm_line" ]
+    # The check runs on the NEW image, while the old container still serves.
+    [ "$pull_line" -lt "$check_line" ]
+    [ "$check_line" -lt "$rm_line" ]
     [ "$rm_line" -lt "$mig_line" ]
     [ "$mig_line" -lt "$seed_line" ]
     [ "$seed_line" -lt "$run_line" ]
     grep -qE "run -d .*-e GRAPPA_AUTO_MIGRATE=0" "$ARGV_LOG"
+}
+
+@test "update: a migration check that refuses removes NOTHING — exit 1, the old container keeps serving (issue 1112)" {
+    seed_env_file
+    export FAKE_CONTAINER_EXISTS=1 CHECK_RC=1
+    run "$DEPLOY" update
+    [ "$status" -eq 1 ]
+    grep -q "eval Grappa.Release.check_migrations()" "$ARGV_LOG"
+    refute grep -q "rm -f grappa" "$ARGV_LOG"
+    refute grep -q "eval Grappa.Release.migrate()" "$ARGV_LOG"
+    refute grep -q "run -d" "$ARGV_LOG"
+    [[ "$output" == *"NOTHING was stopped"* ]]
 }
 
 @test "an older consumer sourcing the newer lib dies before it stops or migrates anything (issue 1112)" {
@@ -300,7 +322,9 @@ EOF
         . "'"$BOX"'/infra/lib/deploy_common.sh"
         deploy_main --force-cold
     '
-    [ "$status" -eq 127 ]
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"substrate_check_migrations"*"not found"* ]]
+    [[ "$output" == *"NOTHING was stopped"* ]]
     grep -qx "cic" "$BATS_TEST_TMPDIR/old-consumer.log"
     refute grep -qx "restart" "$BATS_TEST_TMPDIR/old-consumer.log"
     refute grep -qx "migrate" "$BATS_TEST_TMPDIR/old-consumer.log"

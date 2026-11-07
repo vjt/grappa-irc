@@ -39,6 +39,13 @@ defmodule Grappa.Migrations.DuplicateVersionGateTest do
     * COLD, jail — `Grappa.Release.migrate/0`.
     * COLD, docker + linux — `mix grappa.migrate`, which drives the very
       same `Grappa.Release.migrate/0`.
+
+  And one door that only audits (issue 1112, F2): a cold deploy migrates
+  with the daemon STOPPED, so every substrate runs the audit alone first,
+  while the old node still serves — `Grappa.Release.check_migrations/0`
+  on the release substrates, `mix grappa.check_migrations` on the mix
+  ones. It must refuse exactly like the migrating doors, and migrate
+  nothing when it passes.
   """
   use ExUnit.Case, async: false
 
@@ -48,6 +55,11 @@ defmodule Grappa.Migrations.DuplicateVersionGateTest do
   alias Grappa.HotReload
 
   @fixture_priv "priv/repo/duplicate_version_smoke"
+  # A CLEAN set of three, borrowed read-only from
+  # `hot_deploy_migrate_test.exs`: the check's passing arm needs pending
+  # files that it must leave pending.
+  @clean_priv "priv/repo/hot_migrate_smoke"
+  @clean_first 20_200_101_000_001
 
   @collided 20_200_101_000_001
   @first_file "20200101000001_first_claim_on_the_version.exs"
@@ -158,6 +170,63 @@ defmodule Grappa.Migrations.DuplicateVersionGateTest do
 
       assert error.message =~ "20200101000001"
     end)
+  end
+
+  test "the pre-stop check refuses out of Grappa.Release.check_migrations/0, naming both files" do
+    with_ecto_repos([SmokeRepo], fn ->
+      error = assert_raise RuntimeError, fn -> Grappa.Release.check_migrations() end
+
+      assert error.message =~ "20200101000001"
+      assert error.message =~ @first_file
+      assert error.message =~ @second_file
+    end)
+  end
+
+  test "the pre-stop check refuses out of mix grappa.check_migrations" do
+    with_ecto_repos([SmokeRepo], fn ->
+      error = assert_raise RuntimeError, fn -> Mix.Tasks.Grappa.CheckMigrations.run([]) end
+
+      assert error.message =~ "20200101000001"
+    end)
+  end
+
+  test "the pre-stop check passes a clean set and migrates NOTHING: what was pending stays pending" do
+    path = Path.join(System.tmp_dir!(), "grappa-check-only-#{System.unique_integer([:positive])}.db")
+
+    Application.put_env(:grappa, FreshRepo,
+      database: path,
+      priv: @clean_priv,
+      pool_size: 2,
+      busy_timeout: 30_000,
+      foreign_keys: :on
+    )
+
+    on_exit(fn ->
+      Application.delete_env(:grappa, FreshRepo)
+      File.rm(path)
+      File.rm(path <> "-shm")
+      File.rm(path <> "-wal")
+    end)
+
+    # A database partway through the set — one applied, two pending — so
+    # "nothing changed" is measured against a state with something to change
+    # in both directions.
+    {:ok, _, _} = Ecto.Migrator.with_repo(FreshRepo, &Ecto.Migrator.run(&1, :up, to: @clean_first))
+    before = migration_statuses(FreshRepo)
+
+    assert Enum.count(before, &match?({:up, _, _}, &1)) == 1
+    assert Enum.count(before, &match?({:down, _, _}, &1)) == 2
+
+    with_ecto_repos([FreshRepo], fn ->
+      assert Grappa.Release.check_migrations() == :ok
+    end)
+
+    assert migration_statuses(FreshRepo) == before
+  end
+
+  defp migration_statuses(repo) do
+    {:ok, statuses, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.migrations/1)
+    statuses
   end
 
   test "the first-install door: the audit runs against a database file that does not exist yet" do
