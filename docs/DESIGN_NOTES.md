@@ -5643,3 +5643,101 @@ accepts that, and the PR says it.
   locked` on connect: seen only in failing runs, since ExUnit prints captured
   logs for failures alone, and not investigated. The pre-existing first-install
   case opens the same scratch repo with the same pool and busy timeout.
+<!-- entry #remoteip-clients-20261107 -->
+
+---
+
+## 2026-11-07 — remote-ip: only loopback hops are proxies; a private address in the chain is a client
+
+`GrappaWeb.Plugs.RemoteIpFromProxy` resolves the client address through
+`RemoteIp` 1.2.0, which walks `X-Forwarded-For` / `X-Real-IP` from the right
+and steps over every entry in its built-in reserved list as a proxy hop —
+loopback AND the private ranges `10.0.0.0/8`, `172.16.0.0/12`,
+`192.168.0.0/16`, `fc00::/7`. The proxy in front of the BEAM appends the
+address it saw as the rightmost entry, so for a user who reaches it from a
+LAN or a VPN that entry is private: the walk stepped over it and resolved
+the entry to its left, or, with none, the transport peer. Every reader of
+the resolved address got the wrong one for that user — `sessions.ip`, the
+per-IP admission cap and login throttles, the #543 mode-2 egress
+derivation.
+
+**Ruling (vjt, relayed by the orchestrator): a reserved address that is not
+loopback is a CLIENT, not a proxy.** Only `127.0.0.0/8` and `::1` remain
+proxy hops — the same-host proxy shapes.
+
+### Mechanism
+
+`RemoteIp.type/2` classifies an entry in a fixed order — `clients:`, then
+`proxies:`, then the reserved list — and the walk stops on `:client` or
+`:unknown` (`client?/2`), read in `deps/remote_ip/lib/remote_ip.ex`.
+`trusted_client_ip/3` now passes the four private ranges as `clients:`, on
+every resolution and not in `init/1`. Both doors (the endpoint plug and
+`UserSocket.connect/3`) already call that function, and in prod
+`plug_init_mode` is `:compile`, so a rule in `init/1` would also be baked
+into `GrappaWeb.Endpoint`'s beam. Measured with prod compiles of base and
+head run back to back in the same `_build`: `GrappaWeb.Endpoint` comes out
+byte-identical (`beam_lib:cmp/2` = `ok`), and of the four beams the head
+compile rewrote, only `RemoteIpFromProxy` changes its code md5 — the value
+`Grappa.HotReload` compares. `Router` differs only in `ExCk`, `LoopbackOnly`
+only in `Docs` (a one-word moduledoc edit).
+
+### Consequences
+
+* **Single front door** (every proxy config this repo ships, and the m42
+  host vhost): a client on a public address resolves exactly as before; one
+  on a private address now resolves to its own address.
+* **Two proxies, the first on a private address.** Example: nginx on a
+  Docker host at `172.17.0.1` in front of a second nginx inside the
+  container. The inner one appends `172.17.0.1`, so EVERY user now resolves
+  to that address and they all share one per-IP bucket: one login throttle,
+  one per-IP admission cap, one `sessions.ip` value. A public first hop (a
+  CDN in front of the proxy) already resolved that way. No setting for
+  trusted proxy addresses exists, and none was built: `RemoteIp`'s
+  `proxies:` could not be one, because it is consulted after `clients:`, so
+  an operator would have to narrow `@private_ranges` in the plug. Written up
+  as an operator limit in `docs/OPERATIONS.md`.
+* **The e2e stack.** The browser goes through `nginx-test`, the API fixtures
+  hit `grappa-test:4000` directly. The browser's requests used to resolve to
+  `nginx-test`'s address and the fixtures' to the runner's; both now resolve
+  to the runner's, so the two share per-IP buckets. Left to the integration
+  CI to decide.
+* **Production**, relayed and not re-measured here: 428 of 428 `sessions.ip`
+  rows were public on 2026-11-07.
+
+### Tests
+
+A new describe, `only loopback hops are proxies`, reads every case through
+BOTH doors (the plug and `trusted_client_ip/2`): each private range × both
+peer kinds × three header shapes (XFF alone, XFF then X-Real-IP, X-Real-IP
+then XFF). Its guardrails cover an all-public chain, loopback entries still
+being walked past, a loopback-only chain falling back to the peer, and
+`direct_loopback_peer?/1` staying a property of the transport. On the
+pre-fix code 10 of its 12 tests fail (the file: 41 tests, 10 failures); with
+the fix the file passes 38 of 38. Three older tests asserted the walk-past
+and were removed; the new describe covers their shapes with the corrected
+answer. Two mutants: dropping `172.16.0.0/12` fails exactly the two 172.16
+cases, and adding `127.0.0.0/8` to the ranges fails exactly the two loopback
+guardrails.
+
+### Hot or cold
+
+HOT. `Grappa.Deploy.Preflight.cli/1` from base `f6155c02d` to the code commit answers HOT for
+jail, linux and docker (rc 0). Positive control: `0665dd018~1..0665dd018`,
+which touches `config/` and `mix.exs`, answers COLD (rc 3). Only one module
+changes code, so only one reloads (see Mechanism).
+
+### Not claimed
+
+* The resolved address of a real LAN or VPN client on a running node. It is
+  measured in unit tests through both doors; no live request was made.
+* The integration suite on this branch: not run locally (no stack lane).
+  The PR's CI decides.
+* That a future `RemoteIp` keeps these six reserved ranges. A range it adds
+  would be walked past as a proxy hop until it is added to
+  `@private_ranges`.
+* Entries written as IPv4-mapped IPv6 (`::ffff:10.0.0.5`): not tested on
+  either side of the change.
+* That the whole-file md5 of a beam is reproducible. A first base compile
+  from a stale `_build` gave `Endpoint` a different whole-file md5 than the
+  second one did, so only the back-to-back pair counts as evidence, compared
+  chunk by chunk.
