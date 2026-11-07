@@ -82,6 +82,20 @@ const collectTags = (b: WhoisBundle): TagChip[] => {
   return tags;
 };
 
+// Issue 2597 — the text of the client-address row, for a bundle whose
+// `grappa_client_ips` is not null. The words are cic's (the server sends
+// values only, per `feedback_no_localized_strings_server_side`): the live
+// addresses; or, with no socket open, where the newest login came from when
+// grappa knows it.
+const clientIpText = (b: WhoisBundle): string => {
+  const ips = b.grappa_client_ips ?? [];
+  if (ips.length > 0) return ips.join(", ");
+  const lastKnown = b.grappa_client_last_known_ip;
+  return lastKnown === null
+    ? "no socket connected"
+    : `no socket connected, last known address ${lastKnown}`;
+};
+
 const WhoisCard: Component<Props> = (props) => {
   const bundle = () => props.bundle;
   // #1199 — Escape closes the card through the shared ordered ESC stack, the
@@ -212,6 +226,15 @@ const WhoisCard: Component<Props> = (props) => {
                     {"]"}
                   </Show>
                 </dd>
+              </Show>
+              {/* Issue 2597 — where the grappa user holding this nick connects
+                  from: shown when this session holds umode o/O or this client
+                  speaks for a grappa admin, and only for a nick a grappa
+                  session holds. Null for anyone else, so no row. These are
+                  grappa's own records, not ircd pass-through — no MircBody. */}
+              <Show when={b().grappa_client_ips !== null}>
+                <dt>client IP</dt>
+                <dd class="whois-card-client-ips">{clientIpText(b())}</dd>
               </Show>
               <Show when={b().umodes}>
                 <dt>modes</dt>

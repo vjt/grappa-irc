@@ -47,6 +47,8 @@ const baseBundle: WhoisBundle = {
   certfp: null,
   extra_lines: null,
   avatar_url: null,
+  grappa_client_ips: null,
+  grappa_client_last_known_ip: null,
 };
 
 const renderCard = (overrides: Partial<WhoisBundle> = {}, onDismiss?: () => void) =>
@@ -382,5 +384,34 @@ describe("WhoisCard #673 extra_lines", () => {
   it("renders no extra-line row when extra_lines is null (the bahamut-plain path)", () => {
     renderCard();
     expect(screen.getByTestId("whois-card").querySelector(".whois-card-extra-line")).toBeNull();
+  });
+});
+
+// Issue 2597 — where the grappa user holding the nick connects from. The
+// server sends values only; null means "not for you, or nobody of ours", `[]`
+// means no socket of theirs is open, and the words are the card's.
+describe("WhoisCard issue 2597 client addresses", () => {
+  const row = () => screen.getByTestId("whois-card").querySelector(".whois-card-client-ips");
+
+  it("renders no client-address row when grappa_client_ips is null", () => {
+    renderCard({ grappa_client_last_known_ip: "198.51.100.7" });
+    expect(row()).toBeNull();
+    expect(screen.queryByText("client IP")).toBeNull();
+  });
+
+  it("lists the live addresses", () => {
+    renderCard({ grappa_client_ips: ["2001:db8::7", "203.0.113.9"] });
+    expect(screen.getByText("client IP")).toBeInTheDocument();
+    expect(row()?.textContent).toBe("2001:db8::7, 203.0.113.9");
+  });
+
+  it("says no socket is connected and names the last known address", () => {
+    renderCard({ grappa_client_ips: [], grappa_client_last_known_ip: "198.51.100.7" });
+    expect(row()?.textContent).toBe("no socket connected, last known address 198.51.100.7");
+  });
+
+  it("says only that no socket is connected when no address is known", () => {
+    renderCard({ grappa_client_ips: [], grappa_client_last_known_ip: null });
+    expect(row()?.textContent).toBe("no socket connected");
   });
 });
