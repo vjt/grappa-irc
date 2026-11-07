@@ -16592,6 +16592,32 @@ static void e2e_undecryptable_text(const char *nick, const char *reason, char *o
              nick, reason);
 }
 
+/* A decrypted body as an IRC line could have carried it, for the screen
+ * (malloc'd; the history on disk keeps what was said). IRC cannot carry
+ * CR, LF or NUL, and a JSON string can: a newline drawn as one starts a
+ * visual line with no row prefix, so a peer could forge a line that reads
+ * as this client's own ("--- e2e: … verified"), and a NUL hid the rest of
+ * the body. Every C0 control and DEL becomes a space — tab and ESC too,
+ * which no line of ours needs from a peer — except what the renderer draws
+ * on purpose: the mIRC formatting codes (mirc.h) and \x01, the CTCP frame
+ * an ACTION is read from. `len` counts the bytes, NULs included. Pure. */
+static char *e2e_body_for_screen(const char *body, size_t len) {
+    char *out = malloc(len + 1);
+    if (!out) die("out of memory");
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)body[i];
+        bool kept = c >= 0x20 && c != 0x7f;
+        switch (c) {
+        case 0x01: case 0x02: case 0x03: case 0x04: case 0x0f:
+        case 0x11: case 0x16: case 0x1d: case 0x1e: case 0x1f: kept = true; break;
+        default: break;
+        }
+        out[i] = kept ? (char)c : ' ';
+    }
+    out[len] = 0;
+    return out;
+}
+
 /* A key alarm's words, in the query and $server (EncryptedChatPane's step
  * card): the presented key, nothing taken, and the one way to take it
  * (/e2e trust, which asks again before it pins). Pure. */
@@ -16651,7 +16677,10 @@ static bool e2e_trust_row_text(const e2e_row *row, bool live, char *out, size_t 
         const char *words = e2e_sas_reason_text(reason);
         char quoted[80];
         if (!words) {
-            snprintf(quoted, sizeof(quoted), "\"%s\"", reason);
+            /* The peer's own words: drawn as a body is, on one line. */
+            char *shown = e2e_body_for_screen(reason, strlen(reason));
+            snprintf(quoted, sizeof(quoted), "\"%.70s\"", shown);
+            free(shown);
             words = quoted;
         }
         if (strcmp(reason, "other-device") == 0)
@@ -16687,7 +16716,7 @@ static void e2e_render_row_marked(struct app *app, const char *slug, const e2e_r
     snprintf(own, sizeof(own), "%s", own_nick_for_network(app, slug));
     pthread_mutex_unlock(&app->lock);
     if (row->kind == E2E_ROW_IN || row->kind == E2E_ROW_OUT) {
-        char *body = row->body ? xstrdup(row->body) : xstrdup("");
+        char *body = row->body ? e2e_body_for_screen(row->body, row->body_len) : xstrdup("");
         char act[MAX_LINE];
         struct wire_scrollback_message m = {0};
         m.network = slug;
@@ -17957,7 +17986,10 @@ static void e2e_who(struct app *app, struct e2e_slot *s, const e2e_ctx *c, const
         const char *words = e2e_sas_reason_text(reason);
         char quoted[80];
         if (!words) {
-            snprintf(quoted, sizeof(quoted), "\"%s\"", reason);
+            /* The peer's own words: drawn as a body is, on one line. */
+            char *shown = e2e_body_for_screen(reason, strlen(reason));
+            snprintf(quoted, sizeof(quoted), "\"%.70s\"", shown);
+            free(shown);
             words = quoted;
         }
         log_line(app, "[%s/%s]   last emoji comparison: %s%s", s->slug, nick,

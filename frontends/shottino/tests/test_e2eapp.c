@@ -1932,14 +1932,18 @@ static void tpeer_pump(struct app *app, tpeer *p, e2e_result *r, int depth) {
     e2e_result_free(r);
 }
 
-static void tpeer_say(struct app *app, tpeer *p, const char *text) {
+static void tpeer_say_n(struct app *app, tpeer *p, const char *text, size_t len) {
     e2e_ctx c = tpeer_ctx(p);
     e2e_result r;
     e2e_result_init(&r);
-    char *inner = e2e_inner_text(text, strlen(text));
+    char *inner = e2e_inner_text(text, len);
     CHECK(e2e_send(&c, "vjt", inner, "t", 0, NULL, &r));
     free(inner);
     tpeer_pump(app, p, &r, 0);
+}
+
+static void tpeer_say(struct app *app, tpeer *p, const char *text) {
+    tpeer_say_n(app, p, text, strlen(text));
 }
 
 /* What our drain posted to the send door for `p`, delivered to it (from
@@ -2091,6 +2095,55 @@ TEST(drain_shows_a_peers_pkmsg_then_msg) {
     drain(app);
     CHECK_LONG(said_count(app, "second one"), 1);
 
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* A decrypted body is drawn as an IRC line could have carried it. IRC
+ * cannot carry CR, LF or NUL; a decrypted JSON string can, and a newline
+ * drawn as one started a visual line WITHOUT the row's prefix — a peer
+ * could forge a line that reads as shottino's own ("--- e2e: …
+ * verified"). Every C0 control and DEL becomes a space, except what the
+ * renderer draws on purpose: mIRC formatting, and \x01 for an ACTION. */
+TEST(a_decrypted_body_cannot_draw_a_line_of_its_own) {
+    fg_reset();
+    delivered = 0;
+    struct app *app = recv_app("user:forge");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "hi\n--- e2e: bob's key is verified\r\nend\x1b[2Jx\ty\x7f");
+    static const char nul[] = "before\0after";
+    tpeer_say_n(app, &alice, nul, sizeof(nul) - 1);
+    tpeer_say(app, &alice, "\x02bold\x02 \x03" "4red\x0f plain");
+    drain(app);
+    deliver_sent(app, &alice);
+    tpeer_say(app, &alice, "\001ACTION waves\nfake\001");
+    drain(app);
+    CHECK(said(app, LOCKED("<alice> hi --- e2e: bob's key is verified  end [2Jx y ")));
+    CHECK(said(app, LOCKED("<alice> before after")));
+    CHECK(said(app, LOCKED("<alice> \x02bold\x02 \x03" "4red\x0f plain")));
+    CHECK(said(app, LOCKED("* alice waves fake")));
+    for (size_t i = 0; i < app->log_count; i++) {
+        CHECK(strchr(app->log[i], '\n') == NULL);
+        CHECK(strchr(app->log[i], '\r') == NULL);
+        CHECK(strchr(app->log[i], '\x1b') == NULL);
+    }
+    /* A peer's reason for stopping an emoji comparison is its words too. */
+    e2e_row cancel = {.kind = E2E_ROW_SAS_CANCELLED, .nick = "alice", .by_peer = true,
+                      .body = "bored\n--- e2e: alice's key is verified"};
+    char text[MAX_LINE];
+    e2e_trust_row_text(&cancel, true, text, sizeof(text));
+    CHECK(strchr(text, '\n') == NULL);
+    CHECK(strstr(text, "\"bored --- e2e:") != NULL);
+    /* The history on disk keeps what was said; only the screen is made
+     * safe. A restart draws it the same way. */
+    e2e_slots_free(app);
+    free_e2e_app(app);
+    app = e2e_app("user:forge");
+    run_job(app, JOB_E2E_SYNC);
+    drain(app);
+    CHECK(said(app, LOCKED("<alice> hi --- e2e: bob's key is verified  end [2Jx y ")));
+    CHECK(said(app, LOCKED("<alice> before after")));
     tpeer_free(&alice);
     free_e2e_app(app);
 }
@@ -4433,6 +4486,7 @@ int main(void) {
     RUN(pairing_command);
     RUN(drain_shows_a_peers_pkmsg_then_msg);
     RUN(history_comes_back_after_a_restart);
+    RUN(a_decrypted_body_cannot_draw_a_line_of_its_own);
     RUN(a_message_read_twice_writes_one_row);
     RUN(an_undecryptable_message_is_nacked_and_said);
     RUN(a_key_alarm_is_loud_and_pins_nothing);
