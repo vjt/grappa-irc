@@ -5098,6 +5098,42 @@ TEST(e2e_init_without_a_keyring_asks_for_a_new_passphrase) {
     test_keyring_mode(NULL);
 }
 
+/* A sealed record that opens under the key and is no record this shottino
+ * reads — what a downgrade from a newer one leaves — is never started over:
+ * the slot errors, says so, and neither a sync nor /e2e init writes over it. */
+TEST(a_sealed_record_this_shottino_cannot_read_is_left_alone) {
+    fg_reset();
+    struct app *app = recv_app("user:atrest-future");
+    char dir[PATH_MAX];
+    e2e_slot_dir(app, &app->e2e[0], dir, sizeof(dir));
+    e2e_slots_free(app);
+    free_e2e_app(app);
+    uint8_t key[AR_KEY_LEN];
+    int net;
+    CHECK(key_of_slot_dir(dir, key, &net));
+    char *path = xasprintf("%s/record.sealed", dir), *name = xasprintf("%d/record.sealed", net);
+    const char *future = "{\"v\":99,\"ratchets\":\"a newer shottino's\"}";
+    size_t n = 0;
+    uint8_t *sealed = ar_seal(key, "record", name, future, strlen(future), &n);
+    CHECK(e2e_write_private(path, sealed, n, NULL, 0));
+
+    fg_reset();
+    app = booted_app("user:atrest-future", 0, NULL);
+    run_job(app, JOB_E2E_SYNC);
+    CHECK(view_of(app).state == E2E_SLOT_ERROR);
+    CHECK(status_says(app, "left as it is"));
+    run_job(app, JOB_E2E_INIT);
+    CHECK(fg_no("POST") && fg_no("PUT"));
+    size_t after_n = 0;
+    char *after = slurp(path, &after_n);
+    CHECK(after && after_n == n && memcmp(after, sealed, n) == 0);
+    free(after);
+    free(sealed);
+    free(path);
+    free(name);
+    free_e2e_app(app);
+}
+
 int main(void) {
     test_use_temp_home();
     /* A keyring for every test (tests/fake-secret-tool, in the temp home):
@@ -5174,6 +5210,7 @@ int main(void) {
     RUN(a_half_migrated_state_still_loads);
     RUN(e2e_unlock_opens_a_locked_store_from_the_input_line);
     RUN(e2e_init_without_a_keyring_asks_for_a_new_passphrase);
+    RUN(a_sealed_record_this_shottino_cannot_read_is_left_alone);
     th_free();
     fg_stop();
     return test_report();

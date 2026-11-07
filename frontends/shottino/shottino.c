@@ -15733,6 +15733,15 @@ static bool e2e_slot_open(struct app *app, struct e2e_slot *s, struct e2e_view *
                  "sealed under another); left as it is",
                  dir);
         return false;
+    case E2E_LOAD_UNREADABLE:
+        /* Never started over either: it is this identity's, and its
+         * ratchets are the only copy. */
+        v->state = E2E_SLOT_ERROR;
+        snprintf(v->why, sizeof(v->why),
+                 "the record in %.150s is this identity's but no record this shottino reads (a "
+                 "newer shottino's?); left as it is",
+                 dir);
+        return false;
     case E2E_LOAD_LOCKED:
         v->state = E2E_SLOT_LOCKED;
         snprintf(v->why, sizeof(v->why), "%s", E2E_LOCKED_WHY);

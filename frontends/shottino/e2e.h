@@ -654,18 +654,21 @@ typedef enum { E2E_STORE_OK, E2E_STORE_BUSY, E2E_STORE_ERROR } e2e_store_status;
 typedef enum {
     E2E_LOAD_OK,
     E2E_LOAD_NONE,
-    E2E_LOAD_CORRUPT,  /* a plaintext file that is not a record */
-    E2E_LOAD_REFUSED,  /* a sealed record that does not open with this key (or was changed) */
+    E2E_LOAD_CORRUPT,    /* a PLAINTEXT record.json that is not a record */
+    E2E_LOAD_REFUSED,    /* a sealed record that does not open with this key (or was changed) */
+    E2E_LOAD_UNREADABLE, /* a sealed record that opens and is no record this shottino reads */
     E2E_LOAD_LOCKED,   /* a record is there and no key was given: nothing read */
     E2E_LOAD_ERROR
 } e2e_load_status;
 
 e2e_store_status e2e_store_open(const char *dir, e2e_store **out, char *err, size_t err_sz);
 void e2e_store_close(e2e_store *st);
-/* CORRUPT is a file that is not a record: the caller decides (cic starts
- * over, which makes the next sync read grappa's identity as elsewhere).
- * REFUSED is never started over: the record may be fine under its own
- * key. `key` (AR_KEY_LEN bytes) may be NULL: then anything on disk is
+/* CORRUPT is a plaintext record.json that is not a record: the caller
+ * decides (cic starts over, which makes the next sync read grappa's
+ * identity as elsewhere). REFUSED and UNREADABLE are sealed records and
+ * are NEVER started over: one may be fine under its own key, the other
+ * authenticated as this identity's and is most likely a newer shottino's
+ * format — starting over would destroy its ratchets. `key` (AR_KEY_LEN bytes) may be NULL: then anything on disk is
  * LOCKED and only a directory without a record answers (NONE). */
 e2e_load_status e2e_store_load(e2e_store *st, const uint8_t *key, e2e_record *out, char *err,
                                size_t err_sz);

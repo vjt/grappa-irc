@@ -2525,8 +2525,10 @@ e2e_load_status e2e_store_load(e2e_store *st, const uint8_t *key, e2e_record *ou
                    path);
             res = E2E_LOAD_REFUSED;
         } else if (!e2e_record_from_json(json, json_len, out)) {
-            SETERR("%s is not a record", path);
-            res = E2E_LOAD_CORRUPT;
+            SETERR("%s opens under this key but is no record this shottino reads (a newer "
+                   "one's?)",
+                   path);
+            res = E2E_LOAD_UNREADABLE;
         } else {
             res = E2E_LOAD_OK;
             /* A crash between sealing and removing the plaintext. */

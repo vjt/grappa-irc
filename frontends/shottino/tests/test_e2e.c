@@ -1801,6 +1801,17 @@ TEST(store_seals_a_plaintext_record_on_load) {
     CHECK(back.state.inbox == 42);
     e2e_record_free(&back);
     CHECK(stat(plain, &sb) != 0);
+    /* A sealed file that opens under the key but is no record this shottino
+     * reads (a newer one's, say): never CORRUPT, which starts over. */
+    {
+        size_t sn = 0;
+        const char *future = "{\"v\":99,\"account\":\"from a newer shottino\"}";
+        uint8_t *sb2 = ar_seal(KEY, "record", "7/record.sealed", future, strlen(future), &sn);
+        put_file(path, (const char *)sb2, sn);
+        free(sb2);
+        CHECK(e2e_store_load(st, KEY, &back, err, sizeof(err)) == E2E_LOAD_UNREADABLE);
+        CHECK(strstr(err, "record.sealed") != NULL);
+    }
     /* Only a plaintext non-record: CORRUPT, and the next save replaces it. */
     CHECK(unlink(path) == 0);
     put_file(plain, "{\"v\":1,\"account\":\"x\"}", 22);
