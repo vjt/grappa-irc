@@ -43,7 +43,7 @@ CARGO ?= $(shell command -v cargo 2>/dev/null || echo $(abspath $(ROOT))/scripts
 # endpoint at all, and "what a WHIP endpoint looks like" must have ONE
 # answer. Built to whip_client.o rather than call/whip.o because the
 # opt-in helper compiles the same file with its own flags into that name.
-OBJS := shottino.o json.o wire.o e2e.o alias.o mirc.o termcolor.o http.o media.o ircd.o ws.o llm.o unfurl.o whip_client.o
+OBJS := shottino.o json.o wire.o e2e.o atrest.o alias.o mirc.o termcolor.o http.o media.o ircd.o ws.o llm.o unfurl.o whip_client.o
 
 # Test binaries link only the pure modules they exercise — no ncurses, no
 # OpenSSL, no terminal. That is the point of keeping the narrowing and
@@ -64,10 +64,10 @@ OBJS := shottino.o json.o wire.o e2e.o alias.o mirc.o termcolor.o http.o media.o
 # reaches, which is the drawing primitives and nothing else. Do not trust
 # this net for changes elsewhere in that file; add a test or reason about
 # the path by hand.
-TESTS := tests/test_vodozemac tests/test_e2e tests/test_unfurl tests/test_llm tests/test_ws tests/test_json tests/test_wire tests/test_alias tests/test_mirc tests/test_termcolor tests/test_http tests/test_media tests/test_whip tests/test_callmedia tests/test_callnote tests/test_callmain tests/test_layout tests/test_keys tests/test_ircd tests/test_commands tests/test_windows tests/test_e2eapp tests/test_call
+TESTS := tests/test_vodozemac tests/test_atrest tests/test_e2e tests/test_unfurl tests/test_llm tests/test_ws tests/test_json tests/test_wire tests/test_alias tests/test_mirc tests/test_termcolor tests/test_http tests/test_media tests/test_whip tests/test_callmedia tests/test_callnote tests/test_callmain tests/test_layout tests/test_keys tests/test_ircd tests/test_commands tests/test_windows tests/test_e2eapp tests/test_call
 # What a suite that compiles shottino.c links beside it: every module the
 # binary links, the E2E core and vodozemac included.
-APP_TEST_SRCS := json.c wire.c e2e.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c
+APP_TEST_SRCS := json.c wire.c e2e.c atrest.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c unfurl.c
 APP_TEST_LIBS = $(VZ_LIB) $(LDLIBS) $(VZ_LDLIBS)
 SANITIZE ?= -fsanitize=address,undefined -fno-omit-frame-pointer
 TEST_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O1 -g $(SANITIZE)
@@ -84,6 +84,13 @@ $(VZ_LIB): $(VZ_DIR)/Cargo.toml $(VZ_DIR)/Cargo.lock $(VZ_DIR)/src/lib.rs
 
 tests/test_vodozemac: tests/test_vodozemac.c tests/test.h $(VZ_DIR)/include/vodozemac.h $(VZ_LIB)
 	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) -o $@ tests/test_vodozemac.c $(VZ_LIB) $(VZ_LDLIBS)
+
+# The seal around the E2E state at rest: AES-256-GCM and the scrypt key
+# wrap, pure, against the OpenSSL the binary links. Every refusal a sealed
+# file owes (a tampered byte, another name, another key, a wrong
+# passphrase) is a case under the sanitizers.
+tests/test_atrest: tests/test_atrest.c tests/test.h atrest.c atrest.h
+	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) -o $@ tests/test_atrest.c atrest.c -lcrypto
 
 # The E2E core: cicchetto's wire and engine, pure, against the real
 # vodozemac. Two engines talk through a fake grappa inside the suite, so
