@@ -11,8 +11,10 @@
 #   0  the unit is not running (left as it is: its next start runs the new
 #      release and migrates first, in ExecStartPre), OR the upgrade was
 #      applied hot, OR it was applied by restart
-#   1  a restart was needed and did not take — the ONLY failure: every hot
-#      refusal is a reason to restart, never a reason to fail
+#   1  a restart was needed and did not take, OR the hot reload was refused
+#      with `409 duplicate_migration_versions` — the one refusal a restart
+#      cannot cure (#1348), so the running node is left serving. Every other
+#      hot refusal is a reason to restart, never a reason to fail
 #
 # Why: docs/OPERATIONS.md § "Packaging (infra/packaging/)", "An upgrade
 # applies itself".
@@ -130,6 +132,21 @@ restart() {
 	exit 0
 }
 
+# The one hot refusal that is NOT a reason to restart (vjt's ruling on issue
+# 1112): two migration files claim one version (#1348). The restart migrates
+# first, in ExecStartPre, and would walk into the same two files — trading a
+# node that serves for a unit that fails to start every 5 s. Nothing ran on
+# the node, so it keeps serving the release it booted.
+duplicate_versions() {
+	warn "the upgrade was NOT applied, and the service was NOT restarted: the hot"
+	warn "        reload was refused because two migration files claim one version"
+	warn "        (HTTP 409): $1"
+	warn "        A restart migrates first and would fail on the same files, leaving"
+	warn "        the service down. It keeps running the previous release; a package"
+	warn "        that fixes the migrations applies on its next upgrade."
+	exit 1
+}
+
 fail() {
 	warn "the upgrade was NOT applied: $1."
 	warn "        It needed a restart because: $2"
@@ -185,6 +202,7 @@ code=$(curl -sS --max-time "$RELOAD_TIMEOUT" -o "$body" -w '%{http_code}' -X POS
 answer=$(cat "$body")
 case "$code:$answer" in
 200:*'"failed":[]'*) ;;
+409:*'"error":"duplicate_migration_versions"'*) duplicate_versions "$answer" ;;
 *) restart "the hot reload was refused (HTTP $code): $answer" ;;
 esac
 healthy || restart "the service did not answer /healthz within ${HEALTH_TRIES}s of the hot reload"
