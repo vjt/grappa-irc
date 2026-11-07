@@ -22,7 +22,7 @@
 # tested 1.3.14). test/infra/base_image_digest_pin_test.bats fails when the
 # oven/bun tags disagree on the version, so bump them together. Refresh:
 #   docker buildx imagetools inspect oven/bun:<version>-alpine --format '{{.Manifest.Digest}}'
-FROM oven/bun:1.3.14-alpine@sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0 AS cic
+FROM oven/bun:1.4.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c40680e597228ec6070a AS cic
 WORKDIR /cic
 # Lockfile + manifest first, for a cache-friendly frozen install layer.
 COPY cicchetto/package.json cicchetto/bun.lock ./
