@@ -33,6 +33,13 @@ import { getBoldMentions } from "./lib/boldMentions";
 import { type ChannelKey, decodeChannelKey } from "./lib/channelKey";
 import { getColoredNicklist } from "./lib/colorNicklist";
 import {
+  COMMAND_MENU_ENTRY_CHOICES,
+  getCommandMenuEnabled,
+  getCommandMenuEntries,
+  setCommandMenuEnabled,
+  setCommandMenuEntries,
+} from "./lib/commandMenu";
+import {
   windowMuteKey,
   withConversationMute,
   withoutConversationMute,
@@ -378,6 +385,15 @@ const SettingsDrawer: Component<Props> = (props) => {
   // straight to it and there is no second copy to keep in sync.
   const onHideNextActiveChange = (e: Event) => {
     setHideNextActive((e.currentTarget as HTMLInputElement).checked);
+  };
+
+  // issue 2584 — the `/` menu's two per-device settings; like the #914 row,
+  // the module signals ARE the state, so no drawer-local mirror.
+  const onCommandMenuChange = (e: Event) => {
+    setCommandMenuEnabled((e.currentTarget as HTMLInputElement).checked);
+  };
+  const onCommandMenuEntriesChange = (e: Event) => {
+    setCommandMenuEntries(Number((e.currentTarget as HTMLSelectElement).value));
   };
 
   // #1766 — like the #914 row, no drawer-local mirror: `getShowBottomBar()` IS
@@ -2843,12 +2859,42 @@ const SettingsDrawer: Component<Props> = (props) => {
                   hide the jump-to-next-active button
                 </label>
 
+                {/* issue 2584 — the `/` command menu, and how many entries it
+                  shows. A row of this fieldset per #1766 (one box for the
+                  options, not one per setting), and PER-DEVICE like the jump
+                  button (vjt's ruling, Q1): how many lines fit above the
+                  compose box is a question about the screen. The ORDER of the
+                  entries does follow the account (server-side counts). */}
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={getCommandMenuEnabled()}
+                    onChange={onCommandMenuChange}
+                    data-testid="command-menu-toggle"
+                  />
+                  offer commands when a line starts with /
+                </label>
+                <label>
+                  commands offered{" "}
+                  <select
+                    value={String(getCommandMenuEntries())}
+                    onChange={onCommandMenuEntriesChange}
+                    disabled={!getCommandMenuEnabled()}
+                    data-testid="command-menu-entries-select"
+                  >
+                    <For each={COMMAND_MENU_ENTRY_CHOICES}>
+                      {(n) => <option value={String(n)}>{n}</option>}
+                    </For>
+                  </select>
+                </label>
+
                 {/* The one thing the merge HIDES, said out loud rather than
-                  inherited: these rows do not persist alike. All but one are
-                  #449 server-backed and converge across every device on the
-                  account; the jump button is per-DEVICE localStorage, and
-                  deliberately so — #914's complaint was about a viewport, not
-                  an account. Under one legend, identical-looking rows would
+                  inherited: these rows do not persist alike. Most are #449
+                  server-backed and converge across every device on the
+                  account; the jump button and the command menu are per-DEVICE
+                  localStorage, and deliberately so — #914's complaint was
+                  about a viewport, not an account, and so is how many commands
+                  fit above the compose box (issue 2584). Under one legend, identical-looking rows would
                   otherwise behave differently on a second device with nothing
                   on screen to say why. Phrased by BEHAVIOUR rather than by
                   position ("the first two" until #2029 added a third synced
@@ -2856,8 +2902,8 @@ const SettingsDrawer: Component<Props> = (props) => {
                   time one arrives, silently, because nothing type-checks a
                   sentence. */}
                 <p class="settings-section-blurb" data-testid="display-checkboxes-hint">
-                  Only the jump button is remembered on this device alone — the rest follow your
-                  account onto every device you use.
+                  The jump button and the command menu are remembered on this device alone — the
+                  rest follow your account onto every device you use.
                 </p>
               </fieldset>
             </section>

@@ -656,6 +656,72 @@ describe("SettingsDrawer display options section (#443)", () => {
     expect(hideNextActive.setHideNextActive).toHaveBeenCalledWith(true);
   });
 
+  // issue 2584 — the `/` menu's two settings, per DEVICE (vjt's ruling,
+  // Q1). The real module, not a mock: what is asserted is what this device
+  // will read back, so the next page load starts from it.
+  describe("command menu (issue 2584)", () => {
+    beforeEach(async () => {
+      const menu = await import("../lib/commandMenu");
+      menu.setCommandMenuEnabled(true);
+      menu.setCommandMenuEntries(5);
+    });
+
+    it("shows the menu toggle on and five entries chosen, by default", () => {
+      wrap(true);
+      openSub("display-settings-entry");
+      const section = screen.getByTestId("settings-section-display");
+      const toggle = section.querySelector('[data-testid="command-menu-toggle"]');
+      const select = section.querySelector('[data-testid="command-menu-entries-select"]');
+      expect((toggle as HTMLInputElement | null)?.checked).toBe(true);
+      expect((select as HTMLSelectElement | null)?.value).toBe("5");
+    });
+
+    it("sits in the options fieldset, beside the other per-device row (#1766)", () => {
+      wrap(true);
+      openSub("display-settings-entry");
+      const fieldsetOf = (id: string) => screen.getByTestId(id).closest("fieldset");
+      expect(fieldsetOf("command-menu-toggle")).toBe(fieldsetOf("hide-next-active-toggle"));
+      expect(fieldsetOf("command-menu-entries-select")).toBe(fieldsetOf("hide-next-active-toggle"));
+    });
+
+    it("turning it off is remembered on this device", async () => {
+      const menu = await import("../lib/commandMenu");
+      wrap(true);
+      openSub("display-settings-entry");
+      fireEvent.click(screen.getByTestId("command-menu-toggle"));
+      expect(menu.getCommandMenuEnabled()).toBe(false);
+      expect(localStorage.getItem("cicchetto.commandMenu")).toBe("false");
+    });
+
+    it("choosing a number of entries is remembered on this device", async () => {
+      const menu = await import("../lib/commandMenu");
+      wrap(true);
+      openSub("display-settings-entry");
+      const select = screen.getByTestId("command-menu-entries-select") as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: "7" } });
+      expect(menu.getCommandMenuEntries()).toBe(7);
+      expect(localStorage.getItem("cicchetto.commandMenuEntries")).toBe("7");
+    });
+
+    it("offers the counts 1 to 10", () => {
+      wrap(true);
+      openSub("display-settings-entry");
+      const select = screen.getByTestId("command-menu-entries-select") as HTMLSelectElement;
+      expect(Array.from(select.options).map((o) => o.value)).toEqual([
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+      ]);
+    });
+  });
+
   // #1766 part 1 — the mobile window bar toggle. Default CHECKED: the bar is
   // opt-OUT, and a dozen e2e specs address `.bottom-bar` on the strength of
   // that. It is the one SYNCED row of the three, so the click has to reach the

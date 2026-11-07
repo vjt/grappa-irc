@@ -7,10 +7,12 @@ import {
   Show,
   untrack,
 } from "solid-js";
+import CommandMenu from "./CommandMenu";
 import { isDiagEnabled } from "./DiagFloat";
 import { awayByNetwork } from "./lib/awayStatus";
 import { channelKey } from "./lib/channelKey";
 import {
+  commandCycle,
   draftFramePreview,
   getDraft,
   isDraining,
@@ -582,6 +584,15 @@ const ComposeBox: Component<Props> = (props) => {
     clearFeedback();
   };
 
+  // issue 2584 — a tap on a `/` menu entry: the command and its space, caret
+  // after it, as if typed. The entry kept the focus here (its mousedown is
+  // cancelled), so the keyboard stays up for the arguments.
+  const pickCommand = (verb: string): void => {
+    setDraft(key(), `/${verb} `);
+    clearFeedback();
+    if (textareaEl) placeCaretAtEndInView(textareaEl);
+  };
+
   // ---- Upload trigger surfaces (all categories) --------------------
 
   const onPickerChange = (e: Event) => {
@@ -783,6 +794,18 @@ const ComposeBox: Component<Props> = (props) => {
             </p>
           )}
         </Show>
+      </div>
+      {/* issue 2584 — the `/` menu. Same #1358 rule as the countdown slot
+          above: the slot is ALWAYS mounted and only its content comes and
+          goes, so the menu appearing never makes Solid move the form (and
+          the focused textarea in it) to re-order the fragment. */}
+      <div class="command-menu-slot">
+        <CommandMenu
+          draft={getDraft(key())}
+          cycle={commandCycle(key())}
+          readOnly={isDraining(key()) || isQueueFull(key())}
+          onPick={pickCommand}
+        />
       </div>
       <form
         class={`compose-box${greyed() ? " compose-box-greyed" : ""}`}
