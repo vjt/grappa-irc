@@ -15461,6 +15461,52 @@ static bool e2e_key_mark(const char *idir, const uint8_t key[AR_KEY_LEN]) {
     return ok;
 }
 
+/* Whether `key` is THIS identity's: it opens key.check. A key found in
+ * the keyring or unwrapped is only a candidate — a keyring item left by an
+ * abandoned /e2e init, or stored by a run before another (an ssh session,
+ * no keyring) made key.wrapped, would otherwise shadow the right key, and
+ * everything would then be REFUSED, or sealed under the wrong one. No
+ * key.check (an identity sealed before it existed) checks nothing:
+ * `*unchecked` says so, and the first successful open writes one. */
+static bool e2e_key_is_ours(const char *idir, const uint8_t key[AR_KEY_LEN], bool *unchecked) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/" E2E_KEY_CHECK, idir);
+    uint8_t buf[128];
+    FILE *f = fopen(path, "rb");
+    *unchecked = !f;
+    if (!f) return true;
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    char *pt = NULL;
+    size_t pt_len = 0;
+    bool ours = ar_open(key, "check", E2E_KEY_CHECK, buf, n, &pt, &pt_len) == AR_OK;
+    ar_free_secret(pt, pt_len);
+    return ours;
+}
+
+/* The keyring's key for this identity, when there is one and it is ours. */
+static bool e2e_key_from_keyring(struct app *app, const char *idir, uint8_t k[AR_KEY_LEN]) {
+    char hash[32];
+    e2e_key_hash(app, hash, sizeof(hash));
+    bool unchecked;
+    return kr_lookup(hash, k) && e2e_key_is_ours(idir, k, &unchecked);
+}
+
+/* After a record opened under the held key: an identity with no key.check
+ * gets one, under the flock. */
+static void e2e_key_mark_if_missing(struct app *app, const uint8_t key[AR_KEY_LEN]) {
+    char idir[PATH_MAX - 32];
+    e2e_identity_dir(app, idir, sizeof(idir));
+    bool unchecked;
+    e2e_key_is_ours(idir, key, &unchecked);
+    if (!unchecked) return;
+    int lock = e2e_key_flock(idir);
+    if (lock < 0) return;
+    e2e_key_is_ours(idir, key, &unchecked);
+    if (unchecked) e2e_key_mark(idir, key);
+    close(lock);
+}
+
 /* The data key into `out`: the one this run holds, else the keyring's.
  * `create`: with neither, and nothing sealed yet, a new one goes into the
  * keyring (read back) — never into a file without a passphrase asked. */
@@ -15468,16 +15514,15 @@ static bool e2e_key_obtain(struct app *app, bool create, uint8_t out[AR_KEY_LEN]
     pthread_mutex_lock(&e2e_key_mu);
     bool ok = app->e2e_key_src == E2E_KEY_KEYRING || app->e2e_key_src == E2E_KEY_PASSPHRASE;
     if (!ok && app->e2e_key_src == E2E_KEY_UNKNOWN) {
-        char hash[32];
+        char hash[32], idir[PATH_MAX - 32];
         e2e_key_hash(app, hash, sizeof(hash));
+        e2e_identity_dir(app, idir, sizeof(idir));
         uint8_t k[AR_KEY_LEN];
-        ok = kr_lookup(hash, k);
+        ok = e2e_key_from_keyring(app, idir, k);
         if (!ok && create) {
-            char idir[PATH_MAX - 32];
-            e2e_identity_dir(app, idir, sizeof(idir));
             int lock = e2e_key_flock(idir);
             /* Another process may have made it while this one waited. */
-            ok = lock >= 0 && kr_lookup(hash, k);
+            ok = lock >= 0 && e2e_key_from_keyring(app, idir, k);
             if (lock >= 0 && !ok) {
                 bool any, sealed;
                 e2e_identity_state(idir, &any, &sealed);
@@ -15537,6 +15582,9 @@ static ar_status e2e_key_unwrap_locked(struct app *app, const char *pass) {
     if (f) fclose(f);
     uint8_t k[AR_KEY_LEN];
     ar_status st = f ? ar_unwrap(pass, buf, n, k) : AR_MALFORMED;
+    bool unchecked;
+    /* Unwrapped is a candidate too: a key.wrapped of another key fails. */
+    if (st == AR_OK && !e2e_key_is_ours(idir, k, &unchecked)) st = AR_REFUSED;
     if (st == AR_OK) e2e_key_set_locked(app, E2E_KEY_PASSPHRASE, k);
     OPENSSL_cleanse(k, sizeof(k));
     return st;
@@ -15754,6 +15802,7 @@ static bool e2e_slot_open(struct app *app, struct e2e_slot *s, struct e2e_view *
     uint8_t key[AR_KEY_LEN];
     bool have = e2e_store_has_record(dir) && e2e_key_obtain(app, true, key);
     e2e_load_status ld = e2e_store_load(s->store, have ? key : NULL, &s->rec, err, sizeof(err));
+    if (ld == E2E_LOAD_OK && have) e2e_key_mark_if_missing(app, key);
     OPENSSL_cleanse(key, sizeof(key));
     switch (ld) {
     case E2E_LOAD_OK:
@@ -20045,11 +20094,11 @@ static void e2e_unlock_command(struct app *app) {
                  src == E2E_KEY_KEYRING ? "in the OS keyring" : "under your passphrase");
         return;
     }
-    char hash[32];
-    e2e_key_hash(app, hash, sizeof(hash));
+    char idir[PATH_MAX - 32], path[PATH_MAX];
+    e2e_identity_dir(app, idir, sizeof(idir));
     uint8_t k[AR_KEY_LEN];
     pthread_mutex_lock(&e2e_key_mu);
-    bool got = kr_lookup(hash, k);
+    bool got = e2e_key_from_keyring(app, idir, k);
     if (got) e2e_key_set_locked(app, E2E_KEY_KEYRING, k);
     pthread_mutex_unlock(&e2e_key_mu);
     OPENSSL_cleanse(k, sizeof(k));
@@ -20057,8 +20106,6 @@ static void e2e_unlock_command(struct app *app) {
         e2e_unlocked(app, "the keyring handed the key over");
         return;
     }
-    char idir[PATH_MAX - 32], path[PATH_MAX];
-    e2e_identity_dir(app, idir, sizeof(idir));
     snprintf(path, sizeof(path), "%s/" E2E_WRAPPED_KEY, idir);
     bool any, sealed;
     e2e_identity_state(idir, &any, &sealed);

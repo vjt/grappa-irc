@@ -4903,6 +4903,18 @@ reads the sealed record and removes the stale one, and it appends a
 plaintext chat into the sealed one (the dedupe drops the repeats). Without
 a keyring, the boot asks for a new passphrase for that first seal.
 
+**One key per identity, and only the right one (revised after review).**
+Making a key happens under an exclusive flock on `key.lock`. Under it the
+keyring is looked up again and the state checked again, because two
+shottinos on one identity could otherwise each mint a key and seal under
+it. Every new key writes `key.check`, the key sealed over nothing. Every
+candidate key, whether from the keyring or unwrapped, must open it before
+it is used. A stale keyring item (an abandoned `/e2e init`, or a run
+before an ssh session made `key.wrapped`) therefore falls through to the
+passphrase instead of shadowing it. `key.check` counts as sealed state.
+An identity sealed before it existed gets one on its first successful
+open.
+
 **Not tested against a real Secret Service.** `secret-tool` is not
 installed on the machine this was built on. Every keyring path runs
 against `tests/fake-secret-tool`, which follows `secret-tool`'s documented

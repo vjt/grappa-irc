@@ -5213,6 +5213,61 @@ TEST(two_processes_make_one_key) {
     test_keyring_mode(NULL);
 }
 
+/* A keyring key that is not the one this identity's state is sealed under
+ * — left by an abandoned /e2e init, or stored before an ssh session made
+ * key.wrapped — must not shadow the right one: it fails key.check, so the
+ * boot and /e2e unlock fall through to the passphrase. And an identity
+ * sealed before key.check existed gets one on its first successful open. */
+TEST(a_keyring_key_that_fails_the_check_falls_through_to_the_passphrase) {
+    fg_reset();
+    struct app *app = recv_app("user:atrest-shadow");
+    char idir[PATH_MAX], dir[PATH_MAX], hash[32];
+    identity_dir_of(app, idir, sizeof(idir));
+    e2e_slot_dir(app, &app->e2e[0], dir, sizeof(dir));
+    token_key_hash(app->url.base, app->subject, hash, sizeof(hash));
+    e2e_slots_free(app);
+    free_e2e_app(app);
+    uint8_t ours[AR_KEY_LEN], other[AR_KEY_LEN];
+    int net;
+    CHECK(key_of_slot_dir(dir, ours, &net));
+    size_t wn = 0;
+    uint8_t *w = ar_wrap("the right one", ours, &wn);
+    CHECK(e2e_write_private(xasprintf_keep(idir, "/key.wrapped"), w, wn, NULL, 0));
+    free(w);
+    memset(other, 0x5a, sizeof(other));
+    CHECK(kr_store(hash, other));
+
+    const char *right[] = {"the right one"};
+    app = booted_app("user:atrest-shadow", 1, right);
+    CHECK_LONG(asked_count, 1);
+    CHECK(e2e_key_source(app) == E2E_KEY_PASSPHRASE);
+    run_job(app, JOB_E2E_SYNC);
+    CHECK(view_of(app).state == E2E_SLOT_READY);
+    free_e2e_app(app);
+
+    /* Declined at boot: /e2e unlock asks the keyring, which still hands
+     * the wrong key — and so asks for the passphrase, not "not locked". */
+    app = booted_app("user:atrest-shadow", 0, NULL);
+    CHECK(e2e_key_source(app) == E2E_KEY_LOCKED);
+    type_line(app, "/e2e unlock");
+    CHECK(!said(app, "not locked"));
+    CHECK(said(app, "type the passphrase"));
+    type_line(app, "the right one");
+    CHECK(e2e_key_source(app) == E2E_KEY_PASSPHRASE);
+    free_e2e_app(app);
+
+    /* No key.check (sealed before it existed): written by the first open. */
+    CHECK(kr_store(hash, ours));
+    CHECK(unlink(xasprintf_keep(idir, "/key.check")) == 0);
+    CHECK(unlink(xasprintf_keep(idir, "/key.wrapped")) == 0);
+    app = booted_app("user:atrest-shadow", 0, NULL);
+    CHECK(e2e_key_source(app) == E2E_KEY_KEYRING);
+    run_job(app, JOB_E2E_SYNC);
+    CHECK(view_of(app).state == E2E_SLOT_READY);
+    CHECK(exists(idir, "key.check"));
+    free_e2e_app(app);
+}
+
 int main(void) {
     test_use_temp_home();
     /* A keyring for every test (tests/fake-secret-tool, in the temp home):
@@ -5291,6 +5346,7 @@ int main(void) {
     RUN(e2e_init_without_a_keyring_asks_for_a_new_passphrase);
     RUN(a_sealed_record_this_shottino_cannot_read_is_left_alone);
     RUN(two_processes_make_one_key);
+    RUN(a_keyring_key_that_fails_the_check_falls_through_to_the_passphrase);
     th_free();
     fg_stop();
     return test_report();
