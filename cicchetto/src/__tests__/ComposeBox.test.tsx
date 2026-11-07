@@ -2507,7 +2507,7 @@ describe("ComposeBox", () => {
       mockFrameBudgetBase = 400;
       render(() => <ComposeBox networkSlug="freenode" channelName="#caffè" />);
 
-      expect(compose.draftFramePreview).toHaveBeenCalledWith("#caffè", "ciao", 393);
+      expect(compose.draftFramePreview).toHaveBeenCalledWith("freenode", "#caffè", "ciao", 393);
     });
 
     it("is silent about a decision it cannot make — no budget, no affordance", () => {

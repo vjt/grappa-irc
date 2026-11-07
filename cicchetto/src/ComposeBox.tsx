@@ -544,7 +544,9 @@ const ComposeBox: Component<Props> = (props) => {
   const framePreviewNow = createMemo(() => {
     const base = frameBudgetBaseForNetwork(networkBySlug(props.networkSlug)?.id ?? null);
     const budget = frameBudgetForTarget(base, props.channelName);
-    return budget === null ? null : draftFramePreview(props.channelName, getDraft(key()), budget);
+    return budget === null
+      ? null
+      : draftFramePreview(props.networkSlug, props.channelName, getDraft(key()), budget);
   });
 
   // The seam's third state: the draft no longer fits one frame. Copy states
