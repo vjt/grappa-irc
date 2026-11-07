@@ -585,6 +585,42 @@ static bool menu_offers(struct overlay_item *items, size_t n, enum overlay_actio
     return false;
 }
 
+/* A click on a picture used to open it at once — full screen, fetched
+ * from wherever the link pointed. One stray click (or a click meant for
+ * the line next to it) took over the terminal and told a third-party host
+ * that you were reading. Now the click ASKS: Cancel first, so Enter by
+ * reflex does nothing, and the picture is touched only on "Open". */
+TEST(a_click_on_a_picture_asks_before_opening_it) {
+    struct app *app = window_app();
+    CHECK(app != NULL);
+    add_window_ex(app, "azzurra", "#sniffo", true);
+    const char *url = "https://example.org/cat.png";
+
+    media_click(app, url, MEDIA_IMAGE, 10, 5);
+    CHECK(app->overlay.kind == OVERLAY_MENU);
+    CHECK(app->overlay.confirm_open);
+    CHECK(!app->preview_pending);
+    struct overlay_item items[16];
+    size_t n = overlay_items_locked(app, items, 16);
+    CHECK_LONG(n, 2);
+    CHECK(items[0].action == ACT_ADMIN_CANCEL);
+    CHECK(items[1].action == ACT_PREVIEW);
+    CHECK_STR(items[1].body, url);
+    /* The box names where the picture comes from: the host is what the
+     * click would tell about you. */
+    CHECK(strstr(items[1].label, "example.org") != NULL);
+
+    /* Closing the box disarms it: the next menu is an ordinary one. */
+    overlay_close(app);
+    CHECK(!app->overlay.confirm_open);
+
+    /* A video asks too. */
+    media_click(app, "https://example.org/clip.mp4", MEDIA_VIDEO, 10, 5);
+    CHECK(app->overlay.confirm_open);
+    overlay_close(app);
+    free_app(app);
+}
+
 TEST(the_menu_offers_the_op_actions_only_to_an_op) {
     struct app *app = window_app();
     CHECK(app != NULL);
@@ -5820,6 +5856,7 @@ int main(void) {
     RUN(a_reply_card_lands_in_the_window_that_asked);
     RUN(a_block_matches_the_person_not_the_spelling);
     RUN(a_blocked_person_is_not_drawn_but_is_still_counted);
+    RUN(a_click_on_a_picture_asks_before_opening_it);
     RUN(the_menu_offers_the_op_actions_only_to_an_op);
     RUN(op_actions_stay_out_of_a_query_window);
     RUN(the_block_entry_is_a_toggle);

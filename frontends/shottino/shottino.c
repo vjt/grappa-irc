@@ -582,7 +582,6 @@ struct link_region {
     int y1;
     int x0;
     int x1;
-    bool is_video;
     enum media_kind kind;
     char url[MAX_LINE];
 };
@@ -980,6 +979,9 @@ struct overlay {
      * overlay so closing the box disarms it. */
     long msg_id;
     bool confirm_delete;
+    /* A LEFT click on a picture: the box asks before opening it. On the
+     * overlay so closing the box disarms it. */
+    bool confirm_open;
     enum admin_verb pending;
     /* OVERLAY_ADMIN in FORM mode: the fields being filled in, which one
      * has the cursor, and what they will create. ADMIN_V_NONE means this
@@ -9850,7 +9852,6 @@ static void add_link_region_locked(struct app *app, int y0, int y1, int x0, int 
     r->x0 = x0;
     r->x1 = x1;
     r->kind = kind;
-    r->is_video = kind == MEDIA_VIDEO;
     snprintf(r->url, sizeof(r->url), "%s", url);
 }
 
@@ -15301,6 +15302,23 @@ static size_t overlay_items_locked(struct app *app, struct overlay_item *out, si
          * rides in `body` so the actions are the SAME ones the media
          * picker already uses — a second implementation of "preview
          * this" is a second thing that can drift from /preview. */
+        if (ov->media[0] && ov->confirm_open) {
+            /* The question a left click asks, and nothing else. Cancel
+             * FIRST so Enter pressed by reflex is the answer that does
+             * nothing — the same ordering as the delete confirmation.
+             * The host is named because it is what opening tells about
+             * you: the fetch goes to whoever posted that link's server. */
+            char host[256] = "";
+            const char *h = strstr(ov->media, "://");
+            h = h ? h + 3 : ov->media;
+            size_t hl = strcspn(h, "/:?#");
+            snprintf(host, sizeof(host), "%.*s", (int)(hl < sizeof(host) ? hl : sizeof(host) - 1), h);
+            menu_add(out, &n, max, ACT_ADMIN_CANCEL, "", "", "Cancel");
+            menu_add(out, &n, max, ACT_PREVIEW, "", ov->media, "Open this %s — from %s",
+                     media_kind_of(ov->media) == MEDIA_VIDEO ? "video" : "picture",
+                     host[0] ? host : "?");
+            return n;
+        }
         if (ov->media[0]) {
             enum media_kind mk = media_kind_of(ov->media);
             if (mk == MEDIA_AUDIO) {
@@ -15459,6 +15477,7 @@ static void overlay_close(struct app *app) {
     app->overlay.call_controls = false;
     app->overlay.msg_id = 0;
     app->overlay.confirm_delete = false;
+    app->overlay.confirm_open = false;
     app->overlay.form_verb = ADMIN_V_NONE;
     app->overlay.form_count = 0;
     app->overlay.form_sel = 0;
@@ -21678,6 +21697,40 @@ static bool selection_drag(struct app *app, int y, bool release, bool other_butt
 /* Map a mouse event to a link region: motion updates the hover hint, a
  * left button press over a region acts on the link — a picture previews
  * in place, anything else opens in the browser. */
+/* What a left click on a link does.
+ *
+ * A picture or a video ASKS first (the confirm box, Cancel first). It used
+ * to open on the click: full screen, fetched from wherever the link
+ * pointed, so one stray click took over the terminal and told a
+ * third-party host you were reading. "Open" in the box is the same
+ * ACT_PREVIEW the right-click menu offers, so the two cannot drift.
+ * Audio still plays out of band, and a plain link still goes to the
+ * browser through the /open door. */
+static void media_click(struct app *app, const char *url, enum media_kind kind, int x, int y) {
+    if (kind == MEDIA_AUDIO) {
+        play_audio_url(app, url);
+        return;
+    }
+    if (kind == MEDIA_NONE) {
+        call_open_url(app, url);
+        return;
+    }
+    pthread_mutex_lock(&app->lock);
+    app->overlay.kind = OVERLAY_MENU;
+    app->overlay.sel = 0;
+    app->overlay.top = 0;
+    app->overlay.x = x;
+    app->overlay.y = y + 1;
+    app->overlay.nick[0] = 0;
+    app->overlay.body[0] = 0;
+    app->overlay.setting[0] = 0;
+    app->overlay.msg_id = 0;
+    app->overlay.confirm_delete = false;
+    app->overlay.confirm_open = true;
+    snprintf(app->overlay.media, sizeof(app->overlay.media), "%s", url);
+    pthread_mutex_unlock(&app->lock);
+}
+
 static void handle_mouse(struct app *app) {
     MEVENT ev;
     if (getmouse(&ev) != OK) return;
@@ -21950,6 +22003,7 @@ static void handle_mouse(struct app *app) {
             app->overlay.nick[0] = 0;
             app->overlay.body[0] = 0;
             app->overlay.setting[0] = 0;
+            app->overlay.confirm_open = false;
             snprintf(app->overlay.media, sizeof(app->overlay.media), "%s", mr->url);
             pthread_mutex_unlock(&app->lock);
             return;
@@ -22072,12 +22126,10 @@ static void handle_mouse(struct app *app) {
     }
     const struct link_region *r = region_at_locked(app, ev.x, ev.y);
     char url[MAX_LINE];
-    bool is_video = false;
     enum media_kind kind = MEDIA_NONE;
     bool hit = r != NULL;
     if (r) {
         snprintf(url, sizeof(url), "%s", r->url);
-        is_video = r->is_video;
         kind = r->kind;
         snprintf(app->hover_url, sizeof(app->hover_url), "%s", r->url);
     } else {
@@ -22086,21 +22138,7 @@ static void handle_mouse(struct app *app) {
     pthread_mutex_unlock(&app->lock);
 
     if (click && hit) {
-        if (kind == MEDIA_AUDIO) {
-            /* Plays out of band — no picture to draw, and nothing to
-             * take over the screen. */
-            play_audio_url(app, url);
-        } else if (kind == MEDIA_NONE) {
-            /* Not a picture: hand it to the browser, the same door /open
-             * uses. A link that cannot be opened from where it is read is
-             * a link the user has to retype. */
-            call_open_url(app, url);
-        } else {
-            /* Clicking a media link previews it, using the terminal's
-             * graphics protocol when there is one and character art when
-             * there is not — the same path as /preview. */
-            request_preview(app, url, is_video, false);
-        }
+        media_click(app, url, kind, ev.x, ev.y);
         pthread_mutex_lock(&app->lock);
         app->hover_url[0] = 0;
         pthread_mutex_unlock(&app->lock);
