@@ -62,8 +62,9 @@ defmodule Grappa.Deploy.Manifest do
   def current, do: @manifest
 
   @doc """
-  `current/0`, encoded for `grappa rpc` to print: Base64 text, so it
-  crosses the remote group leader unharmed.
+  `current/0`, encoded for `grappa rpc` to print: JSON text. Every entry
+  is a hex digest or `nil`, so no Erlang term has to cross — the reader
+  never decodes one from a file.
   """
   @spec encode() :: String.t()
   def encode, do: encode(current())
@@ -71,19 +72,20 @@ defmodule Grappa.Deploy.Manifest do
   @doc "Encode a manifest the way `encode/0` does."
   @spec encode(Preflight.manifest()) :: String.t()
   def encode(%{files: files, state_blocks: blocks}) do
-    Base.encode64(:erlang.term_to_binary({:grappa_manifest, @format, %{files: files, state_blocks: blocks}}))
+    Jason.encode!(%{grappa_manifest: @format, files: files, state_blocks: blocks})
   end
 
   @doc """
   Decode what `encode/0` printed. `{:error, :unknown_format}` for anything
-  else — malformed text, another format version, a term this release
-  cannot read — never a guess.
+  else — malformed text, another format version, an entry that is not a
+  digest — never a guess.
   """
   @spec decode(String.t()) :: {:ok, Preflight.manifest()} | {:error, :unknown_format}
   def decode(text) when is_binary(text) do
-    with {:ok, binary} <- Base.decode64(String.trim(text)),
-         {:ok, {:grappa_manifest, @format, %{files: files, state_blocks: blocks}}}
-         when is_map(files) and is_map(blocks) <- safe_term(binary) do
+    with {:ok, %{"grappa_manifest" => @format, "files" => files, "state_blocks" => blocks}}
+         when is_map(files) and is_map(blocks) <- Jason.decode(text),
+         true <- Enum.all?(Map.values(files), &(is_binary(&1) or is_nil(&1))),
+         true <- Enum.all?(Map.values(blocks), &is_binary/1) do
       {:ok, %{files: files, state_blocks: blocks}}
     else
       _ -> {:error, :unknown_format}
@@ -142,13 +144,5 @@ defmodule Grappa.Deploy.Manifest do
       {:ok, source} -> source
       {:error, _} -> nil
     end
-  end
-
-  # `:safe` refuses to mint atoms from the input; a term this VM cannot
-  # read is malformed input, rejected at the boundary.
-  defp safe_term(binary) do
-    {:ok, :erlang.binary_to_term(binary, [:safe])}
-  rescue
-    ArgumentError -> :error
   end
 end
