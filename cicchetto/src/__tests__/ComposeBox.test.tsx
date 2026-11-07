@@ -2527,3 +2527,41 @@ describe("ComposeBox", () => {
     });
   });
 });
+
+// issue 2584 — the `/` menu's behaviour is pinned against the REAL compose
+// store in ComposeBoxCommandMenu.test.tsx; what needs THIS file's mocked store
+// is the refusal: a composer locked by a paced drain (#737) or a full send
+// queue (#904) is readOnly, and offers nothing to put in it.
+describe("ComposeBox — the `/` menu and a refusing composer (issue 2584)", () => {
+  // `vi.clearAllMocks()` keeps a `mockReturnValue`: put back the defaults.
+  afterEach(async () => {
+    const compose = await import("../lib/compose");
+    vi.mocked(compose.getDraft).mockReturnValue("");
+    vi.mocked(compose.isDraining).mockReturnValue(false);
+  });
+
+  const menuEntries = () => screen.queryAllByRole("option").map((el) => el.textContent);
+
+  it("offers commands for a lone `/` in a writable composer", async () => {
+    const compose = await import("../lib/compose");
+    vi.mocked(compose.getDraft).mockReturnValue("/");
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    expect(menuEntries()).toEqual(["/join", "/msg", "/me", "/query", "/whois"]);
+  });
+
+  it("offers nothing while a paced drain owns the draft", async () => {
+    const compose = await import("../lib/compose");
+    vi.mocked(compose.getDraft).mockReturnValue("/");
+    vi.mocked(compose.isDraining).mockReturnValue(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    expect(menuEntries()).toEqual([]);
+  });
+
+  it("offers nothing while the send queue is full", async () => {
+    const compose = await import("../lib/compose");
+    vi.mocked(compose.getDraft).mockReturnValue("/");
+    setMockQueueFull(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    expect(menuEntries()).toEqual([]);
+  });
+});
