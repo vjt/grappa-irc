@@ -12,7 +12,8 @@
 # image's glibc must not be newer than the host's; the Makefile's link step
 # is where that would show, as an undefined versioned symbol.
 set -euo pipefail
-readonly RUST_IMAGE="$(sed -n 's/^readonly RUST_IMAGE="\(.*\)"$/\1/p' "$(dirname "$0")/wasm.sh")"
+RUST_IMAGE="$(sed -n 's/^readonly RUST_IMAGE="\(.*\)"$/\1/p' "$(dirname "$0")/wasm.sh")" || RUST_IMAGE=''
+readonly RUST_IMAGE
 [ -n "$RUST_IMAGE" ] || { echo "shottino-cargo: cannot read RUST_IMAGE from scripts/wasm.sh" >&2; exit 1; }
 exec docker run --rm -u "$(id -u):$(id -g)" \
 	-e CARGO_HOME=/src/.cargo-home \
