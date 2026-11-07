@@ -54,7 +54,11 @@ setup() {
     export RPC_RC=0 RPC_OUT='g2gDZAAQZ3JhcHBhX21hbmlmZXN0' EVAL_RC=0 EVAL_OUT='  → no unsafe markers → HOT'
     export RELOAD_CONNECT_RC=0 RELOAD_CODE=200
     export RELOAD_BODY='{"failed":[],"migrated":[],"reloaded":["Elixir.Grappa.Version"]}'
-    export HEALTH_RC=0 HEALTH_OK_AFTER_RESTART=0 CIC_RC=0 SEED_RC=0
+    export HEALTH_RC=0 HEALTH_OK_AFTER_RESTART=0 CIC_RC=0 SEED_RC=0 RPC_HANGS=0
+    # One line per call that waits on the node, with the bound it was given.
+    BOUNDS_LOG="$BATS_TEST_TMPDIR/bounds.log"
+    export BOUNDS_LOG
+    : > "$BOUNDS_LOG"
 
     STUB="$BATS_TEST_TMPDIR/stub"
     mkdir -p "$STUB"
@@ -89,17 +93,20 @@ EOF
     # the code the case set, the way `-o FILE -w '%{http_code}'` would.
     cat > "$STUB/curl" <<'EOF'
 #!/usr/bin/env bash
-out='' wfmt='' method=GET url=''
+out='' wfmt='' method=GET url='' maxt=none
 while [ $# -gt 0 ]; do
     case "$1" in
         -o) out="$2"; shift 2 ;;
         -w) wfmt="$2"; shift 2 ;;
         -X) method="$2"; shift 2 ;;
+        --max-time) maxt="$2"; shift 2 ;;
+        --connect-timeout) shift 2 ;;
         -*) shift ;;
         *) url="$1"; shift ;;
     esac
 done
 printf 'curl %s %s\n' "$method" "$url" >> "$CALL_LOG"
+printf '%s %s\n' "${url##*/}" "$maxt" >> "$BOUNDS_LOG"
 case "$url" in
     */admin/reload)
         if [ "$RELOAD_CONNECT_RC" -ne 0 ]; then
@@ -124,6 +131,16 @@ EOF
     # The healthcheck loop sleeps between probes; a no-op keeps a case that
     # exhausts it instant, without a production knob to shorten the loop.
     printf '#!/bin/sh\nexit 0\n' > "$STUB/sleep"
+    # timeout DURATION CMD... — records the bound and runs CMD. RPC_HANGS
+    # plays a node that never answers: the bound expires, as timeout(1)
+    # reports it.
+    cat > "$STUB/timeout" <<'EOF'
+#!/bin/sh
+printf '%s-%s %s\n' "${2##*/}" "$3" "$1" >> "$BOUNDS_LOG"
+if [ "$RPC_HANGS" = 1 ] && [ "$3" = rpc ]; then exit 124; fi
+shift
+exec "$@"
+EOF
     chmod 0755 "$STUB"/*
     PATH="$STUB:$PATH"
 
@@ -514,4 +531,35 @@ nfpm_depends() {
     [[ "$output" == *util-linux* ]] # ... and the rpm one
     grep -qx '/usr/bin/curl' <<<"$output"
     grep -qE "^depends=\(.*'curl'.*\)$" "$PKG_SRC/aur/PKGBUILD"
+}
+
+@test "no call that waits on the node can hold the package manager's lock forever" {
+    # Hot path: rpc, eval, reload, /healthz, cic notice.
+    run apply
+    [ "$status" -eq 0 ]
+    grep -qx 'grappa-rpc 60' "$BOUNDS_LOG"
+    grep -qx 'grappa-eval 120' "$BOUNDS_LOG"
+    grep -qx 'reload 300' "$BOUNDS_LOG"
+    grep -qx 'healthz 5' "$BOUNDS_LOG"
+    grep -qx 'cic-bundle-changed 5' "$BOUNDS_LOG"
+    refute grep -q ' none$' "$BOUNDS_LOG"
+
+    # Restart path: every /healthz probe after it, too.
+    : > "$BOUNDS_LOG"
+    export EVAL_RC=3 EVAL_OUT='Cold-deploy required:'
+    run apply
+    [ "$status" -eq 0 ]
+    restarted
+    grep -qx 'healthz 5' "$BOUNDS_LOG"
+    refute grep -q ' none$' "$BOUNDS_LOG"
+}
+
+@test "a running node that never answers the rpc → restart, saying it timed out" {
+    export RPC_HANGS=1
+    run apply
+
+    [ "$status" -eq 0 ]
+    restarted
+    [[ "$output" == *"did not report its manifest within 60s"* ]]
+    refute grep -q '^grappa eval' "$CALL_LOG"
 }

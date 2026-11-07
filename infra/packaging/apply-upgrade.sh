@@ -25,6 +25,15 @@ ENV_FILE=/etc/grappa/grappa.env
 START_ERL=/usr/lib/grappa/releases/start_erl.data
 # /healthz probes after a reload or a restart, one second apart.
 HEALTH_TRIES=60
+# Every call that waits on the node is bounded, in seconds: the package
+# manager holds its lock for as long as this script runs, and a node that
+# accepts a connection and never answers would hold it forever. The reload
+# migrates in-process, so it gets the budget the unit gives a migration on a
+# restart (TimeoutStartSec).
+RPC_TIMEOUT=60
+EVAL_TIMEOUT=120
+RELOAD_TIMEOUT=300
+PROBE_TIMEOUT=5
 
 # Evaluated INSIDE the running node: its own manifest, the one compiled into
 # the code it runs. The is_loaded guard is not decoration — on a node that
@@ -82,7 +91,8 @@ http_port() {
 healthy() {
 	i=0
 	while [ "$i" -lt "$HEALTH_TRIES" ]; do
-		curl -fsS -o /dev/null "http://127.0.0.1:$PORT/healthz" 2>/dev/null && return 0
+		curl -fsS --connect-timeout 2 --max-time "$PROBE_TIMEOUT" -o /dev/null \
+			"http://127.0.0.1:$PORT/healthz" 2>/dev/null && return 0
 		i=$((i + 1))
 		sleep 1
 	done
@@ -145,12 +155,16 @@ new=$(release_erts) || restart "the new release's ERTS could not be read from $S
 scratch=$(mktemp -d /run/grappa-upgrade.XXXXXX) || restart "could not create a scratch directory under /run"
 chmod 0711 "$scratch"
 manifest="$scratch/manifest"
-if ! "$GRAPPA" rpc "$RPC_EXPR" >"$manifest" || [ ! -s "$manifest" ]; then
+timeout "$RPC_TIMEOUT" "$GRAPPA" rpc "$RPC_EXPR" >"$manifest"
+rc=$?
+if [ "$rc" -eq 124 ]; then
+	restart "the running node did not report its manifest within ${RPC_TIMEOUT}s"
+elif [ "$rc" -ne 0 ] || [ ! -s "$manifest" ]; then
 	restart "the running node did not report its manifest (a release older than issue 1112 cannot)"
 fi
 # Read by the release as the grappa user.
 chmod 0644 "$manifest"
-verdict=$("$GRAPPA" eval "$VERDICT_EXPR" "$manifest" 2>&1)
+verdict=$(timeout "$EVAL_TIMEOUT" "$GRAPPA" eval "$VERDICT_EXPR" "$manifest" 2>&1)
 rc=$?
 case "$rc" in
 0) ;;
@@ -162,7 +176,8 @@ esac
 #    the body that says why a reload was refused. HTTP 200 is not success on
 #    its own: the endpoint reports per-module failures in-band.
 body="$scratch/reload-body"
-code=$(curl -sS -o "$body" -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/admin/reload") || code="no answer"
+code=$(curl -sS --max-time "$RELOAD_TIMEOUT" -o "$body" -w '%{http_code}' -X POST \
+	"http://127.0.0.1:$PORT/admin/reload") || code="no answer"
 answer=$(cat "$body")
 case "$code:$answer" in
 200:*'"failed":[]'*) ;;
@@ -171,7 +186,7 @@ esac
 healthy || restart "the service did not answer /healthz within ${HEALTH_TRIES}s of the hot reload"
 # A hot reload leaves the browsers on the old bundle; this tells them. A cold
 # start needs no call: the join reply carries the new bundle's hash.
-curl -fsS -o /dev/null -X POST "http://127.0.0.1:$PORT/admin/cic-bundle-changed" ||
+curl -fsS --max-time "$PROBE_TIMEOUT" -o /dev/null -X POST "http://127.0.0.1:$PORT/admin/cic-bundle-changed" ||
 	warn "could not notify the browsers of the new web bundle; they pick it up on their next reload"
 seed
 say "applied HOT: $answer"
