@@ -1247,6 +1247,11 @@ struct e2e_slot {
      * wholesale, so a sync cannot put a query back in clear. */
     e2e_strv on;
     bool on_loaded;
+    /* The record is on disk but unreadable, so which queries were
+     * encrypted is unknown: every query on the network fails closed,
+     * but those the user turned off (`clear`) with /e2e off. */
+    bool on_unknown;
+    e2e_strv clear;
     /* The engine waits on the clock; a tick is queued; when the last went. */
     bool clock, tick_queued;
     int64_t ticked_at;
@@ -15101,6 +15106,63 @@ static void e2e_slot_dir(struct app *app, const struct e2e_slot *s, char *out, s
     free(state);
 }
 
+/* Which queries were encrypted, read from the record on disk BEFORE the
+ * UI takes a keystroke (boot) or the network's windows exist (attach):
+ * the worker's open, which takes the store's lock and may wait behind
+ * HTTP, comes later, and a line typed in between must not go in clear.
+ * A read of record.json takes no lock (the lock is the `lock` file's,
+ * and the store writes by rename, so a read sees a whole record), so it
+ * reads even a record another shottino holds — BUSY, an identity that
+ * does not verify or a record of another version all keep their
+ * queries encrypted, failing closed on the worker. Only the `encrypted`
+ * member is read. A record that is there and is no JSON at all says
+ * nothing: every query on the network fails closed until /e2e off. */
+static void e2e_peek_modes(struct app *app, const char *slug) {
+    struct e2e_slot *s = e2e_slot_for(app, slug);
+    if (!s) return;
+    char dir[PATH_MAX - 16];
+    e2e_slot_dir(app, s, dir, sizeof(dir));
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/record.json", dir);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    char *buf = NULL;
+    size_t len = 0, cap = 0;
+    for (;;) {
+        if (len + 65536 > cap) {
+            cap = cap ? cap * 2 : 1 << 18;
+            char *grown = realloc(buf, cap);
+            if (!grown) die("out of memory");
+            buf = grown;
+        }
+        size_t n = fread(buf + len, 1, cap - len, f);
+        len += n;
+        if (n == 0) break;
+    }
+    bool failed = ferror(f) != 0;
+    fclose(f);
+    json_doc *d = failed ? NULL : json_parse(buf, len, NULL, 0);
+    free(buf);
+    const json_value *enc = d ? json_get(json_root(d), "encrypted") : NULL;
+    bool readable = d && json_type_of(json_root(d)) == JSON_OBJECT &&
+                    (!enc || json_type_of(enc) == JSON_ARRAY);
+    pthread_mutex_lock(&app->lock);
+    if (!s->on_loaded && readable) {
+        for (size_t i = 0; enc && i < json_len(enc); i++)
+            if (json_string(json_at(enc, i))) e2e_on_set(&s->on, json_string(json_at(enc, i)), true);
+        s->on_loaded = true;
+    } else if (!s->on_loaded) {
+        s->on_unknown = true;
+    }
+    pthread_mutex_unlock(&app->lock);
+    json_free(d);
+    if (!readable)
+        card(app, slug, "--- e2e: %s cannot be read, so which queries on %s were encrypted is "
+                        "unknown: nothing typed in a query there goes in clear until you /e2e "
+                        "off in it",
+             path, slug);
+}
+
 /* Persist the slot's record: the step BEFORE anything it enables leaves
  * this process (an OTK published, a ratchet step sent). */
 static bool e2e_save(struct app *app, struct e2e_slot *s) {
@@ -16323,7 +16385,11 @@ static void e2e_slots_free(struct app *app) {
         for (size_t k = 0; k < s->on.n; k++) free(s->on.v[k]);
         free(s->on.v);
         s->on = (e2e_strv){0};
+        for (size_t k = 0; k < s->clear.n; k++) free(s->clear.v[k]);
+        free(s->clear.v);
+        s->clear = (e2e_strv){0};
         s->on_loaded = false;
+        s->on_unknown = false;
     }
     app->e2e_count = 0;
 }
@@ -17311,6 +17377,14 @@ static void e2e_send_text(struct app *app, struct e2e_slot *s, bool usable, cons
         return;
     }
     struct e2e_out *o = e2e_out_new(s, peer, body, row);
+    pthread_mutex_lock(&app->lock);
+    bool unknown = s->on_unknown && !e2e_on_has(&s->on, peer);
+    pthread_mutex_unlock(&app->lock);
+    if (unknown) {
+        e2e_out_failed(app, s, o, "this network's encrypted state on disk cannot be read, so "
+                                  "nothing goes in clear here; /e2e off to write in clear");
+        return;
+    }
     if (!usable) {
         e2e_out_failed(app, s, o, "this device is not ready for encrypted queries here; /e2e "
                                   "shows why");
@@ -17507,7 +17581,9 @@ static void e2e_send_enqueue(struct app *app, const char *net, const char *nick,
 static bool e2e_query_encrypted_locked(struct app *app, const char *net, const char *nick) {
     if (!net || !nick || !nick[0] || is_channel_name(nick) || is_local_window(nick)) return false;
     struct e2e_slot *s = e2e_slot_by_slug_locked(app, net);
-    return s && e2e_on_has(&s->on, nick);
+    if (!s) return false;
+    if (s->on_unknown && !e2e_on_has(&s->clear, nick)) return true;
+    return e2e_on_has(&s->on, nick);
 }
 
 static bool e2e_query_encrypted(struct app *app, const char *net, const char *nick) {
@@ -17564,8 +17640,11 @@ static void e2e_query_command(struct app *app, const char *sub, const char *name
     struct e2e_slot *s = e2e_slot_by_slug_locked(app, net);
     bool ready = s && s->view.state == E2E_SLOT_READY &&
                  app->server_protocol >= E2E_SEND_MIN_PROTOCOL;
-    bool was = s && e2e_on_has(&s->on, peer);
-    if (s && strcmp(sub, "off") == 0) e2e_on_set(&s->on, peer, false);
+    bool was = s && (e2e_on_has(&s->on, peer) || (s->on_unknown && !e2e_on_has(&s->clear, peer)));
+    if (s && strcmp(sub, "off") == 0) {
+        e2e_on_set(&s->on, peer, false);
+        if (s->on_unknown) e2e_on_set(&s->clear, peer, true);
+    }
     if (s && ready && strcmp(sub, "on") == 0) e2e_on_set(&s->on, peer, true);
     pthread_mutex_unlock(&app->lock);
     if (own) {
@@ -17986,6 +18065,7 @@ static void attach_network_target(struct app *app, const char *slug) {
     log_line(app, "--- network %s attached to the session", slug);
     /* On this same worker, so right after: what seed_state's boot queue
      * gives every network. */
+    e2e_peek_modes(app, slug);
     e2e_enqueue(app, JOB_E2E_SYNC, slug);
 }
 
@@ -28094,8 +28174,10 @@ int main(int argc, char **argv) {
     /* Queued, never awaited: each network's E2E identity is read on the
      * worker once it starts, behind nothing and ahead of nothing the UI
      * waits on — boot does not pay a round trip for it. */
-    for (size_t i = 0; i < app->network_count; i++)
+    for (size_t i = 0; i < app->network_count; i++) {
+        e2e_peek_modes(app, app->networks[i].slug);
         e2e_enqueue(app, JOB_E2E_SYNC, app->networks[i].slug);
+    }
     startup("starting background worker");
     /* Checked, like the model thread six lines below. Without a worker
      * every enqueued job silently never runs, and the shutdown join

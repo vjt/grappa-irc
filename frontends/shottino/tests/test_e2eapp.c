@@ -3106,6 +3106,132 @@ TEST(emsg_sends_one_encrypted_message) {
     free_e2e_app(app);
 }
 
+/* Boot: the encrypted modes are read off the disk before the first
+ * keystroke (e2e_peek_modes), so a line typed before the worker's open
+ * never reaches the clear door — it waits behind the sync, then goes
+ * encrypted. */
+TEST(a_line_typed_before_the_slot_loads_never_goes_in_clear) {
+    struct app *app = send_app("user:early", "alice");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "psst");
+    drain(app);
+    CHECK(e2e_query_encrypted(app, "azzurra", "alice"));
+    e2e_slots_free(app);
+    free_e2e_app(app);
+
+    app = e2e_app("user:early");
+    app->networks[0].has_frame_budget_base = true;
+    app->networks[0].frame_budget_base = 394;
+    e2e_peek_modes(app, "azzurra");
+    e2e_enqueue(app, JOB_E2E_SYNC, "azzurra");
+    add_window_ex(app, "azzurra", "alice", true);
+    CHECK(prompt_locked(app));
+    pthread_mutex_lock(&fg.lock);
+    carried = fg.nsent;
+    pthread_mutex_unlock(&fg.lock);
+    type_line(app, "typed at once");
+    handle_command(app, "/me too");
+    send_message_target(app, "azzurra", "alice", "and a stray one");
+    CHECK_LONG(fg.nplain, 0);
+    run_jobs(app);
+    CHECK(view_of(app).state == E2E_SLOT_READY);
+    tpeer_carry(app, &alice, 1);
+    CHECK_LONG(heard_n[0], 2);
+    CHECK_STR(heard[0], "\001ACTION too\001");
+    CHECK(!grappa_saw("typed at once"));
+    CHECK(!grappa_saw("and a stray one"));
+    CHECK_LONG(fg.nplain, 0);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* Another shottino holds the device: the modes are still read (no lock
+ * is needed to read), and the query fails closed, saying why. */
+TEST(a_busy_slot_fails_closed) {
+    struct app *app = send_app("user:busy2", "alice");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "psst");
+    drain(app);
+    char dir[PATH_MAX];
+    e2e_slot_dir(app, &app->e2e[0], dir, sizeof(dir));
+    e2e_slots_free(app);
+    free_e2e_app(app);
+    e2e_store *held;
+    char err[256];
+    CHECK(e2e_store_open(dir, &held, err, sizeof(err)) == E2E_STORE_OK);
+
+    app = e2e_app("user:busy2");
+    e2e_peek_modes(app, "azzurra");
+    e2e_enqueue(app, JOB_E2E_SYNC, "azzurra");
+    add_window_ex(app, "azzurra", "alice", true);
+    type_line(app, "while busy");
+    run_jobs(app);
+    CHECK(view_of(app).state == E2E_SLOT_BUSY);
+    CHECK(said(app, "(failed: this device is not ready for encrypted queries here"));
+    CHECK(!grappa_saw("while busy"));
+    CHECK_LONG(fg.nplain, 0);
+    e2e_store_close(held);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* A record that is no record: one still naming its encrypted queries
+ * keeps them encrypted (and failing: the worker cannot use it); one that
+ * is no JSON at all says nothing, so every query there fails closed
+ * until /e2e off in it. */
+static void write_record(struct app *app, const char *text) {
+    struct e2e_slot s = {.network_id = app->networks[0].id};
+    char dir[PATH_MAX - 16], path[PATH_MAX];
+    e2e_slot_dir(app, &s, dir, sizeof(dir));
+    char *mk = xasprintf("mkdir -p '%s'", dir);
+    CHECK(system(mk) == 0);
+    free(mk);
+    snprintf(path, sizeof(path), "%s/record.json", dir);
+    FILE *f = fopen(path, "wb");
+    CHECK(f && fwrite(text, 1, strlen(text), f) == strlen(text));
+    if (f) fclose(f);
+}
+
+TEST(a_corrupt_record_fails_closed) {
+    fg_reset();
+    struct app *app = e2e_app("user:corrupt1");
+    write_record(app, "{\"v\":99,\"encrypted\":[\"alice\"]}");
+    e2e_peek_modes(app, "azzurra");
+    e2e_enqueue(app, JOB_E2E_SYNC, "azzurra");
+    add_window_ex(app, "azzurra", "bob", true);
+    add_window_ex(app, "azzurra", "alice", true);
+    type_line(app, "still secret");
+    run_jobs(app);
+    CHECK(said(app, "(failed: this device is not ready for encrypted queries here"));
+    CHECK(!grappa_saw("still secret"));
+    CHECK_LONG(fg.nplain, 0);
+    free_e2e_app(app);
+
+    fg_reset();
+    app = e2e_app("user:corrupt2");
+    write_record(app, "\x01 not json");
+    e2e_peek_modes(app, "azzurra");
+    CHECK(said(app, "which queries on azzurra were encrypted is unknown"));
+    e2e_enqueue(app, JOB_E2E_SYNC, "azzurra");
+    add_window_ex(app, "azzurra", "bob", true);
+    CHECK(prompt_locked(app));
+    type_line(app, "for bob");
+    run_jobs(app);
+    CHECK(said(app, "(failed: this network's encrypted state on disk cannot be read"));
+    CHECK(!grappa_saw("for bob"));
+    CHECK_LONG(fg.nplain, 0);
+    handle_command(app, "/e2e off");
+    CHECK(said(app, "encrypted mode OFF"));
+    run_jobs(app);
+    CHECK(!prompt_locked(app));
+    type_line(app, "for bob in clear");
+    run_jobs(app);
+    CHECK_LONG(fg.nplain, 1);
+    free_e2e_app(app);
+}
+
 int main(void) {
     test_use_temp_home();
     if (!fg_start()) {
@@ -3147,6 +3273,9 @@ int main(void) {
     RUN(the_peer_turns_it_on_and_only_off_turns_it_off);
     RUN(a_sent_text_is_copied_to_our_sibling);
     RUN(emsg_sends_one_encrypted_message);
+    RUN(a_line_typed_before_the_slot_loads_never_goes_in_clear);
+    RUN(a_busy_slot_fails_closed);
+    RUN(a_corrupt_record_fails_closed);
     th_free();
     fg_stop();
     return test_report();
