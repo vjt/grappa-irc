@@ -160,6 +160,15 @@ package() {
 	install -Dm755 infra/packaging/grappa-wrapper.sh \
 		"${pkgdir}/usr/bin/grappa"
 
+	# Applies an upgrade to the running service, hot or by restart (issue
+	# 1112), run by the alpm hook at the end of the transaction. Both under
+	# usr/ on purpose: a repackaging that keeps usr/ and drops .INSTALL
+	# still gets the apply.
+	install -Dm755 infra/packaging/apply-upgrade.sh \
+		"${pkgdir}/usr/share/grappa/apply-upgrade.sh"
+	install -Dm644 infra/packaging/aur/grappa-apply.hook \
+		"${pkgdir}/usr/share/libalpm/hooks/grappa-apply.hook"
+
 	install -Dm644 infra/packaging/README.md \
 		"${pkgdir}/usr/share/doc/grappa/README.md"
 

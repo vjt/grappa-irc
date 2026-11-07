@@ -143,6 +143,13 @@ contents:
     file_info:
       mode: 0755
 
+  # Applies an upgrade to the running service — hot, or by restart (issue
+  # 1112). The postinst calls it; so does the Arch alpm hook.
+  - src: ./apply-upgrade.sh
+    dst: /usr/share/grappa/apply-upgrade.sh
+    file_info:
+      mode: 0755
+
   # Operator CLI: `grappa migrate`, `grappa remote`, `grappa gen-secrets`.
   - src: ./grappa-wrapper.sh
     dst: /usr/bin/grappa

@@ -89,10 +89,17 @@ EOF
     # to the developer's own init. chmod is deliberately NOT stubbed.
     STUB="$BATS_TEST_TMPDIR/stub"
     mkdir -p "$STUB"
-    for noop in chown systemctl systemd-sysusers systemd-tmpfiles; do
+    for noop in chown systemd-sysusers systemd-tmpfiles; do
         printf '#!/bin/sh\nexit 0\n' > "$STUB/$noop"
         chmod 0755 "$STUB/$noop"
     done
+    # The service is NOT running: these doors are the ones that seed it
+    # themselves. Over a running service the scriptlets hand the upgrade to
+    # apply-upgrade.sh instead (issue 1112), which seeds after applying —
+    # packaging_postinstall_live_unit_test.bats and
+    # packaging_apply_upgrade_test.bats cover that side.
+    printf '#!/bin/sh\n[ "$1" = is-active ] && exit 3\nexit 0\n' > "$STUB/systemctl"
+    chmod 0755 "$STUB/systemctl"
 
     # `install -o root -g grappa` fails for an unprivileged user, and the
     # ownership is not what this suite is about — drop the owner flags and
