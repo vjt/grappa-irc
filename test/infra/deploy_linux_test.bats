@@ -118,6 +118,7 @@ printf 'mix %s\n' "$*" >> "$ARGV_LOG"
 case "$*" in
     "deps.get"*) : > "$DEPS_MARKER" ;;
     "grappa.seed_themes"*) exit "$SEED_RC" ;;
+    "grappa.migrate"*) exit "${MIGRATE_RC:-0}" ;;
     "run --no-start"*)
         if [ "${STRICT_PREFLIGHT_DEPS:-0}" = 1 ] && [ ! -f "$DEPS_MARKER" ]; then
             echo "** (Mix) Can't continue due to errors on stale dependencies" >&2
@@ -290,29 +291,53 @@ run_deploy() {
 
 # --- cold path ---------------------------------------------------------------
 
-@test "cold path order: cic_build -> migrate -> install_systemd -> stop -> start, writes marker" {
+@test "cold path order: cic_build -> install_systemd -> stop -> migrate -> seed -> start, writes marker" {
+    # Issue 1112 (D4): the migration runs with the old node STOPPED. It used
+    # to run first, so for the seconds before the stop the old code served
+    # the new schema — an order nobody chose (vjt's ruling, F1/F3 (a)).
     export PREFLIGHT_RC=3
     new="$(commit_upstream lib/base.txt)"
 
     run_deploy
     [ "$status" -eq 0 ]
-    grep -q "cic_build.sh" "$ARGV_LOG"
-    grep -q "mix grappa.migrate" "$ARGV_LOG"
-    grep -q "install_systemd.sh" "$ARGV_LOG"
-    grep -q "systemctl stop grappa" "$ARGV_LOG"
-    grep -q "systemctl start grappa" "$ARGV_LOG"
 
     cic_line=$(grep -n "cic_build.sh" "$ARGV_LOG" | head -1 | cut -d: -f1)
-    mig_line=$(grep -n "mix grappa.migrate" "$ARGV_LOG" | head -1 | cut -d: -f1)
     unit_line=$(grep -n "install_systemd.sh" "$ARGV_LOG" | head -1 | cut -d: -f1)
     stop_line=$(grep -n "systemctl stop grappa" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    mig_line=$(grep -n "mix grappa.migrate" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    seed_line=$(grep -n "mix grappa.seed_themes" "$ARGV_LOG" | head -1 | cut -d: -f1)
     start_line=$(grep -n "systemctl start grappa" "$ARGV_LOG" | head -1 | cut -d: -f1)
-    [ "$cic_line" -lt "$mig_line" ]
-    [ "$mig_line" -lt "$unit_line" ]
+    [ -n "$cic_line" ]
+    [ -n "$unit_line" ]
+    [ -n "$stop_line" ]
+    [ -n "$mig_line" ]
+    [ -n "$seed_line" ]
+    [ -n "$start_line" ]
+    [ "$cic_line" -lt "$unit_line" ]
     [ "$unit_line" -lt "$stop_line" ]
-    [ "$stop_line" -lt "$start_line" ]
+    [ "$stop_line" -lt "$mig_line" ]
+    [ "$mig_line" -lt "$seed_line" ]
+    [ "$seed_line" -lt "$start_line" ]
 
     [ "$(cat "$REPO_ROOT/runtime/last-deployed-sha")" = "$new" ]
+}
+
+@test "issue 1112: a migration that fails AFTER the stop says production is DOWN, and starts nothing" {
+    # The price of stopping first: a migration that fails used to leave the
+    # old node serving, and now leaves no node at all. "The deploy failed"
+    # and "production is down" are different emergencies (#1656), so this
+    # one must be named, not inferred from a non-zero exit.
+    export PREFLIGHT_RC=3 MIGRATE_RC=1
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy
+    [ "$status" -ne 0 ]
+    grep -q "systemctl stop grappa" "$ARGV_LOG"
+    grep -q "mix grappa.migrate" "$ARGV_LOG"
+    refute grep -q "systemctl start grappa" "$ARGV_LOG"
+    refute grep -q "mix grappa.seed_themes" "$ARGV_LOG"
+    [ ! -f "$REPO_ROOT/runtime/last-deployed-sha" ]
+    [[ "$output" == *"PRODUCTION IS DOWN"* ]]
 }
 
 # --- #503 enrich: --force-* flags (parity with jail + docker) ----------------
@@ -451,7 +476,7 @@ run_deploy() {
     refute grep -q "mix grappa.seed_themes" "$ARGV_LOG"
 }
 
-@test "#440 cold: the seed runs AFTER the migration and BEFORE the restart" {
+@test "#440 cold: the seed runs AFTER the migration and BEFORE the start" {
     export PREFLIGHT_RC=3
     commit_upstream lib/base.txt > /dev/null
 
@@ -460,15 +485,17 @@ run_deploy() {
 
     mig_line=$(grep -n "mix grappa.migrate" "$ARGV_LOG" | head -1 | cut -d: -f1)
     seed_line=$(grep -n "mix grappa.seed_themes" "$ARGV_LOG" | head -1 | cut -d: -f1)
-    stop_line=$(grep -n "systemctl stop grappa" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    start_line=$(grep -n "systemctl start grappa" "$ARGV_LOG" | head -1 | cut -d: -f1)
     [ -n "$mig_line" ]
     [ -n "$seed_line" ]
-    [ -n "$stop_line" ]
+    [ -n "$start_line" ]
     # Schema first: a built-in whose payload needs a column added in the
     # same deploy would crash a seed that ran before the migrator.
     [ "$mig_line" -lt "$seed_line" ]
-    # Before the restart, so --defer-restart still stages a seeded DB.
-    [ "$seed_line" -lt "$stop_line" ]
+    # Before the start, so the new code boots on a seeded DB — the shared
+    # lib keeps that order for the substrate that stages (the jail's
+    # --defer-restart), and this one rides on the same lib.
+    [ "$seed_line" -lt "$start_line" ]
 }
 
 @test "#440: a failing seed warns loudly, names the gallery, and does NOT fail the deploy" {
