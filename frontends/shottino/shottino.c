@@ -100,6 +100,14 @@
 #define MAX_CHANNEL 256
 #define MAX_SLUG 128
 #define MAX_LINE 1024
+/* The input line. Larger than MAX_LINE because an encrypted query takes
+ * longer lines than anything else typed here: grappa frames one in up to
+ * 64 IRC lines (E2E_MAX_FRAGMENTS), cicchetto and the irc-olm bot send
+ * 1 KiB and more, and e2e.c refuses what does not fit, with a reason. A
+ * clear line or a command goes through MAX_LINE buffers from the job queue
+ * on, so handle_enter refuses one longer than that out loud rather than
+ * letting it be cut. */
+#define MAX_INPUT_LINE 16384
 #define MAX_TOPIC 4096
 /* The scrollback ring, shared by every window.
  *
@@ -453,6 +461,11 @@ struct job {
      * to hold it, when it is done. False for a file the user named —
      * /upload of a holiday photo must not eat the photo. */
     bool owns_file;
+    /* JOB_E2E_SEND's "send" only: the typed text, owned by the job and
+     * freed by e2e_send_job. An encrypted line can be longer than arg2
+     * (MAX_INPUT_LINE); every other job's text fits arg2 and leaves this
+     * NULL. */
+    char *text;
     /* One integer, for a job whose argument is not text. JOB_CALL_PROBE
      * carries an enum call_kind here rather than spelling it into arg2
      * and parsing it back — a closed set of two does not become a string
@@ -1508,7 +1521,7 @@ struct app {
     struct seen_message seen[SEEN_MESSAGES];
     size_t seen_count;
     size_t seen_next;
-    char input[MAX_LINE];
+    char input[MAX_INPUT_LINE];
     size_t input_len;
     /* Where the cursor sits IN the line, as a byte offset.
      *
@@ -1525,7 +1538,7 @@ struct app {
      * many candidates have been shown. Kept so a second Tab means "the
      * next one" rather than "the same one again"; any edit that is not
      * a cycle clears it, because then the base has changed. */
-    char cycle_from[MAX_LINE];
+    char cycle_from[MAX_INPUT_LINE];
     size_t cycle_at;
     bool cycling;
     char last_url[MAX_LINE];
@@ -17758,8 +17771,8 @@ static size_t e2e_resend(struct app *app, struct e2e_slot *s, const char *peer) 
     return n;
 }
 
-/* JOB_E2E_SEND: arg1 the verb, channel the peer, arg2 the text (send) or
- * the msgid (dropped), num the row (send) or the drop reason (dropped). */
+/* JOB_E2E_SEND: arg1 the verb, channel the peer, text the text (send) or
+ * arg2 the msgid (dropped), num the row (send) or the drop reason (dropped). */
 /* ── E2E: trust (slice F) ─────────────────────────────────────────────────
  * Pins, the key alarm, the emoji comparison (SAS) and this account's
  * devices, as cicchetto's rail and chat window offer them (EncryptedRail,
@@ -18709,7 +18722,9 @@ static void e2e_send_job(struct app *app, const struct job *job) {
     pthread_mutex_unlock(&app->lock);
     bool usable = ready && s->have_rec && s->rec.own;
     if (strcmp(verb, "send") == 0) {
-        e2e_send_text(app, s, usable, nick, job->arg2, (unsigned long)(unsigned)job->num);
+        e2e_send_text(app, s, usable, nick, job->text ? job->text : "",
+                      (unsigned long)(unsigned)job->num);
+        free(job->text);
         return;
     }
     if (strcmp(verb, "off") == 0) {
@@ -18854,8 +18869,9 @@ static void e2e_type(struct app *app, const char *net, const char *peer, const c
     snprintf(job.network, sizeof(job.network), "%s", net);
     snprintf(job.channel, sizeof(job.channel), "%s", peer);
     snprintf(job.arg1, sizeof(job.arg1), "send");
-    snprintf(job.arg2, sizeof(job.arg2), "%s", body);
+    job.text = xstrdup(body);
     if (enqueue_job_quiet(app, job)) return;
+    free(job.text);
     pthread_mutex_lock(&app->lock);
     log_settle_pending_locked(app, row, " (failed: the background queue is full; nothing was sent)");
     pthread_mutex_unlock(&app->lock);
@@ -19636,6 +19652,10 @@ static const char *own_nick_for_network(struct app *app, const char *network) {
 
 static void add_history(struct app *app, const char *line) {
     if (!line[0]) return;
+    /* A line the history cannot hold whole (an encrypted one past
+     * MAX_LINE) is not kept: Up would hand back a cut copy, and Enter
+     * would send it. */
+    if (strlen(line) >= MAX_LINE) return;
     if (app->history_count > 0 && strcmp(app->history[app->history_count - 1], line) == 0) {
         app->history_pos = app->history_count;
         return;
@@ -19644,7 +19664,7 @@ static void add_history(struct app *app, const char *line) {
         memmove(app->history, app->history + 1, sizeof(app->history[0]) * (INPUT_HISTORY - 1));
         app->history_count--;
     }
-    snprintf(app->history[app->history_count++], MAX_LINE, "%s", line);
+    snprintf(app->history[app->history_count++], MAX_LINE, "%.*s", MAX_LINE - 1, line);
     app->history_pos = app->history_count;
 }
 
@@ -20444,7 +20464,7 @@ static void compose_reply(const char *nick, const char *body, const char *existi
  * half-written line to a stray keypress is its own bug. */
 static void reply_to(struct app *app, const char *nick, const char *body) {
     pthread_mutex_lock(&app->lock);
-    char composed[MAX_LINE];
+    char composed[MAX_INPUT_LINE];
     compose_reply(nick, body, app->input, composed, sizeof(composed));
     snprintf(app->input, sizeof(app->input), "%s", composed);
     app->input_len = strlen(app->input);
@@ -21088,7 +21108,9 @@ static void collect_log_nick_candidate(struct app *app, char candidates[][MAX_CH
 }
 
 static void complete_input(struct app *app) {
-    char prefix[MAX_LINE];
+    /* As large as the input: completion rewrites the line from an offset
+     * into this copy, so a shorter copy would cut the tail of the line. */
+    char prefix[MAX_INPUT_LINE];
     /* Copied out under the lock and worked on from the copy: the search
      * below takes app->lock again for the candidate walk, and holding it
      * across the whole function would mean holding it across that. */
@@ -26455,7 +26477,7 @@ static void handle_command_dispatch(struct app *app, char *line) {
 }
 
 static void handle_enter(struct app *app) {
-    char line[MAX_LINE];
+    char line[MAX_INPUT_LINE];
     /* Taking the line and clearing it are ONE step: a transcript landing
      * from /stt between the copy and the clear would be typed by nobody
      * and then discarded unsent. */
@@ -26464,6 +26486,25 @@ static void handle_enter(struct app *app) {
     if (app->input_len == 0) {
         pthread_mutex_unlock(&app->lock);
         return;
+    }
+    /* Past MAX_LINE only a line for an encrypted query goes on (see
+     * MAX_INPUT_LINE): a command or a clear message would be cut by the
+     * first MAX_LINE buffer it meets, and a cut line is a different
+     * message. It stays in the input, to be shortened. */
+    if (app->input_len >= MAX_LINE) {
+        size_t cur = focused_window_locked(app);
+        bool encrypted = app->input[0] != '/' && cur < app->window_count &&
+                         e2e_query_encrypted_locked(app, app->windows[cur].network,
+                                                    app->windows[cur].channel);
+        if (!encrypted) {
+            size_t len = app->input_len;
+            pthread_mutex_unlock(&app->lock);
+            log_line(app, "--- line too long (%zu bytes): a command or a clear message takes at "
+                          "most %d, so nothing was sent; it is still in the input to shorten (an "
+                          "encrypted query takes longer lines)",
+                     len, MAX_LINE - 1);
+            return;
+        }
     }
     snprintf(line, sizeof(line), "%s", app->input);
     app->input_len = 0;

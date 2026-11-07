@@ -2616,7 +2616,7 @@ static char *tpeer_keys(tpeer *devs, size_t n) {
  * or MSG opens on every device it carries a body for, and the texts they
  * read are counted in `heard` (one row per device, the last kept). */
 static size_t carried;
-static char heard[E2E_MAX_DEVICES][2048];
+static char heard[E2E_MAX_DEVICES][8192];
 static size_t heard_n[E2E_MAX_DEVICES];
 /* The sas.* inners the peer read, in order (slice F). */
 static char heard_sas[32][1024];
@@ -2853,6 +2853,57 @@ TEST(a_long_line_is_sized_on_the_networks_budget) {
     CHECK(s1 && s2 && e1 && e2 && e1 - s1 == e2 - s2 && memcmp(s1, s2, (size_t)(e1 - s1)) == 0);
     free(rec_before);
     free(rec_after);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* Found live against cicchetto and the irc-olm bot: both send encrypted
+ * lines of 1 KiB and more, and shottino read theirs whole, but a line
+ * typed here stopped at 1023 bytes — the input buffer dropped the rest
+ * without a word and the peer read the cut text. An encrypted line is
+ * bounded by grappa's 64 lines, not by the buffer; a clear line or a
+ * command still goes through 1 KiB buffers, so one too long for them is
+ * refused out loud and left in the input, never cut. */
+TEST(a_line_past_a_clear_lines_size_goes_whole_when_encrypted) {
+    struct app *app = send_app("user:longer", "alice");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "hi");
+    drain(app);
+    /* 1 + 1500 × "è" (2 bytes) + the end mark: 3005 bytes, multibyte. */
+    char line[3100] = "L";
+    for (int i = 0; i < 1500; i++) strcat(line, "\xc3\xa8");
+    strcat(line, " end");
+    CHECK(strlen(line) > 2 * MAX_LINE);
+    size_t before = fg.nsent;
+    size_t hist = app->history_count;
+    type_line(app, line);
+    run_jobs(app);
+    CHECK_LONG(posted(before, "msg", NULL), 1);
+    CHECK(!said(app, "failed:"));
+    tpeer_carry(app, &alice, 1);
+    CHECK_STR(heard[0], line);
+    CHECK(!grappa_saw("\xc3\xa8\xc3\xa8\xc3\xa8 end"));
+    /* Up never brings back a copy of it cut to the history's size. */
+    CHECK_LONG((long)app->history_count, (long)hist);
+
+    /* The same length as a command, then in clear: refused, kept, unsent. */
+    char cmd[3200];
+    snprintf(cmd, sizeof(cmd), "/me %s", line);
+    before = fg.nsent;
+    type_line(app, cmd);
+    run_jobs(app);
+    CHECK(said(app, "too long"));
+    CHECK_LONG(fg.nsent, before);
+    CHECK_STR(app->input, cmd);
+    handle_command(app, "/e2e off");
+    run_jobs(app);
+    size_t plain = fg.nplain;
+    type_line(app, line);
+    run_jobs(app);
+    CHECK_LONG(fg.nplain, plain);
+    CHECK_LONG(fg.nsent, before);
+    CHECK_STR(app->input, line);
     tpeer_free(&alice);
     free_e2e_app(app);
 }
@@ -4249,6 +4300,7 @@ int main(void) {
     RUN(the_doorbell_rings_for_this_device_once);
     RUN(a_typed_line_in_an_encrypted_query_goes_encrypted);
     RUN(a_long_line_is_sized_on_the_networks_budget);
+    RUN(a_line_past_a_clear_lines_size_goes_whole_when_encrypted);
     RUN(a_peer_with_two_devices_gets_one_payload_two_bodies);
     RUN(no_keys_fails_the_row_and_nothing_goes_in_clear);
     RUN(a_nack_rekeys_and_resends_once_then_fails);
