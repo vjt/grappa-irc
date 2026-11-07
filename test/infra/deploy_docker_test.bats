@@ -314,7 +314,8 @@ run_deploy() {
     [ -n "$deps_line" ]
     [ "$hex_line" -lt "$deps_line" ]
     # Never in the same invocation.
-    ! grep "local.hex" "$ARGV_LOG" | grep -q "deps.get"
+    hex_calls="$(grep "local.hex" "$ARGV_LOG")"
+    refute grep -q "deps.get" <<<"$hex_calls"
 }
 
 # --- #503 enrich: completed-deploy marker (parity with jail + linux) ----------
