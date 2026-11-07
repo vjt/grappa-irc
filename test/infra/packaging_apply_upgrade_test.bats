@@ -42,8 +42,10 @@ setup() {
 
     # ---- the host's state -------------------------------------------------
     # The release on disk declares ERTS 16.4; the running node (MainPID 4242)
-    # runs it too, unless a case says otherwise.
-    printf '16.4 0.0.0\n' > "$ROOT/usr/lib/grappa/releases/start_erl.data"
+    # runs it too, unless a case says otherwise. Byte for byte what
+    # `mix release` writes — with NO trailing newline, which is exactly what a
+    # `read` of the file reports as a failure.
+    printf '16.4 0.0.0' > "$ROOT/usr/lib/grappa/releases/start_erl.data"
     running_erts '/usr/lib/grappa/erts-16.4/bin/beam.smp'
     printf 'PHX_HOST=example.org\nPORT=4123\n' > "$ROOT/etc/grappa/grappa.env"
 
