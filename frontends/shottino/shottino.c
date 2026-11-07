@@ -1179,6 +1179,15 @@ struct ircd {
  *
  * Slots are appended, never moved or removed (a detached network keeps
  * its slot, closed or not), so a pointer to one stays valid for the run. */
+/* A passphrase being typed into the input line (see "E2E: the passphrase
+ * prompt"): which question it answers. */
+enum e2e_secret_kind {
+    E2E_SECRET_NONE = 0,
+    E2E_SECRET_UNLOCK,   /* the passphrase key.wrapped is sealed under */
+    E2E_SECRET_NEW,      /* a new one, the first time */
+    E2E_SECRET_NEW_AGAIN /* the new one again */
+};
+
 /* Where this run's E2E data key came from (see "E2E: the data key"). */
 enum e2e_key_src {
     E2E_KEY_UNKNOWN = 0, /* none yet: nothing was sealed, or nothing asked for it */
@@ -2150,6 +2159,13 @@ struct app {
     /* e2e_key_mu: the identity's data key and where it came from. */
     enum e2e_key_src e2e_key_src;
     uint8_t e2e_key[AR_KEY_LEN];
+    /* UI thread: the passphrase prompt in the input line, the first entry
+     * of a new one, and the command it was asked for, run once it is set. */
+    struct {
+        enum e2e_secret_kind kind;
+        char first[256];
+        char then[MAX_LINE];
+    } e2e_secret;
     struct e2e_pairing pair;
     /* app->lock */
     struct e2e_arrival arrivals[E2E_ARRIVALS_MAX];
@@ -2180,6 +2196,7 @@ static void e2e_dropped_enqueue(struct app *app, const char *net, const char *ta
 static bool e2e_query_encrypted(struct app *app, const char *net, const char *nick);
 static bool e2e_query_encrypted_locked(struct app *app, const char *net, const char *nick);
 static void input_prompt_locked(struct app *app, const struct window *w, char *out, size_t out_sz);
+static const char *input_shown_locked(struct app *app, char *buf, size_t buf_sz);
 
 static void die(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void startup(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -11463,6 +11480,7 @@ if (app->overlay.kind == OVERLAY_RECORD) {
 }
 
 static void draw(struct app *app) {
+    static char shown_input[MAX_INPUT_LINE]; /* the masked passphrase; UI thread only */
     pthread_mutex_lock(&app->lock);
     /* The ring, rung here because ncurses is not thread-safe and an
      * invite arrives on the socket thread. Once per raised ring: a bell
@@ -11735,7 +11753,8 @@ static void draw(struct app *app) {
                       "panel: %s | Esc or /chat returns to chat", panel_name(app->panel));
         int cursor_y = input_y;
         int cursor_x = main_x + 2;
-        draw_input_box(input_y, main_x + 1, main_w - 2, input_h, prompt, app->input,
+        draw_input_box(input_y, main_x + 1, main_w - 2, input_h, prompt,
+                       input_shown_locked(app, shown_input, sizeof(shown_input)),
                        (int)app->input_pos, &cursor_y, &cursor_x);
         /* An overlay belongs ON TOP of a panel, not instead of it.
          *
@@ -11823,7 +11842,8 @@ static void draw(struct app *app) {
     }
     int cursor_y = input_y;
     int cursor_x = main_x + 2;
-    draw_input_box(input_y, main_x + 1, main_w - 2, input_h, prompt, app->input,
+    draw_input_box(input_y, main_x + 1, main_w - 2, input_h, prompt,
+                       input_shown_locked(app, shown_input, sizeof(shown_input)),
                        (int)app->input_pos, &cursor_y, &cursor_x);
 
     /* The member pane used to render three lines of prose describing what
@@ -12115,12 +12135,27 @@ static void send_message_target(struct app *app, const char *network, const char
  * there goes encrypted. Caller holds app->lock. */
 static void input_prompt_locked(struct app *app, const struct window *w, char *out,
                                 size_t out_sz) {
+    if (app->e2e_secret.kind != E2E_SECRET_NONE) {
+        snprintf(out, out_sz, "%s> ",
+                 app->e2e_secret.kind == E2E_SECRET_NEW_AGAIN ? "passphrase again" : "passphrase");
+        return;
+    }
     if (app->panel != PANEL_CHAT) {
         snprintf(out, out_sz, "%s> ", panel_name(app->panel));
         return;
     }
     bool locked = e2e_query_encrypted_locked(app, w->network, w->channel);
     snprintf(out, out_sz, "%s%s> ", locked ? E2E_LOCK " " : "", w->channel);
+}
+
+/* What the input line shows: the line, or — while it takes a passphrase —
+ * one '*' a byte, into `buf`. Caller holds app->lock. */
+static const char *input_shown_locked(struct app *app, char *buf, size_t buf_sz) {
+    if (app->e2e_secret.kind == E2E_SECRET_NONE) return app->input;
+    size_t n = app->input_len < buf_sz ? app->input_len : buf_sz - 1;
+    memset(buf, '*', n);
+    buf[n] = 0;
+    return buf;
 }
 
 /* Send to the window the user is looking at.
@@ -15336,7 +15371,7 @@ static pthread_mutex_t e2e_key_mu = PTHREAD_MUTEX_INITIALIZER;
 #define E2E_WRAPPED_KEY "key.wrapped"
 #define E2E_LOCKED_WHY                                                                             \
     "the encrypted-query store is LOCKED: its key is not in the keyring and no passphrase "        \
-    "opened it, so nothing of it is read or written — restart shottino to be asked again"
+    "opened it, so nothing of it is read or written — /e2e unlock opens it"
 #define E2E_PASSPHRASE_TRIES 3
 
 /* What of an E2E state `idir` holds: any record or chat (`*any`), and any
@@ -15420,6 +15455,13 @@ static bool e2e_key_new_wrapped_locked(struct app *app, const char *pass, char *
     char idir[PATH_MAX - 32], path[PATH_MAX];
     e2e_identity_dir(app, idir, sizeof(idir));
     snprintf(path, sizeof(path), "%s/" E2E_WRAPPED_KEY, idir);
+    bool any, sealed;
+    e2e_identity_state(idir, &any, &sealed);
+    if (sealed) {
+        /* Never a second key over what the first one sealed. */
+        snprintf(why, why_sz, "this identity's state is already sealed under a key");
+        return false;
+    }
     uint8_t k[AR_KEY_LEN];
     size_t n = 0;
     uint8_t *w = ar_random(k, sizeof(k)) ? ar_wrap(pass, k, &n) : NULL;
@@ -19790,6 +19832,209 @@ static void e2e_requests_command(struct app *app, const char *only) {
     if (!shown) log_line(app, "e2e requests: none%s%s", only[0] ? " on " : "", only);
 }
 
+/* ── E2E: the passphrase prompt ──────────────────────────────────────────
+ * Without a keyring, the data key lives under a passphrase (see "E2E: the
+ * data key"), and the UI asks for one in the input line: /e2e unlock for a
+ * run that started LOCKED, and a NEW one, twice, when /e2e init or a
+ * pairing is about to create the first E2E state and there is no keyring
+ * to put its key in. While it asks, the line is drawn as one '*' a byte,
+ * Enter hands it here and nowhere else (no history, no log, no command),
+ * Tab and Up/Down do nothing, Esc cancels; every copy is wiped once read.
+ * The command that needed the key runs once it is set. */
+static void handle_command(struct app *app, const char *input);
+static void e2e_secret_submit(struct app *app, char *line);
+
+static void e2e_secret_begin(struct app *app, enum e2e_secret_kind kind, const char *then) {
+    app->e2e_secret.kind = kind;
+    snprintf(app->e2e_secret.then, sizeof(app->e2e_secret.then), "%s", then ? then : "");
+    if (kind == E2E_SECRET_UNLOCK)
+        log_line(app, "--- e2e: type the passphrase your encrypted queries are sealed under, then "
+                      "Enter (it is not shown; Esc cancels)");
+    else if (kind == E2E_SECRET_NEW)
+        log_line(app, "--- e2e: there is no keyring to keep the key of your encrypted queries in — "
+                      "choose a passphrase to seal them under, then Enter (it is not shown; Esc "
+                      "cancels). It is asked for whenever shottino starts");
+    else
+        log_line(app, "--- e2e: the same passphrase again");
+}
+
+static void e2e_secret_end(struct app *app) {
+    OPENSSL_cleanse(app->e2e_secret.first, sizeof(app->e2e_secret.first));
+    app->e2e_secret.kind = E2E_SECRET_NONE;
+    app->e2e_secret.then[0] = 0;
+}
+
+/* Esc on the prompt. */
+static void e2e_secret_cancel(struct app *app) {
+    enum e2e_secret_kind kind = app->e2e_secret.kind;
+    if (kind == E2E_SECRET_NONE) return;
+    e2e_secret_end(app);
+    pthread_mutex_lock(&app->lock);
+    OPENSSL_cleanse(app->input, sizeof(app->input));
+    app->input_len = 0;
+    app->input_pos = 0;
+    pthread_mutex_unlock(&app->lock);
+    log_line(app, kind == E2E_SECRET_UNLOCK
+                      ? "--- e2e: cancelled — the encrypted-query store stays locked"
+                      : "--- e2e: cancelled — the passphrase is not set and nothing was made");
+}
+
+/* The key is here now: every network reads its slot again. */
+static void e2e_unlocked(struct app *app, const char *how) {
+    log_line(app, "--- e2e: unlocked — %s", how);
+    char slugs[MAX_NETWORKS][MAX_SLUG];
+    pthread_mutex_lock(&app->lock);
+    size_t n = app->network_count;
+    for (size_t i = 0; i < n; i++) snprintf(slugs[i], sizeof(slugs[i]), "%s", app->networks[i].slug);
+    pthread_mutex_unlock(&app->lock);
+    for (size_t i = 0; i < n; i++) e2e_enqueue(app, JOB_E2E_SYNC, slugs[i]);
+}
+
+/* The command the key was asked for, or else the re-read an unlock owes. */
+static void e2e_secret_done(struct app *app, const char *then, const char *how) {
+    if (then[0]) handle_command(app, then);
+    else e2e_unlocked(app, how);
+}
+
+static void e2e_secret_submit(struct app *app, char *line) {
+    char then[MAX_LINE];
+    snprintf(then, sizeof(then), "%s", app->e2e_secret.then);
+    switch (app->e2e_secret.kind) {
+    case E2E_SECRET_NONE:
+        break;
+    case E2E_SECRET_UNLOCK: {
+        e2e_secret_end(app);
+        pthread_mutex_lock(&e2e_key_mu);
+        ar_status st = e2e_key_unwrap_locked(app, line);
+        pthread_mutex_unlock(&e2e_key_mu);
+        if (st == AR_OK) {
+            if (then[0]) log_line(app, "--- e2e: unlocked — the key is under your passphrase");
+            e2e_secret_done(app, then, "the key is under your passphrase");
+        } else if (st == AR_REFUSED) {
+            log_line(app, "--- e2e: wrong passphrase — still locked; /e2e unlock to try again");
+        } else {
+            log_line(app, "--- e2e: the wrapped key (" E2E_WRAPPED_KEY ") is not one this "
+                          "shottino wrote — still locked");
+        }
+        break;
+    }
+    case E2E_SECRET_NEW: {
+        /* What the terminal at boot can read back (read_password_tty). */
+        size_t n = strlen(line);
+        if (n >= sizeof(app->e2e_secret.first)) {
+            e2e_secret_end(app);
+            log_line(app, "--- e2e: that passphrase is too long (%zu bytes at most); nothing was "
+                          "made — %s to start again",
+                     sizeof(app->e2e_secret.first) - 1, then[0] ? then : "/e2e unlock");
+            break;
+        }
+        memcpy(app->e2e_secret.first, line, n + 1);
+        e2e_secret_begin(app, E2E_SECRET_NEW_AGAIN, then);
+        break;
+    }
+    case E2E_SECRET_NEW_AGAIN: {
+        bool same = strcmp(app->e2e_secret.first, line) == 0;
+        e2e_secret_end(app);
+        if (!same) {
+            log_line(app, "--- e2e: the two passphrases did not match; nothing was made — %s to "
+                          "start again",
+                     then[0] ? then : "/e2e unlock");
+            break;
+        }
+        char why[256];
+        pthread_mutex_lock(&e2e_key_mu);
+        bool ok = e2e_key_new_wrapped_locked(app, line, why, sizeof(why));
+        pthread_mutex_unlock(&e2e_key_mu);
+        if (!ok) {
+            log_line(app, "--- e2e: the passphrase could not be set: %s", why);
+            break;
+        }
+        log_line(app, "--- e2e: the key of your encrypted queries is sealed under your passphrase "
+                      "(" E2E_WRAPPED_KEY "); it is asked for whenever shottino starts");
+        e2e_secret_done(app, then, "the key is under your new passphrase");
+        break;
+    }
+    }
+}
+
+/* Before a door that creates E2E state (/e2e init, pairing): a key to seal
+ * it with — the one held, or a new one in the keyring — or else the
+ * question that gets one, `cmd` running once it is answered. True when
+ * the door may go on now. */
+static bool e2e_key_ready(struct app *app, const char *cmd, const char *what) {
+    uint8_t k[AR_KEY_LEN];
+    bool ok = e2e_key_obtain(app, true, k);
+    OPENSSL_cleanse(k, sizeof(k));
+    if (ok) return true;
+    if (e2e_key_source(app) == E2E_KEY_LOCKED) {
+        log_line(app, "%s: refused — %s", what, E2E_LOCKED_WHY);
+        return false;
+    }
+    char idir[PATH_MAX - 32], path[PATH_MAX];
+    e2e_identity_dir(app, idir, sizeof(idir));
+    snprintf(path, sizeof(path), "%s/" E2E_WRAPPED_KEY, idir);
+    e2e_secret_begin(app, access(path, F_OK) == 0 ? E2E_SECRET_UNLOCK : E2E_SECRET_NEW, cmd);
+    return false;
+}
+
+/* /e2e unlock: the keyring asked again, then the passphrase. */
+static void e2e_unlock_command(struct app *app) {
+    enum e2e_key_src src = e2e_key_source(app);
+    if (src == E2E_KEY_KEYRING || src == E2E_KEY_PASSPHRASE) {
+        log_line(app, "e2e: not locked — the key is %s",
+                 src == E2E_KEY_KEYRING ? "in the OS keyring" : "under your passphrase");
+        return;
+    }
+    char hash[32];
+    e2e_key_hash(app, hash, sizeof(hash));
+    uint8_t k[AR_KEY_LEN];
+    pthread_mutex_lock(&e2e_key_mu);
+    bool got = kr_lookup(hash, k);
+    if (got) e2e_key_set_locked(app, E2E_KEY_KEYRING, k);
+    pthread_mutex_unlock(&e2e_key_mu);
+    OPENSSL_cleanse(k, sizeof(k));
+    if (got) {
+        e2e_unlocked(app, "the keyring handed the key over");
+        return;
+    }
+    char idir[PATH_MAX - 32], path[PATH_MAX];
+    e2e_identity_dir(app, idir, sizeof(idir));
+    snprintf(path, sizeof(path), "%s/" E2E_WRAPPED_KEY, idir);
+    bool any, sealed;
+    e2e_identity_state(idir, &any, &sealed);
+    if (access(path, F_OK) == 0)
+        e2e_secret_begin(app, E2E_SECRET_UNLOCK, "");
+    else if (sealed)
+        log_line(app, "--- e2e: still locked — the state is sealed under a key the OS keyring "
+                      "holds, and the keyring did not hand it over: unlock it (GNOME Keyring, "
+                      "KWallet), then /e2e unlock again");
+    else
+        e2e_secret_begin(app, E2E_SECRET_NEW, "");
+}
+
+/* Where this run's key lives, for /e2e status. */
+static void e2e_key_status_line(struct app *app, char *out, size_t out_sz) {
+    switch (e2e_key_source(app)) {
+    case E2E_KEY_KEYRING:
+        snprintf(out, out_sz, "e2e key: in the OS keyring (Secret Service, via secret-tool)");
+        break;
+    case E2E_KEY_PASSPHRASE: {
+        char idir[PATH_MAX - 32];
+        e2e_identity_dir(app, idir, sizeof(idir));
+        snprintf(out, out_sz, "e2e key: under your passphrase (%.300s/" E2E_WRAPPED_KEY ")", idir);
+        break;
+    }
+    case E2E_KEY_LOCKED:
+        snprintf(out, out_sz, "e2e key: LOCKED — %s", E2E_LOCKED_WHY);
+        break;
+    case E2E_KEY_UNKNOWN:
+        snprintf(out, out_sz, "e2e key: none yet — made with the first encrypted state (/e2e "
+                              "init, pairing): in the OS keyring when there is one, else under a "
+                              "passphrase");
+        break;
+    }
+}
+
 /* /e2e [status [network]] | init [network] | sync [network] | pair …
  * | on|off|resend|rekey [nick] | verify|trust|who|alarm|devices|revoke …. */
 static void e2e_command(struct app *app, const char *args) {
@@ -19816,8 +20061,17 @@ static void e2e_command(struct app *app, const char *args) {
             log_line(app, "usage: /e2e pair [accept|confirm|decline]");
             return;
         }
+        if (strcmp(net, "decline") != 0) {
+            char cmd[MAX_SLUG + 16];
+            snprintf(cmd, sizeof(cmd), "/e2e pair %s", net);
+            if (!e2e_key_ready(app, cmd, cmd)) return;
+        }
         log_line(app, "/e2e pair %s…", net);
         e2e_pair_enqueue(app, net, "", 0);
+        return;
+    }
+    if (strcmp(sub, "unlock") == 0) {
+        e2e_unlock_command(app);
         return;
     }
     if (strcmp(sub, "on") == 0 || strcmp(sub, "off") == 0 || strcmp(sub, "resend") == 0 ||
@@ -19843,8 +20097,8 @@ static void e2e_command(struct app *app, const char *args) {
         return;
     }
     if (!status && strcmp(sub, "init") != 0 && strcmp(sub, "sync") != 0) {
-        log_line(app, "usage: /e2e [status [network]] | init [network] | sync [network] | pair "
-                      "[accept|confirm|decline] | on|off|resend|rekey [nick] | verify [nick "
+        log_line(app, "usage: /e2e [status [network]] | init [network] | sync [network] | unlock | "
+                      "pair [accept|confirm|decline] | on|off|resend|rekey [nick] | verify [nick "
                       "[key]] | verify accept|confirm|cancel [nick] | trust [nick] [confirm] | "
                       "who [nick] | alarm | devices | revoke <did> [confirm] | ask|accept|refuse|"
                       "cancel [nick] | requests [network]");
@@ -19879,6 +20133,9 @@ static void e2e_command(struct app *app, const char *args) {
         return;
     }
     if (status) {
+        char key_line[MAX_LINE];
+        e2e_key_status_line(app, key_line, sizeof(key_line));
+        log_line(app, "%s", key_line);
         for (size_t i = 0; i < n; i++) {
             char lines[2][MAX_LINE];
             size_t k = e2e_status_lines(rows[i].slug, &rows[i].view, lines);
@@ -19912,6 +20169,10 @@ static void e2e_command(struct app *app, const char *args) {
             log_line(app, "/e2e init %s: refused — %s", rows[0].slug, v->why);
             return;
         }
+        char cmd[MAX_SLUG + 16], what[MAX_SLUG + 16];
+        snprintf(cmd, sizeof(cmd), "/e2e init %s", rows[0].slug);
+        snprintf(what, sizeof(what), "/e2e init %s", rows[0].slug);
+        if (!e2e_key_ready(app, cmd, what)) return;
         log_line(app, "/e2e init %s: creating an encrypted identity…", rows[0].slug);
         e2e_enqueue(app, JOB_E2E_INIT, rows[0].slug);
         return;
@@ -20367,6 +20628,7 @@ static void input_backspace(struct app *app) {
 }
 
 static void history_prev(struct app *app) {
+    if (app->e2e_secret.kind != E2E_SECRET_NONE) return; /* a passphrase is not edited from it */
     pthread_mutex_lock(&app->lock);
     if (app->history_count && app->history_pos) {
         app->history_pos--;
@@ -20378,6 +20640,7 @@ static void history_prev(struct app *app) {
 }
 
 static void history_next(struct app *app) {
+    if (app->e2e_secret.kind != E2E_SECRET_NONE) return;
     pthread_mutex_lock(&app->lock);
     if (app->history_pos < app->history_count) {
         app->history_pos++;
@@ -21628,6 +21891,7 @@ static void collect_log_nick_candidate(struct app *app, char candidates[][MAX_CH
 }
 
 static void complete_input(struct app *app) {
+    if (app->e2e_secret.kind != E2E_SECRET_NONE) return; /* nothing completes a passphrase */
     /* As large as the input: completion rewrites the line from an offset
      * into this copy, so a shorter copy would cut the tail of the line. */
     char prefix[MAX_INPUT_LINE];
@@ -21725,7 +21989,7 @@ static void complete_input(struct app *app) {
     static const char *const E2E_SUBS[] = {"accept", "alarm",    "ask",    "cancel", "devices",
                                            "init",   "off",      "on",     "pair",   "refuse",
                                            "rekey",  "requests", "resend", "revoke", "status",
-                                           "sync",   "trust",    "verify", "who"};
+                                           "sync",   "trust",    "unlock", "verify", "who"};
     static const char *const E2E_PAIR_SUBS[] = {"accept", "confirm", "decline"};
     const char *const *e2e_words = NULL;
     size_t e2e_nwords = 0;
@@ -24345,7 +24609,7 @@ static void show_command_help(struct app *app, const char *raw) {
     else if (strcmp(cmd, "exec") == 0) log_line(app, "/exec <command> — run it in a shell and SEND its stdout to the current window (everyone sees it); capped at 20 lines / 16 KiB, killed after 15s, stderr discarded");
     else if (strcmp(cmd, "ctcp") == 0) log_line(app, "/ctcp <nick|#channel> <VERB> [args] — send any CTCP query (VERSION, TIME, FINGER…); the reply lands in the window you asked from. /ping is the timed special case");
     else if (strcmp(cmd, "ping") == 0) log_line(app, "/ping nick — CTCP PING somebody and time the round trip; the answer lands in the window you asked from");
-    else if (strcmp(cmd, "e2e") == 0) log_line(app, "/e2e [status [network]] — per network: whether this device is part of the account's end-to-end encrypted identity (none, elsewhere, holder, paired), its device id, the device list version and size, whether it holds the master key, and its key bundle on grappa. /e2e init [network] creates the identity when the account has none (this device becomes its first and holds the master key; never replaces one). /e2e sync [network] reads it again. Needs server protocol v49. /e2e pair [accept|confirm|decline] pairs this device onto an identity another device holds: when cicchetto's \"add a device\" offers a pairing, accept joins it and shows a 2-digit check code to type there; once it matched, confirm registers this device on the networks offered; decline stops at any step. Needs protocol v55 and a password login. Once this device is ready, encrypted messages addressed to it are read from grappa's inbox and shown in the query with the peer, marked with a lock beside the time (a copy another of your devices sent shows as your own line); they are never bridged to --ircd, desktop notifications say only \"encrypted message\", and this device keeps their only copy, under its state directory. In a query, /e2e on [nick] puts it in encrypted mode (also turned on by the peer's first encrypted message, or by a copy of one you wrote encrypted from another device; the prompt shows a lock): every line and /me typed there goes encrypted, NEVER in clear — on any failure the row says why and /e2e resend sends it again; a line there may run past the 1023 bytes a clear line or a command takes, up to what grappa frames in 64 IRC lines; /e2e off [nick] returns the query to clear, with a warning; /e2e rekey [nick] asks for new keys and resends what failed (after \"cannot read your last message on any device\"). Consent (protocol v53): /e2e ask [nick] asks a peer to start an encrypted chat (it expires after 24 hours); a peer's request shows in the query with them — /e2e accept [nick] turns the query encrypted and asks for their keys, /e2e refuse [nick] says no (needs no identity here); /e2e cancel [nick] withdraws your request or dismisses an answer; /e2e requests [network] lists them. Accepting is consent, not trust: keys are still pinned on first use, alarmed and verified as ever. A bot that takes orders from you may challenge a plaintext line you sent: shottino confirms it inside the encrypted session only when the bot's key is verified and THIS device sent exactly that line there in the last 30 s, and shows the identity check in the query with the bot");
+    else if (strcmp(cmd, "e2e") == 0) log_line(app, "/e2e [status [network]] — per network: whether this device is part of the account's end-to-end encrypted identity (none, elsewhere, holder, paired), its device id, the device list version and size, whether it holds the master key, and its key bundle on grappa. /e2e init [network] creates the identity when the account has none (this device becomes its first and holds the master key; never replaces one). /e2e sync [network] reads it again. Needs server protocol v49. /e2e pair [accept|confirm|decline] pairs this device onto an identity another device holds: when cicchetto's \"add a device\" offers a pairing, accept joins it and shows a 2-digit check code to type there; once it matched, confirm registers this device on the networks offered; decline stops at any step. Needs protocol v55 and a password login. Once this device is ready, encrypted messages addressed to it are read from grappa's inbox and shown in the query with the peer, marked with a lock beside the time (a copy another of your devices sent shows as your own line); they are never bridged to --ircd, desktop notifications say only \"encrypted message\", and this device keeps their only copy, under its state directory, sealed at rest under a key the OS keyring holds (secret-tool), or without a keyring under a passphrase asked for at start; /e2e unlock opens a run that started locked, and /e2e status says where the key lives. In a query, /e2e on [nick] puts it in encrypted mode (also turned on by the peer's first encrypted message, or by a copy of one you wrote encrypted from another device; the prompt shows a lock): every line and /me typed there goes encrypted, NEVER in clear — on any failure the row says why and /e2e resend sends it again; a line there may run past the 1023 bytes a clear line or a command takes, up to what grappa frames in 64 IRC lines; /e2e off [nick] returns the query to clear, with a warning; /e2e rekey [nick] asks for new keys and resends what failed (after \"cannot read your last message on any device\"). Consent (protocol v53): /e2e ask [nick] asks a peer to start an encrypted chat (it expires after 24 hours); a peer's request shows in the query with them — /e2e accept [nick] turns the query encrypted and asks for their keys, /e2e refuse [nick] says no (needs no identity here); /e2e cancel [nick] withdraws your request or dismisses an answer; /e2e requests [network] lists them. Accepting is consent, not trust: keys are still pinned on first use, alarmed and verified as ever. A bot that takes orders from you may challenge a plaintext line you sent: shottino confirms it inside the encrypted session only when the bot's key is verified and THIS device sent exactly that line there in the last 30 s, and shows the identity check in the query with the bot");
     else if (strcmp(cmd, "emsg") == 0) log_line(app, "/emsg <nick> <text> — send ONE end-to-end encrypted message to nick without putting the query in encrypted mode; it is never sent in clear (if it cannot be encrypted the row says why). /e2e on makes every line in the query encrypted");
     else if (strcmp(cmd, "block") == 0 || strcmp(cmd, "ignore") == 0) log_line(app, "/block [nick], /ignore [nick] — hide somebody's messages in THIS client only (nothing is sent to the server); bare /block lists who is blocked");
     else if (strcmp(cmd, "unblock") == 0 || strcmp(cmd, "unignore") == 0) log_line(app, "/unblock nick, /unignore nick — show somebody's messages again");
@@ -27044,6 +27308,17 @@ static void handle_enter(struct app *app) {
         pthread_mutex_unlock(&app->lock);
         return;
     }
+    if (app->e2e_secret.kind != E2E_SECRET_NONE) {
+        /* A passphrase: never a line, never in the history. */
+        snprintf(line, sizeof(line), "%s", app->input);
+        OPENSSL_cleanse(app->input, app->input_len);
+        app->input_len = 0;
+        app->input_pos = 0;
+        pthread_mutex_unlock(&app->lock);
+        e2e_secret_submit(app, line);
+        OPENSSL_cleanse(line, sizeof(line));
+        return;
+    }
     bool command = app->input[0] == '/';
     size_t cur = focused_window_locked(app);
     bool have = cur < app->window_count;
@@ -29517,6 +29792,8 @@ static void event_loop(struct app *app) {
             resize_pane(app, 1);
         } else if (ch == KEY_PANE_SHRINK) {
             resize_pane(app, -1);
+        } else if (ch == 27 && app->e2e_secret.kind != E2E_SECRET_NONE) {
+            e2e_secret_cancel(app);
         } else if (ch == 27) {
             pthread_mutex_lock(&app->lock);
             app->panel = PANEL_CHAT;

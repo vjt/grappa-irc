@@ -4976,6 +4976,117 @@ TEST(a_half_migrated_state_still_loads) {
     tpeer_free(&alice);
 }
 
+/* A state LOCKED at boot (no keyring, the passphrase declined) opens from
+ * the UI: /e2e unlock asks for the passphrase in the input line, masked
+ * and kept out of the history; a wrong one is said and changes nothing;
+ * the right one unlocks, and the slot loads and reads its history. */
+TEST(e2e_unlock_opens_a_locked_store_from_the_input_line) {
+    fg_reset();
+    struct app *app = recv_app("user:atrest-unlock");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "read after unlocking");
+    drain(app);
+    char idir[PATH_MAX], dir[PATH_MAX];
+    identity_dir_of(app, idir, sizeof(idir));
+    e2e_slot_dir(app, &app->e2e[0], dir, sizeof(dir));
+    e2e_slots_free(app);
+    free_e2e_app(app);
+    uint8_t key[AR_KEY_LEN];
+    int net;
+    CHECK(key_of_slot_dir(dir, key, &net));
+    size_t wn = 0;
+    uint8_t *w = ar_wrap("open sesame", key, &wn);
+    char path[PATH_MAX + 16];
+    snprintf(path, sizeof(path), "%s/key.wrapped", idir);
+    CHECK(e2e_write_private(path, w, wn, NULL, 0));
+    free(w);
+    test_keyring_mode("fail");
+
+    fg_reset();
+    app = booted_app("user:atrest-unlock", 0, NULL);
+    CHECK(e2e_key_source(app) == E2E_KEY_LOCKED);
+    e2e_peek_modes(app, "azzurra");
+    run_job(app, JOB_E2E_SYNC);
+    CHECK(view_of(app).state == E2E_SLOT_LOCKED);
+    type_line(app, "/e2e status");
+    CHECK(said(app, "e2e key: LOCKED"));
+
+    type_line(app, "/e2e unlock");
+    CHECK(said(app, "type the passphrase"));
+    pthread_mutex_lock(&app->lock);
+    snprintf(app->input, sizeof(app->input), "abc");
+    app->input_len = app->input_pos = 3;
+    char buf[MAX_INPUT_LINE], prompt[128];
+    const char *shown = input_shown_locked(app, buf, sizeof(buf));
+    input_prompt_locked(app, &app->windows[focused_window_locked(app)], prompt, sizeof(prompt));
+    pthread_mutex_unlock(&app->lock);
+    CHECK_STR(shown, "***");
+    CHECK(strstr(prompt, "passphrase") != NULL);
+    type_line(app, "open sesam");
+    CHECK(said(app, "wrong passphrase"));
+    CHECK(e2e_key_source(app) == E2E_KEY_LOCKED);
+    type_line(app, "/e2e unlock");
+    type_line(app, "open sesame");
+    CHECK(said(app, "e2e: unlocked"));
+    CHECK(e2e_key_source(app) == E2E_KEY_PASSPHRASE);
+    run_jobs(app);
+    CHECK(view_of(app).state == E2E_SLOT_READY);
+    drain(app);
+    CHECK(said(app, "read after unlocking"));
+    for (size_t i = 0; i < app->history_count; i++) CHECK(strstr(app->history[i], "sesam") == NULL);
+    for (size_t i = 0; i < app->log_count; i++) CHECK(strstr(app->log[i], "sesam") == NULL);
+    type_line(app, "/e2e status");
+    CHECK(said(app, "e2e key: under your passphrase"));
+    free_e2e_app(app);
+    tpeer_free(&alice);
+    test_keyring_mode(NULL);
+}
+
+/* No keyring and no state yet: /e2e init asks for a NEW passphrase twice
+ * before anything is made — a mismatch makes nothing and sends nothing —
+ * and once one is set, the init it was asked for runs, sealed under it. */
+TEST(e2e_init_without_a_keyring_asks_for_a_new_passphrase) {
+    fg_reset();
+    test_keyring_mode("fail");
+    struct app *app = e2e_app("user:atrest-init");
+    char idir[PATH_MAX];
+    identity_dir_of(app, idir, sizeof(idir));
+    type_line(app, "/e2e status");
+    CHECK(said(app, "e2e key: none yet"));
+    type_line(app, "/e2e init");
+    CHECK(said(app, "choose a passphrase"));
+    type_line(app, "first idea");
+    CHECK(said(app, "again"));
+    type_line(app, "second idea");
+    CHECK(said(app, "did not match"));
+    run_jobs(app);
+    CHECK(fg_no("POST") && fg_no("PUT"));
+    CHECK(!exists(idir, "key.wrapped"));
+    /* Esc on the prompt: nothing kept, nothing run. */
+    type_line(app, "/e2e init");
+    e2e_secret_cancel(app);
+    CHECK(said(app, "the passphrase is not set"));
+    CHECK(app->e2e_secret.kind == E2E_SECRET_NONE);
+    CHECK(!exists(idir, "key.wrapped"));
+
+    type_line(app, "/e2e init");
+    type_line(app, "p4ss phrase");
+    type_line(app, "p4ss phrase");
+    CHECK(said(app, "sealed under your passphrase"));
+    CHECK(e2e_key_source(app) == E2E_KEY_PASSPHRASE);
+    run_jobs(app);
+    CHECK(view_of(app).state == E2E_SLOT_READY);
+    CHECK(exists(idir, "key.wrapped"));
+    char dir[PATH_MAX];
+    e2e_slot_dir(app, &app->e2e[0], dir, sizeof(dir));
+    CHECK(exists(dir, "record.sealed"));
+    CHECK(!tree_has(idir, "p4ss"));
+    for (size_t i = 0; i < app->history_count; i++) CHECK(strstr(app->history[i], "p4ss") == NULL);
+    free_e2e_app(app);
+    test_keyring_mode(NULL);
+}
+
 int main(void) {
     test_use_temp_home();
     /* A keyring for every test (tests/fake-secret-tool, in the temp home):
@@ -5050,6 +5161,8 @@ int main(void) {
     RUN(without_a_keyring_a_passphrase_seals_the_state);
     RUN(a_locked_store_reads_nothing_writes_nothing_sends_nothing);
     RUN(a_half_migrated_state_still_loads);
+    RUN(e2e_unlock_opens_a_locked_store_from_the_input_line);
+    RUN(e2e_init_without_a_keyring_asks_for_a_new_passphrase);
     th_free();
     fg_stop();
     return test_report();
