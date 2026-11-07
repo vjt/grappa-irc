@@ -4,8 +4,12 @@
 #   dpkg:  $1 = remove | upgrade | deconfigure | failed-upgrade
 #   rpm:   $1 = 0 (final uninstall) | 1 (upgrade — old pkg's %preun)
 # Stop + disable the service ONLY on a real removal (dpkg remove/deconfigure,
-# rpm 0). An upgrade never auto-restarts — that keeps the stop/start
-# epmd-name race off the upgrade path; the operator restarts. POSIX /bin/sh.
+# rpm 0). An upgrade is not stopped HERE: the NEW package's postinst applies it
+# to the running service — hot, or one `systemctl restart` (apply-upgrade.sh,
+# issue 1112). A stop from this scriptlet would leave it down after the
+# upgrade either way: dpkg runs it BEFORE the new postinst, which then finds
+# nothing running to apply to, and rpm runs it AFTER the new %post, stopping
+# the service that %post just applied the upgrade to. POSIX /bin/sh.
 # Why: docs/OPERATIONS.md § "Packaging (infra/packaging/)".
 set -e
 

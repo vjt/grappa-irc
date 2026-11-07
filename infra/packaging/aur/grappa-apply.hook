@@ -1,0 +1,25 @@
+# alpm hook: apply an upgraded grappa to the running service (issue 1112).
+# Installed to /usr/share/libalpm/hooks/grappa-apply.hook by the PKGBUILD.
+#
+# A hook, not a line in grappa.install's post_upgrade, for two reasons:
+#   * it runs at the END of the transaction, once every file of the new
+#     release is on disk — post_upgrade runs per package, mid-transaction;
+#   * it lives under usr/, so a repackaging of our .pkg.tar.zst that keeps
+#     usr/ and drops .INSTALL (the community grappa-bin does) still applies
+#     its upgrades, with no change to that package's PKGBUILD.
+#
+# A PostTransaction hook cannot abort the transaction (alpm-hooks(5):
+# AbortOnFail is for PreTransaction only), so a failed apply is an error
+# pacman prints after the upgrade has committed. apply-upgrade.sh exits
+# non-zero only when a restart was needed and did not take.
+# Why: docs/OPERATIONS.md § "Packaging (infra/packaging/)".
+
+[Trigger]
+Operation = Upgrade
+Type = Path
+Target = usr/lib/grappa/*
+
+[Action]
+Description = Applying the grappa upgrade to the running service...
+When = PostTransaction
+Exec = /usr/share/grappa/apply-upgrade.sh

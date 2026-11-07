@@ -43,9 +43,18 @@ Environment=LANG=C.UTF-8
 # release tree.
 Environment=RELEASE_TMP=/var/lib/grappa
 
+# Migrate BEFORE the release starts (issue 1112): a restart then serves the
+# new code on the schema it expects, never the other way round. Pending
+# migrations only, so a start with none costs one short eval. A failed
+# migration fails the start — the unit does not come up on a half-applied
+# schema — and shows up in `journalctl -u grappa`.
+ExecStartPre=/usr/lib/grappa/bin/grappa eval 'Grappa.Release.migrate()'
 ExecStart=/usr/lib/grappa/bin/grappa start
 
-TimeoutStartSec=30
+# Bounds ExecStartPre too, so it is sized for a migration, not for a boot
+# (R7 of issue 1112): the 30 s this was would kill a long migration halfway.
+# How long real migrations take is not measured; 300 is the ruling's figure.
+TimeoutStartSec=300
 TimeoutStopSec=30
 Restart=on-failure
 RestartSec=5

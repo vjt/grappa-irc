@@ -6,7 +6,11 @@
 # So do NOT match on "configure": the body is idempotent (mkdir -p, chown,
 # gen-secrets fills only REPLACE_ME, Ecto.Migrator applies only PENDING) and
 # runs on every install/upgrade under EITHER manager, skipping only dpkg's
-# abort-* rollback. POSIX /bin/sh.
+# abort-* rollback. What it does past the secrets is decided by the UNIT, not
+# by $1 (issue 1112): a running service gets the upgrade applied to it by
+# apply-upgrade.sh, which migrates after the code it serves, hot or in the
+# restart's ExecStartPre; a stopped one is migrated here and left stopped.
+# POSIX /bin/sh.
 # Why: docs/OPERATIONS.md § "Packaging (infra/packaging/)".
 set -e
 
@@ -36,11 +40,31 @@ abort-*)
 	# ── Secrets: openssl-only, idempotent (fills REPLACE_ME) ───────────
 	/usr/share/grappa/gen-secrets.sh
 
+	# ── A RUNNING service: apply the upgrade to it (issue 1112) ─────────
+	# Nothing is migrated from here: the running node still serves the old
+	# code, and migrating under it is what made "restart soon" necessary.
+	# apply-upgrade.sh reloads hot when the release allows it (the reload
+	# migrates in-process) and restarts otherwise (the unit migrates in
+	# ExecStartPre), then seeds. FAIL LOUD, like a failed migrate below: it
+	# fails only when a restart was needed and did not take.
+	if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet grappa.service; then
+		systemctl daemon-reload || true
+		systemctl enable grappa.service || true
+		if ! /usr/share/grappa/apply-upgrade.sh; then
+			echo "grappa: the upgrade was NOT applied to the running service (see above)." >&2
+			echo "        The package is installed. Fix the cause and retry with:" >&2
+			echo "        sudo systemctl restart grappa" >&2
+			exit 1
+		fi
+		exit 0
+	fi
+
 	# ── Migrate ────────────────────────────────────────────────────────
-	# Reaches Ecto.Migrator through the release, no mix/toolchain. Runs on
-	# every (re)configure — only PENDING migrations apply, so upgrades stay
-	# current too. FAIL LOUD: a broken migrate must surface as a failed
-	# package configuration, not a silently half-migrated install.
+	# A stopped service from here on — first install, or an upgrade while it
+	# was down (R5 of issue 1112: it stays down). Reaches Ecto.Migrator
+	# through the release, no mix/toolchain; only PENDING migrations apply.
+	# FAIL LOUD: a broken migrate must surface as a failed package
+	# configuration, not a silently half-migrated install.
 	if ! /usr/bin/grappa migrate; then
 		echo "grappa: database migration FAILED (see error above)." >&2
 		echo "        The package is installed but the schema is not applied." >&2

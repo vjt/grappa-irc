@@ -14,7 +14,7 @@
 # systemd required); systemctl calls ARE guarded (a chroot/container install
 # has no live manager), matching the .deb scripts' `command -v systemctl`.
 
-_bootstrap() {
+_prepare() {
 	# grappa user + group, then the writable state dirs — BEFORE migrate.
 	systemd-sysusers /usr/lib/sysusers.d/grappa.conf
 	systemd-tmpfiles --create /usr/lib/tmpfiles.d/grappa.conf
@@ -31,7 +31,9 @@ _bootstrap() {
 	# openssl-only secrets, idempotent (fills REPLACE_ME, never touches real
 	# values). A packaged host has no mix, so generation stays off the BEAM.
 	/usr/share/grappa/gen-secrets.sh
+}
 
+_migrate_and_seed() {
 	# Packaged migrate: Ecto.Migrator via the release eval, no mix/toolchain.
 	# FAIL LOUD — a broken migrate must surface as a failed transaction, not
 	# a silently half-migrated install. Applies only PENDING migrations, so
@@ -58,7 +60,8 @@ _bootstrap() {
 }
 
 post_install() {
-	_bootstrap || return 1
+	_prepare || return 1
+	_migrate_and_seed || return 1
 
 	# Enable on boot, but do NOT start: the service refuses to boot until
 	# the operator sets a real PHX_HOST in /etc/grappa/grappa.env.
@@ -90,21 +93,27 @@ EOF
 }
 
 post_upgrade() {
-	# Re-run the SAME idempotent bootstrap as first install: sysusers/tmpfiles
-	# no-op when present, the env file is never clobbered (its `[ ! -f ]`
-	# guard also self-heals a deleted one), gen-secrets fills only NEW keys a
-	# version introduces, migrate applies only PENDING migrations. Keep the
-	# fail-loud posture — no `|| true` swallow — so a broken secret-fill or
-	# migrate aborts the transaction.
-	_bootstrap || return 1
+	# Re-run the SAME idempotent preparation as first install: sysusers/
+	# tmpfiles no-op when present, the env file is never clobbered (its
+	# `[ ! -f ]` guard also self-heals a deleted one), gen-secrets fills only
+	# NEW keys a version introduces. Fail-loud — no `|| true` swallow.
+	_prepare || return 1
 
-	# Never auto-restart: leave it to the operator, so the epmd-name
-	# stop/start race stays off the upgrade path.
 	if command -v systemctl >/dev/null 2>&1; then
 		systemctl daemon-reload || true
+		# A RUNNING service is not migrated from here (issue 1112): it still
+		# serves the old code. The alpm hook grappa-apply.hook applies the
+		# upgrade at the end of the transaction — hot, or by a restart that
+		# migrates in ExecStartPre — and seeds. Applying here as well would
+		# apply twice.
+		if systemctl is-active --quiet grappa.service; then
+			return 0
+		fi
 	fi
-	echo "grappa upgraded. Restart to run the new release:"
-	echo "       sudo systemctl restart grappa"
+
+	# A stopped service stays stopped (R5 of issue 1112); migrate and seed
+	# it as on first install.
+	_migrate_and_seed || return 1
 }
 
 pre_remove() {
