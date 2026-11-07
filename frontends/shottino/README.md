@@ -52,7 +52,7 @@ build it from source instead, read on.
 ## Version
 
 ```sh
-shottino --version        # shottino 0.2.1
+shottino --version        # shottino 0.4.1
 ```
 
 It is also in the corner, beside the name, on any terminal wide enough to
@@ -1013,6 +1013,82 @@ Putting the call itself **in the terminal** — audio through the system devices
 video decoded by ffmpeg and drawn as colour art by the renderer that already
 draws animated clips — is the next stage, over WHIP/WHEP. What a host has to
 provide for it is written down in [docs/CALLS.md](docs/CALLS.md).
+
+## End-to-end encrypted queries
+
+shottino speaks the same end-to-end encryption as cicchetto, so an encrypted
+query works between the two in either direction. It is Olm from
+[vodozemac](https://github.com/matrix-org/vodozemac), the same crate and
+version cicchetto pins, linked through a small C binding
+(`e2e/vodozemac-c`). grappa only relays: it stores each device's public key
+bundle and the encrypted messages addressed to it, and never sees a key or a
+word. Only queries are encrypted; channels stay clear.
+
+**Joining.** An account has one encrypted identity per network, held by a
+master key on one device.
+
+- `/e2e init [network]` creates the identity when the account has none. This
+  device becomes its first device and holds the master key. It never replaces
+  an existing identity.
+- `/e2e pair accept` joins an identity another device already holds. Open
+  "add a device" in cicchetto, accept here, and type the two-digit check code
+  shottino shows into cicchetto. Then `/e2e pair confirm` registers this
+  device on the networks offered. `/e2e pair decline` stops at any step.
+  Pairing needs a password login.
+- `/e2e` (or `/e2e status [network]`) shows where this device stands on each
+  network. `/e2e devices` lists the account's devices, and
+  `/e2e revoke <device>` removes one (only on the device holding the master
+  key).
+
+**Talking.**
+
+- `/e2e on [nick]` puts a query in encrypted mode, and the prompt shows a
+  lock. The peer's first encrypted message turns it on too.
+- In encrypted mode every line and `/me` goes encrypted and **never in
+  clear**. If a message can't be encrypted, its row says why, and
+  `/e2e resend` sends it again.
+- **Only `/e2e off` returns a query to clear.** Missing keys, a timeout or a
+  401 never do.
+- `/e2e rekey [nick]` asks for new keys and resends what failed.
+- `/emsg <nick> <text>` sends one encrypted message without switching the
+  query's mode.
+- To ask first: `/e2e ask [nick]` sends a request, the peer answers with
+  `/e2e accept` or `/e2e refuse`, and `/e2e cancel` withdraws yours.
+  `/e2e requests` lists open ones.
+
+**Trust.**
+
+- A peer's keys are pinned the first time they are seen, and a changed key
+  raises an alarm in the query. `/e2e trust <nick>` takes the new key after
+  asking again.
+- `/e2e verify <nick>` compares seven emoji with the peer, in either client.
+  `/e2e who <nick>` shows what is pinned.
+
+**What encrypted rows never do.** Received encrypted messages show a lock
+beside the time.
+
+- They are not bridged to `--ircd`.
+- Desktop notifications say only "encrypted message".
+- `/llm` and `/bot` tools can't read them.
+- Their links are never fetched for a preview or a link card; you can still
+  click them.
+- The layout log writes a placeholder instead of their words.
+- `/upload` and voice or video messages are refused in an encrypted query
+  before anything is uploaded, because the file would travel in clear.
+
+**Where it lives.** This device keeps the only copy of its encrypted history,
+under `<state>/e2e-<account>/<network>/`:
+
+- `record.sealed` holds the account, sessions and pins;
+- `chats/chat-hmac-<digest>.sealed` holds the history.
+
+They are sealed with AES-256-GCM under a key kept in the OS keyring, or
+under a passphrase when there is no keyring; see
+[Encrypted queries at rest](#encrypted-queries-at-rest). The files are mode
+0600 and the directories 0700.
+
+**Not yet.** shottino can't hold the master key for another device to pair
+from; pair from cicchetto, or start the identity here with `/e2e init`.
 
 ## /exec
 

@@ -4939,3 +4939,68 @@ CLI (`store --label=… attr value…` reading the secret on stdin, `lookup
 attr value…` printing it, exit 1 for nothing found). The interaction with a
 real daemon (an unlock prompt, KWallet's Secret Service bridge) is
 unverified.
+<!-- entry shottino-e2e-2026-11-07 -->
+
+---
+
+## 2026-11-07 — shottino: cicchetto-compatible end-to-end encrypted queries
+
+shottino now speaks cicchetto's end-to-end encryption, the Olm-over-grappa
+scheme cicchetto already ships (identity, pairing, consent requests, order
+challenges; protocol gates v49/50/53/55). No server change: grappa stays a
+blind relay.
+
+**One Olm, not two.** The crypto is vodozemac `=0.11.1`, the exact version
+cicchetto pins, through a Rust staticlib with a C ABI
+(`frontends/shottino/e2e/vodozemac-c`). We rejected libolm (deprecated
+upstream, and a second implementation is an interop question nobody should
+have to ask) and a C reimplementation. Every exported function catches a
+panic and returns an error (`vz_last_error`), and the release profile is
+`panic = "unwind"`, not abort. That is because one malformed message from
+the wire must not take the terminal down in raw mode. The 33-byte-key
+input that panics vodozemac itself is checked before the call.
+
+**Build cost, accepted.** Building shottino now needs Rust. With no host
+`cargo`, `make` runs the build in the Rust image pinned by `scripts/wasm.sh`
+(`scripts/shottino-cargo.sh`). CI uses `scripts/ci-rust.sh`. Packages list
+Rust as a build dependency only.
+
+**Fail closed, everywhere a clear line could escape:**
+- At boot, `e2e_peek_modes` reads which queries are encrypted before any
+  input is taken. A query that was encrypted never sends in clear while its
+  slot is still loading (measured: it did, before the fix).
+- `handle_enter` decides between encrypted and clear under the same lock
+  that takes the line.
+- Only an explicit `/e2e off` turns a query back to clear. Missing keys, a
+  timeout or a 401 fail the row and say so, but never downgrade the mode: a
+  network event turning encryption off silently is the one failure a user
+  cannot see.
+- CTCP bodies, `/ctcp ACTION`, `/upload` and voice or video messages are
+  refused in an encrypted query. Uploads are refused before the POST, not
+  after.
+
+**Decrypted text stays on screen.** A decrypted row is marked (`log_e2e`),
+and the mark follows the row through every buffer move. Marked rows are
+skipped by the model's `read_scrollback` tool, by inline media and
+link-card fetches, by `/preview`'s last-link memory, by `--ircd` and by the
+layout log. Notifications say only "encrypted message". Control characters
+in a decrypted body are drawn as spaces (the stored copy keeps them), so a
+peer cannot forge a status line. A JSON object key that decodes to anything
+containing a NUL makes the whole document invalid, because `ref\u0000x`
+read as `ref`.
+
+**State.** This device keeps the only copy of its history, under
+`<state>/e2e-<token_key_hash>/<network_id>/`:
+- `record.sealed` holds the pickles, pins and pending messages;
+- `chats/chat-hmac-<hex>.sealed` holds the history, with a fixed-length
+  name so that no nick can hit `ENAMETOOLONG` (a 300-byte nick did).
+
+The files are 0600, the directories 0700, and writes are flock'd. A pending
+message is never evicted to make room for a new one. How the files are
+sealed, and where the key lives, is in the entry
+`shottino-e2e-at-rest-2026-11-07` above.
+
+**Known gaps:** shottino has no holder role, so it cannot be the device a
+new device pairs from. Cross-client emoji verification (SAS) has passed
+binding-level tests but has not yet been run between cicchetto and shottino
+by hand.
