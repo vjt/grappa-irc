@@ -13,8 +13,10 @@
 #      applied hot, OR it was applied by restart
 #   1  a restart was needed and did not take, OR the hot reload was refused
 #      with `409 duplicate_migration_versions` — the one refusal a restart
-#      cannot cure (#1348), so the running node is left serving. Every other
-#      hot refusal is a reason to restart, never a reason to fail
+#      cannot cure (#1348), so the running node is left serving — OR a restart
+#      was needed and the new release's migration check refused it first, with
+#      the same outcome. Every other hot refusal is a reason to restart, never
+#      a reason to fail
 #
 # Why: docs/OPERATIONS.md § "Packaging (infra/packaging/)", "An upgrade
 # applies itself".
@@ -50,6 +52,9 @@ RPC_EXPR='m = Grappa.Deploy.Manifest; if :code.is_loaded(m), do: IO.write(apply(
 # Evaluated by the NEW release on disk: compares the reported manifest (the
 # file named in argv) with its own. Exit 0 hot, 3 cold, anything else a crash.
 VERDICT_EXPR='Grappa.Deploy.Manifest.cli(System.argv())'
+# Evaluated by the NEW release on disk before every restart (issue 1112): the
+# #1348 duplicate-version audit alone, migrating nothing. Exit 0 passes.
+CHECK_EXPR='Grappa.Release.check_migrations()'
 
 say() { printf 'grappa: %s\n' "$*"; }
 warn() { printf 'grappa: %s\n' "$*" >&2; }
@@ -116,6 +121,13 @@ seed() {
 # The restart path, and the end of the script either way.
 restart() {
 	reason="$1"
+	# The restart migrates first, in ExecStartPre, with the old node already
+	# stopped. So the new release audits its migrations BEFORE it (vjt's S3
+	# ruling on issue 1112), from disk — the node is not contacted, which
+	# keeps the ERTS mine below safe — and a refusal leaves the node serving.
+	check=$(timeout "$EVAL_TIMEOUT" "$GRAPPA" eval "$CHECK_EXPR" 2>&1)
+	rc=$?
+	[ "$rc" -eq 0 ] || check_refused "$rc" "$check"
 	say "applying the upgrade by RESTART: $reason"
 	systemctl daemon-reload || warn "systemctl daemon-reload failed — restarting anyway"
 	# A unit past its StartLimitBurst refuses `restart` until this clears it.
@@ -143,6 +155,20 @@ duplicate_versions() {
 	warn "        A restart migrates first and would fail on the same files, leaving"
 	warn "        the service down. It keeps running the previous release; a package"
 	warn "        that fixes the migrations applies on its next upgrade."
+	exit 1
+}
+
+# A refused check means the restart would fail in ExecStartPre the same way: a
+# duplicate version (#1348), or a migrator that cannot boot or open the
+# database. Restarting into it trades a serving node for a unit that cannot
+# start, so the node is left as it was.
+check_refused() {
+	warn "the upgrade was NOT applied, and the service was NOT restarted: it needed a"
+	warn "        restart because: $reason"
+	warn "        but the new release's migration check failed first (exit $1): $2"
+	warn "        The restart migrates first (ExecStartPre) and would fail the same way,"
+	warn "        leaving the service down. The running node was left as it was; a"
+	warn "        package that fixes the migrations applies on its next upgrade."
 	exit 1
 }
 
