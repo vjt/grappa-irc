@@ -340,6 +340,7 @@ cmd_install() {
 	# shellcheck disable=SC1010  # `mix do` is a mix subcommand, not shell `do`
 	"${COMPOSE[@]}" run --rm --no-deps -T -e MIX_ENV=dev grappa \
 		mix do local.hex --force + local.rebar --force
+	# shellcheck disable=SC1010  # `mix do` is a mix subcommand, not shell `do`
 	"${COMPOSE[@]}" run --rm --no-deps -T -e MIX_ENV=dev grappa \
 		mix do deps.get + compile
 
