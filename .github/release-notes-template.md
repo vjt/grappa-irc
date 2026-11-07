@@ -19,9 +19,9 @@
 ### Packaging
 <!--
   One bullet per change to the PACKAGING.md contract this release carries,
-  each saying whether it is compatible or incompatible. An incompatible change
-  needs a major version bump (PACKAGING.md § "Change policy"). With no change,
-  the section is exactly the line below.
+  each saying whether it is compatible or incompatible (PACKAGING.md §
+  "Change policy" defines both). Either kind can ship in a minor release.
+  With no change, the section is exactly the line below.
 -->
 No change to the packaging contract.
 

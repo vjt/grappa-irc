@@ -272,6 +272,34 @@ reads the DB, so the package has to unpack them itself), and **enables
 but does not start**
 the service (it cannot start until you set a real `PHX_HOST`).
 
+## Upgrading
+
+```sh
+sudo apt install ./grappa_<new-version>_<arch>.deb
+```
+
+That is all: the upgrade applies itself to a running service (issue 1112).
+`/usr/share/grappa/apply-upgrade.sh` — run by the postinst, the rpm `%post`
+or, on Arch, a pacman hook — reloads the new code in place when nothing in
+between needs a restart, and restarts the service otherwise; the unit
+migrates the database before every start. It prints which of the two it did
+(`applied HOT` or `applied by RESTART: <reason>`). The first upgrade onto
+this mechanism is always a restart, because the release you are leaving
+cannot report what it was built from.
+
+A service that is not running is not started: the package migrates the
+database and leaves it stopped, and its next start runs the new release.
+
+If a needed restart does not take, the upgrade fails (dpkg leaves the
+package half-configured), and the script prints what failed. Fix the cause,
+then:
+
+```sh
+sudo systemctl restart grappa
+journalctl -u grappa -b     # a failed migration shows up here
+sudo dpkg --configure -a    # deb: finish the half-configured package
+```
+
 ## First user
 
 ```sh

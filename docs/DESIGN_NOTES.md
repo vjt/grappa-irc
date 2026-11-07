@@ -5076,3 +5076,224 @@ neither the real blob size in prod nor the effect on the write lock (#1420,
 #1715) has been measured. It is also one more write metered by
 `:request_budget` (capacity 60, 20/s), so a pasted block of N commands
 spends 2N.
+<!-- entry #1112b -->
+
+---
+
+## 2026-11-07 — #1112b: a package upgrade applies itself, hot when it can
+
+Issue 1112, slice S2. Decisions D1, D2 (revised) and D3 of 2026-11-06 and the
+rulings R1–R7 on the S2 plan (issue comments 6694711016 and 6694771323) are
+relays from vjt through an encrypted DM, not seen first-hand by the
+orchestrator, and are quoted as such. Until now a deb, rpm or Arch upgrade
+migrated the live database from its maintainer script and printed "restart":
+the running node then served the old code on the new schema until someone
+read that line. D2 revised: «sempre restart, hot se si può» — an upgrade needs
+nothing else from the operator.
+
+### The verdict compares two manifests, because there is no git range
+
+The running node was built from one tree, the package has just written the
+release of another, and neither tree is on the host. `Grappa.Deploy.Manifest`
+is computed at COMPILE time over `Preflight.manifest_paths/1` — every file a
+`:package` path class matches (`mix.exs`, `mix.lock`, `application.ex`,
+`config/**/*.exs`, the migrations, the package's own unit) plus the long-lived
+module files — as a sha256 per file and a sha256 of each long-lived module's
+state block as `extract_state_block/1` normalises it. The running node reports
+its own over `grappa rpc`; the NEW release compares it with its own under
+`grappa eval` (`Manifest.cli/1`). `Preflight.classify_manifests/4` feeds the
+changed paths to the unchanged `classify_paths/3` and compares the state
+digests where `classify/5` compares the blocks: one rule set, two ways of
+finding what moved. Two departures from the git door, both toward COLD: a path
+only one manifest lists counts as changed, and the long-lived set is the union
+of both builds'. The path-class literals are now module attributes shared by
+the predicates and `manifest_paths/1`, so a class cannot drift from what the
+manifest watches.
+
+A module and not a file beside the release, because the package overwrites
+files: a manifest on disk would describe the NEW tree by the time anyone read
+it as the old one. A hot reload reloads this beam with the rest. Each watched
+file is an `@external_resource`; `__mix_recompile__?/0` hashes the path SET,
+because a new migration is in no `@external_resource` list. A file missing
+from a build context is `nil`, which fails safe (a `nil` that becomes a hash is
+a change) and never breaks the compile.
+
+### apply-upgrade.sh
+
+Shipped at `/usr/share/grappa/apply-upgrade.sh`, POSIX sh, run as root.
+(0) Unit not running: nothing is applied or started (R5), exit 0. (1) The
+running ERTS (`/proc/<MainPID>/exe`) against field 1 of `start_erl.data`:
+different or unreadable restarts at once, with no rpc and no HTTP, because a
+node left on a removed ERTS directory halts the first time it relaunches
+`inet_gethost` (phase 1, on an OCI surrogate). (2) The verdict: an rpc that
+fails or prints nothing restarts — every node older than this slice has no
+manifest, so the first upgrade onto it is always a restart — and so do exit 3
+and any exit that is not 0. (3) HOT: `POST /admin/reload`, body and code both
+captured; 200 with `"failed":[]`, then `/healthz`, then
+`POST /admin/cic-bundle-changed`, then the seed. Anything else restarts.
+(4) RESTART: `daemon-reload`, `reset-failed`, `restart`, `/healthz`, seed. Exit
+1 is the only failure and means "a restart was needed and did not take" (R4).
+Every wait on the node is bounded — the rpc 60 s and the eval 120 s under
+`timeout(1)`, the reload 300 s, each probe 5 s — because the package manager
+holds its lock while the script runs.
+
+It does not reuse `deploy_common.sh`: `_deploy_hot` exits 1 on a refusal, while
+here a refusal is the way into the restart, and `deploy_main` presumes a
+checkout. The price is that the `"failed":[]` predicate lives in both files
+until the cold-path slice, which reworks `deploy_common.sh`, takes it.
+
+### Where it runs, per format
+
+deb postinst and rpm `%post` call it when the unit is active and migrate
+nothing themselves; a stopped unit is migrated and seeded as before and left
+stopped. rpm runs it in `%post`, not `%posttrans`, because rpm runs the new
+`%post` before it erases the old package's files: no window with a removed
+ERTS. On Arch an alpm hook (`grappa-apply.hook`, `PostTransaction`, `Upgrade`
+on `usr/lib/grappa/*`) runs it at the end of the transaction and
+`post_upgrade` does not apply as well. Hook and script live under `usr/`, so
+the community `grappa-bin`, which repackages `usr/` and drops `.INSTALL`, gets
+the apply without editing its PKGBUILD (R2). `grappa.install`'s `_bootstrap`
+split into `_prepare` (every install and upgrade) and `_migrate_and_seed`
+(only where nothing runs). What failing means differs per format (R4): dpkg
+half-configured; rpm a failed scriptlet with the package installed; pacman an
+error printed after the transaction committed, since a PostTransaction hook
+cannot abort. The window in which deb and Arch run the node from a removed
+ERTS, between the unpack and the apply, is accepted and documented (R3).
+`preremove` is unchanged in behaviour: a stop there on upgrade would leave the
+service down on both managers.
+
+### The unit migrates in ExecStartPre
+
+The package unit runs `grappa eval 'Grappa.Release.migrate()'` before every
+start, so a restart serves new code on the schema it expects, and a failed
+migration fails the start. `TimeoutStartSec` bounds `ExecStartPre` too, so it
+went 30 → 300 (R7: the ruling's figure; real migration times are not
+measured). The native-Linux unit is the cold-path slice's.
+
+### The rule "an incompatible change requires a major bump" falls (R1)
+
+«1112 no major»: S2 is a minor. Its homes were enumerated, not remembered:
+the PACKAGING.md Change policy bullet, the release-notes template and the
+Release-cutting step in OPERATIONS.md (the third is not in the ruling comment;
+the enumeration found it). A fourth, by my reading and declared as such:
+PACKAGING.md said the number "follows semver", which promises exactly that
+rule; it now says the number has semver's form, not its promise. The
+compatible/incompatible label and its definition stay, because they tell a
+packager whether to touch the package, which the number no longer does. The
+#2570 entry's text keeps its rule as history. S2 is itself incompatible for a
+repackager — `grappa-bin` changes behaviour without being edited — and ships
+in a minor, announced in the Packaging section.
+
+### curl became a dependency
+
+Every HTTP call the script makes is `curl`, and no format declared it. On a
+host without curl the reload reads as "no answer", the restart succeeds, and
+sixty `/healthz` probes that cannot run fail it: a healthy service and a
+failed upgrade. The deb depends on `curl`, the rpm on the FILE `/usr/bin/curl`
+(Fedora's base ships curl-minimal, which owns it; a name dependency would make
+dnf swap it out), the PKGBUILD on `curl`. Found by reading the slice's own
+script against the package metadata; no CI path runs an upgrade over a running
+unit.
+
+### Departures from the plan
+
+* The CLI is `Manifest.cli/1`, not `Preflight.package_cli/1`: Manifest needs
+  Preflight at compile time, and Boundary refuses the cycle.
+* `state_blocks` holds a digest of the normalised block, not the block: the
+  same comparison, a smaller beam and rpc payload.
+* The same ERTS behind "(deleted)" is not a move: dpkg replaces every file on
+  every upgrade.
+* The hot order is reload → `/healthz` → cic notice → seed, and a silent
+  `/healthz` after a hot reload restarts.
+* The first-install banner prints only when the unit is stopped.
+* The rpc expression is guarded by `:code.is_loaded/1`, so a node that
+  autoloads cannot answer with the new beam.
+* `HEALTH_TRIES=60` at one second is provisional: the packaged boot time is
+  not measured.
+* curl, above.
+* Four defects an independent review of the slice found, each fixed in its
+  own commit: `start_erl.data` is now read with `cut`, since `mix release`
+  writes it with no trailing newline and `read` failed on every real package,
+  so the hot path could never run (the suite's fixture had a newline; written
+  as Mix writes it, it turned 10 of 27 cases red against the old script);
+  every wait on the node is bounded; `PORT` is read in quotes too; and the rpc
+  names the module through a variable, so the `is_loaded` guard cannot be
+  pre-empted by an expansion that loads it.
+
+### Measured
+
+* ExUnit, red first on the tests-only commit: `manifest_test` 14/14 failures,
+  `preflight_test` 35 of 179, every one an undefined module or function or the
+  missing `:package` clause. Green after: 14 tests and 179 tests + 2
+  properties, 0 failures.
+* `compile --force --warnings-as-errors` dev (383 files) and test (409)
+  clean; credo strict clean after three findings in the new test were fixed;
+  dialyzer 0 errors; `wire_pin --check`: "wire shape and protocol 60 agree",
+  so no protocol bump; the three generated artefacts in sync.
+* `__mix_recompile__?/0`, in the dev container: adding, editing and removing a
+  migration each recompiled `manifest.ex` alone (keys 166 → 167 → 166), a
+  no-op compile recompiled nothing, and with the callback mutated away a new
+  migration left the manifest stale. In test, that stale build turned exactly
+  one test red, the one that rebuilds the manifest from disk; CI never sees
+  that state, since it builds from scratch.
+* Compile cost: `manifest.ex` took 272–336 ms per recompile (4 samples)
+  against 33–36 ms for `migration_audit.ex`.
+* Mutants, each turning red only the assertions written down for it: 23 on
+  the shell side (script, unit, postinst, Arch scriptlet) before the review,
+  and 10 for its fixes (4 on the scratch directory, 5 on the bounds, 1 on
+  the quoted `PORT`), 8 on the Elixir side
+  (`:package` dropped from the unit class, 2 reds; a missing key read as
+  unchanged, 3; long-lived compared by hash, 1; state shape skipped, 1; cold
+  exit 1, 3; the package unit unwatched, 1; an unreadable or undecodable file
+  read as hot, 1 each), 3 on the curl pin (one per format, 1 each).
+* `scripts/shellcheck.sh` (the pinned container) and `scripts/posix-parse.sh`
+  rc=0, both sets containing the script and the postinst.
+
+### Hot or cold, for this slice
+
+On the jail, HOT by the classifier's rules as read: none of the touched files
+is in a jail COLD class, and neither `Preflight` nor `Manifest` is a long-lived
+module. That is a reading, not an executed classify. For packages, the first
+upgrade carrying S2 is a restart: the running node has no manifest, and the
+unit changed.
+
+### Not claimed
+
+* A real package built or upgraded, deb, rpm or Arch: none was.
+* The package managers' orderings, AbortOnFail, and rpm's failed-scriptlet
+  behaviour: documented, not measured.
+* That `grappa-bin` copies `usr/share/libalpm/hooks/`: read from what it is
+  said to extract.
+* That `grappa rpc` works from inside a maintainer-script transaction: phase 1
+  measured it from `docker exec` as root.
+* That `ExecStartPre` works under the real unit: by reading. The release
+  workflow's deb job, which starts the service, is the first place it runs.
+* That `__mix_recompile__?/0` behaves the same in the real build contexts (deb
+  CI, Fedora, makepkg): measured in the dev container only.
+* That 300 s, the other bounds and 60 probes are enough.
+* That needrestart (Ubuntu) leaves a hot apply alone: after one, the BEAM
+  still maps files dpkg replaced, and needrestart may restart the service
+  anyway. Safe, but it would make every deb apply a restart; not measured.
+* A unit in `activating (auto-restart)` fails `is-active` and takes the
+  stopped branch, so the postinst migrates beside the unit's own
+  `ExecStartPre`; a first install onto a host whose own
+  `/etc/systemd/system/grappa.service` is running would be treated as an
+  upgrade; the restart calls `systemctl` directly, not `deb-systemd-invoke`,
+  so `policy-rc.d` is not consulted. Known, not handled.
+* `__mix_recompile__?/0` hashes the path SET, so a fixed watched path that
+  was absent at compile time and appears later recompiles nothing. Only a
+  long-lived build tree sees it; every package build starts from scratch.
+
+Checked: `.gitattributes` has no `export-ignore`, so the Arch tarball drops
+no watched file. (Had it, a file one build lacks and the other has reads as
+changed; a file both lack is not compared.)
+
+### Open, for a ruling
+
+D3 has a consequence nobody ruled on. A migration that fails now fails the
+restart's `ExecStartPre`, and the unit stays down, retrying every 5 s; before
+S2 the postinst ran it with the old node still serving, and a failure left the
+package half-configured and the service up. Two hot refusals already predict
+that: `409 duplicate_migration_versions` (#1348: a restart walks into the same
+defect) and a `500` from a migration that raised in-process. Whether those
+two should exit 1 without restarting is raised with the orchestrator.
