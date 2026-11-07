@@ -5741,3 +5741,150 @@ changes code, so only one reloads (see Mechanism).
   from a stale `_build` gave `Endpoint` a different whole-file md5 than the
   second one did, so only the back-to-back pair counts as evidence, compared
   chunk by chunk.
+<!-- entry #2597 -->
+
+---
+
+## 2026-11-07 — issue 2597: a WHOIS names where a grappa user's clients connect from, for an oper or an admin
+
+vjt's request, first-hand in the issue body: a WHOIS made through grappa, on a
+nick held by a user of this same grappa, also shows the address that user's
+client connects to grappa from, because the ircd cannot — every grappa user
+reaches it from grappa's address. The product questions P1–P6 are comment
+6712808329; vjt's answers, typed into the worker session and copied verbatim
+by the orchestrator, are comment 6712842590. The engineering forks E1–E5 were
+decided by the orchestrator.
+
+### Who sees it, and where the gate sits
+
+The requester is entitled when its session on that network holds umode `o`
+or `O` (P6: `+O`, the local oper, counts), or when the asking socket speaks
+for a grappa admin with a full web session. The admin half is the console's
+own predicate: `GrappaWeb.AdminChannel.admin_socket?/1` is `authorize/1`'s
+clause made public, so the console join and the WHOIS door cannot drift, and
+#1196's refusal of an admin-minted per-client token holds at both. The gate
+is server-side: an unentitled requester gets `null` on the wire, never a
+value cic hides.
+
+The door reads the flag off the socket and `Session.send_whois/7` carries it;
+`WhoisAccum.requester_admin` stores it beside `reply_to` and is replaced with
+it, so under #1088's per-target collapse the last asker's admin-ness decides
+what the last asker sees. The umode half is read at the 318 drain, from the
+session's own `:umodes`.
+
+P3: the automatic rail WHOIS (`origin: :rail`) shows it too.
+
+### Whose address: the registry learns who holds the nick upstream (E1 c)
+
+The lookup must find the grappa session that holds the nick UPSTREAM, on the
+same network. The `SessionRegistry` value already carried a live nick (#498),
+but seeded with the CONFIGURED nick in `do_init`, before 001, and re-seeded
+on every respawn. For `current_nick/2` that is the contract: its consumers
+(scrollback reads, the window-counts seed, the presence carve-out) want a
+nick to fall back on, and three of them turn `:no_session` into `nil`, which
+would zero the seeded mentions and count our own lines as unread for a whole
+reconnect or backoff window. As an answer to "who holds this nick" it is
+wrong: a session in backoff or a 433 loop does not hold its configured nick,
+and a stranger may.
+
+So the value is `{nick, subject_label, registered?}`, the flag true once the
+001 handler ran. `current_nick/2` reads the nick alone, unchanged.
+`Session.registered_holders/3` selects only flagged entries for the network
+and folds each nick with the caller's casemapping. Seeding `nil` until 001
+was rejected after reading those three consumers. The drain asks only when
+the ircd confirmed a user (311 filled `accum.user`): a 401 names nobody. Two
+holders on one ircd are a transient, not resolved by picking: the bundle
+carries `null` and a `Logger.warning` names the sessions' labels, never an
+address.
+
+### What it shows (E2 a, P1, P2)
+
+`WSPresence` already owned the live socket pids of each subject, monitored
+and dropped at the DOWN; the address each one connected from is a fact with
+exactly that lifecycle, so it lives there (`record_client_ip/3`,
+`client_ips/1`), keyed by pid, accepted only for a tracked pid. It is not a
+third element of the visibility tuple, which the auto-away FSM rewrites at
+every door. `UserSocket.connect/3` records the address it already resolves
+through the `RemoteIpFromProxy` SSOT for the #543 sample, formatted by
+`GrappaWeb.RemoteIP`.
+
+With live sockets the bundle carries their addresses. With none (P1+P2, the
+ruling): `[]` beside `Accounts.last_known_ip/1`, the newest cookie session's
+login address — the same reading the admin listings make through
+`newest_touch_by_subject_ids/2`, so the two cannot disagree. #1308's caveat
+stands: it is where a login came from, so cic labels it "last known" and
+never current: "no socket connected, last known address <ip>", or "no socket
+connected" when there is none.
+
+### Wire (E3, E5)
+
+Two keys on `whois_bundle`, always present: `grappa_client_ips`
+(`[String] | null`) and `grappa_client_last_known_ip` (`String | null`, set
+only beside `[]`). One bump, 61 → 62, in all four sites (`Grappa.Protocol`,
+cic's `socket.ts`, shottino's `wire.h`, the wire pin).
+
+cic tolerates the keys' ABSENCE as `null`, as it does `avatar_url`; a present
+malformed value still drops the bundle. Absence is what a pre-62 server
+means — nothing to show — and strictness would oblige
+`MIN_SERVER_PROTOCOL_VERSION` to 62 (`serverProtocol.ts`'s OBLIGATION) for one
+row of a card. Both tolerances are declared in the user-topic census.
+
+### What is not built, by ruling (P4, P5)
+
+No audit record of each disclosure and no in-app notice: vjt answered both
+with "??" rather than a yes. `docs/OPERATIONS.md` says who sees client
+addresses and what the value means; `docs/CLIENT_PROTOCOL.md` §4m gives
+client authors the keys.
+
+### Deploy
+
+COLD: `WSPresence`'s defstruct grows a field, and `WhoisAccum` is in
+`HotReload.LongLivedModules`'s `@state_helpers`.
+
+### Tests, and one fixture trap
+
+`test/grappa/session/whois_client_ip_test.exs` runs a REAL target session on
+the asker's network. The fake IRC server takes one connection, so the target
+dials a fake of its own, and moving `:port` in the opts alone does not do it:
+`Session.Server.init/1` merges the `refresh_plan` answer over the opts, the DB
+winning on `:port`. The `dial/2` helper moves it in both halves and leaves the
+production closure running underneath. Each case also gives the asker a live
+socket with a different address, which the bundle must never carry.
+
+### Measured
+
+- `compile --force --warnings-as-errors` (test env) rc=0, Boundary accepting
+  `Grappa.Session`'s two new deps (`Grappa.Accounts`, `Grappa.WSPresence`).
+  The first real run was red: the helpers sat between two `apply_effects/2`
+  clauses.
+- 11 targeted ExUnit files: 1424 tests + 1 property, 0 failures.
+- Mutants against `whois_client_ip_test`, `grappa_channel_test`,
+  `session/wire_test`, `admin_channel_test` and `session/server_test`
+  (792 tests), reds per mutant: no admin in the gate 6; no `o` 1; no `O` 1;
+  no 311 guard 1; last-known replaced by nil 2; first of two holders taken 1;
+  admin flag primed false 6; the two wire values swapped 8; admin flag
+  constant true on the one-argument door 2; per-client token admitted as
+  admin 2. The same constant on the `/whois <server> <nick>` door turned 0
+  reds: nothing drove that clause's flag. Two tests now do, and the mutant
+  turns 1 red each way (constant true, constant false). The earlier slices:
+  registry flag 5/5, `WSPresence` addresses 6/6, `last_known_ip` 1/1, the
+  forged-XFF pin 1/1.
+- `gen_wire_types --check` and `wire_pin --check` rc=0 at protocol 62.
+- cic: `bun run check` rc=0 (61 warnings, none in this slice's lines);
+  vitest 422 files, 9302 tests, rc=0; the census's declared and measured
+  tolerances both 74 → 76.
+- shottino `tests/test_wire` on the host, with the v62 fixtures: 719 checks,
+  rc=0; positive control (broken JSON) rc=134, `FAIL whois_bundle`.
+
+### Not claimed
+
+- That the address shown is the client's real one in production: it is only
+  as right as the proxy chain `RemoteIpFromProxy` trusts. Not observed on m42.
+- That an end-to-end run proves WHOSE address the row shows: on one test host
+  every client connects from the same few addresses.
+- shottino: `test_wire` parses the v62 fixtures and ignores the two fields;
+  `test_commands` (its protocol pin against `protocol.ex`) was not run
+  locally — it needs vodozemac; CI runs it.
+- Two `networks` rows pointing at one ircd: the lookup is per `network_id`,
+  so a grappa user connected through the other row is not found.
+- That `O` means an operator on every ircd: read on bahamut and solanum only.
