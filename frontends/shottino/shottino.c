@@ -1849,8 +1849,101 @@ static void die(const char *fmt, ...) {
     exit(1);
 }
 
+/* ── The splash ─────────────────────────────────────────────────────────
+ *
+ * Startup used to print plain stderr lines for as long as everything took
+ * — 25 seconds against the real bouncer — and only then draw a screen.
+ * Now curses comes up right after login, and what is left of startup is
+ * drawn on it: a small transgender flag and the steps as they happen, in
+ * colour. It stays at least SPLASH_MS so it is seen rather than flashed;
+ * everything slow (scrollback, the socket's catch-up) happens after it,
+ * in the background.
+ *
+ * Process-wide by nature: there is one boot and one screen, and only the
+ * main thread draws it, before the worker thread exists. */
+#define SPLASH_MS 1000
+#define SPLASH_LINES 12
+
+static struct {
+    bool active;
+    char lines[SPLASH_LINES][160];
+    size_t count;
+    long started_ms;
+} splash;
+
+static long monotonic_ms(void);
+static int mirc_pair_for(long fg_rgb, long bg_rgb, int fallback_pair);
+
+static void splash_draw(void) {
+    /* Light blue, pink, white, pink, light blue. */
+    static const long stripes[5] = {0x5bcefa, 0xf5a9b8, 0xffffff, 0xf5a9b8, 0x5bcefa};
+    /* The step lines cycle through the flag's colours and the theme's
+     * accent, so the log reads as part of the same picture. */
+    static const long inks[4] = {0x5bcefa, 0xf5a9b8, 0xffffff, 0x5fafd7};
+    erase();
+    int rows = LINES, cols = COLS;
+    int fw = cols >= 40 ? 24 : (cols > 4 ? cols - 4 : cols);
+    int top = rows / 2 - 6;
+    if (top < 0) top = 0;
+    int x = (cols - fw) / 2;
+    for (int r = 0; r < 5; r++) {
+        int pair = mirc_pair_for(stripes[r], stripes[r], CP_MAIN);
+        attron(COLOR_PAIR(pair));
+        mvhline(top + r, x, ' ', fw);
+        attroff(COLOR_PAIR(pair));
+    }
+    const char *title = "shottino " SHOTTINO_VERSION;
+    attron(COLOR_PAIR(CP_ACCENT) | A_BOLD);
+    mvaddstr(top + 6, (cols - (int)strlen(title)) / 2, title);
+    attroff(COLOR_PAIR(CP_ACCENT) | A_BOLD);
+    int room = rows - top - 8;
+    if (room < 0) room = 0;
+    size_t first = splash.count > (size_t)room ? splash.count - (size_t)room : 0;
+    for (size_t i = first; i < splash.count; i++) {
+        int y = top + 8 + (int)(i - first);
+        int pair = mirc_pair_for(inks[i % 4], -1, CP_MAIN);
+        attr_t bold = i + 1 == splash.count ? A_BOLD : A_NORMAL;
+        attron(COLOR_PAIR(pair) | bold);
+        int len = (int)strlen(splash.lines[i]);
+        mvaddnstr(y, len < cols ? (cols - len) / 2 : 0, splash.lines[i], cols);
+        attroff(COLOR_PAIR(pair) | bold);
+    }
+    refresh();
+}
+
+static void splash_begin(void) {
+    splash.active = true;
+    splash.count = 0;
+    splash.started_ms = monotonic_ms();
+    splash_draw();
+}
+
+/* Hold the splash until it has been up SPLASH_MS, then hand the screen to
+ * the client. */
+static void splash_end(void) {
+    if (!splash.active) return;
+    long left = SPLASH_MS - (monotonic_ms() - splash.started_ms);
+    if (left > 0) napms((int)left);
+    splash.active = false;
+    erase();
+}
+
 static void startup(const char *fmt, ...) {
     va_list ap;
+    if (splash.active) {
+        if (splash.count == SPLASH_LINES) {
+            memmove(splash.lines[0], splash.lines[1], sizeof(splash.lines[0]) * (SPLASH_LINES - 1));
+            splash.count--;
+        }
+        va_start(ap, fmt);
+        vsnprintf(splash.lines[splash.count++], sizeof(splash.lines[0]), fmt, ap);
+        va_end(ap);
+        splash_draw();
+        return;
+    }
+    /* After the splash the screen is the client's: boot chatter has
+     * nowhere to go, and stderr under curses is garbage on the screen. */
+    if (!isendwin()) return;
     va_start(ap, fmt);
     fputs("shottino: ", stderr);
     vfprintf(stderr, fmt, ap);
@@ -2924,27 +3017,6 @@ static bool conn_write_all(struct tls_conn *conn, const char *buf, size_t len) {
     return true;
 }
 
-static char *read_all(struct tls_conn *conn, size_t *out_len) {
-    size_t cap = 8192;
-    size_t len = 0;
-    char *buf = malloc(cap + 1);
-    if (!buf) die("out of memory");
-    for (;;) {
-        if (len == cap) {
-            cap *= 2;
-            if (cap > HTTP_MAX) die("HTTP response too large");
-            buf = realloc(buf, cap + 1);
-            if (!buf) die("out of memory");
-        }
-        ssize_t n = conn_read(conn, buf + len, cap - len);
-        if (n <= 0) break;
-        len += (size_t)n;
-    }
-    buf[len] = 0;
-    *out_len = len;
-    return buf;
-}
-
 /* Case-insensitive substring search — ours, not the libc's.
  *
  * `strcasestr` is a GNU/BSD extension: it is declared only when a
@@ -3005,10 +3077,137 @@ static struct http_response http_failed(const char *why) {
     return (struct http_response){ .status = 0, .body = body, .body_len = n };
 }
 
+/* Read exactly ONE response off `conn` — to the end its framing names
+ * (http_frame_response), not to the close — so the connection can carry
+ * the next request. `*keep` says whether it may. NULL when nothing at all
+ * came back, which on a reused connection means it went stale. */
+static char *read_one_response(struct tls_conn *conn, size_t *out_len, bool *keep) {
+    *keep = false;
+    size_t cap = 8192;
+    size_t len = 0;
+    char *buf = malloc(cap + 1);
+    if (!buf) die("out of memory");
+    for (;;) {
+        size_t total = 0;
+        bool reusable = false;
+        http_frame f = len ? http_frame_response(buf, len, &total, &reusable) : HTTP_FRAME_PARTIAL;
+        if (f == HTTP_FRAME_COMPLETE) {
+            /* Bytes past the response are a protocol error on a client that
+             * never pipelines: answer this one, spend the connection. */
+            *keep = reusable && len == total;
+            len = total;
+            break;
+        }
+        if (f == HTTP_FRAME_BAD) break;
+        if (len == cap) {
+            cap *= 2;
+            if (cap > HTTP_MAX) die("HTTP response too large");
+            buf = realloc(buf, cap + 1);
+            if (!buf) die("out of memory");
+        }
+        ssize_t n = conn_read(conn, buf + len, cap - len);
+        if (n <= 0) break; /* the close: the end for UNTIL_CLOSE, a truncation otherwise */
+        len += (size_t)n;
+    }
+    if (len == 0) {
+        free(buf);
+        return NULL;
+    }
+    buf[len] = 0;
+    *out_len = len;
+    return buf;
+}
+
+/* ── One kept-alive connection per thread ─────────────────────────────
+ *
+ * Every request used to open its own TCP + TLS connection and read the
+ * reply to the close (`Connection: close`). Against the real bouncer that
+ * is ~0.6 s a request, and startup made ~40 of them in a row: most of a
+ * 25-second boot was handshakes.
+ *
+ * Per THREAD, not shared: the UI thread, the job worker and the model
+ * thread all call http_request, and a shared connection would need a
+ * lock held across a whole round trip — the very stall the worker exists
+ * to avoid. A thread's connection is closed when the thread ends (the
+ * key's destructor), so nothing leaks past a worker.
+ *
+ * Reuse is refused, and a fresh connection opened, when the kept one has
+ * idled past HTTP_KEEP_IDLE (well under any proxy's keep-alive timeout, and
+ * far under a NAT's) or when the server has already closed it — its socket
+ * is readable while we have asked nothing (FIN, or a TLS close_notify). A
+ * server that closes in the instant between that check and our request is
+ * the one race left: an idempotent request is then sent again once on a
+ * fresh connection; a POST is NOT, since it may have been acted on, and
+ * reports the failure like any other. */
+#define HTTP_KEEP_IDLE 20
+
+struct http_keep {
+    struct tls_conn conn;
+    bool open;
+    time_t at;
+};
+
+static pthread_key_t http_keep_key;
+static pthread_once_t http_keep_once = PTHREAD_ONCE_INIT;
+
+static void http_keep_free(void *p) {
+    struct http_keep *k = p;
+    if (k && k->open) conn_close(&k->conn);
+    free(k);
+}
+
+static void http_keep_init(void) {
+    pthread_key_create(&http_keep_key, http_keep_free);
+}
+
+static struct http_keep *http_keep_slot(void) {
+    pthread_once(&http_keep_once, http_keep_init);
+    struct http_keep *k = pthread_getspecific(http_keep_key);
+    if (!k) {
+        k = calloc(1, sizeof(*k));
+        if (!k) die("out of memory");
+        k->conn.fd = -1;
+        pthread_setspecific(http_keep_key, k);
+    }
+    return k;
+}
+
+/* Close this thread's kept connection, if any. For the main thread, whose
+ * key destructor never runs: exit() does not end a thread. */
+static void http_keep_close(void) {
+    pthread_once(&http_keep_once, http_keep_init);
+    struct http_keep *k = pthread_getspecific(http_keep_key);
+    if (!k) return;
+    pthread_setspecific(http_keep_key, NULL);
+    http_keep_free(k);
+}
+
+/* Is the kept connection still one the server will answer on? */
+static bool http_keep_live(const struct http_keep *k) {
+    if (!k->open || time(NULL) - k->at > HTTP_KEEP_IDLE) return false;
+    if (k->conn.tls && SSL_pending(k->conn.ssl) > 0) return false;
+    struct pollfd pfd = { .fd = k->conn.fd, .events = POLLIN };
+    int r = poll(&pfd, 1, 0);
+    return r == 0; /* readable, hung up or errored while idle: stale */
+}
+
+static struct http_response http_parse_response(char *raw, size_t raw_len);
+
+/* One response off a connection used once (a third-party host: the model,
+ * speech-to-text). Read by its framing like any other; the caller closes. */
 static struct http_response http_read_response(struct tls_conn *conn) {
     size_t raw_len = 0;
-    char *raw = read_all(conn, &raw_len);
-    if (!raw) return http_failed("no reply");
+    bool keep = false;
+    char *raw = read_one_response(conn, &raw_len, &keep);
+    return raw ? http_parse_response(raw, raw_len) : http_failed("no reply");
+}
+
+static bool http_idempotent(const char *method) {
+    return strcmp(method, "POST") != 0 && strcmp(method, "PATCH") != 0;
+}
+
+/* Parse one response read by read_one_response; takes ownership of `raw`. */
+static struct http_response http_parse_response(char *raw, size_t raw_len) {
 
     char *sep = strstr(raw, "\r\n\r\n");
     if (!sep) {
@@ -3040,25 +3239,6 @@ static struct http_response http_read_response(struct tls_conn *conn) {
 static struct http_response http_request_raw(struct app *app, const char *method, const char *path,
                                              const char *body, size_t body_len,
                                              const char *content_type) {
-    struct tls_conn conn;
-    /* A transport failure REPORTS and returns rather than killing the
-     * client.
-     *
-     * These three were die() calls, and die() exits the process from
-     * whichever thread reached it — including the job worker, which runs
-     * read-cursor pushes and member refreshes nobody asked for. So a
-     * bouncer restart mid-session (which grappa's own deploy does) took
-     * the whole client with it, from a background thread, without
-     * endwin: the terminal was left raw and the websocket's careful
-     * reconnect-with-backoff never got the chance to do its job. The
-     * status-0 return is the shape callers already handle. */
-    if (!conn_open(app, &conn)) {
-        char why[512];
-        snprintf(why, sizeof(why), "cannot reach %.128s:%.16s — %.128s", app->url.host,
-                 app->url.port, strerror(errno));
-        log_failure(app, "%s", why);
-        return http_failed(why);
-    }
     char auth[MAX_TOKEN + 64] = "";
     if (app->token[0]) snprintf(auth, sizeof(auth), "Authorization: Bearer %s\r\n", app->token);
     char *head = xasprintf(
@@ -3068,22 +3248,65 @@ static struct http_response http_request_raw(struct app *app, const char *method
         "Accept: application/json\r\n"
         "Content-Type: %s\r\n"
         "%s"
-        "Connection: close\r\n"
+        "Connection: keep-alive\r\n"
         "Content-Length: %zu\r\n\r\n",
         method, path, app->url.host, content_type, auth, body_len);
-    bool ok = conn_write_all(&conn, head, strlen(head));
-    free(head);
-    /* Body written separately — it is binary and must not go through a
-     * format string. */
-    if (ok && body_len) ok = conn_write_all(&conn, body, body_len);
-    if (!ok) {
-        conn_close(&conn);
-        log_failure(app, "lost the connection to %s while sending %s %.80s", app->url.host,
-                    method, path);
-        return http_failed("connection lost mid-request");
+
+    struct http_keep *k = http_keep_slot();
+    struct http_response resp = {0};
+    bool keep = false;
+    /* At most two attempts: the second only after a REUSED connection
+     * turned out dead, and only for a request that is safe to repeat. */
+    for (int attempt = 0; attempt < 2; attempt++) {
+        bool reused = http_keep_live(k);
+        struct tls_conn conn;
+        if (reused) {
+            conn = k->conn;
+            k->open = false;
+        } else {
+            if (k->open) conn_close(&k->conn);
+            k->open = false;
+            /* A transport failure REPORTS and returns rather than killing
+             * the client: die() from the job worker took the whole client
+             * down on a bouncer restart, without endwin, before the
+             * websocket's reconnect-with-backoff got its chance. */
+            if (!conn_open(app, &conn)) {
+                char why[512];
+                snprintf(why, sizeof(why), "cannot reach %.128s:%.16s — %.128s", app->url.host,
+                         app->url.port, strerror(errno));
+                log_failure(app, "%s", why);
+                free(head);
+                return http_failed(why);
+            }
+        }
+        bool ok = conn_write_all(&conn, head, strlen(head));
+        /* Body written separately — it is binary and must not go through a
+         * format string. */
+        if (ok && body_len) ok = conn_write_all(&conn, body, body_len);
+        size_t raw_len = 0;
+        char *raw = ok ? read_one_response(&conn, &raw_len, &keep) : NULL;
+        /* Nothing at all back on a REUSED connection: it died idle. */
+        if (reused && !raw && attempt == 0 && http_idempotent(method)) {
+            conn_close(&conn);
+            continue;
+        }
+        if (ok) resp = raw ? http_parse_response(raw, raw_len) : http_failed("no reply");
+        if (ok && keep) {
+            k->conn = conn;
+            k->open = true;
+            k->at = time(NULL);
+        } else {
+            conn_close(&conn);
+        }
+        if (!ok) {
+            log_failure(app, "lost the connection to %s while sending %s %.80s", app->url.host,
+                        method, path);
+            free(head);
+            return http_failed("connection lost mid-request");
+        }
+        break;
     }
-    struct http_response resp = http_read_response(&conn);
-    conn_close(&conn);
+    free(head);
     /* A malformed reply from GRAPPA used to be fatal on the grounds that
      * it means the bouncer is not what we are talking to. That is a fair
      * reading at login and a wrong one afterwards: the likeliest cause
@@ -9054,26 +9277,32 @@ static void backfill_window(struct app *app, const char *network, const char *ch
     free(r.body);
 }
 
-static void ws_backfill_all(struct app *app) {
-    /* Snapshot the window list under the lock; the HTTP calls must not
-     * hold it (they block for as long as the server takes). */
-    struct { char network[MAX_SLUG]; char channel[MAX_CHANNEL]; long last_id; } snap[MAX_WINDOWS];
-    size_t count;
+/* Bring every window up to date in the BACKGROUND: one refresh job per
+ * window on the worker, the focused one first because it is the one being
+ * looked at. A refresh asks only for what a window lacks (refresh_window):
+ * the rows after the newest one held, or the tail when it holds none.
+ *
+ * This replaced a loop that made the same requests synchronously on the
+ * UI thread — at startup (a tail per window, then a backfill per window
+ * once the socket was up: the same windows read twice) and on every
+ * reconnect, when the screen froze for as long as the requests took. */
+static void enqueue_refresh_all(struct app *app) {
+    struct job jobs[MAX_WINDOWS];
+    size_t count = 0;
     pthread_mutex_lock(&app->lock);
-    count = app->window_count;
-    for (size_t i = 0; i < count; i++) {
-        snprintf(snap[i].network, sizeof(snap[i].network), "%s", app->windows[i].network);
-        snprintf(snap[i].channel, sizeof(snap[i].channel), "%s", app->windows[i].channel);
-        snap[i].last_id = app->windows[i].last_id;
-    }
+    size_t focused = focused_window_locked(app);
+    for (size_t pass = 0; pass < 2; pass++)
+        for (size_t i = 0; i < app->window_count; i++) {
+            if ((pass == 0) != (i == focused)) continue;
+            if (is_local_window(app->windows[i].channel)) continue;
+            struct job *j = &jobs[count++];
+            memset(j, 0, sizeof(*j));
+            j->kind = JOB_FETCH;
+            snprintf(j->network, sizeof(j->network), "%s", app->windows[i].network);
+            snprintf(j->channel, sizeof(j->channel), "%s", app->windows[i].channel);
+        }
     pthread_mutex_unlock(&app->lock);
-    for (size_t i = 0; i < count; i++) {
-        if (is_local_window(snap[i].channel)) continue; /* nothing on the server to fetch */
-        /* last_id 0 means this window never saw a message; a full tail
-         * fetch is the right recovery there, not an ?after=0 flood. */
-        if (snap[i].last_id > 0) backfill_window(app, snap[i].network, snap[i].channel, snap[i].last_id);
-        else fetch_scrollback_target(app, snap[i].network, snap[i].channel);
-    }
+    for (size_t i = 0; i < count; i++) enqueue_job(app, jobs[i]);
 }
 
 /* Attempt one reconnect if the backoff timer has expired. */
@@ -9104,8 +9333,8 @@ static void ws_try_reconnect(struct app *app) {
     for (size_t i = 0; i < app->window_count; i++) app->windows[i].joined_ws = false;
     pthread_mutex_unlock(&app->lock);
     ws_join_topics(app);
-    log_line(app, "websocket reconnected");
-    ws_backfill_all(app);
+    log_line(app, "websocket connected");
+    enqueue_refresh_all(app);
 }
 
 static void ws_pump(struct app *app) {
@@ -23619,7 +23848,9 @@ static void ui_signal_handler(int sig) {
     ui_signalled = 1;
 }
 
-static void event_loop(struct app *app) {
+/* Put the terminal into curses mode. Separate from the loop so startup can
+ * draw its splash on the real screen while it is still loading. */
+static void ui_start(struct app *app) {
     setlocale(LC_ALL, "");
     /* A TERMINAL THAT CLOSES STILL OWES THE CAMERA BACK.
      *
@@ -23661,6 +23892,9 @@ static void event_loop(struct app *app) {
      * it — and after define_pane_keys, so the sequences it binds are
      * registered before the terminal can start sending them. */
     modified_keys_reporting(true);
+}
+
+static void event_loop(struct app *app) {
     app->running = true;
     while (app->running && !ui_signalled) {
         ws_pump(app);
@@ -24368,6 +24602,15 @@ int main(int argc, char **argv) {
      * and the feature still off get no image attached, which is why the
      * first screenful used to come up pictureless. */
     app->headless = ircd_enabled;
+    /* The window comes up HERE, right after login: the graphics probe
+     * still needs the raw terminal first, and everything after it is drawn
+     * on the splash instead of scrolling past on stderr. */
+    if (!app->headless) {
+        app->proto = media_detect(STDIN_FILENO, 120);
+        ui_start(app);
+        splash_begin();
+        startup("authenticated as %s", app->subject);
+    }
     if (app->headless) {
         /* Nothing draws, so nothing decodes: the probe wants a raw tty
          * that a service unit does not have, and an inline picture has
@@ -24375,7 +24618,6 @@ int main(int argc, char **argv) {
         app->inline_media_enabled = false;
         startup("headless: no terminal, no inline media");
     } else {
-        app->proto = media_detect(STDIN_FILENO, 120);
         startup("terminal graphics: %s", media_protocol_name(app->proto));
     }
     /* Retain the deployment's upload host set BEFORE any scrollback
@@ -24425,26 +24667,19 @@ int main(int argc, char **argv) {
     seed_state(app);
     /* Before the first fetch, so a deleted message is never drawn. */
     hidden_load(app);
-    startup("loading initial scrollback for %zu windows", app->window_count);
-    for (size_t i = 0; i < app->window_count; i++) fetch_scrollback(app, &app->windows[i]);
-    startup("connecting websocket");
-    if (ws_connect(app)) {
-        startup("joining websocket topics");
-        ws_join_topics(app);
-        log_line(app, "websocket connected");
-        /* The tails above were read one window at a time, BEFORE any topic
-         * was joined: whatever was said in that interval reached no door.
-         * The same `?after=` catch-up a reconnect does closes it. */
-        ws_backfill_all(app);
-    } else {
-        /* Arm the retry timer rather than settling permanently into
-         * REST-only mode: a server still coming up is the common cause of
-         * a failed first connect, and it will be ready in seconds. */
-        ws_schedule_retry(app);
-        startup("websocket unavailable; will retry");
-        log_line(app, "websocket unavailable; retrying in %ds (REST send/fetch still works)",
-                 (int)(app->ws_retry_at - time(NULL)));
-    }
+    startup("%zu networks, %zu windows", app->network_count, app->window_count);
+    /* The socket first, then the scrollback — in the background. Joining
+     * the topics before any window is read means nothing said meanwhile
+     * falls between the two, so each window is read ONCE (a tail, queued
+     * on the worker by the connect) instead of a tail now and a backfill
+     * after. A connect that fails arms the same retry a dropped socket
+     * does, and the retry reads the windows in its turn. */
+    startup("connecting to %s", app->url.host);
+    app->ws_retry_at = 0;
+    ws_try_reconnect(app);
+    startup(app->ws_connected ? "connected — reading %zu windows in the background"
+                              : "websocket unavailable (retrying) — %zu windows wait for it",
+            app->window_count);
     /* The listener is bound, and the process detaches, BEFORE the worker
      * thread is created: fork() takes only the calling thread with it,
      * and a lock held by another one would never be released in the
@@ -24477,7 +24712,7 @@ int main(int argc, char **argv) {
     if (ircd_enabled) {
         ircd_loop(app);
     } else {
-        startup("entering terminal UI");
+        splash_end();
         event_loop(app);
     }
     /* A recording in flight when the client quits: ffmpeg would keep
@@ -24549,6 +24784,8 @@ int main(int argc, char **argv) {
     pthread_mutex_destroy(&app->jobs_lock);
     pthread_mutex_destroy(&app->ws_lock);
     pthread_mutex_destroy(&app->lock);
+    /* Before the context its SSL object was made from. */
+    http_keep_close();
     SSL_CTX_free(app->ssl_ctx);
     free(app);
     return 0;

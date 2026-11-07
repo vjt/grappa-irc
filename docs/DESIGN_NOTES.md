@@ -4745,3 +4745,40 @@ row-menu test (28.6 s), the new rail test (28.3 s) and 2543's actions test
 project collects these files. The bundle served was the branch's: the new
 test clicks a testid only this branch has. It was not run red on the code
 before the entry.
+<!-- entry shottino-boot-2026-11-07 -->
+
+---
+
+## 2026-11-07 — shottino: a 25-second boot was handshakes; keep-alive, a splash, and the rest in the background
+
+**Measured** against the production bouncer from a desktop: 25.4 s from
+launch to the first screen. About 40 REST calls ran in a row before curses
+started, each opening its own TCP + TLS connection (`Connection: close`,
+~0.6 s each): settings and networks 3.8 s, a scrollback tail per window
+10.9 s, then a `?after=` backfill of the same windows once the socket was
+up, 8.7 s.
+
+**Keep-alive.** One kept connection per THREAD (a `pthread_key` with a
+destructor), not a shared pool: the UI thread, the job worker and the
+model thread all make requests, and a shared connection would need a lock
+held across a round trip. A response is read to the end its framing
+names (`http_frame_response`, pure, in `http.c`). Reuse is refused after
+20 s idle and when the socket is readable while nothing was asked (the
+server closed it). The race left — a close between that check and our
+request — retries ONCE on a fresh connection, and **only for an idempotent
+method: a POST is never resent**, because it may have been acted on (a
+message sent twice is worse than one reported failed). Keep-alive alone:
+25.4 s → 8.3 s.
+
+**The boot.** Curses comes up right after login (the graphics probe still
+needs the raw terminal first, and login may prompt), and the rest of
+startup is drawn on a splash: a small transgender flag and the steps as
+coloured lines, held at least 1 s. The socket connects during the splash,
+and scrollback is NOT read before the UI: the connect queues one refresh
+per window on the worker (focused first), and windows fill in as they
+land. Joining the topics before reading means nothing falls in between,
+so each window is read ONCE — the old tail-then-backfill read every window
+twice. A reconnect takes the same path, which also ends the UI freeze a
+reconnect used to cause (its backfill ran synchronously on the UI
+thread). Measured: splash at 0.8 s, chat UI at 2.7 s, windows full shortly
+after.
