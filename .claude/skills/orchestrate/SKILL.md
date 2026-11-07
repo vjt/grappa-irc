@@ -1099,8 +1099,14 @@ at that merge (#1632). ONE batched deploy (~4–5 already-closed issues), ONE du
   utenti serve sapere che sono tornati su, non che l'orchestratrice ha sbagliato l'orologio — quello
   va in `#grappa-live` e nell'handoff, dove lo legge chi deve non ripeterlo.
 - 🔴 **PROVE A HOT DEPLOY** by the reload `{"failed":[]}` list + the served cic bundle hash (`curl
-  https://irc.sindro.me/`). **`/api/config` stays STALE after a hot deploy** — valid for COLD only. A release `rpc`
+  https://irc.sindro.me/`). A release `rpc`
   from root fails `:noconnection` — use `service grappa status` + `fetch http://127.0.0.1:4000/healthz`.
+  🔧 **CORRECTED 2026-11-07: «`/api/config` stays STALE after a hot deploy» is OUTDATED.** Since the app
+  vsn froze (`@otp_vsn`, issue 2057) the beams land where the node looks, so a hot reload that touches
+  `Grappa.Version`/`Grappa.Protocol` moves `/api/config` too — measured on the 2582 deploy
+  (`1.6.2-5b8e13903 proto 59` → `1.6.2-c11c11c1e proto 60`, no restart). **It still says nothing when the
+  hot delta does not touch those modules** (a `--cic`-only deploy leaves it on the server's sha), so it is
+  never the proof of a deploy: the reload list and the served bundle are.
   🔴🔴 **MA QUELLA REGOLA È PER-SUBSTRATO, E SU STAGING È FALSA — misurato 2026-09-10.** *"`/api/config`
   resta stantio dopo un hot"* è misurato sul substrato **RELEASE di m42**, dove la vsn sta nel path
   (`lib/grappa-<vsn>`). **Staging è il container docker `grappa` sul Pi** (`https://grappa.bad.ass`, CA
@@ -2924,7 +2930,10 @@ nessuna riscrittura possibile. Misurala lo stesso se costa due comandi, ma dichi
   utenza, stessa forma, e se ci sono provano che la sonda vede la classe giusta.
   ⇒ **Forma che regge: `sudo -n` per le sonde di processo, oppure leggi un artefatto leggibile
   (il pidfile), e in ogni caso il pos ctrl DENTRO la stessa cattura.** ⚠️ La ricetta di
-  verifica del deploy prod si salva **per fortuna, non per progetto**: usa `sudo -n jexec 11`.
+  verifica del deploy prod si salva **per fortuna, non per progetto**: usa `sudo -n jexec <JID>`.
+  🔧 **E IL JID NON E' UNA COSTANTE (2026-11-07): grappa prod e' oggi JID 12, e JID 11 e' `zukker0`.**
+  Un JID si riassegna a ogni restart del jail ⇒ **si legge da `jls` prima dell'uso, mai si copia
+  da qui** — un `jexec` sul JID sbagliato misura un ALTRO jail con lo strumento giusto.
   🪞 **E la diagnosi sbagliata era più pericolosa dell'errore:** un peer aveva concluso *"il
   tuo ssh è finito dentro un jail"* — plausibile e falso. Archiviata così, la volta dopo si
   controlla l'host (già giusto) e **la sonda torna a mentire identica**. **Una correzione
