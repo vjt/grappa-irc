@@ -54,7 +54,10 @@ defmodule Grappa.Deploy.ManifestTest do
       assert {:error, :unknown_format} = Manifest.decode(Base.encode64("junk"))
 
       assert {:error, :unknown_format} =
-               Manifest.decode(Base.encode64(:erlang.term_to_binary({:grappa_manifest, 999, %{}})))
+               {:grappa_manifest, 999, %{}}
+               |> :erlang.term_to_binary()
+               |> Base.encode64()
+               |> Manifest.decode()
     end
   end
 
@@ -81,11 +84,11 @@ defmodule Grappa.Deploy.ManifestTest do
       hot = "priv/repo/migrations/20260805100000_add_old_nick_to_session_log_events.exs"
       cold = "priv/repo/migrations/20260515111331_visitors_expires_at_nullable.exs"
 
-      from = update_in(Manifest.current(), [:files], &Map.delete(&1, hot))
-      assert {0, _} = Manifest.run([write_manifest(dir, from)])
+      lacks_hot = update_in(Manifest.current(), [:files], &Map.delete(&1, hot))
+      assert {0, _} = Manifest.run([write_manifest(dir, lacks_hot)])
 
-      from = update_in(Manifest.current(), [:files], &Map.delete(&1, cold))
-      assert {3, text} = Manifest.run([write_manifest(dir, from)])
+      lacks_cold = update_in(Manifest.current(), [:files], &Map.delete(&1, cold))
+      assert {3, text} = Manifest.run([write_manifest(dir, lacks_cold)])
       assert text =~ cold
     end
 
@@ -120,8 +123,8 @@ defmodule Grappa.Deploy.ManifestTest do
     end
 
     test "VERDICT_EXPR calls a function this module exports" do
-      {{:., _, [mod, fun]}, _, args} = Code.string_to_quoted!(script_expr("VERDICT_EXPR"))
-      mod = Macro.expand(mod, __ENV__)
+      {{:., _, [alias_ast, fun]}, _, args} = Code.string_to_quoted!(script_expr("VERDICT_EXPR"))
+      mod = Macro.expand(alias_ast, __ENV__)
       assert function_exported?(mod, fun, length(args))
     end
   end
