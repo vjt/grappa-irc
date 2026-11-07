@@ -1489,6 +1489,29 @@ TEST(a_label_is_cut_by_cells_never_inside_a_character) {
     CHECK(!screen_has_wide("a"));
 }
 
+/* A message of several lines (an encrypted query's): the input box starts
+ * a line at each break, the cursor follows, and a received break is drawn
+ * at the BODY column, under the sender's name. A line that starts at the
+ * pane's edge is shottino's own, so a peer cannot draw one. */
+TEST(a_line_break_starts_a_line_in_the_box_and_under_the_name) {
+    int cl = -1, cc = -1;
+    CHECK_LONG(input_layout("ab\ncd", 40, 5, &cl, &cc, NULL), 2);
+    CHECK_LONG(cl, 1);
+    CHECK_LONG(cc, 2);
+    CHECK_LONG(input_display_lines("> ", "uno\ndue\ntre", 40), 3);
+
+    erase();
+    const char *line = "10:16 <alice> hi\n--- e2e: bob's key is verified";
+    draw_message_line(0, 0, 60, 0, 4, line, false, false);
+    CHECK_LONG(message_display_lines(line, 60), 2);
+    int body_x = (int)strlen("10:16 ") + (int)strlen("alice") + 3;
+    char row[61];
+    for (int x = 0; x < 60; x++) row[x] = (char)(mvinch(1, x) & A_CHARTEXT);
+    row[60] = 0;
+    for (int x = 0; x < body_x; x++) CHECK(row[x] == ' ');
+    CHECK(strncmp(row + body_x, "--- e2e:", 8) == 0);
+}
+
 /* Only the network you are IN is spelled out in the sidebar; every other
  * one folds to a single header row.
  *
@@ -2127,6 +2150,7 @@ int main(void) {
     RUN(the_sidebar_records_a_row_for_every_window);
     RUN(an_encrypted_query_shows_its_lock_in_the_sidebar);
     RUN(a_label_is_cut_by_cells_never_inside_a_character);
+    RUN(a_line_break_starts_a_line_in_the_box_and_under_the_name);
     RUN(the_sidebar_folds_every_network_but_the_focused_one);
     RUN(a_modal_over_the_settings_panel_is_drawn);
     RUN(the_input_box_draws_characters_not_bytes);

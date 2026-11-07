@@ -6337,6 +6337,14 @@ static int input_layout(const char *s, int width, int cursor_byte, int *cur_line
     size_t i = 0;
     while (i < len) {
         if (cur_line && (int)i == cursor_byte) *cur_line = line, *cur_col = col;
+        /* A line break (an encrypted query's message may hold some) starts
+         * the next line and takes no cell. */
+        if (s[i] == '\n') {
+            line++;
+            col = 0;
+            i++;
+            continue;
+        }
         wchar_t wc;
         size_t n = mbrtowc(&wc, s + i, len - i, &st);
         int w = 1;
@@ -17215,29 +17223,42 @@ static void e2e_undecryptable_text(const char *nick, const char *reason, char *o
              nick, reason);
 }
 
-/* A decrypted body as an IRC line could have carried it, for the screen
- * (malloc'd; the history on disk keeps what was said). IRC cannot carry
- * CR, LF or NUL, and a JSON string can: a newline drawn as one starts a
- * visual line with no row prefix, so a peer could forge a line that reads
- * as this client's own ("--- e2e: … verified"), and a NUL hid the rest of
- * the body. Every C0 control and DEL becomes a space — tab and ESC too,
- * which no line of ours needs from a peer — except what the renderer draws
- * on purpose: the mIRC formatting codes (mirc.h) and \x01, the CTCP frame
- * an ACTION is read from. `len` counts the bytes, NULs included. Pure. */
-static char *e2e_body_for_screen(const char *body, size_t len) {
+/* A decrypted body for the screen (malloc'd; the history on disk keeps
+ * what was said). A NUL would hide the rest of the body, and a control
+ * byte could draw something a line of text should not. Every C0 control
+ * and DEL becomes a space — tab and ESC too, which no line of ours needs
+ * from a peer — except what the renderer draws on purpose: the mIRC
+ * formatting codes (mirc.h) and \x01, the CTCP frame an ACTION is read
+ * from. With `lines` (a message's body), a line break stays one, as LF:
+ * an encrypted message may hold several lines, as cicchetto sends them.
+ * The row draws them at the body column, so a peer still cannot start a
+ * line where shottino's own begin ("--- e2e: … verified"). Without it (a
+ * peer's free-text reason, drawn inside a line of ours) a break is a
+ * space too. `len` counts the bytes, NULs included. Pure. */
+static char *e2e_body_for_screen(const char *body, size_t len, bool lines) {
     char *out = malloc(len + 1);
     if (!out) die("out of memory");
+    size_t o = 0;
     for (size_t i = 0; i < len; i++) {
         unsigned char c = (unsigned char)body[i];
+        /* A message may hold line breaks (cicchetto sends them, and so
+         * does Ctrl-Enter here): CRLF and a lone CR become LF. The row
+         * draws a break at the BODY column, under the sender's name, never
+         * at the start of the pane where shottino's own lines begin. */
+        if (lines && (c == '\n' || c == '\r')) {
+            if (c == '\r' && i + 1 < len && body[i + 1] == '\n') i++;
+            out[o++] = '\n';
+            continue;
+        }
         bool kept = c >= 0x20 && c != 0x7f;
         switch (c) {
         case 0x01: case 0x02: case 0x03: case 0x04: case 0x0f:
         case 0x11: case 0x16: case 0x1d: case 0x1e: case 0x1f: kept = true; break;
         default: break;
         }
-        out[i] = kept ? (char)c : ' ';
+        out[o++] = kept ? (char)c : ' ';
     }
-    out[len] = 0;
+    out[o] = 0;
     return out;
 }
 
@@ -17301,7 +17322,7 @@ static bool e2e_trust_row_text(const e2e_row *row, bool live, char *out, size_t 
         char quoted[80];
         if (!words) {
             /* The peer's own words: drawn as a body is, on one line. */
-            char *shown = e2e_body_for_screen(reason, strlen(reason));
+            char *shown = e2e_body_for_screen(reason, strlen(reason), false);
             snprintf(quoted, sizeof(quoted), "\"%.70s\"", shown);
             free(shown);
             words = quoted;
@@ -17339,7 +17360,7 @@ static void e2e_render_row_marked(struct app *app, const char *slug, const e2e_r
     snprintf(own, sizeof(own), "%s", own_nick_for_network(app, slug));
     pthread_mutex_unlock(&app->lock);
     if (row->kind == E2E_ROW_IN || row->kind == E2E_ROW_OUT) {
-        char *body = row->body ? e2e_body_for_screen(row->body, row->body_len) : xstrdup("");
+        char *body = row->body ? e2e_body_for_screen(row->body, row->body_len, true) : xstrdup("");
         char act[MAX_LINE];
         struct wire_scrollback_message m = {0};
         m.network = slug;
@@ -18647,7 +18668,7 @@ static void e2e_who(struct app *app, struct e2e_slot *s, const e2e_ctx *c, const
         char quoted[80];
         if (!words) {
             /* The peer's own words: drawn as a body is, on one line. */
-            char *shown = e2e_body_for_screen(reason, strlen(reason));
+            char *shown = e2e_body_for_screen(reason, strlen(reason), false);
             snprintf(quoted, sizeof(quoted), "\"%.70s\"", shown);
             free(shown);
             words = quoted;
@@ -24853,7 +24874,7 @@ static void show_command_help(struct app *app, const char *raw) {
     else if (strcmp(cmd, "exec") == 0) log_line(app, "/exec <command> — run it in a shell and SEND its stdout to the current window (everyone sees it); capped at 20 lines / 16 KiB, killed after 15s, stderr discarded");
     else if (strcmp(cmd, "ctcp") == 0) log_line(app, "/ctcp <nick|#channel> <VERB> [args] — send any CTCP query (VERSION, TIME, FINGER…); the reply lands in the window you asked from. /ping is the timed special case");
     else if (strcmp(cmd, "ping") == 0) log_line(app, "/ping nick — CTCP PING somebody and time the round trip; the answer lands in the window you asked from");
-    else if (strcmp(cmd, "e2e") == 0) log_line(app, "/e2e [status [network]] — per network: whether this device is part of the account's end-to-end encrypted identity (none, elsewhere, holder, paired), its device id, the device list version and size, whether it holds the master key, and its key bundle on grappa. /e2e init [network] creates the identity when the account has none (this device becomes its first and holds the master key; never replaces one). /e2e sync [network] reads it again. Needs server protocol v49. /e2e pair [accept|confirm|decline] pairs this device onto an identity another device holds: when cicchetto's \"add a device\" offers a pairing, accept joins it and shows a 2-digit check code to type there; once it matched, confirm registers this device on the networks offered; decline stops at any step. Needs protocol v55 and a password login. Once this device is ready, encrypted messages addressed to it are read from grappa's inbox and shown in the query with the peer, marked with a lock beside the time (a copy another of your devices sent shows as your own line); they are never bridged to --ircd, desktop notifications say only \"encrypted message\", and this device keeps their only copy, under its state directory, sealed at rest under a key the OS keyring holds (secret-tool), or without a keyring under a passphrase asked for at start; /e2e unlock opens a run that started locked, and /e2e status says where the key lives. In a query, /e2e on [nick] puts it in encrypted mode (also turned on by the peer's first encrypted message, or by a copy of one you wrote encrypted from another device; the prompt shows a lock): every line and /me typed there goes encrypted, NEVER in clear — on any failure the row says why and /e2e resend sends it again; a line there may run past the 1023 bytes a clear line or a command takes, up to what grappa frames in 64 IRC lines; /e2e off [nick] returns the query to clear, with a warning; /e2e rekey [nick] asks for new keys and resends what failed (after \"cannot read your last message on any device\"). Consent (protocol v53): /e2e ask [nick] asks a peer to start an encrypted chat (it expires after 24 hours); a peer's request shows in the query with them — /e2e accept [nick] turns the query encrypted and asks for their keys, /e2e refuse [nick] says no (needs no identity here); /e2e cancel [nick] withdraws your request or dismisses an answer; /e2e requests [network] lists them. Accepting is consent, not trust: keys are still pinned on first use, alarmed and verified as ever. A bot that takes orders from you may challenge a plaintext line you sent: shottino confirms it inside the encrypted session only when the bot's key is verified and THIS device sent exactly that line there in the last 30 s, and shows the identity check in the query with the bot");
+    else if (strcmp(cmd, "e2e") == 0) log_line(app, "/e2e [status [network]] — per network: whether this device is part of the account's end-to-end encrypted identity (none, elsewhere, holder, paired), its device id, the device list version and size, whether it holds the master key, and its key bundle on grappa. /e2e init [network] creates the identity when the account has none (this device becomes its first and holds the master key; never replaces one). /e2e sync [network] reads it again. Needs server protocol v49. /e2e pair [accept|confirm|decline] pairs this device onto an identity another device holds: when cicchetto's \"add a device\" offers a pairing, accept joins it and shows a 2-digit check code to type there; once it matched, confirm registers this device on the networks offered; decline stops at any step. Needs protocol v55 and a password login. Once this device is ready, encrypted messages addressed to it are read from grappa's inbox and shown in the query with the peer, marked with a lock beside the time (a copy another of your devices sent shows as your own line); they are never bridged to --ircd, desktop notifications say only \"encrypted message\", and this device keeps their only copy, under its state directory, sealed at rest under a key the OS keyring holds (secret-tool), or without a keyring under a passphrase asked for at start; /e2e unlock opens a run that started locked, and /e2e status says where the key lives. In a query, /e2e on [nick] puts it in encrypted mode (also turned on by the peer's first encrypted message, or by a copy of one you wrote encrypted from another device; the prompt shows a lock): every line and /me typed there goes encrypted, NEVER in clear — on any failure the row says why and /e2e resend sends it again; a line there may run past the 1023 bytes a clear line or a command takes, up to what grappa frames in 64 IRC lines, and may hold several lines — Ctrl-Enter (or Shift-Enter, Alt-Enter) starts a new one, sent as ONE message as cicchetto does; /e2e off [nick] returns the query to clear, with a warning; /e2e rekey [nick] asks for new keys and resends what failed (after \"cannot read your last message on any device\"). Consent (protocol v53): /e2e ask [nick] asks a peer to start an encrypted chat (it expires after 24 hours); a peer's request shows in the query with them — /e2e accept [nick] turns the query encrypted and asks for their keys, /e2e refuse [nick] says no (needs no identity here); /e2e cancel [nick] withdraws your request or dismisses an answer; /e2e requests [network] lists them. Accepting is consent, not trust: keys are still pinned on first use, alarmed and verified as ever. A bot that takes orders from you may challenge a plaintext line you sent: shottino confirms it inside the encrypted session only when the bot's key is verified and THIS device sent exactly that line there in the last 30 s, and shows the identity check in the query with the bot");
     else if (strcmp(cmd, "emsg") == 0) log_line(app, "/emsg <nick> <text> — send ONE end-to-end encrypted message to nick without putting the query in encrypted mode; it is never sent in clear (if it cannot be encrypted the row says why). /e2e on makes every line in the query encrypted");
     else if (strcmp(cmd, "block") == 0 || strcmp(cmd, "ignore") == 0) log_line(app, "/block [nick], /ignore [nick] — hide somebody's messages in THIS client only (nothing is sent to the server); bare /block lists who is blocked");
     else if (strcmp(cmd, "unblock") == 0 || strcmp(cmd, "unignore") == 0) log_line(app, "/unblock nick, /unignore nick — show somebody's messages again");
@@ -27539,6 +27560,28 @@ static void handle_command_dispatch(struct app *app, char *line) {
     }
 }
 
+/* Ctrl-Enter: a line break in the input, where it can go. An encrypted
+ * query sends a message of several lines as ONE message (cicchetto does
+ * the same); anywhere else IRC carries one line per message, so the key
+ * says so instead of starting a line that could never be sent. */
+static void input_newline(struct app *app) {
+    pthread_mutex_lock(&app->lock);
+    bool secret = app->e2e_secret.kind != E2E_SECRET_NONE;
+    bool command = app->input_len > 0 && app->input[0] == '/';
+    size_t cur = focused_window_locked(app);
+    bool encrypted = app->panel == PANEL_CHAT && cur < app->window_count &&
+                     e2e_query_encrypted_locked(app, app->windows[cur].network,
+                                                app->windows[cur].channel);
+    pthread_mutex_unlock(&app->lock);
+    if (secret) return;
+    if (!encrypted || command) {
+        log_line(app, "--- a line break (Ctrl-Enter) goes only in a message to an encrypted "
+                      "query: IRC carries one line per message");
+        return;
+    }
+    input_append_wide(app, L'\n');
+}
+
 static void handle_enter(struct app *app) {
     char line[MAX_INPUT_LINE];
     char send_net[MAX_SLUG] = "", send_chan[MAX_CHANNEL] = "";
@@ -27581,6 +27624,15 @@ static void handle_enter(struct app *app) {
      * MAX_INPUT_LINE): a command or a clear message would be cut by the
      * first MAX_LINE buffer it meets, and a cut line is a different
      * message. It stays in the input, to be shortened. */
+    /* A line break goes only in an encrypted query, as one message, the
+     * way cicchetto sends it: IRC carries one line per message, and a
+     * command takes one line. It stays in the input, to be taken out. */
+    if (memchr(app->input, '\n', app->input_len) && !encrypted) {
+        pthread_mutex_unlock(&app->lock);
+        log_line(app, "--- this line holds a line break, and only a message in an encrypted "
+                      "query can: nothing was sent; it is still in the input");
+        return;
+    }
     if (app->input_len >= MAX_LINE && !encrypted) {
         size_t len = app->input_len;
         pthread_mutex_unlock(&app->lock);
@@ -28219,7 +28271,10 @@ enum {
     KEY_WIN_PREV,
     /* Mid-call controls, bound to Alt-M and Alt-V. */
     KEY_CALL_MIC,
-    KEY_CALL_CAMERA
+    KEY_CALL_CAMERA,
+    /* Ctrl-Enter (and Shift-Enter, Alt-Enter): a line break in the input,
+     * for an encrypted query only (input_newline). */
+    KEY_NEWLINE
 };
 
 static void define_pane_keys(void) {
@@ -28245,6 +28300,11 @@ static void define_pane_keys(void) {
         {"\033[9;6u", KEY_WIN_PREV},
         {"\033[27;3;43~", KEY_PANE_GROW},
         {"\033[27;3;45~", KEY_PANE_SHRINK},
+        /* Ctrl-Enter and Shift-Enter, modifyOtherKeys and CSI-u forms. */
+        {"\033[27;5;13~", KEY_NEWLINE},
+        {"\033[13;5u", KEY_NEWLINE},
+        {"\033[27;2;13~", KEY_NEWLINE},
+        {"\033[13;2u", KEY_NEWLINE},
         /* The member list. Shift+PgUp/PgDn was bound through terminfo's
          * kPRV/kNXT alone, which plenty of terminfo entries simply do not
          * define — the key then arrives as an undecoded escape burst and
@@ -28359,6 +28419,10 @@ static int resolve_escape(void) {
     case '\t': return KEY_PANE_CYCLE;
     case KEY_UP: return KEY_PANE_PREV;
     case KEY_DOWN: return KEY_PANE_NEXT;
+    /* Alt-Enter: the line break for terminals that send nothing distinct
+     * for Ctrl-Enter. */
+    case '\r':
+    case '\n': return KEY_NEWLINE;
     case '[': return resolve_csi();
     default:
         /* Same rule: an Escape followed by a key we have no binding for
@@ -30039,6 +30103,8 @@ static void event_loop(struct app *app) {
             open_reply_picker(app);
         } else if (ch == '\n' || ch == '\r') {
             handle_enter(app);
+        } else if (ch == KEY_NEWLINE) {
+            input_newline(app);
         } else if (ch == KEY_PANE_NEXT || ch == KEY_PANE_CYCLE) {
             focus_pane(app, 1);
         } else if (ch == KEY_PANE_PREV) {

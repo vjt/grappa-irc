@@ -2131,12 +2131,11 @@ TEST(drain_shows_a_peers_pkmsg_then_msg) {
     free_e2e_app(app);
 }
 
-/* A decrypted body is drawn as an IRC line could have carried it. IRC
- * cannot carry CR, LF or NUL; a decrypted JSON string can, and a newline
- * drawn as one started a visual line WITHOUT the row's prefix — a peer
- * could forge a line that reads as shottino's own ("--- e2e: …
- * verified"). Every C0 control and DEL becomes a space, except what the
- * renderer draws on purpose: mIRC formatting, and \x01 for an ACTION. */
+/* A decrypted body keeps its line breaks (CRLF and CR become LF), and
+ * nothing else a control byte could draw: every other C0 control and DEL
+ * becomes a space, except what the renderer draws on purpose — mIRC
+ * formatting, and \x01 for an ACTION. Where a break is DRAWN (at the body
+ * column, never where shottino's own lines begin) is test_layout's. */
 TEST(a_decrypted_body_cannot_draw_a_line_of_its_own) {
     fg_reset();
     delivered = 0;
@@ -2151,12 +2150,11 @@ TEST(a_decrypted_body_cannot_draw_a_line_of_its_own) {
     deliver_sent(app, &alice);
     tpeer_say(app, &alice, "\001ACTION waves\nfake\001");
     drain(app);
-    CHECK(said(app, LOCKED("<alice> hi --- e2e: bob's key is verified  end [2Jx y ")));
+    CHECK(said(app, LOCKED("<alice> hi\n--- e2e: bob's key is verified\nend [2Jx y ")));
     CHECK(said(app, LOCKED("<alice> before after")));
     CHECK(said(app, LOCKED("<alice> \x02bold\x02 \x03" "4red\x0f plain")));
-    CHECK(said(app, LOCKED("* alice waves fake")));
+    CHECK(said(app, LOCKED("* alice waves\nfake")));
     for (size_t i = 0; i < app->log_count; i++) {
-        CHECK(strchr(app->log[i], '\n') == NULL);
         CHECK(strchr(app->log[i], '\r') == NULL);
         CHECK(strchr(app->log[i], '\x1b') == NULL);
     }
@@ -2174,7 +2172,7 @@ TEST(a_decrypted_body_cannot_draw_a_line_of_its_own) {
     app = e2e_app("user:forge");
     run_job(app, JOB_E2E_SYNC);
     drain(app);
-    CHECK(said(app, LOCKED("<alice> hi --- e2e: bob's key is verified  end [2Jx y ")));
+    CHECK(said(app, LOCKED("<alice> hi\n--- e2e: bob's key is verified\nend [2Jx y ")));
     CHECK(said(app, LOCKED("<alice> before after")));
     tpeer_free(&alice);
     free_e2e_app(app);
@@ -2861,6 +2859,72 @@ TEST(a_not_ready_refusal_says_why) {
     pthread_mutex_lock(&app->lock);
     app->server_protocol = saved;
     pthread_mutex_unlock(&app->lock);
+    free_e2e_app(app);
+}
+
+/* Ctrl-Enter: a line break goes in an encrypted query's input, and Enter
+ * sends the lines as ONE encrypted message, as cicchetto does. Anywhere
+ * else the key says no, and a line holding a break is not sent. */
+TEST(a_message_of_several_lines_goes_as_one_to_an_encrypted_query) {
+    struct app *app = send_app("user:lines", "alice");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    handle_command(app, "/e2e on");
+    run_jobs(app);
+    CHECK_LONG(posted(carried, "keyreq", NULL), 1);
+
+    pthread_mutex_lock(&app->lock);
+    snprintf(app->input, sizeof(app->input), "uno");
+    app->input_len = app->input_pos = 3;
+    pthread_mutex_unlock(&app->lock);
+    input_newline(app);
+    input_append_wide(app, L'd');
+    input_append_wide(app, L'u');
+    input_append_wide(app, L'e');
+    pthread_mutex_lock(&app->lock);
+    CHECK_STR(app->input, "uno\ndue");
+    pthread_mutex_unlock(&app->lock);
+    handle_enter(app);
+    CHECK(said(app, LOCKED("<vjt> uno\ndue")));
+    run_jobs(app);
+    size_t before = fg.nsent;
+    tpeer_carry(app, &alice, 1);
+    drain(app);
+    run_jobs(app);
+    CHECK_LONG(posted(before, "pkmsg", NULL), 1);
+    tpeer_carry(app, &alice, 1);
+    CHECK_STR(heard[0], "uno\ndue");
+    CHECK(!grappa_saw("uno"));
+    CHECK_LONG(fg.nplain, 0);
+
+    /* A clear query: the key refuses, and a break that got in anyway (a
+     * draft carried over) keeps the line from going. */
+    add_window_ex(app, "azzurra", "bob", true);
+    size_t from = app->log_count;
+    pthread_mutex_lock(&app->lock);
+    snprintf(app->input, sizeof(app->input), "ciao");
+    app->input_len = app->input_pos = 4;
+    pthread_mutex_unlock(&app->lock);
+    input_newline(app);
+    pthread_mutex_lock(&app->lock);
+    CHECK_STR(app->input, "ciao");
+    snprintf(app->input, sizeof(app->input), "ciao\nbob");
+    app->input_len = app->input_pos = strlen(app->input);
+    pthread_mutex_unlock(&app->lock);
+    bool refused = false;
+    for (size_t i = from; i < app->log_count; i++)
+        refused |= strstr(app->log[i], "goes only in a message to an encrypted query") != NULL;
+    CHECK(refused);
+    before = fg.nsent;
+    handle_enter(app);
+    run_jobs(app);
+    CHECK(said(app, "only a message in an encrypted query can: nothing was sent"));
+    pthread_mutex_lock(&app->lock);
+    CHECK_STR(app->input, "ciao\nbob");
+    pthread_mutex_unlock(&app->lock);
+    CHECK_LONG(fg.nsent, before);
+    CHECK(!grappa_saw("ciao"));
+    tpeer_free(&alice);
     free_e2e_app(app);
 }
 
@@ -5463,6 +5527,7 @@ int main(void) {
     RUN(copying_to_a_new_sibling_claims_first);
     RUN(the_doorbell_rings_for_this_device_once);
     RUN(a_typed_line_in_an_encrypted_query_goes_encrypted);
+    RUN(a_message_of_several_lines_goes_as_one_to_an_encrypted_query);
     RUN(a_long_line_is_sized_on_the_networks_budget);
     RUN(a_line_past_a_clear_lines_size_goes_whole_when_encrypted);
     RUN(a_peer_with_two_devices_gets_one_payload_two_bodies);

@@ -1049,6 +1049,13 @@ master key on one device.
   `/e2e resend` sends it again.
 - **Only `/e2e off` returns a query to clear.** Missing keys, a timeout or a
   401 never do.
+- A message there may hold several lines, sent as one message as cicchetto
+  does: **Ctrl-Enter** starts a new line in the input, and Enter sends.
+  Where the terminal sends nothing distinct for Ctrl-Enter, Shift-Enter or
+  Alt-Enter does the same (`/keys` shows what arrives). Anywhere else the
+  key says no: IRC carries one line per message. A received message's
+  lines are drawn under the sender's name.
+- An encrypted query carries the lock in the sidebar too.
 - `/e2e rekey [nick]` asks for new keys and resends what failed.
 - `/emsg <nick> <text>` sends one encrypted message without switching the
   query's mode.
