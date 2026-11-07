@@ -573,6 +573,59 @@ defmodule GrappaWeb.UserSocketTest do
     end
   end
 
+  # Issue 2597 — the connecting socket's resolved address is kept beside its
+  # pid in WSPresence, for the WHOIS bundle an IRC operator or a grappa admin
+  # receives. Resolved by the same `RemoteIpFromProxy` SSOT as the #543
+  # capture above, and formatted by `GrappaWeb.RemoteIP` like every address
+  # this app stores.
+  describe "connect/3 records the client address in WSPresence (issue 2597)" do
+    setup do
+      on_exit(&TaskSupervisorHelpers.drain_children/0)
+      :ok
+    end
+
+    test "records the resolved client of a user socket, not the proxy peer" do
+      user_name = "vjt-#{System.unique_integer([:positive])}"
+      {_, session} = user_and_session(name: user_name)
+
+      assert {:ok, _} =
+               connect_with_peer(session.id, {127, 0, 0, 1}, [
+                 {"x-forwarded-for", "2001:db8:1:2:3:4:5:6"}
+               ])
+
+      assert Grappa.WSPresence.client_ips(user_name) == ["2001:db8:1:2:3:4:5:6"]
+    end
+
+    test "records an IPv4 client on a dual-stack listener dotted, not as ::ffff:" do
+      user_name = "vjt-#{System.unique_integer([:positive])}"
+      {_, session} = user_and_session(name: user_name)
+
+      assert {:ok, _} = connect_with_peer(session.id, {0, 0, 0, 0, 0, 0xFFFF, 0xCB00, 0x7107}, [])
+
+      assert Grappa.WSPresence.client_ips(user_name) == ["203.0.113.7"]
+    end
+
+    test "records a visitor socket under the visitor's label" do
+      visitor = visitor_fixture()
+      {:ok, session} = Accounts.create_session({:visitor, visitor.id}, "1.2.3.4", "ua", [])
+
+      assert {:ok, _} = connect_with_peer(session.id, {203, 0, 113, 42}, [])
+
+      assert Grappa.WSPresence.client_ips("visitor:" <> visitor.id) == ["203.0.113.42"]
+    end
+
+    test "records nothing, and still connects, when peer_data is absent" do
+      user_name = "vjt-#{System.unique_integer([:positive])}"
+      {_, session} = user_and_session(name: user_name)
+
+      assert {:ok, _} =
+               Phoenix.ChannelTest.connect(UserSocket, %{}, connect_info: %{auth_token: session.id})
+
+      assert user_name in Grappa.WSPresence.list_user_names()
+      assert Grappa.WSPresence.client_ips(user_name) == []
+    end
+  end
+
   # #1618 — the capture write is best-effort by CONTRACT already: #523 made
   # `Vhosts.record_client_source/2` swallow `:db_unavailable` precisely so it
   # could never fail a connect. What it was not is best-effort in LATENCY.
