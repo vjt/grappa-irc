@@ -532,12 +532,16 @@ defmodule GrappaWeb.ShareTokenControllerTest do
                      500
 
       # The rejections that follow must not re-emit, or a spray floods the
-      # admin stream with its own refusals. Matched on THIS door so a
-      # concurrent file's throttle can't answer for it.
+      # admin stream with its own refusals. Matched on THIS door AND this
+      # test's address. With the door alone, seed 789007 failed this test on
+      # main as well: a crossing from 10.67.0.1, the address the sibling test
+      # above throttles, arrived inside the refute window. AdminEvents.record/1
+      # is a cast, so a broadcast can land after the test that caused it — the
+      # mechanism is inferred, the failure measured.
       _ = consume_invalid(conn, 6)
 
       refute_receive %Phoenix.Socket.Broadcast{
-                       payload: %{kind: :login_throttled, door: :share_token_consume}
+                       payload: %{kind: :login_throttled, door: :share_token_consume, source_ip: "10.67.0.6"}
                      },
                      200
     end
