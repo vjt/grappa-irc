@@ -4,6 +4,7 @@ import { ownNickForNetwork } from "./api";
 import { token } from "./auth";
 import { casemappingForSlug, chantypesForSlug } from "./casemapping";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
+import { getCommandMenuEnabled, getCommandMenuEntries } from "./commandMenu";
 import type { CommandContext, DispatchOutcome, SubmitResult } from "./commands/context";
 import { fanOutCommand } from "./commands/fanout";
 import { watchlistCommand } from "./commands/highlight";
@@ -74,6 +75,7 @@ import {
   partCommand,
   queryCommand,
 } from "./commands/window";
+import { countCommand, rankCommands } from "./commandUsage";
 import { ctcpFrame, scrubCtcpDelimiters } from "./ctcpAction";
 import { documentTeardownEpoch, documentTornDownSince } from "./documentTeardown";
 import { encryptedChatDeleted, sendEncrypted } from "./encryptedChats";
@@ -93,7 +95,7 @@ import { sendMessage as sendWindowMessage } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { draftLines, sendBodyLines, wireBody } from "./sendPipeline";
 import { isServicesSender } from "./servicesSender";
-import { parseSlash, type SlashCommand } from "./slashCommands";
+import { parseSlash, type SlashCommand, splitSlash } from "./slashCommands";
 import { peelStatusmsg } from "./statusmsg";
 import { type TabCycle, tabCompleteStep } from "./tabCompletion";
 import { encryptedWindowPeer, SERVER_WINDOW_NAME } from "./windowKinds";
@@ -305,6 +307,10 @@ const sayEncrypted = async (
   }
 };
 
+// issue 2584 — a command cycle as the `/` menu sees it: the verb prefix the
+// entries are ranked for, and the ring slot Tab is on.
+export type CommandCycle = { prefix: string; idx: number };
+
 const exports_ = identityScopedStore((onIdentityChange) => {
   // #772 — seeded from the previous document's unsent drafts. The textarea is
   // `value={getDraft(key())}`, so restoring the store IS restoring the UI:
@@ -342,12 +348,12 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   );
 
   // The compose door's tab-complete cycle (shape and rules: lib/tabCompletion).
-  let tabCycle: TabCycle | null = null;
+  // issue 2584 — a signal, not a `let`: the `/` menu marks the entry a command
+  // cycle put in the draft (`commandCycle` below), so it has to be observable.
+  const [tabCycle, setTabCycle] = createSignal<TabCycle | null>(null);
 
   onIdentityChange(() => setComposeByChannel({}));
-  onIdentityChange(() => {
-    tabCycle = null;
-  });
+  onIdentityChange(() => setTabCycle(null));
   // #737 — the drain lock is identity-scoped like the drafts it guards. A
   // send that never settles (a backgrounded tab whose fetch never resolves)
   // never runs its release `finally`, and the lock would otherwise outlive a
@@ -454,7 +460,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     const text = getState(key).draft;
     if (text.trim() !== "") pushHistory(key, text);
     writeState(key, (s) => ({ ...s, draft: "", historyCursor: null }));
-    tabCycle = null;
+    setTabCycle(null);
     return text;
   };
 
@@ -475,7 +481,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     if (isDraining(key)) return;
     // Any explicit edit (typing, paste, clear) breaks the tab-cycle
     // and resets the history cursor to null (we're back to live draft).
-    tabCycle = null;
+    setTabCycle(null);
     writeState(key, (s) => ({ ...s, draft: value, historyCursor: null }));
   };
 
@@ -701,6 +707,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // a no-op regardless of session state, and the consumer (ComposeBox)
     // wants the same outcome whether or not a token is in play.
     if (cmd.kind === "empty") return { error: "empty" };
+
+    // issue 2584 — count the command for the `/` menu's "most used first":
+    // the verb AS TYPED (an alias under its own name, never its expansion)
+    // and only the verb, once per command that is dispatched, whatever its
+    // outcome. Text and a line the parser refused (unknown verb, bad
+    // arguments, an alias loop) dispatch no command and count nothing.
+    // Fire-and-forget: the send never waits on it (commandUsage.ts).
+    const typed = cmd.kind === "privmsg" || cmd.kind === "error" ? null : splitSlash(text);
+    if (typed !== null) countCommand(typed.verb.toLowerCase());
 
     // issue 2512 — in an encrypted query, what is said goes to the peer,
     // encrypted, as ONE message (`sayEncrypted`).
@@ -1472,6 +1487,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   // beside the per-channel drafts, and the write through writeState (NOT
   // setDraft, which nulls tabCycle and would kill the cycle) — callers only
   // place the caret. Line-start nicks get the ": " addressee suffix.
+  //
+  // issue 2584 — and a line-start `/word` cycles the commands the `/` menu
+  // shows, in its order and no further than its entry count: what you see is
+  // what Tab walks. With the menu turned off on this device, no commands.
   const tabComplete = (
     key: ChannelKey,
     input: string,
@@ -1479,15 +1498,39 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     forward: boolean,
   ): { newInput: string; newCursor: number } | null => {
     if (isDraining(key)) return null;
-    const step = tabCompleteStep({ key, input, cursor, forward, cycle: tabCycle, addressee: true });
+    const step = tabCompleteStep({
+      key,
+      input,
+      cursor,
+      forward,
+      cycle: tabCycle(),
+      addressee: true,
+      commands: getCommandMenuEnabled()
+        ? (prefix) => rankCommands(prefix, getCommandMenuEntries())
+        : null,
+    });
     if (step === null) return null;
-    tabCycle = step.cycle;
+    setTabCycle(step.cycle);
     writeState(key, (s) => ({ ...s, draft: step.newInput }));
     return { newInput: step.newInput, newCursor: step.newCursor };
   };
 
+  // issue 2584 — the command cycle Tab is walking in `key`'s draft, for the
+  // `/` menu to mark: the verb prefix it ranks and the slot it is on
+  // (`idx === entries.length` is the typed-word slot, marking nothing).
+  // Derived, never stored: a cycle counts only while its insertion is still
+  // the draft's text where it put it — the engine's own continuation test —
+  // so a history recall or a handed-back line ends it with no reset to forget.
+  const commandCycle = (key: ChannelKey): CommandCycle | null => {
+    const c = tabCycle();
+    if (c === null || !c.command || c.key !== key) return null;
+    if (getDraft(key).slice(c.anchorStart, c.anchorEnd) !== c.lastInsertion) return null;
+    return { prefix: c.prefix, idx: c.idx };
+  };
+
   return {
     composeByChannel,
+    commandCycle,
     getDraft,
     setDraft,
     recallPrev,
@@ -1501,6 +1544,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 });
 
 export const composeByChannel = exports_.composeByChannel;
+export const commandCycle = exports_.commandCycle;
 export const getDraft = exports_.getDraft;
 export const setDraft = exports_.setDraft;
 export const recallPrev = exports_.recallPrev;

@@ -9,6 +9,7 @@
 import { casemappingForSlug, chantypesForSlug } from "./casemapping";
 import { type ChannelKey, decodeChannelKey } from "./channelKey";
 import { isChannelName } from "./chantypes";
+import type { Casemapping } from "./isupport";
 import { joinedChannelsOnNetwork } from "./joinedChannels";
 import { membersByChannel } from "./members";
 import { normalizeNick } from "./nickEquals";
@@ -39,6 +40,7 @@ export type TabCycle = {
   anchorEnd: number;
   lastInsertion: string;
   suffix: string; // ": " (line start, addressee doors only) or " "
+  command: boolean; // issue 2584 — cycling commands (a line-start `/word`), not identifiers
 };
 
 export type TabRequest = {
@@ -48,6 +50,11 @@ export type TabRequest = {
   forward: boolean; // Tab (true) / Shift+Tab (false)
   cycle: TabCycle | null; // the door's previous step, or null
   addressee: boolean; // a line-start nick gets ": " (compose) or " " (services prompt)
+  // issue 2584 — what a line-start `/word` completes against: the verbs for a
+  // prefix (slash dropped, lower-cased), in the order to cycle them, which is
+  // the `/` menu's own. `null` at a door with no commands (the services prompt,
+  // or the compose box with the menu turned off on this device).
+  commands: ((prefix: string) => readonly string[]) | null;
 };
 
 export type TabStep = { newInput: string; newCursor: number; cycle: TabCycle };
@@ -65,7 +72,7 @@ export type TabStep = { newInput: string; newCursor: number; cycle: TabCycle };
 // shared. There is ONE completion engine, deliberately: a parallel one
 // would drift on the re-tap/anchor rules that took #737 to get right.
 export function tabCompleteStep(req: TabRequest): TabStep | null {
-  const { key, input, cursor, forward, cycle: tabCycle, addressee } = req;
+  const { key, input, cursor, forward, cycle: tabCycle, addressee, commands } = req;
 
   // #1255 — completing a CHANNEL vs a NICK is decided by this network's
   // advertised sigils, not the RFC class: on a `CHANTYPES=#` network a
@@ -88,6 +95,7 @@ export function tabCompleteStep(req: TabRequest): TabStep | null {
   let prefix: string;
   let suffix: string;
   let oldEnd: number;
+  let command: boolean;
 
   if (continuing && tabCycle !== null) {
     anchorStart = tabCycle.anchorStart;
@@ -95,6 +103,7 @@ export function tabCompleteStep(req: TabRequest): TabStep | null {
     prefix = tabCycle.prefix;
     suffix = tabCycle.suffix;
     oldEnd = tabCycle.anchorEnd;
+    command = tabCycle.command;
   } else {
     // Fresh cycle: find the word ending at the cursor.
     let start = cursor;
@@ -102,6 +111,12 @@ export function tabCompleteStep(req: TabRequest): TabStep | null {
     typedWord = input.slice(start, cursor);
     if (typedWord.length === 0) return null;
     anchorStart = start;
+    // issue 2584 — a `/word` that opens the line is a command, never a nick:
+    // the cycle, the revert slot and the anchor stay the ones below, only the
+    // candidates and the suffix differ. A `//` opening is the literal-text
+    // escape (slashCommands.ts), so it is not a command.
+    command =
+      commands !== null && start === 0 && typedWord.startsWith("/") && !typedWord.startsWith("//");
     // Fold with the NETWORK's casemapping (not a bare toLowerCase) so
     // `Foo` completes a member `foo`. On bahamut (`CASEMAPPING=ascii`,
     // #525) that folds `A-Z` ONLY: `[ ] \ ~` are NOT folded, so for
@@ -119,19 +134,70 @@ export function tabCompleteStep(req: TabRequest): TabStep | null {
     // what gets inserted is always the real nick. Keep both halves stated
     // — a reader who sees only this paragraph will "fix" the second level
     // as a leftover.
-    prefix = normalizeNick(typedWord, tabCasemapping);
+    //
+    // issue 2584 — a verb is not an identifier, so none of that applies to
+    // it: lower case, as the server keys the counts (and as alias names are).
+    prefix = command ? typedWord.slice(1).toLowerCase() : normalizeNick(typedWord, tabCasemapping);
     // ": " only when the word is the first token on the line — and only
     // for a NICK. A channel is a topic of conversation, never an
     // addressee, so `#chan: ` would be wrong at line start (#30).
     // issue 2375 — and only at a door that has addressees: on the services
     // prompt the line opens with a COMMAND (`INFO vjt`), never a nick.
     suffix =
-      addressee && !isChannelName(typedWord, tabSigils) && input.slice(0, anchorStart).trim() === ""
+      !command &&
+      addressee &&
+      !isChannelName(typedWord, tabSigils) &&
+      input.slice(0, anchorStart).trim() === ""
         ? ": "
         : " ";
     oldEnd = cursor;
   }
 
+  // A command cycle the door stopped offering commands to (the menu turned
+  // off mid-cycle) completes nothing, rather than its verb prefix as a nick.
+  const matches = command
+    ? (commands?.(prefix) ?? []).map((verb) => `/${verb}`)
+    : identifierMatches(key, typedWord, prefix, tabSigils, tabCasemapping);
+  if (matches.length === 0) return null;
+
+  const span = matches.length + 1; // matches + the revert slot
+  const idx =
+    continuing && tabCycle !== null
+      ? (((tabCycle.idx + (forward ? 1 : -1)) % span) + span) % span
+      : 0;
+
+  // idx === matches.length is the revert slot: restore the typed text.
+  const insertion = idx === matches.length ? typedWord : matches[idx] + suffix;
+  const newInput = input.slice(0, anchorStart) + insertion + input.slice(oldEnd);
+  const anchorEnd = anchorStart + insertion.length;
+
+  return {
+    newInput,
+    newCursor: anchorEnd,
+    cycle: {
+      key,
+      typedWord,
+      prefix,
+      idx,
+      anchorStart,
+      anchorEnd,
+      lastInsertion: insertion,
+      suffix,
+      command,
+    },
+  };
+}
+
+// The members of the key's window, or the channels joined on its network when
+// the word carries one of the network's sigils (#30, #1255), that `prefix`
+// reaches: the literal matches first, then (nicks only) the #1003 second level.
+function identifierMatches(
+  key: ChannelKey,
+  typedWord: string,
+  prefix: string,
+  tabSigils: readonly string[],
+  tabCasemapping: Casemapping,
+): string[] {
   const isChannel = isChannelName(typedWord, tabSigils);
   const candidates = isChannel
     ? joinedChannelsOnNetwork(key)
@@ -158,32 +224,5 @@ export function tabCompleteStep(req: TabRequest): TabStep | null {
               stripNickDecoration(normalizeNick(c, tabCasemapping)).startsWith(looseWord),
           )
           .sort(byName);
-  const matches = [...literal, ...loose];
-  if (matches.length === 0) return null;
-
-  const span = matches.length + 1; // matches + the revert slot
-  const idx =
-    continuing && tabCycle !== null
-      ? (((tabCycle.idx + (forward ? 1 : -1)) % span) + span) % span
-      : 0;
-
-  // idx === matches.length is the revert slot: restore the typed text.
-  const insertion = idx === matches.length ? typedWord : matches[idx] + suffix;
-  const newInput = input.slice(0, anchorStart) + insertion + input.slice(oldEnd);
-  const anchorEnd = anchorStart + insertion.length;
-
-  return {
-    newInput,
-    newCursor: anchorEnd,
-    cycle: {
-      key,
-      typedWord,
-      prefix,
-      idx,
-      anchorStart,
-      anchorEnd,
-      lastInsertion: insertion,
-      suffix,
-    },
-  };
+  return [...literal, ...loose];
 }
