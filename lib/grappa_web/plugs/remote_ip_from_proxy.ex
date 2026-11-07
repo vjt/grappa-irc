@@ -5,7 +5,8 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxy do
   when they carry forwarded headers.
 
   Wraps the `RemoteIp` hex package. Same option shape: `headers:` +
-  `proxies:` + `clients:` etc. are forwarded verbatim.
+  `proxies:` etc. are forwarded verbatim. `clients:` is the exception: the
+  plug sets it on every resolution (see "Which hops are proxies").
 
   ## Trust model
 
@@ -15,7 +16,7 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxy do
       |-------------|-------------|-------------------------------------------|
       | loopback    | no          | trust peer (direct curl from inside box)  |
       | loopback    | yes         | trust XFF (local nginx is reverse-proxying) |
-      | non-loopback| any         | delegate to `RemoteIp`: the forwarded-chain client if XFF is present (walked right-to-left, reserved ranges skipped), else the peer |
+      | non-loopback| any         | delegate to `RemoteIp`: the forwarded-chain client if XFF is present (walked right-to-left, loopback hops skipped), else the peer |
 
   The `non-loopback` row is NOT "ignore headers and trust the peer":
   a non-loopback peer WITH an XFF still has its chain walked (the
@@ -71,6 +72,27 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxy do
   rewrite the codebase), so this layer never claimed to defend against
   it.
 
+  ## Which hops are proxies
+
+  Only loopback hops are treated as proxies. `RemoteIp` on its own treats
+  every reserved range as a proxy hop — loopback AND the private ranges
+  (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`) — so an
+  address a proxy appended from one of those ranges would be walked past
+  and an entry further left resolved instead. The proxy appends the
+  address it actually saw, so that entry is the client however it is
+  numbered: a user reaching the front door from a LAN or a VPN.
+  `trusted_client_ip/3` passes the four private ranges as `clients:`,
+  which `RemoteIp` consults before anything else, so the walk stops on
+  them and only `127.0.0.0/8` and `::1` remain proxy hops.
+
+  The price falls on a CHAIN of proxies on private addresses: the hop
+  nearest the BEAM appends the address of the hop before it, and that
+  address is what resolves. A single front door — the shape of every proxy
+  config this project ships — is unaffected. There is no setting for a
+  list of trusted proxy addresses, and `RemoteIp`'s `proxies:` would not
+  be one: it is consulted AFTER `clients:`, so it cannot claim back an
+  address inside these ranges.
+
   ## Loopback shapes
 
   `{127, _, _, _}` and `{0, 0, 0, 0, 0, 0, 0, 1}` are the only two
@@ -104,6 +126,14 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxy do
   # through `direct_loopback_peer?/1` so exactly ONE module knows both the
   # key and the fail-closed default.
   @direct_peer_assign :direct_loopback_peer
+
+  # `RemoteIp`'s built-in reserved list minus loopback: the ranges it would
+  # otherwise walk past as proxy hops. Passed as `clients:`, which it checks
+  # first. See "Which hops are proxies" in the moduledoc. Applied on every
+  # resolution rather than in `init/1`: in prod the endpoint runs `init/1` at
+  # compile time and keeps the result in its own beam, so the rule would live
+  # in two beams and a hot deploy would have to swap both.
+  @private_ranges ~w[10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 fc00::/7]
 
   @typedoc "Packed plug options: the header allowlist + the `RemoteIp` keyword opts."
   @type opts :: {[binary()], keyword()}
@@ -189,18 +219,17 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxy do
       | non-loopback | any         | the header-chain client, else the peer    |
 
   The non-loopback rows delegate to `RemoteIp.from/2`, which walks the
-  forwarded chain right-to-left and stops at the first non-reserved IP —
-  so a trusted proxy's appended real client wins over any forged leftmost
-  entry, and a header yielding no client falls back to the peer.
+  forwarded chain right-to-left and stops at the first entry that is not
+  loopback (see "Which hops are proxies") — so the address the proxy
+  appended wins over every entry left of it, and a header yielding no
+  client falls back to the peer.
 
-  That last fallback is a known ATTRIBUTION limitation, still open: when
-  every entry in the chain is a reserved address the walk yields nothing,
-  and the answer collapses onto the transport peer — so such clients
-  share one identity for throttle keys, the `sessions.ip` audit column
-  and the #543 mode-2 source derivation. Do NOT read a return value of
-  this function as a privilege; `Plugs.LoopbackOnly` gates on
-  `direct_loopback_peer?/1` precisely so this limitation cannot become an
-  authorization decision.
+  That last fallback is an ATTRIBUTION limit: a chain whose every entry is
+  loopback (a client on the proxy's own host) names no client, and the
+  answer is the transport peer. Do NOT read a return value of this
+  function as a privilege; `Plugs.LoopbackOnly` gates on
+  `direct_loopback_peer?/1` precisely so a resolved loopback address can
+  never become an authorization decision.
   """
   @spec trusted_client_ip(:inet.ip_address(), [{binary(), binary()}], opts()) ::
           :inet.ip_address()
@@ -208,7 +237,7 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxy do
     if direct_loopback_peer?(peer_ip, req_headers, headers) do
       peer_ip
     else
-      case RemoteIp.from(req_headers, remote_ip_opts) do
+      case RemoteIp.from(req_headers, Keyword.put(remote_ip_opts, :clients, @private_ranges)) do
         nil -> peer_ip
         client -> client
       end

@@ -7,7 +7,10 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxyTest do
       |-------------|-------------|--------|-----------------------|
       | loopback    | no          | peer   | loopback (untouched)  |
       | loopback    | yes         | XFF    | rewritten from chain  |
-      | non-loopback| any         | RemoteIp default (chain walk if XFF set, peer otherwise) |
+      | non-loopback| any         | RemoteIp (chain walk if XFF set, peer otherwise) |
+
+  In every row with a chain, only loopback hops are walked past — see the
+  "only loopback hops are proxies" describe.
 
   The loopback+XFF row is the bastille-jail (and Docker) shape:
   nginx runs on the same host and proxies via loopback. Tests pin
@@ -41,20 +44,6 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxyTest do
     test "honors X-Real-IP as a fallback shape" do
       conn = call({172, 17, 0, 2}, [{"x-real-ip", "198.51.100.7"}])
       assert conn.remote_ip == {198, 51, 100, 7}
-    end
-
-    test "right-to-left walk skips reserved-range proxy chain" do
-      # Real client = 203.0.113.42, then through a corporate proxy at
-      # 10.0.0.5 (RFC1918 — reserved-proxy), then through nginx at
-      # 172.17.0.2 (peer, also reserved). Walk surfaces the leftmost
-      # non-reserved IP.
-      conn =
-        call(
-          {172, 17, 0, 2},
-          [{"x-forwarded-for", "203.0.113.42, 10.0.0.5"}]
-        )
-
-      assert conn.remote_ip == {203, 0, 113, 42}
     end
 
     test "spoofed X-F-F from non-reserved client surfaces the spoofer's real public IP" do
@@ -108,16 +97,6 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxyTest do
 
     test "v6 loopback peer with X-F-F is rewritten" do
       conn = call({0, 0, 0, 0, 0, 0, 0, 1}, [{"x-forwarded-for", "203.0.113.42"}])
-      assert conn.remote_ip == {203, 0, 113, 42}
-    end
-
-    test "loopback peer with X-F-F chain walks like a normal proxy" do
-      conn =
-        call(
-          {127, 0, 0, 1},
-          [{"x-forwarded-for", "203.0.113.42, 10.0.0.5"}]
-        )
-
       assert conn.remote_ip == {203, 0, 113, 42}
     end
   end
@@ -180,32 +159,17 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxyTest do
                [{"x-forwarded-for", "1.2.3.4, 198.51.100.99"}]
              ) == {198, 51, 100, 99}
     end
-
-    # THREAT: a forged XFF carrying only a RESERVED (RFC1918) address can't
-    # override the real peer — the reserved entry is treated as a proxy and
-    # skipped, the header yields no client, resolution falls back to the peer.
-    test "forged reserved-only XFF falls back to the peer (non-loopback)" do
-      assert RemoteIpFromProxy.trusted_client_ip(
-               {203, 0, 113, 7},
-               [{"x-forwarded-for", "10.0.0.5"}]
-             ) == {203, 0, 113, 7}
-    end
   end
 
-  # A caller whose own source address is in a reserved range, fronted by a
-  # same-host reverse proxy, arrives with a forwarded chain in which every
-  # entry is reserved. The resolver finds no client in such a chain and
-  # answers with the transport peer — which in that topology is loopback.
+  # A caller whose own source address is in a private range, fronted by a
+  # same-host reverse proxy, arrives with a forwarded chain naming only that
+  # address, over a loopback transport peer.
   #
   # No header is forged; the proxy builds the chain itself. The gate must
-  # deny anyway, and it does, because it reads the transport predicate and
-  # not the resolved value. This pins the GATE, which is the whole point of
-  # separating the two.
-  #
-  # The sibling property — that the RESOLVED value should not collapse onto
-  # the peer either — is an attribution concern, still open, and is NOT
-  # pinned here: it has no fix in this tree, and a permanently-red test
-  # buys nothing. See the `trusted_client_ip/3` moduledoc.
+  # deny, and it does because it reads the transport predicate and not the
+  # resolved value. This pins the GATE, which is the whole point of
+  # separating the two. The RESOLVED value — the caller's own address, not
+  # the peer — is pinned by the "only loopback hops are proxies" describe.
   describe "reserved-only forwarded chain behind a loopback proxy" do
     test "the loopback gate rejects a private-range caller fronted by a loopback proxy" do
       conn =

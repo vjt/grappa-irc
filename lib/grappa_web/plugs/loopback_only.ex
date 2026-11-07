@@ -30,7 +30,7 @@ defmodule GrappaWeb.Plugs.LoopbackOnly do
   replaced the transport peer with the best available guess at who the
   client is — and that guess can be loopback for reasons that carry no
   operator privilege whatsoever. A forwarded chain that names only
-  reserved addresses yields no client at all, and the resolver then
+  loopback addresses yields no client at all, and the resolver then
   answers with the transport peer, which behind a same-host reverse
   proxy (the bastille jail, `proxy_pass 127.0.0.1:4000`) IS loopback.
   Gating on that value made the gate a function of a heuristic.
