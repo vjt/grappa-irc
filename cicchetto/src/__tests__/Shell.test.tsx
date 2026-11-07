@@ -329,6 +329,8 @@ vi.mock("../lib/compose", () => ({
   // send-button spinner and the queue-full refusal.
   isSending: () => false,
   isQueueFull: () => false,
+  // issue 2584 — the `/` menu reads the compose door's command cycle.
+  commandCycle: () => null,
 }));
 
 vi.mock("../lib/theme", () => ({

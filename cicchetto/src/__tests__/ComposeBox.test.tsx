@@ -32,6 +32,9 @@ vi.mock("../lib/compose", () => ({
   // query's peer, which the paste guard asks (pinned in compose.test.ts).
   // False: every window here is a plain one.
   sentEncrypted: vi.fn(() => false),
+  // issue 2584 — the `/` menu's view of the Tab cycle; its behaviour is
+  // pinned against the REAL store in ComposeBoxCommandMenu.test.tsx.
+  commandCycle: vi.fn(() => null),
 }));
 
 let mockFramePreview: { messages: number; remainingBytes: number | null } | null = null;

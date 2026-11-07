@@ -6068,6 +6068,50 @@ html.is-ios27-band .shell {
   color: var(--mode-halfop);
 }
 
+/* issue 2584 — the `/` command menu. The slot is a zero-height anchor on the
+   compose form's top edge, so the menu floats OVER the bottom of the
+   scrollback instead of pushing it up: a pane that resized on every keystroke
+   of a verb would fight its own stick-to-bottom. Left-aligned, clear of the
+   float stack on the right (z 40), above the cards overlay (42) and the
+   mobile ☰ (41), below every drawer and modal (99+). */
+.command-menu-slot {
+  position: relative;
+}
+
+.command-menu {
+  position: absolute;
+  bottom: 0;
+  left: 0.5rem;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  min-width: 10rem;
+  max-width: calc(100% - 1rem);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  box-shadow: 2px 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.command-menu-entry {
+  background: transparent;
+  color: var(--fg);
+  border: none;
+  /* A thumb's row (#306's floor): on a phone a tap here is the way to pick a
+     command that does not depend on the swipe (issue 2356). */
+  min-height: var(--tap-min);
+  padding: 0.3rem 1rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.command-menu-entry:hover,
+.command-menu-entry[aria-selected="true"] {
+  background: var(--border);
+}
+
 /* Image upload — picker button + TTL select + progress + modal.
  * Images cluster I-2 (2026-05-15). */
 
