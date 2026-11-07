@@ -1472,8 +1472,9 @@ defmodule Grappa.Session.Server do
 
     # #498 — seed the cheap live-nick copy with the initial (configured)
     # nick so `current_nick/2` returns `{:ok, nick}` for a live session
-    # from the moment it registers, before any reconcile/rename.
-    :ok = publish_live_nick(state.subject, state.network_id, state.nick)
+    # from the moment it registers, before any reconcile/rename. Seeded as
+    # NOT registered (issue 2597): until 001 this nick is a wish, not a fact.
+    :ok = publish_live_nick(state.subject, state.network_id, state.nick, state.subject_label, false)
 
     # issue 2430 — the first offline-queue sweep, as soon as the session is
     # up: whatever expired while it was down is told to the recipient now,
@@ -3868,7 +3869,15 @@ defmodule Grappa.Session.Server do
     # map-update form would KeyError on its next 001 (the #216 contract).
     next_state = %{state | connection_stable_timer: stable_timer}
 
-    delegate(msg, Map.put(next_state, :registered_at, DateTime.utc_now()))
+    {:noreply, registered} = delegate(msg, Map.put(next_state, :registered_at, DateTime.utc_now()))
+
+    # issue 2597 — from here the session HOLDS its nick upstream, so the
+    # registry copy may say so. Read off the delegated state, whose nick is
+    # the reconciled one.
+    :ok =
+      publish_live_nick(registered.subject, registered.network_id, registered.nick, registered.subject_label, true)
+
+    {:noreply, registered}
   end
 
   # #100 — the connection survived `connection_stable_ms` past 001 without
@@ -6422,7 +6431,14 @@ defmodule Grappa.Session.Server do
   @spec on_own_nick_change(t(), t()) :: :ok
   defp on_own_nick_change(%{nick: prev_nick}, %{nick: next_nick} = next_state)
        when prev_nick != next_nick do
-    :ok = publish_live_nick(next_state.subject, next_state.network_id, next_state.nick)
+    :ok =
+      publish_live_nick(
+        next_state.subject,
+        next_state.network_id,
+        next_state.nick,
+        next_state.subject_label,
+        Map.get(next_state, :registered_at) != nil
+      )
 
     :ok = Broadcaster.to_user(next_state, SessionWire.own_nick_changed(next_state.network_id, next_nick))
 
@@ -6459,26 +6475,36 @@ defmodule Grappa.Session.Server do
   # value. The ONE writer of the cheap live-nick copy: it always writes
   # `state.nick` (a copy, never a parallel computation) and is called at
   # EXACTLY the points `state.nick` is set — `do_init/1` (initial) and
-  # `on_own_nick_change/2` (001 reconcile + self-NICK) — so
-  # the copy cannot fork from the authoritative nick (the identity-fork bug
-  # class #498 fixes). Runs in the process that OWNS the entry, so
+  # `on_own_nick_change/2` (001 reconcile + self-NICK) — plus the 001 itself,
+  # so the copy cannot fork from the authoritative nick (the identity-fork bug
+  # class #498 fixes).
+  #
+  # issue 2597 — the value is `{nick, subject_label, registered?}`.
+  # `current_nick/2` reads the nick alone and is unchanged: before 001 it
+  # still answers the configured seed, which its consumers want as a
+  # fallback. `registered?` is false from `do_init/1` until the 001 handler
+  # publishes true, and a respawn is a new process back on `do_init/1`, so
+  # it can only be true while THIS process holds the nick upstream. That is
+  # what `Session.registered_holders/3` keys on: the seed alone would answer
+  # "ours" for a nick a session in backoff or a 433 loop does not hold, and
+  # somebody else may. The label rides along so that lookup can reach
+  # `WSPresence` without a DB read. Runs in the process that OWNS the entry, so
   # `Registry.update_value/3` is a direct ETS write with no message
   # round-trip; on session crash the Registry drops the entry →
   # `current_nick/2` reports `:no_session` → callers fall back to the
   # credential nick. A `:error` return would mean the process is not
   # registered under its own key — an impossible invariant break we let
   # crash rather than silently swallow.
-  # Takes the three scalars it needs (subject / network_id / nick), NOT the
-  # whole `state`: passing `t()` handed dialyzer the state's OPAQUE `MapSet`
+  # Takes the scalars it needs, NOT the whole `state`: passing `t()` handed dialyzer the state's OPAQUE `MapSet`
   # fields (`awaiting_invite`, `caps_active` → `%MapSet{map =>
   # MapSet.internal(_)}`) at the `do_init/1` call site, tripping
   # `call_without_opaque`. The warning was a design signal — the interface
   # was too wide. A narrow scalar interface cannot break opacity.
-  @spec publish_live_nick(Grappa.Session.subject(), integer(), String.t()) :: :ok
-  defp publish_live_nick(subject, network_id, nick) do
+  @spec publish_live_nick(Grappa.Session.subject(), integer(), String.t(), String.t(), boolean()) :: :ok
+  defp publish_live_nick(subject, network_id, nick, label, registered?) do
     {_, _} =
       Registry.update_value(Grappa.SessionRegistry, registry_key(subject, network_id), fn _ ->
-        nick
+        {nick, label, registered?}
       end)
 
     :ok

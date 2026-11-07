@@ -1995,13 +1995,17 @@ defmodule Grappa.Session do
   #498 — a CHEAP `Registry.lookup/2` read of the session's own registry
   entry VALUE, NOT a `GenServer.call`. `Session.Server` mirrors `state.nick`
   into its own SessionRegistry entry value on init + every reconcile/rename
-  (`publish_live_nick/1`), so this reader carries no per-call round-trip.
+  (`publish_live_nick/5`), so this reader carries no per-call round-trip.
   That is what lets the badge / `/me` unread seed / read-cursor settle
   resolve own_nick through the ONE live-nick source on their hot path
   without the per-network GenServer round-trip the old off-Session
   configured-nick shortcut existed to avoid (DESIGN_NOTES 2026-07-28).
-  A live session always carries a binary value (seeded at init); an entry
-  whose value is not yet a binary is treated as no live nick → fall back.
+  A live session always carries a `{nick, label, registered?}` value
+  (seeded at init); an entry not yet seeded is treated as no live nick →
+  fall back. The nick is answered whether or not the session has seen 001
+  — before it, that is the configured seed, which is the fallback these
+  callers want. "Does this session hold the nick upstream" is a different
+  question: `registered_holders/3`.
 
   Exposed on the facade so `GrappaWeb.NetworksController.index` can
   advertise the real IRC nick to cicchetto without coupling the controller
@@ -2011,9 +2015,34 @@ defmodule Grappa.Session do
   def current_nick(subject, network_id)
       when is_subject(subject) and is_integer(network_id) do
     case Registry.lookup(Grappa.SessionRegistry, Server.registry_key(subject, network_id)) do
-      [{_, nick}] when is_binary(nick) -> {:ok, nick}
+      [{_, {nick, _, _}}] when is_binary(nick) -> {:ok, nick}
       _ -> {:error, :no_session}
     end
+  end
+
+  @doc """
+  Issue 2597 — the live sessions on `network_id` that HOLD a nick folding
+  to `nick_key` upstream, as `{subject, subject_label}` pairs.
+
+  `nick_key` is already folded; each session's nick is folded with
+  `casemapping` (the caller's network casemapping) before the compare.
+  Only a session that has seen 001 RPL_WELCOME counts: before it, the
+  registry carries the CONFIGURED nick (the `current_nick/2` seed), which
+  a session in backoff or in a 433 loop does not hold — somebody else may.
+
+  One `Registry.select/2` over the entry values; no session is messaged.
+  On a single ircd a nick has one holder, so more than one entry is a
+  transient the caller must not resolve by picking.
+  """
+  @spec registered_holders(integer(), String.t(), Identifier.casemapping()) :: [{subject(), String.t()}]
+  def registered_holders(network_id, nick_key, casemapping)
+      when is_integer(network_id) and is_binary(nick_key) and is_atom(casemapping) do
+    Grappa.SessionRegistry
+    |> Registry.select([
+      {{{:session, :"$1", network_id}, :_, {:"$2", :"$3", true}}, [], [{{:"$1", :"$2", :"$3"}}]}
+    ])
+    |> Enum.filter(fn {_, nick, _} -> Identifier.canonical_target(nick, casemapping) == nick_key end)
+    |> Enum.map(fn {subject, _, label} -> {subject, label} end)
   end
 
   @doc """
