@@ -103,6 +103,9 @@ defmodule Grappa.UserSettings do
   | `"away_nick_suffix"`   | `away_nick_suffix()`   | `get_away_nick_suffix/1`,       |
   |                        | (absent = OFF)         | `put_away_nick_suffix/3`        |
   |                        |                        | (#1894)                         |
+  | `"command_counts"`     | `command_counts()`     | `get_command_counts/1`,         |
+  |                        |                        | `increment_command_count/2`     |
+  |                        |                        | (issue 2584)                    |
 
   ## Boundary
 
@@ -301,6 +304,13 @@ defmodule Grappa.UserSettings do
   # builtin-collision precedence are client-side (cic owns DISPATCH); the
   # server validates only structural shape at this boundary.
   @aliases_key "aliases"
+  # Issue 2584 — how many times the subject sent each command verb, the order
+  # of cic's `/` menu ("most used first"). The verb is the one TYPED (an alias
+  # by its own name): an open set cic owns, exactly like `"aliases"`, so the
+  # server holds its shape and a ceiling, never a list of verbs. Synced by
+  # reading, not by broadcast (vjt's ruling on the issue): another device
+  # picks the counts up at its next (re)join of the user topic.
+  @command_counts_key "command_counts"
 
   # #449 — server-backed display preferences (timestamp format, colored
   # nicklist, per-channel presence filter). ONE JSON sub-object so a single
@@ -333,9 +343,16 @@ defmodule Grappa.UserSettings do
   # Structural bounds for aliases — a user-writable JSON blob needs a boundary
   # or it becomes an unbounded storage/DOS vector (same rationale as
   # @upload_ttl_seconds_max). Generous enough that no real config hits them.
-  @alias_name_max_bytes 32
+  # `@verb_max_bytes` bounds every command verb this module stores: alias
+  # names (#385) and the verbs counted for the `/` menu (issue 2584).
+  @verb_max_bytes 32
   @alias_expansion_max_bytes 512
   @aliases_max_count 200
+  # Issue 2584 — the same guard for the count map, which a client grows one
+  # verb at a time. cic offers its builtins plus at most `@aliases_max_count`
+  # aliases (72 + 200 today), so an honest client never meets it. The price,
+  # accepted: a deleted alias keeps its count, and its slot.
+  @command_counts_max_count 512
 
   # Structural bounds for the mention watchlist — the same treatment
   # @aliases_max_count gives the alias map one door over: a
@@ -2017,7 +2034,8 @@ defmodule Grappa.UserSettings do
     * Every key AND value must be a string. Each name is trimmed +
       lowercased; each expansion trimmed.
     * A name must be non-empty, contain no whitespace (it is a command verb),
-      and be at most #{@alias_name_max_bytes} bytes.
+      and be at most #{@verb_max_bytes} bytes — the verb rule
+      `increment_command_count/2` applies too.
     * An expansion must be non-empty and at most #{@alias_expansion_max_bytes}
       bytes.
     * At most #{@aliases_max_count} aliases total.
@@ -2033,6 +2051,67 @@ defmodule Grappa.UserSettings do
   def set_aliases({_, _} = subject, aliases) when is_map(aliases) do
     with {:ok, normalized} <- validate_and_normalize_aliases(aliases, subject) do
       update_data(subject, &Map.put(&1, @aliases_key, normalized))
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # command_counts accessors (issue 2584 — the `/` menu's "most used first")
+  # ---------------------------------------------------------------------------
+
+  @typedoc """
+  Issue 2584 — verb => how many times the subject sent it. The verb is the
+  normalised one (the alias-name rule), the count at least 1: a verb never
+  sent is absent, never `0`.
+  """
+  @type command_counts :: %{String.t() => pos_integer()}
+
+  @doc """
+  Returns how many times the subject sent each command verb.
+
+  `%{}` when no row exists, the key is absent, or the stored value is not a
+  map; an entry that is not `string => pos_integer` is dropped. Side-effect
+  free — does NOT create the row.
+  """
+  @spec get_command_counts(Subject.t()) :: command_counts()
+  def get_command_counts({_, _} = subject) do
+    case fetch_existing_or_nil(subject) do
+      nil -> %{}
+      %Settings{data: data} -> read_command_counts(data)
+    end
+  end
+
+  @doc """
+  Counts one use of `verb` and answers the subject's WHOLE count map, so the
+  device that sent the command catches up with the others as it counts.
+
+  The verb follows the alias-name rule — trimmed, lowercased, non-empty, no
+  whitespace, at most #{@verb_max_bytes} bytes — because it is cic's to name
+  (a DISPATCH builtin or one of the subject's aliases, by the name typed) and
+  the server holds only the shape. Once the map holds
+  #{@command_counts_max_count} distinct verbs a NEW one is refused and nothing
+  is written; a verb already there always counts. Errors land on the
+  synthetic `:command_counts` field (`field_errors.command_counts` in the 422
+  envelope).
+
+  The increment, ceiling included, runs inside `update_data/2`'s one
+  transaction: two devices sending at once both count, which a count read
+  outside it would not (#1375).
+  """
+  @spec increment_command_count(Subject.t(), String.t()) ::
+          {:ok, command_counts()} | {:error, Ecto.Changeset.t() | :db_unavailable}
+  def increment_command_count({_, _} = subject, verb) when is_binary(verb) do
+    with {:ok, verb} <- normalize_command_verb(verb, subject),
+         {:ok, %Settings{data: data}} <- update_data(subject, &bump_command_count(&1, verb)) do
+      counts = read_command_counts(data)
+
+      if Map.has_key?(counts, verb),
+        do: {:ok, counts},
+        else:
+          settings_field_error(
+            :command_counts,
+            subject,
+            "too many distinct command verbs (max #{@command_counts_max_count})"
+          )
     end
   end
 
@@ -2788,31 +2867,76 @@ defmodule Grappa.UserSettings do
   @spec normalize_alias_entry(term(), term()) ::
           {:ok, {String.t(), String.t()}} | {:error, String.t()}
   defp normalize_alias_entry(name, expansion) when is_binary(name) and is_binary(expansion) do
-    n = name |> String.trim() |> String.downcase()
     e = String.trim(expansion)
 
-    cond do
-      n == "" ->
-        {:error, "alias name must not be empty"}
+    case normalize_verb(name) do
+      {:error, reason} ->
+        {:error, verb_error("alias name", reason)}
 
-      String.match?(n, ~r/\s/u) ->
-        {:error, "alias name must not contain whitespace"}
-
-      byte_size(n) > @alias_name_max_bytes ->
-        {:error, "alias name too long (max #{@alias_name_max_bytes} bytes)"}
-
-      e == "" ->
+      {:ok, _} when e == "" ->
         {:error, "alias expansion must not be empty"}
 
-      byte_size(e) > @alias_expansion_max_bytes ->
+      {:ok, _} when byte_size(e) > @alias_expansion_max_bytes ->
         {:error, "alias expansion too long (max #{@alias_expansion_max_bytes} bytes)"}
 
-      true ->
+      {:ok, n} ->
         {:ok, {n, e}}
     end
   end
 
   defp normalize_alias_entry(_, _), do: {:error, "alias name and expansion must be strings"}
+
+  # The one rule for "what a command verb looks like", shared by alias names
+  # (#385) and the counted verbs (issue 2584), so a verb cic can alias is a
+  # verb it can count. `String.downcase/1` and not `canonical_target/1`: a
+  # verb is no IRC identifier, and this is the fold aliases already had.
+  @spec normalize_verb(String.t()) :: {:ok, String.t()} | {:error, :empty | :whitespace | :too_long}
+  defp normalize_verb(raw) do
+    verb = raw |> String.trim() |> String.downcase()
+
+    cond do
+      verb == "" -> {:error, :empty}
+      String.match?(verb, ~r/\s/u) -> {:error, :whitespace}
+      byte_size(verb) > @verb_max_bytes -> {:error, :too_long}
+      true -> {:ok, verb}
+    end
+  end
+
+  @spec verb_error(String.t(), :empty | :whitespace | :too_long) :: String.t()
+  defp verb_error(noun, :empty), do: "#{noun} must not be empty"
+  defp verb_error(noun, :whitespace), do: "#{noun} must not contain whitespace"
+  defp verb_error(noun, :too_long), do: "#{noun} too long (max #{@verb_max_bytes} bytes)"
+
+  @spec normalize_command_verb(String.t(), Subject.t()) ::
+          {:ok, String.t()} | {:error, Ecto.Changeset.t()}
+  defp normalize_command_verb(raw, subject) do
+    case normalize_verb(raw) do
+      {:ok, _} = ok -> ok
+      {:error, reason} -> settings_field_error(:command_counts, subject, verb_error("command verb", reason))
+    end
+  end
+
+  # Pure, as `update_data/2` demands of its function. A verb the map cannot
+  # take leaves `data` as it was (a changeset without changes, which Ecto
+  # does not send as an UPDATE); `increment_command_count/2` reads the refusal
+  # off the verb's absence. Rewriting the map from `read_command_counts/1` also drops
+  # any malformed entry a stray writer left.
+  @spec bump_command_count(map(), String.t()) :: map()
+  defp bump_command_count(data, verb) do
+    counts = read_command_counts(data)
+
+    if Map.has_key?(counts, verb) or map_size(counts) < @command_counts_max_count,
+      do: Map.put(data, @command_counts_key, Map.update(counts, verb, 1, &(&1 + 1))),
+      else: data
+  end
+
+  @spec read_command_counts(map()) :: command_counts()
+  defp read_command_counts(data) do
+    case data[@command_counts_key] do
+      %{} = stored -> for {verb, n} <- stored, is_binary(verb) and is_integer(n) and n > 0, into: %{}, do: {verb, n}
+      _ -> %{}
+    end
+  end
 
   defp aliases_changeset_error(message, subject) do
     attrs = Subject.put_subject_id(%{data: %{}}, subject)

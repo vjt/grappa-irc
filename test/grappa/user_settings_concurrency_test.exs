@@ -103,4 +103,20 @@ defmodule Grappa.UserSettingsConcurrencyTest do
     assert UserSettings.get_highlight_patterns(subject) == ["ciao"]
     assert UserSettings.get_last_client_prefix64(subject) == "AABB"
   end
+
+  # Issue 2584 — the SAME key from two writers, the shape a counter takes when
+  # two devices of one account send a command at once. A count read outside
+  # the write's transaction would land 1 here, both writers answering `{:ok, _}`.
+  test "two increments of one command verb, interleaved, count two" do
+    user = user_fixture()
+    subject = {:user, user.id}
+    {:ok, _} = UserSettings.get_or_init(subject)
+
+    interleave(subject, &UserSettings.increment_command_count(&1, "whois"))
+
+    assert {:ok, _} = UserSettings.increment_command_count(subject, "whois")
+    assert_receive {:peer_done, {:ok, _}}, 2_000
+
+    assert UserSettings.get_command_counts(subject) == %{"whois" => 2}
+  end
 end
