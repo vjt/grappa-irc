@@ -5336,6 +5336,45 @@ TEST(the_masked_line_is_the_passphrase_alone_and_leaves_nothing) {
     test_keyring_mode(NULL);
 }
 
+static bool pair_job_queued(struct app *app, const char *verb) {
+    bool found = false;
+    pthread_mutex_lock(&app->jobs_lock);
+    for (size_t i = app->jobs_head; i != app->jobs_tail; i = (i + 1) % JOB_QUEUE)
+        found |= app->jobs[i].kind == JOB_E2E_PAIR && strcmp(app->jobs[i].arg1, verb) == 0;
+    pthread_mutex_unlock(&app->jobs_lock);
+    return found;
+}
+
+/* A pairing creates this device's first E2E state too: with no keyring,
+ * /e2e pair accept asks for a new passphrase first, goes nowhere until it
+ * is set (a mismatch queues nothing), and once set it is the pairing that
+ * runs. /e2e pair decline creates nothing and asks for nothing. */
+TEST(e2e_pair_accept_without_a_keyring_asks_for_a_new_passphrase) {
+    fg_reset();
+    test_keyring_mode("fail");
+    struct app *app = e2e_app("user:atrest-pair");
+    type_line(app, "/e2e pair decline");
+    CHECK(app->e2e_secret.kind == E2E_SECRET_NONE);
+    run_jobs(app);
+    type_line(app, "/e2e pair accept");
+    CHECK(said(app, "choose a passphrase"));
+    CHECK(!pair_job_queued(app, "accept"));
+    type_line(app, "one pass");
+    type_line(app, "another");
+    CHECK(said(app, "did not match"));
+    CHECK(!pair_job_queued(app, "accept"));
+    CHECK(said(app, "/e2e pair accept to start again"));
+    type_line(app, "/e2e pair accept");
+    type_line(app, "pair pass");
+    type_line(app, "pair pass");
+    CHECK(said(app, "sealed under your passphrase"));
+    CHECK(e2e_key_source(app) == E2E_KEY_PASSPHRASE);
+    CHECK(said(app, "/e2e pair accept…"));
+    CHECK(pair_job_queued(app, "accept"));
+    free_e2e_app(app);
+    test_keyring_mode(NULL);
+}
+
 int main(void) {
     test_use_temp_home();
     /* A keyring for every test (tests/fake-secret-tool, in the temp home):
@@ -5417,6 +5456,7 @@ int main(void) {
     RUN(a_keyring_key_that_fails_the_check_falls_through_to_the_passphrase);
     RUN(a_keyring_that_failed_is_not_asked_again_until_unlock);
     RUN(the_masked_line_is_the_passphrase_alone_and_leaves_nothing);
+    RUN(e2e_pair_accept_without_a_keyring_asks_for_a_new_passphrase);
     th_free();
     fg_stop();
     return test_report();
