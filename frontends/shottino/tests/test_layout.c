@@ -50,6 +50,33 @@ static bool screen_has(const char *needle) {
     return false;
 }
 
+/* Is the UTF-8 `needle` on screen? Reads cells as WIDE characters (the
+ * lock is one), skipping the trailing half of a double-width cell. */
+static bool screen_has_wide(const char *needle) {
+    int rows = getmaxy(stdscr), cols = getmaxx(stdscr);
+    for (int y = 0; y < rows && y < MAX_H; y++) {
+        char line[MAX_W * 4 + 1];
+        size_t n = 0;
+        for (int x = 0; x < cols && x < MAX_W; x++) {
+            cchar_t cc;
+            if (mvin_wch(y, x, &cc) != OK) continue;
+            wchar_t wc = cc.chars[0];
+            if (wc == 0) continue;
+            char mb[MB_LEN_MAX];
+            mbstate_t st;
+            memset(&st, 0, sizeof(st));
+            size_t k = wcrtomb(mb, wc, &st);
+            if (k == (size_t)-1) continue;
+            memcpy(line + n, mb, k);
+            n += k;
+            if (wcwidth(wc) == 2) x++;
+        }
+        line[n] = 0;
+        if (strstr(line, needle)) return true;
+    }
+    return false;
+}
+
 /* The colour pair a run of text was drawn in.
  *
  * screen_has answers "was it drawn"; this answers "drawn HOW", which is
@@ -1411,6 +1438,57 @@ TEST(the_sidebar_records_a_row_for_every_window) {
     free(app);
 }
 
+/* An encrypted query carries the lock in the sidebar too, as its prompt
+ * does: which conversations are private should read at a glance, not only
+ * from inside each one. A clear query and a channel carry none. */
+TEST(an_encrypted_query_shows_its_lock_in_the_sidebar) {
+    struct app *app = test_app();
+    CHECK(app != NULL);
+    if (!app) return;
+    add_test_network(app, "azzurra", "ohv", "@%+");
+    add_test_window(app, "azzurra", "#grappa");
+    add_test_window(app, "azzurra", "alice");
+    add_test_window(app, "azzurra", "bob");
+    struct e2e_slot *s = &app->e2e[app->e2e_count++];
+    snprintf(s->slug, sizeof(s->slug), "azzurra");
+    e2e_on_set(&s->on, "alice", true);
+
+    erase();
+    draw(app);
+    CHECK(screen_has_wide(E2E_LOCK " alice"));
+    CHECK(!screen_has_wide(E2E_LOCK " bob"));
+    CHECK(!screen_has_wide(E2E_LOCK " #grappa"));
+
+    /* Turned off, the lock goes with it. */
+    e2e_on_set(&s->on, "alice", false);
+    erase();
+    draw(app);
+    CHECK(!screen_has_wide(E2E_LOCK));
+    CHECK(screen_has_wide("alice"));
+
+    free(s->on.v);
+    for (size_t i = 0; i < app->log_count; i++) free(app->log[i]);
+    free(app);
+}
+
+/* A label is cut by cells, never inside a character: `perchè` in five
+ * cells is `perch`, in six it is whole, and no half of `è` is left for
+ * ncursesw to draw as a meta glyph. */
+TEST(a_label_is_cut_by_cells_never_inside_a_character) {
+    erase();
+    draw_text(0, 0, 5, CP_MAIN, 0, "%s", "perch\xc3\xa8");
+    CHECK(screen_has_wide("perch"));
+    CHECK(!screen_has_wide("M"));
+    erase();
+    draw_text(0, 0, 6, CP_MAIN, 0, "%s", "perch\xc3\xa8");
+    CHECK(screen_has_wide("perch\xc3\xa8"));
+    /* A double-width lock counts two. */
+    erase();
+    draw_text(0, 0, 3, CP_MAIN, 0, "%s", E2E_LOCK " alice");
+    CHECK(screen_has_wide(E2E_LOCK " "));
+    CHECK(!screen_has_wide("a"));
+}
+
 /* Only the network you are IN is spelled out in the sidebar; every other
  * one folds to a single header row.
  *
@@ -2047,6 +2125,8 @@ int main(void) {
     RUN(the_layout_log_is_private_and_holds_no_encrypted_words);
     RUN(audio_is_clickable_but_not_drawn);
     RUN(the_sidebar_records_a_row_for_every_window);
+    RUN(an_encrypted_query_shows_its_lock_in_the_sidebar);
+    RUN(a_label_is_cut_by_cells_never_inside_a_character);
     RUN(the_sidebar_folds_every_network_but_the_focused_one);
     RUN(a_modal_over_the_settings_panel_is_drawn);
     RUN(the_input_box_draws_characters_not_bytes);

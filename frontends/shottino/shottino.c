@@ -5894,6 +5894,11 @@ static void draw_text(int y, int x, int max, int pair, attr_t attrs, const char 
 static int split_message_line(const char *line, char *prefix, size_t prefix_sz, char *nick, size_t nick_sz, const char **body);
 static int split_action_line(const char *line, char *prefix, size_t prefix_sz, char *nick, size_t nick_sz, const char **body);
 
+static size_t text_char(const char *p, size_t left, mbstate_t *st, int *w);
+
+/* `max` is in CELLS. It used to be bytes (`%.*s`), which cut a label with
+ * an accent or an emoji short, and could cut inside a character, leaving
+ * half of it for ncursesw to draw as a meta glyph. */
 static void draw_text(int y, int x, int max, int pair, attr_t attrs, const char *fmt, ...) {
     if (max <= 0) return;
     char buf[2048];
@@ -5901,8 +5906,19 @@ static void draw_text(int y, int x, int max, int pair, attr_t attrs, const char 
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
+    size_t len = strlen(buf), fit = 0;
+    int cells = 0;
+    mbstate_t st;
+    memset(&st, 0, sizeof(st));
+    while (fit < len) {
+        int w;
+        size_t n = text_char(buf + fit, len - fit, &st, &w);
+        if (cells + w > max) break;
+        cells += w;
+        fit += n;
+    }
     attron(COLOR_PAIR(pair) | attrs);
-    mvprintw(y, x, "%.*s", max, buf);
+    mvaddnstr(y, x, buf, (int)fit);
     attroff(COLOR_PAIR(pair) | attrs);
 }
 
@@ -11657,19 +11673,23 @@ static void draw(struct app *app) {
          * instead of looking like an ordinary empty channel. */
         char state_mark = window_state_mark(win->state);
         bool dead = state_mark != ' ';
+        /* An encrypted query carries the lock its prompt shows, so which
+         * conversations are private reads at a glance from the list. */
+        const char *lock =
+            e2e_query_encrypted_locked(app, win->network, win->channel) ? E2E_LOCK " " : "";
         int pair = selected ? CP_SELECTED : (unread ? CP_ACCENT : (dead ? CP_MUTED : CP_ALT));
         draw_fill(y, 0, side, pair);
         draw_text(y, 1, 2, pair, (selected || unread) ? A_BOLD : 0, "%2zu", i + 1);
-        if (dead) draw_text(y, 4, side - 5, pair, A_DIM, "%c%s", state_mark, win->channel);
+        if (dead) draw_text(y, 4, side - 5, pair, A_DIM, "%c%s%s", state_mark, lock, win->channel);
         else if (win->mentions > 0) {
             /* A mention outranks a plain-message count: it is the reason
              * to look now rather than later, so it gets its own colour
              * and marker instead of being folded into one number. */
-            draw_text(y, 4, side - 5, selected ? pair : CP_MENTION, A_BOLD, "%s (%u)",
+            draw_text(y, 4, side - 5, selected ? pair : CP_MENTION, A_BOLD, "%s%s (%u)", lock,
                       win->channel, win->mentions);
         }
-        else if (unread) draw_text(y, 4, side - 5, pair, A_BOLD, "%s [%u]", win->channel, app->windows[i].unread);
-        else draw_text(y, 4, side - 5, pair, selected ? A_BOLD : 0, "%s", win->channel);
+        else if (unread) draw_text(y, 4, side - 5, pair, A_BOLD, "%s%s [%u]", lock, win->channel, app->windows[i].unread);
+        else draw_text(y, 4, side - 5, pair, selected ? A_BOLD : 0, "%s%s", lock, win->channel);
         /* The whole row is the target, number included: aiming at the
          * channel name in a 14-column sidebar is finicky, and there is
          * nothing else on the line to hit by accident. */
