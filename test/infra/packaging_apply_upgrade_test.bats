@@ -563,3 +563,14 @@ nfpm_depends() {
     [[ "$output" == *"did not report its manifest within 60s"* ]]
     refute grep -q '^grappa eval' "$CALL_LOG"
 }
+
+@test "PORT is read bare or in quotes, as systemd reads the env file" {
+    local quoted
+    for quoted in '"8080"' "'8080'"; do
+        : > "$CALL_LOG"
+        printf 'PHX_HOST=example.org\nPORT=%s\n' "$quoted" > "$ROOT/etc/grappa/grappa.env"
+        run apply
+        [ "$status" -eq 0 ]
+        grep -qx 'curl POST http://127.0.0.1:8080/admin/reload' "$CALL_LOG"
+    done
+}
