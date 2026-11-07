@@ -2349,19 +2349,32 @@ void e2e_store_close(e2e_store *st) {
 }
 
 /* The whole of a file, malloc'd (NUL-terminated); NULL on a read error,
- * errno set. */
+ * errno set. What it reads is a record or a chat — plaintext once opened,
+ * and plaintext outright in the files from before sealing — so the buffer
+ * is sized from fstat, and if the file grew meanwhile it grows by copy and
+ * wipe, never by a realloc that may leave the old block's bytes in the
+ * heap. */
 static char *read_file(const char *path, size_t *len) {
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return NULL;
-    size_t n = 0, cap = 4096;
+    struct stat sb;
+    size_t n = 0, cap = fstat(fd, &sb) == 0 && sb.st_size > 0 ? (size_t)sb.st_size + 2 : 4096;
     char *buf = xmalloc(cap);
     for (;;) {
-        if (n + 1 >= cap) buf = xrealloc(buf, cap *= 2);
+        if (n + 1 >= cap) {
+            char *grown = xmalloc(cap * 2);
+            memcpy(grown, buf, n);
+            OPENSSL_cleanse(buf, cap);
+            free(buf);
+            buf = grown;
+            cap *= 2;
+        }
         ssize_t got = read(fd, buf + n, cap - n - 1);
         if (got < 0 && errno == EINTR) continue;
         if (got < 0) {
             int e = errno;
             close(fd);
+            OPENSSL_cleanse(buf, cap);
             free(buf);
             errno = e;
             return NULL;

@@ -1160,7 +1160,9 @@ chat file names say nothing.
 
 `/e2e status` opens with where the key lives: `in the OS keyring`, `under
 your passphrase`, `LOCKED`, or `none yet`. The key and the passphrase are
-wiped from memory after use and at exit, and neither is ever logged.
+wiped from memory after use and at exit, and neither is ever logged. Once
+a run has the key, or is about to ask for the passphrase, it writes no core
+dump (`RLIMIT_CORE` 0, and on Linux `PR_SET_DUMPABLE` 0).
 
 ## Tests
 

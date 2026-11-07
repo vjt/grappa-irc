@@ -5301,6 +5301,41 @@ TEST(a_keyring_that_failed_is_not_asked_again_until_unlock) {
     test_keyring_mode(NULL);
 }
 
+/* While the input line takes a passphrase nothing else writes into it — a
+ * reply, a nick from the menu, a dictation — and once taken, no byte of it
+ * is left anywhere in the buffer, even past where the line ended (what a
+ * Backspace leaves behind). A loaded key turns core dumps off. */
+TEST(the_masked_line_is_the_passphrase_alone_and_leaves_nothing) {
+    fg_reset();
+    test_keyring_mode("fail");
+    struct app *app = e2e_app("user:atrest-hygiene");
+    type_line(app, "/e2e init");
+    CHECK(app->e2e_secret.kind == E2E_SECRET_NEW);
+    reply_to(app, "bob", "a quoted line");
+    pthread_mutex_lock(&app->lock);
+    CHECK_LONG(app->input_len, 0);
+    CHECK(strstr(app->input, "bob") == NULL);
+    /* Typed "correct horse staple", then Backspaced down to "corr". */
+    snprintf(app->input, sizeof(app->input), "correct horse staple");
+    app->input[4] = 0;
+    app->input_len = app->input_pos = 4;
+    pthread_mutex_unlock(&app->lock);
+    handle_enter(app);
+    bool left = false;
+    for (size_t i = 0; i + 5 <= sizeof(app->input); i++) left |= memcmp(app->input + i, "horse", 5) == 0;
+    CHECK(!left);
+    CHECK(app->e2e_secret.kind == E2E_SECRET_NEW_AGAIN);
+    type_line(app, "corr");
+    CHECK(e2e_key_source(app) == E2E_KEY_PASSPHRASE);
+    struct rlimit rl;
+    CHECK(getrlimit(RLIMIT_CORE, &rl) == 0 && rl.rlim_cur == 0);
+#ifdef __linux__
+    CHECK(prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) == 0);
+#endif
+    free_e2e_app(app);
+    test_keyring_mode(NULL);
+}
+
 int main(void) {
     test_use_temp_home();
     /* A keyring for every test (tests/fake-secret-tool, in the temp home):
@@ -5381,6 +5416,7 @@ int main(void) {
     RUN(two_processes_make_one_key);
     RUN(a_keyring_key_that_fails_the_check_falls_through_to_the_passphrase);
     RUN(a_keyring_that_failed_is_not_asked_again_until_unlock);
+    RUN(the_masked_line_is_the_passphrase_alone_and_leaves_nothing);
     th_free();
     fg_stop();
     return test_report();

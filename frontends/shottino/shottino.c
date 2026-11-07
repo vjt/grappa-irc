@@ -40,6 +40,10 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <sys/file.h>
+#include <sys/resource.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include <limits.h>
 #include <dirent.h>
 #include <glob.h>
@@ -15417,8 +15421,21 @@ static void e2e_key_hash(struct app *app, char *out, size_t out_sz) {
     token_key_hash(app->url.base, app->subject, out, out_sz);
 }
 
+/* A process holding the data key writes no core: a dump is the key, and
+ * whatever was decrypted, on disk in the clear. Linux also stops other
+ * processes of the user attaching (ptrace) or reading /proc/<pid>/mem;
+ * RLIMIT_CORE is the portable half. Once on, it stays on for the run. */
+static void e2e_no_core_dumps(void) {
+#ifdef __linux__
+    prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+#endif
+    struct rlimit none = {0, 0};
+    setrlimit(RLIMIT_CORE, &none);
+}
+
 /* Under e2e_key_mu. */
 static void e2e_key_set_locked(struct app *app, enum e2e_key_src src, const uint8_t key[AR_KEY_LEN]) {
+    if (key) e2e_no_core_dumps();
     if (key) memcpy(app->e2e_key, key, AR_KEY_LEN);
     else OPENSSL_cleanse(app->e2e_key, sizeof(app->e2e_key));
     app->e2e_key_src = src;
@@ -15613,6 +15630,7 @@ static void e2e_key_boot(struct app *app, e2e_ask_fn ask) {
     bool any, sealed;
     e2e_identity_state(idir, &any, &sealed);
     if (!any) return;
+    e2e_no_core_dumps(); /* before a passphrase is typed into this process */
     uint8_t k[AR_KEY_LEN];
     bool ok = e2e_key_obtain(app, true, k);
     OPENSSL_cleanse(k, sizeof(k));
@@ -19966,8 +19984,16 @@ static void e2e_requests_command(struct app *app, const char *only) {
 static void handle_command(struct app *app, const char *input);
 static void e2e_secret_submit(struct app *app, char *line);
 
+/* Whether the input line is taking a passphrase. Caller holds app->lock
+ * (or is the UI thread, the only writer). */
+static bool input_takes_passphrase_locked(const struct app *app) {
+    return app->e2e_secret.kind != E2E_SECRET_NONE;
+}
+
 static void e2e_secret_begin(struct app *app, enum e2e_secret_kind kind, const char *then) {
+    pthread_mutex_lock(&app->lock);
     app->e2e_secret.kind = kind;
+    pthread_mutex_unlock(&app->lock);
     snprintf(app->e2e_secret.then, sizeof(app->e2e_secret.then), "%s", then ? then : "");
     if (kind == E2E_SECRET_UNLOCK)
         log_line(app, "--- e2e: type the passphrase your encrypted queries are sealed under, then "
@@ -19982,7 +20008,9 @@ static void e2e_secret_begin(struct app *app, enum e2e_secret_kind kind, const c
 
 static void e2e_secret_end(struct app *app) {
     OPENSSL_cleanse(app->e2e_secret.first, sizeof(app->e2e_secret.first));
+    pthread_mutex_lock(&app->lock);
     app->e2e_secret.kind = E2E_SECRET_NONE;
+    pthread_mutex_unlock(&app->lock);
     app->e2e_secret.then[0] = 0;
 }
 
@@ -21364,6 +21392,11 @@ static void compose_reply(const char *nick, const char *body, const char *existi
  * half-written line to a stray keypress is its own bug. */
 static void reply_to(struct app *app, const char *nick, const char *body) {
     pthread_mutex_lock(&app->lock);
+    if (input_takes_passphrase_locked(app)) {
+        /* Nothing is composed into a masked line. */
+        pthread_mutex_unlock(&app->lock);
+        return;
+    }
     char composed[MAX_INPUT_LINE];
     compose_reply(nick, body, app->input, composed, sizeof(composed));
     snprintf(app->input, sizeof(app->input), "%s", composed);
@@ -21469,7 +21502,7 @@ static void overlay_activate(struct app *app) {
          * the nick already in place, and the oper finishes it and
          * presses Enter. It is also the one action here that should not
          * happen on a single click. */
-        if (nick[0]) {
+        if (nick[0] && !input_takes_passphrase_locked(app)) {
             pthread_mutex_lock(&app->lock);
             snprintf(app->input, sizeof(app->input), "/kill %s ", nick);
             app->input_len = strlen(app->input);
@@ -21514,7 +21547,7 @@ static void overlay_activate(struct app *app) {
     case ACT_INSERT:
         /* What tab-completion would have typed. Appended rather than
          * replacing, because the input may already be half a sentence. */
-        if (nick[0]) {
+        if (nick[0] && !input_takes_passphrase_locked(app)) {
             pthread_mutex_lock(&app->lock);
             size_t len = strlen(app->input);
             const char *sep = len == 0 ? "" : (app->input[len - 1] == ' ' ? "" : " ");
@@ -22321,7 +22354,7 @@ static void settings_prefill_edit(struct app *app, const char *name) {
     char line[MAX_LINE];
     int w = snprintf(line, sizeof(line), "/set %s %.*s", name, (int)room,
                      (secret || !carriable) ? "" : raw);
-    if (w < 0) return;
+    if (w < 0 || input_takes_passphrase_locked(app)) return;
     pthread_mutex_lock(&app->lock);
     snprintf(app->input, sizeof(app->input), "%s", line);
     app->input_len = strlen(app->input);
@@ -25421,7 +25454,12 @@ static void stt_job(struct app *app, const struct job *job) {
      * words are a fact about the conversation and belong in the window,
      * like any other line. Sending them would be putting words in your
      * mouth that were never yours. */
-    if (job->arg2[0] == 'd') { /* dictate */
+    if (job->arg2[0] == 'd' && input_takes_passphrase_locked(app)) {
+        /* Not into a masked line: it would become part of the passphrase. */
+        pthread_mutex_unlock(&app->lock);
+        log_line(app, "/dictate: not put in the input line, which is taking a passphrase — "
+                      "dictate again once it is done");
+    } else if (job->arg2[0] == 'd') { /* dictate */
         size_t have = strlen(app->input);
         if (have && have + 1 < sizeof(app->input)) app->input[have++] = ' ';
         snprintf(app->input + have, sizeof(app->input) - have, "%s", text);
@@ -27428,7 +27466,8 @@ static void handle_enter(struct app *app) {
     if (app->e2e_secret.kind != E2E_SECRET_NONE) {
         /* A passphrase: never a line, never in the history. */
         snprintf(line, sizeof(line), "%s", app->input);
-        OPENSSL_cleanse(app->input, app->input_len);
+        /* The whole buffer: a Backspace leaves bytes past the end. */
+        OPENSSL_cleanse(app->input, sizeof(app->input));
         app->input_len = 0;
         app->input_pos = 0;
         pthread_mutex_unlock(&app->lock);
@@ -28200,10 +28239,15 @@ static int resolve_csi(void) {
 /* Resolve an ESC into either a modified key or a real Escape. Called
  * with the 27 already consumed; peeks without blocking, because a lone
  * Escape must not wait for a key that is never coming. */
+/* Whether the last 27 resolve_escape answered was a bare Escape (no key
+ * behind it), as opposed to an Escape AND an unbound key. */
+static bool escape_bare;
+
 static int resolve_escape(void) {
     timeout(0);
     int next = getch();
     timeout(50);
+    escape_bare = next == ERR;
     if (next == ERR) return 27; /* a real Escape */
     switch (next) {
     /* Alt-M and Alt-V: the microphone and the camera, without leaving
@@ -29910,7 +29954,8 @@ static void event_loop(struct app *app) {
         } else if (ch == KEY_PANE_SHRINK) {
             resize_pane(app, -1);
         } else if (ch == 27 && app->e2e_secret.kind != E2E_SECRET_NONE) {
-            e2e_secret_cancel(app);
+            /* Only a bare Escape cancels: Alt plus a key is that key. */
+            if (escape_bare) e2e_secret_cancel(app);
         } else if (ch == 27) {
             pthread_mutex_lock(&app->lock);
             app->panel = PANEL_CHAT;
