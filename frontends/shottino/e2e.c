@@ -1603,6 +1603,7 @@ void e2e_record_new(e2e_record *r) {
     r->master = NULL;
     r->own = NULL;
     e2e_state_init(&r->state);
+    r->encrypted = (e2e_strv){0};
 }
 
 void e2e_record_free(e2e_record *r) {
@@ -1613,9 +1614,26 @@ void e2e_record_free(e2e_record *r) {
         free(r->own);
     }
     e2e_state_free(&r->state);
+    strv_free(&r->encrypted);
     r->account = NULL;
     r->master = NULL;
     r->own = NULL;
+}
+
+bool e2e_record_encrypted(const e2e_record *r, const char *nick) {
+    char *key = e2e_fold(nick);
+    bool on = strv_has(&r->encrypted, key);
+    free(key);
+    return on;
+}
+
+bool e2e_record_set_encrypted(e2e_record *r, const char *nick, bool on) {
+    char *key = e2e_fold(nick);
+    bool was = strv_has(&r->encrypted, key);
+    if (on && !was) strv_push(&r->encrypted, key);
+    if (!on && was) strv_remove(&r->encrypted, key);
+    free(key);
+    return on != was;
 }
 
 #define RECORD_VERSION 1
@@ -1879,6 +1897,7 @@ char *e2e_record_to_json(const e2e_record *r) {
     }
     jb_key(&b, "state");
     w_state(&b, &r->state);
+    w_strv(&b, "encrypted", &r->encrypted);
     jb_obj_close(&b);
     free(account);
     free(master);
@@ -2175,6 +2194,8 @@ bool e2e_record_from_json(const char *json, size_t len, e2e_record *out) {
         ok = own && json_type_of(own) == JSON_NULL;
     }
     ok = ok && r_state(obj_field(root, "state"), &r.state);
+    /* Optional: a record written before the encrypted mode had none. */
+    if (ok && json_get(root, "encrypted")) ok = r_strv(root, "encrypted", &r.encrypted);
     json_free(d);
     if (!ok) {
         e2e_record_free(&r);

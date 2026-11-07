@@ -535,11 +535,20 @@ typedef struct {
     vz_account *master;
     e2e_own *own;
     e2e_state state;
+    /* The queries this device writes ENCRYPTED (folded nicks): the user's
+     * choice, or a peer's encrypted message, turned it on; only /e2e off
+     * turns it off. A preference, not engine state — kept here because it
+     * belongs to the same (subject, network) slot and is saved with it. */
+    e2e_strv encrypted;
 } e2e_record;
 
 /* A new record: a fresh device account, no master, no place, empty state. */
 void e2e_record_new(e2e_record *r);
 void e2e_record_free(e2e_record *r);
+/* Whether the query with `nick` is in encrypted mode; set it (true when
+ * that changed anything). The nick is folded (e2e_fold). */
+bool e2e_record_encrypted(const e2e_record *r, const char *nick);
+bool e2e_record_set_encrypted(e2e_record *r, const char *nick, bool on);
 /* The record as JSON text (pickles are plain vodozemac JSON: §1.3). */
 char *e2e_record_to_json(const e2e_record *r);
 /* False (and *out untouched) for anything but a record this writer wrote. */
@@ -900,7 +909,7 @@ void e2e_record_start_over(e2e_record *r);
 
 typedef enum {
     E2E_ROW_IN,            /* a peer's text: key = the master its device is under */
-    E2E_ROW_OUT,           /* ours: a copy one of our other devices sent (`copy:` ids) */
+    E2E_ROW_OUT,           /* ours: sent from here (`out:<tag>`) or a sibling's copy (`copy:`) */
     E2E_ROW_UNDECRYPTABLE, /* body = the reason (e2e_undecryptable_reason_name) */
     E2E_ROW_KEY_ALARM      /* key = the master presented instead of the pinned one */
 } e2e_row_kind;

@@ -1615,6 +1615,38 @@ TEST(record_refuses_what_it_did_not_write) {
     e2e_record_free(&r);
 }
 
+/* The encrypted mode of a query: folded, saved with the record, and
+ * absent from a record written before it existed (read as none). */
+TEST(record_keeps_the_encrypted_queries) {
+    e2e_record r;
+    e2e_record_new(&r);
+    CHECK(!e2e_record_encrypted(&r, "Alice"));
+    CHECK(e2e_record_set_encrypted(&r, "Alice", true));
+    CHECK(!e2e_record_set_encrypted(&r, "ALICE", true));
+    CHECK(e2e_record_encrypted(&r, "alice"));
+    CHECK(e2e_record_set_encrypted(&r, "bob", true));
+    char *j = e2e_record_to_json(&r);
+    CHECK(strstr(j, "\"encrypted\":[\"alice\",\"bob\"]") != NULL);
+    e2e_record back;
+    CHECK(e2e_record_from_json(j, strlen(j), &back));
+    CHECK(e2e_record_encrypted(&back, "Alice") && e2e_record_encrypted(&back, "BOB"));
+    CHECK(e2e_record_set_encrypted(&back, "alice", false));
+    CHECK(!e2e_record_encrypted(&back, "alice") && e2e_record_encrypted(&back, "bob"));
+    e2e_record_free(&back);
+    /* Older: no member at all. A wrong type still refuses the whole. */
+    char *old = strdup(j);
+    char *at = strstr(old, ",\"encrypted\":");
+    strcpy(at, "}");
+    CHECK(e2e_record_from_json(old, strlen(old), &back));
+    CHECK(back.encrypted.n == 0);
+    e2e_record_free(&back);
+    strcpy(strstr(old, "}") ? old + strlen(old) - 1 : old, ",\"encrypted\":7}");
+    CHECK(!e2e_record_from_json(old, strlen(old), &back));
+    free(old);
+    free(j);
+    e2e_record_free(&r);
+}
+
 /* ── pairing (pairingMessages.ts) ── */
 
 static bool pair_decodes(const char *json, e2e_pair_msg *m) {
@@ -2109,6 +2141,7 @@ int main(void) {
     RUN(sending_refusals);
     RUN(store_atomic_locked_private);
     RUN(record_refuses_what_it_did_not_write);
+    RUN(record_keeps_the_encrypted_queries);
     RUN(pair_initial_payload_crosses_the_relay);
     RUN(pair_messages_decode_strictly);
     RUN(pair_issue_and_accept);
