@@ -1939,6 +1939,153 @@ TEST(iso8601_instants) {
     CHECK(!e2e_iso8601_seconds(NULL, &t));
 }
 
+static e2e_row mkrow(const char *id, e2e_row_kind kind, int64_t at, const char *nick,
+                     const char *body, const char *key) {
+    e2e_row r = {0};
+    r.id = (char *)id;
+    r.kind = kind;
+    r.at = at;
+    r.nick = (char *)nick;
+    r.body = (char *)body;
+    r.body_len = body ? strlen(body) : 0;
+    r.key = (char *)key;
+    return r;
+}
+
+/* Each kind round-trips with exactly its fields, a NUL inside a body
+ * included; anything else is refused as a unit. */
+TEST(history_rows_round_trip) {
+    const char nul_body[] = "a\0b";
+    e2e_row in = mkrow("in:7:0", E2E_ROW_IN, 1700000000123, "Alice", "ciao \"tu\"", E1);
+    e2e_row out = mkrow("copy:8:1", E2E_ROW_OUT, 1700000000124, "alice", NULL, NULL);
+    out.body = (char *)nul_body;
+    out.body_len = 3;
+    e2e_row und = mkrow("in:9:0", E2E_ROW_UNDECRYPTABLE, 5, "bob", "no-session", NULL);
+    e2e_row alarm = mkrow("in:10:0", E2E_ROW_KEY_ALARM, 6, "bob", NULL, E2);
+    e2e_row all[] = {in, out, und, alarm};
+    for (size_t i = 0; i < 4; i++) {
+        char *json = e2e_row_to_json(&all[i]);
+        CHECK(strchr(json, '\n') == NULL);
+        e2e_row back;
+        CHECK(e2e_row_from_json(json, strlen(json), &back));
+        CHECK_STR(back.id, all[i].id);
+        CHECK(back.kind == all[i].kind);
+        CHECK(back.at == all[i].at);
+        CHECK_STR(back.nick, all[i].nick);
+        CHECK(back.body_len == all[i].body_len);
+        CHECK((back.body == NULL) == (all[i].body == NULL));
+        if (back.body) CHECK(memcmp(back.body, all[i].body, back.body_len) == 0);
+        if (all[i].key) CHECK_STR(back.key, all[i].key);
+        else CHECK(back.key == NULL);
+        e2e_row_free(&back);
+        free(json);
+    }
+    const char *bad[] = {"", "{}", "[]",
+                         "{\"v\":2,\"id\":\"x\",\"kind\":\"in\",\"at\":1,\"nick\":\"a\",\"body\":\"b\",\"key\":\"k\"}",
+                         "{\"v\":1,\"id\":\"x\",\"kind\":\"in\",\"at\":1,\"nick\":\"a\",\"body\":\"b\"}",
+                         "{\"v\":1,\"id\":\"x\",\"kind\":\"key_alarm\",\"at\":1,\"nick\":\"a\"}",
+                         "{\"v\":1,\"id\":\"x\",\"kind\":\"spam\",\"at\":1,\"nick\":\"a\",\"body\":\"b\"}",
+                         "{\"v\":1,\"id\":\"\",\"kind\":\"out\",\"at\":1,\"nick\":\"a\",\"body\":\"b\"}",
+                         "{\"v\":1,\"id\":\"x\",\"kind\":\"out\",\"at\":1.5,\"nick\":\"a\",\"body\":\"b\"}"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        e2e_row r;
+        CHECK(!e2e_row_from_json(bad[i], strlen(bad[i]), &r));
+    }
+    char *name = e2e_chat_file_name("Al/ice[]");
+    CHECK_STR(name, "chat-616c2f6963655b5d.jsonl");
+    free(name);
+}
+
+static size_t count_lines(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    size_t n = 0;
+    int c;
+    while ((c = fgetc(f)) != EOF) n += c == '\n';
+    fclose(f);
+    return n;
+}
+
+/* Appended and private; one file per folded nick; a repeated id and a
+ * torn tail are both survived; the load is oldest first across chats. */
+TEST(history_appends_dedupes_and_survives_a_torn_tail) {
+    char base[] = "/tmp/shottino-hist-XXXXXX";
+    CHECK(mkdtemp(base) != NULL);
+    char *dir = xfmt("%s/7/chats", base);
+    char err[256];
+    e2e_rows rows;
+    CHECK(e2e_chat_load(dir, &rows, err, sizeof(err)));
+    CHECK(rows.n == 0);
+
+    e2e_row a1 = mkrow("in:1:0", E2E_ROW_IN, 100, "Alice", "one", E1);
+    e2e_row b1 = mkrow("in:2:0", E2E_ROW_IN, 150, "bob", "bee", E2);
+    e2e_row a2 = mkrow("in:3:0", E2E_ROW_IN, 200, "alice", "two", E1);
+    CHECK(e2e_chat_append(dir, &a1, err, sizeof(err)));
+    CHECK(e2e_chat_append(dir, &b1, err, sizeof(err)));
+    CHECK(e2e_chat_append(dir, &a2, err, sizeof(err)));
+    /* The crash between the row and the record: the same message read
+     * again writes the same row again. */
+    CHECK(e2e_chat_append(dir, &a2, err, sizeof(err)));
+    struct stat sb;
+    CHECK(stat(dir, &sb) == 0 && (sb.st_mode & 0777) == 0700);
+    char *name = e2e_chat_file_name("alice");
+    char *path = xfmt("%s/%s", dir, name);
+    free(name);
+    CHECK(stat(path, &sb) == 0 && (sb.st_mode & 0777) == 0600);
+    CHECK_LONG((long)count_lines(path), 3);
+
+    /* A crash inside a write: half a line, no newline. */
+    int fd = open(path, O_WRONLY | O_APPEND);
+    CHECK(fd >= 0 && write(fd, "{\"v\":1,\"id\":\"in:4:0\",\"ki", 24) == 24);
+    close(fd);
+    e2e_row a3 = mkrow("in:5:0", E2E_ROW_IN, 300, "ALICE", "three", E1);
+    CHECK(e2e_chat_append(dir, &a3, err, sizeof(err)));
+    CHECK_LONG((long)count_lines(path), 4);
+
+    CHECK(e2e_chat_load(dir, &rows, err, sizeof(err)));
+    CHECK_LONG((long)rows.n, 4);
+    const char *want[] = {"in:1:0", "in:2:0", "in:3:0", "in:5:0"};
+    for (size_t i = 0; i < rows.n && i < 4; i++) CHECK_STR(rows.v[i].id, want[i]);
+    e2e_rows_free(&rows);
+    /* The load compacted the repeat away. */
+    CHECK_LONG((long)count_lines(path), 3);
+
+    /* A torn tail with nothing appended after it: skipped, then cut. */
+    fd = open(path, O_WRONLY | O_APPEND);
+    CHECK(fd >= 0 && write(fd, "{\"v\":1", 6) == 6);
+    close(fd);
+    CHECK(e2e_chat_load(dir, &rows, err, sizeof(err)));
+    CHECK_LONG((long)rows.n, 4);
+    e2e_rows_free(&rows);
+    CHECK_LONG((long)count_lines(path), 3);
+
+    /* Past twice the cap a load keeps the newest E2E_CHAT_ROWS_MAX. */
+    for (int i = 0; i < 2 * E2E_CHAT_ROWS_MAX; i++) {
+        char id[32];
+        snprintf(id, sizeof(id), "in:%d:0", 1000 + i);
+        e2e_row r = mkrow(id, E2E_ROW_IN, 1000 + i, "carol", "x", E1);
+        CHECK(e2e_chat_append(dir, &r, err, sizeof(err)));
+    }
+    CHECK(e2e_chat_load(dir, &rows, err, sizeof(err)));
+    CHECK_LONG((long)rows.n, 4 + E2E_CHAT_ROWS_MAX);
+    CHECK_STR(rows.v[rows.n - 1].id, "in:2999:0");
+    CHECK_STR(rows.v[4].id, "in:2000:0");
+    e2e_rows_free(&rows);
+    char *cpath = xfmt("%s/%s", dir, "chat-6361726f6c.jsonl");
+    CHECK_LONG((long)count_lines(cpath), 2 * E2E_CHAT_ROWS_MAX);
+    e2e_row r = mkrow("in:9999:0", E2E_ROW_IN, 9999, "carol", "x", E1);
+    CHECK(e2e_chat_append(dir, &r, err, sizeof(err)));
+    CHECK(e2e_chat_load(dir, &rows, err, sizeof(err)));
+    e2e_rows_free(&rows);
+    CHECK_LONG((long)count_lines(cpath), E2E_CHAT_ROWS_MAX);
+    free(cpath);
+    free(path);
+    free(dir);
+    char *rm = xfmt("rm -rf '%s'", base);
+    CHECK(system(rm) == 0);
+    free(rm);
+}
+
 int main(void) {
     RUN(did_vectors);
     RUN(fb_vectors_are_cicchettos);
@@ -1967,5 +2114,7 @@ int main(void) {
     RUN(pair_issue_and_accept);
     RUN(record_start_over_keeps_only_trust);
     RUN(iso8601_instants);
+    RUN(history_rows_round_trip);
+    RUN(history_appends_dedupes_and_survives_a_torn_tail);
     return test_report();
 }

@@ -875,6 +875,72 @@ bool e2e_pair_accept_signed(const char *master, vz_account *device,
  * devices and the pins). */
 void e2e_record_start_over(e2e_record *r);
 
+/* ── Decrypted history (chatStore.ts) ──────────────────────────────────────
+ * What this device read in its encrypted queries: the ONLY copy there is
+ * (grappa keeps no E2E line in scrollback, search or push, and the session
+ * key that opened a message is spent), so a row is written here BEFORE
+ * the record that spent its key is saved.
+ *
+ * One file per chat, `<dir>/chat-<hex of the folded nick>.jsonl`, 0600 in
+ * a 0700 directory: one JSON object per line, APPENDED and fsync'd. Not
+ * rewritten per row as the record is: a chat grows by one row a message,
+ * and a whole-file rename per row is O(n) a message for a guarantee the
+ * order already gives — the row is durable before the state that spent
+ * its key, and a crash between the two re-reads the message from the
+ * inbox, writing the SAME row id again. So a reader keeps the first of a
+ * repeated id, and a torn last line (a crash inside the write) is cut off
+ * before the next append and skipped by a load. A load rewrites a file
+ * atomically (temp + fsync + rename) only to compact it: past twice
+ * E2E_CHAT_ROWS_MAX rows, or holding a torn, unreadable or repeated line,
+ * it keeps the newest E2E_CHAT_ROWS_MAX. Not encrypted at rest: the
+ * posture of the record beside it (docs/plans). Every string is
+ * PLAINTEXT: never log one. */
+
+#define E2E_CHAT_ROWS_MAX 1000
+
+typedef enum {
+    E2E_ROW_IN,            /* a peer's text: key = the master its device is under */
+    E2E_ROW_OUT,           /* ours: a copy one of our other devices sent (`copy:` ids) */
+    E2E_ROW_UNDECRYPTABLE, /* body = the reason (e2e_undecryptable_reason_name) */
+    E2E_ROW_KEY_ALARM      /* key = the master presented instead of the pinned one */
+} e2e_row_kind;
+
+/* `nick` is always the peer the chat is with. `id` is derived from the
+ * inbox (`in:<inbox id>:<event>`, `copy:<inbox id>:<event>`), so the same
+ * message read twice is the same row. `at` is unix ms. */
+typedef struct {
+    char *id;
+    e2e_row_kind kind;
+    int64_t at;
+    char *nick;
+    char *body; /* NULL on a key alarm */
+    size_t body_len;
+    char *key; /* NULL but on IN and KEY_ALARM */
+} e2e_row;
+
+typedef struct {
+    e2e_row *v;
+    size_t n;
+} e2e_rows;
+
+const char *e2e_row_kind_name(e2e_row_kind k); /* "in", "out", "undecryptable", "key_alarm" */
+void e2e_row_free(e2e_row *r);
+void e2e_rows_free(e2e_rows *r);
+/* One row as one line of compact JSON (no newline). */
+char *e2e_row_to_json(const e2e_row *r);
+/* False for anything but a row this writer wrote (its fields per kind). */
+bool e2e_row_from_json(const char *text, size_t len, e2e_row *out);
+/* "chat-<lowercase hex of e2e_fold(nick)>.jsonl": one file per peer, the
+ * fold so `Alice` and `alice` are one chat, hex so no byte of a nick can
+ * reach the filesystem's syntax. */
+char *e2e_chat_file_name(const char *nick);
+/* Appends `r` to its chat's file under `dir` (made 0700 when missing),
+ * fsync'd, the directory too when the file is new. */
+bool e2e_chat_append(const char *dir, const e2e_row *r, char *err, size_t err_sz);
+/* Every row of every chat under `dir`, oldest first (by `at`, file order
+ * among equals), each id once. A missing `dir` is an empty history. */
+bool e2e_chat_load(const char *dir, e2e_rows *out, char *err, size_t err_sz);
+
 /* An ISO-8601 UTC instant as grappa writes one ("2026-11-07T10:05:00Z",
  * fractional seconds and a +hh:mm offset allowed) in unix seconds. */
 bool e2e_iso8601_seconds(const char *s, int64_t *out);

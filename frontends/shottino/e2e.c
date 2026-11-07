@@ -3,6 +3,7 @@
  * be read side by side. */
 #include "e2e.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -5072,4 +5073,322 @@ bool e2e_iso8601_seconds(const char *s, int64_t *out) {
     }
     *out = days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se - offset;
     return true;
+}
+
+/* ── Decrypted history ───────────────────────────────────────────────── */
+
+const char *e2e_row_kind_name(e2e_row_kind k) {
+    switch (k) {
+    case E2E_ROW_IN: return "in";
+    case E2E_ROW_OUT: return "out";
+    case E2E_ROW_UNDECRYPTABLE: return "undecryptable";
+    case E2E_ROW_KEY_ALARM: return "key_alarm";
+    }
+    return "unknown";
+}
+
+void e2e_row_free(e2e_row *r) {
+    if (!r) return;
+    free(r->id);
+    free(r->nick);
+    free(r->body);
+    free(r->key);
+    memset(r, 0, sizeof(*r));
+}
+
+void e2e_rows_free(e2e_rows *r) {
+    for (size_t i = 0; i < r->n; i++) e2e_row_free(&r->v[i]);
+    free(r->v);
+    r->v = NULL;
+    r->n = 0;
+}
+
+/* Which fields each kind carries: what a row is written with, and what a
+ * read refuses to be without. */
+static bool row_has_body(e2e_row_kind k) { return k != E2E_ROW_KEY_ALARM; }
+static bool row_has_key(e2e_row_kind k) { return k == E2E_ROW_IN || k == E2E_ROW_KEY_ALARM; }
+
+char *e2e_row_to_json(const e2e_row *r) {
+    json_buf b;
+    jb_init(&b);
+    jb_obj_open(&b);
+    jb_key(&b, "v");
+    jb_num(&b, 1);
+    jb_key(&b, "id");
+    jb_str(&b, r->id);
+    jb_key(&b, "kind");
+    jb_str(&b, e2e_row_kind_name(r->kind));
+    jb_key(&b, "at");
+    jb_num(&b, (double)r->at);
+    jb_key(&b, "nick");
+    jb_str(&b, r->nick);
+    if (row_has_body(r->kind)) {
+        jb_key(&b, "body");
+        jb_strn(&b, r->body ? r->body : "", r->body ? r->body_len : 0);
+    }
+    if (row_has_key(r->kind)) {
+        jb_key(&b, "key");
+        jb_str(&b, r->key ? r->key : "");
+    }
+    jb_obj_close(&b);
+    char *out = jb_take(&b);
+    if (!out) abort();
+    return out;
+}
+
+bool e2e_row_from_json(const char *text, size_t len, e2e_row *out) {
+    memset(out, 0, sizeof(*out));
+    json_doc *d = json_parse(text, len, NULL, 0);
+    if (!d) return false;
+    const json_value *o = json_root(d);
+    double v, at;
+    const char *kind = json_string(json_get(o, "kind"));
+    const char *id = json_string(json_get(o, "id"));
+    const char *nick = json_string(json_get(o, "nick"));
+    bool ok = json_type_of(o) == JSON_OBJECT && json_number(json_get(o, "v"), &v) && v == 1 &&
+              id && id[0] && nick && nick[0] && kind && json_number(json_get(o, "at"), &at) &&
+              at >= 0 && at < 9e15 && at == floor(at);
+    e2e_row_kind k = E2E_ROW_IN;
+    if (ok) {
+        if (strcmp(kind, "in") == 0) k = E2E_ROW_IN;
+        else if (strcmp(kind, "out") == 0) k = E2E_ROW_OUT;
+        else if (strcmp(kind, "undecryptable") == 0) k = E2E_ROW_UNDECRYPTABLE;
+        else if (strcmp(kind, "key_alarm") == 0) k = E2E_ROW_KEY_ALARM;
+        else ok = false;
+    }
+    const json_value *body = json_get(o, "body");
+    const char *key = json_string(json_get(o, "key"));
+    if (ok && row_has_body(k) && !json_string(body)) ok = false;
+    if (ok && row_has_key(k) && !key) ok = false;
+    if (ok) {
+        out->id = xstrdup(id);
+        out->kind = k;
+        out->at = (int64_t)at;
+        out->nick = xstrdup(nick);
+        if (row_has_body(k)) {
+            out->body_len = json_string_len(body);
+            out->body = xstrndup(json_string(body), out->body_len);
+        }
+        if (row_has_key(k)) out->key = xstrdup(key);
+    }
+    json_free(d);
+    return ok;
+}
+
+char *e2e_chat_file_name(const char *nick) {
+    char *folded = e2e_fold(nick);
+    size_t n = strlen(folded);
+    char *out = xmalloc(5 + 2 * n + 7);
+    memcpy(out, "chat-", 5);
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < n; i++) {
+        out[5 + 2 * i] = hex[(unsigned char)folded[i] >> 4];
+        out[5 + 2 * i + 1] = hex[(unsigned char)folded[i] & 15];
+    }
+    memcpy(out + 5 + 2 * n, ".jsonl", 7);
+    free(folded);
+    return out;
+}
+
+static void fsync_dir(const char *dir) {
+    int dfd = open(dir, O_RDONLY | O_CLOEXEC);
+    if (dfd >= 0) {
+        fsync(dfd);
+        close(dfd);
+    }
+}
+
+/* A torn last line — a crash inside a write — cut off, so the next line
+ * does not land glued to its remains. */
+static bool cut_torn_tail(int fd) {
+    struct stat st;
+    if (fstat(fd, &st) != 0) return false;
+    off_t size = st.st_size;
+    if (size == 0) return true;
+    char last;
+    if (pread(fd, &last, 1, size - 1) != 1) return false;
+    if (last == '\n') return true;
+    off_t keep = size - 1;
+    char buf[4096];
+    while (keep > 0) {
+        off_t from = keep > (off_t)sizeof(buf) ? keep - (off_t)sizeof(buf) : 0;
+        ssize_t got = pread(fd, buf, (size_t)(keep - from), from);
+        if (got != keep - from) return false;
+        ssize_t i = got;
+        while (i > 0 && buf[i - 1] != '\n') i--;
+        if (i > 0) {
+            keep = from + i;
+            break;
+        }
+        keep = from;
+    }
+    return ftruncate(fd, keep) == 0;
+}
+
+bool e2e_chat_append(const char *dir, const e2e_row *r, char *err, size_t err_sz) {
+    if (!mkdir_p(dir)) {
+        SETERR("cannot make %s: %s", dir, strerror(errno));
+        return false;
+    }
+    char *name = e2e_chat_file_name(r->nick);
+    char *path = xprintf("%s/%s", dir, name);
+    free(name);
+    struct stat st;
+    bool fresh = stat(path, &st) != 0;
+    int fd = open(path, O_RDWR | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    bool ok = fd >= 0;
+    if (ok) {
+        char *json = e2e_row_to_json(r);
+        size_t n = strlen(json);
+        json = xrealloc(json, n + 2);
+        json[n] = '\n';
+        json[n + 1] = 0;
+        ok = fchmod(fd, 0600) == 0 && cut_torn_tail(fd) && write_all(fd, json, n + 1) &&
+             fsync(fd) == 0;
+        free(json);
+        ok = close(fd) == 0 && ok;
+    }
+    if (!ok) SETERR("cannot write %s: %s", path, strerror(errno));
+    else if (fresh) fsync_dir(dir);
+    free(path);
+    return ok;
+}
+
+/* The whole of a file, malloc'd (NUL-terminated); NULL on a read error. */
+static char *read_file(const char *path, size_t *len) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return NULL;
+    size_t n = 0, cap = 4096;
+    char *buf = xmalloc(cap);
+    for (;;) {
+        if (n + 1 >= cap) buf = xrealloc(buf, cap *= 2);
+        ssize_t got = read(fd, buf + n, cap - n - 1);
+        if (got < 0 && errno == EINTR) continue;
+        if (got < 0) {
+            close(fd);
+            free(buf);
+            return NULL;
+        }
+        if (got == 0) break;
+        n += (size_t)got;
+    }
+    close(fd);
+    buf[n] = 0;
+    *len = n;
+    return buf;
+}
+
+static bool rows_have_id(const e2e_rows *rows, size_t from, const char *id) {
+    for (size_t i = rows->n; i > from; i--)
+        if (strcmp(rows->v[i - 1].id, id) == 0) return true;
+    return false;
+}
+
+static void rows_push(e2e_rows *rows, size_t *cap, e2e_row *r) {
+    if (rows->n == *cap) rows->v = xrealloc(rows->v, (*cap = *cap ? *cap * 2 : 64) * sizeof(*rows->v));
+    rows->v[rows->n++] = *r;
+}
+
+/* The newest `keep` rows of one chat, from `from` on in `rows`, written
+ * over its file atomically. A failure leaves the old file: still readable,
+ * only not compact. */
+static void chat_compact(const char *dir, const char *path, const e2e_rows *rows, size_t from) {
+    size_t n = rows->n - from;
+    size_t first = from + (n > E2E_CHAT_ROWS_MAX ? n - E2E_CHAT_ROWS_MAX : 0);
+    char *tmp = xprintf("%s.tmp.%ld", path, (long)getpid());
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    bool ok = fd >= 0;
+    for (size_t i = first; ok && i < rows->n; i++) {
+        char *json = e2e_row_to_json(&rows->v[i]);
+        ok = write_all(fd, json, strlen(json)) && write_all(fd, "\n", 1);
+        free(json);
+    }
+    if (fd >= 0) {
+        ok = ok && fsync(fd) == 0;
+        ok = close(fd) == 0 && ok;
+    }
+    if (ok && rename(tmp, path) == 0) fsync_dir(dir);
+    else unlink(tmp);
+    free(tmp);
+}
+
+typedef struct {
+    int64_t at;
+    size_t order;
+    e2e_row row;
+} ordered_row;
+
+static int ordered_cmp(const void *a, const void *b) {
+    const ordered_row *x = a, *y = b;
+    if (x->at != y->at) return x->at < y->at ? -1 : 1;
+    return x->order < y->order ? -1 : x->order > y->order;
+}
+
+bool e2e_chat_load(const char *dir, e2e_rows *out, char *err, size_t err_sz) {
+    out->v = NULL;
+    out->n = 0;
+    DIR *d = opendir(dir);
+    if (!d) {
+        if (errno == ENOENT) return true;
+        SETERR("cannot read %s: %s", dir, strerror(errno));
+        return false;
+    }
+    size_t cap = 0;
+    bool ok = true;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        size_t nl = strlen(ent->d_name);
+        if (nl < 11 || strncmp(ent->d_name, "chat-", 5) != 0 ||
+            strcmp(ent->d_name + nl - 6, ".jsonl") != 0)
+            continue;
+        char *path = xprintf("%s/%s", dir, ent->d_name);
+        size_t len;
+        char *text = read_file(path, &len);
+        if (!text) {
+            SETERR("cannot read %s: %s", path, strerror(errno));
+            free(path);
+            ok = false;
+            continue;
+        }
+        size_t from = out->n;
+        bool untidy = false;
+        size_t lines = 0;
+        for (char *p = text; p < text + len;) {
+            char *nl2 = memchr(p, '\n', (size_t)(text + len - p));
+            if (!nl2) {
+                untidy = true; /* torn: no newline ends it */
+                break;
+            }
+            lines++;
+            e2e_row r;
+            if (!e2e_row_from_json(p, (size_t)(nl2 - p), &r)) untidy = true;
+            else if (rows_have_id(out, from, r.id)) {
+                untidy = true;
+                e2e_row_free(&r);
+            } else {
+                rows_push(out, &cap, &r);
+            }
+            p = nl2 + 1;
+        }
+        free(text);
+        size_t kept = out->n - from;
+        if (untidy || lines > 2 * E2E_CHAT_ROWS_MAX) chat_compact(dir, path, out, from);
+        if (kept > E2E_CHAT_ROWS_MAX) {
+            /* What a compaction keeps is what the load answers. */
+            size_t drop = kept - E2E_CHAT_ROWS_MAX;
+            for (size_t i = from; i < from + drop; i++) e2e_row_free(&out->v[i]);
+            memmove(out->v + from, out->v + from + drop, (out->n - from - drop) * sizeof(*out->v));
+            out->n -= drop;
+        }
+        free(path);
+    }
+    closedir(d);
+    if (out->n > 1) {
+        ordered_row *o = xmalloc(out->n * sizeof(*o));
+        for (size_t i = 0; i < out->n; i++) o[i] = (ordered_row){out->v[i].at, i, out->v[i]};
+        qsort(o, out->n, sizeof(*o), ordered_cmp);
+        for (size_t i = 0; i < out->n; i++) out->v[i] = o[i].row;
+        free(o);
+    }
+    return ok;
 }
