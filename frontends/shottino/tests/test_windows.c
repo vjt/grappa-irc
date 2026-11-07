@@ -618,6 +618,20 @@ TEST(a_click_on_a_picture_asks_before_opening_it) {
     media_click(app, "https://example.org/clip.mp4", MEDIA_VIDEO, 10, 5);
     CHECK(app->overlay.confirm_open);
     overlay_close(app);
+
+    /* And audio: sound out of the speakers on a stray click is as much a
+     * surprise as a picture over the screen, and the fetch tells the
+     * host the same thing. "Play" is the same ACT_PREVIEW, which plays
+     * audio out of band. */
+    media_click(app, "https://example.org/voice.ogg", MEDIA_AUDIO, 10, 5);
+    CHECK(app->overlay.confirm_open);
+    n = overlay_items_locked(app, items, 16);
+    CHECK_LONG(n, 2);
+    CHECK(items[0].action == ACT_ADMIN_CANCEL);
+    CHECK(items[1].action == ACT_PREVIEW);
+    CHECK(strstr(items[1].label, "Play this audio") != NULL);
+    CHECK(strstr(items[1].label, "example.org") != NULL);
+    overlay_close(app);
     free_app(app);
 }
 

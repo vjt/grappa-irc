@@ -15313,9 +15313,12 @@ static size_t overlay_items_locked(struct app *app, struct overlay_item *out, si
             h = h ? h + 3 : ov->media;
             size_t hl = strcspn(h, "/:?#");
             snprintf(host, sizeof(host), "%.*s", (int)(hl < sizeof(host) ? hl : sizeof(host) - 1), h);
+            enum media_kind mk = media_kind_of(ov->media);
             menu_add(out, &n, max, ACT_ADMIN_CANCEL, "", "", "Cancel");
-            menu_add(out, &n, max, ACT_PREVIEW, "", ov->media, "Open this %s — from %s",
-                     media_kind_of(ov->media) == MEDIA_VIDEO ? "video" : "picture",
+            menu_add(out, &n, max, ACT_PREVIEW, "", ov->media, "%s — from %s",
+                     mk == MEDIA_AUDIO   ? "Play this audio"
+                     : mk == MEDIA_VIDEO ? "Open this video"
+                                         : "Open this picture",
                      host[0] ? host : "?");
             return n;
         }
@@ -21699,18 +21702,14 @@ static bool selection_drag(struct app *app, int y, bool release, bool other_butt
  * in place, anything else opens in the browser. */
 /* What a left click on a link does.
  *
- * A picture or a video ASKS first (the confirm box, Cancel first). It used
- * to open on the click: full screen, fetched from wherever the link
- * pointed, so one stray click took over the terminal and told a
- * third-party host you were reading. "Open" in the box is the same
- * ACT_PREVIEW the right-click menu offers, so the two cannot drift.
- * Audio still plays out of band, and a plain link still goes to the
- * browser through the /open door. */
+ * A picture, a video or an audio clip ASKS first (the confirm box, Cancel
+ * first). They used to open on the click: a picture full screen, a clip
+ * out of the speakers, fetched from wherever the link pointed — so one
+ * stray click took over the terminal (or the room) and told a third-party
+ * host you were reading. "Open"/"Play" in the box is the same ACT_PREVIEW
+ * the right-click menu offers, so the two cannot drift. A plain link
+ * still goes to the browser through the /open door. */
 static void media_click(struct app *app, const char *url, enum media_kind kind, int x, int y) {
-    if (kind == MEDIA_AUDIO) {
-        play_audio_url(app, url);
-        return;
-    }
     if (kind == MEDIA_NONE) {
         call_open_url(app, url);
         return;
