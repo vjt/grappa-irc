@@ -19,7 +19,7 @@
 #define SHOTTINO_VERSION_H
 
 #ifndef SHOTTINO_VERSION
-#define SHOTTINO_VERSION "0.4.0"
+#define SHOTTINO_VERSION "0.4.1"
 #endif
 
 /* What goes on the wire. Kept here so it cannot drift from the number
