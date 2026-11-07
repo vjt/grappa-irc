@@ -264,6 +264,20 @@ defmodule Grappa.Accounts do
   def touch_of(touches, subject_id) when is_map(touches) and is_binary(subject_id),
     do: Map.get(touches, subject_id, @no_touch)
 
+  @doc """
+  Issue 2597 — the address `subject` was last known at: the `ip` of its
+  newest cookie session, exactly what the admin listings show through
+  `newest_touch_by_subject_ids/2`. `nil` when the subject never had a
+  session, or its newest one recorded no address.
+
+  It is where that session LOGGED IN from (#1308), not where it was last
+  seen: read it as "last known", never as "current".
+  """
+  @spec last_known_ip({:user | :visitor, Ecto.UUID.t()}) :: String.t() | nil
+  def last_known_ip({kind, id}) when kind in [:user, :visitor] and is_binary(id) do
+    kind |> newest_touch_by_subject_ids([id]) |> touch_of(id) |> Map.fetch!(:ip)
+  end
+
   @spec newest_touch(:user_id | :visitor_id, [Ecto.UUID.t()]) :: %{Ecto.UUID.t() => touch()}
   defp newest_touch(column, ids) do
     ranked =
