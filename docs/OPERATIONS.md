@@ -22,6 +22,7 @@ production runs on the pi.
 - [Emergency DB rollback (cold + irreversible migrations)](#emergency-db-rollback-cold--irreversible-migrations)
 - [Letting a locked-out visitor back in (#982)](#letting-a-locked-out-visitor-back-in-982)
 - [Running an identd (RFC 1413, issue 227)](#running-an-identd-rfc-1413-issue-227)
+- [The client address behind a reverse proxy](#the-client-address-behind-a-reverse-proxy)
 - [CSP / security headers (BEAM-emitted, NOT nginx — #485)](#csp--security-headers-beam-emitted-not-nginx--485)
 - [The Docker compose stack (compose.yaml)](#the-docker-compose-stack-composeyaml)
 - [The two images: Dockerfile (toolchain) vs Dockerfile.release](#the-two-images-dockerfile-toolchain-vs-dockerfilerelease)
@@ -2981,6 +2982,24 @@ In order of likelihood:
 5. **A session could not publish its tuple.** A `Logger.warning`
    naming that session says so explicitly; it keeps its `~` for the
    life of that connection.
+
+## The client address behind a reverse proxy
+
+grappa records a client's address — the `sessions.ip` audit column, the
+per-IP admission caps and login throttles, the vhost a session egresses
+from — from the `X-Forwarded-For` / `X-Real-IP` pair the front door sets
+(`GrappaWeb.Plugs.RemoteIpFromProxy`: the endpoint plug for HTTP, the same
+function for the WebSocket connect). It reads `X-Forwarded-For` from the
+right, and **only loopback hops are treated as proxies**: the first entry
+that is not `127.0.0.0/8` or `::1` is the client, a private-range address
+(RFC 1918, ULA) included. A user who reaches the front door from a LAN or
+over a VPN is recorded under that address.
+
+Keep ONE proxy hop in front of the BEAM — the shape of every config this
+repo ships (`infra/nginx-tls-frontend.example.conf`, and on m42 the host
+vhost). In a chain, the hop nearest the BEAM appends the address of the
+hop before it, and unless that address is loopback it is what gets
+recorded. There is no setting for a list of trusted proxy addresses.
 
 ## CSP / security headers (BEAM-emitted, NOT nginx — #485)
 
