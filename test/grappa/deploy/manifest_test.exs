@@ -49,15 +49,32 @@ defmodule Grappa.Deploy.ManifestTest do
       assert Manifest.encode() == Manifest.encode(Manifest.current())
     end
 
+    test "the encoding is JSON text, the transport no Erlang term crosses" do
+      assert {:ok, %{"grappa_manifest" => 1}} = Jason.decode(Manifest.encode())
+    end
+
     test "text that is not a manifest is refused, not guessed at" do
-      assert {:error, :unknown_format} = Manifest.decode("not base64 at all!")
-      assert {:error, :unknown_format} = Manifest.decode(Base.encode64("junk"))
+      assert {:error, :unknown_format} = Manifest.decode("not json at all!")
+      assert {:error, :unknown_format} = Manifest.decode(~s(["junk"]))
 
       assert {:error, :unknown_format} =
-               {:grappa_manifest, 999, %{}}
-               |> :erlang.term_to_binary()
-               |> Base.encode64()
-               |> Manifest.decode()
+               Manifest.decode(Jason.encode!(%{grappa_manifest: 999, files: %{}, state_blocks: %{}}))
+    end
+
+    test "a manifest whose entries are not hashes is refused" do
+      %{files: files, state_blocks: blocks} = Manifest.current()
+      [file | _] = Map.keys(files)
+      [block | _] = Map.keys(blocks)
+
+      assert {:error, :unknown_format} =
+               Manifest.decode(
+                 Jason.encode!(%{grappa_manifest: 1, files: Map.put(files, file, 42), state_blocks: blocks})
+               )
+
+      assert {:error, :unknown_format} =
+               Manifest.decode(
+                 Jason.encode!(%{grappa_manifest: 1, files: files, state_blocks: Map.put(blocks, block, nil)})
+               )
     end
   end
 
