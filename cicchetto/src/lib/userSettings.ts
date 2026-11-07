@@ -322,6 +322,46 @@ export async function putAliases(token: string, aliases: Aliases): Promise<Alias
 }
 
 // ---------------------------------------------------------------------------
+// command counts — how many times the subject sent each command (issue 2584).
+//
+// A `%{verb => count}` map the `/` menu orders by, most used first. The CLIENT
+// writes it, one verb per command that goes out: the server never sees the
+// verb as typed (an alias arrives expanded, a local command not at all), so it
+// cannot count by itself. Both doors answer the whole map. There is no event;
+// the store re-reads at every user-topic (re)join. Contract and the
+// protocol-61 gate: CLIENT_PROTOCOL.md §8f, commandUsage.ts.
+// ---------------------------------------------------------------------------
+
+// Keyed by a verb the user typed (an alias name among them), so a `ByKey`.
+export type CommandCounts = ByKey<number>;
+
+type CommandCountsResponse = { command_counts: CommandCounts };
+
+export async function getCommandCounts(token: string): Promise<CommandCounts> {
+  const res = await fetch("/me/settings/command-counts", {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as CommandCountsResponse;
+  return body.command_counts;
+}
+
+// The verb and NOTHING after it: `/ns identify <password>` posts `ns`.
+export async function postCommandCount(token: string, verb: string): Promise<CommandCounts> {
+  const res = await fetch("/me/settings/command-counts", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ verb }),
+  });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as CommandCountsResponse;
+  return body.command_counts;
+}
+
+// ---------------------------------------------------------------------------
 // display_prefs — server-backed display preferences (#449).
 //
 // The presence filter (#222), timestamp format (#217), and colored nicklist

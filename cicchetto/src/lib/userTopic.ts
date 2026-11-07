@@ -11,6 +11,7 @@ import { setServerBundleHash, setServerBundleVersion } from "./bundleHash";
 import { casemappingForSlug } from "./casemapping";
 import { onDirectoryComplete, onDirectoryFailed, onDirectoryProgress } from "./channelDirectory";
 import { channelKey } from "./channelKey";
+import { refreshCommandCounts } from "./commandUsage";
 import { holdDccOffer, resolveDccOffer } from "./dccOffers";
 import { diagPush } from "./diagLog";
 import { catchUpPairings, deliverPairingEvent } from "./e2e/pairing";
@@ -990,6 +991,13 @@ moduleRoot(() => {
       // never configured anything" — never to silence.
       void refreshNotificationPrefs().catch((err) =>
         console.warn("[userTopic] notification-prefs hydrate failed", err),
+      );
+      // issue 2584 — the command counts the `/` menu orders by, for the same
+      // reason as the three above: server user_settings, NO broadcast (vjt's
+      // ruling), so a count sent from another device arrives here at the
+      // next (re)join. The store itself stays silent below protocol 61.
+      void refreshCommandCounts().catch((err) =>
+        console.warn("[userTopic] command-counts hydrate failed", err),
       );
       // issue 2430 — whatever encrypted messages waited while no cic was
       // connected sit in grappa's offline queue, and no push re-announces
