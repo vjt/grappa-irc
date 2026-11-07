@@ -506,19 +506,21 @@ just-pulled tree cold:
 
 ```sh
 git pull --ff-only                          # get the #485/#503 scripts + compose first
-infra/docker/deploy.sh update --no-pull     # force-cold: migrate .env, deps, migrate, cic, recreate
+infra/docker/deploy.sh update --no-pull     # force-cold: migrate .env, build + deps, cic, check, stop, migrate, seed, recreate
 ```
 
 > **Why `--no-pull` here.** You already pulled by hand, so re-pulling would
 > be a no-op with an empty commit range — which the hot-vs-cold classifier
 > cannot read. `--no-pull` forces the **cold** path, and the cold path runs
 > the full sequence unconditionally: image build, `deps.get`, the cic
-> bundle, `ecto.migrate`, and `up --force-recreate`. A box that predates
+> bundle, the migration check, the container stop, `grappa.migrate`, the
+> theme seed, and `up --force-recreate`. A box that predates
 > #485 has almost certainly crossed migration, dep, and bundle commits, and
 > the cold path applies all of them — no hand-run steps, unlike the old
-> update's diff-driven table. The critical one is `ecto.migrate`: crossing a
+> update's diff-driven table. The critical one is `grappa.migrate`: crossing a
 > schema-adding commit without it boots new code against the old schema, and
-> the health poll times out. From then on run `infra/docker/deploy.sh update`
+> the health poll times out. It runs with the old container stopped (issue
+> 1112), so if it fails the box is down until you fix it — the script says so. From then on run `infra/docker/deploy.sh update`
 > normally (it pulls and classifies hot-vs-cold).
 
 On that run the script:

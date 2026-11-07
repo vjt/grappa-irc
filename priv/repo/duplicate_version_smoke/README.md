@@ -10,7 +10,10 @@ without a conflict marker.
 The duplication is the fixture. Do not "fix" it — the gate under test
 (`Grappa.Deploy.MigrationAudit`, #1348) exists to refuse exactly this,
 and it has to be refused at every door that migrates: the hot handler,
-`Grappa.Release.migrate/0`, and `mix grappa.migrate`.
+`Grappa.Release.migrate/0`, and `mix grappa.migrate` — and at the door
+that only audits, the check every cold deploy runs before it stops
+anything (`Grappa.Release.check_migrations/0` and
+`mix grappa.check_migrations`, issue 1112).
 
 Neither file is ever compiled or applied. `Ecto.Migrator.migrations/1`
 parses the BASENAME and nothing else (`extract_migration_info/1`), so
