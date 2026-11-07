@@ -8,6 +8,7 @@ pkgbase = shottino
 	depends = ncurses
 	depends = openssl
 	depends = ca-certificates
+	makedepends = rust
 	optdepends = grappa: the bouncer this client talks to, if you run one locally
 	optdepends = libsecret: keep the encrypted-query key in the OS keyring (secret-tool)
 	source = shottino-@SHOTTINO_VERSION@.tar.gz::https://github.com/vjt/grappa-irc/archive/refs/tags/v@GRAPPA_VERSION@.tar.gz
