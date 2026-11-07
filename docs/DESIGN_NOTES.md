@@ -5875,6 +5875,19 @@ socket with a different address, which the bundle must never carry.
   tolerances both 74 → 76.
 - shottino `tests/test_wire` on the host, with the v62 fixtures: 719 checks,
   rc=0; positive control (broken JSON) rc=134, `FAIL whois_bundle`.
+- `scripts/check.sh` rc=0 (8720 tests, dialyzer 0, bats 863/863) — after
+  three red runs, each a real cause. The full suite found a reader of the
+  registry value E1 had missed: `auth_controller_test`'s #126 detach case
+  compared the raw value with the bare nick; it now asks
+  `Session.current_nick/2`, the value's contract. Every production reader was
+  read: `whereis/2` and `LiveIntrospection.lookup_session/2` match
+  `[{pid, _}]`, the admission and `count_live/0` match-specs ignore the value.
+  It also found a defect that is main's, not this branch's: with seed 789007
+  #1387's "exactly once" share-token test fails on `origin/main` too, its
+  refute matching the door alone and catching a sibling test's crossing from
+  another address. The refute now pins the address; three fresh-VM runs with
+  that seed are green, and a mutant emitting on the shut-window refusal still
+  turns it red.
 
 ### Not claimed
 
