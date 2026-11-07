@@ -4259,6 +4259,24 @@ static void bot_challenges(struct app *app, tpeer *bot, const char *network, con
     run_jobs(app);
 }
 
+/* The 005 edge as grappa pushes it (isupport_changed), with `extra`
+ * fields appended to the required head, through the client's own door. */
+static void isupport_edge(struct app *app, const char *extra) {
+    char text[512];
+    snprintf(text, sizeof(text),
+             "[null,null,\"grappa:user:vjt\",\"event\",{\"kind\":\"isupport_changed\","
+             "\"network_id\":%d,\"chanmodes_a\":[],\"chanmodes_b\":[],\"chanmodes_c\":[],"
+             "\"chanmodes_d\":[],\"prefix\":{\"o\":\"@\"}%s}]",
+             app->networks[0].id, extra);
+    json_doc *d = json_parse(text, strlen(text), NULL, 0);
+    struct wire_frame f;
+    struct wire_event ev;
+    CHECK(d && wire_frame_split(json_root(d), &f) && wire_narrow(f.payload, &ev));
+    if (d && wire_frame_split(json_root(d), &f) && wire_narrow(f.payload, &ev))
+        handle_wire_event(app, f.network, &ev);
+    json_free(d);
+}
+
 /* A plaintext channel line this client sent, challenged by a bot whose key
  * we verified: ACKed with its nonce, to the bot's device, with the CHAL's
  * deadline. A line we did not send, an unverified bot, another network
@@ -4329,13 +4347,35 @@ TEST(an_order_challenge_is_acked_only_for_a_line_we_sent) {
     bot_challenges(app, &bot, "Azzurra", "#grappa", "!voice vjt", "nonce-7", exp);
     CHECK_LONG(posted(before, "msg", NULL), 1);
 
+    /* A sigil the network does not advertise (CHANTYPES=# here) names no
+     * channel: "&local" is then a private message to someone else, even
+     * though the RFC class would have read it as a channel. */
+    isupport_edge(app, ",\"frame_budget_base\":394,\"network\":\"Azzurra\",\"chantypes\":[\"#\"]");
+    CHECK(app->networks[0].has_chantypes);
+    CHECK_STR(app->networks[0].chantypes, "#");
+    add_window_ex(app, "azzurra", "&local", true);
+    type_line(app, "!op amp");
+    run_jobs(app);
+    bot_challenges(app, &bot, "Azzurra", "&local", "!op amp", "nonce-9", exp);
+    CHECK(said(app, "identity check ✗ failed — bot asked to confirm a line in &local on Azzurra: "
+                    "not confirmed, it names a private message to someone other than the bot"));
+    CHECK_LONG(posted(before, "msg", NULL), 1);
+    /* Unknown (no CHANTYPES on the wire): the RFC class, so it is one. */
+    isupport_edge(app, ",\"frame_budget_base\":394,\"network\":\"Azzurra\"");
+    CHECK(!app->networks[0].has_chantypes);
+    type_line(app, "!op amp2");
+    run_jobs(app);
+    bot_challenges(app, &bot, "Azzurra", "&local", "!op amp2", "nonce-10", exp);
+    CHECK_LONG(posted(before, "msg", NULL), 2);
+    add_window_ex(app, "azzurra", "#grappa", true);
+
     /* No NETWORK= advertised: nothing to match against. */
     app->networks[0].network_name[0] = 0;
     type_line(app, "!kick x");
     run_jobs(app);
     bot_challenges(app, &bot, "Azzurra", "#grappa", "!kick x", "nonce-8", exp);
     CHECK(said(app, "this network has sent no 005 NETWORK= name"));
-    CHECK_LONG(posted(before, "msg", NULL), 1);
+    CHECK_LONG(posted(before, "msg", NULL), 2);
     tpeer_free(&bot);
     free_e2e_app(app);
 }

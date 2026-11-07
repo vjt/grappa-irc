@@ -388,6 +388,14 @@ static bool narrow_isupport(const json_value *p, struct wire_event *ev) {
         json_long(json_get(p, "frame_budget_base"), &ev->u.isupport.frame_budget_base);
     const char *name = json_string(json_get(p, "network"));
     ev->u.isupport.network = name && name[0] ? name : NULL;
+    /* Lenient too: every element one character (a sigil), or absent. */
+    const json_value *ct = json_get(p, "chantypes");
+    bool ct_ok = json_type_of(ct) == JSON_ARRAY;
+    for (size_t i = 0; ct_ok && i < json_len(ct); i++) {
+        const json_value *e = json_at(ct, i);
+        ct_ok = json_string(e) && json_string_len(e) == 1;
+    }
+    ev->u.isupport.chantypes = ct_ok ? ct : NULL;
     ev->kind = WIRE_ISUPPORT_CHANGED;
     return true;
 }

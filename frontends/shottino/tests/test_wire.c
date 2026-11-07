@@ -663,6 +663,41 @@ TEST(isupport_frame_budget_and_network_name) {
     json_free(d);
 }
 
+/* CHANTYPES (005), which an order challenge's channel is read against:
+ * lenient as the other E2E fields — absent or malformed is ABSENT (the
+ * client then falls back to the RFC class), never a refused envelope. */
+TEST(isupport_chantypes) {
+    struct wire_event ev;
+    bool ok;
+    json_doc *d = narrow(ISUPPORT_HEAD ",\"chantypes\":[\"#\",\"&\"]}", &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.u.isupport.chantypes != NULL);
+    CHECK_LONG(json_len(ev.u.isupport.chantypes), 2);
+    CHECK_STR(json_string(json_at(ev.u.isupport.chantypes, 1)), "&");
+    json_free(d);
+    /* An empty CHANTYPES= is a fact (no channels), not an absence. */
+    d = narrow(ISUPPORT_HEAD ",\"chantypes\":[]}", &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.u.isupport.chantypes != NULL);
+    CHECK_LONG(json_len(ev.u.isupport.chantypes), 0);
+    json_free(d);
+    const char *bad[] = {"", ",\"chantypes\":null", ",\"chantypes\":\"#&\"",
+                         ",\"chantypes\":[\"##\"]", ",\"chantypes\":[\"\"]",
+                         ",\"chantypes\":[7]"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char *text = NULL;
+        size_t n = strlen(ISUPPORT_HEAD) + strlen(bad[i]) + 2;
+        text = malloc(n);
+        snprintf(text, n, "%s%s}", ISUPPORT_HEAD, bad[i]);
+        d = narrow(text, &ev, &ok);
+        CHECK(ok);
+        CHECK(ev.u.isupport.chantypes == NULL);
+        json_free(d);
+        free(text);
+    }
+}
+
+
 /* The undeliverable row (CLIENT_PROTOCOL §4f): a server_event whose meta
  * counts the encrypted messages a peer sent that no device of ours can
  * read, and names the device. Read only when typed as cic reads it. */
@@ -1687,6 +1722,7 @@ int main(void) {
     RUN(maps_keyed_by_data);
     RUN(isupport);
     RUN(isupport_frame_budget_and_network_name);
+    RUN(isupport_chantypes);
     RUN(server_event_carries_the_undeliverable_count);
     RUN(e2e_message);
     RUN(e2e_send_dropped);

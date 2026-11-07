@@ -340,6 +340,11 @@ struct network {
     long frame_budget_base;
     bool has_frame_budget_base;
     char network_name[MAX_SLUG];
+    /* CHANTYPES, the sigils as one string ("#&"), from the same edge; an
+     * order challenge's channel is read against it. `has_chantypes` false:
+     * never advertised, and the RFC class stands in. */
+    char chantypes[16];
+    bool has_chantypes;
     bool connecting;
     /* Which own-nick topic this network's DM listener is subscribed to,
      * or empty for none. Recorded rather than derived from `nick`
@@ -9231,6 +9236,12 @@ static void handle_wire_event(struct app *app, const char *topic_network,
             n->frame_budget_base = ev->u.isupport.frame_budget_base;
             snprintf(n->network_name, sizeof(n->network_name), "%s",
                      ev->u.isupport.network ? ev->u.isupport.network : "");
+            const json_value *ct = ev->u.isupport.chantypes;
+            n->has_chantypes = ct != NULL;
+            size_t k = 0;
+            for (size_t i = 0; ct && i < json_len(ct) && k + 1 < sizeof(n->chantypes); i++)
+                n->chantypes[k++] = json_string(json_at(ct, i))[0];
+            n->chantypes[k] = 0;
         }
         pthread_mutex_unlock(&app->lock);
         break;
@@ -17159,11 +17170,15 @@ static const char *e2e_order_place(const char *channel) {
 static void e2e_answer_chal(struct app *app, struct e2e_slot *s, const e2e_ctx *c,
                             const e2e_event *e, const e2e_inner *in, e2e_result *out) {
     char network[MAX_SLUG] = "";
+    /* The network's own CHANTYPES; the RFC class only while it is unknown
+     * (no 005 yet, or a grappa that does not carry it). */
+    char chantypes[sizeof(((struct network *)0)->chantypes)] = "#&+!";
     int64_t at = e2e_now_ms();
     pthread_mutex_lock(&app->lock);
     struct network *n = network_by_slug_locked(app, s->slug);
     if (n) snprintf(network, sizeof(network), "%s", n->network_name);
-    const e2e_order_scope scope = {s->slug, network, "#&+!"};
+    if (n && n->has_chantypes) snprintf(chantypes, sizeof(chantypes), "%s", n->chantypes);
+    const e2e_order_scope scope = {s->slug, network, chantypes};
     e2e_order_verdict v = e2e_order_check(&app->sent_log, in, e->nick, e->verified, &scope, at);
     pthread_mutex_unlock(&app->lock);
     if (v == E2E_ORDER_CONFIRMED) {

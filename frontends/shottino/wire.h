@@ -408,6 +408,10 @@ struct wire_event {
             long frame_budget_base;
             bool has_frame_budget_base;
             const char *network;
+            /* CHANTYPES (005), an array of one-character strings — the
+             * sigils an order challenge's channel is read against. NULL
+             * when absent or malformed (lenient like the two above). */
+            const json_value *chantypes;
         } isupport;
 
         /* joined / join_failed / kicked share a head so the common
