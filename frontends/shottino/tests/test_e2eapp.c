@@ -454,6 +454,19 @@ static char *fg_handle(const char *method, const char *path, const char *body, i
                     goto end;
                 }
             }
+            /* A device the held list named and this one does not is
+             * revoked: grappa forgets it with everything stored. */
+            for (size_t k = 0; fg.has_list && k < fg.ndevices; k++) {
+                bool kept = false;
+                for (size_t i = 0; i < l.device_count; i++)
+                    kept = kept || strcmp(fg.devices[k], m.devices[i]) == 0;
+                for (size_t d = 0; !kept && d < fg.ndev; d++) {
+                    if (strcmp(fg.dev[d].ed, fg.devices[k]) != 0) continue;
+                    memmove(&fg.dev[d], &fg.dev[d + 1], (fg.ndev - d - 1) * sizeof(fg.dev[0]));
+                    fg.ndev--;
+                    break;
+                }
+            }
             fg.has_list = true;
             snprintf(fg.master, sizeof(fg.master), "%s", l.master);
             fg.ver = (long)l.ver;
@@ -2501,6 +2514,9 @@ static char *tpeer_keys(tpeer *devs, size_t n) {
 static size_t carried;
 static char heard[E2E_MAX_DEVICES][2048];
 static size_t heard_n[E2E_MAX_DEVICES];
+/* The sas.* inners the peer read, in order (slice F). */
+static char heard_sas[32][1024];
+static size_t nheard_sas;
 static void tpeer_carry(struct app *app, tpeer *devs, size_t n) {
     for (;;) {
         pthread_mutex_lock(&fg.lock);
@@ -2544,6 +2560,10 @@ static void tpeer_carry(struct app *app, tpeer *devs, size_t n) {
                         if (in.type == E2E_INNER_TEXT) {
                             snprintf(heard[i], sizeof(heard[i]), "%.*s", (int)in.body_len, in.body);
                             heard_n[i]++;
+                        } else if (in.type >= E2E_INNER_SAS_START &&
+                                   in.type <= E2E_INNER_SAS_CANCEL && nheard_sas < 32) {
+                            snprintf(heard_sas[nheard_sas++], sizeof(heard_sas[0]), "%s",
+                                     r.events[k].inner);
                         }
                         e2e_inner_free(&in);
                     }
@@ -3232,6 +3252,563 @@ TEST(a_corrupt_record_fails_closed) {
     free_e2e_app(app);
 }
 
+/* ── trust: SAS, the key alarm, devices (slice F) ─────────────────────── */
+
+/* The peer's half of a SAS, scripted here from vodozemac and hand-written
+ * JSON as cicchetto's sas.ts runs it — NOT through e2e.c's verifier — so
+ * what it accepts is shottino's bytes judged independently: the
+ * commitment, the info string, both MACs. */
+typedef struct {
+    vz_sas *sas;
+    vz_established_sas *est;
+    char key[64], their[64], tx[16];
+} hpeer;
+
+static void hp_free(hpeer *h) {
+    vz_sas_free(h->sas);
+    vz_established_sas_free(h->est);
+    memset(h, 0, sizeof(*h));
+}
+
+static void hp_new(hpeer *h) {
+    memset(h, 0, sizeof(*h));
+    h->sas = vz_sas_new();
+    char *k = th_vz(vz_sas_public_key(h->sas));
+    snprintf(h->key, sizeof(h->key), "%s", k);
+    free(k);
+}
+
+static char *hp_commitment(const char *key, const char *tx) {
+    char *text = xasprintf("%s|%s", key, tx);
+    uint8_t d[32];
+    CHECK(vz_sha256((const uint8_t *)text, strlen(text), d) == 0);
+    free(text);
+    return th_vz(vz_base64_encode(d, 32));
+}
+
+static char *acct_key(vz_account *a, bool curve) {
+    return th_vz(curve ? vz_account_curve25519_key(a) : vz_account_ed25519_key(a));
+}
+
+/* Our device's keys, as the peer has them. */
+static char *our_key(struct app *app, bool curve) { return acct_key(app->e2e[0].rec.account, curve); }
+
+/* The peer sends an inner message to us, through its engine. */
+static void tpeer_inner(struct app *app, tpeer *p, const char *inner) {
+    e2e_ctx c = tpeer_ctx(p);
+    e2e_result r;
+    e2e_result_init(&r);
+    CHECK(e2e_send(&c, "vjt", inner, "sas", 0, NULL, &r));
+    tpeer_pump(app, p, &r, 0);
+}
+
+/* The newest sas.* the peer read from us of type `t`, parsed (field `f`). */
+static bool heard_field(const char *t, const char *f, char *out, size_t out_sz) {
+    for (size_t i = nheard_sas; i > 0; i--) {
+        json_doc *d = json_parse(heard_sas[i - 1], strlen(heard_sas[i - 1]), NULL, 0);
+        const json_value *o = json_root(d);
+        bool hit = json_str_is(json_get(o, "t"), t);
+        if (hit) snprintf(out, out_sz, "%s", json_string(json_get(o, f)) ? json_string(json_get(o, f)) : "");
+        json_free(d);
+        if (hit) return true;
+    }
+    return false;
+}
+
+/* The info both sides derive the emoji from: A's curve|key, B's, the tx. */
+static void hp_emoji(hpeer *h, const char *a_curve, const char *a_key, const char *b_curve,
+                     const char *b_key, uint8_t out[7]) {
+    char *info = xasprintf("irc-e2e:v1:sas:%s|%s|%s|%s|%s", a_curve, a_key, b_curve, b_key, h->tx);
+    CHECK(vz_established_sas_emoji_indices(h->est, info, out) == 0);
+    free(info);
+}
+
+static char *hp_mac(hpeer *h, const char *key, bool master, const char *first, const char *second) {
+    char *info = xasprintf("%s%s|%s|%s", master ? "irc-e2e:v2:sas-mmac:" : "irc-e2e:v1:sas-mac:",
+                           first, second, h->tx);
+    char *mac = th_vz(vz_established_sas_calculate_mac(h->est, key, info));
+    free(info);
+    return mac;
+}
+
+static bool verified_here(struct app *app, const char *nick) {
+    e2e_ctx c;
+    char own[MAX_CHANNEL];
+    e2e_ctx_of(app, &app->e2e[0], &c, own, sizeof(own));
+    const char *m;
+    bool verified = false;
+    size_t trusted;
+    return e2e_pinned(&c, nick, &m, &verified, &trusted) && verified;
+}
+
+static struct app *trust_app(const char *subject, tpeer *alice) {
+    struct app *app = send_app(subject, "alice");
+    tpeer_new(alice, "alice");
+    meet(app, alice);
+    nheard_sas = 0;
+    return app;
+}
+
+/* As the initiator: /e2e verify alice → start, the peer accepts, keys,
+ * the 7 emoji in the query are the peer's own, both confirm, the peer's
+ * MASTER is verified here and ours there would be (its MACs check out). */
+TEST(sas_as_initiator_verifies_the_peers_master) {
+    tpeer alice;
+    struct app *app = trust_app("user:sas-a", &alice);
+    CHECK(!verified_here(app, "alice"));
+    type_line(app, "/e2e verify");
+    run_jobs(app);
+    tpeer_carry(app, &alice, 1);
+    char tx[16] = "";
+    CHECK(heard_field("sas.start", "tx", tx, sizeof(tx)) && strlen(tx) == 11);
+    CHECK(said(app, "you asked alice to compare emoji"));
+    e2e_ctx c;
+    char own[MAX_CHANNEL];
+    e2e_ctx_of(app, &app->e2e[0], &c, own, sizeof(own));
+    CHECK(e2e_waits_on_the_clock(&c));
+
+    hpeer h;
+    hp_new(&h);
+    snprintf(h.tx, sizeof(h.tx), "%s", tx);
+    char *commit = hp_commitment(h.key, tx);
+    char *inner = xasprintf("{\"t\":\"sas.accept\",\"tx\":\"%s\",\"commitment\":\"%s\"}", tx, commit);
+    tpeer_inner(app, &alice, inner);
+    free(inner);
+    free(commit);
+    drain(app);
+    tpeer_carry(app, &alice, 1);
+    char akey[64] = "";
+    CHECK(heard_field("sas.key", "key", akey, sizeof(akey)) && strlen(akey) == 43);
+    inner = xasprintf("{\"t\":\"sas.key\",\"tx\":\"%s\",\"key\":\"%s\"}", tx, h.key);
+    tpeer_inner(app, &alice, inner);
+    free(inner);
+    drain(app);
+    h.est = vz_sas_diffie_hellman(h.sas, akey);
+    h.sas = NULL;
+    CHECK(h.est != NULL);
+    char *ak = our_key(app, true), *ae = our_key(app, false);
+    char *bk = acct_key(alice.rec.account, true), *be = acct_key(alice.rec.account, false);
+    uint8_t emoji[7];
+    hp_emoji(&h, ak, akey, bk, h.key, emoji);
+    char line[256];
+    e2e_sas_emoji_line(emoji, line, sizeof(line));
+    CHECK(said(app, line));
+    CHECK(said(app, "--- e2e: compare emoji with alice — does alice see these, in this order?"));
+    CHECK(said(app, "/e2e verify confirm if they match, /e2e verify cancel if not"));
+    CHECK_LONG(said_count(app, line), 1);
+
+    type_line(app, "/e2e verify confirm");
+    run_jobs(app);
+    CHECK(said(app, "you confirmed the emoji; waiting for alice to confirm"));
+    CHECK(!verified_here(app, "alice"));
+    tpeer_carry(app, &alice, 1);
+    char mac[64] = "", mmac[64] = "";
+    CHECK(heard_field("sas.mac", "mac", mac, sizeof(mac)));
+    CHECK(heard_field("sas.mac", "mmac", mmac, sizeof(mmac)));
+    char *want = hp_mac(&h, ae, false, ak, bk);
+    CHECK_STR(mac, want);
+    free(want);
+    want = hp_mac(&h, app->e2e[0].rec.own->master, true, ak, bk);
+    CHECK_STR(mmac, want);
+    free(want);
+
+    char *bmac = hp_mac(&h, be, false, bk, ak);
+    char *bmmac = hp_mac(&h, alice.rec.own->master, true, bk, ak);
+    inner = xasprintf("{\"t\":\"sas.mac\",\"tx\":\"%s\",\"mac\":\"%s\",\"mmac\":\"%s\"}", tx, bmac, bmmac);
+    tpeer_inner(app, &alice, inner);
+    free(inner);
+    free(bmac);
+    free(bmmac);
+    drain(app);
+    CHECK(verified_here(app, "alice"));
+    char words[MAX_LINE];
+    snprintf(words, sizeof(words), "alice's key %s is verified — the emoji matched",
+             alice.rec.own->master);
+    CHECK(said(app, words));
+    e2e_ctx_of(app, &app->e2e[0], &c, own, sizeof(own));
+    CHECK(app->e2e[0].rec.state.nsas == 0);
+    /* /e2e who says so; a second /e2e verify does not start another. */
+    type_line(app, "/e2e who");
+    run_jobs(app);
+    CHECK(said(app, "— verified, 1 device trusted"));
+    CHECK(said(app, "last emoji comparison: matched"));
+    type_line(app, "/e2e verify");
+    run_jobs(app);
+    CHECK(said(app, "alice's key is verified already"));
+    free(ak);
+    free(ae);
+    free(bk);
+    free(be);
+    hp_free(&h);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* As the responder: the peer's start is a loud request, accepted by hand;
+ * our commitment is to the key we then show; the peer MACs first and the
+ * verification waits for our human. */
+TEST(sas_as_responder_waits_for_its_human) {
+    tpeer alice;
+    struct app *app = trust_app("user:sas-b", &alice);
+    hpeer h;
+    hp_new(&h);
+    snprintf(h.tx, sizeof(h.tx), "q83vEjRWeJA");
+    tpeer_inner(app, &alice, "{\"t\":\"sas.start\",\"tx\":\"q83vEjRWeJA\"}");
+    drain(app);
+    CHECK(said(app, "*** alice wants to verify keys with you — /e2e verify accept | /e2e verify "
+                    "cancel"));
+    tpeer_carry(app, &alice, 1);
+    char got[64] = "";
+    CHECK(!heard_field("sas.accept", "tx", got, sizeof(got))); /* nothing before the human */
+    type_line(app, "/e2e verify accept");
+    run_jobs(app);
+    CHECK(said(app, "accepted; exchanging keys with alice"));
+    tpeer_carry(app, &alice, 1);
+    char commitment[64] = "";
+    CHECK(heard_field("sas.accept", "commitment", commitment, sizeof(commitment)));
+    char *inner = xasprintf("{\"t\":\"sas.key\",\"tx\":\"q83vEjRWeJA\",\"key\":\"%s\"}", h.key);
+    tpeer_inner(app, &alice, inner);
+    free(inner);
+    drain(app);
+    tpeer_carry(app, &alice, 1);
+    char bkey[64] = "";
+    CHECK(heard_field("sas.key", "key", bkey, sizeof(bkey)));
+    char *want = hp_commitment(bkey, "q83vEjRWeJA");
+    CHECK_STR(commitment, want); /* B committed to the key it then sent */
+    free(want);
+    h.est = vz_sas_diffie_hellman(h.sas, bkey);
+    h.sas = NULL;
+    char *bk = our_key(app, true), *be = our_key(app, false);
+    char *ak = acct_key(alice.rec.account, true), *ae = acct_key(alice.rec.account, false);
+    uint8_t emoji[7];
+    hp_emoji(&h, ak, h.key, bk, bkey, emoji);
+    char line[256];
+    e2e_sas_emoji_line(emoji, line, sizeof(line));
+    CHECK(said(app, line));
+    /* The peer's MACs come first: kept, nothing verified until we say. */
+    char *amac = hp_mac(&h, ae, false, ak, bk);
+    char *ammac = hp_mac(&h, alice.rec.own->master, true, ak, bk);
+    inner = xasprintf("{\"t\":\"sas.mac\",\"tx\":\"q83vEjRWeJA\",\"mac\":\"%s\",\"mmac\":\"%s\"}",
+                      amac, ammac);
+    tpeer_inner(app, &alice, inner);
+    free(inner);
+    free(amac);
+    free(ammac);
+    drain(app);
+    CHECK(!verified_here(app, "alice"));
+    type_line(app, "/e2e verify confirm alice");
+    run_jobs(app);
+    CHECK(verified_here(app, "alice"));
+    tpeer_carry(app, &alice, 1);
+    char mac[64] = "", mmac[64] = "";
+    CHECK(heard_field("sas.mac", "mac", mac, sizeof(mac)));
+    CHECK(heard_field("sas.mac", "mmac", mmac, sizeof(mmac)));
+    want = hp_mac(&h, be, false, bk, ak);
+    CHECK_STR(mac, want);
+    free(want);
+    want = hp_mac(&h, app->e2e[0].rec.own->master, true, bk, ak);
+    CHECK_STR(mmac, want);
+    free(want);
+    free(ak);
+    free(ae);
+    free(bk);
+    free(be);
+    hp_free(&h);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* The emoji differ: "cancel" on shown emoji is `mismatch`, and nothing is
+ * verified; a wrong MAC from the peer is refused `mac-mismatch`. */
+TEST(sas_mismatch_and_a_wrong_mac_verify_nothing) {
+    tpeer alice;
+    struct app *app = trust_app("user:sas-x", &alice);
+    for (int round = 0; round < 2; round++) {
+        nheard_sas = 0;
+        hpeer h;
+        hp_new(&h);
+        snprintf(h.tx, sizeof(h.tx), round ? "BBBBBBBBBBB" : "AAAAAAAAAAA");
+        char *inner = xasprintf("{\"t\":\"sas.start\",\"tx\":\"%s\"}", h.tx);
+        tpeer_inner(app, &alice, inner);
+        free(inner);
+        drain(app);
+        type_line(app, "/e2e verify accept");
+        run_jobs(app);
+        inner = xasprintf("{\"t\":\"sas.key\",\"tx\":\"%s\",\"key\":\"%s\"}", h.tx, h.key);
+        tpeer_inner(app, &alice, inner);
+        free(inner);
+        drain(app);
+        tpeer_carry(app, &alice, 1);
+        char bkey[64] = "", reason[64] = "";
+        CHECK(heard_field("sas.key", "key", bkey, sizeof(bkey)));
+        if (round == 0) {
+            type_line(app, "/e2e verify cancel");
+            run_jobs(app);
+            tpeer_carry(app, &alice, 1);
+            CHECK(heard_field("sas.cancel", "reason", reason, sizeof(reason)));
+            CHECK_STR(reason, "mismatch");
+            CHECK(said(app, "emoji comparison with alice stopped: the emoji did not match"));
+        } else {
+            h.est = vz_sas_diffie_hellman(h.sas, bkey);
+            h.sas = NULL;
+            char *bk = our_key(app, true), *ak = acct_key(alice.rec.account, true);
+            char *ae = acct_key(alice.rec.account, false);
+            char *amac = hp_mac(&h, ae, false, ak, bk);
+            char *ammac = hp_mac(&h, app->e2e[0].rec.own->master, true, ak, bk); /* wrong master */
+            inner = xasprintf("{\"t\":\"sas.mac\",\"tx\":\"%s\",\"mac\":\"%s\",\"mmac\":\"%s\"}",
+                              h.tx, amac, ammac);
+            tpeer_inner(app, &alice, inner);
+            free(inner);
+            drain(app);
+            type_line(app, "/e2e verify confirm");
+            run_jobs(app);
+            tpeer_carry(app, &alice, 1);
+            CHECK(heard_field("sas.cancel", "reason", reason, sizeof(reason)));
+            CHECK_STR(reason, "mac-mismatch");
+            CHECK(said(app, "emoji comparison with alice stopped: the confirmation did not match"));
+            free(bk);
+            free(ak);
+            free(ae);
+            free(amac);
+            free(ammac);
+        }
+        CHECK(!verified_here(app, "alice"));
+        CHECK(app->e2e[0].rec.state.nsas == 0);
+        hp_free(&h);
+    }
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* 600 s with no answer: the clock cancels it `timeout`, on both sides. */
+TEST(sas_times_out_on_the_engines_clock) {
+    tpeer alice;
+    struct app *app = trust_app("user:sas-t", &alice);
+    type_line(app, "/e2e verify alice");
+    run_jobs(app);
+    CHECK(app->e2e[0].rec.state.nsas == 1);
+    CHECK(app->e2e[0].clock); /* the main loop ticks while it runs */
+    app->e2e[0].rec.state.sas[0].at -= E2E_SAS_TIMEOUT_MS + 1;
+    tick(app);
+    CHECK(app->e2e[0].rec.state.nsas == 0);
+    CHECK(said(app, "emoji comparison with alice stopped: no answer in 10 minutes"));
+    tpeer_carry(app, &alice, 1);
+    char reason[64] = "";
+    CHECK(heard_field("sas.cancel", "reason", reason, sizeof(reason)));
+    CHECK_STR(reason, "timeout");
+    /* Stored: a restart reads no SAS back. */
+    e2e_slots_free(app);
+    e2e_record rec;
+    CHECK(disk_record(app, &rec));
+    CHECK(rec.state.nsas == 0);
+    e2e_record_free(&rec);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* A restart mid-SAS loses the secret (memory only): the request comes
+ * back from the record, and the next tick ends it `page-gone`. */
+TEST(sas_restart_loses_the_secret_and_says_so) {
+    tpeer alice;
+    struct app *app = trust_app("user:sas-r", &alice);
+    type_line(app, "/e2e verify alice");
+    run_jobs(app);
+    e2e_slots_free(app);
+    free_e2e_app(app);
+    app = e2e_app("user:sas-r");
+    run_job(app, JOB_E2E_SYNC);
+    CHECK(app->e2e[0].rec.state.nsas == 1);
+    tick(app);
+    CHECK(app->e2e[0].rec.state.nsas == 0);
+    CHECK(said(app, "stopped: the page running it was closed or reloaded"));
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* The alarm resolves only by hand: shown, then confirmed — the new key
+ * pinned NOT verified; verifying it takes the very key pinned. */
+TEST(key_alarm_resolves_only_by_an_explicit_trust) {
+    fg_reset();
+    struct app *app = recv_app("user:trust");
+    add_window_ex(app, "azzurra", "alice", true);
+    tpeer alice, mallory;
+    tpeer_new(&alice, "alice");
+    tpeer_new(&mallory, "alice");
+    tpeer_say(app, &alice, "it is me");
+    drain(app);
+    tpeer_say(app, &mallory, "it is me too");
+    drain(app);
+    char pinned[64], presented[64];
+    snprintf(pinned, sizeof(pinned), "%s", alice.rec.own->master);
+    snprintf(presented, sizeof(presented), "%s", mallory.rec.own->master);
+    e2e_ctx c;
+    char own[MAX_CHANNEL];
+    e2e_ctx_of(app, &app->e2e[0], &c, own, sizeof(own));
+    const char *m;
+    bool verified;
+    size_t trusted;
+
+    type_line(app, "/e2e alarm");
+    run_jobs(app);
+    CHECK(said(app, "key alarm open for alice"));
+    type_line(app, "/e2e who");
+    run_jobs(app);
+    CHECK(said(app, "— key changed"));
+    /* Neither a SAS nor an out-of-band verify while the alarm is open. */
+    type_line(app, "/e2e verify");
+    run_jobs(app);
+    CHECK(said(app, "a key alarm is open for alice: answer it first"));
+    CHECK(app->e2e[0].rec.state.nsas == 0);
+
+    /* A confirm before the warning was shown takes nothing. */
+    type_line(app, "/e2e trust confirm");
+    run_jobs(app);
+    CHECK(said(app, "To take it: /e2e trust alice confirm"));
+    CHECK(e2e_pinned(&c, "alice", &m, &verified, &trusted) && strcmp(m, pinned) == 0);
+    type_line(app, "/e2e trust alice confirm");
+    run_jobs(app);
+    CHECK(e2e_pinned(&c, "alice", &m, &verified, &trusted) && strcmp(m, presented) == 0);
+    CHECK(!verified);
+    char words[MAX_LINE];
+    snprintf(words, sizeof(words), "alice is now pinned to the new key %s — NOT verified",
+             presented);
+    CHECK(said(app, words));
+    type_line(app, "/e2e alarm");
+    run_jobs(app);
+    CHECK(said(app, "--- e2e azzurra: no key alarm open"));
+
+    /* Verifying a key that is not the pinned one moves nothing. */
+    char line[160];
+    snprintf(line, sizeof(line), "/e2e verify alice %s", pinned);
+    type_line(app, line);
+    run_jobs(app);
+    CHECK(said(app, "that is not the key pinned to alice"));
+    CHECK(e2e_pinned(&c, "alice", &m, &verified, &trusted) && strcmp(m, presented) == 0 && !verified);
+    snprintf(line, sizeof(line), "/e2e verify alice %s", presented);
+    type_line(app, line);
+    run_jobs(app);
+    CHECK(e2e_pinned(&c, "alice", &m, &verified, &trusted) && strcmp(m, presented) == 0 && verified);
+    snprintf(words, sizeof(words), "alice's key %s is verified (compared out of band)", presented);
+    CHECK(said(app, words));
+
+    /* A restart reads the alarm as answered: the rows say so. */
+    e2e_slots_free(app);
+    free_e2e_app(app);
+    app = e2e_app("user:trust");
+    run_job(app, JOB_E2E_SYNC);
+    add_window_ex(app, "azzurra", "alice", true);
+    type_line(app, "/e2e alarm");
+    run_jobs(app);
+    CHECK(said(app, "no key alarm open"));
+    tpeer_free(&alice);
+    tpeer_free(&mallory);
+    free_e2e_app(app);
+}
+
+static void did_of(vz_account *a, char out[E2E_DID_LEN + 1]) {
+    char *e = vz_account_ed25519_key(a);
+    e2e_did(e, out);
+    vz_str_free(e);
+}
+
+/* The holder lists the identity's devices and revokes one: the master
+ * signs ver+1 without it, grappa drops it; this device is never offered. */
+TEST(devices_listed_and_revoked_by_the_holder) {
+    fg_reset();
+    struct app *app = recv_app("user:devs");
+    run_jobs(app);
+    add_window_ex(app, "azzurra", "alice", true);
+    tpeer sib;
+    sibling_of(app, &sib);
+    char mine[E2E_DID_LEN + 1], theirs[E2E_DID_LEN + 1];
+    did_of(app->e2e[0].rec.account, mine);
+    did_of(sib.rec.account, theirs);
+    type_line(app, "/e2e devices");
+    run_jobs(app);
+    CHECK(said(app, "--- e2e devices on azzurra: list v2, 2 of 3; this device holds the master key"));
+    char line[MAX_LINE];
+    snprintf(line, sizeof(line), "  %s  added ", mine);
+    CHECK(said(app, line));
+    snprintf(line, sizeof(line), "  %s  added ", theirs);
+    CHECK(said(app, line));
+    CHECK(said(app, "  — this device"));
+    CHECK(said(app, "/e2e revoke <did> removes a device"));
+
+    snprintf(line, sizeof(line), "/e2e revoke %s", theirs);
+    type_line(app, line);
+    run_jobs(app);
+    CHECK(said(app, "To revoke it: /e2e revoke"));
+    pthread_mutex_lock(&fg.lock);
+    CHECK_LONG(fg.ver, 2); /* nothing put before the confirm */
+    pthread_mutex_unlock(&fg.lock);
+    snprintf(line, sizeof(line), "/e2e revoke %s confirm", theirs);
+    type_line(app, line);
+    run_jobs(app);
+    snprintf(line, sizeof(line), "device %s revoked — the master signed list v3 without it", theirs);
+    CHECK(said(app, line));
+    pthread_mutex_lock(&fg.lock);
+    CHECK_LONG(fg.ver, 3);
+    CHECK_LONG(fg.ndevices, 1);
+    CHECK(fg_device_by_did(theirs) == NULL); /* grappa dropped it */
+    pthread_mutex_unlock(&fg.lock);
+    CHECK_LONG(app->e2e[0].rec.own->list_ver, 3);
+    CHECK_LONG(view_of(app).list_devices, 1);
+    /* Itself: refused, nothing put. */
+    snprintf(line, sizeof(line), "/e2e revoke %s confirm", mine);
+    type_line(app, line);
+    run_jobs(app);
+    CHECK(said(app, "it cannot revoke itself"));
+    pthread_mutex_lock(&fg.lock);
+    CHECK_LONG(fg.ver, 3);
+    pthread_mutex_unlock(&fg.lock);
+    /* On disk. */
+    e2e_slots_free(app);
+    e2e_record rec;
+    CHECK(disk_record(app, &rec));
+    CHECK(rec.own && rec.own->list_ver == 3 && rec.own->list_devices.n == 1);
+    CHECK(rec.own && e2e_own_verify(rec.own, rec.account));
+    e2e_record_free(&rec);
+    tpeer_free(&sib);
+    free_e2e_app(app);
+}
+
+/* A paired device lists the devices but revokes none: only the holder of
+ * the master can, and nothing is put from here. */
+TEST(a_paired_device_cannot_revoke) {
+    struct app *app = pair_to_confirm("user:pair-revoke");
+    pair_run(app, "confirm", "", 0);
+    char joiner[64] = "";
+    CHECK(th_join(joiner));
+    th_sign(joiner, 2);
+    ring(app);
+    CHECK(view_of(app).state == E2E_SLOT_READY && !view_of(app).holder);
+    add_window_ex(app, "azzurra", "alice", true);
+    type_line(app, "/e2e devices");
+    run_jobs(app);
+    CHECK(said(app, "the master key is on another device"));
+    CHECK(said(app, "Devices are added and revoked from the device that started this identity"));
+    char holder[E2E_DID_LEN + 1];
+    e2e_did(th.e, holder);
+    char line[96];
+    snprintf(line, sizeof(line), "/e2e revoke %s confirm", holder);
+    size_t puts = 0;
+    pthread_mutex_lock(&fg.lock);
+    for (const char *p = fg.log; (p = strstr(p, "PUT /networks/azzurra/e2e/list")); p++) puts++;
+    pthread_mutex_unlock(&fg.lock);
+    type_line(app, line);
+    run_jobs(app);
+    CHECK(said(app, "only the device holding the master key can remove devices"));
+    /* The worker refuses too, whatever reaches it. */
+    e2e_send_enqueue(app, "azzurra", "", "revoke", holder, 0);
+    run_jobs(app);
+    size_t after = 0;
+    pthread_mutex_lock(&fg.lock);
+    for (const char *p = fg.log; (p = strstr(p, "PUT /networks/azzurra/e2e/list")); p++) after++;
+    pthread_mutex_unlock(&fg.lock);
+    CHECK_LONG(after, puts);
+    free_pair_app(app);
+}
+
 int main(void) {
     test_use_temp_home();
     if (!fg_start()) {
@@ -3260,6 +3837,14 @@ int main(void) {
     RUN(a_message_read_twice_writes_one_row);
     RUN(an_undecryptable_message_is_nacked_and_said);
     RUN(a_key_alarm_is_loud_and_pins_nothing);
+    RUN(sas_as_initiator_verifies_the_peers_master);
+    RUN(sas_as_responder_waits_for_its_human);
+    RUN(sas_mismatch_and_a_wrong_mac_verify_nothing);
+    RUN(sas_times_out_on_the_engines_clock);
+    RUN(sas_restart_loses_the_secret_and_says_so);
+    RUN(key_alarm_resolves_only_by_an_explicit_trust);
+    RUN(devices_listed_and_revoked_by_the_holder);
+    RUN(a_paired_device_cannot_revoke);
     RUN(a_copy_from_a_sibling_reads_as_ours);
     RUN(copying_to_a_new_sibling_claims_first);
     RUN(the_doorbell_rings_for_this_device_once);

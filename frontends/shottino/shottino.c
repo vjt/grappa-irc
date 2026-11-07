@@ -1238,6 +1238,13 @@ struct e2e_slot {
     size_t nawaiting;
     int64_t siblings_at;
     long siblings_ver;
+    /* Trust (see "E2E: trust"): the SAS secrets (memory only: vodozemac's
+     * Sas cannot be pickled), the txs whose emoji were shown, and the key
+     * an alarm presented that /e2e trust showed, waiting for its confirm. */
+    e2e_sas_host *sas_host;
+    e2e_strv sas_shown;
+    char trust_nick[MAX_CHANNEL];
+    char trust_key[64];
     /* app->lock */
     struct e2e_view view;
     bool drain_queued; /* a JOB_E2E_DRAIN is queued and not started */
@@ -16378,6 +16385,11 @@ static void e2e_slots_free(struct app *app) {
         if (s->have_rec) e2e_record_free(&s->rec);
         s->have_rec = false;
         if (s->store) e2e_store_close(s->store);
+        e2e_sas_host_free(s->sas_host);
+        s->sas_host = NULL;
+        for (size_t k = 0; k < s->sas_shown.n; k++) free(s->sas_shown.v[k]);
+        free(s->sas_shown.v);
+        s->sas_shown = (e2e_strv){0};
         s->store = NULL;
         e2e_hist_ids_free(s);
         for (size_t k = 0; k < s->nouts; k++) free(s->outs[k].body);
@@ -16473,8 +16485,8 @@ static void e2e_undecryptable_text(const char *nick, const char *reason, char *o
 }
 
 /* A key alarm's words, in the query and $server (EncryptedChatPane's step
- * card): the presented key, and nothing taken. Resolving it (take the key,
- * verify it) is /e2e trust and verify, a later slice. Pure. */
+ * card): the presented key, nothing taken, and the one way to take it
+ * (/e2e trust, which asks again before it pins). Pure. */
 static void e2e_key_alarm_text(const char *nick, const char *presented, bool server, char *out,
                                size_t out_sz) {
     if (server)
@@ -16485,10 +16497,67 @@ static void e2e_key_alarm_text(const char *nick, const char *presented, bool ser
     else
         snprintf(out, out_sz,
                  "!!! %s wrote with a key that is not the one pinned, and it was ignored — "
-                 "presented key %s. If they changed it, take the new key only once it is "
-                 "verified; if they did not, someone else may be writing in their name. The "
+                 "presented key %s. If they changed it, take the new key (/e2e trust %s) and "
+                 "verify it; if they did not, someone else may be writing in their name. The "
                  "pinned key stays",
-                 nick, presented);
+                 nick, presented, nick);
+}
+
+/* A trust row's words (EncryptedRail's labels, sas.ts's reasons): a key
+ * pinned, taken or verified, an emoji comparison asked or ended. `live`:
+ * a peer's request just came, so it says what to type; read back from the
+ * history it is a past event. True when the line is an alert (the peer
+ * asks; a key taken unverified). Pure: tests read it. */
+static bool e2e_trust_row_text(const e2e_row *row, bool live, char *out, size_t out_sz) {
+    const char *nick = row->nick, *key = row->key ? row->key : "?";
+    switch (row->kind) {
+    case E2E_ROW_PINNED:
+        snprintf(out, out_sz, "--- e2e: %s's key %s is verified (compared out of band)", nick, key);
+        return false;
+    case E2E_ROW_ACCEPTED:
+        snprintf(out, out_sz,
+                 "!!! e2e: %s is now pinned to the new key %s — NOT verified: compare it with them "
+                 "(/e2e verify %s)",
+                 nick, key, nick);
+        return true;
+    case E2E_ROW_VERIFIED:
+        snprintf(out, out_sz, "--- e2e: %s's key %s is verified — the emoji matched", nick, key);
+        return false;
+    case E2E_ROW_SAS_ASKED:
+        if (row->by_peer && live)
+            snprintf(out, out_sz,
+                     "*** %s wants to verify keys with you — /e2e verify accept | /e2e verify "
+                     "cancel",
+                     nick);
+        else if (row->by_peer)
+            snprintf(out, out_sz, "*** %s asked to verify keys with you (emoji comparison)", nick);
+        else
+            snprintf(out, out_sz,
+                     "--- e2e: you asked %s to compare emoji — waiting for them to accept "
+                     "(/e2e verify cancel stops it). A bot never answers: compare the key it "
+                     "prints with /e2e who %s, then /e2e verify %s <key>",
+                     nick, nick, nick);
+        return row->by_peer;
+    case E2E_ROW_SAS_CANCELLED: {
+        const char *reason = row->body ? row->body : "";
+        const char *words = e2e_sas_reason_text(reason);
+        char quoted[80];
+        if (!words) {
+            snprintf(quoted, sizeof(quoted), "\"%s\"", reason);
+            words = quoted;
+        }
+        if (strcmp(reason, "other-device") == 0)
+            snprintf(out, out_sz, "--- e2e: the emoji comparison with %s was %s", nick, words);
+        else if (row->by_peer)
+            snprintf(out, out_sz, "--- e2e: emoji comparison stopped by %s: %s", nick, words);
+        else
+            snprintf(out, out_sz, "--- e2e: emoji comparison with %s stopped: %s", nick, words);
+        return false;
+    }
+    default:
+        out[0] = '\0';
+        return false;
+    }
 }
 
 /* One history row on screen. A message goes the DM path (render_row,
@@ -16526,6 +16595,13 @@ static void e2e_render_row(struct app *app, const char *slug, const e2e_row *row
         e2e_undecryptable_text(row->nick, row->body ? row->body : "?", text, sizeof(text));
         maybe_mark_unread(app, slug, row->nick, live);
         log_line(app, "[%s/%s] %s " E2E_LOCK " %s", slug, row->nick, clock, text);
+        return;
+    }
+    if (row->kind != E2E_ROW_KEY_ALARM) {
+        bool alert = e2e_trust_row_text(row, live, text, sizeof(text));
+        if (alert) maybe_mark_unread(app, slug, row->nick, live);
+        log_line_mention(app, alert && live, "[%s/%s] %s " E2E_LOCK " %s", slug, row->nick, clock,
+                         text);
         return;
     }
     /* A key alarm is never hidden: it is about who is writing. */
@@ -16827,6 +16903,70 @@ static void e2e_hist_load(struct app *app, struct e2e_slot *s) {
     e2e_rows_free(&rows);
 }
 
+/* Small string sets for the worker (exact compare). */
+static void e2e_strv_push(e2e_strv *v, const char *str) {
+    char **grown = realloc(v->v, (v->n + 1) * sizeof(*grown));
+    if (!grown) die("out of memory");
+    v->v = grown;
+    v->v[v->n++] = xstrdup(str);
+}
+
+static bool e2e_strv_has(const e2e_strv *v, const char *str) {
+    for (size_t i = 0; str && i < v->n; i++)
+        if (strcmp(v->v[i], str) == 0) return true;
+    return false;
+}
+
+static void e2e_strv_clear(e2e_strv *v) {
+    for (size_t i = 0; i < v->n; i++) free(v->v[i]);
+    free(v->v);
+    *v = (e2e_strv){0};
+}
+
+/* A nick once, by fold. */
+static void e2e_nicks_note(e2e_strv *v, const char *nick) {
+    for (size_t i = 0; nick && i < v->n; i++)
+        if (e2e_nick_eq(v->v[i], nick)) return;
+    if (nick) e2e_strv_push(v, nick);
+}
+
+/* sas.ts isSas: an inner whose `t` starts "sas.". */
+static bool e2e_is_sas(const char *inner) {
+    if (!inner) return false;
+    json_doc *d = json_parse(inner, strlen(inner), NULL, 0);
+    const char *t = d ? json_string(json_get(json_root(d), "t")) : NULL;
+    bool sas = t && strncmp(t, "sas.", 4) == 0;
+    json_free(d);
+    return sas;
+}
+
+static e2e_sas_host *e2e_sas_host_of(struct e2e_slot *s) {
+    if (!s->sas_host && !(s->sas_host = e2e_sas_host_new())) die("out of memory");
+    return s->sas_host;
+}
+
+/* What the query shows of the SAS on `nick` after a step: the 7 emoji, once
+ * per tx, where the secret is and while our human has not answered them
+ * (the comparison dialog's `compare` phase). Worked out BEFORE the step's
+ * commit, since working the emoji out can end the SAS (a key that makes
+ * no secret: `bad-key`, into res/rows); the line is shown after it. */
+static char *e2e_sas_look(struct app *app, struct e2e_slot *s, const e2e_ctx *c, const char *nick,
+                          e2e_result *res, e2e_rows *rows) {
+    (void)app;
+    e2e_sas_view v;
+    if (!e2e_sas_view_of(c, e2e_sas_host_of(s), nick, &v, res, rows)) return NULL;
+    if (v.phase != E2E_SAS_COMPARE || !v.here || !v.has_emoji || v.confirmed ||
+        e2e_strv_has(&s->sas_shown, v.tx))
+        return NULL;
+    e2e_strv_push(&s->sas_shown, v.tx);
+    char emoji[256];
+    e2e_sas_emoji_line(v.emoji, emoji, sizeof(emoji));
+    return xasprintf("[%s/%s] " E2E_LOCK " --- e2e: compare emoji with %s — does %s see these, in "
+                     "this order?  %s  — /e2e verify confirm if they match, /e2e verify cancel "
+                     "if not",
+                     s->slug, nick, nick, nick, emoji);
+}
+
 static void e2e_auto_on(struct app *app, struct e2e_slot *s, const char *nick);
 static void e2e_report(struct app *app, struct e2e_slot *s, const e2e_result *res);
 static void e2e_after_step(struct app *app, struct e2e_slot *s, const e2e_ctx *c);
@@ -16845,6 +16985,7 @@ static void e2e_drain_slot(struct app *app, struct e2e_slot *s, int depth) {
     snprintf(did, sizeof(did), "%s", s->rec.own->did);
     bool behind = false, unknown = false, failed = false;
     long after = 0;
+    e2e_strv touched = {0}; /* the nicks a SAS step came from, this page */
     for (int pages = 0; !behind && !failed && pages < 1000; pages++) {
         struct e2e_reply r;
         const json_value *items = NULL;
@@ -16920,17 +17061,40 @@ static void e2e_drain_slot(struct app *app, struct e2e_slot *s, int depth) {
             /* A peer who writes encrypted is answered encrypted. */
             for (size_t k = had; k < rows.n; k++)
                 if (rows.v[k].kind == E2E_ROW_IN) e2e_auto_on(app, s, rows.v[k].nick);
+            /* A sas.* goes to the verifier (client.ts drain), its rows
+             * derived from the same inbox item. */
+            e2e_result sas;
+            e2e_result_init(&sas);
+            for (size_t k = 0; k < res.nevents; k++) {
+                const e2e_event *e = &res.events[k];
+                if (e->kind != E2E_EV_RECEIVED || !e2e_is_sas(e->inner)) continue;
+                char rid[48];
+                snprintf(rid, sizeof(rid), "in:%ld:%zu", id, k);
+                e2e_sas_receive(&c, e2e_sas_host_of(s), e->nick, e->master, e->device, e->inner,
+                                rid, &sas, &rows);
+                e2e_nicks_note(&touched, e->nick);
+            }
+            e2e_result_move(&res, &sas);
             e2e_result_move(&pend, &res);
             s->rec.state.inbox = id;
             acks[nacks++] = id;
             if (shaped) seen++;
         }
         e2e_reply_free(&r);
+        e2e_strv looks = {0};
+        for (size_t k = 0; k < touched.n; k++) {
+            char *look = e2e_sas_look(app, s, &c, touched.v[k], &pend, &rows);
+            if (look) e2e_strv_push(&looks, look);
+            free(look);
+        }
+        e2e_strv_clear(&touched);
         if (!e2e_commit(app, s, &c, &rows, &pend, &unknown)) {
             failed = true;
         } else {
             e2e_report(app, s, &pend);
+            for (size_t k = 0; k < looks.n; k++) log_line(app, "%s", looks.v[k]);
         }
+        e2e_strv_clear(&looks);
         if (!failed && nacks) {
             json_buf b;
             jb_init(&b);
@@ -16966,13 +17130,16 @@ static void e2e_drain_slot(struct app *app, struct e2e_slot *s, int depth) {
         e2e_result_init(&ticked);
         c.now_ms = e2e_now_ms();
         e2e_tick(&c, &ticked);
-        e2e_rows none = {0};
-        if ((ticked.noutbound || ticked.ncopies || ticked.nevents) &&
-            e2e_commit(app, s, &c, &none, &ticked, &unknown))
+        e2e_rows ended = {0}; /* a SAS out of time, or whose secret is gone */
+        e2e_sas_tick(&c, e2e_sas_host_of(s), &ticked, &ended);
+        if ((ticked.noutbound || ticked.ncopies || ticked.nevents || ended.n) &&
+            e2e_commit(app, s, &c, &ended, &ticked, &unknown))
             e2e_report(app, s, &ticked);
+        e2e_rows_free(&ended);
         e2e_result_free(&ticked);
         e2e_after_step(app, s, &c);
     }
+    e2e_strv_clear(&touched);
     if (behind || unknown) {
         /* Sync: an adopt brings the newer list (or tells what moved), and
          * a list-behind drain reads again, from the copy it stopped at. */
@@ -17314,7 +17481,15 @@ static void e2e_report(struct app *app, struct e2e_slot *s, const e2e_result *re
             const char *words = e2e_failure_words(e->failure);
             for (size_t k = 0; k < e->tags.n; k++) {
                 struct e2e_out *o = e2e_out_by_tag(s, e->tags.v[k]);
-                if (o) e2e_out_failed(app, s, o, words);
+                /* client.ts rowlessLost: a SAS step has no row; the SAS
+                 * waits for it until it times out. A release lost leaves
+                 * the other devices' request to its own clock. */
+                if (strcmp(e->tags.v[k], E2E_SAS_RELEASE_TAG) == 0) continue;
+                if (strcmp(e->tags.v[k], E2E_SAS_TAG) == 0)
+                    log_line(app, "[%s/%s] --- e2e: a step of the emoji comparison with %s was "
+                                  "not sent (%s); it will time out",
+                             s->slug, e->nick, e->nick, words);
+                else if (o) e2e_out_failed(app, s, o, words);
                 else
                     log_line(app, "[%s/%s] " E2E_LOCK " --- e2e: an encrypted message to %s sent "
                                   "earlier was not delivered (%s)",
@@ -17347,14 +17522,19 @@ static void e2e_report(struct app *app, struct e2e_slot *s, const e2e_result *re
 
 /* Steps 3-5 of a step on the worker. False when the record could not be
  * stored: nothing left, the record is read back. */
-static bool e2e_run(struct app *app, struct e2e_slot *s, const e2e_ctx *c, e2e_result *res) {
+static bool e2e_run_rows(struct app *app, struct e2e_slot *s, const e2e_ctx *c, e2e_rows *rows,
+                         e2e_result *res) {
     bool unknown = false;
-    e2e_rows none = {0};
-    bool ok = e2e_commit(app, s, c, &none, res, &unknown);
+    bool ok = e2e_commit(app, s, c, rows, res, &unknown);
     if (ok) e2e_report(app, s, res);
     e2e_after_step(app, s, c);
     if (unknown) e2e_sync_slot(app, s);
     return ok;
+}
+
+static bool e2e_run(struct app *app, struct e2e_slot *s, const e2e_ctx *c, e2e_result *res) {
+    e2e_rows none = {0};
+    return e2e_run_rows(app, s, c, &none, res);
 }
 
 static bool e2e_failed_now(const e2e_result *res, const char *tag) {
@@ -17448,6 +17628,509 @@ static size_t e2e_resend(struct app *app, struct e2e_slot *s, const char *peer) 
 
 /* JOB_E2E_SEND: arg1 the verb, channel the peer, arg2 the text (send) or
  * the msgid (dropped), num the row (send) or the drop reason (dropped). */
+/* ── E2E: trust (slice F) ─────────────────────────────────────────────────
+ * Pins, the key alarm, the emoji comparison (SAS) and this account's
+ * devices, as cicchetto's rail and chat window offer them (EncryptedRail,
+ * EncryptedChatPane, identity.ts), as /e2e verbs on the job worker (it
+ * owns the slot). Nothing here moves a pin silently: a pin moves only on
+ * a typed /e2e trust … confirm (the alarm's key, NOT verified) or a typed
+ * /e2e verify <nick> <key> naming the very key already pinned (the
+ * out-of-band compare, verified), and a SAS verifies only the master it
+ * ran with. What a step writes (cic's trust rows) goes in the history
+ * BEFORE the record is stored and the payloads leave, as any step. */
+
+/* Every row of the slot's history: what trust the rows record (openAlarm,
+ * lastComparison) is derived from them, never kept beside them. */
+static void e2e_rows_load(struct app *app, struct e2e_slot *s, e2e_rows *rows) {
+    char dir[PATH_MAX], err[256];
+    e2e_chat_dir(app, s, dir, sizeof(dir));
+    if (!e2e_chat_load(dir, rows, err, sizeof(err)))
+        card(app, s->slug, "--- e2e: some of the encrypted history could not be read (%s)", err);
+}
+
+/* The SAS with the master pinned to `nick`, if one runs (borrowed). */
+static const e2e_sas *e2e_sas_running(const e2e_ctx *c, const char *nick) {
+    const char *m;
+    bool verified;
+    size_t trusted;
+    if (!e2e_pinned(c, nick, &m, &verified, &trusted)) return NULL;
+    const e2e_state *st = &c->record->state;
+    for (size_t i = 0; i < st->nsas; i++)
+        if (strcmp(st->sas[i].master, m) == 0) return &st->sas[i];
+    return NULL;
+}
+
+/* client.ts pin: the pin moved by the user's hand (`verified`: compared
+ * out of band), any SAS on another master ended, and the row that says so
+ * — `pinned` when the master is verified now, `accepted` when not. */
+static e2e_pin_outcome e2e_pin_by_hand(struct e2e_slot *s, const e2e_ctx *c, const char *nick,
+                                       const char *key, bool verified, e2e_result *res,
+                                       e2e_rows *rows) {
+    e2e_pin_outcome o = e2e_pin(c, nick, key, verified, res);
+    if (o != E2E_PIN_PINNED) return o;
+    e2e_sas_repinned(c, e2e_sas_host_of(s), nick, rows);
+    const char *m = key;
+    bool now_verified = verified;
+    size_t trusted;
+    e2e_pinned(c, nick, &m, &now_verified, &trusted);
+    e2e_row r = {0};
+    r.id = xasprintf("pin:%lld.%lu", (long long)c->now_ms, ++s->out_seq);
+    r.kind = now_verified ? E2E_ROW_PINNED : E2E_ROW_ACCEPTED;
+    r.at = c->now_ms;
+    r.nick = xstrdup(nick);
+    r.key = xstrdup(m);
+    e2e_rows_push(rows, &r);
+    return o;
+}
+
+static const char *e2e_pin_refusal_words(e2e_pin_outcome o) {
+    return o == E2E_PIN_OWN_KEY ? "that is your own key" : "that is not an Ed25519 key (43 "
+                                                            "characters of base64)";
+}
+
+/* Steps 3-5 for a trust step, then the emoji it made appear. */
+static void e2e_trust_finish(struct app *app, struct e2e_slot *s, const e2e_ctx *c,
+                             const char *nick, e2e_rows *rows, e2e_result *res) {
+    char *look = nick ? e2e_sas_look(app, s, c, nick, res, rows) : NULL;
+    if (e2e_run_rows(app, s, c, rows, res) && look) log_line(app, "%s", look);
+    free(look);
+}
+
+/* /e2e who <nick>: the pinned key, its standing, its devices (the list
+ * the last KEYS or t:list brought), the alarm, the last comparison. */
+static void e2e_who(struct app *app, struct e2e_slot *s, const e2e_ctx *c, const char *nick) {
+    const char *m;
+    bool verified;
+    size_t trusted;
+    if (!e2e_pinned(c, nick, &m, &verified, &trusted)) {
+        log_line(app, "[%s/%s] --- e2e: no key pinned to %s yet — it is taken, on first use, when "
+                      "they answer an encrypted message",
+                 s->slug, nick, nick);
+        return;
+    }
+    e2e_rows rows = {0};
+    e2e_rows_load(app, s, &rows);
+    const char *alarm = e2e_open_alarm(&rows, nick);
+    const e2e_master *mr = e2e_master_of(c, m);
+    char list[32] = "no list from them yet";
+    if (mr && mr->ver) snprintf(list, sizeof(list), "their list v%ld", mr->ver);
+    log_line(app, "[%s/%s] --- e2e: %s's key %s — %s, %zu device%s trusted (%s)", s->slug, nick,
+             nick, m, alarm ? "key changed" : verified ? "verified" : "not verified", trusted,
+             trusted == 1 ? "" : "s", list);
+    const e2e_state *st = &c->record->state;
+    for (size_t i = 0; mr && i < mr->devices.n; i++) {
+        char did[E2E_DID_LEN + 1] = "?";
+        e2e_did(mr->devices.v[i], did);
+        log_line(app, "[%s/%s]   device %s %s — %s", s->slug, nick, did, mr->devices.v[i],
+                 e2e_trusted(c, m, mr->devices.v[i]) ? "trusted" : "listed, no keys from it yet");
+    }
+    for (size_t i = 0; i < st->ndevices; i++) {
+        const e2e_device *d = &st->devices[i];
+        bool listed = false;
+        for (size_t k = 0; mr && k < mr->devices.n && !listed; k++)
+            listed = strcmp(mr->devices.v[k], d->ed25519) == 0;
+        if (listed || strcmp(d->master, m) != 0) continue;
+        log_line(app, "[%s/%s]   device %s %s — %s", s->slug, nick, d->did, d->ed25519,
+                 e2e_trusted(c, m, d->ed25519) ? "trusted (certified past their list)"
+                                               : "not trusted (revoked or not listed)");
+    }
+    if (alarm)
+        log_line(app, "[%s/%s]   ignored key %s — /e2e trust %s takes it, NOT verified", s->slug,
+                 nick, alarm, nick);
+    const e2e_row *last = e2e_last_comparison(&rows, nick);
+    if (last && last->kind == E2E_ROW_VERIFIED) {
+        log_line(app, "[%s/%s]   last emoji comparison: matched", s->slug, nick);
+    } else if (last) {
+        const char *reason = last->body ? last->body : "";
+        const char *words = e2e_sas_reason_text(reason);
+        char quoted[80];
+        if (!words) {
+            snprintf(quoted, sizeof(quoted), "\"%s\"", reason);
+            words = quoted;
+        }
+        log_line(app, "[%s/%s]   last emoji comparison: %s%s", s->slug, nick,
+                 strcmp(reason, "other-device") == 0 ? ""
+                 : last->by_peer                     ? "stopped by them: "
+                                                     : "stopped: ",
+                 words);
+    }
+    const e2e_sas *run = e2e_sas_running(c, nick);
+    if (run) {
+        const char *where = "comparing — /e2e verify confirm | /e2e verify cancel";
+        if (run->phase == E2E_SAS_STARTED || run->phase == E2E_SAS_KEYED)
+            where = "waiting for them to accept";
+        else if (run->phase == E2E_SAS_ASKED)
+            where = "they ask — /e2e verify accept | /e2e verify cancel";
+        else if (run->phase == E2E_SAS_ACCEPTED)
+            where = "exchanging keys";
+        else if (run->expected)
+            where = "you confirmed; waiting for them to confirm";
+        log_line(app, "[%s/%s]   emoji comparison under way: %s", s->slug, nick, where);
+    } else if (!verified && !alarm) {
+        log_line(app, "[%s/%s]   compare it with %s out of band, then /e2e verify %s <key>; or "
+                      "compare emoji while both are online: /e2e verify %s",
+                 s->slug, nick, nick, nick, nick);
+    }
+    e2e_rows_free(&rows);
+}
+
+/* /e2e alarm: every chat whose newest key alarm is not answered yet. */
+static void e2e_alarms(struct app *app, struct e2e_slot *s, const e2e_ctx *c) {
+    e2e_rows rows = {0};
+    e2e_rows_load(app, s, &rows);
+    e2e_strv nicks = {0};
+    for (size_t i = 0; i < rows.n; i++)
+        if (rows.v[i].kind == E2E_ROW_KEY_ALARM) e2e_nicks_note(&nicks, rows.v[i].nick);
+    size_t open = 0;
+    for (size_t i = 0; i < nicks.n; i++) {
+        const char *alarm = e2e_open_alarm(&rows, nicks.v[i]);
+        if (!alarm) continue;
+        const char *m = "?";
+        bool verified;
+        size_t trusted;
+        e2e_pinned(c, nicks.v[i], &m, &verified, &trusted);
+        log_line(app, "!!! e2e %s: key alarm open for %s — they wrote with %s, the pinned key is "
+                      "%s (/e2e trust %s takes the new one, NOT verified)",
+                 s->slug, nicks.v[i], alarm, m, nicks.v[i]);
+        open++;
+    }
+    if (!open) log_line(app, "--- e2e %s: no key alarm open", s->slug);
+    e2e_strv_clear(&nicks);
+    e2e_rows_free(&rows);
+}
+
+/* /e2e trust <nick> [confirm] (the alarm card's "take the new key (not
+ * verified)"): shown first, with what it means; taken only on a confirm
+ * naming the same key still presented. */
+static void e2e_trust(struct app *app, struct e2e_slot *s, const e2e_ctx *c, const char *nick,
+                      bool confirm) {
+    e2e_rows rows = {0};
+    e2e_rows_load(app, s, &rows);
+    const char *alarm = e2e_open_alarm(&rows, nick);
+    char presented[64];
+    snprintf(presented, sizeof(presented), "%s", alarm ? alarm : "");
+    e2e_rows_free(&rows);
+    if (!presented[0]) {
+        log_line(app, "[%s/%s] --- e2e: no key alarm open for %s: there is no new key to take",
+                 s->slug, nick, nick);
+        return;
+    }
+    const char *m = "?";
+    bool verified;
+    size_t trusted;
+    e2e_pinned(c, nick, &m, &verified, &trusted);
+    bool same = e2e_nick_eq(s->trust_nick, nick) && strcmp(s->trust_key, presented) == 0;
+    if (!confirm || !same) {
+        snprintf(s->trust_nick, sizeof(s->trust_nick), "%s", nick);
+        snprintf(s->trust_key, sizeof(s->trust_key), "%s", presented);
+        log_line_mention(app, true,
+                         "[%s/%s] !!! e2e: %s wrote with the key %s, not the pinned %s. Take it "
+                         "only if %s told you, out of band, that their key changed — otherwise "
+                         "someone else may be writing in their name. It is pinned NOT verified "
+                         "(verify it after: /e2e verify %s). To take it: /e2e trust %s confirm",
+                         s->slug, nick, nick, presented, m, nick, nick, nick);
+        return;
+    }
+    s->trust_nick[0] = s->trust_key[0] = '\0';
+    e2e_result res;
+    e2e_result_init(&res);
+    e2e_rows out = {0};
+    e2e_pin_outcome o = e2e_pin_by_hand(s, c, nick, presented, false, &res, &out);
+    if (o != E2E_PIN_PINNED)
+        log_line(app, "[%s/%s] --- e2e: cannot take that key: %s", s->slug, nick,
+                 e2e_pin_refusal_words(o));
+    else
+        e2e_trust_finish(app, s, c, nick, &out, &res);
+    e2e_rows_free(&out);
+    e2e_result_free(&res);
+}
+
+/* /e2e verify <nick> <key> (the rail's "verify" beside the key shown): the
+ * user compared the pinned key out of band; pinning that very key again,
+ * verified, is the whole act. Another key is refused, never pinned over
+ * it: either the key shown is theirs, or someone is in the middle. */
+static void e2e_verify_key(struct app *app, struct e2e_slot *s, const e2e_ctx *c,
+                           const char *nick, const char *key) {
+    e2e_rows rows = {0};
+    e2e_rows_load(app, s, &rows);
+    bool alarm = e2e_open_alarm(&rows, nick) != NULL;
+    e2e_rows_free(&rows);
+    const char *m;
+    bool verified;
+    size_t trusted;
+    if (alarm) {
+        log_line(app, "[%s/%s] --- e2e: a key alarm is open for %s: answer it first (/e2e who %s)",
+                 s->slug, nick, nick, nick);
+        return;
+    }
+    if (!e2e_pinned(c, nick, &m, &verified, &trusted)) {
+        log_line(app, "[%s/%s] --- e2e: no key pinned to %s yet: nothing to verify", s->slug,
+                 nick, nick);
+        return;
+    }
+    if (strcmp(m, key) != 0) {
+        log_line_mention(app, true,
+                         "[%s/%s] !!! e2e: that is not the key pinned to %s (%s), so nothing was "
+                         "verified. If the key %s gives you differs from it, someone may be in "
+                         "the middle: it is never pinned over",
+                         s->slug, nick, nick, m, nick);
+        return;
+    }
+    if (verified) {
+        log_line(app, "[%s/%s] --- e2e: %s's key is verified already", s->slug, nick, nick);
+        return;
+    }
+    e2e_result res;
+    e2e_result_init(&res);
+    e2e_rows out = {0};
+    e2e_pin_outcome o = e2e_pin_by_hand(s, c, nick, key, true, &res, &out);
+    if (o != E2E_PIN_PINNED)
+        log_line(app, "[%s/%s] --- e2e: cannot verify that key: %s", s->slug, nick,
+                 e2e_pin_refusal_words(o));
+    else
+        e2e_trust_finish(app, s, c, nick, &out, &res);
+    e2e_rows_free(&out);
+    e2e_result_free(&res);
+}
+
+/* /e2e verify [nick] and its steps: the emoji comparison (SasDialog). */
+static void e2e_sas_command(struct app *app, struct e2e_slot *s, const e2e_ctx *c,
+                            const char *nick, const char *word) {
+    e2e_sas_step step = E2E_SAS_STEP_START;
+    if (strcmp(word, "accept") == 0) step = E2E_SAS_STEP_ACCEPT;
+    else if (strcmp(word, "match") == 0) step = E2E_SAS_STEP_MATCH;
+    else if (strcmp(word, "mismatch") == 0) step = E2E_SAS_STEP_MISMATCH;
+    else if (strcmp(word, "cancel") == 0) step = E2E_SAS_STEP_CANCEL;
+    const e2e_sas *run = e2e_sas_running(c, nick);
+    if (step == E2E_SAS_STEP_START) {
+        /* The badge's door (KeyDialog): offered only for a key pinned and
+         * not verified, with no alarm open — that is answered first. */
+        e2e_rows rows = {0};
+        e2e_rows_load(app, s, &rows);
+        bool alarm = e2e_open_alarm(&rows, nick) != NULL;
+        e2e_rows_free(&rows);
+        const char *m;
+        bool verified = false;
+        size_t trusted;
+        bool pinned = e2e_pinned(c, nick, &m, &verified, &trusted);
+        if (alarm) {
+            log_line(app, "[%s/%s] --- e2e: a key alarm is open for %s: answer it first (/e2e "
+                          "who %s)",
+                     s->slug, nick, nick, nick);
+            return;
+        }
+        if (pinned && verified && !run) {
+            log_line(app, "[%s/%s] --- e2e: %s's key is verified already", s->slug, nick, nick);
+            return;
+        }
+    } else if (step == E2E_SAS_STEP_CANCEL && run && run->phase == E2E_SAS_COMPARE &&
+               run->held && !run->expected) {
+        /* The emoji are shown and the answer is no: they do not match. */
+        step = E2E_SAS_STEP_MISMATCH;
+    }
+    e2e_result res;
+    e2e_result_init(&res);
+    e2e_rows rows = {0};
+    e2e_sas_outcome o = e2e_sas_user(c, e2e_sas_host_of(s), nick, step, &res, &rows);
+    switch (o) {
+    case E2E_SAS_NO_PIN:
+        log_line(app, "[%s/%s] --- e2e: no key pinned to %s yet — exchange an encrypted message "
+                      "first",
+                 s->slug, nick, nick);
+        break;
+    case E2E_SAS_RUNNING:
+        log_line(app, "[%s/%s] --- e2e: an emoji comparison with %s is under way already (/e2e "
+                      "who %s)",
+                 s->slug, nick, nick, nick);
+        break;
+    case E2E_SAS_NONE:
+        log_line(app, "[%s/%s] --- e2e: no emoji comparison with %s is under way (/e2e verify %s "
+                      "starts one)",
+                 s->slug, nick, nick, nick);
+        break;
+    case E2E_SAS_NOT_NOW:
+        log_line(app, "[%s/%s] --- e2e: not now — %s", s->slug, nick,
+                 step == E2E_SAS_STEP_ACCEPT ? "there is no request to accept"
+                 : run && run->expected      ? "you confirmed already; waiting for them"
+                                             : "the emoji are not shown yet");
+        break;
+    case E2E_SAS_DONE:
+        if (step == E2E_SAS_STEP_ACCEPT)
+            log_line(app, "[%s/%s] --- e2e: accepted; exchanging keys with %s…", s->slug, nick,
+                     nick);
+        break;
+    }
+    e2e_trust_finish(app, s, c, nick, &rows, &res);
+    if (o == E2E_SAS_DONE && step == E2E_SAS_STEP_MATCH && (run = e2e_sas_running(c, nick)) &&
+        run->expected)
+        log_line(app, "[%s/%s] --- e2e: you confirmed the emoji; waiting for %s to confirm…",
+                 s->slug, nick, nick);
+    e2e_rows_free(&rows);
+    e2e_result_free(&res);
+}
+
+/* /e2e devices (EncryptedRail OwnDevices, identity.ts ownDevices): after a
+ * sync, grappa's devices with the did worked out here from each key, the
+ * identity's (listed) first, this device marked. */
+static void e2e_devices(struct app *app, struct e2e_slot *s) {
+    e2e_sync_slot(app, s);
+    pthread_mutex_lock(&app->lock);
+    bool ready = s->view.state == E2E_SLOT_READY;
+    pthread_mutex_unlock(&app->lock);
+    if (!ready || !s->have_rec || !s->rec.own) {
+        log_line(app, "/e2e devices: the identity on %s is not ready here (/e2e shows why)",
+                 s->slug);
+        return;
+    }
+    struct e2e_reply r;
+    const json_value *devices = NULL;
+    size_t count = 0;
+    if (!e2e_door(app, WIRE_E2E_DEVICES, s->slug, NULL, -1, NULL, &r) ||
+        !wire_narrow_e2e_devices(json_root(r.doc), &devices, &count)) {
+        char why[160];
+        e2e_reply_describe(&r, why, sizeof(why));
+        log_line(app, "/e2e devices: could not list the devices on %s (%s)", s->slug, why);
+        e2e_reply_free(&r);
+        return;
+    }
+    const e2e_own *own = s->rec.own;
+    char *here = NULL;
+    if (s->rec.account) {
+        char *k = vz_account_ed25519_key(s->rec.account);
+        here = k ? xstrdup(k) : NULL;
+        vz_str_free(k);
+    }
+    bool holder = s->rec.master != NULL;
+    log_line(app, "--- e2e devices on %s: list v%ld, %zu of %d; %s", s->slug, own->list_ver,
+             own->list_devices.n, E2E_DEVICE_CAP,
+             holder ? "this device holds the master key" : "the master key is on another device");
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t i = 0; i < count; i++) {
+            struct wire_e2e_device d;
+            if (!wire_e2e_device_at(devices, i, &d)) continue;
+            bool listed = false;
+            for (size_t k = 0; k < own->list_devices.n && !listed; k++)
+                listed = strcmp(own->list_devices.v[k], d.ed25519) == 0;
+            if (listed != (pass == 0)) continue;
+            char did[E2E_DID_LEN + 1];
+            if (!e2e_did(d.ed25519, did)) continue;
+            bool mine = here && strcmp(here, d.ed25519) == 0;
+            if (!listed) {
+                log_line(app, "  %s  registered, not on the list (a pairing that did not "
+                              "finish)%s",
+                         did, mine ? "  — this device" : "");
+                continue;
+            }
+            log_line(app, "  %s  added %s  last seen %s%s", did,
+                     d.inserted_at ? d.inserted_at : "(unknown)",
+                     d.last_seen_at ? d.last_seen_at : "(unknown)",
+                     mine ? "  — this device" : "");
+        }
+    }
+    if (holder && own->list_devices.n >= E2E_DEVICE_CAP)
+        log_line(app, "  An identity holds at most %d devices: revoke one to add another (/e2e "
+                      "revoke <did>)",
+                 E2E_DEVICE_CAP);
+    else if (holder)
+        log_line(app, "  /e2e revoke <did> removes a device from the identity");
+    else
+        log_line(app, "  Devices are added and revoked from the device that started this "
+                      "identity (it holds the master key)");
+    free(here);
+    e2e_reply_free(&r);
+}
+
+/* /e2e revoke <did> confirm (identity.ts revokeDevice): the holder signs
+ * the list one version up without that device; grappa, taking it, drops
+ * the device with its keys and queue — no DELETE follows, as in cic. A
+ * stale_list syncs and signs again, once. */
+static void e2e_revoke(struct app *app, struct e2e_slot *s, const char *did) {
+    for (int attempt = 0; attempt < 2; attempt++) {
+        e2e_sync_slot(app, s);
+        pthread_mutex_lock(&app->lock);
+        bool ready = s->view.state == E2E_SLOT_READY;
+        pthread_mutex_unlock(&app->lock);
+        if (!ready || !s->have_rec || !s->rec.own) {
+            log_line(app, "/e2e revoke %s: refused — the identity on %s is not ready here", did,
+                     s->slug);
+            return;
+        }
+        if (!s->rec.master) {
+            log_line(app, "/e2e revoke %s: refused — only the device holding the master key can "
+                          "remove devices, and this one is paired",
+                     did);
+            return;
+        }
+        const char *ed = NULL;
+        for (size_t i = 0; i < s->rec.own->list_devices.n && !ed; i++) {
+            char d[E2E_DID_LEN + 1];
+            if (e2e_did(s->rec.own->list_devices.v[i], d) && strcmp(d, did) == 0)
+                ed = s->rec.own->list_devices.v[i];
+        }
+        e2e_own fresh;
+        bool unlisted = ed == NULL;
+        if (!ed || !e2e_own_revoked(&s->rec, ed, &fresh, &unlisted)) {
+            log_line(app, "/e2e revoke %s: refused — %s", did,
+                     unlisted ? "it is no longer on the device list"
+                              : "this device could not sign a new list without it (it cannot "
+                                "revoke itself)");
+            return;
+        }
+        char *put = e2e_list_put_body(&fresh);
+        struct e2e_reply r;
+        bool ok = put && e2e_door(app, WIRE_E2E_LIST_PUT, s->slug, NULL, -1, put, &r);
+        free(put);
+        if (ok) {
+            e2e_reply_free(&r);
+            long ver = fresh.list_ver;
+            e2e_replace_own(s, &fresh);
+            e2e_save(app, s);
+            s->siblings_at = 0; /* our siblings are listed again before the next copy */
+            struct e2e_view v;
+            pthread_mutex_lock(&app->lock);
+            v = s->view;
+            pthread_mutex_unlock(&app->lock);
+            e2e_view_ready(s, &v);
+            e2e_view_put(app, s, &v);
+            log_line(app, "--- e2e %s: device %s revoked — the master signed list v%ld without "
+                          "it; grappa drops it, and your contacts stop trusting it once they have "
+                          "the new list",
+                     s->slug, did, ver);
+            return;
+        }
+        bool stale = e2e_refused_as(&r, "stale_list");
+        char why[160];
+        e2e_reply_describe(&r, why, sizeof(why));
+        e2e_reply_free(&r);
+        e2e_own_free(&fresh);
+        if (!stale) {
+            log_line(app, "/e2e revoke %s: grappa refused the new list (%s)", did, why);
+            return;
+        }
+    }
+    log_line(app, "/e2e revoke %s: the device list changed meanwhile: try again", did);
+}
+
+/* The trust verbs of e2e_send_job. */
+static bool e2e_trust_verb(const char *verb) {
+    static const char *const verbs[] = {"sas", "verify-key", "trust", "who", "alarms", "devices",
+                                        "revoke"};
+    for (size_t i = 0; i < sizeof(verbs) / sizeof(verbs[0]); i++)
+        if (strcmp(verb, verbs[i]) == 0) return true;
+    return false;
+}
+
+static void e2e_trust_job(struct app *app, struct e2e_slot *s, const e2e_ctx *c, const char *verb,
+                          const char *nick, const char *arg) {
+    if (strcmp(verb, "sas") == 0) e2e_sas_command(app, s, c, nick, arg);
+    else if (strcmp(verb, "verify-key") == 0) e2e_verify_key(app, s, c, nick, arg);
+    else if (strcmp(verb, "trust") == 0) e2e_trust(app, s, c, nick, strcmp(arg, "confirm") == 0);
+    else if (strcmp(verb, "who") == 0) e2e_who(app, s, c, nick);
+    else if (strcmp(verb, "alarms") == 0) e2e_alarms(app, s, c);
+    else if (strcmp(verb, "devices") == 0) e2e_devices(app, s);
+    else if (strcmp(verb, "revoke") == 0) e2e_revoke(app, s, arg);
+}
+
 static void e2e_send_job(struct app *app, const struct job *job) {
     const char *verb = job->arg1, *nick = job->channel;
     pthread_mutex_lock(&app->lock);
@@ -17469,7 +18152,8 @@ static void e2e_send_job(struct app *app, const struct job *job) {
         return;
     }
     if (!usable) {
-        if (strcmp(verb, "on") == 0 || strcmp(verb, "resend") == 0 || strcmp(verb, "rekey") == 0)
+        if (strcmp(verb, "on") == 0 || strcmp(verb, "resend") == 0 || strcmp(verb, "rekey") == 0 ||
+            e2e_trust_verb(verb))
             log_line(app, "/e2e %s %s: encrypted queries are not ready on %s (/e2e shows why)",
                      verb, nick, job->network);
         return;
@@ -17478,6 +18162,10 @@ static void e2e_send_job(struct app *app, const struct job *job) {
     char own[MAX_CHANNEL];
     e2e_ctx c;
     e2e_ctx_of(app, s, &c, own, sizeof(own));
+    if (e2e_trust_verb(verb)) {
+        e2e_trust_job(app, s, &c, verb, nick, job->arg2);
+        return;
+    }
     e2e_result res;
     e2e_result_init(&res);
     if (strcmp(verb, "on") == 0) {
@@ -17527,6 +18215,12 @@ static void e2e_send_job(struct app *app, const struct job *job) {
             }
     } else if (strcmp(verb, "tick") == 0) {
         e2e_tick(&c, &res);
+        e2e_rows ended = {0};
+        e2e_sas_tick(&c, e2e_sas_host_of(s), &res, &ended);
+        e2e_run_rows(app, s, &c, &ended, &res);
+        e2e_rows_free(&ended);
+        e2e_result_free(&res);
+        return;
     }
     e2e_run(app, s, &c, &res);
     e2e_result_free(&res);
@@ -17806,8 +18500,98 @@ static size_t e2e_status_lines(const char *slug, const struct e2e_view *v, char 
     return 0;
 }
 
+/* /e2e verify|trust|who|alarm|devices|revoke (see "E2E: trust"): read on
+ * the UI thread, run on the worker. The nick defaults to the query typed
+ * in; the network is the current window's. */
+static void e2e_trust_command(struct app *app, const char *sub, const char *rest) {
+    char w1[128] = "", w2[128] = "", w3[16] = "";
+    sscanf(rest, "%127s %127s %15s", w1, w2, w3);
+    char net[MAX_SLUG], chan[MAX_CHANNEL];
+    if (!current_window_key(app, net, sizeof(net), chan, sizeof(chan)) || !net[0]) {
+        log_line(app, "/e2e %s: switch to a window of the network first", sub);
+        return;
+    }
+    pthread_mutex_lock(&app->lock);
+    struct e2e_slot *s = e2e_slot_by_slug_locked(app, net);
+    bool ready = s && s->view.state == E2E_SLOT_READY &&
+                 app->server_protocol >= E2E_SEND_MIN_PROTOCOL;
+    bool holder = s && s->view.holder;
+    pthread_mutex_unlock(&app->lock);
+    if (!ready) {
+        log_line(app, "/e2e %s: refused — encrypted queries are not ready on %s (/e2e shows why)",
+                 sub, net);
+        return;
+    }
+    if (strcmp(sub, "alarm") == 0 || strcmp(sub, "alarms") == 0) {
+        e2e_send_enqueue(app, net, "", "alarms", "", 0);
+        return;
+    }
+    if (strcmp(sub, "devices") == 0) {
+        e2e_send_enqueue(app, net, "", "devices", "", 0);
+        return;
+    }
+    if (strcmp(sub, "revoke") == 0) {
+        if (!e2e_did_valid(w1)) {
+            log_line(app, "usage: /e2e revoke <did> (the 11-character id /e2e devices lists)");
+            return;
+        }
+        if (!holder) {
+            log_line(app, "/e2e revoke %s: refused — only the device holding the master key can "
+                          "remove devices, and this one is paired; revoke it from there",
+                     w1);
+            return;
+        }
+        if (strcmp(w2, "confirm") != 0) {
+            log_line(app, "!!! e2e: revoke device %s from your encryption identity on %s? grappa "
+                          "drops it and delivers nothing more to it, and your contacts stop "
+                          "trusting it once they have the new device list. Messages already on "
+                          "it stay there. To use it again, add it again from this device. To "
+                          "revoke it: /e2e revoke %s confirm",
+                     w1, net, w1);
+            return;
+        }
+        e2e_send_enqueue(app, net, "", "revoke", w1, 0);
+        return;
+    }
+    /* The verbs on a nick: a step word first, or the nick. */
+    static const char *const steps[] = {"accept", "confirm", "match", "mismatch", "cancel",
+                                        "decline"};
+    bool is_step = false;
+    for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]) && !is_step; i++)
+        is_step = strcmp(sub, "verify") == 0 && strcmp(w1, steps[i]) == 0;
+    bool trust_confirm = strcmp(sub, "trust") == 0 && strcmp(w1, "confirm") == 0;
+    const char *named = is_step || trust_confirm ? w2 : w1;
+    const char *peer = named[0] ? named : chan;
+    if (!peer[0] || is_channel_name(peer) || is_local_window(peer)) {
+        log_line(app, "/e2e %s: type it in a query, or name the nick (/e2e %s <nick>)", sub, sub);
+        return;
+    }
+    pthread_mutex_lock(&app->lock);
+    bool own = nick_case_equal(peer, own_nick_for_network(app, net));
+    pthread_mutex_unlock(&app->lock);
+    if (own) {
+        log_line(app, "/e2e %s: %s is your own nick", sub, peer);
+        return;
+    }
+    if (strcmp(sub, "who") == 0) {
+        e2e_send_enqueue(app, net, peer, "who", "", 0);
+    } else if (strcmp(sub, "trust") == 0) {
+        bool confirm = trust_confirm || strcmp(w2, "confirm") == 0;
+        e2e_send_enqueue(app, net, peer, "trust", confirm ? "confirm" : "", 0);
+    } else if (is_step) {
+        const char *step = strcmp(w1, "confirm") == 0   ? "match"
+                           : strcmp(w1, "decline") == 0 ? "cancel"
+                                                        : w1;
+        e2e_send_enqueue(app, net, peer, "sas", step, 0);
+    } else if (w2[0]) {
+        e2e_send_enqueue(app, net, peer, "verify-key", w2, 0);
+    } else {
+        e2e_send_enqueue(app, net, peer, "sas", "start", 0);
+    }
+}
+
 /* /e2e [status [network]] | init [network] | sync [network] | pair …
- * | on|off|resend|rekey [nick]. */
+ * | on|off|resend|rekey [nick] | verify|trust|who|alarm|devices|revoke …. */
 static void e2e_command(struct app *app, const char *args) {
     while (*args == ' ') args++;
     char sub[16] = "", net[MAX_SLUG] = "";
@@ -17841,9 +18625,19 @@ static void e2e_command(struct app *app, const char *args) {
         e2e_query_command(app, sub, net);
         return;
     }
+    if (strcmp(sub, "verify") == 0 || strcmp(sub, "trust") == 0 || strcmp(sub, "who") == 0 ||
+        strcmp(sub, "alarm") == 0 || strcmp(sub, "alarms") == 0 || strcmp(sub, "devices") == 0 ||
+        strcmp(sub, "revoke") == 0) {
+        const char *rest = strstr(args, sub) + strlen(sub);
+        while (*rest == ' ') rest++;
+        e2e_trust_command(app, sub, rest);
+        return;
+    }
     if (!status && strcmp(sub, "init") != 0 && strcmp(sub, "sync") != 0) {
         log_line(app, "usage: /e2e [status [network]] | init [network] | sync [network] | pair "
-                      "[accept|confirm|decline] | on|off|resend|rekey [nick]");
+                      "[accept|confirm|decline] | on|off|resend|rekey [nick] | verify [nick "
+                      "[key]] | verify accept|confirm|cancel [nick] | trust [nick] [confirm] | "
+                      "who [nick] | alarm | devices | revoke <did> [confirm]");
         return;
     }
     if (!net[0] && !status) current_window_key(app, net, sizeof(net), NULL, 0);
@@ -19712,8 +20506,9 @@ static void complete_input(struct app *app) {
         }
     }
     /* /e2e's own words, and /e2e pair's: from the verbs e2e_command reads. */
-    static const char *const E2E_SUBS[] = {"init",   "off",    "on",     "pair",
-                                           "rekey",  "resend", "status", "sync"};
+    static const char *const E2E_SUBS[] = {"alarm",  "devices", "init",   "off",   "on",
+                                           "pair",   "rekey",   "resend", "revoke", "status",
+                                           "sync",   "trust",   "verify", "who"};
     static const char *const E2E_PAIR_SUBS[] = {"accept", "confirm", "decline"};
     const char *const *e2e_words = NULL;
     size_t e2e_nwords = 0;
