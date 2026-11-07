@@ -2069,6 +2069,40 @@ explicit `auto_away_debounce_seconds` is untouched. Known exception: a
 session the server restarted after a crash returns to the window it was
 first started with, until the next admin save.
 
+### 8f. Command counts are written by the client, one verb per send (issue 2584, v61)
+
+`GET /me/settings/command-counts` answers
+`{"command_counts": {"<verb>": <count>, ...}}`, which says how many times
+the subject sent each command. cicchetto uses it to order its `/` menu,
+most used first. Before the first count it is `{}`.
+
+`POST /me/settings/command-counts` with `{"verb": "<verb>"}` counts one
+use and answers the same envelope with the whole map, not just the one
+count. Send it **after** a command actually goes out, once per command.
+Send the verb as the user typed it, alias names included, and nothing that
+followed it: `/ns identify <password>` posts `{"verb": "ns"}`. The server
+cannot count for you. It never sees the verb as typed, and a local command
+never reaches it.
+
+The server checks the shape and nothing else. The verb is trimmed and
+lowercased, must be non-empty with no whitespace, and is at most 32 bytes,
+the same rule alias names follow. A verb outside it gets **422** with
+`field_errors.command_counts`. Once 512 distinct verbs are stored, a NEW
+one gets the same 422, while one already counted always counts. A body
+without a string `verb` gets **400 `bad_request`**.
+
+There is **no event**. Another open device sees new counts the next time
+it fetches them; cicchetto does that at every (re)join of the user topic.
+The POST is a metered write like any other (429 `rate_limited`, §6), so
+treat a failure as a lost count, never as a failed command.
+
+**Key off `protocol_version >= 61`, not off a 404.** Against an older
+server the `POST` answers 404, but the `GET` answers **200 with
+`text/html`**: an unknown `GET` path falls through to the web app's
+catch-all page. A client that parses that body as JSON fails, and a
+client that tests only for 404 believes the route exists. Below v61, use
+an order of your own and do not post.
+
 ## 9. Event kind inventory (issue 2260)
 
 Every `"event"` frame carries a `kind`. This is the complete set the server
