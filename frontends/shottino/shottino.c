@@ -2077,6 +2077,11 @@ struct app {
     /* app->lock */
     struct e2e_arrival arrivals[E2E_ARRIVALS_MAX];
     size_t arrival_count;
+    /* app->lock. Every PRIVMSG this client sent in the last 30 s, as
+     * hashes (e2e.h "Order challenges"): what a bot's CHAL is checked
+     * against. Recorded at the one plaintext door, send_message_target,
+     * never from the echo; memory only. */
+    e2e_send_log sent_log;
 };
 
 static void e2e_pair_enqueue(struct app *app, const char *verb, const char *words, int num);
@@ -14600,6 +14605,8 @@ static void exec_job(struct app *app, const struct job *job) {
                  job->arg1, EXEC_TIMEOUT_MS / 1000, sent);
 }
 
+static int64_t e2e_now_ms(void);
+
 static void send_message_target(struct app *app, const char *network, const char *channel, const char *body) {
     /* The last door to plaintext. A query in encrypted mode never gets a
      * line in clear from here, whichever path forgot to ask (the typed
@@ -14622,7 +14629,22 @@ static void send_message_target(struct app *app, const char *network, const char
     free(net);
     free(chan);
     free(escaped);
+    /* Every PRIVMSG goes through here (typed, /me, /msg, /exec, /np, a
+     * CTCP request), so this is where the order-challenge log learns what
+     * THIS device sent: before the POST, so no CHAL can come first, and
+     * forgotten if grappa did not take it (orders.ts, scrollback.ts
+     * sendMessage). The bytes hashed are `body` as posted — what the bot
+     * hashes, unless grappa splits the line, which fails closed. */
+    int64_t sent_at = e2e_now_ms();
+    pthread_mutex_lock(&app->lock);
+    e2e_send_log_record(&app->sent_log, network, channel, body, strlen(body), sent_at);
+    pthread_mutex_unlock(&app->lock);
     struct http_response r = http_request(app, "POST", path, json);
+    if (r.status < 200 || r.status >= 300) {
+        pthread_mutex_lock(&app->lock);
+        e2e_send_log_forget(&app->sent_log, network, channel, body, strlen(body), sent_at);
+        pthread_mutex_unlock(&app->lock);
+    }
     if (r.status == 404) {
         /* 404 on a SEND is almost never "no such channel".
          *
@@ -16380,6 +16402,7 @@ static void e2e_hist_ids_free(struct e2e_slot *s) {
 }
 
 static void e2e_slots_free(struct app *app) {
+    e2e_send_log_free(&app->sent_log);
     for (size_t i = 0; i < app->e2e_count; i++) {
         struct e2e_slot *s = &app->e2e[i];
         if (s->have_rec) e2e_record_free(&s->rec);
@@ -16761,6 +16784,15 @@ static void e2e_out_failed(struct app *app, struct e2e_slot *s, struct e2e_out *
  * A text grappa takes for the first time is copied to our other devices
  * (§6.9). `unknown` says grappa refused a payload as from a device it
  * does not list: the identity moved, and is synced again. */
+/* An ACK that will not reach the bot (client.ts rowlessLost: it has no row
+ * to mark): said, once, where the challenge was. The bot then refuses the
+ * order when its challenge runs out. */
+static void e2e_order_lost(struct app *app, const char *slug, const char *nick, const char *why) {
+    log_line(app, "[%s/%s] " E2E_LOCK " --- e2e: the confirmation of %s's identity check was not "
+                  "delivered (%s); %s will refuse that order",
+             slug, nick, nick, why, nick);
+}
+
 static void e2e_flush(struct app *app, struct e2e_slot *s, const e2e_ctx *c, e2e_result *pend,
                       bool *unknown) {
     const char *did = s->rec.own->did;
@@ -16793,6 +16825,8 @@ static void e2e_flush(struct app *app, struct e2e_slot *s, const e2e_ctx *c, e2e
             char words[200];
             snprintf(words, sizeof(words), "grappa refused it: %s", why);
             e2e_out_failed(app, s, out, words);
+        } else if (nick && tag && strcmp(tag, E2E_ORDER_TAG) == 0) {
+            e2e_order_lost(app, s->slug, nick, why);
         } else if (nick) {
             card(app, s->slug, "--- e2e: an encrypted message to %s could not be sent (%s)", nick,
                  why);
@@ -16971,6 +17005,50 @@ static void e2e_auto_on(struct app *app, struct e2e_slot *s, const char *nick);
 static void e2e_report(struct app *app, struct e2e_slot *s, const e2e_result *res);
 static void e2e_after_step(struct app *app, struct e2e_slot *s, const e2e_ctx *c);
 
+/* Where a challenged line was said, as cic's rail says it. */
+static const char *e2e_order_place(const char *channel) {
+    return is_channel_name(channel) ? channel : "a private message";
+}
+
+/* client.ts answer: the CHAL `in` from `e`'s device. Confirmed (the master
+ * verified, and THIS device sent that line there in the last 30 s), an
+ * ACK with the CHAL's own deadline goes to that device alone; otherwise
+ * nothing goes. Never a history row: the one trace is the identity-check
+ * line cic's rail shows ("last identity check"), and a line this device
+ * did not send reads "not answered here", not as an alarm — a bot
+ * encrypts its challenge to every device of the account, so a line typed
+ * on a sibling reads exactly so here (DESIGN_NOTES #2485). */
+static void e2e_answer_chal(struct app *app, struct e2e_slot *s, const e2e_ctx *c,
+                            const e2e_event *e, const e2e_inner *in, e2e_result *out) {
+    char network[MAX_SLUG] = "";
+    int64_t at = e2e_now_ms();
+    pthread_mutex_lock(&app->lock);
+    struct network *n = network_by_slug_locked(app, s->slug);
+    if (n) snprintf(network, sizeof(network), "%s", n->network_name);
+    const e2e_order_scope scope = {s->slug, network, "#&+!"};
+    e2e_order_verdict v = e2e_order_check(&app->sent_log, in, e->nick, e->verified, &scope, at);
+    pthread_mutex_unlock(&app->lock);
+    if (v == E2E_ORDER_CONFIRMED) {
+        char *ack = e2e_inner_ack(in->nonce);
+        e2e_send(c, e->nick, ack, E2E_ORDER_TAG, in->expires_at, e->device, out);
+        free(ack);
+        log_line(app, "[%s/%s] " E2E_LOCK " --- e2e: identity check ✓ passed — %s asked "
+                      "to confirm your line in %s on %s; confirmed",
+                 s->slug, e->nick, e->nick, e2e_order_place(in->channel), in->network);
+    } else if (v == E2E_ORDER_NOT_SENT) {
+        log_line(app, "[%s/%s] " E2E_LOCK " --- e2e: identity check – not answered here — "
+                      "%s asked to confirm a line in %s on %s that this device did not send in "
+                      "the last %d s (another device of yours, or someone in your nick)",
+                 s->slug, e->nick, e->nick, e2e_order_place(in->channel), in->network,
+                 E2E_SENT_WINDOW_MS / 1000);
+    } else {
+        log_line(app, "[%s/%s] " E2E_LOCK " --- e2e: identity check ✗ failed — %s asked to "
+                      "confirm a line in %s on %s: not confirmed, %s",
+                 s->slug, e->nick, e->nick, e2e_order_place(in->channel), in->network,
+                 e2e_order_verdict_text(v));
+    }
+}
+
 static void e2e_drain_slot(struct app *app, struct e2e_slot *s, int depth) {
     pthread_mutex_lock(&app->lock);
     bool ready = s->view.state == E2E_SLOT_READY;
@@ -17075,6 +17153,20 @@ static void e2e_drain_slot(struct app *app, struct e2e_slot *s, int depth) {
                 e2e_nicks_note(&touched, e->nick);
             }
             e2e_result_move(&res, &sas);
+            /* An order challenge (§10): an ACK to that device alone, or
+             * nothing on the wire. */
+            e2e_result orders;
+            e2e_result_init(&orders);
+            for (size_t k = 0; k < res.nevents; k++) {
+                const e2e_event *e = &res.events[k];
+                e2e_inner in;
+                if (e->kind != E2E_EV_RECEIVED || !e->inner ||
+                    !e2e_inner_parse(e->inner, strlen(e->inner), &in))
+                    continue;
+                if (in.type == E2E_INNER_CHAL) e2e_answer_chal(app, s, &c, e, &in, &orders);
+                e2e_inner_free(&in);
+            }
+            e2e_result_move(&res, &orders);
             e2e_result_move(&pend, &res);
             s->rec.state.inbox = id;
             acks[nacks++] = id;
@@ -17485,7 +17577,9 @@ static void e2e_report(struct app *app, struct e2e_slot *s, const e2e_result *re
                  * waits for it until it times out. A release lost leaves
                  * the other devices' request to its own clock. */
                 if (strcmp(e->tags.v[k], E2E_SAS_RELEASE_TAG) == 0) continue;
-                if (strcmp(e->tags.v[k], E2E_SAS_TAG) == 0)
+                if (strcmp(e->tags.v[k], E2E_ORDER_TAG) == 0)
+                    e2e_order_lost(app, s->slug, e->nick, words);
+                else if (strcmp(e->tags.v[k], E2E_SAS_TAG) == 0)
                     log_line(app, "[%s/%s] --- e2e: a step of the emoji comparison with %s was "
                                   "not sent (%s); it will time out",
                              s->slug, e->nick, e->nick, words);
@@ -18198,6 +18292,8 @@ static void e2e_send_job(struct app *app, const struct job *job) {
             snprintf(words, sizeof(words), "grappa dropped it unsent (%s)",
                      wire_e2e_drop_reason_name((wire_e2e_drop_reason)job->num));
             if (o) e2e_out_failed(app, s, o, words);
+            else if (who && tag && strcmp(tag, E2E_ORDER_TAG) == 0)
+                e2e_order_lost(app, s->slug, who, words);
             else if (who)
                 log_line(app, "[%s/%s] " E2E_LOCK " --- e2e: an encrypted message to %s was not "
                               "delivered (%s)",
@@ -25827,8 +25923,8 @@ static void handle_enter(struct app *app) {
         } else if (e2e_query_encrypted(app, network, channel)) {
             e2e_type(app, network, channel, line);
         } else {
-            /* The one door a typed line takes in clear (the CHAL sent-line
-             * log of a later slice records it here). */
+            /* The one door a typed line takes in clear (its send door,
+             * send_message_target, records it for order challenges). */
             add_pending_echo(app, network, channel, own_nick_for_network(app, network), line);
             enqueue_send(app, network, channel, line);
         }

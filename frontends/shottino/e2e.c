@@ -6362,7 +6362,7 @@ e2e_order_verdict e2e_order_check(e2e_send_log *l, const e2e_inner *chal, const 
     for (size_t i = 0; i < l->n; i++) {
         e2e_sent_line *s = &l->v[i];
         if (s->at > at_ms || strcmp(s->sha256, chal->line_sha256) != 0 ||
-            strcmp(s->slug, scope->slug) != 0 || !e2e_nick_eq(s->target, chal->channel))
+            !e2e_nick_eq(s->slug, scope->slug) || !e2e_nick_eq(s->target, chal->channel))
             continue;
         if (s->nonce && strcmp(s->nonce, chal->nonce) == 0) return E2E_ORDER_CONFIRMED;
         if (!s->nonce && !fresh) fresh = s;

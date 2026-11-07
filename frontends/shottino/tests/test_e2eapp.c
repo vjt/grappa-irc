@@ -2517,6 +2517,9 @@ static size_t heard_n[E2E_MAX_DEVICES];
 /* The sas.* inners the peer read, in order (slice F). */
 static char heard_sas[32][1024];
 static size_t nheard_sas;
+/* The ACK nonces the peer read, in order (slice G). */
+static char heard_ack[8][64];
+static size_t nheard_ack;
 static void tpeer_carry(struct app *app, tpeer *devs, size_t n) {
     for (;;) {
         pthread_mutex_lock(&fg.lock);
@@ -2560,6 +2563,9 @@ static void tpeer_carry(struct app *app, tpeer *devs, size_t n) {
                         if (in.type == E2E_INNER_TEXT) {
                             snprintf(heard[i], sizeof(heard[i]), "%.*s", (int)in.body_len, in.body);
                             heard_n[i]++;
+                        } else if (in.type == E2E_INNER_ACK && in.nonce && nheard_ack < 8) {
+                            snprintf(heard_ack[nheard_ack++], sizeof(heard_ack[0]), "%s",
+                                     in.nonce);
                         } else if (in.type >= E2E_INNER_SAS_START &&
                                    in.type <= E2E_INNER_SAS_CANCEL && nheard_sas < 32) {
                             snprintf(heard_sas[nheard_sas++], sizeof(heard_sas[0]), "%s",
@@ -3809,6 +3815,101 @@ TEST(a_paired_device_cannot_revoke) {
     free_pair_app(app);
 }
 
+/* ── order challenges (slice G) ──────────────────────────────────────── */
+
+/* The bot's CHAL for `body` in `channel` on `network`. */
+static void bot_challenges(struct app *app, tpeer *bot, const char *network, const char *channel,
+                           const char *body, const char *nonce, int64_t expires_at) {
+    char sha[65];
+    e2e_line_sha256(body, strlen(body), sha);
+    char *inner = e2e_inner_chal(network, channel, "vjt!v@host", sha, nonce, expires_at);
+    tpeer_inner(app, bot, inner);
+    free(inner);
+    drain(app);
+    run_jobs(app);
+}
+
+/* A plaintext channel line this client sent, challenged by a bot whose key
+ * we verified: ACKed with its nonce, to the bot's device, with the CHAL's
+ * deadline. A line we did not send, an unverified bot, another network
+ * token: no ACK, and the identity-check line says why. */
+TEST(an_order_challenge_is_acked_only_for_a_line_we_sent) {
+    struct app *app = send_app("user:chal", "bot");
+    snprintf(app->networks[0].network_name, sizeof(app->networks[0].network_name), "Azzurra");
+    tpeer bot;
+    tpeer_new(&bot, "bot");
+    meet(app, &bot);
+    nheard_ack = 0;
+    add_window_ex(app, "azzurra", "#grappa", true);
+    type_line(app, "!op vjt");
+    run_jobs(app);
+    CHECK(grappa_saw("!op vjt"));
+    int64_t exp = (int64_t)time(NULL) + 20;
+
+    /* Not verified yet: nothing goes, the check failed. */
+    size_t before = fg.nsent;
+    bot_challenges(app, &bot, "Azzurra", "#grappa", "!op vjt", "nonce-0", exp);
+    CHECK(said(app, "identity check ✗ failed — bot asked to confirm a line in #grappa on "
+                    "Azzurra: not confirmed, their key is not verified here"));
+    CHECK_LONG(posted(before, "msg", NULL) + posted(before, "pkmsg", NULL), 0);
+
+    char line[160];
+    snprintf(line, sizeof(line), "/e2e verify bot %s", bot.rec.own->master);
+    type_line(app, line);
+    run_jobs(app);
+
+    /* Verified, the line ours: one ACK, with that nonce and deadline. */
+    before = fg.nsent;
+    bot_challenges(app, &bot, "Azzurra", "#Grappa", "!op vjt", "nonce-1", exp);
+    CHECK(said(app, "[azzurra/bot] " E2E_LOCK " --- e2e: identity check ✓ passed — bot asked to "
+                    "confirm your line in #Grappa on Azzurra; confirmed"));
+    const char *ack = NULL;
+    CHECK_LONG(posted(before, "msg", &ack), 1);
+    char deadline[48];
+    snprintf(deadline, sizeof(deadline), "\"expires_at\":%lld", (long long)exp);
+    CHECK(ack && strstr(ack, deadline));
+    tpeer_carry(app, &bot, 1);
+    CHECK_LONG(nheard_ack, 1);
+    CHECK_STR(heard_ack[0], "nonce-1");
+    /* Never a row of the encrypted history. */
+    CHECK(!said(app, "nonce-1"));
+
+    /* A line we never sent (another client's, or the echo of one): no ACK. */
+    before = fg.nsent;
+    bot_challenges(app, &bot, "Azzurra", "#grappa", "!deop vjt", "nonce-2", exp);
+    CHECK(said(app, "identity check – not answered here — bot asked to confirm a line in "
+                    "#grappa on Azzurra that this device did not send"));
+    CHECK_LONG(posted(before, "msg", NULL), 0);
+    /* The same line under a second nonce is not confirmed twice. */
+    bot_challenges(app, &bot, "Azzurra", "#grappa", "!op vjt", "nonce-3", exp);
+    CHECK_LONG(posted(before, "msg", NULL), 0);
+    /* Another network's token, and a PM to someone else: no ACK. */
+    type_line(app, "!voice vjt");
+    run_jobs(app);
+    bot_challenges(app, &bot, "AzzurraNet", "#grappa", "!voice vjt", "nonce-4", exp);
+    CHECK(said(app, "not confirmed, it names another network"));
+    bot_challenges(app, &bot, "Azzurra", "alice", "!voice vjt", "nonce-5", exp);
+    CHECK(said(app, "not confirmed, it names a private message to someone other than the bot"));
+    /* Expired by our clock. */
+    bot_challenges(app, &bot, "Azzurra", "#grappa", "!voice vjt", "nonce-6",
+                   (int64_t)time(NULL) - 1);
+    CHECK(said(app, "not confirmed, it has expired by this device's clock"));
+    CHECK_LONG(posted(before, "msg", NULL), 0);
+    /* Still there for a live, well-named CHAL. */
+    bot_challenges(app, &bot, "Azzurra", "#grappa", "!voice vjt", "nonce-7", exp);
+    CHECK_LONG(posted(before, "msg", NULL), 1);
+
+    /* No NETWORK= advertised: nothing to match against. */
+    app->networks[0].network_name[0] = 0;
+    type_line(app, "!kick x");
+    run_jobs(app);
+    bot_challenges(app, &bot, "Azzurra", "#grappa", "!kick x", "nonce-8", exp);
+    CHECK(said(app, "this network has sent no 005 NETWORK= name"));
+    CHECK_LONG(posted(before, "msg", NULL), 1);
+    tpeer_free(&bot);
+    free_e2e_app(app);
+}
+
 int main(void) {
     test_use_temp_home();
     if (!fg_start()) {
@@ -3861,6 +3962,7 @@ int main(void) {
     RUN(a_line_typed_before_the_slot_loads_never_goes_in_clear);
     RUN(a_busy_slot_fails_closed);
     RUN(a_corrupt_record_fails_closed);
+    RUN(an_order_challenge_is_acked_only_for_a_line_we_sent);
     th_free();
     fg_stop();
     return test_report();
