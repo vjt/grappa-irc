@@ -925,7 +925,9 @@ void e2e_record_start_over(e2e_record *r);
  * key that opened a message is spent), so a row is written here BEFORE
  * the record that spent its key is saved.
  *
- * One file per chat, `<dir>/chat-<hex of the folded nick>.jsonl`, 0600 in
+ * One file per chat, `<dir>/chat-sha256-<hex SHA-256 of the folded nick>.jsonl`
+ * (a fixed length whatever the nick; a file of the older
+ * `chat-<hex of the folded nick>.jsonl` shape is moved on load), 0600 in
  * a 0700 directory: one JSON object per line, APPENDED and fsync'd. Not
  * rewritten per row as the record is: a chat grows by one row a message,
  * and a whole-file rename per row is O(n) a message for a guarantee the
@@ -983,15 +985,18 @@ void e2e_rows_free(e2e_rows *r);
 char *e2e_row_to_json(const e2e_row *r);
 /* False for anything but a row this writer wrote (its fields per kind). */
 bool e2e_row_from_json(const char *text, size_t len, e2e_row *out);
-/* "chat-<lowercase hex of e2e_fold(nick)>.jsonl": one file per peer, the
- * fold so `Alice` and `alice` are one chat, hex so no byte of a nick can
- * reach the filesystem's syntax. */
+/* "chat-sha256-<lowercase hex SHA-256 of e2e_fold(nick)>.jsonl": one file
+ * per peer, the fold so `Alice` and `alice` are one chat, a digest so no
+ * byte of a nick can reach the filesystem's syntax and no nick, however
+ * long, makes a name past NAME_MAX (the hex of the nick itself did). */
 char *e2e_chat_file_name(const char *nick);
 /* Appends `r` to its chat's file under `dir` (made 0700 when missing),
  * fsync'd, the directory too when the file is new. */
 bool e2e_chat_append(const char *dir, const e2e_row *r, char *err, size_t err_sz);
 /* Every row of every chat under `dir`, oldest first (by `at`, file order
- * among equals), each id once. A missing `dir` is an empty history. */
+ * among equals), each id once. A missing `dir` is an empty history. Files
+ * of the older name shape are moved to the new names first (merged when
+ * both exist); one that cannot be moved is still read, and said. */
 bool e2e_chat_load(const char *dir, e2e_rows *out, char *err, size_t err_sz);
 
 /* An ISO-8601 UTC instant as grappa writes one ("2026-11-07T10:05:00Z",

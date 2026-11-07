@@ -5331,18 +5331,12 @@ const e2e_row *e2e_last_comparison(const e2e_rows *rows, const char *nick) {
 
 char *e2e_chat_file_name(const char *nick) {
     char *folded = e2e_fold(nick);
-    size_t n = strlen(folded);
-    char *out = xmalloc(5 + 2 * n + 7);
-    memcpy(out, "chat-", 5);
-    static const char hex[] = "0123456789abcdef";
-    for (size_t i = 0; i < n; i++) {
-        out[5 + 2 * i] = hex[(unsigned char)folded[i] >> 4];
-        out[5 + 2 * i + 1] = hex[(unsigned char)folded[i] & 15];
-    }
-    memcpy(out + 5 + 2 * n, ".jsonl", 7);
+    char sha[65];
+    e2e_line_sha256(folded, strlen(folded), sha);
     free(folded);
-    return out;
+    return xprintf("chat-sha256-%s.jsonl", sha);
 }
+
 
 static void fsync_dir(const char *dir) {
     int dfd = open(dir, O_RDONLY | O_CLOEXEC);
@@ -5478,9 +5472,103 @@ static int ordered_cmp(const void *a, const void *b) {
     return x->order < y->order ? -1 : x->order > y->order;
 }
 
+/* The shape chat files had before the digest: "chat-" + the
+ * lowercase hex of the folded nick + ".jsonl" — two bytes a nick byte, so
+ * past ~120 bytes no filesystem takes the name. The folded nick it names
+ * into `nick` (malloc'd), or false. "chat-sha256-…" is never one: `s` is
+ * not a hex digit. */
+static bool chat_legacy_name(const char *name, char **nick) {
+    size_t n = strlen(name);
+    if (n < 5 + 2 + 6 || strncmp(name, "chat-", 5) != 0 || strcmp(name + n - 6, ".jsonl") != 0)
+        return false;
+    size_t hexlen = n - 5 - 6;
+    if (hexlen % 2) return false;
+    char *out = xmalloc(hexlen / 2 + 1);
+    for (size_t i = 0; i < hexlen / 2; i++) {
+        int v = 0;
+        for (int k = 0; k < 2; k++) {
+            char c = name[5 + 2 * i + (size_t)k];
+            int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+            if (d < 0) {
+                free(out);
+                return false;
+            }
+            v = v * 16 + d;
+        }
+        if (v == 0) {
+            free(out);
+            return false;
+        }
+        out[i] = (char)v;
+    }
+    out[hexlen / 2] = 0;
+    *nick = out;
+    return true;
+}
+
+/* Old-named chat files under the new names, before a load reads them:
+ * renamed, or — when the new file exists too (written since, or a merge a
+ * crash interrupted) — appended to it, then removed. A repeated row is the
+ * load's business (it keeps the first of an id and compacts). Collected
+ * first and moved after the directory is closed: a rename while readdir
+ * walks may show the same file twice. A failure leaves the old file, which
+ * the load still reads, and is said in `err`. */
+static bool chat_migrate(const char *dir, char *err, size_t err_sz) {
+    DIR *d = opendir(dir);
+    if (!d) return true; /* the load says why */
+    char **names = NULL;
+    size_t n = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        char *nick;
+        if (!chat_legacy_name(ent->d_name, &nick)) continue;
+        free(nick);
+        names = xrealloc(names, (n + 1) * sizeof(*names));
+        names[n++] = xstrdup(ent->d_name);
+    }
+    closedir(d);
+    bool ok = true;
+    for (size_t i = 0; i < n; i++) {
+        char *nick = NULL;
+        chat_legacy_name(names[i], &nick);
+        char *fresh = e2e_chat_file_name(nick);
+        char *from = xprintf("%s/%s", dir, names[i]);
+        char *to = xprintf("%s/%s", dir, fresh);
+        struct stat st;
+        bool moved;
+        if (stat(to, &st) != 0) {
+            /* 0600 as every chat file is, whatever the old one had. */
+            moved = chmod(from, 0600) == 0 && rename(from, to) == 0;
+        } else {
+            size_t len = 0;
+            char *text = read_file(from, &len);
+            int fd = text ? open(to, O_RDWR | O_APPEND | O_CLOEXEC) : -1;
+            moved = fd >= 0 && cut_torn_tail(fd) && write_all(fd, text, len) &&
+                    (len == 0 || text[len - 1] == '\n' || write_all(fd, "\n", 1)) &&
+                    fsync(fd) == 0;
+            if (fd >= 0) moved = close(fd) == 0 && moved;
+            free(text);
+            if (moved) moved = unlink(from) == 0;
+        }
+        if (!moved && ok) {
+            SETERR("cannot move %s to %s: %s", from, to, strerror(errno));
+            ok = false;
+        }
+        free(nick);
+        free(fresh);
+        free(from);
+        free(to);
+        free(names[i]);
+    }
+    free(names);
+    if (n) fsync_dir(dir);
+    return ok;
+}
+
 bool e2e_chat_load(const char *dir, e2e_rows *out, char *err, size_t err_sz) {
     out->v = NULL;
     out->n = 0;
+    bool migrated = chat_migrate(dir, err, err_sz);
     DIR *d = opendir(dir);
     if (!d) {
         if (errno == ENOENT) return true;
@@ -5488,7 +5576,7 @@ bool e2e_chat_load(const char *dir, e2e_rows *out, char *err, size_t err_sz) {
         return false;
     }
     size_t cap = 0;
-    bool ok = true;
+    bool ok = migrated;
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         size_t nl = strlen(ent->d_name);

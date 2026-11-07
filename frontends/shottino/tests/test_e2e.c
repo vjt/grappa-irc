@@ -13,6 +13,7 @@
 #include "test.h"
 
 #include <fcntl.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2112,8 +2113,12 @@ TEST(history_rows_round_trip) {
         e2e_row r;
         CHECK(!e2e_row_from_json(bad[i], strlen(bad[i]), &r));
     }
+    /* SHA-256 of the folded nick (vector: Python's hashlib over
+     * "al/ice[]"): a fixed length whatever the nick, and no byte of it
+     * reaches the filesystem's syntax. */
     char *name = e2e_chat_file_name("Al/ice[]");
-    CHECK_STR(name, "chat-616c2f6963655b5d.jsonl");
+    CHECK_STR(name, "chat-sha256-32c6e69b6886b227b30ec01f74b196c896eeb7a5df33119a7018ce1e19031db0"
+                    ".jsonl");
     free(name);
 }
 
@@ -2192,7 +2197,9 @@ TEST(history_appends_dedupes_and_survives_a_torn_tail) {
     CHECK_STR(rows.v[rows.n - 1].id, "in:2999:0");
     CHECK_STR(rows.v[4].id, "in:2000:0");
     e2e_rows_free(&rows);
-    char *cpath = xfmt("%s/%s", dir, "chat-6361726f6c.jsonl");
+    char *cname = e2e_chat_file_name("carol");
+    char *cpath = xfmt("%s/%s", dir, cname);
+    free(cname);
     CHECK_LONG((long)count_lines(cpath), 2 * E2E_CHAT_ROWS_MAX);
     e2e_row r = mkrow("in:9999:0", E2E_ROW_IN, 9999, "carol", "x", E1);
     CHECK(e2e_chat_append(dir, &r, err, sizeof(err)));
@@ -2201,6 +2208,74 @@ TEST(history_appends_dedupes_and_survives_a_torn_tail) {
     CHECK_LONG((long)count_lines(cpath), E2E_CHAT_ROWS_MAX);
     free(cpath);
     free(path);
+    free(dir);
+    char *rm = xfmt("rm -rf '%s'", base);
+    CHECK(system(rm) == 0);
+    free(rm);
+}
+
+/* A chat file's name has a fixed length: the hex of the folded nick it
+ * used to be grew two bytes a nick byte, so a peer nick past ~120 bytes
+ * (grappa takes what the network takes) named a file the filesystem
+ * refuses, and the history of that chat could not be kept at all. A file
+ * of the old shape is renamed on load — merged into the new one when
+ * both exist — and read like any other. */
+TEST(history_names_are_fixed_length_and_old_names_migrate) {
+    char base[] = "/tmp/shottino-hist-XXXXXX";
+    CHECK(mkdtemp(base) != NULL);
+    char *dir = xfmt("%s/7/chats", base);
+    char err[256];
+    char nick[301];
+    memset(nick, 'n', 300);
+    nick[300] = 0;
+    char *name = e2e_chat_file_name(nick);
+    CHECK(strlen(name) <= NAME_MAX);
+    CHECK_LONG((long)strlen(name), (long)strlen("chat-sha256-.jsonl") + 64);
+    free(name);
+    e2e_row lng = mkrow("in:1:0", E2E_ROW_IN, 100, nick, "long", E1);
+    CHECK(e2e_chat_append(dir, &lng, err, sizeof(err)));
+
+    /* Two chats written under the old names; bob's new file exists too. */
+    char *old_a = xfmt("%s/chat-616c696365.jsonl", dir);
+    char *old_b = xfmt("%s/chat-626f62.jsonl", dir);
+    e2e_row a = mkrow("in:2:0", E2E_ROW_IN, 200, "alice", "old alice", E1);
+    e2e_row b_old = mkrow("in:3:0", E2E_ROW_IN, 300, "bob", "old bob", E2);
+    e2e_row b_new = mkrow("in:4:0", E2E_ROW_IN, 400, "bob", "new bob", E2);
+    char *ja = e2e_row_to_json(&a), *jb = e2e_row_to_json(&b_old);
+    FILE *f = fopen(old_a, "w");
+    CHECK(f && fprintf(f, "%s\n", ja) > 0);
+    if (f) fclose(f);
+    f = fopen(old_b, "w");
+    CHECK(f && fprintf(f, "%s\n", jb) > 0);
+    if (f) fclose(f);
+    free(ja);
+    free(jb);
+    CHECK(e2e_chat_append(dir, &b_new, err, sizeof(err)));
+
+    e2e_rows rows;
+    CHECK(e2e_chat_load(dir, &rows, err, sizeof(err)));
+    CHECK_LONG((long)rows.n, 4);
+    const char *want[] = {"in:1:0", "in:2:0", "in:3:0", "in:4:0"};
+    for (size_t i = 0; i < rows.n && i < 4; i++) CHECK_STR(rows.v[i].id, want[i]);
+    e2e_rows_free(&rows);
+    struct stat sb;
+    CHECK(stat(old_a, &sb) != 0);
+    CHECK(stat(old_b, &sb) != 0);
+    char *na = e2e_chat_file_name("alice"), *nb = e2e_chat_file_name("BOB");
+    char *pa = xfmt("%s/%s", dir, na), *pb = xfmt("%s/%s", dir, nb);
+    CHECK(stat(pa, &sb) == 0 && (sb.st_mode & 0777) == 0600);
+    CHECK_LONG((long)count_lines(pb), 2);
+    /* A second load finds nothing left to move and reads the same. */
+    CHECK(e2e_chat_load(dir, &rows, err, sizeof(err)));
+    CHECK_LONG((long)rows.n, 4);
+    e2e_rows_free(&rows);
+    CHECK_LONG((long)count_lines(pb), 2);
+    free(na);
+    free(nb);
+    free(pa);
+    free(pb);
+    free(old_a);
+    free(old_b);
     free(dir);
     char *rm = xfmt("rm -rf '%s'", base);
     CHECK(system(rm) == 0);
@@ -2792,6 +2867,7 @@ int main(void) {
     RUN(iso8601_instants);
     RUN(history_rows_round_trip);
     RUN(history_appends_dedupes_and_survives_a_torn_tail);
+    RUN(history_names_are_fixed_length_and_old_names_migrate);
     RUN(sas_pure_halves);
     RUN(sas_full_run_verifies_both_masters);
     RUN(sas_mismatch_cancels_and_verifies_nobody);
