@@ -185,6 +185,13 @@ defmodule GrappaWeb.UserSocket do
         end
 
       client_ip = GrappaWeb.Plugs.RemoteIpFromProxy.trusted_client_ip(peer_ip, x_headers)
+
+      # Issue 2597 — the same resolved address, kept beside this transport's
+      # pid for as long as it lives (it was registered in
+      # `authenticate_and_assign/3`), for the WHOIS an IRC operator or a
+      # grappa admin receives. Synchronous: a GenServer write, no DB.
+      :ok = WSPresence.record_client_ip(socket.assigns.user_name, self(), GrappaWeb.RemoteIP.format(client_ip))
+
       detach_client_source_capture(subject, client_ip)
     else
       _ -> :ok

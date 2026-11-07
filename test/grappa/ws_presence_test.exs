@@ -635,6 +635,89 @@ defmodule Grappa.WSPresenceTest do
     end
   end
 
+  # Issue 2597 — the address each live socket connected from, read by the
+  # WHOIS bundle an IRC operator or a grappa admin receives. Same lifecycle
+  # as the pid it belongs to: it goes when the pid goes.
+  describe "record_client_ip/3 and client_ips/1 (issue 2597)" do
+    test "returns the addresses of the user's live sockets, deduplicated and sorted" do
+      p1 = stub_pid()
+      p2 = stub_pid()
+      p3 = stub_pid()
+      :ok = WSPresence.register("alice", p1)
+      :ok = WSPresence.register("alice", p2)
+      :ok = WSPresence.register("alice", p3)
+      :ok = WSPresence.record_client_ip("alice", p1, "203.0.113.9")
+      :ok = WSPresence.record_client_ip("alice", p2, "2001:db8::7")
+      :ok = WSPresence.record_client_ip("alice", p3, "203.0.113.9")
+
+      assert WSPresence.client_ips("alice") == ["2001:db8::7", "203.0.113.9"]
+
+      Enum.each([p1, p2, p3], &send(&1, :stop))
+    end
+
+    test "never answers with another user's addresses" do
+      p1 = stub_pid()
+      p2 = stub_pid()
+      :ok = WSPresence.register("alice", p1)
+      :ok = WSPresence.register("bob", p2)
+      :ok = WSPresence.record_client_ip("alice", p1, "203.0.113.9")
+      :ok = WSPresence.record_client_ip("bob", p2, "198.51.100.4")
+
+      assert WSPresence.client_ips("alice") == ["203.0.113.9"]
+      assert WSPresence.client_ips("bob") == ["198.51.100.4"]
+      assert WSPresence.client_ips("carol") == []
+
+      Enum.each([p1, p2], &send(&1, :stop))
+    end
+
+    test "a socket pid that dies takes its address with it" do
+      p1 = stub_pid()
+      p2 = stub_pid()
+      :ok = WSPresence.register("alice", p1)
+      :ok = WSPresence.register("alice", p2)
+      :ok = WSPresence.record_client_ip("alice", p1, "203.0.113.9")
+      :ok = WSPresence.record_client_ip("alice", p2, "198.51.100.4")
+
+      Process.exit(p1, :kill)
+      assert_ws_count("alice", 1)
+
+      assert WSPresence.client_ips("alice") == ["198.51.100.4"]
+      # The read already skips a dead pid, so only the state shows a leak:
+      # every socket that ever connected would otherwise stay in a
+      # `:permanent` process (the same reason `put_user_sockets/3` exists).
+      refute Map.has_key?(:sys.get_state(WSPresence).client_ips, p1)
+
+      send(p2, :stop)
+    end
+
+    test "an address for a pid that was never registered is not kept" do
+      p = stub_pid()
+      :ok = WSPresence.record_client_ip("alice", p, "203.0.113.9")
+      :ok = WSPresence.register("alice", p)
+
+      assert WSPresence.client_ips("alice") == []
+
+      send(p, :stop)
+    end
+
+    test "reset_for_user/1 drops the user's addresses and keeps the others" do
+      p1 = stub_pid()
+      p2 = stub_pid()
+      :ok = WSPresence.register("alice", p1)
+      :ok = WSPresence.register("bob", p2)
+      :ok = WSPresence.record_client_ip("alice", p1, "203.0.113.9")
+      :ok = WSPresence.record_client_ip("bob", p2, "198.51.100.4")
+
+      :ok = WSPresence.reset_for_user("alice")
+      :ok = WSPresence.register("alice", p1)
+
+      assert WSPresence.client_ips("alice") == []
+      assert WSPresence.client_ips("bob") == ["198.51.100.4"]
+
+      Enum.each([p1, p2], &send(&1, :stop))
+    end
+  end
+
   describe "reset_for_user/1" do
     test "drops the user_name's entries without touching other users" do
       :ok = WSPresence.reset_for_test()

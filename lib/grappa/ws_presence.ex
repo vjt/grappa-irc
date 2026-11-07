@@ -121,6 +121,14 @@ defmodule Grappa.WSPresence do
   today); on-device confirmation is owed via a reporter run reading the
   `/admin/ws_presence` diagnostic (see `snapshot/0`).
 
+  ## Client addresses (issue 2597)
+
+  Each live socket pid may also carry the address it connected from
+  (`record_client_ip/3`, written by `GrappaWeb.UserSocket.connect/3`), so a
+  WHOIS answered to an IRC operator or a grappa admin can name where a
+  grappa user's clients are. It belongs to the pid, not to the user: it
+  enters only for a tracked pid and leaves with the pid's DOWN.
+
   ## Lifecycle events
 
   Fired to `notify_pid` (tests) or every `Session.Server` for the user
@@ -209,6 +217,13 @@ defmodule Grappa.WSPresence do
   #   `last_visible_at` is the monotonic-ms stamp of the pid's last
   #   `set_visibility(true)` report, or nil when it has never reported
   #   visible / is hidden. See "Read-time staleness (#318)" in the moduledoc.
+  # `client_ips` — %{pid() => address} (issue 2597): the address each socket
+  #   connected from, as `GrappaWeb.RemoteIP` formats it. Kept only for a pid
+  #   `sockets` tracks and dropped at the same door, the DOWN, so it can never
+  #   outlive the connection it describes. A separate field rather than a third
+  #   element of `pid_state`: the visibility FSM rewrites that tuple at every
+  #   door (#224/#318/#671), and an address it had to carry along would be
+  #   lost at the first door that forgot to.
   # `notify_pids` — %{user_name => pid()} for test overrides; in production nil
   # `refs_to_user` — %{reference() => user_name} for monitor → user lookup
   # `stale_ms` — a :visible pid whose last report is older than this counts
@@ -222,6 +237,7 @@ defmodule Grappa.WSPresence do
   @default_stale_ms 60_000
 
   defstruct sockets: %{},
+            client_ips: %{},
             notify_pids: %{},
             refs_to_user: %{},
             stale_ms: @default_stale_ms,
@@ -238,6 +254,7 @@ defmodule Grappa.WSPresence do
 
   @type t :: %__MODULE__{
           sockets: %{String.t() => %{pid() => pid_state()}},
+          client_ips: %{pid() => String.t()},
           notify_pids: %{String.t() => pid()},
           refs_to_user: %{reference() => String.t()},
           stale_ms: non_neg_integer(),
@@ -299,6 +316,27 @@ defmodule Grappa.WSPresence do
   def register_with_notify(user_name, socket_pid, notify_pid)
       when is_binary(user_name) and is_pid(socket_pid) and is_pid(notify_pid) do
     GenServer.call(__MODULE__, {:register, user_name, socket_pid, notify_pid})
+  end
+
+  @doc """
+  Issue 2597 — records the address `socket_pid` connected from. Kept only
+  while `user_name` tracks that pid (call it after `register/2`) and dropped
+  when the pid exits; an untracked pid is ignored, so nothing is kept that no
+  DOWN would ever clear.
+  """
+  @spec record_client_ip(String.t(), pid(), String.t()) :: :ok
+  def record_client_ip(user_name, socket_pid, client_ip)
+      when is_binary(user_name) and is_pid(socket_pid) and is_binary(client_ip) do
+    GenServer.call(__MODULE__, {:record_client_ip, user_name, socket_pid, client_ip})
+  end
+
+  @doc """
+  Issue 2597 — the addresses `user_name`'s live sockets connected from,
+  deduplicated and sorted. `[]` when no socket is live, or none recorded one.
+  """
+  @spec client_ips(String.t()) :: [String.t()]
+  def client_ips(user_name) when is_binary(user_name) do
+    GenServer.call(__MODULE__, {:client_ips, user_name})
   end
 
   @doc """
@@ -535,6 +573,26 @@ defmodule Grappa.WSPresence do
     end
   end
 
+  def handle_call({:record_client_ip, user_name, socket_pid, client_ip}, _, state) do
+    if Map.has_key?(Map.get(state.sockets, user_name, %{}), socket_pid) do
+      {:reply, :ok, %{state | client_ips: Map.put(state.client_ips, socket_pid, client_ip)}}
+    else
+      {:reply, :ok, state}
+    end
+  end
+
+  def handle_call({:client_ips, user_name}, _, state) do
+    ips =
+      state.sockets
+      |> Map.get(user_name, %{})
+      |> Map.keys()
+      |> Enum.flat_map(fn pid -> state.client_ips |> Map.get(pid) |> List.wrap() end)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    {:reply, ips, state}
+  end
+
   def handle_call({:any_visible?, user_name}, _, state) do
     {:reply, any_visible_in?(state, user_name), state}
   end
@@ -620,6 +678,7 @@ defmodule Grappa.WSPresence do
     new_state = %{
       state
       | sockets: Map.delete(state.sockets, user_name),
+        client_ips: Map.drop(state.client_ips, Map.keys(Map.get(state.sockets, user_name, %{}))),
         notify_pids: Map.delete(state.notify_pids, user_name),
         refs_to_user: Map.new(kept_refs)
     }
@@ -647,7 +706,12 @@ defmodule Grappa.WSPresence do
         {:noreply, state}
 
       user_name ->
-        state1 = %{state | refs_to_user: Map.delete(state.refs_to_user, ref)}
+        state1 = %{
+          state
+          | refs_to_user: Map.delete(state.refs_to_user, ref),
+            client_ips: Map.delete(state.client_ips, pid)
+        }
+
         existing = Map.get(state1.sockets, user_name, %{})
         before? = any_reported_visible_in?(state1, user_name)
         updated = Map.delete(existing, pid)
