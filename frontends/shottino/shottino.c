@@ -1205,6 +1205,20 @@ struct e2e_out {
 };
 #define E2E_OUTS_MAX 64
 #define E2E_AWAITING_MAX 8
+/* grappa holds at most 32 requests per side and network. */
+#define E2E_REQS_MAX 64
+
+/* A consent request (§11.1, #2486), as grappa holds it: the mirror, fed by
+ * a GET per network on every sync and user-topic rejoin, then by the
+ * e2e_request / e2e_request_gone pushes. It originates nothing — every
+ * change is a door, and what grappa answered is what lands here. */
+struct e2e_req {
+    long id;
+    char peer[MAX_CHANNEL];
+    wire_e2e_request_state state;
+    int64_t expires_ms; /* 0: none */
+    bool opening;       /* accepted, being opened on the worker */
+};
 /* The engine's clock (client.ts TICK_MS): queues expire, KEYREQs retry. */
 #define E2E_TICK_MS 5000
 /* How long `GET …/devices` is believed for our siblings (client.ts SIBLINGS_TTL_MS). */
@@ -1262,6 +1276,11 @@ struct e2e_slot {
     /* The engine waits on the clock; a tick is queued; when the last went. */
     bool clock, tick_queued;
     int64_t ticked_at;
+    /* app->lock. Consent requests on this network; `req_changes` counts
+     * what landed, so a GET can tell a push came while it was out. */
+    struct e2e_req reqs[E2E_REQS_MAX];
+    size_t nreqs;
+    unsigned long req_changes;
 };
 
 /* The encrypted-mode set of a slot, by folded nick. */
@@ -2087,6 +2106,9 @@ struct app {
 static void e2e_pair_enqueue(struct app *app, const char *verb, const char *words, int num);
 static void e2e_drain_enqueue(struct app *app, const char *slug);
 static void e2e_drain_all(struct app *app);
+static void e2e_requests_reload_all(struct app *app);
+static void e2e_request_push(struct app *app, const char *net, const struct wire_e2e_request *w);
+static void e2e_request_gone(struct app *app, const char *net, long id);
 static void e2e_doorbell(struct app *app, const struct wire_e2e_message *m);
 static void e2e_arrival_add(struct app *app, const char *network, const char *from,
                             const char *from_did, const char *to, const char *msgid);
@@ -9310,9 +9332,8 @@ static void handle_wire_event(struct app *app, const char *topic_network,
 
     /* E2E (§4f-§4l). e2e_message is a doorbell: the drain reads the inbox
      * (at least once, deduped there by id); e2e_incoming* the arriving
-     * placeholder; e2e_send_dropped fails the row of what it dropped.
-     * Consent (e2e_request*) is a later slice: until then KNOWN and
-     * deliberately dropped, as the avatar above. */
+     * placeholder; e2e_send_dropped fails the row of what it dropped;
+     * e2e_request* the consent mirror (see "E2E: consent requests"). */
     case WIRE_E2E_MESSAGE:
         e2e_doorbell(app, &ev->u.e2e_message);
         break;
@@ -9332,7 +9353,10 @@ static void handle_wire_event(struct app *app, const char *topic_network,
                             ev->u.e2e_send_dropped.msgid, (int)ev->u.e2e_send_dropped.reason);
         break;
     case WIRE_E2E_REQUEST:
+        e2e_request_push(app, ev->u.e2e_request.network, &ev->u.e2e_request.request);
+        break;
     case WIRE_E2E_REQUEST_GONE:
+        e2e_request_gone(app, ev->u.e2e_request_gone.network, ev->u.e2e_request_gone.id);
         break;
 
     case WIRE_AUTO_AWAY_DEBOUNCE_CHANGED:
@@ -9724,6 +9748,8 @@ static void ws_try_reconnect(struct app *app) {
     /* Nor is an e2e_message: what arrived while down waits in the inbox
      * (cic drains every network's on each user-topic join). */
     e2e_drain_all(app);
+    /* Nor is an e2e_request: every network's requests are read again. */
+    e2e_requests_reload_all(app);
 }
 
 static void ws_pump(struct app *app) {
@@ -16369,6 +16395,8 @@ static bool e2e_pair_status_line(const struct pair_view *v, int64_t now, char *o
     return false;
 }
 
+static void e2e_requests_load(struct app *app, struct e2e_slot *s, int depth);
+
 /* JOB_E2E_SYNC / JOB_E2E_INIT. An empty network is every listed one. */
 static void e2e_job(struct app *app, const struct job *job) {
     char slugs[MAX_NETWORKS][MAX_SLUG];
@@ -16383,6 +16411,13 @@ static void e2e_job(struct app *app, const struct job *job) {
         if (!s) continue;
         if (job->kind == JOB_E2E_INIT) e2e_init_slot(app, s);
         else e2e_sync_slot(app, s);
+        /* The consent requests, read on login with the identity (cic's
+         * mountE2eRequests); they need none, so whatever the sync found —
+         * but a slot another shottino holds is that one's to show. */
+        pthread_mutex_lock(&app->lock);
+        bool busy = s->view.state == E2E_SLOT_BUSY;
+        pthread_mutex_unlock(&app->lock);
+        if (!busy) e2e_requests_load(app, s, 0);
     }
 }
 
@@ -16639,8 +16674,11 @@ static void e2e_render_row(struct app *app, const char *slug, const e2e_row *row
 
 /* What the history shows of an engine step on inbox item `inbox_id`
  * (client.ts changesFor): a text received, a copy, an undecryptable, a key
- * alarm. Every other `t` is not shown (a CHAL, a SAS step: later slices);
- * the engine's list traffic never reaches here. */
+ * alarm. No other `t` is a row: a CHAL is answered by e2e_answer_chal and
+ * leaves only its identity-check line, a sas.* goes to the verifier (its
+ * rows come from there), an `ack` means nothing to a client (cic ignores it
+ * too: only a bot reads ACKs), and an unknown `t` is ignored as cic ignores
+ * it; the engine's list traffic never reaches here. */
 static void e2e_rows_push(e2e_rows *rows, e2e_row *r) {
     e2e_row *grown = realloc(rows->v, (rows->n + 1) * sizeof(*grown));
     if (!grown) die("out of memory");
@@ -18205,6 +18243,414 @@ static void e2e_revoke(struct app *app, struct e2e_slot *s, const char *did) {
     log_line(app, "/e2e revoke %s: the device list changed meanwhile: try again", did);
 }
 
+/* ── E2E: consent requests (docs/plans §11.1, #2486; e2eRequests.ts) ────
+ *
+ * Asking a peer to start an encrypted chat, and the answer. grappa holds
+ * the asking — one request per peer and network, whoever asked — so
+ * neither user has to be online when the other acts; the slot's `reqs` is
+ * its mirror. Consent is not trust: accepting turns the query's encrypted
+ * mode on and asks the peer for its keys, and those keys are pinned and
+ * checked as any key is (trust on first use, the alarm, the SAS). Nor does
+ * it gate anything: an encrypted message from a peer who never asked is
+ * read as before, as cicchetto reads it. cic sends a REQUEST only when its
+ * user presses "start encrypted chat"; here that is /e2e ask.
+ *
+ * Every consent line goes from this device with our master key as a hint
+ * ({"v":2,"master":M}), never a proof — but a refusal goes with no line,
+ * so grappa says no for the user (vjt's ruling R2): it needs no identity
+ * here, and works from a device whose identity lives elsewhere. */
+
+#define E2E_REQUESTS_MIN_PROTOCOL 53
+
+/* What the query with the peer shows of a request as of `now` (ms):
+ * requestView — an incoming one past its deadline shows nothing (grappa
+ * withdraws it within the hour), ours reads expired at its deadline. */
+enum e2e_req_view {
+    E2E_REQV_NONE,
+    E2E_REQV_INCOMING,
+    E2E_REQV_PENDING,
+    E2E_REQV_ACCEPTED,
+    E2E_REQV_REFUSED,
+    E2E_REQV_EXPIRED
+};
+
+static enum e2e_req_view e2e_req_view_of(const struct e2e_req *r, int64_t now) {
+    bool lapsed = r->expires_ms && now >= r->expires_ms;
+    switch (r->state) {
+    case WIRE_E2E_REQ_INCOMING: return lapsed ? E2E_REQV_NONE : E2E_REQV_INCOMING;
+    case WIRE_E2E_REQ_OUTGOING: return lapsed ? E2E_REQV_EXPIRED : E2E_REQV_PENDING;
+    case WIRE_E2E_REQ_ACCEPTED: return E2E_REQV_ACCEPTED;
+    case WIRE_E2E_REQ_REFUSED: return E2E_REQV_REFUSED;
+    case WIRE_E2E_REQ_EXPIRED: return E2E_REQV_EXPIRED;
+    }
+    return E2E_REQV_NONE;
+}
+
+/* What landed, to be said once the lock is let go. */
+struct e2e_req_news {
+    long id;
+    char peer[MAX_CHANNEL];
+    enum e2e_req_view was, now;
+    bool open; /* accepted: open it on the worker */
+};
+
+/* The request with `nick`, the newest when a push left two; NULL none.
+ * Caller holds app->lock. */
+static struct e2e_req *e2e_req_with_locked(struct e2e_slot *s, const char *nick) {
+    struct e2e_req *found = NULL;
+    for (size_t i = 0; i < s->nreqs; i++)
+        if (e2e_nick_eq(s->reqs[i].peer, nick) && (!found || s->reqs[i].id > found->id))
+            found = &s->reqs[i];
+    return found;
+}
+
+static struct e2e_req *e2e_req_by_id_locked(struct e2e_slot *s, long id) {
+    for (size_t i = 0; i < s->nreqs; i++)
+        if (s->reqs[i].id == id) return &s->reqs[i];
+    return NULL;
+}
+
+static void e2e_req_drop_locked(struct e2e_slot *s, long id) {
+    for (size_t i = 0; i < s->nreqs; i++)
+        if (s->reqs[i].id == id) {
+            memmove(s->reqs + i, s->reqs + i + 1, (s->nreqs - i - 1) * sizeof(*s->reqs));
+            s->nreqs--;
+            s->req_changes++;
+            return;
+        }
+}
+
+/* Upserts `w` by id. Caller holds app->lock. */
+static void e2e_req_put_locked(struct e2e_slot *s, const struct wire_e2e_request *w, int64_t now,
+                               struct e2e_req_news *news) {
+    struct e2e_req *r = e2e_req_by_id_locked(s, w->id);
+    memset(news, 0, sizeof(*news));
+    news->id = w->id;
+    news->was = r ? e2e_req_view_of(r, now) : E2E_REQV_NONE;
+    if (!r) {
+        if (s->nreqs == E2E_REQS_MAX) {
+            /* Full (grappa caps each side at 32): the oldest goes. */
+            memmove(s->reqs, s->reqs + 1, (s->nreqs - 1) * sizeof(*s->reqs));
+            s->nreqs--;
+        }
+        r = &s->reqs[s->nreqs++];
+        memset(r, 0, sizeof(*r));
+        r->id = w->id;
+    }
+    snprintf(r->peer, sizeof(r->peer), "%s", w->peer);
+    r->state = w->state;
+    int64_t secs = 0;
+    r->expires_ms = w->expires_at && e2e_iso8601_seconds(w->expires_at, &secs) ? secs * 1000 : 0;
+    s->req_changes++;
+    snprintf(news->peer, sizeof(news->peer), "%s", r->peer);
+    news->now = e2e_req_view_of(r, now);
+    if (r->state == WIRE_E2E_REQ_ACCEPTED && !r->opening) r->opening = news->open = true;
+}
+
+static void e2e_send_enqueue(struct app *app, const char *net, const char *nick, const char *verb,
+                             const char *arg2, int num);
+
+/* What a request's new look says, in the query with the peer (cic's
+ * banner and request card), and an accepted one sent to be opened. */
+static void e2e_req_tell(struct app *app, const char *slug, const struct e2e_req_news *n) {
+    const char *p = n->peer;
+    if (n->now != n->was) switch (n->now) {
+        case E2E_REQV_INCOMING:
+            log_line_mention(app, true, "[%s/%s] *** e2e: %s would like to start an encrypted chat "
+                                        "with you — /e2e accept %s | /e2e refuse %s",
+                             slug, p, p, p, p);
+            break;
+        case E2E_REQV_PENDING:
+            log_line(app, "[%s/%s] --- e2e: waiting for %s to accept the encrypted chat — /e2e "
+                          "cancel %s withdraws the request",
+                     slug, p, p, p);
+            break;
+        case E2E_REQV_ACCEPTED:
+            log_line(app, "[%s/%s] --- e2e: %s accepted the encrypted chat", slug, p, p);
+            break;
+        case E2E_REQV_REFUSED:
+            log_line(app, "[%s/%s] --- e2e: %s refused the encrypted chat (/e2e cancel %s "
+                          "dismisses it)",
+                     slug, p, p, p);
+            break;
+        case E2E_REQV_EXPIRED:
+            log_line(app, "[%s/%s] --- e2e: %s did not answer the encrypted chat request within 24 "
+                          "hours — /e2e ask %s asks again, /e2e cancel %s dismisses it",
+                     slug, p, p, p, p);
+            break;
+        case E2E_REQV_NONE:
+            break;
+        }
+    if (n->open) {
+        char id[24];
+        snprintf(id, sizeof(id), "%ld", n->id);
+        e2e_send_enqueue(app, slug, p, "opened", id, 0);
+    }
+}
+
+/* e2e_request (v53), any thread. A network whose slot no sync made yet is
+ * left to that sync's read. */
+static void e2e_request_push(struct app *app, const char *net, const struct wire_e2e_request *w) {
+    if (!net || !w->peer) return;
+    struct e2e_req_news news;
+    pthread_mutex_lock(&app->lock);
+    struct e2e_slot *s = e2e_slot_by_slug_locked(app, net);
+    bool held = s && app->server_protocol >= E2E_REQUESTS_MIN_PROTOCOL;
+    char slug[MAX_SLUG] = "";
+    if (held) {
+        snprintf(slug, sizeof(slug), "%s", s->slug);
+        e2e_req_put_locked(s, w, e2e_now_ms(), &news);
+    }
+    pthread_mutex_unlock(&app->lock);
+    if (held) e2e_req_tell(app, slug, &news);
+}
+
+/* Every slot's requests read again, on the worker (a user-topic rejoin). */
+static void e2e_requests_reload_all(struct app *app) {
+    char slugs[MAX_NETWORKS][MAX_SLUG];
+    size_t n = 0;
+    pthread_mutex_lock(&app->lock);
+    for (size_t i = 0; i < app->e2e_count; i++)
+        snprintf(slugs[n++], sizeof(slugs[0]), "%s", app->e2e[i].slug);
+    pthread_mutex_unlock(&app->lock);
+    for (size_t i = 0; i < n; i++) e2e_send_enqueue(app, slugs[i], "", "requests", "", 0);
+}
+
+/* e2e_request_gone (v53): answered, withdrawn or swept; nothing is said. */
+static void e2e_request_gone(struct app *app, const char *net, long id) {
+    pthread_mutex_lock(&app->lock);
+    struct e2e_slot *s = net ? e2e_slot_by_slug_locked(app, net) : NULL;
+    if (s) e2e_req_drop_locked(s, id);
+    pthread_mutex_unlock(&app->lock);
+}
+
+/* Worker: the network's requests read again; what grappa lists replaces
+ * what was held. A change that landed while the read was out may be newer
+ * than what was read, so then it is read again (loadE2eRequests). */
+static void e2e_requests_load(struct app *app, struct e2e_slot *s, int depth) {
+    pthread_mutex_lock(&app->lock);
+    bool can = app->server_protocol >= E2E_REQUESTS_MIN_PROTOCOL;
+    unsigned long before = s->req_changes;
+    pthread_mutex_unlock(&app->lock);
+    if (!can) return;
+    struct e2e_reply r;
+    const json_value *items = NULL;
+    size_t count = 0;
+    if (!e2e_door(app, WIRE_E2E_REQUESTS, s->slug, NULL, -1, NULL, &r) ||
+        !wire_narrow_e2e_requests(json_root(r.doc), &items, &count)) {
+        char why[160];
+        e2e_reply_describe(&r, why, sizeof(why));
+        card(app, s->slug, "--- e2e: cannot read the encrypted chat requests on %s (%s)", s->slug,
+             why);
+        e2e_reply_free(&r);
+        return;
+    }
+    struct e2e_req_news *news = calloc(E2E_REQS_MAX, sizeof(*news));
+    if (!news) die("out of memory");
+    size_t nnews = 0;
+    int64_t now = e2e_now_ms();
+    pthread_mutex_lock(&app->lock);
+    if (s->req_changes != before && depth < 3) {
+        pthread_mutex_unlock(&app->lock);
+        e2e_reply_free(&r);
+        free(news);
+        e2e_requests_load(app, s, depth + 1);
+        return;
+    }
+    /* Kept: what grappa lists, in its order, each with its `opening`. */
+    struct e2e_req old[E2E_REQS_MAX];
+    size_t nold = s->nreqs;
+    memcpy(old, s->reqs, nold * sizeof(*old));
+    s->nreqs = 0;
+    for (size_t i = 0; i < count && nnews < E2E_REQS_MAX; i++) {
+        struct wire_e2e_request w;
+        if (!wire_e2e_request_at(items, i, &w)) continue;
+        for (size_t k = 0; k < nold; k++)
+            if (old[k].id == w.id && s->nreqs < E2E_REQS_MAX) s->reqs[s->nreqs++] = old[k];
+        e2e_req_put_locked(s, &w, now, &news[nnews++]);
+    }
+    s->req_changes++;
+    char slug[MAX_SLUG];
+    snprintf(slug, sizeof(slug), "%s", s->slug);
+    pthread_mutex_unlock(&app->lock);
+    e2e_reply_free(&r);
+    for (size_t i = 0; i < nnews; i++) e2e_req_tell(app, slug, &news[i]);
+    free(news);
+}
+
+/* A door grappa answered 404 or 409: the request moved under this device
+ * (answered or withdrawn elsewhere, or in another state now). */
+static void e2e_req_refused(struct app *app, struct e2e_slot *s, const char *what,
+                            const char *nick, struct e2e_reply *r) {
+    char why[160];
+    e2e_reply_describe(r, why, sizeof(why));
+    log_line(app, "[%s/%s] --- e2e: %s: grappa refused it (%s)", s->slug, nick, what, why);
+    if (r->status == 404 || r->status == 409) e2e_requests_load(app, s, 0);
+}
+
+/* {"from": did, "payload": "{\"v\":2,\"master\":M}"} — or, with `target`,
+ * the ask's body. */
+static char *e2e_consent_body(struct e2e_slot *s, const char *target) {
+    char *payload = e2e_consent_payload(s->rec.own->master);
+    char *p = json_escape(payload);
+    char *from = json_escape(s->rec.own->did);
+    char *t = target ? json_escape(target) : NULL;
+    char *body = t ? xasprintf("{\"target\":\"%s\",\"from\":\"%s\",\"payload\":\"%s\"}", t, from, p)
+                   : xasprintf("{\"from\":\"%s\",\"payload\":\"%s\"}", from, p);
+    free(payload);
+    free(p);
+    free(from);
+    free(t);
+    return body;
+}
+
+static void e2e_turn_on(struct app *app, struct e2e_slot *s, const e2e_ctx *c, const char *nick,
+                        bool say, e2e_result *res);
+
+/* The request verbs of e2e_send_job. `usable`: an identity is here. */
+static bool e2e_request_verb(const char *verb) {
+    static const char *const verbs[] = {"requests", "ask", "accept", "refuse", "cancel", "opened"};
+    for (size_t i = 0; i < sizeof(verbs) / sizeof(verbs[0]); i++)
+        if (strcmp(verb, verbs[i]) == 0) return true;
+    return false;
+}
+
+static void e2e_request_job(struct app *app, struct e2e_slot *s, bool usable, const char *verb,
+                            const char *nick, const char *arg) {
+    if (strcmp(verb, "requests") == 0) {
+        e2e_requests_load(app, s, 0);
+        return;
+    }
+    pthread_mutex_lock(&app->lock);
+    bool can = app->server_protocol >= E2E_REQUESTS_MIN_PROTOCOL;
+    struct e2e_req *found = strcmp(verb, "opened") == 0 ? e2e_req_by_id_locked(s, atol(arg))
+                                                        : e2e_req_with_locked(s, nick);
+    struct e2e_req req = {0};
+    bool have = found != NULL;
+    if (found) req = *found;
+    enum e2e_req_view view = have ? e2e_req_view_of(&req, e2e_now_ms()) : E2E_REQV_NONE;
+    if (strcmp(verb, "opened") == 0 && found && !usable) found->opening = false;
+    pthread_mutex_unlock(&app->lock);
+    if (!can) {
+        log_line(app, "/e2e %s %s: refused — encrypted chat requests need server protocol v%d",
+                 verb, nick, E2E_REQUESTS_MIN_PROTOCOL);
+        return;
+    }
+    char id[24];
+    snprintf(id, sizeof(id), "%ld", req.id);
+    bool needs_line = strcmp(verb, "ask") == 0 || strcmp(verb, "accept") == 0 ||
+                      strcmp(verb, "opened") == 0 ||
+                      (strcmp(verb, "cancel") == 0 && have && req.state == WIRE_E2E_REQ_OUTGOING);
+    if (needs_line && !usable) {
+        log_line(app, "[%s/%s] --- e2e: /e2e %s %s: encrypted queries are not ready on %s (/e2e "
+                      "shows why)%s",
+                 s->slug, nick, strcmp(verb, "opened") == 0 ? "accept" : verb, nick, s->slug,
+                 strcmp(verb, "opened") == 0 ? " — the accepted request waits" : "");
+        return;
+    }
+    struct e2e_reply r;
+    if (strcmp(verb, "ask") == 0) {
+        char *body = e2e_consent_body(s, nick);
+        struct wire_e2e_request w;
+        bool ok = e2e_door(app, WIRE_E2E_REQUEST_ASK, s->slug, NULL, -1, body, &r) &&
+                  wire_narrow_e2e_asked(json_root(r.doc), &w);
+        free(body);
+        if (!ok) {
+            e2e_req_refused(app, s, "asking for an encrypted chat", nick, &r);
+        } else {
+            struct e2e_req_news news;
+            pthread_mutex_lock(&app->lock);
+            e2e_req_put_locked(s, &w, e2e_now_ms(), &news);
+            pthread_mutex_unlock(&app->lock);
+            e2e_req_tell(app, s->slug, &news);
+        }
+        e2e_reply_free(&r);
+        return;
+    }
+    if (strcmp(verb, "accept") == 0 || strcmp(verb, "refuse") == 0) {
+        if (view != E2E_REQV_INCOMING) {
+            log_line(app, "[%s/%s] --- e2e: /e2e %s: %s has not asked for an encrypted chat (/e2e "
+                          "requests lists what waits)",
+                     s->slug, nick, verb, nick);
+            return;
+        }
+        bool accept = strcmp(verb, "accept") == 0;
+        char *body = accept ? e2e_consent_body(s, NULL) : NULL;
+        const char *msgid = NULL;
+        bool ok = e2e_door(app, accept ? WIRE_E2E_REQUEST_ACCEPT : WIRE_E2E_REQUEST_REFUSE,
+                           s->slug, id, -1, body, &r) &&
+                  wire_narrow_e2e_sent(json_root(r.doc), &msgid);
+        free(body);
+        if (!ok) {
+            e2e_req_refused(app, s, accept ? "accepting" : "refusing", nick, &r);
+            e2e_reply_free(&r);
+            return;
+        }
+        e2e_reply_free(&r);
+        pthread_mutex_lock(&app->lock);
+        e2e_req_drop_locked(s, req.id);
+        pthread_mutex_unlock(&app->lock);
+        if (!accept) {
+            log_line(app, "[%s/%s] --- e2e: you refused %s's encrypted chat; %s is told", s->slug,
+                     req.peer, req.peer, req.peer);
+            return;
+        }
+        log_line(app, "[%s/%s] --- e2e: you accepted %s's encrypted chat", s->slug, req.peer,
+                 req.peer);
+    } else if (strcmp(verb, "cancel") == 0) {
+        if (!have) {
+            log_line(app, "[%s/%s] --- e2e: /e2e cancel: no encrypted chat request with %s",
+                     s->slug, nick, nick);
+            return;
+        }
+        bool outgoing = req.state == WIRE_E2E_REQ_OUTGOING;
+        char *body = outgoing ? e2e_consent_body(s, NULL) : NULL;
+        bool ok = e2e_door(app, WIRE_E2E_REQUEST_DISMISS, s->slug, id, -1, body, &r);
+        free(body);
+        if (!ok) {
+            e2e_req_refused(app, s, outgoing ? "withdrawing the request" : "dismissing it", nick,
+                            &r);
+            e2e_reply_free(&r);
+            return;
+        }
+        e2e_reply_free(&r);
+        pthread_mutex_lock(&app->lock);
+        e2e_req_drop_locked(s, req.id);
+        pthread_mutex_unlock(&app->lock);
+        log_line(app, "[%s/%s] --- e2e: %s", s->slug, req.peer,
+                 outgoing ? "you withdrew the encrypted chat request" : "request dismissed");
+        return;
+    } else if (!have) {
+        return; /* opened: gone meanwhile (another device opened it) */
+    }
+    /* Accepted (by us just now, or by the peer: opened): the query goes
+     * encrypted and the peer is asked for its keys; an accepted request of
+     * ours has then done its job (openAccepted; 404 = another device of
+     * ours did it). */
+    char own[MAX_CHANNEL];
+    e2e_ctx c;
+    e2e_ctx_of(app, s, &c, own, sizeof(own));
+    e2e_result res;
+    e2e_result_init(&res);
+    e2e_turn_on(app, s, &c, req.peer, true, &res);
+    e2e_run(app, s, &c, &res);
+    e2e_result_free(&res);
+    if (strcmp(verb, "opened") == 0) {
+        bool ok = e2e_door(app, WIRE_E2E_REQUEST_DISMISS, s->slug, id, -1, NULL, &r);
+        if (!ok && r.status != 404) {
+            char why[160];
+            e2e_reply_describe(&r, why, sizeof(why));
+            card(app, s->slug, "--- e2e: the accepted request with %s could not be dismissed (%s)",
+                 req.peer, why);
+        }
+        e2e_reply_free(&r);
+        pthread_mutex_lock(&app->lock);
+        if (ok || r.status == 404) e2e_req_drop_locked(s, req.id);
+        else if ((found = e2e_req_by_id_locked(s, req.id))) found->opening = false;
+        pthread_mutex_unlock(&app->lock);
+    }
+}
+
 /* The trust verbs of e2e_send_job. */
 static bool e2e_trust_verb(const char *verb) {
     static const char *const verbs[] = {"sas", "verify-key", "trust", "who", "alarms", "devices",
@@ -18223,6 +18669,34 @@ static void e2e_trust_job(struct app *app, struct e2e_slot *s, const e2e_ctx *c,
     else if (strcmp(verb, "alarms") == 0) e2e_alarms(app, s, c);
     else if (strcmp(verb, "devices") == 0) e2e_devices(app, s);
     else if (strcmp(verb, "revoke") == 0) e2e_revoke(app, s, arg);
+}
+
+/* The query with `nick` in encrypted mode (/e2e on, or a consent accepted):
+ * its peer's key said, or — no identity known for them yet — asked for.
+ * Until they answer, what is typed waits in the engine's queue, encrypted
+ * or nothing. `say`: tell the query its mode moved (/e2e on already did). */
+static void e2e_turn_on(struct app *app, struct e2e_slot *s, const e2e_ctx *c, const char *nick,
+                        bool say, e2e_result *res) {
+    bool was = e2e_record_encrypted(&s->rec, nick);
+    e2e_mode_set(app, s, nick, true, true);
+    if (say && !was)
+        log_line(app, "[%s/%s] --- e2e: this query is in encrypted mode now: what you type here "
+                      "goes encrypted (" E2E_LOCK "), never in clear; /e2e off for clear",
+                 s->slug, nick);
+    const char *m = NULL;
+    bool verified = false;
+    size_t trusted = 0;
+    bool known = false;
+    for (size_t i = 0; i < s->nawaiting; i++) known |= e2e_nick_eq(s->awaiting[i].nick, nick);
+    if (e2e_pinned(c, nick, &m, &verified, &trusted)) {
+        log_line(app, "[%s/%s] --- e2e: %s's key is %s (%s, %zu device%s)", s->slug, nick, nick, m,
+                 verified ? "verified" : "not verified yet", trusted, trusted == 1 ? "" : "s");
+    } else if (!known && s->nawaiting < E2E_AWAITING_MAX) {
+        snprintf(s->awaiting[s->nawaiting].nick, sizeof(s->awaiting[0].nick), "%s", nick);
+        s->awaiting[s->nawaiting++].until = c->now_ms + E2E_OUTQ_TTL_MS;
+        e2e_ask_keys(c, nick, res);
+        log_line(app, "[%s/%s] --- e2e: asking %s for their keys…", s->slug, nick, nick);
+    }
 }
 
 static void e2e_send_job(struct app *app, const struct job *job) {
@@ -18245,6 +18719,11 @@ static void e2e_send_job(struct app *app, const struct job *job) {
         if (s->have_rec && e2e_record_set_encrypted(&s->rec, nick, false)) e2e_save(app, s);
         return;
     }
+    if (e2e_request_verb(verb)) {
+        /* A refusal, a dismissal and the read need no identity here. */
+        if (s) e2e_request_job(app, s, usable, verb, nick, job->arg2);
+        return;
+    }
     if (!usable) {
         if (strcmp(verb, "on") == 0 || strcmp(verb, "resend") == 0 || strcmp(verb, "rekey") == 0 ||
             e2e_trust_verb(verb))
@@ -18263,23 +18742,7 @@ static void e2e_send_job(struct app *app, const struct job *job) {
     e2e_result res;
     e2e_result_init(&res);
     if (strcmp(verb, "on") == 0) {
-        e2e_mode_set(app, s, nick, true, true);
-        const char *m = NULL;
-        bool verified = false;
-        size_t trusted = 0;
-        bool known = false;
-        for (size_t i = 0; i < s->nawaiting; i++) known |= e2e_nick_eq(s->awaiting[i].nick, nick);
-        if (e2e_pinned(&c, nick, &m, &verified, &trusted)) {
-            log_line(app, "[%s/%s] --- e2e: %s's key is %s (%s, %zu device%s)", s->slug, nick, nick,
-                     m, verified ? "verified" : "not verified yet", trusted, trusted == 1 ? "" : "s");
-        } else if (!known && s->nawaiting < E2E_AWAITING_MAX) {
-            /* No identity known for them yet: ask. Until they answer, what
-             * is typed waits in the engine's queue — encrypted or nothing. */
-            snprintf(s->awaiting[s->nawaiting].nick, sizeof(s->awaiting[0].nick), "%s", nick);
-            s->awaiting[s->nawaiting++].until = c.now_ms + E2E_OUTQ_TTL_MS;
-            e2e_ask_keys(&c, nick, &res);
-            log_line(app, "[%s/%s] --- e2e: asking %s for their keys…", s->slug, nick, nick);
-        }
+        e2e_turn_on(app, s, &c, nick, false, &res);
     } else if (strcmp(verb, "rekey") == 0) {
         e2e_rekey(&c, nick, &res);
     } else if (strcmp(verb, "dropped") == 0) {
@@ -18686,6 +19149,111 @@ static void e2e_trust_command(struct app *app, const char *sub, const char *rest
     }
 }
 
+/* /e2e ask|accept|refuse|cancel [nick] (see "E2E: consent requests"):
+ * checked here, run on the worker. The nick defaults to the query typed
+ * in; the network is the current window's. */
+static void e2e_consent_command(struct app *app, const char *sub, const char *named) {
+    char net[MAX_SLUG], chan[MAX_CHANNEL];
+    if (!current_window_key(app, net, sizeof(net), chan, sizeof(chan)) || !net[0]) {
+        log_line(app, "/e2e %s: switch to a window of the network first", sub);
+        return;
+    }
+    const char *peer = named[0] ? named : chan;
+    if (!peer[0] || is_channel_name(peer) || is_local_window(peer)) {
+        log_line(app, "/e2e %s: type it in a query, or name the nick (/e2e %s <nick>)", sub, sub);
+        return;
+    }
+    pthread_mutex_lock(&app->lock);
+    bool own = nick_case_equal(peer, own_nick_for_network(app, net));
+    struct e2e_slot *s = e2e_slot_by_slug_locked(app, net);
+    long proto = app->server_protocol;
+    bool ready = s && s->view.state == E2E_SLOT_READY;
+    pthread_mutex_unlock(&app->lock);
+    if (own) {
+        log_line(app, "/e2e %s: %s is your own nick", sub, peer);
+        return;
+    }
+    if (proto < E2E_REQUESTS_MIN_PROTOCOL || !s) {
+        log_line(app, "/e2e %s %s: refused — %s", sub, peer,
+                 !s ? "this network was not looked at yet (/e2e sync)"
+                    : "encrypted chat requests need server protocol v53");
+        return;
+    }
+    /* Asking and accepting carry our master key: they need an identity
+     * here. Refusing and dismissing do not. */
+    if (!ready && (strcmp(sub, "ask") == 0 || strcmp(sub, "accept") == 0)) {
+        log_line(app, "/e2e %s %s: refused — encrypted queries are not ready on %s (/e2e shows why)",
+                 sub, peer, net);
+        return;
+    }
+    if (strcmp(sub, "ask") == 0)
+        log_line(app, "[%s/%s] --- e2e: asking %s to start an encrypted chat; %s can answer only "
+                      "from cicchetto or another client that speaks grappa's encrypted chats, and "
+                      "without an answer within 24 hours the request expires",
+                 net, peer, peer, peer);
+    e2e_send_enqueue(app, net, peer, sub, "", 0);
+}
+
+/* /e2e requests [network]: what the mirror holds, as the banners and
+ * request cards would show it now. */
+static void e2e_requests_command(struct app *app, const char *only) {
+    int64_t now = e2e_now_ms();
+    size_t shown = 0;
+    pthread_mutex_lock(&app->lock);
+    long proto = app->server_protocol;
+    struct {
+        char slug[MAX_SLUG], peer[MAX_CHANNEL];
+        enum e2e_req_view view;
+    } rows[E2E_REQS_MAX];
+    size_t n = 0;
+    for (size_t i = 0; i < app->e2e_count; i++) {
+        struct e2e_slot *s = &app->e2e[i];
+        if (only[0] && !irc_name_eq(s->slug, only)) continue;
+        for (size_t k = 0; k < s->nreqs && n < E2E_REQS_MAX; k++) {
+            enum e2e_req_view v = e2e_req_view_of(&s->reqs[k], now);
+            if (v == E2E_REQV_NONE) continue;
+            snprintf(rows[n].slug, sizeof(rows[n].slug), "%s", s->slug);
+            snprintf(rows[n].peer, sizeof(rows[n].peer), "%s", s->reqs[k].peer);
+            rows[n++].view = v;
+        }
+    }
+    pthread_mutex_unlock(&app->lock);
+    if (proto < E2E_REQUESTS_MIN_PROTOCOL) {
+        log_line(app, "/e2e requests: encrypted chat requests need server protocol v%d",
+                 E2E_REQUESTS_MIN_PROTOCOL);
+        return;
+    }
+    for (size_t i = 0; i < n; i++, shown++) {
+        const char *p = rows[i].peer;
+        switch (rows[i].view) {
+        case E2E_REQV_INCOMING:
+            log_line(app, "e2e request %s: %s asks to start an encrypted chat — /e2e accept %s | "
+                          "/e2e refuse %s",
+                     rows[i].slug, p, p, p);
+            break;
+        case E2E_REQV_PENDING:
+            log_line(app, "e2e request %s: you asked %s, waiting — /e2e cancel %s", rows[i].slug, p,
+                     p);
+            break;
+        case E2E_REQV_ACCEPTED:
+            log_line(app, "e2e request %s: %s accepted", rows[i].slug, p);
+            break;
+        case E2E_REQV_REFUSED:
+            log_line(app, "e2e request %s: %s refused — /e2e cancel %s dismisses it", rows[i].slug,
+                     p, p);
+            break;
+        case E2E_REQV_EXPIRED:
+            log_line(app, "e2e request %s: %s did not answer within 24 hours — /e2e ask %s | /e2e "
+                          "cancel %s",
+                     rows[i].slug, p, p, p);
+            break;
+        case E2E_REQV_NONE:
+            break;
+        }
+    }
+    if (!shown) log_line(app, "e2e requests: none%s%s", only[0] ? " on " : "", only);
+}
+
 /* /e2e [status [network]] | init [network] | sync [network] | pair …
  * | on|off|resend|rekey [nick] | verify|trust|who|alarm|devices|revoke …. */
 static void e2e_command(struct app *app, const char *args) {
@@ -18721,6 +19289,15 @@ static void e2e_command(struct app *app, const char *args) {
         e2e_query_command(app, sub, net);
         return;
     }
+    if (strcmp(sub, "ask") == 0 || strcmp(sub, "accept") == 0 || strcmp(sub, "refuse") == 0 ||
+        strcmp(sub, "cancel") == 0) {
+        e2e_consent_command(app, sub, net);
+        return;
+    }
+    if (strcmp(sub, "requests") == 0) {
+        e2e_requests_command(app, net);
+        return;
+    }
     if (strcmp(sub, "verify") == 0 || strcmp(sub, "trust") == 0 || strcmp(sub, "who") == 0 ||
         strcmp(sub, "alarm") == 0 || strcmp(sub, "alarms") == 0 || strcmp(sub, "devices") == 0 ||
         strcmp(sub, "revoke") == 0) {
@@ -18733,7 +19310,8 @@ static void e2e_command(struct app *app, const char *args) {
         log_line(app, "usage: /e2e [status [network]] | init [network] | sync [network] | pair "
                       "[accept|confirm|decline] | on|off|resend|rekey [nick] | verify [nick "
                       "[key]] | verify accept|confirm|cancel [nick] | trust [nick] [confirm] | "
-                      "who [nick] | alarm | devices | revoke <did> [confirm]");
+                      "who [nick] | alarm | devices | revoke <did> [confirm] | ask|accept|refuse|"
+                      "cancel [nick] | requests [network]");
         return;
     }
     if (!net[0] && !status) current_window_key(app, net, sizeof(net), NULL, 0);
@@ -20602,9 +21180,10 @@ static void complete_input(struct app *app) {
         }
     }
     /* /e2e's own words, and /e2e pair's: from the verbs e2e_command reads. */
-    static const char *const E2E_SUBS[] = {"alarm",  "devices", "init",   "off",   "on",
-                                           "pair",   "rekey",   "resend", "revoke", "status",
-                                           "sync",   "trust",   "verify", "who"};
+    static const char *const E2E_SUBS[] = {"accept", "alarm",    "ask",    "cancel", "devices",
+                                           "init",   "off",      "on",     "pair",   "refuse",
+                                           "rekey",  "requests", "resend", "revoke", "status",
+                                           "sync",   "trust",    "verify", "who"};
     static const char *const E2E_PAIR_SUBS[] = {"accept", "confirm", "decline"};
     const char *const *e2e_words = NULL;
     size_t e2e_nwords = 0;
@@ -23224,7 +23803,7 @@ static void show_command_help(struct app *app, const char *raw) {
     else if (strcmp(cmd, "exec") == 0) log_line(app, "/exec <command> — run it in a shell and SEND its stdout to the current window (everyone sees it); capped at 20 lines / 16 KiB, killed after 15s, stderr discarded");
     else if (strcmp(cmd, "ctcp") == 0) log_line(app, "/ctcp <nick|#channel> <VERB> [args] — send any CTCP query (VERSION, TIME, FINGER…); the reply lands in the window you asked from. /ping is the timed special case");
     else if (strcmp(cmd, "ping") == 0) log_line(app, "/ping nick — CTCP PING somebody and time the round trip; the answer lands in the window you asked from");
-    else if (strcmp(cmd, "e2e") == 0) log_line(app, "/e2e [status [network]] — per network: whether this device is part of the account's end-to-end encrypted identity (none, elsewhere, holder, paired), its device id, the device list version and size, whether it holds the master key, and its key bundle on grappa. /e2e init [network] creates the identity when the account has none (this device becomes its first and holds the master key; never replaces one). /e2e sync [network] reads it again. Needs server protocol v49. /e2e pair [accept|confirm|decline] pairs this device onto an identity another device holds: when cicchetto's \"add a device\" offers a pairing, accept joins it and shows a 2-digit check code to type there; once it matched, confirm registers this device on the networks offered; decline stops at any step. Needs protocol v55 and a password login. Once this device is ready, encrypted messages addressed to it are read from grappa's inbox and shown in the query with the peer, marked with a lock beside the time (a copy another of your devices sent shows as your own line); they are never bridged to --ircd, desktop notifications say only \"encrypted message\", and this device keeps their only copy, under its state directory. In a query, /e2e on [nick] puts it in encrypted mode (also turned on by the peer's first encrypted message; the prompt shows a lock): every line and /me typed there goes encrypted, NEVER in clear — on any failure the row says why and /e2e resend sends it again; /e2e off [nick] returns the query to clear, with a warning; /e2e rekey [nick] asks for new keys and resends what failed (after \"cannot read your last message on any device\")");
+    else if (strcmp(cmd, "e2e") == 0) log_line(app, "/e2e [status [network]] — per network: whether this device is part of the account's end-to-end encrypted identity (none, elsewhere, holder, paired), its device id, the device list version and size, whether it holds the master key, and its key bundle on grappa. /e2e init [network] creates the identity when the account has none (this device becomes its first and holds the master key; never replaces one). /e2e sync [network] reads it again. Needs server protocol v49. /e2e pair [accept|confirm|decline] pairs this device onto an identity another device holds: when cicchetto's \"add a device\" offers a pairing, accept joins it and shows a 2-digit check code to type there; once it matched, confirm registers this device on the networks offered; decline stops at any step. Needs protocol v55 and a password login. Once this device is ready, encrypted messages addressed to it are read from grappa's inbox and shown in the query with the peer, marked with a lock beside the time (a copy another of your devices sent shows as your own line); they are never bridged to --ircd, desktop notifications say only \"encrypted message\", and this device keeps their only copy, under its state directory. In a query, /e2e on [nick] puts it in encrypted mode (also turned on by the peer's first encrypted message; the prompt shows a lock): every line and /me typed there goes encrypted, NEVER in clear — on any failure the row says why and /e2e resend sends it again; /e2e off [nick] returns the query to clear, with a warning; /e2e rekey [nick] asks for new keys and resends what failed (after \"cannot read your last message on any device\"). Consent (protocol v53): /e2e ask [nick] asks a peer to start an encrypted chat (it expires after 24 hours); a peer's request shows in the query with them — /e2e accept [nick] turns the query encrypted and asks for their keys, /e2e refuse [nick] says no (needs no identity here); /e2e cancel [nick] withdraws your request or dismisses an answer; /e2e requests [network] lists them. Accepting is consent, not trust: keys are still pinned on first use, alarmed and verified as ever. A bot that takes orders from you may challenge a plaintext line you sent: shottino confirms it inside the encrypted session only when the bot's key is verified and THIS device sent exactly that line there in the last 30 s, and shows the identity check in the query with the bot");
     else if (strcmp(cmd, "emsg") == 0) log_line(app, "/emsg <nick> <text> — send ONE end-to-end encrypted message to nick without putting the query in encrypted mode; it is never sent in clear (if it cannot be encrypted the row says why). /e2e on makes every line in the query encrypted");
     else if (strcmp(cmd, "block") == 0 || strcmp(cmd, "ignore") == 0) log_line(app, "/block [nick], /ignore [nick] — hide somebody's messages in THIS client only (nothing is sent to the server); bare /block lists who is blocked");
     else if (strcmp(cmd, "unblock") == 0 || strcmp(cmd, "unignore") == 0) log_line(app, "/unblock nick, /unignore nick — show somebody's messages again");

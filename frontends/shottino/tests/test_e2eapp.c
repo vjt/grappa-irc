@@ -120,6 +120,15 @@ static struct {
     /* every request, "METHOD path\n" */
     char log[32768];
     size_t requests;
+    /* the consent requests (§4i), and every body their doors took,
+     * "METHOD path body\n" ("-" for none) */
+    struct {
+        long id;
+        char peer[32], state[12], expires[32];
+    } req[16];
+    size_t nreq;
+    long next_req;
+    char req_bodies[8192];
 } fg;
 
 static void fg_reset(void) {
@@ -143,6 +152,8 @@ static void fg_reset(void) {
     fg.nack_disk = 0;
     fg.log[0] = 0;
     fg.requests = 0;
+    fg.nreq = 0;
+    fg.req_bodies[0] = 0;
     pthread_mutex_unlock(&fg.lock);
 }
 
@@ -394,6 +405,95 @@ static char *fg_pairing(const char *method, const char *rest, const char *body, 
 
 /* One request, under fg.lock. Returns the body (malloc'd, may be "") and
  * sets the status. */
+/* A request as grappa's wire has it. */
+static char *fg_req_json_locked(size_t i) {
+    return xasprintf("{\"id\":%ld,\"peer\":\"%s\",\"state\":\"%s\",\"payload\":null,"
+                     "\"at\":\"2026-11-07T10:00:00Z\",\"expires_at\":%s%s%s}",
+                     fg.req[i].id, fg.req[i].peer, fg.req[i].state,
+                     fg.req[i].expires[0] ? "\"" : "", fg.req[i].expires[0] ? fg.req[i].expires : "null",
+                     fg.req[i].expires[0] ? "\"" : "");
+}
+
+static long fg_req_add(const char *peer, const char *state, const char *expires) {
+    pthread_mutex_lock(&fg.lock);
+    size_t i = fg.nreq++;
+    fg.req[i].id = ++fg.next_req;
+    snprintf(fg.req[i].peer, sizeof(fg.req[0].peer), "%s", peer);
+    snprintf(fg.req[i].state, sizeof(fg.req[0].state), "%s", state);
+    snprintf(fg.req[i].expires, sizeof(fg.req[0].expires), "%s", expires ? expires : "");
+    long id = fg.req[i].id;
+    pthread_mutex_unlock(&fg.lock);
+    return id;
+}
+
+static ssize_t fg_req_index_locked(long id) {
+    for (size_t i = 0; i < fg.nreq; i++)
+        if (fg.req[i].id == id) return (ssize_t)i;
+    return -1;
+}
+
+static void fg_req_remove_locked(size_t i) { fg.req[i] = fg.req[--fg.nreq]; }
+
+/* …/e2e/requests, as lib/grappa/e2e_requests.ex answers for the cases here:
+ * a consent line needs a did grappa lists and the payload as a string. */
+static char *fg_requests(const char *method, const char *tail, const char *body,
+                         const json_value *root, int *status) {
+    size_t at = strlen(fg.req_bodies);
+    snprintf(fg.req_bodies + at, sizeof(fg.req_bodies) - at, "%s %s %s\n", method,
+             tail[0] ? tail : "/", body && body[0] ? body : "-");
+    const char *from = json_string(json_get(root, "from"));
+    const char *payload = json_string(json_get(root, "payload"));
+    bool line = from && payload && fg_device_by_did(from);
+    if (!tail[0] && strcmp(method, "GET") == 0) {
+        char *out = xasprintf("{\"requests\":[");
+        for (size_t i = 0; i < fg.nreq; i++) {
+            char *r = fg_req_json_locked(i);
+            char *j = xasprintf("%s%s%s", out, i ? "," : "", r);
+            free(out);
+            free(r);
+            out = j;
+        }
+        char *c = xasprintf("%s]}", out);
+        free(out);
+        return c;
+    }
+    if (!tail[0] && strcmp(method, "POST") == 0) {
+        const char *target = json_string(json_get(root, "target"));
+        if (!target || !line) FG_ERR(400, "bad_request");
+        size_t i = fg.nreq++;
+        fg.req[i].id = ++fg.next_req;
+        snprintf(fg.req[i].peer, sizeof(fg.req[0].peer), "%s", target);
+        snprintf(fg.req[i].state, sizeof(fg.req[0].state), "outgoing");
+        snprintf(fg.req[i].expires, sizeof(fg.req[0].expires), "2099-01-01T00:00:00Z");
+        *status = 202;
+        char *r = fg_req_json_locked(i);
+        char *out = xasprintf("{\"request\":%s}", r);
+        free(r);
+        return out;
+    }
+    long id = strtol(tail + 1, NULL, 10);
+    ssize_t i = fg_req_index_locked(id);
+    if (i < 0) FG_ERR(404, "not_found");
+    const char *verb = strchr(tail + 1, '/');
+    if (verb && strcmp(method, "POST") == 0 &&
+        (strcmp(verb, "/accept") == 0 || strcmp(verb, "/refuse") == 0)) {
+        if (strcmp(fg.req[i].state, "incoming") != 0) FG_ERR(409, "request_state");
+        if (strcmp(verb, "/accept") == 0 && !line) FG_ERR(400, "bad_request");
+        fg_req_remove_locked((size_t)i);
+        *status = 202;
+        char msgid[12];
+        fg_msgid(msgid);
+        return xasprintf("{\"msgid\":\"%s\"}", msgid);
+    }
+    if (!verb && strcmp(method, "DELETE") == 0) {
+        if (strcmp(fg.req[i].state, "outgoing") == 0 && !line) FG_ERR(400, "bad_request");
+        fg_req_remove_locked((size_t)i);
+        *status = 204;
+        return xasprintf("%s", "");
+    }
+    FG_ERR(404, "not_found");
+}
+
 static char *fg_handle(const char *method, const char *path, const char *body, int *status) {
     const char *prefix = "/networks/azzurra/e2e";
     *status = 200;
@@ -411,6 +511,10 @@ static char *fg_handle(const char *method, const char *path, const char *body, i
     const json_value *root = doc ? json_root(doc) : NULL;
     char *out = NULL;
 
+    if (strncmp(rest, "/requests", 9) == 0) {
+        out = fg_requests(method, rest + 9, body, root, status);
+        goto end;
+    }
     if (strcmp(rest, "/list") == 0 && strcmp(method, "GET") == 0) {
         if (!fg.has_list) {
             *status = 404;
@@ -3910,6 +4014,200 @@ TEST(an_order_challenge_is_acked_only_for_a_line_we_sent) {
     free_e2e_app(app);
 }
 
+/* ── consent requests (slice G) ─────────────────────────────────────── */
+
+/* What grappa pushes for request `id` as it now holds it (or a gone). */
+static void push_request(struct app *app, long id) {
+    pthread_mutex_lock(&fg.lock);
+    ssize_t i = fg_req_index_locked(id);
+    char *r = i >= 0 ? fg_req_json_locked((size_t)i) : NULL;
+    pthread_mutex_unlock(&fg.lock);
+    if (!r) return;
+    char *frame = xasprintf("{\"kind\":\"e2e_request\",\"network\":\"azzurra\",\"request\":%s}", r);
+    json_doc *d = json_parse(frame, strlen(frame), NULL, 0);
+    struct wire_event ev;
+    CHECK(d && wire_narrow(json_root(d), &ev) && ev.kind == WIRE_E2E_REQUEST);
+    e2e_request_push(app, ev.u.e2e_request.network, &ev.u.e2e_request.request);
+    json_free(d);
+    free(frame);
+    free(r);
+}
+
+static bool req_body(const char *needle) {
+    pthread_mutex_lock(&fg.lock);
+    bool found = strstr(fg.req_bodies, needle) != NULL;
+    pthread_mutex_unlock(&fg.lock);
+    return found;
+}
+
+/* A peer asks: the query says so; /e2e accept answers with our line, turns
+ * the query encrypted and asks for their keys, and messages flow both ways. */
+TEST(an_incoming_request_is_accepted_and_messages_flow) {
+    struct app *app = send_app("user:consent-in", "alice");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    long id = fg_req_add("alice", "incoming", "2099-01-01T00:00:00Z");
+    push_request(app, id);
+    CHECK(said(app, "[azzurra/alice] *** e2e: alice would like to start an encrypted chat with "
+                    "you — /e2e accept alice | /e2e refuse alice"));
+    /* The same request pushed again says nothing new. */
+    push_request(app, id);
+    CHECK_LONG(said_count(app, "would like to start an encrypted chat"), 1);
+    type_line(app, "/e2e requests");
+    CHECK(said(app, "e2e request azzurra: alice asks to start an encrypted chat"));
+    CHECK(!prompt_locked(app));
+
+    size_t before = fg.nsent;
+    type_line(app, "/e2e accept");
+    run_jobs(app);
+    char path[64];
+    snprintf(path, sizeof(path), "POST /%ld/accept {\"from\":\"%s\"", id, our_did(app));
+    CHECK(req_body(path));
+    CHECK(req_body("\"payload\":\"{\\\"v\\\":2,\\\"master\\\":\\\""));
+    CHECK(said(app, "you accepted alice's encrypted chat"));
+    CHECK(said(app, "this query is in encrypted mode now"));
+    CHECK(prompt_locked(app));
+    CHECK_LONG(posted(before, "keyreq", NULL), 1);
+    CHECK_LONG(fg.nreq, 0);
+    type_line(app, "/e2e requests");
+    CHECK(said(app, "e2e requests: none"));
+
+    /* Keys come; what we type goes encrypted, what alice says reads. */
+    tpeer_carry(app, &alice, 1);
+    drain(app);
+    type_line(app, "hello after consent");
+    run_jobs(app);
+    tpeer_carry(app, &alice, 1);
+    CHECK_STR(heard[0], "hello after consent");
+    tpeer_say(app, &alice, "glad you agreed");
+    drain(app);
+    CHECK(said(app, LOCKED("<alice> glad you agreed")));
+    CHECK(!grappa_saw("hello after consent"));
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* Refusing goes with no line (grappa says no for us), and needs no
+ * identity; a request gone is dropped without a word; one past its
+ * deadline is no longer offered. */
+TEST(an_incoming_request_is_refused_or_goes) {
+    struct app *app = send_app("user:consent-no", "bob");
+    long id = fg_req_add("bob", "incoming", "2099-01-01T00:00:00Z");
+    run_job(app, JOB_E2E_SYNC); /* the sync reads the requests */
+    CHECK(said(app, "bob would like to start an encrypted chat with you"));
+    type_line(app, "/e2e refuse bob");
+    run_jobs(app);
+    char line[64];
+    snprintf(line, sizeof(line), "POST /%ld/refuse -", id);
+    CHECK(req_body(line));
+    CHECK(said(app, "you refused bob's encrypted chat; bob is told"));
+    CHECK(!prompt_locked(app));
+    /* Nothing waits now: accept and refuse say so, and send nothing. */
+    type_line(app, "/e2e accept bob");
+    run_jobs(app);
+    CHECK(said(app, "bob has not asked for an encrypted chat"));
+    CHECK(!req_body("/accept"));
+
+    /* Gone: dropped, nothing said. */
+    long gone = fg_req_add("carol", "incoming", "2099-01-01T00:00:00Z");
+    push_request(app, gone);
+    CHECK(said(app, "carol would like to start"));
+    char *frame = xasprintf("{\"kind\":\"e2e_request_gone\",\"network\":\"azzurra\",\"id\":%ld}",
+                            gone);
+    json_doc *d = json_parse(frame, strlen(frame), NULL, 0);
+    struct wire_event ev;
+    CHECK(d && wire_narrow(json_root(d), &ev) && ev.kind == WIRE_E2E_REQUEST_GONE);
+    e2e_request_gone(app, ev.u.e2e_request_gone.network, ev.u.e2e_request_gone.id);
+    json_free(d);
+    free(frame);
+    type_line(app, "/e2e requests");
+    CHECK(said(app, "e2e requests: none"));
+
+    /* An incoming request past its deadline shows nothing. */
+    long late = fg_req_add("dave", "incoming", "2000-01-01T00:00:00Z");
+    push_request(app, late);
+    CHECK(!said(app, "dave would like"));
+    free_e2e_app(app);
+}
+
+/* Our asking: pending, with our line; the peer's accept (a push) opens the
+ * query encrypted, asks for their keys and dismisses the request; a
+ * refusal is shown and dismissed; a pending one is withdrawn with a line. */
+TEST(an_outgoing_request_waits_then_is_accepted) {
+    struct app *app = send_app("user:consent-out", "alice");
+    type_line(app, "/e2e ask");
+    CHECK(said(app, "asking alice to start an encrypted chat"));
+    run_jobs(app);
+    CHECK(req_body("POST / {\"target\":\"alice\",\"from\":\""));
+    CHECK(said(app, "[azzurra/alice] --- e2e: waiting for alice to accept the encrypted chat"));
+    CHECK(!prompt_locked(app));
+    CHECK_LONG(fg.nreq, 1);
+    long id = fg.req[0].id;
+
+    pthread_mutex_lock(&fg.lock);
+    snprintf(fg.req[0].state, sizeof(fg.req[0].state), "accepted");
+    pthread_mutex_unlock(&fg.lock);
+    size_t before = fg.nsent;
+    push_request(app, id);
+    CHECK(said(app, "alice accepted the encrypted chat"));
+    run_jobs(app);
+    CHECK(prompt_locked(app));
+    CHECK_LONG(posted(before, "keyreq", NULL), 1);
+    char line[64];
+    snprintf(line, sizeof(line), "DELETE /%ld -", id);
+    CHECK(req_body(line));
+    CHECK_LONG(fg.nreq, 0);
+    /* The same accepted request read again by a later GET opens nothing. */
+    run_jobs(app);
+    CHECK_LONG(posted(before, "keyreq", NULL), 1);
+
+    /* bob refuses ours: shown; /e2e cancel dismisses it with no line. */
+    add_window_ex(app, "azzurra", "bob", true);
+    type_line(app, "/e2e ask bob");
+    run_jobs(app);
+    long bid = fg.req[0].id;
+    pthread_mutex_lock(&fg.lock);
+    snprintf(fg.req[0].state, sizeof(fg.req[0].state), "refused");
+    pthread_mutex_unlock(&fg.lock);
+    push_request(app, bid);
+    CHECK(said(app, "bob refused the encrypted chat"));
+    type_line(app, "/e2e cancel");
+    run_jobs(app);
+    snprintf(line, sizeof(line), "DELETE /%ld -", bid);
+    CHECK(req_body(line));
+    CHECK(said(app, "request dismissed"));
+
+    /* A pending one withdrawn: CANCEL carries our line. */
+    type_line(app, "/e2e ask bob");
+    run_jobs(app);
+    long cid = fg.req[0].id;
+    type_line(app, "/e2e cancel bob");
+    run_jobs(app);
+    snprintf(line, sizeof(line), "DELETE /%ld {\"from\":\"%s\"", cid, our_did(app));
+    CHECK(req_body(line));
+    CHECK(said(app, "you withdrew the encrypted chat request"));
+    CHECK_LONG(fg.nreq, 0);
+    free_e2e_app(app);
+}
+
+/* Below protocol 53 nothing is asked, read or answered. */
+TEST(consent_needs_protocol_53) {
+    struct app *app = send_app("user:consent-old", "alice");
+    app->server_protocol = 52;
+    pthread_mutex_lock(&fg.lock);
+    fg.req_bodies[0] = 0;
+    pthread_mutex_unlock(&fg.lock);
+    type_line(app, "/e2e ask");
+    run_jobs(app);
+    CHECK(said(app, "encrypted chat requests need server protocol v53"));
+    run_job(app, JOB_E2E_SYNC);
+    long id = fg_req_add("alice", "incoming", "2099-01-01T00:00:00Z");
+    push_request(app, id);
+    CHECK(!said(app, "would like to start"));
+    CHECK_STR(fg.req_bodies, "");
+    free_e2e_app(app);
+}
+
 int main(void) {
     test_use_temp_home();
     if (!fg_start()) {
@@ -3963,6 +4261,10 @@ int main(void) {
     RUN(a_busy_slot_fails_closed);
     RUN(a_corrupt_record_fails_closed);
     RUN(an_order_challenge_is_acked_only_for_a_line_we_sent);
+    RUN(an_incoming_request_is_accepted_and_messages_flow);
+    RUN(an_incoming_request_is_refused_or_goes);
+    RUN(an_outgoing_request_waits_then_is_accepted);
+    RUN(consent_needs_protocol_53);
     th_free();
     fg_stop();
     return test_report();
