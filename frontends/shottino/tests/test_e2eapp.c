@@ -230,28 +230,49 @@ static char *fg_keys_locked(const char *only) {
 
 /* What reached disk, read as the next run would (no store: the app holds
  * its lock): the record's watermark, and the rows of every chat. */
+/* The data key of the identity whose slot is `dir` (".../e2e-<hash>/<id>"),
+ * as the fake keyring holds it, and the slot's network id. */
+static bool key_of_slot_dir(const char *dir, uint8_t key[AR_KEY_LEN], int *net) {
+    const char *slash = strrchr(dir, '/');
+    const char *e = strstr(dir, "/e2e-");
+    if (!slash || !e || e >= slash) return false;
+    char hash[32];
+    snprintf(hash, sizeof(hash), "%.*s", (int)(slash - e - 5), e + 5);
+    *net = atoi(slash + 1);
+    return kr_lookup(hash, key);
+}
+
 static void fg_disk_locked(long *inbox, long *records, size_t *nrows) {
-    char *path = xasprintf("%s/record.json", fg.watch_dir);
+    *inbox = *records = -1;
+    *nrows = 0;
+    uint8_t key[AR_KEY_LEN];
+    int net;
+    if (!key_of_slot_dir(fg.watch_dir, key, &net)) return;
+    char *path = xasprintf("%s/record.sealed", fg.watch_dir);
     FILE *f = fopen(path, "r");
     free(path);
-    *inbox = *records = -1;
     if (f) {
         static char buf[1 << 20];
         size_t n = fread(buf, 1, sizeof(buf), f);
         fclose(f);
+        char *name = xasprintf("%d/record.sealed", net), *json = NULL;
+        size_t json_len = 0;
         e2e_record rec;
-        if (e2e_record_from_json(buf, n, &rec)) {
+        if (ar_open(key, "record", name, buf, n, &json, &json_len) == AR_OK &&
+            e2e_record_from_json(json, json_len, &rec)) {
             *inbox = rec.state.inbox;
             *records = (long)rec.state.nsent;
             e2e_record_free(&rec);
         }
+        ar_free_secret(json, json_len);
+        free(name);
     }
-    char *dir = xasprintf("%s/chats", fg.watch_dir);
+    char *dir = xasprintf("%s/chats", fg.watch_dir), *rel = xasprintf("%d/chats", net);
     e2e_rows rows;
-    *nrows = 0;
-    if (e2e_chat_load(dir, &rows, NULL, 0)) *nrows = rows.n;
+    if (e2e_chat_load(dir, rel, key, &rows, NULL, 0)) *nrows = rows.n;
     e2e_rows_free(&rows);
     free(dir);
+    free(rel);
 }
 
 static void fg_watch_locked(void) {
@@ -980,7 +1001,10 @@ static bool disk_record(struct app *app, e2e_record *out) {
     e2e_store *st;
     char err[256];
     if (e2e_store_open(dir, &st, err, sizeof(err)) != E2E_STORE_OK) return false;
-    bool ok = e2e_store_load(st, out, err, sizeof(err)) == E2E_LOAD_OK;
+    uint8_t key[AR_KEY_LEN];
+    int net;
+    bool ok = key_of_slot_dir(dir, key, &net) &&
+              e2e_store_load(st, key, out, err, sizeof(err)) == E2E_LOAD_OK;
     e2e_store_close(st);
     return ok;
 }
@@ -2199,7 +2223,7 @@ TEST(a_message_read_twice_writes_one_row) {
     fg_reset();
     struct app *app = recv_app("user:crash");
     char rec_path[PATH_MAX + 16];
-    snprintf(rec_path, sizeof(rec_path), "%s/record.json", fg.watch_dir);
+    snprintf(rec_path, sizeof(rec_path), "%s/record.sealed", fg.watch_dir);
     tpeer alice;
     tpeer_new(&alice, "alice");
     tpeer_say(app, &alice, "only once");
@@ -2227,12 +2251,10 @@ TEST(a_message_read_twice_writes_one_row) {
     CHECK(fg.inbox[0].acked);
     pthread_mutex_unlock(&fg.lock);
     CHECK_LONG(app->e2e[0].rec.state.inbox, fg.inbox[0].id);
-    char *dir = xasprintf("%s/chats", fg.watch_dir);
     e2e_rows rows;
-    CHECK(e2e_chat_load(dir, &rows, NULL, 0));
+    CHECK(e2e_hist_read(app, &app->e2e[0], &rows, NULL, 0));
     CHECK_LONG(rows.n, 1);
     e2e_rows_free(&rows);
-    free(dir);
     tpeer_free(&alice);
     free_e2e_app(app);
 }
@@ -2845,16 +2867,14 @@ TEST(a_typed_line_in_an_encrypted_query_goes_encrypted) {
     CHECK_STR(heard[0], "hello alice");
     CHECK(!grappa_saw("hello alice"));
     CHECK_LONG(fg.nplain, 0);
-    char *dir = xasprintf("%s/chats", fg.watch_dir);
     e2e_rows rows;
-    CHECK(e2e_chat_load(dir, &rows, NULL, 0));
+    CHECK(e2e_hist_read(app, &app->e2e[0], &rows, NULL, 0));
     bool out = false;
     for (size_t i = 0; i < rows.n; i++)
         out |= rows.v[i].kind == E2E_ROW_OUT && strncmp(rows.v[i].id, "out:", 4) == 0 &&
                strcmp(rows.v[i].body, "hello alice") == 0 && strcmp(rows.v[i].nick, "alice") == 0;
     CHECK(out);
     e2e_rows_free(&rows);
-    free(dir);
 
     /* alice answers; our next goes on the session she has read: a MSG. */
     tpeer_say(app, &alice, "hi back");
@@ -4599,8 +4619,370 @@ TEST(consent_needs_protocol_53) {
     free_e2e_app(app);
 }
 
+/* ── E2E at rest: the sealed store and its key ───────────────────────── */
+
+/* Whether any file under `dir`, at any depth, holds `needle`. */
+static bool tree_has(const char *dir, const char *needle) {
+    DIR *d = opendir(dir);
+    if (!d) return false;
+    bool found = false;
+    struct dirent *ent;
+    while (!found && (ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        char *path = xasprintf("%s/%s", dir, ent->d_name);
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            found = tree_has(path, needle);
+        } else {
+            size_t len = 0;
+            char *buf = slurp(path, &len);
+            for (size_t i = 0; buf && i + strlen(needle) <= len && !found; i++)
+                found = memcmp(buf + i, needle, strlen(needle)) == 0;
+            free(buf);
+        }
+        free(path);
+    }
+    closedir(d);
+    return found;
+}
+
+static void identity_dir_of(struct app *app, char *out, size_t out_sz) {
+    e2e_identity_dir(app, out, out_sz);
+}
+
+static bool exists(const char *dir, const char *name) {
+    char path[PATH_MAX + 64];
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    return access(path, F_OK) == 0;
+}
+
+static bool keyring_log_has(const char *needle) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/log", getenv("FAKE_KEYRING"));
+    size_t len = 0;
+    char *buf = slurp(path, &len);
+    bool has = false;
+    for (size_t i = 0; buf && i + strlen(needle) <= len && !has; i++)
+        has = memcmp(buf + i, needle, strlen(needle)) == 0;
+    free(buf);
+    return has;
+}
+
+/* The answers a scripted terminal gives, in order; then it declines. */
+static const char *asked_answers[8];
+static size_t asked_n, asked_next, asked_count;
+
+static bool scripted_ask(const char *prompt, char *out, size_t out_sz) {
+    (void)prompt;
+    asked_count++;
+    if (asked_next >= asked_n) return false;
+    snprintf(out, out_sz, "%s", asked_answers[asked_next++]);
+    return true;
+}
+
+static void script_answers(size_t n, const char **answers) {
+    for (size_t i = 0; i < n; i++) asked_answers[i] = answers[i];
+    asked_n = n;
+    asked_next = asked_count = 0;
+}
+
+/* A new run of `subject`, through the boot key step a real run takes. */
+static struct app *booted_app(const char *subject, size_t n, const char **answers) {
+    struct app *app = e2e_app(subject);
+    script_answers(n, answers);
+    e2e_key_boot(app, scripted_ask);
+    return app;
+}
+
+/* The slot's state as a run before sealing wrote it: the record and every
+ * chat in plaintext, nothing sealed, no index — and the keyring's item
+ * gone with it. */
+static void unseal_to_plaintext(struct app *app) {
+    char dir[PATH_MAX];
+    e2e_slot_dir(app, &app->e2e[0], dir, sizeof(dir));
+    uint8_t key[AR_KEY_LEN];
+    int net;
+    CHECK(key_of_slot_dir(dir, key, &net));
+    char *path = xasprintf("%s/record.sealed", dir), *name = xasprintf("%d/record.sealed", net);
+    size_t len = 0, pt_len = 0;
+    char *buf = slurp(path, &len), *pt = NULL;
+    CHECK(buf && ar_open(key, "record", name, buf, len, &pt, &pt_len) == AR_OK);
+    char *plain = xasprintf("%s/record.json", dir);
+    FILE *f = fopen(plain, "wb");
+    CHECK(f && fwrite(pt, 1, pt_len, f) == pt_len);
+    if (f) fclose(f);
+    ar_free_secret(pt, pt_len);
+    free(buf);
+    CHECK(unlink(path) == 0);
+    free(path);
+    free(name);
+    free(plain);
+    path = xasprintf("%s/" E2E_INDEX_FILE, dir);
+    CHECK(unlink(path) == 0);
+    free(path);
+    char *chats = xasprintf("%s/chats", dir);
+    DIR *d = opendir(chats);
+    struct dirent *ent;
+    while (d && (ent = readdir(d)) != NULL) {
+        size_t n = strlen(ent->d_name);
+        if (n < 7 || strcmp(ent->d_name + n - 7, ".sealed") != 0) continue;
+        char *from = xasprintf("%s/%s", chats, ent->d_name);
+        char *aad = xasprintf("%d/chats/%s", net, ent->d_name);
+        char *to = xasprintf("%s/%.*s.jsonl", chats, (int)(n - 7), ent->d_name);
+        char *text = slurp(from, &len);
+        FILE *o = fopen(to, "wb");
+        for (char *p = text; o && p < text + len;) {
+            char *nl = memchr(p, '\n', (size_t)(text + len - p));
+            if (!nl) break;
+            CHECK(ar_open_line(key, "chat", aad, p, (size_t)(nl - p), &pt, &pt_len) == AR_OK);
+            fprintf(o, "%s\n", pt);
+            ar_free_secret(pt, pt_len);
+            p = nl + 1;
+        }
+        if (o) fclose(o);
+        free(text);
+        CHECK(unlink(from) == 0);
+        free(from);
+        free(aad);
+        free(to);
+    }
+    if (d) closedir(d);
+    free(chats);
+    /* The keyring forgets it: the fake holds one file per item. */
+    char hash[32];
+    token_key_hash(app->url.base, app->subject, hash, sizeof(hash));
+    char *item = xasprintf("%s/application.shottino.purpose.e2e-data-key.identity.%s.",
+                           getenv("FAKE_KEYRING"), hash);
+    CHECK(unlink(item) == 0);
+    free(item);
+}
+
+/* What is sealed: the record, every history row, the secrets of a sent
+ * and a received line — under a key the (fake) Secret Service holds, which
+ * the next run reads back. Grepped, the identity directory holds neither
+ * body, nor the peer's nick, anywhere. */
+TEST(the_state_is_sealed_under_a_key_the_keyring_holds) {
+    struct app *app = send_app("user:atrest-kr", "alice");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    char hash[32], idir[PATH_MAX], dir[PATH_MAX];
+    token_key_hash(app->url.base, app->subject, hash, sizeof(hash));
+    identity_dir_of(app, idir, sizeof(idir));
+    e2e_slot_dir(app, &app->e2e[0], dir, sizeof(dir));
+    char want[96];
+    snprintf(want, sizeof(want), "store application shottino purpose e2e-data-key identity %s",
+             hash);
+    CHECK(keyring_log_has(want));
+    CHECK(e2e_key_source(app) == E2E_KEY_KEYRING);
+    handle_command(app, "/e2e on");
+    run_jobs(app);
+    type_line(app, "aubergine moonlight seven");
+    run_jobs(app);
+    tpeer_carry(app, &alice, 1);
+    drain(app);
+    run_jobs(app);
+    tpeer_carry(app, &alice, 1);
+    CHECK_STR(heard[0], "aubergine moonlight seven");
+    tpeer_say(app, &alice, "zebra crossing at noon");
+    drain(app);
+    CHECK(said(app, LOCKED("<alice> zebra crossing at noon")));
+    CHECK(exists(dir, "record.sealed") && exists(dir, E2E_INDEX_FILE));
+    CHECK(!exists(dir, "record.json") && !exists(idir, "key.wrapped"));
+    CHECK(!tree_has(idir, "aubergine"));
+    CHECK(!tree_has(idir, "zebra"));
+    CHECK(!tree_has(idir, "alice"));
+    CHECK(!tree_has(idir, "\"account\""));
+    tpeer_free(&alice);
+    free_e2e_app(app);
+
+    /* The next run finds the key where it left it. */
+    app = booted_app("user:atrest-kr", 0, NULL);
+    CHECK_LONG(asked_count, 0);
+    CHECK(e2e_key_source(app) == E2E_KEY_KEYRING);
+    snprintf(want, sizeof(want), "lookup application shottino purpose e2e-data-key identity %s",
+             hash);
+    CHECK(keyring_log_has(want));
+    run_job(app, JOB_E2E_SYNC);
+    CHECK(view_of(app).state == E2E_SLOT_READY);
+    drain(app);
+    CHECK(said(app, "zebra crossing at noon"));
+    CHECK(said(app, "aubergine moonlight seven"));
+    free_e2e_app(app);
+}
+
+/* No keyring: the state from before sealing is sealed under a NEW
+ * passphrase, asked twice (a mismatch asks again), wrapped into
+ * key.wrapped; the next run opens it with the passphrase. Everything of
+ * the old plaintext is gone from the disk. */
+TEST(without_a_keyring_a_passphrase_seals_the_state) {
+    fg_reset();
+    struct app *app = recv_app("user:atrest-pass");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "kept under a passphrase");
+    drain(app);
+    char idir[PATH_MAX], dir[PATH_MAX];
+    identity_dir_of(app, idir, sizeof(idir));
+    e2e_slot_dir(app, &app->e2e[0], dir, sizeof(dir));
+    e2e_slots_free(app);
+    unseal_to_plaintext(app);
+    free_e2e_app(app);
+    CHECK(tree_has(idir, "kept under a passphrase")); /* the "before" */
+    test_keyring_mode("fail");
+
+    const char *first[] = {"one thing", "another", "s3cret pass", "s3cret pass"};
+    app = booted_app("user:atrest-pass", 4, first);
+    CHECK_LONG(asked_count, 4);
+    CHECK(e2e_key_source(app) == E2E_KEY_PASSPHRASE);
+    CHECK(exists(idir, "key.wrapped"));
+    run_job(app, JOB_E2E_SYNC);
+    CHECK(view_of(app).state == E2E_SLOT_READY);
+    drain(app);
+    CHECK(said(app, LOCKED("<alice> kept under a passphrase")));
+    CHECK(!exists(dir, "record.json") && exists(dir, "record.sealed"));
+    CHECK(!tree_has(idir, "kept under a passphrase"));
+    CHECK(!tree_has(idir, "s3cret"));
+    free_e2e_app(app);
+
+    /* The next run: a wrong passphrase, then the right one. */
+    const char *second[] = {"s3cret pas", "s3cret pass"};
+    app = booted_app("user:atrest-pass", 2, second);
+    CHECK_LONG(asked_count, 2);
+    CHECK(e2e_key_source(app) == E2E_KEY_PASSPHRASE);
+    run_job(app, JOB_E2E_SYNC);
+    CHECK(view_of(app).state == E2E_SLOT_READY);
+    drain(app);
+    CHECK_LONG(said_count(app, "kept under a passphrase"), 1);
+    free_e2e_app(app);
+    tpeer_free(&alice);
+    test_keyring_mode(NULL);
+}
+
+/* A run that cannot get the key — three wrong passphrases, or none given —
+ * is LOCKED: nothing sealed is read (no history, no record), nothing is
+ * written (the files are byte for byte what they were), the encrypted
+ * query the clear index names refuses a typed line instead of sending it
+ * in clear, and the status says so. */
+TEST(a_locked_store_reads_nothing_writes_nothing_sends_nothing) {
+    fg_reset();
+    struct app *app = recv_app("user:atrest-lock");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "behind the lock");
+    drain(app);
+    CHECK(said(app, "behind the lock"));
+    char idir[PATH_MAX], dir[PATH_MAX];
+    identity_dir_of(app, idir, sizeof(idir));
+    e2e_slot_dir(app, &app->e2e[0], dir, sizeof(dir));
+    e2e_slots_free(app);
+    free_e2e_app(app);
+    /* The key moves from the keyring into key.wrapped, as on a machine
+     * that had none: wrapped by hand, the keyring then refusing. */
+    uint8_t key[AR_KEY_LEN];
+    int net;
+    CHECK(key_of_slot_dir(dir, key, &net));
+    size_t wn = 0;
+    uint8_t *w = ar_wrap("right one", key, &wn);
+    char path[PATH_MAX + 16];
+    snprintf(path, sizeof(path), "%s/key.wrapped", idir);
+    CHECK(e2e_write_private(path, w, wn, NULL, 0));
+    free(w);
+    test_keyring_mode("fail");
+    char *rec_path = xasprintf("%s/record.sealed", dir);
+    size_t before_len = 0;
+    char *before = slurp(rec_path, &before_len);
+
+    const char *wrong[] = {"no", "nope", "not it", "right one"};
+    for (int declined = 0; declined < 2; declined++) {
+        fg_reset();
+        app = booted_app("user:atrest-lock", declined ? 0 : 4, wrong);
+        CHECK_LONG(asked_count, declined ? 1 : 3);
+        CHECK(e2e_key_source(app) == E2E_KEY_LOCKED);
+        e2e_peek_modes(app, "azzurra");
+        e2e_enqueue(app, JOB_E2E_SYNC, "azzurra");
+        add_window_ex(app, "azzurra", "alice", true);
+        CHECK(prompt_locked(app));
+        type_line(app, "while it is locked");
+        run_jobs(app);
+        drain(app);
+        CHECK(view_of(app).state == E2E_SLOT_LOCKED);
+        CHECK(status_says(app, "LOCKED"));
+        CHECK(said(app, "(failed: this device is not ready for encrypted queries here"));
+        CHECK(!grappa_saw("while it is locked"));
+        CHECK_LONG(fg.nplain, 0);
+        CHECK(!said(app, "behind the lock"));
+        CHECK(!app->e2e[0].have_rec && !app->e2e[0].hist_loaded);
+        CHECK(!tree_has(idir, "while it is locked"));
+        size_t after_len = 0;
+        char *after = slurp(rec_path, &after_len);
+        CHECK(after && after_len == before_len && memcmp(after, before, after_len) == 0);
+        free(after);
+        free_e2e_app(app);
+    }
+    free(before);
+    free(rec_path);
+    tpeer_free(&alice);
+    test_keyring_mode(NULL);
+}
+
+/* A migration a crash interrupted: the sealed record in and the plaintext
+ * one not yet removed, a plaintext chat beside the sealed one. The run
+ * reads the sealed record, folds the plaintext rows into the sealed chat
+ * and removes every plaintext file. */
+TEST(a_half_migrated_state_still_loads) {
+    fg_reset();
+    struct app *app = recv_app("user:atrest-half");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "sealed before the crash");
+    drain(app);
+    char dir[PATH_MAX];
+    e2e_slot_dir(app, &app->e2e[0], dir, sizeof(dir));
+    char *json = e2e_record_to_json(&app->e2e[0].rec);
+    e2e_slots_free(app);
+    free_e2e_app(app);
+    char *plain = xasprintf("%s/record.json", dir);
+    FILE *f = fopen(plain, "wb");
+    CHECK(f && fputs(json, f) >= 0);
+    if (f) fclose(f);
+    free(json);
+    char *name = e2e_chat_file_name("alice");
+    name[strlen(name) - strlen(".sealed")] = 0;
+    char *chat = xasprintf("%s/chats/%s.jsonl", dir, name);
+    e2e_row r = {.id = "in:900:0", .kind = E2E_ROW_IN, .at = 1, .nick = "alice",
+                 .body = "plaintext from before", .body_len = 21,
+                 .key = alice.rec.own->master};
+    char *row = e2e_row_to_json(&r);
+    f = fopen(chat, "wb");
+    CHECK(f && fprintf(f, "%s\n", row) > 0);
+    if (f) fclose(f);
+    free(row);
+
+    app = booted_app("user:atrest-half", 0, NULL);
+    run_job(app, JOB_E2E_SYNC);
+    CHECK(view_of(app).state == E2E_SLOT_READY);
+    drain(app);
+    CHECK(said(app, "sealed before the crash"));
+    CHECK(said(app, "plaintext from before"));
+    CHECK(access(plain, F_OK) != 0);
+    CHECK(access(chat, F_OK) != 0);
+    char idir[PATH_MAX];
+    identity_dir_of(app, idir, sizeof(idir));
+    CHECK(!tree_has(idir, "plaintext from before"));
+    free_e2e_app(app);
+    free(plain);
+    free(chat);
+    free(name);
+    tpeer_free(&alice);
+}
+
 int main(void) {
     test_use_temp_home();
+    /* A keyring for every test (tests/fake-secret-tool, in the temp home):
+     * the data key is made and found there as on a desktop with one. The
+     * at-rest tests take it away. */
+    signal(SIGPIPE, SIG_IGN);
+    test_use_fake_keyring();
     if (!fg_start()) {
         FAIL("cannot start the fake grappa on loopback");
         return test_report();
@@ -4664,6 +5046,10 @@ int main(void) {
     RUN(an_incoming_request_is_refused_or_goes);
     RUN(an_outgoing_request_waits_then_is_accepted);
     RUN(consent_needs_protocol_53);
+    RUN(the_state_is_sealed_under_a_key_the_keyring_holds);
+    RUN(without_a_keyring_a_passphrase_seals_the_state);
+    RUN(a_locked_store_reads_nothing_writes_nothing_sends_nothing);
+    RUN(a_half_migrated_state_still_loads);
     th_free();
     fg_stop();
     return test_report();

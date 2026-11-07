@@ -1630,6 +1630,43 @@ static bool child_cannot_lock(const char *dir) {
     return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
+static const uint8_t KEY[AR_KEY_LEN] = {9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 9, 8, 7, 6, 5, 4,
+                                        3, 2, 1, 0, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 9, 8};
+
+static char *slurp_file(const char *path, size_t *len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    char *buf = malloc(1 << 20);
+    *len = fread(buf, 1, (1 << 20) - 1, f);
+    buf[*len] = 0;
+    fclose(f);
+    return buf;
+}
+
+static bool file_has(const char *path, const char *needle) {
+    size_t n = 0;
+    char *b = slurp_file(path, &n);
+    bool has = false;
+    for (size_t i = 0; b && i + strlen(needle) <= n; i++)
+        if (memcmp(b + i, needle, strlen(needle)) == 0) has = true;
+    free(b);
+    return has;
+}
+
+static void put_file(const char *path, const char *text, size_t len) {
+    FILE *f = fopen(path, "wb");
+    CHECK(f && fwrite(text, 1, len, f) == len);
+    if (f) fclose(f);
+}
+
+static void new_holder_record(e2e_record *rec) {
+    e2e_record_new(rec);
+    rec->master = vz_account_new();
+    rec->own = calloc(1, sizeof(*rec->own));
+    e2e_own_bootstrap(rec->account, rec->master, rec->own);
+    rec->state.inbox = 42;
+}
+
 TEST(store_atomic_locked_private) {
     char base[] = "/tmp/shottino-e2e-XXXXXX";
     CHECK(mkdtemp(base) != NULL);
@@ -1646,37 +1683,137 @@ TEST(store_atomic_locked_private) {
     CHECK(child_cannot_lock(dir));
 
     e2e_record rec, back;
-    CHECK(e2e_store_load(st, &back, err, sizeof(err)) == E2E_LOAD_NONE);
-    e2e_record_new(&rec);
-    rec.master = vz_account_new();
-    rec.own = calloc(1, sizeof(*rec.own));
-    e2e_own_bootstrap(rec.account, rec.master, rec.own);
-    rec.state.inbox = 42;
-    CHECK(e2e_store_save(st, &rec, err, sizeof(err)));
-    char *path = xfmt("%s/record.json", dir);
+    CHECK(e2e_store_load(st, KEY, &back, err, sizeof(err)) == E2E_LOAD_NONE);
+    CHECK(e2e_store_load(st, NULL, &back, err, sizeof(err)) == E2E_LOAD_NONE);
+    CHECK(!e2e_store_has_record(dir));
+    new_holder_record(&rec);
+    e2e_record_set_encrypted(&rec, "Alice", true);
+    /* No key, nothing written. */
+    CHECK(!e2e_store_save(st, NULL, &rec, err, sizeof(err)));
+    CHECK(!e2e_store_has_record(dir));
+    CHECK(e2e_store_save(st, KEY, &rec, err, sizeof(err)));
+    CHECK(e2e_store_has_record(dir));
+    char *path = xfmt("%s/record.sealed", dir);
+    char *plain = xfmt("%s/record.json", dir);
     CHECK(stat(path, &sb) == 0 && (sb.st_mode & 0777) == 0600);
-    CHECK(e2e_store_load(st, &back, err, sizeof(err)) == E2E_LOAD_OK);
+    CHECK(stat(plain, &sb) != 0);
+    /* Sealed: no byte of the pickle, nor of the nick, in the clear. */
+    char *pickle = vz_account_pickle(rec.account);
+    CHECK(!file_has(path, pickle) && !file_has(path, "alice") && !file_has(path, "account"));
+    vz_str_free(pickle);
+    CHECK(e2e_store_load(st, KEY, &back, err, sizeof(err)) == E2E_LOAD_OK);
     char *j1 = e2e_record_to_json(&rec), *j2 = e2e_record_to_json(&back);
     CHECK_STR(j2, j1);
     CHECK(back.state.inbox == 42 && back.master != NULL && back.own != NULL);
     free(j1);
     free(j2);
     e2e_record_free(&back);
+    /* Without the key, or with another, nothing is read. */
+    CHECK(e2e_store_load(st, NULL, &back, err, sizeof(err)) == E2E_LOAD_LOCKED);
+    uint8_t other[AR_KEY_LEN];
+    memcpy(other, KEY, sizeof(other));
+    other[0] ^= 1;
+    CHECK(e2e_store_load(st, other, &back, err, sizeof(err)) == E2E_LOAD_REFUSED);
+    /* The clear index names the query by its digest only. */
+    char *idx = xfmt("%s/" E2E_INDEX_FILE, dir);
+    CHECK(stat(idx, &sb) == 0 && (sb.st_mode & 0777) == 0600);
+    CHECK(!file_has(idx, "alice"));
+    e2e_strv dg = {0};
+    CHECK(e2e_store_read_index(dir, &dg));
+    char want[E2E_DIGEST_SZ];
+    e2e_nick_digest("ALICE", want);
+    CHECK(dg.n == 1 && dg.n && strcmp(dg.v[0], want) == 0);
+    CHECK(strncmp(want, "sha256:", 7) == 0 && strlen(want) == 7 + 64);
+    e2e_strv_free(&dg);
+    put_file(idx, "junk\n", 5);
+    CHECK(!e2e_store_read_index(dir, &dg));
+    free(idx);
     /* No temp file left behind. */
-    char *tmp = xfmt("%s/record.json.tmp.%ld", dir, (long)getpid());
+    char *tmp = xfmt("%s/record.sealed.tmp.%ld", dir, (long)getpid());
     CHECK(access(tmp, F_OK) != 0);
     free(tmp);
-    /* A file that is not a record is CORRUPT, never half-loaded. */
-    int fd = open(path, O_WRONLY | O_TRUNC);
-    CHECK(fd >= 0 && write(fd, "{\"v\":1,\"account\":\"x\"}", 22) == 22);
-    close(fd);
-    CHECK(e2e_store_load(st, &back, err, sizeof(err)) == E2E_LOAD_CORRUPT);
+    /* A changed byte is refused, never half-loaded. */
+    size_t n = 0;
+    char *sealed = slurp_file(path, &n);
+    sealed[n / 2] ^= 0x20;
+    put_file(path, sealed, n);
+    CHECK(e2e_store_load(st, KEY, &back, err, sizeof(err)) == E2E_LOAD_REFUSED);
+    sealed[n / 2] ^= 0x20;
+    put_file(path, sealed, n);
+    CHECK(e2e_store_load(st, KEY, &back, err, sizeof(err)) == E2E_LOAD_OK);
+    e2e_record_free(&back);
     e2e_store_close(st);
+    /* Another network's record, swapped in under this one's name. */
+    char *dir8 = xfmt("%s/e2e-abc/8", base);
+    CHECK(e2e_store_open(dir8, &st, err, sizeof(err)) == E2E_STORE_OK);
+    char *path8 = xfmt("%s/record.sealed", dir8);
+    put_file(path8, sealed, n);
+    CHECK(e2e_store_load(st, KEY, &back, err, sizeof(err)) == E2E_LOAD_REFUSED);
+    e2e_store_close(st);
+    free(path8);
+    free(dir8);
+    free(sealed);
     /* Closed, the lock is free again. */
     CHECK(e2e_store_open(dir, &st, err, sizeof(err)) == E2E_STORE_OK);
     e2e_store_close(st);
     e2e_record_free(&rec);
     free(path);
+    free(plain);
+    free(dir);
+    char *rm = xfmt("rm -rf '%s'", base);
+    CHECK(system(rm) == 0);
+    free(rm);
+}
+
+/* The plaintext record a run before sealing wrote: read, sealed at once,
+ * removed — and a crash between the rename and the removal still loads,
+ * from the sealed one. A plaintext file that is no record stays CORRUPT. */
+TEST(store_seals_a_plaintext_record_on_load) {
+    char base[] = "/tmp/shottino-e2e-XXXXXX";
+    CHECK(mkdtemp(base) != NULL);
+    char *dir = xfmt("%s/e2e-abc/7", base);
+    char *path = xfmt("%s/record.sealed", dir), *plain = xfmt("%s/record.json", dir);
+    e2e_store *st;
+    char err[256];
+    CHECK(e2e_store_open(dir, &st, err, sizeof(err)) == E2E_STORE_OK);
+    e2e_record rec, back;
+    new_holder_record(&rec);
+    e2e_record_set_encrypted(&rec, "bob", true);
+    char *json = e2e_record_to_json(&rec);
+    put_file(plain, json, strlen(json));
+    CHECK(e2e_store_has_record(dir));
+    /* Without a key the plaintext is not read either. */
+    CHECK(e2e_store_load(st, NULL, &back, err, sizeof(err)) == E2E_LOAD_LOCKED);
+    CHECK(e2e_store_load(st, KEY, &back, err, sizeof(err)) == E2E_LOAD_OK);
+    char *j2 = e2e_record_to_json(&back);
+    CHECK_STR(j2, json);
+    free(j2);
+    e2e_record_free(&back);
+    struct stat sb;
+    CHECK(stat(plain, &sb) != 0);
+    CHECK(stat(path, &sb) == 0 && !file_has(path, "bob"));
+    e2e_strv dg = {0};
+    CHECK(e2e_store_read_index(dir, &dg) && dg.n == 1);
+    e2e_strv_free(&dg);
+    /* Half-migrated: the sealed record in, the plaintext not yet gone. */
+    put_file(plain, "{\"stale\":true}", 14);
+    CHECK(e2e_store_load(st, KEY, &back, err, sizeof(err)) == E2E_LOAD_OK);
+    CHECK(back.state.inbox == 42);
+    e2e_record_free(&back);
+    CHECK(stat(plain, &sb) != 0);
+    /* Only a plaintext non-record: CORRUPT, and the next save replaces it. */
+    CHECK(unlink(path) == 0);
+    put_file(plain, "{\"v\":1,\"account\":\"x\"}", 22);
+    CHECK(e2e_store_load(st, KEY, &back, err, sizeof(err)) == E2E_LOAD_CORRUPT);
+    CHECK(e2e_store_save(st, KEY, &rec, err, sizeof(err)));
+    CHECK(stat(plain, &sb) != 0);
+    CHECK(e2e_store_load(st, KEY, &back, err, sizeof(err)) == E2E_LOAD_OK);
+    e2e_record_free(&back);
+    e2e_store_close(st);
+    free(json);
+    e2e_record_free(&rec);
+    free(path);
+    free(plain);
     free(dir);
     char *rm = xfmt("rm -rf '%s'", base);
     CHECK(system(rm) == 0);
@@ -2118,7 +2255,7 @@ TEST(history_rows_round_trip) {
      * reaches the filesystem's syntax. */
     char *name = e2e_chat_file_name("Al/ice[]");
     CHECK_STR(name, "chat-sha256-32c6e69b6886b227b30ec01f74b196c896eeb7a5df33119a7018ce1e19031db0"
-                    ".jsonl");
+                    ".sealed");
     free(name);
 }
 
@@ -2140,18 +2277,18 @@ TEST(history_appends_dedupes_and_survives_a_torn_tail) {
     char *dir = xfmt("%s/7/chats", base);
     char err[256];
     e2e_rows rows;
-    CHECK(e2e_chat_load(dir, &rows, err, sizeof(err)));
+    CHECK(e2e_chat_load(dir, "7/chats", KEY, &rows, err, sizeof(err)));
     CHECK(rows.n == 0);
 
     e2e_row a1 = mkrow("in:1:0", E2E_ROW_IN, 100, "Alice", "one", E1);
     e2e_row b1 = mkrow("in:2:0", E2E_ROW_IN, 150, "bob", "bee", E2);
     e2e_row a2 = mkrow("in:3:0", E2E_ROW_IN, 200, "alice", "two", E1);
-    CHECK(e2e_chat_append(dir, &a1, err, sizeof(err)));
-    CHECK(e2e_chat_append(dir, &b1, err, sizeof(err)));
-    CHECK(e2e_chat_append(dir, &a2, err, sizeof(err)));
+    CHECK(e2e_chat_append(dir, "7/chats", KEY, &a1, err, sizeof(err)));
+    CHECK(e2e_chat_append(dir, "7/chats", KEY, &b1, err, sizeof(err)));
+    CHECK(e2e_chat_append(dir, "7/chats", KEY, &a2, err, sizeof(err)));
     /* The crash between the row and the record: the same message read
      * again writes the same row again. */
-    CHECK(e2e_chat_append(dir, &a2, err, sizeof(err)));
+    CHECK(e2e_chat_append(dir, "7/chats", KEY, &a2, err, sizeof(err)));
     struct stat sb;
     CHECK(stat(dir, &sb) == 0 && (sb.st_mode & 0777) == 0700);
     char *name = e2e_chat_file_name("alice");
@@ -2165,10 +2302,10 @@ TEST(history_appends_dedupes_and_survives_a_torn_tail) {
     CHECK(fd >= 0 && write(fd, "{\"v\":1,\"id\":\"in:4:0\",\"ki", 24) == 24);
     close(fd);
     e2e_row a3 = mkrow("in:5:0", E2E_ROW_IN, 300, "ALICE", "three", E1);
-    CHECK(e2e_chat_append(dir, &a3, err, sizeof(err)));
+    CHECK(e2e_chat_append(dir, "7/chats", KEY, &a3, err, sizeof(err)));
     CHECK_LONG((long)count_lines(path), 4);
 
-    CHECK(e2e_chat_load(dir, &rows, err, sizeof(err)));
+    CHECK(e2e_chat_load(dir, "7/chats", KEY, &rows, err, sizeof(err)));
     CHECK_LONG((long)rows.n, 4);
     const char *want[] = {"in:1:0", "in:2:0", "in:3:0", "in:5:0"};
     for (size_t i = 0; i < rows.n && i < 4; i++) CHECK_STR(rows.v[i].id, want[i]);
@@ -2180,7 +2317,7 @@ TEST(history_appends_dedupes_and_survives_a_torn_tail) {
     fd = open(path, O_WRONLY | O_APPEND);
     CHECK(fd >= 0 && write(fd, "{\"v\":1", 6) == 6);
     close(fd);
-    CHECK(e2e_chat_load(dir, &rows, err, sizeof(err)));
+    CHECK(e2e_chat_load(dir, "7/chats", KEY, &rows, err, sizeof(err)));
     CHECK_LONG((long)rows.n, 4);
     e2e_rows_free(&rows);
     CHECK_LONG((long)count_lines(path), 3);
@@ -2190,9 +2327,9 @@ TEST(history_appends_dedupes_and_survives_a_torn_tail) {
         char id[32];
         snprintf(id, sizeof(id), "in:%d:0", 1000 + i);
         e2e_row r = mkrow(id, E2E_ROW_IN, 1000 + i, "carol", "x", E1);
-        CHECK(e2e_chat_append(dir, &r, err, sizeof(err)));
+        CHECK(e2e_chat_append(dir, "7/chats", KEY, &r, err, sizeof(err)));
     }
-    CHECK(e2e_chat_load(dir, &rows, err, sizeof(err)));
+    CHECK(e2e_chat_load(dir, "7/chats", KEY, &rows, err, sizeof(err)));
     CHECK_LONG((long)rows.n, 4 + E2E_CHAT_ROWS_MAX);
     CHECK_STR(rows.v[rows.n - 1].id, "in:2999:0");
     CHECK_STR(rows.v[4].id, "in:2000:0");
@@ -2202,8 +2339,8 @@ TEST(history_appends_dedupes_and_survives_a_torn_tail) {
     free(cname);
     CHECK_LONG((long)count_lines(cpath), 2 * E2E_CHAT_ROWS_MAX);
     e2e_row r = mkrow("in:9999:0", E2E_ROW_IN, 9999, "carol", "x", E1);
-    CHECK(e2e_chat_append(dir, &r, err, sizeof(err)));
-    CHECK(e2e_chat_load(dir, &rows, err, sizeof(err)));
+    CHECK(e2e_chat_append(dir, "7/chats", KEY, &r, err, sizeof(err)));
+    CHECK(e2e_chat_load(dir, "7/chats", KEY, &rows, err, sizeof(err)));
     e2e_rows_free(&rows);
     CHECK_LONG((long)count_lines(cpath), E2E_CHAT_ROWS_MAX);
     free(cpath);
@@ -2230,10 +2367,10 @@ TEST(history_names_are_fixed_length_and_old_names_migrate) {
     nick[300] = 0;
     char *name = e2e_chat_file_name(nick);
     CHECK(strlen(name) <= NAME_MAX);
-    CHECK_LONG((long)strlen(name), (long)strlen("chat-sha256-.jsonl") + 64);
+    CHECK_LONG((long)strlen(name), (long)strlen("chat-sha256-.sealed") + 64);
     free(name);
     e2e_row lng = mkrow("in:1:0", E2E_ROW_IN, 100, nick, "long", E1);
-    CHECK(e2e_chat_append(dir, &lng, err, sizeof(err)));
+    CHECK(e2e_chat_append(dir, "7/chats", KEY, &lng, err, sizeof(err)));
 
     /* Two chats written under the old names; bob's new file exists too. */
     char *old_a = xfmt("%s/chat-616c696365.jsonl", dir);
@@ -2250,10 +2387,10 @@ TEST(history_names_are_fixed_length_and_old_names_migrate) {
     if (f) fclose(f);
     free(ja);
     free(jb);
-    CHECK(e2e_chat_append(dir, &b_new, err, sizeof(err)));
+    CHECK(e2e_chat_append(dir, "7/chats", KEY, &b_new, err, sizeof(err)));
 
     e2e_rows rows;
-    CHECK(e2e_chat_load(dir, &rows, err, sizeof(err)));
+    CHECK(e2e_chat_load(dir, "7/chats", KEY, &rows, err, sizeof(err)));
     CHECK_LONG((long)rows.n, 4);
     const char *want[] = {"in:1:0", "in:2:0", "in:3:0", "in:4:0"};
     for (size_t i = 0; i < rows.n && i < 4; i++) CHECK_STR(rows.v[i].id, want[i]);
@@ -2266,7 +2403,7 @@ TEST(history_names_are_fixed_length_and_old_names_migrate) {
     CHECK(stat(pa, &sb) == 0 && (sb.st_mode & 0777) == 0600);
     CHECK_LONG((long)count_lines(pb), 2);
     /* A second load finds nothing left to move and reads the same. */
-    CHECK(e2e_chat_load(dir, &rows, err, sizeof(err)));
+    CHECK(e2e_chat_load(dir, "7/chats", KEY, &rows, err, sizeof(err)));
     CHECK_LONG((long)rows.n, 4);
     e2e_rows_free(&rows);
     CHECK_LONG((long)count_lines(pb), 2);
@@ -2276,6 +2413,101 @@ TEST(history_names_are_fixed_length_and_old_names_migrate) {
     free(pb);
     free(old_a);
     free(old_b);
+    free(dir);
+    char *rm = xfmt("rm -rf '%s'", base);
+    CHECK(system(rm) == 0);
+    free(rm);
+}
+
+/* Every line sealed on its own: no body reaches the disk in the clear; a
+ * line changed, or moved from another chat, is refused and said, and its
+ * file is left as it is; without the key nothing is read or written. A
+ * plaintext chat of the shape before sealing is sealed by the load that
+ * finds it — merged when a sealed one exists too (a crash after the
+ * rename) — and removed. */
+TEST(history_is_sealed_and_refuses_what_does_not_open) {
+    char base[] = "/tmp/shottino-hist-XXXXXX";
+    CHECK(mkdtemp(base) != NULL);
+    char *dir = xfmt("%s/7/chats", base);
+    char err[256];
+    e2e_rows rows;
+    e2e_row a1 = mkrow("in:1:0", E2E_ROW_IN, 100, "alice", "a very private sentence", E1);
+    CHECK(!e2e_chat_append(dir, "7/chats", NULL, &a1, err, sizeof(err)));
+    CHECK(e2e_chat_load(dir, "7/chats", NULL, &rows, err, sizeof(err)) && rows.n == 0);
+    CHECK(e2e_chat_append(dir, "7/chats", KEY, &a1, err, sizeof(err)));
+    char *na = e2e_chat_file_name("alice"), *nb = e2e_chat_file_name("bob");
+    char *pa = xfmt("%s/%s", dir, na), *pb = xfmt("%s/%s", dir, nb);
+    CHECK(!file_has(pa, "private") && !file_has(pa, "in:1:0") && file_has(pa, "e1:"));
+    /* Locked: there is something to read, and it is not read. */
+    CHECK(!e2e_chat_load(dir, "7/chats", NULL, &rows, err, sizeof(err)));
+    CHECK(rows.n == 0);
+    /* Under another network's name it does not open. */
+    CHECK(!e2e_chat_load(dir, "8/chats", KEY, &rows, err, sizeof(err)));
+    CHECK(rows.n == 0);
+    e2e_rows_free(&rows);
+
+    /* Alice's line moved into bob's chat; then a changed one appended. */
+    size_t n = 0;
+    char *line = slurp_file(pa, &n);
+    put_file(pb, line, n);
+    line[5] = line[5] == 'A' ? 'B' : 'A';
+    FILE *f = fopen(pa, "ab");
+    CHECK(f && fwrite(line, 1, n, f) == n);
+    if (f) fclose(f);
+    free(line);
+    CHECK(!e2e_chat_load(dir, "7/chats", KEY, &rows, err, sizeof(err)));
+    CHECK(strstr(err, "do not open") != NULL);
+    CHECK_LONG((long)rows.n, 1);
+    if (rows.n) CHECK_STR(rows.v[0].body, "a very private sentence");
+    e2e_rows_free(&rows);
+    CHECK_LONG((long)count_lines(pa), 2); /* left for someone to look at */
+    CHECK_LONG((long)count_lines(pb), 1);
+    CHECK(unlink(pa) == 0 && unlink(pb) == 0);
+
+    /* The plaintext shape: carol's alone, bob's beside a sealed one. */
+    char *nc = e2e_chat_file_name("carol");
+    nc[strlen(nc) - strlen(".sealed")] = 0;
+    char *plain_c = xfmt("%s/%s.jsonl", dir, nc);
+    nb[strlen(nb) - strlen(".sealed")] = 0;
+    char *plain_b = xfmt("%s/%s.jsonl", dir, nb);
+    e2e_row c1 = mkrow("in:2:0", E2E_ROW_IN, 200, "carol", "carol said this in clear", E1);
+    e2e_row b1 = mkrow("in:3:0", E2E_ROW_IN, 300, "bob", "bob said this in clear", E2);
+    e2e_row b2 = mkrow("in:4:0", E2E_ROW_IN, 400, "bob", "bob said this sealed", E2);
+    char *jc = e2e_row_to_json(&c1), *jb = e2e_row_to_json(&b1);
+    char *tc = xfmt("%s\n", jc), *tb = xfmt("%s\n", jb);
+    put_file(plain_c, tc, strlen(tc));
+    put_file(plain_b, tb, strlen(tb));
+    CHECK(e2e_chat_append(dir, "7/chats", KEY, &b2, err, sizeof(err)));
+    /* No key: the plaintext is neither read nor moved. */
+    CHECK(!e2e_chat_load(dir, "7/chats", NULL, &rows, err, sizeof(err)));
+    struct stat sb;
+    CHECK(stat(plain_c, &sb) == 0);
+    CHECK(e2e_chat_load(dir, "7/chats", KEY, &rows, err, sizeof(err)));
+    CHECK_LONG((long)rows.n, 3);
+    const char *want[] = {"in:2:0", "in:3:0", "in:4:0"};
+    for (size_t i = 0; i < rows.n && i < 3; i++) CHECK_STR(rows.v[i].id, want[i]);
+    e2e_rows_free(&rows);
+    CHECK(stat(plain_c, &sb) != 0 && stat(plain_b, &sb) != 0);
+    char *sc = xfmt("%s/%s.sealed", dir, nc);
+    CHECK(stat(sc, &sb) == 0 && (sb.st_mode & 0777) == 0600);
+    CHECK(!file_has(sc, "clear") && !file_has(pb, "clear") && !file_has(pb, "sealed"));
+    CHECK_LONG((long)count_lines(pb), 2);
+    /* Nothing left to seal: the same rows again. */
+    CHECK(e2e_chat_load(dir, "7/chats", KEY, &rows, err, sizeof(err)));
+    CHECK_LONG((long)rows.n, 3);
+    e2e_rows_free(&rows);
+    free(jc);
+    free(jb);
+    free(tc);
+    free(tb);
+    free(sc);
+    free(plain_c);
+    free(plain_b);
+    free(na);
+    free(nb);
+    free(nc);
+    free(pa);
+    free(pb);
     free(dir);
     char *rm = xfmt("rm -rf '%s'", base);
     CHECK(system(rm) == 0);
@@ -2858,6 +3090,7 @@ int main(void) {
     RUN(receiver_checks);
     RUN(sending_refusals);
     RUN(store_atomic_locked_private);
+    RUN(store_seals_a_plaintext_record_on_load);
     RUN(record_refuses_what_it_did_not_write);
     RUN(record_keeps_the_encrypted_queries);
     RUN(pair_initial_payload_crosses_the_relay);
@@ -2868,6 +3101,7 @@ int main(void) {
     RUN(history_rows_round_trip);
     RUN(history_appends_dedupes_and_survives_a_torn_tail);
     RUN(history_names_are_fixed_length_and_old_names_migrate);
+    RUN(history_is_sealed_and_refuses_what_does_not_open);
     RUN(sas_pure_halves);
     RUN(sas_full_run_verifies_both_masters);
     RUN(sas_mismatch_cancels_and_verifies_nobody);

@@ -169,7 +169,40 @@ static inline void test_use_temp_home(void) {
         test_temp_home_remove();
         exit(1);
     }
+    /* And no keyring. Saving E2E state reaches for the OS keyring through
+     * secret-tool (keyring.h), and a developer's desktop has one: a suite
+     * would store test keys in the real Secret Service. A binary that is
+     * not there is "no keyring"; a suite that wants one takes the fake
+     * (test_use_fake_keyring). */
+    if (setenv("SHOTTINO_SECRET_TOOL", "/nonexistent/shottino-test-secret-tool", 1) != 0) {
+        fprintf(stderr, "FATAL %s: setenv(SHOTTINO_SECRET_TOOL): %s\n", __FILE__, strerror(errno));
+        test_temp_home_remove();
+        exit(1);
+    }
     atexit(test_temp_home_remove);
+}
+
+/* A keyring for the suite: tests/fake-secret-tool (run from
+ * frontends/shottino, as `make check` does), its items in <temp home>/keyring.
+ * After test_use_temp_home. `mode` NULL, "fail" or "forget" (see the script). */
+static inline void test_keyring_mode(const char *mode) {
+    if (mode) setenv("FAKE_KEYRING_MODE", mode, 1);
+    else unsetenv("FAKE_KEYRING_MODE");
+}
+
+static inline void test_use_fake_keyring(void) {
+    char cwd[4096], tool[4200], dir[sizeof(test_temp_home) + 16];
+    if (!getcwd(cwd, sizeof(cwd))) exit(1);
+    snprintf(tool, sizeof(tool), "%s/tests/fake-secret-tool", cwd);
+    if (access(tool, X_OK) != 0) {
+        fprintf(stderr, "FATAL %s: %s is missing (run from frontends/shottino)\n", __FILE__, tool);
+        exit(1);
+    }
+    snprintf(dir, sizeof(dir), "%s/keyring", test_temp_home);
+    mkdir(dir, 0700);
+    setenv("SHOTTINO_SECRET_TOOL", tool, 1);
+    setenv("FAKE_KEYRING", dir, 1);
+    test_keyring_mode(NULL);
 }
 
 /* A state directory of its OWN, for one test that needs to start empty.

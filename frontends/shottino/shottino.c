@@ -57,6 +57,8 @@
 #include "termcolor.h"
 #include "wire.h"
 #include "e2e.h"
+#include "atrest.h"
+#include "keyring.h"
 
 #define MAX_TOKEN 4096
 #define MAX_SUBJECT 512
@@ -1177,6 +1179,14 @@ struct ircd {
  *
  * Slots are appended, never moved or removed (a detached network keeps
  * its slot, closed or not), so a pointer to one stays valid for the run. */
+/* Where this run's E2E data key came from (see "E2E: the data key"). */
+enum e2e_key_src {
+    E2E_KEY_UNKNOWN = 0, /* none yet: nothing was sealed, or nothing asked for it */
+    E2E_KEY_KEYRING,     /* the Secret Service holds it */
+    E2E_KEY_PASSPHRASE,  /* key.wrapped, opened with the passphrase */
+    E2E_KEY_LOCKED       /* sealed state is here and the key could not be had */
+};
+
 enum e2e_slot_state {
     E2E_SLOT_UNSYNCED, /* not looked at yet this run */
     E2E_SLOT_OFF,      /* the server cannot speak it (protocol), or nothing asked */
@@ -1184,6 +1194,7 @@ enum e2e_slot_state {
     E2E_SLOT_ERROR,    /* the last sync failed; /e2e sync tries again */
     E2E_SLOT_NONE,     /* no identity on the network: /e2e init makes one */
     E2E_SLOT_ELSEWHERE, /* the account's identity does not include this device */
+    E2E_SLOT_LOCKED,   /* the state on disk is sealed and this run has no key */
     E2E_SLOT_READY     /* this device is one of the identity's */
 };
 
@@ -1301,27 +1312,46 @@ struct e2e_slot {
     unsigned long req_changes;
 };
 
-/* The encrypted-mode set of a slot, by folded nick. */
+/* The encrypted-mode set of a slot, by folded nick — or by the digest of
+ * one ("sha256:…", e2e_nick_digest), as the clear index names a query
+ * while the record is out of reach (e2e_peek_modes). A nick never holds a
+ * ':', so the two cannot be taken for each other. */
+static bool e2e_on_entry_is(const char *entry, const char *nick, const char *digest) {
+    return strncmp(entry, "sha256:", 7) == 0 ? strcmp(entry, digest) == 0
+                                             : e2e_nick_eq(entry, nick);
+}
+
 static bool e2e_on_has(const e2e_strv *on, const char *nick) {
-    for (size_t i = 0; nick && i < on->n; i++)
-        if (e2e_nick_eq(on->v[i], nick)) return true;
+    if (!nick) return false;
+    char digest[E2E_DIGEST_SZ];
+    e2e_nick_digest(nick, digest);
+    for (size_t i = 0; i < on->n; i++)
+        if (e2e_on_entry_is(on->v[i], nick, digest)) return true;
     return false;
 }
 
+/* Set: by the folded nick (or the digest as given). Unset: every entry
+ * that names it, digest or nick. */
 static void e2e_on_set(e2e_strv *on, const char *nick, bool set) {
     bool has = e2e_on_has(on, nick);
     if (set && !has) {
         char **grown = realloc(on->v, (on->n + 1) * sizeof(*grown));
         if (!grown) abort();
+        char *entry = strncmp(nick, "sha256:", 7) == 0 ? strdup(nick) : e2e_fold(nick);
+        if (!entry) abort();
         on->v = grown;
-        on->v[on->n++] = e2e_fold(nick);
+        on->v[on->n++] = entry;
     } else if (!set && has) {
-        for (size_t i = 0; i < on->n; i++) {
-            if (!e2e_nick_eq(on->v[i], nick)) continue;
+        char digest[E2E_DIGEST_SZ];
+        e2e_nick_digest(nick, digest);
+        for (size_t i = 0; i < on->n;) {
+            if (!e2e_on_entry_is(on->v[i], nick, digest)) {
+                i++;
+                continue;
+            }
             free(on->v[i]);
             memmove(on->v + i, on->v + i + 1, (on->n - i - 1) * sizeof(*on->v));
             on->n--;
-            break;
         }
     }
 }
@@ -2117,6 +2147,9 @@ struct app {
     long server_protocol;
     struct e2e_slot e2e[MAX_NETWORKS];
     size_t e2e_count;
+    /* e2e_key_mu: the identity's data key and where it came from. */
+    enum e2e_key_src e2e_key_src;
+    uint8_t e2e_key[AR_KEY_LEN];
     struct e2e_pairing pair;
     /* app->lock */
     struct e2e_arrival arrivals[E2E_ARRIVALS_MAX];
@@ -15256,39 +15289,278 @@ static void e2e_view_ready(struct e2e_slot *s, struct e2e_view *v) {
     v->list_devices = own->list_devices.n;
 }
 
-/* <state>/e2e-<identity hash>/<network id>: per identity like the bot
- * directory, per network like cic's slot (one identity per network). */
-static void e2e_slot_dir(struct app *app, const struct e2e_slot *s, char *out, size_t out_sz) {
+/* <state>/e2e-<identity hash>: everything E2E of this identity, and the
+ * one data key that seals it. */
+static void e2e_identity_dir(struct app *app, char *out, size_t out_sz) {
     char *state = shottino_state_dir();
     char key[32];
     token_key_hash(app->url.base, app->subject, key, sizeof(key));
-    snprintf(out, out_sz, "%s/e2e-%s/%d", state, key, s->network_id);
+    snprintf(out, out_sz, "%s/e2e-%s", state, key);
     free(state);
 }
 
-/* Which queries were encrypted, read from the record on disk BEFORE the
- * UI takes a keystroke (boot) or the network's windows exist (attach):
- * the worker's open, which takes the store's lock and may wait behind
- * HTTP, comes later, and a line typed in between must not go in clear.
- * A read of record.json takes no lock (the lock is the `lock` file's,
- * and the store writes by rename, so a read sees a whole record), so it
- * reads even a record another shottino holds — BUSY, an identity that
- * does not verify or a record of another version all keep their
- * queries encrypted, failing closed on the worker. Only the `encrypted`
- * member is read. A record that is there and is no JSON at all says
- * nothing: every query on the network fails closed until /e2e off. */
+/* <identity dir>/<network id>: per identity like the bot directory, per
+ * network like cic's slot (one identity per network). */
+static void e2e_slot_dir(struct app *app, const struct e2e_slot *s, char *out, size_t out_sz) {
+    char idir[PATH_MAX - 32];
+    e2e_identity_dir(app, idir, sizeof(idir));
+    snprintf(out, out_sz, "%s/%d", idir, s->network_id);
+}
+
+/* ── E2E: the data key ────────────────────────────────────────────────────
+ * Every E2E file of an identity is sealed (atrest.h) under ONE random
+ * 256-bit key, made the first time something is to be sealed. Where it
+ * lives, in order:
+ *
+ *   1. the OS keyring (keyring.h: the Secret Service, by secret-tool);
+ *   2. without one, `<identity dir>/key.wrapped`: the key sealed under a
+ *      passphrase (scrypt), asked for on the terminal at boot — before
+ *      ncurses — and only when this identity has E2E state the keyring
+ *      cannot open; three tries.
+ *
+ * LOCKED is the run that could not get it: the passphrase was declined or
+ * wrong, or the state is sealed and the keyring did not answer. Then
+ * nothing sealed is read and nothing is written — no record, no history
+ * row — and the queries the clear index names stay encrypted, so a line
+ * typed in one fails rather than going in clear (e2e_peek_modes).
+ *
+ * A new key is made ONLY where nothing is sealed yet: the keyring cannot
+ * tell "locked" from "empty", and a fresh key stored over a key it failed
+ * to hand back would leave everything sealed under the old one unreadable
+ * for good. e2e_key_mu serialises the obtaining (secret-tool, scrypt: not
+ * under app->lock, which the UI draws with), so two threads never make two
+ * keys. The key is copied out per use and wiped after; the app's copy is
+ * wiped at exit. Never logged, nor the passphrase. */
+static pthread_mutex_t e2e_key_mu = PTHREAD_MUTEX_INITIALIZER;
+
+#define E2E_WRAPPED_KEY "key.wrapped"
+#define E2E_LOCKED_WHY                                                                             \
+    "the encrypted-query store is LOCKED: its key is not in the keyring and no passphrase "        \
+    "opened it, so nothing of it is read or written — restart shottino to be asked again"
+#define E2E_PASSPHRASE_TRIES 3
+
+/* What of an E2E state `idir` holds: any record or chat (`*any`), and any
+ * of it sealed, the wrapped key included (`*sealed`). */
+static void e2e_identity_state(const char *idir, bool *any, bool *sealed) {
+    *any = *sealed = false;
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/" E2E_WRAPPED_KEY, idir);
+    if (access(path, F_OK) == 0) *any = *sealed = true;
+    DIR *d = opendir(idir);
+    struct dirent *ent;
+    while (d && (ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.' || strspn(ent->d_name, "0123456789") != strlen(ent->d_name))
+            continue;
+        snprintf(path, sizeof(path), "%s/%s/record.sealed", idir, ent->d_name);
+        if (access(path, F_OK) == 0) *any = *sealed = true;
+        snprintf(path, sizeof(path), "%s/%s/record.json", idir, ent->d_name);
+        if (access(path, F_OK) == 0) *any = true;
+        snprintf(path, sizeof(path), "%s/%s/chats", idir, ent->d_name);
+        DIR *c = opendir(path);
+        struct dirent *ce;
+        while (c && (ce = readdir(c)) != NULL) {
+            if (strncmp(ce->d_name, "chat-", 5) != 0) continue;
+            *any = true;
+            size_t n = strlen(ce->d_name);
+            if (n > 7 && strcmp(ce->d_name + n - 7, ".sealed") == 0) *sealed = true;
+        }
+        if (c) closedir(c);
+    }
+    if (d) closedir(d);
+}
+
+static void e2e_key_hash(struct app *app, char *out, size_t out_sz) {
+    token_key_hash(app->url.base, app->subject, out, out_sz);
+}
+
+/* Under e2e_key_mu. */
+static void e2e_key_set_locked(struct app *app, enum e2e_key_src src, const uint8_t key[AR_KEY_LEN]) {
+    if (key) memcpy(app->e2e_key, key, AR_KEY_LEN);
+    else OPENSSL_cleanse(app->e2e_key, sizeof(app->e2e_key));
+    app->e2e_key_src = src;
+}
+
+static enum e2e_key_src e2e_key_source(struct app *app) {
+    pthread_mutex_lock(&e2e_key_mu);
+    enum e2e_key_src src = app->e2e_key_src;
+    pthread_mutex_unlock(&e2e_key_mu);
+    return src;
+}
+
+/* The data key into `out`: the one this run holds, else the keyring's.
+ * `create`: with neither, and nothing sealed yet, a new one goes into the
+ * keyring (read back) — never into a file without a passphrase asked. */
+static bool e2e_key_obtain(struct app *app, bool create, uint8_t out[AR_KEY_LEN]) {
+    pthread_mutex_lock(&e2e_key_mu);
+    bool ok = app->e2e_key_src == E2E_KEY_KEYRING || app->e2e_key_src == E2E_KEY_PASSPHRASE;
+    if (!ok && app->e2e_key_src == E2E_KEY_UNKNOWN) {
+        char hash[32];
+        e2e_key_hash(app, hash, sizeof(hash));
+        uint8_t k[AR_KEY_LEN];
+        ok = kr_lookup(hash, k);
+        if (!ok && create) {
+            char idir[PATH_MAX - 32];
+            e2e_identity_dir(app, idir, sizeof(idir));
+            bool any, sealed;
+            e2e_identity_state(idir, &any, &sealed);
+            ok = !sealed && ar_random(k, sizeof(k)) && kr_store(hash, k);
+        }
+        if (ok) e2e_key_set_locked(app, E2E_KEY_KEYRING, k);
+        OPENSSL_cleanse(k, sizeof(k));
+    }
+    if (ok) memcpy(out, app->e2e_key, AR_KEY_LEN);
+    pthread_mutex_unlock(&e2e_key_mu);
+    return ok;
+}
+
+/* A new key, wrapped under `pass` into key.wrapped and held. Under
+ * e2e_key_mu; false (said in `why`) leaves nothing changed. */
+static bool e2e_key_new_wrapped_locked(struct app *app, const char *pass, char *why,
+                                       size_t why_sz) {
+    char idir[PATH_MAX - 32], path[PATH_MAX];
+    e2e_identity_dir(app, idir, sizeof(idir));
+    snprintf(path, sizeof(path), "%s/" E2E_WRAPPED_KEY, idir);
+    uint8_t k[AR_KEY_LEN];
+    size_t n = 0;
+    uint8_t *w = ar_random(k, sizeof(k)) ? ar_wrap(pass, k, &n) : NULL;
+    bool ok = w && e2e_write_private(path, w, n, why, why_sz);
+    if (!w) snprintf(why, why_sz, "cannot make a key");
+    if (ok) e2e_key_set_locked(app, E2E_KEY_PASSPHRASE, k);
+    OPENSSL_cleanse(k, sizeof(k));
+    free(w);
+    return ok;
+}
+
+/* The key out of key.wrapped with `pass`. Under e2e_key_mu. */
+static ar_status e2e_key_unwrap_locked(struct app *app, const char *pass) {
+    char idir[PATH_MAX - 32], path[PATH_MAX];
+    e2e_identity_dir(app, idir, sizeof(idir));
+    snprintf(path, sizeof(path), "%s/" E2E_WRAPPED_KEY, idir);
+    uint8_t buf[256];
+    FILE *f = fopen(path, "rb");
+    size_t n = f ? fread(buf, 1, sizeof(buf), f) : 0;
+    if (f) fclose(f);
+    uint8_t k[AR_KEY_LEN];
+    ar_status st = f ? ar_unwrap(pass, buf, n, k) : AR_MALFORMED;
+    if (st == AR_OK) e2e_key_set_locked(app, E2E_KEY_PASSPHRASE, k);
+    OPENSSL_cleanse(k, sizeof(k));
+    return st;
+}
+
+/* How a passphrase is asked for: read_password_tty in the binary. A test
+ * hands its own, which is the only seam — the logic around it is the one
+ * that runs. */
+typedef bool (*e2e_ask_fn)(const char *prompt, char *out, size_t out_sz);
+
+/* Boot, before ncurses: the key for an identity that has E2E state, from
+ * the keyring or the passphrase; LOCKED when neither gives it. A state
+ * only in plaintext (from before sealing) with no keyring asks for a NEW
+ * passphrase, twice, to seal it under. Said on stderr. */
+static void e2e_key_boot(struct app *app, e2e_ask_fn ask) {
+    char idir[PATH_MAX - 32], path[PATH_MAX];
+    e2e_identity_dir(app, idir, sizeof(idir));
+    bool any, sealed;
+    e2e_identity_state(idir, &any, &sealed);
+    if (!any) return;
+    uint8_t k[AR_KEY_LEN];
+    bool ok = e2e_key_obtain(app, true, k);
+    OPENSSL_cleanse(k, sizeof(k));
+    if (ok) return;
+    snprintf(path, sizeof(path), "%s/" E2E_WRAPPED_KEY, idir);
+    bool wrapped = access(path, F_OK) == 0;
+    char pass[256], again[256];
+    pthread_mutex_lock(&e2e_key_mu);
+    for (int i = 0; !ok && i < E2E_PASSPHRASE_TRIES && (wrapped || !sealed); i++) {
+        if (wrapped) {
+            if (!ask("E2E passphrase (encrypted queries): ", pass, sizeof(pass))) break;
+            ar_status st = e2e_key_unwrap_locked(app, pass);
+            ok = st == AR_OK;
+            if (st == AR_MALFORMED) {
+                fprintf(stderr, "shottino: %s is not a wrapped key\n", path);
+                break;
+            }
+            if (!ok) fprintf(stderr, "shottino: wrong passphrase\n");
+        } else {
+            if (i == 0)
+                fprintf(stderr, "shottino: no keyring to keep the key of your encrypted queries "
+                                "in — choose a passphrase to seal them under\n");
+            if (!ask("new E2E passphrase: ", pass, sizeof(pass))) break;
+            if (!ask("again: ", again, sizeof(again))) break;
+            if (strcmp(pass, again) != 0) {
+                fprintf(stderr, "shottino: the two did not match\n");
+                continue;
+            }
+            char why[256];
+            ok = e2e_key_new_wrapped_locked(app, pass, why, sizeof(why));
+            if (!ok) {
+                fprintf(stderr, "shottino: %s\n", why);
+                break;
+            }
+        }
+    }
+    OPENSSL_cleanse(pass, sizeof(pass));
+    OPENSSL_cleanse(again, sizeof(again));
+    if (!ok) e2e_key_set_locked(app, E2E_KEY_LOCKED, NULL);
+    pthread_mutex_unlock(&e2e_key_mu);
+    if (!ok)
+        fprintf(stderr, "shottino: your encrypted queries stay LOCKED this run: nothing of them "
+                        "is read or written, and nothing typed in one goes anywhere\n");
+}
+
+/* At exit: the key goes from memory. */
+static void e2e_key_forget(struct app *app) {
+    pthread_mutex_lock(&e2e_key_mu);
+    e2e_key_set_locked(app, E2E_KEY_UNKNOWN, NULL);
+    pthread_mutex_unlock(&e2e_key_mu);
+}
+
+/* Which queries were encrypted, read from disk BEFORE the UI takes a
+ * keystroke (boot) or the network's windows exist (attach): the worker's
+ * open, which takes the store's lock and may wait behind HTTP, comes
+ * later, and a line typed in between must not go in clear.
+ *
+ * The record is sealed, and this runs where there may be no key at all
+ * (LOCKED), so what it reads is the clear index beside it
+ * (E2E_INDEX_FILE): the queries as digests of the folded nick, put into
+ * the mode set as "sha256:…" entries, which e2e_on_has matches against a
+ * nick's digest. The digest is the one the chat files are already named
+ * by, so the index tells someone with the disk nothing those names did
+ * not; the harsher alternative, every query refusing to send while
+ * locked, would make a locked store unusable for clear queries too.
+ *
+ * A read takes no lock (the lock is the `lock` file's, and the store
+ * writes by rename, so a read sees a whole file), so it reads even a
+ * directory another shottino holds — BUSY, an identity that does not
+ * verify, a record of another version, LOCKED all keep their queries
+ * encrypted, failing closed on the worker. Without an index: a plaintext
+ * record.json (from before sealing) is read for its `encrypted` member as
+ * it always was; a sealed record without one, or a plaintext one that is
+ * no JSON at all, says nothing — every query on the network fails closed
+ * until /e2e off. */
 static void e2e_peek_modes(struct app *app, const char *slug) {
     struct e2e_slot *s = e2e_slot_for(app, slug);
     if (!s) return;
     char dir[PATH_MAX - 16];
     e2e_slot_dir(app, s, dir, sizeof(dir));
+    e2e_strv digests = {0};
+    if (e2e_store_read_index(dir, &digests)) {
+        pthread_mutex_lock(&app->lock);
+        if (!s->on_loaded)
+            for (size_t i = 0; i < digests.n; i++) e2e_on_set(&s->on, digests.v[i], true);
+        s->on_loaded = true;
+        pthread_mutex_unlock(&app->lock);
+        e2e_strv_free(&digests);
+        return;
+    }
     char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/record.sealed", dir);
+    bool sealed = access(path, F_OK) == 0;
     snprintf(path, sizeof(path), "%s/record.json", dir);
-    FILE *f = fopen(path, "rb");
-    if (!f) return;
+    FILE *f = sealed ? NULL : fopen(path, "rb");
+    if (!sealed && !f) return;
     char *buf = NULL;
     size_t len = 0, cap = 0;
-    for (;;) {
+    for (; f;) {
         if (len + 65536 > cap) {
             cap = cap ? cap * 2 : 1 << 18;
             char *grown = realloc(buf, cap);
@@ -15299,8 +15571,8 @@ static void e2e_peek_modes(struct app *app, const char *slug) {
         len += n;
         if (n == 0) break;
     }
-    bool failed = ferror(f) != 0;
-    fclose(f);
+    bool failed = !f || ferror(f) != 0;
+    if (f) fclose(f);
     json_doc *d = failed ? NULL : json_parse(buf, len, NULL, 0);
     free(buf);
     const json_value *enc = d ? json_get(json_root(d), "encrypted") : NULL;
@@ -15317,18 +15589,26 @@ static void e2e_peek_modes(struct app *app, const char *slug) {
     pthread_mutex_unlock(&app->lock);
     json_free(d);
     if (!readable)
-        card(app, slug, "--- e2e: %s cannot be read, so which queries on %s were encrypted is "
+        card(app, slug, "--- e2e: %s/%s cannot be read, so which queries on %s were encrypted is "
                         "unknown: nothing typed in a query there goes in clear until you /e2e "
                         "off in it",
-             path, slug);
+             dir, sealed ? E2E_INDEX_FILE : "record.json", slug);
 }
 
 /* Persist the slot's record: the step BEFORE anything it enables leaves
  * this process (an OTK published, a ratchet step sent). */
 static bool e2e_save(struct app *app, struct e2e_slot *s) {
     char err[256];
-    if (e2e_store_save(s->store, &s->rec, err, sizeof(err))) return true;
-    card(app, s->slug, "--- e2e: could not store this device's record: %s", err);
+    uint8_t key[AR_KEY_LEN];
+    bool have = e2e_key_obtain(app, true, key);
+    bool ok = have && e2e_store_save(s->store, key, &s->rec, err, sizeof(err));
+    OPENSSL_cleanse(key, sizeof(key));
+    if (ok) return true;
+    if (!have)
+        card(app, s->slug, "--- e2e: could not store this device's record: %s",
+             E2E_LOCKED_WHY);
+    else
+        card(app, s->slug, "--- e2e: could not store this device's record: %s", err);
     return false;
 }
 
@@ -15373,7 +15653,13 @@ static bool e2e_slot_open(struct app *app, struct e2e_slot *s, struct e2e_view *
             return false;
         }
     }
-    e2e_load_status ld = e2e_store_load(s->store, &s->rec, err, sizeof(err));
+    /* A key only when there is something to read: a sync of a network
+     * with nothing on disk makes no key (creating state is the user's
+     * decision), a plaintext record about to be sealed may make one. */
+    uint8_t key[AR_KEY_LEN];
+    bool have = e2e_store_has_record(dir) && e2e_key_obtain(app, true, key);
+    e2e_load_status ld = e2e_store_load(s->store, have ? key : NULL, &s->rec, err, sizeof(err));
+    OPENSSL_cleanse(key, sizeof(key));
     switch (ld) {
     case E2E_LOAD_OK:
         if (s->rec.own && !e2e_own_verify(s->rec.own, s->rec.account)) {
@@ -15397,6 +15683,18 @@ static bool e2e_slot_open(struct app *app, struct e2e_slot *s, struct e2e_view *
              dir, err);
         e2e_record_new(&s->rec);
         break;
+    case E2E_LOAD_REFUSED:
+        /* Never started over: under its own key the record may be fine. */
+        v->state = E2E_SLOT_ERROR;
+        snprintf(v->why, sizeof(v->why),
+                 "the record in %.150s does not open with this identity's key (changed, or "
+                 "sealed under another); left as it is",
+                 dir);
+        return false;
+    case E2E_LOAD_LOCKED:
+        v->state = E2E_SLOT_LOCKED;
+        snprintf(v->why, sizeof(v->why), "%s", E2E_LOCKED_WHY);
+        return false;
     case E2E_LOAD_ERROR:
         v->state = E2E_SLOT_ERROR;
         snprintf(v->why, sizeof(v->why), "cannot read %.120s: %.120s", dir, err);
@@ -15404,8 +15702,13 @@ static bool e2e_slot_open(struct app *app, struct e2e_slot *s, struct e2e_view *
     }
     s->have_rec = true;
     pthread_mutex_lock(&app->lock);
-    if (!s->on_loaded)
-        for (size_t i = 0; i < s->rec.encrypted.n; i++) e2e_on_set(&s->on, s->rec.encrypted.v[i], true);
+    /* What the index named by digest is named by nick from here; a digest
+     * no nick of the record matches stays, and keeps its query encrypted. */
+    for (size_t i = 0; i < s->rec.encrypted.n; i++) {
+        bool keep = !s->on_loaded || e2e_on_has(&s->on, s->rec.encrypted.v[i]);
+        e2e_on_set(&s->on, s->rec.encrypted.v[i], false);
+        if (keep) e2e_on_set(&s->on, s->rec.encrypted.v[i], true);
+    }
     s->on_loaded = true;
     pthread_mutex_unlock(&app->lock);
     return true;
@@ -16616,11 +16919,40 @@ static void e2e_hist_note(struct e2e_slot *s, const char *id) {
     s->hist_ids.v[s->hist_ids.n++] = xstrdup(id);
 }
 
-/* <slot dir>/chats: beside the record, under the same lock. */
-static void e2e_chat_dir(struct app *app, const struct e2e_slot *s, char *out, size_t out_sz) {
+/* <slot dir>/chats: beside the record, under the same lock, named
+ * "<network id>/chats" in each line's AAD. */
+static void e2e_chat_dir(struct app *app, const struct e2e_slot *s, char *out, size_t out_sz,
+                         char *rel, size_t rel_sz) {
     char dir[PATH_MAX - 16];
     e2e_slot_dir(app, s, dir, sizeof(dir));
     snprintf(out, out_sz, "%s/chats", dir);
+    snprintf(rel, rel_sz, "%d/chats", s->network_id);
+}
+
+/* One history row, sealed under the identity's key; false (said in `err`)
+ * when there is none to seal with. */
+static bool e2e_hist_append(struct app *app, const struct e2e_slot *s, const e2e_row *row,
+                            char *err, size_t err_sz) {
+    char dir[PATH_MAX], rel[32];
+    e2e_chat_dir(app, s, dir, sizeof(dir), rel, sizeof(rel));
+    uint8_t key[AR_KEY_LEN];
+    bool have = e2e_key_obtain(app, true, key);
+    bool ok = have && e2e_chat_append(dir, rel, key, row, err, err_sz);
+    OPENSSL_cleanse(key, sizeof(key));
+    if (!have) snprintf(err, err_sz, "%s", E2E_LOCKED_WHY);
+    return ok;
+}
+
+/* Every row of the slot's history (e2e_chat_load). */
+static bool e2e_hist_read(struct app *app, const struct e2e_slot *s, e2e_rows *rows, char *err,
+                          size_t err_sz) {
+    char dir[PATH_MAX], rel[32];
+    e2e_chat_dir(app, s, dir, sizeof(dir), rel, sizeof(rel));
+    uint8_t key[AR_KEY_LEN];
+    bool have = e2e_key_obtain(app, false, key);
+    bool ok = e2e_chat_load(dir, rel, have ? key : NULL, rows, err, err_sz);
+    OPENSSL_cleanse(key, sizeof(key));
+    return ok;
 }
 
 /* Remove the row a pending id marks. Caller holds app->lock. */
@@ -16943,7 +17275,11 @@ static void e2e_ctx_of(struct app *app, struct e2e_slot *s, e2e_ctx *c, char *ow
 static void e2e_slot_reload(struct app *app, struct e2e_slot *s) {
     e2e_record_free(&s->rec);
     char err[256];
-    if (e2e_store_load(s->store, &s->rec, err, sizeof(err)) == E2E_LOAD_OK) return;
+    uint8_t key[AR_KEY_LEN];
+    bool have = e2e_key_obtain(app, false, key);
+    e2e_load_status ld = e2e_store_load(s->store, have ? key : NULL, &s->rec, err, sizeof(err));
+    OPENSSL_cleanse(key, sizeof(key));
+    if (ld == E2E_LOAD_OK) return;
     s->have_rec = false;
     struct e2e_view v;
     memset(&v, 0, sizeof(v));
@@ -17078,12 +17414,11 @@ static void e2e_flush(struct app *app, struct e2e_slot *s, const e2e_ctx *c, e2e
  * the record is read back, nothing has left, and the caller acks nothing. */
 static bool e2e_commit(struct app *app, struct e2e_slot *s, const e2e_ctx *c, e2e_rows *rows,
                        e2e_result *pend, bool *unknown) {
-    char dir[PATH_MAX], err[256];
-    e2e_chat_dir(app, s, dir, sizeof(dir));
+    char err[256];
     for (size_t i = 0; i < rows->n; i++) {
         const e2e_row *row = &rows->v[i];
         if (e2e_hist_has(s, row->id)) continue;
-        if (!e2e_chat_append(dir, row, err, sizeof(err))) {
+        if (!e2e_hist_append(app, s, row, err, sizeof(err))) {
             card(app, s->slug, "--- e2e: cannot keep an encrypted message (%s) — nothing of it is "
                                "acknowledged; it is read again next time", err);
             e2e_slot_reload(app, s);
@@ -17117,10 +17452,9 @@ static bool e2e_commit(struct app *app, struct e2e_slot *s, const e2e_ctx *c, e2
 /* The history, once a run, into the windows: replayed, not news. */
 static void e2e_hist_load(struct app *app, struct e2e_slot *s) {
     s->hist_loaded = true;
-    char dir[PATH_MAX], err[256];
-    e2e_chat_dir(app, s, dir, sizeof(dir));
+    char err[256];
     e2e_rows rows;
-    if (!e2e_chat_load(dir, &rows, err, sizeof(err)))
+    if (!e2e_hist_read(app, s, &rows, err, sizeof(err)))
         card(app, s->slug, "--- e2e: some of the encrypted history could not be read (%s)", err);
     for (size_t i = 0; i < rows.n; i++) {
         if (e2e_hist_has(s, rows.v[i].id)) continue;
@@ -17908,13 +18242,12 @@ static void e2e_send_text(struct app *app, struct e2e_slot *s, bool usable, cons
     free(inner);
     if (!e2e_failed_now(&res, o->tag)) {
         /* The row before the state: the text is this device's only copy. */
-        char dir[PATH_MAX], err[256];
-        e2e_chat_dir(app, s, dir, sizeof(dir));
+        char err[256];
         e2e_row r = {.kind = E2E_ROW_OUT, .at = c.now_ms, .body_len = strlen(body)};
         r.id = xasprintf("out:%s", o->tag);
         r.nick = xstrdup(peer);
         r.body = xstrdup(body);
-        bool kept = e2e_chat_append(dir, &r, err, sizeof(err));
+        bool kept = e2e_hist_append(app, s, &r, err, sizeof(err));
         if (kept) e2e_hist_note(s, r.id);
         e2e_row_free(&r);
         if (!kept) {
@@ -17969,9 +18302,8 @@ static size_t e2e_resend(struct app *app, struct e2e_slot *s, const char *peer) 
 /* Every row of the slot's history: what trust the rows record (openAlarm,
  * lastComparison) is derived from them, never kept beside them. */
 static void e2e_rows_load(struct app *app, struct e2e_slot *s, e2e_rows *rows) {
-    char dir[PATH_MAX], err[256];
-    e2e_chat_dir(app, s, dir, sizeof(dir));
-    if (!e2e_chat_load(dir, rows, err, sizeof(err)))
+    char err[256];
+    if (!e2e_hist_read(app, s, rows, err, sizeof(err)))
         card(app, s->slug, "--- e2e: some of the encrypted history could not be read (%s)", err);
 }
 
@@ -19219,6 +19551,9 @@ static size_t e2e_status_lines(const char *slug, const struct e2e_view *v, char 
     case E2E_SLOT_ERROR:
         snprintf(out[0], MAX_LINE, "e2e %s: error — %s; /e2e sync %s tries again", slug, v->why,
                  slug);
+        return 1;
+    case E2E_SLOT_LOCKED:
+        snprintf(out[0], MAX_LINE, "e2e %s: LOCKED — %s", slug, v->why);
         return 1;
     case E2E_SLOT_NONE:
         snprintf(out[0], MAX_LINE,
@@ -29816,6 +30151,9 @@ int main(int argc, char **argv) {
      * and the feature still off get no image attached, which is why the
      * first screenful used to come up pictureless. */
     app->headless = ircd_enabled;
+    /* The E2E data key, while the terminal is still an ordinary one: the
+     * passphrase, when it is needed, is asked for here or not at all. */
+    e2e_key_boot(app, read_password_tty);
     /* The window comes up HERE, right after login: the graphics probe
      * still needs the raw terminal first, and everything after it is drawn
      * on the splash instead of scrolling past on stderr. */
@@ -29878,6 +30216,8 @@ int main(int argc, char **argv) {
                       "userlist; drag over messages to copy them; Shift for the terminal's own selection, or "
                       "/mouse off");
     }
+    if (e2e_key_source(app) == E2E_KEY_LOCKED)
+        log_line(app, "!!! e2e: %s", E2E_LOCKED_WHY);
     seed_state(app);
     /* Before the first fetch, so a deleted message is never drawn. */
     hidden_load(app);
@@ -29953,6 +30293,7 @@ int main(int argc, char **argv) {
      * devices are let go here. */
     e2e_slots_free(app);
     e2e_pair_free(app);
+    e2e_key_forget(app);
     /* The model thread. It was never stopped and never joined: llm_stop
      * was declared, read in the loop below, and assigned NOWHERE, so
      * shutdown went on to free every log line, destroy app->lock, free

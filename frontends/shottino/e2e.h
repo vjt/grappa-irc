@@ -32,6 +32,7 @@
 #ifndef SHOTTINO_E2E_H
 #define SHOTTINO_E2E_H
 
+#include "atrest.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -618,25 +619,70 @@ void e2e_own_adopted(const e2e_own *own, const e2e_master_list *held, e2e_own *o
  * at cert_ver: the self-check of a record read back from disk. */
 bool e2e_own_verify(const e2e_own *own, vz_account *device);
 
-/* ── Store: one record in a directory, atomic, locked ──────────────────────
+/* ── Store: one record in a directory, sealed, atomic, locked ─────────────
  * `dir` is the caller's (the app computes <state>/e2e-<hash>/<network_id>);
- * it and any missing parent are made 0700. The record is `record.json`,
- * 0600, written to a temp file in the same directory (pid in its name),
- * fsync'd, renamed over, and the directory fsync'd. `lock` in the same
- * directory carries an exclusive flock held from open to close: two
- * shottino processes on one directory are ONE device and must not
- * interleave, so the second is refused rather than made to wait. */
+ * it and any missing parent are made 0700. The record is SEALED at rest
+ * (atrest.h) under the identity's data key: `record.sealed`, role
+ * "record", named "<network_id>/record.sealed" in its AAD (the last
+ * component of `dir`, then the file), 0600, written to a temp file in the
+ * same directory (pid in its name), fsync'd, renamed over, and the
+ * directory fsync'd. `lock` in the same directory carries an exclusive
+ * flock held from open to close: two shottino processes on one directory
+ * are ONE device and must not interleave, so the second is refused rather
+ * than made to wait.
+ *
+ * `record.json` is the plaintext record this replaces. A load that finds
+ * only it reads it and seals it at once (record.sealed renamed in, then
+ * record.json removed, each step fsync'd); a load that finds both — a
+ * crash between those two steps — reads the sealed one and removes the
+ * other. Nothing here ever writes a plaintext record: a save without a
+ * key is refused, and so is a load of anything on disk.
+ *
+ * Beside it, in the clear, E2E_INDEX_FILE: which queries are encrypted, as
+ * the digest e2e_nick_digest gives (the same SHA-256 the chat files are
+ * named by, so it says nothing their names do not), written BEFORE the
+ * record on every save. It is what a run without the key reads, at boot,
+ * to keep those queries from sending in clear (shottino.c,
+ * e2e_peek_modes). */
 typedef struct e2e_store e2e_store;
 
+#define E2E_INDEX_FILE "encrypted-queries"
+/* "sha256:" + 64 hex + NUL */
+#define E2E_DIGEST_SZ 72
+
 typedef enum { E2E_STORE_OK, E2E_STORE_BUSY, E2E_STORE_ERROR } e2e_store_status;
-typedef enum { E2E_LOAD_OK, E2E_LOAD_NONE, E2E_LOAD_CORRUPT, E2E_LOAD_ERROR } e2e_load_status;
+typedef enum {
+    E2E_LOAD_OK,
+    E2E_LOAD_NONE,
+    E2E_LOAD_CORRUPT,  /* a plaintext file that is not a record */
+    E2E_LOAD_REFUSED,  /* a sealed record that does not open with this key (or was changed) */
+    E2E_LOAD_LOCKED,   /* a record is there and no key was given: nothing read */
+    E2E_LOAD_ERROR
+} e2e_load_status;
 
 e2e_store_status e2e_store_open(const char *dir, e2e_store **out, char *err, size_t err_sz);
 void e2e_store_close(e2e_store *st);
 /* CORRUPT is a file that is not a record: the caller decides (cic starts
- * over, which makes the next sync read grappa's identity as elsewhere). */
-e2e_load_status e2e_store_load(e2e_store *st, e2e_record *out, char *err, size_t err_sz);
-bool e2e_store_save(e2e_store *st, const e2e_record *r, char *err, size_t err_sz);
+ * over, which makes the next sync read grappa's identity as elsewhere).
+ * REFUSED is never started over: the record may be fine under its own
+ * key. `key` (AR_KEY_LEN bytes) may be NULL: then anything on disk is
+ * LOCKED and only a directory without a record answers (NONE). */
+e2e_load_status e2e_store_load(e2e_store *st, const uint8_t *key, e2e_record *out, char *err,
+                               size_t err_sz);
+/* False, writing nothing, without a key. */
+bool e2e_store_save(e2e_store *st, const uint8_t *key, const e2e_record *r, char *err,
+                    size_t err_sz);
+/* Whether `dir` holds a record (sealed or plaintext), without its lock. */
+bool e2e_store_has_record(const char *dir);
+/* The index under `dir` as e2e_nick_digest strings into `out` (the
+ * caller's: e2e_strv_free). False when it is missing or is not one. */
+bool e2e_store_read_index(const char *dir, e2e_strv *out);
+/* "sha256:<lowercase hex SHA-256 of e2e_fold(nick)>". */
+void e2e_nick_digest(const char *nick, char out[E2E_DIGEST_SZ]);
+void e2e_strv_free(e2e_strv *v);
+/* `path` replaced by `data`, 0600, as the record is (temp, fsync, rename,
+ * the directory fsync'd), its directory made 0700 when missing. */
+bool e2e_write_private(const char *path, const void *data, size_t len, char *err, size_t err_sz);
 
 /* ── Engine (engine.ts Engine) ─────────────────────────────────────────── */
 
@@ -925,22 +971,32 @@ void e2e_record_start_over(e2e_record *r);
  * key that opened a message is spent), so a row is written here BEFORE
  * the record that spent its key is saved.
  *
- * One file per chat, `<dir>/chat-sha256-<hex SHA-256 of the folded nick>.jsonl`
- * (a fixed length whatever the nick; a file of the older
- * `chat-<hex of the folded nick>.jsonl` shape is moved on load), 0600 in
- * a 0700 directory: one JSON object per line, APPENDED and fsync'd. Not
- * rewritten per row as the record is: a chat grows by one row a message,
- * and a whole-file rename per row is O(n) a message for a guarantee the
- * order already gives — the row is durable before the state that spent
- * its key, and a crash between the two re-reads the message from the
- * inbox, writing the SAME row id again. So a reader keeps the first of a
- * repeated id, and a torn last line (a crash inside the write) is cut off
- * before the next append and skipped by a load. A load rewrites a file
- * atomically (temp + fsync + rename) only to compact it: past twice
- * E2E_CHAT_ROWS_MAX rows, or holding a torn, unreadable or repeated line,
- * it keeps the newest E2E_CHAT_ROWS_MAX. Not encrypted at rest: the
- * posture of the record beside it (docs/plans). Every string is
- * PLAINTEXT: never log one. */
+ * One file per chat, `<dir>/chat-sha256-<hex SHA-256 of the folded nick>.sealed`
+ * (a fixed length whatever the nick), 0600 in a 0700 directory: one row a
+ * line, each line SEALED on its own (atrest.h: "e1:…", role "chat", named
+ * "<rel>/<file name>" in its AAD, `rel` being `dir` relative to the
+ * identity directory, "<network_id>/chats"), APPENDED and fsync'd. Sealed
+ * a line at a time so that an append stays an append. Not rewritten per
+ * row as the record is: a chat grows by one row a message, and a
+ * whole-file rename per row is O(n) a message for a guarantee the order
+ * already gives — the row is durable before the state that spent its key,
+ * and a crash between the two re-reads the message from the inbox, writing
+ * the SAME row id again. So a reader keeps the first of a repeated id, and
+ * a torn last line (a crash inside the write) is cut off before the next
+ * append and skipped by a load. A load rewrites a file atomically (temp +
+ * fsync + rename) only to compact it: past twice E2E_CHAT_ROWS_MAX rows,
+ * or holding a torn or repeated line, it keeps the newest
+ * E2E_CHAT_ROWS_MAX. A whole line that does not OPEN (changed, moved from
+ * another chat, another key) is refused and said, and its file is then
+ * not compacted: what is left of it stays for someone to look at.
+ *
+ * The plaintext files this replaces are sealed by the load that finds
+ * them, with a key: `chat-sha256-<hex>.jsonl`, and the older
+ * `chat-<hex of the folded nick>.jsonl` renamed to that first. Each is
+ * written sealed to a temp file, fsync'd and renamed in (appended to the
+ * sealed file when one exists — written since, or a crash after the
+ * rename), and only then removed; a repeated row is the load's business.
+ * Every string is PLAINTEXT: never log one. */
 
 #define E2E_CHAT_ROWS_MAX 1000
 
@@ -985,19 +1041,22 @@ void e2e_rows_free(e2e_rows *r);
 char *e2e_row_to_json(const e2e_row *r);
 /* False for anything but a row this writer wrote (its fields per kind). */
 bool e2e_row_from_json(const char *text, size_t len, e2e_row *out);
-/* "chat-sha256-<lowercase hex SHA-256 of e2e_fold(nick)>.jsonl": one file
+/* "chat-sha256-<lowercase hex SHA-256 of e2e_fold(nick)>.sealed": one file
  * per peer, the fold so `Alice` and `alice` are one chat, a digest so no
  * byte of a nick can reach the filesystem's syntax and no nick, however
  * long, makes a name past NAME_MAX (the hex of the nick itself did). */
 char *e2e_chat_file_name(const char *nick);
-/* Appends `r` to its chat's file under `dir` (made 0700 when missing),
- * fsync'd, the directory too when the file is new. */
-bool e2e_chat_append(const char *dir, const e2e_row *r, char *err, size_t err_sz);
+/* Appends `r` sealed under `key` to its chat's file under `dir` (made
+ * 0700 when missing), fsync'd, the directory too when the file is new.
+ * False, writing nothing, without a key. */
+bool e2e_chat_append(const char *dir, const char *rel, const uint8_t *key, const e2e_row *r,
+                     char *err, size_t err_sz);
 /* Every row of every chat under `dir`, oldest first (by `at`, file order
- * among equals), each id once. A missing `dir` is an empty history. Files
- * of the older name shape are moved to the new names first (merged when
- * both exist); one that cannot be moved is still read, and said. */
-bool e2e_chat_load(const char *dir, e2e_rows *out, char *err, size_t err_sz);
+ * among equals), each id once. A missing `dir` is an empty history.
+ * Plaintext files are sealed first (above); one that cannot be is not
+ * read, and said. Without a key, false when there is anything to read. */
+bool e2e_chat_load(const char *dir, const char *rel, const uint8_t *key, e2e_rows *out,
+                   char *err, size_t err_sz);
 
 /* An ISO-8601 UTC instant as grappa writes one ("2026-11-07T10:05:00Z",
  * fractional seconds and a +hh:mm offset allowed) in unix seconds. */

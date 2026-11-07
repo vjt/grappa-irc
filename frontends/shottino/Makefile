@@ -97,8 +97,8 @@ tests/test_atrest: tests/test_atrest.c tests/test.h atrest.c atrest.h keyring.c 
 # The E2E core: cicchetto's wire and engine, pure, against the real
 # vodozemac. Two engines talk through a fake grappa inside the suite, so
 # the sanitizers watch every ratchet step and every wire refusal.
-tests/test_e2e: tests/test_e2e.c tests/test.h e2e.c e2e.h json.c json.h $(VZ_DIR)/include/vodozemac.h $(VZ_LIB)
-	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) -o $@ tests/test_e2e.c e2e.c json.c $(VZ_LIB) $(VZ_LDLIBS)
+tests/test_e2e: tests/test_e2e.c tests/test.h e2e.c e2e.h atrest.c atrest.h json.c json.h $(VZ_DIR)/include/vodozemac.h $(VZ_LIB)
+	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) -o $@ tests/test_e2e.c e2e.c atrest.c json.c $(VZ_LIB) $(VZ_LDLIBS) -lcrypto
 
 # -MMD -MP makes the compiler write the header dependencies, because a
 # hand-maintained list rots: shottino.o's named nine headers while
