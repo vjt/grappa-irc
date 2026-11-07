@@ -21,6 +21,9 @@ defmodule Grappa.ReleaseTest do
     "infra/linux/deploy.sh",
     "infra/docker/deploy.sh",
     "scripts/deploy.sh",
+    # Issue 1112: a package upgrade evaluates the migration check before
+    # every restart it decides, from the release the package just wrote.
+    "infra/packaging/apply-upgrade.sh",
     # Not a deploy script but the same hazard, and worse (#1158): this one
     # SHIPS as `bin/grappa`, so a rename here rots on every substrate at
     # once, and only when an operator reaches for the account door.
