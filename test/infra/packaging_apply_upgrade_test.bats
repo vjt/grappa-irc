@@ -487,3 +487,27 @@ restarted() {
     grep -q 'install -Dm755 infra/packaging/apply-upgrade.sh' "$PKG_SRC/aur/PKGBUILD"
     grep -q '"${pkgdir}/usr/share/grappa/apply-upgrade.sh"' "$PKG_SRC/aur/PKGBUILD"
 }
+
+# The list items under overrides.<format>.depends in nfpm.yaml, comments out.
+nfpm_depends() {
+    awk -v fmt="$1" '
+        /^  [a-z]+:$/ { in_fmt = ($0 == "  " fmt ":"); in_dep = 0; next }
+        in_fmt && /^    [a-z]+:$/ { in_dep = ($0 == "    depends:"); next }
+        in_fmt && in_dep && /^      - / { sub(/^      - /, ""); print }
+    ' "$PKG_SRC/nfpm.yaml"
+}
+
+@test "every format depends on curl — the script's HTTP calls are all curl" {
+    # Without curl the hot reload reads as "no answer" and no /healthz probe
+    # after the restart ever succeeds: a healthy restart would fail the
+    # upgrade. A minimal Debian ships no curl. Fedora's base ships
+    # curl-minimal, hence a FILE dependency on the rpm side.
+    grep -q '^[^#]*curl -' "$PKG_SRC/apply-upgrade.sh"
+    run nfpm_depends deb
+    [[ "$output" == *openssl* ]] # the extractor read the deb list at all
+    grep -qx 'curl' <<<"$output"
+    run nfpm_depends rpm
+    [[ "$output" == *util-linux* ]] # ... and the rpm one
+    grep -qx '/usr/bin/curl' <<<"$output"
+    grep -qE "^depends=\(.*'curl'.*\)$" "$PKG_SRC/aur/PKGBUILD"
+}

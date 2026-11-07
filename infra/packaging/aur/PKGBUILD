@@ -55,7 +55,9 @@ url="https://github.com/vjt/grappa-irc"
 license=('MIT')
 # Runtime shared libs the bundled ERTS + crypto/exiftool paths link against.
 # The mix release bundles ERTS itself; these are the system libs it needs.
-depends=('openssl' 'ncurses' 'gcc-libs' 'ca-certificates')
+# curl is a command, not a lib: apply-upgrade.sh (issue 1112) reaches the
+# running service over HTTP for the hot reload and every /healthz probe.
+depends=('openssl' 'ncurses' 'gcc-libs' 'ca-certificates' 'curl')
 # elixir + erlang-headless build the mix release; bun builds the cicchetto SPA.
 # erlang-headless, NOT bare elixir: Arch splits OTP into per-app subpackages
 # and `elixir` runtime-depends on ONLY `erlang-core` (erts, kernel, stdlib,

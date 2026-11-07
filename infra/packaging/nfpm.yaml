@@ -75,6 +75,11 @@ overrides:
       # it lives in util-linux, which is Essential:yes on Debian (always
       # present) — unlike Fedora, where it is a separate package (see rpm).
       - openssl
+      # curl: apply-upgrade.sh (issue 1112) reaches the running service over
+      # HTTP for the hot reload and every /healthz probe. Debian does not
+      # ship it in a minimal install, and without it the script would read a
+      # healthy restart as a failed one and fail the upgrade.
+      - curl
     recommends:
       # shottino: THE UPGRADE PATH, not a suggestion. /usr/bin/shottino left
       # this package in 1.3.0 (#1447); without this entry `apt upgrade` would
@@ -111,6 +116,11 @@ overrides:
       #               minimal host would %post-fail without this.
       - openssl
       - util-linux
+      #   curl:       apply-upgrade.sh, as on the deb. A FILE dependency on
+      #               purpose: Fedora's base ships curl-minimal, which owns
+      #               /usr/bin/curl too, and a package-name dependency on
+      #               `curl` would make dnf swap it out.
+      - /usr/bin/curl
     recommends:
       # See the deb override: the client is a weak dep so that a dnf upgrade
       # brings it back in the same transaction the file leaves this package.
