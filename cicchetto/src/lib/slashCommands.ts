@@ -1,4 +1,4 @@
-import { atKey, type ByKey, keysOf, setKey } from "./byKey";
+import { atKey, type ByKey, keyEntries, keysOf, setKey } from "./byKey";
 import { isChannelName } from "./chantypes";
 import {
   DEFAULT_NOTIFICATION_SOUND,
@@ -1303,6 +1303,28 @@ if (quoteHandler) {
   setKey(DISPATCH, "raw", quoteHandler);
 }
 
+// issue 2584 — every verb the dispatcher answers, the six registered above
+// included: the builtin half of what the `/` menu offers (the user's aliases
+// are the other half, commandUsage.ts).
+export const BUILTIN_VERBS: readonly string[] = keyEntries(DISPATCH).map(([verb]) => verb);
+
+/**
+ * The verb of a command line AS TYPED (case kept, before any alias expands)
+ * and what follows it, or `null` for a line that is not a command: empty, plain
+ * text, or a `//` escape. issue 2584 — one rule for "what is the verb", read by
+ * the parser below and by the command counter, so a count can never name a
+ * different verb from the one that was dispatched.
+ */
+export function splitSlash(input: string): { verb: string; rest: string } | null {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//")) return null;
+  const stripped = trimmed.slice(1);
+  const spaceIdx = stripped.search(/\s/);
+  return spaceIdx === -1
+    ? { verb: stripped, rest: "" }
+    : { verb: stripped.slice(0, spaceIdx), rest: stripped.slice(spaceIdx + 1).trim() };
+}
+
 // `aliases` (#385) is the user's `%{name => expansion}` map, passed in by
 // compose.ts from the aliasList store; `chantypes` (#1255) are the sigils the
 // network advertises. Both are required: a parse that forgets the network's
@@ -1315,20 +1337,12 @@ export function parseSlash(
   const trimmed = input.trim();
   if (trimmed === "") return { kind: "empty" };
 
-  // Literal-/ escape: //foo → privmsg with body /foo.
-  if (trimmed.startsWith("//")) {
-    return { kind: "privmsg", body: trimmed.slice(1) };
+  // Not a command: plain text, or the literal-/ escape (//foo → body /foo).
+  const split = splitSlash(trimmed);
+  if (split === null) {
+    return { kind: "privmsg", body: trimmed.startsWith("//") ? trimmed.slice(1) : trimmed };
   }
-
-  if (!trimmed.startsWith("/")) {
-    return { kind: "privmsg", body: trimmed };
-  }
-
-  // Strip leading /, split on first whitespace into verb + rest.
-  const stripped = trimmed.slice(1);
-  const spaceIdx = stripped.search(/\s/);
-  const verb = spaceIdx === -1 ? stripped : stripped.slice(0, spaceIdx);
-  const rest = spaceIdx === -1 ? "" : stripped.slice(spaceIdx + 1).trim();
+  const { verb, rest } = split;
 
   // #385 — expand user-defined aliases BEFORE the DISPATCH lookup, so an
   // expanded alias flows through the normal command path with no downstream

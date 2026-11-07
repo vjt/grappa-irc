@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import { keysOf, noKeys } from "../lib/byKey";
 import { DEFAULT_CHANTYPES } from "../lib/chantypes";
 import {
+  BUILTIN_VERBS,
   expandAlias,
   isNonShadowableVerb,
   MAX_ALIAS_DEPTH,
   parseSlash,
   type SlashCommand,
+  splitSlash,
 } from "../lib/slashCommands";
 
 // No aliases, the RFC sigils: what most cases here parse against. parseSlash
@@ -2283,5 +2285,40 @@ describe("parseSlash — /np (#1698)", () => {
       kind: "me",
       body: "is listening",
     });
+  });
+});
+
+// issue 2584 — what "the verb" of a line is, asked by the parser, by the
+// command counter (which posts the verb AS TYPED, before any alias expands)
+// and nowhere else: one rule, so the count and the dispatch cannot disagree.
+describe("splitSlash (issue 2584)", () => {
+  it("splits a command line into the verb as typed and the rest", () => {
+    expect(splitSlash("/WhoIs vjt")).toEqual({ verb: "WhoIs", rest: "vjt" });
+    expect(splitSlash("  /ns identify secret  ")).toEqual({ verb: "ns", rest: "identify secret" });
+    expect(splitSlash("/me\tdances")).toEqual({ verb: "me", rest: "dances" });
+    expect(splitSlash("/away")).toEqual({ verb: "away", rest: "" });
+    expect(splitSlash("/")).toEqual({ verb: "", rest: "" });
+  });
+
+  it("is null for a line that is not a command", () => {
+    expect(splitSlash("hello")).toBeNull();
+    expect(splitSlash("//me literal")).toBeNull();
+    expect(splitSlash("")).toBeNull();
+    expect(splitSlash("   ")).toBeNull();
+  });
+});
+
+describe("BUILTIN_VERBS (issue 2584)", () => {
+  it("is every verb the dispatcher answers, aliases of builtins included", () => {
+    for (const verb of BUILTIN_VERBS) {
+      expect(parsePlain(`/${verb}`)).not.toMatchObject({ message: `unknown command: /${verb}` });
+    }
+    expect(BUILTIN_VERBS).toEqual(expect.arrayContaining(["whois", "w", "raw", "kickban", "j"]));
+    expect(new Set(BUILTIN_VERBS).size).toBe(BUILTIN_VERBS.length);
+  });
+
+  it("names no verb the dispatcher does not answer", () => {
+    expect(BUILTIN_VERBS).not.toContain("notarealverbatall");
+    expect(parsePlain("/notarealverbatall")).toMatchObject({ kind: "error" });
   });
 });

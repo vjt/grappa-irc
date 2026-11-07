@@ -196,6 +196,13 @@ vi.mock("../lib/encryptedArriving", () => ({
   e2eMessageQueued: vi.fn(async () => undefined),
 }));
 
+// issue 2584 — the command counts have no event (vjt's ruling, Q3): each
+// (re)join re-fetches them, beside the alias list.
+vi.mock("../lib/commandUsage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/commandUsage")>()),
+  refreshCommandCounts: vi.fn(async () => undefined),
+}));
+
 vi.mock("../lib/supportedUmodes", () => ({
   seedSupportedUmodes: vi.fn(),
 }));
@@ -248,7 +255,7 @@ describe("userTopic", () => {
   // issue 2430 — pushes are not replayed, so every (re)join re-fetches what
   // a push would have announced: the offline E2E inbox and, X1, every live
   // pairing channel (a handshake whose doorbell was lost waits out the TTL).
-  it("on every join catches up the E2E inbox, the pairing channels and the encrypted chat requests", async () => {
+  it("on every join catches up the E2E inbox, the pairing channels, the encrypted chat requests and the command counts", async () => {
     const socket = await import("../lib/socket");
     const pairing = await import("../lib/e2e/pairing");
     const chats = await import("../lib/encryptedChats");
@@ -261,6 +268,9 @@ describe("userTopic", () => {
     expect(chats.drainEveryNetwork).toHaveBeenCalledTimes(2);
     // issue 2486 — and the requests to start an encrypted chat.
     expect(requests.reloadE2eRequests).toHaveBeenCalledTimes(2);
+    // issue 2584 — and the command counts the `/` menu orders by.
+    const usage = await import("../lib/commandUsage");
+    expect(usage.refreshCommandCounts).toHaveBeenCalledTimes(2);
     // The join also hydrates three settings lists, which fail here on the
     // stubbed socket and fetch and warn: let them settle before restoring.
     await new Promise((r) => setTimeout(r, 10));
