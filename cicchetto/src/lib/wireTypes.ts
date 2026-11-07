@@ -1540,6 +1540,8 @@ export type SessionWireWhoisBundlePayload = {
   certfp: string | null;
   extra_lines: SessionWireWhoisExtraLine[] | null;
   avatar_url: string | null;
+  grappa_client_ips: string[] | null;
+  grappa_client_last_known_ip: string | null;
 };
 
 export type SessionWirePeerAwayPayload = {

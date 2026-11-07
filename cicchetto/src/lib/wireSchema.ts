@@ -1584,6 +1584,8 @@ export const S_SessionWireWhoisBundlePayload = {
     certfp: { u: ["s", "z"] },
     extra_lines: { u: [{ a: S_SessionWireWhoisExtraLine }, "z"] },
     avatar_url: { u: ["s", "z"] },
+    grappa_client_ips: { u: [{ a: "s" }, "z"] },
+    grappa_client_last_known_ip: { u: ["s", "z"] },
   },
 } as const;
 
