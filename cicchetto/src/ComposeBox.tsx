@@ -688,6 +688,26 @@ const ComposeBox: Component<Props> = (props) => {
     // what it deliberately does not consult.
     if (isComposingKeystroke(e)) return;
     if (e.key === "Enter") {
+      // issue 2589 — the ONE exception to #974 below: in an encrypted query
+      // a bare Shift+Enter is a line break, left to the textarea. What the
+      // window SAYS (text, `/me`) goes out inside an E2E envelope, not as the
+      // PRIVMSG text, so a newline in it is no CRLF on the wire and `submit`
+      // sends it as one message; a command typed there still runs in clear,
+      // one line per message, as a pasted one always did. vjt asked for it
+      // knowing #974: a Shift his device arms on its own now breaks the line
+      // there instead of sending. Nothing is lost — the break stays in the box
+      // and Enter sends it — but it does not go on that press. Only a BARE
+      // Shift: a chord with Ctrl, Cmd or Alt keeps sending as #974 has it,
+      // rather than falling to whatever the engine does with it — nothing, it
+      // may be, which is the eaten keystroke #974 removed.
+      if (
+        e.shiftKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        encryptedWindowPeer(props.channelName) !== null
+      )
+        return;
       // #974 — EVERY Enter sends, modifier or not. vjt's ruling (2026-08-07)
       // reverses his 2026-08-06 one: a Shift+Enter that refuses also EATS the
       // keystroke, and on his device the modifier arms itself on presses he
@@ -698,10 +718,10 @@ const ComposeBox: Component<Props> = (props) => {
       //
       // preventDefault STAYS: it is what stops the textarea from inserting its
       // own line break, which would otherwise land in the box AFTER the async
-      // doSubmit() has cleared the draft. The composer is still single-line —
-      // a newline cannot travel inside a PRIVMSG (CRLF terminates the frame),
-      // and paste remains the ONE route a multi-line body takes in, guarded by
-      // lib/pasteFlood.
+      // doSubmit() has cleared the draft. Outside an encrypted query the
+      // composer is still single-line — a newline cannot travel inside a
+      // PRIVMSG (CRLF terminates the frame), and paste remains the ONE route a
+      // multi-line body takes in, guarded by lib/pasteFlood.
       e.preventDefault();
       void doSubmit();
       return;
