@@ -58,6 +58,8 @@ setup() {
     export RELOAD_CONNECT_RC=0 RELOAD_CODE=200
     export RELOAD_BODY='{"failed":[],"migrated":[],"reloaded":["Elixir.Grappa.Version"]}'
     export HEALTH_RC=0 HEALTH_OK_AFTER_RESTART=0 CIC_RC=0 SEED_RC=0 RPC_HANGS=0
+    # issue 1112 — the migration check the script runs before every restart.
+    export CHECK_RC=0 CHECK_OUT='migration audit: 3 versions applied, 0 pending, no version claimed by two files' 
     # One line per call that waits on the node, with the bound it was given.
     BOUNDS_LOG="$BATS_TEST_TMPDIR/bounds.log"
     export BOUNDS_LOG
@@ -152,7 +154,12 @@ EOF
     # produced.
     cat > "$ROOT/usr/bin/grappa" <<EOF
 #!/usr/bin/env bash
-printf 'grappa %s\n' "\$1" >> "\$CALL_LOG"
+# An eval is logged WITH its expression: the verdict and the pre-restart
+# migration check are both evals, and the cases below must tell them apart.
+case "\$1" in
+    eval) printf 'grappa eval %s\n' "\$2" >> "\$CALL_LOG" ;;
+    *)    printf 'grappa %s\n' "\$1" >> "\$CALL_LOG" ;;
+esac
 case "\$1" in
     rpc)
         if [ "\$RPC_RC" -ne 0 ]; then
@@ -162,6 +169,12 @@ case "\$1" in
         printf '%s' "\$RPC_OUT"
         ;;
     eval)
+        case "\$2" in
+            *check_migrations*)
+                printf '%s\n' "\$CHECK_OUT"
+                exit "\$CHECK_RC"
+                ;;
+        esac
         printf '%s\n' "\$2" > "$BATS_TEST_TMPDIR/eval-expr"
         cp "\$3" "$BATS_TEST_TMPDIR/eval-saw"
         printf '%s\n' "\$3" > "$BATS_TEST_TMPDIR/eval-path"
@@ -247,7 +260,7 @@ restarted() {
     [ "$status" -eq 0 ]
     restarted
     refute grep -q '^grappa rpc' "$CALL_LOG"
-    refute grep -q '^grappa eval' "$CALL_LOG"
+    refute grep -q '^grappa eval Grappa.Deploy.Manifest' "$CALL_LOG"
     refute grep -q 'admin/' "$CALL_LOG"
     [[ "$output" == *"16.3"*"16.4"* ]]
     [[ "$output" == *"applied by RESTART"* ]]
@@ -307,7 +320,7 @@ restarted() {
     run apply
 
     [ "$status" -eq 0 ]
-    [ "$(first '^grappa rpc')" -lt "$(first '^grappa eval')" ]
+    [ "$(first '^grappa rpc')" -lt "$(first '^grappa eval Grappa.Deploy.Manifest')" ]
     [ "$(cat "$BATS_TEST_TMPDIR/eval-saw")" = "$RPC_OUT" ]
     # It travelled in a directory of its own that the release, run as the
     # grappa user, can traverse but not list or write, in a file it can read...
@@ -327,7 +340,7 @@ restarted() {
 
     [ "$status" -eq 0 ]
     restarted
-    refute grep -q '^grappa eval' "$CALL_LOG"
+    refute grep -q '^grappa eval Grappa.Deploy.Manifest' "$CALL_LOG"
     refute grep -q 'admin/reload' "$CALL_LOG"
 }
 
@@ -337,7 +350,7 @@ restarted() {
 
     [ "$status" -eq 0 ]
     restarted
-    refute grep -q '^grappa eval' "$CALL_LOG"
+    refute grep -q '^grappa eval Grappa.Deploy.Manifest' "$CALL_LOG"
 }
 
 @test "a cold verdict restarts and names what made it cold" {
@@ -443,6 +456,55 @@ restarted() {
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"applied by RESTART"* ]]
+}
+
+# ── issue 1112: no restart without the migration check ───────────────────────
+#
+# vjt's ruling on S3 (F2 (a)): the restart migrates first, in ExecStartPre,
+# with the old node already stopped — so a migration that cannot run turns a
+# serving node into a unit that fails to start. The new release audits its
+# migrations first, while the old node still serves, and a refusal leaves it
+# serving. Since the cold path of every source substrate does the same.
+
+@test "every restart is preceded by the new release's migration check" {
+    local case_
+    for case_ in cold-verdict erts-move; do
+        : > "$CALL_LOG"
+        if [ "$case_" = cold-verdict ]; then
+            export EVAL_RC=3 EVAL_OUT='Cold-deploy required:'
+        else
+            export EVAL_RC=0
+            running_erts '/usr/lib/grappa/erts-16.3/bin/beam.smp'
+        fi
+        run apply
+
+        [ "$status" -eq 0 ]
+        restarted
+        [ -n "$(first '^grappa eval Grappa.Release.check_migrations')" ]
+        [ "$(first '^grappa eval Grappa.Release.check_migrations')" -lt "$(first '^systemctl restart')" ]
+    done
+}
+
+@test "a migration check that refuses: exit 1, NOT restarted, the running node left as it was" {
+    export EVAL_RC=3 EVAL_OUT='Cold-deploy required:' CHECK_RC=1
+    export CHECK_OUT='** (RuntimeError) refusing to migrate — migration version 20260810120000 is claimed by 2 files'
+    run apply
+
+    [ "$status" -eq 1 ]
+    refute restarted
+    refute grep -qE '^systemctl (daemon-reload|reset-failed|restart|stop)' "$CALL_LOG"
+    refute grep -q '^grappa seed-themes' "$CALL_LOG"
+    [[ "$output" == *"claimed by 2 files"* ]]
+    [[ "$output" == *"NOT restarted"* ]]
+}
+
+@test "a migration check that never finishes is a refusal too — bounded, and NOT restarted" {
+    export EVAL_RC=3 EVAL_OUT='Cold-deploy required:' CHECK_RC=124 CHECK_OUT=''
+    run apply
+
+    [ "$status" -eq 1 ]
+    refute restarted
+    [[ "$output" == *"124"* ]]
 }
 
 # ── R4: the one failure that fails ───────────────────────────────────────────
@@ -570,6 +632,14 @@ nfpm_depends() {
     restarted
     grep -qx 'healthz 5' "$BOUNDS_LOG"
     refute grep -q ' none$' "$BOUNDS_LOG"
+
+    # The pre-restart migration check (issue 1112), on a path where it is the
+    # ONLY eval: an ERTS move computes no verdict.
+    : > "$BOUNDS_LOG"
+    running_erts '/usr/lib/grappa/erts-16.3/bin/beam.smp'
+    run apply
+    [ "$status" -eq 0 ]
+    grep -qx 'grappa-eval 120' "$BOUNDS_LOG"
 }
 
 @test "a running node that never answers the rpc → restart, saying it timed out" {
@@ -579,7 +649,7 @@ nfpm_depends() {
     [ "$status" -eq 0 ]
     restarted
     [[ "$output" == *"did not report its manifest within 60s"* ]]
-    refute grep -q '^grappa eval' "$CALL_LOG"
+    refute grep -q '^grappa eval Grappa.Deploy.Manifest' "$CALL_LOG"
 }
 
 @test "PORT is read bare or in quotes, as systemd reads the env file" {
