@@ -46,13 +46,11 @@ const CommandMenu: Component<Props> = (props) => {
     const limit = getCommandMenuEntries();
     // A live command cycle: the draft holds the entry Tab put there (with its
     // space), so the list is the cycle's, and the slot past the last entry is
-    // the typed word, which marks nothing.
+    // the typed word, which marks nothing: no entry has that index.
     const cycle = props.cycle;
     if (cycle !== null) {
       const entries = rankCommands(cycle.prefix, limit);
-      return entries.length === 0
-        ? null
-        : { entries, active: cycle.idx < entries.length ? cycle.idx : null };
+      return entries.length === 0 ? null : { entries, active: cycle.idx };
     }
     const prefix = loneVerb(props.draft);
     if (prefix === null) return null;
