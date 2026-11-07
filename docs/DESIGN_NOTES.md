@@ -5369,3 +5369,107 @@ height 35.59, the first's top 512.92, height 16), so four box readings went
 red while the screenshots showed two rows. **Not covered:** the Android
 touch project (Blink again, the engine the desktop run already reads) and
 real devices.
+<!-- entry #2584b -->
+
+---
+
+## 2026-11-07 — issue 2584 (slice B): the `/` menu in cic
+
+The cic half of issue 2584. A dropdown over the compose box offers commands
+while the draft is a lone `/verb`, most used first, filtered by what follows
+the `/`. Slice A put the counts on the server; this slice reads them, writes
+them and draws the menu.
+
+**A view, not a second state machine.** `CommandMenu.tsx` derives what it
+shows from two things that already exist: the draft, and the compose door's
+Tab cycle. That is why it closes "by itself" on a space, on deleting the `/`
+and on send (each changes the draft), and why it needs no key handling of its
+own. The one state it owns is Escape's: closed until the draft changes. It
+opens only for a `/` in the first column, and never for `//`, the literal-text
+escape. The `//` guard is live, not decorative: slice A's `normalize_verb/1`
+accepts an alias NAMED `/foo`, and without the guard `//f` would offer it.
+
+**One ring for Tab, the menu and the swipe.** The completion engine
+(`tabCompletion.ts`) gained a command branch instead of a second engine: a
+line-start `/word` completes against the commands the door hands in, in the
+menu's order, with the cycle, revert slot and anchor every nick cycle already
+has. The new `commands` field of the request is REQUIRED, and `null` means "no
+commands at this door": the services prompt (its line opens with the
+SERVICE's verb, `INFO`), and the compose box with the menu turned off. Tab
+walks the entries the menu SHOWS (its entry count), not every match, so what
+you see is what Tab walks. The menu marks the slot Tab is on through
+`commandCycle`, which is derived and never stored: a cycle counts only while
+its insertion is still in the draft where it put it, the engine's own
+continuation test, so a history recall ends it with nothing to reset. The
+arrow keys stay history recall while the menu is open (vjt's ruling).
+
+**Escape goes through the ONE ESC authority** (#232), via
+`createOverlayEscape`: the non-covering overlay door the inline cards and the
+context menu use (#1772). It does not freeze the scrollback, and the composer
+stays live under it.
+
+**A tap keeps the composer focused.** Each entry cancels its `mousedown`
+(#59, lib/keepKeyboard: the focus-shift carrier, never `pointerdown`), so the
+phone's keyboard stays up for the arguments. The pick writes `/verb ` with the
+caret after the space, through `placeCaretAtEndInView` like every end-of-draft
+writer (#173, #1105). That call is measured as unfalsifiable in jsdom: the
+`value` setter already puts the caret at the end on a spec-conforming engine,
+and the draft before a pick is one short line, so the reveal has nothing to
+scroll. It stays for the convention, and because iOS is out of reach here.
+The menu's slot is always mounted and only its content comes and goes (#1358),
+so it never makes Solid move the form that holds the focused textarea.
+
+**What is counted.** The verb AS TYPED, lower-cased, once per command that is
+dispatched, whatever its outcome: an alias under its own name, never under its
+expansion. Plain text and a line the parser refused (unknown verb, bad
+arguments, an alias loop) count nothing. `splitSlash` is the one rule for
+"what is the verb", read by the parser AND the counter, so a count can never
+name a different verb from the one dispatched. The POST is fire-and-forget: a
+send never waits on it, and a refused count (429) is lost and logged, never
+shown to the sender. Counting the use and not the result is a choice: a
+command the server later rejects still counts, because the menu ranks what a
+person reaches for.
+
+**Keyed off the protocol number, never off a 404.** Below protocol 61 the
+routes do not exist and the GET answers the SPA page with 200 (CLIENT_PROTOCOL
+§8f). So the store asks `serverProtocol() >= 61` first, and a server that has
+not named its protocol yet gets neither a GET nor a POST. The menu then orders
+by the default list alone. Another device picks new counts up at its next
+user-topic (re)join (no event, vjt's ruling Q3); the device that sends is
+current at once, because the POST answers the whole map.
+
+**The settings are per device** (vjt's ruling, Q1): `cicchetto.commandMenu`
+and `cicchetto.commandMenuEntries` in localStorage, on and five by default,
+choices 1 to 10 (vjt asked for "max 5 or 7", then for the number to be
+configurable). A stored value the bundle cannot read falls back to the
+default, never to off; a setter handed a value outside the choices throws
+rather than storing it. Turning the menu off turns `/` completion off with it,
+but the counting goes on, because another device of the account may have its
+menu on. The two rows sit in the existing options fieldset (#1766) rather than
+a new one, and its blurb now names both per-device rows.
+
+**The default order** is ten verbs (`join msg me query whois part nick away
+topic quit`), five of them shown with the default setting. Equal counts fall
+back to that list, then to the alphabet, so "no history yet" needs no branch
+of its own.
+
+**D8, a fix the slice paid for.** `parseSlash` lost its two default arguments
+(CLAUDE.md: no `\\` defaults). Its one production caller that leaned on the
+chantypes default was `draftFramePreview`, which now takes the network slug
+and passes `chantypesForSlug`, so the frame preview parses a draft with the
+sigils the network advertises, like the send path does. Whether the old
+default ever produced a wrong preview in practice was read, not measured.
+
+**The price.** On iOS a swipe right that starts over the typed text may not
+fire (issue 2356, still open); Tab and the tap do not depend on it.
+
+**Not measured.**
+- The menu's layout on a real phone (overlap with the compose box, z-index
+  45, the keyboard): jsdom sees no CSS; the e2e runs on chromium (desktop and
+  Pixel 7 emulation) and WebKit's iPhone 15 profile, which is not iOS.
+- That a tap keeps the keyboard up on a real iOS device: the e2e proves the
+  focus stays in the textarea, which is the precondition, not the keyboard.
+- That the shell lock `createOverlayEscape` takes does not disturb anything
+  under the menu on a real device: only precedents (#1772).
+- The swipe right under issue 2356 on iOS.
+- Protocol 61 in production: taken from the merge order, not observed.
