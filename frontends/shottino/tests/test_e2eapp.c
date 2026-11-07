@@ -104,6 +104,9 @@ static struct {
     /* The send door's next answer, scripted (0: accept); the frame
      * budget it sizes payloads with (0: unchecked), as grappa's 413. */
     int fail_send_status;
+    /* Make the watched slot dir read-only once the next payload is taken:
+     * the record saved BEFORE it left is on disk, the one after cannot be. */
+    bool lock_disk_on_send;
     char fail_send_error[32];
     long budget;
     /* The PLAINTEXT door (POST …/channels/:c/messages): every body. */
@@ -146,6 +149,7 @@ static void fg_reset(void) {
     for (size_t i = 0; i < fg.nplain; i++) free(fg.plain[i]);
     fg.nplain = 0;
     fg.fail_send_status = 0;
+    fg.lock_disk_on_send = false;
     fg.budget = 0;
     fg.acks[0] = 0;
     fg.watch_dir[0] = 0;
@@ -611,6 +615,10 @@ static char *fg_handle(const char *method, const char *path, const char *body, i
         fg.sent_disk_rows[k] = 0;
         fg.sent_disk_records[k] = -1;
         if (fg.watch_dir[0]) fg_disk_locked(&inbox, &fg.sent_disk_records[k], &fg.sent_disk_rows[k]);
+        if (fg.lock_disk_on_send && fg.watch_dir[0]) {
+            chmod(fg.watch_dir, 0500);
+            fg.lock_disk_on_send = false;
+        }
         *status = 202;
         out = xasprintf("{\"msgid\":\"%s\"}", fg.sent_msgid[k]);
     } else if (strcmp(rest, "/devices") == 0 && strcmp(method, "POST") == 0) {
@@ -3125,6 +3133,30 @@ TEST(a_full_table_refuses_a_new_message_and_keeps_every_pending_one) {
     free_e2e_app(app);
 }
 
+/* What leaves is recorded after it left (the second save of a step): if
+ * the disk refuses that one, it is said loudly, and the in-memory record —
+ * which tells the truth about what left — is kept rather than read back to
+ * a state that predates the send. The next step's save, which comes before
+ * anything else leaves, writes it. */
+TEST(a_record_that_cannot_be_stored_after_a_send_is_said) {
+    struct app *app = send_app("user:latesave", "bob");
+    pthread_mutex_lock(&fg.lock);
+    fg.lock_disk_on_send = true;
+    pthread_mutex_unlock(&fg.lock);
+    handle_command(app, "/e2e on");
+    run_jobs(app);
+    CHECK_LONG(posted(carried, "keyreq", NULL), 1);
+    CHECK(said(app, "could not store this device's record"));
+    CHECK(said(app, "what was just sent left, but the record of it could not be stored"));
+    CHECK(view_of(app).state == E2E_SLOT_READY);
+    CHECK(app->e2e[0].have_rec);
+    CHECK(e2e_query_encrypted(app, "azzurra", "bob"));
+    pthread_mutex_lock(&fg.lock);
+    chmod(fg.watch_dir, 0700);
+    pthread_mutex_unlock(&fg.lock);
+    free_e2e_app(app);
+}
+
 /* The NACK in (§5.7): from a device the message went to, the engine
  * re-keys that device and sends again, once; a second NACK fails it. */
 static void nack_from(struct app *app, tpeer *p, const char *ref) {
@@ -4548,6 +4580,7 @@ int main(void) {
     RUN(a_peer_with_two_devices_gets_one_payload_two_bodies);
     RUN(no_keys_fails_the_row_and_nothing_goes_in_clear);
     RUN(a_full_table_refuses_a_new_message_and_keeps_every_pending_one);
+    RUN(a_record_that_cannot_be_stored_after_a_send_is_said);
     RUN(a_nack_rekeys_and_resends_once_then_fails);
     RUN(a_nack_from_star_asks_the_user);
     RUN(a_dropped_send_fails_and_resend_sends_it_again);

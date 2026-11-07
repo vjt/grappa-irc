@@ -17043,7 +17043,18 @@ static bool e2e_commit(struct app *app, struct e2e_slot *s, const e2e_ctx *c, e2
     }
     if (pend->noutbound || pend->ncopies || pend->nevents) {
         e2e_flush(app, s, c, pend, unknown);
-        e2e_save(app, s);
+        /* What the flush records (the msgids grappa answered, refusals
+         * discarded) is stored AFTER it left, so a refusal here cannot
+         * call anything back. The record is NOT read back: the memory is
+         * the truth about what left, and the disk's copy predates it. The
+         * next step's save, which comes before anything else leaves, writes
+         * it — so the crash-safe order holds; a crash before then loses
+         * only these answers (an order challenge for these lines is then
+         * refused, never acknowledged blind). Said, loudly. */
+        if (!e2e_save(app, s))
+            card(app, s->slug, "!!! e2e: what was just sent left, but the record of it could not "
+                               "be stored — the record on disk is one step behind until the next "
+                               "step stores it; if this repeats, check the disk");
     }
     return true;
 }
