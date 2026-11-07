@@ -1416,6 +1416,37 @@ the one that counts.
 
 Check `protocol_version >= 59`.
 
+### 4m. Where a grappa user's clients connect from (issue 2597, v62)
+
+From v62 every `whois_bundle` carries two more keys, always present:
+
+```json
+{"kind": "whois_bundle", "network": "azzurra", "target": "alice", "...": "...",
+ "grappa_client_ips": ["2001:db8::7", "203.0.113.9"],
+ "grappa_client_last_known_ip": null}
+```
+
+They say where the grappa user holding `target` connects from, and they
+are `null` unless the asker is entitled: your session holds umode `o` or
+`O` upstream (an IRC operator), or your connection speaks for a grappa
+admin with a full web session — a per-client token (§7) never does, even
+one an admin minted. Read them as four states:
+
+| `grappa_client_ips` | `grappa_client_last_known_ip` | means |
+|---|---|---|
+| `null` | `null` | not for you; or no grappa session on this network holds the nick upstream; or the ircd confirmed no user (no 311) |
+| `["…", …]` | `null` | the addresses that user's live sockets connected from, sorted and deduplicated |
+| `[]` | `"…"` | no socket of theirs is open; this is where their newest login came from — where they logged in, not where they are |
+| `[]` | `null` | no socket open, and no login address on record |
+
+`grappa_client_last_known_ip` is set only beside `[]`. Like the rest of the
+bundle, it reaches only the connection that asked (§4, #1088), so another
+device of yours that is not entitled never sees it. A server below v62
+sends neither key; read their absence as `null`, which is what such a
+server means.
+
+Check `protocol_version >= 62`.
+
 ---
 
 ## 5. Wire format

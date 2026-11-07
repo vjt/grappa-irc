@@ -23,6 +23,7 @@ production runs on the pi.
 - [Letting a locked-out visitor back in (#982)](#letting-a-locked-out-visitor-back-in-982)
 - [Running an identd (RFC 1413, issue 227)](#running-an-identd-rfc-1413-issue-227)
 - [The client address behind a reverse proxy](#the-client-address-behind-a-reverse-proxy)
+- [Client addresses in a WHOIS (issue 2597)](#client-addresses-in-a-whois-issue-2597)
 - [CSP / security headers (BEAM-emitted, NOT nginx — #485)](#csp--security-headers-beam-emitted-not-nginx--485)
 - [The Docker compose stack (compose.yaml)](#the-docker-compose-stack-composeyaml)
 - [The two images: Dockerfile (toolchain) vs Dockerfile.release](#the-two-images-dockerfile-toolchain-vs-dockerfilerelease)
@@ -3007,6 +3008,51 @@ to `172.17.0.1` and they all share one per-IP bucket: one login throttle,
 one per-IP admission cap, one `sessions.ip` value. A public first hop (a
 CDN in front of your proxy) resolves the same way, to the CDN's addresses.
 There is no setting for a list of trusted proxy addresses.
+
+## Client addresses in a WHOIS (issue 2597)
+
+A WHOIS for a nick one of your grappa users holds can name where that
+user's clients connect from — a **client IP** row on the WHOIS card (on the
+wire, `grappa_client_ips` and `grappa_client_last_known_ip` on
+`whois_bundle`, see `docs/CLIENT_PROTOCOL.md`). Two kinds of asker get it,
+and nobody else:
+
+* **an IRC operator** — the asking grappa session holds umode `o` or `O`
+  upstream, what `/oper` grants. Those two letters are what bahamut and
+  solanum use; on another ircd, check what its operators carry.
+* **a grappa admin with a full web session** — `is_admin` on the user,
+  asking from a socket that is not a per-client token. It is the predicate
+  the admin console's live feed checks (`GrappaWeb.AdminChannel.admin_socket?/1`).
+
+What the row says:
+
+* the addresses that user's **live** sockets connected from — every open
+  tab or device, deduplicated;
+* with none open, **no socket connected**, beside the address that user's
+  newest login came from (`sessions.ip`, the one the admin listings show)
+  when grappa has one. That is where they logged in, not where they are;
+* nothing, for a nick that no grappa session on the same network holds
+  upstream (a session still registering does not count), and when the
+  ircd answers that nobody holds it.
+
+The address is the one grappa resolved for that connection — the same one
+behind `sessions.ip` and the per-IP throttles — so it is only as right as
+the proxy chain in front of the BEAM (see
+[The client address behind a reverse proxy](#the-client-address-behind-a-reverse-proxy):
+behind a chain of two proxies whose inner hop does not see the outer one on
+loopback, every user reads as the outer proxy's address).
+Two `networks` rows pointing at the
+same ircd are two networks to grappa: a nick held through one is nobody
+through the other. If two of your sessions ever answer for one nick at
+once, the row stays empty and a `whois: N sessions hold the nick` warning
+names the sessions, never an address.
+
+**Nothing is audited and nobody is told.** No log line records who looked
+up whom, and the user whose address is shown is not notified. That is a
+choice, not an omission: an IRC operator already sees every client's real
+host upstream, and an admin already reads login addresses in the console.
+If your users are owed notice that operators and admins can see where they
+connect from, give it in your terms of service.
 
 ## CSP / security headers (BEAM-emitted, NOT nginx — #485)
 
