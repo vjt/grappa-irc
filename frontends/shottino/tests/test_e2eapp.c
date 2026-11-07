@@ -33,10 +33,30 @@
 #define FG_MAX_DEV 8
 
 typedef struct {
+    char key[64], sig[128];
+} fg_key;
+
+typedef struct {
     char did[16], ed[64], curve[64], sig[128];
     long otks;
     bool fallback;
+    /* the keys themselves, as uploaded: what a KEYS or a claim hands out */
+    fg_key otk[64];
+    size_t notk;
+    fg_key fb;
 } fg_device;
+
+/* One inbox entry: the e2e_message as grappa holds it for device `to`. */
+typedef struct {
+    long id;
+    char to[16];
+    char *json;
+    bool acked;
+    e2e_verb verb;
+} fg_item;
+
+#define FG_INBOX_MAX 64
+#define FG_SENT_MAX 64
 
 static struct {
     int fd;
@@ -70,8 +90,22 @@ static struct {
         int fail_join_status;
         char fail_join_error[32];
     } rv;
+    /* the inboxes, the send door and the copy door */
+    fg_item inbox[FG_INBOX_MAX];
+    size_t ninbox;
+    long next_inbox_id;
+    char *sent[FG_SENT_MAX]; /* request bodies of POST …/messages, in order */
+    size_t nsent;
+    long next_msgid;
+    char acks[2048]; /* each ack's ids, "[1,2]\n" */
+    /* What the disk held when each ack arrived (the slot dir, set by a
+     * test): the record's watermark and the history's rows. */
+    char watch_dir[PATH_MAX];
+    long ack_disk_inbox[16];
+    size_t ack_disk_rows[16];
+    size_t nack_disk;
     /* every request, "METHOD path\n" */
-    char log[16384];
+    char log[32768];
     size_t requests;
 } fg;
 
@@ -83,9 +117,112 @@ static void fg_reset(void) {
     fg.fail_put_status = 0;
     fg.fail_upload_status = 0;
     memset(&fg.rv, 0, sizeof(fg.rv));
+    for (size_t i = 0; i < fg.ninbox; i++) free(fg.inbox[i].json);
+    fg.ninbox = 0;
+    for (size_t i = 0; i < fg.nsent; i++) free(fg.sent[i]);
+    fg.nsent = 0;
+    fg.acks[0] = 0;
+    fg.watch_dir[0] = 0;
+    fg.nack_disk = 0;
     fg.log[0] = 0;
     fg.requests = 0;
     pthread_mutex_unlock(&fg.lock);
+}
+
+static void fg_msgid(char out[12]) { snprintf(out, 12, "m%010ld", ++fg.next_msgid); }
+
+/* An inbox entry for device `to` (a did), as grappa's e2e_message shape.
+ * Under fg.lock. Answers its id. */
+static long fg_inbox_push_locked(const char *to, const char *from, const char *from_did,
+                                 e2e_verb verb, const char *msgid, const char *payload, bool own) {
+    if (fg.ninbox >= FG_INBOX_MAX) return 0;
+    fg_item *it = &fg.inbox[fg.ninbox++];
+    it->id = ++fg.next_inbox_id;
+    snprintf(it->to, sizeof(it->to), "%s", to);
+    it->acked = false;
+    it->verb = verb;
+    char *f = json_escape(from), *p = json_escape(payload);
+    it->json = xasprintf("{\"kind\":\"e2e_message\",\"id\":%ld,\"network\":\"azzurra\",\"from\":"
+                         "\"%s\",\"from_did\":\"%s\",\"to_did\":\"%s\",\"verb\":\"%s\",\"msgid\":"
+                         "\"%s\",\"payload\":\"%s\",\"own\":%s}",
+                         it->id, f, from_did, to, e2e_verb_name(verb), msgid, p,
+                         own ? "true" : "false");
+    free(f);
+    free(p);
+    return it->id;
+}
+
+static long fg_inbox_push(const char *to, const char *from, const char *from_did, e2e_verb verb,
+                          const char *msgid, const char *payload, bool own) {
+    pthread_mutex_lock(&fg.lock);
+    long id = fg_inbox_push_locked(to, from, from_did, verb, msgid, payload, own);
+    pthread_mutex_unlock(&fg.lock);
+    return id;
+}
+
+/* grappa's KEYS (lib/grappa/e2e_keys.ex): the list it holds and each
+ * listed device's id block with its oldest one-time key (spent) or its
+ * fallback — only `only`'s on a claim. Under fg.lock. */
+static char *fg_keys_locked(const char *only) {
+    e2e_keys_build_entry entries[E2E_MAX_DEVICES];
+    fg_key spent[E2E_MAX_DEVICES];
+    size_t n = 0;
+    const char *devs[E2E_MAX_DEVICES];
+    for (size_t i = 0; i < fg.ndevices; i++) {
+        devs[i] = fg.devices[i];
+        fg_device *d = NULL;
+        for (size_t k = 0; k < fg.ndev; k++)
+            if (strcmp(fg.dev[k].ed, fg.devices[i]) == 0) d = &fg.dev[k];
+        if (!d || (only && strcmp(d->did, only) != 0)) continue;
+        e2e_keys_build_entry *e = &entries[n];
+        memset(e, 0, sizeof(*e));
+        e->curve25519 = d->curve;
+        e->ed25519 = d->ed;
+        e->sig = d->sig;
+        if (d->notk > 0) {
+            spent[n] = d->otk[0];
+            memmove(d->otk, d->otk + 1, (d->notk - 1) * sizeof(d->otk[0]));
+            d->notk--;
+            d->otks--;
+            e->otk_key = spent[n].key;
+            e->otk_sig = spent[n].sig;
+        } else {
+            e->otk_key = d->fb.key;
+            e->otk_sig = d->fb.sig;
+            e->otk_fallback = true;
+        }
+        n++;
+    }
+    return e2e_keys_payload(fg.master, fg.ver, devs, fg.ndevices, fg.list_sig, entries, n);
+}
+
+/* What reached disk, read as the next run would (no store: the app holds
+ * its lock): the record's watermark, and the rows of every chat. */
+static void fg_watch_locked(void) {
+    if (!fg.watch_dir[0] || fg.nack_disk >= 16) return;
+    char *path = xasprintf("%s/record.json", fg.watch_dir);
+    FILE *f = fopen(path, "r");
+    free(path);
+    long inbox = -1;
+    if (f) {
+        static char buf[1 << 20];
+        size_t n = fread(buf, 1, sizeof(buf), f);
+        fclose(f);
+        e2e_record rec;
+        if (e2e_record_from_json(buf, n, &rec)) {
+            inbox = rec.state.inbox;
+            e2e_record_free(&rec);
+        }
+    }
+    char *dir = xasprintf("%s/chats", fg.watch_dir);
+    e2e_rows rows;
+    size_t nrows = 0;
+    if (e2e_chat_load(dir, &rows, NULL, 0)) nrows = rows.n;
+    e2e_rows_free(&rows);
+    free(dir);
+    fg.ack_disk_inbox[fg.nack_disk] = inbox;
+    fg.ack_disk_rows[fg.nack_disk] = nrows;
+    fg.nack_disk++;
 }
 
 static fg_device *fg_device_by_did(const char *did) {
@@ -296,6 +433,18 @@ static char *fg_handle(const char *method, const char *path, const char *body, i
             snprintf(fg.list_sig, sizeof(fg.list_sig), "%s", l.sig);
             out = fg_list_json();
         }
+    } else if (strcmp(rest, "/messages") == 0 && strcmp(method, "POST") == 0) {
+        /* The send door: accepted, named, kept for the test to carry. */
+        if (!root || !json_string(json_get(root, "verb")) || fg.nsent >= FG_SENT_MAX) {
+            *status = 400;
+            out = xasprintf("{\"error\":\"bad_request\"}");
+            goto end;
+        }
+        fg.sent[fg.nsent++] = xasprintf("%s", body);
+        char msgid[12];
+        fg_msgid(msgid);
+        *status = 202;
+        out = xasprintf("{\"msgid\":\"%s\"}", msgid);
     } else if (strcmp(rest, "/devices") == 0 && strcmp(method, "POST") == 0) {
         const char *ed = json_string(json_get(root, "ed25519"));
         const char *curve = json_string(json_get(root, "curve25519"));
@@ -354,6 +503,75 @@ static char *fg_handle(const char *method, const char *path, const char *body, i
                 *status = 204;
                 out = xasprintf("%s", "");
             }
+        } else if (strncmp(tail, "/inbox?after=", 13) == 0 && strcmp(method, "GET") == 0) {
+            long after = strtol(tail + 13, NULL, 10);
+            out = xasprintf("{\"messages\":[");
+            size_t n = 0;
+            for (size_t i = 0; i < fg.ninbox && n < 100; i++) {
+                fg_item *it = &fg.inbox[i];
+                if (it->acked || it->id <= after || strcmp(it->to, did) != 0) continue;
+                char *joined = xasprintf("%s%s%s", out, n ? "," : "", it->json);
+                free(out);
+                out = joined;
+                n++;
+            }
+            char *closed = xasprintf("%s]}", out);
+            free(out);
+            out = closed;
+        } else if (strcmp(tail, "/inbox/ack") == 0 && strcmp(method, "POST") == 0) {
+            const json_value *ids = json_get(root, "ids");
+            if (json_type_of(ids) != JSON_ARRAY || json_len(ids) == 0 || json_len(ids) > 100) {
+                *status = 400;
+                out = xasprintf("{\"error\":\"bad_request\"}");
+                goto end;
+            }
+            fg_watch_locked();
+            size_t at = strlen(fg.acks);
+            json_write(ids, fg.acks + at, sizeof(fg.acks) - at - 1);
+            at = strlen(fg.acks);
+            snprintf(fg.acks + at, sizeof(fg.acks) - at, "\n");
+            for (size_t k = 0; k < json_len(ids); k++) {
+                long id = 0;
+                json_long(json_at(ids, k), &id);
+                for (size_t i = 0; i < fg.ninbox; i++)
+                    if (fg.inbox[i].id == id && strcmp(fg.inbox[i].to, did) == 0)
+                        fg.inbox[i].acked = true;
+            }
+            *status = 204;
+            out = xasprintf("%s", "");
+        } else if (strcmp(tail, "/claim") == 0 && strcmp(method, "POST") == 0) {
+            const char *from = json_string(json_get(root, "from_did"));
+            if (!from || !fg_device_by_did(from)) {
+                *status = 422;
+                out = xasprintf("{\"error\":\"unknown_device\"}");
+            } else if (strcmp(from, did) == 0) {
+                *status = 409;
+                out = xasprintf("{\"error\":\"same_device\"}");
+            } else if (!fg_listed(d->ed)) {
+                *status = 404;
+                out = xasprintf("{\"error\":\"not_found\"}");
+            } else {
+                char *keys = fg_keys_locked(did);
+                char *k = json_escape(keys);
+                out = xasprintf("{\"keys\":\"%s\"}", k);
+                free(k);
+                free(keys);
+            }
+        } else if (strcmp(tail, "/copies") == 0 && strcmp(method, "POST") == 0) {
+            const char *from = json_string(json_get(root, "from_did"));
+            const char *verb = json_string(json_get(root, "verb"));
+            const char *payload = json_string(json_get(root, "payload"));
+            if (!from || !verb || !payload) {
+                *status = 400;
+                out = xasprintf("{\"error\":\"bad_request\"}");
+                goto end;
+            }
+            char msgid[12];
+            fg_msgid(msgid);
+            long id = fg_inbox_push_locked(did, "vjt", from, e2e_verb_parse(verb), msgid, payload,
+                                           true);
+            *status = 202;
+            out = xasprintf("{\"id\":%ld,\"msgid\":\"%s\"}", id, msgid);
         } else if (strcmp(tail, "/keys") == 0 && strcmp(method, "GET") == 0) {
             out = xasprintf("{\"one_time_keys\":%ld,\"fallback\":%s}", d->otks,
                             d->fallback ? "true" : "false");
@@ -385,7 +603,19 @@ static char *fg_handle(const char *method, const char *path, const char *body, i
                 goto end;
             }
             d->otks += (long)json_len(otks);
-            if (json_type_of(fb) == JSON_OBJECT) d->fallback = true;
+            for (size_t i = 0; i < json_len(otks) && d->notk < 64; i++) {
+                const json_value *k = json_at(otks, i);
+                snprintf(d->otk[d->notk].key, sizeof(d->otk[0].key), "%s",
+                         json_string(json_get(k, "key")));
+                snprintf(d->otk[d->notk].sig, sizeof(d->otk[0].sig), "%s",
+                         json_string(json_get(k, "sig")));
+                d->notk++;
+            }
+            if (json_type_of(fb) == JSON_OBJECT) {
+                d->fallback = true;
+                snprintf(d->fb.key, sizeof(d->fb.key), "%s", json_string(json_get(fb, "key")));
+                snprintf(d->fb.sig, sizeof(d->fb.sig), "%s", json_string(json_get(fb, "sig")));
+            }
             out = xasprintf("{\"one_time_keys\":%ld,\"fallback\":%s}", d->otks,
                             d->fallback ? "true" : "false");
         } else {
@@ -1477,6 +1707,614 @@ TEST(pairing_command) {
     free_pair_app(app);
 }
 
+/* ── receiving: a scripted peer (slice D) ────────────────────────────── */
+
+/* A peer's device, on e2e.c's own engine: it talks to ours only through
+ * the fake grappa — KEYREQs it sends are answered with the KEYS grappa
+ * composes from what our device uploaded; what it sends us lands in our
+ * device's inbox. */
+typedef struct {
+    e2e_record rec;
+    char nick[32];
+} tpeer;
+
+static void tpeer_new(tpeer *p, const char *nick) {
+    memset(p, 0, sizeof(*p));
+    e2e_record_new(&p->rec);
+    p->rec.master = vz_account_new();
+    p->rec.own = calloc(1, sizeof(*p->rec.own));
+    e2e_own_bootstrap(p->rec.account, p->rec.master, p->rec.own);
+    snprintf(p->nick, sizeof(p->nick), "%s", nick);
+}
+
+static void tpeer_free(tpeer *p) { e2e_record_free(&p->rec); }
+
+static e2e_ctx tpeer_ctx(tpeer *p) {
+    return (e2e_ctx){&p->rec, p->nick, 394, (int64_t)time(NULL) * 1000};
+}
+
+/* Our device's did, as the slot holds it. */
+static const char *our_did(struct app *app) { return app->e2e[0].rec.own->did; }
+
+/* Carries what the peer's step sent: a KEYREQ answered by grappa's KEYS,
+ * everything else into our inbox. Frees `r`. */
+static void tpeer_pump(struct app *app, tpeer *p, e2e_result *r, int depth) {
+    e2e_ctx c = tpeer_ctx(p);
+    for (size_t i = 0; i < r->noutbound && depth < 8; i++) {
+        const e2e_outbound *o = &r->outbound[i];
+        char msgid[12];
+        pthread_mutex_lock(&fg.lock);
+        fg_msgid(msgid);
+        pthread_mutex_unlock(&fg.lock);
+        if (o->ref) e2e_sent_ok(&c, o->ref, msgid);
+        if (o->verb == E2E_VERB_KEYREQ) {
+            pthread_mutex_lock(&fg.lock);
+            char *keys = fg_keys_locked(NULL);
+            pthread_mutex_unlock(&fg.lock);
+            e2e_result kr;
+            e2e_result_init(&kr);
+            e2e_receive(&c, o->target, E2E_VERB_KEYS, msgid, "*", keys, &kr);
+            free(keys);
+            tpeer_pump(app, p, &kr, depth + 1);
+            continue;
+        }
+        const char *to = strcmp(o->to, "*") == 0 ? our_did(app) : o->to;
+        fg_inbox_push(to, p->nick, o->from, o->verb, msgid, o->payload, false);
+    }
+    e2e_result_free(r);
+}
+
+static void tpeer_say(struct app *app, tpeer *p, const char *text) {
+    e2e_ctx c = tpeer_ctx(p);
+    e2e_result r;
+    e2e_result_init(&r);
+    char *inner = e2e_inner_text(text, strlen(text));
+    CHECK(e2e_send(&c, "vjt", inner, "t", 0, NULL, &r));
+    free(inner);
+    tpeer_pump(app, p, &r, 0);
+}
+
+/* What our drain posted to the send door for `p`, delivered to it (from
+ * the next undelivered one on): grappa's relay, as far as a peer sees it. */
+static size_t delivered;
+static void deliver_sent(struct app *app, tpeer *p) {
+    e2e_ctx c = tpeer_ctx(p);
+    for (;;) {
+        pthread_mutex_lock(&fg.lock);
+        char *body = delivered < fg.nsent ? xasprintf("%s", fg.sent[delivered]) : NULL;
+        if (body) delivered++;
+        char msgid[12];
+        fg_msgid(msgid);
+        pthread_mutex_unlock(&fg.lock);
+        if (!body) return;
+        json_doc *d = json_parse(body, strlen(body), NULL, 0);
+        const json_value *o = json_root(d);
+        if (json_str_is(json_get(o, "target"), p->nick)) {
+            e2e_result r;
+            e2e_result_init(&r);
+            e2e_receive(&c, "vjt", e2e_verb_parse(json_string(json_get(o, "verb"))), msgid,
+                        json_string(json_get(o, "from")), json_string(json_get(o, "payload")),
+                        &r);
+            tpeer_pump(app, p, &r, 0);
+        }
+        json_free(d);
+        free(body);
+    }
+}
+
+static void drain(struct app *app) { e2e_drain_slot(app, &app->e2e[0], 0); }
+
+static size_t said_count(struct app *app, const char *needle) {
+    size_t n = 0;
+    for (size_t i = 0; i < app->log_count; i++) n += strstr(app->log[i], needle) != NULL;
+    return n;
+}
+
+static bool has_window(struct app *app, const char *channel) {
+    for (size_t i = 0; i < app->window_count; i++)
+        if (window_matches(&app->windows[i], "azzurra", channel)) return true;
+    return false;
+}
+
+static fg_item *fg_item_by_id(long id) {
+    for (size_t i = 0; i < fg.ninbox; i++)
+        if (fg.inbox[i].id == id) return &fg.inbox[i];
+    return NULL;
+}
+
+/* A holder of its own identity on azzurra, ready, frame budget known. */
+static struct app *recv_app(const char *subject) {
+    struct app *app = e2e_app(subject);
+    app->networks[0].has_frame_budget_base = true;
+    app->networks[0].frame_budget_base = 394;
+    run_job(app, JOB_E2E_INIT);
+    CHECK(view_of(app).state == E2E_SLOT_READY);
+    char dir[PATH_MAX];
+    e2e_slot_dir(app, &app->e2e[0], dir, sizeof(dir));
+    pthread_mutex_lock(&fg.lock);
+    snprintf(fg.watch_dir, sizeof(fg.watch_dir), "%s", dir);
+    pthread_mutex_unlock(&fg.lock);
+    return app;
+}
+
+#define LOCKED(s) " " E2E_LOCK " " s
+
+/* A peer's PKMSG, then (once our device answered) its MSG: each lands in
+ * the query with the peer, marked encrypted, written down before the
+ * inbox is acknowledged; a /me is an action; a redelivery adds nothing. */
+TEST(drain_shows_a_peers_pkmsg_then_msg) {
+    fg_reset();
+    delivered = 0;
+    struct app *app = recv_app("user:recv");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+
+    tpeer_say(app, &alice, "hello there");
+    pthread_mutex_lock(&fg.lock);
+    CHECK_LONG(fg.ninbox, 1);
+    CHECK(fg.inbox[0].verb == E2E_VERB_PKMSG);
+    long first = fg.inbox[0].id;
+    char from_did[16];
+    snprintf(from_did, sizeof(from_did), "%s", alice.rec.own->did);
+    char msgid0[12];
+    const char *mp = strstr(fg.inbox[0].json, "\"msgid\":\"");
+    snprintf(msgid0, sizeof(msgid0), "%.11s", mp ? mp + 9 : "");
+    pthread_mutex_unlock(&fg.lock);
+    /* grappa announced it as arriving: a placeholder, until it lands. */
+    e2e_arrival_add(app, "azzurra", "alice", from_did, our_did(app), msgid0);
+    CHECK(said(app, "alice … (encrypted message arriving)"));
+    e2e_arrival_add(app, "azzurra", "alice", from_did, "notourdid00", "zzzzzzzzzzz");
+    CHECK_LONG(said_count(app, "(encrypted message arriving)"), 1);
+
+    drain(app);
+    CHECK(said(app, "[azzurra/alice]"));
+    CHECK(said(app, LOCKED("<alice> hello there")));
+    CHECK(has_window(app, "alice"));
+    CHECK(!said(app, "(encrypted message arriving)"));
+    pthread_mutex_lock(&fg.lock);
+    CHECK(fg_item_by_id(first)->acked);
+    /* The ack came after the row was on disk and the record saved past it. */
+    CHECK_LONG(fg.nack_disk, 1);
+    CHECK(fg.ack_disk_inbox[0] >= first);
+    CHECK_LONG(fg.ack_disk_rows[0], 1);
+    pthread_mutex_unlock(&fg.lock);
+    /* The plaintext is nowhere grappa can see: not in what reached it. */
+    pthread_mutex_lock(&fg.lock);
+    for (size_t i = 0; i < fg.nsent; i++) CHECK(strstr(fg.sent[i], "hello there") == NULL);
+    CHECK(strstr(fg.log, "hello") == NULL);
+    pthread_mutex_unlock(&fg.lock);
+
+    /* Our device answered (its list request); the peer's next is a MSG. */
+    deliver_sent(app, &alice);
+    tpeer_say(app, &alice, "second one");
+    tpeer_say(app, &alice, "\001ACTION waves\001");
+    pthread_mutex_lock(&fg.lock);
+    fg_item *last = &fg.inbox[fg.ninbox - 1];
+    CHECK(last->verb == E2E_VERB_MSG);
+    long last_id = last->id;
+    pthread_mutex_unlock(&fg.lock);
+    drain(app);
+    CHECK(said(app, LOCKED("<alice> second one")));
+    CHECK(said(app, LOCKED("* alice waves")));
+    CHECK(!said(app, "ACTION"));
+    /* The action row is read as one by the splitter that draws it. */
+    for (size_t i = 0; i < app->log_count; i++) {
+        if (!strstr(app->log[i], "waves")) continue;
+        char prefix[64], nick[64];
+        const char *body;
+        CHECK(split_action_line(app->log[i], prefix, sizeof(prefix), nick, sizeof(nick), &body));
+        CHECK_STR(nick, "alice");
+        CHECK_STR(body, "waves");
+    }
+
+    /* Redelivered (an ack lost on the way): acknowledged again, shown once. */
+    pthread_mutex_lock(&fg.lock);
+    fg_item_by_id(last_id)->acked = false;
+    size_t acks_before = strlen(fg.acks);
+    pthread_mutex_unlock(&fg.lock);
+    drain(app);
+    CHECK_LONG(said_count(app, "waves"), 1);
+    CHECK_LONG(said_count(app, "hello there"), 1);
+    pthread_mutex_lock(&fg.lock);
+    CHECK(fg_item_by_id(last_id)->acked);
+    CHECK(strlen(fg.acks) > acks_before);
+    pthread_mutex_unlock(&fg.lock);
+    /* A doorbell push for the same message reads nothing new either. */
+    drain(app);
+    CHECK_LONG(said_count(app, "second one"), 1);
+
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* What was read survives the process: a new run shows it from disk, once,
+ * without reading the inbox for it again. */
+TEST(history_comes_back_after_a_restart) {
+    fg_reset();
+    struct app *app = recv_app("user:restart");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "remember me");
+    drain(app);
+    CHECK(said(app, LOCKED("<alice> remember me")));
+    e2e_slots_free(app);
+    free_e2e_app(app);
+
+    app = e2e_app("user:restart");
+    run_job(app, JOB_E2E_SYNC);
+    CHECK(view_of(app).state == E2E_SLOT_READY);
+    CHECK(!said(app, "remember me"));
+    drain(app);
+    CHECK_LONG(said_count(app, "remember me"), 1);
+    CHECK(said(app, LOCKED("<alice> remember me")));
+    CHECK(has_window(app, "alice"));
+    /* Replayed, not news: nothing unread for it. */
+    for (size_t i = 0; i < app->window_count; i++) CHECK_LONG(app->windows[i].unread, 0);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+static char *slurp(const char *path, size_t *len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    char *buf = malloc(1 << 20);
+    *len = fread(buf, 1, 1 << 20, f);
+    fclose(f);
+    return buf;
+}
+
+/* A crash after the rows were written and before the inbox was acked,
+ * with the record never saved: the next run steps the message again
+ * (its state never spent the key), and it lands on the row it wrote. */
+TEST(a_message_read_twice_writes_one_row) {
+    fg_reset();
+    struct app *app = recv_app("user:crash");
+    char rec_path[PATH_MAX + 16];
+    snprintf(rec_path, sizeof(rec_path), "%s/record.json", fg.watch_dir);
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "only once");
+    size_t len = 0;
+    char *before = slurp(rec_path, &len);
+    CHECK(before != NULL);
+    drain(app);
+    CHECK(said(app, "only once"));
+    e2e_slots_free(app);
+    free_e2e_app(app);
+    /* The record as it was before the drain; the inbox entry unacked. */
+    FILE *f = fopen(rec_path, "wb");
+    CHECK(f && fwrite(before, 1, len, f) == len);
+    if (f) fclose(f);
+    free(before);
+    pthread_mutex_lock(&fg.lock);
+    fg.inbox[0].acked = false;
+    pthread_mutex_unlock(&fg.lock);
+
+    app = e2e_app("user:crash");
+    run_job(app, JOB_E2E_SYNC);
+    drain(app);
+    CHECK_LONG(said_count(app, "only once"), 1);
+    pthread_mutex_lock(&fg.lock);
+    CHECK(fg.inbox[0].acked);
+    pthread_mutex_unlock(&fg.lock);
+    CHECK_LONG(app->e2e[0].rec.state.inbox, fg.inbox[0].id);
+    char *dir = xasprintf("%s/chats", fg.watch_dir);
+    e2e_rows rows;
+    CHECK(e2e_chat_load(dir, &rows, NULL, 0));
+    CHECK_LONG(rows.n, 1);
+    e2e_rows_free(&rows);
+    free(dir);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
+/* A MSG on a curve this device never saw: the engine NACKs it, the post
+ * goes to grappa, and the query says what happened. */
+TEST(an_undecryptable_message_is_nacked_and_said) {
+    fg_reset();
+    struct app *app = recv_app("user:nack");
+    vz_account *stranger = vz_account_new();
+    char *ck = vz_account_curve25519_key(stranger);
+    e2e_body body = {our_did(app), "AwogTm90IGEgcmVhbCBPbG0gbWVzc2FnZQ"};
+    char *payload = e2e_msg_payload(ck, &body, 1);
+    vz_str_free(ck);
+    vz_account_free(stranger);
+    long id = fg_inbox_push(our_did(app), "alice", "AAAAAAAAAAA", E2E_VERB_MSG, "mNACKME0001",
+                            payload, false);
+    free(payload);
+    drain(app);
+    char line[MAX_LINE];
+    e2e_undecryptable_text("alice", "no-session", line, sizeof(line));
+    CHECK(said(app, line));
+    CHECK(said(app, "[azzurra/alice]"));
+    pthread_mutex_lock(&fg.lock);
+    bool nacked = false;
+    for (size_t i = 0; i < fg.nsent; i++)
+        if (strstr(fg.sent[i], "\"verb\":\"nack\"") && strstr(fg.sent[i], "\"to\":\"AAAAAAAAAAA\"") &&
+            strstr(fg.sent[i], "mNACKME0001"))
+            nacked = true;
+    CHECK(nacked);
+    /* The NACK went before the ack. */
+    const char *post = strstr(fg.log, "POST /networks/azzurra/e2e/messages\n");
+    const char *ack = strstr(fg.log, "/inbox/ack\n");
+    CHECK(post && ack && post < ack);
+    CHECK(fg_item_by_id(id)->acked);
+    pthread_mutex_unlock(&fg.lock);
+    free_e2e_app(app);
+}
+
+/* Another master writing as a pinned nick: shown loudly in the query and
+ * in $server, the message ignored, nothing NACKed, the pin left as it is. */
+TEST(a_key_alarm_is_loud_and_pins_nothing) {
+    fg_reset();
+    struct app *app = recv_app("user:alarm");
+    tpeer alice, mallory;
+    tpeer_new(&alice, "alice");
+    tpeer_new(&mallory, "alice");
+    tpeer_say(app, &alice, "it is me");
+    drain(app);
+    CHECK(said(app, LOCKED("<alice> it is me")));
+    char pinned[64];
+    snprintf(pinned, sizeof(pinned), "%s", alice.rec.own->master);
+    pthread_mutex_lock(&fg.lock);
+    size_t sent_before = fg.nsent;
+    pthread_mutex_unlock(&fg.lock);
+
+    tpeer_say(app, &mallory, "it is me too");
+    drain(app);
+    CHECK(!said(app, "it is me too"));
+    char line[MAX_LINE];
+    e2e_key_alarm_text("alice", mallory.rec.own->master, false, line, sizeof(line));
+    CHECK(said(app, line));
+    e2e_key_alarm_text("alice", mallory.rec.own->master, true, line, sizeof(line));
+    CHECK(said(app, "[azzurra/" SERVER_WINDOW "] !!! e2e: alice wrote with a key"));
+    CHECK(said(app, line));
+    pthread_mutex_lock(&fg.lock);
+    for (size_t i = sent_before; i < fg.nsent; i++) CHECK(strstr(fg.sent[i], "\"nack\"") == NULL);
+    pthread_mutex_unlock(&fg.lock);
+    e2e_ctx c;
+    char own[MAX_CHANNEL];
+    e2e_ctx_of(app, &app->e2e[0], &c, own, sizeof(own));
+    const char *m = NULL;
+    bool verified;
+    size_t trusted;
+    CHECK(e2e_pinned(&c, "alice", &m, &verified, &trusted));
+    CHECK(m && strcmp(m, pinned) == 0);
+    /* Persistent: a restart shows the alarm again. */
+    e2e_slots_free(app);
+    free_e2e_app(app);
+    app = e2e_app("user:alarm");
+    run_job(app, JOB_E2E_SYNC);
+    drain(app);
+    e2e_key_alarm_text("alice", mallory.rec.own->master, false, line, sizeof(line));
+    CHECK(said(app, line));
+    tpeer_free(&alice);
+    tpeer_free(&mallory);
+    free_e2e_app(app);
+}
+
+/* A sibling of ours: another device listed by our master at v2. Its record
+ * holds that list and the certificate. */
+static void sibling_of(struct app *app, tpeer *sib) {
+    struct e2e_slot *s = &app->e2e[0];
+    memset(sib, 0, sizeof(*sib));
+    snprintf(sib->nick, sizeof(sib->nick), "vjt");
+    e2e_record_new(&sib->rec);
+    char *e = vz_account_ed25519_key(sib->rec.account);
+    char *me = vz_account_ed25519_key(s->rec.account);
+    const char *devs[2] = {me, e};
+    if (strcmp(devs[0], devs[1]) > 0) {
+        devs[0] = e;
+        devs[1] = me;
+    }
+    char *ls = e2e_sign_list(s->rec.master, 2, devs, 2);
+    e2e_own *o = sib->rec.own = calloc(1, sizeof(*o));
+    o->master = xasprintf("%s", s->rec.own->master);
+    o->cert = e2e_sign_cert(s->rec.master, 2, e);
+    o->cert_ver = 2;
+    o->list_ver = 2;
+    o->list_devices.v = calloc(2, sizeof(char *));
+    o->list_devices.v[0] = xasprintf("%s", devs[0]);
+    o->list_devices.v[1] = xasprintf("%s", devs[1]);
+    o->list_devices.n = 2;
+    o->list_sig = xasprintf("%s", ls);
+    char did[E2E_DID_LEN + 1];
+    e2e_did(e, did);
+    o->did = xasprintf("%s", did);
+    /* grappa: registered, its keys up, the list v2 put by our master. */
+    char *reg = e2e_register_body(sib->rec.account, o->master);
+    int status;
+    pthread_mutex_lock(&fg.lock);
+    char *reply = fg_handle("POST", "/networks/azzurra/e2e/devices", reg, &status);
+    free(reply);
+    char *up = e2e_top_up(sib->rec.account, 0, false);
+    char *path = xasprintf("/networks/azzurra/e2e/devices/%s/keys", did);
+    reply = fg_handle("POST", path, up, &status);
+    free(reply);
+    free(path);
+    free(up);
+    vz_account_mark_keys_as_published(sib->rec.account);
+    char *put = xasprintf("{\"master\":\"%s\",\"ver\":2,\"devices\":[\"%s\",\"%s\"],\"sig\":\"%s\"}",
+                          o->master, devs[0], devs[1], ls);
+    reply = fg_handle("PUT", "/networks/azzurra/e2e/list", put, &status);
+    CHECK_LONG(status, 200);
+    free(reply);
+    free(put);
+    pthread_mutex_unlock(&fg.lock);
+    free(reg);
+    free(ls);
+    vz_str_free(e);
+    vz_str_free(me);
+}
+
+/* Our id block as grappa lists it, for a sibling's setSiblings. */
+static e2e_id_block fg_block_of(const char *did) {
+    fg_device *d = fg_device_by_did(did);
+    return (e2e_id_block){d->curve, d->ed, d->sig};
+}
+
+/* This device copies a text to `sib` (e2e_copy, then step 4): `claim`
+ * says no session is held yet, so a key of it is claimed first; the record
+ * is saved, then the copy goes through the copy door, never IRC, and opens
+ * on the sibling as our copy to alice. */
+static void copy_back(struct app *app, tpeer *sib, e2e_ctx *sc, bool claim) {
+    struct e2e_slot *s = &app->e2e[0];
+    e2e_ctx c;
+    char own[MAX_CHANNEL];
+    e2e_ctx_of(app, s, &c, own, sizeof(own));
+    e2e_result r;
+    e2e_result_init(&r);
+    pthread_mutex_lock(&fg.lock);
+    e2e_id_block theirs = fg_block_of(sib->rec.own->did);
+    fg.log[0] = 0;
+    pthread_mutex_unlock(&fg.lock);
+    e2e_set_siblings(&c, &theirs, 1, &r);
+    e2e_result_free(&r);
+    e2e_copy(&c, "alice", "and from here", 13, &r);
+    bool unknown = false;
+    e2e_flush(app, s, &c, &r, &unknown);
+    e2e_result_free(&r);
+    CHECK(!unknown);
+    char claimed[128], copies[128];
+    snprintf(claimed, sizeof(claimed), "POST /networks/azzurra/e2e/devices/%s/claim\n",
+             sib->rec.own->did);
+    snprintf(copies, sizeof(copies), "POST /networks/azzurra/e2e/devices/%s/copies\n",
+             sib->rec.own->did);
+    pthread_mutex_lock(&fg.lock);
+    const char *cl = strstr(fg.log, claimed), *cp = strstr(fg.log, copies);
+    CHECK(cp != NULL);
+    CHECK(claim ? cl && cl < cp : !cl);
+    CHECK(!strstr(fg.log, "/e2e/messages")); /* a copy never goes on IRC */
+    fg_item *copy = &fg.inbox[fg.ninbox - 1];
+    CHECK(strcmp(copy->to, sib->rec.own->did) == 0 && strstr(copy->json, "\"own\":true"));
+    char *cjson = xasprintf("%s", copy->json);
+    e2e_verb verb = copy->verb;
+    pthread_mutex_unlock(&fg.lock);
+    json_doc *d = json_parse(cjson, strlen(cjson), NULL, 0);
+    e2e_receive_copy(sc, our_did(app), verb, json_string(json_get(json_root(d), "payload")), &r);
+    bool copied = false;
+    for (size_t i = 0; i < r.nevents; i++)
+        copied |= r.events[i].kind == E2E_EV_COPIED && strcmp(r.events[i].peer, "alice") == 0 &&
+                  r.events[i].body_len == 13 && memcmp(r.events[i].body, "and from here", 13) == 0;
+    CHECK(copied);
+    e2e_result_free(&r);
+    json_free(d);
+    free(cjson);
+}
+
+/* A sibling this device has no session with (paired elsewhere, the list
+ * adopted by a sync): the first copy to it claims a key of it. */
+TEST(copying_to_a_new_sibling_claims_first) {
+    fg_reset();
+    struct app *app = recv_app("user:claim");
+    tpeer sib;
+    sibling_of(app, &sib);
+    run_job(app, JOB_E2E_SYNC);
+    CHECK_LONG(app->e2e[0].rec.own->list_ver, 2);
+    e2e_ctx sc = {&sib.rec, "vjt", 394, (int64_t)time(NULL) * 1000};
+    copy_back(app, &sib, &sc, true);
+    tpeer_free(&sib);
+    free_e2e_app(app);
+}
+
+/* What another device of ours sent alice: it reaches this one as a copy
+ * (own), whose sibling our list does not name yet — the drain stops
+ * before it, syncs (adopting the newer list), reads it, and shows it as
+ * OUR line in the query with alice. Then this device copies to the
+ * sibling: claim, then the copy door. */
+TEST(a_copy_from_a_sibling_reads_as_ours) {
+    fg_reset();
+    struct app *app = recv_app("user:copy");
+    tpeer sib;
+    sibling_of(app, &sib);
+    e2e_ctx sc = {&sib.rec, "vjt", 394, (int64_t)time(NULL) * 1000};
+    e2e_result r;
+    e2e_result_init(&r);
+    pthread_mutex_lock(&fg.lock);
+    e2e_id_block ours = fg_block_of(our_did(app));
+    pthread_mutex_unlock(&fg.lock);
+    e2e_set_siblings(&sc, &ours, 1, &r);
+    e2e_result_free(&r);
+    e2e_copy(&sc, "alice", "sent from my phone", strlen("sent from my phone"), &r);
+    bool asked = false;
+    for (size_t i = 0; i < r.nevents; i++) asked |= r.events[i].kind == E2E_EV_SIBLING_KEYS_NEEDED;
+    CHECK(asked);
+    e2e_result_free(&r);
+    pthread_mutex_lock(&fg.lock);
+    char *keys = fg_keys_locked(our_did(app));
+    pthread_mutex_unlock(&fg.lock);
+    e2e_sibling_keys(&sc, our_did(app), keys, &r);
+    free(keys);
+    CHECK_LONG(r.ncopies, 1);
+    long id = 0;
+    if (r.ncopies) {
+        char msgid[12];
+        pthread_mutex_lock(&fg.lock);
+        fg_msgid(msgid);
+        id = fg_inbox_push_locked(r.copies[0].to, "vjt", sib.rec.own->did, r.copies[0].verb, msgid,
+                                  r.copies[0].payload, true);
+        pthread_mutex_unlock(&fg.lock);
+    }
+    e2e_result_free(&r);
+    CHECK_LONG(app->e2e[0].rec.own->list_ver, 1);
+
+    drain(app);
+    CHECK_LONG(app->e2e[0].rec.own->list_ver, 2);
+    CHECK(said(app, LOCKED("<vjt> sent from my phone")));
+    CHECK(has_window(app, "alice"));
+    pthread_mutex_lock(&fg.lock);
+    CHECK(fg_item_by_id(id)->acked);
+    /* Acknowledged once, after the sync: never while it stood unread. */
+    char want[32];
+    snprintf(want, sizeof(want), "[%ld]\n", id);
+    CHECK_STR(fg.acks, want);
+    pthread_mutex_unlock(&fg.lock);
+
+    /* The other way: this device copies a text to the sibling, on the
+     * session its copy opened — straight through the copy door. */
+    copy_back(app, &sib, &sc, false);
+    tpeer_free(&sib);
+    free_e2e_app(app);
+}
+
+/* The push rings a drain only for this device, and a burst is one drain. */
+TEST(the_doorbell_rings_for_this_device_once) {
+    fg_reset();
+    struct app *app = recv_app("user:bell");
+    struct e2e_slot *s = &app->e2e[0];
+    pthread_mutex_lock(&app->jobs_lock);
+    app->jobs_head = app->jobs_tail;
+    pthread_mutex_unlock(&app->jobs_lock);
+    s->drain_queued = false;
+    struct wire_e2e_message m = {.id = 9, .network = "azzurra", .from = "alice",
+                                 .from_did = "AAAAAAAAAAA", .to_did = "someoneelse",
+                                 .verb = WIRE_E2E_MSG, .msgid = "x", .payload = "{}"};
+    e2e_doorbell(app, &m);
+    CHECK(app->jobs_head == app->jobs_tail);
+    m.to_did = our_did(app);
+    e2e_doorbell(app, &m);
+    e2e_doorbell(app, &m);
+    pthread_mutex_lock(&app->jobs_lock);
+    size_t queued = (app->jobs_tail + JOB_QUEUE - app->jobs_head) % JOB_QUEUE;
+    bool drain_job = queued == 1 && app->jobs[app->jobs_head].kind == JOB_E2E_DRAIN &&
+                     strcmp(app->jobs[app->jobs_head].network, "azzurra") == 0;
+    pthread_mutex_unlock(&app->jobs_lock);
+    CHECK(drain_job);
+    /* The worker takes it: the next push rings again. */
+    struct job job;
+    CHECK(dequeue_job(app, &job));
+    e2e_drain_job(app, &job);
+    CHECK(!s->drain_queued);
+    e2e_doorbell(app, &m);
+    CHECK(s->drain_queued);
+    /* A lost arrival takes its placeholder with it. */
+    e2e_arrival_add(app, "azzurra", "bob", "BBBBBBBBBBB", "*", "mLOST000001");
+    CHECK(said(app, "bob … (encrypted message arriving)"));
+    e2e_arrival_done(app, "azzurra", "BBBBBBBBBBB", "mLOST000001");
+    CHECK(!said(app, "(encrypted message arriving)"));
+    free_e2e_app(app);
+}
+
 int main(void) {
     test_use_temp_home();
     if (!fg_start()) {
@@ -1500,6 +2338,14 @@ int main(void) {
     RUN(pairing_refuses_tampered_messages);
     RUN(pairing_refusals_are_explained);
     RUN(pairing_command);
+    RUN(drain_shows_a_peers_pkmsg_then_msg);
+    RUN(history_comes_back_after_a_restart);
+    RUN(a_message_read_twice_writes_one_row);
+    RUN(an_undecryptable_message_is_nacked_and_said);
+    RUN(a_key_alarm_is_loud_and_pins_nothing);
+    RUN(a_copy_from_a_sibling_reads_as_ours);
+    RUN(copying_to_a_new_sibling_claims_first);
+    RUN(the_doorbell_rings_for_this_device_once);
     th_free();
     fg_stop();
     return test_report();

@@ -418,6 +418,7 @@ enum job_kind {
     JOB_E2E_SYNC,
     JOB_E2E_INIT,
     JOB_E2E_PAIR,
+    JOB_E2E_DRAIN,
     JOB_FETCH,
     JOB_SEND,
     JOB_JOIN,
@@ -1193,9 +1194,23 @@ struct e2e_slot {
     e2e_store *store;
     e2e_record rec;
     bool have_rec;
+    /* The decrypted history (e2e.h): read into the windows once per run,
+     * at the first drain; `hist_ids` every row id written or read this
+     * run, so a message read again lands on the row it already wrote. */
+    bool hist_loaded;
+    e2e_strv hist_ids;
+    /* The inbox item the last drain stopped before (a copy from a sibling
+     * our list is behind, §6.10): stopped before once, never twice. */
+    long stopped_before;
     /* app->lock */
     struct e2e_view view;
+    bool drain_queued; /* a JOB_E2E_DRAIN is queued and not started */
 };
+
+/* What marks an encrypted query's line (cic's 🔒 beside the time): between
+ * the clock and the nick, so the splitters still read the row as the
+ * message it is. */
+#define E2E_LOCK "\xF0\x9F\x94\x92"
 
 /* Below this the server has no device identities (wire v2): E2E stays off,
  * and /e2e init refuses (§14). Claim and copies (v50) and the consent
@@ -1268,6 +1283,17 @@ struct e2e_pairing {
     int64_t deadline; /* the clock's: `expires` while a pairing is on, 0 idle */
     bool tick_queued;
 };
+
+/* An encrypted message on its way (e2e_incoming, §11.2): a placeholder
+ * row, `row` its pending id, until the message lands or is lost.
+ * Ephemeral: never stored, never unread. */
+struct e2e_arrival {
+    char network[MAX_SLUG];
+    char from_did[24];
+    char msgid[24];
+    unsigned long row;
+};
+#define E2E_ARRIVALS_MAX 32
 
 struct app {
     struct url url;
@@ -1966,9 +1992,19 @@ struct app {
     struct e2e_slot e2e[MAX_NETWORKS];
     size_t e2e_count;
     struct e2e_pairing pair;
+    /* app->lock */
+    struct e2e_arrival arrivals[E2E_ARRIVALS_MAX];
+    size_t arrival_count;
 };
 
 static void e2e_pair_enqueue(struct app *app, const char *verb, const char *words, int num);
+static void e2e_drain_enqueue(struct app *app, const char *slug);
+static void e2e_drain_all(struct app *app);
+static void e2e_doorbell(struct app *app, const struct wire_e2e_message *m);
+static void e2e_arrival_add(struct app *app, const char *network, const char *from,
+                            const char *from_did, const char *to, const char *msgid);
+static void e2e_arrival_done(struct app *app, const char *network, const char *from_did,
+                             const char *msgid);
 static void e2e_pair_clock(struct app *app);
 
 static void die(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -2100,6 +2136,7 @@ static void startup(const char *fmt, ...) {
 }
 
 static char *xasprintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static char *xstrdup(const char *s);
 
 static char *xasprintf(const char *fmt, ...) {
     va_list ap;
@@ -2115,6 +2152,8 @@ static char *xasprintf(const char *fmt, ...) {
     va_end(ap2);
     return s;
 }
+
+static char *xstrdup(const char *s) { return xasprintf("%s", s); }
 
 /* ── Entropy ───────────────────────────────────────────────────────────
  *
@@ -5077,7 +5116,22 @@ static void call_consider(struct app *app, const char *network, const char *chan
                  sender ? sender : "someone");
 }
 
-static void render_message(struct app *app, const struct wire_scrollback_message *m, bool live) {
+/* One row, from the server or (`encrypted`) from this device's own E2E
+ * history (e2e_render_row): ONE path, so an encrypted query scrolls,
+ * counts unread, mentions, notifies and hides a blocked nick exactly as a
+ * DM does. What differs is what plaintext must not reach, and the mark:
+ *   - the row is not the server's: no id (e2e rows carry 0, so no seen
+ *     ring, no read cursor, no divider), no pending echo to retire;
+ *   - the ircd bridge never sees it: a downstream IRC client is a
+ *     PLAINTEXT session whose logs and replies this client does not
+ *     control (a reply there would leave in clear);
+ *   - neither does the bot, nor the call ringer: both answer with a
+ *     cleartext send, and an answer to an encrypted line is the line;
+ *   - a desktop notification says "encrypted message", grappa's own push
+ *     text for an E2E row (Push.Payload.build_e2e), never the words;
+ *   - the line carries E2E_LOCK beside the clock. */
+static void render_row(struct app *app, const struct wire_scrollback_message *m, bool live,
+                       bool encrypted) {
     long id = m->id;
     long server_time = m->server_time;
     const char *network = m->network;
@@ -5149,6 +5203,8 @@ static void render_message(struct app *app, const struct wire_scrollback_message
         snprintf(display_channel, sizeof(display_channel), "%s", peer);
         add_window_ex(app, network, display_channel, false);
     }
+    /* An encrypted row is filed by its chat, which IS its channel. */
+    if (encrypted) add_window_ex(app, network, display_channel, false);
     /* Same door the windows use: a row addressed to the network's own
      * name is server output, and it reads in the window that holds the
      * rest of the server's output. Rewritten only when the routing
@@ -5211,7 +5267,7 @@ static void render_message(struct app *app, const struct wire_scrollback_message
      * echo. Matching by text is still imprecise when two pending messages
      * say the same thing, but it can no longer delete a line without
      * putting the confirmed one in its place. */
-    clear_matching_pending_echo(app, network, display_channel, body);
+    if (!encrypted) clear_matching_pending_echo(app, network, display_channel, body);
 
     pthread_mutex_lock(&app->lock);
     for (size_t i = 0; i < app->window_count; i++) {
@@ -5223,7 +5279,7 @@ static void render_message(struct app *app, const struct wire_scrollback_message
      * scrollback have already become the same thing and the id-dedup
      * above has already run. Anywhere else means two feeds to keep in
      * step. */
-    ircd_publish(app, m, display_channel);
+    if (!encrypted) ircd_publish(app, m, display_channel);
 
     /* A CTCP reply is an ANSWER, not conversation: the round trip the
      * user asked for with /ping, or a client version they queried. It
@@ -5277,7 +5333,7 @@ static void render_message(struct app *app, const struct wire_scrollback_message
          * message. */
         char act[MAX_LINE];
         const char *shown = m->kind == MSG_ACTION ? ctcp_action_text(body, act, sizeof(act)) : NULL;
-        snprintf(text, sizeof(text), "%.400s", shown ? shown : body);
+        snprintf(text, sizeof(text), "%.400s", encrypted ? "encrypted message" : shown ? shown : body);
         desktop_notify(title, text);
     }
     char clock[16];
@@ -5286,6 +5342,7 @@ static void render_message(struct app *app, const struct wire_scrollback_message
     localtime_r(&ts, &tm);
     strftime(clock, sizeof(clock), "%H:%M", &tm);
     bool wrote = false;
+    const char *lock = encrypted ? " " E2E_LOCK : "";
     switch (m->kind) {
     case MSG_ACTION:
         if (!hidden) {
@@ -5293,8 +5350,8 @@ static void render_message(struct app *app, const struct wire_scrollback_message
              * say it again in control characters. See ctcp_action_text. */
             char act[MAX_LINE];
             const char *shown = ctcp_action_text(body, act, sizeof(act));
-            log_line_mention(app, mention, "[%s/%s] %s * %s %s", network, display_channel, clock,
-                             sender, shown ? shown : body);
+            log_line_mention(app, mention, "[%s/%s] %s%s * %s %s", network, display_channel,
+                             clock, lock, sender, shown ? shown : body);
             wrote = true;
         }
         break;
@@ -5306,7 +5363,8 @@ static void render_message(struct app *app, const struct wire_scrollback_message
         break;
     case MSG_PRIVMSG:
         if (!hidden) {
-            log_line_mention(app, mention, "[%s/%s] %s <%s> %s", network, display_channel, clock, sender, body);
+            log_line_mention(app, mention, "[%s/%s] %s%s <%s> %s", network, display_channel, clock,
+                             lock, sender, body);
             wrote = true;
         }
         break;
@@ -5336,12 +5394,14 @@ static void render_message(struct app *app, const struct wire_scrollback_message
      * evaluated and the bot never saw a single message. Everything built
      * on top of it (the approval gate, the grants, the memories) was
      * therefore live code behind a dead door. */
-    if (conversational && live && !hidden) bot_consider(app, network, display_channel, sender, body);
+    if (conversational && live && !hidden && !encrypted)
+        bot_consider(app, network, display_channel, sender, body);
     /* Same three guards, and each one earns its place: `live` so a
      * scrollback fetch cannot ring you with yesterday's calls, `hidden`
      * so a blocked person cannot ring you at all, and `conversational`
      * because a join is not an invitation. */
-    if (conversational && live && !hidden) call_consider(app, network, display_channel, sender, body);
+    if (conversational && live && !hidden && !encrypted)
+        call_consider(app, network, display_channel, sender, body);
 
     pthread_mutex_lock(&app->lock);
     /* Stamp the row just appended with its scrollback id, so the unread
@@ -5363,6 +5423,10 @@ static void render_message(struct app *app, const struct wire_scrollback_message
     for (size_t p = 0; p < app->pane_count; p++)
         if (!app->panes[p].scroll_pinned) app->panes[p].scroll_offset = 0;
     pthread_mutex_unlock(&app->lock);
+}
+
+static void render_message(struct app *app, const struct wire_scrollback_message *m, bool live) {
+    render_row(app, m, live, false);
 }
 
 static const char *find_url(const char *s) {
@@ -7087,8 +7151,16 @@ static int split_action_line(const char *line, char *prefix, size_t prefix_sz, c
     }
     const char *star = strstr(visible, "* ");
     if (!star) return 0;
-    for (const char *p = visible; p < star; p++)
+    /* An encrypted query's action carries the lock between the clock and
+     * the star (render_row): it is still the timestamp column. */
+    const size_t lock_len = sizeof(E2E_LOCK) - 1;
+    for (const char *p = visible; p < star; p++) {
+        if ((size_t)(star - p) >= lock_len && memcmp(p, E2E_LOCK, lock_len) == 0) {
+            p += lock_len - 1;
+            continue;
+        }
         if (!isdigit((unsigned char)*p) && *p != ':' && *p != ' ') return 0;
+    }
 
     const char *n = star + 2;
     if (!*n || *n == ' ') return 0;
@@ -9142,14 +9214,26 @@ static void handle_wire_event(struct app *app, const char *topic_network,
         break;
     }
 
-    /* E2E (§4f-§4l): narrowed, and consumed by the slices that read them —
-     * the inbox drain (e2e_message, e2e_incoming*), sending
-     * (e2e_send_dropped) and consent (e2e_request*). Until then each is
-     * KNOWN and deliberately dropped, as the avatar above. */
+    /* E2E (§4f-§4l). e2e_message is a doorbell: the drain reads the inbox
+     * (at least once, deduped there by id); e2e_incoming* the arriving
+     * placeholder. Sending (e2e_send_dropped) and consent (e2e_request*)
+     * are later slices: until then each is KNOWN and deliberately
+     * dropped, as the avatar above. */
     case WIRE_E2E_MESSAGE:
-    case WIRE_E2E_SEND_DROPPED:
+        e2e_doorbell(app, &ev->u.e2e_message);
+        break;
     case WIRE_E2E_INCOMING:
+        e2e_arrival_add(app, ev->u.e2e_incoming.network, ev->u.e2e_incoming.from,
+                        ev->u.e2e_incoming.from_did, ev->u.e2e_incoming.to,
+                        ev->u.e2e_incoming.msgid);
+        break;
     case WIRE_E2E_INCOMING_LOST:
+        /* `to` is ours or `*` for every arrival kept (e2e_arrival_add), so
+         * the (from_did, msgid) pair names one of ours or none. */
+        e2e_arrival_done(app, ev->u.e2e_incoming.network, ev->u.e2e_incoming.from_did,
+                         ev->u.e2e_incoming.msgid);
+        break;
+    case WIRE_E2E_SEND_DROPPED:
     case WIRE_E2E_REQUEST:
     case WIRE_E2E_REQUEST_GONE:
         break;
@@ -9540,6 +9624,9 @@ static void ws_try_reconnect(struct app *app) {
     /* A pairing doorbell missed while down is not replayed, and in a
      * handshake each side waits for the other. */
     e2e_pair_enqueue(app, "catchup", "", 0);
+    /* Nor is an e2e_message: what arrived while down waits in the inbox
+     * (cic drains every network's on each user-topic join). */
+    e2e_drain_all(app);
 }
 
 static void ws_pump(struct app *app) {
@@ -15212,6 +15299,11 @@ static void e2e_sync_slot(struct app *app, struct e2e_slot *s) {
     e2e_reply_free(&r);
     e2e_view_ready(s, &v);
     e2e_top_up_keys(app, s, &v, -1, false);
+    /* Ready, so what waits in the inbox is readable: drained next, on this
+     * worker, behind whatever else is queued (§3.8). */
+    e2e_view_put(app, s, &v);
+    e2e_drain_enqueue(app, s->slug);
+    return;
 done:
     e2e_reply_free(&r);
     e2e_view_put(app, s, &v);
@@ -15304,6 +15396,7 @@ static void e2e_init_slot(struct app *app, struct e2e_slot *s) {
     e2e_view_ready(s, &v);
     e2e_top_up_keys(app, s, &v, 0, false);
     e2e_view_put(app, s, &v);
+    e2e_drain_enqueue(app, s->slug);
     card(app, s->slug,
          "--- e2e: encrypted identity created on %s — this device (%s) holds its master key; "
          "list v1, 1 device, %ld one-time key%s published",
@@ -16098,6 +16191,14 @@ static void e2e_enqueue(struct app *app, enum job_kind kind, const char *slug) {
 }
 
 /* After the worker is joined: nothing else holds a slot. */
+static void e2e_hist_ids_free(struct e2e_slot *s) {
+    for (size_t i = 0; i < s->hist_ids.n; i++) free(s->hist_ids.v[i]);
+    free(s->hist_ids.v);
+    s->hist_ids.v = NULL;
+    s->hist_ids.n = 0;
+    s->hist_loaded = false;
+}
+
 static void e2e_slots_free(struct app *app) {
     for (size_t i = 0; i < app->e2e_count; i++) {
         struct e2e_slot *s = &app->e2e[i];
@@ -16105,8 +16206,668 @@ static void e2e_slots_free(struct app *app) {
         s->have_rec = false;
         if (s->store) e2e_store_close(s->store);
         s->store = NULL;
+        e2e_hist_ids_free(s);
     }
     app->e2e_count = 0;
+}
+
+/* ── E2E: receiving (docs/plans §3.3, §5, §6.8, §6.10, §11.2, §12.2) ──────
+ *
+ * JOB_E2E_DRAIN reads this device's inbox on a network, on the JOB
+ * WORKER (it owns the slot: see struct e2e_slot). Rung by an e2e_message
+ * push for this device (a doorbell only: the push is at least once and
+ * may race the inbox, so the inbox is the truth), by every identity sync
+ * that ends READY, and by every websocket reconnect (nothing missed while
+ * down is replayed). Pushes coalesce: one drain queued per slot.
+ *
+ * Each page, in cicchetto's crash-safe order (client.ts header):
+ *   1. every item past the watermark (state.inbox) is stepped through the
+ *      engine — a peer's on e2e_receive, a copy from one of our own other
+ *      devices (`own`, v50) on e2e_receive_copy — and the watermark moves;
+ *   2. the rows it decrypted are appended to the history (fsync'd), and
+ *      only then shown;
+ *   3. the record is saved, BEFORE any ciphertext leaves (a ratchet step
+ *      is never sent twice from a state reloaded after a crash);
+ *   4. what the steps made (NACKs, list answers and requests, KEYREQs)
+ *      goes to the send door one at a time, in order; then claims and
+ *      copies (v50), the record saved first again; the record is saved
+ *      once more for the msgids grappa named;
+ *   5. the page's items up to the watermark are acknowledged, LAST.
+ * A crash anywhere re-reads at most the unacknowledged items: those past
+ * the saved watermark are stepped again and land on the rows they wrote
+ * (row ids derive from the inbox id), those below it are only acked. A
+ * write that fails stops the drain with the record read back from disk,
+ * so no state that spent a key the history did not keep survives it. */
+
+static int64_t e2e_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static bool e2e_hist_has(const struct e2e_slot *s, const char *id) {
+    for (size_t i = s->hist_ids.n; i > 0; i--)
+        if (strcmp(s->hist_ids.v[i - 1], id) == 0) return true;
+    return false;
+}
+
+static void e2e_hist_note(struct e2e_slot *s, const char *id) {
+    char **grown = realloc(s->hist_ids.v, (s->hist_ids.n + 1) * sizeof(*grown));
+    if (!grown) die("out of memory");
+    s->hist_ids.v = grown;
+    s->hist_ids.v[s->hist_ids.n++] = xstrdup(id);
+}
+
+/* <slot dir>/chats: beside the record, under the same lock. */
+static void e2e_chat_dir(struct app *app, const struct e2e_slot *s, char *out, size_t out_sz) {
+    char dir[PATH_MAX - 16];
+    e2e_slot_dir(app, s, dir, sizeof(dir));
+    snprintf(out, out_sz, "%s/chats", dir);
+}
+
+/* Remove the row a pending id marks. Caller holds app->lock. */
+static void log_remove_pending_locked(struct app *app, unsigned long id) {
+    for (size_t i = 0; id && i < app->log_count; i++) {
+        if (app->log_pending[i] != id) continue;
+        free(app->log[i]);
+        for (size_t k = i; k + 1 < app->log_count; k++) log_row_move_locked(app, k, k + 1);
+        app->log_count--;
+        log_row_removed_locked(app, i);
+        return;
+    }
+}
+
+/* The undecryptable row's words: cic's ("sent you an encrypted message
+ * that cannot be read here", ScrollbackPane.tsx), and the engine's reason.
+ * The peer was told already (the NACK the engine made), and resends. Pure:
+ * tests read it. */
+static void e2e_undecryptable_text(const char *nick, const char *reason, char *out,
+                                   size_t out_sz) {
+    snprintf(out, out_sz,
+             "*** %s sent you an encrypted message that cannot be read here (%s); they were "
+             "told, so it can be sent again",
+             nick, reason);
+}
+
+/* A key alarm's words, in the query and $server (EncryptedChatPane's step
+ * card): the presented key, and nothing taken. Resolving it (take the key,
+ * verify it) is /e2e trust and verify, a later slice. Pure. */
+static void e2e_key_alarm_text(const char *nick, const char *presented, bool server, char *out,
+                               size_t out_sz) {
+    if (server)
+        snprintf(out, out_sz,
+                 "!!! e2e: %s wrote with a key that is not the one pinned to them, and it was "
+                 "ignored (presented %s) — see the query with %s",
+                 nick, presented, nick);
+    else
+        snprintf(out, out_sz,
+                 "!!! %s wrote with a key that is not the one pinned, and it was ignored — "
+                 "presented key %s. If they changed it, take the new key only once it is "
+                 "verified; if they did not, someone else may be writing in their name. The "
+                 "pinned key stays",
+                 nick, presented);
+}
+
+/* One history row on screen. A message goes the DM path (render_row,
+ * encrypted): our own (a sibling's copy) under our nick now, a /me inside
+ * the body as an action. */
+static void e2e_render_row(struct app *app, const char *slug, const e2e_row *row, bool live) {
+    char own[MAX_CHANNEL];
+    pthread_mutex_lock(&app->lock);
+    snprintf(own, sizeof(own), "%s", own_nick_for_network(app, slug));
+    pthread_mutex_unlock(&app->lock);
+    if (row->kind == E2E_ROW_IN || row->kind == E2E_ROW_OUT) {
+        char *body = row->body ? xstrdup(row->body) : xstrdup("");
+        char act[MAX_LINE];
+        struct wire_scrollback_message m = {0};
+        m.network = slug;
+        m.channel = row->nick;
+        m.dm_with = row->nick;
+        m.sender = row->kind == E2E_ROW_IN ? row->nick : own;
+        m.body = body;
+        m.kind = ctcp_action_text(body, act, sizeof(act)) ? MSG_ACTION : MSG_PRIVMSG;
+        m.server_time = row->at;
+        render_row(app, &m, live, true);
+        free(body);
+        return;
+    }
+    add_window_ex(app, slug, row->nick, false);
+    char clock[16];
+    time_t ts = (time_t)(row->at / 1000);
+    struct tm tm;
+    localtime_r(&ts, &tm);
+    strftime(clock, sizeof(clock), "%H:%M", &tm);
+    char text[MAX_LINE];
+    if (row->kind == E2E_ROW_UNDECRYPTABLE) {
+        if (is_blocked(app, row->nick)) return;
+        e2e_undecryptable_text(row->nick, row->body ? row->body : "?", text, sizeof(text));
+        maybe_mark_unread(app, slug, row->nick, live);
+        log_line(app, "[%s/%s] %s " E2E_LOCK " %s", slug, row->nick, clock, text);
+        return;
+    }
+    /* A key alarm is never hidden: it is about who is writing. */
+    e2e_key_alarm_text(row->nick, row->key ? row->key : "?", false, text, sizeof(text));
+    maybe_mark_unread(app, slug, row->nick, live);
+    log_line_mention(app, true, "[%s/%s] %s " E2E_LOCK " %s", slug, row->nick, clock, text);
+    if (live) {
+        e2e_key_alarm_text(row->nick, row->key ? row->key : "?", true, text, sizeof(text));
+        log_line_mention(app, true, "[%s/" SERVER_WINDOW "] %s", slug, text);
+    }
+}
+
+/* What the history shows of an engine step on inbox item `inbox_id`
+ * (client.ts changesFor): a text received, a copy, an undecryptable, a key
+ * alarm. Every other `t` is not shown (a CHAL, a SAS step: later slices);
+ * the engine's list traffic never reaches here. */
+static void e2e_rows_push(e2e_rows *rows, e2e_row *r) {
+    e2e_row *grown = realloc(rows->v, (rows->n + 1) * sizeof(*grown));
+    if (!grown) die("out of memory");
+    rows->v = grown;
+    rows->v[rows->n++] = *r;
+}
+
+static void e2e_rows_of(const e2e_result *res, long inbox_id, int64_t at, e2e_rows *rows) {
+    for (size_t i = 0; i < res->nevents; i++) {
+        const e2e_event *e = &res->events[i];
+        e2e_row r = {0};
+        r.at = at;
+        switch (e->kind) {
+        case E2E_EV_RECEIVED: {
+            e2e_inner in;
+            if (!e->inner || !e2e_inner_parse(e->inner, strlen(e->inner), &in)) break;
+            if (in.type == E2E_INNER_TEXT && in.body) {
+                r.id = xasprintf("in:%ld:%zu", inbox_id, i);
+                r.kind = E2E_ROW_IN;
+                r.nick = xstrdup(e->nick);
+                r.body_len = in.body_len;
+                r.body = malloc(in.body_len + 1);
+                if (!r.body) die("out of memory");
+                memcpy(r.body, in.body, in.body_len);
+                r.body[in.body_len] = 0;
+                r.key = xstrdup(e->master ? e->master : "");
+                e2e_rows_push(rows, &r);
+            }
+            e2e_inner_free(&in);
+            break;
+        }
+        case E2E_EV_UNDECRYPTABLE:
+            r.id = xasprintf("in:%ld:%zu", inbox_id, i);
+            r.kind = E2E_ROW_UNDECRYPTABLE;
+            r.nick = xstrdup(e->nick);
+            r.body = xstrdup(e2e_undecryptable_reason_name(e->undecryptable));
+            r.body_len = strlen(r.body);
+            e2e_rows_push(rows, &r);
+            break;
+        case E2E_EV_KEY_ALARM:
+            r.id = xasprintf("in:%ld:%zu", inbox_id, i);
+            r.kind = E2E_ROW_KEY_ALARM;
+            r.nick = xstrdup(e->nick);
+            r.key = xstrdup(e->presented ? e->presented : "");
+            e2e_rows_push(rows, &r);
+            break;
+        case E2E_EV_COPIED:
+            r.id = xasprintf("copy:%ld:%zu", inbox_id, i);
+            r.kind = E2E_ROW_OUT;
+            r.nick = xstrdup(e->peer);
+            r.body_len = e->body_len;
+            r.body = malloc(e->body_len + 1);
+            if (!r.body) die("out of memory");
+            memcpy(r.body, e->body, e->body_len);
+            r.body[e->body_len] = 0;
+            e2e_rows_push(rows, &r);
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+static bool e2e_list_behind(const e2e_result *res) {
+    for (size_t i = 0; i < res->nevents; i++)
+        if (res->events[i].kind == E2E_EV_DROPPED &&
+            res->events[i].drop == E2E_DROP_SIBLING_LIST_BEHIND)
+            return true;
+    return false;
+}
+
+/* `from`'s events, payloads and copies moved to the end of `into`'s. */
+static void e2e_result_move(e2e_result *into, e2e_result *from) {
+    if (from->nevents) {
+        e2e_event *g = realloc(into->events, (into->nevents + from->nevents) * sizeof(*g));
+        if (!g) die("out of memory");
+        memcpy(g + into->nevents, from->events, from->nevents * sizeof(*g));
+        into->events = g;
+        into->nevents += from->nevents;
+    }
+    if (from->noutbound) {
+        e2e_outbound *g = realloc(into->outbound, (into->noutbound + from->noutbound) * sizeof(*g));
+        if (!g) die("out of memory");
+        memcpy(g + into->noutbound, from->outbound, from->noutbound * sizeof(*g));
+        into->outbound = g;
+        into->noutbound += from->noutbound;
+    }
+    if (from->ncopies) {
+        e2e_sibling_copy *g = realloc(into->copies, (into->ncopies + from->ncopies) * sizeof(*g));
+        if (!g) die("out of memory");
+        memcpy(g + into->ncopies, from->copies, from->ncopies * sizeof(*g));
+        into->copies = g;
+        into->ncopies += from->ncopies;
+    }
+    free(from->events);
+    free(from->outbound);
+    free(from->copies);
+    e2e_result_init(from);
+}
+
+/* The engine's context for the slot: our nick on the network now and its
+ * frame budget (-1 unknown). `own` is the caller's buffer. */
+static void e2e_ctx_of(struct app *app, struct e2e_slot *s, e2e_ctx *c, char *own, size_t own_sz) {
+    pthread_mutex_lock(&app->lock);
+    snprintf(own, own_sz, "%s", own_nick_for_network(app, s->slug));
+    struct network *n = network_by_slug_locked(app, s->slug);
+    long budget = n && n->has_frame_budget_base ? n->frame_budget_base : -1;
+    pthread_mutex_unlock(&app->lock);
+    c->record = &s->rec;
+    c->own_nick = own;
+    c->frame_budget_base = budget;
+    c->now_ms = e2e_now_ms();
+}
+
+/* The record as the disk holds it, after a write that failed: what this
+ * run did to it since the last save is undone, so nothing that spent a key
+ * the history did not keep survives (the inbox still holds it). */
+static void e2e_slot_reload(struct app *app, struct e2e_slot *s) {
+    e2e_record_free(&s->rec);
+    char err[256];
+    if (e2e_store_load(s->store, &s->rec, err, sizeof(err)) == E2E_LOAD_OK) return;
+    s->have_rec = false;
+    struct e2e_view v;
+    memset(&v, 0, sizeof(v));
+    v.state = E2E_SLOT_ERROR;
+    snprintf(v.why, sizeof(v.why), "cannot read the record back: %.200s", err);
+    e2e_view_put(app, s, &v);
+}
+
+/* Step 4 (client.ts flush, copyOut): each payload to the send door in
+ * order, then the claims the engine asked for and the copies, the record
+ * saved before any copy leaves. A refusal is told, never retried: the
+ * ratchet step is spent (grappa's 429 is a refusal like any other here).
+ * `unknown` says grappa refused a payload as from a device it does not
+ * list: the identity moved, and is synced again. */
+static void e2e_flush(struct app *app, struct e2e_slot *s, const e2e_ctx *c, e2e_result *pend,
+                      bool *unknown) {
+    const char *did = s->rec.own->did;
+    for (size_t i = 0; i < pend->noutbound; i++) {
+        const e2e_outbound *o = &pend->outbound[i];
+        char *body = e2e_outbound_body(o);
+        struct e2e_reply r;
+        const char *msgid = NULL;
+        bool ok = body && e2e_door(app, WIRE_E2E_SEND, s->slug, NULL, -1, body, &r) &&
+                  wire_narrow_e2e_sent(json_root(r.doc), &msgid);
+        free(body);
+        if (ok) {
+            if (o->ref) e2e_sent_ok(c, o->ref, msgid);
+            e2e_reply_free(&r);
+            continue;
+        }
+        char why[160];
+        e2e_reply_describe(&r, why, sizeof(why));
+        if (e2e_refused_as(&r, "unknown_device")) *unknown = true;
+        e2e_reply_free(&r);
+        char *nick = NULL, *tag = NULL;
+        if (o->ref && e2e_discard(c, o->ref, &nick, &tag))
+            card(app, s->slug, "--- e2e: an encrypted message to %s could not be sent (%s)", nick,
+                 why);
+        else
+            card(app, s->slug, "--- e2e: grappa refused a %s to %s (%s)", e2e_verb_name(o->verb),
+                 o->target, why);
+        free(nick);
+        free(tag);
+    }
+    pthread_mutex_lock(&app->lock);
+    long proto = app->server_protocol;
+    pthread_mutex_unlock(&app->lock);
+    if (proto < 50) return;
+    /* A sibling with no session asks once for a key of it (claim). What
+     * the claim brings, or NULL on a refusal, opens the session or drops
+     * what waited for it. */
+    e2e_result more;
+    e2e_result_init(&more);
+    for (size_t i = 0; i < pend->nevents; i++) {
+        const e2e_event *e = &pend->events[i];
+        if (e->kind != E2E_EV_SIBLING_KEYS_NEEDED || !e->did) continue;
+        char *esc = json_escape(did);
+        char *body = xasprintf("{\"from_did\":\"%s\"}", esc);
+        free(esc);
+        struct e2e_reply r;
+        const char *keys = NULL;
+        bool ok = e2e_door(app, WIRE_E2E_CLAIM, s->slug, e->did, -1, body, &r) &&
+                  wire_narrow_e2e_claimed(json_root(r.doc), &keys);
+        free(body);
+        if (!ok) {
+            char why[160];
+            e2e_reply_describe(&r, why, sizeof(why));
+            card(app, s->slug, "--- e2e: grappa refused a key of our device %s (%s); the copies "
+                               "waiting for it are dropped", e->did, why);
+        }
+        e2e_sibling_keys(c, e->did, ok ? keys : NULL, &more);
+        e2e_reply_free(&r);
+    }
+    size_t ncopies = pend->ncopies + more.ncopies;
+    if (ncopies && !e2e_save(app, s)) {
+        e2e_result_free(&more);
+        return;
+    }
+    for (size_t i = 0; i < ncopies; i++) {
+        const e2e_sibling_copy *cp =
+            i < pend->ncopies ? &pend->copies[i] : &more.copies[i - pend->ncopies];
+        char *body = e2e_copy_body(cp, did);
+        struct e2e_reply r;
+        if (!body || !e2e_door(app, WIRE_E2E_COPY, s->slug, cp->to, -1, body, &r)) {
+            char why[160];
+            e2e_reply_describe(&r, why, sizeof(why));
+            card(app, s->slug, "--- e2e: grappa refused a copy to our device %s (%s)", cp->to, why);
+        }
+        free(body);
+        e2e_reply_free(&r);
+    }
+    e2e_result_free(&more);
+}
+
+/* Steps 2-4 for what a page (or the tick) made. False when a write failed:
+ * the record is read back, nothing has left, and the caller acks nothing. */
+static bool e2e_commit(struct app *app, struct e2e_slot *s, const e2e_ctx *c, e2e_rows *rows,
+                       e2e_result *pend, bool *unknown) {
+    char dir[PATH_MAX], err[256];
+    e2e_chat_dir(app, s, dir, sizeof(dir));
+    for (size_t i = 0; i < rows->n; i++) {
+        const e2e_row *row = &rows->v[i];
+        if (e2e_hist_has(s, row->id)) continue;
+        if (!e2e_chat_append(dir, row, err, sizeof(err))) {
+            card(app, s->slug, "--- e2e: cannot keep an encrypted message (%s) — nothing of it is "
+                               "acknowledged; it is read again next time", err);
+            e2e_slot_reload(app, s);
+            return false;
+        }
+        e2e_hist_note(s, row->id);
+        e2e_render_row(app, s->slug, row, true);
+    }
+    if (!e2e_save(app, s)) {
+        e2e_slot_reload(app, s);
+        return false;
+    }
+    if (pend->noutbound || pend->ncopies || pend->nevents) {
+        e2e_flush(app, s, c, pend, unknown);
+        e2e_save(app, s);
+    }
+    return true;
+}
+
+/* The history, once a run, into the windows: replayed, not news. */
+static void e2e_hist_load(struct app *app, struct e2e_slot *s) {
+    s->hist_loaded = true;
+    char dir[PATH_MAX], err[256];
+    e2e_chat_dir(app, s, dir, sizeof(dir));
+    e2e_rows rows;
+    if (!e2e_chat_load(dir, &rows, err, sizeof(err)))
+        card(app, s->slug, "--- e2e: some of the encrypted history could not be read (%s)", err);
+    for (size_t i = 0; i < rows.n; i++) {
+        if (e2e_hist_has(s, rows.v[i].id)) continue;
+        e2e_hist_note(s, rows.v[i].id);
+        e2e_render_row(app, s->slug, &rows.v[i], false);
+    }
+    e2e_rows_free(&rows);
+}
+
+static void e2e_drain_slot(struct app *app, struct e2e_slot *s, int depth) {
+    pthread_mutex_lock(&app->lock);
+    bool ready = s->view.state == E2E_SLOT_READY;
+    long proto = app->server_protocol;
+    pthread_mutex_unlock(&app->lock);
+    if (!ready || !s->have_rec || !s->rec.own) return;
+    if (!s->hist_loaded) e2e_hist_load(app, s);
+    char own[MAX_CHANNEL];
+    e2e_ctx c;
+    e2e_ctx_of(app, s, &c, own, sizeof(own));
+    char did[E2E_DID_LEN + 1];
+    snprintf(did, sizeof(did), "%s", s->rec.own->did);
+    bool behind = false, unknown = false, failed = false;
+    long after = 0;
+    for (int pages = 0; !behind && !failed && pages < 1000; pages++) {
+        struct e2e_reply r;
+        const json_value *items = NULL;
+        size_t count = 0;
+        if (!e2e_door(app, WIRE_E2E_INBOX, s->slug, did, after, NULL, &r) ||
+            !wire_narrow_e2e_inbox(json_root(r.doc), &items, &count)) {
+            char why[160];
+            e2e_reply_describe(&r, why, sizeof(why));
+            card(app, s->slug, "--- e2e: cannot read this device's inbox on %s (%s); the next "
+                               "message tries again", s->slug, why);
+            e2e_reply_free(&r);
+            failed = true;
+            break;
+        }
+        if (count == 0) {
+            e2e_reply_free(&r);
+            break;
+        }
+        e2e_rows rows = {0};
+        e2e_result pend;
+        e2e_result_init(&pend);
+        long acks[128];
+        size_t nacks = 0, seen = 0;
+        struct {
+            char from_did[24], msgid[24];
+        } landed[128];
+        long last = after;
+        c.now_ms = e2e_now_ms();
+        for (size_t i = 0; i < count && i < 128; i++) {
+            struct wire_e2e_message m;
+            long id = 0;
+            if (!json_long(json_get(json_at(items, i), "id"), &id) || id <= 0) continue;
+            last = id > last ? id : last;
+            bool shaped = wire_e2e_message_at(items, i, &m);
+            /* Read (now or before): its arriving placeholder goes. */
+            if (shaped && seen < 128) {
+                snprintf(landed[seen].from_did, sizeof(landed[0].from_did), "%s", m.from_did);
+                snprintf(landed[seen].msgid, sizeof(landed[0].msgid), "%s", m.msgid);
+            }
+            if (id <= s->rec.state.inbox) {
+                acks[nacks++] = id; /* read before: only acknowledged again */
+                if (shaped) seen++;
+                continue;
+            }
+            e2e_result res;
+            e2e_result_init(&res);
+            /* An item that is not an e2e_message can never be read: it
+             * moves the watermark and goes, like a refusal of the engine. */
+            if (shaped && !m.own) {
+                e2e_receive(&c, m.from, (e2e_verb)(m.verb == WIRE_E2E_KEYS    ? E2E_VERB_KEYS
+                                                   : m.verb == WIRE_E2E_PKMSG ? E2E_VERB_PKMSG
+                                                   : m.verb == WIRE_E2E_MSG   ? E2E_VERB_MSG
+                                                                              : E2E_VERB_NACK),
+                            m.msgid, m.from_did, m.payload, &res);
+            } else if (shaped && proto >= 50 &&
+                       (m.verb == WIRE_E2E_PKMSG || m.verb == WIRE_E2E_MSG)) {
+                e2e_receive_copy(&c, m.from_did,
+                                 m.verb == WIRE_E2E_PKMSG ? E2E_VERB_PKMSG : E2E_VERB_MSG,
+                                 m.payload, &res);
+            }
+            if (e2e_list_behind(&res) && s->stopped_before != id) {
+                /* A copy from a sibling our list does not name yet, which
+                 * our master certified for a newer list: neither it nor
+                 * anything past it is read or acknowledged until the
+                 * identity is synced (client.ts listBehind). */
+                s->stopped_before = id;
+                behind = true;
+                e2e_result_free(&res);
+                break;
+            }
+            e2e_rows_of(&res, id, c.now_ms, &rows);
+            e2e_result_move(&pend, &res);
+            s->rec.state.inbox = id;
+            acks[nacks++] = id;
+            if (shaped) seen++;
+        }
+        e2e_reply_free(&r);
+        if (!e2e_commit(app, s, &c, &rows, &pend, &unknown)) {
+            failed = true;
+        } else if (nacks) {
+            json_buf b;
+            jb_init(&b);
+            jb_obj_open(&b);
+            jb_key(&b, "ids");
+            jb_arr_open(&b);
+            for (size_t i = 0; i < nacks; i++) jb_num(&b, (double)acks[i]);
+            jb_arr_close(&b);
+            jb_obj_close(&b);
+            char *body = jb_take(&b);
+            struct e2e_reply a;
+            if (!body || !e2e_door(app, WIRE_E2E_INBOX_ACK, s->slug, did, -1, body, &a)) {
+                /* Not lost: the items stay, are re-read below the watermark
+                 * next drain, and only acknowledged again. */
+                char why[160];
+                e2e_reply_describe(&a, why, sizeof(why));
+                card(app, s->slug, "--- e2e: acknowledging the inbox failed (%s); it is "
+                                   "acknowledged again next drain", why);
+            }
+            free(body);
+            e2e_reply_free(&a);
+        }
+        if (!failed)
+            for (size_t i = 0; i < seen; i++)
+                e2e_arrival_done(app, s->slug, landed[i].from_did, landed[i].msgid);
+        e2e_rows_free(&rows);
+        e2e_result_free(&pend);
+        after = last;
+    }
+    if (!failed) {
+        /* What waited on the clock (client.ts drain ends with a tick). */
+        e2e_result ticked;
+        e2e_result_init(&ticked);
+        c.now_ms = e2e_now_ms();
+        e2e_tick(&c, &ticked);
+        e2e_rows none = {0};
+        if (ticked.noutbound || ticked.ncopies || ticked.nevents)
+            e2e_commit(app, s, &c, &none, &ticked, &unknown);
+        e2e_result_free(&ticked);
+    }
+    if (behind || unknown) {
+        /* Sync: an adopt brings the newer list (or tells what moved), and
+         * a list-behind drain reads again, from the copy it stopped at. */
+        e2e_sync_slot(app, s);
+        if (behind && depth == 0) e2e_drain_slot(app, s, depth + 1);
+    }
+}
+
+/* JOB_E2E_DRAIN: the network in job.network. */
+static void e2e_drain_job(struct app *app, const struct job *job) {
+    pthread_mutex_lock(&app->lock);
+    struct e2e_slot *s = e2e_slot_by_slug_locked(app, job->network);
+    if (s) s->drain_queued = false;
+    pthread_mutex_unlock(&app->lock);
+    if (s) e2e_drain_slot(app, s, 0);
+}
+
+/* One drain queued per slot: a burst of pushes is one inbox read. Only for
+ * a slot that exists (a sync made it): a network never looked at has no
+ * device to drain. */
+static void e2e_drain_enqueue(struct app *app, const char *slug) {
+    pthread_mutex_lock(&app->lock);
+    struct e2e_slot *s = e2e_slot_by_slug_locked(app, slug);
+    bool go = s && !s->drain_queued;
+    if (go) s->drain_queued = true;
+    pthread_mutex_unlock(&app->lock);
+    if (!go) return;
+    struct job job = {.kind = JOB_E2E_DRAIN};
+    snprintf(job.network, sizeof(job.network), "%s", slug);
+    if (!enqueue_job_quiet(app, job)) {
+        pthread_mutex_lock(&app->lock);
+        s->drain_queued = false;
+        pthread_mutex_unlock(&app->lock);
+    }
+}
+
+static void e2e_drain_all(struct app *app) {
+    char slugs[MAX_NETWORKS][MAX_SLUG];
+    size_t n = 0;
+    pthread_mutex_lock(&app->lock);
+    for (size_t i = 0; i < app->network_count && n < MAX_NETWORKS; i++)
+        snprintf(slugs[n++], sizeof(slugs[0]), "%s", app->networks[i].slug);
+    pthread_mutex_unlock(&app->lock);
+    for (size_t i = 0; i < n; i++) e2e_drain_enqueue(app, slugs[i]);
+}
+
+/* e2e_message: a doorbell, when it is for this device (grappa pushes every
+ * device's message to every client of the account). */
+static void e2e_doorbell(struct app *app, const struct wire_e2e_message *m) {
+    pthread_mutex_lock(&app->lock);
+    struct e2e_slot *s = e2e_slot_by_slug_locked(app, m->network);
+    bool ours = s && s->view.state == E2E_SLOT_READY && strcmp(s->view.did, m->to_did) == 0;
+    pthread_mutex_unlock(&app->lock);
+    if (ours) e2e_drain_enqueue(app, m->network);
+}
+
+/* e2e_incoming (v59): a ≥2-line encrypted message began to arrive. Only
+ * one for this device or every one (`*`) is shown; an unknown own did
+ * shows nothing. The placeholder sits in the sender's query, dimmed (a
+ * pending row), until the message lands or is lost. */
+static void e2e_arrival_add(struct app *app, const char *network, const char *from,
+                            const char *from_did, const char *to, const char *msgid) {
+    if (!network || !from || !from[0] || !from_did || !to || !msgid ||
+        strlen(from_did) >= sizeof(((struct e2e_arrival *)0)->from_did) ||
+        strlen(msgid) >= sizeof(((struct e2e_arrival *)0)->msgid))
+        return;
+    pthread_mutex_lock(&app->lock);
+    struct e2e_slot *s = e2e_slot_by_slug_locked(app, network);
+    bool ours = s && s->view.state == E2E_SLOT_READY &&
+                (strcmp(to, "*") == 0 || strcmp(to, s->view.did) == 0);
+    for (size_t i = 0; ours && i < app->arrival_count; i++)
+        if (irc_name_eq(app->arrivals[i].network, network) &&
+            strcmp(app->arrivals[i].from_did, from_did) == 0 &&
+            strcmp(app->arrivals[i].msgid, msgid) == 0)
+            ours = false;
+    if (app->arrival_count >= E2E_ARRIVALS_MAX) ours = false;
+    pthread_mutex_unlock(&app->lock);
+    if (!ours || is_blocked(app, from)) return;
+    add_window_ex(app, network, from, false);
+    char clock[16];
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    strftime(clock, sizeof(clock), "%H:%M", &tm);
+    char *line = xasprintf("[%s/%s] %s " E2E_LOCK " %s … (encrypted message arriving)", network,
+                           from, clock, from);
+    pthread_mutex_lock(&app->lock);
+    if (app->arrival_count < E2E_ARRIVALS_MAX) {
+        struct e2e_arrival *a = &app->arrivals[app->arrival_count++];
+        snprintf(a->network, sizeof(a->network), "%s", network);
+        snprintf(a->from_did, sizeof(a->from_did), "%s", from_did);
+        snprintf(a->msgid, sizeof(a->msgid), "%s", msgid);
+        a->row = ++app->next_pending_id;
+        log_push_locked(app, line, false, a->row);
+    } else {
+        free(line);
+    }
+    pthread_mutex_unlock(&app->lock);
+}
+
+/* The placeholder for (from_did, msgid) goes: the message landed (a drain
+ * read it) or will not come (e2e_incoming_lost). */
+static void e2e_arrival_done(struct app *app, const char *network, const char *from_did,
+                             const char *msgid) {
+    if (!network || !from_did || !msgid) return;
+    pthread_mutex_lock(&app->lock);
+    for (size_t i = 0; i < app->arrival_count; i++) {
+        struct e2e_arrival *a = &app->arrivals[i];
+        if (!irc_name_eq(a->network, network) || strcmp(a->from_did, from_did) != 0 ||
+            strcmp(a->msgid, msgid) != 0)
+            continue;
+        log_remove_pending_locked(app, a->row);
+        app->arrivals[i] = app->arrivals[--app->arrival_count];
+        break;
+    }
+    pthread_mutex_unlock(&app->lock);
 }
 
 /* One network's /e2e status line (or two: the master key of a ready one),
@@ -16283,6 +17044,9 @@ static void *worker_main(void *arg) {
             break;
         case JOB_E2E_PAIR:
             e2e_pair_job(app, &job);
+            break;
+        case JOB_E2E_DRAIN:
+            e2e_drain_job(app, &job);
             break;
         case JOB_FETCH:
             refresh_window(app, job.network, job.channel);
@@ -20680,7 +21444,7 @@ static void show_command_help(struct app *app, const char *raw) {
     else if (strcmp(cmd, "exec") == 0) log_line(app, "/exec <command> — run it in a shell and SEND its stdout to the current window (everyone sees it); capped at 20 lines / 16 KiB, killed after 15s, stderr discarded");
     else if (strcmp(cmd, "ctcp") == 0) log_line(app, "/ctcp <nick|#channel> <VERB> [args] — send any CTCP query (VERSION, TIME, FINGER…); the reply lands in the window you asked from. /ping is the timed special case");
     else if (strcmp(cmd, "ping") == 0) log_line(app, "/ping nick — CTCP PING somebody and time the round trip; the answer lands in the window you asked from");
-    else if (strcmp(cmd, "e2e") == 0) log_line(app, "/e2e [status [network]] — per network: whether this device is part of the account's end-to-end encrypted identity (none, elsewhere, holder, paired), its device id, the device list version and size, whether it holds the master key, and its key bundle on grappa. /e2e init [network] creates the identity when the account has none (this device becomes its first and holds the master key; never replaces one). /e2e sync [network] reads it again. Needs server protocol v49. /e2e pair [accept|confirm|decline] pairs this device onto an identity another device holds: when cicchetto's \"add a device\" offers a pairing, accept joins it and shows a 2-digit check code to type there; once it matched, confirm registers this device on the networks offered; decline stops at any step. Needs protocol v55 and a password login");
+    else if (strcmp(cmd, "e2e") == 0) log_line(app, "/e2e [status [network]] — per network: whether this device is part of the account's end-to-end encrypted identity (none, elsewhere, holder, paired), its device id, the device list version and size, whether it holds the master key, and its key bundle on grappa. /e2e init [network] creates the identity when the account has none (this device becomes its first and holds the master key; never replaces one). /e2e sync [network] reads it again. Needs server protocol v49. /e2e pair [accept|confirm|decline] pairs this device onto an identity another device holds: when cicchetto's \"add a device\" offers a pairing, accept joins it and shows a 2-digit check code to type there; once it matched, confirm registers this device on the networks offered; decline stops at any step. Needs protocol v55 and a password login. Once this device is ready, encrypted messages addressed to it are read from grappa's inbox and shown in the query with the peer, marked with a lock beside the time (a copy another of your devices sent shows as your own line); they are never bridged to --ircd, desktop notifications say only \"encrypted message\", and this device keeps their only copy, under its state directory");
     else if (strcmp(cmd, "block") == 0 || strcmp(cmd, "ignore") == 0) log_line(app, "/block [nick], /ignore [nick] — hide somebody's messages in THIS client only (nothing is sent to the server); bare /block lists who is blocked");
     else if (strcmp(cmd, "unblock") == 0 || strcmp(cmd, "unignore") == 0) log_line(app, "/unblock nick, /unignore nick — show somebody's messages again");
     else if (strcmp(cmd, "whowas") == 0) log_line(app, "/whowas nick — request WHOWAS for nick");
