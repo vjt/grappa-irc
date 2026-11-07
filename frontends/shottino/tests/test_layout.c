@@ -1200,6 +1200,50 @@ TEST(a_page_link_earns_a_card_once_it_has_something_to_say) {
     free(app);
 }
 
+/* A link in an ENCRYPTED row is never fetched on view, picture or page:
+ * the fetch tells the link's host (and grappa, for its own uploads) what
+ * was said in a conversation meant for two devices. It stays a link —
+ * a region with its kind, so a click still reaches it (and a picture
+ * still asks first, through the media confirm box). */
+TEST(an_encrypted_rows_link_is_never_fetched_on_view) {
+    struct app *app = test_app();
+    CHECK(app != NULL);
+    if (!app) return;
+    add_test_network(app, "azzurra", "ohv", "@%+");
+    add_test_window(app, "azzurra", "alice");
+    app->inline_media_enabled = true;
+    app->inline_media_peers = true;
+    app->link_cards = true;
+    log_writing_e2e = true;
+    seed_log(app, "[azzurra/alice] 09:00 <alice> look https://ex.net/secret.png");
+    seed_log(app, "[azzurra/alice] 09:01 <alice> and https://ex.net/secret-article");
+    log_writing_e2e = false;
+    seed_log(app, "[azzurra/alice] 09:02 <alice> clear https://ex.net/public.png");
+    for (int f = 0; f < 3; f++) {
+        erase();
+        draw(app);
+    }
+    CHECK_LONG(app->log_media[0], LOG_MEDIA_NONE);
+    CHECK_LONG(app->log_media[1], LOG_MEDIA_NONE);
+    /* The clear row beside them still earns its picture: the rule is the
+     * row's, not the window's. */
+    CHECK(app->log_media[2] >= 0);
+    for (size_t k = 0; k < app->media_count; k++) CHECK(strstr(app->media[k].url, "secret") == NULL);
+    bool pic = false, page = false;
+    for (size_t i = 0; i < app->link_region_count; i++) {
+        if (strstr(app->link_regions[i].url, "secret.png")) {
+            pic = true;
+            CHECK_LONG(app->link_regions[i].kind, MEDIA_IMAGE);
+        }
+        if (strstr(app->link_regions[i].url, "secret-article")) page = true;
+    }
+    CHECK(pic);
+    CHECK(page);
+
+    for (size_t i = 0; i < app->log_count; i++) free(app->log[i]);
+    free(app);
+}
+
 /* More link rows on screen than slots is an ordinary screen once
  * links earn cards (a feed bot, one link a line). The pool recycles
  * only slots NOT on screen this frame; when every slot is, the row
@@ -1922,6 +1966,7 @@ int main(void) {
     }
     RUN(a_page_link_earns_a_card_once_it_has_something_to_say);
     RUN(a_screen_of_links_does_not_thrash_the_media_pool);
+    RUN(an_encrypted_rows_link_is_never_fetched_on_view);
     RUN(audio_is_clickable_but_not_drawn);
     RUN(the_sidebar_records_a_row_for_every_window);
     RUN(the_sidebar_folds_every_network_but_the_focused_one);

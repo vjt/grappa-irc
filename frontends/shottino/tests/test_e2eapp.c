@@ -3277,6 +3277,23 @@ TEST(no_model_tool_reads_an_encrypted_row) {
     free_e2e_app(app);
 }
 
+/* A link in an encrypted row is not "the last link": /preview and /open
+ * with no argument fetch what remember_url kept, so a decrypted URL there
+ * would be one keystroke from a GET its host was never meant to see.
+ * The row keeps it as a link (the draw path, test_layout). */
+TEST(an_encrypted_link_is_not_remembered_for_preview) {
+    struct app *app = send_app("user:link", "alice");
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "see https://ex.net/secret.png");
+    drain(app);
+    CHECK(said(app, "https://ex.net/secret.png"));
+    CHECK(strstr(app->last_url, "secret") == NULL);
+    CHECK(strstr(app->last_media_url, "secret") == NULL);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
 /* What this device sends a peer reaches our other device as a copy
  * (claim, then the copy door — never IRC), after grappa took the text. */
 TEST(a_sent_text_is_copied_to_our_sibling) {
@@ -4377,6 +4394,7 @@ int main(void) {
     RUN(a_dropped_send_fails_and_resend_sends_it_again);
     RUN(the_peer_turns_it_on_and_only_off_turns_it_off);
     RUN(no_model_tool_reads_an_encrypted_row);
+    RUN(an_encrypted_link_is_not_remembered_for_preview);
     RUN(a_sent_text_is_copied_to_our_sibling);
     RUN(emsg_sends_one_encrypted_message);
     RUN(a_line_typed_before_the_slot_loads_never_goes_in_clear);

@@ -5421,7 +5421,10 @@ static void render_row(struct app *app, const struct wire_scrollback_message *m,
         if (network[0] && display_channel[0] && window_matches(&app->windows[i], network, display_channel) && id > app->windows[i].last_id) app->windows[i].last_id = id;
     }
     pthread_mutex_unlock(&app->lock);
-    remember_url(app, body);
+    /* Not an encrypted row's: "the last link" is what /preview and /open
+     * fetch with no argument, and a decrypted URL must never be one
+     * keystroke from a GET to its host. The row still draws it as a link. */
+    if (!encrypted) remember_url(app, body);
     /* The bridge sees the row here, where live pushes and fetched
      * scrollback have already become the same thing and the id-dedup
      * above has already run. Anywhere else means two feeds to keep in
@@ -11052,8 +11055,14 @@ static void draw_chat_pane(struct app *app, struct pane *pane, int x, int y, int
         /* Fetching on view is a GET from this machine's network position,
          * so a link that names THIS network — a router, a printer, a LAN
          * name, localhost — is never fetched, picture or page: a stranger
-         * does not get to make this client's requests for it. */
-        bool allowed = app->inline_media_enabled && !media_url_is_local(url_tok) &&
+         * does not get to make this client's requests for it.
+         *
+         * Nor is a link in an ENCRYPTED row (log_e2e): the fetch would
+         * tell its host — and grappa, for its own uploads — what was said
+         * in a conversation meant for two devices. It stays a link above:
+         * a click reaches it, and a picture still asks first. */
+        bool allowed = app->inline_media_enabled && !app->log_e2e[i] &&
+                       !media_url_is_local(url_tok) &&
                        (app->inline_media_peers || url_is_first_party(app, url_tok));
         if (mi == LOG_MEDIA_NONE && mk != MEDIA_NONE && allowed) {
             app->log_media[i] = media_claim_locked(app, url_tok, mk == MEDIA_VIDEO);
