@@ -52,7 +52,7 @@ build it from source instead, read on.
 ## Version
 
 ```sh
-shottino --version        # shottino 0.4.2
+shottino --version        # shottino 0.4.3
 ```
 
 It is also in the corner, beside the name, on any terminal wide enough to
