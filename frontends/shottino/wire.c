@@ -1066,6 +1066,10 @@ bool wire_narrow_e2e_request(const json_value *v, struct wire_e2e_request *out) 
     return true;
 }
 
+bool wire_narrow_e2e_asked(const json_value *root, struct wire_e2e_request *out) {
+    return json_type_of(root) == JSON_OBJECT && wire_narrow_e2e_request(json_get(root, "request"), out);
+}
+
 bool wire_narrow_e2e_device(const json_value *v, struct wire_e2e_device *out) {
     if (json_type_of(v) != JSON_OBJECT) return false;
     struct wire_e2e_device d = {0};
@@ -1182,7 +1186,7 @@ const char *wire_e2e_error(const json_value *root) {
 }
 
 /* The door table: the path is `/networks/<slug>/e2e` + head, then for a
- * door that names a device, the did and `rest`. */
+ * door that names a device (or a request), its id and `rest`. */
 static const struct {
     const char *method;
     const char *head;
@@ -1203,6 +1207,11 @@ static const struct {
     [WIRE_E2E_CLAIM] = {"POST", "/devices/", "/claim", true, true},
     [WIRE_E2E_COPY] = {"POST", "/devices/", "/copies", true, true},
     [WIRE_E2E_SEND] = {"POST", "/messages", "", false, true},
+    [WIRE_E2E_REQUESTS] = {"GET", "/requests", "", false, true},
+    [WIRE_E2E_REQUEST_ASK] = {"POST", "/requests", "", false, true},
+    [WIRE_E2E_REQUEST_ACCEPT] = {"POST", "/requests/", "/accept", true, true},
+    [WIRE_E2E_REQUEST_REFUSE] = {"POST", "/requests/", "/refuse", true, true},
+    [WIRE_E2E_REQUEST_DISMISS] = {"DELETE", "/requests/", "", true, false},
 };
 
 const char *wire_e2e_door_method(wire_e2e_door d) {
@@ -1220,8 +1229,9 @@ bool wire_e2e_door_path(wire_e2e_door d, const char *slug_enc, const char *did, 
     if (E2E_DOORS[d].did && (!did || !did[0])) return false;
     const char *id = "";
     if (E2E_DOORS[d].did) {
-        /* A did is 11 characters of base64url; anything that could leave
-         * the path is refused rather than sent. */
+        /* A did is 11 characters of base64url (a request id is decimal
+         * digits, a subset); anything that could leave the path is refused
+         * rather than sent. */
         if (strlen(did) > 32) return false;
         for (const char *c = did; *c; c++)
             if (!((*c >= 'A' && *c <= 'Z') || (*c >= 'a' && *c <= 'z') ||

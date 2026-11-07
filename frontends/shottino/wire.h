@@ -862,7 +862,14 @@ typedef enum {
     WIRE_E2E_INBOX_ACK,       /* POST   …/e2e/devices/:did/inbox/ack  → 204 */
     WIRE_E2E_CLAIM,           /* POST   …/e2e/devices/:did/claim      → {keys} */
     WIRE_E2E_COPY,            /* POST   …/e2e/devices/:did/copies     → {id, msgid} */
-    WIRE_E2E_SEND             /* POST   …/e2e/messages                → {msgid} */
+    WIRE_E2E_SEND,            /* POST   …/e2e/messages                → {msgid} */
+    /* Consent requests (§4i, v53): `:id` is the request's id, in decimal,
+     * passed where the device doors take a did. */
+    WIRE_E2E_REQUESTS,        /* GET    …/e2e/requests                → {requests} */
+    WIRE_E2E_REQUEST_ASK,     /* POST   …/e2e/requests                → {request} */
+    WIRE_E2E_REQUEST_ACCEPT,  /* POST   …/e2e/requests/:id/accept     → {msgid} */
+    WIRE_E2E_REQUEST_REFUSE,  /* POST   …/e2e/requests/:id/refuse     → {msgid} */
+    WIRE_E2E_REQUEST_DISMISS  /* DELETE …/e2e/requests/:id            → 204 */
 } wire_e2e_door;
 
 const char *wire_e2e_door_method(wire_e2e_door d);
@@ -908,6 +915,8 @@ bool wire_e2e_message_at(const json_value *messages, size_t i, struct wire_e2e_m
 bool wire_narrow_e2e_request(const json_value *v, struct wire_e2e_request *out);
 bool wire_narrow_e2e_requests(const json_value *root, const json_value **requests, size_t *count);
 bool wire_e2e_request_at(const json_value *requests, size_t i, struct wire_e2e_request *out);
+/* `{request: request}`, the ask door's answer. */
+bool wire_narrow_e2e_asked(const json_value *root, struct wire_e2e_request *out);
 bool wire_narrow_e2e_claimed(const json_value *root, const char **keys);
 bool wire_narrow_e2e_copied(const json_value *root, long *id, const char **msgid);
 bool wire_narrow_e2e_sent(const json_value *root, const char **msgid);

@@ -1019,6 +1019,29 @@ TEST(e2e_doors) {
     CHECK_STR(path, "/networks/n/e2e/devices/If4x36FUomE/copies");
     CHECK(wire_e2e_door_path(WIRE_E2E_INBOX_ACK, "n", "If4x36FUomE", -1, path, sizeof(path)));
     CHECK_STR(path, "/networks/n/e2e/devices/If4x36FUomE/inbox/ack");
+    /* The consent requests (v53): the id where a did goes. */
+    CHECK(wire_e2e_door_path(WIRE_E2E_REQUESTS, "n", NULL, -1, path, sizeof(path)));
+    CHECK_STR(path, "/networks/n/e2e/requests");
+    CHECK_STR(wire_e2e_door_method(WIRE_E2E_REQUEST_ASK), "POST");
+    CHECK(wire_e2e_door_path(WIRE_E2E_REQUEST_ACCEPT, "n", "42", -1, path, sizeof(path)));
+    CHECK_STR(path, "/networks/n/e2e/requests/42/accept");
+    CHECK(wire_e2e_door_path(WIRE_E2E_REQUEST_REFUSE, "n", "42", -1, path, sizeof(path)));
+    CHECK_STR(path, "/networks/n/e2e/requests/42/refuse");
+    CHECK(wire_e2e_door_path(WIRE_E2E_REQUEST_DISMISS, "n", "42", -1, path, sizeof(path)));
+    CHECK_STR(path, "/networks/n/e2e/requests/42");
+    CHECK_STR(wire_e2e_door_method(WIRE_E2E_REQUEST_DISMISS), "DELETE");
+    CHECK(!wire_e2e_door_has_body(WIRE_E2E_REQUEST_DISMISS));
+    CHECK(!wire_e2e_door_path(WIRE_E2E_REQUEST_ACCEPT, "n", NULL, -1, path, sizeof(path)));
+    json_doc *asked = json_parse("{\"request\":{\"id\":3,\"peer\":\"bob\",\"state\":"
+                                 "\"outgoing\",\"payload\":null,\"at\":\"2026-11-07T10:00:00Z\","
+                                 "\"expires_at\":\"2026-11-08T10:00:00Z\"}}",
+                                 131, NULL, 0);
+    struct wire_e2e_request rq;
+    CHECK(asked && wire_narrow_e2e_asked(json_root(asked), &rq));
+    CHECK_LONG(rq.id, 3);
+    CHECK(rq.state == WIRE_E2E_REQ_OUTGOING);
+    CHECK(rq.payload == NULL);
+    json_free(asked);
     /* A device door with no did, or a did that could leave the path. */
     CHECK(!wire_e2e_door_path(WIRE_E2E_CLAIM, "n", NULL, -1, path, sizeof(path)));
     CHECK(!wire_e2e_door_path(WIRE_E2E_CLAIM, "n", "", -1, path, sizeof(path)));
