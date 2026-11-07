@@ -5230,8 +5230,9 @@ unit.
   properties, 0 failures.
 * `compile --force --warnings-as-errors` dev (383 files) and test (409)
   clean; credo strict clean after three findings in the new test were fixed;
-  dialyzer 0 errors; `wire_pin --check`: "wire shape and protocol 60 agree",
-  so no protocol bump; the three generated artefacts in sync.
+  dialyzer 0 errors; `wire_pin --check`: "wire shape and protocol 60 agree"
+  before the rebase onto issue 2584's bump and "61" after it, so S2 bumps
+  nothing; the three generated artefacts in sync.
 * `__mix_recompile__?/0`, in the dev container: adding, editing and removing a
   migration each recompiled `manifest.ex` alone (keys 166 → 167 → 166), a
   no-op compile recompiled nothing, and with the callback mutated away a new
@@ -5253,11 +5254,14 @@ unit.
 
 ### Hot or cold, for this slice
 
-On the jail, HOT by the classifier's rules as read: none of the touched files
-is in a jail COLD class, and neither `Preflight` nor `Manifest` is a long-lived
-module. That is a reading, not an executed classify. For packages, the first
-upgrade carrying S2 is a restart: the running node has no manifest, and the
-unit changed.
+On the jail, HOT: none of the touched files is in a jail COLD class, and
+neither `Preflight` nor `Manifest` is a long-lived module. Executed, not only
+read: `Preflight.cli/1` over the slice's own range, on the tree rebased onto
+protocol 61, answers "no unsafe markers → HOT" (exit 0) for `jail`, beside a
+range known cold (a `mix.lock` bump) that answers `mix_deps` (exit 3). For
+packages, the first upgrade carrying S2 is a restart: the running node has no
+manifest, and the unit changed — `package` over the same range answers COLD
+`systemd_unit`.
 
 ### Not claimed
 
