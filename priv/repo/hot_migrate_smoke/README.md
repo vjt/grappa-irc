@@ -32,3 +32,12 @@ it.
 
 Adding a file here changes what the #41 test measures. Adding one to
 `priv/repo/migrations/` does not.
+
+## A second reader: the pre-stop migration check (issue 1112)
+
+`test/grappa/migrations/duplicate_version_gate_test.exs` borrows this set
+read-only for the passing arm of `Grappa.Release.check_migrations/0`: it
+applies the BASE alone to a temp sqlite file of its own, then asserts that
+the check leaves the migration statuses exactly as it found them — one up,
+two down. So that test counts these files too, and a fourth one changes
+its numbers as well.

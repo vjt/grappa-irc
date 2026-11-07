@@ -140,8 +140,12 @@ diff since the last completed deploy and picks HOT (`mix release
 --overwrite`, no stop, then `POST /admin/reload` — Erlang's 2-version
 code-loading guarantee means already-running IRC sessions keep their
 state, only newly-called code paths pick up the change) or COLD (the
-full migrate → systemd-unit-refresh → `systemctl stop`/`start` cycle,
-sessions reset) automatically. A diff touching
+full migration check → systemd-unit-refresh → `systemctl stop` → migrate
+→ seed → `systemctl start` cycle, sessions reset) automatically. The
+check runs while the old daemon still serves and migrates nothing: a
+refusal stops nothing. The migrate runs with the daemon stopped (issue
+1112), so a migration that fails there leaves the service down, and the
+deploy says so. A diff touching
 `infra/linux/systemd/grappa.service` always forces COLD on this
 substrate — a changed unit file needs `daemon-reload` + a restart to
 take effect, there's no hot-reload of a systemd unit's own definition.
@@ -175,8 +179,10 @@ plausibly an OTP 28.5-specific interaction with `--boot-var
 RELEASE_LIB` and the persistent_term-based code-loading fast path.
 
 Workaround in place: `install.sh`/`deploy.sh` run migrations via plain
-`mix ecto.migrate` (sourcing the env file, `MIX_ENV=prod`) instead of
-`release.sh eval 'Grappa.Release.migrate()'` — viable here because
+`mix grappa.migrate` (sourcing the env file, `MIX_ENV=prod`; the same
+migrator as `ecto.migrate` plus the #1348 duplicate-version audit), and
+the cold deploy's pre-stop check via `mix grappa.check_migrations`,
+instead of `release.sh eval 'Grappa.Release.migrate()'` — viable here because
 this substrate keeps the full mix/asdf toolchain around permanently
 (unlike a minimal prod container), so routing through the packaged
 release for one-off tasks was never strictly necessary in the first

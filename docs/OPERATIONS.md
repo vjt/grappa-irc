@@ -836,11 +836,17 @@ image, or the `curl | bash` bootstrap on a fresh host) reuses this same
 write.
 
 **Migrations run BEFORE the long-running container comes up (the S3
-crash-loop fix).** A one-shot `run` against the same image and the same
-bind-mounted DB runs to completion and exits before the long-lived
-container starts, so Bootstrap's first DB hit can never race an
-unapplied migration. Bringing the container up first and migrating
-after is the crash loop.
+crash-loop fix), and AFTER the old one is stopped (issue 1112).** A
+one-shot `run` against the same image and the same bind-mounted DB runs
+to completion and exits before the long-lived container starts, so
+Bootstrap's first DB hit can never race an unapplied migration.
+Bringing the container up first and migrating after is the crash loop.
+The other side is the old container: `substrate_stop` takes it down
+first, so no old code ever serves the new schema. What still runs
+beside the live container is the side-effect-free
+`mix grappa.check_migrations` — and the hex/deps sync, which moved into
+`substrate_build` so its seconds are not downtime. The order and its
+price are in § "The shared deploy library (`infra/lib/`)".
 
 **`--no-deps --remove-orphans` on the recreate.** `--no-deps` avoids
 re-running the `cicchetto-build` oneshot; `--remove-orphans` sweeps a
@@ -981,8 +987,9 @@ to it — the same posture as Docker since #485.
 
 **`--full-restart` is a cold deploy that binds NEW jail vhosts in one
 bounce, and it is deliberately two remote calls.** First the jail
-stages the release and the rc.d wrappers and STOPS the BEAM
-(`deploy.sh --force-cold --defer-restart` exits 0 without starting it);
+stages the release and the rc.d wrappers, STOPS the BEAM, and migrates
+and seeds the DB with it stopped (`deploy.sh --force-cold
+--defer-restart` exits 0 without starting it);
 then the host issues a single `bastille restart`, which boots the
 staged release through the new wrapper and binds any new jail vhosts.
 Use it when a new vhost or a jail-layer network change must take
@@ -1446,8 +1453,8 @@ release-image Docker path (#503 unit D).** A checkout-less host running the
 published ghcr image — `infra/docker/deploy.sh` in release mode, or the
 `curl | bash` `get.sh` bootstrap — has no `Phoenix.CodeReloader` and no git
 range to classify, so its `update` NEVER shells out to preflight: it
-force-colds (`docker pull` → migrate → `rm -f` + `run -d` recreate) through the
-shared cold path. It is the one substrate with no hot branch at all; hot-on-image
+force-colds (`docker pull` → migration check → `rm -f` → migrate → seed →
+`run -d`) through the shared cold path. It is the one substrate with no hot branch at all; hot-on-image
 is #503 unit E. Runbook below.
 
 **A sixth door, with no git range and no `deploy_common.sh`: a deb/rpm/Arch
@@ -1527,7 +1534,9 @@ daemon pid unchanged): `lib/*.ex` edits, `cicchetto/src/` edits
 **COLD** (forced by `--force-cold` or any of these diff classes
 — Docker: image rebuild + `--force-recreate`, ~30s downtime;
 jail: `mix release --overwrite` + `service grappa restart`, ~10-30s
-downtime):
+downtime — both figures predate issue 1112, which moved the migrate and
+seed oneshots inside the stop: see § "The shared deploy library
+(infra/lib/)"):
 
 - `mix.lock` / `mix.exs` (deps + version + apps callback).
   ⚠️ **A deps-version bump (`mix.lock`) crashes the AUTO preflight
@@ -1753,7 +1762,8 @@ A new vhost (or any jail-layer network change) needs both a cold deploy
 AND a host `bastille restart` to bind it — two bounces, two drop windows.
 `--full-restart` collapses them: the jail runs `deploy.sh --force-cold
 --defer-restart` (stages the new release + rc.d wrappers, STOPS the BEAM,
-exits without restarting it — marker deliberately NOT written), then the
+migrates and seeds the DB with it stopped (issue 1112), exits without
+restarting it — marker deliberately NOT written), then the
 host does a single `bastille restart grappa` that boots the staged
 release through the new wrapper and binds the vhost. The host wrapper
 then healthchecks (`FULL_RESTART_HC_URL`/`_RETRIES`/`_SLEEP`, defaults
@@ -1775,7 +1785,7 @@ above:
 
 ```
 infra/linux/install.sh   # first install, idempotent (see README.md for env)
-infra/linux/deploy.sh    # update: pull, rebuild, migrate, restart, healthcheck
+infra/linux/deploy.sh    # update: pull, rebuild, check, stop, migrate, seed, start, healthcheck
 infra/linux/release.sh   # bin/grappa wrapper: version / eval / remote
 ```
 
@@ -1783,7 +1793,8 @@ No SSH-to-a-separate-host indirection — run these directly on the
 target box as root. `deploy.sh` is preflight-driven, same as the
 Docker/jail substrates: `Grappa.Deploy.Preflight` classifies each
 deploy's diff and picks hot (rebuild + `POST /admin/reload`, sessions
-preserved) or cold (full stop → rebuild → migrate → start cycle)
+preserved) or cold (rebuild → migration check → stop → migrate → seed →
+start)
 automatically — see `infra/linux/README.md` "Day-2 operations".
 
 Stop/start synchronization (the FreeBSD jail's `jail_beam_wait.sh`
@@ -2160,8 +2171,9 @@ curl -fsSL https://raw.githubusercontent.com/vjt/grappa-irc/main/infra/docker/ge
     bug back on a box whose operator thinks it is on). Empty means unset, the
     same as everywhere else in that file.
   - `deploy.sh` passes `GRAPPA_AUTO_MIGRATE=0` on its own `docker run`: that
-    path migrates from the host, before recreating the container, which is the
-    ordering a schema change wants. **An orchestrated / multi-instance
+    path migrates from the host, after removing the old container and before
+    starting the new one (issue 1112), which is the ordering a schema change
+    wants. **An orchestrated / multi-instance
     deployment must do the same** and run the migration as its own job — the
     default is ON because the only shipped consumers of this image are
     single-container, NOT because concurrent starts are safe. Two BEAMs
@@ -2207,9 +2219,13 @@ curl -fsSL https://raw.githubusercontent.com/vjt/grappa-irc/main/infra/docker/ge
   fork/branch).
 - **`update` is ALWAYS cold.** No `CodeReloader` in the image + no git range to
   classify → `update` skips preflight and force-colds: `docker pull` a newer
-  image, migrate (`docker run … eval 'Grappa.Release.migrate()'` against the full
-  prod env + the data volume), then `docker rm -f` + `docker run -d` to recreate.
-  The DB + uploads on the volume survive; only the running container is replaced.
+  image, check its migrations (`docker run … eval
+  'Grappa.Release.check_migrations()'`, the old container still serving), then
+  `docker rm -f`, migrate (`docker run … eval 'Grappa.Release.migrate()'` against
+  the full prod env + the data volume), seed, and `docker run -d` the new one.
+  A refused check removes nothing; a migration that fails after the `rm -f`
+  leaves no container running (issue 1112). The DB + uploads on the volume
+  survive; only the running container is replaced.
   Hot-on-image is **#503 unit E**.
 - **Front door.** The container serves plain HTTP on `GRAPPA_PUBLISH` and owns
   its own CSP + security headers (#485) — put your TLS front door in front as a
@@ -3397,11 +3413,16 @@ sources — needs no extra file.
 whole ordering decision (#867).** The image's entrypoint migrates on
 boot by default because a bare `docker run` has no other door to the
 migrator. This path HAS one and already uses it: `release_migrate` runs
-from the host, before the container is recreated, which is the ordering
-a schema change needs. Saying so explicitly keeps the decision in ONE
-place per path — without it, a crash-looping old container could
-restart INTO a migration while `release_migrate` is running, and two
-BEAMs migrating one sqlite file is corruption, not contention. The
+from the host, after the old container is removed and before the new one
+starts (issue 1112), which is the ordering a schema change needs. Since
+that order there is no old container left alive to crash-loop INTO a
+running `release_migrate` — the race this flag first guarded is gone by
+construction. The flag stays, because it is still the whole decision:
+without it the NEW container would run a second migrator at boot — a
+no-op after `release_migrate`, but one nobody chose, and the one that
+would race it the day the host-side step moved past the start. Saying
+so explicitly keeps the decision in ONE place per path: two BEAMs
+migrating one sqlite file is corruption, not contention. The
 theme seed goes through the same door for the same reason: the image
 ships no Mix, so it runs as `… eval 'Grappa.Release.seed_themes()'`,
 and the entrypoint deliberately does not migrate on an `eval` verb — so
@@ -3624,7 +3645,7 @@ their own hooks. This section is the WHY behind those files; the files
 themselves say only what they do (#1159).
 
 **A fourth file, `deploy_docker.sh`, is deliberately NOT POSIX (#1384).**
-It holds the Docker substrate's thirteen `substrate_*` hooks, shared by
+It holds the Docker substrate's `substrate_*` hooks, shared by
 the two entry points onto that substrate — `scripts/deploy.sh` and
 `infra/docker/deploy.sh update` — and it takes the compose invocation as
 a bash ARRAY, because that is what both callers already have (the
@@ -3686,7 +3707,8 @@ by `.gitignore`, or it poisons the reported version the same way** —
 `runtime/last-deployed-sha` is one, already covered by `/runtime/*`.
 
 The consumer supplies hooks (`substrate_pull`, `substrate_build`,
-`substrate_reload`, `substrate_migrate`, `substrate_restart`, …); the
+`substrate_reload`, `substrate_check_migrations`, `substrate_stop`,
+`substrate_migrate`, `substrate_start`, …); the
 hook list in the file header is the API, because hook names are only
 ever called indirectly and nothing about them is greppable from a
 consumer. `substrate_done_banner` is a hook rather than a shared
@@ -3708,6 +3730,72 @@ and fall back to the shared `HEALTHCHECK_*` defaults, so a consumer
 sets only what actually diverges. The jail and the Linux host leave
 them unset; Docker is the one substrate with a genuinely short hot
 loop and a long cold one (image rebuild plus recreate).
+
+### The cold path: check, stop, migrate, seed, start (issue 1112)
+
+**The lib owns the ORDER of the cold path; the consumers own the verbs.**
+`_deploy_cold` runs `substrate_cic` → `substrate_check_migrations` →
+`substrate_stop` → `substrate_migrate` → the seed → `substrate_start` →
+the healthcheck loop, on all four consumers and the release-image role.
+Until issue 1112 it migrated FIRST and restarted after, so for the
+seconds between the migrate and the stop the old code served the new
+schema — an order nothing had chosen; it was inherited, and no ruling in
+the decision log picked it. Stopping first means no old code ever reads
+the new schema, whatever kind of migration is pending, without a
+classifier to decide which kinds the old code tolerates.
+
+**The price is named, not hidden: a migration that fails after the stop
+is an OUTAGE.** Before, it failed with the old node still serving. The
+lib says so in the words an operator reads first — `the migration failed
+with the daemon STOPPED — PRODUCTION IS DOWN, and nothing was started.`
+— and exits 1 with no start hint, because what is on disk is the NEW
+code and the schema under it is not the one it expects (the same
+"say what you observed" rule as the healthcheck's, #1656). Every cold
+deploy also carries the migrate and seed oneshots inside its downtime
+now, pending migrations or not — measured once on the local Docker
+stack with nothing pending, 2.39 s of `/healthz` refusals before and
+5.09 s after (DESIGN_NOTES #1112c; one sample, not a production figure).
+
+**So the one step that can run beside the live node runs first:
+`substrate_check_migrations`.** It is the #1348 duplicate-version audit
+ALONE, through the same door as the migrate —
+`Grappa.Release.check_migrations()` on the jail and the published image,
+`mix grappa.check_migrations` on Linux and source Docker — and it
+migrates nothing; its only write is the `schema_migrations` table
+`Ecto.Migrator` creates on a database that lacks one. A refusal exits 1
+with `the migration check did not pass — NOTHING was stopped`. Because
+it boots exactly as the migrator does, a pass also proves the
+migrator's door opens (the app, the env the vault needs, the database)
+before the service is closed. What it cannot prove is that a migration's
+own SQL succeeds: only running it says that, and that is the price
+above.
+
+**Both hooks are called as CONDITIONS (`if ! substrate_…`), so `set -e`
+does not reach inside them, and the step that decides must be the hook's
+LAST command** — its status is the hook's. Each of the four consumers
+ends its two hooks on the check or the migrate today (read, not gated);
+a hook that grows a step after it must carry that step's failure itself.
+`substrate_seed` was already called this way (#440).
+
+**Substrate notes.** The jail's `substrate_stop` keeps the BEAM-exit wait
+and the rc.d refresh, and `--defer-restart` now exits in
+`substrate_start` — so a staged deploy stages a migrated AND seeded DB.
+Source Docker's hex + `deps.get` sync moved from the migrate hook into
+`substrate_build`'s cold branch, before the stop, so its seconds are not
+downtime. The release image's stop is the `docker rm -f`, and its
+`GRAPPA_AUTO_MIGRATE=0` stays (§ "Running the published image").
+
+**An old consumer beside the new lib dies before it touches anything.**
+`get.sh` downloads the lib and the consumer separately, so a box can end
+up with the new lib and a consumer that still defines `substrate_restart`
+and none of the split hooks. `substrate_check_migrations` is the first
+new hook the cold path calls, right after the cic build: an old consumer
+fails it as `not found` and gets the `NOTHING was stopped` refusal,
+never a migrate with the node up. Pinned by
+`deploy_docker_release_image_test.bats`.
+
+A package upgrade has no `_deploy_cold`, but it runs the same check
+before every restart it decides — § "Packaging (infra/packaging/)".
 
 ### Capability toggles versus the one correctness toggle (#440)
 
@@ -3812,10 +3900,11 @@ that body — so every `substrate_healthcheck` now re-asks WITHOUT `-f` on a
 red probe only. A healthy deploy still makes exactly one request.
 
 **A failed seed is non-fatal, and that is not a silent swallow.** On
-the cold path the seed runs after the migration and before the restart,
-so aborting there would leave a migrated DB, the old daemon still up,
-and no restart — trading a stale gallery for a half-applied deploy. On
-an always-on bouncer that is the worse of the two by a wide margin. The
+the cold path the seed runs after the migration and before the start —
+with the daemon STOPPED since issue 1112 — so aborting there would leave
+a migrated DB and nothing left to start the daemon: trading a stale
+gallery for an outage. On an always-on bouncer that is the worse of the
+two by a wide margin. The
 failure is still reported: the completed-deploy marker is written only
 after a 200, the upsert converges, so the next deploy re-runs the seed
 and heals it. The warning is also re-asserted AFTER the ✓ banner —
@@ -4089,7 +4178,8 @@ deploy, unconditionally, so the installed state is a pure function of
 
 The incident that bought this: `jail_install_source_alias.sh` used to
 live inside `jail_install_rcd.sh`, which the deploy invokes only from
-`substrate_restart` — i.e. on COLD. No preflight class covers
+`substrate_restart` (split into `substrate_stop` + `substrate_start` by
+issue 1112; the rc.d refresh now sits in the stop) — i.e. on COLD. No preflight class covers
 `infra/freebsd/bin/*`, so a wrapper-only change classifies HOT and the
 installer never ran. Shipping #610 (whose `arm_check` calls the new
 `probe` subcommand) therefore left the **pre-#610 wrapper** installed:
@@ -4478,9 +4568,11 @@ a HOT deploy, which is the entire point of seeding on one.
 The rule is about the APP START, not about the words "mix task", and the
 migrate door has always sat outside it: `mix ecto.migrate` starts the
 Repo and nothing else — no Bootstrap to connect, no Endpoint to bind —
-which is why `substrate_migrate` has run it bare against a live host
-since this substrate existed. `mix grappa.migrate` (#1348) keeps exactly
-that regime: `app.config`, the duplicate-version audit and the migrator,
+which is why `substrate_migrate` ran it bare against a live host from
+the day this substrate existed until issue 1112 moved the migrate behind
+the stop. What runs beside the live host now is
+`mix grappa.check_migrations`, in the same regime. `mix grappa.migrate`
+(#1348) keeps exactly that regime: `app.config`, the duplicate-version audit and the migrator,
 all inside `Ecto.Migrator.with_repo/2`, with no
 `Application.ensure_all_started/1` anywhere. Satisfying the rule's
 reason by starting NOTHING is stricter than satisfying it by starting
@@ -5275,7 +5367,9 @@ than booting on a half-applied schema. A start with nothing pending costs one
 short eval. `TimeoutStartSec` bounds `ExecStartPre` too, which is why it is
 300 and not the 30 it was (R7 of issue 1112: sized for a migration; how long
 real migrations take is NOT measured). This is the PACKAGE unit only — the
-native-Linux unit (`infra/linux/systemd/`) is another slice's.
+native-Linux unit (`infra/linux/systemd/`) does not migrate at boot: its
+deploy migrates between the stop and the start (issue 1112, § "The shared
+deploy library (infra/lib/)").
 
 **An upgrade restarts only through `apply-upgrade.sh`, never from
 `preremove`.** The `.deb`/`.rpm` `preremove` still stops the service only on
@@ -5345,7 +5439,11 @@ The steps, in order:
    four 409s, a 200 with module failures, a 500, no answer, `/healthz`
    silent afterwards → restart, naming it. The fourth 409,
    `duplicate_migration_versions`, is the exception below.
-4. **RESTART.** `daemon-reload`, `reset-failed` (a unit past its start limit
+4. **RESTART.** First the migration check: the new release, from disk,
+   under `grappa eval 'Grappa.Release.check_migrations()'` (the same
+   bounded eval as the verdict; the node is not contacted, so the ERTS
+   branch of step 1 takes it too). A refusal → exit 1, NOT restarted (below).
+   Then `daemon-reload`, `reset-failed` (a unit past its start limit
    refuses `restart` until cleared), `restart` (the unit migrates in
    `ExecStartPre`), `/healthz`, seed → `applied by RESTART: <reason>`.
 
@@ -5353,13 +5451,17 @@ The steps, in order:
 `systemctl restart` failed (a failed migration, the start timeout) or
 `/healthz` stayed silent. The script prints what failed, the state the unit
 is in and how to retry; the postinst turns it into a failed configuration,
-as a failed migrate. **One refusal exits 1 WITHOUT restarting**:
-`409 duplicate_migration_versions`, two migration files claiming one version
-(#1348). The restart migrates first and would fail on the same two files,
-leaving the service down, so the running node keeps serving the release it
-booted and the upgrade fails until a package that fixes the migrations
-arrives (vjt's ruling on issue 1112, deviating from R4's "restart on every
-refusal"). A failed seed stays non-fatal (#1167).
+as a failed migrate. **Two refusals exit 1 WITHOUT restarting**, for one
+reason: the restart migrates first and would fail the same way, leaving the
+service down, so the running node keeps serving the release it booted and
+the upgrade fails until a package that fixes the migrations arrives. The
+first is the hot `409 duplicate_migration_versions`, two migration files
+claiming one version (#1348; vjt's ruling on issue 1112, deviating from
+R4's "restart on every refusal"). The second is the migration check of
+step 4 refusing — the same audit for every restart the script decides,
+plus a migrator that cannot boot or open the database (vjt's S3 ruling on
+issue 1112). A timed-out check (`124`) is a refusal too. A failed seed stays
+non-fatal (#1167).
 `/healthz` is probed 60 times one second apart (`HEALTH_TRIES`), a
 PROVISIONAL figure: the packaged boot time is not measured. **Every wait on
 the node is bounded**, because the package manager holds its lock for as
@@ -5622,18 +5724,24 @@ it.
     #1348 audit — and a long-lived dev database is precisely where a
     duplicated version goes silent, because the version is already
     applied there long before anyone deploys it.
-  - Deploys: the preflight classifies ANY new migration file as COLD
-    (Class 5 — there is no in-reload migrate until #41 lands). The
-    cold paths run it: Docker and native Linux via `mix grappa.migrate`,
-    the jail via `Grappa.Release.migrate()` before `service grappa
-    restart`. Every one of those doors — plus the hot
+  - Deploys: the preflight classifies a new migration by its
+    up-direction body (Class 5, #41): an all-EXPAND one stays HOT, and
+    `POST /admin/reload` applies it in-process before it loads the new
+    modules; a CONTRACT one, or one it cannot prove expand, forces
+    COLD, and the cold paths run it: Docker and native Linux via
+    `mix grappa.migrate`, the jail via `Grappa.Release.migrate()` — each
+    with the daemon
+    STOPPED, after a side-effect-free check ran while it still served
+    (issue 1112). Every one of those doors — plus the hot
     `POST /admin/reload`, the published image's boot entrypoint and the
     `grappa migrate` operator verb — runs the #1348 duplicate-version
     audit first, and refuses rather than migrate past a version claimed
     by two files.
-    Never `--force-hot` past a new migration — the DML is skipped
-    and the code reads defaults (the uploads-2 key-rename would have
-    silently reverted tuned caps this way).
+    `--force-hot` past a contract migration buys nothing: the reload
+    refuses it with `409 contract_migrations_pending`, having done
+    nothing. (Before #41 the hot path ran no migration at all, the DML
+    was skipped and the code read defaults — the uploads-2 key-rename
+    would have silently reverted tuned caps that way.)
   - Never apply DDL manually via raw SQL. Always Ecto.Migration so
     `schema_migrations` stays in sync.
   - Use `:text` for free-text columns. Don't bake length limits into

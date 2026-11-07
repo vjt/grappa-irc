@@ -5141,8 +5141,8 @@ holds its lock while the script runs.
 
 It does not reuse `deploy_common.sh`: `_deploy_hot` exits 1 on a refusal, while
 here a refusal is the way into the restart, and `deploy_main` presumes a
-checkout. The price is that the `"failed":[]` predicate lives in both files
-until the cold-path slice, which reworks `deploy_common.sh`, takes it.
+checkout. The price is that the `"failed":[]` predicate lives in both files,
+each pinned by its own bats suite.
 
 ### Where it runs, per format
 
@@ -5311,8 +5311,9 @@ letter of D2/R4, "always restart, hot when possible"**, and the reason is
 because the restart migrates through the same files. The `500` stays a
 restart: its body cannot tell a failed migration from any other crash, and a
 restart cures those. A migration that fails after a COLD verdict still takes
-the service down in every case; only migrating before the stop (the cold-path
-slice) avoids that.
+the service down — the restart migrates in `ExecStartPre`, with the old node
+already stopped — unless the migration check `apply-upgrade.sh` runs before
+every restart refuses it first (#1112c).
 <!-- entry #2589 -->
 
 ---
@@ -5473,3 +5474,172 @@ fire (issue 2356, still open); Tab and the tap do not depend on it.
   under the menu on a real device: only precedents (#1772).
 - The swipe right under issue 2356 on iOS.
 - Protocol 61 in production: taken from the merge order, not observed.
+<!-- entry #1112c -->
+
+---
+
+## 2026-11-07 — #1112c: a cold deploy stops the service before it migrates
+
+Issue 1112, slice S3 — D4: «fix the migrate-before-stop ordering on the
+linux/jail/docker cold path in this issue». The forks F1–F5 (issue comment
+6708142622) were ruled by vjt, all option (a), in comment 6708180345: a relay,
+not seen first-hand by the orchestrator, and quoted as such. F6 and F7 were
+decided by the orchestrator.
+
+### The order, and who owns it
+
+`_deploy_cold` in `infra/lib/deploy_common.sh` ran cic → migrate → seed →
+restart, so for the seconds between the migrate and the stop the old node
+served the new schema. No ruling in the live log or the archives chose that
+order; it was inherited. It now runs cic → `substrate_check_migrations` →
+`substrate_stop` → `substrate_migrate` → seed → `substrate_start` → the
+healthcheck loop, and `substrate_restart` is gone from the hook contract. Four
+consumers split it: the jail, the native-Linux host, source Docker (one hook
+file shared by `scripts/deploy.sh` and `infra/docker/deploy.sh update`) and the
+release-image role of `infra/docker/deploy.sh`.
+
+* F1 (a): the lib orders it, with the verbs each substrate already has. Option
+  (b), the service manager migrating at boot, would have made this slice COLD
+  on the jail (rc.d), needed `mix` inside the native-Linux unit (the release
+  `eval` crashes the BEAM there), and touched `bin/start.sh`, which is also the
+  dev container's boot.
+* F3 (a): always stop first — no expand/contract classifier over the pending
+  set, whose branch would have been heavier than the window it closes.
+* F4 (a): the seed stays after the migrate and before the start (#440), so a
+  `--defer-restart` jail deploy stages a migrated AND seeded DB.
+* F5 (a): the release-image update is in. #867's `GRAPPA_AUTO_MIGRATE=0` stays;
+  the race it first guarded — an old container crash-looping into a running
+  `release_migrate` — is gone by construction, since no old container is left
+  alive, and the flag remains the one place that decision is written.
+
+### The price, and the check that shrinks it (F2)
+
+A migration that fails after the stop is an outage; before, it failed with the
+old node serving. The lib names it — `the migration failed with the daemon
+STOPPED — PRODUCTION IS DOWN, and nothing was started.` — and exits 1 with no
+start hint, because what is on disk is the new code.
+
+F2 (a): `Grappa.Release.check_migrations/0`, the #1348 duplicate-version audit
+alone, runs BEFORE the stop through each substrate's migrate door: the jail's
+`jail_release.sh eval`, `mix grappa.check_migrations` (new, the twin of
+`grappa.migrate`) on Linux and source Docker, and a `docker run --rm … eval` of
+the NEW image on the release path. A refusal prints `the migration check did
+not pass — NOTHING was stopped` and exits 1. It boots exactly as the migrator
+does, through a private `each_repo/2` that `migrate/0` now shares, so a pass
+also proves the migrator's door opens before the service closes. Its only
+write is the `schema_migrations` table `Ecto.Migrator` creates where one is
+missing. What it cannot cover is a migration whose own SQL fails: that is the
+price above, and only running the migration finds it.
+
+Both hooks are called as conditions (`if ! substrate_…`), so `set -e` does not
+reach inside, and the deciding command must be the hook's LAST. All four
+consumers satisfy that today, by reading; nothing gates it.
+
+`get.sh` downloads the lib and the consumer separately, so a box can hold the
+new lib beside a consumer that still defines `substrate_restart`. The check is
+the first new hook the cold path calls, after the cic build only: such a
+consumer fails it as `not found` and gets the refusal, never a migrate with the
+node up.
+
+### apply-upgrade.sh runs the same check before every restart
+
+F2's extension to S2's packages: `restart()` evaluates
+`Grappa.Release.check_migrations()` from the new release on disk, under the
+same `timeout` as the verdict, before `daemon-reload`. Any non-zero exit — a
+timeout's 124 included — exits 1 with the service NOT restarted. Every restart
+the script decides goes through `restart()`, the ERTS-move branch too: the eval
+does not contact the node. Kept from the plan: on an ERTS move the old node is
+already on borrowed time, so "left serving" is weaker there.
+
+### Source Docker: the deps sync moved into the build
+
+`local.hex`/`local.rebar` and `deps.get` left `substrate_migrate` for the cold
+branch of `substrate_build`, which runs while the old container still serves,
+so their seconds are not downtime. The check oneshot is also the first to
+compile the pulled tree, so that compile lands before the stop as well.
+
+### F6: two forward-looking sentences of #1112b, corrected where they stand
+
+#1112b said the `"failed":[]` predicate would live in two files "until the
+cold-path slice … takes it" — S3 does not touch the hot path, so it stays in
+both, each pinned by bats — and that "only migrating before the stop (the
+cold-path slice)" avoids a migration taking a package restart down, the
+opposite of D4. Both sentences now say what is true, in place.
+
+### Departures from the plan
+
+1. The PRODUCTION IS DOWN branch. The plan only moved the call; the exit status
+   is unchanged, the message is the #1656 rule of saying what was observed.
+2. `packaging_apply_upgrade_test.bats`: four `refute` lines that no restart
+   branch runs `grappa eval` were narrowed to `grappa eval
+   Grappa.Deploy.Manifest`, because the restart now evaluates the check; the
+   intent, that no verdict is asked on those branches, is unchanged.
+3. S2's shortcut on `409 duplicate_migration_versions` stays: it answers before
+   the restart path is reached, with its own message.
+4. `infra/packaging/apply-upgrade.sh` joins `ReleaseTest`'s `@deploy_scripts`,
+   since it now names a `Grappa.Release` function.
+5. The ExUnit cases went into `duplicate_version_gate_test.exs`, beside the
+   doors that already refuse, instead of a new file.
+
+### Measured
+
+* bats red before the code: 7 on the order commit (6 predicted, 1 added after
+  and measured), 9 on the check commit (9 predicted), 4 on the apply-upgrade
+  commit (5 predicted and measured; the fifth was dropped as redundant).
+* bats green: 203/203 over the eleven deploy files, 57/57 over the four
+  packaging files.
+* Mutants on the order commit: migrate before the stop → 7 reds (= predicted);
+  no PRODUCTION IS DOWN branch → 1 (=); `deps.get` after the stop → 1 (=); the
+  `--defer-restart` exit moved into `substrate_stop` → 3, predicted 1 — the
+  other two read the log line the mutant also removed, a defect of the mutant.
+* `scripts/shellcheck.sh` rc=0 over 91 files with a LOCAL shellcheck 0.11.0
+  (CI pins 0.10.0); `scripts/posix-parse.sh` rc=0 over 36 files.
+* ExUnit red on the check commit, measured afterwards with the check's code
+  taken back out: 9 tests, 3 failures, exactly the three new cases — every one
+  an `UndefinedFunctionError`, a function or module not there yet, so not an
+  assertion red. Green on the code: 9 tests, 0 failures.
+* ExUnit mutants on `check_migrations/0`: a check that also migrates → 1 red,
+  the clean-set case (two statuses `:down` → `:up`); a check without the audit
+  → 2 reds, both refusals ("nothing was raised"). Both as predicted.
+* `Grappa.Deploy.Preflight.cli/1` over this slice's range: HOT on `jail`,
+  `linux`, `docker` and `package` (rc 0, "no unsafe markers"). Negative
+  control, `4b2efc778` (a `mix.lock` bump): COLD `mix_deps` (rc 3) on
+  `package` and `jail`.
+* A real `scripts/deploy.sh --force-cold` on the local Docker stack. It cannot
+  run from a worktree (`require_main_checkout`, #364, and it would pull and
+  source the MAIN checkout), so it ran in a scratch clone of this head acting
+  as its own main checkout, with a fresh DB. Box DOWN, no container at all:
+  check → migrate (111) → seed → up → healthy, rc 0 — so `compose stop
+  grappa` exits 0 on a box with no container, since the script runs under
+  `set -e` and calls the stop bare. Box UP: check, then the container stops,
+  then migrate, seed and the recreate, in that order by the log's own
+  timestamps. **Downtime, from the first refused `/healthz` probe to the first
+  200, polling every 0.2 s: 5.09 s. The same bench on the base commit, old
+  order: 2.39 s** — so stopping first costs about 2.7 s per cold deploy with
+  nothing pending, the migrate and seed oneshots. One sample each side, a dev
+  stack on Docker Desktop for macOS: not a production number.
+* The refusal arm, on that same real stack, by accident: before the bench had
+  `PHX_HOST`, the check died in the migrator's boot (`environment variable
+  PHX_HOST is missing`) and the deploy printed `NOTHING was stopped`, rc 1.
+
+### Hot or cold, for this slice (F7)
+
+HOT on the jail, Linux, Docker and `:package`, measured above with the
+preflight itself and predicted by reading before it ran — no rc.d, no unit, no
+`mix.exs`/`mix.lock`, and `release.ex` plus the new task are stateless. So the
+new cold order first runs at the next cold deploy after this one; F7 (a)
+accepts that, and the PR says it.
+
+### Not claimed
+
+* A real cold deploy on the jail, the native-Linux host or the published image:
+  none ran; the only real one is the Docker dev stack above.
+* What the reorder costs on those substrates, or with migrations pending.
+* `docker compose stop grappa` on a container that exists but is stopped: only
+  the no-container case was measured.
+* That shellcheck 0.10.0, the CI's, agrees with the local 0.11.0.
+* That a future hook keeps the check or the migrate as its last command.
+* Why the clean-set case's captured log carries an Exqlite `database is
+  locked` on connect: seen only in failing runs, since ExUnit prints captured
+  logs for failures alone, and not investigated. The pre-existing first-install
+  case opens the same scratch repo with the same pool and busy timeout.

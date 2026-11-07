@@ -233,7 +233,11 @@ restart was needed and did not take, and prints what failed and how to
 retry. It also exits 1, without restarting, when the reload is refused
 because two migration files claim one version: a restart would migrate
 into the same defect and leave the service down, so the running service
-keeps the previous release until a fixed package arrives. A service that
+keeps the previous release until a fixed package arrives. For the same
+reason, before every restart it decides, the script has the new release
+check its migrations (`grappa eval 'Grappa.Release.check_migrations()'`,
+which migrates nothing): a refusal, or a check that does not finish in
+time, exits 1 and leaves the running service as it was. A service that
 is not running is left stopped: its next start
 runs the new release and migrates first. Removal stops and disables the
 service and leaves `/var/lib/grappa` and the `grappa` user in place. A
