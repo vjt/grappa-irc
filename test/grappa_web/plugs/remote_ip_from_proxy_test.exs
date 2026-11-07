@@ -291,6 +291,72 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxyTest do
     end
   end
 
+  # The proxy APPENDS the address it saw as the rightmost X-Forwarded-For
+  # entry, and sets X-Real-IP to that same address. Only loopback hops are
+  # treated as proxies, so that entry is the client whichever range it sits
+  # in: a private-range address (RFC 1918, ULA) is a client reaching the
+  # proxy from a LAN or VPN, and the walk stops on it. Every case is read
+  # through BOTH doors — the HTTP plug and the socket's `trusted_client_ip/2`
+  # — so the two cannot disagree on any shape.
+  describe "only loopback hops are proxies" do
+    for {range, appended, expected} <- [
+          {"10/8", "10.0.0.5", {10, 0, 0, 5}},
+          {"172.16/12", "172.16.4.4", {172, 16, 4, 4}},
+          {"192.168/16", "192.168.1.20", {192, 168, 1, 20}},
+          {"fd00::/8", "fd00::5", {0xFD00, 0, 0, 0, 0, 0, 0, 5}}
+        ],
+        {peer_kind, peer} <- [{"loopback", {127, 0, 0, 1}}, {"non-loopback", {172, 17, 0, 2}}] do
+      test "a #{range} address the proxy appended is the client (#{peer_kind} peer)" do
+        appended = unquote(appended)
+        expected = unquote(Macro.escape(expected))
+        peer = unquote(Macro.escape(peer))
+        chain = {"x-forwarded-for", "203.0.113.7, #{appended}"}
+
+        for headers <- [[chain], [chain, {"x-real-ip", appended}], [{"x-real-ip", appended}, chain]] do
+          assert call(peer, headers).remote_ip == expected, "plug: #{inspect(headers)}"
+          assert RemoteIpFromProxy.trusted_client_ip(peer, headers) == expected, "socket: #{inspect(headers)}"
+        end
+      end
+    end
+
+    test "an all-public chain still resolves to its rightmost entry" do
+      headers = [{"x-forwarded-for", "198.51.100.1, 203.0.113.7"}]
+
+      for peer <- [{127, 0, 0, 1}, {172, 17, 0, 2}] do
+        assert call(peer, headers).remote_ip == {203, 0, 113, 7}
+        assert RemoteIpFromProxy.trusted_client_ip(peer, headers) == {203, 0, 113, 7}
+      end
+    end
+
+    test "loopback entries are still walked past as proxy hops" do
+      for {xff, expected} <- [
+            {"203.0.113.7, 127.0.0.1", {203, 0, 113, 7}},
+            {"203.0.113.7, 10.0.0.5, 127.0.0.1", {10, 0, 0, 5}},
+            {"203.0.113.7, ::1", {203, 0, 113, 7}}
+          ],
+          peer <- [{127, 0, 0, 1}, {172, 17, 0, 2}] do
+        headers = [{"x-forwarded-for", xff}]
+        assert call(peer, headers).remote_ip == expected, "plug: #{xff}"
+        assert RemoteIpFromProxy.trusted_client_ip(peer, headers) == expected, "socket: #{xff}"
+      end
+    end
+
+    test "a chain of only loopback entries names no client, so the peer stands" do
+      headers = [{"x-forwarded-for", "127.0.0.1"}]
+
+      assert call({172, 17, 0, 2}, headers).remote_ip == {172, 17, 0, 2}
+      assert RemoteIpFromProxy.trusted_client_ip({172, 17, 0, 2}, headers) == {172, 17, 0, 2}
+    end
+
+    test "the gate signal does not follow the resolved address" do
+      conn = call({127, 0, 0, 1}, [{"x-forwarded-for", "203.0.113.7, 10.0.0.5"}])
+
+      assert conn.remote_ip == {10, 0, 0, 5}
+      refute RemoteIpFromProxy.direct_loopback_peer?(conn)
+      assert RemoteIpFromProxy.direct_loopback_peer?(call({127, 0, 0, 1}, []))
+    end
+  end
+
   describe "config wiring (drift detection)" do
     test "Endpoint installs RemoteIpFromProxy with the configured headers" do
       # If a future refactor swaps the wrapper for bare RemoteIp, the
