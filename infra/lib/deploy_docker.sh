@@ -281,6 +281,15 @@ substrate_cic() {
 	cic_dist_promote "$cic_served" "$cic_build_out"
 }
 
+substrate_check_migrations() {
+	# The same door as substrate_migrate, auditing only — it runs while the
+	# old container still serves, so a refusal stops nothing (issue 1112).
+	# On a cold deploy this oneshot is also the first to compile the pulled
+	# tree, so that compile lands before the stop, outside the downtime.
+	echo "Checking migrations..."
+	"${DOCKER_COMPOSE[@]}" --profile prod run --rm --no-deps grappa mix grappa.check_migrations
+}
+
 substrate_migrate() {
 	# Apply pending migrations with the old container STOPPED (issue 1112)
 	# and BEFORE bringing the new one up: a one-shot `run` exits before

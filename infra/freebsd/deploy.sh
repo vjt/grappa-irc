@@ -18,9 +18,9 @@
 #   restart.
 #
 # Cold path (preflight returns COLD or --force-cold):
-#   git pull → mix release --overwrite → vite build → service grappa
-#   stop → migrate → seed → service grappa start → healthcheck loop.
-#   Sessions reset.
+#   git pull → mix release --overwrite → vite build → migration check →
+#   service grappa stop → migrate → seed → service grappa start →
+#   healthcheck loop. Sessions reset.
 #
 # Both paths reconcile the out-of-repo artifacts (the source-alias
 # privilege wrapper + its DB-rendered prefix scope) after the build and
@@ -164,6 +164,13 @@ substrate_cic() {
 	# whenever cicchetto/src changed; cheap otherwise (~40ms incremental).
 	deploy_log "vite build (cicchetto bundle)"
 	"${REPO_ROOT}/infra/freebsd/jail_cic_build.sh"
+}
+
+substrate_check_migrations() {
+	# The same door as substrate_migrate, auditing only — it runs while the
+	# old daemon still serves, so a refusal stops nothing (issue 1112).
+	deploy_log "Grappa.Release.check_migrations()"
+	"${REPO_ROOT}/infra/freebsd/jail_release.sh" eval 'Grappa.Release.check_migrations()'
 }
 
 substrate_migrate() {

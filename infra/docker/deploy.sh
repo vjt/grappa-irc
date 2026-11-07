@@ -816,6 +816,15 @@ release_migrate() {
 		"$GRAPPA_IMAGE" eval 'Grappa.Release.migrate()'
 }
 
+release_check_migrations() {
+	# Same door as release_migrate, auditing only: on `update` it runs the
+	# NEW image while the old container still serves, so a refusal removes
+	# nothing (issue 1112).
+	say "Checking database migrations (release image)"
+	docker run --rm --env-file "$ENV_FILE" -v "${GRAPPA_DATA_VOLUME}:/data" \
+		"$GRAPPA_IMAGE" eval 'Grappa.Release.check_migrations()'
+}
+
 release_seed_themes() {
 	# Same door as release_migrate: the image ships no Mix, so the seed goes
 	# through the release entry point, which does not migrate on `eval`.
@@ -917,6 +926,7 @@ cmd_update_release() {
 	substrate_build()         { :; }          # image already pulled
 	substrate_reload()        { :; }          # never reached (COLD-only)
 	substrate_cic()           { :; }          # the cicchetto SPA is baked into the image
+	substrate_check_migrations() { release_check_migrations; }
 	substrate_migrate()       { release_migrate; }
 	substrate_seed()          { release_seed_themes; }
 	substrate_stop() {

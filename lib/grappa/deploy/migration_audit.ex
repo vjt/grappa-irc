@@ -24,7 +24,10 @@ defmodule Grappa.Deploy.MigrationAudit do
   `schema_migrations` at all. The gate therefore hangs off the doors that
   migrate, where a pool is live by construction: `check/1` for a caller that
   reports a refusal (the hot handler), `check!/1` for one whose refusal is a
-  non-zero exit (`Grappa.Release.migrate/0`, `mix grappa.migrate`).
+  non-zero exit (`Grappa.Release.migrate/0`, `mix grappa.migrate`, and the
+  audit-only pair the cold path runs before it stops anything,
+  `Grappa.Release.check_migrations/0` and `mix grappa.check_migrations` —
+  issue 1112).
 
   ## The third column: reported, never refused
 

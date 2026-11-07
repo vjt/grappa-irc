@@ -14,10 +14,11 @@
 #   No systemctl call at all.
 #
 # Cold path (preflight returns COLD):
-#   git pull -> mix release --overwrite -> cic build -> refresh systemd
-#   unit -> systemctl stop -> migrate -> seed -> systemctl start ->
-#   healthcheck loop. Sessions reset; the downtime is the stop (bounded
-#   by TimeoutStopSec), the migrate and seed tasks, and the boot.
+#   git pull -> mix release --overwrite -> cic build -> migration check
+#   -> refresh systemd unit -> systemctl stop -> migrate -> seed ->
+#   systemctl start -> healthcheck loop. Sessions reset; the downtime is
+#   the stop (bounded by TimeoutStopSec), the migrate and seed tasks, and
+#   the boot.
 #
 # Usage: infra/linux/deploy.sh
 #
@@ -137,6 +138,17 @@ substrate_reload() {
 substrate_cic() {
 	deploy_log "cic_build.sh"
 	"${SCRIPT_DIR}/cic_build.sh" "${REPO_ROOT}"
+}
+
+substrate_check_migrations() {
+	# The same door as substrate_migrate, auditing only — it runs while the
+	# old daemon still serves, so a refusal stops nothing (issue 1112).
+	deploy_log "check migrations"
+	run_as_grappa "
+		set -a; . '${ENV_FILE}'; set +a
+		export MIX_ENV=prod
+		mix grappa.check_migrations
+	"
 }
 
 substrate_migrate() {
