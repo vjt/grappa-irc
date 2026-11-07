@@ -4860,8 +4860,13 @@ are already named by, so anyone holding the disk learns nothing that
 - The index goes in the mode set as `sha256:…` entries, which
   `e2e_on_has` matches against a nick's digest. A nick cannot contain
   `:`, so the two kinds of entry cannot be confused.
-- It is written BEFORE the record, so a crash between the two leaves one
-  query too many encrypted, never one too few.
+- It is ordered against the record so that a crash between the two
+  renames leaves one query too many encrypted, never one too few. A query
+  joining the set is in the index BEFORE the record holds it. A query
+  leaving it stays in the index until AFTER the record has dropped it. The
+  directory is fsync'd between the renames. (The first cut wrote the index
+  first on every save, which fails OPEN on a removal: the index dropped a
+  query that the record still held.)
 - **The alternative, refusing every query send while locked, was
   rejected.** It would have made a locked store take down the clear
   queries, which it has nothing to do with. A sealed record without an

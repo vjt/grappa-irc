@@ -1831,6 +1831,60 @@ TEST(store_seals_a_plaintext_record_on_load) {
     free(rm);
 }
 
+static bool index_names(const char *dir, const char *nick) {
+    e2e_strv dg = {0};
+    if (!e2e_store_read_index(dir, &dg)) return false;
+    char want[E2E_DIGEST_SZ];
+    e2e_nick_digest(nick, want);
+    bool has = false;
+    for (size_t i = 0; i < dg.n; i++) has |= strcmp(dg.v[i], want) == 0;
+    e2e_strv_free(&dg);
+    return has;
+}
+
+/* The index fails CLOSED in both directions: a query joining the set is in
+ * the index before the record says so, one leaving it stays in the index
+ * until the record no longer says so. Shown with a record that cannot be
+ * renamed into place (a directory sits on its name): the save fails after
+ * the first index write, and the index must still err towards encrypted. */
+TEST(store_index_fails_closed_both_ways) {
+    char base[] = "/tmp/shottino-e2e-XXXXXX";
+    CHECK(mkdtemp(base) != NULL);
+    char *dir = xfmt("%s/e2e-abc/7", base);
+    char *path = xfmt("%s/record.sealed", dir), *blocker = xfmt("%s/record.sealed/x", dir);
+    e2e_store *st;
+    char err[256];
+    CHECK(e2e_store_open(dir, &st, err, sizeof(err)) == E2E_STORE_OK);
+    e2e_record rec;
+    new_holder_record(&rec);
+    e2e_record_set_encrypted(&rec, "alice", true);
+    CHECK(e2e_store_save(st, KEY, &rec, err, sizeof(err)));
+    CHECK(index_names(dir, "alice"));
+    /* The record cannot be written from here on. */
+    CHECK(unlink(path) == 0 && mkdir(path, 0700) == 0);
+    put_file(blocker, "x", 1);
+    /* Leaving: the failed save must not have dropped alice already. */
+    e2e_record_set_encrypted(&rec, "alice", false);
+    CHECK(!e2e_store_save(st, KEY, &rec, err, sizeof(err)));
+    CHECK(index_names(dir, "alice"));
+    /* Joining (bob) while leaving (alice): both stay named. */
+    e2e_record_set_encrypted(&rec, "bob", true);
+    CHECK(!e2e_store_save(st, KEY, &rec, err, sizeof(err)));
+    CHECK(index_names(dir, "alice") && index_names(dir, "bob"));
+    /* Writable again: the index ends as the record says. */
+    CHECK(unlink(blocker) == 0 && rmdir(path) == 0);
+    CHECK(e2e_store_save(st, KEY, &rec, err, sizeof(err)));
+    CHECK(!index_names(dir, "alice") && index_names(dir, "bob"));
+    e2e_store_close(st);
+    e2e_record_free(&rec);
+    free(path);
+    free(blocker);
+    free(dir);
+    char *rm = xfmt("rm -rf '%s'", base);
+    CHECK(system(rm) == 0);
+    free(rm);
+}
+
 TEST(record_refuses_what_it_did_not_write) {
     e2e_record r;
     const char *bad[] = {"", "{}", "{\"v\":2}", "[]",
@@ -3102,6 +3156,7 @@ int main(void) {
     RUN(sending_refusals);
     RUN(store_atomic_locked_private);
     RUN(store_seals_a_plaintext_record_on_load);
+    RUN(store_index_fails_closed_both_ways);
     RUN(record_refuses_what_it_did_not_write);
     RUN(record_keeps_the_encrypted_queries);
     RUN(pair_initial_payload_crosses_the_relay);

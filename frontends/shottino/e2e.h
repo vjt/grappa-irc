@@ -640,8 +640,10 @@ bool e2e_own_verify(const e2e_own *own, vz_account *device);
  *
  * Beside it, in the clear, E2E_INDEX_FILE: which queries are encrypted, as
  * the digest e2e_nick_digest gives (the same SHA-256 the chat files are
- * named by, so it says nothing their names do not), written BEFORE the
- * record on every save. It is what a run without the key reads, at boot,
+ * named by, so it says nothing their names do not), ordered against the
+ * record so that it always errs towards encrypted: a query joining the
+ * set is in the index before the record, one leaving it leaves the index
+ * only after the record. It is what a run without the key reads, at boot,
  * to keep those queries from sending in clear (shottino.c,
  * e2e_peek_modes). */
 typedef struct e2e_store e2e_store;

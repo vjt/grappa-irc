@@ -2446,17 +2446,36 @@ void e2e_strv_free(e2e_strv *v) { strv_free(v); }
 
 #define INDEX_HEADER "shottino-e2e-encrypted-queries 1\n"
 
-static bool write_index(const e2e_store *st, const e2e_record *r, char *err, size_t err_sz) {
-    size_t cap = strlen(INDEX_HEADER) + r->encrypted.n * 65 + 1;
+/* Whether the index entry `entry` names `nick`. */
+static bool digest_names(const char *entry, const char *nick) {
+    char d[E2E_DIGEST_SZ];
+    e2e_nick_digest(nick, d);
+    return strcmp(entry, d) == 0;
+}
+
+static bool any_names(const e2e_strv *entries, const char *nick) {
+    for (size_t i = 0; i < entries->n; i++)
+        if (digest_names(entries->v[i], nick)) return true;
+    return false;
+}
+
+/* The index naming `nicks`, plus the entries of `keep` (old ones no nick
+ * of `nicks` names), written over the old one. */
+static bool write_index(const e2e_store *st, const e2e_strv *nicks, const e2e_strv *keep,
+                        char *err, size_t err_sz) {
+    size_t cap = strlen(INDEX_HEADER) + (nicks->n + keep->n) * 66 + 1;
     char *text = xmalloc(cap);
     size_t n = (size_t)snprintf(text, cap, "%s", INDEX_HEADER);
-    for (size_t i = 0; i < r->encrypted.n; i++) {
+    for (size_t i = 0; i < nicks->n; i++) {
         char d[E2E_DIGEST_SZ];
-        e2e_nick_digest(r->encrypted.v[i], d);
+        e2e_nick_digest(nicks->v[i], d);
         n += (size_t)snprintf(text + n, cap - n, "%s\n", d + 7);
     }
+    for (size_t i = 0; i < keep->n; i++)
+        n += (size_t)snprintf(text + n, cap - n, "%s\n", keep->v[i] + 7);
     char *path = xprintf("%s/" E2E_INDEX_FILE, st->dir);
     bool ok = replace_file(path, text, n, err, err_sz);
+    if (ok) fsync_dir(st->dir);
     free(path);
     free(text);
     return ok;
@@ -2557,10 +2576,27 @@ bool e2e_store_save(e2e_store *st, const uint8_t *key, const e2e_record *r, char
         SETERR("the store is locked: nothing was written");
         return false;
     }
-    /* The index first: a crash between the two leaves an index naming a
-     * query the record does not yet, which keeps it encrypted (fails
-     * closed) — never the other way round. */
-    if (!write_index(st, r, err, err_sz)) return false;
+    /* The index and the record are two renames, and between them the
+     * index must err towards ENCRYPTED: a query joining the set is named
+     * in the index BEFORE the record holds it, one leaving the set stays
+     * named until AFTER the record no longer does. So: the old entries no
+     * current nick names (`gone`) are kept in a first write when anything
+     * joins, and dropped only by a write after the record. Each rename is
+     * made durable (the directory fsync'd) before the next. */
+    e2e_strv old = {0}, gone = {0}, none = {0};
+    bool had = e2e_store_read_index(st->dir, &old);
+    bool joins = !had;
+    for (size_t i = 0; i < r->encrypted.n; i++) joins |= !any_names(&old, r->encrypted.v[i]);
+    for (size_t i = 0; i < old.n; i++) {
+        bool named = false;
+        for (size_t k = 0; k < r->encrypted.n; k++) named |= digest_names(old.v[i], r->encrypted.v[k]);
+        if (!named) strv_push(&gone, old.v[i]);
+    }
+    strv_free(&old);
+    if (joins && !write_index(st, &r->encrypted, &gone, err, err_sz)) {
+        strv_free(&gone);
+        return false;
+    }
     char *json = e2e_record_to_json(r);
     char *name = record_aad_name(st);
     size_t n = 0;
@@ -2579,7 +2615,11 @@ bool e2e_store_save(e2e_store *st, const uint8_t *key, const e2e_record *r, char
         char *plain = xprintf("%s/record.json", st->dir);
         if (unlink(plain) == 0) fsync_dir(st->dir);
         free(plain);
+        /* Failing here leaves an entry too many: the record is stored, and
+         * the stale entry only keeps a query encrypted. */
+        if (gone.n) write_index(st, &r->encrypted, &none, NULL, 0);
     }
+    strv_free(&gone);
     return ok;
 }
 
