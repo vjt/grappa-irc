@@ -333,4 +333,28 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxyTest do
       assert endpoint_source =~ ~s|headers: ~w[x-forwarded-for x-real-ip]|
     end
   end
+
+  describe "issue 2597 — the address an operator is shown" do
+    # THREAT, the common reverse-proxy shape: the proxy OVERWRITES X-Real-IP
+    # with the address it saw and APPENDS that same address to whatever
+    # X-Forwarded-For the client sent, so everything left of it is
+    # client-controlled. The forged entry must never win, whichever of the
+    # two headers the proxy emits first and whether or not it reaches us
+    # over loopback. Issue 2597 shows this value to IRC operators as the
+    # client's address, so the leftmost entry winning would let a client
+    # pick the address an operator acts on.
+    test "a proxy that overwrites X-Real-IP and appends XFF yields the appended client, never the forged entry" do
+      forged = "1.2.3.4"
+      real = "198.51.100.99"
+
+      for peer <- [{10, 0, 0, 1}, {127, 0, 0, 1}],
+          headers <- [
+            [{"x-real-ip", real}, {"x-forwarded-for", "#{forged}, #{real}"}],
+            [{"x-forwarded-for", "#{forged}, #{real}"}, {"x-real-ip", real}]
+          ] do
+        assert RemoteIpFromProxy.trusted_client_ip(peer, headers) == {198, 51, 100, 99},
+               "peer #{inspect(peer)} with #{inspect(headers)} resolved to the forged entry"
+      end
+    end
+  end
 end
