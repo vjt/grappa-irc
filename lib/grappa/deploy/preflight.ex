@@ -30,13 +30,15 @@ defmodule Grappa.Deploy.Preflight do
   Classification is per-substrate (`:docker` for the dev/CI compose
   stack via `scripts/deploy.sh`, `:jail` for the m42 bastille jail via
   `infra/freebsd/deploy.sh`, `:linux` for a native systemd host via
-  `infra/linux/deploy.sh`). Most classes are substrate-independent
+  `infra/linux/deploy.sh`, `:package` for a deb/rpm/Arch upgrade applied
+  by `infra/packaging/apply-upgrade.sh`). Most classes are substrate-independent
   (deps, supervision tree, migrations, config, state-shape),
   but the boot-substrate files are not: a `Dockerfile` diff is COLD
   on Docker and irrelevant to the jail or a systemd host,
   `infra/freebsd/rc.d/grappa` is COLD on the jail and irrelevant
   elsewhere, `infra/linux/systemd/grappa.service` is COLD on
-  `:linux` and irrelevant elsewhere, and the whole nginx class —
+  `:linux` and irrelevant elsewhere (and the package's own
+  `infra/packaging/grappa.service` likewise on `:package`), and the whole nginx class —
   `infra/linux/nginx.conf` plus the shared `infra/snippets/*` proxy
   surface — is HOT on `:jail`, which since the jail-nginx removal
   runs no proxy of its own at all (#923 scoping, widened). The repo-root
@@ -47,6 +49,20 @@ defmodule Grappa.Deploy.Preflight do
   Dockerfile diff the jail never reads — on an always-on bouncer
   every needless restart is incident-grade, so the substrate is an
   explicit required argument, never a default.
+
+  ## The package door: manifests instead of a git range
+
+  A package upgrade has no git range to diff: the running node was built
+  from one tree, the package just wrote the release of another, and
+  neither tree is on the host. So `classify_manifests/4` compares two
+  MANIFESTS instead (issue 1112) — the one compiled into the running node
+  (`Grappa.Deploy.Manifest`, reported over rpc) and the one compiled into
+  the new release. A manifest covers exactly the files a `:package`
+  verdict can turn on (`manifest_paths/1`): a sha256 per file and, for the
+  long-lived modules, a digest of the state block `extract_state_block/1`
+  pulls out. The changed paths then go through `classify_paths/3`
+  unchanged and the state blocks are compared like `classify/5` compares
+  them, so there is one set of rules with two ways of finding what moved.
 
   ## Conservative bias
 
@@ -65,7 +81,7 @@ defmodule Grappa.Deploy.Preflight do
 
   alias Grappa.HotReload.LongLivedModules
 
-  @type substrate :: :docker | :jail | :linux
+  @type substrate :: :docker | :jail | :linux | :package
 
   @type reason ::
           {:mix_deps, [String.t()]}
@@ -81,6 +97,16 @@ defmodule Grappa.Deploy.Preflight do
   @type verdict :: {:hot, []} | {:cold, [reason()]}
 
   @typedoc """
+  What a build knows about the files a `:package` verdict turns on: a
+  sha256 per watched file (`nil` when the file was absent from the build)
+  and, per long-lived module file, a sha256 of its normalized state block.
+  """
+  @type manifest :: %{
+          files: %{String.t() => String.t() | nil},
+          state_blocks: %{String.t() => String.t()}
+        }
+
+  @typedoc """
   Expand-vs-contract class of ONE migration's up-direction body.
 
   `:hot` means every DDL op is provably **expand**: the currently-loaded
@@ -90,11 +116,20 @@ defmodule Grappa.Deploy.Preflight do
   """
   @type migration_class :: :hot | :cold
 
-  @substrates [:docker, :jail, :linux]
+  @substrates [:docker, :jail, :linux, :package]
   # CLI-boundary mirror of @substrates — derived, not hand-kept, so a
   # third substrate can't be accepted by classify_paths/2 yet rejected
   # at the cli/1 guard (or vice versa).
   @substrate_strings Enum.map(@substrates, &Atom.to_string/1)
+
+  # The literal paths of the path classes, named once: the predicates below
+  # match them and manifest_paths/1 watches them, so a class and the files a
+  # package verdict reads for it cannot drift apart.
+  @mix_deps_files ["mix.lock", "mix.exs"]
+  @application_file "lib/grappa/application.ex"
+  @linux_unit "infra/linux/systemd/grappa.service"
+  @package_unit "infra/packaging/grappa.service"
+  @migrations_dir "priv/repo/migrations/"
 
   @doc """
   Classify a list of changed paths for the given deploy substrate,
@@ -132,7 +167,7 @@ defmodule Grappa.Deploy.Preflight do
       |> add_reason(:application, Enum.filter(paths, &application?/1))
       |> add_reason(:image_substrate, filter_on([:docker], substrate, paths, &docker_image?/1))
       |> add_reason(:rc_d, filter_on([:jail], substrate, paths, &rc_d?/1))
-      |> add_reason(:systemd_unit, filter_on([:linux], substrate, paths, &systemd_unit?/1))
+      |> add_reason(:systemd_unit, systemd_units(substrate, paths))
       |> add_reason(:migration, contract_migrations(paths, migration_source_fn))
       |> add_reason(:nginx, filter_on([:linux], substrate, paths, &nginx?/1))
       |> add_reason(:config, Enum.filter(paths, &config?/1))
@@ -336,26 +371,14 @@ defmodule Grappa.Deploy.Preflight do
       when is_binary(from) and is_binary(to) and substrate in @substrate_strings do
     substrate = String.to_existing_atom(substrate)
     verdict = classify(from, to, substrate, &git_diff_paths/2, &git_show/2)
-
-    case verdict do
-      {:hot, []} ->
-        IO.puts("  → no unsafe markers → HOT")
-
-      {:cold, reasons} ->
-        IO.puts("Cold-deploy required:")
-
-        Enum.each(reasons, fn {kind, files} ->
-          IO.puts("  → #{kind}: #{Enum.join(files, ", ")}")
-        end)
-    end
-
+    IO.write(render(verdict))
     System.halt(exit_code(verdict))
   end
 
   def cli(_) do
     IO.puts(
       :stderr,
-      "usage: mix run -e 'Grappa.Deploy.Preflight.cli([from_sha, to_sha, \"docker\" | \"jail\" | \"linux\"])'"
+      "usage: mix run -e 'Grappa.Deploy.Preflight.cli([from_sha, to_sha, \"docker\" | \"jail\" | \"linux\" | \"package\"])'"
     )
 
     System.halt(2)
@@ -389,36 +412,123 @@ defmodule Grappa.Deploy.Preflight do
         ) :: verdict()
   def classify(from, to, substrate, diff_paths_fn, show_fn) do
     paths = diff_paths_fn.(from, to)
+    long_lived_set = MapSet.new(long_lived_module_files())
 
-    case classify_paths(paths, substrate, &show_fn.(to, &1)) do
-      {:cold, _} = cold ->
-        cold
+    paths
+    |> classify_paths(substrate, &show_fn.(to, &1))
+    |> with_state_shape(
+      Enum.filter(paths, &MapSet.member?(long_lived_set, &1)),
+      &(compare_state_shape(&1, from, to, show_fn) == :cold)
+    )
+  end
 
-      {:hot, []} ->
-        # Path-class check came up clean. Check state-shape on every
-        # touched long-lived module file.
-        long_lived_set = MapSet.new(long_lived_module_files())
+  @doc """
+  The package door (issue 1112): classify the move from the build that
+  produced `from` to the build that produced `to`, both `t:manifest/0`s.
 
-        touched_long_lived =
-          Enum.filter(paths, &MapSet.member?(long_lived_set, &1))
+  A changed path is one whose entry differs, OR one only one side lists —
+  a path the old build never watched counts as changed, in doubt COLD.
+  The changed paths go through `classify_paths/3` with
+  `migration_source_fn.(path)` returning a migration's source in the NEW
+  release (`nil` when unreadable → COLD); if that comes up HOT, every
+  changed long-lived module file whose state-block digest differs makes it
+  COLD with `:state_shape`. A side that does not list a file's block reads
+  as the empty block, as `classify/5` reads an absent file.
+  """
+  @spec classify_manifests(manifest(), manifest(), substrate(), (String.t() -> String.t() | nil)) ::
+          verdict()
+  def classify_manifests(
+        %{files: from_files, state_blocks: from_blocks},
+        %{files: to_files, state_blocks: to_blocks},
+        substrate,
+        migration_source_fn
+      ) do
+    changed =
+      (Map.keys(from_files) ++ Map.keys(to_files))
+      |> Enum.uniq()
+      |> Enum.filter(&(Map.fetch(from_files, &1) != Map.fetch(to_files, &1)))
+      |> Enum.sort()
 
-        state_shape_changes =
-          for path <- touched_long_lived,
-              shape = compare_state_shape(path, from, to, show_fn),
-              shape == :cold do
-            path
-          end
+    empty_block = state_digest(nil)
+    long_lived_set = MapSet.new(Map.keys(from_blocks) ++ Map.keys(to_blocks))
 
-        case state_shape_changes do
-          [] -> {:hot, []}
-          files -> {:cold, [{:state_shape, files}]}
+    changed
+    |> classify_paths(substrate, migration_source_fn)
+    |> with_state_shape(
+      Enum.filter(changed, &MapSet.member?(long_lived_set, &1)),
+      &(Map.get(from_blocks, &1, empty_block) != Map.get(to_blocks, &1, empty_block))
+    )
+  end
+
+  @doc """
+  The repo-relative paths a `:package` verdict can turn on, as found under
+  `root`: every file a `:package` path class matches, plus the long-lived
+  module files the state-shape check reads. Derived from the same
+  constants and prefixes as the predicates, so a class and what the
+  manifest watches for it move together.
+  """
+  @spec manifest_paths(Path.t()) :: [String.t()]
+  def manifest_paths(root) when is_binary(root) do
+    globbed =
+      for pattern <- ["config/**/*.exs", @migrations_dir <> "**"],
+          path <- Path.wildcard(Path.join(root, pattern)),
+          File.regular?(path),
+          do: Path.relative_to(path, root)
+
+    Enum.sort(
+      Enum.uniq(
+        @mix_deps_files ++ [@application_file, @package_unit] ++ long_lived_module_files() ++ globbed
+      )
+    )
+  end
+
+  @doc """
+  Build a `t:manifest/0` from `path => source` (`nil` = the file is
+  absent). State blocks are kept for the long-lived module files only.
+  """
+  @spec build_manifest(%{String.t() => String.t() | nil}) :: manifest()
+  def build_manifest(sources) when is_map(sources) do
+    long_lived_set = MapSet.new(long_lived_module_files())
+
+    %{
+      files: Map.new(sources, fn {path, source} -> {path, source && sha256(source)} end),
+      state_blocks:
+        for {path, source} <- sources, MapSet.member?(long_lived_set, path), into: %{} do
+          {path, state_digest(source)}
         end
-    end
+    }
+  end
+
+  @doc """
+  A verdict as the operator reads it — the text both CLI doors print.
+  """
+  @spec render(verdict()) :: String.t()
+  def render({:hot, []}), do: "  → no unsafe markers → HOT\n"
+
+  def render({:cold, reasons}) do
+    lines = for {kind, files} <- reasons, do: "  → #{kind}: #{Enum.join(files, ", ")}\n"
+    IO.iodata_to_binary(["Cold-deploy required:\n" | lines])
   end
 
   # ---- internals ----------------------------------------------------
   defp add_reason(reasons, _, []), do: reasons
   defp add_reason(reasons, kind, files), do: [{kind, files} | reasons]
+
+  # The state-shape check, shared by both doors: it runs only when the path
+  # classes came up clean, over the touched long-lived files `cold?` judges.
+  defp with_state_shape({:cold, _} = cold, _, _), do: cold
+
+  defp with_state_shape({:hot, []}, touched_long_lived, cold?) do
+    case Enum.filter(touched_long_lived, cold?) do
+      [] -> {:hot, []}
+      files -> {:cold, [{:state_shape, files}]}
+    end
+  end
+
+  defp sha256(binary), do: Base.encode16(:crypto.hash(:sha256, binary), case: :lower)
+
+  # An absent file has the empty block, as compare_state_shape/4 reads it.
+  defp state_digest(source), do: sha256(extract_state_block(source || ""))
 
   # Substrate-scoped filter: the predicate only applies when the diff is
   # being classified FOR a substrate that reads those files. The scope is
@@ -430,10 +540,10 @@ defmodule Grappa.Deploy.Preflight do
   end
 
   # Class 1: dep / build config.
-  defp mix_deps?(path), do: path in ["mix.lock", "mix.exs"]
+  defp mix_deps?(path), do: path in @mix_deps_files
 
   # Class 2: supervision tree (Application.start/2 is boot-only).
-  defp application?(path), do: path == "lib/grappa/application.ex"
+  defp application?(path), do: path == @application_file
 
   # Class 4a: Docker image substrate — applies ONLY when classifying
   # for :docker (see filter_on/4); the jail never reads these files
@@ -472,15 +582,17 @@ defmodule Grappa.Deploy.Preflight do
   defp rc_d?("infra/freebsd/rc.d/grappa"), do: true
   defp rc_d?(_), do: false
 
-  # Class 4c: Linux systemd unit — applies ONLY when classifying for
-  # :linux. Sibling of rc_d?/1 (4b) and docker_image?/1 (4a): a changed
-  # unit file needs `systemctl daemon-reload` + a restart to take
-  # effect (there is no hot-reload of a running unit's own
-  # definition), and neither Docker nor the jail read this file at
-  # all, so the rule must stay :linux-scoped via filter_on/4 the same
-  # way rc_d? is :jail-scoped.
-  defp systemd_unit?("infra/linux/systemd/grappa.service"), do: true
-  defp systemd_unit?(_), do: false
+  # Class 4c: systemd unit — a changed unit file needs `systemctl
+  # daemon-reload` + a restart to take effect (there is no hot-reload of a
+  # running unit's own definition). Two units, each scoped to the one
+  # substrate that installs it via filter_on/4, the way rc_d? is
+  # :jail-scoped: the native-Linux host runs infra/linux/systemd/, the
+  # deb/rpm/Arch packages ship infra/packaging/ (issue 1112), and neither
+  # reads the other's — nor do Docker or the jail read either.
+  defp systemd_units(substrate, paths) do
+    filter_on([:linux], substrate, paths, &(&1 == @linux_unit)) ++
+      filter_on([:package], substrate, paths, &(&1 == @package_unit))
+  end
 
   # Class 5: migrations — CONTRACT ones only (GH #41). The class used
   # to be the path prefix alone, because the hot path ran no migration
@@ -496,7 +608,7 @@ defmodule Grappa.Deploy.Preflight do
     end)
   end
 
-  defp migration?(path), do: String.starts_with?(path, "priv/repo/migrations/")
+  defp migration?(path), do: String.starts_with?(path, @migrations_dir)
 
   # An unreadable migration is indistinguishable from an unclassifiable
   # one, and gets the same conservative verdict.
@@ -645,8 +757,8 @@ defmodule Grappa.Deploy.Preflight do
   #
   # **`:linux` is the only substrate left that runs nginx**, so the whole
   # class is scoped to it via `filter_on/4`, exactly like its siblings
-  # `rc_d?/1` (:jail), `systemd_unit?/1` (:linux) and `docker_image?/1`
-  # (:docker). It used to be scoped inline by a 2-arity predicate because
+  # `rc_d?/1` (:jail), `systemd_units/2` (:linux, :package) and
+  # `docker_image?/1` (:docker). It used to be scoped inline by a 2-arity predicate because
   # the class was MIXED — two per-substrate configs plus a genuinely
   # shared snippet prefix. It is not mixed any more: #485 dropped the
   # Docker nginx container (the BEAM is published directly), and the
