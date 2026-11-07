@@ -5004,3 +5004,75 @@ sealed, and where the key lives, is in the entry
 new device pairs from. Cross-client emoji verification (SAS) has passed
 binding-level tests but has not yet been run between cicchetto and shottino
 by hand.
+<!-- entry #2584 -->
+
+---
+
+## 2026-11-07 — issue 2584 (slice A): the command counts behind the `/` menu
+
+cic is getting a command dropdown on `/` that lists the **most used**
+commands first (issue 2584). vjt ruled that the order is shared by every
+device of the account, so the counts live on the server. This slice is the
+server half: a store, two doors and protocol 61. The dropdown itself is
+slice B, in cic.
+
+**Where the counts live.** In a `"command_counts"` key in
+`user_settings.data`, `%{verb => count}`. There is no new table and no
+migration. A table would have made each increment one atomic upsert with no
+read, but it brings a schema, an XOR FK, two partial unique indexes and the
+visitor CASCADE. The JSON key reuses all of that from the store a subject
+already owns, which is the reasoning `"aliases"` (#385) used too. The price
+is stated under "Not measured" below.
+
+**What is counted, and who decides.** cic decides. The server never sees
+the verb as it was typed: `parseSlash` expands an alias before the lookup,
+`/q` and `/query` both become `kind: "query"`, and an unknown verb or a
+local one (`/settings`, `/beep`) never reaches a server door at all. So cic
+names the verb, a DISPATCH builtin or one of the user's aliases by its own
+name, and posts it after the command goes out. The server holds only the
+shape. That shape is **one rule shared with alias names**
+(`normalize_verb/1`: trimmed, `String.downcase`, non-empty, no whitespace,
+at most 32 bytes), so a verb cic can alias is a verb it can count. It uses
+`String.downcase` rather than `canonical_target/1` because a verb is not an
+IRC identifier, and this is the fold aliases already had.
+
+**The increment holds the #1375 line.** `increment_command_count/2` runs
+inside `update_data/2`'s single transaction, ceiling check included. A
+counter is the shape where a read-modify-write outside that transaction
+loses data: two devices sending at once would both write 1. The
+concurrency test drives the same key from two writers through the existing
+interleave harness and expects 2.
+
+**The POST answers the whole map, not the one count.** One view serves GET
+and POST, cic mirrors the map the way it mirrors aliases, and the device
+that sends catches up with the other devices as it counts.
+
+**Ceiling: 512 distinct verbs.** It is the DOS guard `@aliases_max_count`
+already is for aliases. An honest client offers at most its builtins plus
+200 aliases (72 + 200 today), so it never hits the ceiling. The accepted
+price: a deleted alias keeps its count and its slot. A refused verb leaves
+`data` unchanged, and the refusal is read off the verb's absence, so the
+function `update_data/2` replays on a retry stays pure.
+
+**No broadcast** (vjt's ruling on the issue). Another open device reads the
+counts at its next (re)join of the user topic, as it already does for
+aliases, highlights and notification prefs from the same store. A new kind
+on the user topic would also have raised the sticky "could not read an
+update" banner in every stale bundle, at every command sent.
+
+**The menu's own settings are per device** (vjt's ruling). Whether the
+dropdown is on, and how many entries it shows, live in localStorage like
+the font size, not in the synced `display_prefs`. They belong to slice B,
+and no server key exists for them.
+
+**Wire.** Protocol 60 → 61. The digest moves through the new view's
+`@spec` only: no `*wire.ex` and no `ErrorTokens` member changed, so the
+generated `wireTypes.ts` / `wireSchema.ts` do not change. The min protocol
+version stays at 1.
+
+**Not measured.** Every counted command is one `BEGIN IMMEDIATE` that
+rewrites the subject's whole settings blob. That runs at a human pace, but
+neither the real blob size in prod nor the effect on the write lock (#1420,
+#1715) has been measured. It is also one more write metered by
+`:request_budget` (capacity 60, 20/s), so a pasted block of N commands
+spends 2N.
