@@ -459,6 +459,40 @@ defmodule GrappaWeb.UserSettingsController do
   def update_aliases(_, _), do: {:error, :bad_request}
 
   @doc """
+  `GET /me/settings/command-counts` — how many times the subject sent each
+  command verb, `{"command_counts": {"<verb>": <count>, ...}}`, `{}` before
+  the first (issue 2584). cic orders its `/` menu by it and reads it at every
+  (re)join of the user topic: nothing broadcasts a count.
+  """
+  @spec show_command_counts(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def show_command_counts(conn, _) do
+    subject = Subject.from_assigns(conn.assigns)
+    render(conn, :command_counts, counts: UserSettings.get_command_counts(subject))
+  end
+
+  @doc """
+  `POST /me/settings/command-counts` — count one use of a command verb.
+  Body: `{"verb": "<verb>"}`, the verb ONLY, never what followed it
+  (`/ns identify <password>` posts `{"verb": "ns"}`). Answers the whole map,
+  the shape `GET` answers.
+
+  Shape validation and the ceiling live in
+  `Grappa.UserSettings.increment_command_count/2`; 422 +
+  `field_errors.command_counts` on rejection.
+  """
+  @spec increment_command_count(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :bad_request | Ecto.Changeset.t() | :db_unavailable}
+  def increment_command_count(conn, %{"verb" => verb}) when is_binary(verb) do
+    subject = Subject.from_assigns(conn.assigns)
+
+    with {:ok, counts} <- UserSettings.increment_command_count(subject, verb) do
+      render(conn, :command_counts, counts: counts)
+    end
+  end
+
+  def increment_command_count(_, _), do: {:error, :bad_request}
+
+  @doc """
   `GET /me/settings/display-prefs` — return the subject's server-backed
   display preferences (#449): `{"display_prefs": {...}, "persisted": bool}`.
   Falls back to defaults when the subject has never persisted them; the

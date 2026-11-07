@@ -757,6 +757,81 @@ defmodule GrappaWeb.UserSettingsControllerTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # command counts — issue 2584, the order of cic's `/` menu
+  # ---------------------------------------------------------------------------
+
+  describe "GET /me/settings/command-counts" do
+    test "401 without bearer", %{conn: conn} do
+      conn = get(conn, "/me/settings/command-counts")
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "200 + {} when nothing was ever counted", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn = conn |> put_bearer(session.id) |> get("/me/settings/command-counts")
+      assert json_response(conn, 200) == %{"command_counts" => %{}}
+    end
+
+    test "200 + the stored counts", %{conn: conn} do
+      {user, session} = user_and_session()
+      {:ok, _} = UserSettings.increment_command_count({:user, user.id}, "whois")
+      {:ok, _} = UserSettings.increment_command_count({:user, user.id}, "whois")
+
+      conn = conn |> put_bearer(session.id) |> get("/me/settings/command-counts")
+      assert json_response(conn, 200) == %{"command_counts" => %{"whois" => 2}}
+    end
+  end
+
+  describe "POST /me/settings/command-counts" do
+    setup %{conn: conn} do
+      {user, session} = user_and_session()
+      {:ok, conn: put_bearer(conn, session.id), user: user}
+    end
+
+    test "200 + the whole map after counting the verb", %{conn: conn, user: user} do
+      {:ok, _} = UserSettings.increment_command_count({:user, user.id}, "join")
+
+      conn = post(conn, "/me/settings/command-counts", %{"verb" => "WHOIS"})
+
+      assert json_response(conn, 200) == %{"command_counts" => %{"join" => 1, "whois" => 1}}
+      assert UserSettings.get_command_counts({:user, user.id}) == %{"join" => 1, "whois" => 1}
+    end
+
+    test "422 + field_errors.command_counts on a verb with whitespace", %{conn: conn, user: user} do
+      conn = post(conn, "/me/settings/command-counts", %{"verb" => "who is"})
+
+      assert %{"error" => "validation_failed", "field_errors" => fe} = json_response(conn, 422)
+      assert Map.has_key?(fe, "command_counts")
+      assert UserSettings.get_command_counts({:user, user.id}) == %{}
+    end
+
+    test "400 when the body names no verb", %{conn: conn} do
+      conn = post(conn, "/me/settings/command-counts", %{"nope" => "whois"})
+      assert json_response(conn, 400) == %{"error" => "bad_request"}
+    end
+
+    test "400 when the verb is not a string", %{conn: conn} do
+      conn = post(conn, "/me/settings/command-counts", %{"verb" => 7})
+      assert json_response(conn, 400) == %{"error" => "bad_request"}
+    end
+  end
+
+  describe "POST /me/settings/command-counts — visitor parity" do
+    test "200 for a visitor subject, counted on the visitor", %{conn: conn} do
+      {visitor, session} = visitor_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/me/settings/command-counts", %{"verb" => "join"})
+
+      assert json_response(conn, 200) == %{"command_counts" => %{"join" => 1}}
+      assert UserSettings.get_command_counts({:visitor, visitor.id}) == %{"join" => 1}
+    end
+  end
+
   # ===========================================================================
   # display_prefs (#449) — server-backed display preferences, so one account
   # converges its UI across devices. Wrapped-envelope endpoint mirroring

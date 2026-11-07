@@ -527,6 +527,13 @@ defmodule GrappaWeb.Router do
     get "/me/settings/aliases", UserSettingsController, :show_aliases
     put "/me/settings/aliases", UserSettingsController, :update_aliases
 
+    # Issue 2584 — the order of cic's `/` menu. GET reads the subject's
+    # `%{verb => count}`; POST counts one use of one verb and answers the
+    # whole map. No broadcast (vjt's ruling): another device reads the
+    # counts at its next (re)join of the user topic.
+    get "/me/settings/command-counts", UserSettingsController, :show_command_counts
+    post "/me/settings/command-counts", UserSettingsController, :increment_command_count
+
     # #449 — server-backed display preferences (timestamp format, colored
     # nicklist, per-channel presence filter) so a single account converges
     # its UI across devices. Full-map PUT wrapped under `display_prefs`;
