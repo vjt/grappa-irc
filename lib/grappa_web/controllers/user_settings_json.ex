@@ -93,6 +93,9 @@ defmodule GrappaWeb.UserSettingsJSON do
           aliases: %{String.t() => String.t()}
         }
 
+  @typedoc "Wire shape for the command_counts envelope (issue 2584), GET and POST alike."
+  @type command_counts_response :: %{command_counts: %{String.t() => pos_integer()}}
+
   @typedoc """
   Wire shape for the display_prefs envelope (#449). `persisted` is the
   seed-up discriminator: `false` means the subject has never written a
@@ -188,6 +191,10 @@ defmodule GrappaWeb.UserSettingsJSON do
   def aliases(%{aliases: aliases}) do
     %{aliases: aliases}
   end
+
+  @doc "Renders the `:command_counts` action — GET/POST 200 response shape (issue 2584)."
+  @spec command_counts(%{counts: UserSettings.command_counts()}) :: command_counts_response()
+  def command_counts(%{counts: counts}), do: %{command_counts: counts}
 
   @doc "Renders the `:display_prefs` action — GET/PUT 200 response shape (#449)."
   @spec display_prefs(%{prefs: UserSettings.display_prefs(), persisted: boolean()}) ::

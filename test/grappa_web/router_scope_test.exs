@@ -163,7 +163,15 @@ defmodule GrappaWeb.RouterScopeTest do
     # result would exceed NICKLEN, and `nil` — the default — is the whole
     # feature switched off.
     {"GET", "/me/settings/away-nick-suffix"},
-    {"PUT", "/me/settings/away-nick-suffix"}
+    {"PUT", "/me/settings/away-nick-suffix"},
+    # Issue 2584 — how many times the account sent each command verb, the
+    # order of cicchetto's `/` menu. The same class as `aliases` above: the
+    # verbs ARE the alias names and the builtins, the map reaches no
+    # credential, reads back nothing secret, and a write only adds one to a
+    # count. A terminal client that wants the same order posts its own
+    # verbs, which is a use of the account, not a change to it.
+    {"GET", "/me/settings/command-counts"},
+    {"POST", "/me/settings/command-counts"}
   ]
 
   # Routes with no bearer gate at all — the login doors, the public
