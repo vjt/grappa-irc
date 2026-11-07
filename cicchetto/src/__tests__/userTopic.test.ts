@@ -3101,13 +3101,18 @@ describe("narrowUserEvent — #1393d strict arms", () => {
       const { narrowUserEvent } = await import("../lib/userTopic");
       expect(
         narrowUserEvent(whois({ grappa_client_ips: ["2001:db8::7", "203.0.113.9"] })),
-      ).toMatchObject({ grappa_client_ips: ["2001:db8::7", "203.0.113.9"], grappa_client_last_known_ip: null });
+      ).toMatchObject({
+        grappa_client_ips: ["2001:db8::7", "203.0.113.9"],
+        grappa_client_last_known_ip: null,
+      });
     });
 
     it("carries [] beside the last known address through", async () => {
       const { narrowUserEvent } = await import("../lib/userTopic");
       expect(
-        narrowUserEvent(whois({ grappa_client_ips: [], grappa_client_last_known_ip: "198.51.100.7" })),
+        narrowUserEvent(
+          whois({ grappa_client_ips: [], grappa_client_last_known_ip: "198.51.100.7" }),
+        ),
       ).toMatchObject({ grappa_client_ips: [], grappa_client_last_known_ip: "198.51.100.7" });
     });
 
