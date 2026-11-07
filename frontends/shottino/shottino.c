@@ -1434,6 +1434,13 @@ struct app {
     enum split_axis split;
     char *log[LOG_LINES];
     bool log_mentions[LOG_LINES];
+    /* The row came out of this device's E2E history (a decrypted message,
+     * our own encrypted line, an E2E trust row): its words exist in clear
+     * nowhere but here. Set at the push, never derived from the query's
+     * CURRENT mode — a query turned clear later still holds rows that were
+     * encrypted, and those must stay out of every door that hands the
+     * buffer on (the model's tools, the link fetchers, the debug log). */
+    bool log_e2e[LOG_LINES];
     /* The pending_echo id of an optimistic row, 0 for a confirmed one.
      * The id, not a flag: the row is retired by matching the RECORD
      * (folded names, raw body) and then taking the row that carries its
@@ -2455,6 +2462,7 @@ static void log_shift_locked(struct app *app) {
     free(app->log[0]);
     memmove(app->log, app->log + 1, sizeof(app->log[0]) * (LOG_LINES - 1));
     memmove(app->log_mentions, app->log_mentions + 1, sizeof(app->log_mentions[0]) * (LOG_LINES - 1));
+    memmove(app->log_e2e, app->log_e2e + 1, sizeof(app->log_e2e[0]) * (LOG_LINES - 1));
     memmove(app->log_pending, app->log_pending + 1, sizeof(app->log_pending[0]) * (LOG_LINES - 1));
     memmove(app->log_ids, app->log_ids + 1, sizeof(app->log_ids[0]) * (LOG_LINES - 1));
     memmove(app->log_times, app->log_times + 1, sizeof(app->log_times[0]) * (LOG_LINES - 1));
@@ -2468,6 +2476,7 @@ static void log_row_move_locked(struct app *app, size_t dst, size_t src) {
     if (dst == src) return;
     app->log[dst] = app->log[src];
     app->log_mentions[dst] = app->log_mentions[src];
+    app->log_e2e[dst] = app->log_e2e[src];
     app->log_pending[dst] = app->log_pending[src];
     app->log_ids[dst] = app->log_ids[src];
     app->log_times[dst] = app->log_times[src];
@@ -2588,6 +2597,14 @@ static log_scope_id log_scope_of_locked(struct app *app, const char *line) {
 
 static void desktop_notify(const char *title, const char *body);
 
+/* True while THIS thread writes rows of the E2E history (e2e_render_row,
+ * e2e_row_push): every row it pushes meanwhile is marked log_e2e. Per
+ * thread, not per app, because rows from other threads land in the same
+ * ring at the same time, and the mark must be decided at the push — the
+ * one door every row takes — rather than stamped onto "the last row"
+ * afterwards, which another thread may have moved on. */
+static _Thread_local bool log_writing_e2e;
+
 static void log_push_locked(struct app *app, char *line, bool mention, unsigned long pending) {
     if (app->log_count == LOG_LINES) log_shift_locked(app);
     size_t i = app->log_count;
@@ -2606,6 +2623,7 @@ static void log_push_locked(struct app *app, char *line, bool mention, unsigned 
     app->log_last_index = i;
     app->log[i] = line;
     app->log_mentions[i] = mention;
+    app->log_e2e[i] = log_writing_e2e;
     app->log_pending[i] = pending;
     app->log_ids[i] = 0;
     app->log_times[i] = 0;
@@ -13007,10 +13025,20 @@ static char *tool_execute(struct app *app, const struct llm_req *req,
             if (v > 0 && v < 400) want = v;
         }
         pthread_mutex_lock(&app->lock);
+        /* An encrypted query is refused, not filtered: what is said there
+         * was meant for two devices, and the model is a third party — the
+         * endpoint, and through the bot whoever asked it. A row that WAS
+         * encrypted stays out after the query went clear (log_e2e). */
+        if (e2e_query_encrypted_locked(app, req->network, target)) {
+            pthread_mutex_unlock(&app->lock);
+            return xasprintf("error: %.64s is an encrypted query — its messages are end-to-end "
+                             "encrypted and no tool reads them",
+                             target);
+        }
         log_scope_id scope = window_scope_id_locked(app, req->network, target);
         size_t shown = 0;
         for (size_t i = app->log_count; i > 0 && shown < (size_t)want; i--) {
-            if (!log_row_in_scope(app, i - 1, scope)) continue;
+            if (!log_row_in_scope(app, i - 1, scope) || app->log_e2e[i - 1]) continue;
             size_t len = strlen(app->log[i - 1]);
             if (strlen(out) + len + 2 >= sizeof(out)) break;
             memmove(out + len + 1, out, strlen(out) + 1);
@@ -16634,7 +16662,17 @@ static bool e2e_trust_row_text(const e2e_row *row, bool live, char *out, size_t 
 /* One history row on screen. A message goes the DM path (render_row,
  * encrypted): our own (a sibling's copy) under our nick now, a /me inside
  * the body as an action. */
+static void e2e_render_row_marked(struct app *app, const char *slug, const e2e_row *row,
+                                  bool live);
+
 static void e2e_render_row(struct app *app, const char *slug, const e2e_row *row, bool live) {
+    log_writing_e2e = true;
+    e2e_render_row_marked(app, slug, row, live);
+    log_writing_e2e = false;
+}
+
+static void e2e_render_row_marked(struct app *app, const char *slug, const e2e_row *row,
+                                  bool live) {
     char own[MAX_CHANNEL];
     pthread_mutex_lock(&app->lock);
     snprintf(own, sizeof(own), "%s", own_nick_for_network(app, slug));
@@ -17409,7 +17447,9 @@ static unsigned long e2e_row_push(struct app *app, const char *net, const char *
     pthread_mutex_lock(&app->lock);
     char *line = e2e_own_line(net, peer, own_nick_for_network(app, net), body, time(NULL));
     unsigned long id = ++app->next_pending_id;
+    log_writing_e2e = true;
     log_push_locked(app, line, false, id);
+    log_writing_e2e = false;
     for (size_t p = 0; p < app->pane_count; p++) {
         app->panes[p].scroll_offset = 0;
         app->panes[p].scroll_pinned = false;

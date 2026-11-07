@@ -3216,6 +3216,67 @@ TEST(the_peer_turns_it_on_and_only_off_turns_it_off) {
     free_e2e_app(app);
 }
 
+/* What read_scrollback hands a model: a model's tools are a door to a
+ * third party (the endpoint) and, through the bot, to whoever asked it. An
+ * encrypted query is refused outright, and a row that was encrypted stays
+ * out of the answer after the query went clear again — only the rows that
+ * were clear in the first place are read. */
+static char *read_scrollback(struct app *app, const char *target) {
+    struct llm_req req = {0};
+    snprintf(req.network, sizeof(req.network), "azzurra");
+    struct llm_tool_call call = {0};
+    snprintf(call.name, sizeof(call.name), "read_scrollback");
+    snprintf(call.arguments, sizeof(call.arguments), "{\"target\":\"%s\",\"lines\":\"100\"}",
+             target);
+    return tool_execute(app, &req, &call, "");
+}
+
+TEST(no_model_tool_reads_an_encrypted_row) {
+    struct app *app = send_app("user:llmread", "alice");
+    struct wire_scrollback_message m = {0};
+    m.id = 900;
+    m.network = "azzurra";
+    m.channel = "vjt";
+    m.dm_with = "alice";
+    m.sender = "alice";
+    m.body = "said in clear";
+    m.kind = MSG_PRIVMSG;
+    render_message(app, &m, true);
+    tpeer alice;
+    tpeer_new(&alice, "alice");
+    tpeer_say(app, &alice, "the secret plan");
+    drain(app);
+    CHECK(said(app, LOCKED("<alice> the secret plan")));
+    CHECK(e2e_query_encrypted(app, "azzurra", "alice"));
+    type_line(app, "my own secret");
+    run_jobs(app);
+    CHECK(said(app, "my own secret"));
+    /* Every row the E2E history drew is marked as such; the clear one not. */
+    CHECK(app->log_e2e[row_of(app, "the secret plan")]);
+    CHECK(app->log_e2e[row_of(app, "my own secret")]);
+    CHECK(!app->log_e2e[row_of(app, "said in clear")]);
+
+    char *out = read_scrollback(app, "alice");
+    CHECK(strncmp(out, "error:", 6) == 0);
+    CHECK(strstr(out, "encrypted") != NULL);
+    CHECK(strstr(out, "the secret plan") == NULL);
+    CHECK(strstr(out, "my own secret") == NULL);
+    free(out);
+    out = read_scrollback(app, "ALICE");
+    CHECK(strncmp(out, "error:", 6) == 0);
+    free(out);
+
+    handle_command(app, "/e2e off");
+    CHECK(!e2e_query_encrypted(app, "azzurra", "alice"));
+    out = read_scrollback(app, "alice");
+    CHECK(strstr(out, "said in clear") != NULL);
+    CHECK(strstr(out, "the secret plan") == NULL);
+    CHECK(strstr(out, "my own secret") == NULL);
+    free(out);
+    tpeer_free(&alice);
+    free_e2e_app(app);
+}
+
 /* What this device sends a peer reaches our other device as a copy
  * (claim, then the copy door — never IRC), after grappa took the text. */
 TEST(a_sent_text_is_copied_to_our_sibling) {
@@ -4315,6 +4376,7 @@ int main(void) {
     RUN(a_nack_from_star_asks_the_user);
     RUN(a_dropped_send_fails_and_resend_sends_it_again);
     RUN(the_peer_turns_it_on_and_only_off_turns_it_off);
+    RUN(no_model_tool_reads_an_encrypted_row);
     RUN(a_sent_text_is_copied_to_our_sibling);
     RUN(emsg_sends_one_encrypted_message);
     RUN(a_line_typed_before_the_slot_loads_never_goes_in_clear);
