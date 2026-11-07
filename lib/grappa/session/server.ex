@@ -4748,6 +4748,58 @@ defmodule Grappa.Session.Server do
     end
   end
 
+  # Issue 2597 — where the grappa user holding `target` on this network
+  # connects from, for a requester entitled to know: this session holds
+  # umode `o` or `O` (an IRC operator, who sees real hosts upstream anyway),
+  # or the asking client speaks for a grappa admin (`accum.requester_admin`,
+  # `GrappaWeb.AdminChannel.admin_socket?/1`). Anyone else gets `{nil, nil}`.
+  #
+  # Only once the ircd has confirmed somebody holds the nick (311 filled
+  # `accum.user`), and only through `Session.registered_holders/3`, which
+  # counts a session that has seen 001 — never the configured nick of one
+  # in backoff, which a stranger may hold upstream. The answer pairs:
+  # live socket addresses and no last-known one; or `[]` and the address
+  # of that user's newest login, since a user with no socket open is still
+  # somebody's client. More than one holder is a transient on one ircd and
+  # is not resolved by picking: the bundle says nothing and the log says
+  # who collided — never with an address.
+  #
+  # `Map.get` for `:umodes`, as every other reader here does (#216).
+  @spec whois_grappa_client(t(), String.t(), WhoisAccum.t()) :: {[String.t()] | nil, String.t() | nil}
+  defp whois_grappa_client(state, target, %WhoisAccum{user: user} = accum) when is_binary(user) do
+    umodes = Map.get(state, :umodes, [])
+
+    if accum.requester_admin or "o" in umodes or "O" in umodes do
+      state.network_id
+      |> Session.registered_holders(fold_key(state, target), session_casemapping(state))
+      |> grappa_client_of(target)
+    else
+      {nil, nil}
+    end
+  end
+
+  defp whois_grappa_client(_, _, _), do: {nil, nil}
+
+  @spec grappa_client_of([{Session.subject(), String.t()}], String.t()) :: {[String.t()] | nil, String.t() | nil}
+  defp grappa_client_of([{subject, label}], _) do
+    case WSPresence.client_ips(label) do
+      [] -> {[], Accounts.last_known_ip(subject)}
+      ips -> {ips, nil}
+    end
+  end
+
+  defp grappa_client_of([], _), do: {nil, nil}
+
+  defp grappa_client_of(holders, target) do
+    Logger.warning(
+      "whois: #{length(holders)} sessions hold the nick " <>
+        "(#{Enum.map_join(holders, ", ", fn {_, label} -> label end)}) — no client address shown",
+      target: target
+    )
+
+    {nil, nil}
+  end
+
   # Existing behavior — persist scrollback row, broadcast on per-channel
   # PubSub topic, send the wire line. Reply carries the persisted row.
   # BUGHUNT-1 A: a body larger than the wire-frame budget (LINELEN -
@@ -7173,58 +7225,6 @@ defmodule Grappa.Session.Server do
       )
 
     apply_effects(rest, state)
-  end
-
-  # Issue 2597 — where the grappa user holding `target` on this network
-  # connects from, for a requester entitled to know: this session holds
-  # umode `o` or `O` (an IRC operator, who sees real hosts upstream anyway),
-  # or the asking client speaks for a grappa admin (`accum.requester_admin`,
-  # `GrappaWeb.AdminChannel.admin_socket?/1`). Anyone else gets `{nil, nil}`.
-  #
-  # Only once the ircd has confirmed somebody holds the nick (311 filled
-  # `accum.user`), and only through `Session.registered_holders/3`, which
-  # counts a session that has seen 001 — never the configured nick of one
-  # in backoff, which a stranger may hold upstream. The answer pairs:
-  # live socket addresses and no last-known one; or `[]` and the address
-  # of that user's newest login, since a user with no socket open is still
-  # somebody's client. More than one holder is a transient on one ircd and
-  # is not resolved by picking: the bundle says nothing and the log says
-  # who collided — never with an address.
-  #
-  # `Map.get` for `:umodes`, as every other reader here does (#216).
-  @spec whois_grappa_client(t(), String.t(), WhoisAccum.t()) :: {[String.t()] | nil, String.t() | nil}
-  defp whois_grappa_client(state, target, %WhoisAccum{user: user} = accum) when is_binary(user) do
-    umodes = Map.get(state, :umodes, [])
-
-    if accum.requester_admin or "o" in umodes or "O" in umodes do
-      state.network_id
-      |> Session.registered_holders(fold_key(state, target), session_casemapping(state))
-      |> grappa_client_of(target)
-    else
-      {nil, nil}
-    end
-  end
-
-  defp whois_grappa_client(_, _, _), do: {nil, nil}
-
-  @spec grappa_client_of([{Session.subject(), String.t()}], String.t()) :: {[String.t()] | nil, String.t() | nil}
-  defp grappa_client_of([{subject, label}], _) do
-    case WSPresence.client_ips(label) do
-      [] -> {[], Accounts.last_known_ip(subject)}
-      ips -> {ips, nil}
-    end
-  end
-
-  defp grappa_client_of([], _), do: {nil, nil}
-
-  defp grappa_client_of(holders, target) do
-    Logger.warning(
-      "whois: #{length(holders)} sessions hold the nick " <>
-        "(#{Enum.map_join(holders, ", ", fn {_, label} -> label end)}) — no client address shown",
-      target: target
-    )
-
-    {nil, nil}
   end
 
   # P-0c — WHOWAS bundle ephemeral. Broadcast on the user-level topic
