@@ -39,6 +39,7 @@
 #include <wctype.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <limits.h>
 #include <dirent.h>
 #include <glob.h>
@@ -15370,6 +15371,11 @@ static pthread_mutex_t e2e_key_mu = PTHREAD_MUTEX_INITIALIZER;
     "the encrypted-query store is LOCKED: its key is not in the keyring and no passphrase "        \
     "opened it, so nothing of it is read or written — /e2e unlock opens it"
 #define E2E_PASSPHRASE_TRIES 3
+/* Taken by every process that may MAKE this identity's key (see below). */
+#define E2E_KEY_LOCK "key.lock"
+/* Written with every new key: the key sealed over nothing, so a later run
+ * knows a key exists even where no other file says so yet. */
+#define E2E_KEY_CHECK "key.check"
 
 /* What of an E2E state `idir` holds: any record or chat (`*any`), and any
  * of it sealed, the wrapped key included (`*sealed`). */
@@ -15377,6 +15383,8 @@ static void e2e_identity_state(const char *idir, bool *any, bool *sealed) {
     *any = *sealed = false;
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/" E2E_WRAPPED_KEY, idir);
+    if (access(path, F_OK) == 0) *any = *sealed = true;
+    snprintf(path, sizeof(path), "%s/" E2E_KEY_CHECK, idir);
     if (access(path, F_OK) == 0) *any = *sealed = true;
     DIR *d = opendir(idir);
     struct dirent *ent;
@@ -15419,6 +15427,40 @@ static enum e2e_key_src e2e_key_source(struct app *app) {
     return src;
 }
 
+/* Making a key is check-then-create, and the mutex above serialises it
+ * only inside this process: `secret-tool store` replaces an item and a
+ * rename replaces key.wrapped, so two shottinos on one identity could each
+ * see nothing, each make a key, and each seal under its own — one of them
+ * then loses everything it wrote. So making a key happens under an
+ * exclusive flock on <identity dir>/key.lock, and under it the keyring is
+ * looked at again and the state checked again before anything is made;
+ * the key made is marked (key.check) before the lock goes. -1 when the
+ * lock cannot be had, and then nothing is made. */
+static int e2e_key_flock(const char *idir) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/" E2E_KEY_LOCK, idir);
+    if (!e2e_write_private_dir(idir)) return -1;
+    int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) return -1;
+    while (flock(fd, LOCK_EX) != 0)
+        if (errno != EINTR) {
+            close(fd);
+            return -1;
+        }
+    return fd;
+}
+
+/* The marker of a new key, written under the flock. */
+static bool e2e_key_mark(const char *idir, const uint8_t key[AR_KEY_LEN]) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/" E2E_KEY_CHECK, idir);
+    size_t n = 0;
+    uint8_t *sealed = ar_seal(key, "check", E2E_KEY_CHECK, "", 0, &n);
+    bool ok = sealed && e2e_write_private(path, sealed, n, NULL, 0);
+    free(sealed);
+    return ok;
+}
+
 /* The data key into `out`: the one this run holds, else the keyring's.
  * `create`: with neither, and nothing sealed yet, a new one goes into the
  * keyring (read back) — never into a file without a passphrase asked. */
@@ -15433,9 +15475,16 @@ static bool e2e_key_obtain(struct app *app, bool create, uint8_t out[AR_KEY_LEN]
         if (!ok && create) {
             char idir[PATH_MAX - 32];
             e2e_identity_dir(app, idir, sizeof(idir));
-            bool any, sealed;
-            e2e_identity_state(idir, &any, &sealed);
-            ok = !sealed && ar_random(k, sizeof(k)) && kr_store(hash, k);
+            int lock = e2e_key_flock(idir);
+            /* Another process may have made it while this one waited. */
+            ok = lock >= 0 && kr_lookup(hash, k);
+            if (lock >= 0 && !ok) {
+                bool any, sealed;
+                e2e_identity_state(idir, &any, &sealed);
+                ok = !sealed && ar_random(k, sizeof(k)) && kr_store(hash, k) &&
+                     e2e_key_mark(idir, k);
+            }
+            if (lock >= 0) close(lock); /* releases the flock */
         }
         if (ok) e2e_key_set_locked(app, E2E_KEY_KEYRING, k);
         OPENSSL_cleanse(k, sizeof(k));
@@ -15452,18 +15501,25 @@ static bool e2e_key_new_wrapped_locked(struct app *app, const char *pass, char *
     char idir[PATH_MAX - 32], path[PATH_MAX];
     e2e_identity_dir(app, idir, sizeof(idir));
     snprintf(path, sizeof(path), "%s/" E2E_WRAPPED_KEY, idir);
+    int lock = e2e_key_flock(idir);
+    if (lock < 0) {
+        snprintf(why, why_sz, "cannot lock %s/" E2E_KEY_LOCK, idir);
+        return false;
+    }
     bool any, sealed;
     e2e_identity_state(idir, &any, &sealed);
     if (sealed) {
         /* Never a second key over what the first one sealed. */
+        close(lock);
         snprintf(why, why_sz, "this identity's state is already sealed under a key");
         return false;
     }
     uint8_t k[AR_KEY_LEN];
     size_t n = 0;
     uint8_t *w = ar_random(k, sizeof(k)) ? ar_wrap(pass, k, &n) : NULL;
-    bool ok = w && e2e_write_private(path, w, n, why, why_sz);
+    bool ok = w && e2e_write_private(path, w, n, why, why_sz) && e2e_key_mark(idir, k);
     if (!w) snprintf(why, why_sz, "cannot make a key");
+    close(lock);
     if (ok) e2e_key_set_locked(app, E2E_KEY_PASSPHRASE, k);
     OPENSSL_cleanse(k, sizeof(k));
     free(w);

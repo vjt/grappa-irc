@@ -2417,6 +2417,8 @@ static bool replace_file(const char *path, const void *data, size_t len, char *e
     return ok;
 }
 
+bool e2e_write_private_dir(const char *dir) { return mkdir_p(dir); }
+
 bool e2e_write_private(const char *path, const void *data, size_t len, char *err,
                        size_t err_sz) {
     char *dir = xstrdup(path);

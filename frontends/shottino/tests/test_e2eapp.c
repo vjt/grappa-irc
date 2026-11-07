@@ -4621,6 +4621,15 @@ TEST(consent_needs_protocol_53) {
 
 /* ── E2E at rest: the sealed store and its key ───────────────────────── */
 
+/* `dir` + `name`, in a buffer that lives to the end of the suite. */
+static const char *xasprintf_keep(const char *dir, const char *name) {
+    static char buf[8][PATH_MAX + 64];
+    static int next;
+    char *b = buf[next++ % 8];
+    snprintf(b, sizeof(buf[0]), "%s%s", dir, name);
+    return b;
+}
+
 /* Whether any file under `dir`, at any depth, holds `needle`. */
 static bool tree_has(const char *dir, const char *needle) {
     DIR *d = opendir(dir);
@@ -4758,6 +4767,10 @@ static void unseal_to_plaintext(struct app *app) {
     }
     if (d) closedir(d);
     free(chats);
+    /* A run before sealing made no key, so left no marker of one. */
+    char idir[PATH_MAX];
+    e2e_identity_dir(app, idir, sizeof(idir));
+    CHECK(unlink(xasprintf_keep(idir, "/key.check")) == 0);
     /* The keyring forgets it: the fake holds one file per item. */
     char hash[32];
     token_key_hash(app->url.base, app->subject, hash, sizeof(hash));
@@ -5143,6 +5156,63 @@ TEST(a_sealed_record_this_shottino_cannot_read_is_left_alone) {
     free_e2e_app(app);
 }
 
+/* Two shottinos on one identity must end with ONE key. Another process
+ * makes the key while this one waits on key.lock: this one takes that key
+ * — it looks again under the lock — instead of storing a second over it.
+ * And the key made leaves its marker (key.check), so a later run with no
+ * keyring does not mint another under a passphrase. */
+TEST(two_processes_make_one_key) {
+    fg_reset();
+    struct app *app = e2e_app("user:atrest-race");
+    char idir[PATH_MAX], hash[32];
+    identity_dir_of(app, idir, sizeof(idir));
+    token_key_hash(app->url.base, app->subject, hash, sizeof(hash));
+    CHECK(e2e_write_private(xasprintf_keep(idir, "/key.lock"), "", 0, NULL, 0));
+    uint8_t theirs[AR_KEY_LEN];
+    for (size_t i = 0; i < sizeof(theirs); i++) theirs[i] = (uint8_t)(0xa0 + i);
+    int go[2];
+    CHECK(pipe(go) == 0);
+    pid_t pid = fork();
+    if (pid == 0) {
+        char lock[PATH_MAX + 16];
+        snprintf(lock, sizeof(lock), "%s/key.lock", idir);
+        int fd = open(lock, O_RDWR);
+        if (fd < 0 || flock(fd, LOCK_EX) != 0) _exit(1);
+        if (write(go[1], "x", 1) != 1) _exit(1);
+        usleep(300000);
+        _exit(kr_store(hash, theirs) ? 0 : 1);
+    }
+    char c;
+    CHECK(read(go[0], &c, 1) == 1);
+    close(go[0]);
+    close(go[1]);
+    uint8_t got[AR_KEY_LEN];
+    CHECK(e2e_key_obtain(app, true, got));
+    CHECK(memcmp(got, theirs, AR_KEY_LEN) == 0);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    uint8_t now[AR_KEY_LEN];
+    CHECK(kr_lookup(hash, now) && memcmp(now, theirs, AR_KEY_LEN) == 0);
+    free_e2e_app(app);
+
+    /* A key this run made: marked, and the marker is state. */
+    app = e2e_app("user:atrest-mark");
+    identity_dir_of(app, idir, sizeof(idir));
+    CHECK(e2e_key_obtain(app, true, got));
+    CHECK(exists(idir, "key.check"));
+    free_e2e_app(app);
+    test_keyring_mode("fail");
+    app = e2e_app("user:atrest-mark");
+    type_line(app, "/e2e init");
+    type_line(app, "a passphrase");
+    type_line(app, "a passphrase");
+    CHECK(said(app, "already sealed under a key"));
+    CHECK(!exists(idir, "key.wrapped"));
+    free_e2e_app(app);
+    test_keyring_mode(NULL);
+}
+
 int main(void) {
     test_use_temp_home();
     /* A keyring for every test (tests/fake-secret-tool, in the temp home):
@@ -5220,6 +5290,7 @@ int main(void) {
     RUN(e2e_unlock_opens_a_locked_store_from_the_input_line);
     RUN(e2e_init_without_a_keyring_asks_for_a_new_passphrase);
     RUN(a_sealed_record_this_shottino_cannot_read_is_left_alone);
+    RUN(two_processes_make_one_key);
     th_free();
     fg_stop();
     return test_report();

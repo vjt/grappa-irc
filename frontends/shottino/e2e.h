@@ -690,6 +690,8 @@ void e2e_strv_free(e2e_strv *v);
 /* `path` replaced by `data`, 0600, as the record is (temp, fsync, rename,
  * the directory fsync'd), its directory made 0700 when missing. */
 bool e2e_write_private(const char *path, const void *data, size_t len, char *err, size_t err_sz);
+/* `dir` and each missing parent, 0700. */
+bool e2e_write_private_dir(const char *dir);
 
 /* ── Engine (engine.ts Engine) ─────────────────────────────────────────── */
 
