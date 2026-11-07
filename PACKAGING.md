@@ -228,9 +228,13 @@ nothing.** `apply-upgrade.sh` asks the running node which build it runs,
 compares that with the new release, and reloads the new code in place when
 nothing in between needs a restart (a hot reload, which applies the pending
 migrations itself). Anything else is applied by `systemctl restart`, and
-the unit migrates before the new release boots. The script exits 1 only
-when a restart was needed and did not take; it prints what failed and how
-to retry. A service that is not running is left stopped: its next start
+the unit migrates before the new release boots. The script exits 1 when a
+restart was needed and did not take, and prints what failed and how to
+retry. It also exits 1, without restarting, when the reload is refused
+because two migration files claim one version: a restart would migrate
+into the same defect and leave the service down, so the running service
+keeps the previous release until a fixed package arrives. A service that
+is not running is left stopped: its next start
 runs the new release and migrates first. Removal stops and disables the
 service and leaves `/var/lib/grappa` and the `grappa` user in place. A
 Debian `purge` also deletes `/etc/grappa/grappa.env`.

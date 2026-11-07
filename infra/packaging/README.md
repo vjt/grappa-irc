@@ -290,6 +290,12 @@ cannot report what it was built from.
 A service that is not running is not started: the package migrates the
 database and leaves it stopped, and its next start runs the new release.
 
+If the release on disk ships two migrations with the same version, the
+upgrade fails WITHOUT a restart: a restart would migrate into the same
+defect and leave the service down, so the running service keeps the
+previous release. Nothing on the host fixes that; a package that fixes the
+migrations applies on its next upgrade.
+
 If a needed restart does not take, the upgrade fails (dpkg leaves the
 package half-configured), and the script prints what failed. Fix the cause,
 then:

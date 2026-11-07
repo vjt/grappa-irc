@@ -5130,9 +5130,11 @@ fails or prints nothing restarts — every node older than this slice has no
 manifest, so the first upgrade onto it is always a restart — and so do exit 3
 and any exit that is not 0. (3) HOT: `POST /admin/reload`, body and code both
 captured; 200 with `"failed":[]`, then `/healthz`, then
-`POST /admin/cic-bundle-changed`, then the seed. Anything else restarts.
-(4) RESTART: `daemon-reload`, `reset-failed`, `restart`, `/healthz`, seed. Exit
-1 is the only failure and means "a restart was needed and did not take" (R4).
+`POST /admin/cic-bundle-changed`, then the seed. Anything else restarts, but
+for `409 duplicate_migration_versions`, which exits 1 with the old node still
+serving (ruled below). (4) RESTART: `daemon-reload`, `reset-failed`,
+`restart`, `/healthz`, seed. Otherwise exit 1 means "a restart was needed and
+did not take" (R4).
 Every wait on the node is bounded — the rpc 60 s and the eval 120 s under
 `timeout(1)`, the reload 300 s, each probe 5 s — because the package manager
 holds its lock while the script runs.
@@ -5288,12 +5290,22 @@ Checked: `.gitattributes` has no `export-ignore`, so the Arch tarball drops
 no watched file. (Had it, a file one build lacks and the other has reads as
 changed; a file both lack is not compared.)
 
-### Open, for a ruling
+### Ruled: a duplicate migration version does not restart
 
-D3 has a consequence nobody ruled on. A migration that fails now fails the
-restart's `ExecStartPre`, and the unit stays down, retrying every 5 s; before
-S2 the postinst ran it with the old node still serving, and a failure left the
-package half-configured and the service up. Two hot refusals already predict
-that: `409 duplicate_migration_versions` (#1348: a restart walks into the same
-defect) and a `500` from a migration that raised in-process. Whether those
-two should exit 1 without restarting is raised with the orchestrator.
+D3 has a consequence the slice raised as an open question. A migration that
+fails now fails the restart's `ExecStartPre`, and the unit stays down,
+retrying every 5 s; before S2 the postinst ran it with the old node still
+serving, and a failure left the package half-configured and the service up.
+Two hot refusals predict that: `409 duplicate_migration_versions` and a `500`
+from a migration that raised in-process.
+
+vjt ruled for the first only (2026-11-07, option (b)): on
+`409 duplicate_migration_versions` the script exits 1 WITHOUT restarting, so
+the old node keeps serving and the upgrade fails. **This deviates from the
+letter of D2/R4, "always restart, hot when possible"**, and the reason is
+#1348: two files claiming one version is certain to defeat the restart too,
+because the restart migrates through the same files. The `500` stays a
+restart: its body cannot tell a failed migration from any other crash, and a
+restart cures those. A migration that fails after a COLD verdict still takes
+the service down in every case; only migrating before the stop (the cold-path
+slice) avoids that.

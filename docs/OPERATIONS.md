@@ -5341,18 +5341,25 @@ The steps, in order:
 3. **HOT.** `POST /admin/reload`, with the body AND the code captured
    (`curl -f` would drop the body that says why a reload was refused).
    200 with `"failed":[]` → `/healthz` → `POST /admin/cic-bundle-changed`
-   → `grappa seed-themes` → `applied HOT`. Anything else — any of the four
-   409s, a 200 with module failures, no answer, `/healthz` silent afterwards
-   → restart, naming it.
+   → `grappa seed-themes` → `applied HOT`. Anything else — three of the
+   four 409s, a 200 with module failures, a 500, no answer, `/healthz`
+   silent afterwards → restart, naming it. The fourth 409,
+   `duplicate_migration_versions`, is the exception below.
 4. **RESTART.** `daemon-reload`, `reset-failed` (a unit past its start limit
    refuses `restart` until cleared), `restart` (the unit migrates in
    `ExecStartPre`), `/healthz`, seed → `applied by RESTART: <reason>`.
 
-**Exit 1 is the ONLY failure, and it means "a restart was needed and did not
-take"** (R4): `systemctl restart` failed (a failed migration, the start
-timeout) or `/healthz` stayed silent. The script prints what failed, the
-state the unit is in and how to retry; the postinst turns it into a failed
-configuration, as a failed migrate. A failed seed stays non-fatal (#1167).
+**Exit 1 means "a restart was needed and did not take"** (R4):
+`systemctl restart` failed (a failed migration, the start timeout) or
+`/healthz` stayed silent. The script prints what failed, the state the unit
+is in and how to retry; the postinst turns it into a failed configuration,
+as a failed migrate. **One refusal exits 1 WITHOUT restarting**:
+`409 duplicate_migration_versions`, two migration files claiming one version
+(#1348). The restart migrates first and would fail on the same two files,
+leaving the service down, so the running node keeps serving the release it
+booted and the upgrade fails until a package that fixes the migrations
+arrives (vjt's ruling on issue 1112, deviating from R4's "restart on every
+refusal"). A failed seed stays non-fatal (#1167).
 `/healthz` is probed 60 times one second apart (`HEALTH_TRIES`), a
 PROVISIONAL figure: the packaged boot time is not measured. **Every wait on
 the node is bounded**, because the package manager holds its lock for as
