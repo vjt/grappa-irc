@@ -628,6 +628,27 @@ describe("EncryptedChatPane", () => {
     ).toBe(`written with another key: ${OWN}`);
   });
 
+  // issue 2589 — a body of several lines (typed with Shift+Enter, or pasted)
+  // is one message, and its line breaks reach the line, sent and received:
+  // the scrollback's line keeps them (`white-space: pre-wrap`), so it reads
+  // as one line per line break. jsdom lays nothing out, so this reads the
+  // text and the rule; the lines as painted are the e2e's
+  // (issue2589-encrypted-shift-enter.spec.ts).
+  it("a body of several lines is one line of the chat, its line breaks kept, ours and the peer's", () => {
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    setRows([
+      { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "riga uno\nriga due" },
+      { kind: "out", id: "2", at, body: "ciao\ncome va", state: "sent", reason: null },
+    ]);
+    renderPane();
+    const shown = lines();
+    expect(shown.map(line)).toEqual(["privmsg <Bob>", "privmsg <alice>"]);
+    expect(body(shown[0])).toBe("riga uno\nriga due");
+    expect(body(shown[1])).toBe("ciao\ncome va");
+    for (const row of shown) expect(row.classList.contains("scrollback-line")).toBe(true);
+    expect(ruleBody(".scrollback-line")).toMatch(/white-space:\s*pre-wrap/);
+  });
+
   // issue 2512 — the scrollback pane any query has: the window opens on the
   // unread marker, and the chat is read once its last line has been seen with
   // the page visible. The chat counts what is unread, so the marker sits

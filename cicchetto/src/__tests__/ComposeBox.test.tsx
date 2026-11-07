@@ -557,8 +557,9 @@ describe("ComposeBox", () => {
   // arms `shiftKey` on the reporter's device (still unknown, and deliberately
   // not diagnosed) can no longer eat the message. Ctrl+Enter and Cmd+Enter
   // already fell through to submit, so this makes the handling uniform rather
-  // than adding a case. Paste stays the ONE route a multi-line body takes into
-  // the box, and paste is still guarded.
+  // than adding a case. Outside an encrypted query (issue 2589, below) paste
+  // stays the ONE route a multi-line body takes into the box, and paste is
+  // still guarded.
   it("#974 — Shift+Enter submits, and says nothing about multi-line", async () => {
     const compose = await import("../lib/compose");
     vi.mocked(compose.submit).mockResolvedValue({ ok: true });
@@ -608,6 +609,112 @@ describe("ComposeBox", () => {
     }
     expect(compose.submit).toHaveBeenCalledTimes(1);
     expect(compose.setDraft).not.toHaveBeenCalled();
+  });
+
+  // issue 2589 — the ONE exception to #974, asked for by vjt knowing #974: in
+  // an encrypted query Shift+Enter is a line break. The body travels inside
+  // an E2E envelope, not as the PRIVMSG text, so a newline in it is no CRLF
+  // on the wire, and the store sends the whole draft as one message
+  // (compose.test.ts, "sends a body of several lines as the one message it
+  // is"). Every other window keeps #974, and the #974 cases above stay as
+  // they are. The real-browser proof (the newline lands in the box, the line
+  // reads as two) is the e2e, issue2589-encrypted-shift-enter.spec.ts.
+  describe("issue 2589 — Shift+Enter in an encrypted query is a line break", () => {
+    const E2E_WINDOW = "$e2e:Bob";
+    const shiftEnter = (chord: Partial<KeyboardEventInit>) =>
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+        ...chord,
+      });
+    const composer = () =>
+      screen.getByRole("textbox", { name: "compose message" }) as HTMLTextAreaElement;
+
+    afterEach(() => {
+      vi.mocked(compose_.getDraft).mockReturnValue("");
+    });
+
+    // jsdom has no default action for the key, so what is read here is that
+    // the keystroke is LEFT to the textarea (not cancelled, nothing sent); the
+    // line break it then inserts is the e2e's to see.
+    it("does not submit, and leaves the keystroke to the textarea", () => {
+      vi.mocked(compose_.getDraft).mockReturnValue("riga uno");
+      vi.mocked(compose_.submit).mockResolvedValue({ ok: true });
+      render(() => <ComposeBox networkSlug="freenode" channelName={E2E_WINDOW} />);
+      const ev = shiftEnter({});
+      composer().dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(false);
+      expect(compose_.submit).not.toHaveBeenCalled();
+    });
+
+    // A chord is not a bare Shift: Ctrl, Cmd or Alt held too keeps sending,
+    // as #974 has it, instead of falling to whatever the engine does with it.
+    it.each([
+      ["Ctrl", { ctrlKey: true }],
+      ["Cmd", { metaKey: true }],
+      ["Alt", { altKey: true }],
+    ])("%s+Shift+Enter still sends there", (_name, chord) => {
+      vi.mocked(compose_.getDraft).mockReturnValue("riga uno");
+      vi.mocked(compose_.submit).mockResolvedValue({ ok: true });
+      render(() => <ComposeBox networkSlug="freenode" channelName={E2E_WINDOW} />);
+      const ev = shiftEnter(chord);
+      composer().dispatchEvent(ev);
+      expect(compose_.submit).toHaveBeenCalledWith(
+        `freenode ${E2E_WINDOW}`,
+        "freenode",
+        E2E_WINDOW,
+      );
+      expect(ev.defaultPrevented).toBe(true);
+    });
+
+    it("Enter still sends there, the body of several lines in one submit", () => {
+      vi.mocked(compose_.getDraft).mockReturnValue("riga uno\nriga due");
+      vi.mocked(compose_.submit).mockResolvedValue({ ok: true });
+      render(() => <ComposeBox networkSlug="freenode" channelName={E2E_WINDOW} />);
+      const ev = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      composer().dispatchEvent(ev);
+      expect(compose_.submit).toHaveBeenCalledTimes(1);
+      expect(compose_.submit).toHaveBeenCalledWith(
+        `freenode ${E2E_WINDOW}`,
+        "freenode",
+        E2E_WINDOW,
+      );
+      expect(ev.defaultPrevented).toBe(true);
+    });
+
+    it("in a plain query with the same peer Shift+Enter still sends (#974)", () => {
+      vi.mocked(compose_.submit).mockResolvedValue({ ok: true });
+      render(() => <ComposeBox networkSlug="freenode" channelName="Bob" />);
+      const ev = shiftEnter({});
+      composer().dispatchEvent(ev);
+      expect(compose_.submit).toHaveBeenCalledWith("freenode Bob", "freenode", "Bob");
+      expect(ev.defaultPrevented).toBe(true);
+    });
+
+    // The arrows already read the draft's own newlines: a typed one behaves
+    // as a pasted one did, moving the caret instead of walking the history.
+    it("the arrows move between the typed lines, and walk the history only from the edges", () => {
+      vi.mocked(compose_.getDraft).mockReturnValue("riga uno\nriga due");
+      render(() => <ComposeBox networkSlug="freenode" channelName={E2E_WINDOW} />);
+      const ta = composer();
+      const second = "riga uno\n".length + 2;
+
+      ta.setSelectionRange(second, second);
+      fireEvent.keyDown(ta, { key: "ArrowUp" });
+      expect(compose_.recallPrev).not.toHaveBeenCalled();
+      ta.setSelectionRange(2, 2);
+      fireEvent.keyDown(ta, { key: "ArrowDown" });
+      expect(compose_.recallNext).not.toHaveBeenCalled();
+
+      ta.setSelectionRange(2, 2);
+      fireEvent.keyDown(ta, { key: "ArrowUp" });
+      expect(compose_.recallPrev).toHaveBeenCalledTimes(1);
+      ta.setSelectionRange(second, second);
+      fireEvent.keyDown(ta, { key: "ArrowDown" });
+      expect(compose_.recallNext).toHaveBeenCalledTimes(1);
+    });
   });
 
   // issue 2041 — an IME (Japanese, Chinese, Korean, and every other
