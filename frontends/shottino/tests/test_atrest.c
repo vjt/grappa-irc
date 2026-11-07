@@ -4,6 +4,10 @@
  * changed anywhere, a file moved to another name or role, another key, a
  * wrong passphrase. Each of those is a case here, under ASan/UBSan. */
 #include "../atrest.h"
+#include "../keyring.h"
+
+#include <limits.h>
+#include <signal.h>
 #include "test.h"
 
 static const uint8_t KEY[AR_KEY_LEN] = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11,
@@ -148,6 +152,94 @@ TEST(base64_round_trips_and_refuses_junk) {
     CHECK(!ar_unb64("ab=d", 4, &out, &out_n));
 }
 
+
+/* ── the keyring, through a fake secret-tool ──────────────────────────── */
+
+static char keyring_dir[PATH_MAX];
+
+static void keyring_use_fake(const char *mode) {
+    char cwd[PATH_MAX], tool[PATH_MAX + 32];
+    if (!getcwd(cwd, sizeof(cwd))) {
+        FAIL("getcwd");
+        return;
+    }
+    snprintf(tool, sizeof(tool), "%s/tests/fake-secret-tool", cwd);
+    if (access(tool, X_OK) != 0) FAIL("tests/fake-secret-tool is missing (run from frontends/shottino)");
+    setenv("SHOTTINO_SECRET_TOOL", tool, 1);
+    setenv("FAKE_KEYRING", keyring_dir, 1);
+    if (mode) setenv("FAKE_KEYRING_MODE", mode, 1);
+    else unsetenv("FAKE_KEYRING_MODE");
+}
+
+static bool keyring_log_has(const char *needle) {
+    char path[PATH_MAX + 8];
+    snprintf(path, sizeof(path), "%s/log", keyring_dir);
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    char line[512];
+    bool found = false;
+    while (fgets(line, sizeof(line), f))
+        if (strstr(line, needle)) found = true;
+    fclose(f);
+    return found;
+}
+
+TEST(the_keyring_stores_and_hands_back_the_key) {
+    keyring_use_fake(NULL);
+    uint8_t got[AR_KEY_LEN];
+    CHECK(!kr_lookup("idhash1", got));
+    CHECK(kr_store("idhash1", KEY));
+    memset(got, 0, sizeof(got));
+    CHECK(kr_lookup("idhash1", got));
+    CHECK(memcmp(got, KEY, AR_KEY_LEN) == 0);
+    /* Its own item: another identity has nothing there. */
+    CHECK(!kr_lookup("idhash2", got));
+    CHECK(keyring_log_has("store application shottino purpose e2e-data-key identity idhash1"));
+    CHECK(keyring_log_has("lookup application shottino purpose e2e-data-key identity idhash1"));
+}
+
+TEST(a_keyring_that_refuses_or_forgets_is_no_keyring) {
+    keyring_use_fake("fail");
+    uint8_t got[AR_KEY_LEN];
+    CHECK(!kr_store("idhash3", KEY));
+    CHECK(!kr_lookup("idhash1", got));
+    /* A store that cannot be read back is not one. */
+    keyring_use_fake("forget");
+    CHECK(!kr_store("idhash3", KEY));
+    CHECK(!kr_lookup("idhash3", got));
+    keyring_use_fake(NULL);
+}
+
+TEST(no_secret_tool_is_no_keyring) {
+    setenv("SHOTTINO_SECRET_TOOL", "/nonexistent/secret-tool", 1);
+    uint8_t got[AR_KEY_LEN];
+    CHECK(!kr_store("idhash4", KEY));
+    CHECK(!kr_lookup("idhash4", got));
+    /* On PATH, and not there. */
+    unsetenv("SHOTTINO_SECRET_TOOL");
+    char *path = getenv("PATH") ? strdup(getenv("PATH")) : NULL;
+    setenv("PATH", keyring_dir, 1);
+    CHECK(!kr_lookup("idhash4", got));
+    if (path) setenv("PATH", path, 1);
+    free(path);
+}
+
+/* What the keyring answers that is not a key is not taken for one. */
+TEST(a_keyring_answer_that_is_no_key_is_refused) {
+    keyring_use_fake(NULL);
+    char path[PATH_MAX + 80];
+    snprintf(path, sizeof(path), "%s/application.shottino.purpose.e2e-data-key.identity.junk.",
+             keyring_dir);
+    FILE *f = fopen(path, "w");
+    CHECK(f != NULL);
+    if (f) {
+        fputs("bm90IGEga2V5", f); /* "not a key" */
+        fclose(f);
+    }
+    uint8_t got[AR_KEY_LEN];
+    CHECK(!kr_lookup("junk", got));
+}
+
 int main(void) {
     RUN(a_sealed_file_opens_to_what_was_sealed);
     RUN(two_seals_of_one_body_differ);
@@ -156,5 +248,19 @@ int main(void) {
     RUN(a_sealed_line_round_trips_and_binds_its_file);
     RUN(a_wrapped_key_opens_with_its_passphrase_only);
     RUN(base64_round_trips_and_refuses_junk);
+    signal(SIGPIPE, SIG_IGN); /* as shottino's main does */
+    char tmpl[] = "/tmp/shottino-keyring-XXXXXX";
+    if (!mkdtemp(tmpl)) {
+        FAIL("mkdtemp");
+        return test_report();
+    }
+    snprintf(keyring_dir, sizeof(keyring_dir), "%s", tmpl);
+    RUN(the_keyring_stores_and_hands_back_the_key);
+    RUN(a_keyring_that_refuses_or_forgets_is_no_keyring);
+    RUN(no_secret_tool_is_no_keyring);
+    RUN(a_keyring_answer_that_is_no_key_is_refused);
+    char rm[PATH_MAX + 16];
+    snprintf(rm, sizeof(rm), "rm -rf '%s'", keyring_dir);
+    if (system(rm) != 0) FAIL("rm");
     return test_report();
 }
