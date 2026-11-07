@@ -40,8 +40,13 @@
 #                             (both paths; MUST be idempotent; non-fatal)
 #   substrate_reload          echoes /admin/reload HTTP body; nonzero=POST failed
 #   substrate_cic             cic bundle build (cold only)
-#   substrate_migrate         ecto migrate (cold only)
-#   substrate_restart         stop/start the daemon (cold only; may exit on defer)
+#   substrate_stop            stop the daemon (cold only); returns once it is GONE,
+#                             since the migrator runs next
+#   substrate_migrate         ecto migrate (cold only; the daemon is stopped).
+#                             Called as a condition, like substrate_seed, so
+#                             `set -e` does not reach inside: the migrate must
+#                             be its LAST command, whose status is the hook's
+#   substrate_start           start the daemon (cold only; may exit on defer)
 #   substrate_healthcheck     one /healthz probe; 0=200, nonzero=not yet AND
 #                             stdout carries whatever the substrate could learn
 #                             about WHY (the 503 body, the curl error) — see
@@ -330,9 +335,10 @@ _deploy_report_liveness() {
 : "${DEPLOY_SEED_LABEL:=the built-in theme gallery}"
 : "${DEPLOY_SEED_RETRY_HINT:=the grappa.seed_themes task on this substrate}"
 
-# NON-FATAL, deliberately: aborting here would leave a migrated DB and no
-# restart. Not a silent swallow either — the upsert converges, so the NEXT
-# deploy re-runs the seed and heals it.
+# NON-FATAL, deliberately: on the cold path aborting here would leave a
+# migrated DB and the daemon STOPPED, with nothing left to start it. Not a
+# silent swallow either — the upsert converges, so the NEXT deploy re-runs
+# the seed and heals it.
 _deploy_seed() {
 	[ "$DEPLOY_FEATURE_SEED" = 1 ] || return 0
 	deploy_log "seeding ${DEPLOY_SEED_LABEL} (idempotent)"
@@ -407,15 +413,27 @@ _deploy_hot() {
 # ---- cold path ------------------------------------------------------
 _deploy_cold() {
 	substrate_cic
-	substrate_migrate
+	# Stop, THEN migrate (issue 1112, D4). Migrating first left the old code
+	# serving the new schema until the stop — an order nothing chose.
+	# Why: docs/OPERATIONS.md § "The shared deploy library (infra/lib/)".
+	substrate_stop
+	if ! substrate_migrate; then
+		# The price of that order, named: the old node no longer serves
+		# through a failed migration, so this is an outage, not a red deploy
+		# (#1656). No start hint — what is on disk is the NEW code, and the
+		# schema under it is not the one it expects.
+		deploy_error "the migration failed with the daemon STOPPED — PRODUCTION IS DOWN, and nothing was started."
+		printf '[deploy]   fix the migration, then run the cold deploy again\n' >&2
+		exit 1
+	fi
 	# AFTER the migrator: a built-in whose payload needs a column added in
 	# the same deploy would crash a seed that ran ahead of the schema.
-	# BEFORE the restart: --defer-restart stops in substrate_restart, and a
+	# BEFORE the start: --defer-restart exits in substrate_start, and a
 	# staged deploy must stage a seeded DB too.
 	_deploy_seed
-	# substrate_restart may `exit 0` on --defer-restart (staged, not
+	# substrate_start may `exit 0` on --defer-restart (staged, not
 	# started) — in which case the marker is deliberately NOT written.
-	substrate_restart
+	substrate_start
 	_deploy_healthcheck_loop "$(_deploy_cold_retries)" "$(_deploy_cold_sleep)"
 }
 
