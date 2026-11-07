@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { noKeys } from "../lib/byKey";
 import { type ChannelKey, channelKey } from "../lib/channelKey";
+import { DEFAULT_CHANTYPES } from "../lib/chantypes";
 import type { SlashCommand } from "../lib/slashCommands";
 import { LIST_WINDOW_NAME, SERVER_WINDOW_NAME } from "../lib/windowKinds";
 import { BLANK_BODY_ERROR, serverAcceptsBody } from "./serverBodyPredicate";
@@ -447,7 +449,7 @@ describe("compose draft state", () => {
 describe("compose draftFramePreview (#1108)", () => {
   it("counts a plain draft that still fits, and the bytes left in the frame", async () => {
     const compose = await import("../lib/compose");
-    expect(compose.draftFramePreview("#a", "hello", 10)).toEqual({
+    expect(compose.draftFramePreview("freenode", "#a", "hello", 10)).toEqual({
       messages: 1,
       remainingBytes: 5,
     });
@@ -455,7 +457,7 @@ describe("compose draftFramePreview (#1108)", () => {
 
   it("counts the frames of a draft past the budget, with no countdown", async () => {
     const compose = await import("../lib/compose");
-    expect(compose.draftFramePreview("#a", "a".repeat(25), 10)).toEqual({
+    expect(compose.draftFramePreview("freenode", "#a", "a".repeat(25), 10)).toEqual({
       messages: 3,
       remainingBytes: null,
     });
@@ -464,10 +466,12 @@ describe("compose draftFramePreview (#1108)", () => {
   it("charges /me its CTCP ACTION envelope, like the send path does", async () => {
     const compose = await import("../lib/compose");
     // 15 bytes of text fit a 20-byte frame as a plain message…
-    expect(compose.draftFramePreview("#a", "a".repeat(15), 20)).toMatchObject({ messages: 1 });
+    expect(compose.draftFramePreview("freenode", "#a", "a".repeat(15), 20)).toMatchObject({
+      messages: 1,
+    });
     // …but `/me` puts `\x01ACTION `…`\x01` around EVERY fragment, so the same
     // text no longer does. Ten of the twenty bytes are envelope.
-    expect(compose.draftFramePreview("#a", `/me ${"a".repeat(15)}`, 20)).toMatchObject({
+    expect(compose.draftFramePreview("freenode", "#a", `/me ${"a".repeat(15)}`, 20)).toMatchObject({
       messages: 2,
     });
   });
@@ -475,20 +479,22 @@ describe("compose draftFramePreview (#1108)", () => {
   it("counts a pasted multi-line draft as the messages it fans out to", async () => {
     const compose = await import("../lib/compose");
     // Newline splitting is the client's half; a blank line yields no frame.
-    expect(compose.draftFramePreview("#a", "one\n\ntwo", 100)).toMatchObject({ messages: 2 });
+    expect(compose.draftFramePreview("freenode", "#a", "one\n\ntwo", 100)).toMatchObject({
+      messages: 2,
+    });
   });
 
   it("previews nothing for a command that is not a message", async () => {
     const compose = await import("../lib/compose");
     // `/join #x` sends no PRIVMSG, and `/msg peer …` addresses a DIFFERENT
     // target whose budget is not this window's. Neither gets a warning.
-    expect(compose.draftFramePreview("#a", "/join #x", 100)).toBeNull();
-    expect(compose.draftFramePreview("#a", "/msg gigi hello", 100)).toBeNull();
+    expect(compose.draftFramePreview("freenode", "#a", "/join #x", 100)).toBeNull();
+    expect(compose.draftFramePreview("freenode", "#a", "/msg gigi hello", 100)).toBeNull();
   });
 
   it("previews nothing when the server has published no budget", async () => {
     const compose = await import("../lib/compose");
-    expect(compose.draftFramePreview("#a", "hello", null)).toBeNull();
+    expect(compose.draftFramePreview("freenode", "#a", "hello", null)).toBeNull();
   });
 
   it("previews nothing for plain text in the server window, which refuses it", async () => {
@@ -497,15 +503,15 @@ describe("compose draftFramePreview (#1108)", () => {
     // "will send as 3 separate messages" over a message that will never be
     // sent — budgeted against a target that is not one — is worse than
     // silence.
-    expect(compose.draftFramePreview("$server", "a".repeat(25), 10)).toBeNull();
+    expect(compose.draftFramePreview("freenode", "$server", "a".repeat(25), 10)).toBeNull();
     // A slash-command there is the normal case and was never previewed.
-    expect(compose.draftFramePreview("$server", "/raw PING x", 10)).toBeNull();
+    expect(compose.draftFramePreview("freenode", "$server", "/raw PING x", 10)).toBeNull();
   });
 
   it("previews the literal text of a //-escaped draft, not the escape", async () => {
     const compose = await import("../lib/compose");
     // `//foo` sends the five bytes `/foo`, so that is what gets counted.
-    expect(compose.draftFramePreview("#a", "//foo", 10)).toEqual({
+    expect(compose.draftFramePreview("freenode", "#a", "//foo", 10)).toEqual({
       messages: 1,
       remainingBytes: 6,
     });
@@ -6384,10 +6390,15 @@ describe("#1396 — dispatch characterization over every arm", () => {
     // from the `kind` column: a row is only protection for the arm it really
     // reaches, so a mislabelled draft must not be able to report an arm as
     // covered while exercising its neighbour.
-    const reached = DISPATCH_DRAFTS.map((r) => parseSlash(r.draft).kind);
+    const reached = DISPATCH_DRAFTS.map(
+      (r) => parseSlash(r.draft, noKeys(), DEFAULT_CHANTYPES).kind,
+    );
 
-    const misparsed = DISPATCH_DRAFTS.filter((r) => parseSlash(r.draft).kind !== r.kind).map(
-      (r) => `${r.draft} => ${parseSlash(r.draft).kind} (claimed ${r.kind})`,
+    const misparsed = DISPATCH_DRAFTS.filter(
+      (r) => parseSlash(r.draft, noKeys(), DEFAULT_CHANTYPES).kind !== r.kind,
+    ).map(
+      (r) =>
+        `${r.draft} => ${parseSlash(r.draft, noKeys(), DEFAULT_CHANTYPES).kind} (claimed ${r.kind})`,
     );
 
     expect({
@@ -7829,6 +7840,6 @@ describe("compose in an encrypted window (issues 2512, 2536)", () => {
 
   it("previews no frame split: the encrypted message is sized by the engine, not as a PRIVMSG", async () => {
     const compose = await import("../lib/compose");
-    expect(compose.draftFramePreview(e2eWindow, "a".repeat(25), 10)).toBeNull();
+    expect(compose.draftFramePreview("freenode", e2eWindow, "a".repeat(25), 10)).toBeNull();
   });
 });

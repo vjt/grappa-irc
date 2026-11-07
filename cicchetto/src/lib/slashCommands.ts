@@ -1,5 +1,5 @@
-import { atKey, type ByKey, keysOf, noKeys, setKey } from "./byKey";
-import { DEFAULT_CHANTYPES, isChannelName } from "./chantypes";
+import { atKey, type ByKey, keysOf, setKey } from "./byKey";
+import { isChannelName } from "./chantypes";
 import {
   DEFAULT_NOTIFICATION_SOUND,
   isNotificationSound,
@@ -1304,14 +1304,13 @@ if (quoteHandler) {
 }
 
 // `aliases` (#385) is the user's `%{name => expansion}` map, passed in by
-// compose.ts from the aliasList store. It defaults to none (no aliases → no
-// expansion, the correct production behavior when the user has defined none),
-// which also keeps the many pure `parseSlash(input)` call sites in tests
-// working unchanged.
+// compose.ts from the aliasList store; `chantypes` (#1255) are the sigils the
+// network advertises. Both are required: a parse that forgets the network's
+// sigils would answer "channel or nick?" with a guess.
 export function parseSlash(
   input: string,
-  aliases: ByKey<string> = noKeys(),
-  chantypes: readonly string[] = DEFAULT_CHANTYPES,
+  aliases: ByKey<string>,
+  chantypes: readonly string[],
 ): SlashCommand {
   const trimmed = input.trim();
   if (trimmed === "") return { kind: "empty" };

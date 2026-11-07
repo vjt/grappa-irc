@@ -225,6 +225,7 @@ const persistDrafts = (states: Record<ChannelKey, ComposeState>): void => {
  * that will actually be POSTed rather than about the raw draft.
  */
 export const draftFramePreview = (
+  networkSlug: string,
   target: string,
   draft: string,
   budget: number | null,
@@ -233,7 +234,7 @@ export const draftFramePreview = (
   // issue 2512 — an encrypted query sends one encrypted message, sized by the
   // E2E engine (which says "too long" on the row), never split as PRIVMSGs.
   if (encryptedWindowPeer(target) !== null) return null;
-  const cmd = parseSlash(draft, aliases());
+  const cmd = parseSlash(draft, aliases(), chantypesForSlug(networkSlug));
   if (cmd.kind !== "privmsg" && cmd.kind !== "me") return null;
   if (target === SERVER_WINDOW_NAME && cmd.kind === "privmsg") return null;
   const action = cmd.kind === "me";
