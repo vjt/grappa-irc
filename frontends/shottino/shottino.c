@@ -18377,6 +18377,9 @@ static bool e2e_failed_now(const e2e_result *res, const char *tag) {
     return false;
 }
 
+static void e2e_not_ready_why_locked(const struct app *app, const struct e2e_slot *s,
+                                     const char *slug, char *out, size_t out_sz);
+
 /* One text (a line, or a /me as its CTCP ACTION) for `peer`, whose row
  * `row` the UI drew. Steps 1-5 of the section comment. */
 static void e2e_send_text(struct app *app, struct e2e_slot *s, bool usable, const char *peer,
@@ -18402,6 +18405,8 @@ static void e2e_send_text(struct app *app, struct e2e_slot *s, bool usable, cons
     }
     pthread_mutex_lock(&app->lock);
     bool unknown = s->on_unknown && !e2e_on_has(&s->on, peer);
+    char nr[MAX_LINE] = "";
+    if (!usable) e2e_not_ready_why_locked(app, s, s->slug, nr, sizeof(nr));
     pthread_mutex_unlock(&app->lock);
     if (unknown) {
         e2e_out_failed(app, s, o, "this network's encrypted state on disk cannot be read, so "
@@ -18409,8 +18414,9 @@ static void e2e_send_text(struct app *app, struct e2e_slot *s, bool usable, cons
         return;
     }
     if (!usable) {
-        e2e_out_failed(app, s, o, "this device is not ready for encrypted queries here; /e2e "
-                                  "shows why");
+        char *why = xasprintf("this device is not ready for encrypted queries here: %s", nr);
+        e2e_out_failed(app, s, o, why);
+        free(why);
         return;
     }
     if (!s->hist_loaded) e2e_hist_load(app, s);
@@ -18819,11 +18825,12 @@ static void e2e_sas_command(struct app *app, struct e2e_slot *s, const e2e_ctx *
 static void e2e_devices(struct app *app, struct e2e_slot *s) {
     e2e_sync_slot(app, s);
     pthread_mutex_lock(&app->lock);
-    bool ready = s->view.state == E2E_SLOT_READY;
+    bool ready = s->view.state == E2E_SLOT_READY && s->have_rec && s->rec.own;
+    char nr[MAX_LINE] = "";
+    if (!ready) e2e_not_ready_why_locked(app, s, s->slug, nr, sizeof(nr));
     pthread_mutex_unlock(&app->lock);
-    if (!ready || !s->have_rec || !s->rec.own) {
-        log_line(app, "/e2e devices: the identity on %s is not ready here (/e2e shows why)",
-                 s->slug);
+    if (!ready) {
+        log_line(app, "/e2e devices: the identity on %s is not ready here: %s", s->slug, nr);
         return;
     }
     struct e2e_reply r;
@@ -18892,11 +18899,13 @@ static void e2e_revoke(struct app *app, struct e2e_slot *s, const char *did) {
     for (int attempt = 0; attempt < 2; attempt++) {
         e2e_sync_slot(app, s);
         pthread_mutex_lock(&app->lock);
-        bool ready = s->view.state == E2E_SLOT_READY;
+        bool ready = s->view.state == E2E_SLOT_READY && s->have_rec && s->rec.own;
+        char nr[MAX_LINE] = "";
+        if (!ready) e2e_not_ready_why_locked(app, s, s->slug, nr, sizeof(nr));
         pthread_mutex_unlock(&app->lock);
-        if (!ready || !s->have_rec || !s->rec.own) {
-            log_line(app, "/e2e revoke %s: refused — the identity on %s is not ready here", did,
-                     s->slug);
+        if (!ready) {
+            log_line(app, "/e2e revoke %s: refused — the identity on %s is not ready here: %s",
+                     did, s->slug, nr);
             return;
         }
         if (!s->rec.master) {
@@ -19227,8 +19236,8 @@ static bool e2e_request_verb(const char *verb) {
     return false;
 }
 
-static void e2e_request_job(struct app *app, struct e2e_slot *s, bool usable, const char *verb,
-                            const char *nick, const char *arg) {
+static void e2e_request_job(struct app *app, struct e2e_slot *s, bool usable, const char *not_ready,
+                            const char *verb, const char *nick, const char *arg) {
     if (strcmp(verb, "requests") == 0) {
         e2e_requests_load(app, s, 0);
         return;
@@ -19254,10 +19263,9 @@ static void e2e_request_job(struct app *app, struct e2e_slot *s, bool usable, co
                       strcmp(verb, "opened") == 0 ||
                       (strcmp(verb, "cancel") == 0 && have && req.state == WIRE_E2E_REQ_OUTGOING);
     if (needs_line && !usable) {
-        log_line(app, "[%s/%s] --- e2e: /e2e %s %s: encrypted queries are not ready on %s (/e2e "
-                      "shows why)%s",
+        log_line(app, "[%s/%s] --- e2e: /e2e %s %s: encrypted queries are not ready on %s: %s%s",
                  s->slug, nick, strcmp(verb, "opened") == 0 ? "accept" : verb, nick, s->slug,
-                 strcmp(verb, "opened") == 0 ? " — the accepted request waits" : "");
+                 not_ready, strcmp(verb, "opened") == 0 ? " — the accepted request waits" : "");
         return;
     }
     struct e2e_reply r;
@@ -19418,8 +19426,10 @@ static void e2e_send_job(struct app *app, const struct job *job) {
     if (s && strcmp(verb, "tick") == 0) s->tick_queued = false;
     bool ready = s && s->view.state == E2E_SLOT_READY &&
                  app->server_protocol >= E2E_SEND_MIN_PROTOCOL;
-    pthread_mutex_unlock(&app->lock);
     bool usable = ready && s->have_rec && s->rec.own;
+    char nr[MAX_LINE] = "";
+    if (!usable) e2e_not_ready_why_locked(app, s, job->network, nr, sizeof(nr));
+    pthread_mutex_unlock(&app->lock);
     if (strcmp(verb, "send") == 0) {
         e2e_send_text(app, s, usable, nick, job->text ? job->text : "",
                       (unsigned long)(unsigned)job->num);
@@ -19435,14 +19445,14 @@ static void e2e_send_job(struct app *app, const struct job *job) {
     }
     if (e2e_request_verb(verb)) {
         /* A refusal, a dismissal and the read need no identity here. */
-        if (s) e2e_request_job(app, s, usable, verb, nick, job->arg2);
+        if (s) e2e_request_job(app, s, usable, nr, verb, nick, job->arg2);
         return;
     }
     if (!usable) {
         if (strcmp(verb, "on") == 0 || strcmp(verb, "resend") == 0 || strcmp(verb, "rekey") == 0 ||
             e2e_trust_verb(verb))
-            log_line(app, "/e2e %s %s: encrypted queries are not ready on %s (/e2e shows why)",
-                     verb, nick, job->network);
+            log_line(app, "/e2e %s %s: encrypted queries are not ready on %s: %s", verb, nick,
+                     job->network, nr);
         return;
     }
     if (!s->hist_loaded) e2e_hist_load(app, s);
@@ -19614,6 +19624,8 @@ static void e2e_query_command(struct app *app, const char *sub, const char *name
         if (s->on_unknown) e2e_on_set(&s->clear, peer, true);
     }
     if (s && ready && strcmp(sub, "on") == 0) e2e_on_set(&s->on, peer, true);
+    char nr[MAX_LINE] = "";
+    if (!ready) e2e_not_ready_why_locked(app, s, net, nr, sizeof(nr));
     pthread_mutex_unlock(&app->lock);
     if (own) {
         log_line(app, "/e2e %s: %s is your own nick", sub, peer);
@@ -19632,9 +19644,8 @@ static void e2e_query_command(struct app *app, const char *sub, const char *name
         return;
     }
     if (!ready) {
-        log_line(app, "/e2e %s %s: refused — encrypted queries are not ready on %s (/e2e shows "
-                      "why; sending needs server protocol v%d)",
-                 sub, peer, net, E2E_SEND_MIN_PROTOCOL);
+        log_line(app, "/e2e %s %s: refused — encrypted queries are not ready on %s: %s", sub, peer,
+                 net, nr);
         return;
     }
     if (strcmp(sub, "on") == 0)
@@ -19777,6 +19788,32 @@ static size_t e2e_status_lines(const char *slug, const struct e2e_view *v, char 
     return 0;
 }
 
+/* Why encrypted queries are not ready on `slug`, as one clause that names
+ * the fix: the server protocol only when the server really is too old,
+ * otherwise what /e2e status says about the slot. Call with app->lock
+ * held (it reads the slot's view). */
+static void e2e_not_ready_why_locked(const struct app *app, const struct e2e_slot *s,
+                                     const char *slug, char *out, size_t out_sz) {
+    if (app->server_protocol < E2E_SEND_MIN_PROTOCOL) {
+        snprintf(out, out_sz, "this grappa speaks protocol v%ld; encrypted queries need v%d",
+                 app->server_protocol, E2E_SEND_MIN_PROTOCOL);
+        return;
+    }
+    if (!s) {
+        snprintf(out, out_sz, "%s was not looked at yet (/e2e sync %s)", slug, slug);
+        return;
+    }
+    if (s->view.state == E2E_SLOT_READY) {
+        snprintf(out, out_sz, "this device's encrypted state on %s is not loaded (/e2e sync %s)",
+                 slug, slug);
+        return;
+    }
+    char lines[2][MAX_LINE];
+    e2e_status_lines(s->slug, &s->view, lines);
+    size_t skip = strlen("e2e ") + strlen(s->slug) + strlen(": ");
+    snprintf(out, out_sz, "%s", strlen(lines[0]) > skip ? lines[0] + skip : lines[0]);
+}
+
 /* /e2e verify|trust|who|alarm|devices|revoke (see "E2E: trust"): read on
  * the UI thread, run on the worker. The nick defaults to the query typed
  * in; the network is the current window's. */
@@ -19793,10 +19830,11 @@ static void e2e_trust_command(struct app *app, const char *sub, const char *rest
     bool ready = s && s->view.state == E2E_SLOT_READY &&
                  app->server_protocol >= E2E_SEND_MIN_PROTOCOL;
     bool holder = s && s->view.holder;
+    char nr[MAX_LINE] = "";
+    if (!ready) e2e_not_ready_why_locked(app, s, net, nr, sizeof(nr));
     pthread_mutex_unlock(&app->lock);
     if (!ready) {
-        log_line(app, "/e2e %s: refused — encrypted queries are not ready on %s (/e2e shows why)",
-                 sub, net);
+        log_line(app, "/e2e %s: refused — encrypted queries are not ready on %s: %s", sub, net, nr);
         return;
     }
     if (strcmp(sub, "alarm") == 0 || strcmp(sub, "alarms") == 0) {
@@ -19886,6 +19924,8 @@ static void e2e_consent_command(struct app *app, const char *sub, const char *na
     struct e2e_slot *s = e2e_slot_by_slug_locked(app, net);
     long proto = app->server_protocol;
     bool ready = s && s->view.state == E2E_SLOT_READY;
+    char nr[MAX_LINE] = "";
+    if (!ready) e2e_not_ready_why_locked(app, s, net, nr, sizeof(nr));
     pthread_mutex_unlock(&app->lock);
     if (own) {
         log_line(app, "/e2e %s: %s is your own nick", sub, peer);
@@ -19900,8 +19940,8 @@ static void e2e_consent_command(struct app *app, const char *sub, const char *na
     /* Asking and accepting carry our master key: they need an identity
      * here. Refusing and dismissing do not. */
     if (!ready && (strcmp(sub, "ask") == 0 || strcmp(sub, "accept") == 0)) {
-        log_line(app, "/e2e %s %s: refused — encrypted queries are not ready on %s (/e2e shows why)",
-                 sub, peer, net);
+        log_line(app, "/e2e %s %s: refused — encrypted queries are not ready on %s: %s", sub, peer,
+                 net, nr);
         return;
     }
     if (strcmp(sub, "ask") == 0)

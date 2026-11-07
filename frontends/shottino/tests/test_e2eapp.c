@@ -2823,6 +2823,47 @@ static struct app *send_app(const char *subject, const char *nick) {
     return app;
 }
 
+/* A refusal names what is missing and how to fix it, never a guess: an
+ * unpaired device is told to pair from cicchetto, and the server protocol
+ * is named only when the server really is too old. */
+static bool said_since(struct app *app, size_t from, const char *needle) {
+    for (size_t i = from; i < app->log_count; i++)
+        if (strstr(app->log[i], needle)) return true;
+    return false;
+}
+
+TEST(a_not_ready_refusal_says_why) {
+    fg_reset();
+    struct app *other = e2e_app("user:why-a");
+    run_job(other, JOB_E2E_INIT);
+    free_e2e_app(other);
+    struct app *app = e2e_app("user:why-b");
+    run_job(app, JOB_E2E_SYNC);
+    CHECK(view_of(app).state == E2E_SLOT_ELSEWHERE);
+    add_window_ex(app, "azzurra", "carol", true);
+    const char *verbs[] = {"/e2e on", "/e2e verify", "/e2e ask"};
+    for (size_t i = 0; i < sizeof(verbs) / sizeof(verbs[0]); i++) {
+        size_t from = app->log_count;
+        handle_command(app, verbs[i]);
+        run_jobs(app);
+        CHECK(said_since(app, from, "pair this device from cicchetto"));
+        CHECK(!said_since(app, from, "protocol v"));
+        CHECK(!said_since(app, from, "/e2e shows why"));
+    }
+    /* The protocol is named when the server really is too old. */
+    pthread_mutex_lock(&app->lock);
+    long saved = app->server_protocol;
+    app->server_protocol = 49;
+    pthread_mutex_unlock(&app->lock);
+    size_t from = app->log_count;
+    handle_command(app, "/e2e on");
+    CHECK(said_since(app, from, "this grappa speaks protocol v49; encrypted queries need v50"));
+    pthread_mutex_lock(&app->lock);
+    app->server_protocol = saved;
+    pthread_mutex_unlock(&app->lock);
+    free_e2e_app(app);
+}
+
 /* /e2e on, a typed line: KEYREQ, KEYS, then the PKMSG the peer reads; the
  * row pending until grappa took it, written down (and the state saved)
  * before it left; never anything in clear. Then a MSG once the peer
@@ -5391,6 +5432,7 @@ int main(void) {
     RUN(sync_tops_the_bundle_up);
     RUN(lost_list_is_relisted_by_the_holder);
     RUN(identity_elsewhere_is_never_touched);
+    RUN(a_not_ready_refusal_says_why);
     RUN(failed_enlist_rolls_back_and_never_deletes_others);
     RUN(a_held_device_is_not_fought);
     RUN(an_old_server_keeps_e2e_off);
