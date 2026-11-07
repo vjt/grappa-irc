@@ -4782,3 +4782,112 @@ twice. A reconnect takes the same path, which also ends the UI freeze a
 reconnect used to cause (its backfill ran synchronously on the UI
 thread). Measured: splash at 0.8 s, chat UI at 2.7 s, windows full shortly
 after.
+<!-- entry shottino-e2e-at-rest-2026-11-07 -->
+
+---
+
+## 2026-11-07 — shottino: E2E state encrypted at rest
+
+**The problem.** shottino's E2E state held a device's Olm account and
+session pickles, its trust data and pending messages
+(`e2e-<hash>/<network_id>/record.json`), and the decrypted history
+(`chats/chat-sha256-<hex>.jsonl`). All of it sat on disk in the clear, behind
+0600/0700 modes and a flock. The history is the ONLY copy of what was read:
+grappa keeps no E2E line anywhere.
+
+**The decision (the user's): the OS keyring, with a passphrase as the
+fallback.**
+
+- **One data key per identity directory.** It is 256 random bits from
+  `RAND_bytes`.
+- **AES-256-GCM through the EVP already linked**, with a fresh 12-byte
+  nonce for each seal.
+- **The AAD binds the format, the role (`record`, `chat` or `key`), and the
+  file's name relative to the identity directory.** So a file that is
+  swapped, moved to another network, or read as another role fails its tag,
+  exactly as a tampered byte does.
+- **The record is sealed whole** (`record.sealed`: magic and version,
+  nonce, ciphertext, tag).
+- **The history is sealed one line at a time** (`e1:` + base64), so an
+  append stays an append. The crash-safe order (the row first, then the
+  state that spent its key) and the repeated-id dedupe are both unchanged.
+- **A line that does not open is refused and said, and its file is NOT
+  compacted.** Compaction would delete the evidence along with the line.
+- **The pure part is its own module, `atrest.c`, with a test under
+  ASan/UBSan (`test_atrest`).**
+
+**Where the key lives.**
+
+1. **The Secret Service, through `secret-tool`.** It is run, never linked:
+   fork + execvp with no shell, the key's base64 on stdin, read back from
+   stdout, a 30 s deadline. `SHOTTINO_SECRET_TOOL` names another binary,
+   which is the test seam.
+2. **Without a keyring, `key.wrapped`.** This is the data key sealed under
+   `scrypt(passphrase, N=2^17, r=8, p=1)`.
+   - The parameters ARE format version 1, never read off the file, so a
+     planted file cannot talk the derivation down.
+   - The passphrase is asked for on the terminal before ncurses, only when
+     the identity already has E2E state, with three tries.
+   - When `/e2e init` or a pairing creates the first state with no keyring,
+     the input line asks for a new passphrase twice. It is masked as one
+     `*` per byte and kept out of the history and the log.
+
+**A key is minted ONLY where nothing is sealed yet.** `secret-tool lookup`
+exits 1 both for "no such item" and for a locked or absent daemon, so
+shottino cannot tell "empty" from "locked". Storing a fresh key after a
+failed lookup could overwrite the very key that seals the data, and that
+data would be lost for good. That is also why a keyring store counts only
+once it reads back. A suite that compiles `shottino.c` points
+`SHOTTINO_SECRET_TOOL` at nothing (`test.h`), so `make check` cannot write
+test keys into a developer's real keyring.
+
+**Locked fails closed.** A run with no key (passphrase declined or wrong,
+or sealed state and a silent keyring) reads nothing sealed and writes
+nothing:
+
+- `e2e_store_save` and `e2e_chat_append` refuse without a key, at the
+  store, not only in the app.
+- The slot shows `LOCKED`, the status window says so at start, and
+  `/e2e unlock` asks the keyring again, then the passphrase.
+
+**How `e2e_peek_modes` knows which queries are encrypted without the key.**
+It used to read `record.json`, which is now ciphertext. Every save
+therefore writes a clear index first, `encrypted-queries`: one SHA-256 of
+the folded nick per encrypted query. These are the digests the chat files
+are already named by, so anyone holding the disk learns nothing that
+`ls chats/` did not already tell them.
+
+- The index goes in the mode set as `sha256:…` entries, which
+  `e2e_on_has` matches against a nick's digest. A nick cannot contain
+  `:`, so the two kinds of entry cannot be confused.
+- It is written BEFORE the record, so a crash between the two leaves one
+  query too many encrypted, never one too few.
+- **The alternative, refusing every query send while locked, was
+  rejected.** It would have made a locked store take down the clear
+  queries, which it has nothing to do with. A sealed record without an
+  index still fails every query on the network closed, the posture an
+  unreadable `record.json` already had.
+- **Known gap:** an attacker who can write the state directory can delete
+  an index line, and a query will then go in clear while the store is
+  locked. Unlocking restores it, because the sealed record's `encrypted`
+  set is unioned back in. Someone with write access to the directory can
+  also replace `key.wrapped` with a key of their own. File modes are still
+  the only defence against that class of attacker; the seal is against
+  someone who can READ the disk (a backup, a stolen laptop, another
+  user's misconfigured permissions).
+
+**Migration** mirrors the chat-filename move of `1ac31eb73`. The first
+load with a key seals each plaintext file to a temp file, fsyncs it,
+renames it in, fsyncs the directory, and only then removes the plaintext.
+A crash between the rename and the removal leaves both files: the load
+reads the sealed record and removes the stale one, and it appends a
+plaintext chat into the sealed one (the dedupe drops the repeats). Without
+a keyring, the boot asks for a new passphrase for that first seal.
+
+**Not tested against a real Secret Service.** `secret-tool` is not
+installed on the machine this was built on. Every keyring path runs
+against `tests/fake-secret-tool`, which follows `secret-tool`'s documented
+CLI (`store --label=… attr value…` reading the secret on stdin, `lookup
+attr value…` printing it, exit 1 for nothing found). The interaction with a
+real daemon (an unlock prompt, KWallet's Secret Service bridge) is
+unverified.

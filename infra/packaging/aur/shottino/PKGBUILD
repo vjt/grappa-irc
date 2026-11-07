@@ -52,7 +52,10 @@ depends=('ncurses' 'openssl' 'ca-certificates')
 # C binary and must not drag the bouncer's build stack onto a client-only host,
 # which is the entire point of #1447.
 makedepends=('rust')
-optdepends=('grappa: the bouncer this client talks to, if you run one locally')
+# libsecret: secret-tool, run (never linked) to keep the E2E data key in
+# the Secret Service; without it the key lives under a passphrase.
+optdepends=('grappa: the bouncer this client talks to, if you run one locally'
+            'libsecret: keep the encrypted-query key in the OS keyring (secret-tool)')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${_grappaver}.tar.gz")
 # SKIP until the vX.Y.Z tag exists: ../regen.sh replaces this with the real
 # hash via updpkgsums, exactly as it does for the bouncer recipe.

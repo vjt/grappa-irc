@@ -122,6 +122,11 @@ overrides:
     # Debian relation syntax: parenthesised, `<<` for strictly-less.
     replaces:
       - grappa (<< 1.3.0~)
+    # secret-tool: where the E2E data key lives (the Secret Service). Run,
+    # never linked, so a machine without it still installs and runs the
+    # client; the key then lives under a passphrase instead.
+    recommends:
+      - libsecret-tools
   rpm:
     depends:
       - ncurses-libs

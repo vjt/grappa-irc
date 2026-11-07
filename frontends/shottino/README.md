@@ -1100,6 +1100,61 @@ enums are ordinal; and **every event kind cicchetto narrows must be known to
 narrowed and dropped on purpose, so the unrecognised-kind path keeps meaning
 "the server grew something nobody here has looked at".
 
+## Encrypted queries at rest
+
+What shottino keeps of your encrypted queries lives under
+`~/.local/share/shottino/e2e-<identity>/` (or `$XDG_DATA_HOME/shottino/…`):
+this device's E2E account and sessions, the trust it placed in others, and
+the decrypted history, which is the ONLY copy there is — grappa keeps no
+encrypted line anywhere. None of it is on disk in the clear. Each identity
+has one random 256-bit data key, and every file is sealed with AES-256-GCM
+under it. The authenticated data names the file's role and its path inside
+the identity directory, so a file that is changed, cut short, or moved to
+another name or another network does not open.
+
+| File | What it is |
+| --- | --- |
+| `<network id>/record.sealed` | the account, sessions, trust and pending messages, sealed as one file |
+| `<network id>/chats/chat-sha256-<hex>.sealed` | one chat's history, one sealed line per message, so a new message is an append |
+| `<network id>/encrypted-queries` | in the clear: which queries are encrypted, as the SHA-256 of the folded nick (the same digest the chat files are named by) |
+| `key.wrapped` | only without a keyring: the data key, sealed under your passphrase |
+| `<network id>/lock` | held while a shottino uses that network's device |
+
+**Where the key lives.** In the OS keyring, through the Secret Service
+(GNOME Keyring, recent KWallet), by running `secret-tool` from
+`libsecret-tools` (Debian) or `libsecret` (Arch). shottino does not link
+libsecret; without the command there is simply no keyring. The item carries
+`application shottino purpose e2e-data-key identity <identity>`.
+`SHOTTINO_SECRET_TOOL` names another binary in place of the one on `PATH`.
+
+**Without a keyring, a passphrase.** The key is wrapped with scrypt
+(N=2¹⁷, r=8, p=1) into `key.wrapped`. shottino asks for the passphrase on the
+terminal when it starts, before the screen is taken, and only when this
+identity already has encrypted state. You get three tries. The first time
+encrypted state is made from inside the client (`/e2e init`, a pairing),
+with no keyring, the input line asks for a NEW passphrase twice. It shows
+`*` for each byte, and keeps the passphrase out of the history.
+
+**Locked.** A run that cannot get the key starts LOCKED: the passphrase was
+declined or wrong, or the state is sealed and the keyring did not answer.
+The status window says so at start, and so does `/e2e status`. Nothing
+encrypted is read or written while locked. A query that was encrypted
+stays encrypted (shottino knows which ones from the clear index), so a line
+typed there fails instead of going out in clear. `/e2e unlock` asks the
+keyring again, then the passphrase, and reads every network's state once it
+has the key.
+
+**Upgrading.** Files from a version that wrote them in the clear
+(`record.json`, `chat-…jsonl`) are sealed by the first run that has a key,
+then removed. Each one is written, fsync'd, renamed into place, and only
+then is the old file deleted, so a crash at any point leaves a state that
+still loads. Without a keyring, that first run asks you to choose a
+passphrase.
+
+`/e2e status` opens with where the key lives: `in the OS keyring`, `under
+your passphrase`, `LOCKED`, or `none yet`. The key and the passphrase are
+wiped from memory after use and at exit, and neither is ever logged.
+
 ## Tests
 
 ```sh

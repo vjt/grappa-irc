@@ -56,6 +56,10 @@ dependencies. It carries the WIDE `libncursesw6` (NOT the `libncurses6`
 ERTS wants — Debian ships them separately; Fedora folds both SONAMEs into
 `ncurses-libs`), OpenSSL, and `ca-certificates`, because the client calls
 `SSL_CTX_set_default_verify_paths()` and verifies with `SSL_VERIFY_PEER`.
+`secret-tool` is an optional runtime dependency (`recommends: libsecret-tools`
+on Debian, `optdepends` `libsecret` on Arch). The client runs it, without
+linking libsecret, to keep the key that seals its E2E state in the OS
+keyring. Without it, that key lives under a passphrase instead.
 
 It keeps **its own version line** — `frontends/shottino/version.h`, read by
 `version.sh shottino` — rather than the grappa tag. Two artifacts, two
