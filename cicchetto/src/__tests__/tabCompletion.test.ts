@@ -191,4 +191,22 @@ describe("tabCompleteStep — commands (issue 2584)", () => {
     commands.mockReturnValueOnce([]);
     expect(step("/zz", 3, null)).toBeNull();
   });
+
+  it("a command cycle handed to a door that offers no commands completes nothing", () => {
+    vi.mocked(membersByChannel).mockReturnValue({ [k]: [{ nick: "whitney", modes: [] }] });
+    const first = step("/wh", 3, null);
+    expect(first?.cycle.command).toBe(true);
+    // The menu turned off between two Tabs: the cycle's prefix (`wh`) must
+    // not go on to complete the member `whitney` over the command.
+    const next = tabCompleteStep({
+      key: k,
+      input: first?.newInput ?? "",
+      cursor: first?.newCursor ?? 0,
+      forward: true,
+      cycle: first?.cycle ?? null,
+      addressee: true,
+      commands: null,
+    });
+    expect(next).toBeNull();
+  });
 });
