@@ -255,6 +255,58 @@ EOF
     [[ "$output" == *"cold"* ]]
 }
 
+@test "update: removes the old container BEFORE it migrates, starts the new one AFTER the seed (issue 1112)" {
+    # D4 covers this door too (vjt's ruling, F5 (a)): it used to migrate with
+    # the old container still serving. #867's GRAPPA_AUTO_MIGRATE=0 stays —
+    # the host-side migrate is still the only one.
+    seed_env_file
+    export FAKE_CONTAINER_EXISTS=1
+    run "$DEPLOY" update
+    [ "$status" -eq 0 ]
+
+    pull_line=$(grep -n "pull ghcr.io/vjt/grappa:latest" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    rm_line=$(grep -n "rm -f grappa" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    mig_line=$(grep -n "eval Grappa.Release.migrate()" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    seed_line=$(grep -n "eval Grappa.Release.seed_themes()" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    run_line=$(grep -nE "run -d .*--name grappa" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    [ -n "$pull_line" ]
+    [ -n "$rm_line" ]
+    [ -n "$mig_line" ]
+    [ -n "$seed_line" ]
+    [ -n "$run_line" ]
+    [ "$pull_line" -lt "$rm_line" ]
+    [ "$rm_line" -lt "$mig_line" ]
+    [ "$mig_line" -lt "$seed_line" ]
+    [ "$seed_line" -lt "$run_line" ]
+    grep -qE "run -d .*-e GRAPPA_AUTO_MIGRATE=0" "$ARGV_LOG"
+}
+
+@test "an older consumer sourcing the newer lib dies before it stops or migrates anything (issue 1112)" {
+    # get.sh mirrors the lib and this consumer as two downloads, so a box can
+    # hold the new lib beside the consumer from before the restart hook was
+    # split. That consumer defines substrate_restart and nothing the new cold
+    # path calls first; an undefined hook is 127 under `set -e`, and it must
+    # come before every hook that touches the box, or an old consumer would
+    # migrate with the node up and then die without starting it.
+    run bash -c '
+        set -euo pipefail
+        log="'"$BATS_TEST_TMPDIR"'/old-consumer.log"
+        for h in pull read_marker write_marker commit_exists changed_files \
+                 preflight build reload cic migrate seed restart healthcheck \
+                 service_alive done_banner; do
+            eval "substrate_$h() { echo $h >> \"\$log\"; }"
+        done
+        DEPLOY_FEATURE_FORCE_FLAGS=1
+        . "'"$BOX"'/infra/lib/deploy_common.sh"
+        deploy_main --force-cold
+    '
+    [ "$status" -eq 127 ]
+    grep -qx "cic" "$BATS_TEST_TMPDIR/old-consumer.log"
+    refute grep -qx "restart" "$BATS_TEST_TMPDIR/old-consumer.log"
+    refute grep -qx "migrate" "$BATS_TEST_TMPDIR/old-consumer.log"
+    refute grep -qx "seed" "$BATS_TEST_TMPDIR/old-consumer.log"
+}
+
 @test "update: refuses when the box was never installed (no env file)" {
     run "$DEPLOY" update
     [ "$status" -ne 0 ]

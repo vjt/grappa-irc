@@ -273,27 +273,38 @@ run_deploy() {
     [[ "$output" == *".env"* ]]
 }
 
-@test "cold path order: build -> cicchetto-build -> deps.get -> migrate -> up -> healthcheck" {
+@test "cold path order: build -> deps.get -> cicchetto-build -> stop -> migrate -> seed -> up" {
+    # Issue 1112 (D4): the migration runs with the old container STOPPED,
+    # and the recreate starts the new one after the seed. It used to migrate
+    # first, so the old code served the new schema until the recreate. The
+    # deps sync moved into the build, ahead of the stop, so the seconds it
+    # takes are not downtime.
     export PREFLIGHT_RC=3
     commit_upstream lib/base.txt > /dev/null
 
     run_deploy
     [ "$status" -eq 0 ]
-    grep -q "build grappa" "$ARGV_LOG"
-    grep -q "cicchetto-build" "$ARGV_LOG"
-    grep -q "deps.get" "$ARGV_LOG"
-    grep -q "grappa.migrate" "$ARGV_LOG"
-    grep -q "up -d --force-recreate" "$ARGV_LOG"
 
     build_line=$(grep -n "build grappa" "$ARGV_LOG" | head -1 | cut -d: -f1)
-    cic_line=$(grep -n "cicchetto-build" "$ARGV_LOG" | head -1 | cut -d: -f1)
     deps_line=$(grep -n "deps.get" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    cic_line=$(grep -n "cicchetto-build" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    stop_line=$(grep -n "stop grappa" "$ARGV_LOG" | head -1 | cut -d: -f1)
     mig_line=$(grep -n "grappa.migrate" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    seed_line=$(grep -n "grappa.seed_themes" "$ARGV_LOG" | head -1 | cut -d: -f1)
     up_line=$(grep -n "up -d --force-recreate" "$ARGV_LOG" | head -1 | cut -d: -f1)
-    [ "$build_line" -lt "$cic_line" ]
-    [ "$cic_line" -lt "$deps_line" ]
-    [ "$deps_line" -lt "$mig_line" ]
-    [ "$mig_line" -lt "$up_line" ]
+    [ -n "$build_line" ]
+    [ -n "$deps_line" ]
+    [ -n "$cic_line" ]
+    [ -n "$stop_line" ]
+    [ -n "$mig_line" ]
+    [ -n "$seed_line" ]
+    [ -n "$up_line" ]
+    [ "$build_line" -lt "$deps_line" ]
+    [ "$deps_line" -lt "$cic_line" ]
+    [ "$cic_line" -lt "$stop_line" ]
+    [ "$stop_line" -lt "$mig_line" ]
+    [ "$mig_line" -lt "$seed_line" ]
+    [ "$seed_line" -lt "$up_line" ]
 }
 
 @test "cold path installs hex in a mix run of its own, before deps.get" {

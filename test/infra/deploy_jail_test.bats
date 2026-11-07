@@ -340,6 +340,38 @@ EOF
     [ "$rcd_line" -lt "$start_line" ]
 }
 
+# --- issue 1112 (D4): the cold path migrates with the old node STOPPED --------
+#
+# The order used to be migrate → stop → start, inherited rather than chosen:
+# for the seconds between the migration and the stop the OLD code served the
+# NEW schema. vjt's ruling (F1/F3 (a)): the lib orders stop → migrate → seed →
+# start, always.
+
+@test "issue 1112: the cold path stops the node and waits for the BEAM to exit BEFORE it migrates" {
+    export PREFLIGHT_RC=3
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy
+    [ "$status" -eq 0 ]
+
+    stop_line=$(grep -n "service grappa stop" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    wait_line=$(grep -n "jail_beam_wait.sh wait-stopped" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    mig_line=$(grep -n "Grappa.Release.migrate()" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    seed_line=$(grep -n "seed_themes" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    start_line=$(grep -n "service grappa start" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    [ -n "$stop_line" ]
+    [ -n "$wait_line" ]
+    [ -n "$mig_line" ]
+    [ -n "$seed_line" ]
+    [ -n "$start_line" ]
+    # The wait, not just the stop: rc.subr's stop returning is not the BEAM
+    # gone, and a migrator next to a live BEAM is the state this removes.
+    [ "$stop_line" -lt "$wait_line" ]
+    [ "$wait_line" -lt "$mig_line" ]
+    [ "$mig_line" -lt "$seed_line" ]
+    [ "$seed_line" -lt "$start_line" ]
+}
+
 # --- #646: the source-alias wrapper is reconciled on EVERY deploy ------------
 #
 # Shipping #610 pulled a new privilege wrapper and never installed it: the
@@ -474,7 +506,7 @@ EOF
     [ "$seed_line" -gt "$reload_line" ]
 }
 
-@test "#440 cold: the seed runs AFTER the migration and BEFORE the stop" {
+@test "#440 cold: the seed runs AFTER the migration and BEFORE the start" {
     export PREFLIGHT_RC=3
     commit_upstream lib/base.txt > /dev/null
 
@@ -483,32 +515,37 @@ EOF
 
     mig_line=$(grep -n "Grappa.Release.migrate()" "$ARGV_LOG" | head -1 | cut -d: -f1)
     seed_line=$(grep -n "seed_themes" "$ARGV_LOG" | head -1 | cut -d: -f1)
-    stop_line=$(grep -n "service grappa stop" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    start_line=$(grep -n "service grappa start" "$ARGV_LOG" | head -1 | cut -d: -f1)
     [ -n "$mig_line" ]
     [ -n "$seed_line" ]
-    [ -n "$stop_line" ]
+    [ -n "$start_line" ]
     # Schema first: a built-in needing a column added in the same deploy
     # would crash a seed that ran ahead of the migrator.
     [ "$mig_line" -lt "$seed_line" ]
-    [ "$seed_line" -lt "$stop_line" ]
+    [ "$seed_line" -lt "$start_line" ]
 }
 
-@test "#440: --defer-restart still stages a SEEDED database" {
-    # The staged path stops the BEAM and exits before start/healthcheck/
-    # marker. If the seed sat after the restart hook it would never run on
-    # a deferred deploy, and the one-bounce window would boot a stale
-    # gallery with nothing left to fix it.
+@test "#440: --defer-restart still stages a MIGRATED, SEEDED database, and starts nothing" {
+    # The staged path exits before start/healthcheck/marker, and the host's
+    # `bastille restart` boots whatever is on disk. If the migration or the
+    # seed sat after the start hook they would never run on a deferred
+    # deploy, and the one-bounce window would boot new code on the old schema
+    # (or a stale gallery) with nothing left to fix it. Since issue 1112 both
+    # run with the node stopped, so the stop comes first even here.
     commit_upstream lib/base.txt > /dev/null
 
     run_deploy --force-cold --defer-restart
     [ "$status" -eq 0 ]
-    grep -q "seed_themes" "$ARGV_LOG"
+    refute grep -q "service grappa start" "$ARGV_LOG"
 
-    seed_line=$(grep -n "seed_themes" "$ARGV_LOG" | head -1 | cut -d: -f1)
     stop_line=$(grep -n "service grappa stop" "$ARGV_LOG" | head -1 | cut -d: -f1)
-    [ -n "$seed_line" ]
+    mig_line=$(grep -n "Grappa.Release.migrate()" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    seed_line=$(grep -n "seed_themes" "$ARGV_LOG" | head -1 | cut -d: -f1)
     [ -n "$stop_line" ]
-    [ "$seed_line" -lt "$stop_line" ]
+    [ -n "$mig_line" ]
+    [ -n "$seed_line" ]
+    [ "$stop_line" -lt "$mig_line" ]
+    [ "$mig_line" -lt "$seed_line" ]
 }
 
 @test "#440: a failing seed warns loudly, names the gallery, and does NOT fail the deploy" {
