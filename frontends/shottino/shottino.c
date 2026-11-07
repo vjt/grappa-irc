@@ -19885,12 +19885,7 @@ static void e2e_secret_cancel(struct app *app) {
 /* The key is here now: every network reads its slot again. */
 static void e2e_unlocked(struct app *app, const char *how) {
     log_line(app, "--- e2e: unlocked — %s", how);
-    char slugs[MAX_NETWORKS][MAX_SLUG];
-    pthread_mutex_lock(&app->lock);
-    size_t n = app->network_count;
-    for (size_t i = 0; i < n; i++) snprintf(slugs[i], sizeof(slugs[i]), "%s", app->networks[i].slug);
-    pthread_mutex_unlock(&app->lock);
-    for (size_t i = 0; i < n; i++) e2e_enqueue(app, JOB_E2E_SYNC, slugs[i]);
+    e2e_enqueue(app, JOB_E2E_SYNC, ""); /* "": every network */
 }
 
 /* The command the key was asked for, or else the re-read an unlock owes. */
