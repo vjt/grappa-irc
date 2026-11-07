@@ -6278,3 +6278,125 @@ bool e2e_sas_view_of(const e2e_ctx *c, e2e_sas_host *h, const char *nick, e2e_sa
     free(master);
     return true;
 }
+
+/* ── Order challenges (orders.ts SendLog, client.ts answer) ──────────── */
+
+void e2e_line_sha256(const char *body, size_t len, char out[65]) {
+    uint8_t digest[32];
+    if (vz_sha256((const uint8_t *)body, len, digest) != 0) abort();
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < 32; i++) {
+        out[2 * i] = hex[digest[i] >> 4];
+        out[2 * i + 1] = hex[digest[i] & 15];
+    }
+    out[64] = 0;
+}
+
+static void sent_line_free(e2e_sent_line *s) {
+    free(s->slug);
+    free(s->target);
+    free(s->nonce);
+}
+
+static void send_log_drop(e2e_send_log *l, size_t i) {
+    sent_line_free(&l->v[i]);
+    memmove(l->v + i, l->v + i + 1, (l->n - i - 1) * sizeof(*l->v));
+    l->n--;
+}
+
+/* Lines past the window confirm nothing: they go at the next record or
+ * check (orders.ts prune). */
+static void send_log_prune(e2e_send_log *l, int64_t at) {
+    for (size_t i = l->n; i > 0; i--)
+        if (at - l->v[i - 1].at > E2E_SENT_WINDOW_MS) send_log_drop(l, i - 1);
+}
+
+void e2e_send_log_record(e2e_send_log *l, const char *slug, const char *target, const char *body,
+                         size_t len, int64_t at_ms) {
+    send_log_prune(l, at_ms);
+    if (l->n >= E2E_SENT_LOG_MAX) send_log_drop(l, 0);
+    l->v = xrealloc(l->v, (l->n + 1) * sizeof(*l->v));
+    e2e_sent_line *s = &l->v[l->n++];
+    s->slug = xstrdup(slug);
+    s->target = xstrdup(target);
+    e2e_line_sha256(body, len, s->sha256);
+    s->at = at_ms;
+    s->nonce = NULL;
+}
+
+void e2e_send_log_forget(e2e_send_log *l, const char *slug, const char *target, const char *body,
+                         size_t len, int64_t at_ms) {
+    char sha[65];
+    e2e_line_sha256(body, len, sha);
+    for (size_t i = l->n; i > 0; i--) {
+        const e2e_sent_line *s = &l->v[i - 1];
+        if (s->at == at_ms && strcmp(s->sha256, sha) == 0 && strcmp(s->slug, slug) == 0 &&
+            strcmp(s->target, target) == 0)
+            send_log_drop(l, i - 1);
+    }
+}
+
+void e2e_send_log_free(e2e_send_log *l) {
+    for (size_t i = 0; i < l->n; i++) sent_line_free(&l->v[i]);
+    free(l->v);
+    l->v = NULL;
+    l->n = 0;
+}
+
+static bool order_channel_name(const char *name, const char *chantypes) {
+    return name[0] && chantypes && strchr(chantypes, name[0]) != NULL;
+}
+
+e2e_order_verdict e2e_order_check(e2e_send_log *l, const e2e_inner *chal, const char *challenger,
+                                  bool verified, const e2e_order_scope *scope, int64_t at_ms) {
+    if (!verified) return E2E_ORDER_UNVERIFIED;
+    if (!scope->network || !scope->network[0]) return E2E_ORDER_UNNAMED_NETWORK;
+    if (strcmp(chal->network, scope->network) != 0) return E2E_ORDER_OTHER_NETWORK;
+    /* Safe integers only reach here (e2e_inner_parse), so the product fits. */
+    if (at_ms >= chal->expires_at * 1000) return E2E_ORDER_EXPIRED;
+    if (!order_channel_name(chal->channel, scope->chantypes) &&
+        !e2e_nick_eq(chal->channel, challenger))
+        return E2E_ORDER_PM_TO_ANOTHER;
+    send_log_prune(l, at_ms);
+    e2e_sent_line *fresh = NULL;
+    for (size_t i = 0; i < l->n; i++) {
+        e2e_sent_line *s = &l->v[i];
+        if (s->at > at_ms || strcmp(s->sha256, chal->line_sha256) != 0 ||
+            strcmp(s->slug, scope->slug) != 0 || !e2e_nick_eq(s->target, chal->channel))
+            continue;
+        if (s->nonce && strcmp(s->nonce, chal->nonce) == 0) return E2E_ORDER_CONFIRMED;
+        if (!s->nonce && !fresh) fresh = s;
+    }
+    if (!fresh) return E2E_ORDER_NOT_SENT;
+    fresh->nonce = xstrdup(chal->nonce);
+    return E2E_ORDER_CONFIRMED;
+}
+
+const char *e2e_order_verdict_name(e2e_order_verdict v) {
+    switch (v) {
+    case E2E_ORDER_CONFIRMED: return "confirmed";
+    case E2E_ORDER_UNVERIFIED: return "unverified";
+    case E2E_ORDER_UNNAMED_NETWORK: return "unnamed-network";
+    case E2E_ORDER_OTHER_NETWORK: return "other-network";
+    case E2E_ORDER_EXPIRED: return "expired";
+    case E2E_ORDER_PM_TO_ANOTHER: return "pm-to-another";
+    case E2E_ORDER_NOT_SENT: return "not-sent";
+    }
+    return "?";
+}
+
+const char *e2e_order_verdict_text(e2e_order_verdict v) {
+    switch (v) {
+    case E2E_ORDER_CONFIRMED: return "confirmed";
+    case E2E_ORDER_UNVERIFIED: return "their key is not verified here";
+    case E2E_ORDER_UNNAMED_NETWORK:
+        return "this network has sent no 005 NETWORK= name to match it against";
+    case E2E_ORDER_OTHER_NETWORK: return "it names another network";
+    case E2E_ORDER_EXPIRED: return "it has expired by this device's clock";
+    case E2E_ORDER_PM_TO_ANOTHER:
+        return "it names a private message to someone other than the bot asking";
+    case E2E_ORDER_NOT_SENT:
+        return "this device sent no such line there in the last 30 s, or it already confirmed it";
+    }
+    return "?";
+}

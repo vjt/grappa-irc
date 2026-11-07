@@ -1125,4 +1125,86 @@ bool e2e_sas_view_of(const e2e_ctx *c, e2e_sas_host *h, const char *nick, e2e_sa
  * which). `out` is the caller's to free. */
 bool e2e_own_revoked(const e2e_record *r, const char *ed25519, e2e_own *out, bool *unlisted);
 
+/* ── Order challenges (orders.ts, client.ts answer; docs/plans §10) ──────
+ *
+ * A bot that takes orders from a pinned peer does not trust a plaintext
+ * line on its own: inside the Olm session it sends the peer a CHAL naming
+ * the line (its network's 005 NETWORK=, the channel, the SHA-256 of the
+ * PRIVMSG body), and the peer's client ACKs only a line THIS device sent,
+ * there, shortly before. The send log is that "this device sent": the
+ * PRIVMSGs it sent, as hashes (never the body: a NickServ password goes
+ * through the same door), for E2E_SENT_WINDOW_MS, in memory only — a
+ * restart inside the window fails closed, as a reload does in cic.
+ *
+ * Written where the client SENDS, never from the server's echo: grappa
+ * echoes every client's lines, and a line another client sent is exactly
+ * what the ACK must not confirm. One sent line confirms one challenge:
+ * the first CHAL that matches binds it to its nonce, the same nonce again
+ * is answered again, another nonce for the same line is not. */
+#define E2E_SENT_WINDOW_MS 30000
+/* The tag of an ACK: it has no row to mark. */
+#define E2E_ORDER_TAG "order"
+/* Lines held at most; the oldest goes first past it (a /exec burst). */
+#define E2E_SENT_LOG_MAX 512
+
+typedef struct {
+    char *slug, *target;
+    char sha256[65];
+    int64_t at; /* ms, this device's clock */
+    char *nonce; /* the CHAL it confirmed; NULL none yet */
+} e2e_sent_line;
+
+typedef struct {
+    e2e_sent_line *v;
+    size_t n;
+} e2e_send_log;
+
+/* Lowercase hex SHA-256 of `len` bytes: what a CHAL's line_sha256 holds
+ * (the PRIVMSG body's UTF-8 bytes, exactly as sent). */
+void e2e_line_sha256(const char *body, size_t len, char out[65]);
+/* This device is sending `body` to `target` (a channel, or a nick) on the
+ * network `slug` at `at_ms`: BEFORE the send, so no CHAL can come first. */
+void e2e_send_log_record(e2e_send_log *l, const char *slug, const char *target, const char *body,
+                         size_t len, int64_t at_ms);
+/* That send failed: it never went out, so nothing may confirm it. */
+void e2e_send_log_forget(e2e_send_log *l, const char *slug, const char *target, const char *body,
+                         size_t len, int64_t at_ms);
+void e2e_send_log_free(e2e_send_log *l);
+
+/* What a challenge was found to be (orders.ts OrderVerdict, plus
+ * client.ts's `unverified`): only CONFIRMED is answered. */
+typedef enum {
+    E2E_ORDER_CONFIRMED,
+    E2E_ORDER_UNVERIFIED,
+    E2E_ORDER_UNNAMED_NETWORK,
+    E2E_ORDER_OTHER_NETWORK,
+    E2E_ORDER_EXPIRED,
+    E2E_ORDER_PM_TO_ANOTHER,
+    E2E_ORDER_NOT_SENT
+} e2e_order_verdict;
+
+/* The network a challenge arrived on: its slug, its 005 NETWORK= (NULL or
+ * empty: none advertised), its channel prefixes. Nicks and channels fold
+ * ASCII (e2e_nick_eq), as grappa's canonical_target. */
+typedef struct {
+    const char *slug;
+    const char *network;
+    const char *chantypes;
+} e2e_order_scope;
+
+/* Whether this device sent the line `chal` (a parsed E2E_INNER_CHAL) names,
+ * to the scope's network, in the last E2E_SENT_WINDOW_MS before `at_ms`,
+ * the challenge still live by our clock, from `challenger` whose master
+ * is `verified` (pinned by hand or a SAS: an unverified master's devices
+ * authorise nothing). The network name must match EXACTLY (no unescaping
+ * of \xHH); a private message must have gone to the bot asking, so a
+ * CHAL's channel is then the challenger's own nick. A confirmed line is
+ * bound to the CHAL's nonce. */
+e2e_order_verdict e2e_order_check(e2e_send_log *l, const e2e_inner *chal, const char *challenger,
+                                  bool verified, const e2e_order_scope *scope, int64_t at_ms);
+/* "unverified", "unnamed-network", … (cic's CheckFailure names). */
+const char *e2e_order_verdict_name(e2e_order_verdict v);
+/* Why it goes unanswered, as cic's console and rail say it. */
+const char *e2e_order_verdict_text(e2e_order_verdict v);
+
 #endif /* SHOTTINO_E2E_H */

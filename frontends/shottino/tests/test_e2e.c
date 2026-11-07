@@ -2613,6 +2613,144 @@ TEST(trust_rows_read_as_cic_reads_them) {
     CHECK(!e2e_row_from_json(bad, strlen(bad), &r));
 }
 
+/* ── order challenges (orders.ts SendLog) ────────────────────────────── */
+
+/* A CHAL as the bot builds it, parsed as the drain parses it. */
+static bool chal_of(e2e_inner *in, const char *network, const char *channel, const char *body,
+                    const char *nonce, int64_t expires_at) {
+    char sha[65];
+    e2e_line_sha256(body, strlen(body), sha);
+    char *t = e2e_inner_chal(network, channel, "vjt!v@host", sha, nonce, expires_at);
+    bool ok = e2e_inner_parse(t, strlen(t), in);
+    free(t);
+    return ok;
+}
+
+TEST(line_sha256_is_lowercase_hex_of_the_bytes) {
+    char out[65];
+    e2e_line_sha256("abc", 3, out);
+    CHECK_STR(out, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    /* The bytes as sent: a CTCP ACTION hashes with its \x01s, UTF-8 raw. */
+    char act[65], plain[65];
+    e2e_line_sha256("\001ACTION waves\001", 14, act);
+    e2e_line_sha256("ACTION waves", 12, plain);
+    CHECK(strcmp(act, plain) != 0);
+}
+
+TEST(order_check_confirms_only_what_this_device_sent) {
+    const int64_t t0 = 1700000000000;           /* ms */
+    const int64_t live = 1700000000 + 60;       /* the CHAL's expires_at, s */
+    const e2e_order_scope sc = {"azzurra", "Azzurra", "#&+!"};
+    e2e_send_log log = {0};
+    e2e_send_log_record(&log, "azzurra", "#Grappa", "!op vjt", 7, t0);
+    e2e_inner in;
+
+    /* Exactly that line, that channel (folded), that network: confirmed —
+     * once per nonce; the same CHAL again is answered again; another
+     * nonce for the same line is not. */
+    CHECK(chal_of(&in, "Azzurra", "#grappa", "!op vjt", "n1", live));
+    CHECK(e2e_order_check(&log, &in, "bot", true, &sc, t0 + 1000) == E2E_ORDER_CONFIRMED);
+    CHECK(e2e_order_check(&log, &in, "bot", true, &sc, t0 + 2000) == E2E_ORDER_CONFIRMED);
+    e2e_inner_free(&in);
+    CHECK(chal_of(&in, "Azzurra", "#grappa", "!op vjt", "n2", live));
+    CHECK(e2e_order_check(&log, &in, "bot", true, &sc, t0 + 2000) == E2E_ORDER_NOT_SENT);
+    e2e_inner_free(&in);
+
+    /* Unverified master: never, whatever was sent (checked first). */
+    e2e_send_log_record(&log, "azzurra", "#grappa", "!kick x", 7, t0);
+    CHECK(chal_of(&in, "Azzurra", "#grappa", "!kick x", "n3", live));
+    CHECK(e2e_order_check(&log, &in, "bot", false, &sc, t0 + 1) == E2E_ORDER_UNVERIFIED);
+    /* Another channel, another network slug: not sent. */
+    const e2e_order_scope other_slug = {"libera", "Azzurra", "#&+!"};
+    CHECK(e2e_order_check(&log, &in, "bot", true, &other_slug, t0 + 1) == E2E_ORDER_NOT_SENT);
+    e2e_inner_free(&in);
+    CHECK(chal_of(&in, "Azzurra", "#other", "!kick x", "n3", live));
+    CHECK(e2e_order_check(&log, &in, "bot", true, &sc, t0 + 1) == E2E_ORDER_NOT_SENT);
+    e2e_inner_free(&in);
+    /* The NETWORK= token, exactly: case and escapes are not folded. */
+    CHECK(chal_of(&in, "azzurra", "#grappa", "!kick x", "n3", live));
+    CHECK(e2e_order_check(&log, &in, "bot", true, &sc, t0 + 1) == E2E_ORDER_OTHER_NETWORK);
+    e2e_inner_free(&in);
+    CHECK(chal_of(&in, "Azzurra", "#grappa", "!kick x", "n3", live));
+    const e2e_order_scope unnamed = {"azzurra", "", "#&+!"};
+    CHECK(e2e_order_check(&log, &in, "bot", true, &unnamed, t0 + 1) == E2E_ORDER_UNNAMED_NETWORK);
+    const e2e_order_scope null_net = {"azzurra", NULL, "#&+!"};
+    CHECK(e2e_order_check(&log, &in, "bot", true, &null_net, t0 + 1) == E2E_ORDER_UNNAMED_NETWORK);
+    /* Outside the window by our clock: forgotten. */
+    CHECK(e2e_order_check(&log, &in, "bot", true, &sc, t0 + E2E_SENT_WINDOW_MS + 1) ==
+          E2E_ORDER_NOT_SENT);
+    e2e_inner_free(&in);
+
+    /* Past expires_at by our clock: expired, the line still there. */
+    e2e_send_log_record(&log, "azzurra", "#grappa", "!voice y", 8, t0 + 40000);
+    CHECK(chal_of(&in, "Azzurra", "#grappa", "!voice y", "n4", (t0 + 40000) / 1000));
+    CHECK(e2e_order_check(&log, &in, "bot", true, &sc, t0 + 40000) == E2E_ORDER_EXPIRED);
+    e2e_inner_free(&in);
+    CHECK(chal_of(&in, "Azzurra", "#grappa", "!voice y", "n4", (t0 + 40000) / 1000 + 1));
+    CHECK(e2e_order_check(&log, &in, "bot", true, &sc, t0 + 40000) == E2E_ORDER_CONFIRMED);
+    e2e_inner_free(&in);
+
+    /* A line sent after the CHAL's moment confirms nothing before it. */
+    e2e_send_log_record(&log, "azzurra", "#grappa", "!later", 6, t0 + 50000);
+    CHECK(chal_of(&in, "Azzurra", "#grappa", "!later", "n5", live + 100));
+    CHECK(e2e_order_check(&log, &in, "bot", true, &sc, t0 + 49000) == E2E_ORDER_NOT_SENT);
+    e2e_inner_free(&in);
+
+    e2e_send_log_free(&log);
+}
+
+TEST(order_check_reads_a_private_message_to_the_bot_only) {
+    const int64_t t0 = 1700000000000;
+    const e2e_order_scope sc = {"azzurra", "Azzurra", "#&"};
+    e2e_send_log log = {0};
+    e2e_send_log_record(&log, "azzurra", "OrderBot", "status", 6, t0);
+    e2e_send_log_record(&log, "azzurra", "alice", "status", 6, t0);
+    e2e_inner in;
+    /* To the bot asking: its own nick (folded) is the CHAL's channel. */
+    CHECK(chal_of(&in, "Azzurra", "orderbot", "status", "p1", 1700000060));
+    CHECK(e2e_order_check(&log, &in, "OrderBot", true, &sc, t0 + 5) == E2E_ORDER_CONFIRMED);
+    e2e_inner_free(&in);
+    /* A PM to somebody else is never the bot's to confirm. */
+    CHECK(chal_of(&in, "Azzurra", "alice", "status", "p2", 1700000060));
+    CHECK(e2e_order_check(&log, &in, "OrderBot", true, &sc, t0 + 5) == E2E_ORDER_PM_TO_ANOTHER);
+    e2e_inner_free(&in);
+    /* With "+" outside this network's CHANTYPES, +chan is a nick. */
+    e2e_send_log_record(&log, "azzurra", "+modeless", "x", 1, t0);
+    CHECK(chal_of(&in, "Azzurra", "+modeless", "x", "p3", 1700000060));
+    CHECK(e2e_order_check(&log, &in, "OrderBot", true, &sc, t0 + 5) == E2E_ORDER_PM_TO_ANOTHER);
+    e2e_inner_free(&in);
+    e2e_send_log_free(&log);
+}
+
+TEST(send_log_forgets_a_failed_send_and_never_the_echo) {
+    const int64_t t0 = 1700000000000;
+    const e2e_order_scope sc = {"azzurra", "Azzurra", "#"};
+    e2e_send_log log = {0};
+    /* Sent, then the POST failed: forgotten, so it confirms nothing. */
+    e2e_send_log_record(&log, "azzurra", "#c", "!op me", 6, t0);
+    e2e_send_log_forget(&log, "azzurra", "#c", "!op me", 6, t0);
+    CHECK_LONG(log.n, 0);
+    e2e_inner in;
+    CHECK(chal_of(&in, "Azzurra", "#c", "!op me", "f1", 1700000060));
+    CHECK(e2e_order_check(&log, &in, "bot", true, &sc, t0 + 5) == E2E_ORDER_NOT_SENT);
+    e2e_inner_free(&in);
+    /* The bound: the oldest goes first. */
+    for (int i = 0; i < E2E_SENT_LOG_MAX + 3; i++) {
+        char b[16];
+        snprintf(b, sizeof(b), "l%d", i);
+        e2e_send_log_record(&log, "azzurra", "#c", b, strlen(b), t0);
+    }
+    CHECK_LONG(log.n, E2E_SENT_LOG_MAX);
+    CHECK(chal_of(&in, "Azzurra", "#c", "l0", "f2", 1700000060));
+    CHECK(e2e_order_check(&log, &in, "bot", true, &sc, t0 + 5) == E2E_ORDER_NOT_SENT);
+    e2e_inner_free(&in);
+    CHECK(chal_of(&in, "Azzurra", "#c", "l514", "f3", 1700000060));
+    CHECK(e2e_order_check(&log, &in, "bot", true, &sc, t0 + 5) == E2E_ORDER_CONFIRMED);
+    e2e_inner_free(&in);
+    CHECK_STR(e2e_order_verdict_name(E2E_ORDER_PM_TO_ANOTHER), "pm-to-another");
+    e2e_send_log_free(&log);
+}
+
 int main(void) {
     RUN(did_vectors);
     RUN(fb_vectors_are_cicchettos);
@@ -2655,5 +2793,9 @@ int main(void) {
     RUN(sas_ends_when_the_nick_is_repinned);
     RUN(own_revoked_signs_the_rest_one_up);
     RUN(trust_rows_read_as_cic_reads_them);
+    RUN(line_sha256_is_lowercase_hex_of_the_bytes);
+    RUN(order_check_confirms_only_what_this_device_sent);
+    RUN(order_check_reads_a_private_message_to_the_bot_only);
+    RUN(send_log_forgets_a_failed_send_and_never_the_echo);
     return test_report();
 }
