@@ -916,7 +916,7 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
-  describe "whois_bundle/3" do
+  describe "whois_bundle" do
     test "projects the accum map into the wire shape with kind: injected" do
       accum = %WhoisAccum{
         user: "alice_u",
@@ -931,7 +931,7 @@ defmodule Grappa.Session.WireTest do
         channels: ["@#italia", "+#grappa"]
       }
 
-      payload = Wire.whois_bundle("azzurra", "alice", accum, nil)
+      payload = Wire.whois_bundle("azzurra", "alice", accum, nil, nil, nil)
 
       assert payload == %{
                kind: :whois_bundle,
@@ -973,12 +973,16 @@ defmodule Grappa.Session.WireTest do
                secure_cipher: nil,
                certfp: nil,
                extra_lines: nil,
-               avatar_url: nil
+               avatar_url: nil,
+               # Issue 2597 — always present, null unless the caller computed
+               # an answer for an entitled requester.
+               grappa_client_ips: nil,
+               grappa_client_last_known_ip: nil
              }
     end
 
     test "tolerates an empty accum (no numerics fired before 318) — every field nil; is_operator false" do
-      payload = Wire.whois_bundle("azzurra", "ghost", %WhoisAccum{}, nil)
+      payload = Wire.whois_bundle("azzurra", "ghost", %WhoisAccum{}, nil, nil, nil)
 
       assert payload == %{
                kind: :whois_bundle,
@@ -1016,7 +1020,11 @@ defmodule Grappa.Session.WireTest do
                secure_cipher: nil,
                certfp: nil,
                extra_lines: nil,
-               avatar_url: nil
+               avatar_url: nil,
+               # Issue 2597 — always present, null unless the caller computed
+               # an answer for an entitled requester.
+               grappa_client_ips: nil,
+               grappa_client_last_known_ip: nil
              }
     end
 
@@ -1031,7 +1039,7 @@ defmodule Grappa.Session.WireTest do
         extra_lines: [%{numeric: 320, text: "is a volunteer staff member"}]
       }
 
-      payload = Wire.whois_bundle("libera", "alice", accum, nil)
+      payload = Wire.whois_bundle("libera", "alice", accum, nil, nil, nil)
 
       assert payload.account == "AliceAccount"
       assert payload.secure == true
@@ -1046,8 +1054,22 @@ defmodule Grappa.Session.WireTest do
     # verbatim. :rail is the query-rail auto-fetch; anything else defaults to
     # :user (proven by the two exact-map tests above, which prime no :source).
     test "projects the accum :source (rail auto-fetch) into the wire shape" do
-      payload = Wire.whois_bundle("azzurra", "alice", %WhoisAccum{source: :rail}, nil)
+      payload = Wire.whois_bundle("azzurra", "alice", %WhoisAccum{source: :rail}, nil, nil, nil)
       assert payload.source == :rail
+    end
+
+    # Issue 2597 — the two client-address fields are the caller's values,
+    # placed verbatim. `requester_admin` is routing metadata and stays off the
+    # wire, as the two exact-map tests above also show.
+    test "places the grappa client addresses the caller computed, and never the requester's admin flag" do
+      live = Wire.whois_bundle("azzurra", "alice", %WhoisAccum{requester_admin: true}, nil, ["203.0.113.9"], nil)
+      assert live.grappa_client_ips == ["203.0.113.9"]
+      assert live.grappa_client_last_known_ip == nil
+      refute Map.has_key?(live, :requester_admin)
+
+      gone = Wire.whois_bundle("azzurra", "alice", %WhoisAccum{}, nil, [], "198.51.100.7")
+      assert gone.grappa_client_ips == []
+      assert gone.grappa_client_last_known_ip == "198.51.100.7"
     end
   end
 
@@ -1325,7 +1347,7 @@ defmodule Grappa.Session.WireTest do
         Wire.kicked("net", "#c", "by", "r"),
         Wire.away_confirmed("net", :present),
         Wire.mentions_bundle("net", "from", "to", nil, [], false),
-        Wire.whois_bundle("net", "alice", %WhoisAccum{}, nil),
+        Wire.whois_bundle("net", "alice", %WhoisAccum{}, nil, nil, nil),
         Wire.peer_away("net", "alice", "Gone fishing"),
         Wire.invite_ack("net", "#italia", "alice"),
         Wire.lusers_bundle("net", %LusersAccum{}),

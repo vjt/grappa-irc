@@ -926,7 +926,7 @@ export type NotifyEntry = NotifyWireEntry;
 // this mirror.
 export type MentionsBundleMessage = SessionWireMentionsBundleMessage;
 
-// C2 — WHOIS bundle payload. Mirrors `Grappa.Session.Wire.whois_bundle/3`.
+// C2 — WHOIS bundle payload. Mirrors `Grappa.Session.Wire.whois_bundle`.
 // Aggregated reply to `/whois <nick>` issued by the operator. Every
 // upstream-derived field is nullable: a stripped-down upstream (or a
 // non-existent target) may emit only 318 RPL_ENDOFWHOIS, in which case

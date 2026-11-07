@@ -5035,7 +5035,7 @@ defmodule Grappa.Session.EventRouter do
   # (server emits no localized string; the trailing IS the upstream text,
   # which for these codes is inherently free-form and network-defined).
   # Prepends for O(1) fold (mirror of who_fold/replies); the wire projection
-  # `SessionWire.whois_bundle/3` reverses so cic sees arrival order.
+  # `SessionWire.whois_bundle` reverses so cic sees arrival order.
   # The reverse itself lives in `Grappa.Session.Wire.reverse_extra_lines/1`
   # (`lib/grappa/session/wire.ex`) — named here because #673 was filed as an
   # order bug on the strength of grepping only this file and `userTopic.ts`.

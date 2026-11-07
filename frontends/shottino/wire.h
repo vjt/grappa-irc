@@ -53,15 +53,16 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v60 -> v61 (issue 2584): `GET` / `POST
- * /me/settings/command-counts`, per-account counts of the command verbs a
- * client sent, which cicchetto uses to order its `/` menu. No event and no
- * change to anything shottino reads; a terminal that wants the same order
- * would post its own verbs, which is a feature, not a catch-up.
+ * Last read, v61 -> v62 (issue 2597): two keys on `whois_bundle`,
+ * `grappa_client_ips` and `grappa_client_last_known_ip` — where the grappa
+ * user holding the WHOIS target connects from, null unless the asker's
+ * session holds umode o/O or the asking client speaks for a grappa admin.
+ * shottino reads the bundle key by key and reads neither, so a terminal
+ * shows no address; showing one would be a feature, not a catch-up.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 61
+#define WIRE_PROTOCOL_VERSION 62
 
 #include <stdbool.h>
 #include <stddef.h>

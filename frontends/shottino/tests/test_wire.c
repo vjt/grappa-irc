@@ -328,7 +328,10 @@ TEST(whois_bundle) {
         "\"is_agent\":false,\"is_java\":false,\"umodes\":\"+iw\",\"away_message\":null,"
         "\"actually_host\":null,\"actually_ip\":null,\"account\":\"bob\",\"secure\":true,"
         "\"secure_cipher\":\"TLSv1.3\",\"certfp\":null,"
-        "\"extra_lines\":[{\"numeric\":320,\"text\":\"is a bot\"}]}",
+        "\"extra_lines\":[{\"numeric\":320,\"text\":\"is a bot\"}],"
+        /* v62 (issue 2597): where bob's grappa clients connect from, which an
+         * oper or a grappa admin is sent. shottino reads neither key. */
+        "\"grappa_client_ips\":[\"203.0.113.9\"],\"grappa_client_last_known_ip\":null}",
         &ev, &ok);
     CHECK(ok);
     CHECK(ev.kind == WIRE_WHOIS_BUNDLE);
@@ -364,7 +367,8 @@ TEST(whois_minimal_and_rejects) {
         "\"is_services_admin\":false,\"is_helper\":false,\"is_chanop\":false,"
         "\"is_agent\":false,\"is_java\":false,\"umodes\":null,\"away_message\":null,"
         "\"actually_host\":null,\"actually_ip\":null,\"account\":null,\"secure\":false,"
-        "\"secure_cipher\":null,\"certfp\":null,\"extra_lines\":null}",
+        "\"secure_cipher\":null,\"certfp\":null,\"extra_lines\":null,"
+        "\"grappa_client_ips\":[],\"grappa_client_last_known_ip\":\"198.51.100.7\"}",
         &ev, &ok);
     CHECK(ok);
     CHECK(!ev.u.whois.has_channels);

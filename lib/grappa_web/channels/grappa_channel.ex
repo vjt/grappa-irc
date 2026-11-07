@@ -108,6 +108,9 @@ defmodule GrappaWeb.GrappaChannel do
     folds 311/312/313/317/319 into a bundle and broadcasts it on `Topic.user/1`
     when 318 RPL_ENDOFWHOIS arrives. Per spec #2: bundle is ephemeral — NOT
     persisted in scrollback. cic renders inline via the `whois_bundle` event.
+    Asked by a grappa admin (`AdminChannel.admin_socket?/1`) or from a session
+    holding umode `o`/`O`, the bundle also names where the grappa user holding
+    the nick connects from (issue 2597); otherwise those fields are `null`.
 
   - `"umode"` — user-mode change on own nick. Payload: `%{"network_id" => id,
     "modes" => modes}`.
@@ -202,7 +205,7 @@ defmodule GrappaWeb.GrappaChannel do
   alias Grappa.ServerSettings.Wire, as: ServerSettingsWire
   alias Grappa.Session.Wire, as: SessionWire
   alias Grappa.Visitors.Reaper
-  alias GrappaWeb.{BodyLimit, Subject}
+  alias GrappaWeb.{AdminChannel, BodyLimit, Subject}
 
   require Logger
 
@@ -1052,6 +1055,11 @@ defmodule GrappaWeb.GrappaChannel do
   # only consumer). Routes via `dispatch_subject_verb/3`, which accepts
   # BOTH `{:user, _}` and `{:visitor, _}` subjects and rejects only on
   # `:no_session`.
+  # Issue 2597 — the asker's admin-ness travels with the request, read
+  # here off the socket through the console's own predicate
+  # (`AdminChannel.admin_socket?/1`): a bundle answered to a grappa admin
+  # carries the client addresses of the grappa user holding the nick, as
+  # one answered to an IRC operator does.
   # #198 — two-arg `/whois <server> <nick>` (RFC 2812 §3.6.2 target-server
   # routing). This clause matches ONLY when "server" is a non-null binary;
   # cic sends `server: null` for the single-arg + bare forms, so a null
@@ -1066,11 +1074,12 @@ defmodule GrappaWeb.GrappaChannel do
        )
        when is_integer(network_id) and is_binary(nick) and is_binary(server) do
     origin = normalize_whois_origin(params)
+    admin? = AdminChannel.admin_socket?(socket)
 
     dispatch_subject_verb(
       socket,
       fn -> validate_args(nick: nick, server: server) end,
-      fn subject -> Session.send_whois(subject, network_id, nick, server, origin, reply_to(socket)) end
+      fn subject -> Session.send_whois(subject, network_id, nick, server, origin, reply_to(socket), admin?) end
     )
   end
 
@@ -1081,11 +1090,12 @@ defmodule GrappaWeb.GrappaChannel do
        )
        when is_integer(network_id) and is_binary(nick) do
     origin = normalize_whois_origin(params)
+    admin? = AdminChannel.admin_socket?(socket)
 
     dispatch_subject_verb(
       socket,
       fn -> validate_args(nick: nick) end,
-      fn subject -> Session.send_whois(subject, network_id, nick, nil, origin, reply_to(socket)) end
+      fn subject -> Session.send_whois(subject, network_id, nick, nil, origin, reply_to(socket), admin?) end
     )
   end
 

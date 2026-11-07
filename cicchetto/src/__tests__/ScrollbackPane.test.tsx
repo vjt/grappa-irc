@@ -7343,6 +7343,8 @@ describe("ScrollbackPane", () => {
       certfp: null,
       extra_lines: null,
       avatar_url: null,
+      grappa_client_ips: null,
+      grappa_client_last_known_ip: null,
     };
 
     afterEach(() => {

@@ -6,7 +6,7 @@ defmodule Grappa.Session.WhoisAccum do
   `handle_call({:send_whois, ...})` the instant the command is on the wire,
   folded by `EventRouter` as each WHOIS-leg numeric arrives, and drained on
   318 RPL_ENDOFWHOIS into `{:whois_bundle, target, accum, reply_to}`, which
-  `Grappa.Session.Wire.whois_bundle/3` projects to the client payload.
+  `Grappa.Session.Wire.whois_bundle` projects to the client payload.
 
   ## Why a struct and not a `map()` (or a `@type` over a map)
 
@@ -43,6 +43,11 @@ defmodule Grappa.Session.WhoisAccum do
 
   `target_display`, `reply_to` and `__primed_at_ms` are routing/lifecycle
   metadata, not wire fields — the drain and the S10 stale sweep read them.
+  So is `requester_admin` (issue 2597): whether the client the bundle goes
+  back to speaks for a grappa admin. It is primed with `reply_to` and
+  replaced with it, so it always describes the client that receives the
+  bundle; the drain reads it to decide whether the bundle names the client
+  addresses of the grappa user holding the nick.
   """
 
   alias Grappa.Session
@@ -52,6 +57,7 @@ defmodule Grappa.Session.WhoisAccum do
           target_display: String.t() | nil,
           source: :user | :rail,
           reply_to: Session.reply_to(),
+          requester_admin: boolean(),
           __primed_at_ms: integer() | nil,
           user: String.t() | nil,
           host: String.t() | nil,
@@ -85,6 +91,7 @@ defmodule Grappa.Session.WhoisAccum do
   defstruct target_display: nil,
             source: :user,
             reply_to: nil,
+            requester_admin: false,
             __primed_at_ms: nil,
             user: nil,
             host: nil,

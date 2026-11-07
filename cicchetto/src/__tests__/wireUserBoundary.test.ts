@@ -550,6 +550,22 @@ const DECLARED_TOLERANCES = {
       quote: "additive: absent (pre-M3b server) tolerates same as null",
       why: "M3b — the peer-avatar URL landed after the bundle did, so a server predating it omits the key entirely and a bundle otherwise perfect must not be thrown away over a field that means `no avatar` when missing. Only ABSENCE is tolerated: a PRESENT non-string still drops the bundle, same strictness as every sibling nullable here.",
     },
+    // Issue 2597 — the two client-address fields, one reason for both, and
+    // `avatar_url`'s shape above.
+    grappa_client_ips: {
+      ops: ["drop"],
+      covers: "absent",
+      file: "userTopic",
+      quote: "additive: absent (pre-62 server) reads as null",
+      why: "issue 2597, protocol 62 — a pre-62 server omits the key, and null is exactly what it means: no address to show. Strict would oblige `MIN_SERVER_PROTOCOL_VERSION` to 62 (serverProtocol.ts's OBLIGATION) and throw every WHOIS away against an older BEAM, for one row of the card. Only ABSENCE is tolerated: a PRESENT non-array, or a non-string element, still drops the bundle, as `channels` does.",
+    },
+    grappa_client_last_known_ip: {
+      ops: ["drop"],
+      covers: "absent",
+      file: "userTopic",
+      quote: "additive: absent (pre-62 server) reads as null",
+      why: "issue 2597 — the sibling of `grappa_client_ips`, same guard, same reason. A PRESENT non-string still drops the bundle.",
+    },
     // #1393d — `extra_lines` was the single `covers: "none"` row in this
     // whole table: the `!== undefined` guard shipped with the field
     // (05551231) and no in-tree sentence ever said why an absent key should

@@ -5661,7 +5661,7 @@ defmodule Grappa.Session.EventRouterTest do
       end_msg = msg({:numeric, 318}, ["vjt", "alice", "End of /WHOIS list"])
       {:cont, _, [{:whois_bundle, target, accum, _}]} = EventRouter.route(end_msg, final_state)
 
-      payload = Wire.whois_bundle("test-net", target, accum, nil)
+      payload = Wire.whois_bundle("test-net", target, accum, nil, nil, nil)
 
       assert payload.kind == :whois_bundle
       assert payload.using_ssl == true
@@ -5686,7 +5686,7 @@ defmodule Grappa.Session.EventRouterTest do
     end
 
     test "wire payload defaults all P-0a booleans to false when accum is empty" do
-      payload = Wire.whois_bundle("test-net", "ghost", %WhoisAccum{}, nil)
+      payload = Wire.whois_bundle("test-net", "ghost", %WhoisAccum{}, nil, nil, nil)
 
       assert payload.using_ssl == false
       assert payload.is_registered == false
@@ -6150,7 +6150,7 @@ defmodule Grappa.Session.EventRouterTest do
       end_msg = msg({:numeric, 318}, ["vjt", "alice", "End of /WHOIS list"], {:server, "irc.libera.chat"})
 
       {:cont, _, [{:whois_bundle, target, accum, _}]} = EventRouter.route(end_msg, final_state)
-      payload = Wire.whois_bundle("libera", target, accum, nil)
+      payload = Wire.whois_bundle("libera", target, accum, nil, nil, nil)
 
       assert payload.account == "AliceAccount"
       assert payload.secure == true
@@ -6227,12 +6227,12 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       # Assert the OBSERVABLE order cic sees — the accumulator prepends LIFO
-      # for O(1) fold, and SessionWire.whois_bundle/3 reverses on emit. Drain
+      # for O(1) fold, and SessionWire.whois_bundle reverses on emit. Drain
       # the bundle at 318 and check the wire payload is in arrival order.
       m318 = msg({:numeric, 318}, ["vjt", "alice", "End of /WHOIS list"], {:server, "irc.libera.chat"})
       {:cont, _, [{:whois_bundle, "alice", accum, _}]} = EventRouter.route(m318, s2)
 
-      payload = Wire.whois_bundle("libera", "alice", accum, nil)
+      payload = Wire.whois_bundle("libera", "alice", accum, nil, nil, nil)
 
       assert payload.extra_lines == [
                %{numeric: 617, text: "first line"},

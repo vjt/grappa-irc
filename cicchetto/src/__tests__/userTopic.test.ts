@@ -2966,6 +2966,9 @@ describe("narrowUserEvent — #1393d strict arms", () => {
     secure_cipher: null,
     certfp: null,
     extra_lines: null,
+    // Issue 2597 (protocol 62) — on every bundle a current server emits.
+    grappa_client_ips: null,
+    grappa_client_last_known_ip: null,
     ...overrides,
   });
 
@@ -3086,6 +3089,50 @@ describe("narrowUserEvent — #1393d strict arms", () => {
     it("still rejects a non-array extra_lines (unchanged)", async () => {
       const { narrowUserEvent } = await import("../lib/userTopic");
       expect(narrowUserEvent(whois({ extra_lines: "nope" }))).toBeNull();
+    });
+  });
+
+  // Issue 2597 (protocol 62) — where the grappa user holding the target
+  // connects from, for an IRC operator or a grappa admin. Additive and
+  // absence-tolerant (a pre-62 server omits both keys, and null is what it
+  // means); anything PRESENT is held to the type.
+  describe("whois_bundle grappa_client_* (issue 2597)", () => {
+    it("carries the live addresses through", async () => {
+      const { narrowUserEvent } = await import("../lib/userTopic");
+      expect(
+        narrowUserEvent(whois({ grappa_client_ips: ["2001:db8::7", "203.0.113.9"] })),
+      ).toMatchObject({ grappa_client_ips: ["2001:db8::7", "203.0.113.9"], grappa_client_last_known_ip: null });
+    });
+
+    it("carries [] beside the last known address through", async () => {
+      const { narrowUserEvent } = await import("../lib/userTopic");
+      expect(
+        narrowUserEvent(whois({ grappa_client_ips: [], grappa_client_last_known_ip: "198.51.100.7" })),
+      ).toMatchObject({ grappa_client_ips: [], grappa_client_last_known_ip: "198.51.100.7" });
+    });
+
+    it("reads both keys ABSENT (a pre-62 server) as null", async () => {
+      const { narrowUserEvent } = await import("../lib/userTopic");
+      const { grappa_client_ips: _ips, grappa_client_last_known_ip: _last, ...without } = whois();
+      expect(narrowUserEvent(without)).toMatchObject({
+        grappa_client_ips: null,
+        grappa_client_last_known_ip: null,
+      });
+    });
+
+    it("rejects a non-string address", async () => {
+      const { narrowUserEvent } = await import("../lib/userTopic");
+      expect(narrowUserEvent(whois({ grappa_client_ips: ["203.0.113.9", 42] }))).toBeNull();
+    });
+
+    it("rejects a non-array grappa_client_ips", async () => {
+      const { narrowUserEvent } = await import("../lib/userTopic");
+      expect(narrowUserEvent(whois({ grappa_client_ips: "203.0.113.9" }))).toBeNull();
+    });
+
+    it("rejects a non-string last known address", async () => {
+      const { narrowUserEvent } = await import("../lib/userTopic");
+      expect(narrowUserEvent(whois({ grappa_client_last_known_ip: 42 }))).toBeNull();
     });
   });
 
