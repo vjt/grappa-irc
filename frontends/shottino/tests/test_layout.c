@@ -1244,6 +1244,45 @@ TEST(an_encrypted_rows_link_is_never_fetched_on_view) {
     free(app);
 }
 
+/* The layout log (SHOTTINO_LAYOUT_LOG) is a debug dump of what each row
+ * says: it is created 0600 — and made so when it already existed — and an
+ * encrypted row's words never reach it, a placeholder in their place. */
+TEST(the_layout_log_is_private_and_holds_no_encrypted_words) {
+    char path[] = "/tmp/shottino-layout-XXXXXX";
+    int fd = mkstemp(path);
+    CHECK(fd >= 0);
+    if (fd >= 0) {
+        fchmod(fd, 0644);
+        close(fd);
+    }
+    FILE *f = layout_log_open(path);
+    CHECK(f != NULL);
+    struct stat st;
+    CHECK(stat(path, &st) == 0 && (st.st_mode & 0777) == 0600);
+    if (f) fclose(f);
+    unlink(path);
+    f = layout_log_open(path); /* fresh */
+    CHECK(f != NULL);
+    CHECK(stat(path, &st) == 0 && (st.st_mode & 0777) == 0600);
+    if (f) fclose(f);
+    unlink(path);
+
+    struct app *app = test_app();
+    CHECK(app != NULL);
+    if (!app) return;
+    add_test_network(app, "azzurra", "ohv", "@%+");
+    add_test_window(app, "azzurra", "alice");
+    seed_log(app, "[azzurra/alice] 09:00 <alice> in clear");
+    log_writing_e2e = true;
+    seed_log(app, "[azzurra/alice] 09:01 <alice> the secret");
+    log_writing_e2e = false;
+    CHECK_STR(layout_log_text(app, 0), "[azzurra/alice] 09:00 <alice> in clear");
+    CHECK(strstr(layout_log_text(app, 1), "secret") == NULL);
+    CHECK(strstr(layout_log_text(app, 1), "encrypted") != NULL);
+    for (size_t i = 0; i < app->log_count; i++) free(app->log[i]);
+    free(app);
+}
+
 /* More link rows on screen than slots is an ordinary screen once
  * links earn cards (a feed bot, one link a line). The pool recycles
  * only slots NOT on screen this frame; when every slot is, the row
@@ -1967,6 +2006,7 @@ int main(void) {
     RUN(a_page_link_earns_a_card_once_it_has_something_to_say);
     RUN(a_screen_of_links_does_not_thrash_the_media_pool);
     RUN(an_encrypted_rows_link_is_never_fetched_on_view);
+    RUN(the_layout_log_is_private_and_holds_no_encrypted_words);
     RUN(audio_is_clickable_but_not_drawn);
     RUN(the_sidebar_records_a_row_for_every_window);
     RUN(the_sidebar_folds_every_network_but_the_focused_one);

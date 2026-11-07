@@ -10131,6 +10131,18 @@ static int media_extra_rows_locked(const struct inline_media *m) {
     return 0;
 }
 
+/* The layout log at `path`, truncated, 0600 — made so when the file
+ * already existed: it holds the start of every row on screen, which is
+ * private messages, and fopen's 0666-under-umask is world-readable on the
+ * usual umask. NULL when it cannot be opened. */
+static FILE *layout_log_open(const char *path) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) return NULL;
+    FILE *f = fchmod(fd, 0600) == 0 ? fdopen(fd, "w") : NULL;
+    if (!f) close(fd);
+    return f;
+}
+
 /* Open the layout log once, if SHOTTINO_LAYOUT_LOG is set. Returns NULL
  * when the diagnostic is off, which is the normal case — the call sites
  * check for NULL and cost nothing. */
@@ -10140,9 +10152,16 @@ static FILE *layout_log(void) {
     if (!tried) {
         tried = true;
         const char *path = getenv("SHOTTINO_LAYOUT_LOG");
-        if (path && *path) f = fopen(path, "w");
+        if (path && *path) f = layout_log_open(path);
     }
     return f;
+}
+
+/* What the layout log shows of row `i`: its text, or for an encrypted row
+ * a placeholder — the dump measures heights, and an E2E row's words exist
+ * in clear nowhere but the screen. Caller holds app->lock. */
+static const char *layout_log_text(const struct app *app, size_t i) {
+    return app->log_e2e[i] ? "(encrypted row — not logged)" : app->log[i];
 }
 
 /* One-character marker for a non-joined window state. A joined window (or
@@ -10955,7 +10974,7 @@ static void draw_chat_pane(struct app *app, struct pane *pane, int x, int y, int
                            : app->media[mi].state == IM_FAILED   ? " FAILED"
                                                                  : " IDLE")
                         : "",
-                    app->log[view.rows[k]]);
+                    layout_log_text(app, view.rows[k]));
         }
     }
     int skip_lines = view.skip_lines;

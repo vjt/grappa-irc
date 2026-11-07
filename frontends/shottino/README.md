@@ -1327,7 +1327,9 @@ SHOTTINO_LAYOUT_LOG=/tmp/shottino-layout.log shottino …
 
 Reproduce the problem, quit, and read the last frame. Each row shows its
 reserved height (`h`), its text-only height (`text`), and any attached
-image with its decode state. The `END` line shows the scroll budget:
+image with its decode state. The file is created `0600`, since it holds the
+start of every row on screen; a row of an encrypted query is logged as
+`(encrypted row — not logged)`, never its words. The `END` line shows the scroll budget:
 
 ```
    row=13 h=11 text=1 media=0 READY :: [net/#chan] <bob> pic https://…
