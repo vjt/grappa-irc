@@ -296,6 +296,27 @@ run_deploy() {
     [ "$mig_line" -lt "$up_line" ]
 }
 
+@test "cold path installs hex in a mix run of its own, before deps.get" {
+    # `mix do local.hex --force, ..., deps.get` cannot work the first time a
+    # box needs a fresh hex (a new Elixir/OTP in the image): the archive is
+    # written mid-run, and the SAME VM then fails to start it —
+    # `Could not start Hex ... {:error, {:hex, {'no such file or directory',
+    # 'hex.app'}}}`. Measured on a real 1.5.9 -> 1.6.2 docker upgrade. So
+    # hex (and rebar) are installed by one mix process and used by the next.
+    export PREFLIGHT_RC=3
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy
+    [ "$status" -eq 0 ]
+    hex_line=$(grep -n "local.hex" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    deps_line=$(grep -n "deps.get" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    [ -n "$hex_line" ]
+    [ -n "$deps_line" ]
+    [ "$hex_line" -lt "$deps_line" ]
+    # Never in the same invocation.
+    ! grep "local.hex" "$ARGV_LOG" | grep -q "deps.get"
+}
+
 # --- #503 enrich: completed-deploy marker (parity with jail + linux) ----------
 
 @test "hot deploy writes the completed-deploy marker as final step" {

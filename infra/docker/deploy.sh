@@ -334,9 +334,14 @@ cmd_install() {
 
 	# ---- 4. bootstrap toolchain + deps against the bind-mount ---------
 	say "Installing hex/rebar + fetching deps into the checkout"
+	# Hex installed by one mix process, used by the next: in a single
+	# `mix do` the archive written mid-run cannot be started by that same
+	# VM (see substrate_migrate in infra/lib/deploy_docker.sh).
 	# shellcheck disable=SC1010  # `mix do` is a mix subcommand, not shell `do`
 	"${COMPOSE[@]}" run --rm --no-deps -T -e MIX_ENV=dev grappa \
-		mix do local.hex --force, local.rebar --force, deps.get, compile
+		mix do local.hex --force + local.rebar --force
+	"${COMPOSE[@]}" run --rm --no-deps -T -e MIX_ENV=dev grappa \
+		mix do deps.get + compile
 
 	# ---- 5. generate secrets (only the blank ones) --------------------
 	gen() { "${COMPOSE[@]}" run --rm --no-deps -T -e MIX_ENV=dev grappa "$@" 2>/dev/null | tr -d '\r'; }

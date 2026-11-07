@@ -266,9 +266,18 @@ substrate_migrate() {
 	# bind-mount puts deps/ + HEX_HOME on the host; a fresh checkout has
 	# neither. Idempotent + cheap when already in sync.
 	echo "Syncing hex + deps to mix.lock..."
+	# Hex and rebar are installed by ONE mix process and used by the NEXT.
+	# A single `mix do local.hex --force, ..., deps.get` fails the first time
+	# a box needs a fresh hex (a new Elixir/OTP in the image): the archive is
+	# written mid-run and that same VM cannot start it — "Could not start
+	# Hex ... hex.app" — measured on a real 1.5.9 -> 1.6.2 docker upgrade.
+	# The rest of the tree already does it this way (Dockerfile.release,
+	# bin/start.sh, infra/linux/install.sh).
 	# shellcheck disable=SC1010  # `mix do` is a mix subcommand, not shell `do`
 	"${DOCKER_COMPOSE[@]}" --profile prod run --rm --no-deps grappa \
-		mix do local.hex --force, local.rebar --force, deps.get
+		mix do local.hex --force + local.rebar --force
+	"${DOCKER_COMPOSE[@]}" --profile prod run --rm --no-deps grappa \
+		mix deps.get
 
 	# Apply pending migrations BEFORE bringing the long-running container up:
 	# a one-shot `run` exits before Bootstrap's first DB hit can race an
