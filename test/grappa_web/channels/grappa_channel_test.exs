@@ -44,6 +44,7 @@ defmodule GrappaWeb.GrappaChannelTest do
   alias Grappa.IRCServer
 
   alias Grappa.{
+    Accounts,
     AdmissionStateHelpers,
     Networks,
     Protocol,
@@ -94,7 +95,9 @@ defmodule GrappaWeb.GrappaChannelTest do
         end
       end)
 
-    socket(UserSocket, "user_socket:#{user_name}", %{
+    # Issue 2597 — `:assigns` adds what `UserSocket.connect/3` would set for
+    # a particular bearer (`is_admin`, `current_session_kind`).
+    socket(UserSocket, "user_socket:#{user_name}", Map.merge(%{
       user_name: user_name,
       current_subject: subject,
       # #630 — UserSocket.connect/3 always assigns `current_session_id`, and
@@ -108,7 +111,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # a shared constant would make the addressed-delivery tests below pass
       # for the wrong reason (one topic, two subscribers = the fan-out again).
       socket_ref: Keyword.get(opts, :socket_ref, Ecto.UUID.generate())
-    })
+    }, Keyword.get(opts, :assigns, %{})))
   end
 
   # Drain up to `max_attempts` query_windows_list pushes and return the
@@ -2621,6 +2624,68 @@ defmodule GrappaWeb.GrappaChannelTest do
       IRCServer.feed(irc_server, ":irc.test.org 318 #{visitor_nick(visitor)} alice :End\r\n")
 
       assert_push("event", %{kind: :whois_bundle, target: "alice", source: :rail})
+    end
+  end
+
+  # Issue 2597 — a WHOIS bundle names where the grappa user holding the nick
+  # connects from when the asking client speaks for a grappa admin with a
+  # full web session: the admin console's own predicate
+  # (`AdminChannel.admin_socket?/1`), read at this door and carried to the
+  # session with the request. The session's umode half of the gate, and the
+  # lookup itself, are `Grappa.Session.WhoisClientIpTest`'s.
+  #
+  # The target here is the asker's own nick: the one grappa holder this
+  # fixture has. No socket of it is in `WSPresence` (a fixture socket is no
+  # transport), so an entitled answer is `[]` beside the newest login's
+  # address — non-null either way, which is what tells the doors apart.
+  defp whois_self(irc_server, user, network, assigns) do
+    {:ok, _, socket} =
+      user.name
+      |> build_socket(subject: {:user, user.id}, assigns: assigns)
+      |> subscribe_and_join(Topic.user(user.name), %{})
+
+    ref = push(socket, "whois", %{"network_id" => network.id, "nick" => "grappa-snap"})
+    assert_reply(ref, :ok)
+    {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "WHOIS grappa-snap\r\n"), 1_000)
+
+    IRCServer.feed(irc_server, ":irc.test.org 311 grappa-snap grappa-snap u h * :Snap\r\n")
+    IRCServer.feed(irc_server, ":irc.test.org 318 grappa-snap grappa-snap :End of /WHOIS list.\r\n")
+
+    assert_push("event", %{kind: :whois_bundle, target: "grappa-snap"} = bundle)
+    bundle
+  end
+
+  describe "issue 2597 — the client addresses follow the asker's admin-ness" do
+    setup do
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network} = setup_user_and_network_with_session(port)
+      welcome_session_on_channel(irc_server, "#snap")
+      {:ok, _} = Accounts.create_session({:user, user.id}, "198.51.100.7", "ua", [])
+
+      %{irc_server: irc_server, user: user, network: network}
+    end
+
+    test "an admin's web socket gets the addresses", %{irc_server: irc_server, user: user, network: network} do
+      bundle = whois_self(irc_server, user, network, %{is_admin: true, current_session_kind: :web})
+
+      assert bundle.grappa_client_ips == []
+      assert bundle.grappa_client_last_known_ip == "198.51.100.7"
+    end
+
+    test "a non-admin's socket gets null for both", %{irc_server: irc_server, user: user, network: network} do
+      bundle = whois_self(irc_server, user, network, %{is_admin: false, current_session_kind: :web})
+
+      assert bundle.grappa_client_ips == nil
+      assert bundle.grappa_client_last_known_ip == nil
+    end
+
+    # #1196 — a per-client token an admin minted is a scoped credential, and
+    # this door refuses it exactly as the console's join does.
+    test "an admin's per-client token gets null for both", %{irc_server: irc_server, user: user, network: network} do
+      bundle = whois_self(irc_server, user, network, %{is_admin: true, current_session_kind: :client})
+
+      assert bundle.grappa_client_ips == nil
+      assert bundle.grappa_client_last_known_ip == nil
     end
   end
 

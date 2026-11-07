@@ -84,6 +84,7 @@ defmodule Grappa.Session.Server do
   use GenServer, restart: :transient
 
   alias Grappa.{
+    Accounts,
     ChannelDirectory,
     Dcc,
     E2eInbox,
@@ -96,7 +97,8 @@ defmodule Grappa.Session.Server do
     ServerSettings,
     Session,
     SessionLog,
-    UserSettings
+    UserSettings,
+    WSPresence
   }
 
   alias Grappa.Dcc.{Policy, Report, Transfer}
@@ -2537,16 +2539,21 @@ defmodule Grappa.Session.Server do
   # request identity, so the second bundle could not be told from the first
   # even with two accumulators. Losing a duplicate answer to a duplicate
   # question beats the fan-out this issue is removing.
-  def handle_call({:send_whois, target, server, origin, reply_to}, _, state)
+  # Issue 2597 — `requester_admin?` is primed and replaced together with
+  # `reply_to`, so under that collapse it still describes the client the
+  # bundle goes to: the last asker's admin-ness decides what the last asker
+  # sees.
+  def handle_call({:send_whois, target, server, origin, reply_to, requester_admin?}, _, state)
       when is_binary(target) and (is_binary(server) or is_nil(server)) and
-             origin in [:user, :rail] do
+             origin in [:user, :rail] and is_boolean(requester_admin?) do
     nick_key = fold_key(state, target)
 
     next_pending =
       prime_pending(state.whois_pending, nick_key, %WhoisAccum{
         target_display: target,
         source: origin,
-        reply_to: reply_to
+        reply_to: reply_to,
+        requester_admin: requester_admin?
       })
 
     next_state = %{state | whois_pending: next_pending}
@@ -7156,15 +7163,68 @@ defmodule Grappa.Session.Server do
     # available immediately; the async-fetch-completes-later path is
     # `handle_info({:peer_avatar_ready, ...})` above.
     avatar_url = whois_target_avatar_url(state, target)
+    {client_ips, client_last_known_ip} = whois_grappa_client(state, target, accum)
 
     :ok =
       Broadcaster.to_requester(
         state,
         reply_to,
-        SessionWire.whois_bundle(state.network_slug, target, accum, avatar_url)
+        SessionWire.whois_bundle(state.network_slug, target, accum, avatar_url, client_ips, client_last_known_ip)
       )
 
     apply_effects(rest, state)
+  end
+
+  # Issue 2597 — where the grappa user holding `target` on this network
+  # connects from, for a requester entitled to know: this session holds
+  # umode `o` or `O` (an IRC operator, who sees real hosts upstream anyway),
+  # or the asking client speaks for a grappa admin (`accum.requester_admin`,
+  # `GrappaWeb.AdminChannel.admin_socket?/1`). Anyone else gets `{nil, nil}`.
+  #
+  # Only once the ircd has confirmed somebody holds the nick (311 filled
+  # `accum.user`), and only through `Session.registered_holders/3`, which
+  # counts a session that has seen 001 — never the configured nick of one
+  # in backoff, which a stranger may hold upstream. The answer pairs:
+  # live socket addresses and no last-known one; or `[]` and the address
+  # of that user's newest login, since a user with no socket open is still
+  # somebody's client. More than one holder is a transient on one ircd and
+  # is not resolved by picking: the bundle says nothing and the log says
+  # who collided — never with an address.
+  #
+  # `Map.get` for `:umodes`, as every other reader here does (#216).
+  @spec whois_grappa_client(t(), String.t(), WhoisAccum.t()) :: {[String.t()] | nil, String.t() | nil}
+  defp whois_grappa_client(state, target, %WhoisAccum{user: user} = accum) when is_binary(user) do
+    umodes = Map.get(state, :umodes, [])
+
+    if accum.requester_admin or "o" in umodes or "O" in umodes do
+      state.network_id
+      |> Session.registered_holders(fold_key(state, target), session_casemapping(state))
+      |> grappa_client_of(target)
+    else
+      {nil, nil}
+    end
+  end
+
+  defp whois_grappa_client(_, _, _), do: {nil, nil}
+
+  @spec grappa_client_of([{Session.subject(), String.t()}], String.t()) :: {[String.t()] | nil, String.t() | nil}
+  defp grappa_client_of([{subject, label}], _) do
+    case WSPresence.client_ips(label) do
+      [] -> {[], Accounts.last_known_ip(subject)}
+      ips -> {ips, nil}
+    end
+  end
+
+  defp grappa_client_of([], _), do: {nil, nil}
+
+  defp grappa_client_of(holders, target) do
+    Logger.warning(
+      "whois: #{length(holders)} sessions hold the nick " <>
+        "(#{Enum.map_join(holders, ", ", fn {_, label} -> label end)}) — no client address shown",
+      target: target
+    )
+
+    {nil, nil}
   end
 
   # P-0c — WHOWAS bundle ephemeral. Broadcast on the user-level topic

@@ -431,7 +431,14 @@ let _socket: Socket | null = null;
 // cicchetto calls it yet. Below 61 the POST answers 404 and the GET answers the
 // SPA page (200 text/html), so the menu keys off this number, not a status;
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 61;
+//
+// 62 (issue 2597) — two keys on `whois_bundle`: `grappa_client_ips` and
+// `grappa_client_last_known_ip`, where the grappa user holding the WHOIS target
+// connects from, null unless this session holds umode o/O or this client speaks
+// for a grappa admin. The WHOIS card shows them; a server below 62 sends
+// neither key, and the card reads the absence as "nothing to show", so
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 62;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

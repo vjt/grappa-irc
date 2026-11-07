@@ -1570,7 +1570,29 @@ defmodule Grappa.Protocol do
   # no open PR edits this file.
   #
   # @min_protocol_version stays at 1: an older client never calls the door.
-  @protocol_version 61
+  #
+  # ---------------------------------------------------------------------------
+  # 62 — issue 2597: where a grappa user's clients connect from
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: two keys on the `whois_bundle` event (`Session.Wire.whois_bundle/6`),
+  # always present. `grappa_client_ips` ([String] or null) — the addresses the
+  # live sockets of the grappa user holding the WHOIS target connected from,
+  # sorted; `[]` when none is open. `grappa_client_last_known_ip` (String or
+  # null) — set only beside `[]`: where that user's newest login came from.
+  # Both are null unless the asker is entitled — its session holds umode `o`
+  # or `O`, or the asking client speaks for a grappa admin with a full web
+  # session — and the ircd confirmed a user (311) that a registered grappa
+  # session on the same network holds. Bumped on the #1393d rule: a client
+  # that shows an operator those addresses cannot get them from a server
+  # predating this.
+  #
+  # Checked for a collision before claiming 62: origin/main carries 61, and
+  # no open PR edits this file.
+  #
+  # @min_protocol_version stays at 1: an older client ignores a field it
+  # does not know.
+  @protocol_version 62
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1611,7 +1633,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 61
+  @spec version() :: 62
   def version, do: @protocol_version
 
   @doc """

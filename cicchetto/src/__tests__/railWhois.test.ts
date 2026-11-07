@@ -81,6 +81,8 @@ const bundle = (target: string): WhoisBundle => ({
   certfp: null,
   extra_lines: null,
   avatar_url: null,
+  grappa_client_ips: null,
+  grappa_client_last_known_ip: null,
 });
 
 // What the server emits for a nick nobody holds: the accumulator drained by

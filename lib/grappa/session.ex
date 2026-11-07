@@ -75,6 +75,13 @@ defmodule Grappa.Session do
   use Boundary,
     top_level?: true,
     deps: [
+      # Issue 2597 — a WHOIS bundle answered to an IRC operator or a grappa
+      # admin names where the grappa user holding the nick connects from:
+      # `Session.Server` reads that user's newest login address with
+      # `Accounts.last_known_ip/1` when no socket of theirs is live, beside
+      # the `Avatars.get/2` read the same drain already makes. Forward edge:
+      # Accounts takes no Session dep, so no Boundary cycle.
+      Grappa.Accounts,
       # M3b — `EventRouter.maybe_query_avatar/2` dispatches
       # `Avatars.fetch_and_cache/3` inside a detached
       # `Task.Supervisor.start_child`; `Session.Server` reads
@@ -130,7 +137,11 @@ defmodule Grappa.Session do
       Grappa.Notify,
       Grappa.UserSettings,
       Grappa.Version,
-      Grappa.WindowCounts
+      Grappa.WindowCounts,
+      # Issue 2597 — the same drain reads the live sockets' addresses with
+      # `WSPresence.client_ips/1`. WSPresence reaches sessions only through
+      # PubSub, never a call, so a call from a session cannot deadlock it.
+      Grappa.WSPresence
     ],
     # NSInterceptor is exported for its `vet_password/2` ALONE (#124): the
     # per-network password field is a second door onto the same credential
@@ -2676,6 +2687,11 @@ defmodule Grappa.Session do
   refreshes the laptop's rail. That is the fan-out this issue removes,
   not a #606 regression.
 
+  `requester_admin?` (issue 2597) says the asking client speaks for a
+  grappa admin. It rides in the accumulator beside `reply_to`, and with
+  the session's own umode `o`/`O` it decides whether the bundle names
+  where the grappa user holding the nick connects from.
+
   Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
   if the nick or server syntax is rejected by
   `Grappa.IRC.Client.send_whois/3`.
@@ -2686,13 +2702,14 @@ defmodule Grappa.Session do
           String.t(),
           String.t() | nil,
           :user | :rail,
-          reply_to()
+          reply_to(),
+          boolean()
         ) :: :ok | {:error, :no_session | :invalid_line | send_transport_error()}
-  def send_whois(subject, network_id, nick, server, origin, reply_to)
+  def send_whois(subject, network_id, nick, server, origin, reply_to, requester_admin?)
       when is_subject(subject) and is_integer(network_id) and is_binary(nick) and
              (is_binary(server) or is_nil(server)) and origin in [:user, :rail] and
-             (is_binary(reply_to) or is_nil(reply_to)) do
-    call_session(subject, network_id, {:send_whois, nick, server, origin, reply_to})
+             (is_binary(reply_to) or is_nil(reply_to)) and is_boolean(requester_admin?) do
+    call_session(subject, network_id, {:send_whois, nick, server, origin, reply_to, requester_admin?})
   end
 
   @doc """

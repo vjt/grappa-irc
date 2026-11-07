@@ -802,7 +802,22 @@ defmodule Grappa.Session.Wire do
           # peer never answered) — a LATER `whois_avatar_ready` event on
           # the same user topic (`SessionWire.whois_avatar_ready/3`)
           # patches an open card if the fetch completes afterward.
-          avatar_url: String.t() | nil
+          avatar_url: String.t() | nil,
+          # Issue 2597 — where the grappa user holding the target nick
+          # connects from, for a requester entitled to know: an IRC operator
+          # (the asking session holds umode `o` or `O`) or a grappa admin.
+          # Both keys are always present.
+          #
+          # grappa_client_ips — the addresses that user's live sockets
+          #   connected from, sorted; `[]` when none is connected; `null`
+          #   when the requester is not entitled, the ircd confirmed no
+          #   user (no 311), or no grappa session holds the nick.
+          # grappa_client_last_known_ip — set only beside `[]`: where that
+          #   user's newest login came from (`Accounts.last_known_ip/1`),
+          #   `null` when that is unknown. `null` whenever
+          #   `grappa_client_ips` is not `[]`.
+          grappa_client_ips: [String.t()] | nil,
+          grappa_client_last_known_ip: String.t() | nil
         }
 
   @typedoc """
@@ -1901,11 +1916,24 @@ defmodule Grappa.Session.Wire do
   # `defstruct`, next to the data: `source` still defaults to `:user`, the
   # flags to `false`, `channels` / `extra_lines` to nil (a `null` on the wire,
   # which is NOT the same value as `[]`). Duplication removed, not moved.
-  @spec whois_bundle(String.t(), String.t(), WhoisAccum.t(), String.t() | nil) ::
-          whois_bundle_payload()
-  def whois_bundle(network_slug, target, %WhoisAccum{} = accum, avatar_url)
+  #
+  # Issue 2597 — the two `grappa_client_*` values are computed by the caller,
+  # which owns the requester's entitlement and the lookups; this verb only
+  # places them. The pairing rule (a last-known address only beside `[]`)
+  # is the caller's to keep.
+  @spec whois_bundle(
+          String.t(),
+          String.t(),
+          WhoisAccum.t(),
+          String.t() | nil,
+          [String.t()] | nil,
+          String.t() | nil
+        ) :: whois_bundle_payload()
+  def whois_bundle(network_slug, target, %WhoisAccum{} = accum, avatar_url, client_ips, client_last_known_ip)
       when is_binary(network_slug) and is_binary(target) and
-             (is_binary(avatar_url) or is_nil(avatar_url)) do
+             (is_binary(avatar_url) or is_nil(avatar_url)) and
+             (is_list(client_ips) or is_nil(client_ips)) and
+             (is_binary(client_last_known_ip) or is_nil(client_last_known_ip)) do
     %{
       kind: :whois_bundle,
       network: network_slug,
@@ -1945,7 +1973,9 @@ defmodule Grappa.Session.Wire do
       # #221 — extra_lines are prepended LIFO by whois_extra_line_fold for
       # O(1) fold; reverse here so cic sees them in arrival (wire) order.
       extra_lines: reverse_extra_lines(accum.extra_lines),
-      avatar_url: avatar_url
+      avatar_url: avatar_url,
+      grappa_client_ips: client_ips,
+      grappa_client_last_known_ip: client_last_known_ip
     }
   end
 
@@ -1979,7 +2009,7 @@ defmodule Grappa.Session.Wire do
 
   @doc """
   P-0b — standalone 301 RPL_AWAY. Broadcast on `Topic.user/1`
-  (mirroring `whois_bundle/3`'s ephemeral routing); cic's dm-listener
+  (mirroring `whois_bundle`'s ephemeral routing); cic's dm-listener
   arm inspects the `peer:` field and renders an inline ephemeral row
   in that peer's DM window. NOT persisted in scrollback — the away
   banner is a transient hint, not a chat message.
@@ -2040,7 +2070,7 @@ defmodule Grappa.Session.Wire do
 
   @doc """
   P-0c — WHOWAS bundle. Broadcast on `Topic.user/1` (mirrors
-  `whois_bundle/3` — single-entity historical-user data, ephemeral).
+  `whois_bundle` — single-entity historical-user data, ephemeral).
   cic dispatches in `userTopic.ts`'s `whowas_bundle` arm into the
   per-network `whowasCard.ts` store (last-write-wins replacement).
 

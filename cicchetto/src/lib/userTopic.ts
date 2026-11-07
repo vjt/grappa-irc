@@ -236,17 +236,17 @@ function isUploadActiveHost(v: unknown): v is UploadActiveHost {
 // ones below survive because their arm is still hand-narrowed; the
 // rest went with theirs (#1393).
 
-// `whois_bundle.channels` is `string[] | null`. Wire elements arrive
-// as IRC mode-prefixed channel names (`@#italia`, `+#grappa`). Reject
-// non-string elements; preserve raw strings (cic owns the prefix
-// rendering).
-function narrowWhoisChannel(raw: unknown): string | null {
+// The `whois_bundle` string arrays: `channels` (`string[] | null`, IRC
+// mode-prefixed names like `@#italia`, `+#grappa`) and `grappa_client_ips`
+// (issue 2597, `string[] | null`, addresses). Reject non-string elements;
+// preserve raw strings (cic owns the prefix rendering).
+function narrowWhoisString(raw: unknown): string | null {
   return typeof raw === "string" ? raw : null;
 }
 
 // #221 — per-entry narrower for the WHOIS `extra_lines` array. Mirror of
 // `Grappa.Session.Wire.whois_extra_line/0` — `{numeric, text}`. A malformed
-// element drops the whole bundle (strict, matching narrowWhoisChannel).
+// element drops the whole bundle (strict, matching narrowWhoisString).
 function narrowWhoisExtraLine(raw: unknown): WhoisExtraLine | null {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
@@ -407,7 +407,7 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
     case "whois_bundle": {
       // C2 — every numeric-derived field is nullable; only network +
       // target are required. is_operator + channels also tolerate
-      // missing values (boolean false / null) per Wire.whois_bundle/3
+      // missing values (boolean false / null) per the Wire.whois_bundle
       // shape. Defensive: any malformed shape returns null and the
       // dispatcher logs + drops.
       //
@@ -451,12 +451,29 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         (r.secure_cipher !== null && typeof r.secure_cipher !== "string") ||
         (r.certfp !== null && typeof r.certfp !== "string") ||
         // M3b — additive: absent (pre-M3b server) tolerates same as null.
-        (r.avatar_url !== null && r.avatar_url !== undefined && typeof r.avatar_url !== "string")
+        (r.avatar_url !== null && r.avatar_url !== undefined && typeof r.avatar_url !== "string") ||
+        // Issue 2597 (protocol 62) — additive: absent (pre-62 server) reads as null.
+        (r.grappa_client_last_known_ip !== null &&
+          r.grappa_client_last_known_ip !== undefined &&
+          typeof r.grappa_client_last_known_ip !== "string")
       )
         return null;
+      // Issue 2597 (protocol 62) — where the grappa user holding the target
+      // connects from; null unless this session is an IRC operator or this
+      // client speaks for a grappa admin. Additive: absent (pre-62 server)
+      // reads as null, which is what such a server means — no address to
+      // show — so a strict guard would buy nothing the card can render and
+      // cost a `MIN_SERVER_PROTOCOL_VERSION` raise to 62 (serverProtocol.ts's
+      // OBLIGATION). Only ABSENCE is tolerated: a present non-array, or a
+      // non-string element, drops the bundle like `channels` below.
+      let grappaClientIps: string[] | null = null;
+      if (r.grappa_client_ips !== null && r.grappa_client_ips !== undefined) {
+        grappaClientIps = narrowArray(r.grappa_client_ips, narrowWhoisString);
+        if (grappaClientIps === null) return null;
+      }
       let channels: string[] | null = null;
       if (r.channels !== null) {
-        channels = narrowArray(r.channels, narrowWhoisChannel);
+        channels = narrowArray(r.channels, narrowWhoisString);
         if (channels === null) return null;
       }
       // #221 — extra_lines: a list of {numeric, text}, or null; a malformed
@@ -518,6 +535,9 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         // never the peer's raw declared URL. `undefined` (pre-M3b server)
         // normalizes to null, same as every other additive nullable field.
         avatar_url: typeof r.avatar_url === "string" ? r.avatar_url : null,
+        grappa_client_ips: grappaClientIps,
+        grappa_client_last_known_ip:
+          typeof r.grappa_client_last_known_ip === "string" ? r.grappa_client_last_known_ip : null,
       };
     }
     case "whois_avatar_ready":
