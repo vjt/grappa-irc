@@ -2952,7 +2952,10 @@ TEST(a_peer_with_two_devices_gets_one_payload_two_bodies) {
 
 /* The queue for queued messages is the engine's (90 s): once it gives up
  * — or the server says the nick is gone — the row fails, nothing ever
- * goes in clear, and a query turned on for nobody is off again, loudly. */
+ * goes in clear, and the query STAYS encrypted: neither is the user's
+ * word, and a network that could turn the mode off by withholding keys or
+ * answering 401 could make the next line go in clear. Only /e2e off does;
+ * the user is told so, loudly. */
 static void age_queues(struct app *app) {
     e2e_state *st = &app->e2e[0].rec.state;
     for (size_t i = 0; i < st->npeers; i++)
@@ -2989,9 +2992,19 @@ TEST(no_keys_fails_the_row_and_nothing_goes_in_clear) {
     CHECK(said(app, "(failed: no keys came from them in 90 s"));
     CHECK(!row_pending(app, "a secret for bob"));
     CHECK(said(app, "bob has no encrypted identity on azzurra"));
-    CHECK(!prompt_locked(app));
-    CHECK(!e2e_query_encrypted(app, "azzurra", "bob"));
+    CHECK(said(app, "encrypted mode stays ON"));
+    CHECK(said(app, "/e2e off to write in clear"));
+    CHECK(!said(app, "OFF again"));
+    CHECK(prompt_locked(app));
+    CHECK(e2e_query_encrypted(app, "azzurra", "bob"));
     CHECK(!grappa_saw("a secret for bob"));
+    CHECK_LONG(fg.nplain, 0);
+    /* The record — what a restart reads — still says encrypted. */
+    CHECK(e2e_record_encrypted(&app->e2e[0].rec, "bob"));
+    /* The next line still goes nowhere in clear. */
+    type_line(app, "another for bob");
+    run_jobs(app);
+    CHECK(!grappa_saw("another for bob"));
     CHECK_LONG(fg.nplain, 0);
 
     /* The 401 (no_such_nick, v54) fails what waits at once. */
@@ -3004,8 +3017,17 @@ TEST(no_keys_fails_the_row_and_nothing_goes_in_clear) {
     run_jobs(app);
     CHECK(said(app, "(failed: no such nick on the network"));
     CHECK(said(app, "carol is not on azzurra"));
+    CHECK(e2e_query_encrypted(app, "azzurra", "carol"));
+    CHECK(prompt_locked(app));
     CHECK(!grappa_saw("for carol"));
+    type_line(app, "still for carol");
+    run_jobs(app);
+    CHECK(!grappa_saw("still for carol"));
     CHECK_LONG(fg.nplain, 0);
+    /* Only the user's word turns it off. */
+    handle_command(app, "/e2e off");
+    run_jobs(app);
+    CHECK(!e2e_query_encrypted(app, "azzurra", "carol"));
     free_e2e_app(app);
 }
 

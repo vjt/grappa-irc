@@ -17632,14 +17632,18 @@ static void e2e_awaiting_drop(struct e2e_slot *s, size_t i) {
 }
 
 /* A query turned on before its peer's keys came, given up: the peer has
- * no identity we could find, and the mode is off again — loudly. */
+ * no identity we could find — loudly. The mode STAYS on: what was waiting
+ * has failed (the engine's queue, or the 401, says so on each row), and
+ * the next line waits for keys again. Neither a missing KEYS nor a 401 is
+ * the user's word, and a mode the network could switch off by withholding
+ * keys is a mode a hostile network downgrades to clear at will: only
+ * /e2e off turns it off. */
 static void e2e_awaiting_gave_up(struct app *app, struct e2e_slot *s, size_t i, const char *what) {
     char nick[MAX_CHANNEL];
     snprintf(nick, sizeof(nick), "%s", s->awaiting[i].nick);
     e2e_awaiting_drop(s, i);
-    e2e_mode_set(app, s, nick, false, true);
-    log_line(app, "[%s/%s] !!! e2e: %s — encrypted mode is OFF again; what you type in this query "
-                  "goes in CLEAR (nothing typed while it waited was sent in clear)",
+    log_line(app, "[%s/%s] !!! e2e: %s — encrypted mode stays ON: what waited was NOT sent, and "
+                  "nothing you type here goes until they have keys; /e2e off to write in clear",
              s->slug, nick, what);
 }
 
@@ -26541,33 +26545,42 @@ static void handle_command_dispatch(struct app *app, char *line) {
 
 static void handle_enter(struct app *app) {
     char line[MAX_INPUT_LINE];
+    char send_net[MAX_SLUG] = "", send_chan[MAX_CHANNEL] = "";
     /* Taking the line and clearing it are ONE step: a transcript landing
      * from /stt between the copy and the clear would be typed by nobody
-     * and then discarded unsent. */
+     * and then discarded unsent.
+     *
+     * And so is deciding where it goes. The window and "encrypted or
+     * clear" are read ONCE, here, and the line is routed by that answer:
+     * asked twice — once for the length, once for the send — a mode that
+     * flipped in between sent a line in clear that was meant encrypted,
+     * or cut a long encrypted one at MAX_LINE on the clear door. */
     pthread_mutex_lock(&app->lock);
     app->input[app->input_len] = 0;
     if (app->input_len == 0) {
         pthread_mutex_unlock(&app->lock);
         return;
     }
+    bool command = app->input[0] == '/';
+    size_t cur = focused_window_locked(app);
+    bool have = cur < app->window_count;
+    if (have) {
+        snprintf(send_net, sizeof(send_net), "%s", app->windows[cur].network);
+        snprintf(send_chan, sizeof(send_chan), "%s", app->windows[cur].channel);
+    }
+    bool encrypted = !command && have && e2e_query_encrypted_locked(app, send_net, send_chan);
     /* Past MAX_LINE only a line for an encrypted query goes on (see
      * MAX_INPUT_LINE): a command or a clear message would be cut by the
      * first MAX_LINE buffer it meets, and a cut line is a different
      * message. It stays in the input, to be shortened. */
-    if (app->input_len >= MAX_LINE) {
-        size_t cur = focused_window_locked(app);
-        bool encrypted = app->input[0] != '/' && cur < app->window_count &&
-                         e2e_query_encrypted_locked(app, app->windows[cur].network,
-                                                    app->windows[cur].channel);
-        if (!encrypted) {
-            size_t len = app->input_len;
-            pthread_mutex_unlock(&app->lock);
-            log_line(app, "--- line too long (%zu bytes): a command or a clear message takes at "
-                          "most %d, so nothing was sent; it is still in the input to shorten (an "
-                          "encrypted query takes longer lines)",
-                     len, MAX_LINE - 1);
-            return;
-        }
+    if (app->input_len >= MAX_LINE && !encrypted) {
+        size_t len = app->input_len;
+        pthread_mutex_unlock(&app->lock);
+        log_line(app, "--- line too long (%zu bytes): a command or a clear message takes at "
+                      "most %d, so nothing was sent; it is still in the input to shorten (an "
+                      "encrypted query takes longer lines)",
+                 len, MAX_LINE - 1);
+        return;
     }
     snprintf(line, sizeof(line), "%s", app->input);
     app->input_len = 0;
@@ -26575,43 +26588,48 @@ static void handle_enter(struct app *app) {
     app->input[0] = 0;
     pthread_mutex_unlock(&app->lock);
     add_history(app, line);
-    if (line[0] == '/') handle_command(app, line);
-    else {
-        char send_net[MAX_SLUG], send_chan[MAX_CHANNEL];
-        if (!current_window_key(app, send_net, sizeof(send_net), send_chan, sizeof(send_chan))) return;
-        const char *network = send_net;
-        const char *channel = send_chan;
-        /* The $llm window is a CONVERSATION with the model, so typing in
-         * it talks to the model — not to IRC. There is no server side to
-         * send to anyway: this window is client-local, and a plain
-         * message here would be a POST to a channel named "$llm" that
-         * grappa would refuse. Getting to the model without repeating
-         * the verb is the whole point of the window. */
-        if (irc_name_eq(channel, LLM_WINDOW)) {
-            /* The echo used to be here. It moved into llm_enqueue_full
-             * so that asking from a channel gets it too — echoing again
-             * here would show the question twice. */
-            llm_enqueue(app, network, channel, line, false);
-            return;
-        }
-        /* $server is read-only by server contract, so say so HERE rather
-         * than firing a request that can only come back 400. The client
-         * knows the rule; making the user decode an HTTP status to learn
-         * it is the failure this replaces. Commands still work from a
-         * $server window — only a bare PRIVMSG has nowhere to go. */
-        if (is_server_window(channel)) {
-            log_line(app, "[%s/$server] --- the server window is read-only — "
-                          "switch to a channel, or use /msg <nick> <text> or /join #chan",
-                     network);
-        } else if (e2e_query_encrypted(app, network, channel)) {
-            e2e_type(app, network, channel, line);
-        } else {
-            /* The one door a typed line takes in clear (its send door,
-             * send_message_target, records it for order challenges). */
-            add_pending_echo(app, network, channel, own_nick_for_network(app, network), line);
-            enqueue_send(app, network, channel, line);
-        }
+    if (command) {
+        handle_command(app, line);
+        return;
     }
+    if (!have) return;
+    const char *network = send_net;
+    const char *channel = send_chan;
+    /* Decided encrypted: the encrypted door, whatever the mode says by now
+     * — the worker never falls back to clear (e2e_send_text). */
+    if (encrypted) {
+        e2e_type(app, network, channel, line);
+        return;
+    }
+    /* The $llm window is a CONVERSATION with the model, so typing in
+     * it talks to the model — not to IRC. There is no server side to
+     * send to anyway: this window is client-local, and a plain
+     * message here would be a POST to a channel named "$llm" that
+     * grappa would refuse. Getting to the model without repeating
+     * the verb is the whole point of the window. */
+    if (irc_name_eq(channel, LLM_WINDOW)) {
+        /* The echo used to be here. It moved into llm_enqueue_full
+         * so that asking from a channel gets it too — echoing again
+         * here would show the question twice. */
+        llm_enqueue(app, network, channel, line, false);
+        return;
+    }
+    /* $server is read-only by server contract, so say so HERE rather
+     * than firing a request that can only come back 400. The client
+     * knows the rule; making the user decode an HTTP status to learn
+     * it is the failure this replaces. Commands still work from a
+     * $server window — only a bare PRIVMSG has nowhere to go. */
+    if (is_server_window(channel)) {
+        log_line(app, "[%s/$server] --- the server window is read-only — "
+                      "switch to a channel, or use /msg <nick> <text> or /join #chan",
+                 network);
+        return;
+    }
+    /* Decided clear. The one door a typed line takes in clear (its send
+     * door, send_message_target, records it for order challenges) — and
+     * refuses it, should the query have turned encrypted since. */
+    add_pending_echo(app, network, channel, own_nick_for_network(app, network), line);
+    enqueue_send(app, network, channel, line);
 }
 
 /* Topmost recorded media region containing screen cell (x, y), or NULL.
