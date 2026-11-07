@@ -40,6 +40,12 @@
 #                             (both paths; MUST be idempotent; non-fatal)
 #   substrate_reload          echoes /admin/reload HTTP body; nonzero=POST failed
 #   substrate_cic             cic bundle build (cold only)
+#   substrate_check_migrations
+#                             the #1348 duplicate-version audit alone, through
+#                             the migrate door, migrating nothing (cold only,
+#                             BEFORE the stop); nonzero refuses the deploy with
+#                             nothing stopped. Called as a condition, like
+#                             substrate_migrate below
 #   substrate_stop            stop the daemon (cold only); returns once it is GONE,
 #                             since the migrator runs next
 #   substrate_migrate         ecto migrate (cold only; the daemon is stopped).
@@ -413,6 +419,14 @@ _deploy_hot() {
 # ---- cold path ------------------------------------------------------
 _deploy_cold() {
 	substrate_cic
+	# Audit BEFORE anything stops (issue 1112, F2): the one migration step
+	# that runs with the old node serving, so that a refusal — or a migrate
+	# door that does not open — costs a red deploy and not an outage.
+	if ! substrate_check_migrations; then
+		deploy_error "the migration check did not pass — NOTHING was stopped: the daemon keeps serving the code it runs."
+		printf '[deploy]   the cold deploy migrates with the daemon stopped; fix what the check reported, then deploy again\n' >&2
+		exit 1
+	fi
 	# Stop, THEN migrate (issue 1112, D4). Migrating first left the old code
 	# serving the new schema until the stop — an order nothing chose.
 	# Why: docs/OPERATIONS.md § "The shared deploy library (infra/lib/)".

@@ -12,14 +12,16 @@ defmodule Grappa.Release do
   release-aware bridge to the same Ecto.Migrator the deploy script
   invokes elsewhere.
 
-  Invoke from `infra/freebsd/deploy.sh` BEFORE swapping the rc.d
-  service, so a schema change is applied against the old code and
-  the new release boots into a consistent DB. Same ordering
-  discipline as the Docker cold path documented in CLAUDE.md
-  "Migrations".
+  `infra/freebsd/deploy.sh` invokes it on the cold path with the old
+  daemon STOPPED and before the new release starts, so the new release
+  boots into a migrated DB and no old code ever reads the new schema
+  (issue 1112) — after `check_migrations/0`, which runs while the old
+  daemon still serves. Every substrate's cold path keeps that order;
+  `infra/lib/deploy_common.sh` owns it.
 
   ## Usage
 
+      _build/prod/rel/grappa/bin/grappa eval 'Grappa.Release.check_migrations()'
       _build/prod/rel/grappa/bin/grappa eval 'Grappa.Release.migrate()'
       _build/prod/rel/grappa/bin/grappa eval 'Grappa.Release.seed_themes()'
       _build/prod/rel/grappa/bin/grappa eval 'Grappa.Release.rollback(Grappa.Repo, 20260501000000)'
@@ -65,34 +67,37 @@ defmodule Grappa.Release do
   @app :grappa
 
   @doc """
-  Runs all pending migrations against the configured repos.
+  Runs all pending migrations against the configured repos, after the
+  #1348 duplicate-version audit.
 
   Stops the BEAM cleanly on success or any error. Caller should
-  treat non-zero exit as a deploy failure and refuse to restart
-  the service.
+  treat non-zero exit as a deploy failure and start nothing on that
+  schema.
   """
   @spec migrate() :: :ok
   def migrate do
-    load_app()
-    start_vault!()
+    each_repo("migration", fn repo ->
+      MigrationAudit.check!(repo)
+      Ecto.Migrator.run(repo, :up, all: true)
+    end)
+  end
 
-    for repo <- repos() do
-      # The audit is INSIDE the callback because that is the only place the
-      # pool is up — `with_repo/2` starts the repo around the fun and stops
-      # it after. It raises rather than returns: the deploy scripts read the
-      # exit code, and `_deploy_cold` aborts before the seed and the restart.
-      migrate = fn repo ->
-        MigrationAudit.check!(repo)
-        Ecto.Migrator.run(repo, :up, all: true)
-      end
+  @doc """
+  The duplicate-version audit `migrate/0` runs first, alone: it migrates
+  nothing (issue 1112).
 
-      case Ecto.Migrator.with_repo(repo, migrate) do
-        {:ok, _, _} -> :ok
-        {:error, reason} -> raise "migration failed: #{inspect(reason)}"
-      end
-    end
+  A cold deploy migrates with the daemon STOPPED, so a migration that fails
+  is an outage. Every cold path calls this BEFORE the stop instead, while
+  the old node still serves: a refusal raises — a non-zero exit, nothing
+  stopped. It boots exactly as `migrate/0` does, so a pass also says the
+  migrator's door opens (the app, the env the vault needs, the database).
 
-    :ok
+  Its only write is the one `Ecto.Migrator` makes before any read:
+  creating `schema_migrations` on a database that lacks it.
+  """
+  @spec check_migrations() :: :ok
+  def check_migrations do
+    each_repo("migration check", &MigrationAudit.check!/1)
   end
 
   @doc """
@@ -171,6 +176,25 @@ defmodule Grappa.Release do
   defp abort(message) do
     IO.puts(:stderr, "grappa: #{message}")
     System.halt(1)
+  end
+
+  # The audit runs INSIDE the callback because that is the only place the
+  # pool is up — `with_repo/2` starts the repo around the fun and stops it
+  # after. It raises rather than returns: the deploy scripts read the exit
+  # code, and the cold path aborts on it.
+  @spec each_repo(String.t(), (module() -> term())) :: :ok
+  defp each_repo(what, fun) do
+    load_app()
+    start_vault!()
+
+    for repo <- repos() do
+      case Ecto.Migrator.with_repo(repo, fun) do
+        {:ok, _, _} -> :ok
+        {:error, reason} -> raise "#{what} failed: #{inspect(reason)}"
+      end
+    end
+
+    :ok
   end
 
   defp repos do
