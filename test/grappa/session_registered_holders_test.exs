@@ -22,8 +22,8 @@ defmodule Grappa.SessionRegisteredHoldersTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{IRCServer, Session}
   alias Grappa.IRC.Identifier
+  alias Grappa.{IRCServer, Session}
 
   # Mixed case on purpose: the session holds it RAW, the lookup is folded.
   @nick "Holder-2597"
