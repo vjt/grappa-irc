@@ -475,11 +475,7 @@ defmodule Grappa.Deploy.Preflight do
           File.regular?(path),
           do: Path.relative_to(path, root)
 
-    Enum.sort(
-      Enum.uniq(
-        @mix_deps_files ++ [@application_file, @package_unit] ++ long_lived_module_files() ++ globbed
-      )
-    )
+    Enum.sort(Enum.uniq(@mix_deps_files ++ [@application_file, @package_unit] ++ long_lived_module_files() ++ globbed))
   end
 
   @doc """
