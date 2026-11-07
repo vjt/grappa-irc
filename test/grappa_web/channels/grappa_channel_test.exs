@@ -97,21 +97,28 @@ defmodule GrappaWeb.GrappaChannelTest do
 
     # Issue 2597 — `:assigns` adds what `UserSocket.connect/3` would set for
     # a particular bearer (`is_admin`, `current_session_kind`).
-    socket(UserSocket, "user_socket:#{user_name}", Map.merge(%{
-      user_name: user_name,
-      current_subject: subject,
-      # #630 — UserSocket.connect/3 always assigns `current_session_id`, and
-      # the inbound `handle_in/3` request-budget guard reads it, so the
-      # fixture must carry it too (a generated bearer is fine — the budget
-      # only revokes on the sever crossing, which the generous test config
-      # never reaches). Overridable for the budget/sever tests.
-      current_session_id: Keyword.get(opts, :session_id, Ecto.UUID.generate()),
-      # #1088 — `UserSocket.connect/3` mints one per CONNECTION, so two
-      # fixture sockets are two connections. Generated per call on purpose:
-      # a shared constant would make the addressed-delivery tests below pass
-      # for the wrong reason (one topic, two subscribers = the fan-out again).
-      socket_ref: Keyword.get(opts, :socket_ref, Ecto.UUID.generate())
-    }, Keyword.get(opts, :assigns, %{})))
+    socket(
+      UserSocket,
+      "user_socket:#{user_name}",
+      Map.merge(
+        %{
+          user_name: user_name,
+          current_subject: subject,
+          # #630 — UserSocket.connect/3 always assigns `current_session_id`, and
+          # the inbound `handle_in/3` request-budget guard reads it, so the
+          # fixture must carry it too (a generated bearer is fine — the budget
+          # only revokes on the sever crossing, which the generous test config
+          # never reaches). Overridable for the budget/sever tests.
+          current_session_id: Keyword.get(opts, :session_id, Ecto.UUID.generate()),
+          # #1088 — `UserSocket.connect/3` mints one per CONNECTION, so two
+          # fixture sockets are two connections. Generated per call on purpose:
+          # a shared constant would make the addressed-delivery tests below pass
+          # for the wrong reason (one topic, two subscribers = the fan-out again).
+          socket_ref: Keyword.get(opts, :socket_ref, Ecto.UUID.generate())
+        },
+        Keyword.get(opts, :assigns, %{})
+      )
+    )
   end
 
   # Drain up to `max_attempts` query_windows_list pushes and return the
