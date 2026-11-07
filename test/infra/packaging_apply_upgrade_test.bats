@@ -15,9 +15,12 @@
 # restart BEFORE it talks to the node at all — no `grappa rpc`, no POST — so
 # the cases below assert the absence of every contact, not only the restart.
 #
-# The second is the R4 ruling: the ONLY non-zero exit is "a restart was needed
-# and did not take". Hot refusals of every kind fall through to the restart,
-# a stopped unit stays stopped, and a failed theme seed stays non-fatal.
+# The second is the R4 ruling: a non-zero exit means "a restart was needed and
+# did not take". Hot refusals fall through to the restart, a stopped unit stays
+# stopped, and a failed theme seed stays non-fatal. ONE refusal is the
+# exception, by vjt's ruling on issue 1112: `409 duplicate_migration_versions`
+# exits 1 WITHOUT restarting, because the restart migrates first and walks into
+# the same defect (#1348), trading a serving node for a unit that cannot start.
 #
 # The script addresses the host by ABSOLUTE path (/usr/bin/grappa,
 # /usr/lib/grappa, /etc/grappa, /var/lib/grappa, /proc), so it is copied into
@@ -316,7 +319,7 @@ restarted() {
     [ -z "$(ls -A "$ROOT/var/lib/grappa")" ]
 }
 
-# ── Every hot refusal falls through to the restart ───────────────────────────
+# ── Every hot refusal but one falls through to the restart ───────────────────
 
 @test "a running node that cannot report a manifest (pre-1112 release) → restart" {
     export RPC_RC=1
@@ -358,11 +361,10 @@ restarted() {
     [[ "$output" == *"verdict unavailable"* ]]
 }
 
-@test "each of the four 409 refusals of POST /admin/reload → restart" {
+@test "the three 409 refusals a restart cures → restart" {
     local body
     for body in \
         '{"error":"contract_migrations_pending","migrations":["x.exs"]}' \
-        '{"error":"duplicate_migration_versions","duplicates":[]}' \
         '{"error":"stale_code_path","booted":"0.0.0","built":"0.0.1","code_path":"/x"}' \
         '{"error":"stale_toolchain","release":"/usr/lib/grappa","moved":null}'; do
         : > "$CALL_LOG"
@@ -375,6 +377,22 @@ restarted() {
         [[ "$output" == *"$body"* ]]
         refute grep -q 'cic-bundle-changed' "$CALL_LOG"
     done
+}
+
+@test "409 duplicate_migration_versions does NOT restart: exit 1, the old node keeps serving" {
+    # The body as the endpoint encodes it (Jason orders the keys), naming the
+    # two files that claim one version.
+    local body='{"duplicates":[{"applied":true,"files":["priv/repo/migrations/20260810120000_add_a.exs","priv/repo/migrations/20260810120000_add_b.exs"],"version":20260810120000}],"error":"duplicate_migration_versions"}'
+    export RELOAD_CODE=409 RELOAD_BODY="$body"
+    run apply
+
+    [ "$status" -eq 1 ]
+    refute restarted
+    refute grep -qE '^systemctl (daemon-reload|reset-failed|restart|stop)' "$CALL_LOG"
+    refute grep -q 'cic-bundle-changed' "$CALL_LOG"
+    refute grep -q '^grappa seed-themes' "$CALL_LOG"
+    [[ "$output" == *"$body"* ]]
+    [[ "$output" == *"NOT restarted"* ]]
 }
 
 @test "a 200 that reports per-module failures is not a hot apply → restart" {
