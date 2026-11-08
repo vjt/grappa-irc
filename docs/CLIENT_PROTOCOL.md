@@ -985,13 +985,20 @@ has an open cic, the newcomer waits — there is no server-side
 fallback. A member with no epoch yet creates one when its turn to
 send comes: it mints a fresh epoch key and distributes it pairwise to
 the current roster, then sends under it. On PART, KICK or QUIT the
-epoch rotates, mandatorily: whoever sees the exit first with an open
-cic mints a new epoch and distributes it pairwise to ALL REMAINING
-members (one-time, O(n)) — you cannot encrypt the new key under the
-old key and post it in the channel, the departed member holds the old
-key. Rotation is periodic too: one channel message carrying the new
-key encrypted under the old key, which costs nothing — daily is fine —
-whose plaintext is `{"t": "grotate", "c": 0, "sid": "<new sid>", "key": "<new key>"}` and whose v4 envelope still names the OLD `sid`:
+epoch rotates, mandatorily: the designated rotator — the
+folded-nick-first REMAINING holder of the epoch — mints a new epoch
+and distributes it pairwise to ALL REMAINING members (one-time, O(n))
+— you cannot encrypt the new key under the old key and post it in the
+channel, the departed member holds the old key. A member that is not
+the designated rotator does nothing on the exit; if the designated
+rotator has no open cic, the audit rotates the moment a cic opens or
+a message is about to go out (the holder set is audited against the
+true roster on cic open AND before every send). Rotation is periodic
+too: one channel message carrying the new key encrypted under the old
+key, which costs nothing — daily is fine — whose plaintext is
+`{"t": "grotate", "c": <the sender's next counter under the old epoch>,
+"sid": "<new sid>", "key": "<new key>"}` and whose v4 envelope still
+names the OLD `sid`:
 decrypt it with the old epoch, import the new one, drop the old one.
 A departed member keeps the old key: they can re-read what they
 already received, nothing after. Rotation is only real if clients

@@ -1,51 +1,56 @@
-// Channel E2E (wire v3, CLIENT_PROTOCOL §4f) — the orchestration over
-// the group session store: key distribution, rotation triggers, and the
-// channel send/receive paths.
+// Channel E2E (wire v4, CLIENT_PROTOCOL §4f) — the orchestration over
+// the epoch store: key distribution, rotation triggers, and the channel
+// send/receive paths.
 //
 // This module is pure over its inputs: it never touches the network, the
-// Olm engine, or the wasm binding directly. It takes the group state, a
-// Megolm adapter, and two callbacks — `sendDm` (a gkey inside the pairwise
-// Olm DM to a nick, through `Engine.send`) and the caller's own nick and
-// did — and answers the events and the outbound payloads for the caller
-// (`e2e/client.ts`) to flush through grappa's send door and store. That
-// keeps every rule here unit-testable with a fake adapter and a fake DM
-// sender, and keeps the store's sealed persistence (`E2eState.groups`)
-// the only state it mutates.
+// Olm engine, or the wasm binding directly. It takes the group state, the
+// signing and verification callbacks, and `sendDm` (a gkey inside the
+// pairwise Olm DM to a nick, through `Engine.send`), and answers the
+// events and the outbound payloads for the caller (`e2e/client.ts`) to
+// flush through grappa's send door and store. That keeps every rule here
+// unit-testable with a fake DM sender and test keys, and keeps the store's
+// sealed persistence (`E2eState.groups`) the only state it mutates.
 //
-// THE RULES, as §4f and the design note state them:
+// THE RULES, as §4f states them:
 //
 //   * Distribution: the epoch key NEVER travels in the clear and NEVER
 //     through the server. It goes inside the pairwise Olm DM to each
-//     member, as `{"t":"gkey","ch":"#chan","sid":"...","key":"..."}`.
-//   * Join: the newcomer gets the current epoch key from ONE member, so
-//     the key is sent once, not once per member. The sender is
+//     member, as `{"t":"gkey","ch":"#chan","sid":"...","key":"...",
+//     "holders":["..."]}`.
+//   * Join: the newcomer ASKS. It broadcasts a key request on the
+//     channel (`{"v":4,"t":"keyreq","ch":"#chan"}`), and the first member
+//     with an open cic who holds the epoch answers with a gkey DM;
+//     duplicate answers are harmless, the first valid import wins. A
+//     member with no epoch yet creates one when its turn to send comes: it
+//     becomes the epoch owner. If nobody has an open cic, the newcomer
+//     waits: the request sits in every member's inbox until one opens a
+//     cic and answers it. There is no server-side fallback.
+//   * Leave / kick / quit: mandatory rotation. The rotator is
 //     deterministic off the roster — the member whose folded nick sorts
-//     first among the members other than the newcomer — so every member
-//     computes the same sender without coordinating. A member with no
-//     epoch yet creates one when its turn to send comes: it becomes the
-//     epoch owner. If the designated sender has no E2E (or is away), the
-//     newcomer waits: nothing here re-asks, and a later rotation or
-//     re-join distributes again. (A newcomer that never receives a key
-//     reads nothing; it does NOT fork a new epoch on its own — the first
-//     sender to speak creates the epoch, see `sendChannel`.)
-//   * Leave / kick / quit: mandatory rotation. Every remaining member
-//     rotates its OWN outbound session (one sender key per sender) and
-//     distributes the new key pairwise to ALL remaining members; the old
-//     outbound pickle is deleted, and the departed member's inbound
-//     sessions are dropped. The new key is never encrypted under the old
-//     one for this: the departed member holds the old one.
+//     first among the REMAINING holders — so exactly one member mints the
+//     new epoch and distributes it pairwise to ALL remaining members; the
+//     old epoch is deleted. The new key is never encrypted under the old
+//     one for this: the departed member holds the old one. A member whose
+//     audit finds a departed holder rotates too, which covers a rotator
+//     whose cic was closed.
 //   * Periodic rotation: daily, one channel message carrying the new key
 //     encrypted under the old key (membership unchanged, so the old key
-//     may carry the new one). See `groupSessions.buildPeriodicRotation`.
+//     may carry the new one). The rotator is the folded-nick-first holder.
+//     See `groupSessions.buildPeriodicRotation`.
 //   * Own leave: everything of the channel is dropped. We hold no key
-//     for a channel we are not in.
+//     for a channel we are not in. Our own rejoin drops the epoch held
+//     before the leave: it predates the rotation the others did without
+//     us, so it is dead, and the newcomer asks for the key again.
+//   * Audit: on cic open and before every send, the holder set is
+//     compared with the true roster; anyone in the set who is no longer
+//     in the roster triggers rotation (§4f, F4).
 //
 // A decrypted channel message is a `channel_received` event; one that
 // cannot be read is `channel_undecryptable`, never a silent drop and never
 // a crash — the DM path's rule for undecryptable messages, applied to a
 // channel. Our own channel messages come back through the same inbox and
 // are skipped: the sender's UI already shows the sent row from the send
-// path, and re-decrypting our own epoch would only burn the chain.
+// path.
 //
 // The decrypted text has nowhere to land yet: the channel window renders
 // server rows (`scrollback.ts`), and a decrypted E2E line has no server
@@ -57,20 +62,25 @@
 import type { Outbound } from "./engine";
 import {
   buildPeriodicRotation,
-  createOutbound,
+  createEpoch,
   decryptChannel,
   dropChannel,
-  dropInboundFrom,
+  dropEpoch,
   encryptChannel,
+  epochFor,
+  epochHoldersStale,
+  type ChannelSigner,
+  type ChannelVerifier,
   type GroupSessionsState,
   gkeyInner,
-  importInbound,
-  outboundFor,
-  rotateOutboundForLeave,
+  importEpoch,
+  keyreqAnswerDue,
+  keyreqPayload,
+  markKeyreqAnswered,
+  rotateEpochForLeave,
   rotationDue,
 } from "./groupSessions";
-import type { MegolmAdapter } from "./megolm";
-import { fold, PayloadError, parseGkeyInner } from "./wire";
+import { decodePayload, fold, PayloadError, parseChannelKeyreqPayload, parseGkeyInner } from "./wire";
 
 /** The tag of a gkey DM's `Engine.send`: its rows never exist (`chatStore` no-ops an `out` alone). */
 export const GKEY_TAG = "gkey";
@@ -81,7 +91,7 @@ export type ChannelE2eEvent =
       channel: string;
       from: string;
       sid: string;
-      index: number;
+      counter: number;
       body: string;
     }
   | {
@@ -93,13 +103,15 @@ export type ChannelE2eEvent =
         | "bad-payload"
         | "channel-mismatch"
         | "no-session"
+        | "bad-signature"
         | "replay"
         | "decryption-failed"
-        | "bad-inner"
-        | "megolm-unavailable";
+        | "bad-inner";
     }
   | { kind: "channel_key_received"; channel: string; from: string; sid: string }
   | { kind: "channel_key_sent"; channel: string; to: string; sid: string }
+  | { kind: "channel_key_failed"; channel: string; to: string; sid: string; reason: string }
+  | { kind: "channel_key_requested"; channel: string }
   | {
       kind: "channel_rotated";
       channel: string;
@@ -113,14 +125,22 @@ export type ChannelE2eEvent =
 export type ChannelE2eResult = { events: ChannelE2eEvent[]; outbound: Outbound[] };
 
 export type ChannelE2eDeps = {
-  /** The Megolm adapter (real, or a fake in tests). Null before the wasm exports land. */
-  adapter: MegolmAdapter | null;
   /** Our nick on the network now. */
   ownNick: string;
   /** This device's did: the `from` of a channel `:msg`. */
   ownDid: string;
   /** The clock (ms since epoch). */
   now: () => number;
+  /** Signs a channel message's text with this device's Ed25519 key. */
+  sign: ChannelSigner;
+  /** Whether a channel message's signature is its sender's device key's, pinned. */
+  verify: ChannelVerifier;
+  /**
+   * The roster of `channel`, as the caller holds it, or undefined when the
+   * caller has none: the gkey staleness check and the periodic-rotation
+   * election skip when it is missing (the audit is what enforces them).
+   */
+  rosterFor?: (channel: string) => string[] | undefined;
   /**
    * Sends `inner` to `nick`'s DM through the Olm engine, on the text
    * lane, and answers the outbound payloads. The engine queues for keys
@@ -136,21 +156,20 @@ function emptyResult(): ChannelE2eResult {
 
 const foldOf = (nick: string): string => fold(nick);
 
-/** The roster without `except`, in display spelling, folded-nick order be damned. */
+/** The roster without `except`, in display spelling. */
 function others(members: string[], except: string): string[] {
   return members.filter((m) => foldOf(m) !== foldOf(except));
 }
 
 /**
- * The one member that sends the epoch key to a newcomer: the folded-nick
- * first of the roster other than the newcomer. Deterministic off a roster
- * every member holds, so exactly one member sends. Undefined when the
- * roster names nobody else (we are alone: nothing to send to).
+ * The one member that rotates an epoch: the folded-nick first of
+ * `holders` (already folded). Deterministic off a holder set every member
+ * holds, so exactly one member rotates without coordinating. Undefined
+ * when nobody holds the epoch.
  */
-export function designatedSender(members: string[], joined: string): string | undefined {
-  const rest = others(members, joined).map((m) => ({ folded: foldOf(m), display: m }));
-  rest.sort((a, b) => (a.folded < b.folded ? -1 : a.folded > b.folded ? 1 : 0));
-  return rest[0]?.display;
+export function designatedRotator(holders: string[]): string | undefined {
+  const sorted = [...holders].sort();
+  return sorted[0];
 }
 
 /** The listeners for live channel E2E events (the channel UI, once it renders them). */
@@ -183,17 +202,8 @@ export function distributeKey(
   members: string[],
 ): ChannelE2eResult {
   const res = emptyResult();
-  if (deps.adapter === null) {
-    res.events.push({
-      kind: "channel_dropped",
-      channel,
-      reason: "megolm-unavailable",
-      detail: "no Megolm adapter: the epoch key cannot be made or sent",
-    });
-    return res;
-  }
-  if (outboundFor(groups, channel) === undefined) {
-    const created = createOutbound(groups, deps.adapter, channel, deps.now());
+  if (epochFor(groups, channel) === undefined) {
+    const created = createEpoch(groups, channel, members, deps.now());
     res.events.push({
       kind: "channel_rotated",
       channel,
@@ -202,7 +212,7 @@ export function distributeKey(
       reason: "created",
     });
   }
-  const inner = gkeyInner(groups, deps.adapter, channel);
+  const inner = gkeyInner(groups, channel);
   if (inner === undefined) return res;
   for (const member of others(members, deps.ownNick)) {
     res.outbound.push(...deps.sendDm(member, { ...inner }));
@@ -212,11 +222,63 @@ export function distributeKey(
 }
 
 /**
+ * Broadcasts a key request for `channel` on the channel itself: the ask
+ * a newcomer makes when it holds no epoch. The caller flushes the
+ * outbound; every member with an open cic who holds the epoch answers
+ * with a gkey DM (`onKeyreq`). Nothing when an epoch is already held:
+ * there is nothing to ask for.
+ */
+export function requestKey(
+  deps: ChannelE2eDeps,
+  groups: GroupSessionsState,
+  channel: string,
+): ChannelE2eResult {
+  const res = emptyResult();
+  if (epochFor(groups, channel) !== undefined) return res;
+  res.events.push({ kind: "channel_key_requested", channel });
+  res.outbound.push({
+    target: channel,
+    verb: "msg",
+    from: deps.ownDid,
+    to: "*",
+    payload: keyreqPayload(channel),
+    priority: "text",
+  });
+  return res;
+}
+
+/**
+ * A key request on `channel` from `from`, as the drain delivered it: the
+ * first member with an open cic who holds the epoch answers with a gkey
+ * DM. Duplicate answers are harmless (the first valid import wins), so
+ * the answer is throttled per asker, not elected: every holder answers
+ * once per asker per minute. Nothing when no epoch is held.
+ */
+export function onKeyreq(
+  deps: ChannelE2eDeps,
+  groups: GroupSessionsState,
+  channel: string,
+  from: string,
+): ChannelE2eResult {
+  const res = emptyResult();
+  const inner = gkeyInner(groups, channel);
+  if (inner === undefined) return res;
+  if (foldOf(from) === foldOf(deps.ownNick)) return res;
+  if (!keyreqAnswerDue(groups, channel, from, deps.now())) return res;
+  markKeyreqAnswered(groups, channel, from, deps.now());
+  res.outbound.push(...deps.sendDm(from, { ...inner }));
+  res.events.push({ kind: "channel_key_sent", channel, to: from, sid: inner.sid });
+  return res;
+}
+
+/**
  * A member joined `channel` (the roster `members` is after the join).
- * We send the epoch key only when we are the designated sender, and
- * only to the newcomer: the members who already hold the epoch need no
- * copy of it. A join of our own nick sends nothing (we wait for the
- * key). Nothing is sent when the roster names nobody else.
+ * Our own join drops the epoch held before the leave: it predates the
+ * rotation the others did without us, so it is dead, and the newcomer
+ * asks for the key again through the channel UI (`requestKey`) — never
+ * here, so a cleartext channel's joins stay silent. A join of anyone
+ * else sends nothing: they ask with a key request, and the holders
+ * answer it.
  */
 export function onMemberJoined(
   deps: ChannelE2eDeps,
@@ -225,18 +287,30 @@ export function onMemberJoined(
   joined: string,
   members: string[],
 ): ChannelE2eResult {
-  if (foldOf(joined) === foldOf(deps.ownNick)) return emptyResult();
-  const sender = designatedSender(members, joined);
-  if (sender === undefined || foldOf(sender) !== foldOf(deps.ownNick)) return emptyResult();
-  return distributeKey(deps, groups, channel, [joined]);
+  void members;
+  const res = emptyResult();
+  if (foldOf(joined) !== foldOf(deps.ownNick)) return res;
+  if (epochFor(groups, channel) === undefined) return res;
+  dropEpoch(groups, channel);
+  res.events.push({
+    kind: "channel_dropped",
+    channel,
+    reason: "rejoined",
+    detail: "the epoch held before the leave is dead; ask for the key again",
+  });
+  return res;
 }
 
 /**
  * A member left `channel` (PART, KICK, or QUIT; the roster `members` is
  * after the leave). Our own leave drops the channel outright. Any other
- * leave rotates our epoch and distributes the new key pairwise to every
- * remaining member; the departed member's inbound sessions are dropped,
- * and our old outbound pickle is deleted by the rotation itself.
+ * leave rotates the epoch only when the departed member held the key AND
+ * this device is the designated rotator: the folded-nick-first remaining
+ * holder mints the new epoch and distributes it pairwise to every
+ * remaining member. A leave of someone who never held the key rotates
+ * nothing, and a channel with no epoch rotates nothing either — the
+ * rotation is gated on the epoch, so a cleartext channel's joins and
+ * parts never mint one.
  */
 export function onMemberLeft(
   deps: ChannelE2eDeps,
@@ -251,17 +325,15 @@ export function onMemberLeft(
     res.events.push({ kind: "channel_dropped", channel, reason: "own-leave" });
     return res;
   }
-  if (deps.adapter === null) {
-    res.events.push({
-      kind: "channel_dropped",
-      channel,
-      reason: "megolm-unavailable",
-      detail: "no Megolm adapter: the epoch cannot rotate on a member leaving",
-    });
-    return res;
-  }
-  dropInboundFrom(groups, channel, left);
-  const rotated = rotateOutboundForLeave(groups, deps.adapter, channel, deps.now());
+  const held = epochFor(groups, channel);
+  if (held === undefined) return res;
+  if (!held.holders.includes(foldOf(left))) return res;
+  const remaining = others(members, deps.ownNick);
+  const remainingHolders = held.holders.filter((holder) =>
+    members.some((m) => foldOf(m) === holder),
+  );
+  if (designatedRotator(remainingHolders) !== foldOf(deps.ownNick)) return res;
+  const rotated = rotateEpochForLeave(groups, channel, members, deps.now());
   res.events.push({
     kind: "channel_rotated",
     channel,
@@ -269,12 +341,13 @@ export function onMemberLeft(
     newSid: rotated.newSid,
     reason: "member-left",
   });
-  for (const member of others(members, deps.ownNick)) {
+  for (const member of remaining) {
     const inner = {
       t: "gkey",
       ch: fold(channel),
       sid: rotated.newSid,
       key: rotated.key,
+      holders: members.map((m) => fold(m)),
     };
     res.outbound.push(...deps.sendDm(member, inner));
     res.events.push({ kind: "channel_key_sent", channel, to: member, sid: rotated.newSid });
@@ -283,48 +356,65 @@ export function onMemberLeft(
 }
 
 /**
- * Sends `body` to `channel`, encrypted under this device's epoch. When
- * no epoch exists this device becomes its owner: the key is distributed
- * pairwise to the roster first, and the channel message follows, so the
- * members can read it. The channel `:msg` itself carries no `ref` or
- * `tag`: it has no DM row to move, and the caller must not mistake it
- * for one (`client.ts` flushes untagged payloads without row changes).
- * The caller flushes the outbound, gkey DMs first, in order.
+ * The audit (§4f): `channel`'s epoch holder set against the true roster
+ * `members`. Anyone in the set who is no longer in the roster triggers
+ * rotation — the new epoch goes pairwise to the roster that remains —
+ * which covers an exit that happened while every cic was closed. Nothing
+ * when the holders are all still members, or no epoch is held.
  */
-export function sendChannel(
+export function auditEpochRotation(
+  deps: ChannelE2eDeps,
+  groups: GroupSessionsState,
+  channel: string,
+  members: string[],
+): ChannelE2eResult {
+  const res = emptyResult();
+  if (!epochHoldersStale(groups, channel, members)) return res;
+  const rotated = rotateEpochForLeave(groups, channel, members, deps.now());
+  res.events.push({
+    kind: "channel_rotated",
+    channel,
+    oldSid: rotated.oldSid,
+    newSid: rotated.newSid,
+    reason: "member-left",
+  });
+  const inner = gkeyInner(groups, channel);
+  if (inner === undefined) return res;
+  for (const member of others(members, deps.ownNick)) {
+    res.outbound.push(...deps.sendDm(member, { ...inner }));
+    res.events.push({ kind: "channel_key_sent", channel, to: member, sid: inner.sid });
+  }
+  return res;
+}
+
+/**
+ * Sends `body` to `channel`, encrypted under the channel's epoch. The
+ * holder set is audited against the roster first: a departed holder
+ * rotates the epoch before anything goes under it. When no epoch exists
+ * this device becomes its owner: the key is distributed pairwise to the
+ * roster first, and the channel message follows, so the members can read
+ * it. The channel `:msg` itself carries no `ref` or `tag`: it has no DM
+ * row to move, and the caller must not mistake it for one (`client.ts`
+ * flushes untagged payloads without row changes). The caller flushes the
+ * outbound, gkey DMs first, in order.
+ */
+export async function sendChannel(
   deps: ChannelE2eDeps,
   groups: GroupSessionsState,
   channel: string,
   body: string,
   members: string[],
-): ChannelE2eResult {
+): Promise<ChannelE2eResult> {
   const res = emptyResult();
-  if (deps.adapter === null) {
-    res.events.push({
-      kind: "channel_dropped",
-      channel,
-      reason: "megolm-unavailable",
-      detail: "no Megolm adapter: the channel message cannot be encrypted",
-    });
-    return res;
-  }
-  const encrypted = encryptChannel(groups, deps.adapter, channel, body, deps.now());
-  if (encrypted.created) {
-    // The epoch is new: nobody holds its key yet. Distribute it first,
-    // before the message that needs it.
+  const audited = auditEpochRotation(deps, groups, channel, members);
+  res.events.push(...audited.events);
+  res.outbound.push(...audited.outbound);
+  if (epochFor(groups, channel) === undefined) {
     const distributed = distributeKey(deps, groups, channel, members);
-    // `distributeKey` sees the epoch already exists, so it sends the key
-    // without re-creating it; its `created` event is ours to report.
-    res.events.push({
-      kind: "channel_rotated",
-      channel,
-      oldSid: null,
-      newSid: encrypted.sid,
-      reason: "created",
-    });
     res.events.push(...distributed.events);
     res.outbound.push(...distributed.outbound);
   }
+  const encrypted = await encryptChannel(groups, channel, body, members, deps.sign, deps.now());
   res.outbound.push({
     target: channel,
     verb: "msg",
@@ -337,78 +427,138 @@ export function sendChannel(
 }
 
 /**
- * A channel `:msg` from `from` on `channel`, as grappa delivered it:
- * decrypts it, consumes a rotation inside it, or surfaces it as
+ * A channel `:msg` from `from`'s device `fromDid` on `channel`, as grappa
+ * delivered it: a key request is answered with the epoch key, a message
+ * is decrypted, a rotation inside it is consumed, or it surfaces as
  * undecryptable. Our own messages are skipped (the send path showed
  * them). Never throws on wire input.
  */
-export function receiveChannel(
+export async function receiveChannel(
   deps: ChannelE2eDeps,
   groups: GroupSessionsState,
   channel: string,
   from: string,
+  fromDid: string,
   payloadText: string,
-): ChannelE2eEvent[] {
-  if (foldOf(from) === foldOf(deps.ownNick)) return [];
-  if (deps.adapter === null) {
-    return [
-      {
-        kind: "channel_undecryptable",
-        channel,
-        from,
-        sid: null,
-        reason: "megolm-unavailable",
-      },
-    ];
+): Promise<ChannelE2eResult> {
+  if (foldOf(from) === foldOf(deps.ownNick)) return emptyResult();
+  let decoded: Record<string, unknown>;
+  try {
+    decoded = decodePayload(payloadText);
+  } catch {
+    return {
+      events: [
+        {
+          kind: "channel_undecryptable",
+          channel,
+          from,
+          sid: null,
+          reason: "bad-payload",
+        },
+      ],
+      outbound: [],
+    };
   }
-  const decrypted = decryptChannel(groups, deps.adapter, channel, from, payloadText, deps.now());
+  if (decoded.t === "keyreq") {
+    try {
+      const keyreq = parseChannelKeyreqPayload(decoded);
+      if (fold(keyreq.ch) !== fold(channel)) {
+        return {
+          events: [
+            {
+              kind: "channel_undecryptable",
+              channel,
+              from,
+              sid: null,
+              reason: "channel-mismatch",
+            },
+          ],
+          outbound: [],
+        };
+      }
+    } catch (err) {
+      if (!(err instanceof PayloadError)) throw err;
+      return {
+        events: [
+          {
+            kind: "channel_undecryptable",
+            channel,
+            from,
+            sid: null,
+            reason: "bad-payload",
+          },
+        ],
+        outbound: [],
+      };
+    }
+    return onKeyreq(deps, groups, channel, from);
+  }
+  const decrypted = await decryptChannel(
+    groups,
+    channel,
+    from,
+    fromDid,
+    payloadText,
+    deps.verify,
+    deps.now(),
+  );
   if (!decrypted.ok) {
-    return [
+    return {
+      events: [
+        {
+          kind: "channel_undecryptable",
+          channel,
+          from,
+          sid: decrypted.sid,
+          reason: decrypted.reason,
+        },
+      ],
+      outbound: [],
+    };
+  }
+  if (decrypted.kind === "rotated") {
+    return {
+      events: [
+        {
+          kind: "channel_key_received",
+          channel,
+          from,
+          sid: decrypted.newSid,
+        },
+      ],
+      outbound: [],
+    };
+  }
+  return {
+    events: [
       {
-        kind: "channel_undecryptable",
+        kind: "channel_received",
         channel,
         from,
         sid: decrypted.sid,
-        reason: decrypted.reason,
+        counter: decrypted.counter,
+        body: decrypted.body,
       },
-    ];
-  }
-  if (decrypted.kind === "rotated") {
-    return [
-      {
-        kind: "channel_key_received",
-        channel,
-        from,
-        sid: decrypted.newSid,
-      },
-    ];
-  }
-  return [
-    {
-      kind: "channel_received",
-      channel,
-      from,
-      sid: decrypted.sid,
-      index: decrypted.index,
-      body: decrypted.body,
-    },
-  ];
+    ],
+    outbound: [],
+  };
 }
 
 /**
- * A gkey DM from `from`, as the Olm engine delivered its inner message:
- * imports the inbound session it carries. A re-sent key is a no-op
- * (the stored ratchet is further along); a key for another session id,
- * or one Megolm refuses, is dropped, never stored. Never throws on wire
- * input.
+ * A gkey DM from `from`'s device `fromDid`, as the Olm engine delivered
+ * its inner message: imports the epoch it carries. A re-sent key is a
+ * no-op; a key for an epoch whose holders name someone no longer in the
+ * roster is stale and is dropped, never stored; a key that is not an
+ * epoch key is dropped, never stored. Never throws on wire input.
  */
 export function receiveGkey(
   deps: ChannelE2eDeps,
   groups: GroupSessionsState,
   inner: Record<string, unknown>,
   from: string,
+  fromDid: string,
 ): ChannelE2eEvent[] {
-  let gkey: { t: "gkey"; ch: string; sid: string; key: string };
+  let gkey: { t: "gkey"; ch: string; sid: string; key: string; holders: string[] };
   try {
     gkey = parseGkeyInner(inner);
   } catch (err) {
@@ -422,26 +572,29 @@ export function receiveGkey(
       },
     ];
   }
-  if (deps.adapter === null) {
-    return [
-      {
-        kind: "channel_dropped",
-        channel: gkey.ch,
-        reason: "megolm-unavailable",
-        detail: "no Megolm adapter: the gkey cannot be imported",
-      },
-    ];
+  const held = epochFor(groups, gkey.ch);
+  if (held !== undefined && held.sid !== gkey.sid) {
+    // Replacing an epoch: a gkey whose holders name someone no longer in
+    // the roster is stale — the epoch it opens is already dead. A
+    // newcomer with no epoch takes any well-formed key; the audit is what
+    // rotates it if the holders prove stale once the roster is in.
+    const roster = deps.rosterFor?.(gkey.ch);
+    if (
+      roster !== undefined &&
+      gkey.holders.some((holder) => !roster.some((m) => foldOf(m) === holder))
+    ) {
+      return [
+        {
+          kind: "channel_dropped",
+          channel: gkey.ch,
+          reason: "stale-gkey",
+          detail: "its holders name someone no longer in the roster",
+        },
+      ];
+    }
   }
   try {
-    const imported = importInbound(
-      groups,
-      deps.adapter,
-      gkey.ch,
-      from,
-      gkey.sid,
-      gkey.key,
-      deps.now(),
-    );
+    const imported = importEpoch(groups, gkey.ch, gkey, fromDid, deps.now());
     return imported === "imported"
       ? [{ kind: "channel_key_received", channel: gkey.ch, from, sid: gkey.sid }]
       : [];
@@ -460,19 +613,25 @@ export function receiveGkey(
 /**
  * The periodic rotations due now, across `channels`: one channel `:msg`
  * each, the new key encrypted under the old key. A channel whose epoch
- * never spoke, or is not due, is skipped. The caller flushes the
- * outbound; each payload is untagged (no DM row), as in `sendChannel`.
+ * never spoke, or is not due, is skipped — and so is one this device
+ * does not rotate: the folded-nick-first holder rotates, so exactly one
+ * member sends the rotation. The caller flushes the outbound; each
+ * payload is untagged (no DM row), as in `sendChannel`.
  */
-export function rotateDue(
+export async function rotateDue(
   deps: ChannelE2eDeps,
   groups: GroupSessionsState,
   channels: string[],
-): ChannelE2eResult {
+): Promise<ChannelE2eResult> {
   const res = emptyResult();
-  if (deps.adapter === null) return res;
   for (const channel of channels) {
     if (!rotationDue(groups, channel, deps.now())) continue;
-    const rotated = buildPeriodicRotation(groups, deps.adapter, channel, deps.now());
+    const held = epochFor(groups, channel);
+    if (held === undefined) continue;
+    const roster = deps.rosterFor?.(channel);
+    if (roster === undefined) continue;
+    if (designatedRotator(held.holders) !== foldOf(deps.ownNick)) continue;
+    const rotated = await buildPeriodicRotation(groups, channel, deps.sign, deps.now());
     if (rotated === null) continue;
     res.events.push({
       kind: "channel_rotated",
@@ -493,7 +652,7 @@ export function rotateDue(
   return res;
 }
 
-/** The channels this device holds an outbound epoch for. */
+/** The channels this device holds an epoch for. */
 export function channelsWithEpoch(groups: GroupSessionsState): string[] {
-  return Object.keys(groups.outbound);
+  return Object.keys(groups.epochs);
 }
