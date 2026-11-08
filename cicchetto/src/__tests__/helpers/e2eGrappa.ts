@@ -86,6 +86,8 @@ export type DeviceMessage = {
   msgid: string;
   payload: string;
   own: boolean;
+  /** The folded channel the message was sent to (v63), null for a DM. */
+  channel: string | null;
 };
 
 /** The doors of one device. */
@@ -221,6 +223,8 @@ export class Grappa {
   pageSize = PAGE;
   /** Every send the door took, with who sent it and the msgid it named it. */
   sends: (DoorSend & { by: string; msgid: string })[] = [];
+  /** The channels, by folded name, and the folded nicks on each. */
+  private readonly channels = new Map<string, Set<string>>();
   refuse: (o: DoorSend) => DoorRefusal | undefined = () => undefined;
   /** A KEYREQ the door takes and nobody answers. */
   unanswered: (o: DoorSend) => boolean = () => false;
@@ -276,6 +280,7 @@ export class Grappa {
           msgid: m.msgid,
           payload: m.payload,
           own: m.own,
+          channel: m.channel ?? null,
         })),
       ack: async (ids) => {
         if (this.failAck) throw new Error("ack refused");
@@ -292,6 +297,29 @@ export class Grappa {
         ),
       devices: () => devicesAnswer(this.api.listE2eDevices(nick, "")),
     };
+  }
+
+  /** `nick` joins `channel`: its devices receive what is sent there. */
+  joinChannel(channel: string, nick: string): void {
+    const key = fold(channel);
+    const members = this.channels.get(key) ?? new Set<string>();
+    members.add(fold(nick));
+    this.channels.set(key, members);
+  }
+
+  /** `nick` leaves `channel`: its devices stop receiving what is sent there. */
+  leaveChannel(channel: string, nick: string): void {
+    const key = fold(channel);
+    const members = this.channels.get(key);
+    if (members === undefined) return;
+    members.delete(fold(nick));
+    if (members.size === 0) this.channels.delete(key);
+  }
+
+  /** The folded nicks on `channel`, in join order, or undefined when nobody joined it. */
+  channelMembers(channel: string): string[] | undefined {
+    const members = this.channels.get(fold(channel));
+    return members === undefined ? undefined : [...members];
   }
 
   private subject(nick: string): Subject {
@@ -432,19 +460,44 @@ export class Grappa {
       return { msgid };
     }
     let reached = false;
-    for (const device of this.listed(o.target)) {
-      if (o.to !== "*" && o.to !== device.did) continue;
-      reached = true;
-      device.inbox.push({
-        id: this.nextId++,
-        from: by,
-        from_did: o.from,
-        to_did: device.did,
-        verb: o.verb as ReceiveVerb,
-        msgid,
-        payload: o.payload,
-        own: false,
-      });
+    // A channel target (v63): the message fans out to every listed
+    // device of every member, with the folded channel named, own on the
+    // sender's own devices. A channel nobody joined reaches nobody, and
+    // the NACK below answers it like any other unreached message.
+    const members = this.channels.get(fold(o.target));
+    if (members !== undefined) {
+      for (const nick of members) {
+        for (const device of this.listed(nick)) {
+          if (o.to !== "*" && o.to !== device.did) continue;
+          reached = true;
+          device.inbox.push({
+            id: this.nextId++,
+            from: by,
+            from_did: o.from,
+            to_did: device.did,
+            verb: o.verb as ReceiveVerb,
+            msgid,
+            payload: o.payload,
+            own: fold(nick) === fold(by),
+            channel: fold(o.target),
+          });
+        }
+      }
+    } else {
+      for (const device of this.listed(o.target)) {
+        if (o.to !== "*" && o.to !== device.did) continue;
+        reached = true;
+        device.inbox.push({
+          id: this.nextId++,
+          from: by,
+          from_did: o.from,
+          to_did: device.did,
+          verb: o.verb as ReceiveVerb,
+          msgid,
+          payload: o.payload,
+          own: false,
+        });
+      }
     }
     // grappa's own NACK (`Session.Server`'s `nack_unreadable/3`), not a send.
     if (!reached && (o.verb === "pkmsg" || o.verb === "msg")) {

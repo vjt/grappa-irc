@@ -92,6 +92,10 @@ const {
   syncIdentity,
 } = await import("../lib/e2e/identity");
 const chats = await import("../lib/encryptedChats");
+const { applyPresenceEvent, seedMembers } = await import("../lib/members");
+const { __resetServerProtocolForTests, setServerProtocol } = await import(
+  "../lib/serverProtocol"
+);
 
 const ME = { kind: "user", id: "0b5e" };
 
@@ -1405,5 +1409,119 @@ describe("trustOf", () => {
     expect(chats.trustOf([row("key_alarm", "1"), row("verified", "2")], peer(true))).toBe(
       "verified",
     );
+  });
+});
+
+// Channel E2E through the glue: the presence subscription drives the
+// client's rotation, and a roster seed drives its audit. The fake grappa
+// carries the channel (`joinChannel`); the members store carries the
+// roster; the protocol version is the module signal.
+describe("encrypted chats, channel presence", () => {
+  const CHANNEL = "#grappa";
+
+  /** Mounts the glue, establishes the DM session, and sends the first channel message. */
+  async function established() {
+    const dispose = createRoot((dispose) => {
+      chats.mountEncryptedChats();
+      return dispose;
+    });
+    await chats.drainE2e(net.slug);
+    const b = await bob();
+    await b.client.send(b.ctx, net.nick, "ciao alice");
+    await b.client.drain(b.ctx);
+    await chats.drainE2e(net.slug);
+
+    const key = channelKey(net.slug, CHANNEL);
+    seedMembers(key, [
+      { nick: "alice", modes: [] },
+      { nick: "Bob", modes: [] },
+    ]);
+    grappa.joinChannel(CHANNEL, "alice");
+    grappa.joinChannel(CHANNEL, "Bob");
+    setServerProtocol(63);
+    await chats.sendChannelEncrypted(net.slug, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
+    return { dispose, key };
+  }
+
+  function presence(key: string, kind: "join" | "part", sender: string) {
+    applyPresenceEvent(
+      key as never,
+      {
+        id: 1,
+        network: net.slug,
+        channel: CHANNEL,
+        server_time: 0,
+        kind,
+        sender,
+        body: null,
+        meta: {},
+      },
+      "ascii",
+    );
+  }
+
+  it("a join on an encrypted channel sends nothing, a leave rotates it", async () => {
+    const { dispose, key } = await established();
+    try {
+      const afterEpoch = grappa.sends.length;
+
+      // Carol joins: the newcomer asks with a key request, nobody sends
+      // the key unasked.
+      presence(key, "join", "carol");
+      await vi.waitFor(() => expect(grappa.sends.length).toBe(afterEpoch));
+
+      // Bob leaves: alice is the folded-nick-first remaining holder, so
+      // she rotates, and the new key goes pairwise to carol (who holds
+      // no session yet, so the engine asks for her keys first).
+      presence(key, "part", "Bob");
+      await vi.waitFor(() => expect(grappa.sends.length).toBeGreaterThan(afterEpoch));
+      expect(grappa.sends.at(-1)).toEqual(
+        expect.objectContaining({ target: "carol", verb: "keyreq" }),
+      );
+    } finally {
+      dispose();
+      __resetServerProtocolForTests();
+    }
+  });
+
+  it("a roster seed without a holder rotates the epoch", async () => {
+    const { dispose, key } = await established();
+    try {
+      // Carol joins, then Bob leaves, so the holders are alice and carol.
+      presence(key, "join", "carol");
+      await vi.waitFor(() => expect(grappa.sends.length).toBeGreaterThan(0));
+      const afterLeave = grappa.sends.length;
+      presence(key, "part", "Bob");
+      await vi.waitFor(() => expect(grappa.sends.length).toBeGreaterThan(afterLeave));
+
+      // A seed is the audit's second chance: carol left while every cic
+      // was closed, so the seed names alice and dave instead — the stale
+      // holder rotates the epoch, and the new key goes pairwise to dave.
+      const afterRotation = grappa.sends.length;
+      seedMembers(key, [
+        { nick: "alice", modes: [] },
+        { nick: "dave", modes: [] },
+      ]);
+      await vi.waitFor(() => expect(grappa.sends.length).toBeGreaterThan(afterRotation));
+      expect(grappa.sends.at(-1)).toEqual(
+        expect.objectContaining({ target: "dave", verb: "keyreq" }),
+      );
+    } finally {
+      dispose();
+      __resetServerProtocolForTests();
+    }
+  });
+
+  it("below protocol 63 a leave rotates nothing", async () => {
+    const { dispose, key } = await established();
+    try {
+      const afterEpoch = grappa.sends.length;
+      setServerProtocol(62);
+      presence(key, "part", "Bob");
+      await vi.waitFor(() => expect(grappa.sends.length).toBe(afterEpoch));
+    } finally {
+      dispose();
+      __resetServerProtocolForTests();
+    }
   });
 });
