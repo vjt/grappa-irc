@@ -65,6 +65,10 @@ export const GROUP_ROTATION_INTERVAL_MS = 86_400_000;
 export const REPLAY_WINDOW = 128;
 /** A member who asked for the key is answered at most this often (ms): duplicate answers are harmless, but not free. */
 export const KEYREQ_ANSWER_THROTTLE_MS = 60_000;
+/** How many session-less channel rows are held for retry in total: the cap keeps the hold bounded. */
+export const MAX_HELD_ROWS = 32;
+/** How long a held row waits for its key (ms): an hour, then it expires and is reported, never silently lost. */
+export const HELD_ROW_TTL_MS = 3_600_000;
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -109,20 +113,41 @@ export type StoredEpoch = {
 };
 
 /**
+ * A channel row that arrived before its epoch key: held for retry, not
+ * dropped. `channel` is the folded channel name, `sid` the epoch the row
+ * names, `from`/`fromDid` its sender, `payload` the wire payload as
+ * delivered, `receivedAt` when it arrived (ms since epoch). The drain
+ * retries held rows when the key arrives (`takeHeldRows`) and expires
+ * the ones that waited too long (`expireHeldRows`).
+ */
+export type HeldRow = {
+  channel: string;
+  sid: string;
+  from: string;
+  fromDid: string;
+  payload: string;
+  receivedAt: number;
+};
+
+/**
  * The epochs, as `E2eState.groups` holds them. `epochs` is keyed by folded
  * channel name; `keyreqAnsweredAt` by `${folded channel}:${folded asker}`,
  * the last time this device answered that asker's key request on that
- * channel. A channel name is folded (`fold`) because §4f's `ch` is the
+ * channel; `keyreqSentAt` by folded channel, the last time this device
+ * broadcast a key request for it; `held` is the session-less rows held
+ * for retry. A channel name is folded (`fold`) because §4f's `ch` is the
  * folded name.
  */
 export type GroupSessionsState = {
   v: 2;
   epochs: Record<string, StoredEpoch>;
   keyreqAnsweredAt: Record<string, number>;
+  keyreqSentAt: Record<string, number>;
+  held: HeldRow[];
 };
 
 export function newGroupSessionsState(): GroupSessionsState {
-  return { v: 2, epochs: {}, keyreqAnsweredAt: {} };
+  return { v: 2, epochs: {}, keyreqAnsweredAt: {}, keyreqSentAt: {}, held: [] };
 }
 
 /** The epoch held for `channel`, if any. */
@@ -173,6 +198,83 @@ export function markKeyreqAnswered(
   state.keyreqAnsweredAt[`${fold(channel)}:${fold(asker)}`] = now;
 }
 
+/**
+ * Records that this device broadcast a key request for `channel` now: a
+ * first epoch is imported only while such a request is outstanding, so a
+ * key nobody asked for never arms the channel. A record sealed before
+ * this field existed opens without it (`accountStore` spreads
+ * `newState()` underneath, but a hand-built state may still lack it),
+ * so the map is defaulted, never assumed.
+ */
+export function markKeyreqSent(state: GroupSessionsState, channel: string, now: number): void {
+  const sent = state.keyreqSentAt ?? {};
+  sent[fold(channel)] = now;
+  state.keyreqSentAt = sent;
+}
+
+/** When this device last broadcast a key request for `channel`, if ever. */
+export function keyreqSentAtFor(state: GroupSessionsState, channel: string): number | undefined {
+  return state.keyreqSentAt?.[fold(channel)];
+}
+
+/** Forgets this device's outstanding key request for `channel`, if any. */
+function clearKeyreqSent(state: GroupSessionsState, channel: string): void {
+  const sent = state.keyreqSentAt ?? {};
+  delete sent[fold(channel)];
+  state.keyreqSentAt = sent;
+}
+
+/**
+ * The rows held for retry, defaulting a record sealed before the field
+ * existed to an empty list.
+ */
+function heldRows(state: GroupSessionsState): HeldRow[] {
+  const rows = state.held ?? [];
+  state.held = rows;
+  return rows;
+}
+
+/**
+ * Holds `row` for retry: a channel row that arrived before its key. The
+ * row is stored under its folded channel name. Past the cap the oldest
+ * rows are dropped, and returned — never silently — so the caller can
+ * surface them.
+ */
+export function holdRow(state: GroupSessionsState, row: HeldRow): HeldRow[] {
+  const rows = heldRows(state);
+  rows.push({ ...row, channel: fold(row.channel) });
+  const dropped: HeldRow[] = [];
+  while (rows.length > MAX_HELD_ROWS) {
+    const oldest = rows.shift();
+    if (oldest !== undefined) dropped.push(oldest);
+  }
+  return dropped;
+}
+
+/**
+ * Takes the rows held under `channel` and `sid`: the key just arrived,
+ * so the drain retries them now. They leave the hold.
+ */
+export function takeHeldRows(state: GroupSessionsState, channel: string, sid: string): HeldRow[] {
+  const rows = heldRows(state);
+  const taken = rows.filter((r) => fold(r.channel) === fold(channel) && r.sid === sid);
+  state.held = rows.filter((r) => !(fold(r.channel) === fold(channel) && r.sid === sid));
+  return taken;
+}
+
+/**
+ * Expires the held rows older than `HELD_ROW_TTL_MS` at `now`: they
+ * waited too long for a key that never came. The expired rows are
+ * returned — never silently — so the caller can surface them; the fresh
+ * ones stay held.
+ */
+export function expireHeldRows(state: GroupSessionsState, now: number): HeldRow[] {
+  const rows = heldRows(state);
+  const expired = rows.filter((r) => now - r.receivedAt > HELD_ROW_TTL_MS);
+  state.held = rows.filter((r) => now - r.receivedAt <= HELD_ROW_TTL_MS);
+  return expired;
+}
+
 /** Stores `epoch` as `channel`'s epoch, replacing whatever was held. */
 function storeEpoch(state: GroupSessionsState, channel: string, epoch: StoredEpoch): StoredEpoch {
   state.epochs[fold(channel)] = epoch;
@@ -206,6 +308,9 @@ export function createEpoch(
 /** Deletes `channel`'s epoch: its key is never spoken or read again. */
 export function dropEpoch(state: GroupSessionsState, channel: string): void {
   delete state.epochs[fold(channel)];
+  // An outstanding request for the channel is answered by nothing now:
+  // the next key, if any, comes from a fresh ask.
+  clearKeyreqSent(state, channel);
 }
 
 /** Drops everything of `channel`: its epoch. We left. */
@@ -242,6 +347,8 @@ export function importEpoch(
     receivedFrom: fromDid,
     seen: {},
   });
+  // The key arrived: the request that asked for it is answered.
+  clearKeyreqSent(state, channel);
   return "imported";
 }
 
