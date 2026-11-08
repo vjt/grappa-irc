@@ -1836,7 +1836,7 @@ from either server, so keeping the filter does no harm. One difference
 remains: when every mention was muted, a new server sends no bundle,
 while an old one sends a bundle that the filter empties.
 
-### 5l. Channels in common with a nick (issue 2449)
+### 5l. Channels in common with a nick (issue 2449, v64)
 
 A query window shows the channels you share with the peer (KVIrc-style),
 next to the nick changes the window already shows. The read is a REST
@@ -1868,9 +1868,11 @@ reading has its presence paused (#1769), so a locally derived list
 would go stale for exactly the backgrounded channels — refetch on
 focus/resume instead of trusting the derivation while paused.
 
-The payload shape is additive, so `protocol_version` did not move. A
-server predating this endpoint 404s the route; treat that as "unknown",
-not "no channels in common".
+The payload shape is additive, but the protocol still moved to v64 on
+the #1393d rule: a new verb in `Session.Wire` changes the shape digest,
+and additivity describes what the server EMITS, not what a client
+REQUIRES. A server predating this endpoint 404s the route; treat that
+as "unknown", not "no channels in common".
 
 ## 6. Rate limiting & flood protection (#630)
 

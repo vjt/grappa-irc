@@ -1639,7 +1639,25 @@ defmodule Grappa.Protocol do
   # @min_protocol_version stays at 1: an older client ignores an unknown
   # `channel` field and shows the message as a DM from its sender —
   # degraded, not broken.
-  @protocol_version 63
+  #
+  # ---------------------------------------------------------------------------
+  # 64 — `GET /networks/:network_id/common-channels` (issue 2449)
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: the channels-in-common endpoint, whose payload is
+  # `SessionWire.common_channels_index_payload` (`%{channels: [String.t()]}`).
+  # Bumped on the #1393d rule: the shape moved (a new verb in Session.Wire),
+  # and the pin refused the digest while the number stood still — additivity
+  # describes what the server EMITS and says nothing about what a client
+  # REQUIRES, so the number moves even though the payload is additive.
+  #
+  # Checked for a collision before claiming 64: origin/main carries 63, and
+  # no open PR edits this file.
+  #
+  # @min_protocol_version stays at 1: an older client ignores the endpoint
+  # (it never calls it) and a server predating it 404s the route, which the
+  # client reads as "unknown", not "no channels in common".
+  @protocol_version 64
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1680,7 +1698,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 63
+  @spec version() :: 64
   def version, do: @protocol_version
 
   @doc """
