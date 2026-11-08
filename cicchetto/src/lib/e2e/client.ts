@@ -1264,7 +1264,7 @@ export function e2eClient(
     channelMembersChanged: (ctx, channel, joined, left, members) =>
       withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
         const deps = channelDeps(ctx, engine, account);
-        const res: ChannelE2eResult = { events: [], outbound: [] };
+        const res: ChannelE2eResult = { events: [], outbound: [], copies: [] };
         if (joined !== null) {
           const r = await onMemberJoined(deps, state.groups, channel, joined, members);
           res.events.push(...r.events);
@@ -1311,7 +1311,7 @@ export function e2eClient(
               state.groups,
               channelsWithEpoch(state.groups),
             )
-          : { events: [], outbound: [] };
+          : { events: [], outbound: [], copies: [] };
         const { report, refused } = await finish(
           ctx,
           engine,

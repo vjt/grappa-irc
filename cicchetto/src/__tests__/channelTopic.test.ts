@@ -29,6 +29,7 @@ vi.mock(import("../lib/api"), async (importOriginal) => {
 import { channelKey } from "../lib/channelKey";
 import {
   flattenTopicNewlines,
+  parseE2eTopicTag,
   type TopicEntry,
   topicJoinLine,
   topicJoinMeta,
@@ -348,5 +349,22 @@ describe("topicShowLine", () => {
     // Deliberate divergence from topicJoinLine, which trims and stays silent.
     expect(topicShowLine("#chan", entry({ text: "   " })).text).toBe("   ");
     expect(topicJoinLine("#chan", entry({ text: "   " }))).toBeNull();
+  });
+});
+
+describe("parseE2eTopicTag", () => {
+  it("reads the nick out of a topic that carries the tag", () => {
+    expect(parseE2eTopicTag("welcome [e2e:1 key-from=vjt-claude] be nice")).toBe("vjt-claude");
+    expect(parseE2eTopicTag("[e2e:1 key-from=alice]")).toBe("alice");
+    expect(parseE2eTopicTag("rules here [e2e:1 key-from=Bob]")).toBe("Bob");
+  });
+
+  it("answers null when the topic carries no tag", () => {
+    expect(parseE2eTopicTag("just a normal topic")).toBeNull();
+    expect(parseE2eTopicTag("")).toBeNull();
+    expect(parseE2eTopicTag("[e2e:1] no key holder named")).toBeNull();
+    expect(parseE2eTopicTag("[e2e:2 key-from=alice] wrong version")).toBeNull();
+    expect(parseE2eTopicTag("[e2e:1 key-from=] empty holder")).toBeNull();
+    expect(parseE2eTopicTag("[e2e:1 key-from =alice] spaced out")).toBeNull();
   });
 });
