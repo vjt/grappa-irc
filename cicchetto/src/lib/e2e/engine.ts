@@ -604,6 +604,16 @@ export class Engine {
   }
 
   /**
+   * The Ed25519 key of the device `did` bound under `master`, if that
+   * master vouches for it now: the key a channel message's signature is
+   * verified against. Undefined when the did is not one of the master's
+   * trusted devices — a sender this cic has no key for.
+   */
+  trustedDid(master: string, did: string): string | undefined {
+    return this.trustedDevices(master).find((device) => device.did === did)?.ed25519;
+  }
+
+  /**
    * Pins the master `master` to `nick` by hand: the one way a pin moves to
    * another master (`checkMaster` never does it). `verified` when the user
    * compared the key with the peer out of band and verified it (issue 2544:

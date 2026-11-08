@@ -1,42 +1,52 @@
-// Channel E2E (wire v3, CLIENT_PROTOCOL §4f) — the group session store:
-// one outbound Megolm session per channel (this device's epoch), and one
-// inbound session per (channel, sender, session id).
+// Channel E2E (wire v4, CLIENT_PROTOCOL §4f) — the epoch store: one AEAD
+// epoch per channel, shared by every member of the epoch.
 //
 // PERSISTENCE. The state lives in `E2eState.groups` (`engine.ts`), so it
 // is sealed with the Olm account in the same IndexedDB record, under the
-// same wrapping key, and stored in the same write as the ratchet step that
-// spent it — the exact pattern the Olm sessions follow (`accountStore.ts`:
+// same wrapping key, and stored in the same write as the step that spent
+// it — the exact pattern the Olm sessions follow (`accountStore.ts`:
 // one record, because the pieces change together). A reload therefore
-// keeps the epochs: without the stored pickles this device could decrypt
-// nothing of an epoch it had already joined, and its own outbound session
-// would fork a new epoch on every reload. A record sealed before this
-// field existed opens with an empty store (`accountStore` spreads
-// `newState()` underneath the stored state), so no migration is needed.
+// keeps the epochs: without the stored key this device could decrypt
+// nothing of an epoch it had already joined, and its own epoch would fork
+// a new one on every reload. A record sealed before this field existed
+// opens with an empty store (`accountStore` spreads `newState()`
+// underneath the stored state, and resets a groups object whose `v` is
+// not 2), so no migration is needed.
 //
-// WHAT A SESSION IS. An outbound session is stored by its pickle, the
-// same string the adapter's `pickle()` returns; an inbound one the same.
-// The pickle is written back after EVERY encrypt/decrypt: the ratchet
-// advanced, and the pickle from before the step cannot read what comes
-// after it. The store never holds a live wasm session between calls, so
-// no `free()` discipline leaks out of this module.
+// WHAT AN EPOCH IS. One record per channel: the epoch id (`sid`), the
+// 32-byte AES-GCM key (base64), when it was created, how many messages
+// went under it, this device's next counter, and the HOLDER SET — the
+// folded nicks of every member who received this epoch key. The holder
+// set is the audit input (§4f, F4): on cic open and before every send,
+// the client compares it with the true roster, and anyone in the set who
+// is no longer in the roster triggers rotation. There is no per-sender
+// store: a sender is just a device whose counter the epoch tracks.
 //
-// ROTATION, and why old keys die. One sender key per sender, one epoch
-// per session. A sender rotates on two triggers (see `channelE2e.ts`):
-// a member leaves, or the day passes. On rotation the old outbound
-// pickle is deleted outright — encrypting with it again would hand the
-// departed member new messages under a key they hold — and a sender's
-// old inbound sessions are dropped the moment a newer session id of
-// THEIRS arrives (supersede): their old epoch is dead, and keeping its
-// key would only let a replayed old message read again. Inbound sessions
-// of OTHER senders are untouched by a rotation: their epochs are theirs.
-// A departed member's inbound sessions are dropped on the leave itself:
-// nothing they send after leaving is read here. Rotation is only real if
-// clients delete old keys (§4f); this module is where that happens.
+// ROTATION, and why old keys die. One key per epoch. A member leaves, or
+// the day passes, and the epoch rotates: the old key is deleted outright
+// — encrypting with it again would hand the departed member new messages
+// under a key they hold — and the new key goes pairwise to the members
+// who remain. A gkey supersedes by ARRIVAL: a valid gkey for a different
+// epoch replaces the one held, whatever order the epochs were minted in.
+// Rotation is only real if clients delete old keys (§4f); this module is
+// where that happens. No keys are kept for channels left (`dropChannel`).
+//
+// REPLAY. The counter lives inside the signed, encrypted part, and the
+// envelope carries no plaintext counter at all. A receiver keeps, per
+// (channel, epoch, sender device), the highest counter accepted plus the
+// counters accepted in the window below it (`REPLAY_WINDOW`); a counter
+// at or below the high-water mark that was already seen, or below the
+// window, is refused as `replay`. The state is indexed on the sender
+// DEVICE (its did), never on the nick: a rename must not make a sender
+// unreadable, and two devices of one subject must not evict each other.
+// A re-delivery — the inbox is at-least-once — is refused by this state
+// before any plaintext is shown. The window bounds the state: at most
+// one entry per sender device, 128 counters each.
 
-import type { MegolmAdapter, MegolmInboundSession, MegolmOutboundSession } from "./megolm";
-import { megolmBytes } from "./megolm";
+import { decryptEpoch, encryptEpoch, isEpochKey, newEpochId, newEpochKey } from "./channelCrypto";
 import {
   type ChannelPayload,
+  channelSigText,
   decodePayload,
   encodePayload,
   fold,
@@ -51,81 +61,83 @@ import {
 
 /** A periodic rotation is due once an epoch is this old (ms): daily. */
 export const GROUP_ROTATION_INTERVAL_MS = 86_400_000;
+/** How many counters below the high-water mark a replay window keeps, per sender device. */
+export const REPLAY_WINDOW = 128;
+/** A member who asked for the key is answered at most this often (ms): duplicate answers are harmless, but not free. */
+export const KEYREQ_ANSWER_THROTTLE_MS = 60_000;
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
-/** This device's outbound session for a channel, as stored. */
-export type StoredGroupOutbound = {
-  /** The session id: the base64 of the session's signing key. */
-  sid: string;
-  /** The pickle AFTER the last encrypt (or the creation): the ratchet moved. */
-  pickle: string;
-  /** When the epoch was created (ms since epoch). */
-  createdAt: number;
-  /** How many messages this epoch encrypted: 0, it never spoke. */
-  messages: number;
+/** Signs `text` with this device's Ed25519 key: the `sig` of a channel `:msg`. */
+export type ChannelSigner = (text: string) => string;
+/**
+ * Whether `sig` is `nick`'s device `did`'s Ed25519 signature over `text`:
+ * the pinned device key for that did, verified with the wasm binding.
+ * False when the nick is not pinned, or the did is not one of its trusted
+ * devices — a message from a sender this cic has no key for does not verify.
+ */
+export type ChannelVerifier = (
+  nick: string,
+  did: string,
+  text: string,
+  sig: string,
+) => boolean;
+
+/** The counters already accepted from one sender device under one epoch. */
+export type ReplayState = {
+  /** The highest counter accepted from this device. -1 before the first. */
+  high: number;
+  /** The counters accepted in (`high` - `REPLAY_WINDOW`, `high`]. */
+  window: number[];
 };
 
-/** A sender's inbound session for a channel, as stored. */
-export type StoredGroupInbound = {
-  /** The session id it decrypts for. */
+/** This channel's epoch, as stored: the one key every member shares. */
+export type StoredEpoch = {
+  /** The epoch id: 16 random bytes, base64 unpadded. */
   sid: string;
-  /** The pickle AFTER the last decrypt: the ratchet moved. */
-  pickle: string;
-  /** When the session key arrived (ms since epoch). */
+  /** The 32-byte AES-GCM key, base64 unpadded. */
+  key: string;
+  /** When the epoch was created (ms since epoch). */
+  createdAt: number;
+  /** How many messages went under this epoch: 0, it never spoke. */
+  messages: number;
+  /** This device's next counter under this epoch: 0, it never spoke. */
+  counter: number;
+  /** The folded nicks of every member who received this epoch key. */
+  holders: string[];
+  /** When the key arrived (ms since epoch): the creation, for our own epochs. */
   receivedAt: number;
-  /**
-   * Chain indices already decrypted under this session. Replay
-   * detection lives HERE, not in the crypto: vodozemac's decrypt
-   * happily decrypts the same index twice (its `DecryptedMessage`
-   * carries `message_index` precisely so the caller can tell a replay
-   * from a new message), and its pickle keeps only the initial
-   * ratchet, so a replay would survive a reload too. A re-delivery —
-   * the inbox is at-least-once — is refused by this list before any
-   * decrypt runs. Epochs rotate daily and on leave, so the list stays
-   * a day's messages from one sender, at most.
-   */
-  seen: number[];
+  /** The did of the member whose gkey brought the key: null for our own epochs. */
+  receivedFrom: string | null;
+  /** The replay state per sender device did. */
+  seen: Record<string, ReplayState>;
 };
 
 /**
- * The group sessions, as `E2eState.groups` holds them. `outbound` is
- * keyed by folded channel name; `inbound` by folded channel, then the
- * sender's nick folded, then the session id. A channel name is folded
- * (`fold`) because §4f's `ch` is the folded name; a nick is folded the
- * way every E2E record folds one.
+ * The epochs, as `E2eState.groups` holds them. `epochs` is keyed by folded
+ * channel name; `keyreqAnsweredAt` by `${folded channel}:${folded asker}`,
+ * the last time this device answered that asker's key request on that
+ * channel. A channel name is folded (`fold`) because §4f's `ch` is the
+ * folded name.
  */
 export type GroupSessionsState = {
-  v: 1;
-  outbound: Record<string, StoredGroupOutbound>;
-  inbound: Record<string, Record<string, Record<string, StoredGroupInbound>>>;
+  v: 2;
+  epochs: Record<string, StoredEpoch>;
+  keyreqAnsweredAt: Record<string, number>;
 };
 
 export function newGroupSessionsState(): GroupSessionsState {
-  return { v: 1, outbound: {}, inbound: {} };
+  return { v: 2, epochs: {}, keyreqAnsweredAt: {} };
 }
 
-/** The outbound session held for `channel`, if any. */
-export function outboundFor(
-  state: GroupSessionsState,
-  channel: string,
-): StoredGroupOutbound | undefined {
-  return state.outbound[fold(channel)];
-}
-
-/** The inbound session held for `sender`'s `sid` on `channel`, if any. */
-export function inboundFor(
-  state: GroupSessionsState,
-  channel: string,
-  sender: string,
-  sid: string,
-): StoredGroupInbound | undefined {
-  return state.inbound[fold(channel)]?.[fold(sender)]?.[sid];
+/** The epoch held for `channel`, if any. */
+export function epochFor(state: GroupSessionsState, channel: string): StoredEpoch | undefined {
+  return state.epochs[fold(channel)];
 }
 
 /** Whether a periodic rotation of `channel`'s epoch is due. */
 export function rotationDue(state: GroupSessionsState, channel: string, now: number): boolean {
-  const held = outboundFor(state, channel);
+  const held = epochFor(state, channel);
   if (held === undefined) return false;
   // An epoch that never spoke has nothing to protect: rotating it only
   // churns keys every member must then import.
@@ -133,232 +145,191 @@ export function rotationDue(state: GroupSessionsState, channel: string, now: num
   return now - held.createdAt >= GROUP_ROTATION_INTERVAL_MS;
 }
 
-/**
- * A live outbound session on `stored`: the caller advances it and stores
- * its pickle again (`storeOutbound`), and frees it either way.
- */
-function withOutbound<T>(
-  adapter: MegolmAdapter,
-  stored: StoredGroupOutbound,
-  fn: (session: MegolmOutboundSession) => T,
-): T {
-  const session = adapter.restoreOutbound(stored.pickle);
-  try {
-    return fn(session);
-  } finally {
-    session.free();
-  }
-}
-
-/** A live inbound session on `stored`: the same discipline as `withOutbound`. */
-function withInbound<T>(
-  adapter: MegolmAdapter,
-  stored: StoredGroupInbound,
-  fn: (session: MegolmInboundSession) => T,
-): T {
-  const session = adapter.restoreInbound(stored.pickle);
-  try {
-    return fn(session);
-  } finally {
-    session.free();
-  }
-}
-
-/** Stores `session`'s pickle as `channel`'s outbound, counting one more message. */
-function storeOutbound(
+/** Whether `channel`'s epoch holder set names someone no longer in `roster`: the audit input (§4f). */
+export function epochHoldersStale(
   state: GroupSessionsState,
   channel: string,
-  session: MegolmOutboundSession,
-  createdAt: number,
-  messages: number,
-): StoredGroupOutbound {
-  const stored: StoredGroupOutbound = {
-    sid: session.sessionId(),
-    pickle: session.pickle(),
-    createdAt,
-    messages,
-  };
-  state.outbound[fold(channel)] = stored;
-  return stored;
+  roster: string[],
+): boolean {
+  const held = epochFor(state, channel);
+  if (held === undefined) return false;
+  const present = new Set(roster.map((nick) => fold(nick)));
+  return held.holders.some((holder) => !present.has(holder));
 }
 
-/** Stores `session`'s pickle as `sender`'s inbound for `sid` on `channel`. */
-function storeInbound(
+/** Whether this device answered `asker`'s key request on `channel` recently: the throttle. */
+export function keyreqAnswerDue(
   state: GroupSessionsState,
   channel: string,
-  sender: string,
-  session: MegolmInboundSession,
-  receivedAt: number,
-): StoredGroupInbound {
-  let bySender = state.inbound[fold(channel)];
-  if (bySender === undefined) {
-    bySender = {};
-    state.inbound[fold(channel)] = bySender;
-  }
-  let bySid = bySender[fold(sender)];
-  if (bySid === undefined) {
-    bySid = {};
-    bySender[fold(sender)] = bySid;
-  }
-  const stored: StoredGroupInbound = {
-    sid: session.sessionId(),
-    pickle: session.pickle(),
-    receivedAt,
-    seen: [],
-  };
-  bySid[session.sessionId()] = stored;
-  return stored;
-}
-
-/**
- * Creates `channel`'s outbound session: a new epoch, this device its
- * owner. The caller distributes its key (`exportOutboundKey`) before
- * anyone can read a message under it.
- */
-export function createOutbound(
-  state: GroupSessionsState,
-  adapter: MegolmAdapter,
-  channel: string,
+  asker: string,
   now: number,
-): StoredGroupOutbound {
-  const session = adapter.createOutbound();
-  try {
-    return storeOutbound(state, channel, session, now, 0);
-  } finally {
-    session.free();
-  }
+): boolean {
+  const at = state.keyreqAnsweredAt[`${fold(channel)}:${fold(asker)}`];
+  return at === undefined || now - at >= KEYREQ_ANSWER_THROTTLE_MS;
 }
 
-/** Deletes `channel`'s outbound session: its epoch is never spoken again. */
-export function deleteOutbound(state: GroupSessionsState, channel: string): void {
-  delete state.outbound[fold(channel)];
-}
-
-/**
- * The session key of `channel`'s outbound session, for distribution: the
- * `key` of a gkey, the `sid` it opens. Undefined when no epoch exists.
- * Exporting a key does not advance the session, so no pickle is stored.
- */
-export function exportOutboundKey(
+/** Records that this device answered `asker`'s key request on `channel` now. */
+export function markKeyreqAnswered(
   state: GroupSessionsState,
-  adapter: MegolmAdapter,
   channel: string,
-): { sid: string; key: string } | undefined {
-  const held = outboundFor(state, channel);
-  if (held === undefined) return undefined;
-  return withOutbound(adapter, held, (session) => ({
-    sid: session.sessionId(),
-    key: session.sessionKey(),
-  }));
-}
-
-/**
- * Imports the inbound session `key` opens for `sender` on `channel`, as
- * a gkey or a grotate carried it. The session id it opens must be `sid`:
- * a key for another session is refused, never stored. An import of a
- * session id already held is a no-op (a re-sent gkey): the stored pickle
- * has the further-advanced ratchet, and re-importing would wind it back.
- * Otherwise the sender's older session ids on the channel are dropped:
- * the sender rotated, and their old epoch is dead (see the header).
- * Throws when `key` is not a session key.
- */
-export function importInbound(
-  state: GroupSessionsState,
-  adapter: MegolmAdapter,
-  channel: string,
-  sender: string,
-  sid: string,
-  key: string,
+  asker: string,
   now: number,
-): "imported" | "already-held" {
-  if (inboundFor(state, channel, sender, sid) !== undefined) return "already-held";
-  const session = adapter.importInbound(key);
-  try {
-    if (session.sessionId() !== sid) {
-      throw new Error(`a gkey for ${sid} opened ${session.sessionId()}`);
-    }
-    let bySender = state.inbound[fold(channel)];
-    if (bySender === undefined) {
-      bySender = {};
-      state.inbound[fold(channel)] = bySender;
-    }
-    bySender[fold(sender)] = {};
-    storeInbound(state, channel, sender, session, now);
-    return "imported";
-  } finally {
-    session.free();
-  }
+): void {
+  state.keyreqAnsweredAt[`${fold(channel)}:${fold(asker)}`] = now;
 }
 
-/** Drops every inbound session `sender` holds on `channel`: they left. */
-export function dropInboundFrom(state: GroupSessionsState, channel: string, sender: string): void {
-  const bySender = state.inbound[fold(channel)];
-  if (bySender === undefined) return;
-  delete bySender[fold(sender)];
-  if (Object.keys(bySender).length === 0) delete state.inbound[fold(channel)];
-}
-
-/** Drops everything of `channel`: outbound and every inbound. We left. */
-export function dropChannel(state: GroupSessionsState, channel: string): void {
-  deleteOutbound(state, channel);
-  delete state.inbound[fold(channel)];
+/** Stores `epoch` as `channel`'s epoch, replacing whatever was held. */
+function storeEpoch(state: GroupSessionsState, channel: string, epoch: StoredEpoch): StoredEpoch {
+  state.epochs[fold(channel)] = epoch;
+  return epoch;
 }
 
 /**
- * The gkey inner for `channel`'s current epoch, to send to `nick`'s DM:
- * `{"t":"gkey","ch":"#chan","sid":"...","key":"..."}` (§4f). Undefined
- * when no epoch exists: create one first (`createOutbound`).
+ * Creates `channel`'s epoch: a new key, this device its owner. `holders`
+ * is the roster the key goes to, folded on store. The caller distributes
+ * its key (`gkeyInner`) before anyone can read a message under it.
  */
-export function gkeyInner(
+export function createEpoch(
   state: GroupSessionsState,
-  adapter: MegolmAdapter,
   channel: string,
-): GkeyInner | undefined {
-  const exported = exportOutboundKey(state, adapter, channel);
-  if (exported === undefined) return undefined;
-  return { t: "gkey", ch: fold(channel), sid: exported.sid, key: exported.key };
-}
-
-/**
- * Encrypts `body` for `channel` under this device's outbound session,
- * as the v3 payload of a channel `:msg`. Creates the epoch when none
- * exists (`created`): the caller distributes its key before the message
- * can be read. The chain index and the pickle are stored with the step.
- */
-export function encryptChannel(
-  state: GroupSessionsState,
-  adapter: MegolmAdapter,
-  channel: string,
-  body: string,
+  holders: string[],
   now: number,
-): { payload: string; sid: string; index: number; created: boolean } {
-  const created = outboundFor(state, channel) === undefined;
-  const held = created ? createOutbound(state, adapter, channel, now) : outboundFor(state, channel);
-  if (held === undefined) throw new Error(`no outbound session for ${channel}`);
-  const inner = encodePayload({ t: "text", body });
-  return withOutbound(adapter, held, (session) => {
-    const encrypted = session.encrypt(megolmBytes(inner));
-    const stored = storeOutbound(state, channel, session, held.createdAt, held.messages + 1);
-    const payload: ChannelPayload = {
-      v: GROUP_WIRE_VERSION,
-      ch: fold(channel),
-      sid: stored.sid,
-      i: encrypted.index,
-      body: encrypted.body,
-    };
-    return { payload: encodePayload(payload), sid: stored.sid, index: encrypted.index, created };
+): StoredEpoch {
+  return storeEpoch(state, channel, {
+    sid: newEpochId(),
+    key: newEpochKey(),
+    createdAt: now,
+    messages: 0,
+    counter: 0,
+    holders: holders.map((nick) => fold(nick)),
+    receivedAt: now,
+    receivedFrom: null,
+    seen: {},
   });
 }
 
+/** Deletes `channel`'s epoch: its key is never spoken or read again. */
+export function dropEpoch(state: GroupSessionsState, channel: string): void {
+  delete state.epochs[fold(channel)];
+}
+
+/** Drops everything of `channel`: its epoch. We left. */
+export function dropChannel(state: GroupSessionsState, channel: string): void {
+  dropEpoch(state, channel);
+}
+
+/**
+ * Imports the epoch `gkey` carries for `channel`: a gkey DM brought it,
+ * or a grotate inside a channel message. The key must be a 32-byte epoch
+ * key, or the import throws and nothing is stored. An import of the epoch
+ * already held is a no-op (a re-sent gkey). Otherwise the held epoch is
+ * replaced, whatever order the epochs were minted in: a gkey supersedes
+ * by arrival, and the new epoch's counters start over. `fromDid` is the
+ * did of the member whose gkey it was, for the record.
+ */
+export function importEpoch(
+  state: GroupSessionsState,
+  channel: string,
+  gkey: GkeyInner,
+  fromDid: string,
+  now: number,
+): "imported" | "already-held" {
+  if (epochFor(state, channel)?.sid === gkey.sid) return "already-held";
+  if (!isEpochKey(gkey.key)) throw new Error(`a gkey for ${gkey.sid} is not an epoch key`);
+  storeEpoch(state, channel, {
+    sid: gkey.sid,
+    key: gkey.key,
+    createdAt: now,
+    messages: 0,
+    counter: 0,
+    holders: gkey.holders.map((nick) => fold(nick)),
+    receivedAt: now,
+    receivedFrom: fromDid,
+    seen: {},
+  });
+  return "imported";
+}
+
+/**
+ * The gkey inner for `channel`'s current epoch, to send to a member's DM:
+ * `{"t":"gkey","ch":"#chan","sid":"...","key":"...","holders":["..."]}`
+ * (§4f). Undefined when no epoch exists: create one first
+ * (`createEpoch`).
+ */
+export function gkeyInner(state: GroupSessionsState, channel: string): GkeyInner | undefined {
+  const held = epochFor(state, channel);
+  if (held === undefined) return undefined;
+  return { t: "gkey", ch: fold(channel), sid: held.sid, key: held.key, holders: [...held.holders] };
+}
+
+/** The key-request envelope for `channel`: `{"v":4,"t":"keyreq","ch":"#chan"}` (§4f). */
+export function keyreqPayload(channel: string): string {
+  return encodePayload({ v: GROUP_WIRE_VERSION, t: "keyreq", ch: fold(channel) });
+}
+
+/**
+ * Encrypts `body` for `channel` under the epoch key, as the v4 payload of
+ * a channel `:msg`. Creates the epoch when none exists (`created`): the
+ * caller distributes its key before the message can be read. The
+ * per-sender counter and the message count are stored with the step.
+ */
+export async function encryptChannel(
+  state: GroupSessionsState,
+  channel: string,
+  body: string,
+  holders: string[],
+  sign: ChannelSigner,
+  now: number,
+): Promise<{ payload: string; sid: string; counter: number; created: boolean }> {
+  const created = epochFor(state, channel) === undefined;
+  const held = created
+    ? createEpoch(state, channel, holders, now)
+    : (epochFor(state, channel) as StoredEpoch);
+  const inner = encodePayload({ t: "text", c: held.counter, body });
+  const ciphertext = await encryptEpoch(held.key, new TextEncoder().encode(inner));
+  const payload: ChannelPayload = {
+    v: GROUP_WIRE_VERSION,
+    t: "msg",
+    ch: fold(channel),
+    sid: held.sid,
+    body: ciphertext,
+    sig: sign(channelSigText(fold(channel), held.sid, ciphertext)),
+  };
+  held.counter += 1;
+  held.messages += 1;
+  return { payload: encodePayload(payload), sid: held.sid, counter: held.counter - 1, created };
+}
+
+/** Whether `counter` from `did` is a new message under the epoch, judging its replay state. */
+function counterIsNew(replay: ReplayState | undefined, counter: number): boolean {
+  if (replay === undefined) return true;
+  if (counter > replay.high) return true;
+  if (counter <= replay.high - REPLAY_WINDOW) return false;
+  return !replay.window.includes(counter);
+}
+
+/** Records `counter` from `did` as read under the epoch. */
+function noteCounter(epoch: StoredEpoch, did: string, counter: number): void {
+  const replay = epoch.seen[did] ?? { high: -1, window: [] };
+  if (counter > replay.high) {
+    replay.high = counter;
+    replay.window = [...replay.window, counter].filter((c) => c > counter - REPLAY_WINDOW);
+  } else {
+    replay.window.push(counter);
+  }
+  epoch.seen[did] = replay;
+}
+
 export type ChannelDecrypt =
-  | { ok: true; kind: "text"; sid: string; index: number; body: string }
-  | { ok: true; kind: "rotated"; sid: string; index: number; newSid: string }
+  | { ok: true; kind: "text"; sid: string; counter: number; body: string }
+  | { ok: true; kind: "rotated"; sid: string; counter: number; newSid: string }
   | {
       ok: false;
       reason:
         | "bad-payload"
         | "channel-mismatch"
         | "no-session"
+        | "bad-signature"
         | "replay"
         | "decryption-failed"
         | "bad-inner";
@@ -366,22 +337,26 @@ export type ChannelDecrypt =
     };
 
 /**
- * Decrypts a channel `:msg` payload from `sender` on `channel` with the
- * matching inbound session. A grotate inside is consumed, not shown: the
- * new epoch is imported (its key is inside, encrypted under the old one)
- * and the event says `rotated`, so the caller can note the new epoch.
- * Anything that cannot be read is `ok: false`, never a throw: an
- * undecryptable channel message surfaces as one, exactly as a DM's does.
- * The inbound pickle is stored after a decrypt: the ratchet advanced.
+ * Decrypts a channel `:msg` payload from `sender`'s device `senderDid` on
+ * `channel`, under the epoch the envelope names. The signature is checked
+ * before the ciphertext is touched; the counter is checked after the
+ * decrypt, on the counter inside the signed, encrypted part — never on a
+ * plaintext field, of which the envelope has none. A grotate inside is
+ * consumed, not shown: the new epoch is imported (its key is inside,
+ * encrypted under the old one) and the event says `rotated`, so the caller
+ * can note the new epoch. Anything that cannot be read is `ok: false`,
+ * never a throw: an undecryptable channel message surfaces as one,
+ * exactly as a DM's does.
  */
-export function decryptChannel(
+export async function decryptChannel(
   state: GroupSessionsState,
-  adapter: MegolmAdapter,
   channel: string,
   sender: string,
+  senderDid: string,
   payloadText: string,
+  verify: ChannelVerifier,
   now: number,
-): ChannelDecrypt {
+): Promise<ChannelDecrypt> {
   let payload: ChannelPayload;
   try {
     payload = parseChannelPayload(decodePayload(payloadText));
@@ -392,33 +367,16 @@ export function decryptChannel(
   if (fold(payload.ch) !== fold(channel)) {
     return { ok: false, reason: "channel-mismatch", sid: payload.sid };
   }
-  const held = inboundFor(state, channel, sender, payload.sid);
-  if (held === undefined) return { ok: false, reason: "no-session", sid: payload.sid };
-  // A re-delivery of an index already read: refused before any decrypt
-  // runs — the crypto itself would decrypt it again (see `seen`).
-  if ((held.seen ?? []).includes(payload.i)) {
-    return { ok: false, reason: "replay", sid: payload.sid };
+  const held = epochFor(state, channel);
+  if (held === undefined || held.sid !== payload.sid) {
+    return { ok: false, reason: "no-session", sid: payload.sid };
+  }
+  if (!verify(sender, senderDid, channelSigText(payload.ch, payload.sid, payload.body), payload.sig)) {
+    return { ok: false, reason: "bad-signature", sid: payload.sid };
   }
   let plaintext: Uint8Array;
-  let index: number;
   try {
-    const out = withInbound(adapter, held, (session) => {
-      const decrypted = session.decrypt(payload.body);
-      // Stored before anything else can throw: the ratchet moved, and
-      // this index is now read — a re-delivery refuses it above.
-      const stored: StoredGroupInbound = {
-        sid: session.sessionId(),
-        pickle: session.pickle(),
-        receivedAt: held.receivedAt,
-        seen: [...(held.seen ?? []), decrypted.messageIndex],
-      };
-      const bySender = state.inbound[fold(channel)];
-      const bySid = bySender?.[fold(sender)];
-      if (bySid !== undefined) bySid[session.sessionId()] = stored;
-      return decrypted;
-    });
-    plaintext = out.plaintext;
-    index = out.messageIndex;
+    plaintext = await decryptEpoch(held.key, payload.body);
   } catch {
     return { ok: false, reason: "decryption-failed", sid: payload.sid };
   }
@@ -437,91 +395,104 @@ export function decryptChannel(
       if (!(err instanceof PayloadError)) throw err;
       return { ok: false, reason: "bad-inner", sid: payload.sid };
     }
-    try {
-      importInbound(state, adapter, channel, sender, rotated.sid, rotated.key, now);
-    } catch {
-      return { ok: false, reason: "bad-inner", sid: payload.sid };
+    if (!isEpochKey(rotated.key)) return { ok: false, reason: "bad-inner", sid: payload.sid };
+    if (!counterIsNew(held.seen[senderDid], rotated.c)) {
+      return { ok: false, reason: "replay", sid: payload.sid };
     }
-    return { ok: true, kind: "rotated", sid: payload.sid, index, newSid: rotated.sid };
+    noteCounter(held, senderDid, rotated.c);
+    // The new epoch, under the old one's holders: membership did not
+    // change on a periodic rotation, so the holder set carries over.
+    storeEpoch(state, channel, {
+      sid: rotated.sid,
+      key: rotated.key,
+      createdAt: now,
+      messages: 0,
+      counter: 0,
+      holders: [...held.holders],
+      receivedAt: now,
+      receivedFrom: senderDid,
+      seen: {},
+    });
+    return { ok: true, kind: "rotated", sid: payload.sid, counter: rotated.c, newSid: rotated.sid };
   }
-  let text: { t: "text"; body: string };
+  let text: { t: "text"; c: number; body: string };
   try {
     text = parseChannelTextInner(inner);
   } catch (err) {
     if (!(err instanceof PayloadError)) throw err;
     return { ok: false, reason: "bad-inner", sid: payload.sid };
   }
-  return { ok: true, kind: "text", sid: payload.sid, index, body: text.body };
+  if (!counterIsNew(held.seen[senderDid], text.c)) {
+    return { ok: false, reason: "replay", sid: payload.sid };
+  }
+  noteCounter(held, senderDid, text.c);
+  return { ok: true, kind: "text", sid: payload.sid, counter: text.c, body: text.body };
 }
 
 /**
- * Rotates `channel`'s epoch because a member left: the old outbound is
- * deleted (never spoken again), a new one created, and its key returned
- * for pairwise distribution to the members who remain. The old epoch's
- * key stays valid for what it already encrypted — a departed member can
- * re-read the past — and useless for the future: nothing new goes under
- * it. Callers also drop the departed member's inbound sessions
- * (`dropInboundFrom`); that half is not here, because the rotation and
- * the drop are judged together by the caller.
+ * Rotates `channel`'s epoch because a member left: the old epoch is
+ * deleted (never spoken again), a new one created for `holders` — the
+ * roster that remains — and its key returned for pairwise distribution
+ * to them. The old epoch's key stays valid for what it already encrypted
+ * — a departed member can re-read the past — and useless for the future:
+ * nothing new goes under it.
  */
-export function rotateOutboundForLeave(
+export function rotateEpochForLeave(
   state: GroupSessionsState,
-  adapter: MegolmAdapter,
   channel: string,
+  holders: string[],
   now: number,
 ): { oldSid: string | null; newSid: string; key: string } {
-  const oldSid = outboundFor(state, channel)?.sid ?? null;
-  deleteOutbound(state, channel);
-  const created = createOutbound(state, adapter, channel, now);
-  const exported = exportOutboundKey(state, adapter, channel);
-  if (exported === undefined) throw new Error(`no outbound session for ${channel} after rotation`);
-  return { oldSid, newSid: created.sid, key: exported.key };
+  const oldSid = epochFor(state, channel)?.sid ?? null;
+  dropEpoch(state, channel);
+  const created = createEpoch(state, channel, holders, now);
+  return { oldSid, newSid: created.sid, key: created.key };
 }
 
 /**
  * Rotates `channel`'s epoch because the day passed: the new key goes out
- * in ONE channel message, encrypted under the OLD epoch's key (the design
- * note's O(1) rotation: membership did not change, so the old key may
- * carry the new one). The returned payload is a v3 channel `:msg` whose
- * envelope names the OLD `sid`; the store already holds the NEW outbound
- * by the time it returns, and the old outbound pickle is gone. Null when
- * there is no epoch to rotate, or it never spoke.
+ * in ONE channel message, encrypted under the OLD epoch's key (the O(1)
+ * rotation: membership did not change, so the old key may carry the new
+ * one). The returned payload is a v4 channel `:msg` whose envelope names
+ * the OLD `sid`; the store already holds the NEW epoch by the time it
+ * returns, and the old epoch is gone. Null when there is no epoch to
+ * rotate, or it never spoke. `sign` signs the envelope, as for any
+ * channel message.
  */
-export function buildPeriodicRotation(
+export async function buildPeriodicRotation(
   state: GroupSessionsState,
-  adapter: MegolmAdapter,
   channel: string,
+  sign: ChannelSigner,
   now: number,
-): { payload: string; oldSid: string; newSid: string } | null {
-  const held = outboundFor(state, channel);
+): Promise<{ payload: string; oldSid: string; newSid: string } | null> {
+  const held = epochFor(state, channel);
   if (held === undefined || held.messages === 0) return null;
   const oldSid = held.sid;
-  // The new epoch, created once: its key is what the rotation message
-  // carries, and its pickle is what the store keeps. Minting a second
-  // session here would store a key nobody holds.
-  const created = adapter.createOutbound();
-  let newSid: string;
-  let newKey: string;
-  try {
-    newSid = created.sessionId();
-    newKey = created.sessionKey();
-    const rotate: GrotateInner = { t: "grotate", sid: newSid, key: newKey };
-    const encrypted = withOutbound(adapter, held, (session) =>
-      session.encrypt(megolmBytes(encodePayload(rotate))),
-    );
-    // Stored only once the rotation message exists: a failure above leaves
-    // the old epoch in place, and the next tick tries again.
-    deleteOutbound(state, channel);
-    storeOutbound(state, channel, created, now, 0);
-    const payload: ChannelPayload = {
-      v: GROUP_WIRE_VERSION,
-      ch: fold(channel),
-      sid: oldSid,
-      i: encrypted.index,
-      body: encrypted.body,
-    };
-    return { payload: encodePayload(payload), oldSid, newSid };
-  } finally {
-    created.free();
-  }
+  const newSid = newEpochId();
+  const newKey = newEpochKey();
+  const rotate: GrotateInner = { t: "grotate", c: held.counter, sid: newSid, key: newKey };
+  const ciphertext = await encryptEpoch(held.key, new TextEncoder().encode(encodePayload(rotate)));
+  const payload: ChannelPayload = {
+    v: GROUP_WIRE_VERSION,
+    t: "msg",
+    ch: fold(channel),
+    sid: oldSid,
+    body: ciphertext,
+    sig: sign(channelSigText(fold(channel), oldSid, ciphertext)),
+  };
+  // Stored only once the rotation message exists: a failure above leaves
+  // the old epoch in place, and the next tick tries again.
+  dropEpoch(state, channel);
+  storeEpoch(state, channel, {
+    sid: newSid,
+    key: newKey,
+    createdAt: now,
+    messages: 0,
+    counter: 0,
+    holders: [...held.holders],
+    receivedAt: now,
+    receivedFrom: null,
+    seen: {},
+  });
+  return { payload: encodePayload(payload), oldSid, newSid };
 }

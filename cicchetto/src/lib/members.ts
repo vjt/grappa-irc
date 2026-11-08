@@ -33,7 +33,7 @@ import { nickEquals } from "./nickEquals";
 
 export type { ChannelMembers, MemberEntry, MemberGender } from "./memberTypes";
 
-// Channel E2E rotation trigger (wire v3, CLIENT_PROTOCOL §4f): a
+// Channel E2E rotation trigger (wire v4, CLIENT_PROTOCOL §4f): a
 // membership delta on a channel — who joined or left, and the roster
 // after the change — for the E2E client to distribute the epoch key on a
 // join and rotate it on a leave. `nick_change` and `mode` are not deltas:
@@ -60,6 +60,25 @@ export function onPresenceDelta(fn: PresenceDeltaListener): () => void {
   };
 }
 
+/**
+ * Runs when the roster for a channel is seeded (a NAMES burst after
+ * joining, or a join reply): the E2E audit for that channel runs then,
+ * comparing the epoch's holders with the true roster — a member who left
+ * while every cic was closed is caught here, not only on a live leave.
+ * `members` is the seeded roster's nicks, display spelling.
+ */
+type MembersSeededListener = (key: ChannelKey, members: string[]) => void;
+
+const membersSeededListeners = new Set<MembersSeededListener>();
+
+/** Subscribes to roster seeds; answers the unsubscribe. */
+export function onMembersSeeded(fn: MembersSeededListener): () => void {
+  membersSeededListeners.add(fn);
+  return () => {
+    membersSeededListeners.delete(fn);
+  };
+}
+
 const exports_ = identityScopedStore((onIdentityChange) => {
   const [membersByChannel, setMembersByChannel] = createSignal<Record<ChannelKey, ChannelMembers>>(
     {},
@@ -74,6 +93,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   // signal write — no REST fetch path remains.
   const seedMembers = (key: ChannelKey, list: ChannelMembers): void => {
     setMembersByChannel((prev) => ({ ...prev, [key]: list }));
+    // The seed fires after the roster is stored, so a listener reads the
+    // seeded roster (not the one before the burst): the audit's second
+    // chance for a leave the socket missed.
+    for (const fn of [...membersSeededListeners]) fn(key, list.map((m) => m.nick));
   };
 
   // #1861 — the casemapping is passed IN rather than resolved here: this

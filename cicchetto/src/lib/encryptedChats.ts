@@ -84,7 +84,7 @@ import {
   frameBudgetBaseForNetwork,
   isupportForNetwork,
 } from "./isupport";
-import { onPresenceDelta } from "./members";
+import { membersByChannel, onMembersSeeded, onPresenceDelta } from "./members";
 import { networkBySlug, networks, user } from "./networks";
 import { encryptedWindowName } from "./windowKinds";
 import type { SessionWireE2eDropReason } from "./wireTypes";
@@ -309,6 +309,13 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         frameBudgetBase: frameBudgetBaseForNetwork(network.id),
         door: doors(bearer, slug),
         orders: (chal, challenger, at) => sendLog.confirms(chal, challenger, scope, at),
+        // The roster of a channel, as the members store holds it, or
+        // undefined when it holds none: the channel E2E steps use it for
+        // the gkey staleness check and the periodic-rotation election.
+        channelMembers: (channel) => {
+          const list = membersByChannel()[channelKey(slug, channel)];
+          return list === undefined ? undefined : list.map((m) => m.nick);
+        },
       },
     };
   }
@@ -644,7 +651,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
   /**
    * Sends `body` to `channel`, encrypted under the channel's epoch
-   * (wire v3): the key is distributed pairwise first when the epoch is
+   * (wire v4): the key is distributed pairwise first when the epoch is
    * new. `members` is the roster the channel window holds. The channel
    * UI calls this once it offers an encrypted channel mode; until then
    * nothing sends here.
@@ -659,6 +666,39 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       client.sendChannel(ctx, channel, body, members),
     );
     await afterReport(slug, report);
+  }
+
+  /**
+   * Broadcasts a key request for `channel` on the channel itself
+   * (`client.requestChannelKey`): the ask a newcomer makes when it holds
+   * no epoch. The channel UI calls this when it offers an encrypted
+   * channel the device has no key for; until then nothing asks here. A
+   * network held elsewhere runs nothing, and is not retried.
+   */
+  async function requestChannelKey(slug: string, channel: string): Promise<void> {
+    try {
+      const report = await run(slug, (client, ctx) => client.requestChannelKey(ctx, channel));
+      await afterReport(slug, report);
+    } catch (err) {
+      unlessElsewhere(err);
+    }
+  }
+
+  /**
+   * The audit for `channel` against the roster `members`
+   * (`client.auditChannelEpoch`): rotates the epoch when a holder left
+   * while every cic was closed. A network held elsewhere runs nothing,
+   * and is not retried: only the user moves it.
+   */
+  async function auditChannelEpoch(slug: string, channel: string, members: string[]): Promise<void> {
+    try {
+      const report = await run(slug, (client, ctx) =>
+        client.auditChannelEpoch(ctx, channel, members),
+      );
+      await afterReport(slug, report);
+    } catch (err) {
+      unlessElsewhere(err);
+    }
   }
 
   /**
@@ -805,13 +845,14 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // `tickWaiting` logs each network's failure itself, and goes on.
     const tick = setInterval(() => void tickWaiting(), TICK_MS);
     onCleanup(() => clearInterval(tick));
-    // Channel E2E rotation triggers (wire v3): a member joined or left a
+    // Channel E2E rotation triggers (wire v4): a member joined or left a
     // channel — the epoch key is distributed, or rotated. The delta's
     // roster is after the change; our own leave drops the channel's keys
     // (`client.channelMembersChanged` judges it off the network's nick).
-    // A network held elsewhere runs nothing (`channelMembersChanged`
-    // swallows that), and a channel on no network this browser knows is
-    // not ours.
+    // The client gates the rotation on the server's protocol (63): a
+    // delta on a server below it rotates nothing. A network held
+    // elsewhere runs nothing (`channelMembersChanged` swallows that),
+    // and a channel on no network this browser knows is not ours.
     const unsubscribePresence = onPresenceDelta((delta) => {
       const decoded = decodeChannelKey(delta.key);
       if (decoded === null || networkBySlug(decoded.slug) === undefined) return;
@@ -830,6 +871,20 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       });
     });
     onCleanup(() => unsubscribePresence());
+    // A roster seeded (a NAMES burst after joining, or a join reply):
+    // the E2E audit for the channel runs then — a member who left while
+    // every cic was closed is caught here, not only on a live leave.
+    const unsubscribeSeeded = onMembersSeeded((key, members) => {
+      const decoded = decodeChannelKey(key);
+      if (decoded === null || networkBySlug(decoded.slug) === undefined) return;
+      void auditChannelEpoch(decoded.slug, decoded.name, members).catch((err: unknown) => {
+        console.warn(
+          `[e2e] could not audit the epoch on ${decoded.slug} ${decoded.name}`,
+          err,
+        );
+      });
+    });
+    onCleanup(() => unsubscribeSeeded());
     onIdentityChange(() => drained.clear());
     createEffect(() => {
       if (!token() || !user()) return;
@@ -856,6 +911,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     readEncryptedChat,
     sendEncrypted,
     sendChannelEncrypted,
+    requestChannelKey,
+    auditChannelEpoch,
     channelMembersChanged,
     encryptedSendSubmitted,
     lastEncryptedSend,
@@ -897,6 +954,8 @@ export const encryptedChatHasMessages = exports_.encryptedChatHasMessages;
 export const readEncryptedChat = exports_.readEncryptedChat;
 export const sendEncrypted = exports_.sendEncrypted;
 export const sendChannelEncrypted = exports_.sendChannelEncrypted;
+export const requestChannelKey = exports_.requestChannelKey;
+export const auditChannelEpoch = exports_.auditChannelEpoch;
 export const channelMembersChanged = exports_.channelMembersChanged;
 export const encryptedSendSubmitted = exports_.encryptedSendSubmitted;
 export const lastEncryptedSend = exports_.lastEncryptedSend;
