@@ -1,11 +1,13 @@
 // Channel E2E (wire v3) — the Megolm adapter shim (`megolm.ts`) over a
-// fake binding that implements the assumed wasm surface. No real wasm
+// fake binding that implements the real wasm surface (`GroupSession` /
+// `InboundGroupSession` as exported by the binding: `encrypt` returns a
+// `GroupEncrypted` with `body` and `message_index`, `decrypt` a
+// `GroupDecrypted` with `plaintext` and `message_index`). No real wasm
 // runs here: these tests prove the shim translates between the adapter
 // interface and the binding's shape, and that a binding without the
 // Megolm exports fails loudly with `MegolmUnavailableError` instead of
-// halfway through a send. The real binding's exports are the Rust
-// worker's slice; when they land, `loadMegolm` (not tested here — it
-// needs the real wasm) is the integration point.
+// halfway through a send. The real binding is exercised in
+// `e2eMegolmReal.test.ts`.
 import { describe, expect, it } from "vitest";
 import { type MegolmAdapter, MegolmUnavailableError, megolmFromBinding } from "../lib/e2e/megolm";
 
@@ -50,14 +52,15 @@ function fakeBinding() {
       return this.stored.index;
     }
 
-    encrypt(plaintext: Uint8Array): string {
+    encrypt(plaintext: Uint8Array): { body: string; message_index: number } {
       const body = JSON.stringify({
         sid: this.stored.sid,
         i: this.stored.index,
         body: decoder.decode(plaintext),
       });
+      const out = { body: toB64(body), message_index: this.stored.index };
       this.stored.index += 1;
-      return toB64(body);
+      return out;
     }
 
     session_key(): string {
@@ -123,13 +126,14 @@ describe("megolmFromBinding", () => {
     const key = outbound.sessionKey();
     expect(sid).toMatch(/^wasm-sid-/);
     const ciphertext = outbound.encrypt(encoder.encode("hello channel"));
+    expect(ciphertext.index).toBe(0);
     expect(outbound.messageIndex()).toBe(1);
     const pickle = outbound.pickle();
     outbound.free();
 
     const inbound = adapter.importInbound(key);
     expect(inbound.sessionId()).toBe(sid);
-    const read = inbound.decrypt(ciphertext);
+    const read = inbound.decrypt(ciphertext.body);
     expect(decoder.decode(read.plaintext)).toBe("hello channel");
     expect(read.messageIndex).toBe(0);
     inbound.free();
@@ -139,9 +143,10 @@ describe("megolmFromBinding", () => {
     expect(restored.sessionId()).toBe(sid);
     expect(restored.messageIndex()).toBe(1);
     const second = restored.encrypt(encoder.encode("second"));
+    expect(second.index).toBe(1);
     restored.free();
     const inbound2 = adapter.importInbound(key);
-    expect(() => inbound2.decrypt(second)).not.toThrow();
+    expect(() => inbound2.decrypt(second.body)).not.toThrow();
     inbound2.free();
   });
 
@@ -152,7 +157,7 @@ describe("megolmFromBinding", () => {
     const other = adapter.createOutbound();
     const ciphertext = outbound.encrypt(encoder.encode("for one"));
     const inbound = adapter.importInbound(other.sessionKey());
-    expect(() => inbound.decrypt(ciphertext)).toThrow();
+    expect(() => inbound.decrypt(ciphertext.body)).toThrow();
     outbound.free();
     other.free();
     inbound.free();

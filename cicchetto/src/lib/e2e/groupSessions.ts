@@ -74,6 +74,18 @@ export type StoredGroupInbound = {
   pickle: string;
   /** When the session key arrived (ms since epoch). */
   receivedAt: number;
+  /**
+   * Chain indices already decrypted under this session. Replay
+   * detection lives HERE, not in the crypto: vodozemac's decrypt
+   * happily decrypts the same index twice (its `DecryptedMessage`
+   * carries `message_index` precisely so the caller can tell a replay
+   * from a new message), and its pickle keeps only the initial
+   * ratchet, so a replay would survive a reload too. A re-delivery —
+   * the inbox is at-least-once — is refused by this list before any
+   * decrypt runs. Epochs rotate daily and on leave, so the list stays
+   * a day's messages from one sender, at most.
+   */
+  seen: number[];
 };
 
 /**
@@ -192,6 +204,7 @@ function storeInbound(
     sid: session.sessionId(),
     pickle: session.pickle(),
     receivedAt,
+    seen: [],
   };
   bySid[session.sessionId()] = stored;
   return stored;
@@ -324,17 +337,16 @@ export function encryptChannel(
   if (held === undefined) throw new Error(`no outbound session for ${channel}`);
   const inner = encodePayload({ t: "text", body });
   return withOutbound(adapter, held, (session) => {
-    const index = session.messageIndex();
-    const ciphertext = session.encrypt(megolmBytes(inner));
+    const encrypted = session.encrypt(megolmBytes(inner));
     const stored = storeOutbound(state, channel, session, held.createdAt, held.messages + 1);
     const payload: ChannelPayload = {
       v: GROUP_WIRE_VERSION,
       ch: fold(channel),
       sid: stored.sid,
-      i: index,
-      body: ciphertext,
+      i: encrypted.index,
+      body: encrypted.body,
     };
-    return { payload: encodePayload(payload), sid: stored.sid, index, created };
+    return { payload: encodePayload(payload), sid: stored.sid, index: encrypted.index, created };
   });
 }
 
@@ -343,7 +355,13 @@ export type ChannelDecrypt =
   | { ok: true; kind: "rotated"; sid: string; index: number; newSid: string }
   | {
       ok: false;
-      reason: "bad-payload" | "channel-mismatch" | "no-session" | "decryption-failed" | "bad-inner";
+      reason:
+        | "bad-payload"
+        | "channel-mismatch"
+        | "no-session"
+        | "replay"
+        | "decryption-failed"
+        | "bad-inner";
       sid: string | null;
     };
 
@@ -376,16 +394,23 @@ export function decryptChannel(
   }
   const held = inboundFor(state, channel, sender, payload.sid);
   if (held === undefined) return { ok: false, reason: "no-session", sid: payload.sid };
+  // A re-delivery of an index already read: refused before any decrypt
+  // runs — the crypto itself would decrypt it again (see `seen`).
+  if ((held.seen ?? []).includes(payload.i)) {
+    return { ok: false, reason: "replay", sid: payload.sid };
+  }
   let plaintext: Uint8Array;
   let index: number;
   try {
     const out = withInbound(adapter, held, (session) => {
       const decrypted = session.decrypt(payload.body);
-      // Stored before anything else can throw: the ratchet moved.
+      // Stored before anything else can throw: the ratchet moved, and
+      // this index is now read — a re-delivery refuses it above.
       const stored: StoredGroupInbound = {
         sid: session.sessionId(),
         pickle: session.pickle(),
         receivedAt: held.receivedAt,
+        seen: [...(held.seen ?? []), decrypted.messageIndex],
       };
       const bySender = state.inbound[fold(channel)];
       const bySid = bySender?.[fold(sender)];
@@ -481,10 +506,9 @@ export function buildPeriodicRotation(
     newSid = created.sessionId();
     newKey = created.sessionKey();
     const rotate: GrotateInner = { t: "grotate", sid: newSid, key: newKey };
-    const encrypted = withOutbound(adapter, held, (session) => {
-      const index = session.messageIndex();
-      return { index, body: session.encrypt(megolmBytes(encodePayload(rotate))) };
-    });
+    const encrypted = withOutbound(adapter, held, (session) =>
+      session.encrypt(megolmBytes(encodePayload(rotate))),
+    );
     // Stored only once the rotation message exists: a failure above leaves
     // the old epoch in place, and the next tick tries again.
     deleteOutbound(state, channel);

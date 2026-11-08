@@ -1,8 +1,9 @@
 // A fake Megolm adapter for the channel E2E tests: no wasm, no crypto,
 // just the adapter contract. A ciphertext is the base64 of a JSON object
 // naming the session id, the chain index, and the plaintext; an inbound
-// session refuses a ciphertext of another session id, and an index it
-// already read (the replay a real Megolm session refuses). Session keys
+// session refuses a ciphertext of another session id. It does NOT refuse
+// a replay — neither does the real binding (vodozemac decrypts the same
+// index twice); the store's `seen` list refuses it instead. Session keys
 // are `fake-key-<sid>`; pickles are JSON. The fake models the contract
 // in `megolm.ts` closely enough to prove the store and the orchestration;
 // it proves nothing about vodozemac itself.
@@ -38,11 +39,15 @@ class FakeOutbound implements MegolmOutboundSession {
     return this.index;
   }
 
-  encrypt(plaintext: Uint8Array): string {
+  encrypt(plaintext: Uint8Array): { index: number; body: string } {
     const body = base64Unpadded(plaintext);
     const ciphertext: Ciphertext = { sid: this.sidValue, i: this.index, body };
+    const out = {
+      index: this.index,
+      body: base64Unpadded(encoder.encode(JSON.stringify(ciphertext))),
+    };
     this.index += 1;
-    return base64Unpadded(encoder.encode(JSON.stringify(ciphertext)));
+    return out;
   }
 
   sessionKey(): string {
@@ -57,14 +62,7 @@ class FakeOutbound implements MegolmOutboundSession {
 }
 
 class FakeInbound implements MegolmInboundSession {
-  private readonly seen: Set<number>;
-
-  constructor(
-    private readonly sidValue: string,
-    seen: number[] = [],
-  ) {
-    this.seen = new Set(seen);
-  }
+  constructor(private readonly sidValue: string) {}
 
   sessionId(): string {
     return this.sidValue;
@@ -78,13 +76,13 @@ class FakeInbound implements MegolmInboundSession {
       throw new Error("not a fake ciphertext");
     }
     if (parsed.sid !== this.sidValue) throw new Error("not for this session");
-    if (this.seen.has(parsed.i)) throw new Error("replayed index");
-    this.seen.add(parsed.i);
+    // No replay refusal here: the real binding decrypts a replayed
+    // index happily, and the store's `seen` list refuses it instead.
     return { plaintext: unbase64(parsed.body), messageIndex: parsed.i };
   }
 
   pickle(): string {
-    return JSON.stringify({ sid: this.sidValue, seen: [...this.seen] });
+    return JSON.stringify({ sid: this.sidValue });
   }
 
   free(): void {}
@@ -113,8 +111,8 @@ export class FakeMegolmAdapter implements MegolmAdapter {
   }
 
   restoreInbound(pickle: string): MegolmInboundSession {
-    const data = JSON.parse(pickle) as { sid: string; seen: number[] };
-    return new FakeInbound(data.sid, data.seen);
+    const data = JSON.parse(pickle) as { sid: string };
+    return new FakeInbound(data.sid);
   }
 }
 
