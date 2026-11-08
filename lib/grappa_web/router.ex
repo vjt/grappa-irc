@@ -800,6 +800,12 @@ defmodule GrappaWeb.Router do
 
     get "/channels/:channel_id/members", MembersController, :index
 
+    # Issue 2449 — channels in common with a peer, from the caller's
+    # own live member lists. Same ResolveNetwork pipeline as /members
+    # (ownership built-in); any nick is queryable because the answer
+    # is the caller's own view. `?nick=` is required (400 without it).
+    get "/common-channels", CommonChannelsController, :index
+
     get "/archive", ArchiveController, :index
     delete "/archive/:target", ArchiveController, :delete
 
