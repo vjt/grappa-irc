@@ -81,6 +81,11 @@ defmodule GrappaWeb.Admin.SettingsController do
   (#1407 W-S3) — a typo is named, never absorbed, and it refuses the WHOLE
   body rather than applying the keys it did recognise.
 
+  A save is all-or-nothing (issue 2546): every key of the body is VALIDATED
+  before any is written, so a refused value leaves no sibling written behind
+  it. `validate_updates/1` is pure (no DB, no state) and `apply_validated/1`
+  only ever sees a body it accepted.
+
   ⚠️ The two `dcc` keys are NOT cross-validated against each other (vjt,
   issue 2185): a per-transfer ceiling above the spool budget is a legal
   end state, and refusing it would make the ORDER of two writes
@@ -204,19 +209,55 @@ defmodule GrappaWeb.Admin.SettingsController do
 
   # ---- Internal ----------------------------------------------------
 
+  # issue 2546 — two passes, and the ORDER is the fix. `validate_updates/1`
+  # is PURE (no DB, no state): it walks the whole body and refuses the first
+  # bad value, so nothing is written when any key is refused. Only a body it
+  # accepts reaches `apply_validated/1`, where each `put_*` commits on its
+  # own. The single fold this replaces validated as it went, so every key
+  # sorted before the refusal stayed written behind the 422.
   defp apply_updates(params) when is_map(params) do
-    with :ok <- apply_subtree(params, "upload", @upload_keys, &apply_upload_key/2),
-         :ok <- apply_subtree(params, "dcc", @dcc_keys, &apply_dcc_key/2),
-         :ok <- apply_subtree(params, "auto_away", @auto_away_keys, &apply_auto_away_key/2) do
-      apply_addressing(Map.get(params, "addressing"))
-    end
+    with :ok <- validate_updates(params), do: apply_validated(params)
   end
 
   defp apply_updates(_), do: {:error, :bad_request}
 
-  # Fold a present subtree through its per-key applier. Absent subtree → :ok
-  # (each is independently optional — an empty body updates nothing); a
-  # non-map subtree → bad_request (no silent swallow of a malformed shape).
+  defp validate_updates(params) do
+    with :ok <- validate_subtree(params, "upload", @upload_keys, &validate_upload_key/2),
+         :ok <- validate_subtree(params, "dcc", @dcc_keys, &validate_dcc_key/2),
+         :ok <- validate_subtree(params, "auto_away", @auto_away_keys, &validate_auto_away_key/2) do
+      validate_addressing(Map.get(params, "addressing"))
+    end
+  end
+
+  # The write pass. `addressing` goes FIRST because `arm_if_static/2` is a
+  # capability probe that can still refuse a save (a mode-2 target this
+  # substrate cannot arm): its refusal must land before any other subtree
+  # has committed. Every key here was validated above, so a `put_*` can only
+  # fail on `:db_unavailable`.
+  defp apply_validated(params) do
+    with :ok <- apply_addressing(Map.get(params, "addressing")),
+         :ok <- apply_subtree(params, "upload", @upload_keys, &apply_upload_key/2),
+         :ok <- apply_subtree(params, "dcc", @dcc_keys, &apply_dcc_key/2) do
+      apply_subtree(params, "auto_away", @auto_away_keys, &apply_auto_away_key/2)
+    end
+  end
+
+  # A present subtree. Absent → :ok (each is independently optional — an
+  # empty body updates nothing); a non-map → bad_request (no silent swallow
+  # of a malformed shape).
+  defp validate_subtree(params, key, allowed, fun) do
+    case Map.get(params, key) do
+      nil ->
+        :ok
+
+      subtree when is_map(subtree) ->
+        validate_known_keys(subtree, allowed, key, fun)
+
+      _ ->
+        {:error, :bad_request}
+    end
+  end
+
   defp apply_subtree(params, key, allowed, fun) do
     case Map.get(params, key) do
       nil ->
@@ -230,12 +271,29 @@ defmodule GrappaWeb.Admin.SettingsController do
     end
   end
 
-  # Gate then fold, in that order — see `reject_unknown_keys/3` for why the
-  # gate cannot move after the fold. Its own function so neither the guard
-  # nor the fold lambda nests inside the shape `case` above.
+  # Gate then walk, in that order — see `reject_unknown_keys/3` for why the
+  # gate cannot move after the walk.
+  defp validate_known_keys(subtree, allowed, key, fun) do
+    with :ok <- reject_unknown_keys(subtree, allowed, key) do
+      traverse(Map.to_list(subtree), fun)
+    end
+  end
+
   defp apply_known_keys(subtree, allowed, key, fun) do
     with :ok <- reject_unknown_keys(subtree, allowed, key) do
       Enum.reduce_while(subtree, :ok, fn {k, v}, _ -> halt_or_cont(fun.(k, v)) end)
+    end
+  end
+
+  # Collect-or-bail traversal (CLAUDE.md, "Recursive pattern match over
+  # `Enum.reduce_while/3`"): every key must pass, the first refusal is the
+  # answer.
+  defp traverse([], _fun), do: :ok
+
+  defp traverse([{k, v} | rest], fun) do
+    case fun.(k, v) do
+      :ok -> traverse(rest, fun)
+      {:error, _} = err -> err
     end
   end
 
@@ -264,47 +322,67 @@ defmodule GrappaWeb.Admin.SettingsController do
     end
   end
 
-  # Per-key dispatch so the surrounding fold stays a 2-line lambda
-  # and Credo's cyclomatic-complexity check on `apply_updates/1`
-  # stays below the 9 ceiling.
-  defp apply_upload_key("active_host", "embedded"), do: ServerSettings.put_upload_active_host(:embedded)
-  defp apply_upload_key("active_host", "litterbox"), do: ServerSettings.put_upload_active_host(:litterbox)
-  defp apply_upload_key("active_host", _), do: {:error, {:invalid_setting, "upload.active_host"}}
+  # Per-key dispatch, split in two: `validate_*_key/2` decides (pure) and
+  # `put_*_key/2` writes. Validity lives ONLY in the validators — an applier
+  # assumes the key it is handed was already accepted, so the two cannot
+  # disagree about what is legal.
+  defp validate_upload_key("active_host", v) when v in ["embedded", "litterbox"], do: :ok
 
-  defp apply_upload_key("image_per_file_cap_bytes", n), do: put_per_file_cap(:image, n)
-  defp apply_upload_key("video_per_file_cap_bytes", n), do: put_per_file_cap(:video, n)
-  defp apply_upload_key("document_per_file_cap_bytes", n), do: put_per_file_cap(:document, n)
-  defp apply_upload_key("audio_per_file_cap_bytes", n), do: put_per_file_cap(:audio, n)
+  defp validate_upload_key("active_host", _),
+    do: {:error, {:invalid_setting, "upload.active_host"}}
 
-  defp apply_upload_key("global_cap_bytes", n) when is_integer(n) and n > 0,
-    do: ServerSettings.put_upload_global_cap_bytes(n)
+  defp validate_upload_key("image_per_file_cap_bytes", n), do: validate_per_file_cap(:image, n)
+  defp validate_upload_key("video_per_file_cap_bytes", n), do: validate_per_file_cap(:video, n)
+  defp validate_upload_key("document_per_file_cap_bytes", n), do: validate_per_file_cap(:document, n)
+  defp validate_upload_key("audio_per_file_cap_bytes", n), do: validate_per_file_cap(:audio, n)
 
-  defp apply_upload_key("global_cap_bytes", _),
+  defp validate_upload_key("global_cap_bytes", n) when is_integer(n) and n > 0, do: :ok
+
+  defp validate_upload_key("global_cap_bytes", _),
     do: {:error, {:invalid_setting, "upload.global_cap_bytes"}}
 
   # issue 2175 — TWO per-subject ceilings, never one shared knob: a
   # single field would silently move the disposable visitor and the
   # durable account together.
-  defp apply_upload_key("per_user_cap_bytes", n) when is_integer(n) and n > 0,
-    do: ServerSettings.put_upload_per_user_cap_bytes(n)
+  defp validate_upload_key("per_user_cap_bytes", n) when is_integer(n) and n > 0, do: :ok
 
-  defp apply_upload_key("per_user_cap_bytes", _),
+  defp validate_upload_key("per_user_cap_bytes", _),
     do: {:error, {:invalid_setting, "upload.per_user_cap_bytes"}}
 
-  defp apply_upload_key("per_visitor_cap_bytes", n) when is_integer(n) and n > 0,
-    do: ServerSettings.put_upload_per_visitor_cap_bytes(n)
+  defp validate_upload_key("per_visitor_cap_bytes", n) when is_integer(n) and n > 0, do: :ok
 
-  defp apply_upload_key("per_visitor_cap_bytes", _),
+  defp validate_upload_key("per_visitor_cap_bytes", _),
     do: {:error, {:invalid_setting, "upload.per_visitor_cap_bytes"}}
 
-  defp apply_upload_key("video_max_duration_seconds", n) when is_integer(n) and n > 0,
-    do: ServerSettings.put_upload_video_max_duration_seconds(n)
+  defp validate_upload_key("video_max_duration_seconds", n) when is_integer(n) and n > 0, do: :ok
 
-  defp apply_upload_key("video_max_duration_seconds", _),
+  defp validate_upload_key("video_max_duration_seconds", _),
     do: {:error, {:invalid_setting, "upload.video_max_duration_seconds"}}
 
+  defp apply_upload_key(key, value) do
+    with :ok <- validate_upload_key(key, value), do: put_upload_key(key, value)
+  end
+
+  defp put_upload_key("active_host", "embedded"), do: ServerSettings.put_upload_active_host(:embedded)
+
+  defp put_upload_key("active_host", "litterbox"),
+    do: ServerSettings.put_upload_active_host(:litterbox)
+
+  defp put_upload_key("image_per_file_cap_bytes", n), do: put_per_file_cap(:image, n)
+  defp put_upload_key("video_per_file_cap_bytes", n), do: put_per_file_cap(:video, n)
+  defp put_upload_key("document_per_file_cap_bytes", n), do: put_per_file_cap(:document, n)
+  defp put_upload_key("audio_per_file_cap_bytes", n), do: put_per_file_cap(:audio, n)
+  defp put_upload_key("global_cap_bytes", n), do: ServerSettings.put_upload_global_cap_bytes(n)
+  defp put_upload_key("per_user_cap_bytes", n), do: ServerSettings.put_upload_per_user_cap_bytes(n)
+
+  defp put_upload_key("per_visitor_cap_bytes", n),
+    do: ServerSettings.put_upload_per_visitor_cap_bytes(n)
+
+  defp put_upload_key("video_max_duration_seconds", n),
+    do: ServerSettings.put_upload_video_max_duration_seconds(n)
+
   # No unknown-key clause: `reject_unknown_keys/3` has already refused
-  # every key outside `@upload_keys` before this fold begins.
+  # every key outside `@upload_keys` before this walk begins.
 
   # ---- dcc.* (issue 2185) — key by key, like `upload` ----------------
   #
@@ -315,33 +393,43 @@ defmodule GrappaWeb.Admin.SettingsController do
   # spool budget, which only means nothing fits until they raise the
   # budget. Cross-validating would make the order of two writes
   # significant and break a UI that saves one field at a time.
-  defp apply_dcc_key("max_transfer_bytes", n) when is_integer(n) and n > 0,
-    do: ServerSettings.put_dcc_max_transfer_bytes(n)
+  defp validate_dcc_key("max_transfer_bytes", n) when is_integer(n) and n > 0, do: :ok
 
-  defp apply_dcc_key("max_transfer_bytes", _),
+  defp validate_dcc_key("max_transfer_bytes", _),
     do: {:error, {:invalid_setting, "dcc.max_transfer_bytes"}}
 
-  defp apply_dcc_key("global_cap_bytes", n) when is_integer(n) and n > 0,
-    do: ServerSettings.put_dcc_global_cap_bytes(n)
+  defp validate_dcc_key("global_cap_bytes", n) when is_integer(n) and n > 0, do: :ok
 
-  defp apply_dcc_key("global_cap_bytes", _),
+  defp validate_dcc_key("global_cap_bytes", _),
     do: {:error, {:invalid_setting, "dcc.global_cap_bytes"}}
+
+  defp apply_dcc_key(key, value) do
+    with :ok <- validate_dcc_key(key, value), do: put_dcc_key(key, value)
+  end
+
+  defp put_dcc_key("max_transfer_bytes", n), do: ServerSettings.put_dcc_max_transfer_bytes(n)
+  defp put_dcc_key("global_cap_bytes", n), do: ServerSettings.put_dcc_global_cap_bytes(n)
 
   # ---- auto_away.* (issue 2359) ---------------------------------------
   #
   # The closed set is `ServerSettings`'s, so the controller does not restate
-  # it: anything the context refuses is the 422 naming the key. `nil`
-  # (JSON null) clears the stored value — the boot fallback applies again.
-  defp apply_auto_away_key("default_debounce_seconds", v) when is_integer(v) or is_nil(v) do
-    case ServerSettings.put_auto_away_default_seconds(v) do
-      :ok -> :ok
-      {:error, :db_unavailable} = err -> err
-      {:error, :invalid_value} -> {:error, {:invalid_setting, "auto_away.default_debounce_seconds"}}
-    end
+  # it: `valid_auto_away_default_seconds?/1` IS the ladder. `nil` (JSON
+  # null) clears the stored value — the boot fallback applies again.
+  defp validate_auto_away_key("default_debounce_seconds", v) do
+    if ServerSettings.valid_auto_away_default_seconds?(v),
+      do: :ok,
+      else: {:error, {:invalid_setting, "auto_away.default_debounce_seconds"}}
   end
 
-  defp apply_auto_away_key("default_debounce_seconds", _),
-    do: {:error, {:invalid_setting, "auto_away.default_debounce_seconds"}}
+  defp apply_auto_away_key("default_debounce_seconds", v) do
+    with :ok <- validate_auto_away_key("default_debounce_seconds", v) do
+      case ServerSettings.put_auto_away_default_seconds(v) do
+        :ok -> :ok
+        {:error, :db_unavailable} = err -> err
+        {:error, :invalid_value} -> {:error, {:invalid_setting, "auto_away.default_debounce_seconds"}}
+      end
+    end
+  end
 
   # ---- addressing.* — probe-gated unit apply (#543 / #609) ----------
   #
@@ -365,6 +453,23 @@ defmodule GrappaWeb.Admin.SettingsController do
   end
 
   defp apply_addressing(_), do: {:error, :bad_request}
+
+  # The pure half of the addressing apply: closed key set, a mode in the
+  # closed set, and a prefix that canonicalizes. The capability probe
+  # (`arm_if_static/2`) stays in the write pass — it has side effects — but
+  # it runs FIRST there, so its refusal still lands before any other subtree
+  # commits.
+  defp validate_addressing(nil), do: :ok
+
+  defp validate_addressing(subtree) when is_map(subtree) do
+    with :ok <- reject_unknown_keys(subtree, @addressing_keys, "addressing"),
+         {:ok, _mode} <- resolve_addressing_mode(subtree),
+         {:ok, _prefix} <- resolve_addressing_prefix(subtree) do
+      :ok
+    end
+  end
+
+  defp validate_addressing(_), do: {:error, :bad_request}
 
   # Target mode = the body's mode (validated against the closed set) or, when
   # the body omits it, the currently stored mode.
@@ -440,11 +545,20 @@ defmodule GrappaWeb.Admin.SettingsController do
 
   # The per-file caps are validated by `ServerSettings` alone — positive,
   # integer, and no larger than the maximum the upload doors' transport can
-  # deliver (issue 2529) — so this door only names the field, the posture
-  # `apply_auto_away_key/2` already takes. The guard it replaces restated
-  # `n > 0` and nothing else, so a cap above the maximum would have reached
-  # `FallbackController` as a bare `:invalid_value`, which it has no clause
-  # for.
+  # deliver (issue 2529) — so this door only names the field. The bound is
+  # READ from the context, never restated here, so raising it there raises it
+  # everywhere.
+  defp validate_per_file_cap(category, n) do
+    if is_integer(n) and n > 0 and n <= ServerSettings.max_upload_per_file_cap_bytes() do
+      :ok
+    else
+      {:error, {:invalid_setting, "upload.#{category}_per_file_cap_bytes"}}
+    end
+  end
+
+  # The write side keeps its `:invalid_value` translation as defence in
+  # depth: the validator above already refused every such value, so a
+  # refusal here means the two halves drifted apart.
   defp put_per_file_cap(category, n) do
     case ServerSettings.put_upload_per_file_cap_bytes(category, n) do
       {:error, :invalid_value} -> {:error, {:invalid_setting, "upload.#{category}_per_file_cap_bytes"}}
