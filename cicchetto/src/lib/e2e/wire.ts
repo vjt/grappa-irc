@@ -407,7 +407,14 @@ export function parseGkeyInner(inner: Record<string, unknown>): GkeyInner {
   if (seq !== undefined && (typeof seq !== "number" || !Number.isInteger(seq) || seq < 0)) {
     throw new PayloadError("bad seq");
   }
-  const parsed: GkeyInner = { t: "gkey", ch, sid, key, holders: holders as string[], seq: seq ?? 0 };
+  const parsed: GkeyInner = {
+    t: "gkey",
+    ch,
+    sid,
+    key,
+    holders: holders as string[],
+    seq: seq ?? 0,
+  };
   if (inner.holderNicks !== undefined) {
     const byNick = inner.holderNicks;
     if (
