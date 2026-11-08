@@ -83,9 +83,8 @@ defmodule GrappaWeb.Admin.SettingsController do
 
   A save is all-or-nothing (issue 2546): every key of the body is VALIDATED
   before any is written, so a refused value leaves no sibling written behind
-  it. `validate_updates/1` writes nothing and touches no state — it does
-  READ, for the `addressing` subtree, the currently stored mode/prefix it
-  must validate the body against — and `apply_validated/1` only ever sees a
+  it. `validate_updates/1` is pure — it decides on the body alone, with no
+  write, no read and no state — and `apply_validated/1` only ever sees a
   body it accepted.
 
   ⚠️ The two `dcc` keys are NOT cross-validated against each other (vjt,
@@ -124,18 +123,22 @@ defmodule GrappaWeb.Admin.SettingsController do
   # caught by that key's own per-key test, loudly, never silently.
   #
   # ⚠️ **"Loudly" is exactly as strong as the per-key test and no stronger,
-  # and that was MEASURED rather than assumed (issue 2185, three
-  # mutants).** A key WITH a per-key test is caught in both directions:
-  # dropping its clauses killed 4 tests, and dropping it from this set while
-  # keeping the clauses killed 3. But adding a key that NO test names —
-  # `spool_retention_seconds`, no clause, no test — left the suite at
-  # **46/46 green**. Nothing structural pairs a set entry with its clauses:
-  # `reject_unknown_keys/3` compares strings at runtime, so the compiler
-  # cannot see the pair, and no test enumerates these sets. A key added here
-  # without its per-key test in the SAME pass ships a latent 500 on the first
-  # request that uses it — and a HALF pair (validate without put, or the
-  # reverse) is that same 500, now raised in the write pass after the keys
-  # sorted before it have committed.
+  # and that was MEASURED rather than assumed (issue 2185).** A key WITH a
+  # per-key test is caught in both directions: dropping its clauses killed
+  # tests, and dropping it from this set while keeping the clauses killed
+  # others. (The counts #2185 recorded — 4 and 3 — measured the ONE-clause
+  # shape this file had before issue 2546; re-measured on the pair they are
+  # 8 and 6, so the old numbers are history, not a current claim.) But
+  # adding a key that NO test names — `spool_retention_seconds`, no clause,
+  # no test — left the suite green. Nothing structural pairs a set entry
+  # with its clauses: `reject_unknown_keys/3` compares strings at runtime,
+  # so the compiler cannot see the pair, and no test enumerates these sets.
+  # A key added here without its per-key test in the SAME pass ships a
+  # latent 500 on the first request that uses it — and a HALF pair is that
+  # same 500, on one of two sides: validate without put explodes in
+  # `put_*_key/2` DURING the write pass, after the keys sorted before it
+  # have committed; put without validate explodes in `validate_*_key/2`,
+  # before anything is written at all.
   @upload_keys ~w(active_host image_per_file_cap_bytes video_per_file_cap_bytes
                   document_per_file_cap_bytes audio_per_file_cap_bytes
                   global_cap_bytes per_user_cap_bytes per_visitor_cap_bytes
@@ -216,11 +219,10 @@ defmodule GrappaWeb.Admin.SettingsController do
   # ---- Internal ----------------------------------------------------
 
   # issue 2546 — two passes, and the ORDER is the fix. `validate_updates/1`
-  # WRITES nothing: it walks the whole body and refuses the first bad value,
-  # so nothing is committed when any key is refused. (It does read, for the
-  # `addressing` subtree: the body is validated against the stored
-  # mode/prefix when it omits them.) Only a body it accepts reaches
-  # `apply_validated/1`, where each `put_*` commits on its own.
+  # is PURE: no write, no read, no state. It walks the whole body and refuses
+  # the first bad value, so nothing is committed when any key is refused.
+  # Only a body it accepts reaches `apply_validated/1`, where each `put_*`
+  # commits on its own.
   defp apply_updates(params) when is_map(params) do
     with :ok <- validate_updates(params), do: apply_validated(params)
   end
@@ -461,21 +463,38 @@ defmodule GrappaWeb.Admin.SettingsController do
   defp apply_addressing(_), do: {:error, :bad_request}
 
   # The pure half of the addressing apply: closed key set, a mode in the
-  # closed set, and a prefix that canonicalizes. The capability probe
-  # (`arm_if_static/2`) stays in the write pass — it has side effects — but
-  # it runs FIRST there, so its refusal still lands before any other subtree
-  # commits.
+  # closed set, and a prefix that canonicalizes — all decided on the BODY
+  # alone. Nothing here reads the stored row: the one check that compares
+  # the body against what is already stored is `arm_if_static/2`, and it
+  # lives in the write pass, where it runs FIRST so its refusal still lands
+  # before any other subtree commits.
   defp validate_addressing(nil), do: :ok
 
   defp validate_addressing(subtree) when is_map(subtree) do
     with :ok <- reject_unknown_keys(subtree, @addressing_keys, "addressing"),
-         {:ok, _} <- resolve_addressing_mode(subtree),
-         {:ok, _} <- resolve_addressing_prefix(subtree) do
+         :ok <- validate_addressing_mode(subtree),
+         :ok <- validate_addressing_prefix(subtree) do
       :ok
     end
   end
 
   defp validate_addressing(_), do: {:error, :bad_request}
+
+  # `is_map_key/2` rather than calling the resolver unconditionally: with the
+  # key ABSENT the resolver falls back to the stored value, which validation
+  # has no use for — it would be a read whose result is thrown away.
+  defp validate_addressing_mode(subtree) when is_map_key(subtree, "mode") do
+    with {:ok, _} <- resolve_addressing_mode(subtree), do: :ok
+  end
+
+  defp validate_addressing_mode(_), do: :ok
+
+  defp validate_addressing_prefix(subtree)
+       when is_map_key(subtree, "static_mapping_prefix") do
+    with {:ok, _} <- resolve_addressing_prefix(subtree), do: :ok
+  end
+
+  defp validate_addressing_prefix(_), do: :ok
 
   # Target mode = the body's mode (validated against the closed set) or, when
   # the body omits it, the currently stored mode.
@@ -549,14 +568,12 @@ defmodule GrappaWeb.Admin.SettingsController do
   defp halt_or_cont(:ok), do: {:cont, :ok}
   defp halt_or_cont({:error, _} = err), do: {:halt, err}
 
-  # The per-file caps: the BOUND is READ from the context
-  # (`max_upload_per_file_cap_bytes/0`, issue 2529), so raising it there
-  # raises it here too. The SHAPE predicate (`is_integer`, `> 0`) mirrors
-  # `put_upload_per_file_cap_bytes/2`'s own guard clause for clause — the
-  # same inherited duplication the other caps carry, not a new one. This
-  # door's job is to NAME the field.
+  # The per-file caps delegate to the context's own predicate (issue 2546):
+  # issue 2529 deliberately took the guard OUT of this controller and put it
+  # in `put_upload_per_file_cap_bytes/2`, so restating it here would be the
+  # regression, not the convention. This door's job is to NAME the field.
   defp validate_per_file_cap(category, n) do
-    if is_integer(n) and n > 0 and n <= ServerSettings.max_upload_per_file_cap_bytes() do
+    if ServerSettings.valid_upload_per_file_cap_bytes?(category, n) do
       :ok
     else
       {:error, {:invalid_setting, "upload.#{category}_per_file_cap_bytes"}}

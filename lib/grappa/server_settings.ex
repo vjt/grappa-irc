@@ -314,6 +314,20 @@ defmodule Grappa.ServerSettings do
 
   def put_upload_per_file_cap_bytes(_, _), do: {:error, :invalid_value}
 
+  @doc """
+  Pure validity check for `put_upload_per_file_cap_bytes/2` — the same
+  predicate the writer's guard carries. Exists so a caller can validate a
+  whole body BEFORE writing any of it (issue 2546) without probing by
+  writing, and so the predicate is restated in exactly one place.
+  """
+  @spec valid_upload_per_file_cap_bytes?(upload_category(), term()) :: boolean()
+  def valid_upload_per_file_cap_bytes?(category, n)
+      when category in @upload_categories and is_integer(n) and n > 0 and
+             n <= @max_upload_per_file_cap_bytes,
+      do: true
+
+  def valid_upload_per_file_cap_bytes?(_category, _n), do: false
+
   defp cap_key_for(:image), do: @key_upload_image_per_file_cap_bytes
   defp cap_key_for(:video), do: @key_upload_video_per_file_cap_bytes
   defp cap_key_for(:document), do: @key_upload_document_per_file_cap_bytes
