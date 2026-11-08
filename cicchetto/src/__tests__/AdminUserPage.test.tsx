@@ -16,14 +16,18 @@ vi.mock("../lib/api", async () => {
     adminBindCredential: vi.fn(),
     adminUpdateCredential: vi.fn(),
     adminUnbindCredential: vi.fn(),
+    adminGetServerPass: vi.fn(),
+    adminPutServerPass: vi.fn(),
   };
 });
 
 import AdminUserPage from "../AdminUserPage";
 import {
   adminBindCredential,
+  adminGetServerPass,
   adminListCredentials,
   adminListNetworks,
+  adminPutServerPass,
   adminUnbindCredential,
   adminUpdateCredential,
 } from "../lib/api";
@@ -150,6 +154,8 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(adminListCredentials).mockResolvedValue([CRED, FOREIGN_CRED]);
   vi.mocked(adminListNetworks).mockResolvedValue([NETWORK, OTHER_NETWORK]);
+  vi.mocked(adminGetServerPass).mockResolvedValue({ server_pass_set: false });
+  vi.mocked(adminPutServerPass).mockResolvedValue({ server_pass_set: true });
 });
 
 describe("AdminUserPage — a section per configured network (#1157)", () => {
@@ -552,5 +558,85 @@ describe("AdminUserPage — session_action is per-section state", () => {
 
     const note = await screen.findByTestId(`admin-user-network-session-action-${NETWORK.id}`);
     expect(note.textContent).toContain("stopped");
+  });
+});
+
+// #2606 — the server `PASS` is a DIFFERENT secret from the NickServ password
+// (it goes on the wire before registration, not to NickServ), and the admin
+// console used to offer one box that wrote the wrong slot. So: its own
+// write-only field, visible only on `auth_method = server_pass`, going out
+// through its own endpoint — never through the PATCH.
+describe("AdminUserPage — the server PASS slot (#2606)", () => {
+  const SERVER_PASS_CRED: AdminCredential = { ...CRED, auth_method: "server_pass" };
+
+  it("offers no server password field on a method that cannot spend it", async () => {
+    mountPage();
+    await pageReady();
+
+    // CRED is `auth_method: "none"`.
+    expect(screen.queryByTestId(`admin-user-network-server-pass-${NETWORK.id}`)).toBeNull();
+    // And the slot is not even asked about.
+    expect(adminGetServerPass).not.toHaveBeenCalled();
+  });
+
+  it("shows the write-only field and the stored set-ness on server_pass", async () => {
+    vi.mocked(adminListCredentials).mockResolvedValue([SERVER_PASS_CRED, FOREIGN_CRED]);
+    vi.mocked(adminGetServerPass).mockResolvedValue({ server_pass_set: true });
+    mountPage();
+    await pageReady();
+
+    const field = (await screen.findByTestId(
+      `admin-user-network-server-pass-${NETWORK.id}`,
+    )) as HTMLInputElement;
+    // Write-only: the value never comes back, the box starts empty.
+    expect(field.value).toBe("");
+    expect(field.type).toBe("password");
+    expect(adminGetServerPass).toHaveBeenCalledWith("test-bearer", USER.id, NETWORK.id);
+
+    const hint = screen.getByTestId(`admin-user-network-form-${NETWORK.id}`).textContent ?? "";
+    expect(hint).toContain("stored: set");
+  });
+
+  it("sends a typed server password to its own endpoint, after the credential write", async () => {
+    vi.mocked(adminListCredentials).mockResolvedValue([SERVER_PASS_CRED, FOREIGN_CRED]);
+    mountPage();
+    await pageReady();
+
+    await screen.findByTestId(`admin-user-network-server-pass-${NETWORK.id}`);
+    fireEvent.input(screen.getByTestId(`admin-user-network-server-pass-${NETWORK.id}`), {
+      target: { value: "gate-pass" },
+    });
+    fireEvent.click(screen.getByTestId(`admin-user-network-save-${NETWORK.id}`));
+
+    await waitFor(() =>
+      expect(adminPutServerPass).toHaveBeenCalledWith(
+        "test-bearer",
+        USER.id,
+        NETWORK.id,
+        "gate-pass",
+      ),
+    );
+    // The secret has ONE door: nothing else goes on the wire, and an empty
+    // PATCH is not sent just to carry it.
+    expect(adminUpdateCredential).not.toHaveBeenCalled();
+    expect(adminBindCredential).not.toHaveBeenCalled();
+  });
+
+  it("clears the slot through the same endpoint, with the empty string", async () => {
+    vi.mocked(adminListCredentials).mockResolvedValue([SERVER_PASS_CRED, FOREIGN_CRED]);
+    vi.mocked(adminGetServerPass).mockResolvedValue({ server_pass_set: true });
+    vi.mocked(adminPutServerPass).mockResolvedValue({ server_pass_set: false });
+    mountPage();
+    await pageReady();
+
+    fireEvent.click(
+      await screen.findByTestId(`admin-user-network-server-pass-clear-${NETWORK.id}`),
+    );
+
+    await waitFor(() =>
+      expect(adminPutServerPass).toHaveBeenCalledWith("test-bearer", USER.id, NETWORK.id, ""),
+    );
+    // Clearing is not a credential edit: nothing else goes on the wire.
+    expect(adminUpdateCredential).not.toHaveBeenCalled();
   });
 });

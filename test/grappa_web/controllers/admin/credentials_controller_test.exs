@@ -32,6 +32,15 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
     :ok
   end
 
+  # #2606 — the PUT as the operator console sends it. Module-level because a
+  # `defp` inside a `describe` block is not a thing Elixir compiles.
+  defp put_server_pass(conn, session, user_id, network_id, body) do
+    conn
+    |> put_bearer(session.id)
+    |> put_req_header("content-type", "application/json")
+    |> put("/admin/credentials/#{user_id}/#{network_id}/server_pass", Jason.encode!(body))
+  end
+
   defp bound_credential do
     user = user_fixture(name: "u-#{System.unique_integer([:positive])}")
     {:ok, network} = Networks.find_or_create_network(%{slug: "n-#{System.unique_integer([:positive])}"})
@@ -945,6 +954,141 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
                        payload: %{kind: :credential_updated, user_id: ^user_id, session_action: :spawned}
                      },
                      1_000
+    end
+  end
+
+  # #2606 — the server `PASS` slot gets its own pair of verbs on the operator
+  # surface. The user-facing `/networks/:network_id/server_pass` resolves the
+  # network against the CALLER's subject, so an admin editing someone else's
+  # binding 404s there; #2107 keeps `server_pass` off the PATCH whitelist on
+  # purpose. Hence: a dedicated door, write-only, set-ness only.
+  describe "GET /admin/credentials/:user_id/:network_id/server_pass (#2606)" do
+    test "401 without bearer", %{conn: conn} do
+      conn = get(conn, "/admin/credentials/some-uuid/123/server_pass")
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "403 for non-admin user", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn = conn |> put_bearer(session.id) |> get("/admin/credentials/some-uuid/123/server_pass")
+
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+
+    test "200 + server_pass_set false when the slot is empty", %{conn: conn} do
+      {user, network, _} = bound_credential()
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/credentials/#{user.id}/#{network.id}/server_pass")
+
+      assert json_response(conn, 200) == %{"server_pass_set" => false}
+    end
+
+    test "200 + server_pass_set true once the slot holds a secret, value never echoed",
+         %{conn: conn} do
+      {user, network, cred} = bound_credential()
+      {:ok, _} = Credentials.update_server_pass(cred, %{"server_pass" => "s3cret"})
+      session = admin_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/credentials/#{user.id}/#{network.id}/server_pass")
+
+      # The whole body, not a key off it: a leaked value would be a new key.
+      assert json_response(conn, 200) == %{"server_pass_set" => true}
+    end
+
+    test "404 when the binding doesn't exist", %{conn: conn} do
+      session = admin_session()
+      bogus_user_id = Ecto.UUID.generate()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> get("/admin/credentials/#{bogus_user_id}/999/server_pass")
+
+      assert json_response(conn, 404) == %{"error" => "not_found"}
+    end
+
+    test "400 on a malformed user_id", %{conn: conn} do
+      session = admin_session()
+
+      conn = conn |> put_bearer(session.id) |> get("/admin/credentials/not-a-uuid/1/server_pass")
+
+      assert json_response(conn, 400) == %{"error" => "bad_request"}
+    end
+  end
+
+  describe "PUT /admin/credentials/:user_id/:network_id/server_pass (#2606)" do
+    test "401 without bearer", %{conn: conn} do
+      conn = put(conn, "/admin/credentials/some-uuid/123/server_pass")
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "403 for non-admin user", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn =
+        conn |> put_bearer(session.id) |> put("/admin/credentials/some-uuid/123/server_pass")
+
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+
+    test "200 + writes the PASS slot and leaves the NickServ secret alone", %{conn: conn} do
+      {user, network, _} = bound_credential()
+      session = admin_session()
+
+      conn = put_server_pass(conn, session, user.id, network.id, %{server_pass: "gate-pass"})
+      assert json_response(conn, 200) == %{"server_pass_set" => true}
+
+      {:ok, stored} = Credentials.get_credential(user, network)
+      # The whole point of the issue: two slots, two destinations.
+      assert Credential.upstream_server_pass(stored) == "gate-pass"
+      assert Credential.upstream_password(stored) == "pw"
+    end
+
+    test "200 + empty string CLEARS the slot", %{conn: conn} do
+      {user, network, cred} = bound_credential()
+      {:ok, _} = Credentials.update_server_pass(cred, %{"server_pass" => "gate-pass"})
+      session = admin_session()
+
+      conn = put_server_pass(conn, session, user.id, network.id, %{server_pass: ""})
+      assert json_response(conn, 200) == %{"server_pass_set" => false}
+
+      {:ok, stored} = Credentials.get_credential(user, network)
+      assert Credential.upstream_server_pass(stored) == nil
+      assert Credential.upstream_password(stored) == "pw"
+    end
+
+    test "200 + an empty body keeps the stored secret (leave-blank-to-keep)", %{conn: conn} do
+      {user, network, cred} = bound_credential()
+      {:ok, _} = Credentials.update_server_pass(cred, %{"server_pass" => "gate-pass"})
+      session = admin_session()
+
+      conn = put_server_pass(conn, session, user.id, network.id, %{})
+      assert json_response(conn, 200) == %{"server_pass_set" => true}
+    end
+
+    test "422 on a value that is not a single wire token", %{conn: conn} do
+      {user, network, _} = bound_credential()
+      session = admin_session()
+
+      conn = put_server_pass(conn, session, user.id, network.id, %{server_pass: "two words"})
+      assert json_response(conn, 422)["error"] == "validation_failed"
+    end
+
+    test "404 when the binding doesn't exist", %{conn: conn} do
+      session = admin_session()
+      bogus_user_id = Ecto.UUID.generate()
+
+      conn = put_server_pass(conn, session, bogus_user_id, 999, %{server_pass: "gate-pass"})
+
+      assert json_response(conn, 404) == %{"error" => "not_found"}
     end
   end
 

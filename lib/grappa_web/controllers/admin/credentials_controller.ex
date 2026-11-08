@@ -224,6 +224,63 @@ defmodule GrappaWeb.Admin.CredentialsController do
     end
   end
 
+  @doc """
+  #2606 — GET the server `PASS` set-ness for an operator-edited binding.
+
+  The operator-console twin of `GET /networks/:network_id/server_pass`: that
+  one resolves the network against the CALLER's own subject, so an admin
+  editing someone else's credential gets a uniform 404 there and had no
+  supported way to read (or write) this slot at all.
+
+  Returns `{server_pass_set}` and never the value — write-only, the same
+  posture `$oper_pass` has on the perform surface. `404 not_found` on an
+  unknown user / network / binding; `400 bad_request` on malformed URL params.
+  """
+  @spec server_pass(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :not_found | :bad_request}
+  def server_pass(conn, %{"user_id" => raw_user_id, "network_id" => raw_network_id}) do
+    with {:ok, user_id} <- parse_uuid(raw_user_id),
+         {:ok, network_id} <- parse_int(raw_network_id),
+         {:ok, credential} <- fetch_credential_by_ids(user_id, network_id) do
+      json(conn, server_pass_wire(credential))
+    end
+  end
+
+  @doc """
+  #2606 — PUT the server `PASS` on an operator-edited binding.
+
+  Body: `{server_pass}` — `""` clears, omitting the key keeps the stored one
+  (leave-blank-to-keep), exactly like the user-facing sibling. The secret is
+  spent during registration, so no live session is bounced: the next
+  (re)connect picks it up.
+
+  A dedicated verb rather than a key on `PATCH /admin/credentials/...`:
+  #2107 kept `server_pass` off that whitelist on purpose, and the way back
+  from a stomped slot is a second door to type it, not a wider first one.
+
+  Returns `200` with `{server_pass_set}`; `422 validation_failed` on a value
+  that is not a single wire token (spaces / CR / LF / NUL); `404 not_found`
+  on an unknown binding; `400 bad_request` on malformed URL params.
+  """
+  @spec update_server_pass(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :not_found | :bad_request | Ecto.Changeset.t()}
+  def update_server_pass(conn, %{"user_id" => raw_user_id, "network_id" => raw_network_id} = params) do
+    with {:ok, user_id} <- parse_uuid(raw_user_id),
+         {:ok, network_id} <- parse_int(raw_network_id),
+         {:ok, credential} <- fetch_credential_by_ids(user_id, network_id),
+         {:ok, updated} <-
+           Credentials.update_server_pass(credential, Map.take(params, ["server_pass"])) do
+      json(conn, server_pass_wire(updated))
+    end
+  end
+
+  # #2606 — set-ness only. The secret is NEVER serialised, the same shape the
+  # user-facing `NetworksController.server_pass_wire/1` renders.
+  @spec server_pass_wire(Credential.t()) :: %{server_pass_set: boolean()}
+  defp server_pass_wire(%Credential{} = credential) do
+    %{server_pass_set: Credential.upstream_server_pass(credential) != nil}
+  end
+
   defp emit_credential_bound(user, network, cred, conn) do
     {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
 
@@ -277,6 +334,15 @@ defmodule GrappaWeb.Admin.CredentialsController do
       nil -> {:error, :not_found}
     end
   end
+
+  # #2606 — the binding, straight from the (user_id, network_id) pair, for the
+  # verbs that need the credential but not the structs around it. The public
+  # sibling is `Credentials.get_credential_by_ids/2`; this only narrows the
+  # spec for the controller's `with` chain.
+  @spec fetch_credential_by_ids(String.t(), integer()) ::
+          {:ok, Credential.t()} | {:error, :not_found}
+  defp fetch_credential_by_ids(user_id, network_id),
+    do: Credentials.get_credential_by_ids(user_id, network_id)
 
   defp fetch_network(id) do
     case Networks.get_network(id) do
