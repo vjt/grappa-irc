@@ -3948,8 +3948,7 @@ const ScrollbackPane: Component<Props> = (props) => {
     if (listRef.scrollTop !== top) listRef.scrollTop = top;
     lastScrollTop = listRef.scrollTop;
     const near =
-      listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight <=
-      SCROLL_BOTTOM_THRESHOLD_PX;
+      listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX;
     setAtBottomNow(near);
     if (near) setFollowMode(nextFollowMode(followMode(), "reach-tail"));
   };
