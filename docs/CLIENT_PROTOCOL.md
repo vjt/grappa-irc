@@ -1836,6 +1836,42 @@ from either server, so keeping the filter does no harm. One difference
 remains: when every mention was muted, a new server sends no bundle,
 while an old one sends a bundle that the filter empties.
 
+### 5l. Channels in common with a nick (issue 2449)
+
+A query window shows the channels you share with the peer (KVIrc-style),
+next to the nick changes the window already shows. The read is a REST
+snapshot, not a push event:
+
+| route | answer |
+|---|---|
+| `GET /networks/:network_id/common-channels?nick=<nick>` | **200** `{"channels": ["#a", "#b"]}` — sorted, seeded channels only; **400** `bad_request` for a missing or empty `nick`; **404** `not_found` for an unknown network, a network that is not yours, or no running session |
+
+The answer is read off the server's live in-memory member lists — no IRC
+round trip, no DB write — so it is the same view the members sidebar
+already shows. Two semantics matter:
+
+- **Seeded channels only.** A channel you joined but whose NAMES burst
+  has not landed yet is EXCLUDED, not reported as "not shared": its
+  member list is unknowable until the 366 arrives, and reporting it
+  would read as "you share nothing there". The same discrimination the
+  per-channel `/members` endpoint expresses as HTTP 204.
+- **Any case answers alike.** The nick is folded with the network's
+  casemapping server-side, so `VJT`, `vjt` and `VjT` return the same list.
+
+**Client usage (what cicchetto does):** fetch once when a query window
+opens or regains focus — that closes the cold-start gap and the
+"zero shared channels vs lists not loaded yet" ambiguity — then derive
+live updates locally from the per-channel member lists the client
+already maintains from the existing JOIN/PART/KICK/QUIT/NICK pushes.
+There is no `common_channels_changed` event: a channel you are not
+reading has its presence paused (#1769), so a locally derived list
+would go stale for exactly the backgrounded channels — refetch on
+focus/resume instead of trusting the derivation while paused.
+
+The payload shape is additive, so `protocol_version` did not move. A
+server predating this endpoint 404s the route; treat that as "unknown",
+not "no channels in common".
+
 ## 6. Rate limiting & flood protection (#630)
 
 grappa applies a **coarse per-subject inbound budget** across BOTH doors —
