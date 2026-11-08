@@ -2151,10 +2151,15 @@ defmodule Grappa.Session do
   reported as "not shared", because its member list is unknowable yet
   (same seeded discrimination as `list_members/3`).
 
-  The nick is passed RAW and folded with the network casemapping inside
-  the session, so `VJT`, `vjt` and `VjT` answer alike. Returns
-  `{:error, :no_session}` if no session is registered for
-  `(subject, network_id)`.
+  The query nick is folded with the network casemapping server-side
+  (`fold_key/2` in `Session.Server`), and the comparison folds each
+  member key the same way at read time — member keys carry wire case
+  (the JOIN handler stores the raw sender, the 353 handler the raw
+  token), so a folded query against raw keys would miss. The facade
+  passes the nick RAW, the way `list_members/3` passes the channel.
+  Any nick is queryable: the answer is the caller's own observed
+  membership, not a lookup of the peer. Returns `{:error, :no_session}`
+  if no session is registered for `(subject, network_id)`.
   """
   @spec common_channels(subject(), integer(), String.t()) ::
           {:ok, [String.t()]} | {:error, :no_session}

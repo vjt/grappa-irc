@@ -2912,32 +2912,46 @@ defmodule Grappa.Session.Server do
     {:reply, {:ok, counts}, state}
   end
 
-  # Returns the sorted list of channels the caller shares with `nick` in
-  # this session — the in-memory read behind issue 2449. Public via
+  # Returns the sorted channels the session shares with `nick`, from the
+  # live `state.members` map — no NAMES/WHO round trip. Public via
   # `Grappa.Session.common_channels/3`.
   #
-  # Read over `state.members`, no IRC round trip and no DB write: the map
-  # is maintained incrementally by `EventRouter` from JOIN/PART/KICK/
-  # QUIT/NICK + the 353/366 seed burst on every (re)join, so the answer
-  # is the live view, not a snapshot. `channels_with_member/2` does the
-  # linear scan; the seeded filter below is what keeps the answer honest:
-  # a channel joined but pre-366 holds only self in the map, so it is
-  # EXCLUDED rather than reported as "not shared" — same discrimination
-  # as `list_members/3` (`:uninitialized` there, omission here, since a
-  # per-channel unknown cannot be expressed in a flat list).
+  # Issue 2449: the query window's "channels in common" line. SEEDED
+  # channels only, for the same reason `list_members/3` returns
+  # `:uninitialized`: a joined-but-pre-366 channel's member list is
+  # unknowable, and counting a peer as absent there would read as "not
+  # in common" for a channel they are about to turn out to share. A
+  # channel the operator has PARTed is gone from `state.members` and so
+  # is absent here too.
   #
-  # The nick arrives RAW from the facade and is folded with the network
-  # casemapping (`fold_key/2`) before the lookup, because the members-map
-  # keys are folded at ingress (#537) — a bare `String.downcase` would
-  # miss non-ASCII nicks the same way it missed `#CAFÉ` for topics.
+  # The comparison is folded on BOTH sides (`fold_key/2`, #537) — NOT a
+  # `Map.has_key?` on the folded query, and NOT a reuse of
+  # `EventRouter.channels_with_member/2`. Member keys carry WIRE case:
+  # the JOIN handler stores the raw sender and the 353 handler stores
+  # the raw token (`split_mode_prefix/2` does not fold); only the
+  # CHANNEL keys and the userhost/peer-profile cache keys are folded at
+  # ingress (the M1 measurement's "member keys are folded" holds for
+  # those caches, not for this map — caught by the fold test, which
+  # failed on its first run). A folded query against raw keys misses
+  # ("ALICE" vs key "Alice"), so each member key is folded at read
+  # time. Linear scan with a fold per member — same order as
+  # `channels_with_member/2`, fine at real channel counts.
+  #
+  # The answer is the caller's OWN view: any nick is queryable, because
+  # the membership it reports is what this session has observed.
   def handle_call({:common_channels, nick}, _, state) when is_binary(nick) do
     folded = fold_key(state, nick)
 
     channels =
-      Enum.filter(
-        EventRouter.channels_with_member(state.members, folded),
-        &MapSet.member?(state.seeded_channels, &1)
-      )
+      state.members
+      |> Enum.filter(fn {channel, _} -> MapSet.member?(state.seeded_channels, channel) end)
+      |> Enum.filter(fn {_, ch_members} ->
+        Enum.any?(ch_members, fn {member_nick, _} ->
+          fold_key(state, member_nick) == folded
+        end)
+      end)
+      |> Enum.map(fn {channel, _} -> channel end)
+      |> Enum.sort()
 
     {:reply, {:ok, channels}, state}
   end
