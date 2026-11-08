@@ -1615,6 +1615,25 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.body == "yo, you alive?"
     end
 
+    # issue 2599 — the open-window test applies to every NICK sender, and
+    # which nicks exist is the upstream's call: IRCnet's `foo~` / `~foo`, a
+    # collision UID. Before, they failed the portable charset and fell to
+    # `$server` with the peer's window open.
+    test "issue 2599: a NOTICE from a nick the upstream allows routes to its open window" do
+      for nick <- ["foo~", "~foo", "0AAAAAAAB"] do
+        open = base_state(%{deps: deps(fn _, _, _ -> true end)})
+        m = msg(:notice, ["vjt", "yo"], {:nick, nick, "u", "host.example.com"})
+
+        assert {:cont, _, [{:persist, :notice, %{channel: ^nick, sender: ^nick}}]} =
+                 EventRouter.route(m, open)
+
+        closed = base_state(%{deps: deps(fn _, _, _ -> false end)})
+
+        assert {:cont, _, [{:persist, :notice, %{channel: "$server", sender: ^nick}}]} =
+                 EventRouter.route(m, closed)
+      end
+    end
+
     # The open-window lookup must be asked about the PEER, with this
     # session's subject + network — the same three arguments the services
     # door passes. A lookup keyed on anything else (own nick, the wire

@@ -3275,7 +3275,9 @@ defmodule Grappa.Session.EventRouter do
       Identifier.server_sender?(sender) ->
         {"$server", body}
 
-      Identifier.valid_nick?(sender) ->
+      # Issue 2599 — a nick the UPSTREAM allows (`foo~` on IRCnet, a
+      # collision UID), not the portable charset we register with.
+      Identifier.wire_nick?(sender) ->
         # #546 — ANY nick sender, service or peer, takes the open-window
         # test: a notice is announcement, not an invitation to a
         # conversation. This was an unconditional `{sender, body}` with a
