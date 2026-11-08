@@ -1170,7 +1170,7 @@ defmodule Grappa.Session.EventRouter do
   # IDENTITY, and a consumer is entitled to trust that shape rather than
   # re-validate it. One malformed line, one door.
   #
-  # Deliberately narrow: the blank class only, NOT `Identifier.valid_nick?/1`.
+  # Deliberately narrow: the blank class only, NOT `Identifier.portable_nick?/1`.
   # That predicate is anchored ASCII and capped at 30 — right for what WE
   # send upstream, wrong for what an upstream may send us. Refusing a
   # legitimate rename would leave `state.nick` on a name the server no

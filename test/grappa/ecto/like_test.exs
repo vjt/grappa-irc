@@ -4,7 +4,7 @@ defmodule Grappa.Ecto.LikeTest do
   safe SQL `LIKE` substring pattern from arbitrary user input. The LIKE
   metacharacters `%` (any run) and `_` (any single char) — plus the `\\`
   escape char itself — MUST be escaped, or an operator typing a nick with
-  an underscore (legal in `Identifier.valid_nick?/1`) would silently
+  an underscore (legal in `Identifier.portable_nick?/1`) would silently
   wildcard-match unrelated rows in the subject-search autocomplete.
   """
   use ExUnit.Case, async: true

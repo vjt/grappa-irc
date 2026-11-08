@@ -13,7 +13,7 @@ defmodule Grappa.IRC.Identity do
 
   ## Relationship to `Grappa.IRC.Identifier`
 
-  `Identifier` owns the pure predicate + fold PRIMITIVES (`valid_nick?/1`,
+  `Identifier` owns the pure predicate + fold PRIMITIVES (`portable_nick?/1`,
   `valid_ident?/1`, `safe_line_token?/1`, `sanitize_ident/1`,
   `canonical_target/1`, …). This module owns the CHANGESET-LEVEL wiring —
   the `validate_change/3` callbacks, the `sanitize_ident` changeset step,
@@ -64,12 +64,13 @@ defmodule Grappa.IRC.Identity do
 
   @doc """
   `validate_change/3` callback rejecting a non-RFC nick via
-  `Identifier.valid_nick?/1`. Single source of the nick-shape changeset
-  error across every identity-bearing schema.
+  `Identifier.portable_nick?/1` — the narrow nick, since every
+  identity-bearing schema holds a nick we REGISTER with. Single source of
+  the nick-shape changeset error across them.
   """
   @spec validate_nick(atom(), String.t()) :: [{atom(), String.t()}]
   def validate_nick(field, value) when is_binary(value) do
-    if Identifier.valid_nick?(value),
+    if Identifier.portable_nick?(value),
       do: [],
       else: [{field, "must be a valid IRC nickname"}]
   end

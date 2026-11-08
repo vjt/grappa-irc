@@ -142,7 +142,7 @@ defmodule GrappaWeb.NotifyController do
   end
 
   # Every nick must be a non-empty string; content validation
-  # (Identifier.valid_nick?/1) lives in the Entry changeset so REST and
+  # (Identifier.wire_nick?/1) lives in the Entry changeset so REST and
   # any future door share one rule — this is just the shape check.
   @spec validate_nicks([term()]) :: :ok | {:error, :bad_request}
   defp validate_nicks(nicks) do

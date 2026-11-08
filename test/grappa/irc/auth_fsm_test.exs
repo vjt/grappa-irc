@@ -775,7 +775,7 @@ defmodule Grappa.IRC.AuthFSMTest do
              "stacking underscores walks into the next occupied slot (vjt ruling)"
 
       assert String.starts_with?(after_second.nick, "vjt")
-      assert Identifier.valid_nick?(after_second.nick)
+      assert Identifier.portable_nick?(after_second.nick)
       assert send_lines(sends) == ["NICK #{after_second.nick}"]
     end
 
@@ -793,7 +793,7 @@ defmodule Grappa.IRC.AuthFSMTest do
       assert {:nick_rejected, 433, last} = final,
              "an unbounded ladder is a respawn-flood against a hostile nick space"
 
-      assert Identifier.valid_nick?(last)
+      assert Identifier.portable_nick?(last)
     end
 
     test "every candidate on the ladder is a distinct, valid nick" do
@@ -808,7 +808,7 @@ defmodule Grappa.IRC.AuthFSMTest do
         end)
 
       assert length(nicks) > 1
-      assert Enum.all?(nicks, &Identifier.valid_nick?/1)
+      assert Enum.all?(nicks, &Identifier.portable_nick?/1)
       assert Enum.uniq(nicks) == nicks, "a repeated candidate wastes an attempt: #{inspect(nicks)}"
     end
 
@@ -872,7 +872,7 @@ defmodule Grappa.IRC.AuthFSMTest do
       assert {:cont, second, _} = AuthFSM.step(first, four_three_three("vjt")),
              "a repeated 433 for the original nick must not crash the ladder"
 
-      assert Identifier.valid_nick?(second.nick)
+      assert Identifier.portable_nick?(second.nick)
       assert String.starts_with?(second.nick, "vjt")
     end
 

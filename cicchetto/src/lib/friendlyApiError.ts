@@ -395,7 +395,7 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
         : "This network still has connected users. Disconnect them before deleting it.";
     }
     case "malformed_nick":
-      // L-web-1 / #40 — login nick failed `Identifier.valid_nick?/1` shape.
+      // L-web-1 / #40 — login nick failed `Identifier.portable_nick?/1` shape.
       // Charset from `@nick_regex`: letters, digits, `- _ [ ] { } | \ \` ^`,
       // ≤ 30 chars, not starting with a digit.
       return "That nickname isn't valid. Use up to 30 letters, digits, or - _ [ ] { } | \\ ` ^, and don't start with a digit.";

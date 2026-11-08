@@ -7,7 +7,7 @@ defmodule Grappa.Auth.IdentifierClassifier do
   Single discriminator: `String.contains?(id, "@")`. RFC2812 forbids
   `@` in nicks → unambiguous. Email path requires a minimal
   RFC5322-light shape (`x@y.z`); nick path delegates to
-  `Grappa.IRC.Identifier.valid_nick?/1` so the codebase has a single
+  `Grappa.IRC.Identifier.portable_nick?/1` so the codebase has a single
   source for the nick rule.
 
   Dispatch-only — actual email deliverability is checked downstream
@@ -34,7 +34,7 @@ defmodule Grappa.Auth.IdentifierClassifier do
   Returns `{:email, id}` if the identifier contains `@` and matches a
   minimal RFC5322-light pattern (`x@y.z`). Returns `{:nick, id}` if
   the identifier is a valid RFC2812 nick (delegated to
-  `Grappa.IRC.Identifier.valid_nick?/1`). Returns
+  `Grappa.IRC.Identifier.portable_nick?/1`). Returns
   `{:error, :malformed}` otherwise (leading digit, leading dash,
   invalid email format, length > 30, non-binary input, etc.).
 
@@ -56,7 +56,7 @@ defmodule Grappa.Auth.IdentifierClassifier do
   def classify(id) when is_binary(id) do
     cond do
       String.contains?(id, "@") and Regex.match?(@email_re, id) -> {:email, id}
-      Identifier.valid_nick?(id) -> {:nick, id}
+      Identifier.portable_nick?(id) -> {:nick, id}
       true -> {:error, :malformed}
     end
   end

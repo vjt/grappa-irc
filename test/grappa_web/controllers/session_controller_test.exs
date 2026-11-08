@@ -203,7 +203,7 @@ defmodule GrappaWeb.SessionControllerTest do
 
       assert {:ok, cred_b} = Credentials.get_credential_by_ids(user.id, network_b.id)
       assert cred_b.nick == Identifier.truncate_nick(long_name)
-      assert Identifier.valid_nick?(cred_b.nick)
+      assert Identifier.portable_nick?(cred_b.nick)
     end
 
     test "user accreting a NON-visitor_enabled network → 403 (the bound holds for users too)",

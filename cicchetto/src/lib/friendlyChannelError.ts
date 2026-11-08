@@ -77,7 +77,7 @@ function friendlyKnown(code: ErrorTokensChannelErrorToken): string {
       // `Identifier.valid_channel?/1` rejected the channel token.
       return "That channel name isn't valid.";
     case "invalid_nick":
-      // `Identifier.valid_nick?/1` rejected a nick token (op/deop/voice/
+      // `Identifier.wire_nick?/1` rejected a nick token (op/deop/voice/
       // devoice/kick target).
       return "That nickname isn't valid.";
     case "invalid_mask":

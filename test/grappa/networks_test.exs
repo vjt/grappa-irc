@@ -288,19 +288,19 @@ defmodule Grappa.NetworksTest do
       assert errors_on(cs)[:nick] != nil
     end
 
-    # A8: nick validation is sourced from `Identifier.valid_nick?/1`.
+    # A8: nick validation is sourced from `Identifier.portable_nick?/1`.
     # These two parity tests lock the Credential ↔ Identifier contract
-    # — if Credential's nick rule and Identifier.valid_nick? ever
+    # — if Credential's nick rule and Identifier.portable_nick? ever
     # diverge again, one of these fires. Asserted at the changeset
     # layer (no DB round-trip) since the contract is pure validation;
     # Repo.insert is exercised by the surrounding tests.
-    test "accepts every nick Identifier.valid_nick?/1 accepts", %{user: user, network: net} do
+    test "accepts every nick Identifier.portable_nick?/1 accepts", %{user: user, network: net} do
       # Sample of edge cases Identifier explicitly permits:
       # leading bracket, full 30-char length, embedded IRC special
       # chars. RFC 2812 §2.3.1 forbids leading dash (tail-only) — see
       # the rejection test below.
       for nick <- ["[bot]", "v|t", "v_jt", "v-jt", String.duplicate("a", 30)] do
-        assert Identifier.valid_nick?(nick),
+        assert Identifier.portable_nick?(nick),
                "test fixture invariant: Identifier should accept #{inspect(nick)}"
 
         cs =
@@ -317,13 +317,13 @@ defmodule Grappa.NetworksTest do
       end
     end
 
-    test "rejects every nick Identifier.valid_nick?/1 rejects", %{user: user, network: net} do
+    test "rejects every nick Identifier.portable_nick?/1 rejects", %{user: user, network: net} do
       # Sample of inputs Identifier explicitly rejects: contains space,
       # leading digit, control byte, over 30 chars. Empty string is
       # tested separately via `validate_required` below — here we want
       # nicks that pass `validate_required` but fail the syntax rule.
       for nick <- ["has space", "9leading", "-leading-dash", "ctl\x01char", String.duplicate("a", 31)] do
-        refute Identifier.valid_nick?(nick),
+        refute Identifier.portable_nick?(nick),
                "test fixture invariant: Identifier should reject #{inspect(nick)}"
 
         cs =
@@ -337,6 +337,29 @@ defmodule Grappa.NetworksTest do
 
         assert errors_on(cs)[:nick] != nil,
                "Credential accepted #{inspect(nick)} that Identifier rejects"
+      end
+    end
+
+    # issue 2599 — a credential nick is the one we REGISTER with, before the
+    # 005: `foo~` would earn bahamut's 432 and restart-loop the session, so it
+    # stays refused even though the wire predicate now takes it. `vjt\n` is
+    # the `^…$` trap the anchored nick regex closed; the message pins that the
+    # NICK rule refused it, not the line-safety gate beside it.
+    test "a nick only the wire allows, or one with a trailing newline, is refused", %{
+      user: user,
+      network: net
+    } do
+      for nick <- ["foo~", "vjt\n"] do
+        cs =
+          Credential.changeset(%Credential{}, %{
+            user_id: user.id,
+            network_id: net.id,
+            nick: nick,
+            auth_method: :none,
+            autojoin_channels: []
+          })
+
+        assert "must be a valid IRC nickname" in (errors_on(cs)[:nick] || []), inspect(nick)
       end
     end
 

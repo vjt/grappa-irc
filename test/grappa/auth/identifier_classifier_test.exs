@@ -32,6 +32,12 @@ defmodule Grappa.Auth.IdentifierClassifierTest do
       assert {:error, :malformed} = IdentifierClassifier.classify("")
     end
 
+    # issue 2599 — the login nick becomes the credential nick we REGISTER
+    # with, so it stays the portable one even though IRCnet takes `foo~`.
+    test "a nick only the wire allows → :malformed" do
+      assert {:error, :malformed} = IdentifierClassifier.classify("foo~")
+    end
+
     test "whitespace-padded → :malformed (no implicit trim)" do
       assert {:error, :malformed} = IdentifierClassifier.classify(" vjt ")
     end

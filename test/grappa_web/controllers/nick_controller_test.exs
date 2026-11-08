@@ -273,18 +273,22 @@ defmodule GrappaWeb.NickControllerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # issue 2599 — `foo~` too: the visitor's nick is the one it registers
+    # with, so it stays the portable one even where IRCnet would take it.
     test "visitor subject — 400 malformed_nick rejected at the boundary", %{conn: _conn} do
       slug = "az-nick-vmalformed-#{System.unique_integer([:positive])}"
       {:ok, _} = Grappa.Networks.find_or_create_network(%{slug: slug})
       {_, session} = visitor_and_session_with_credential(network_slug: slug)
 
-      conn =
-        Phoenix.ConnTest.build_conn()
-        |> put_bearer(session.id)
-        |> put_req_header("content-type", "application/json")
-        |> post("/networks/#{slug}/nick", %{"nick" => "9bad"})
+      for nick <- ["9bad", "foo~"] do
+        conn =
+          Phoenix.ConnTest.build_conn()
+          |> put_bearer(session.id)
+          |> put_req_header("content-type", "application/json")
+          |> post("/networks/#{slug}/nick", %{"nick" => nick})
 
-      assert json_response(conn, 400) == %{"error" => "malformed_nick"}
+        assert json_response(conn, 400) == %{"error" => "malformed_nick"}, inspect(nick)
+      end
     end
   end
 

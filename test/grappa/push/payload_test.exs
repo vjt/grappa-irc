@@ -161,7 +161,7 @@ defmodule Grappa.Push.PayloadTest do
     end
 
     # The title takes the same input class as the body. A nick cannot carry
-    # `\x03` — `Identifier.valid_nick?/1`'s charset has no control byte and
+    # `\x03` — `Identifier.wire_nick?/1`'s charset has no control byte and
     # `valid_sender?/1`'s host arm excludes `\x00-\x1f` outright — but a
     # CHANNEL can: `@channel_regex` excludes only whitespace, comma and BELL,
     # the parser strips only `\x00 \r \n`, and `canonical_target/1` folds

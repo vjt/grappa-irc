@@ -2569,7 +2569,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
 
     test "visitor socket: whois with malformed nick returns invalid_nick" do
-      # Belt-and-braces — bucket E web/S7 added `Identifier.valid_nick?`
+      # Belt-and-braces — bucket E web/S7 added `Identifier.wire_nick?`
       # gate at the channel inbound boundary. Pin that visitors hit the
       # same rejection users do (defense in depth — gate fires BEFORE
       # `Session.send_whois/4` is called).
@@ -2906,7 +2906,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
 
     test "visitor socket: invite with malformed nick returns invalid_nick" do
-      # Defense in depth — the inbound `Identifier.valid_nick?` gate fires
+      # Defense in depth — the inbound `Identifier.wire_nick?` gate fires
       # BEFORE `Session.send_invite/4`, so visitors hit the same rejection
       # users do (mirror of the C3 WHOIS malformed-nick test).
       {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
@@ -3495,7 +3495,7 @@ defmodule GrappaWeb.GrappaChannelTest do
   # accepted any binary `channel`/`nick`/`mask`/`target_nick` and let the
   # upstream `Identifier.safe_line_token?` gate (inside `IRC.Client`) do
   # the rejection. Bucket E adds explicit `Identifier.valid_channel?` /
-  # `valid_nick?` / `safe_line_token?` gates at the WS inbound boundary
+  # `wire_nick?` / `safe_line_token?` gates at the WS inbound boundary
   # — a hostile cic instance (or compromised user) cannot inject
   # malformed/CRLF/NUL bytes via WS even if the upstream `Identifier`
   # gate ever loosens. Mirror of bucket C's irc/S5 self-defending

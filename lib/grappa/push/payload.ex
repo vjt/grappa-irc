@@ -39,7 +39,7 @@ defmodule Grappa.Push.Payload do
 
   The projection sits on the COMPOSED title rather than on `channel`
   alone, and that is a measurement rather than caution. A nick cannot
-  carry `\\x03`: `Identifier.valid_nick?/1`'s charset holds no control
+  carry `\\x03`: `Identifier.wire_nick?/1` refuses every control
   byte, and the host arm of `valid_sender?/1` excludes `\\x00-\\x1f`
   outright (its `<meta>` arm would accept one, but that shape is minted
   here, never read off the wire). A CHANNEL can —

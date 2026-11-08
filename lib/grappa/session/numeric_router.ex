@@ -57,7 +57,7 @@ defmodule Grappa.Session.NumericRouter do
      human-readable text). Take the first match in this priority:
 
      a. `^[#&!+]` → channel name → `{:channel, name}`.
-     b. `valid_nick?/1` AND `!= own_nick` AND no `.` (excludes server
+     b. `portable_nick?/1` AND `!= own_nick` AND no `.` (excludes server
         hostnames whose syntax overlaps with nicks) → `{:query, nick}`.
      c. else → `{:server, nil}`.
 
@@ -208,7 +208,7 @@ defmodule Grappa.Session.NumericRouter do
   # params are DATA, never destinations — the stats letter (`/stats o` →
   # 219 `[nick, "o", "End of /STATS report"]`), the O/I/K/C-line class
   # letter (243/215/216/213), a link name, a host mask.
-  # `Identifier.valid_nick?` accepts a bare letter, so pre-fix the param
+  # `Identifier.portable_nick?` accepts a bare letter, so pre-fix the param
   # scan routed the whole reply set into a `{:query, <letter>}` window (a
   # bogus DM named "o") that even leaked into Archive via list_archive's
   # `COALESCE(dm_with, channel)` — the exact disease as the 004/042
@@ -241,7 +241,7 @@ defmodule Grappa.Session.NumericRouter do
   # #908 — TRACE reply family (200–210, 261–262). The THIRD instance of the
   # @stats_numerics disease (#184's stats letter; UX-4 bucket I's
   # connect-storm metadata): a middle param that is a TYPE LABEL, whose
-  # syntax happens to satisfy `Identifier.valid_nick?/1`. For TRACE the
+  # syntax happens to satisfy `Identifier.portable_nick?/1`. For TRACE the
   # label sits in `params[1]` on every member of the family — "Link",
   # "Attempt", "Handshaking", "????", "Operator", "User", "Server",
   # "<newtype>", "Class", "File" — so the param scan takes the reply KIND
@@ -275,7 +275,7 @@ defmodule Grappa.Session.NumericRouter do
   #
   # 321 RPL_LISTSTART — `[nick, "Channel", "Users  Name"]`. `params[1]` is
   #     the literal COLUMN HEADER of the table that follows, and "Channel"
-  #     satisfies `Identifier.valid_nick?/1`, so the scan resolved it to
+  #     satisfies `Identifier.portable_nick?/1`, so the scan resolved it to
   #     `{:query, "Channel"}`. LATENT rather than observed: #640's
   #     `resolve_numeric_query_window/2` collapses a query decision back to
   #     `$server` when no such window is open. It becomes real the moment a
@@ -287,7 +287,7 @@ defmodule Grappa.Session.NumericRouter do
   #     defect of the three.
   # 323 RPL_LISTEND — `[nick, "End of /LIST"]`. Already reached `$server`,
   #     but only because the trailing carries SPACES and so fails
-  #     `valid_nick?/1` — the same accident that saved 262 RPL_ENDOFTRACE
+  #     `portable_nick?/1` — the same accident that saved 262 RPL_ENDOFTRACE
   #     above. Covered for the same reason: a family-wide rule must not rest
   #     on how a server happens to spell its terminator. Unlike 262 (whose
   #     dotless-server-name spelling is real, and made its test red), no
@@ -328,13 +328,13 @@ defmodule Grappa.Session.NumericRouter do
   #
   # 900 RPL_LOGGEDIN is `":%s 900 %s %s!%s@%s %s :You are now logged in
   # as %s"` (`modules/m_services.c:158` passes the account twice). The
-  # first candidate `nick!user@host` fails `valid_nick?/1` on the `!`, so
+  # first candidate `nick!user@host` fails `portable_nick?/1` on the `!`, so
   # the scan falls to the second — the ACCOUNT NAME — and routes there
   # whenever the account differs from the nick. #911 filed this row as
   # "the reply itself never observed"; the shape is now read from source,
   # and the account-vs-nick condition is the whole of its latency.
   # 908 RPL_SASLMECHS puts the mech list in `params[1]`; a multi-mech list
-  # carries commas and fails `valid_nick?/1`, a single-mech server
+  # carries commas and fails `portable_nick?/1`, a single-mech server
   # advertising a bare "PLAIN" does not.
   #
   # 901–907 are two-param with spacey trailings and route to `$server`
@@ -375,7 +375,7 @@ defmodule Grappa.Session.NumericRouter do
   # append a trailing SPACE after every name they add
   # (bahamut `s_user.c:3437`, solanum `m_ison.c:101`
   # `*current_insert_point++ = ' '`), `Parser.parse_params/2` keeps a
-  # trailing verbatim, and `valid_nick?/1` rejects the space — so even the
+  # trailing verbatim, and `portable_nick?/1` rejects the space — so even the
   # single-hit reply that made the row plausible is `"nick "`, not `"nick"`.
   #
   # And the reachability half of the list shrank too: bahamut's table
@@ -411,7 +411,7 @@ defmodule Grappa.Session.NumericRouter do
                          # UX-4 bucket I (2026-05-19): connect-storm numerics
                          # whose middle params are server metadata (own ID,
                          # server name, version string, supported umode/chanmode
-                         # letters) that happen to match `Identifier.valid_nick?`
+                         # letters) that happen to match `Identifier.portable_nick?`
                          # syntax. Pre-fix `scan_params/2` speculatively routed
                          # these to `{:query, <metadata-token>}`, persisting a
                          # `:notice` row at `channel=<metadata-token>` that
@@ -460,7 +460,7 @@ defmodule Grappa.Session.NumericRouter do
                          # #911 — 472 ERR_UNKNOWNMODE. `params[1]` is a
                          # single mode CHARACTER
                          # (`":%s 472 %s %c :is an unknown mode char to
-                         # me"`, both ircds), and `valid_nick?/1` accepts
+                         # me"`, both ircds), and `portable_nick?/1` accepts
                          # a bare letter — the identical defect #184 was
                          # filed for, with a mode letter in place of a
                          # STATS letter. bahamut defines the entry but no
@@ -853,7 +853,7 @@ defmodule Grappa.Session.NumericRouter do
                         # defensible while nothing polled: the moduledoc note
                         # above reasoned it was only `/quote`-reachable and
                         # that its trailing (`"nick "`, with the space every
-                        # ircd appends) fails `valid_nick?/1` so it could not
+                        # ircd appends) fails `portable_nick?/1` so it could not
                         # misroute to a query window. Both stay true; what
                         # changed is that the ISON fallback now SENDS it on a
                         # timer, so an undelegated 303 would persist a
@@ -1252,13 +1252,23 @@ defmodule Grappa.Session.NumericRouter do
   #   * it isn't the own-nick echo (case-insensitive), AND
   #   * it doesn't contain a `.` (excludes server hostnames whose syntax
   #     overlaps with nicks via the [|]\\`_^{} chars but always carry dots).
-  # The `.` exclusion is defensive belt-and-braces: `Identifier.valid_nick?`
+  # The `.` exclusion is defensive belt-and-braces: `Identifier.portable_nick?`
   # already rejects dots via `\w` in the regex, but if the regex evolves to
   # accept dotted nicks (some IRCds allow them) this scan still excludes
   # server hostnames.
+  #
+  # The NARROW nick, on purpose, where every other door that names somebody
+  # else takes `wire_nick?/1` (issue 2599). This is not a validator but a
+  # classifier guessing which param of an arbitrary numeric is a nick, and
+  # the deny-lists above (#184, #908, #910) were each built against the
+  # tokens the narrow charset happened to admit; widening it would make
+  # counts, timestamps and `=`-tokens candidates and reopen that audit. The
+  # price is bounded by the #640 gate and accepted: a numeric about `foo~`
+  # lands on `$server`, as it did before. WHOIS replies do not depend on
+  # this — they correlate on the folded target.
   @spec query_candidate?(term(), String.t() | nil) :: boolean()
   defp query_candidate?(token, own_nick) when is_binary(token) do
-    Identifier.valid_nick?(token) and
+    Identifier.portable_nick?(token) and
       not String.contains?(token, ".") and
       not nick_eq?(token, own_nick)
   end

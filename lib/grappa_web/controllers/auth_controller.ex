@@ -174,7 +174,7 @@ defmodule GrappaWeb.AuthController do
   # classification. Mobile Chrome/Android soft keyboards inject a
   # trailing space (or other surrounding whitespace / non-printable
   # control chars) via autocapitalize/autocorrect/autofill, which trips
-  # the anchored nick regex in `Identifier.valid_nick?/1` → the login
+  # the anchored nick regex in `Identifier.portable_nick?/1` → the login
   # 400s with `malformed_nick` BEFORE the password is ever checked, so a
   # legitimate visitor cannot log in from a phone.
   #
@@ -185,7 +185,7 @@ defmodule GrappaWeb.AuthController do
   # eats the NBSP ` ` some keyboards emit). This is the single
   # boundary: it runs upstream of BOTH the email and nick branches and
   # upstream of `Login.validate_nick/1`'s second classify, and it keeps
-  # `IdentifierClassifier` / `Identifier.valid_nick?` pure syntactic
+  # `IdentifierClassifier` / `Identifier.portable_nick?` pure syntactic
   # predicates (they deliberately do NOT trim — see their tests), per
   # the CLAUDE.md "convert/sanitize at the boundary, not inside business
   # logic" rule.

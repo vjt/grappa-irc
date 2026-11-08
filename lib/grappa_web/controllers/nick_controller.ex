@@ -62,7 +62,7 @@ defmodule GrappaWeb.NickController do
   through `FallbackController` to 404 / 400 respectively. Visitor branch
   adds 409 `nick_in_use` (target is the login key of another visitor's
   IDENTIFIED credential on the same network — #828) + 400 `malformed_nick` (target rejected by
-  `IRC.Identifier.valid_nick?/1` at the boundary, since the visitor
+  `IRC.Identifier.portable_nick?/1` at the boundary, since the visitor
   schema's `nick_changeset/2` would reject it later — the controller
   surfaces it now to keep the failure mode consistent with login).
   """
@@ -96,7 +96,7 @@ defmodule GrappaWeb.NickController do
 
   # V9 boundary check — surface the syntactic + identity rejections
   # at the controller before the upstream NICK frame goes out. Mirrors
-  # the visitor login boundary's `Identifier.valid_nick?/1` shape so
+  # the visitor login boundary's `Identifier.portable_nick?/1` shape so
   # the failure modes a visitor sees on /nick match what they saw on
   # initial login. #211 phase 7 — the collision check is per-network on
   # the credential (`nick_held_by_identified?/3` keyed on network_id),
@@ -108,7 +108,7 @@ defmodule GrappaWeb.NickController do
           :ok | {:error, :malformed_nick | :nick_in_use}
   defp check_visitor_nick(visitor_id, network_id, nick) do
     cond do
-      not Grappa.IRC.Identifier.valid_nick?(nick) ->
+      not Grappa.IRC.Identifier.portable_nick?(nick) ->
         {:error, :malformed_nick}
 
       Visitors.nick_held_by_identified?(visitor_id, nick, network_id) ->
