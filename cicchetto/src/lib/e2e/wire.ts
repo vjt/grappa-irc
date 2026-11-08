@@ -293,6 +293,76 @@ export function parseNack(payload: Record<string, unknown>): NackPayload {
   return { ref: str(payload, "ref") };
 }
 
+// --- channel E2E (wire v3, CLIENT_PROTOCOL §4f "Channel messages") --------
+//
+// A channel message's payload is the v3 group shape: one sender key per
+// sender (Megolm-style), not one global key. `ch` is the folded channel
+// name, `sid` the group session id, `i` the chain index the ciphertext was
+// encrypted at, `body` the Megolm ciphertext, standard base64 unpadded.
+// The Megolm plaintext inside `body` is itself a typed inner message, the
+// DM convention (`t` names it): `{"t":"text","body":"..."}` for a chat
+// message, `{"t":"grotate","sid":"...","key":"..."}` for a periodic
+// rotation (see `groupSessions.ts`). Raw text is never a channel plaintext:
+// without the `t` the rotation message and a chat message are
+// indistinguishable, and a chat message that happens to parse as a rotation
+// would be eaten as key material.
+export const GROUP_WIRE_VERSION = 3;
+/** The v3 group payload of a channel `:msg` (see §4f). */
+export type ChannelPayload = { v: 3; ch: string; sid: string; i: number; body: string };
+
+export function parseChannelPayload(payload: Record<string, unknown>): ChannelPayload {
+  if (payload.v !== GROUP_WIRE_VERSION) throw new PayloadError("unsupported version");
+  const ch = str(payload, "ch");
+  const sid = str(payload, "sid");
+  const body = str(payload, "body");
+  const i = payload.i;
+  if (typeof i !== "number" || !Number.isInteger(i) || i < 0) throw new PayloadError("bad i");
+  if (ch === "" || sid === "" || body === "") throw new PayloadError("empty channel field");
+  return { v: GROUP_WIRE_VERSION, ch, sid, i, body };
+}
+
+/**
+ * The key of a channel epoch, carried inside the pairwise Olm DM to a
+ * member (`{"t":"gkey","ch":"#grappa","sid":"...","key":"..."}`): `key` is
+ * the session key as the Megolm adapter prints it (base64), `sid` the
+ * session it opens. Never sent in the clear, never through the server.
+ */
+export type GkeyInner = { t: "gkey"; ch: string; sid: string; key: string };
+
+export function parseGkeyInner(inner: Record<string, unknown>): GkeyInner {
+  if (inner.t !== "gkey") throw new PayloadError("not a gkey");
+  const ch = str(inner, "ch");
+  const sid = str(inner, "sid");
+  const key = str(inner, "key");
+  if (ch === "" || sid === "" || key === "") throw new PayloadError("empty gkey field");
+  return { t: "gkey", ch, sid, key };
+}
+
+/**
+ * A periodic rotation, carried as a channel message encrypted under the OLD
+ * epoch's key: `key` is the NEW epoch's session key (base64), `sid` the new
+ * session it opens. The v3 envelope around it still names the OLD `sid`:
+ * the reader decrypts with the old inbound session, then imports this one.
+ */
+export type GrotateInner = { t: "grotate"; sid: string; key: string };
+
+export function parseGrotateInner(inner: Record<string, unknown>): GrotateInner {
+  if (inner.t !== "grotate") throw new PayloadError("not a grotate");
+  const sid = str(inner, "sid");
+  const key = str(inner, "key");
+  if (sid === "" || key === "") throw new PayloadError("empty grotate field");
+  return { t: "grotate", sid, key };
+}
+
+/** A channel chat message as Megolm plaintext: the `body` is shown, nothing else. */
+export type ChannelTextInner = { t: "text"; body: string };
+
+export function parseChannelTextInner(inner: Record<string, unknown>): ChannelTextInner {
+  if (inner.t !== "text") throw new PayloadError("not a channel text");
+  const body = str(inner, "body");
+  return { t: "text", body };
+}
+
 /** The ASCII case fold of a nick (CASEMAPPING=ascii, grappa's `canonical_target`). */
 export function fold(nick: string): string {
   return nick.replace(/[A-Z]/g, (c) => c.toLowerCase());

@@ -54,6 +54,8 @@ import {
   noNicks,
   setNick,
 } from "./byNick";
+import type { GroupSessionsState } from "./groupSessions";
+import { newGroupSessionsState } from "./groupSessions";
 import { idBlock } from "./keyBundle";
 import type { Olm } from "./olm";
 import type { SasRecord } from "./sas";
@@ -288,6 +290,15 @@ export type E2eState = {
   /** Master Ed25519 key → the SAS running with it (`sas.ts`): its public half. */
   sas: Record<string, SasRecord>;
   /**
+   * The channel E2E group sessions (`groupSessions.ts`): this device's
+   * outbound epoch per channel, and the inbound sessions per (channel,
+   * sender, session id). Stored with the account, sealed in the same
+   * record, so a reload keeps the epochs; a record sealed before this
+   * field existed opens with an empty store (`accountStore` spreads
+   * `newState()` underneath the stored state).
+   */
+  groups: GroupSessionsState;
+  /**
    * Device Ed25519 key → our sibling of that key. Its sessions are in
    * `sessions` with every other; a sibling is never in `devices`, and so
    * never bound to a nick.
@@ -323,6 +334,7 @@ export function newState(): E2eState {
     nextRef: 1,
     inbox: 0,
     sas: {},
+    groups: newGroupSessionsState(),
     siblings: {},
     copyq: {},
     keysAsked: noNicks(),

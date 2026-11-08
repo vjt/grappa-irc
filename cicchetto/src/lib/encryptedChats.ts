@@ -45,7 +45,7 @@ import {
   sendE2e,
 } from "./api";
 import { token } from "./auth";
-import { type ChannelKey, channelKey } from "./channelKey";
+import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { browserE2e } from "./e2e/browser";
 import { atNick, type ByNick, nickEntries, nickValues, noNicks } from "./e2e/byNick";
 import { type Chat, type ChatRow, isMessage, type SendDropped } from "./e2e/chatStore";
@@ -78,6 +78,7 @@ import { type OrderScope, sendLog, subjectKey } from "./e2e/orders";
 import type { SasStep, SasView } from "./e2e/sas";
 import { fold } from "./e2e/wire";
 import { identityScopedStore } from "./identityScopedStore";
+import { onPresenceDelta } from "./members";
 import {
   casemappingForNetwork,
   chantypesForNetwork,
@@ -187,6 +188,8 @@ const doors =
         msgid: m.msgid,
         payload: m.payload,
         own: m.own,
+        // v63: the folded channel the message was sent to, null for a DM.
+        channel: m.channel ?? null,
       })),
     ack: (ids) => ackE2eDeviceInbox(bearer, slug, did, ids),
     claim: (to) => claimAnswer(to, claimE2eDeviceKeys(bearer, slug, to, did)),
@@ -639,6 +642,50 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     await afterReport(slug, report);
   }
 
+  /**
+   * Sends `body` to `channel`, encrypted under the channel's epoch
+   * (wire v3): the key is distributed pairwise first when the epoch is
+   * new. `members` is the roster the channel window holds. The channel
+   * UI calls this once it offers an encrypted channel mode; until then
+   * nothing sends here.
+   */
+  async function sendChannelEncrypted(
+    slug: string,
+    channel: string,
+    body: string,
+    members: string[],
+  ): Promise<void> {
+    const report = await run(slug, (client, ctx) =>
+      client.sendChannel(ctx, channel, body, members),
+    );
+    await afterReport(slug, report);
+  }
+
+  /**
+   * A membership delta on `channel` (`members.ts`): `joined` the nick
+   * that joined, `left` the nick that left, was kicked, or quit,
+   * `members` the roster after the change. Distributes the epoch key on
+   * a join, rotates it on a leave, drops the channel on our own leave.
+   * A network held elsewhere runs nothing, and is not retried: only the
+   * user moves it.
+   */
+  async function channelMembersChanged(
+    slug: string,
+    channel: string,
+    joined: string | null,
+    left: string | null,
+    members: string[],
+  ): Promise<void> {
+    try {
+      const report = await run(slug, (client, ctx) =>
+        client.channelMembersChanged(ctx, channel, joined, left, members),
+      );
+      await afterReport(slug, report);
+    } catch (err) {
+      unlessElsewhere(err);
+    }
+  }
+
   /** This device on the network, its did and our master key: what a consent line goes from (issue 2486). */
   function encryptedDevice(slug: string): Promise<{ did: string; master: string }> {
     return run(slug, (client, ctx) => client.device(ctx));
@@ -758,6 +805,31 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // `tickWaiting` logs each network's failure itself, and goes on.
     const tick = setInterval(() => void tickWaiting(), TICK_MS);
     onCleanup(() => clearInterval(tick));
+    // Channel E2E rotation triggers (wire v3): a member joined or left a
+    // channel — the epoch key is distributed, or rotated. The delta's
+    // roster is after the change; our own leave drops the channel's keys
+    // (`client.channelMembersChanged` judges it off the network's nick).
+    // A network held elsewhere runs nothing (`channelMembersChanged`
+    // swallows that), and a channel on no network this browser knows is
+    // not ours.
+    const unsubscribePresence = onPresenceDelta((delta) => {
+      const decoded = decodeChannelKey(delta.key);
+      if (decoded === null || networkBySlug(decoded.slug) === undefined) return;
+      if (delta.joined === null && delta.left === null) return;
+      void channelMembersChanged(
+        decoded.slug,
+        decoded.name,
+        delta.joined,
+        delta.left,
+        delta.members,
+      ).catch((err: unknown) => {
+        console.warn(
+          `[e2e] could not handle a membership change on ${decoded.slug} ${decoded.name}`,
+          err,
+        );
+      });
+    });
+    onCleanup(() => unsubscribePresence());
     onIdentityChange(() => drained.clear());
     createEffect(() => {
       if (!token() || !user()) return;
@@ -783,6 +855,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     encryptedChatHasMessages,
     readEncryptedChat,
     sendEncrypted,
+    sendChannelEncrypted,
+    channelMembersChanged,
     encryptedSendSubmitted,
     lastEncryptedSend,
     encryptedChatDeleted,
@@ -822,6 +896,8 @@ export const deleteEncryptedChat = exports_.deleteEncryptedChat;
 export const encryptedChatHasMessages = exports_.encryptedChatHasMessages;
 export const readEncryptedChat = exports_.readEncryptedChat;
 export const sendEncrypted = exports_.sendEncrypted;
+export const sendChannelEncrypted = exports_.sendChannelEncrypted;
+export const channelMembersChanged = exports_.channelMembersChanged;
 export const encryptedSendSubmitted = exports_.encryptedSendSubmitted;
 export const lastEncryptedSend = exports_.lastEncryptedSend;
 export const encryptedChatDeleted = exports_.encryptedChatDeleted;

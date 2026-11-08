@@ -49,6 +49,20 @@ import { ApiError } from "../api";
 import type { E2eKeysWireDevice } from "../wireTypes";
 import type { AccountStore } from "./accountStore";
 import { type ByNick, noNicks, setNick } from "./byNick";
+import {
+  type ChannelE2eDeps,
+  type ChannelE2eEvent,
+  type ChannelE2eResult,
+  channelsWithEpoch,
+  emitChannelE2eEvents,
+  GKEY_TAG,
+  onMemberJoined,
+  onMemberLeft,
+  receiveChannel,
+  receiveGkey,
+  rotateDue,
+  sendChannel,
+} from "./channelE2e";
 import type {
   ChatChange,
   ChatStore,
@@ -85,6 +99,7 @@ import {
   Verifier,
 } from "./sas";
 import { fold, type ReceiveVerb, type SendVerb } from "./wire";
+import { loadMegolm, type MegolmAdapter } from "./megolm";
 
 /** One whole message grappa holds for this device (the `e2e_message` wire shape, minus its envelope). */
 export type InboxMessage = {
@@ -97,6 +112,8 @@ export type InboxMessage = {
   payload: string;
   /** A copy of a message one of this subject's other devices sent, not one a peer wrote. */
   own: boolean;
+  /** The folded channel the message was sent to (v63), or null for a DM. Absent on a server predating v63. */
+  channel?: string | null;
 };
 
 /** grappa's E2E doors for one device of a subject on one network. */
@@ -207,6 +224,14 @@ export type Report = {
   waiting: boolean;
   unknownDevice: boolean;
   listBehind: boolean;
+  /**
+   * Channel E2E events this operation produced (decrypted channel
+   * messages, undecryptable ones, keys received or sent, rotations).
+   * The channel window has no DM row to show them in yet (see
+   * `channelE2e.ts`): they are also fanned out to the live listeners
+   * there, and the caller that owns the channel UI reads them here.
+   */
+  channelE2e?: ChannelE2eEvent[];
 };
 
 /** Who a nick is pinned to, as the user sees it: the master, and how many of its devices are trusted. */
@@ -250,6 +275,30 @@ export type E2eClient = {
   verify(ctx: E2eContext, nick: string, step: SasStep): Promise<Report>;
   /** grappa dropped `msgid` after accepting it (`e2e_send_dropped`): its row turns failed. */
   dropped(ctx: E2eContext, msgid: string, reason: SendDropped): Promise<Report>;
+  /**
+   * Sends `body` to `channel`, encrypted under the channel's epoch
+   * (`channelE2e.sendChannel`): the key is distributed pairwise first
+   * when the epoch is new. The channel message itself takes no DM row.
+   */
+  sendChannel(
+    ctx: E2eContext,
+    channel: string,
+    body: string,
+    members: string[],
+  ): Promise<Report>;
+  /**
+   * A membership delta on `channel`: `joined` the nick that joined (or
+   * null), `left` the nick that left, was kicked, or quit (or null),
+   * `members` the roster after the change. Drives the key distribution
+   * on a join and the mandatory rotation on a leave (`channelE2e`).
+   */
+  channelMembersChanged(
+    ctx: E2eContext,
+    channel: string,
+    joined: string | null,
+    left: string | null,
+    members: string[],
+  ): Promise<Report>;
   /**
    * Deletes the chat with `nick` (`ChatStore.remove`) and what the engine
    * still holds of it in the clear (`Engine.forget`); answers the chat it
@@ -556,6 +605,21 @@ export function e2eClient(
   now: () => number,
   host: SasHost,
 ): E2eClient {
+  // The channel E2E step's dependencies over an engine: its Megolm
+  // adapter (null before the wasm exports land), this device's did, and
+  // the DM door for a gkey — through the engine, tagged `GKEY_TAG`, so
+  // it writes no chat row (`chatStore`: an `out` alone never creates a
+  // chat, and no row with that tag exists to move).
+  function channelDeps(ctx: E2eContext, engine: Engine, adapter: MegolmAdapter | null): ChannelE2eDeps {
+    return {
+      adapter,
+      ownNick: ctx.ownNick,
+      ownDid: engine.deviceId(),
+      now,
+      sendDm: (nick, inner) => engine.send(nick, inner, GKEY_TAG, null, null).outbound,
+    };
+  }
+
   // Step 4 for `outbound`: what the send door answered, as chat changes, and
   // whether it refused a payload as from a device it does not list. A
   // refused payload is forgotten (`discard`); its message is lost only once
@@ -821,6 +885,12 @@ export function e2eClient(
         let unknownDevice = false;
         let behind = false;
         let after = 0;
+        const channelEvents: ChannelE2eEvent[] = [];
+        // Loaded once per drain: without the Megolm exports every channel
+        // message reads undecryptable (the DM path's rule), and a gkey
+        // cannot be imported — both are reported, never thrown.
+        const megolm = await loadMegolm().catch(() => null);
+        const deps = channelDeps(ctx, engine, megolm);
         for (;;) {
           const page = await door.inbox(after);
           const last = page.at(-1);
@@ -829,6 +899,19 @@ export function e2eClient(
           const outbound: Outbound[] = [];
           for (const m of page) {
             if (m.id <= state.inbox) continue;
+            const channel = m.channel ?? null;
+            if (channel !== null) {
+              // A channel `:msg` (v63): decrypted with the matching
+              // inbound session, or surfaced as undecryptable — never
+              // dropped silently, and acknowledged like a DM's, readable
+              // or not. Our own channel messages are skipped by the
+              // receiver (the send path showed them).
+              channelEvents.push(
+                ...receiveChannel(deps, state.groups, channel, m.from, m.payload),
+              );
+              state.inbox = m.id;
+              continue;
+            }
             const res = m.own
               ? copyFrom(engine, m)
               : engine.receive(m.from, m.verb, m.msgid, m.fromDid, m.payload);
@@ -866,6 +949,11 @@ export function e2eClient(
                 if (check !== null) changes.push(check);
                 changes.push(...changesFor(acked.events, now(), null));
                 outbound.push(...acked.outbound);
+              } else if (e.inner.t === "gkey") {
+                // A member's epoch key, inside the pairwise DM: import
+                // it into the group store. No row: key material is never
+                // shown, and a bad key is reported, never thrown.
+                channelEvents.push(...receiveGkey(deps, state.groups, e.inner, e.nick));
               }
             }
             state.inbox = m.id;
@@ -897,12 +985,14 @@ export function e2eClient(
           ticked.outbound,
         );
         for (const key of end.chats) touched.add(key);
+        emitChannelE2eEvents(channelEvents);
         return {
           chats: [...touched],
           pkmsgs,
           waiting: end.waiting,
           unknownDevice: unknownDevice || end.unknownDevice,
           listBehind: behind,
+          channelE2e: channelEvents,
         };
       }),
 
@@ -933,19 +1023,67 @@ export function e2eClient(
         };
       }),
 
+    sendChannel: (ctx, channel, body, members) =>
+      withEngine(ctx, async (engine, persist, verifier, door, state) => {
+        const megolm = await loadMegolm().catch(() => null);
+        const res = sendChannel(
+          channelDeps(ctx, engine, megolm),
+          state.groups,
+          channel,
+          body,
+          members,
+        );
+        emitChannelE2eEvents(res.events);
+        const report = await finish(ctx, engine, verifier, persist, door, [], res.outbound);
+        return { ...report, channelE2e: res.events };
+      }),
+
+    channelMembersChanged: (ctx, channel, joined, left, members) =>
+      withEngine(ctx, async (engine, persist, verifier, door, state) => {
+        const megolm = await loadMegolm().catch(() => null);
+        const deps = channelDeps(ctx, engine, megolm);
+        const res: ChannelE2eResult = { events: [], outbound: [] };
+        if (joined !== null) {
+          const r = onMemberJoined(deps, state.groups, channel, joined, members);
+          res.events.push(...r.events);
+          res.outbound.push(...r.outbound);
+        }
+        if (left !== null) {
+          const r = onMemberLeft(deps, state.groups, channel, left, members);
+          res.events.push(...r.events);
+          res.outbound.push(...r.outbound);
+        }
+        emitChannelE2eEvents(res.events);
+        const report = await finish(ctx, engine, verifier, persist, door, [], res.outbound);
+        return { ...report, channelE2e: res.events };
+      }),
+
     tick: (ctx) =>
-      withEngine(ctx, async (engine, persist, verifier, door) => {
+      withEngine(ctx, async (engine, persist, verifier, door, state) => {
         const ticked = engine.tick();
         verifier.tick(await host.alive());
-        return finish(
+        // Periodic rotation: the epochs due a new day go out as one
+        // channel message each, the new key encrypted under the old one.
+        const megolm = await loadMegolm().catch(() => null);
+        const rotated =
+          megolm === null
+            ? { events: [], outbound: [] }
+            : rotateDue(
+                channelDeps(ctx, engine, megolm),
+                state.groups,
+                channelsWithEpoch(state.groups),
+              );
+        emitChannelE2eEvents(rotated.events);
+        const report = await finish(
           ctx,
           engine,
           verifier,
           persist,
           door,
           changesFor(ticked.events, now(), null),
-          ticked.outbound,
+          [...ticked.outbound, ...rotated.outbound],
         );
+        return { ...report, channelE2e: rotated.events };
       }),
 
     rekey: (ctx, nick) => step(ctx, (engine) => engine.rekey(nick)),
