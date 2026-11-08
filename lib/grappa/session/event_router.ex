@@ -3999,16 +3999,8 @@ defmodule Grappa.Session.EventRouter do
   @spec channel_target?(binary()) :: boolean()
   defp channel_target?(target), do: Identifier.channel_sigil?(target)
 
-  # Issue 2449 — the sorted channels in `members` holding `nick`. Public
-  # (not private) because `Grappa.Session.Server` answers
-  # `{:common_channels, nick}` from the same live map: the read is the
-  # caller's own view, so no NAMES/WHO round trip. Linear scan of the
-  # members map — fine at real channel counts; no per-nick index exists
-  # and none is needed. `nick` must already be network-folded
-  # (`normalize_nick/2` at ingress); the Server folds the query the same
-  # way (`fold_key/2`) before calling here.
   @spec channels_with_member(members(), String.t()) :: [String.t()]
-  def channels_with_member(members, nick) do
+  defp channels_with_member(members, nick) do
     members
     |> Enum.filter(fn {_, ch_members} -> Map.has_key?(ch_members, nick) end)
     |> Enum.map(fn {ch, _} -> ch end)

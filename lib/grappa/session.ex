@@ -2153,11 +2153,14 @@ defmodule Grappa.Session do
   session's view, and the caller must not read more into it.
 
   The query nick is folded with the network casemapping server-side
-  (`fold_key/2` in `Session.Server`); the facade passes it RAW, the
-  way `list_members/3` passes the channel. Any nick is queryable: the
-  answer is the caller's own observed membership, not a lookup of the
-  peer. Returns `{:error, :no_session}` if no session is registered
-  for `(subject, network_id)`.
+  (`fold_key/2` in `Session.Server`), and the comparison folds each
+  member key the same way at read time — member keys carry wire case
+  (the JOIN handler stores the raw sender, the 353 handler the raw
+  token), so a folded query against raw keys would miss. The facade
+  passes the nick RAW, the way `list_members/3` passes the channel.
+  Any nick is queryable: the answer is the caller's own observed
+  membership, not a lookup of the peer. Returns `{:error, :no_session}`
+  if no session is registered for `(subject, network_id)`.
   """
   @spec common_channels(subject(), integer(), String.t()) ::
           {:ok, [String.t()]} | {:error, :no_session}

@@ -2924,19 +2924,34 @@ defmodule Grappa.Session.Server do
   # channel the operator has PARTed is gone from `state.members` and so
   # is absent here too.
   #
-  # The query nick is folded with the network casemapping (`fold_key/2`,
-  # #537) because member keys are folded at ingress (`normalize_nick/2`
-  # in the EventRouter) — a bare `String.downcase` would miss the peer
-  # on a network whose casemapping folds the rfc1459 national chars.
+  # The comparison is folded on BOTH sides (`fold_key/2`, #537) — NOT a
+  # `Map.has_key?` on the folded query, and NOT a reuse of
+  # `EventRouter.channels_with_member/2`. Member keys carry WIRE case:
+  # the JOIN handler stores the raw sender and the 353 handler stores
+  # the raw token (`split_mode_prefix/2` does not fold); only the
+  # CHANNEL keys and the userhost/peer-profile cache keys are folded at
+  # ingress (the M1 measurement's "member keys are folded" holds for
+  # those caches, not for this map — caught by the fold test, which
+  # failed on the first run). A folded query against raw keys misses
+  # ("ALICE" vs key "Alice"), so each member key is folded at read
+  # time. Linear scan with a fold per member — same order as
+  # `channels_with_member/2`, fine at real channel counts.
+  #
   # The answer is the caller's OWN view: any nick is queryable, because
   # the membership it reports is what this session has observed.
   def handle_call({:common_channels, nick}, _, state) when is_binary(nick) do
-    nick = fold_key(state, nick)
+    folded = fold_key(state, nick)
 
     channels =
       state.members
-      |> Map.filter(fn {channel, _} -> MapSet.member?(state.seeded_channels, channel) end)
-      |> EventRouter.channels_with_member(nick)
+      |> Enum.filter(fn {channel, _} -> MapSet.member?(state.seeded_channels, channel) end)
+      |> Enum.filter(fn {_, ch_members} ->
+        Enum.any?(ch_members, fn {member_nick, _} ->
+          fold_key(state, member_nick) == folded
+        end)
+      end)
+      |> Enum.map(fn {channel, _} -> channel end)
+      |> Enum.sort()
 
     {:reply, {:ok, channels}, state}
   end

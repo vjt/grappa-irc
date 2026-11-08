@@ -7945,16 +7945,26 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
       IRCServer.feed(server, ":irc 353 grappa-test = #test :grappa-test Alice\r\n")
       IRCServer.feed(server, ":irc 366 grappa-test #test :End\r\n")
+      # A second peer arriving by JOIN echo, not 353 — the JOIN path
+      # stores the raw sender too, so the fold must hold there as well.
+      IRCServer.feed(server, ":Bob!u@h JOIN :#test\r\n")
       IRCServer.feed(server, "PING :flush\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
 
-      # Member keys are folded at ingress; the query must fold the
-      # same way, or "ALICE" would miss the "alice" key.
+      # Member keys carry wire case ("Alice", "Bob"); the query folds
+      # both sides with the network casemapping, so "ALICE" must still
+      # find the "Alice" key and "BOB" the "Bob" key.
       assert {:ok, ["#test"]} =
                Session.common_channels({:user, user.id}, network.id, "ALICE")
 
       assert {:ok, ["#test"]} =
                Session.common_channels({:user, user.id}, network.id, "Alice")
+
+      assert {:ok, ["#test"]} =
+               Session.common_channels({:user, user.id}, network.id, "BOB")
+
+      assert {:ok, ["#test"]} =
+               Session.common_channels({:user, user.id}, network.id, "bob")
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
