@@ -5875,6 +5875,13 @@ socket with a different address, which the bundle must never carry.
   tolerances both 74 → 76.
 - shottino `tests/test_wire` on the host, with the v62 fixtures: 719 checks,
   rc=0; positive control (broken JSON) rc=134, `FAIL whois_bundle`.
+- e2e `issue2597-whois-client-ip.spec.ts` (chromium, real bahamut): an oper
+  visitor's `/whois` of a visitor with a browser open shows addresses; a
+  non-oper's card has no row and its frame carries both keys `null`; a visitor
+  never booted reads "no socket connected, last known address <ip>"; the
+  rail's WHOIS of a query carries the row. 1 passed, rc=0. Not run against a
+  mutant: each assertion needs a v62 value a pre-62 server cannot send, which
+  is an argument, not a measurement.
 - `scripts/check.sh` rc=0 (8720 tests, dialyzer 0, bats 863/863) — after
   three red runs, each a real cause. The full suite found a reader of the
   registry value E1 had missed: `auth_controller_test`'s #126 detach case
