@@ -5908,3 +5908,129 @@ socket with a different address, which the bundle must never carry.
 - Two `networks` rows pointing at one ircd: the lookup is per `network_id`,
   so a grappa user connected through the other row is not found.
 - That `O` means an operator on every ircd: read on bahamut and solanum only.
+<!-- entry #2599 -->
+
+---
+
+## 2026-11-08 — #2599: two nick predicates — the one we register with, and the one the upstream chose
+
+`/whois foo~` answered `invalid_nick` on IRCnet, where `~` is a nick
+character. Every door that names a nick held it to one predicate,
+`Identifier.valid_nick?/1`, whose charset is the one WE register with. A
+nick somebody else holds is the upstream's call, not ours, and so is our
+own once the ircd has set it (a collision renames a client to its UID,
+`0AAAAAAAB`). One predicate cannot answer both questions, so there are
+two, and `valid_nick?/1` is gone (deleted, not aliased): a generic name
+beside a specific one is the name the next site copies onto the wrong
+path.
+
+### `portable_nick?/1` — the nick we register with
+
+Unchanged regex, now anchored `\A…\z`. Narrow on purpose:
+
+* The registration `NICK` goes out before 001, so before the 005 that says
+  what the network allows. bahamut (all of prod) refuses `~`
+  (`include/struct.h` `isvalid`), and a 432 during registration is a
+  `{:stop, {:nick_rejected, 432, nick}}` (`AuthFSM`, deliberately not
+  laddered), which the supervisor restarts into the same 432. So the
+  charset is the intersection of the ircds we know.
+* `Grappa.IRC.LineSplit` budgets the relayed prefix on our own nick never
+  registering past 30.
+
+Readers: `Identity.validate_nick/2` (Credential + visitor changesets),
+`IdentifierClassifier.classify/1` (visitor login), the visitor `/nick`
+door, `Client.send_nick/2`, `valid_nick_suffix?/1` (the suffix lands on
+our nick), and `NumericRouter.query_candidate?/2`. That last one is a
+classifier, not a validator: it guesses which param of an arbitrary
+numeric is a nick, and its deny-lists (#184, #908, #910) were built on
+the tokens the narrow charset admitted. Widening it reopens that audit;
+the price, bounded by the #640 gate and accepted, is that a numeric about
+`foo~` lands on `$server` as before. WHOIS does not depend on it — its
+replies correlate on the folded target, pinned by a test that feeds the
+311/312/317/616/318 bundle for `foo~`.
+
+### `wire_nick?/1` — the nick the upstream chose
+
+Refuses only what cannot be one nick token, or what our own code reads as
+something else. Each exclusion has a reader:
+
+* control bytes, space, DEL anywhere — split or end the wire token;
+  `Push.Payload` relies on a nick carrying no control byte;
+* `,` anywhere — the target-list separator (WHOIS, KICK, MONITOR,
+  PRIVMSG);
+* `!` `@` anywhere — the `nick!user@host` delimiters;
+* `.` anywhere — a dotted prefix is a server (`server_sender?/1`; the
+  disjointness is a property test);
+* `*` `?` anywhere — wildcards make the target a mask, and `*` is
+  `Message.anonymous_sender/0`;
+* `#` `&` `+` anywhere — leading, it is a channel and the
+  `valid_channel?(s) or <nick>` sites must stay unambiguous; further in,
+  `peel_statusmsg/2` reads `%#chan` as a channel address;
+* a leading `:` (would become the trailing param) or `$` (RFC 2812 server
+  mask, and our `$server`).
+
+Accepted on purpose: `~` anywhere including first (IRCnet), a leading
+digit (UIDs), a leading `-`, bytes ≥ 0x80 (the upstream is the authority;
+both doors hand us valid UTF-8). Capped at `max_wire_nick_bytes/0` = 128
+BYTES — the bound `E2eInbox.Entry` already used for an own row's sender,
+moved into `Identifier` because IRC is the lower boundary. Solanum on the
+e2e testnet advertises `NICKLEN=31`, so a 30 cap would have kept the same
+defect for longer nicks.
+
+Readers: every verb that names somebody else (kick, invite, whois, whowas,
+op/deop/voice/devoice, query windows, the REST message/archive target, the
+scrollback `channel` column, the non-channel NOTICE route, `/notify`, E2E
+peer/sender/consent), the umode pair on our live nick, and the nick arm of
+`valid_sender?/1` (which changes nothing: its host arm already admits
+every wire nick).
+
+**R7 stands** (docs/design_notes/2026-10.md, vjt's ruling): an own E2E
+inbox row's sender is bounded in bytes, NOT judged, so only the PEER
+branch of `E2eInbox.Entry.validate_sender/1` takes `wire_nick?/1`.
+Collapsing the two branches would have reversed the letter of R7.
+
+Two pins were premises, not properties, and were flipped: a UID peer row
+in the E2E inbox (its only ground, 41201a1e4, was the narrow predicate),
+and an inbound E2E sender of 31 characters (its only ground was the 30
+cap). Four `"123bad"` examples of a bad target became `"bad,target"`,
+since a leading digit is now a legal nick.
+
+### Casefold: nothing moves
+
+IRCnet advertises `CASEMAPPING=ascii` (ircnet/ircd master,
+`common/support.c`; `doc/ChangeLog` 2004-02-15) and marks `~` a nick
+character (`common/match.c`, `NVALID`), so there `foo~` and `foo^` are two
+nicks and `normalize_casemapping(_, :ascii)` is the identity. No fold, no
+SQL twin, no byte pin and no migration changes.
+
+### `^…$` was the wrong anchor in five regexes
+
+In PCRE `$` also matches before a final `\n`, so `valid_nick?("vjt\n")`
+was true — the trap `@ident_regex` already documented. The nick regex and,
+in a commit of its own, the channel, network-slug, host and meta-sender
+regexes are now anchored `\A…\z`: a trailing `\n` no longer passes any of
+them.
+
+### Limits, not claimed
+
+* OUR nick with `~` where the network allows it: out of this slice,
+  routed to vjt as a product question.
+* That `foo~` is legal on the live IRCnet, or that it advertises
+  `CASEMAPPING=ascii`: read in the source, not probed.
+* Solanum's charset for `~`, and so the known rfc1459 gap (a national-char
+  DM peer: `dm_with` RAW, `nick_fold` ASCII) becoming reachable for `~`:
+  not checked.
+* No integration spec drives the acceptance: the e2e stack runs bahamut,
+  which refuses `~`. ExUnit with `IRCServer` carries it.
+
+### Hot or cold
+
+COLD, riding #2597's restart; otherwise hot only with a delegating
+`valid_nick?/1` alias for one release, not built. Reason, by structure and
+not measured: `HotReload.reload_from/1` loads modules in path order, and
+the callers that come after `Grappa.IRC.Identifier`
+(`Grappa.Session.EventRouter`, `Grappa.Scrollback.Message`, `GrappaWeb.*`)
+would run their OLD code — still calling `valid_nick?/1` — against the NEW
+`Identifier`, which no longer has it, until their own load. A remote call
+always goes to the current module version, so the purged old `Identifier`
+does not help, and `EventRouter` runs on every inbound line.
