@@ -40,7 +40,12 @@
 // the day passes, and the epoch rotates: the old key is deleted outright
 // — encrypting with it again would hand the departed member new messages
 // under a key they hold — and the new key goes pairwise to the members
-// who remain. Every epoch carries a SEQUENCE NUMBER — 0 for a first
+// who remain. Exactly ONE rotates on an exit: the designated rotator,
+// the first remaining holder did in sorted order (see `channelE2e`).
+// The audit is gated the same way: a device that is not the designated
+// rotator waits, even on a stale epoch — if the rotator's cic is closed
+// the rotation waits with it, nobody else usurps it, and there is no
+// timeout election. Every epoch carries a SEQUENCE NUMBER — 0 for a first
 // epoch, +1 per rotation — and the FIRST valid gkey wins: a gkey whose
 // seq is not above the held epoch's is dropped, so a late duplicate, or
 // a concurrent mint that lost the race, never replaces the key already
@@ -50,6 +55,14 @@
 // minted and distributed to all. Rotation is only real if clients delete
 // old keys (§4f); this module is where that happens. No keys are kept
 // for channels left (`dropChannel`).
+//
+// SEND WITHOUT A KEY. A row with no epoch waits in queue (`pending`),
+// never mints one, and never goes out in the clear: `encryptChannel`
+// refuses without an epoch, and the drain flushes the queued rows when
+// the key arrives (`takePendingSends`). The user cancels them
+// (`dropPendingSends`); our own leave drops them with the channel.
+// The first epoch is minted only by the topic designee, and only to
+// answer an explicit key request — a send never mints one on its own.
 //
 // REPLAY. The counter lives inside the signed, encrypted part, and the
 // envelope carries no plaintext counter at all. A receiver keeps, per
