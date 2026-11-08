@@ -72,6 +72,97 @@ defmodule Grappa.IRC.IdentifierTest do
     end
   end
 
+  # issue 2599 — a nick as the WIRE may carry it: somebody else's (a whois
+  # target, a DM peer, an inbound sender) or our own as the ircd set it.
+  # The upstream decides what its nicks look like; this only refuses what
+  # cannot be one nick token, or what our own code reads as something else.
+  describe "wire_nick?/1" do
+    test "accepts what real ircds hand out beyond the portable charset" do
+      # IRCnet: `~` is a nick char, leading too (ircd `common/match.c`).
+      assert Identifier.wire_nick?("foo~")
+      assert Identifier.wire_nick?("~foo")
+      # A TS6 / IRCnet UID, what a collision renames a client to.
+      assert Identifier.wire_nick?("0AAAAAAAB")
+      assert Identifier.wire_nick?("-foo")
+      assert Identifier.wire_nick?("café")
+      assert Identifier.wire_nick?("vjt")
+      assert Identifier.wire_nick?("[bracket]")
+    end
+
+    test "rejects what would split, terminate or forge a wire token, anywhere in it" do
+      for c <- [" ", "\t", "\r", "\n", "\x00", "\x01", "\x1f", "\x7f", ","] do
+        refute Identifier.wire_nick?("a#{c}b"), "expected #{inspect(c)} mid-token to be refused"
+        refute Identifier.wire_nick?("#{c}ab"), "expected a leading #{inspect(c)} to be refused"
+        refute Identifier.wire_nick?("ab#{c}"), "expected a trailing #{inspect(c)} to be refused"
+      end
+    end
+
+    test "rejects the prefix delimiters, the server dot, the wildcards and the channel sigils, anywhere in it" do
+      for c <- ["!", "@", ".", "*", "?", "#", "&", "+"] do
+        refute Identifier.wire_nick?("a#{c}b"), "expected #{inspect(c)} mid-token to be refused"
+        refute Identifier.wire_nick?("#{c}ab"), "expected a leading #{inspect(c)} to be refused"
+      end
+
+      refute Identifier.wire_nick?("*")
+    end
+
+    # A STATUSMSG target is `<sigils><channel>`: on a network that does not
+    # advertise `%`, `%#chan` is not peeled, and it must not pass as a nick
+    # either.
+    test "a channel addressed at a membership level is never a nick" do
+      refute Identifier.wire_nick?("%#chan")
+      refute Identifier.wire_nick?("~&chan")
+      refute Identifier.wire_nick?("%+chan")
+    end
+
+    test "rejects a leading trailing-marker or server-mask sigil, and only there" do
+      for c <- [":", "$"] do
+        refute Identifier.wire_nick?("#{c}ab"), "expected a leading #{inspect(c)} to be refused"
+        assert Identifier.wire_nick?("a#{c}b"), "expected #{inspect(c)} mid-token to be accepted"
+      end
+
+      refute Identifier.wire_nick?("$server")
+    end
+
+    test "caps the length in BYTES at max_wire_nick_bytes/0" do
+      cap = Identifier.max_wire_nick_bytes()
+
+      assert Identifier.wire_nick?(String.duplicate("a", cap))
+      refute Identifier.wire_nick?(String.duplicate("a", cap + 1))
+      # Two bytes per `é`: half the cap in graphemes is the whole cap in bytes.
+      assert Identifier.wire_nick?(String.duplicate("é", div(cap, 2)))
+      refute Identifier.wire_nick?(String.duplicate("é", div(cap, 2) + 1))
+    end
+
+    test "rejects empty + nil + non-binary" do
+      refute Identifier.wire_nick?("")
+      refute Identifier.wire_nick?(nil)
+      refute Identifier.wire_nick?(:atom)
+    end
+
+    property "every portable nick is a wire nick" do
+      first = Enum.concat([?A..?Z, ?a..?z, ~c"[]\\`_^{|}"])
+      tail = Enum.concat([first, ?0..?9, ~c"-"])
+
+      check all(
+              head <- StreamData.member_of(first),
+              rest <- StreamData.list_of(StreamData.member_of(tail), max_length: 29)
+            ) do
+        nick = List.to_string([head | rest])
+
+        assert Identifier.valid_nick?(nick)
+        assert Identifier.wire_nick?(nick)
+      end
+    end
+
+    property "no wire nick is a channel or a server sender (the classes are disjoint)" do
+      check all(s <- StreamData.string(:ascii, min_length: 1, max_length: 20)) do
+        refute Identifier.wire_nick?(s) and Identifier.valid_channel?(s)
+        refute Identifier.wire_nick?(s) and Identifier.server_sender?(s)
+      end
+    end
+  end
+
   # #1894 — the user-chosen auto-away nick suffix, validated on its own at
   # the settings write boundary because the nick it will be appended to is
   # per-network and not known until the session holds one.

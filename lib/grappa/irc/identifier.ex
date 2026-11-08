@@ -81,6 +81,41 @@ defmodule Grappa.IRC.Identifier do
   # stay equal to the `{0,29}` bound above.
   @max_nick_length 30
 
+  # Issue 2599 — the WIRE nick: a nick as the upstream may hand it to us
+  # (somebody else's, or our own as the ircd set it). Each exclusion is
+  # something OUR code reads as a different thing, not a guess at an ircd's
+  # charset:
+  #
+  #   * `\x00-\x20`, `\x7f` anywhere — split or terminate the wire token;
+  #     `Grappa.Push.Payload` also relies on a nick carrying no control byte.
+  #   * `,` anywhere — the target-list separator (WHOIS, KICK, MONITOR,
+  #     PRIVMSG).
+  #   * `!` `@` anywhere — the `nick!user@host` prefix delimiters.
+  #   * `.` anywhere — a dotted prefix is a SERVER (`server_sender?/1`, whose
+  #     disjointness from both nick predicates is a property test).
+  #   * `*` `?` anywhere — wildcards turn the target into a mask; `*` is also
+  #     `Grappa.IRC.Message.anonymous_sender/0`.
+  #   * a channel sigil `# & + !` anywhere — leading, it IS a channel
+  #     (`@channel_regex`), and the many `valid_channel?(s) or <nick>` sites
+  #     must stay unambiguous; further in, the STATUSMSG peel
+  #     (`peel_statusmsg/2`) reads `<sigils><channel>` — `%#chan` on a network
+  #     that does not advertise `%` — as a channel address, never a nick.
+  #   * a leading `:` — would become the trailing parameter on the wire.
+  #   * a leading `$` — the RFC 2812 server mask, and grappa's own `$server`.
+  #
+  # Leading `~` and a leading digit are ACCEPTED on purpose: IRCnet takes
+  # `~foo` (ircd `common/match.c` marks `~` NVALID), and a TS6 or IRCnet
+  # collision renames a client to its UID (`0AAAAAAAB`). Bytes >= 0x80 pass:
+  # the upstream is the authority, and both doors hand us valid UTF-8.
+  @wire_nick_regex ~r/\A[^\x00-\x20\x7f,!@.*?#&+:$][^\x00-\x20\x7f,!@.*?#&+]*\z/
+
+  # Moved here from `Grappa.E2eInbox.Entry` (issue 2599), where it bounded
+  # an own row's sender, our nick as the ircd last set it: four times the
+  # 30–32 most ircds cap NICKLEN at (the e2e testnet's solanum advertises
+  # `NICKLEN=31`), so it bounds a column without refusing a real nick. In
+  # BYTES — IRC framing is bytes.
+  @max_wire_nick_bytes 128
+
   # RFC 2812 §2.3.1: channels start with #, &, +, or ! and exclude
   # space, comma, BELL (0x07). Length ≤ 50 including the prefix.
   #
@@ -147,6 +182,30 @@ defmodule Grappa.IRC.Identifier do
   @spec valid_nick?(term()) :: boolean()
   def valid_nick?(s) when is_binary(s), do: Regex.match?(@nick_regex, s)
   def valid_nick?(_), do: false
+
+  @doc """
+  True iff `s` is a well-formed nick as the WIRE may carry it — somebody
+  else's (a WHOIS target, a DM peer, an inbound sender) or our own as the
+  ircd set it.
+
+  The upstream decides what its nicks look like: IRCnet takes `foo~` and
+  `~foo`, a collision renames a client to a UID that starts with a digit,
+  and NICKLEN runs past 30 on some networks. So this refuses only what
+  cannot be one nick token, or what our own code reads as something else —
+  a control or blank byte, `,`, `!`, `@`, `.`, `*`, `?`, or a channel sigil
+  `#` `&` `+` anywhere; a leading `:` or `$` — plus anything past
+  `max_wire_nick_bytes/0` bytes. It is NOT the rule for a nick WE ask to
+  register with; see `valid_nick?/1`.
+  """
+  @spec wire_nick?(term()) :: boolean()
+  def wire_nick?(s) when is_binary(s) and byte_size(s) in 1..@max_wire_nick_bytes,
+    do: Regex.match?(@wire_nick_regex, s)
+
+  def wire_nick?(_), do: false
+
+  @doc "The byte ceiling `wire_nick?/1` enforces (`#{@max_wire_nick_bytes}`)."
+  @spec max_wire_nick_bytes() :: 128
+  def max_wire_nick_bytes, do: @max_wire_nick_bytes
 
   # The shortest legal nick, used ONLY as the probe base below. Any
   # single character of `@nick_regex`'s HEAD class would do; `a` is the
