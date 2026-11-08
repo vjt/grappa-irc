@@ -83,8 +83,10 @@ defmodule GrappaWeb.Admin.SettingsController do
 
   A save is all-or-nothing (issue 2546): every key of the body is VALIDATED
   before any is written, so a refused value leaves no sibling written behind
-  it. `validate_updates/1` is pure (no DB, no state) and `apply_validated/1`
-  only ever sees a body it accepted.
+  it. `validate_updates/1` writes nothing and touches no state — it does
+  READ, for the `addressing` subtree, the currently stored mode/prefix it
+  must validate the body against — and `apply_validated/1` only ever sees a
+  body it accepted.
 
   ⚠️ The two `dcc` keys are NOT cross-validated against each other (vjt,
   issue 2185): a per-transfer ceiling above the spool budget is a legal
@@ -114,22 +116,26 @@ defmodule GrappaWeb.Admin.SettingsController do
   alias Grappa.PubSub.Topic
   alias Grappa.ServerSettings.Wire, as: SettingsWire
 
-  # The four closed key sets. Every entry here MUST have a matching
-  # `apply_upload_key/2` / `apply_dcc_key/2` / `apply_auto_away_key/2` clause (resp. a
-  # `resolve_addressing_*` one) — adding a key to one and not the other is
+  # The four closed key sets. Since issue 2546 every entry here MUST have a
+  # matching PAIR of clauses — `validate_upload_key/2` AND `put_upload_key/2`
+  # (resp. `validate_dcc_key/2`/`put_dcc_key/2`,
+  # `validate_auto_away_key/2`/`apply_auto_away_key/2`, and the
+  # `resolve_addressing_*` pair) — adding a key to one and not the other is
   # caught by that key's own per-key test, loudly, never silently.
   #
   # ⚠️ **"Loudly" is exactly as strong as the per-key test and no stronger,
   # and that was MEASURED rather than assumed (issue 2185, three
   # mutants).** A key WITH a per-key test is caught in both directions:
-  # dropping its `apply_dcc_key/2` clauses killed 4 tests, and dropping it
-  # from this set while keeping the clauses killed 3. But adding a key
-  # that NO test names — `spool_retention_seconds`, no clause, no test —
-  # left the suite at **46/46 green**. Nothing structural pairs a set
-  # entry with its clause: `reject_unknown_keys/3` compares strings at
-  # runtime, so the compiler cannot see the pair, and no test enumerates
-  # these sets. A key added here without its per-key test in the SAME pass
-  # ships a latent 500 on the first request that uses it.
+  # dropping its clauses killed 4 tests, and dropping it from this set while
+  # keeping the clauses killed 3. But adding a key that NO test names —
+  # `spool_retention_seconds`, no clause, no test — left the suite at
+  # **46/46 green**. Nothing structural pairs a set entry with its clauses:
+  # `reject_unknown_keys/3` compares strings at runtime, so the compiler
+  # cannot see the pair, and no test enumerates these sets. A key added here
+  # without its per-key test in the SAME pass ships a latent 500 on the first
+  # request that uses it — and a HALF pair (validate without put, or the
+  # reverse) is that same 500, now raised in the write pass after the keys
+  # sorted before it have committed.
   @upload_keys ~w(active_host image_per_file_cap_bytes video_per_file_cap_bytes
                   document_per_file_cap_bytes audio_per_file_cap_bytes
                   global_cap_bytes per_user_cap_bytes per_visitor_cap_bytes
@@ -210,11 +216,11 @@ defmodule GrappaWeb.Admin.SettingsController do
   # ---- Internal ----------------------------------------------------
 
   # issue 2546 — two passes, and the ORDER is the fix. `validate_updates/1`
-  # is PURE (no DB, no state): it walks the whole body and refuses the first
-  # bad value, so nothing is written when any key is refused. Only a body it
-  # accepts reaches `apply_validated/1`, where each `put_*` commits on its
-  # own. The single fold this replaces validated as it went, so every key
-  # sorted before the refusal stayed written behind the 422.
+  # WRITES nothing: it walks the whole body and refuses the first bad value,
+  # so nothing is committed when any key is refused. (It does read, for the
+  # `addressing` subtree: the body is validated against the stored
+  # mode/prefix when it omits them.) Only a body it accepts reaches
+  # `apply_validated/1`, where each `put_*` commits on its own.
   defp apply_updates(params) when is_map(params) do
     with :ok <- validate_updates(params), do: apply_validated(params)
   end
@@ -288,7 +294,7 @@ defmodule GrappaWeb.Admin.SettingsController do
   # Collect-or-bail traversal (CLAUDE.md, "Recursive pattern match over
   # `Enum.reduce_while/3`"): every key must pass, the first refusal is the
   # answer.
-  defp traverse([], _fun), do: :ok
+  defp traverse([], _), do: :ok
 
   defp traverse([{k, v} | rest], fun) do
     case fun.(k, v) do
@@ -463,8 +469,8 @@ defmodule GrappaWeb.Admin.SettingsController do
 
   defp validate_addressing(subtree) when is_map(subtree) do
     with :ok <- reject_unknown_keys(subtree, @addressing_keys, "addressing"),
-         {:ok, _mode} <- resolve_addressing_mode(subtree),
-         {:ok, _prefix} <- resolve_addressing_prefix(subtree) do
+         {:ok, _} <- resolve_addressing_mode(subtree),
+         {:ok, _} <- resolve_addressing_prefix(subtree) do
       :ok
     end
   end
@@ -543,11 +549,12 @@ defmodule GrappaWeb.Admin.SettingsController do
   defp halt_or_cont(:ok), do: {:cont, :ok}
   defp halt_or_cont({:error, _} = err), do: {:halt, err}
 
-  # The per-file caps are validated by `ServerSettings` alone — positive,
-  # integer, and no larger than the maximum the upload doors' transport can
-  # deliver (issue 2529) — so this door only names the field. The bound is
-  # READ from the context, never restated here, so raising it there raises it
-  # everywhere.
+  # The per-file caps: the BOUND is READ from the context
+  # (`max_upload_per_file_cap_bytes/0`, issue 2529), so raising it there
+  # raises it here too. The SHAPE predicate (`is_integer`, `> 0`) mirrors
+  # `put_upload_per_file_cap_bytes/2`'s own guard clause for clause — the
+  # same inherited duplication the other caps carry, not a new one. This
+  # door's job is to NAME the field.
   defp validate_per_file_cap(category, n) do
     if is_integer(n) and n > 0 and n <= ServerSettings.max_upload_per_file_cap_bytes() do
       :ok
