@@ -78,6 +78,41 @@ declares_restore_keys() {
     grep -qE '^[[:space:]]+restore-keys:' <<<"$1"
 }
 
+# The compose download's curl command from FILE, continuation lines joined so
+# a flag moved onto its own line still belongs to it.
+download_cmd() {
+    steps_with "$1" 'docker-compose-linux-x86_64' 'curl ' |
+        sed -e ':a' -e '/\\$/N' -e 's/\\\n//' -e 'ta' |
+        grep -E '^[[:space:]]+curl[[:space:]]'
+}
+
+# THE retry predicate, over one curl command line: `--retry-all-errors`, and a
+# `--retry N` with N > 0, without which `--retry-all-errors` retries nothing.
+# Plain `--retry` stops at any error outside curl's transient set: on run
+# 42472296717 it stopped at an exit 56 with 8 retries left.
+retries_every_error() {
+    local count='(^|[[:space:]])--retry[[:space:]]+[1-9][0-9]*([[:space:]]|$)'
+    local all='(^|[[:space:]])--retry-all-errors([[:space:]]|$)'
+    [[ "$1" =~ $count ]] && [[ "$1" =~ $all ]]
+}
+
+# A one-step workflow whose comment names `--retry-all-errors` and whose curl
+# command carries the lines given as $1, for aiming the extractor at shapes.
+download_fixture() {
+    cat >"$BATS_TEST_TMPDIR/dl.yml" <<EOF
+jobs:
+  e2e:
+    steps:
+      - name: Upgrade docker compose plugin
+        # \`--retry-all-errors\`, because plain \`--retry\` gave up early
+        run: |
+          curl -fsSL $1
+            "https://github.com/docker/compose/releases/download/v5.0.2/docker-compose-linux-x86_64" \\
+            -o ~/.docker/cli-plugins/docker-compose
+EOF
+    printf '%s\n' "$BATS_TEST_TMPDIR/dl.yml"
+}
+
 # A save gated on ONE shard throws away whatever binary another shard won: on
 # run 42469926842 the only writer lost the download and the shard that got a
 # 200 was not allowed to save.
@@ -136,6 +171,24 @@ GOOD_PATH='~/.docker/cli-plugins/docker-compose'
     refute same_cache "$(restore_step "$wf")" "$(save_step "$wf")"
     wf="$(fixture "$GOOD_KEY" '|' '|' '')"
     refute same_cache "$(restore_step "$wf")" "$(save_step "$wf")"
+}
+
+@test "issue 2603 — the compose download retries every error, not only curl's transient set" {
+    local cmd
+    cmd="$(download_cmd "$WORKFLOW")"
+    # Exactly one command: none would hand the predicate "", two would let it
+    # judge the wrong one.
+    [ "$(grep -c . <<<"$cmd")" -eq 1 ]
+
+    retries_every_error "$cmd"
+
+    # Through the same extractor: the flag on a continuation line counts; the
+    # shape that died on the 56, and a count with no all-errors, do not —
+    # while the fixture's comment names `--retry-all-errors` throughout.
+    retries_every_error "$(download_cmd "$(download_fixture '--retry 10 \
+            --retry-all-errors \')")"
+    refute retries_every_error "$(download_cmd "$(download_fixture '--retry 10 --retry-delay 30 \')")"
+    refute retries_every_error "$(download_cmd "$(download_fixture '--retry-all-errors \')")"
 }
 
 @test "issue 2603 — any shard that downloaded the compose plugin may save it" {
