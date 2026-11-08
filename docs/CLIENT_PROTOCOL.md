@@ -966,11 +966,15 @@ The key never touches the server, and there is no endpoint that serves it:
 an endpoint serving the channel key kills the E2E. The key travels
 encrypted inside the existing pairwise Olm DM between two members — that
 DM is the invite and the bootstrap — as a `msg` whose payload is
-`{"t": "gkey", "ch": "#grappa", "sid": "…", "key": "…", "holders": ["…"]}`.
+`{"t": "gkey", "ch": "#grappa", "sid": "…", "seq": 0, "key": "…", "holders": ["…"], "holderNicks": {"<nick>": ["<did>", …]}, "sentTo": ["<nick>", …]}`.
 `key` is the 32-byte epoch key, base64 unpadded; `holders` is the
-distributor's roster snapshot at distribution time — the folded nicks
-of every member who received this epoch key — and the receiver stores
-it with the epoch as the epoch's holder set. On JOIN, the newcomer
+dids of every device that received this epoch key, and `seq` the
+epoch's sequence number — 0 for a first epoch, +1 per rotation. The
+inner also carries `holderNicks` (which nick each holder did belongs
+to, as the distributor saw it) and `sentTo` (the folded nicks the key
+was DM'd to whose device lists were unknown at distribution time).
+The receiver stores all of it with the epoch: the holder set is the
+audit input, in dids, never in nicks. On JOIN, the newcomer
 broadcasts a key request as a channel message, a v4 envelope of its
 own with no ciphertext and no signature:
 
@@ -980,24 +984,39 @@ own with no ciphertext and no signature:
 
 The first member with an open cic who holds the epoch answers with a
 gkey DM; duplicate answers are harmless — a re-sent gkey for the epoch
-already held is a no-op, and the first valid import wins. A first epoch
-is imported only after this device asked for the key: a key nobody
-asked for never arms the channel. A key request is answered only while
-the asker is on the roster, and the answer names the asker in the
-epoch's holders. If nobody
-has an open cic, the newcomer waits — there is no server-side
-fallback. A member with no epoch yet creates one when its turn to
-send comes: it mints a fresh epoch key and distributes it pairwise to
-the current roster, then sends under it. On PART, KICK or QUIT the
-epoch rotates, mandatorily: the designated rotator — the
-folded-nick-first REMAINING holder of the epoch — mints a new epoch
-and distributes it pairwise to ALL REMAINING members (one-time, O(n))
-— you cannot encrypt the new key under the old key and post it in the
-channel, the departed member holds the old key. A member that is not
-the designated rotator does nothing on the exit; if the designated
-rotator has no open cic, the audit rotates the moment a cic opens or
-a message is about to go out (the holder set is audited against the
-true roster on cic open AND before every send). Rotation is periodic
+already held is a no-op. The FIRST valid gkey wins: a gkey imports
+only when no epoch is held, or when its `seq` is above the held
+epoch's — a rotation successor. A gkey at the same or a lower sequence
+with a different sid is superseded and dropped, so a late duplicate,
+or a concurrent mint that lost the race, never replaces the key
+already taken. Two devices that mint the same sequence concurrently
+still fork — each keeps the first it saw — and the fork heals at the
+next rotation, when one epoch is minted and distributed to all. A
+first epoch is imported only after this device asked for the key: a
+key nobody asked for never arms the channel. A key request is
+answered only while the asker is on the roster, and the answer names
+the asker in the epoch's holders. If nobody holds an epoch yet, only
+the member the channel topic names as its key holder
+(`[e2e:1 key-from=<nick>]`) mints the first one, and only to answer
+an explicit key request. If nobody has an open cic, the newcomer
+waits — there is no server-side fallback. A row without a key waits
+in queue: it never mints an epoch of its own, and never goes out in
+the clear. The key request goes out on the channel, and the row goes
+out under the key once someone with an open cic gives it. Cleartext
+only when the client asks and the user confirms, per row or until the
+key arrives — never automatically, never silently. On PART, KICK or
+QUIT the epoch rotates, mandatorily: the designated rotator — the
+first holder DID in sorted order among the REMAINING holders of the
+epoch — mints a new epoch and distributes it pairwise to ALL
+REMAINING members (one-time, O(n)) — you cannot encrypt the new key
+under the old key and post it in the channel, the departed member
+holds the old key. A member that is not the designated rotator does
+nothing on the exit. If the designated rotator's cic is closed, the
+rotation waits: nobody else usurps it, and there is no timeout
+election — two minters would bifurcate the epoch. The audit is gated
+the same way: on cic open, and before every send, the holder set is
+compared with the true roster, in dids, and only the designated
+rotator rotates on a holder who left. Rotation is periodic
 too: one channel message carrying the new key encrypted under the old
 key, which costs nothing — daily is fine — whose plaintext is
 `{"t": "grotate", "c": <the sender's next counter under the old epoch>,
@@ -1008,13 +1027,19 @@ A departed member keeps the old key: they can re-read what they
 already received, nothing after. Rotation is only real if clients
 DELETE old keys, and no keys are kept for channels left. The holder
 set is audited against the true roster on cic open AND before every
-send: anyone in the set who is no longer in the roster triggers
-rotation, so an exit that happened while every cic was closed still
-rotates the epoch the moment a cic opens or a message is about to go
-out. A gkey supersedes by arrival: a valid gkey for a different epoch
-replaces the one held, provided the sender is on the roster and every
-nick in its holder set is on the roster too — a gkey naming someone
-who already left is stale and is ignored. Membership on the IRC
+send, in dids: anyone in the set who is no longer in the roster
+triggers rotation — but only the designated rotator rotates, so an
+exit that happened while every cic was closed still rotates the epoch
+the moment the designated rotator's cic opens or a message is about
+to go out. A holder did counts as still a member when a roster
+device list names it, or when the epoch's nick mapping attributes it
+to a nick still on the roster — the mapping is what settles a member
+this cic has not chatted with. A rename whose new nick's list has not
+landed yet rotates once, fail closed: until the list lands the audit
+cannot tell the rename from a departure. A gkey is dropped when its
+sender is off the roster, or when its holder set names someone who
+already left and it would replace the epoch held. Membership on the
+IRC
 channel IS key access: grappa never sees the key and has no
 authorisation endpoint, and a member who leaks it reads the current
 epoch — that is unsolvable by crypto, and accepted. Forward secrecy
@@ -1036,14 +1061,20 @@ is `{"t": "grotate", "c": 0, "sid": "<new sid>", "key": "<new key>"}`:
 decrypt it with the old epoch key, import the new epoch, drop the old
 one. On JOIN the newcomer asks, it does not wait to be told: it
 broadcasts a `keyreq` on the channel, and the first member with an open
-cic who holds the epoch answers with a gkey DM. A member with no epoch
-yet mints one when its turn to send comes. A re-sent gkey for the epoch
-already held is a no-op. Your own channel messages come back through
+cic who holds the epoch answers with a gkey DM. A row without a key
+waits in queue: the client never mints an epoch to send one, and
+never sends it in the clear. The first epoch is minted only by the
+topic designee, and only to answer an explicit key request; any other
+creation is an explicit user action in the channel config. A re-sent
+gkey for the epoch already held is a no-op, and the first valid gkey
+wins by epoch sequence. Your own channel messages come back through
 the same inbox; skip them (the send path already showed them). The
 epoch is one record per channel — there is no per-sender store — and
 its holder set is the audit input: on cic open, and before every send,
 the client compares the holder set with the true roster, and anyone in
-the set who is no longer in the roster triggers rotation. Rotation is
+the set who is no longer in the roster triggers rotation — and only
+the designated rotator, the first remaining holder did in sorted
+order, rotates on it. Rotation is
 gated on encrypted channels only: a cleartext channel's joins and
 parts never mint an epoch, never send a gkey, and never touch the key
 store. A rejected message is never silently lost: a channel line that
