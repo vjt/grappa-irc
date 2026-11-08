@@ -439,10 +439,10 @@ let _socket: Socket | null = null;
 // neither key, and the card reads the absence as "nothing to show", so
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
 //
-// 63 (channel E2E) — the server half of Megolm-style channel encryption:
+// 63 (channel E2E) — the server half of channel encryption:
 // `POST …/e2e/messages` takes a `#channel` target for `:msg` to `*`, and
 // `e2e_message` carries `channel` (null for a DM). No cicchetto change in
-// this slice — the client half (group sessions, key distribution, rotation)
+// this slice — the client half (epoch key, key distribution, rotation)
 // is the follow-up; until then cicchetto must not offer channel E2E, and
 // keys off this number, not a status. `MIN_SERVER_PROTOCOL_VERSION` stays
 // at 9.

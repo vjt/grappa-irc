@@ -1592,7 +1592,7 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: an older client ignores a field it
   # does not know.
-  # 63 — channel E2E (Megolm-style group sessions, vjt's order 2026-11-08)
+  # 63 — channel E2E (one AEAD key per channel epoch, vjt's order 2026-11-08)
   # ---------------------------------------------------------------------------
   #
   # ADDED: the server half of channel E2E. `POST /networks/:network_id/

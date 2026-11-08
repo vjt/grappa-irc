@@ -918,78 +918,137 @@ shape, with the channel as its target and `to` always `*`:
 
 `\x01E2E msg <msgid> <i>/<n> <from> * <chunk>\x01`
 
-and the payload is the v3 group shape, one sender key per sender
-(Megolm-style), not one global key:
+and the payload is the v4 group shape: ONE AEAD key per channel epoch,
+shared by every member of the epoch, not one key per sender:
 
 ```json
-{"v": 3, "ch": "#grappa", "sid": "<session id>", "i": 0, "body": "<Megolm ciphertext, base64 unpadded>"}
+{"v": 4, "t": "msg", "ch": "#grappa", "sid": "<epoch id>", "body": "<AES-GCM ciphertext, base64 unpadded>", "sig": "<Ed25519 signature, base64 unpadded>"}
 ```
 
-`ch` is the folded channel name, `sid` the group session id, `i` the
-chain index, `body` the ciphertext. A long message chunks `i/n` as a DM
-does, and receivers wait 60 s from its LAST line. A channel line whose
-frame names a device instead of `*` is dropped as malformed — the
-channel frame has no single recipient. grappa reassembles the
-same multicast independently for every member and queues the whole message
-into every listed device's inbox, with `channel` set — so `e2e_message`
-carries the channel and the offline queue stays per-device (7 days, 1 MiB
-per sender-nick share). A channel message that reaches no listed device is
-NACKed to the sender, as a DM, as for a DM. The pacer treats the channel
-as one recipient: one lane per channel, the same budgets. `e2e_incoming`
-and `e2e_incoming_lost` (§4l) name no channel in v63 — correlate them with
-the delivered message by `msgid`, which is unique per message. And a
-channel E2E line is never stored anywhere else, exactly as a DM line is
-not: no scrollback, no search, no push payload.
+`ch` is the folded channel name, `sid` the epoch id (16 random bytes,
+base64 unpadded — it names the epoch, not a sender session), `body` the
+ciphertext, `sig` the sender's signature. The cipher is AES-256-GCM via
+WebCrypto: a 32-byte random key per epoch, a 12-byte random nonce
+prepended to the ciphertext (plus the 16-byte tag), the whole thing
+base64 unpadded. The signature is the sender's DEVICE Ed25519 key (the
+same key the pairwise system already pins) over the canonical text
+`irc-e2e:v4:chan:<ch>:<sid>:<body>` — `ch` folded, `sid` and `body`
+exactly as transmitted. A receiver verifies `sig` against the sender's
+pinned device key before decrypting; a line whose signature does not
+verify is dropped and reported, never rendered. The plaintext is a
+typed inner message, the DM convention: a chat message is
+`{"t": "text", "c": 0, "body": "..."}`, never raw text. `c` is the
+per-sender counter: it starts at 0 for each sender device in each
+epoch, increases by one per message that device sends, and lives
+INSIDE the authenticated part — the AEAD ciphertext and the signature
+both cover it. A receiver keeps, per (channel, epoch, sender device),
+the highest counter accepted plus a window of the counters already
+seen, and refuses a re-delivery as `replay`: a counter at or below the
+high-water mark that was already seen, or below the window, is not a
+new message (the inbox is at-least-once, so a genuine re-delivery is
+expected and must not render twice). A counter above the high-water
+mark advances it. A long message chunks `i/n` as a DM does, and
+receivers wait 60 s from its LAST line. A channel line whose frame
+names a device instead of `*` is dropped as malformed — the channel
+frame has no single recipient. grappa reassembles the same multicast
+independently for every member and queues the whole message into every
+listed device's inbox, with `channel` set — so `e2e_message` carries
+the channel and the offline queue stays per-device (7 days, 1 MiB per
+sender-nick share). A channel message that reaches no listed device is
+NACKed to the sender, as a DM, as for a DM. The pacer treats the
+channel as one recipient: one lane per channel, the same budgets.
+`e2e_incoming` and `e2e_incoming_lost` (§4l) name no channel in v63 —
+correlate them with the delivered message by `msgid`, which is unique
+per message. And a channel E2E line is never stored anywhere else,
+exactly as a DM line is not: no scrollback, no search, no push payload.
 
 The key never touches the server, and there is no endpoint that serves it:
 an endpoint serving the channel key kills the E2E. The key travels
 encrypted inside the existing pairwise Olm DM between two members — that
 DM is the invite and the bootstrap — as a `msg` whose payload is
-`{"t": "gkey", "ch": "#grappa", "sid": "…", "key": "…"}`. On JOIN, one
-member sends the current epoch key to the newcomer in one pairwise
-message. On PART or KICK the key rotates, mandatorily: the new key is
-distributed pairwise to ALL REMAINING members (one-time, O(n)) — you
-cannot encrypt the new key under the old key and post it in the channel,
-the departed member holds the old key. Rotation is periodic too: one
-channel message carrying the new key encrypted under the old key, which
-costs nothing — daily is fine. A departed member keeps the old key: they
-can re-read what they already received, nothing after. Rotation is only
-real if clients DELETE old keys. Membership on the IRC channel IS key
-access: grappa never sees the key and has no authorisation endpoint, and
-a member who leaks it reads the current epoch — that is unsolvable by
-crypto, and accepted. Forward secrecy is bounded, not true: epoch rotation
-plus a one-way hash-chain ratchet bounds exposure to the compromised epoch;
-true forward secrecy and post-compromise security need MLS (RFC 9420,
-TreeKEM), for which this stack has no ready library. Check
-`protocol_version >= 63` before offering channel E2E: below it the door
-answers 400 on a channel target, and `e2e_message` carries no `channel`.
+`{"t": "gkey", "ch": "#grappa", "sid": "…", "key": "…", "holders": ["…"]}`.
+`key` is the 32-byte epoch key, base64 unpadded; `holders` is the
+distributor's roster snapshot at distribution time — the folded nicks
+of every member who received this epoch key — and the receiver stores
+it with the epoch as the epoch's holder set. On JOIN, the newcomer
+broadcasts a key request as a channel message, a v4 envelope of its
+own with no ciphertext and no signature:
 
-**Client decisions (PR #2, cicchetto).** The v3 `body` decrypts to a
-typed inner message, the DM convention: a chat message is
-`{"t": "text", "body": "..."}`, never raw text, so a rotation inside is
-unambiguous. A periodic rotation is a channel message whose v3 envelope
-still names the OLD `sid`, and whose plaintext is
-`{"t": "grotate", "sid": "<new sid>", "key": "<new session key>"}`:
-decrypt it with the old inbound session, import the new one, drop the
-old one. On JOIN the sender is deterministic off the roster — the member
-whose folded nick sorts first among the members other than the newcomer
-— so exactly one member sends the key, to the newcomer only. A member
-with no epoch yet creates one when its turn to send comes. A sender's
-old inbound sessions die the moment a newer session id of THEIRS
-arrives; a departed member's inbound sessions die on the leave; your
-own channel's sessions die when you leave it. A re-sent gkey for a
-session id already held is a no-op: the stored pickle has the
-further-advanced ratchet. Your own channel messages come back through
-the same inbox; skip them (the send path already showed them). Two
-properties of the crypto, measured against vodozemac 0.11.1, shape the
-client: a session key carries the sender's ratchet at the index it was
-exported at, so a key shared after message N cannot decrypt messages
-below N — a newcomer reads from the join onward, never the past. And a
-decrypt does not refuse a replayed index: the crypto returns the same
-plaintext again, and its `DecryptedMessage` carries `message_index`
-precisely so the caller can tell a replay from a new message — the
-client keeps the indices already read per inbound session and refuses
-a re-delivery as `replay` before decrypting (the inbox is at-least-once).
+```json
+{"v": 4, "t": "keyreq", "ch": "#grappa"}
+```
+
+The first member with an open cic who holds the epoch answers with a
+gkey DM; duplicate answers are harmless — a re-sent gkey for the epoch
+already held is a no-op, and the first valid import wins. If nobody
+has an open cic, the newcomer waits — there is no server-side
+fallback. A member with no epoch yet creates one when its turn to
+send comes: it mints a fresh epoch key and distributes it pairwise to
+the current roster, then sends under it. On PART, KICK or QUIT the
+epoch rotates, mandatorily: whoever sees the exit first with an open
+cic mints a new epoch and distributes it pairwise to ALL REMAINING
+members (one-time, O(n)) — you cannot encrypt the new key under the
+old key and post it in the channel, the departed member holds the old
+key. Rotation is periodic too: one channel message carrying the new
+key encrypted under the old key, which costs nothing — daily is fine —
+whose plaintext is `{"t": "grotate", "c": 0, "sid": "<new sid>", "key": "<new key>"}` and whose v4 envelope still names the OLD `sid`:
+decrypt it with the old epoch, import the new one, drop the old one.
+A departed member keeps the old key: they can re-read what they
+already received, nothing after. Rotation is only real if clients
+DELETE old keys, and no keys are kept for channels left. The holder
+set is audited against the true roster on cic open AND before every
+send: anyone in the set who is no longer in the roster triggers
+rotation, so an exit that happened while every cic was closed still
+rotates the epoch the moment a cic opens or a message is about to go
+out. A gkey supersedes by arrival: a valid gkey for a different epoch
+replaces the one held, provided the sender is on the roster and every
+nick in its holder set is on the roster too — a gkey naming someone
+who already left is stale and is ignored. Membership on the IRC
+channel IS key access: grappa never sees the key and has no
+authorisation endpoint, and a member who leaks it reads the current
+epoch — that is unsolvable by crypto, and accepted. Forward secrecy
+is bounded by epoch rotation alone: the v4 design has no per-sender
+ratchet, so a compromised epoch key reads the whole epoch; true
+forward secrecy and post-compromise security need MLS (RFC 9420,
+TreeKEM), for which this stack has no ready library. A channel
+advertises E2E with a machine tag in its topic,
+`[e2e:1 key-from=<nick>]`, where `key-from` names a member who holds
+the key. Check `protocol_version >= 63` before offering channel E2E:
+below it the door answers 400 on a channel target, and `e2e_message`
+carries no `channel`.
+
+**Client decisions (PR #2605, cicchetto).** The v4 envelope is the
+client-to-client shape; the server is transport-only and never reads
+`sid`, `body`, `sig` or the inner `c`. A periodic rotation is a channel
+message whose v4 envelope still names the OLD `sid`, and whose plaintext
+is `{"t": "grotate", "c": 0, "sid": "<new sid>", "key": "<new key>"}`:
+decrypt it with the old epoch key, import the new epoch, drop the old
+one. On JOIN the newcomer asks, it does not wait to be told: it
+broadcasts a `keyreq` on the channel, and the first member with an open
+cic who holds the epoch answers with a gkey DM. A member with no epoch
+yet mints one when its turn to send comes. A re-sent gkey for the epoch
+already held is a no-op. Your own channel messages come back through
+the same inbox; skip them (the send path already showed them). The
+epoch is one record per channel — there is no per-sender store — and
+its holder set is the audit input: on cic open, and before every send,
+the client compares the holder set with the true roster, and anyone in
+the set who is no longer in the roster triggers rotation. Rotation is
+gated on encrypted channels only: a cleartext channel's joins and
+parts never mint an epoch, never send a gkey, and never touch the key
+store. A rejected message is never silently lost: a channel line that
+fails signature verification, decryption, or the replay check is
+surfaced as an undecryptable event with its reason, and a gkey the
+engine refuses to send is reported as a failed key send, not
+recorded as sent. The inbound replay state is indexed on the sender
+DEVICE (`received.device`), never on the nick: a rename must not make
+a sender unreadable, and two devices of one subject must not evict
+each other. Two properties of the crypto shape the client: the epoch
+key is one key for the whole epoch, so there is no export index to
+model — a key shared at any point decrypts the whole epoch, past and
+future, for as long as the epoch lives — and the authenticated counter
+is the only replay defence: the envelope carries no plaintext counter
+at all, and a receiver rejects on the counter inside the signed,
+encrypted part, never on anything outside it.
 
 **Your key bundle (v44, per device since v49).** A `KEYREQ` addressed to
 you is never delivered as an event: grappa answers it itself, connected
