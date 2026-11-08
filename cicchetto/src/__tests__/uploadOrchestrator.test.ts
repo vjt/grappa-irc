@@ -20,6 +20,33 @@ vi.mock("../lib/userSettings", async () => {
   };
 });
 
+// issue 2517 — the encrypted door is a branch of the same pipeline, gated on
+// the server's protocol. Both are read at dispatch, so the tests below drive
+// them per case.
+const proto = vi.hoisted(() => ({ version: null as number | null }));
+vi.mock("../lib/serverProtocol", () => ({ serverProtocol: () => proto.version }));
+
+const att = vi.hoisted(() => ({
+  calls: [] as Array<{
+    networkSlug: string;
+    peer: string;
+    file: File;
+    ttl: string | undefined;
+    maxDurationSeconds: number;
+    signal: AbortSignal;
+    onPhase: (phase: "transcoding" | "uploading", loaded: number, total: number) => void;
+  }>,
+  outcome: { ok: true } as { ok: true } | { ok: false; error: string },
+}));
+vi.mock("../lib/encryptedAttachments", () => ({
+  sendEncryptedAttachment: vi.fn(
+    async (req: (typeof att.calls)[number]): Promise<typeof att.outcome> => {
+      att.calls.push(req);
+      return att.outcome;
+    },
+  ),
+}));
+
 vi.mock("../lib/uploadHost", async () => {
   const actual = await vi.importActual<typeof import("../lib/uploadHost")>("../lib/uploadHost");
   return {
@@ -2201,6 +2228,53 @@ describe("uploads from an encrypted query (issue 2512)", () => {
       filename: "screenshot.png",
       error: "an encrypted chat sends text only: the upload host would keep this file unencrypted",
     });
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+// issue 2517 — on a server that has the encrypted upload door (§4k, v58) an
+// encrypted query takes it: the file is stripped, sealed and sent through the
+// encrypted query, and nothing of it touches the plain host. Below v58 the
+// 2512 refusal stands (the block above).
+describe("uploads from an encrypted query on a v58 server (issue 2517)", () => {
+  const e2e = channelKey(slug, "$e2e:Bob");
+
+  beforeEach(() => {
+    proto.version = 58;
+    att.calls.length = 0;
+    att.outcome = { ok: true };
+    localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+    vi.mocked(activeHost).mockReturnValue(categoryHost());
+  });
+
+  afterEach(() => {
+    proto.version = null;
+  });
+
+  it("takes the encrypted door, with the peer and the embedded host's TTL", async () => {
+    triggerUploads(e2e, slug, "$e2e:Bob", [sampleImage()]);
+
+    await vi.waitFor(() => expect(att.calls.length).toBe(1));
+    expect(att.calls[0]).toMatchObject({
+      networkSlug: slug,
+      peer: "Bob",
+      ttl: "86400",
+    });
+    // Nothing went through the plain host, and no URL was said in clear.
+    expect(pendingResolvers.length).toBe(0);
+    expect(sendMessage).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(uploadState(e2e)).toBeNull());
+  });
+
+  it("says why when the file cannot be sent, and posts nothing", async () => {
+    att.outcome = { ok: false, error: "File is too large (max 10 MB)." };
+
+    triggerUploads(e2e, slug, "$e2e:Bob", [sampleImage()]);
+
+    await vi.waitFor(() =>
+      expect(uploadState(e2e)).toMatchObject({ error: "File is too large (max 10 MB)." }),
+    );
+    expect(pendingResolvers.length).toBe(0);
     expect(sendMessage).not.toHaveBeenCalled();
   });
 });

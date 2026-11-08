@@ -26,6 +26,7 @@ import {
   setNick,
 } from "./byNick";
 import type { SendFailure } from "./engine";
+import type { FileInner } from "./fileInner";
 import type { OrderVerdict } from "./orders";
 import { fold, type MessageVerb } from "./wire";
 
@@ -65,6 +66,8 @@ export type ChatRow =
       nick: string;
       ed25519: string;
       body: string;
+      /** issue 2517 — the attachment this message carries, `body` then empty. */
+      file?: FileInner;
       wire?: WirePayload[];
     }
   | {
@@ -74,6 +77,8 @@ export type ChatRow =
       body: string;
       state: OutState;
       reason: OutFailure | null;
+      /** issue 2517 — the attachment this message carries, `body` then empty. */
+      file?: FileInner;
       wire?: WirePayload[];
     }
   /** "X sent you an encrypted message that cannot be read here" (2430 "Delivery"). */

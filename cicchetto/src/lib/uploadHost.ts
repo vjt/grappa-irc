@@ -139,15 +139,15 @@ export interface UploadHost {
 // text into a URL string (or a typed UploadError).
 // --------------------------------------------------------------------
 
-type ResponseParser = (status: number, body: string) => string | UploadError;
+type ResponseParser<T> = (status: number, body: string) => T | UploadError;
 
-export type XhrUploadArgs = {
+export type XhrUploadArgs<T = string> = {
   url: string;
   body: FormData;
   headers?: Record<string, string>;
   onProgress: (p: UploadProgress) => void;
   signal: AbortSignal;
-  parseResponse: ResponseParser;
+  parseResponse: ResponseParser<T>;
   /** Mirror of `UploadHost.supportsProgress`. When `false`, the
    *  `xhr.upload` progress listener is NOT attached so the request
    *  stays a "simple" CORS request and avoids the OPTIONS preflight
@@ -155,8 +155,24 @@ export type XhrUploadArgs = {
   supportsProgress: boolean;
 };
 
-export function xhrUpload(args: XhrUploadArgs): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
+// A parser's answer is either the host's own value or an `UploadError`, and
+// `kind` is the only thing the two could ever share: every arm of the error
+// union names one, and no parser answers an object shaped like them.
+const UPLOAD_ERROR_KINDS: ReadonlyArray<UploadError["kind"]> = [
+  "network",
+  "http",
+  "abort",
+  "invalid_response",
+  "provider",
+];
+
+function isUploadError(value: unknown): value is UploadError {
+  if (typeof value !== "object" || value === null || !("kind" in value)) return false;
+  return UPLOAD_ERROR_KINDS.includes((value as { kind: UploadError["kind"] }).kind);
+}
+
+export function xhrUpload<T = string>(args: XhrUploadArgs<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
     if (args.signal.aborted) {
       reject({ kind: "abort" } satisfies UploadError);
       return;
@@ -176,8 +192,8 @@ export function xhrUpload(args: XhrUploadArgs): Promise<string> {
 
     xhr.addEventListener("load", () => {
       const result = args.parseResponse(xhr.status, xhr.responseText);
-      if (typeof result === "string") resolve(result);
-      else reject(result);
+      if (isUploadError(result)) reject(result);
+      else resolve(result);
     });
 
     xhr.addEventListener("error", () => {
@@ -384,6 +400,75 @@ export const embeddedHost: UploadHost = {
     });
   },
 };
+
+// --------------------------------------------------------------------
+// Encrypted — the ciphertext of an end-to-end encrypted attachment
+// (issue 2517, CLIENT_PROTOCOL §4k).
+//
+// Same door, different path: `/api/uploads/encrypted` stores the bytes as
+// `application/octet-stream`, with no filename and no extension, and strips
+// nothing (it cannot read them). The part is therefore a neutral Blob, never
+// the real file: the name and the type travel inside the Olm message
+// (`fileInner.ts`). It always lands in grappa's own store, whatever host the
+// admin picked for plain uploads — the alternative is a public host holding
+// a blob whose key crosses IRC.
+//
+// The answer is the plain door's (`{slug, url, expires_at}`), and the
+// expiry is the one the peer's card needs, so both fields come back here.
+// --------------------------------------------------------------------
+
+const ENCRYPTED_ENDPOINT = "/api/uploads/encrypted";
+
+/** grappa's answer to an encrypted upload: where the ciphertext is, and when it goes. */
+export type EncryptedUploadAnswer = { url: string; expiresAt: string };
+
+function parseEncryptedResponse(status: number, body: string): EncryptedUploadAnswer | UploadError {
+  if (status < 200 || status >= 300) {
+    return { kind: "http", status, body };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return { kind: "invalid_response", body };
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return { kind: "invalid_response", body };
+  }
+  const p = parsed as Partial<EmbeddedSuccessResponse>;
+  if (typeof p.url !== "string" || !URL_PATTERN.test(p.url)) {
+    return { kind: "invalid_response", body };
+  }
+  if (typeof p.expires_at !== "string") {
+    return { kind: "invalid_response", body };
+  }
+  return { url: p.url, expiresAt: p.expires_at };
+}
+
+/**
+ * Uploads `ciphertext` as the neutral octet-stream part §4k expects, under
+ * the TTL token `ttl` (the embedded host's ladder: seconds as a string).
+ */
+export function uploadEncryptedCiphertext(
+  ciphertext: Blob,
+  ttl: string | undefined,
+  onProgress: (p: UploadProgress) => void,
+  signal: AbortSignal,
+): Promise<EncryptedUploadAnswer> {
+  const body = new FormData();
+  body.append("file", ciphertext, "blob");
+  if (ttl !== undefined) body.append("expire", ttl);
+  const bearer = readToken();
+  return xhrUpload<EncryptedUploadAnswer>({
+    url: ENCRYPTED_ENDPOINT,
+    body,
+    headers: bearer ? { authorization: `Bearer ${bearer}` } : undefined,
+    onProgress,
+    signal,
+    parseResponse: parseEncryptedResponse,
+    supportsProgress: embeddedHost.supportsProgress,
+  });
+}
 
 // Token reader extracted so tests can inject without hauling in the
 // whole `auth.ts` module graph (vitest jsdom + localStorage is the
