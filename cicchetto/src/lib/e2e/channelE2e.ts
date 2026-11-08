@@ -776,9 +776,11 @@ export async function receiveChannel(
  * unknown — and a first epoch is imported only after this device asked
  * for the key — a key nobody asked for never arms the channel. A re-sent
  * key is a no-op; a key for an epoch whose holders name a did no longer
- * in the roster is stale and is dropped, never stored; a key that is not
- * an epoch key is dropped, never stored. The importer's own did joins
- * the holder set: it holds the key now. Never throws on wire input.
+ * in the roster is stale and is dropped, never stored; a key whose seq is
+ * not above the held epoch's is superseded — the first valid gkey wins —
+ * and is dropped, never stored; a key that is not an epoch key is
+ * dropped, never stored. The importer's own did joins the holder set: it
+ * holds the key now. Never throws on wire input.
  */
 export function receiveGkey(
   deps: ChannelE2eDeps,
@@ -862,6 +864,16 @@ export function receiveGkey(
         nowHeld.holders.push(deps.ownDid);
       }
       return [{ kind: "channel_key_received", channel: gkey.ch, from, sid: gkey.sid }];
+    }
+    if (imported === "superseded") {
+      return [
+        {
+          kind: "channel_dropped",
+          channel: gkey.ch,
+          reason: "superseded-gkey",
+          detail: "a key is already held for this epoch sequence",
+        },
+      ];
     }
     return [];
   } catch (err) {
