@@ -643,6 +643,16 @@ defmodule Grappa.ServerSettings do
   def put_auto_away_default_seconds(_), do: {:error, :invalid_value}
 
   @doc """
+  Pure validity check for `put_auto_away_default_seconds/1` — `nil` (clear)
+  or a member of the ladder. Exists so a caller can validate a whole body
+  BEFORE writing any of it (issue 2546) without probing by writing, and so
+  the ladder is restated in exactly one place.
+  """
+  @spec valid_auto_away_default_seconds?(term()) :: boolean()
+  def valid_auto_away_default_seconds?(nil), do: true
+  def valid_auto_away_default_seconds?(n), do: n in @auto_away_default_seconds_ladder
+
+  @doc """
   The admin view of the knob: what is STORED (`nil` = follow the fallback)
   and the fallback itself, so the admin select can label its "server
   config" entry with the value it stands for.

@@ -226,6 +226,99 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
     end
   end
 
+  # issue 2546 — a save is all-or-nothing. `put_*` commits one key at a time,
+  # so the body must be VALIDATED before the first write: these are the
+  # asserts that fail if validation ever moves back inside the write fold.
+  describe "PUT /admin/settings — all-or-nothing (issue 2546)" do
+    setup do
+      {_, session} = user_and_session(is_admin: true)
+      %{session: session}
+    end
+
+    test "a refused cap writes no sibling cap — 'image' sorts before 'video'", %{
+      conn: conn,
+      session: session
+    } do
+      :ok = ServerSettings.put_upload_per_file_cap_bytes(:image, 5_000_000)
+      max = ServerSettings.max_upload_per_file_cap_bytes()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{
+          "upload" => %{
+            "image_per_file_cap_bytes" => 6_000_000,
+            "video_per_file_cap_bytes" => max + 1
+          }
+        })
+
+      assert %{"error" => "invalid_setting", "field" => "upload.video_per_file_cap_bytes"} =
+               json_response(conn, 422)
+
+      assert ServerSettings.get_upload_per_file_cap_bytes(:image) == 5_000_000
+    end
+
+    test "a refused dcc value writes nothing from the upload subtree before it", %{
+      conn: conn,
+      session: session
+    } do
+      before_cap = ServerSettings.get_upload_global_cap_bytes()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{
+          "upload" => %{"global_cap_bytes" => before_cap + 1},
+          "dcc" => %{"max_transfer_bytes" => 0}
+        })
+
+      assert %{"error" => "invalid_setting", "field" => "dcc.max_transfer_bytes"} =
+               json_response(conn, 422)
+
+      assert ServerSettings.get_upload_global_cap_bytes() == before_cap
+    end
+
+    test "a refused auto_away value writes no upload key either", %{
+      conn: conn,
+      session: session
+    } do
+      before_cap = ServerSettings.get_upload_global_cap_bytes()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{
+          "upload" => %{"global_cap_bytes" => before_cap + 1},
+          "auto_away" => %{"default_debounce_seconds" => 42}
+        })
+
+      assert %{"error" => "invalid_setting", "field" => "auto_away.default_debounce_seconds"} =
+               json_response(conn, 422)
+
+      assert ServerSettings.get_upload_global_cap_bytes() == before_cap
+    end
+
+    test "a refused addressing value writes no upload key either", %{
+      conn: conn,
+      session: session
+    } do
+      before_cap = ServerSettings.get_upload_global_cap_bytes()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{
+          "upload" => %{"global_cap_bytes" => before_cap + 1},
+          "addressing" => %{"mode" => "nonsense"}
+        })
+
+      assert %{"error" => "invalid_setting", "field" => "addressing.mode"} =
+               json_response(conn, 422)
+
+      assert ServerSettings.get_upload_global_cap_bytes() == before_cap
+    end
+  end
+
   describe "PUT /admin/settings — validation" do
     setup do
       {_, session} = user_and_session(is_admin: true)
