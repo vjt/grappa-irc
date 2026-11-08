@@ -153,7 +153,7 @@ describe("group session store", () => {
       reason: "decryption-failed",
       sid,
     });
-    // A replay of the same chain index: the session already read it.
+    // A replay of the same chain index: the store already read it.
     expect(decryptChannel(bobGroups, bob, CHAN, "alice", sent.payload, NOW)).toEqual({
       ok: true,
       kind: "text",
@@ -163,7 +163,7 @@ describe("group session store", () => {
     });
     expect(decryptChannel(bobGroups, bob, CHAN, "alice", sent.payload, NOW)).toEqual({
       ok: false,
-      reason: "decryption-failed",
+      reason: "replay",
       sid,
     });
     // Another channel's name in the envelope: the inbox channel rules.

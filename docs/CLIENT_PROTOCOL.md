@@ -980,7 +980,16 @@ arrives; a departed member's inbound sessions die on the leave; your
 own channel's sessions die when you leave it. A re-sent gkey for a
 session id already held is a no-op: the stored pickle has the
 further-advanced ratchet. Your own channel messages come back through
-the same inbox; skip them (the send path already showed them).
+the same inbox; skip them (the send path already showed them). Two
+properties of the crypto, measured against vodozemac 0.11.1, shape the
+client: a session key carries the sender's ratchet at the index it was
+exported at, so a key shared after message N cannot decrypt messages
+below N — a newcomer reads from the join onward, never the past. And a
+decrypt does not refuse a replayed index: the crypto returns the same
+plaintext again, and its `DecryptedMessage` carries `message_index`
+precisely so the caller can tell a replay from a new message — the
+client keeps the indices already read per inbound session and refuses
+a re-delivery as `replay` before decrypting (the inbox is at-least-once).
 
 **Your key bundle (v44, per device since v49).** A `KEYREQ` addressed to
 you is never delivered as an event: grappa answers it itself, connected
