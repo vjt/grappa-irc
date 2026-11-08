@@ -6210,3 +6210,80 @@ directory answered "up to date" and built nothing — measured.
 The voice/video/call defaults name Linux capture devices (`pulse:default`,
 `v4l2:/dev/video0`); the README tells FreeBSD users to set them. Capture on
 FreeBSD was not exercised.
+<!-- entry #2610 -->
+
+---
+
+## 2026-11-08 — issue 2610: an in-place re-render keeps the reader's line, not the reader's pixels
+
+Switching an encrypted chat between its plaintext and its ciphertext (issue
+2513) re-renders every line in place, and a payload is longer than the words
+it carries, so every line changes height at once. A scroll offset kept in
+pixels then shows other lines. Two doors, two failures: through the window
+list's row menu (`ContextMenu`, no freeze) nothing re-anchored a reader in the
+middle; through the rail's `ciphertext` entry (issue 2583) the menu stays open
+around the entry and holds the overlay lock, so the freeze re-asserted the OLD
+pixels after the flip and replayed them at close, which left even a reader at
+the bottom above the last line.
+
+### What holds the place
+
+The reader's place is read in LINES (`ReadingAnchor` in `ScrollbackPane`): at
+the tail, or the first line in view and how far its top sits from the top of
+the view, negative when it is cut off above. A line cut off by more than it
+is tall after the re-render shows from its top. A new one-shot intent,
+`reflow-preserve`, restores it through the single applier. Precedence:
+`overlay-freeze ▸ operator-tail ▸ mention-jump ▸ reflow-preserve ▸
+marker-activation ▸ tail-follow ▸ prepend-preserve`.
+
+* Over `tail-follow`: its reading of a reader at the tail IS the tail, so a
+  follower is tailed either way (THE tail write, then the measured settle).
+* Over `marker-activation`: a re-render adds and removes no line, so it is
+  not the late load the activation latch re-asserts the divider against. A
+  reader who opened an unread chat and flips without scrolling keeps the line
+  at the top, not the divider centred. Deliberate; reversible by moving one
+  entry in `PRECEDENCE`.
+* Under `overlay-freeze`, which it RE-ANCHORS instead of fighting: the
+  freeze's `overlayScrollSnapshot` is rewritten to the reader's line in the
+  new layout, so the content-change re-assert and the close edge's restore
+  replay the right place. `overlaySnapshotDistance` is left alone: whether
+  the reader was following is a fact about the open edge (#1121), and a
+  re-render does not change it. This is #1701's "the px is a proxy for a
+  position" applied to the content instead of the box.
+
+Only a re-render of the same rows, in the same order, in the same window
+counts (`sameLines` + the key). A load, an arrival, a divider moving or a
+window switch keep their own rules: the slice is cut on that boundary, not on
+the encrypted window, so any source that re-renders its lines in place gets
+the same treatment.
+
+### When the reading is taken
+
+It has to be taken while the OLD lines are still laid out, and nothing holds
+it once they are gone. It is taken in a `createComputed` on `[rows, key]`, the
+first `createComputed` in cic, because of when it runs: Solid runs every memo
+and computed of an update before any effect, and the `<For>` swaps the line
+nodes in a render effect, so the computed reads the list as the reader saw it
+and the length-effect, which restores, reads the new one. Measured, not
+argued: the same body as a `createEffect` reads the swapped list, and all five
+of the issue's vitest arms go red. The `on` is not deferred on purpose: a
+deferred first run does not record the previous input, so the first change
+after mount had nothing to compare against (read in solid-js 1.9.17's
+`on`, and seen as the one direction of the flip that passed).
+
+### Rejected
+
+* prepend-preserve's arithmetic: it shifts by the growth of `scrollHeight`,
+  right only when all of it lands above the view; a re-render grows above and
+  below it.
+* A seam on the toggle's store write, in the shape of `PrependCommitSeam`:
+  the doors are the rail and the window list, which know no pane, so it would
+  take a registry of mounted panes to reach the one to ask.
+
+### Limits, not claimed
+
+* The overlay effect's deferred restores capture their target in a closure on
+  each edge, so a re-render within two frames of the lock opening or closing
+  is overwritten by the px of that edge. A tap cannot land inside that window.
+* The e2e runs on desktop chromium only; the phone reaches the rail's entry
+  through the right drawer, not exercised.
