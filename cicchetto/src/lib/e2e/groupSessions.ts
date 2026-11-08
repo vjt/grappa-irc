@@ -183,13 +183,31 @@ export type HeldRow = {
 };
 
 /**
+ * A channel row this device queued while it held no epoch: it waits for
+ * the key, never goes out in the clear, and never mints an epoch of its
+ * own. `channel` is the folded channel name, `body` the row, `queuedAt`
+ * when it was queued (ms since epoch). The drain flushes them when the
+ * key arrives (`takePendingSends`); the user cancels them
+ * (`dropPendingSends`); our own leave drops them with the channel.
+ */
+export type PendingSend = {
+  channel: string;
+  body: string;
+  queuedAt: number;
+};
+
+/** How many rows may wait for a key per channel before the oldest drops. */
+export const MAX_PENDING_SENDS = 32;
+
+/**
  * The epochs, as `E2eState.groups` holds them. `epochs` is keyed by folded
  * channel name; `keyreqAnsweredAt` by `${folded channel}:${asker did}`,
  * the last time this device answered that asker's key request on that
  * channel; `keyreqSentAt` by folded channel, the last time this device
  * broadcast a key request for it; `held` is the session-less rows held
- * for retry. A channel name is folded (`fold`) because §4f's `ch` is the
- * folded name.
+ * for retry; `pending` is the rows this device queued while it held no
+ * epoch, waiting for the key. A channel name is folded (`fold`) because
+ * §4f's `ch` is the folded name.
  */
 export type GroupSessionsState = {
   v: 3;
@@ -197,10 +215,11 @@ export type GroupSessionsState = {
   keyreqAnsweredAt: Record<string, number>;
   keyreqSentAt: Record<string, number>;
   held: HeldRow[];
+  pending: PendingSend[];
 };
 
 export function newGroupSessionsState(): GroupSessionsState {
-  return { v: 3, epochs: {}, keyreqAnsweredAt: {}, keyreqSentAt: {}, held: [] };
+  return { v: 3, epochs: {}, keyreqAnsweredAt: {}, keyreqSentAt: {}, held: [], pending: [] };
 }
 
 /** The epoch held for `channel`, if any. */
@@ -325,6 +344,60 @@ function clearKeyreqSent(state: GroupSessionsState, channel: string): void {
 }
 
 /**
+ * The rows queued for a key, defaulting a record sealed before the field
+ * existed to an empty list.
+ */
+function pendingSends(state: GroupSessionsState): PendingSend[] {
+  const rows = state.pending ?? [];
+  state.pending = rows;
+  return rows;
+}
+
+/**
+ * Queues `body` for `channel`: the row waits for the key, never goes out
+ * in the clear, and never mints an epoch of its own. Past the cap the
+ * oldest rows are dropped, and returned — never silently — so the caller
+ * can surface them.
+ */
+export function queuePendingSend(
+  state: GroupSessionsState,
+  channel: string,
+  body: string,
+  now: number,
+): PendingSend[] {
+  const rows = pendingSends(state);
+  rows.push({ channel: fold(channel), body, queuedAt: now });
+  const dropped: PendingSend[] = [];
+  while (rows.filter((r) => fold(r.channel) === fold(channel)).length > MAX_PENDING_SENDS) {
+    const idx = rows.findIndex((r) => fold(r.channel) === fold(channel));
+    const oldest = rows.splice(idx, 1)[0];
+    if (oldest !== undefined) dropped.push(oldest);
+  }
+  return dropped;
+}
+
+/**
+ * Takes the rows queued for `channel`: the key arrived, so the caller
+ * sends them now, under the new epoch, in the order they were queued.
+ * They leave the queue.
+ */
+export function takePendingSends(state: GroupSessionsState, channel: string): PendingSend[] {
+  const rows = pendingSends(state);
+  const taken = rows.filter((r) => fold(r.channel) === fold(channel));
+  state.pending = rows.filter((r) => fold(r.channel) !== fold(channel));
+  return taken;
+}
+
+/**
+ * Drops the rows queued for `channel`: the user cancelled them, or we
+ * left the channel. The dropped rows are returned — never silently — so
+ * the caller can surface them.
+ */
+export function dropPendingSends(state: GroupSessionsState, channel: string): PendingSend[] {
+  return takePendingSends(state, channel);
+}
+
+/**
  * The rows held for retry, defaulting a record sealed before the field
  * existed to an empty list.
  */
@@ -421,9 +494,10 @@ export function dropEpoch(state: GroupSessionsState, channel: string): void {
   clearKeyreqSent(state, channel);
 }
 
-/** Drops everything of `channel`: its epoch. We left. */
+/** Drops everything of `channel`: its epoch, and the rows queued for its key. We left. */
 export function dropChannel(state: GroupSessionsState, channel: string): void {
   dropEpoch(state, channel);
+  dropPendingSends(state, channel);
 }
 
 /**
@@ -499,22 +573,21 @@ export function keyreqPayload(channel: string): string {
 
 /**
  * Encrypts `body` for `channel` under the epoch key, as the v4 payload of
- * a channel `:msg`. Creates the epoch when none exists (`created`): the
- * caller distributes its key before the message can be read. The
- * per-sender counter and the message count are stored with the step.
+ * a channel `:msg`. Refuses — throws — when no epoch is held: a row
+ * without a key waits in queue (`queuePendingSend`), it never mints an
+ * epoch of its own. The per-sender counter and the message count are
+ * stored with the step.
  */
 export async function encryptChannel(
   state: GroupSessionsState,
   channel: string,
   body: string,
-  holders: string[],
   sign: ChannelSigner,
-  now: number,
-): Promise<{ payload: string; sid: string; counter: number; created: boolean }> {
-  const created = epochFor(state, channel) === undefined;
-  const held = created
-    ? createEpoch(state, channel, holders, now)
-    : (epochFor(state, channel) as StoredEpoch);
+): Promise<{ payload: string; sid: string; counter: number }> {
+  const held = epochFor(state, channel);
+  if (held === undefined) {
+    throw new Error(`no epoch for ${channel}: ask for the key first`);
+  }
   const inner = encodePayload({ t: "text", c: held.counter, body });
   const ciphertext = await encryptEpoch(held.key, new TextEncoder().encode(inner));
   const payload: ChannelPayload = {
@@ -527,7 +600,7 @@ export async function encryptChannel(
   };
   held.counter += 1;
   held.messages += 1;
-  return { payload: encodePayload(payload), sid: held.sid, counter: held.counter - 1, created };
+  return { payload: encodePayload(payload), sid: held.sid, counter: held.counter - 1 };
 }
 
 /** Whether `counter` from `did` is a new message under the epoch, judging its replay state. */

@@ -29,9 +29,14 @@ import {
   keyreqPayload,
   keyreqSentAtFor,
   MAX_HELD_ROWS,
+  MAX_PENDING_SENDS,
   markKeyreqAnswered,
   markKeyreqSent,
   newGroupSessionsState,
+  type PendingSend,
+  queuePendingSend,
+  dropPendingSends,
+  takePendingSends,
   REPLAY_WINDOW,
   type RosterDids,
   rotateEpochForLeave,
@@ -129,6 +134,7 @@ describe("state and constants", () => {
       keyreqAnsweredAt: {},
       keyreqSentAt: {},
       held: [],
+      pending: [],
     });
     expect(newGroupSessionsState().v).toBe(3);
     expect(GROUP_ROTATION_INTERVAL_MS).toBe(86_400_000);
@@ -234,28 +240,23 @@ describe("state and constants", () => {
 });
 
 describe("encryptChannel / decryptChannel", () => {
-  it("round-trips with counter 0 then 1, and reports when it created the epoch", async () => {
+  it("round-trips with counter 0 then 1 under an epoch created first", async () => {
     const aliceGroups = newGroupSessionsState();
     const bobGroups = newGroupSessionsState();
+    createEpoch(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     const first = await encryptChannel(
       aliceGroups,
       CHAN,
       "hello",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
-    expect(first.created).toBe(true);
     expect(first.counter).toBe(0);
     const second = await encryptChannel(
       aliceGroups,
       CHAN,
       "again",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
-    expect(second.created).toBe(false);
     expect(second.counter).toBe(1);
     expect(second.sid).toBe(first.sid);
     expect(epochFor(aliceGroups, CHAN)?.messages).toBe(2);
@@ -272,13 +273,12 @@ describe("encryptChannel / decryptChannel", () => {
   it("refuses a replay of the same payload", async () => {
     const aliceGroups = newGroupSessionsState();
     const bobGroups = newGroupSessionsState();
+    createEpoch(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     const sent = await encryptChannel(
       aliceGroups,
       CHAN,
       "hello",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     bobImports(bobGroups, aliceGroups, NOW);
     expect(
@@ -293,15 +293,14 @@ describe("encryptChannel / decryptChannel", () => {
     const aliceGroups = newGroupSessionsState();
     const bobGroups = newGroupSessionsState();
     const sent = [];
+    createEpoch(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     for (const body of ["zero", "one", "two"]) {
       sent.push(
         await encryptChannel(
           aliceGroups,
           CHAN,
           body,
-          [didFor(RING, "alice"), didFor(RING, "bob")],
           signAlice,
-          NOW,
         ),
       );
     }
@@ -346,13 +345,12 @@ describe("encryptChannel / decryptChannel", () => {
   it("refuses a message with no session, a wrong epoch, a bad signature, or a bad payload", async () => {
     const aliceGroups = newGroupSessionsState();
     const bobGroups = newGroupSessionsState();
+    createEpoch(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     const sent = await encryptChannel(
       aliceGroups,
       CHAN,
       "hello",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     // No session at all.
     expect(
@@ -370,13 +368,12 @@ describe("encryptChannel / decryptChannel", () => {
       await decryptChannel(bobGroups, CHAN, "alice", "did-unknown", sent.payload, verifyAll, NOW),
     ).toEqual({ ok: false, reason: "bad-signature", sid: sent.sid });
     // Another channel's name in the envelope: the inbox channel rules.
+    createEpoch(aliceGroups, "#other", [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     const other = await encryptChannel(
       aliceGroups,
       "#other",
       "hi",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     expect(
       await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, other.payload, verifyAll, NOW),
@@ -387,9 +384,7 @@ describe("encryptChannel / decryptChannel", () => {
       aliceGroups,
       CHAN,
       "new epoch",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     expect(
       await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, after.payload, verifyAll, NOW),
@@ -403,13 +398,12 @@ describe("encryptChannel / decryptChannel", () => {
   it("refuses a message whose ciphertext was tampered with under a valid signature", async () => {
     const aliceGroups = newGroupSessionsState();
     const bobGroups = newGroupSessionsState();
+    createEpoch(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     const sent = await encryptChannel(
       aliceGroups,
       CHAN,
       "hello",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     bobImports(bobGroups, aliceGroups, NOW);
     const envelope = parseChannelPayload(decodePayload(sent.payload));
@@ -427,13 +421,12 @@ describe("encryptChannel / decryptChannel", () => {
   it("refuses a message whose inner plaintext is neither text nor a rotation", async () => {
     const aliceGroups = newGroupSessionsState();
     const bobGroups = newGroupSessionsState();
+    createEpoch(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     await encryptChannel(
       aliceGroups,
       CHAN,
       "hello",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     bobImports(bobGroups, aliceGroups, NOW);
     const held = epochFor(bobGroups, CHAN);
@@ -460,13 +453,12 @@ describe("importEpoch", () => {
   it("imports once: a re-sent key is a no-op, a bad key throws and stores nothing", async () => {
     const aliceGroups = newGroupSessionsState();
     const bobGroups = newGroupSessionsState();
+    createEpoch(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     await encryptChannel(
       aliceGroups,
       CHAN,
       "hi",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     const gkey = aliceGkey(aliceGroups);
     expect(importEpoch(bobGroups, CHAN, gkey, ALICE_DID, NOW)).toBe("imported");
@@ -505,13 +497,12 @@ describe("importEpoch", () => {
   it("a rotation successor imports: a higher seq replaces the one held", async () => {
     const aliceGroups = newGroupSessionsState();
     const bobGroups = newGroupSessionsState();
+    createEpoch(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     await encryptChannel(
       aliceGroups,
       CHAN,
       "epoch one",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     const first = aliceGkey(aliceGroups);
     bobImports(bobGroups, aliceGroups, NOW);
@@ -532,13 +523,12 @@ describe("importEpoch", () => {
   it("the first valid gkey wins: a second gkey at the same seq is superseded", async () => {
     const aliceGroups = newGroupSessionsState();
     const bobGroups = newGroupSessionsState();
+    createEpoch(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     await encryptChannel(
       aliceGroups,
       CHAN,
       "epoch one",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     const first = aliceGkey(aliceGroups);
     expect(first.seq).toBe(0);
@@ -578,9 +568,7 @@ describe("rotation", () => {
       groups,
       CHAN,
       "spoke",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     expect(rotationDue(groups, CHAN, NOW + DAY - 1)).toBe(false);
     expect(rotationDue(groups, CHAN, NOW + DAY)).toBe(true);
@@ -596,13 +584,12 @@ describe("rotation", () => {
   it("sends one channel message under the old epoch, and the reader rotates onto the new one", async () => {
     const aliceGroups = newGroupSessionsState();
     const bobGroups = newGroupSessionsState();
+    createEpoch(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     await encryptChannel(
       aliceGroups,
       CHAN,
       "day one",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     const oldSid = aliceGkey(aliceGroups).sid;
     bobImports(bobGroups, aliceGroups, NOW);
@@ -617,9 +604,7 @@ describe("rotation", () => {
             aliceGroups,
             CHAN,
             "read me",
-            [didFor(RING, "alice"), didFor(RING, "bob")],
             signAlice,
-            NOW,
           )
         ).payload,
         verifyAll,
@@ -654,9 +639,7 @@ describe("rotation", () => {
       aliceGroups,
       CHAN,
       "day two",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      later,
     );
     expect(next.sid).toBe(rotated?.newSid);
     expect(
@@ -667,13 +650,12 @@ describe("rotation", () => {
   it("rotating on a leave deletes the old epoch and mints a new one the peer can import", async () => {
     const aliceGroups = newGroupSessionsState();
     const bobGroups = newGroupSessionsState();
+    createEpoch(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     await encryptChannel(
       aliceGroups,
       CHAN,
       "before",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     const oldSid = aliceGkey(aliceGroups).sid;
     const rotated = rotateEpochForLeave(
@@ -706,9 +688,7 @@ describe("rotation", () => {
       aliceGroups,
       CHAN,
       "after",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     expect(
       await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, after.payload, verifyAll, NOW),
@@ -737,13 +717,12 @@ describe("key requests sent", () => {
     expect(keyreqSentAtFor(bobGroups, CHAN)).toBe(NOW);
     expect(keyreqSentAtFor(bobGroups, "#other")).toBeUndefined();
     // A successful import clears the outstanding request for the channel.
+    createEpoch(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     await encryptChannel(
       aliceGroups,
       CHAN,
       "hi",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     expect(importEpoch(bobGroups, CHAN, aliceGkey(aliceGroups), ALICE_DID, NOW)).toBe("imported");
     expect(keyreqSentAtFor(bobGroups, CHAN)).toBeUndefined();
@@ -825,6 +804,61 @@ describe("held rows", () => {
     expect(groups.held).toHaveLength(1);
     expect(takeHeldRows(groups, CHAN, "sid-1")).toHaveLength(1);
     expect(expireHeldRows(groups, NOW + HELD_ROW_TTL_MS + 1)).toEqual([]);
+  });
+});
+
+describe("pending sends", () => {
+  it("refuses to encrypt without an epoch: the row waits, it never mints one", async () => {
+    const groups = newGroupSessionsState();
+    await expect(encryptChannel(groups, CHAN, "hello", signAlice)).rejects.toThrow(
+      /no epoch/,
+    );
+    expect(epochFor(groups, CHAN)).toBeUndefined();
+  });
+
+  it("queues rows in order, takes them back for one channel only, and drops them on cancel", () => {
+    const groups = newGroupSessionsState();
+    expect(queuePendingSend(groups, CHAN, "first", NOW)).toEqual([]);
+    expect(queuePendingSend(groups, CHAN, "second", NOW + 1)).toEqual([]);
+    expect(queuePendingSend(groups, "#other", "elsewhere", NOW + 2)).toEqual([]);
+    expect(groups.pending).toHaveLength(3);
+    const taken = takePendingSends(groups, CHAN);
+    expect(taken.map((r) => r.body)).toEqual(["first", "second"]);
+    expect(groups.pending).toHaveLength(1);
+    expect(takePendingSends(groups, CHAN)).toEqual([]);
+    expect(dropPendingSends(groups, "#other").map((r) => r.body)).toEqual(["elsewhere"]);
+    expect(groups.pending).toHaveLength(0);
+  });
+
+  it("drops the oldest rows past the cap, and returns them instead of losing them silently", () => {
+    const groups = newGroupSessionsState();
+    const dropped: PendingSend[] = [];
+    for (let i = 0; i < MAX_PENDING_SENDS + 2; i++) {
+      dropped.push(...queuePendingSend(groups, CHAN, `row-${i}`, NOW + i));
+    }
+    expect(groups.pending).toHaveLength(MAX_PENDING_SENDS);
+    expect(dropped.map((r) => r.body)).toEqual(["row-0", "row-1"]);
+    expect(groups.pending[0]?.body).toBe("row-2");
+  });
+
+  it("a leave drops the queued rows with the channel; a rejoin keeps them", () => {
+    const groups = newGroupSessionsState();
+    queuePendingSend(groups, CHAN, "waiting", NOW);
+    dropChannel(groups, CHAN);
+    expect(groups.pending).toHaveLength(0);
+    queuePendingSend(groups, CHAN, "waiting", NOW);
+    dropEpoch(groups, CHAN);
+    expect(groups.pending).toHaveLength(1);
+    expect(takePendingSends(groups, CHAN).map((r) => r.body)).toEqual(["waiting"]);
+  });
+
+  it("tolerates a state sealed before the field existed", () => {
+    const groups = newGroupSessionsState();
+    delete (groups as Partial<GroupSessionsState>).pending;
+    expect(queuePendingSend(groups, CHAN, "first", NOW)).toEqual([]);
+    expect(groups.pending).toHaveLength(1);
+    expect(takePendingSends(groups, CHAN)).toHaveLength(1);
+    expect(dropPendingSends(groups, CHAN)).toEqual([]);
   });
 });
 
@@ -961,24 +995,22 @@ describe("holders and key requests", () => {
     const groups = newGroupSessionsState();
     dropEpoch(groups, CHAN);
     dropChannel(groups, CHAN);
+    createEpoch(groups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     await encryptChannel(
       groups,
       CHAN,
       "hi",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
       signAlice,
-      NOW,
     );
     dropEpoch(groups, CHAN);
     expect(epochFor(groups, CHAN)).toBeUndefined();
-    await encryptChannel(
-      groups,
-      CHAN,
-      "hi again",
-      [didFor(RING, "alice"), didFor(RING, "bob")],
-      signAlice,
-      NOW,
+    // After the drop there is no epoch to encrypt under: the row waits,
+    // it does not mint one. The drop itself still tolerates the missing
+    // epoch, and a fresh epoch drops the same way.
+    await expect(encryptChannel(groups, CHAN, "hi again", signAlice)).rejects.toThrow(
+      /no epoch/,
     );
+    createEpoch(groups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
     dropChannel(groups, CHAN);
     expect(epochFor(groups, CHAN)).toBeUndefined();
   });

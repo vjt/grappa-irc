@@ -27,11 +27,19 @@
 //   * Join: the newcomer ASKS. It broadcasts a key request on the
 //     channel (`{"v":4,"t":"keyreq","ch":"#chan"}`), and the first member
 //     with an open cic who holds the epoch answers with a gkey DM;
-//     duplicate answers are harmless, the first valid import wins. A
-//     member with no epoch yet creates one when its turn to send comes: it
-//     becomes the epoch owner. If nobody has an open cic, the newcomer
-//     waits: the request sits in every member's inbox until one opens a
-//     cic and answers it. There is no server-side fallback.
+//     duplicate answers are harmless, the first valid import wins. If
+//     nobody holds an epoch yet, only the member the channel topic names
+//     as its key holder (`[e2e:1 key-from=<nick>]`) mints the first one,
+//     and only to answer an explicit key request. If nobody has an open
+//     cic, the newcomer waits: the request sits in every member's inbox
+//     until one opens a cic and answers it. There is no server-side
+//     fallback.
+//   * Send: a row without a key waits in queue. It never mints an epoch
+//     of its own, and never goes out in the clear: the key request goes
+//     out on the channel, and the row goes out under the key once
+//     someone with an open cic gives it. Cleartext only when the client
+//     asks and the user confirms, per row or until the key arrives —
+//     never automatically, never silently; the step has no such path.
 //   * Leave / kick / quit: mandatory rotation. The rotator is
 //     deterministic off the roster — the device whose did sorts first
 //     among the REMAINING holder dids — so exactly one member mints the
@@ -99,10 +107,12 @@ import {
   keyreqSentAtFor,
   markKeyreqAnswered,
   markKeyreqSent,
+  queuePendingSend,
   type RosterDids,
   rotateEpochForLeave,
   rotationDue,
   sentToOf,
+  takePendingSends,
 } from "./groupSessions";
 import {
   decodePayload,
@@ -143,6 +153,10 @@ export type ChannelE2eEvent =
   | { kind: "channel_key_sent"; channel: string; to: string; sid: string }
   | { kind: "channel_key_failed"; channel: string; to: string; sid: string; reason: string }
   | { kind: "channel_key_requested"; channel: string }
+  | {
+      kind: "channel_key_missing";
+      channel: string;
+    }
   | {
       kind: "channel_rotated";
       channel: string;
@@ -188,6 +202,15 @@ export type ChannelE2eDeps = {
    * that names who holds the key resolves through here.
    */
   didsFor: (nick: string) => string[] | undefined;
+  /**
+   * The nick the topic of `channel` names as the holder of its epoch key
+   * (`[e2e:1 key-from=<nick>]`), or undefined when the channel's topic
+   * carries no such tag: the designee — the one member who mints the
+   * first epoch, and only to answer an explicit key request. Absent when
+   * the caller holds no topics: nobody bootstraps, and the newcomer
+   * waits.
+   */
+  keyFromFor?: (channel: string) => string | undefined;
   /**
    * Sends `inner` to `nick`'s DM through the Olm engine, on the text
    * lane, and answers the outbound payloads. The engine queues for keys
@@ -415,7 +438,10 @@ export function requestKey(
  * answer, and the asker can re-ask. The asker's did joins the stored
  * epoch's holder set before the gkey is built, so the key they receive
  * names their device and their later exit rotates the epoch. Nothing
- * when no epoch is held.
+ * when no epoch is held — except the bootstrap: the topic designee
+ * (`keyFromFor`) mints the first epoch to answer an explicit key
+ * request, and only then. Minting to answer an ask is the bootstrap, not
+ * a send side effect: a send without a key queues, it never mints.
  */
 export function onKeyreq(
   deps: ChannelE2eDeps,
@@ -425,12 +451,26 @@ export function onKeyreq(
   fromDid: string,
 ): ChannelE2eResult {
   const res = emptyResult();
-  const held = epochFor(groups, channel);
-  if (held === undefined) return res;
   if (foldOf(from) === foldOf(deps.ownNick)) return res;
   const roster = deps.rosterFor?.(channel);
   if (roster === undefined || !senderOnRoster(deps, roster, from, fromDid)) return res;
   if (!keyreqAnswerDue(groups, channel, fromDid, deps.now())) return res;
+  const held = epochFor(groups, channel);
+  if (held === undefined) {
+    // The bootstrap: only the topic designee mints the first epoch, and
+    // only to answer an explicit key request. Anyone else waits for the
+    // designee (or a member who holds the epoch) to answer.
+    const designee = deps.keyFromFor?.(channel);
+    if (designee === undefined || foldOf(designee) !== foldOf(deps.ownNick)) return res;
+    const minted = distributeKey(deps, groups, channel, roster);
+    res.events.push(...minted.events);
+    res.outbound.push(...minted.outbound);
+    res.copies.push(...minted.copies);
+    // The distribution already sent the asker the key: the ask is
+    // answered, so a duplicate inside the minute does not mint again.
+    markKeyreqAnswered(groups, channel, fromDid, deps.now());
+    return res;
+  }
   markKeyreqAnswered(groups, channel, fromDid, deps.now());
   if (!held.holders.includes(fromDid)) held.holders.push(fromDid);
   const byNick = holderNicksOf(held);
@@ -585,15 +625,45 @@ export function auditEpochRotation(
 }
 
 /**
+ * Sends the rows queued for `channel` now that an epoch exists, in the
+ * order they were queued: the key arrived, so they go out under it.
+ * Nothing when no epoch is held — the rows keep waiting — and no event:
+ * a sent channel row has nowhere to render yet, so the flush is silent
+ * in the report (the door still reconciles a refusal into a drop).
+ */
+export async function flushPendingSends(
+  deps: ChannelE2eDeps,
+  groups: GroupSessionsState,
+  channel: string,
+): Promise<ChannelE2eResult> {
+  const res = emptyResult();
+  if (epochFor(groups, channel) === undefined) return res;
+  for (const pending of takePendingSends(groups, channel)) {
+    const encrypted = await encryptChannel(groups, channel, pending.body, deps.sign);
+    res.outbound.push({
+      target: channel,
+      verb: "msg",
+      from: deps.ownDid,
+      to: "*",
+      payload: encrypted.payload,
+      priority: "text",
+    });
+  }
+  return res;
+}
+
+/**
  * Sends `body` to `channel`, encrypted under the channel's epoch. The
  * holder set is audited against the roster first: a departed holder
- * rotates the epoch before anything goes under it. When no epoch exists
- * this device becomes its owner: the key is distributed pairwise to the
- * roster first, and the channel message follows, so the members can read
- * it. The channel `:msg` itself carries no `ref` or `tag`: it has no DM
- * row to move, and the caller must not mistake it for one (`client.ts`
- * flushes untagged payloads without row changes). The caller flushes the
- * outbound, gkey DMs first, in order.
+ * rotates the epoch before anything goes under it. When no epoch is
+ * held the row waits in queue — it never mints one, and never goes out
+ * in the clear: the key request goes out on the channel, and the row
+ * goes out under the key once someone with an open cic gives it. What
+ * waited before it goes first, in order. The channel `:msg` itself
+ * carries no `ref` or `tag`: it has no DM row to move, and the caller
+ * must not mistake it for one (`client.ts` flushes untagged payloads
+ * without row changes). The caller flushes the outbound, gkey DMs first,
+ * in order.
  */
 export async function sendChannel(
   deps: ChannelE2eDeps,
@@ -608,19 +678,25 @@ export async function sendChannel(
   res.outbound.push(...audited.outbound);
   res.copies.push(...audited.copies);
   if (epochFor(groups, channel) === undefined) {
-    const distributed = distributeKey(deps, groups, channel, members);
-    res.events.push(...distributed.events);
-    res.outbound.push(...distributed.outbound);
-    res.copies.push(...distributed.copies);
+    for (const dropped of queuePendingSend(groups, channel, body, deps.now())) {
+      res.events.push({
+        kind: "channel_dropped",
+        channel,
+        reason: "send-queue-full",
+        detail: dropped.body,
+      });
+    }
+    const asked = requestKey(deps, groups, channel);
+    res.events.push(...asked.events);
+    res.events.push({ kind: "channel_key_missing", channel });
+    res.outbound.push(...asked.outbound);
+    res.copies.push(...asked.copies);
+    return res;
   }
-  const encrypted = await encryptChannel(
-    groups,
-    channel,
-    body,
-    didsOf(deps, members),
-    deps.sign,
-    deps.now(),
-  );
+  const flushed = await flushPendingSends(deps, groups, channel);
+  res.outbound.push(...flushed.outbound);
+  res.copies.push(...flushed.copies);
+  const encrypted = await encryptChannel(groups, channel, body, deps.sign);
   res.outbound.push({
     target: channel,
     verb: "msg",
