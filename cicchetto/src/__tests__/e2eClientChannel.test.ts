@@ -358,6 +358,91 @@ describe("e2eClient channel", () => {
     ]);
   });
 
+  it("our own rejoin drops the dead epoch and asks for the key again", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    w.grappa.joinChannel(CHANNEL, a.nick);
+    w.grappa.joinChannel(CHANNEL, b.nick);
+    const roster = rosterFor(["alice", "Bob"]);
+    a.ctx.channelMembers = roster;
+    b.ctx.channelMembers = roster;
+    await b.client.requestChannelKey(b.ctx, CHANNEL);
+    await a.client.drain(a.ctx);
+    await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
+    await b.client.drain(b.ctx);
+
+    // Alice leaves and rejoins while her cic was closed: the epoch she
+    // held predates the rotation the others did without her, so it goes
+    // and she asks for the key again instead of speaking under it.
+    const rejoined = await a.client.channelMembersChanged(a.ctx, CHANNEL, "alice", null, [
+      "alice",
+      "Bob",
+    ]);
+    expect(rejoined.channelE2e).toEqual([
+      expect.objectContaining({ kind: "channel_dropped", reason: "rejoined" }),
+      { kind: "channel_key_requested", channel: CHANNEL },
+    ]);
+    expect(w.grappa.sends.at(-1)).toEqual(expect.objectContaining({ target: CHANNEL, to: "*" }));
+  });
+
+  it("our own first join asks for the key when we hold no epoch", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    w.grappa.joinChannel(CHANNEL, a.nick);
+    w.grappa.joinChannel(CHANNEL, b.nick);
+    const roster = rosterFor(["alice", "Bob"]);
+    a.ctx.channelMembers = roster;
+    b.ctx.channelMembers = roster;
+
+    const joined = await a.client.channelMembersChanged(a.ctx, CHANNEL, "alice", null, [
+      "alice",
+      "Bob",
+    ]);
+    expect(joined.channelE2e).toEqual([{ kind: "channel_key_requested", channel: CHANNEL }]);
+    expect(w.grappa.sends.at(-1)).toEqual(expect.objectContaining({ target: CHANNEL, to: "*" }));
+  });
+
+  it("a roster seed audits and asks in one operation, and stays silent off a tagged channel", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    w.grappa.joinChannel(CHANNEL, a.nick);
+    w.grappa.joinChannel(CHANNEL, b.nick);
+    const roster = rosterFor(["alice", "Bob"]);
+    a.ctx.channelMembers = roster;
+    b.ctx.channelMembers = roster;
+    // Only #grappa advertises the tag here.
+    a.ctx.topicTagFor = (channel) => (channel === CHANNEL ? "alice" : null);
+
+    // No epoch held: the seed asks, once, on the channel itself.
+    const seeded = await a.client.seedChannel(a.ctx, CHANNEL, ["alice", "Bob"]);
+    expect(seeded.channelE2e).toEqual([{ kind: "channel_key_requested", channel: CHANNEL }]);
+    expect(w.grappa.sends.filter((s) => s.target === CHANNEL)).toHaveLength(1);
+
+    // The epoch is held now and every holder is still a member: the
+    // seed is quiet.
+    await b.client.requestChannelKey(b.ctx, CHANNEL);
+    await a.client.drain(a.ctx);
+    await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
+    await b.client.drain(b.ctx);
+    const quiet = await a.client.seedChannel(a.ctx, CHANNEL, ["alice", "Bob"]);
+    expect(quiet.channelE2e).toBeUndefined();
+
+    // A holder left while every cic was closed: the seed rotates.
+    const stale = await a.client.seedChannel(a.ctx, CHANNEL, ["alice"]);
+    expect(stale.channelE2e).toEqual([
+      expect.objectContaining({ kind: "channel_rotated", reason: "member-left" }),
+    ]);
+
+    // Off a tagged channel the seed opens nothing at all: no event, no
+    // send, and the sealed record is never even loaded.
+    const stores = vi.spyOn(a.vault, "store");
+    stores.mockClear();
+    const untagged = await a.client.seedChannel(a.ctx, "#sbiffo", ["alice", "Bob"]);
+    expect(untagged.channelE2e).toBeUndefined();
+    expect(w.grappa.sends.filter((s) => s.target === "#sbiffo")).toHaveLength(0);
+    expect(stores).not.toHaveBeenCalled();
+  });
+
   it("the audit rotates when a holder left while every cic was closed", async () => {
     const { w, a, b } = await pair();
     await chat(a, b);
