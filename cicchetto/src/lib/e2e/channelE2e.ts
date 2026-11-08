@@ -447,10 +447,12 @@ export async function sendChannel(
   const audited = auditEpochRotation(deps, groups, channel, members);
   res.events.push(...audited.events);
   res.outbound.push(...audited.outbound);
+  res.copies.push(...audited.copies);
   if (epochFor(groups, channel) === undefined) {
     const distributed = distributeKey(deps, groups, channel, members);
     res.events.push(...distributed.events);
     res.outbound.push(...distributed.outbound);
+    res.copies.push(...distributed.copies);
   }
   const encrypted = await encryptChannel(groups, channel, body, members, deps.sign, deps.now());
   res.outbound.push({
