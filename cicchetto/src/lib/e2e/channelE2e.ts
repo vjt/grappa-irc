@@ -93,6 +93,7 @@ export type ChannelE2eEvent =
         | "bad-payload"
         | "channel-mismatch"
         | "no-session"
+        | "replay"
         | "decryption-failed"
         | "bad-inner"
         | "megolm-unavailable";
