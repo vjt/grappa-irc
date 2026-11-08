@@ -595,6 +595,34 @@ export class Engine {
   }
 
   /**
+   * The dids of the devices `nick`'s pinned master vouches for now: the
+   * roster's dids for the channel E2E steps (holders and roster are per
+   * did, never per nick). Undefined when the nick is not pinned — its
+   * devices are unknown, and the caller falls back to the nick, or skips
+   * the member until its list lands.
+   */
+  deviceDids(nick: string): string[] | undefined {
+    const master = atNick(this.state.pins, nick);
+    const record = master === undefined ? undefined : this.state.masters[master];
+    if (master === undefined || record === undefined) return undefined;
+    return this.trustedDevices(master).map((device) => device.did);
+  }
+
+  /**
+   * The dids of our own devices: this device, and the siblings our
+   * master's list still names. Our own nick is never a pinned peer, so
+   * `deviceDids` cannot list us — the channel E2E steps resolve our own
+   * nick through here.
+   */
+  ownDids(): string[] {
+    const dids = new Set<string>([this.deviceId()]);
+    for (const [ed25519, sibling] of Object.entries(this.state.siblings)) {
+      if (this.ourListNames(ed25519)) dids.add(sibling.did);
+    }
+    return [...dids];
+  }
+
+  /**
    * The device `ed25519` bound under `master` if that master vouches for it
    * now (rule 4: listed, or certified past the stored list, and not revoked).
    * A SAS verifies a master only through such a device (W "SAS").

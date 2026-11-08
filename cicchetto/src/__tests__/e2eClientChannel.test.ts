@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { epochFor, HELD_ROW_TTL_MS } from "../lib/e2e/groupSessions";
 import { decodePayload, encodePayload } from "../lib/e2e/wire";
 import { __resetServerProtocolForTests, setServerProtocol } from "../lib/serverProtocol";
-import { chat, inboxOf, latestGrappa, pair, rowsOf, SLOT } from "./helpers/e2eClients";
+import { chat, inboxOf, latestGrappa, ownOf, pair, rowsOf, SLOT } from "./helpers/e2eClients";
 import { routeApi } from "./helpers/e2eGrappa";
 import { olm } from "./helpers/olm";
 
@@ -176,20 +176,26 @@ describe("e2eClient channel", () => {
     await b.client.drain(b.ctx);
     await c.client.drain(c.ctx);
 
-    // Alice is the folded-nick-first remaining holder, so she rotates.
-    const left = await a.client.channelMembersChanged(a.ctx, CHANNEL, null, "Bob", [
+    // The designated rotator is the first holder did in sorted order —
+    // dids are assigned by the fake grappa, so find it instead of
+    // assuming Alice sorts first. The departed Bob is not among them.
+    const didA = (await ownOf(a)).did;
+    const didC = (await ownOf(c)).did;
+    const rotator = didA < didC ? a : c;
+    const other = rotator === a ? c : a;
+    const left = await rotator.client.channelMembersChanged(rotator.ctx, CHANNEL, null, "Bob", [
       "alice",
       "carol",
     ]);
     expect(left.channelE2e).toEqual([
       expect.objectContaining({ kind: "channel_rotated", reason: "member-left" }),
-      expect.objectContaining({ kind: "channel_key_sent", to: "carol" }),
+      expect.objectContaining({ kind: "channel_key_sent", to: other.nick }),
     ]);
-    await c.client.drain(c.ctx);
+    await other.client.drain(other.ctx);
 
-    await a.client.sendChannel(a.ctx, CHANNEL, "dopo l'addio", ["alice", "carol"]);
-    const carolRead = await c.client.drain(c.ctx);
-    expect(carolRead.channelE2e).toEqual([
+    await rotator.client.sendChannel(rotator.ctx, CHANNEL, "dopo l'addio", ["alice", "carol"]);
+    const otherRead = await other.client.drain(other.ctx);
+    expect(otherRead.channelE2e).toEqual([
       expect.objectContaining({ kind: "channel_received", body: "dopo l'addio" }),
     ]);
     // The transport still delivers to Bob here — the epoch is what locks

@@ -359,9 +359,17 @@ export function parseChannelKeyreqPayload(payload: Record<string, unknown>): Cha
  * The key of a channel epoch, carried inside the pairwise Olm DM to a
  * member (`{"t":"gkey","ch":"#grappa","sid":"...","key":"...","holders":["..."]}`):
  * `key` is the 32-byte epoch key (base64), `sid` the epoch it opens,
- * `holders` the folded nicks of every member who received this epoch key
- * (the distributor's roster snapshot at distribution time). Never sent in
- * the clear, never through the server.
+ * `holders` the dids of every device that received this epoch key (the
+ * distributor's roster snapshot at distribution time, in dids — never
+ * nicks). `holderNicks`, when present, names which nick each holder did
+ * belongs to (`{folded nick: [did, ...]}`): a holder that reads the
+ * inner learns the mapping, so any holder can tell a departed member's
+ * dids from a presence event naming only the nick. `sentTo`, when
+ * present, names the folded nicks the key was DM'd to whose device lists
+ * were unknown at distribution time: they may still receive it (the
+ * engine resolves their keys lazily), so they count as holders-to-be
+ * until their dids land. Never sent in the clear, never through the
+ * server.
  */
 export type GkeyInner = {
   t: "gkey";
@@ -369,6 +377,8 @@ export type GkeyInner = {
   sid: string;
   key: string;
   holders: string[];
+  holderNicks?: Record<string, string[]>;
+  sentTo?: string[];
 };
 
 export function parseGkeyInner(inner: Record<string, unknown>): GkeyInner {
@@ -385,7 +395,29 @@ export function parseGkeyInner(inner: Record<string, unknown>): GkeyInner {
   ) {
     throw new PayloadError("bad holders");
   }
-  return { t: "gkey", ch, sid, key, holders: holders as string[] };
+  const parsed: GkeyInner = { t: "gkey", ch, sid, key, holders: holders as string[] };
+  if (inner.holderNicks !== undefined) {
+    const byNick = inner.holderNicks;
+    if (
+      typeof byNick !== "object" ||
+      byNick === null ||
+      Array.isArray(byNick) ||
+      !Object.values(byNick).every(
+        (dids) => Array.isArray(dids) && dids.every((d) => typeof d === "string" && d !== ""),
+      )
+    ) {
+      throw new PayloadError("bad holderNicks");
+    }
+    parsed.holderNicks = byNick as Record<string, string[]>;
+  }
+  if (inner.sentTo !== undefined) {
+    const sentTo = inner.sentTo;
+    if (!Array.isArray(sentTo) || !sentTo.every((n) => typeof n === "string" && n !== "")) {
+      throw new PayloadError("bad sentTo");
+    }
+    parsed.sentTo = sentTo as string[];
+  }
+  return parsed;
 }
 
 /**

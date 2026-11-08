@@ -11,16 +11,30 @@
 // a new one on every reload. A record sealed before this field existed
 // opens with an empty store (`accountStore` spreads `newState()`
 // underneath the stored state, and resets a groups object whose `v` is
-// not 2), so no migration is needed.
+// not 3), so no migration is needed. Version 3 is the holders-per-did
+// store: a v2 record held folded nicks as holders, which read as dids
+// under the new rule, so it is reset, not migrated — its channels re-ask
+// for the key.
 //
 // WHAT AN EPOCH IS. One record per channel: the epoch id (`sid`), the
 // 32-byte AES-GCM key (base64), when it was created, how many messages
 // went under it, this device's next counter, and the HOLDER SET — the
-// folded nicks of every member who received this epoch key. The holder
-// set is the audit input (§4f, F4): on cic open and before every send,
-// the client compares it with the true roster, and anyone in the set who
-// is no longer in the roster triggers rotation. There is no per-sender
-// store: a sender is just a device whose counter the epoch tracks.
+// dids of every device that received this epoch key. The holder set is
+// the audit input (§4f, F4): on cic open and before every send, the
+// client compares it with the true roster, in dids, and anyone in the
+// set who is no longer in the roster triggers rotation. A holder is a
+// device, never a nick: a rename must not change who holds the key, and
+// two devices of one subject hold it independently. There is no
+// per-sender store: a sender is just a device whose counter the epoch
+// tracks. Next to the holder set the epoch keeps the NICK MAPPING —
+// which nick each holder did belongs to, as the distributor saw it —
+// carried in the gkey inner, so any holder can tell a departed member's
+// dids from a presence event naming only the nick; and the SENT-TO nicks
+// — members the key was DM'd to whose device lists were unknown, who
+// may still receive it (the engine resolves their keys lazily) and move
+// into the holder set once their dids land. A rename must not change
+// who holds the key; the mapping is only the lookup, the dids are the
+// identity.
 //
 // ROTATION, and why old keys die. One key per epoch. A member leaves, or
 // the day passes, and the epoch rotates: the old key is deleted outright
@@ -102,14 +116,38 @@ export type StoredEpoch = {
   messages: number;
   /** This device's next counter under this epoch: 0, it never spoke. */
   counter: number;
-  /** The folded nicks of every member who received this epoch key. */
+  /** The dids of every device that received this epoch key. */
   holders: string[];
+  /**
+   * Which nick each holder did belongs to (`{folded nick: [did, ...]}`):
+   * the distributor's snapshot at distribution time, carried in the gkey
+   * inner, so any holder can tell a departed member's dids from a
+   * presence event naming only the nick. A record sealed before this
+   * field existed opens without it: read it through `holderNicksOf`.
+   */
+  holderNicks: Record<string, string[]>;
+  /**
+   * The folded nicks the key was DM'd to whose device lists were unknown
+   * at distribution time: they may still receive it (the engine resolves
+   * their keys lazily), so they count as holders-to-be until their dids
+   * land and move them into `holders`. A record sealed before this field
+   * existed opens without it: read it through `sentToOf`.
+   */
+  sentTo: string[];
   /** When the key arrived (ms since epoch): the creation, for our own epochs. */
   receivedAt: number;
   /** The did of the member whose gkey brought the key: null for our own epochs. */
   receivedFrom: string | null;
   /** The replay state per sender device did. */
   seen: Record<string, ReplayState>;
+};
+
+/** The roster as the audit sees it: its nicks, and the dids they resolve to. */
+export type RosterDids = {
+  /** The roster's nicks, in display spelling. */
+  nicks: string[];
+  /** The dids the roster resolves to, as this cic knows them. */
+  dids: string[];
 };
 
 /**
@@ -131,7 +169,7 @@ export type HeldRow = {
 
 /**
  * The epochs, as `E2eState.groups` holds them. `epochs` is keyed by folded
- * channel name; `keyreqAnsweredAt` by `${folded channel}:${folded asker}`,
+ * channel name; `keyreqAnsweredAt` by `${folded channel}:${asker did}`,
  * the last time this device answered that asker's key request on that
  * channel; `keyreqSentAt` by folded channel, the last time this device
  * broadcast a key request for it; `held` is the session-less rows held
@@ -139,7 +177,7 @@ export type HeldRow = {
  * folded name.
  */
 export type GroupSessionsState = {
-  v: 2;
+  v: 3;
   epochs: Record<string, StoredEpoch>;
   keyreqAnsweredAt: Record<string, number>;
   keyreqSentAt: Record<string, number>;
@@ -147,7 +185,7 @@ export type GroupSessionsState = {
 };
 
 export function newGroupSessionsState(): GroupSessionsState {
-  return { v: 2, epochs: {}, keyreqAnsweredAt: {}, keyreqSentAt: {}, held: [] };
+  return { v: 3, epochs: {}, keyreqAnsweredAt: {}, keyreqSentAt: {}, held: [] };
 }
 
 /** The epoch held for `channel`, if any. */
@@ -165,37 +203,79 @@ export function rotationDue(state: GroupSessionsState, channel: string, now: num
   return now - held.createdAt >= GROUP_ROTATION_INTERVAL_MS;
 }
 
-/** Whether `channel`'s epoch holder set names someone no longer in `roster`: the audit input (§4f). */
+/**
+ * Whether `channel`'s epoch holder set names a did no longer in the
+ * roster: the audit input (§4f). A holder did counts as still a member
+ * when a roster device list names it, or when the epoch's nick mapping
+ * attributes it to a nick still on the roster — the mapping is what
+ * settles a member this cic has not chatted with, whose dids its engine
+ * does not know yet. Otherwise the epoch is stale: the did belongs to
+ * nobody in the channel, or to a member the key was sent to whose dids
+ * never landed and who is no longer on the roster — either way the epoch
+ * rotates (fail closed: a missed departure is a leak, a spurious
+ * rotation is one new epoch). A rename whose new nick's list has not
+ * landed yet rotates once, until the list lands and the did check
+ * settles it; a rename whose list is known rotates nothing.
+ */
+export function holdersStale(
+  holders: string[],
+  holderNicks: Record<string, string[]>,
+  sentTo: string[],
+  roster: RosterDids,
+): boolean {
+  const rosterNicks = new Set(roster.nicks.map((n) => fold(n)));
+  if (sentTo.some((nick) => !rosterNicks.has(fold(nick)))) return true;
+  const present = new Set(roster.dids);
+  for (const holder of holders) {
+    if (present.has(holder)) continue;
+    const attributed = roster.nicks.some((nick) =>
+      (holderNicks[fold(nick)] ?? []).includes(holder),
+    );
+    if (!attributed) return true;
+  }
+  return false;
+}
+
+/** Whether `channel`'s stored epoch is stale against `roster` (`holdersStale`). */
 export function epochHoldersStale(
   state: GroupSessionsState,
   channel: string,
-  roster: string[],
+  roster: RosterDids,
 ): boolean {
   const held = epochFor(state, channel);
   if (held === undefined) return false;
-  const present = new Set(roster.map((nick) => fold(nick)));
-  return held.holders.some((holder) => !present.has(holder));
+  return holdersStale(held.holders, holderNicksOf(held), sentToOf(held), roster);
 }
 
-/** Whether this device answered `asker`'s key request on `channel` recently: the throttle. */
+/** `epoch`'s nick mapping, defaulting a record sealed before it existed to empty. */
+export function holderNicksOf(epoch: StoredEpoch): Record<string, string[]> {
+  return epoch.holderNicks ?? {};
+}
+
+/** `epoch`'s sent-to nicks, defaulting a record sealed before it existed to empty. */
+export function sentToOf(epoch: StoredEpoch): string[] {
+  return epoch.sentTo ?? [];
+}
+
+/** Whether this device answered `askerDid`'s key request on `channel` recently: the throttle. */
 export function keyreqAnswerDue(
   state: GroupSessionsState,
   channel: string,
-  asker: string,
+  askerDid: string,
   now: number,
 ): boolean {
-  const at = state.keyreqAnsweredAt[`${fold(channel)}:${fold(asker)}`];
+  const at = state.keyreqAnsweredAt[`${fold(channel)}:${askerDid}`];
   return at === undefined || now - at >= KEYREQ_ANSWER_THROTTLE_MS;
 }
 
-/** Records that this device answered `asker`'s key request on `channel` now. */
+/** Records that this device answered `askerDid`'s key request on `channel` now. */
 export function markKeyreqAnswered(
   state: GroupSessionsState,
   channel: string,
-  asker: string,
+  askerDid: string,
   now: number,
 ): void {
-  state.keyreqAnsweredAt[`${fold(channel)}:${fold(asker)}`] = now;
+  state.keyreqAnsweredAt[`${fold(channel)}:${askerDid}`] = now;
 }
 
 /**
@@ -283,14 +363,19 @@ function storeEpoch(state: GroupSessionsState, channel: string, epoch: StoredEpo
 
 /**
  * Creates `channel`'s epoch: a new key, this device its owner. `holders`
- * is the roster the key goes to, folded on store. The caller distributes
- * its key (`gkeyInner`) before anyone can read a message under it.
+ * is the dids the key goes to, stored as given — the caller resolves the
+ * roster to dids and includes this device's did. `extra` carries the
+ * nick mapping for those dids (`holderNicks`) and the nicks the key was
+ * DM'd to whose dids were unknown (`sentTo`): both travel in the gkey
+ * inner, so every holder learns them. The caller distributes its key
+ * (`gkeyInner`) before anyone can read a message under it.
  */
 export function createEpoch(
   state: GroupSessionsState,
   channel: string,
   holders: string[],
   now: number,
+  extra?: { holderNicks?: Record<string, string[]>; sentTo?: string[] },
 ): StoredEpoch {
   return storeEpoch(state, channel, {
     sid: newEpochId(),
@@ -298,7 +383,9 @@ export function createEpoch(
     createdAt: now,
     messages: 0,
     counter: 0,
-    holders: holders.map((nick) => fold(nick)),
+    holders: [...holders],
+    holderNicks: { ...(extra?.holderNicks ?? {}) },
+    sentTo: [...(extra?.sentTo ?? [])],
     receivedAt: now,
     receivedFrom: null,
     seen: {},
@@ -342,7 +429,9 @@ export function importEpoch(
     createdAt: now,
     messages: 0,
     counter: 0,
-    holders: gkey.holders.map((nick) => fold(nick)),
+    holders: [...gkey.holders],
+    holderNicks: { ...(gkey.holderNicks ?? {}) },
+    sentTo: [...(gkey.sentTo ?? [])],
     receivedAt: now,
     receivedFrom: fromDid,
     seen: {},
@@ -355,13 +444,25 @@ export function importEpoch(
 /**
  * The gkey inner for `channel`'s current epoch, to send to a member's DM:
  * `{"t":"gkey","ch":"#chan","sid":"...","key":"...","holders":["..."]}`
- * (§4f). Undefined when no epoch exists: create one first
+ * (§4f), with the nick mapping and the sent-to nicks when either is
+ * non-empty. Undefined when no epoch exists: create one first
  * (`createEpoch`).
  */
 export function gkeyInner(state: GroupSessionsState, channel: string): GkeyInner | undefined {
   const held = epochFor(state, channel);
   if (held === undefined) return undefined;
-  return { t: "gkey", ch: fold(channel), sid: held.sid, key: held.key, holders: [...held.holders] };
+  const inner: GkeyInner = {
+    t: "gkey",
+    ch: fold(channel),
+    sid: held.sid,
+    key: held.key,
+    holders: [...held.holders],
+  };
+  const byNick = holderNicksOf(held);
+  if (Object.keys(byNick).length > 0) inner.holderNicks = { ...byNick };
+  const sentTo = sentToOf(held);
+  if (sentTo.length > 0) inner.sentTo = [...sentTo];
+  return inner;
 }
 
 /** The key-request envelope for `channel`: `{"v":4,"t":"keyreq","ch":"#chan"}` (§4f). */
@@ -505,7 +606,8 @@ export async function decryptChannel(
     }
     noteCounter(held, senderDid, rotated.c);
     // The new epoch, under the old one's holders: membership did not
-    // change on a periodic rotation, so the holder set carries over.
+    // change on a periodic rotation, so the holder set — and its nick
+    // mapping and sent-to nicks — carry over.
     storeEpoch(state, channel, {
       sid: rotated.sid,
       key: rotated.key,
@@ -513,6 +615,8 @@ export async function decryptChannel(
       messages: 0,
       counter: 0,
       holders: [...held.holders],
+      holderNicks: { ...holderNicksOf(held) },
+      sentTo: [...sentToOf(held)],
       receivedAt: now,
       receivedFrom: senderDid,
       seen: {},
@@ -546,10 +650,11 @@ export function rotateEpochForLeave(
   channel: string,
   holders: string[],
   now: number,
+  extra?: { holderNicks?: Record<string, string[]>; sentTo?: string[] },
 ): { oldSid: string | null; newSid: string; key: string } {
   const oldSid = epochFor(state, channel)?.sid ?? null;
   dropEpoch(state, channel);
-  const created = createEpoch(state, channel, holders, now);
+  const created = createEpoch(state, channel, holders, now, extra);
   return { oldSid, newSid: created.sid, key: created.key };
 }
 
@@ -594,6 +699,8 @@ export async function buildPeriodicRotation(
     messages: 0,
     counter: 0,
     holders: [...held.holders],
+    holderNicks: { ...holderNicksOf(held) },
+    sentTo: [...sentToOf(held)],
     receivedAt: now,
     receivedFrom: null,
     seen: {},

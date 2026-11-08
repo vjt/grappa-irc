@@ -670,7 +670,8 @@ export function e2eClient(
   // channel message is signed with this device's Ed25519 key and verified
   // against the sender's pinned device key for the did grappa attests
   // (`fromDid`). The roster comes from the context when the caller holds
-  // one (`encryptedChats.ts` reads it off the members store).
+  // one (`encryptedChats.ts` reads it off the members store), and its
+  // dids from the engine's pinned device lists.
   function channelDeps(ctx: E2eContext, engine: Engine, account: Account): ChannelE2eDeps {
     return {
       ownNick: ctx.ownNick,
@@ -685,6 +686,8 @@ export function e2eClient(
         return olm.verify_ed25519(key, text, sig);
       },
       rosterFor: ctx.channelMembers,
+      didsFor: (nick) =>
+        fold(nick) === fold(ctx.ownNick) ? engine.ownDids() : engine.deviceDids(nick),
       sendDm: (nick, inner) => engine.send(nick, inner, GKEY_TAG, null, null).outbound,
     };
   }
