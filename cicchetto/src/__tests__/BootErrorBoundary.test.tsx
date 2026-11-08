@@ -329,7 +329,7 @@ describe("BootErrorBoundary reload — purge needs proof the server answers", ()
   });
 
   it("purges on an ApiError while online — a status came back, so the link is real", async () => {
-    const { ApiError } = await import("../lib/api");
+    const { ApiError } = await import("../lib/apiError");
     const { __setConnectivityForTests } = await import("../lib/connectivity");
     __setConnectivityForTests(true);
 
@@ -350,7 +350,7 @@ describe("BootErrorBoundary reload — purge needs proof the server answers", ()
   // since dropped. `navigator.onLine === false` is the one direction that IS
   // conclusive.
   it("does NOT purge on an ApiError once the device reports offline", async () => {
-    const { ApiError } = await import("../lib/api");
+    const { ApiError } = await import("../lib/apiError");
     const { __setConnectivityForTests } = await import("../lib/connectivity");
     __setConnectivityForTests(false);
 

@@ -6,22 +6,13 @@ import type { SlashCommand } from "../lib/slashCommands";
 import { LIST_WINDOW_NAME, SERVER_WINDOW_NAME } from "../lib/windowKinds";
 import { BLANK_BODY_ERROR, serverAcceptsBody } from "./serverBodyPredicate";
 
-vi.mock("../lib/api", () => {
-  class ApiError extends Error {
-    readonly status: number;
-    readonly code: string;
-    // #666 — the resumable fan-out reads `info.retry_after` off a 429 to pace
-    // the residue, so the stub MUST mirror the real class's `info` field (see
-    // api.ts ApiError) or `e.info` is undefined and the pacing throws.
-    readonly info: Record<string, unknown>;
-    constructor(status: number, code: string, info: Record<string, unknown> = {}) {
-      super(`${status} ${code}`);
-      this.name = "ApiError";
-      this.status = status;
-      this.code = code;
-      this.info = info;
-    }
-  }
+vi.mock("../lib/api", async () => {
+  // #2409 — the REAL class, not a stub with the same shape. The code under
+  // test (`sendPipeline`, `friendlyApiError`) narrows with
+  // `err instanceof ApiError` against the class it imports from
+  // `lib/apiError.ts`, so a lookalike defined here would fail every one of
+  // those arms. This is the whole reason the class moved out of `api.ts`.
+  const { ApiError } = await import("../lib/apiError");
   // compose.ts's catch does `e instanceof ChannelPushError` (#62) — the
   // mock MUST export the class or that reference is `undefined` and the
   // instanceof throws for EVERY non-ApiError rejection. Mirror the real
