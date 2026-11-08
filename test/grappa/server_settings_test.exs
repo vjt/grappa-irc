@@ -429,6 +429,59 @@ defmodule Grappa.ServerSettingsTest do
     end
   end
 
+  describe "put_many/1 (issue 2609)" do
+    setup do
+      Phoenix.PubSub.subscribe(Grappa.PubSub, ServerSettings.topic())
+      :ok
+    end
+
+    test "commits every write and broadcasts ONCE, carrying all of them" do
+      :ok =
+        ServerSettings.put_many([
+          {:upload_global_cap_bytes, 123_456},
+          {:upload_per_file_cap_bytes, :video, 7_777_777},
+          {:dcc_max_transfer_bytes, 654_321},
+          {:auto_away_default_seconds, 60}
+        ])
+
+      assert ServerSettings.get_upload_global_cap_bytes() == 123_456
+      assert ServerSettings.get_upload_per_file_cap_bytes(:video) == 7_777_777
+      assert ServerSettings.get_dcc_max_transfer_bytes() == 654_321
+      assert ServerSettings.get_auto_away_default_seconds() == 60
+
+      assert_receive %Phoenix.Socket.Broadcast{
+        event: "event",
+        payload: %{
+          kind: :server_settings_changed,
+          upload: %{global_cap_bytes: 123_456, video_per_file_cap_bytes: 7_777_777},
+          auto_away: %{default_debounce_seconds: 60}
+        }
+      }
+
+      refute_receive %Phoenix.Socket.Broadcast{event: "event"}, 50
+    end
+
+    test "one refused write refuses the WHOLE list before anything is written" do
+      before = {ServerSettings.get_upload_global_cap_bytes(), ServerSettings.get_dcc_max_transfer_bytes()}
+
+      assert {:error, :invalid_value} =
+               ServerSettings.put_many([
+                 {:upload_global_cap_bytes, 123_456},
+                 {:dcc_max_transfer_bytes, 0}
+               ])
+
+      assert {ServerSettings.get_upload_global_cap_bytes(), ServerSettings.get_dcc_max_transfer_bytes()} ==
+               before
+
+      refute_receive %Phoenix.Socket.Broadcast{event: "event"}, 50
+    end
+
+    test "an empty list writes nothing and broadcasts nothing" do
+      assert :ok = ServerSettings.put_many([])
+      refute_receive %Phoenix.Socket.Broadcast{event: "event"}, 50
+    end
+  end
+
   describe "topic/0" do
     test "returns the canonical PubSub topic enumerated by Topic.parse/1" do
       topic = ServerSettings.topic()
