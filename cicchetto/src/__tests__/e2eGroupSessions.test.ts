@@ -1,329 +1,547 @@
-// Channel E2E (wire v3) — the group session store and the v3/gkey wire
-// shapes, against the fake Megolm adapter (`helpers/e2eMegolmFake.ts`).
-// No wasm runs here: the fake models the adapter contract, and these
-// tests prove the store's rules (create/rotate/delete, supersede,
-// persistence round-trip) and the payload shapes, not vodozemac.
+// Channel E2E (wire v4) — the epoch store: one AES-256-GCM key per
+// channel epoch, shared by every member, with the per-sender counter
+// inside the signed, encrypted part. Signing and verification use
+// node:crypto Ed25519 test keys: no wasm, no network, no real timers.
+import { generateKeyPairSync, type KeyObject, sign, verify } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { encryptEpoch, newEpochId, newEpochKey } from "../lib/e2e/channelCrypto";
 import {
   buildPeriodicRotation,
-  createOutbound,
+  type ChannelSigner,
+  type ChannelVerifier,
+  createEpoch,
   decryptChannel,
-  deleteOutbound,
   dropChannel,
-  dropInboundFrom,
+  dropEpoch,
   encryptChannel,
-  exportOutboundKey,
+  epochFor,
+  epochHoldersStale,
   GROUP_ROTATION_INTERVAL_MS,
   type GroupSessionsState,
   gkeyInner,
-  importInbound,
-  inboundFor,
+  importEpoch,
+  KEYREQ_ANSWER_THROTTLE_MS,
+  keyreqAnswerDue,
+  keyreqPayload,
+  markKeyreqAnswered,
   newGroupSessionsState,
-  outboundFor,
-  rotateOutboundForLeave,
+  REPLAY_WINDOW,
+  rotateEpochForLeave,
   rotationDue,
 } from "../lib/e2e/groupSessions";
-import type { MegolmAdapter } from "../lib/e2e/megolm";
 import {
+  channelSigText,
   decodePayload,
   encodePayload,
+  fold,
   GROUP_WIRE_VERSION,
   PayloadError,
+  parseChannelKeyreqPayload,
   parseChannelPayload,
   parseGkeyInner,
 } from "../lib/e2e/wire";
-import { fakeMegolmAdapter } from "./helpers/e2eMegolmFake";
 
 const CHAN = "#grappa";
 const NOW = 1_000_000;
+const DAY = GROUP_ROTATION_INTERVAL_MS;
 
-/** Two devices: Alice sends, Bob receives. Each holds its own adapter (its own epochs). */
-function pair(): { alice: MegolmAdapter; bob: MegolmAdapter } {
-  return { alice: fakeMegolmAdapter(), bob: fakeMegolmAdapter() };
+type TestKey = { did: string; privateKey: KeyObject; publicKey: KeyObject };
+
+/** One Ed25519 device key per nick, with a fixed did each. */
+function makeKeys(nicks: string[]): Map<string, TestKey> {
+  const ring = new Map<string, TestKey>();
+  for (const nick of nicks) {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    ring.set(fold(nick), { did: `did-${fold(nick)}`, privateKey, publicKey });
+  }
+  return ring;
 }
 
-/** Alice's current epoch key, as Bob would receive it in a gkey. */
-function aliceKey(
-  aliceGroups: GroupSessionsState,
-  alice: MegolmAdapter,
-): { sid: string; key: string } {
-  const exported = exportOutboundKey(aliceGroups, alice, CHAN);
-  if (exported === undefined) throw new Error("alice has no epoch");
-  return exported;
+function didFor(ring: Map<string, TestKey>, nick: string): string {
+  const key = ring.get(fold(nick));
+  if (key === undefined) throw new Error(`no key for ${nick}`);
+  return key.did;
+}
+
+function signer(ring: Map<string, TestKey>, ownNick: string): ChannelSigner {
+  return (text) => {
+    const key = ring.get(fold(ownNick));
+    if (key === undefined) throw new Error(`no key for ${ownNick}`);
+    return sign(null, Buffer.from(text, "utf8"), key.privateKey)
+      .toString("base64")
+      .replace(/=+$/, "");
+  };
+}
+
+function verifier(ring: Map<string, TestKey>): ChannelVerifier {
+  return (nick, did, text, sig) => {
+    const key = ring.get(fold(nick));
+    if (key === undefined || key.did !== did) return false;
+    try {
+      return verify(null, Buffer.from(text, "utf8"), key.publicKey, Buffer.from(sig, "base64"));
+    } catch {
+      return false;
+    }
+  };
+}
+
+/** `s` with the character at `i` swapped for a different base64 character. */
+function flipChar(s: string, i: number): string {
+  const at = s[i];
+  if (at === undefined) throw new Error("flipChar past the end");
+  return `${s.slice(0, i)}${at === "A" ? "B" : "A"}${s.slice(i + 1)}`;
+}
+
+/** Alice's epoch, as Bob would receive it in a gkey DM. */
+function aliceGkey(aliceGroups: GroupSessionsState) {
+  const inner = gkeyInner(aliceGroups, CHAN);
+  if (inner === undefined) throw new Error("alice has no epoch");
+  return inner;
 }
 
 /** Bob imports Alice's epoch key. */
-function bobImports(
-  bobGroups: GroupSessionsState,
-  bob: MegolmAdapter,
-  sid: string,
-  key: string,
-): void {
-  expect(importInbound(bobGroups, bob, CHAN, "alice", sid, key, NOW)).toBe("imported");
+function bobImports(bobGroups: GroupSessionsState, aliceGroups: GroupSessionsState, now: number) {
+  expect(importEpoch(bobGroups, CHAN, aliceGkey(aliceGroups), didFor(RING, "alice"), now)).toBe(
+    "imported",
+  );
 }
 
-describe("wire v3 shapes", () => {
-  it("parses the §4f channel payload, and refuses a wrong version, a missing field, or a negative index", () => {
-    const payload = { v: 3, ch: "#grappa", sid: "sid-1", i: 0, body: "Y2lwaGVy" };
-    expect(parseChannelPayload(payload)).toEqual(payload);
-    expect(() => parseChannelPayload({ ...payload, v: 2 })).toThrow(PayloadError);
-    expect(() => parseChannelPayload({ ...payload, i: -1 })).toThrow(PayloadError);
-    expect(() => parseChannelPayload({ ...payload, i: 1.5 })).toThrow(PayloadError);
-    expect(() => parseChannelPayload({ v: 3, ch: "#grappa", sid: "sid-1", i: 0 })).toThrow(
-      PayloadError,
-    );
-    expect(() => parseChannelPayload({ ...payload, body: "" })).toThrow(PayloadError);
+const RING = makeKeys(["alice", "bob", "carol"]);
+const signAlice = signer(RING, "alice");
+const verifyAll = verifier(RING);
+const ALICE_DID = didFor(RING, "alice");
+
+describe("state and constants", () => {
+  it("starts empty at version 2, with the documented constants", () => {
+    expect(newGroupSessionsState()).toEqual({ v: 2, epochs: {}, keyreqAnsweredAt: {} });
+    expect(newGroupSessionsState().v).toBe(2);
+    expect(GROUP_ROTATION_INTERVAL_MS).toBe(86_400_000);
+    expect(REPLAY_WINDOW).toBe(128);
+    expect(KEYREQ_ANSWER_THROTTLE_MS).toBe(60_000);
   });
 
-  it("encodes a channel payload as compact JSON with version 3", () => {
-    const text = encodePayload({ v: GROUP_WIRE_VERSION, ch: CHAN, sid: "s", i: 2, body: "eQ" });
-    expect(text).toBe('{"v":3,"ch":"#grappa","sid":"s","i":2,"body":"eQ"}');
-    expect(parseChannelPayload(decodePayload(text)).i).toBe(2);
-  });
-
-  it("parses a gkey inner, and refuses one naming another type or missing a field", () => {
-    const inner = { t: "gkey", ch: "#grappa", sid: "sid-1", key: "a2V5" };
-    expect(parseGkeyInner(inner)).toEqual(inner);
-    expect(() => parseGkeyInner({ ...inner, t: "text" })).toThrow(PayloadError);
-    expect(() => parseGkeyInner({ t: "gkey", ch: "#grappa", sid: "sid-1" })).toThrow(PayloadError);
-    expect(() => parseGkeyInner({ ...inner, key: "" })).toThrow(PayloadError);
-  });
-});
-
-describe("group session store", () => {
-  it("creates an outbound epoch, encrypts under it with rising chain indices, and deletes it", () => {
+  it("creates an epoch with folded holders, found under any case of the channel", () => {
     const groups = newGroupSessionsState();
-    const adapter = fakeMegolmAdapter();
-    expect(outboundFor(groups, CHAN)).toBeUndefined();
-    const created = createOutbound(groups, adapter, CHAN, NOW);
-    expect(created.sid).toMatch(/^fake-sid-/);
+    expect(epochFor(groups, CHAN)).toBeUndefined();
+    const created = createEpoch(groups, "#Grappa", ["Alice", "BOB"], NOW);
+    expect(created.holders).toEqual(["alice", "bob"]);
+    expect(created.createdAt).toBe(NOW);
     expect(created.messages).toBe(0);
-    const first = encryptChannel(groups, adapter, CHAN, "hello", NOW);
-    const second = encryptChannel(groups, adapter, CHAN, "again", NOW);
-    expect(first.index).toBe(0);
-    expect(second.index).toBe(1);
-    expect(first.sid).toBe(created.sid);
-    expect(outboundFor(groups, CHAN)?.messages).toBe(2);
-    deleteOutbound(groups, CHAN);
-    expect(outboundFor(groups, CHAN)).toBeUndefined();
-  });
-
-  it("round-trips through JSON: a sealed record reloaded keeps the epoch and its chain index", () => {
-    const groups = newGroupSessionsState();
-    const adapter = fakeMegolmAdapter();
-    encryptChannel(groups, adapter, CHAN, "one", NOW);
-    encryptChannel(groups, adapter, CHAN, "two", NOW);
-    const sid = outboundFor(groups, CHAN)?.sid;
-    const reloaded = JSON.parse(JSON.stringify(groups)) as GroupSessionsState;
-    expect(outboundFor(reloaded, CHAN)?.sid).toBe(sid);
-    const third = encryptChannel(reloaded, adapter, CHAN, "three", NOW);
-    expect(third.index).toBe(2);
-    expect(third.sid).toBe(sid);
-  });
-
-  it("encrypts for Alice and decrypts for Bob once Bob holds her epoch key", () => {
-    const { alice, bob } = pair();
-    const aliceGroups = newGroupSessionsState();
-    const bobGroups = newGroupSessionsState();
-    const sent = encryptChannel(aliceGroups, alice, CHAN, "hello bob", NOW);
-    const { sid, key } = aliceKey(aliceGroups, alice);
-    expect(sent.sid).toBe(sid);
-    bobImports(bobGroups, bob, sid, key);
-    const read = decryptChannel(bobGroups, bob, CHAN, "alice", sent.payload, NOW);
-    expect(read).toEqual({ ok: true, kind: "text", sid, index: 0, body: "hello bob" });
-  });
-
-  it("refuses a channel message with no session, a tampered body, a replay, or another channel's name", () => {
-    const { alice, bob } = pair();
-    const aliceGroups = newGroupSessionsState();
-    const bobGroups = newGroupSessionsState();
-    const sent = encryptChannel(aliceGroups, alice, CHAN, "hello", NOW);
-    // No session at all.
-    expect(decryptChannel(bobGroups, bob, CHAN, "alice", sent.payload, NOW)).toEqual({
-      ok: false,
-      reason: "no-session",
-      sid: sent.sid,
-    });
-    const { sid, key } = aliceKey(aliceGroups, alice);
-    bobImports(bobGroups, bob, sid, key);
-    // Tampered body: the fake ciphertext no longer parses.
-    const tampered = encodePayload({ ...decodePayload(sent.payload), body: "!!!not-base64!!!" });
-    expect(decryptChannel(bobGroups, bob, CHAN, "alice", tampered, NOW)).toEqual({
-      ok: false,
-      reason: "decryption-failed",
-      sid,
-    });
-    // A replay of the same chain index: the store already read it.
-    expect(decryptChannel(bobGroups, bob, CHAN, "alice", sent.payload, NOW)).toEqual({
-      ok: true,
-      kind: "text",
-      sid,
-      index: 0,
-      body: "hello",
-    });
-    expect(decryptChannel(bobGroups, bob, CHAN, "alice", sent.payload, NOW)).toEqual({
-      ok: false,
-      reason: "replay",
-      sid,
-    });
-    // Another channel's name in the envelope: the inbox channel rules.
-    const other = encryptChannel(aliceGroups, alice, "#other", "hi", NOW);
-    expect(decryptChannel(bobGroups, bob, CHAN, "alice", other.payload, NOW)).toEqual({
-      ok: false,
-      reason: "channel-mismatch",
-      sid: other.sid,
-    });
-    // Garbage that is not a payload at all.
-    expect(decryptChannel(bobGroups, bob, CHAN, "alice", "not json", NOW)).toEqual({
-      ok: false,
-      reason: "bad-payload",
-      sid: null,
-    });
-  });
-
-  it("imports a gkey once: a re-sent key is a no-op, a key for another sid is refused", () => {
-    const { alice, bob } = pair();
-    const aliceGroups = newGroupSessionsState();
-    const bobGroups = newGroupSessionsState();
-    encryptChannel(aliceGroups, alice, CHAN, "hi", NOW);
-    const { sid, key } = aliceKey(aliceGroups, alice);
-    expect(importInbound(bobGroups, bob, CHAN, "alice", sid, key, NOW)).toBe("imported");
-    expect(importInbound(bobGroups, bob, CHAN, "alice", sid, key, NOW)).toBe("already-held");
-    expect(() => importInbound(bobGroups, bob, CHAN, "alice", "another-sid", key, NOW)).toThrow(
-      /opened/,
-    );
-    // A key Megolm refuses, for a session id nothing holds yet: refused, never stored.
-    expect(() =>
-      importInbound(bobGroups, bob, CHAN, "alice", "third-sid", "not-a-key", NOW),
-    ).toThrow();
-    expect(inboundFor(bobGroups, CHAN, "alice", "third-sid")).toBeUndefined();
-  });
-
-  it("supersedes: a sender's new epoch drops their old inbound session", () => {
-    const { alice, bob } = pair();
-    const aliceGroups = newGroupSessionsState();
-    const bobGroups = newGroupSessionsState();
-    encryptChannel(aliceGroups, alice, CHAN, "epoch one", NOW);
-    const first = aliceKey(aliceGroups, alice);
-    bobImports(bobGroups, bob, first.sid, first.key);
-    expect(inboundFor(bobGroups, CHAN, "alice", first.sid)).toBeDefined();
-    // Alice rotates (a member left) and Bob imports the new key.
-    rotateOutboundForLeave(aliceGroups, alice, CHAN, NOW);
-    const second = aliceKey(aliceGroups, alice);
-    expect(second.sid).not.toBe(first.sid);
-    bobImports(bobGroups, bob, second.sid, second.key);
-    expect(inboundFor(bobGroups, CHAN, "alice", first.sid)).toBeUndefined();
-    expect(inboundFor(bobGroups, CHAN, "alice", second.sid)).toBeDefined();
-  });
-
-  it("drops a departed sender's inbound sessions, and everything on our own leave", () => {
-    const { alice, bob } = pair();
-    const aliceGroups = newGroupSessionsState();
-    const bobGroups = newGroupSessionsState();
-    encryptChannel(aliceGroups, alice, CHAN, "hi", NOW);
-    const { sid, key } = aliceKey(aliceGroups, alice);
-    bobImports(bobGroups, bob, sid, key);
-    dropInboundFrom(bobGroups, CHAN, "alice");
-    expect(inboundFor(bobGroups, CHAN, "alice", sid)).toBeUndefined();
-    bobImports(bobGroups, bob, sid, key);
-    dropChannel(bobGroups, CHAN);
-    expect(inboundFor(bobGroups, CHAN, "alice", sid)).toBeUndefined();
-    expect(outboundFor(bobGroups, CHAN)).toBeUndefined();
-  });
-
-  it("rotating on a leave deletes the old outbound and mints a new epoch", () => {
-    const groups = newGroupSessionsState();
-    const adapter = fakeMegolmAdapter();
-    encryptChannel(groups, adapter, CHAN, "before", NOW);
-    const oldSid = outboundFor(groups, CHAN)?.sid;
-    const rotated = rotateOutboundForLeave(groups, adapter, CHAN, NOW);
-    expect(rotated.oldSid).toBe(oldSid);
-    expect(rotated.newSid).not.toBe(oldSid);
-    expect(outboundFor(groups, CHAN)?.sid).toBe(rotated.newSid);
-    expect(outboundFor(groups, CHAN)?.messages).toBe(0);
-    // The new key opens the new epoch for a peer.
-    const bobGroups = newGroupSessionsState();
-    const bob = fakeMegolmAdapter();
-    expect(importInbound(bobGroups, bob, CHAN, "alice", rotated.newSid, rotated.key, NOW)).toBe(
-      "imported",
-    );
+    expect(created.counter).toBe(0);
+    expect(created.receivedFrom).toBeNull();
+    expect(created.seen).toEqual({});
+    expect(epochFor(groups, CHAN)).toBe(created);
+    expect(epochFor(groups, "#GRAPPA")).toBe(created);
   });
 
   it("builds the gkey inner for the current epoch, and none without one", () => {
     const groups = newGroupSessionsState();
-    const adapter = fakeMegolmAdapter();
-    expect(gkeyInner(groups, adapter, CHAN)).toBeUndefined();
-    const created = createOutbound(groups, adapter, CHAN, NOW);
-    const inner = gkeyInner(groups, adapter, CHAN);
-    expect(inner?.t).toBe("gkey");
-    expect(inner?.ch).toBe("#grappa");
-    expect(inner?.sid).toBe(created.sid);
-    expect(typeof inner?.key).toBe("string");
+    expect(gkeyInner(groups, CHAN)).toBeUndefined();
+    const created = createEpoch(groups, CHAN, ["alice", "bob"], NOW);
+    const inner = gkeyInner(groups, CHAN);
+    expect(inner).toEqual({
+      t: "gkey",
+      ch: "#grappa",
+      sid: created.sid,
+      key: created.key,
+      holders: ["alice", "bob"],
+    });
+    // A gkey names its holders, and the wire refuses one with none.
+    expect(inner?.holders.length).toBeGreaterThan(0);
+    expect(() =>
+      parseGkeyInner({ t: "gkey", ch: CHAN, sid: "sid-1", key: newEpochKey(), holders: [] }),
+    ).toThrow(PayloadError);
+  });
+
+  it("builds a key-request envelope the wire parses", () => {
+    const payload = keyreqPayload(CHAN);
+    expect(parseChannelKeyreqPayload(decodePayload(payload))).toEqual({
+      v: GROUP_WIRE_VERSION,
+      t: "keyreq",
+      ch: "#grappa",
+    });
+    expect(GROUP_WIRE_VERSION).toBe(4);
   });
 });
 
-describe("periodic rotation", () => {
-  it("is not due for a fresh epoch, nor for one that never spoke, and is due after a day", () => {
-    const groups = newGroupSessionsState();
-    const adapter = fakeMegolmAdapter();
-    expect(rotationDue(groups, CHAN, NOW)).toBe(false);
-    createOutbound(groups, adapter, CHAN, NOW);
-    expect(rotationDue(groups, CHAN, NOW + GROUP_ROTATION_INTERVAL_MS)).toBe(false);
-    encryptChannel(groups, adapter, CHAN, "spoke", NOW);
-    expect(rotationDue(groups, CHAN, NOW + GROUP_ROTATION_INTERVAL_MS - 1)).toBe(false);
-    expect(rotationDue(groups, CHAN, NOW + GROUP_ROTATION_INTERVAL_MS)).toBe(true);
-  });
-
-  it("sends one channel message under the old epoch, and the reader rotates onto the new one", () => {
-    const { alice, bob } = pair();
+describe("encryptChannel / decryptChannel", () => {
+  it("round-trips with counter 0 then 1, and reports when it created the epoch", async () => {
     const aliceGroups = newGroupSessionsState();
     const bobGroups = newGroupSessionsState();
-    encryptChannel(aliceGroups, alice, CHAN, "day one", NOW);
-    const { sid: oldSid, key } = aliceKey(aliceGroups, alice);
-    bobImports(bobGroups, bob, oldSid, key);
-    const later = NOW + GROUP_ROTATION_INTERVAL_MS;
-    const rotated = buildPeriodicRotation(aliceGroups, alice, CHAN, later);
+    const first = await encryptChannel(
+      aliceGroups,
+      CHAN,
+      "hello",
+      ["alice", "bob"],
+      signAlice,
+      NOW,
+    );
+    expect(first.created).toBe(true);
+    expect(first.counter).toBe(0);
+    const second = await encryptChannel(
+      aliceGroups,
+      CHAN,
+      "again",
+      ["alice", "bob"],
+      signAlice,
+      NOW,
+    );
+    expect(second.created).toBe(false);
+    expect(second.counter).toBe(1);
+    expect(second.sid).toBe(first.sid);
+    expect(epochFor(aliceGroups, CHAN)?.messages).toBe(2);
+
+    bobImports(bobGroups, aliceGroups, NOW);
+    expect(
+      await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, first.payload, verifyAll, NOW),
+    ).toEqual({ ok: true, kind: "text", sid: first.sid, counter: 0, body: "hello" });
+    expect(
+      await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, second.payload, verifyAll, NOW),
+    ).toEqual({ ok: true, kind: "text", sid: first.sid, counter: 1, body: "again" });
+  });
+
+  it("refuses a replay of the same payload", async () => {
+    const aliceGroups = newGroupSessionsState();
+    const bobGroups = newGroupSessionsState();
+    const sent = await encryptChannel(aliceGroups, CHAN, "hello", ["alice", "bob"], signAlice, NOW);
+    bobImports(bobGroups, aliceGroups, NOW);
+    expect(
+      await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, sent.payload, verifyAll, NOW),
+    ).toEqual({ ok: true, kind: "text", sid: sent.sid, counter: 0, body: "hello" });
+    expect(
+      await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, sent.payload, verifyAll, NOW),
+    ).toEqual({ ok: false, reason: "replay", sid: sent.sid });
+  });
+
+  it("accepts out-of-order messages inside the window, and refuses a replayed old counter", async () => {
+    const aliceGroups = newGroupSessionsState();
+    const bobGroups = newGroupSessionsState();
+    const sent = [];
+    for (const body of ["zero", "one", "two"]) {
+      sent.push(await encryptChannel(aliceGroups, CHAN, body, ["alice", "bob"], signAlice, NOW));
+    }
+    bobImports(bobGroups, aliceGroups, NOW);
+    const read = (payload: string) =>
+      decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, payload, verifyAll, NOW);
+    // Delivered 2, 0, 1: all new, all accepted.
+    expect(await read(sent[2]?.payload ?? "")).toEqual({
+      ok: true,
+      kind: "text",
+      sid: sent[2]?.sid,
+      counter: 2,
+      body: "two",
+    });
+    expect(await read(sent[0]?.payload ?? "")).toEqual({
+      ok: true,
+      kind: "text",
+      sid: sent[0]?.sid,
+      counter: 0,
+      body: "zero",
+    });
+    expect(await read(sent[1]?.payload ?? "")).toEqual({
+      ok: true,
+      kind: "text",
+      sid: sent[1]?.sid,
+      counter: 1,
+      body: "one",
+    });
+    // Each of them a second time is a replay now.
+    expect(await read(sent[0]?.payload ?? "")).toEqual({
+      ok: false,
+      reason: "replay",
+      sid: sent[0]?.sid,
+    });
+    expect(await read(sent[2]?.payload ?? "")).toEqual({
+      ok: false,
+      reason: "replay",
+      sid: sent[2]?.sid,
+    });
+  });
+
+  it("refuses a message with no session, a wrong epoch, a bad signature, or a bad payload", async () => {
+    const aliceGroups = newGroupSessionsState();
+    const bobGroups = newGroupSessionsState();
+    const sent = await encryptChannel(aliceGroups, CHAN, "hello", ["alice", "bob"], signAlice, NOW);
+    // No session at all.
+    expect(
+      await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, sent.payload, verifyAll, NOW),
+    ).toEqual({ ok: false, reason: "no-session", sid: sent.sid });
+    bobImports(bobGroups, aliceGroups, NOW);
+    // A signature that is not Alice's over this envelope.
+    const envelope = decodePayload(sent.payload);
+    const badSig = encodePayload({ ...envelope, sig: flipChar(String(envelope.sig), 0) });
+    expect(
+      await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, badSig, verifyAll, NOW),
+    ).toEqual({ ok: false, reason: "bad-signature", sid: sent.sid });
+    // The right signature, but for a device Bob has no key for.
+    expect(
+      await decryptChannel(bobGroups, CHAN, "alice", "did-unknown", sent.payload, verifyAll, NOW),
+    ).toEqual({ ok: false, reason: "bad-signature", sid: sent.sid });
+    // Another channel's name in the envelope: the inbox channel rules.
+    const other = await encryptChannel(
+      aliceGroups,
+      "#other",
+      "hi",
+      ["alice", "bob"],
+      signAlice,
+      NOW,
+    );
+    expect(
+      await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, other.payload, verifyAll, NOW),
+    ).toEqual({ ok: false, reason: "channel-mismatch", sid: other.sid });
+    // A payload under an epoch Bob no longer holds: Alice rotated away.
+    rotateEpochForLeave(aliceGroups, CHAN, ["alice", "bob"], NOW);
+    const after = await encryptChannel(
+      aliceGroups,
+      CHAN,
+      "new epoch",
+      ["alice", "bob"],
+      signAlice,
+      NOW,
+    );
+    expect(
+      await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, after.payload, verifyAll, NOW),
+    ).toEqual({ ok: false, reason: "no-session", sid: after.sid });
+    // Garbage that is not a payload at all.
+    expect(
+      await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, "not json", verifyAll, NOW),
+    ).toEqual({ ok: false, reason: "bad-payload", sid: null });
+  });
+
+  it("refuses a message whose ciphertext was tampered with under a valid signature", async () => {
+    const aliceGroups = newGroupSessionsState();
+    const bobGroups = newGroupSessionsState();
+    const sent = await encryptChannel(aliceGroups, CHAN, "hello", ["alice", "bob"], signAlice, NOW);
+    bobImports(bobGroups, aliceGroups, NOW);
+    const envelope = parseChannelPayload(decodePayload(sent.payload));
+    const tamperedBody = flipChar(envelope.body, 20);
+    const tampered = encodePayload({
+      ...envelope,
+      body: tamperedBody,
+      sig: signAlice(channelSigText(envelope.ch, envelope.sid, tamperedBody)),
+    });
+    expect(
+      await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, tampered, verifyAll, NOW),
+    ).toEqual({ ok: false, reason: "decryption-failed", sid: sent.sid });
+  });
+
+  it("refuses a message whose inner plaintext is neither text nor a rotation", async () => {
+    const aliceGroups = newGroupSessionsState();
+    const bobGroups = newGroupSessionsState();
+    await encryptChannel(aliceGroups, CHAN, "hello", ["alice", "bob"], signAlice, NOW);
+    bobImports(bobGroups, aliceGroups, NOW);
+    const held = epochFor(bobGroups, CHAN);
+    if (held === undefined) throw new Error("bob has no epoch");
+    const ciphertext = await encryptEpoch(
+      held.key,
+      new TextEncoder().encode(encodePayload({ t: "nope" })),
+    );
+    const payload = encodePayload({
+      v: GROUP_WIRE_VERSION,
+      t: "msg",
+      ch: CHAN,
+      sid: held.sid,
+      body: ciphertext,
+      sig: signAlice(channelSigText(CHAN, held.sid, ciphertext)),
+    });
+    expect(
+      await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, payload, verifyAll, NOW),
+    ).toEqual({ ok: false, reason: "bad-inner", sid: held.sid });
+  });
+});
+
+describe("importEpoch", () => {
+  it("imports once: a re-sent key is a no-op, a bad key throws and stores nothing", async () => {
+    const aliceGroups = newGroupSessionsState();
+    const bobGroups = newGroupSessionsState();
+    await encryptChannel(aliceGroups, CHAN, "hi", ["alice", "bob"], signAlice, NOW);
+    const gkey = aliceGkey(aliceGroups);
+    expect(importEpoch(bobGroups, CHAN, gkey, ALICE_DID, NOW)).toBe("imported");
+    expect(importEpoch(bobGroups, CHAN, gkey, ALICE_DID, NOW)).toBe("already-held");
+    expect(() =>
+      importEpoch(
+        bobGroups,
+        CHAN,
+        { ...gkey, sid: "another-sid", key: "not-a-key" },
+        ALICE_DID,
+        NOW,
+      ),
+    ).toThrow();
+    expect(epochFor(bobGroups, CHAN)?.sid).toBe(gkey.sid);
+    // A key of the wrong length for a fresh sid: refused, never stored.
+    const fresh = newGroupSessionsState();
+    expect(() =>
+      importEpoch(
+        fresh,
+        CHAN,
+        { t: "gkey", ch: CHAN, sid: newEpochId(), key: "not-a-key", holders: ["alice"] },
+        ALICE_DID,
+        NOW,
+      ),
+    ).toThrow();
+    expect(epochFor(fresh, CHAN)).toBeUndefined();
+  });
+
+  it("supersedes by arrival: a new epoch replaces the one held", async () => {
+    const aliceGroups = newGroupSessionsState();
+    const bobGroups = newGroupSessionsState();
+    await encryptChannel(aliceGroups, CHAN, "epoch one", ["alice", "bob"], signAlice, NOW);
+    const first = aliceGkey(aliceGroups);
+    bobImports(bobGroups, aliceGroups, NOW);
+    rotateEpochForLeave(aliceGroups, CHAN, ["alice", "bob"], NOW);
+    const second = aliceGkey(aliceGroups);
+    expect(second.sid).not.toBe(first.sid);
+    expect(importEpoch(bobGroups, CHAN, second, ALICE_DID, NOW)).toBe("imported");
+    expect(epochFor(bobGroups, CHAN)?.sid).toBe(second.sid);
+  });
+});
+
+describe("rotation", () => {
+  it("is not due without an epoch, nor for one that never spoke, and is due after a day", async () => {
+    const groups = newGroupSessionsState();
+    expect(rotationDue(groups, CHAN, NOW)).toBe(false);
+    createEpoch(groups, CHAN, ["alice", "bob"], NOW);
+    expect(rotationDue(groups, CHAN, NOW + DAY)).toBe(false);
+    await encryptChannel(groups, CHAN, "spoke", ["alice", "bob"], signAlice, NOW);
+    expect(rotationDue(groups, CHAN, NOW + DAY - 1)).toBe(false);
+    expect(rotationDue(groups, CHAN, NOW + DAY)).toBe(true);
+  });
+
+  it("builds nothing without an epoch, or when the epoch never spoke", async () => {
+    const groups = newGroupSessionsState();
+    expect(await buildPeriodicRotation(groups, CHAN, signAlice, NOW + DAY)).toBeNull();
+    createEpoch(groups, CHAN, ["alice", "bob"], NOW);
+    expect(await buildPeriodicRotation(groups, CHAN, signAlice, NOW + DAY)).toBeNull();
+  });
+
+  it("sends one channel message under the old epoch, and the reader rotates onto the new one", async () => {
+    const aliceGroups = newGroupSessionsState();
+    const bobGroups = newGroupSessionsState();
+    await encryptChannel(aliceGroups, CHAN, "day one", ["alice", "bob"], signAlice, NOW);
+    const oldSid = aliceGkey(aliceGroups).sid;
+    bobImports(bobGroups, aliceGroups, NOW);
+    expect(
+      await decryptChannel(
+        bobGroups,
+        CHAN,
+        "alice",
+        ALICE_DID,
+        (await encryptChannel(aliceGroups, CHAN, "read me", ["alice", "bob"], signAlice, NOW))
+          .payload,
+        verifyAll,
+        NOW,
+      ),
+    ).toEqual({ ok: true, kind: "text", sid: oldSid, counter: 1, body: "read me" });
+
+    const later = NOW + DAY;
+    const rotated = await buildPeriodicRotation(aliceGroups, CHAN, signAlice, later);
     expect(rotated).not.toBeNull();
     expect(rotated?.oldSid).toBe(oldSid);
     expect(rotated?.newSid).not.toBe(oldSid);
-    // The rotation message is a v3 payload naming the OLD sid.
-    const envelope = parseChannelPayload(decodePayload(rotated?.payload ?? ""));
-    expect(envelope.sid).toBe(oldSid);
-    // Bob reads it: a rotation, not a text.
-    const read = decryptChannel(bobGroups, bob, CHAN, "alice", rotated?.payload ?? "", later);
-    expect(read).toEqual({
-      ok: true,
-      kind: "rotated",
-      sid: oldSid,
-      index: 1,
-      newSid: rotated?.newSid,
-    });
-    // The old epoch is dead for Bob now: an old-epoch message replays as undecryptable.
-    // (The first message's index was already read; a fresh old-epoch line would
-    // fail the same way — the session is gone.)
-    expect(inboundFor(bobGroups, CHAN, "alice", oldSid)).toBeUndefined();
-    expect(inboundFor(bobGroups, CHAN, "alice", rotated?.newSid ?? "")).toBeDefined();
+    // The rotation message is a v4 payload naming the OLD sid.
+    expect(parseChannelPayload(decodePayload(rotated?.payload ?? "")).sid).toBe(oldSid);
+    // Alice already holds the new epoch.
+    expect(epochFor(aliceGroups, CHAN)?.sid).toBe(rotated?.newSid);
+    // Bob reads it: a rotation, not a text, at Alice's next counter.
+    expect(
+      await decryptChannel(
+        bobGroups,
+        CHAN,
+        "alice",
+        ALICE_DID,
+        rotated?.payload ?? "",
+        verifyAll,
+        later,
+      ),
+    ).toEqual({ ok: true, kind: "rotated", sid: oldSid, counter: 2, newSid: rotated?.newSid });
+    expect(epochFor(bobGroups, CHAN)?.sid).toBe(rotated?.newSid);
     // And a message under the NEW epoch reads.
-    const next = encryptChannel(aliceGroups, alice, CHAN, "day two", later);
+    const next = await encryptChannel(
+      aliceGroups,
+      CHAN,
+      "day two",
+      ["alice", "bob"],
+      signAlice,
+      later,
+    );
     expect(next.sid).toBe(rotated?.newSid);
-    expect(decryptChannel(bobGroups, bob, CHAN, "alice", next.payload, later)).toEqual({
-      ok: true,
-      kind: "text",
-      sid: rotated?.newSid,
-      index: 0,
-      body: "day two",
-    });
+    expect(
+      await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, next.payload, verifyAll, later),
+    ).toEqual({ ok: true, kind: "text", sid: rotated?.newSid, counter: 0, body: "day two" });
   });
 
-  it("builds nothing without an epoch, or when the epoch never spoke", () => {
+  it("rotating on a leave deletes the old epoch and mints a new one the peer can import", async () => {
+    const aliceGroups = newGroupSessionsState();
+    const bobGroups = newGroupSessionsState();
+    await encryptChannel(aliceGroups, CHAN, "before", ["alice", "bob"], signAlice, NOW);
+    const oldSid = aliceGkey(aliceGroups).sid;
+    const rotated = rotateEpochForLeave(aliceGroups, CHAN, ["alice", "bob"], NOW);
+    expect(rotated.oldSid).toBe(oldSid);
+    expect(rotated.newSid).not.toBe(oldSid);
+    expect(epochFor(aliceGroups, CHAN)?.sid).toBe(rotated.newSid);
+    expect(epochFor(aliceGroups, CHAN)?.messages).toBe(0);
+    expect(
+      importEpoch(
+        bobGroups,
+        CHAN,
+        { t: "gkey", ch: CHAN, sid: rotated.newSid, key: rotated.key, holders: ["alice", "bob"] },
+        ALICE_DID,
+        NOW,
+      ),
+    ).toBe("imported");
+    const after = await encryptChannel(
+      aliceGroups,
+      CHAN,
+      "after",
+      ["alice", "bob"],
+      signAlice,
+      NOW,
+    );
+    expect(
+      await decryptChannel(bobGroups, CHAN, "alice", ALICE_DID, after.payload, verifyAll, NOW),
+    ).toEqual({ ok: true, kind: "text", sid: rotated.newSid, counter: 0, body: "after" });
+  });
+
+  it("rotating on a leave with no epoch still mints one, with a null old sid", () => {
     const groups = newGroupSessionsState();
-    const adapter = fakeMegolmAdapter();
-    expect(
-      buildPeriodicRotation(groups, adapter, CHAN, NOW + GROUP_ROTATION_INTERVAL_MS),
-    ).toBeNull();
-    createOutbound(groups, adapter, CHAN, NOW);
-    expect(
-      buildPeriodicRotation(groups, adapter, CHAN, NOW + GROUP_ROTATION_INTERVAL_MS),
-    ).toBeNull();
+    const rotated = rotateEpochForLeave(groups, CHAN, ["alice", "bob"], NOW);
+    expect(rotated.oldSid).toBeNull();
+    expect(epochFor(groups, CHAN)?.sid).toBe(rotated.newSid);
+  });
+});
+
+describe("holders and key requests", () => {
+  it("spots a holder who left, and is quiet when all holders are present", async () => {
+    const groups = newGroupSessionsState();
+    expect(epochHoldersStale(groups, CHAN, ["alice"])).toBe(false);
+    await encryptChannel(groups, CHAN, "hi", ["alice", "bob", "carol"], signAlice, NOW);
+    expect(epochHoldersStale(groups, CHAN, ["alice", "bob"])).toBe(true);
+    expect(epochHoldersStale(groups, CHAN, ["alice", "bob", "carol"])).toBe(false);
+    // The fold is case-insensitive: the roster in display spelling still matches.
+    expect(epochHoldersStale(groups, CHAN, ["Alice", "BOB", "Carol"])).toBe(false);
+  });
+
+  it("answers a key request once per asker per minute", () => {
+    const groups = newGroupSessionsState();
+    expect(keyreqAnswerDue(groups, CHAN, "bob", NOW)).toBe(true);
+    markKeyreqAnswered(groups, CHAN, "bob", NOW);
+    expect(keyreqAnswerDue(groups, CHAN, "bob", NOW)).toBe(false);
+    expect(keyreqAnswerDue(groups, CHAN, "bob", NOW + KEYREQ_ANSWER_THROTTLE_MS - 1)).toBe(false);
+    expect(keyreqAnswerDue(groups, CHAN, "bob", NOW + KEYREQ_ANSWER_THROTTLE_MS)).toBe(true);
+    // The throttle is per asker and per channel.
+    expect(keyreqAnswerDue(groups, CHAN, "carol", NOW)).toBe(true);
+    expect(keyreqAnswerDue(groups, "#other", "bob", NOW)).toBe(true);
+  });
+
+  it("drops one epoch, or everything of a channel, and tolerates a missing one", async () => {
+    const groups = newGroupSessionsState();
+    dropEpoch(groups, CHAN);
+    dropChannel(groups, CHAN);
+    await encryptChannel(groups, CHAN, "hi", ["alice", "bob"], signAlice, NOW);
+    dropEpoch(groups, CHAN);
+    expect(epochFor(groups, CHAN)).toBeUndefined();
+    await encryptChannel(groups, CHAN, "hi again", ["alice", "bob"], signAlice, NOW);
+    dropChannel(groups, CHAN);
+    expect(epochFor(groups, CHAN)).toBeUndefined();
   });
 });
