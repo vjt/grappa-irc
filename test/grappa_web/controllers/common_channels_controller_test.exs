@@ -84,12 +84,12 @@ defmodule GrappaWeb.CommonChannelsControllerTest do
 
       # carol is ONLY on #three, which never saw 366 — excluded, so
       # the answer is empty, not ["#three"].
-      conn = get(conn, "/networks/#{slug}/common-channels?nick=carol")
-      assert json_response(conn, 200) == %{"channels" => []}
+      assert json_response(get(conn, "/networks/#{slug}/common-channels?nick=carol"), 200) ==
+               %{"channels" => []}
 
       # A nick nobody holds shares nothing — same shape, not an error.
-      conn = get(conn, "/networks/#{slug}/common-channels?nick=nobody")
-      assert json_response(conn, 200) == %{"channels" => []}
+      assert json_response(get(conn, "/networks/#{slug}/common-channels?nick=nobody"), 200) ==
+               %{"channels" => []}
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -101,11 +101,11 @@ defmodule GrappaWeb.CommonChannelsControllerTest do
 
       seed_channels(server)
 
-      conn = get(conn, "/networks/#{slug}/common-channels")
-      assert json_response(conn, 400) == %{"error" => "bad_request"}
+      assert json_response(get(conn, "/networks/#{slug}/common-channels"), 400) ==
+               %{"error" => "bad_request"}
 
-      conn = get(conn, "/networks/#{slug}/common-channels?nick=%20%20")
-      assert json_response(conn, 400) == %{"error" => "bad_request"}
+      assert json_response(get(conn, "/networks/#{slug}/common-channels?nick=%20%20"), 400) ==
+               %{"error" => "bad_request"}
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

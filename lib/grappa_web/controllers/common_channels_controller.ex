@@ -45,22 +45,24 @@ defmodule GrappaWeb.CommonChannelsController do
   @spec index(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :bad_request | :no_session}
   def index(conn, params) do
-    case params do
-      %{"nick" => nick} when is_binary(nick) ->
-        if String.trim(nick) == "" do
-          {:error, :bad_request}
-        else
-          subject = Subject.to_session(conn.assigns.current_subject)
-          network = conn.assigns.network
+    with {:ok, nick} <- fetch_nick(params) do
+      subject = Subject.to_session(conn.assigns.current_subject)
+      network = conn.assigns.network
 
-          case Session.common_channels(subject, network.id, nick) do
-            {:ok, channels} -> render(conn, :index, channels: channels)
-            {:error, _} = err -> err
-          end
-        end
-
-      _ ->
-        {:error, :bad_request}
+      case Session.common_channels(subject, network.id, nick) do
+        {:ok, channels} -> render(conn, :index, channels: channels)
+        {:error, _} = err -> err
+      end
     end
   end
+
+  # The `nick` query param, validated: present, a string, non-blank.
+  # Anything else is 400 — a door that answers "no shared channels"
+  # for a missing nick would let a client bug read as an empty answer.
+  @spec fetch_nick(map()) :: {:ok, String.t()} | {:error, :bad_request}
+  defp fetch_nick(%{"nick" => nick}) when is_binary(nick) do
+    if String.trim(nick) == "", do: {:error, :bad_request}, else: {:ok, nick}
+  end
+
+  defp fetch_nick(_), do: {:error, :bad_request}
 end
