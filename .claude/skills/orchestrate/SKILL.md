@@ -601,6 +601,19 @@ is DELETE-then-write, never append-only:
   `running` line now carries either `watching (ctx=NN%)` or a `BLIND: …` naming what it cannot see.
   A bare `running` with no pane id means a pre-#1761 build — stop and restart it. `pgrep -fl
   'auto-clear-watch'` does NOT diagnose this: the pattern matches the probing command itself.
+  🔴 **ON THE PI IT IS RUN BY SYSTEMD SINCE 2026-11-07 (vjt's order): user unit
+  `grappa-orch-autoclear.service`, `Type=forking`, `ExecStart=… start grappa-orch`, `ExecStop=…
+  stop grappa-orch`, `PIDFile=/tmp/orchestrate-autoclear-grappa-orch.pid`, `Restart=on-failure`,
+  `RestartSec=60`.** **Never `start`/`stop` it by hand there**: `start` answers *already running*,
+  and a manual stop+start takes the loop out of systemd's control. Restart or rebind =
+  **`systemctl --user restart grappa-orch-autoclear`**. On resume check BOTH
+  `systemctl --user is-active grappa-orch-autoclear` (unit) and `status grappa-orch` (which pane it
+  watches); at boot, before the pane exists, `start` exits 1 and systemd retries every minute until
+  the title matches exactly one pane. ⚠️ **Why both:** the unit had crashlooped since #1761
+  (ExecStart without `--pane` ⇒ exit 64 every 5 s, ~55k restarts over 2.5 months) while a
+  hand-started `nohup` watcher did the work — **`status` answered `running` the whole time and said
+  nothing about the unit.** A healthy watcher next to a dead supervisor is the same observable as a
+  supervised one, until the hand-started process dies.
 - **Halt + ESCALATE** on: design picker, plan deviation, real breakage, CI regression (2nd
   recurrence), ambiguous scope, daemon/pane death, PACK COMPLETE. Don't auto-pick design/
   product choices; orchestration mechanics MAY be auto-defaulted.
@@ -3273,7 +3286,8 @@ nessuna riscrittura possibile. Misurala lo stesso se costa due comandi, ma dichi
   20-08 21:55) e l'orchestratore se n'e' accorto solo perche' **vjt gli ha chiesto perche' fosse all'80%**.
   Un watchdog morto e un contesto che cresce piano sono lo stesso osservabile: **niente**.
   🥇 **Cura: `auto-clear-watch.sh status grappa-orch` a OGNI resume, insieme a `daemon.sh status` e al
-  TaskStop dei monitor.** ⚠️ **`pgrep -fl 'auto-clear-watch'` NON basta**: matcha il tuo stesso comando e
+  TaskStop dei monitor — e sul Pi anche `systemctl --user is-active grappa-orch-autoclear`, perché
+  dal 2026-11-07 il watchdog è un'unit systemd (vedi la voce "Auto-clearer").** ⚠️ **`pgrep -fl 'auto-clear-watch'` NON basta**: matcha il tuo stesso comando e
   restituisce un pid che sembra il watchdog. **La prova e' `status` + l'mtime del log.**
   ⚠️ E il danno NON e' il contesto: e' che **l'auto-clear e' anche il salvagente del flush dell'handoff**
   (prompta il flush PRIMA di clearare). Morto lui, se l'orchestratore non flusha a mano, un clear
