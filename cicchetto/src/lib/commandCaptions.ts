@@ -85,8 +85,7 @@ export const COMMAND_CAPTIONS: Readonly<Record<string, string>> = {
 };
 
 /** The builtin caption for `verb`, or null when it has none (a user alias). */
-export const captionForCommand = (verb: string): string | null =>
-  COMMAND_CAPTIONS[verb] ?? null;
+export const captionForCommand = (verb: string): string | null => COMMAND_CAPTIONS[verb] ?? null;
 
 // An alias expansion is free-form text the user typed, so it can be long:
 // the caption keeps the first 40 characters and marks the cut, so the row
@@ -97,8 +96,6 @@ const ALIAS_EXPANSION_CAP = 40;
 export const aliasCaption = (expansion: string): string => {
   const trimmed = expansion.trim();
   const shown =
-    trimmed.length > ALIAS_EXPANSION_CAP
-      ? `${trimmed.slice(0, ALIAS_EXPANSION_CAP)}…`
-      : trimmed;
+    trimmed.length > ALIAS_EXPANSION_CAP ? `${trimmed.slice(0, ALIAS_EXPANSION_CAP)}…` : trimmed;
   return `Alias for ${shown}`;
 };

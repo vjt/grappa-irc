@@ -95,9 +95,7 @@ const CommandMenu: Component<Props> = (props) => {
                   onClick={() => props.onPick(verb)}
                 >
                   <span class="command-menu-verb">/{verb}</span>
-                  {caption !== null && (
-                    <span class="command-menu-caption">{caption}</span>
-                  )}
+                  {caption !== null && <span class="command-menu-caption">{caption}</span>}
                 </button>
               );
             }}
