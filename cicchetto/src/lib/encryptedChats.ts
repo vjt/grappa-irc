@@ -64,6 +64,7 @@ import {
   refusedBy,
 } from "./e2e/client";
 import type { PinOutcome } from "./e2e/engine";
+import type { FileInner } from "./e2e/fileInner";
 import {
   accountSlot,
   type ElsewhereReason,
@@ -627,6 +628,20 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     setLastEncryptedSend(windowKey);
   }
 
+  /**
+   * Sends the attachment `file` to `nick` (issue 2517): the ciphertext is
+   * already on grappa, and this message carries its key, its URL and its
+   * metadata. The same door as a text, and the same rows.
+   */
+  async function sendEncryptedFile(slug: string, nick: string, file: FileInner): Promise<void> {
+    const windowKey = channelKey(slug, encryptedWindowName(nick));
+    setEncryptedSendSubmitted(windowKey);
+    const report = await run(slug, (client, ctx) => client.sendFile(ctx, nick, file));
+    await afterReport(slug, report);
+    await readEncryptedChat(slug, nick);
+    setLastEncryptedSend(windowKey);
+  }
+
   /** Asks `nick` for its keys again: the user's answer to a message none of its devices could read (issue 2491). */
   async function rekeyEncrypted(slug: string, nick: string): Promise<void> {
     const report = await run(slug, (client, ctx) => client.rekey(ctx, nick));
@@ -783,6 +798,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     encryptedChatHasMessages,
     readEncryptedChat,
     sendEncrypted,
+    sendEncryptedFile,
     encryptedSendSubmitted,
     lastEncryptedSend,
     encryptedChatDeleted,
@@ -822,6 +838,7 @@ export const deleteEncryptedChat = exports_.deleteEncryptedChat;
 export const encryptedChatHasMessages = exports_.encryptedChatHasMessages;
 export const readEncryptedChat = exports_.readEncryptedChat;
 export const sendEncrypted = exports_.sendEncrypted;
+export const sendEncryptedFile = exports_.sendEncryptedFile;
 export const encryptedSendSubmitted = exports_.encryptedSendSubmitted;
 export const lastEncryptedSend = exports_.lastEncryptedSend;
 export const encryptedChatDeleted = exports_.encryptedChatDeleted;

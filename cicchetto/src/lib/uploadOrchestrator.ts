@@ -2,8 +2,10 @@ import { createSignal } from "solid-js";
 import { previewKindOf } from "./attachmentPreview";
 import type { ChannelKey } from "./channelKey";
 import { type ConfirmAttachment, dismissConfirm, requestConfirm } from "./confirmDialog";
+import { sendEncryptedAttachment } from "./encryptedAttachments";
 import { formatBytes } from "./formatBytes";
 import { sendMessage } from "./scrollback";
+import { serverProtocol } from "./serverProtocol";
 import { serverSettings } from "./serverSettings";
 import {
   baseMime,
@@ -12,7 +14,13 @@ import {
   normalizeUploadFile,
   type UploadCategory,
 } from "./uploadCategory";
-import { activeHost, type UploadError, type UploadHost, type UploadProgress } from "./uploadHost";
+import {
+  activeHost,
+  embeddedHost,
+  type UploadError,
+  type UploadHost,
+  type UploadProgress,
+} from "./uploadHost";
 import {
   getUploadConfirmEnabled,
   getUploadTtlSeconds,
@@ -70,6 +78,11 @@ export type UploadStateEntry = {
   phase: "transcoding" | "uploading";
   error?: string;
 };
+
+// issue 2517 — the wire protocol that carries an encrypted file's ciphertext
+// (CLIENT_PROTOCOL §4k): below it grappa has no such door, and an encrypted
+// window keeps the 2512 refusal.
+const ENCRYPTED_UPLOAD_PROTOCOL = 58;
 
 // Per-category PRIVMSG prefix — IRC stays text only; the emoji is the
 // whole "media type" signal on the wire.
@@ -545,6 +558,17 @@ async function dispatchUpload(
   // Task 7, 2026-06-09).
   inflight.get(key)?.controller.abort();
 
+  // issue 2517 — an encrypted window takes the other door: the strip and the
+  // seal happen here, the bytes go up as ciphertext, and the key rides the
+  // message. Every gate above (the type gate, the batch's answers) is the
+  // plain path's; the cap below is not, because it is the category's own and
+  // it is checked on the plaintext.
+  const peer = encryptedWindowPeer(channelName);
+  if (peer !== null) {
+    await dispatchEncrypted(key, networkSlug, channelName, peer, file, ttlSeconds);
+    return;
+  }
+
   // Controller + inflight registration happen BEFORE the transform so
   // cancelUpload can abort an in-flight video transcode, not just the
   // host POST (Task 6, 2026-06-09).
@@ -645,6 +669,61 @@ async function dispatchUpload(
         error: friendlyErrorMessage(err, lastProgress),
       });
     });
+}
+
+// issue 2517 — the encrypted branch of `dispatchUpload`: one file, sealed on
+// this device and sent through the encrypted query. The in-flight entry, the
+// stale-controller guards and the error slot are the plain path's, so cancel
+// and retry mean the same thing here. The TTL comes off the embedded host's
+// ladder because grappa's own store is the only door §4k has, whatever host
+// the admin picked for plain uploads.
+async function dispatchEncrypted(
+  key: ChannelKey,
+  networkSlug: string,
+  channelName: string,
+  peer: string,
+  file: File,
+  ttlSeconds: number | null,
+): Promise<void> {
+  const controller = new AbortController();
+  inflight.set(key, { controller, file, networkSlug, channelName });
+  setEntry(key, { filename: file.name, loaded: 0, total: file.size, phase: "uploading" });
+
+  const ttl =
+    pickHostTokenFromSeconds(embeddedHost, ttlSeconds ?? uploadTtlSeconds()) ??
+    embeddedHost.defaultTtl ??
+    undefined;
+
+  const outcome = await sendEncryptedAttachment({
+    networkSlug,
+    peer,
+    file,
+    ttl,
+    maxDurationSeconds: videoMaxDurationSeconds(),
+    signal: controller.signal,
+    onPhase: (phase, loaded, total) => {
+      if (inflight.get(key)?.controller !== controller) return;
+      setEntry(key, { filename: file.name, loaded, total, phase });
+    },
+  });
+  if (inflight.get(key)?.controller !== controller) return;
+  inflight.delete(key);
+  if (controller.signal.aborted) {
+    setEntry(key, null);
+    return;
+  }
+  if (outcome.ok) {
+    setEntry(key, null);
+    pumpQueue(key);
+    return;
+  }
+  setEntry(key, {
+    filename: file.name,
+    loaded: 0,
+    total: 0,
+    phase: "uploading",
+    error: outcome.error,
+  });
 }
 
 // #201 — the ceiling is a server setting now; MAX_DURATION_SECONDS is
@@ -923,7 +1002,11 @@ export function triggerUploads(
   // door every surface shares (picker, paste, drop, the OS share target),
   // before any notice or confirm, and said where the compose box says why.
   const [first] = rawFiles;
-  if (encryptedWindowPeer(channelName) !== null && first !== undefined) {
+  if (
+    encryptedWindowPeer(channelName) !== null &&
+    first !== undefined &&
+    (serverProtocol() ?? 0) < ENCRYPTED_UPLOAD_PROTOCOL
+  ) {
     setEntry(key, {
       filename: first.name,
       loaded: 0,
