@@ -32,6 +32,7 @@ import {
   narrowAdminVisitorsResponse,
   narrowArchiveResponse,
   narrowChannelListResponse,
+  narrowCommonChannelsIndexResponse,
   narrowCredentialResponse,
   narrowDirectoryPageResponse,
   narrowE2eClaimedResponse,
@@ -3276,6 +3277,30 @@ export async function listMembers(
   if (res.status === 204) return null;
   if (!res.ok) throw await readError(res);
   return narrowMembersIndexResponse(await res.json()).members;
+}
+
+// Issue 2449 — `GET /networks/:slug/common-channels?nick=<nick>`, the
+// snapshot twin of the live derivation in `commonChannels.ts`. The
+// server reads the same `Session.Server.state.members` map the
+// `members_seeded` event renders, so this consumes the SAME generated
+// shape rather than a second mirror — and therefore costs no wire
+// change and no protocol bump.
+//
+// Unlike `listMembers` there is no 204 here: an empty list is a real
+// answer ("you share no channels with this nick"), not an unknowable
+// one — the server excludes unseeded channels from the list instead
+// of reporting the whole read as uninitialized.
+export async function listCommonChannels(
+  token: string,
+  networkSlug: string,
+  nick: string,
+): Promise<string[]> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/common-channels?nick=${encodeURIComponent(nick)}`,
+    { headers: buildHeaders(token) },
+  );
+  if (!res.ok) throw await readError(res);
+  return narrowCommonChannelsIndexResponse(await res.json()).channels;
 }
 
 export async function listArchive(token: string, networkSlug: string): Promise<ArchiveEntry[]> {

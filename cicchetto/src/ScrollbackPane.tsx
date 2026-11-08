@@ -10,6 +10,7 @@ import {
   onMount,
   Show,
 } from "solid-js";
+import CommonChannelsBanner from "./CommonChannelsBanner";
 import { isDiagEnabled } from "./DiagFloat";
 import E2eRequestBanner from "./E2eRequestBanner";
 import E2eRequestCard from "./E2eRequestCard";
@@ -4835,6 +4836,7 @@ const ScrollbackPane: Component<Props> = (props) => {
             the top even in an empty DM (the "no messages yet" fallback). */}
         <Show when={props.kind === "query"}>
           <PeerAwayBanner networkSlug={props.networkSlug} peer={props.channelName} />
+          <CommonChannelsBanner networkSlug={props.networkSlug} peer={props.channelName} />
         </Show>
         <Show
           when={rows().length > 0}
