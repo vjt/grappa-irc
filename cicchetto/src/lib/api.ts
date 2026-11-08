@@ -32,6 +32,7 @@ import {
   narrowAdminVisitorsResponse,
   narrowArchiveResponse,
   narrowChannelListResponse,
+  narrowCommonChannelsResponse,
   narrowCredentialResponse,
   narrowDirectoryPageResponse,
   narrowE2eClaimedResponse,
@@ -3276,6 +3277,35 @@ export async function listMembers(
   if (res.status === 204) return null;
   if (!res.ok) throw await readError(res);
   return narrowMembersIndexResponse(await res.json()).members;
+}
+
+// Issue 2449 — `GET /networks/:slug/common-channels?nick=<nick>`, the
+// seeded-channels-only answer to "which channels do I share with this
+// peer", decided in the M1 measurement (brief): the server scans its own
+// `Session.Server.state.members` (seeded channels only — a joined but
+// pre-NAMES channel holds only self and is excluded) and returns the
+// sorted names. Any nick is queryable because it is the caller's own
+// view; auth is the caller's session, same as `/members`.
+//
+// The client needs the fetch even though it derives the same answer
+// locally from `membersByChannel` (see `lib/commonChannels.ts`): a
+// purely local derivation cannot tell "no shared channels" from "lists
+// not loaded yet" (cold start), and it goes stale by design for a
+// presence-paused channel (#1680/#1769 — the server stops pushing its
+// peer join/part/quit and `applyPresenceEvent` is skipped). The fetch
+// on query open closes both gaps; no new push event exists or is needed
+// (brief M2).
+export async function listCommonChannels(
+  token: string,
+  networkSlug: string,
+  nick: string,
+): Promise<string[]> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/common-channels?nick=${encodeURIComponent(nick)}`,
+    { headers: buildHeaders(token) },
+  );
+  if (!res.ok) throw await readError(res);
+  return narrowCommonChannelsResponse(await res.json()).channels;
 }
 
 export async function listArchive(token: string, networkSlug: string): Promise<ArchiveEntry[]> {

@@ -1092,6 +1092,23 @@ export function narrowMembersIndexResponse(raw: unknown): SessionWireMembersInde
   return narrowRest(S_SessionWireMembersIndexPayload, raw, "members index");
 }
 
+/**
+ * Issue 2449 — `GET /networks/:slug/common-channels?nick=<nick>`.
+ *
+ * The shape is `{"channels": ["#a", "#b"]}` — sorted, seeded channels only
+ * (brief M1). The schema here is an INLINE literal, not a generated `S_*`:
+ * the server half (built in parallel) owns the `Grappa.Session.Wire`
+ * typespec, and the codegen that emits `wireSchema.ts` / `wireTypes.ts`
+ * runs against the server tree — this worktree has no server slice to
+ * generate from yet. When the server half lands, the generated
+ * `S_SessionWireCommonChannelsPayload` (or whatever the server names it)
+ * replaces this literal; the shape is pinned by the narrower either way,
+ * and `narrowRest` rejects anything else visibly.
+ */
+export function narrowCommonChannelsResponse(raw: unknown): { channels: string[] } {
+  return narrowRest({ o: { channels: { a: "s" } } }, raw, "common channels");
+}
+
 /** `GET /networks/:slug/channels/:name/messages`, both the `before` and `after` pages. */
 export function narrowMessagePageResponse(raw: unknown): ScrollbackWireT[] {
   return narrowRest({ a: S_ScrollbackWireT }, raw, "message page");
