@@ -104,7 +104,7 @@ import {
   Verifier,
 } from "./sas";
 import type { Account } from "./vodozemac/vodozemac_binding";
-import { decodePayload, fold, type ReceiveVerb, type SendVerb } from "./wire";
+import { decodePayload, fold, parseGkeyInner, type ReceiveVerb, type SendVerb } from "./wire";
 
 /** One whole message grappa holds for this device (the `e2e_message` wire shape, minus its envelope). */
 export type InboxMessage = {
@@ -688,6 +688,25 @@ function copyFrom(engine: Engine, m: InboxMessage): Result {
   return { events: [], outbound: [] };
 }
 
+// The gkey inner a body carries, or undefined when it is not one: a
+// copy's body is opaque text to the drain, and only a gkey inner is
+// imported as a key — anything else keeps its sent row.
+function gkeyInnerOf(body: string): Record<string, unknown> | undefined {
+  let decoded: Record<string, unknown>;
+  try {
+    decoded = decodePayload(body);
+  } catch {
+    return undefined;
+  }
+  if (decoded.t !== "gkey") return undefined;
+  try {
+    parseGkeyInner(decoded);
+  } catch {
+    return undefined;
+  }
+  return decoded;
+}
+
 // A key of our sibling `did` from grappa's claim door: its KEYS text, or
 // null when grappa refused it (logged, never claimed again for those copies:
 // the engine drops what waited for it).
@@ -812,8 +831,13 @@ export function e2eClient(
   // Then each text grappa took a payload of for the first time is copied to
   // our siblings (`copyOut`), once: its row is not sent yet (a re-send after
   // a NACK, or a payload for a device whose keys came later, finds it sent).
-  // An account whose list names this device alone has none: nothing of the
-  // copy step runs, no row read, no listing, no store.
+  // A channel step's `copies` ride along the same way: a gkey DM grappa
+  // took is copied to our siblings, so a rotation reaches our other
+  // devices — but only one grappa actually took: a refused gkey's copy is
+  // dropped with it, and the step reports the refusal instead. All gkey
+  // DMs share the one tag, so what was taken is tracked by peer, not by
+  // tag. An account whose list names this device alone has none: nothing of
+  // the copy step runs, no row read, no listing, no store.
   //
   // Every refusal is answered, not only the tagged ones: an untagged
   // payload (a channel `:msg`, which has no DM row) the door refused is
@@ -825,10 +849,13 @@ export function e2eClient(
     persist: () => Promise<void>,
     door: Door,
     outbound: Outbound[],
+    copies: ChannelE2eResult["copies"] = [],
   ): Promise<{ changes: ChatChange[]; unknownDevice: boolean; refused: RefusedOutbound[] }> {
     const changes: ChatChange[] = [];
     // Tag → nick, of the texts grappa took a payload of.
     const taken = new Map<string, string>();
+    // Folded peers of the gkey DMs grappa took.
+    const takenGkey = new Set<string>();
     const refused: RefusedOutbound[] = [];
     let unknownDevice = false;
     for (const out of outbound) {
@@ -843,6 +870,7 @@ export function e2eClient(
       }
       if (!("refused" in answer)) {
         engine.sent(out.ref, answer.msgid);
+        if (out.tag === GKEY_TAG) takenGkey.add(fold(out.target));
         if (out.tag !== LIST_TAG && !rowless(out.tag)) {
           changes.push({
             op: "out",
@@ -885,8 +913,13 @@ export function e2eClient(
         texts.push({ nick, body: row.body, file: row.file });
       }
     }
+    // Only a gkey grappa took reaches the siblings, and only where there
+    // are siblings to reach: an account alone on its list copies nothing.
+    const copiesTaken: ChannelE2eResult["copies"] = engine.alone()
+      ? []
+      : copies.filter((c) => takenGkey.has(fold(c.peer)));
     return {
-      changes: [...changes, ...(await copyOut(engine, persist, door, texts))],
+      changes: [...changes, ...(await copyOut(engine, persist, door, texts, copiesTaken))],
       unknownDevice,
       refused,
     };
@@ -922,15 +955,24 @@ export function e2eClient(
   // copy or a claim grappa refuses is logged, never tried again: no NACK
   // ever names a copy, so a lost one is lost. Answers what its events change
   // in the chats.
+  //
+  // A channel step's `copies` ride the same door: a gkey DM the step sent
+  // to a member is copied to our siblings as the exact inner, so a device
+  // that never saw the DM still learns the epoch — the other end of the
+  // drain's copied-gkey branch.
   async function copyOut(
     engine: Engine,
     persist: () => Promise<void>,
     door: Door,
     texts: Taken[],
+    copies: ChannelE2eResult["copies"] = [],
   ): Promise<ChatChange[]> {
-    if (texts.length === 0) return [];
+    if (texts.length === 0 && copies.length === 0) return [];
     const listed = await listSiblings(engine, door);
-    const copied: CopyResult[] = texts.map(({ nick, body, file }) => engine.copy(nick, body, file));
+    const copied: CopyResult[] = [
+      ...texts.map(({ nick, body, file }) => engine.copy(nick, body, file)),
+      ...copies.map(({ peer, body }) => engine.copy(peer, body)),
+    ];
     for (const e of copied.flatMap((r) => r.events)) {
       if (e.kind === "sibling_keys_needed") {
         copied.push(engine.siblingKeys(e.did, await claim(door, e.did)));
@@ -1047,12 +1089,13 @@ export function e2eClient(
     door: Door,
     changes: ChatChange[],
     outbound: Outbound[],
+    copies: ChannelE2eResult["copies"] = [],
   ): Promise<{ report: Report; refused: RefusedOutbound[] }> {
     const sas = sasOutput(verifier);
     const touched = new Set(sas.chats);
     for (const key of await chats.apply(ctx.slot, [...sas.changes, ...changes])) touched.add(key);
     await persist();
-    const sent = await flush(ctx, engine, persist, door, [...outbound, ...sas.outbound]);
+    const sent = await flush(ctx, engine, persist, door, [...outbound, ...sas.outbound], copies);
     for (const key of await chats.apply(ctx.slot, sent.changes)) touched.add(key);
     return {
       report: {
@@ -1136,6 +1179,7 @@ export function e2eClient(
           // channel `:msg` the door refused is reported, never lost.
           const pageChannelEvents: ChannelE2eEvent[] = [];
           const pageChannelOutbound: Outbound[] = [];
+          const pageChannelCopies: ChannelE2eResult["copies"] = [];
           for (const m of page) {
             if (m.id <= state.inbox) continue;
             const channel = m.channel ?? null;
@@ -1156,6 +1200,7 @@ export function e2eClient(
               );
               pageChannelEvents.push(...received.events);
               pageChannelOutbound.push(...received.outbound);
+              pageChannelCopies.push(...received.copies);
               outbound.push(...received.outbound);
               state.inbox = m.id;
               continue;
@@ -1186,7 +1231,25 @@ export function e2eClient(
             // trust again all the same (issue 2486, keys asked before any
             // message).
             if (m.verb === "keys") touched.add(fold(m.from));
-            changes.push(...changesFor(res.events, now(), fromInbox(m)));
+            // A copy from a sibling that carries a gkey: the sibling
+            // rotated (or answered a key request) and passed the key on —
+            // import it here instead of showing it as a sent row in the
+            // peer's chat. The copy came through the sibling session, so
+            // it is authenticated like a gkey DM from a roster member.
+            const kept: E2eEvent[] = [];
+            for (const e of res.events) {
+              if (e.kind === "copied" && m.own) {
+                const gkey = gkeyInnerOf(e.body);
+                if (gkey !== undefined) {
+                  pageChannelEvents.push(
+                    ...receiveGkey(deps, state.groups, gkey, ctx.ownNick, m.fromDid),
+                  );
+                  continue;
+                }
+              }
+              kept.push(e);
+            }
+            changes.push(...changesFor(kept, now(), fromInbox(m)));
             outbound.push(...res.outbound);
             for (const [i, e] of res.events.entries()) {
               if (e.kind !== "received") continue;
@@ -1214,7 +1277,7 @@ export function e2eClient(
           for (const key of sas.chats) touched.add(key);
           for (const key of await chats.apply(ctx.slot, changes)) touched.add(key);
           await persist();
-          const sent = await flush(ctx, engine, persist, door, outbound);
+          const sent = await flush(ctx, engine, persist, door, outbound, pageChannelCopies);
           unknownDevice ||= sent.unknownDevice;
           channelEvents.push(
             ...reconcileChannelSends(pageChannelEvents, pageChannelOutbound, sent.refused),
@@ -1302,6 +1365,7 @@ export function e2eClient(
           door,
           [],
           res.outbound,
+          res.copies,
         );
         const events = reconcileChannelSends(res.events, res.outbound, refused);
         emitChannelE2eEvents(events);
@@ -1335,6 +1399,7 @@ export function e2eClient(
           door,
           [],
           res.outbound,
+          res.copies,
         );
         const events = reconcileChannelSends(res.events, res.outbound, refused);
         emitChannelE2eEvents(events);
@@ -1345,6 +1410,14 @@ export function e2eClient(
       });
     },
 
+    // An audit never runs against another audit of the same account: it
+    // runs under `withEngine`, which reads and writes the account record
+    // under the account's exclusive Web Lock (`accountStore`: one lock per
+    // slot, held by `navigator.locks`, so the same lock serialises audits
+    // in this tab and in every other tab of the origin alike). Two devices
+    // can still race — each holds its own lock — but they cannot bifurcate
+    // the epoch: a device that learns the new epoch from a copy of the
+    // rotation does not mint its own (the drain's copied-gkey branch).
     auditChannelEpoch: (ctx, channel, members) =>
       withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
         const res = await auditEpochRotation(
@@ -1361,6 +1434,7 @@ export function e2eClient(
           door,
           [],
           res.outbound,
+          res.copies,
         );
         const events = reconcileChannelSends(res.events, res.outbound, refused);
         emitChannelE2eEvents(events);
@@ -1406,6 +1480,7 @@ export function e2eClient(
           door,
           [],
           res.outbound,
+          res.copies,
         );
         const events = reconcileChannelSends(res.events, res.outbound, refused);
         emitChannelE2eEvents(events);
@@ -1457,6 +1532,7 @@ export function e2eClient(
           door,
           [],
           res.outbound,
+          res.copies,
         );
         const events = reconcileChannelSends(res.events, res.outbound, refused);
         emitChannelE2eEvents(events);
@@ -1488,6 +1564,7 @@ export function e2eClient(
           door,
           changesFor(ticked.events, now(), null),
           [...ticked.outbound, ...rotated.outbound],
+          rotated.copies,
         );
         const events = reconcileChannelSends(rotated.events, rotated.outbound, refused);
         emitChannelE2eEvents(events);

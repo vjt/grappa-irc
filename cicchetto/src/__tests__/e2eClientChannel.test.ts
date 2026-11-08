@@ -11,9 +11,10 @@
 // The protocol version is the module signal (`serverProtocol.ts`): 63
 // unless a test sets it lower.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { epochFor } from "../lib/e2e/groupSessions";
 import { decodePayload, encodePayload } from "../lib/e2e/wire";
 import { __resetServerProtocolForTests, setServerProtocol } from "../lib/serverProtocol";
-import { chat, inboxOf, latestGrappa, pair } from "./helpers/e2eClients";
+import { chat, inboxOf, latestGrappa, pair, rowsOf, SLOT } from "./helpers/e2eClients";
 import { routeApi } from "./helpers/e2eGrappa";
 import { olm } from "./helpers/olm";
 
@@ -459,5 +460,69 @@ describe("e2eClient channel", () => {
     expect(stale.channelE2e).toEqual([
       expect.objectContaining({ kind: "channel_rotated", reason: "member-left" }),
     ]);
+  });
+});
+
+describe("channel rotation reaches our other device", () => {
+  it("a rotation is copied to our other device, which does not mint a second epoch", async () => {
+    const { w, a, b } = await pair();
+    const a2 = await w.pairDevice(a);
+    await chat(a, b);
+    // Bob writes alice first, so both her devices hold a session with him
+    // and his list; then Alice's own send to Bob opens the copy session
+    // to her second device.
+    await b.client.send(b.ctx, "alice", "hi alice");
+    for (const side of [b, a, a2, b, a, a2]) await side.client.drain(side.ctx);
+    await a.client.send(a.ctx, "Bob", "hi Bob");
+    await a2.client.drain(a2.ctx);
+
+    w.grappa.joinChannel(CHANNEL, a.nick);
+    w.grappa.joinChannel(CHANNEL, b.nick);
+    const roster = rosterFor(["alice", "Bob"]);
+    a.ctx.channelMembers = roster;
+    a2.ctx.channelMembers = roster;
+    b.ctx.channelMembers = roster;
+
+    // The second device asks for the key first: a first epoch is only
+    // imported after asking, and the copy carries the same gate.
+    const asked = await a2.client.requestChannelKey(a2.ctx, CHANNEL);
+    expect(asked.channelE2e).toEqual([{ kind: "channel_key_requested", channel: CHANNEL }]);
+
+    // Alice mints the epoch on her first device and sends to the channel:
+    // the gkey DM to Bob is copied to her second device.
+    const sent = await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
+    expect(sent.channelE2e).toEqual([
+      expect.objectContaining({ kind: "channel_rotated", reason: "created" }),
+      expect.objectContaining({ kind: "channel_key_sent", to: "Bob" }),
+    ]);
+    const epochSid = await a.accounts.withAccount(
+      SLOT,
+      async ({ state }) => epochFor(state.groups, CHANNEL)?.sid,
+    );
+
+    // The second device drains: the copy imports the epoch, and no sent
+    // row appears in Bob's chat for a key.
+    const read = await a2.client.drain(a2.ctx);
+    expect(read.channelE2e).toEqual([
+      expect.objectContaining({ kind: "channel_key_received", from: "alice" }),
+    ]);
+    const bobRows = await rowsOf(a2, "Bob");
+    expect(
+      bobRows.some(
+        (r) => r.kind === "out" && typeof r.body === "string" && r.body.includes('"gkey"'),
+      ),
+    ).toBe(false);
+
+    // The second device sends under the imported epoch: no second
+    // rotation, and the line goes out under the same epoch id.
+    const second = await a2.client.sendChannel(a2.ctx, CHANNEL, "secondo", ["alice", "Bob"]);
+    expect(second.channelE2e).toBeUndefined();
+    const a2Sid = await a2.accounts.withAccount(
+      SLOT,
+      async ({ state }) => epochFor(state.groups, CHANNEL)?.sid,
+    );
+    expect(a2Sid).toBe(epochSid);
+    const last = w.grappa.sends.filter((s) => s.target === CHANNEL).at(-1);
+    expect(decodePayload(last?.payload ?? "").sid).toBe(epochSid);
   });
 });
