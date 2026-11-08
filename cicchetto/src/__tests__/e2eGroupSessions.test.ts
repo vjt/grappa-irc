@@ -43,6 +43,7 @@ import {
   decodePayload,
   encodePayload,
   fold,
+  type GkeyInner,
   GROUP_WIRE_VERSION,
   PayloadError,
   parseChannelKeyreqPayload,
@@ -211,6 +212,7 @@ describe("state and constants", () => {
       ch: "#grappa",
       sid: created.sid,
       key: created.key,
+      seq: 0,
       holders: [didFor(RING, "alice"), didFor(RING, "bob")],
     });
     // A gkey names its holders, and the wire refuses one with none.
@@ -490,6 +492,7 @@ describe("importEpoch", () => {
           ch: CHAN,
           sid: newEpochId(),
           key: "not-a-key",
+          seq: 0,
           holders: [didFor(RING, "alice")],
         },
         ALICE_DID,
@@ -499,7 +502,7 @@ describe("importEpoch", () => {
     expect(epochFor(fresh, CHAN)).toBeUndefined();
   });
 
-  it("supersedes by arrival: a new epoch replaces the one held", async () => {
+  it("a rotation successor imports: a higher seq replaces the one held", async () => {
     const aliceGroups = newGroupSessionsState();
     const bobGroups = newGroupSessionsState();
     await encryptChannel(
@@ -512,10 +515,55 @@ describe("importEpoch", () => {
     );
     const first = aliceGkey(aliceGroups);
     bobImports(bobGroups, aliceGroups, NOW);
-    rotateEpochForLeave(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
+    const rotated = rotateEpochForLeave(
+      aliceGroups,
+      CHAN,
+      [didFor(RING, "alice"), didFor(RING, "bob")],
+      NOW,
+    );
+    expect(rotated.seq).toBe(1);
     const second = aliceGkey(aliceGroups);
     expect(second.sid).not.toBe(first.sid);
+    expect(second.seq).toBe(1);
     expect(importEpoch(bobGroups, CHAN, second, ALICE_DID, NOW)).toBe("imported");
+    expect(epochFor(bobGroups, CHAN)?.sid).toBe(second.sid);
+  });
+
+  it("the first valid gkey wins: a second gkey at the same seq is superseded", async () => {
+    const aliceGroups = newGroupSessionsState();
+    const bobGroups = newGroupSessionsState();
+    await encryptChannel(
+      aliceGroups,
+      CHAN,
+      "epoch one",
+      [didFor(RING, "alice"), didFor(RING, "bob")],
+      signAlice,
+      NOW,
+    );
+    const first = aliceGkey(aliceGroups);
+    expect(first.seq).toBe(0);
+    expect(importEpoch(bobGroups, CHAN, first, ALICE_DID, NOW)).toBe("imported");
+    // A concurrent first epoch: same seq, different sid — a late
+    // duplicate, or a mint that lost the race. It is dropped, and the
+    // epoch already taken stays.
+    const rival: GkeyInner = {
+      t: "gkey",
+      ch: CHAN,
+      sid: newEpochId(),
+      key: newEpochKey(),
+      seq: 0,
+      holders: [didFor(RING, "alice"), didFor(RING, "bob")],
+    };
+    expect(importEpoch(bobGroups, CHAN, rival, ALICE_DID, NOW)).toBe("superseded");
+    expect(epochFor(bobGroups, CHAN)?.sid).toBe(first.sid);
+    // A stale seq — below the held one — drops the same way, once the
+    // epoch has advanced past it.
+    rotateEpochForLeave(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
+    const second = aliceGkey(aliceGroups);
+    expect(importEpoch(bobGroups, CHAN, second, ALICE_DID, NOW)).toBe("imported");
+    expect(importEpoch(bobGroups, CHAN, { ...rival, sid: newEpochId() }, ALICE_DID, NOW)).toBe(
+      "superseded",
+    );
     expect(epochFor(bobGroups, CHAN)?.sid).toBe(second.sid);
   });
 });
@@ -647,6 +695,7 @@ describe("rotation", () => {
           ch: CHAN,
           sid: rotated.newSid,
           key: rotated.key,
+          seq: 1,
           holders: [didFor(RING, "alice"), didFor(RING, "bob")],
         },
         ALICE_DID,

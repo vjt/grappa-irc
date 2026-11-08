@@ -1080,19 +1080,81 @@ describe("receiveGkey", () => {
     requestKey(s.bob.deps, s.bob.groups, CHAN);
     receiveGkey(s.bob.deps, s.bob.groups, first, "alice", didFor("alice"));
     const oldSid = epochFor(s.bob.groups, CHAN)?.sid;
-    // A newer epoch from the same sender supersedes by arrival, with no
-    // fresh request: the channel is already armed.
+    // A rotation successor (seq 1) from the same sender imports, with no
+    // fresh request: the channel is already armed. A second gkey at the
+    // same seq would be superseded instead — the first valid gkey wins.
     const second = {
       t: "gkey",
       ch: CHAN,
       sid: newEpochId(),
       key: newEpochKey(),
+      seq: 1,
       holders: [didFor("alice"), didFor("bob")],
     };
     expect(receiveGkey(s.bob.deps, s.bob.groups, second, "alice", didFor("alice"))).toEqual([
       { kind: "channel_key_received", channel: CHAN, from: "alice", sid: second.sid },
     ]);
     expect(epochFor(s.bob.groups, CHAN)?.sid).not.toBe(oldSid);
+  });
+
+  it("drops a second gkey at the same sequence: the first valid gkey wins", async () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
+    const s = sides(clock, roster);
+    await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
+    const first = s.alice.dm.sent[0]?.inner as Record<string, unknown>;
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
+    receiveGkey(s.bob.deps, s.bob.groups, first, "alice", didFor("alice"));
+    const heldSid = epochFor(s.bob.groups, CHAN)?.sid;
+    // A concurrent first epoch: same seq, different sid — a late
+    // duplicate, or a mint that lost the race. It is dropped, and the
+    // epoch already taken stays.
+    const rival = {
+      t: "gkey",
+      ch: CHAN,
+      sid: newEpochId(),
+      key: newEpochKey(),
+      seq: 0,
+      holders: [didFor("alice"), didFor("bob")],
+    };
+    expect(receiveGkey(s.bob.deps, s.bob.groups, rival, "alice", didFor("alice"))).toEqual([
+      {
+        kind: "channel_dropped",
+        channel: CHAN,
+        reason: "superseded-gkey",
+        detail: expect.any(String),
+      },
+    ]);
+    expect(epochFor(s.bob.groups, CHAN)?.sid).toBe(heldSid);
+    // First advance the epoch, so a stale seq is below the held one.
+    const successor = {
+      t: "gkey",
+      ch: CHAN,
+      sid: newEpochId(),
+      key: newEpochKey(),
+      seq: 1,
+      holders: [didFor("alice"), didFor("bob")],
+    };
+    expect(receiveGkey(s.bob.deps, s.bob.groups, successor, "alice", didFor("alice"))).toEqual([
+      { kind: "channel_key_received", channel: CHAN, from: "alice", sid: successor.sid },
+    ]);
+    const stale = {
+      t: "gkey",
+      ch: CHAN,
+      sid: newEpochId(),
+      key: newEpochKey(),
+      seq: 0,
+      holders: [didFor("alice"), didFor("bob")],
+    };
+    expect(receiveGkey(s.bob.deps, s.bob.groups, stale, "alice", didFor("alice"))).toEqual([
+      {
+        kind: "channel_dropped",
+        channel: CHAN,
+        reason: "superseded-gkey",
+        detail: expect.any(String),
+      },
+    ]);
+    expect(epochFor(s.bob.groups, CHAN)?.sid).toBe(successor.sid);
   });
 
   it("drops a bad key, never stores it, never throws", () => {
@@ -1227,6 +1289,7 @@ describe("key copies", () => {
         ch: "#grappa",
         sid,
         key: expect.any(String),
+        seq: 0,
         holders: [didFor("alice"), didFor("bob"), didFor("carol")],
         holderNicks: {
           alice: [didFor("alice")],

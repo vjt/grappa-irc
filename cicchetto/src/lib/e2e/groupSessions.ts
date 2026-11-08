@@ -40,10 +40,16 @@
 // the day passes, and the epoch rotates: the old key is deleted outright
 // — encrypting with it again would hand the departed member new messages
 // under a key they hold — and the new key goes pairwise to the members
-// who remain. A gkey supersedes by ARRIVAL: a valid gkey for a different
-// epoch replaces the one held, whatever order the epochs were minted in.
-// Rotation is only real if clients delete old keys (§4f); this module is
-// where that happens. No keys are kept for channels left (`dropChannel`).
+// who remain. Every epoch carries a SEQUENCE NUMBER — 0 for a first
+// epoch, +1 per rotation — and the FIRST valid gkey wins: a gkey whose
+// seq is not above the held epoch's is dropped, so a late duplicate, or
+// a concurrent mint that lost the race, never replaces the key already
+// taken; only a rotation successor (a higher seq) imports. Two devices
+// that mint the same seq concurrently still fork — each keeps the first
+// it saw — and the fork heals at the next rotation, when one epoch is
+// minted and distributed to all. Rotation is only real if clients delete
+// old keys (§4f); this module is where that happens. No keys are kept
+// for channels left (`dropChannel`).
 //
 // REPLAY. The counter lives inside the signed, encrypted part, and the
 // envelope carries no plaintext counter at all. A receiver keeps, per
@@ -110,6 +116,15 @@ export type StoredEpoch = {
   sid: string;
   /** The 32-byte AES-GCM key, base64 unpadded. */
   key: string;
+  /**
+   * The epoch's sequence number: 0 for a first epoch, +1 per rotation.
+   * The first valid gkey wins: a gkey whose seq is not above the held
+   * epoch's is dropped, so a late duplicate never replaces the key
+   * already taken; a rotation successor (higher seq) still imports. A
+   * record sealed before this field existed opens without it: read it
+   * through `seqOf`.
+   */
+  seq: number;
   /** When the epoch was created (ms since epoch). */
   createdAt: number;
   /** How many messages went under this epoch: 0, it never spoke. */
@@ -247,6 +262,11 @@ export function epochHoldersStale(
   return holdersStale(held.holders, holderNicksOf(held), sentToOf(held), roster);
 }
 
+/** `epoch`'s sequence number, defaulting a record sealed before it existed to 0. */
+export function seqOf(epoch: StoredEpoch): number {
+  return epoch.seq ?? 0;
+}
+
 /** `epoch`'s nick mapping, defaulting a record sealed before it existed to empty. */
 export function holderNicksOf(epoch: StoredEpoch): Record<string, string[]> {
   return epoch.holderNicks ?? {};
@@ -375,11 +395,12 @@ export function createEpoch(
   channel: string,
   holders: string[],
   now: number,
-  extra?: { holderNicks?: Record<string, string[]>; sentTo?: string[] },
+  extra?: { holderNicks?: Record<string, string[]>; sentTo?: string[]; seq?: number },
 ): StoredEpoch {
   return storeEpoch(state, channel, {
     sid: newEpochId(),
     key: newEpochKey(),
+    seq: extra?.seq ?? 0,
     createdAt: now,
     messages: 0,
     counter: 0,
@@ -409,10 +430,12 @@ export function dropChannel(state: GroupSessionsState, channel: string): void {
  * Imports the epoch `gkey` carries for `channel`: a gkey DM brought it,
  * or a grotate inside a channel message. The key must be a 32-byte epoch
  * key, or the import throws and nothing is stored. An import of the epoch
- * already held is a no-op (a re-sent gkey). Otherwise the held epoch is
- * replaced, whatever order the epochs were minted in: a gkey supersedes
- * by arrival, and the new epoch's counters start over. `fromDid` is the
- * did of the member whose gkey it was, for the record.
+ * already held is a no-op (a re-sent gkey). Otherwise the FIRST valid
+ * gkey wins: a gkey whose seq is not above the held epoch's is dropped
+ * as superseded — a late duplicate, or a concurrent mint that lost the
+ * race, never replaces the key already taken — and only a rotation
+ * successor (a higher seq) imports. The new epoch's counters start over.
+ * `fromDid` is the did of the member whose gkey it was, for the record.
  */
 export function importEpoch(
   state: GroupSessionsState,
@@ -420,12 +443,15 @@ export function importEpoch(
   gkey: GkeyInner,
   fromDid: string,
   now: number,
-): "imported" | "already-held" {
+): "imported" | "already-held" | "superseded" {
   if (epochFor(state, channel)?.sid === gkey.sid) return "already-held";
   if (!isEpochKey(gkey.key)) throw new Error(`a gkey for ${gkey.sid} is not an epoch key`);
+  const held = epochFor(state, channel);
+  if (held !== undefined && gkey.seq <= seqOf(held)) return "superseded";
   storeEpoch(state, channel, {
     sid: gkey.sid,
     key: gkey.key,
+    seq: gkey.seq,
     createdAt: now,
     messages: 0,
     counter: 0,
@@ -456,6 +482,7 @@ export function gkeyInner(state: GroupSessionsState, channel: string): GkeyInner
     ch: fold(channel),
     sid: held.sid,
     key: held.key,
+    seq: seqOf(held),
     holders: [...held.holders],
   };
   const byNick = holderNicksOf(held);
@@ -607,10 +634,12 @@ export async function decryptChannel(
     noteCounter(held, senderDid, rotated.c);
     // The new epoch, under the old one's holders: membership did not
     // change on a periodic rotation, so the holder set — and its nick
-    // mapping and sent-to nicks — carry over.
+    // mapping and sent-to nicks — carry over. Its seq is the old one's
+    // +1: the receiver computes the same number from the epoch it holds.
     storeEpoch(state, channel, {
       sid: rotated.sid,
       key: rotated.key,
+      seq: seqOf(held) + 1,
       createdAt: now,
       messages: 0,
       counter: 0,
@@ -651,11 +680,13 @@ export function rotateEpochForLeave(
   holders: string[],
   now: number,
   extra?: { holderNicks?: Record<string, string[]>; sentTo?: string[] },
-): { oldSid: string | null; newSid: string; key: string } {
-  const oldSid = epochFor(state, channel)?.sid ?? null;
+): { oldSid: string | null; newSid: string; key: string; seq: number } {
+  const held = epochFor(state, channel);
+  const oldSid = held?.sid ?? null;
+  const seq = (held === undefined ? 0 : seqOf(held)) + 1;
   dropEpoch(state, channel);
-  const created = createEpoch(state, channel, holders, now, extra);
-  return { oldSid, newSid: created.sid, key: created.key };
+  const created = createEpoch(state, channel, holders, now, { ...extra, seq });
+  return { oldSid, newSid: created.sid, key: created.key, seq };
 }
 
 /**
@@ -695,6 +726,7 @@ export async function buildPeriodicRotation(
   storeEpoch(state, channel, {
     sid: newSid,
     key: newKey,
+    seq: seqOf(held) + 1,
     createdAt: now,
     messages: 0,
     counter: 0,

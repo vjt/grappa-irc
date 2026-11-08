@@ -377,6 +377,13 @@ export type GkeyInner = {
   sid: string;
   key: string;
   holders: string[];
+  /**
+   * The epoch's sequence number: 0 for a first epoch, +1 per rotation.
+   * The first valid gkey wins: a gkey whose seq is not above the held
+   * epoch's is dropped, so a late duplicate never replaces the key
+   * already taken; a rotation successor (higher seq) still imports.
+   */
+  seq: number;
   holderNicks?: Record<string, string[]>;
   sentTo?: string[];
 };
@@ -395,7 +402,12 @@ export function parseGkeyInner(inner: Record<string, unknown>): GkeyInner {
   ) {
     throw new PayloadError("bad holders");
   }
-  const parsed: GkeyInner = { t: "gkey", ch, sid, key, holders: holders as string[] };
+  // An inner sealed before `seq` existed opens as a first epoch.
+  const seq = inner.seq;
+  if (seq !== undefined && (typeof seq !== "number" || !Number.isInteger(seq) || seq < 0)) {
+    throw new PayloadError("bad seq");
+  }
+  const parsed: GkeyInner = { t: "gkey", ch, sid, key, holders: holders as string[], seq: seq ?? 0 };
   if (inner.holderNicks !== undefined) {
     const byNick = inner.holderNicks;
     if (
