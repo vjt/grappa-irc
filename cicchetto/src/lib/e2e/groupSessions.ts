@@ -281,6 +281,40 @@ export function epochHoldersStale(
   return holdersStale(held.holders, holderNicksOf(held), sentToOf(held), roster);
 }
 
+/**
+ * The holder dids still in the roster: the audit's rotator election
+ * input (§4f, (d)). A holder did counts as still a member by the same
+ * rule as `holdersStale` — a roster device list names it, or the epoch's
+ * nick mapping attributes it to a nick still on the roster — so every
+ * holder that holds the same epoch elects the same rotator. The first
+ * of them in sorted order is the designated rotator; when none remain,
+ * nobody rotates (the epoch is stale but there is no holder left to
+ * mint its successor — the next joiner asks, and the designee answers
+ * with a fresh epoch).
+ */
+export function remainingHolders(
+  holders: string[],
+  holderNicks: Record<string, string[]>,
+  roster: RosterDids,
+): string[] {
+  const present = new Set(roster.dids);
+  return holders.filter((holder) => {
+    if (present.has(holder)) return true;
+    return roster.nicks.some((nick) => (holderNicks[fold(nick)] ?? []).includes(holder));
+  });
+}
+
+/** `channel`'s stored epoch's holder dids still in `roster` (`remainingHolders`). */
+export function epochRemainingHolders(
+  state: GroupSessionsState,
+  channel: string,
+  roster: RosterDids,
+): string[] {
+  const held = epochFor(state, channel);
+  if (held === undefined) return [];
+  return remainingHolders(held.holders, holderNicksOf(held), roster);
+}
+
 /** `epoch`'s sequence number, defaulting a record sealed before it existed to 0. */
 export function seqOf(epoch: StoredEpoch): number {
   return epoch.seq ?? 0;

@@ -50,8 +50,10 @@
 //     gkey inner), so any holder can tell a holder left without ever
 //     having DM'd them; a member the key was sent to whose dids never
 //     landed counts as a holder too. A member whose audit finds a
-//     departed holder rotates too, which covers a rotator whose cic was
-//     closed.
+//     departed holder rotates too — but only when it IS the designated
+//     rotator (first remaining holder did): a closed designated
+//     rotator's rotation waits, nobody else usurps it, there is no
+//     timeout election.
 //   * Periodic rotation: daily, one channel message carrying the new key
 //     encrypted under the old key (membership unchanged, so the old key
 //     may carry the new one). The rotator is the first holder did.
@@ -97,6 +99,7 @@ import {
   encryptChannel,
   epochFor,
   epochHoldersStale,
+  epochRemainingHolders,
   type GroupSessionsState,
   gkeyInner,
   holderNicksOf,
@@ -589,8 +592,12 @@ export function onMemberLeft(
  * rotation — the new epoch goes pairwise to the roster that remains —
  * which covers an exit that happened while every cic was closed. The
  * sent-to nicks are reconciled first, so a member whose list landed
- * counts as the holder it is. Nothing when the holders are all still
- * members, or no epoch is held.
+ * counts as the holder it is. Exactly one rotates: the first remaining
+ * holder did in sorted order. A device that is not the designated
+ * rotator waits — the rotator's cic is the one that rotates, and if its
+ * cic is closed the rotation waits with it: nobody else usurps it, and
+ * there is no timeout election (two minters would bifurcate the epoch).
+ * Nothing when the holders are all still members, or no epoch is held.
  */
 export function auditEpochRotation(
   deps: ChannelE2eDeps,
@@ -600,7 +607,11 @@ export function auditEpochRotation(
 ): ChannelE2eResult {
   const res = emptyResult();
   reconcileSentTo(deps, groups, channel);
-  if (!epochHoldersStale(groups, channel, resolveRoster(deps, members))) return res;
+  const roster = resolveRoster(deps, members);
+  if (!epochHoldersStale(groups, channel, roster)) return res;
+  if (designatedRotator(epochRemainingHolders(groups, channel, roster)) !== deps.ownDid) {
+    return res;
+  }
   const resolved = resolveMembers(deps, members);
   const rotated = rotateEpochForLeave(groups, channel, resolved.dids, deps.now(), {
     holderNicks: resolved.byNick,
