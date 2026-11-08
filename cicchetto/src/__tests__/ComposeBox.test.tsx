@@ -2540,7 +2540,10 @@ describe("ComposeBox — the `/` menu and a refusing composer (issue 2584)", () 
     vi.mocked(compose.isDraining).mockReturnValue(false);
   });
 
-  const menuEntries = () => screen.queryAllByRole("option").map((el) => el.textContent);
+  const menuEntries = () =>
+    screen
+      .queryAllByRole("option")
+      .map((el) => el.querySelector(".command-menu-verb")?.textContent);
 
   it("offers commands for a lone `/` in a writable composer", async () => {
     const compose = await import("../lib/compose");
