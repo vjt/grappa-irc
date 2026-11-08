@@ -10,6 +10,7 @@ import {
   onMount,
   Show,
 } from "solid-js";
+import CommonChannelsBanner from "./CommonChannelsBanner";
 import { isDiagEnabled } from "./DiagFloat";
 import E2eRequestBanner from "./E2eRequestBanner";
 import E2eRequestCard from "./E2eRequestCard";
@@ -4835,6 +4836,14 @@ const ScrollbackPane: Component<Props> = (props) => {
             the top even in an empty DM (the "no messages yet" fallback). */}
         <Show when={props.kind === "query"}>
           <PeerAwayBanner networkSlug={props.networkSlug} peer={props.channelName} />
+          {/* Issue 2449 — channels in common with the peer, same in-flow
+              top-row shape as the #270 banner above (same mount, same
+              empty-DM rendering, same "reactive to its store only, never
+              woven into rows()" so it cannot trip the #196/#230
+              tail-follow effect). The row appears once the REST fetch
+              lands; until then nothing renders — locally "no shared
+              channels" is indistinguishable from "lists not loaded yet". */}
+          <CommonChannelsBanner networkSlug={props.networkSlug} peer={props.channelName} />
         </Show>
         <Show
           when={rows().length > 0}

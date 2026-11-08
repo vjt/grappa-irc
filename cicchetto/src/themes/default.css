@@ -13187,6 +13187,36 @@ html.is-ios27-band .shell {
   padding: 0 0.3rem;
 }
 
+/* Issue 2449 — common-channels banner. Same in-flow top-row shape as
+   `.peer-away-banner` above (same mount site, same margins), but the
+   accent is `--accent` rather than `--muted`: this row is window state
+   the operator reads on entry, not an ephemeral notice. */
+.common-channels-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0.25rem 0.5rem 0.5rem 0.5rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  background: var(--bg-alt);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.common-channels-banner-peer {
+  font-weight: bold;
+  color: var(--accent);
+}
+
+.common-channels-banner-list {
+  color: var(--fg);
+}
+
+.common-channels-banner-label {
+  flex: 1 1 auto;
+}
+
 .peer-away-banner-close:hover {
   color: var(--fg);
 }
