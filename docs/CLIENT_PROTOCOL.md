@@ -980,7 +980,11 @@ own with no ciphertext and no signature:
 
 The first member with an open cic who holds the epoch answers with a
 gkey DM; duplicate answers are harmless — a re-sent gkey for the epoch
-already held is a no-op, and the first valid import wins. If nobody
+already held is a no-op, and the first valid import wins. A first epoch
+is imported only after this device asked for the key: a key nobody
+asked for never arms the channel. A key request is answered only while
+the asker is on the roster, and the answer names the asker in the
+epoch's holders. If nobody
 has an open cic, the newcomer waits — there is no server-side
 fallback. A member with no epoch yet creates one when its turn to
 send comes: it mints a fresh epoch key and distributes it pairwise to
@@ -1046,7 +1050,9 @@ store. A rejected message is never silently lost: a channel line that
 fails signature verification, decryption, or the replay check is
 surfaced as an undecryptable event with its reason, and a gkey the
 engine refuses to send is reported as a failed key send, not
-recorded as sent. The inbound replay state is indexed on the sender
+recorded as sent. A channel row that arrives before its key is held
+for retry, bounded in count and time, and retried when the key
+arrives — never dropped silently. The inbound replay state is indexed on the sender
 DEVICE (`received.device`), never on the nick: a rename must not make
 a sender unreadable, and two devices of one subject must not evict
 each other. Two properties of the crypto shape the client: the epoch
