@@ -258,7 +258,8 @@ describe("requestKey", () => {
 describe("onKeyreq", () => {
   it("answers once per asker per minute, then again after the minute", async () => {
     const clock = { t: NOW };
-    const s = sides(clock);
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
+    const s = sides(clock, roster);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const sid = epochFor(s.alice.groups, CHAN)?.sid;
     s.alice.dm.sent.length = 0;
@@ -318,6 +319,35 @@ describe("onKeyreq", () => {
     clock.t = NOW + 60_000;
     onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave");
     expect(epochFor(s.alice.groups, CHAN)?.holders).toEqual(["alice", "bob", "dave"]);
+  });
+
+  it("answers only while the asker is on the roster, and not without one", async () => {
+    const clock = { t: NOW };
+    let members = ["alice", "bob", "dave"];
+    const roster = (channel: string) => (channel === CHAN ? members : undefined);
+    const s = sides(clock, roster);
+    await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
+    const sid = epochFor(s.alice.groups, CHAN)?.sid;
+    // Dave is on the roster: answered.
+    expect(onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave").events).toEqual([
+      { kind: "channel_key_sent", channel: CHAN, to: "dave", sid },
+    ]);
+    // Dave left: the same ask, answered again a minute later, goes unanswered.
+    members = ["alice", "bob"];
+    clock.t = NOW + 60_000;
+    expect(onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave")).toEqual({
+      events: [],
+      outbound: [],
+      copies: [],
+    });
+    // With no roster held at all, nothing is answered either.
+    const noRoster = sides(clock);
+    await sendChannel(noRoster.alice.deps, noRoster.alice.groups, CHAN, "hi", ["alice", "bob"]);
+    expect(onKeyreq(noRoster.alice.deps, noRoster.alice.groups, CHAN, "bob")).toEqual({
+      events: [],
+      outbound: [],
+      copies: [],
+    });
   });
 
   it("a keyreq-served peer's exit rotates the epoch", async () => {
@@ -721,7 +751,8 @@ describe("receiveChannel", () => {
 
   it("answers a newcomer's key request with a gkey DM, and ignores a foreign channel's", async () => {
     const clock = { t: NOW };
-    const s = sides(clock);
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob", "dave"] : undefined);
+    const s = sides(clock, roster);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const sid = epochFor(s.alice.groups, CHAN)?.sid;
     s.alice.dm.sent.length = 0;
@@ -1033,7 +1064,8 @@ describe("key copies", () => {
 
   it("records a copy when answering a key request, and none when nothing is sent", async () => {
     const clock = { t: NOW };
-    const s = sides(clock);
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
+    const s = sides(clock, roster);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const sid = epochFor(s.alice.groups, CHAN)?.sid;
     s.alice.dm.sent.length = 0;
