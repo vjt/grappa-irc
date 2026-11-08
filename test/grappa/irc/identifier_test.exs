@@ -312,6 +312,14 @@ defmodule Grappa.IRC.IdentifierTest do
       refute Identifier.valid_channel?(nil)
     end
 
+    # issue 2599 — `^…$` let a final `\n` through (PCRE's `$` matches before
+    # it); anchored `\A…\z`, it no longer passes.
+    test "rejects a trailing newline" do
+      refute Identifier.valid_channel?("#foo\n")
+      refute Identifier.valid_channel?("#\n")
+      refute Identifier.valid_channel?("+foo\n")
+    end
+
     # Issue 2424 — `/join #` answered "The request was malformed." while the
     # ircd takes `#` as an ordinary channel: bahamut's `IsChannelName` reads
     # the first byte only (`*name == '#' || *name == '&'`) and `m_join` asks
@@ -908,6 +916,11 @@ defmodule Grappa.IRC.IdentifierTest do
       refute Identifier.valid_network_slug?(String.duplicate("a", 33))
       assert Identifier.valid_network_slug?(String.duplicate("a", 32))
     end
+
+    # issue 2599 — the `^…$` trap: PCRE's `$` matches before a final `\n`.
+    test "rejects a trailing newline" do
+      refute Identifier.valid_network_slug?("azzurra\n")
+    end
   end
 
   describe "valid_host?/1" do
@@ -922,6 +935,8 @@ defmodule Grappa.IRC.IdentifierTest do
       refute Identifier.valid_host?("with space")
       refute Identifier.valid_host?("foo\nbar")
       refute Identifier.valid_host?("foo\x00bar")
+      # issue 2599 — only the FINAL `\n` got through, under `^…$`.
+      refute Identifier.valid_host?("irc.azzurra.chat\n")
     end
 
     test "rejects empty / nil" do
@@ -952,6 +967,13 @@ defmodule Grappa.IRC.IdentifierTest do
       refute Identifier.valid_sender?("")
       refute Identifier.valid_sender?(nil)
       refute Identifier.valid_sender?("with space")
+    end
+
+    # issue 2599 — two arms took a final `\n` under `^…$`, the host one and
+    # the `<meta>` one, so this stays red until BOTH are anchored.
+    test "rejects a trailing newline on any arm" do
+      refute Identifier.valid_sender?("<local>\n")
+      refute Identifier.valid_sender?("irc.azzurra.chat\n")
     end
   end
 

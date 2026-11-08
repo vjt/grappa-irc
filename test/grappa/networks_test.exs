@@ -151,7 +151,7 @@ defmodule Grappa.NetworksTest do
     test "rejects every slug Identifier.valid_network_slug?/1 rejects" do
       # Empty string is tested via `validate_required` — here we want
       # slugs that pass `validate_required` but fail the syntax rule.
-      for slug <- ["Azzurra", "foo/bar", "foo bar", "foo.bar", String.duplicate("a", 33)] do
+      for slug <- ["Azzurra", "foo/bar", "foo bar", "foo.bar", "azzurra\n", String.duplicate("a", 33)] do
         refute Identifier.valid_network_slug?(slug),
                "test fixture invariant: Identifier should reject #{inspect(slug)}"
 
