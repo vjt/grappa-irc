@@ -204,6 +204,13 @@ jobs:
     permissions:
       contents: read
       packages: read
+    # The compose pin sits at JOB level, not inside the step's script, because
+    # it has two readers: the shell that downloads the binary, and the cache
+    # key, which is an expression evaluated before any shell runs. One literal
+    # read by both is what lets a version bump miss the cache instead of
+    # restoring the previous version's binary (issue 2603).
+    env:
+      COMPOSE_VER: v5.0.2
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -248,22 +255,98 @@ jobs:
             exit 1;
           }
 
+      - name: Restore docker compose plugin (issue 2603)
+        # The plugin used to be downloaded from github.com/docker/compose/
+        # releases on every run, once per shard. On 2026-11-08 that one
+        # release-asset host answered 504 and all four shards of PR 2602 went
+        # red in ~40s (run 42465678187), with nothing in the PR at fault; it
+        # reproduced outside CI the same morning while other repos' release
+        # assets answered 200. A restored binary never asks that host.
+        #
+        # The key carries `runner.os`, `runner.arch` and COMPOSE_VER, and there
+        # is deliberately NO `restore-keys`: a prefix match would hand a version
+        # bump the PREVIOUS version's binary. A bump must miss and download.
+        # The next step asserts the version it ends up with, so that rule does
+        # not rest on this key alone.
+        #
+        # Reach: an entry saved by a pull request is visible to that pull
+        # request only, one saved on `main` to every pull request. Until a
+        # `main` run has saved one, a PR's first run is a miss.
+        id: compose-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.docker/cli-plugins/docker-compose
+          key: ${{ runner.os }}-${{ runner.arch }}-docker-compose-${{ env.COMPOSE_VER }}
+
       - name: Upgrade docker compose plugin
         # Runner-shipped docker compose is too old to grok the
         # cicchetto/e2e/compose.yaml `include:` + per-service override
         # pattern (`services.leaf-v6 conflicts with imported resource`).
         # Newer compose merges per-service overrides into the included
         # file's service definition; older compose treats them as a
-        # duplicate-resource error. Pin to v5.0.2 — matches the local
-        # dev environment (CI/dev parity) so a workflow that passes
-        # locally also passes on the runner.
+        # duplicate-resource error. Pinned (COMPOSE_VER, job env above) to
+        # match the local dev environment (CI/dev parity) so a workflow
+        # that passes locally also passes on the runner.
+        #
+        # The download runs on a cache MISS only. `--retry`, not
+        # `--retry-all-errors`: plain retry already covers the failure that
+        # was measured — 504 is in curl's transient set, and a 504-then-200
+        # server was recovered from locally — whereas `--retry-all-errors`
+        # also retries a 404, so a mistyped COMPOSE_VER would go red a minute
+        # late for nothing. The retries absorb a transient 5xx or timeout like
+        # the one measured; a sustained outage is what the cache is for.
+        #
+        # Two checks back the cache key. The key must end in the pin THIS
+        # shell sees: were COMPOSE_VER moved into a step's env, the key would
+        # expand it to '' and turn constant, and the first bump would then
+        # restore the old binary from an entry that cannot be overwritten and,
+        # read on every run, is never evicted. Failing here, before the save
+        # step, keeps that entry from being written at all. And whichever way
+        # the binary arrived, the job runs the pinned version or stops.
+        env:
+          CACHE_HIT: ${{ steps.compose-cache.outputs.cache-hit }}
+          CACHE_KEY: ${{ steps.compose-cache.outputs.cache-primary-key }}
         run: |
-          COMPOSE_VER=v5.0.2
-          mkdir -p ~/.docker/cli-plugins
-          curl -fsSL "https://github.com/docker/compose/releases/download/${COMPOSE_VER}/docker-compose-linux-x86_64" \
-            -o ~/.docker/cli-plugins/docker-compose
+          case "$CACHE_KEY" in
+            *"-${COMPOSE_VER}") ;;
+            *)
+              echo "::error::compose cache key '${CACHE_KEY}' does not end in the pin ${COMPOSE_VER} (issue 2603)"
+              exit 1
+              ;;
+          esac
+          if [ "$CACHE_HIT" != "true" ]; then
+            mkdir -p ~/.docker/cli-plugins
+            curl -fsSL --retry 5 --retry-delay 10 \
+              "https://github.com/docker/compose/releases/download/${COMPOSE_VER}/docker-compose-linux-x86_64" \
+              -o ~/.docker/cli-plugins/docker-compose
+          fi
           chmod +x ~/.docker/cli-plugins/docker-compose
           docker compose version
+          got="$(docker compose version --short)"
+          if [ "${got#v}" != "${COMPOSE_VER#v}" ]; then
+            echo "::error::docker compose reports ${got}, the pin is ${COMPOSE_VER} (issue 2603)"
+            exit 1
+          fi
+
+      - name: Save docker compose plugin (issue 2603)
+        # ONE writer, for the reason the dep cache's save step gives below:
+        # four shards would race to upload one immutable entry.
+        #
+        # It runs straight after the download, not at the end of the job, so a
+        # red suite still warms the cache. And it keeps the IMPLIED `success()`
+        # — unlike the dep cache's `success() || failure()` — so only a binary
+        # that passed the version check above is ever saved: an entry cannot be
+        # overwritten, and a bad one would serve every run under its key.
+        #
+        # `path:` MUST stay byte-identical to the restore step's. The cache
+        # finds an entry by key AND by a version hashed from the `path:` text,
+        # so a drift is a miss on every run — green, silent, and this fix
+        # undone. Pinned by test/infra/integration_compose_cache_test.bats.
+        if: matrix.shard == 1 && steps.compose-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.docker/cli-plugins/docker-compose
+          key: ${{ steps.compose-cache.outputs.cache-primary-key }}
 
       - name: Log in to GHCR
         # The bahamut + services images live at

@@ -154,8 +154,12 @@ cache_keys() {
 
     # Anti-vacuity on both sides: ci.yml carries the mix, PLT and bun caches;
     # integration.yml carries this one. An empty side would pass silently.
-    [ "$(printf '%s\n' "$e2e_keys" | grep -c . || true)" -ge 2 ] || {
-        echo "found no cache keys in integration.yml — the parser is wrong" >&2
+    # Counted by THIS cache's namespace, not by line: integration.yml also
+    # carries the compose plugin's keys (issue 2603), which alone would
+    # satisfy a bare count with the mix keys unparsed.
+    [ "$(grep -cF -- '-e2e-musl-mix-' <<<"$e2e_keys" || true)" -ge 2 ] || {
+        echo "found <2 e2e-musl-mix keys in integration.yml — the parser is wrong:" >&2
+        printf '%s\n' "$e2e_keys" >&2
         return 1
     }
     [ "$(printf '%s\n' "$ci_keys" | grep -c . || true)" -ge 4 ] || {
