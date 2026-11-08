@@ -1857,6 +1857,10 @@ already shows. Two semantics matter:
   per-channel `/members` endpoint expresses as HTTP 204.
 - **Any case answers alike.** The nick is folded with the network's
   casemapping server-side, so `VJT`, `vjt` and `VjT` return the same list.
+- **Empty is empty, either way.** A peer that shares no seeded channel —
+  or is not on the network at all — answers `{"channels": []}`; the two
+  are indistinguishable from this session's view, so do not render them
+  differently.
 
 **Client usage (what cicchetto does):** fetch once when a query window
 opens or regains focus — that closes the cold-start gap and the
@@ -1871,8 +1875,11 @@ focus/resume instead of trusting the derivation while paused.
 The payload shape is additive, but the protocol still moved to v64 on
 the #1393d rule: a new verb in `Session.Wire` changes the shape digest,
 and additivity describes what the server EMITS, not what a client
-REQUIRES. A server predating this endpoint 404s the route; treat that
-as "unknown", not "no channels in common".
+REQUIRES. Check `protocol_version >= 64` before calling it: below 64
+the route does not exist and answers 404 with the SPA page — which is
+NOT "no shared channels", so key off the number, not the status. A
+server predating this endpoint 404s the route; treat that as "unknown",
+not "no channels in common".
 
 ## 6. Rate limiting & flood protection (#630)
 
