@@ -11,7 +11,7 @@ defmodule Grappa.Session.EventRouterTest do
   """
   use ExUnit.Case, async: true
 
-  alias Grappa.IRC.{Identifier, Ignore, JoinFailure, Message, Parser}
+  alias Grappa.IRC.{E2e, Identifier, Ignore, JoinFailure, Message, Parser}
 
   alias Grappa.Session.{
     Deps,
@@ -8120,7 +8120,7 @@ defmodule Grappa.Session.EventRouterTest do
     # client puts on the wire.
     defp e2e_line(verb, msgid) do
       payload = ~s({"v":2,"body":"#{String.duplicate("x", 900)}"})
-      {:ok, [first | _]} = Grappa.IRC.E2e.fragment(verb, msgid, {"If4x36FUomE", "AaZaARRDyBk"}, payload, 300)
+      {:ok, [first | _]} = E2e.fragment(verb, msgid, {"If4x36FUomE", "AaZaARRDyBk"}, payload, 300)
       first
     end
 
@@ -8129,7 +8129,7 @@ defmodule Grappa.Session.EventRouterTest do
     # channel is malformed and the router drops it (protocol v63).
     defp e2e_channel_line(verb, msgid) do
       payload = ~s({"v":2,"body":"#{String.duplicate("x", 900)}"})
-      {:ok, [first | _]} = Grappa.IRC.E2e.fragment(verb, msgid, {"If4x36FUomE", "*"}, payload, 300)
+      {:ok, [first | _]} = E2e.fragment(verb, msgid, {"If4x36FUomE", "*"}, payload, 300)
       first
     end
 
@@ -8137,7 +8137,7 @@ defmodule Grappa.Session.EventRouterTest do
 
     test "a PRIVMSG to our nick becomes one :e2e_fragment effect and nothing is persisted" do
       line = e2e_line(:msg, "q83vEjRWeJA")
-      {:ok, fragment} = Grappa.IRC.E2e.parse(line)
+      {:ok, fragment} = E2e.parse(line)
 
       assert {:cont, _, [{:e2e_fragment, "vjt-claude", ^fragment, nil}]} =
                EventRouter.route(msg(:privmsg, ["vjt", line], @peer), base_state())
@@ -8168,7 +8168,7 @@ defmodule Grappa.Session.EventRouterTest do
     # no channel at all.
     test "an E2E line to a channel we joined becomes one :e2e_fragment effect naming the channel" do
       line = e2e_channel_line(:msg, "q83vEjRWeJA")
-      {:ok, fragment} = Grappa.IRC.E2e.parse(line)
+      {:ok, fragment} = E2e.parse(line)
       joined = base_state(%{members: %{"#grappa" => %{"vjt-claude" => []}}})
 
       assert {:cont, _, [{:e2e_fragment, "vjt-claude", ^fragment, "#grappa"}]} =
