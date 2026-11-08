@@ -1446,6 +1446,15 @@ describe("encrypted chats, channel presence", () => {
       { nick: "Bob", modes: [] },
     ]);
     setServerProtocol(63);
+    if (tagged) {
+      // Bob asks for the key first: Alice is the topic designee, so her
+      // drain mints the first epoch to answer him — a send never mints
+      // one on its own. Bob drains and imports it, then the first channel
+      // message goes out under the epoch.
+      await b.client.requestChannelKey(b.ctx, CHANNEL);
+      await chats.drainE2e(net.slug);
+      await b.client.drain(b.ctx);
+    }
     await chats.sendChannelEncrypted(net.slug, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
     return { dispose, key };
   }

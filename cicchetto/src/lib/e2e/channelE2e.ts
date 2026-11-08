@@ -687,8 +687,8 @@ export async function sendChannel(
       });
     }
     const asked = requestKey(deps, groups, channel);
-    res.events.push(...asked.events);
     res.events.push({ kind: "channel_key_missing", channel });
+    res.events.push(...asked.events);
     res.outbound.push(...asked.outbound);
     res.copies.push(...asked.copies);
     return res;
