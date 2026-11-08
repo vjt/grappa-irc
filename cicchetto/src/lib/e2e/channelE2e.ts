@@ -76,7 +76,9 @@ import {
   importEpoch,
   keyreqAnswerDue,
   keyreqPayload,
+  keyreqSentAtFor,
   markKeyreqAnswered,
+  markKeyreqSent,
   rotateEpochForLeave,
   rotationDue,
 } from "./groupSessions";
@@ -243,7 +245,8 @@ export function distributeKey(
  * a newcomer makes when it holds no epoch. The caller flushes the
  * outbound; every member with an open cic who holds the epoch answers
  * with a gkey DM (`onKeyreq`). Nothing when an epoch is already held:
- * there is nothing to ask for.
+ * there is nothing to ask for. The request is recorded, so a first
+ * epoch is only imported after asking (`receiveGkey`).
  */
 export function requestKey(
   deps: ChannelE2eDeps,
@@ -252,6 +255,7 @@ export function requestKey(
 ): ChannelE2eResult {
   const res = emptyResult();
   if (epochFor(groups, channel) !== undefined) return res;
+  markKeyreqSent(groups, channel, deps.now());
   res.events.push({ kind: "channel_key_requested", channel });
   res.outbound.push({
     target: channel,
@@ -574,10 +578,13 @@ export async function receiveChannel(
 
 /**
  * A gkey DM from `from`'s device `fromDid`, as the Olm engine delivered
- * its inner message: imports the epoch it carries. A re-sent key is a
- * no-op; a key for an epoch whose holders name someone no longer in the
- * roster is stale and is dropped, never stored; a key that is not an
- * epoch key is dropped, never stored. Never throws on wire input.
+ * its inner message: imports the epoch it carries. The sender must be
+ * on the roster when one is held, and a first epoch is imported only
+ * after this device asked for the key — a key nobody asked for never
+ * arms the channel. A re-sent key is a no-op; a key for an epoch whose
+ * holders name someone no longer in the roster is stale and is dropped,
+ * never stored; a key that is not an epoch key is dropped, never
+ * stored. Never throws on wire input.
  */
 export function receiveGkey(
   deps: ChannelE2eDeps,
@@ -600,13 +607,39 @@ export function receiveGkey(
       },
     ];
   }
+  const roster = deps.rosterFor?.(gkey.ch);
+  if (roster !== undefined && !roster.some((m) => foldOf(m) === foldOf(from))) {
+    return [
+      {
+        kind: "channel_dropped",
+        channel: gkey.ch,
+        reason: "sender-not-in-roster",
+        detail: "the sender is not on the roster",
+      },
+    ];
+  }
   const held = epochFor(groups, gkey.ch);
+  if (held === undefined && keyreqSentAtFor(groups, gkey.ch) === undefined) {
+    // A first epoch is imported only after this device asked for the
+    // key: a key nobody asked for never arms the channel, and the audit
+    // — which returns early with no epoch held — never DMs a clear
+    // channel's roster over it. With no roster held the sender check
+    // above passes provisionally; the audit rotates if the holders
+    // prove stale once the roster is in.
+    return [
+      {
+        kind: "channel_dropped",
+        channel: gkey.ch,
+        reason: "not-requested",
+        detail: "no key request is outstanding for the channel",
+      },
+    ];
+  }
   if (held !== undefined && held.sid !== gkey.sid) {
     // Replacing an epoch: a gkey whose holders name someone no longer in
-    // the roster is stale — the epoch it opens is already dead. A
-    // newcomer with no epoch takes any well-formed key; the audit is what
-    // rotates it if the holders prove stale once the roster is in.
-    const roster = deps.rosterFor?.(gkey.ch);
+    // the roster is stale — the epoch it opens is already dead. The
+    // audit is what rotates it if the holders prove stale once the
+    // roster is in.
     if (
       roster !== undefined &&
       gkey.holders.some((holder) => !roster.some((m) => foldOf(m) === holder))
