@@ -300,33 +300,36 @@ defmodule Grappa.ServerSettings do
   @spec max_upload_per_file_cap_bytes() :: unquote(@max_upload_per_file_cap_bytes)
   def max_upload_per_file_cap_bytes, do: @max_upload_per_file_cap_bytes
 
+  # ONE predicate, used by both the writer's guard and the pure validator
+  # below (issue 2546). Two copies would let a refusal drift back into the
+  # write pass — exactly the defect 2546 removes — and nothing would go red.
+  defguardp is_valid_per_file_cap(category, n)
+            when category in @upload_categories and is_integer(n) and n > 0 and
+                   n <= @max_upload_per_file_cap_bytes
+
   @doc """
   Pins the per-file upload byte cap for `category`. A positive integer no
   larger than `max_upload_per_file_cap_bytes/0`.
   """
   @spec put_upload_per_file_cap_bytes(upload_category(), pos_integer()) ::
           :ok | {:error, :invalid_value | :db_unavailable}
-  def put_upload_per_file_cap_bytes(category, n)
-      when category in @upload_categories and is_integer(n) and n > 0 and
-             n <= @max_upload_per_file_cap_bytes do
+  def put_upload_per_file_cap_bytes(category, n) when is_valid_per_file_cap(category, n) do
     put_raw(cap_key_for(category), Integer.to_string(n))
   end
 
   def put_upload_per_file_cap_bytes(_, _), do: {:error, :invalid_value}
 
   @doc """
-  Pure validity check for `put_upload_per_file_cap_bytes/2` — the same
-  predicate the writer's guard carries. Exists so a caller can validate a
+  Pure validity check for `put_upload_per_file_cap_bytes/2` — the SAME
+  guard, via `is_valid_per_file_cap/2`. Exists so a caller can validate a
   whole body BEFORE writing any of it (issue 2546) without probing by
-  writing, and so the predicate is restated in exactly one place.
+  writing.
   """
   @spec valid_upload_per_file_cap_bytes?(upload_category(), term()) :: boolean()
-  def valid_upload_per_file_cap_bytes?(category, n)
-      when category in @upload_categories and is_integer(n) and n > 0 and
-             n <= @max_upload_per_file_cap_bytes,
-      do: true
+  def valid_upload_per_file_cap_bytes?(category, n) when is_valid_per_file_cap(category, n),
+    do: true
 
-  def valid_upload_per_file_cap_bytes?(_category, _n), do: false
+  def valid_upload_per_file_cap_bytes?(_, _), do: false
 
   defp cap_key_for(:image), do: @key_upload_image_per_file_cap_bytes
   defp cap_key_for(:video), do: @key_upload_video_per_file_cap_bytes
