@@ -367,6 +367,36 @@ defmodule GrappaWeb.E2eControllerTest do
       assert did == device.did
     end
 
+    # Channel E2E (protocol v62): a queued channel message fetches with
+    # its channel, a DM with null — one shape for push and fetch.
+    test "GET carries the channel of a queued channel message, null for a DM", %{
+      conn: conn,
+      vjt: vjt
+    } do
+      network = idle_network(vjt)
+      device = listed_device!(vjt, network)
+
+      {:ok, channel_entry} =
+        E2eInbox.put(device, %{
+          sender: "alice",
+          from_did: @alice,
+          verb: :msg,
+          msgid: "q83vEjRWeJA",
+          payload: @payload,
+          channel: "#grappa"
+        })
+
+      dm = queue!(device, "bob", :msg)
+
+      [fetched_channel, fetched_dm] =
+        json_response(get(conn, inbox_path(network, device)), 200)["messages"]
+
+      assert fetched_channel["channel"] == "#grappa"
+      assert fetched_channel["id"] == channel_entry.id
+      assert fetched_dm["channel"] == nil
+      assert fetched_dm["id"] == dm.id
+    end
+
     test "GET pages past ?after, and refuses a cursor that is not a count", %{conn: conn, vjt: vjt} do
       network = idle_network(vjt)
       device = listed_device!(vjt, network)

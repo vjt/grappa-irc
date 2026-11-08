@@ -1617,6 +1617,28 @@ defmodule Grappa.Protocol do
   # `channel` field and shows the message as a DM from its sender —
   # degraded, not broken — and never sends to a channel, since the door
   # answers 400 on a server predating the number.
+  #
+  # ---------------------------------------------------------------------------
+  # 63 — `channel` on `e2e_message` is OPTIONAL, not required
+  # ---------------------------------------------------------------------------
+  #
+  # CHANGED: the `channel` key of `SessionWire.e2e_message_payload` moved
+  # from required-but-nullable to optional (`optional(:channel)`). A server
+  # predating v63 sends no `channel` key at all, and a client that REQUIRED it
+  # dropped every such E2E push and inbox page as malformed — the exact
+  # break the #1393d rule exists to name. The server still EMITS the key
+  # on every message (null for a DM); only the client's requirement moved,
+  # so a v63 client keeps reading servers predating v63 and an older client keeps
+  # ignoring the unknown field.
+  # Bumped on the #1393d rule: the shape moved (`q: ["channel"]` in the
+  # generated schema), and the pin refused the digest while the number
+  # stood still.
+  #
+  # Checked for a collision before claiming 63: origin/main carries 62.
+  #
+  # @min_protocol_version stays at 1: an older client ignores an unknown
+  # `channel` field and shows the message as a DM from its sender —
+  # degraded, not broken.
   @protocol_version 63
   @min_protocol_version 1
 

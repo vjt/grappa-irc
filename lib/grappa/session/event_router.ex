@@ -438,6 +438,10 @@ defmodule Grappa.Session.EventRouter do
   #
   # Reassembly is NOT done here: it needs the clock and a buffer that
   # outlives one line, which `Session.Server` owns.
+  # A channel line whose frame names a single device instead of `*` is
+  # dropped here, not delivered to that device: the channel frame has no
+  # single recipient (protocol v62), and a line that names one would
+  # reach one device while the sender believes the channel has it.
   @spec route_e2e(Message.t(), state()) :: {:cont, state(), [effect()]}
   defp route_e2e(%Message{command: :privmsg, params: [target, body]} = msg, state) do
     sender = Message.sender_nick(msg)
@@ -445,7 +449,8 @@ defmodule Grappa.Session.EventRouter do
     with false <- nick_eq?(sender, state.nick),
          true <- Identifier.wire_nick?(sender),
          {:ok, channel} <- e2e_channel(target, state),
-         {:ok, fragment} <- E2e.parse(body) do
+         {:ok, fragment} <- E2e.parse(body),
+         true <- channel == nil or fragment.to == "*" do
       {:cont, state, [{:e2e_fragment, sender, fragment, channel}]}
     else
       _ -> {:cont, state, []}

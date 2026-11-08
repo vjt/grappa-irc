@@ -1197,6 +1197,7 @@ export const S_SessionWireE2eVerb = { e: [...SESSION_WIRE_E2E_VERB] } as const;
 // Grappa.Session.Wire.e2e_message_payload/0
 export const S_SessionWireE2eMessagePayload = {
   o: {
+    channel: { u: ["s", "z"] },
     kind: { l: "e2e_message" },
     id: "i",
     network: "s",
@@ -1207,8 +1208,8 @@ export const S_SessionWireE2eMessagePayload = {
     msgid: "s",
     payload: "s",
     own: "b",
-    channel: { u: ["s", "z"] },
   },
+  q: ["channel"],
 } as const;
 
 // Grappa.Session.Wire.e2e_inbox_payload/0
