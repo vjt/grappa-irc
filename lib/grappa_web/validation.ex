@@ -65,8 +65,9 @@ defmodule GrappaWeb.Validation do
   @doc """
   Returns `:ok` if `name` is a syntactically valid IRC PRIVMSG read
   target — either a channel name (`#`/`&`/`+`/`!` sigil per RFC 2812
-  §1.3), a nick (RFC 2812 §2.3.1), or the Grappa-internal synthetic
-  `"$server"` pseudo-target used for the server-messages window.
+  §1.3), a peer nick as the upstream allows it (`Identifier.wire_nick?/1`,
+  issue 2599: IRCnet's `foo~`, a collision UID), or the Grappa-internal
+  synthetic `"$server"` pseudo-target used for the server-messages window.
 
   `"$server"` is not a real IRC target — it is a Grappa-internal name
   written by `Grappa.Session.Server` when persisting server NOTICEs,
@@ -86,7 +87,7 @@ defmodule GrappaWeb.Validation do
   def validate_target_name("$server"), do: :ok
 
   def validate_target_name(name) do
-    if Identifier.valid_channel?(name) or Identifier.valid_nick?(name),
+    if Identifier.valid_channel?(name) or Identifier.wire_nick?(name),
       do: :ok,
       else: {:error, :bad_request}
   end

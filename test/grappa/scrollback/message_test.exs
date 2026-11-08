@@ -305,10 +305,23 @@ defmodule Grappa.Scrollback.MessageTest do
       refute Ecto.Changeset.get_change(a, :channel) == Ecto.Changeset.get_change(b, :channel)
     end
 
+    # issue 2599 — the key of a DM row is a nick the upstream decided: the
+    # peer's on an outbound DM, OURS at receipt on an inbound one, and a
+    # collision renames us to a UID.
+    test "accepts a DM key the upstream allows (IRCnet `~`, a collision UID)" do
+      for nick <- ["foo~", "~foo", "0AAAAAAAB"] do
+        cs = Message.changeset(%Message{}, %{@valid_attrs | channel: nick})
+        assert cs.valid?, "expected #{inspect(nick)} to be a valid DM key"
+      end
+    end
+
     test "rejects a channel that is neither a valid channel nor a valid nick" do
-      cs = Message.changeset(%Message{}, %{@valid_attrs | channel: "123bad"})
-      refute cs.valid?
-      assert {"is not a valid IRC identifier", _} = cs.errors[:channel]
+      # Was "123bad": a leading digit is a nick since issue 2599 (UIDs).
+      for name <- ["bad,target", "with space"] do
+        cs = Message.changeset(%Message{}, %{@valid_attrs | channel: name})
+        refute cs.valid?
+        assert {"is not a valid IRC identifier", _} = cs.errors[:channel]
+      end
     end
 
     # BUG2 fix-up: "$server" is the synthetic channel for server-origin NOTICEs

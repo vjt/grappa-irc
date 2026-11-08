@@ -98,6 +98,24 @@ defmodule GrappaWeb.ValidationTest do
   # where the target IS the persist key, so admitting `@#chan` there would
   # manufacture a phantom `@#chan` window on the outbound side — the exact
   # defect #1303 fixes on the inbound side.
+  # issue 2599 — a DM window is named by the PEER's nick, which the upstream
+  # decides: IRCnet's `foo~` / `~foo`, a collision UID.
+  describe "validate_target_name/1 and validate_post_target_name/1 (issue 2599)" do
+    test "accept a peer nick the upstream allows" do
+      for nick <- ["foo~", "~foo", "0AAAAAAAB"] do
+        assert Validation.validate_target_name(nick) == :ok
+        assert Validation.validate_post_target_name(nick) == :ok
+      end
+    end
+
+    test "still refuse what is neither a channel nor a nick" do
+      for name <- ["bad,target", "with space", "a.b", "$foo"] do
+        assert Validation.validate_target_name(name) == {:error, :bad_request}
+        assert Validation.validate_post_target_name(name) == {:error, :bad_request}
+      end
+    end
+  end
+
   describe "validate_wire_recipient_name/2 (#1301)" do
     @bahamut ["@", "+"]
     @halfop ["@", "%", "+"]
