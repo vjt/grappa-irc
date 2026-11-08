@@ -2141,6 +2141,29 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Returns the sorted list of channels the caller shares with `nick` in
+  the given session — the in-memory read behind issue 2449.
+
+  No IRC round trip and no DB write: the answer is read off the live
+  `Session.Server.state.members` map (maintained from JOIN/PART/KICK/
+  QUIT/NICK + the 353/366 seed burst). Only channels whose NAMES burst
+  has landed count — a channel joined but pre-366 is EXCLUDED, not
+  reported as "not shared", because its member list is unknowable yet
+  (same seeded discrimination as `list_members/3`).
+
+  The nick is passed RAW and folded with the network casemapping inside
+  the session, so `VJT`, `vjt` and `VjT` answer alike. Returns
+  `{:error, :no_session}` if no session is registered for
+  `(subject, network_id)`.
+  """
+  @spec common_channels(subject(), integer(), String.t()) ::
+          {:ok, [String.t()]} | {:error, :no_session}
+  def common_channels(subject, network_id, nick)
+      when is_subject(subject) and is_integer(network_id) and is_binary(nick) do
+    call_session(subject, network_id, {:common_channels, nick})
+  end
+
+  @doc """
   Returns the cached topic for `channel` in the given session.
 
   Serves from the in-memory topic cache — no upstream TOPIC query is

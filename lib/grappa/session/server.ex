@@ -2912,6 +2912,34 @@ defmodule Grappa.Session.Server do
     {:reply, {:ok, counts}, state}
   end
 
+  # Returns the sorted list of channels the caller shares with `nick` in
+  # this session — the in-memory read behind issue 2449. Public via
+  # `Grappa.Session.common_channels/3`.
+  #
+  # Read over `state.members`, no IRC round trip and no DB write: the map
+  # is maintained incrementally by `EventRouter` from JOIN/PART/KICK/
+  # QUIT/NICK + the 353/366 seed burst on every (re)join, so the answer
+  # is the live view, not a snapshot. `channels_with_member/2` does the
+  # linear scan; the seeded filter below is what keeps the answer honest:
+  # a channel joined but pre-366 holds only self in the map, so it is
+  # EXCLUDED rather than reported as "not shared" — same discrimination
+  # as `list_members/3` (`:uninitialized` there, omission here, since a
+  # per-channel unknown cannot be expressed in a flat list).
+  #
+  # The nick arrives RAW from the facade and is folded with the network
+  # casemapping (`fold_key/2`) before the lookup, because the members-map
+  # keys are folded at ingress (#537) — a bare `String.downcase` would
+  # miss non-ASCII nicks the same way it missed `#CAFÉ` for topics.
+  def handle_call({:common_channels, nick}, _, state) when is_binary(nick) do
+    folded = fold_key(state, nick)
+
+    channels =
+      EventRouter.channels_with_member(state.members, folded)
+      |> Enum.filter(&MapSet.member?(state.seeded_channels, &1))
+
+    {:reply, {:ok, channels}, state}
+  end
+
   # Returns a snapshot of the topic cache for `channel`. Serves from cache —
   # no upstream query. Public via `Grappa.Session.get_topic/3`.
   def handle_call({:get_topic, channel}, _, state) when is_binary(channel) do
