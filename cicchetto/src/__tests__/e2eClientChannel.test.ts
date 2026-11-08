@@ -11,7 +11,7 @@
 // The protocol version is the module signal (`serverProtocol.ts`): 63
 // unless a test sets it lower.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { epochFor } from "../lib/e2e/groupSessions";
+import { epochFor, HELD_ROW_TTL_MS } from "../lib/e2e/groupSessions";
 import { decodePayload, encodePayload } from "../lib/e2e/wire";
 import { __resetServerProtocolForTests, setServerProtocol } from "../lib/serverProtocol";
 import { chat, inboxOf, latestGrappa, pair, rowsOf, SLOT } from "./helpers/e2eClients";
@@ -194,9 +194,14 @@ describe("e2eClient channel", () => {
     ]);
     // The transport still delivers to Bob here — the epoch is what locks
     // him out, not the delivery: he holds the old epoch, the new message
-    // names a new sid.
+    // names a new sid. The row is held for a key that will never come,
+    // so this drain reports nothing; once the hold expires it surfaces
+    // as undecryptable.
     const bobRead = await b.client.drain(b.ctx);
-    expect(bobRead.channelE2e).toEqual([
+    expect(bobRead.channelE2e).toBeUndefined();
+    w.now += HELD_ROW_TTL_MS + 1;
+    const bobExpired = await b.client.drain(b.ctx);
+    expect(bobExpired.channelE2e).toEqual([
       expect.objectContaining({ kind: "channel_undecryptable", reason: "no-session" }),
     ]);
   });
@@ -524,5 +529,130 @@ describe("channel rotation reaches our other device", () => {
     expect(a2Sid).toBe(epochSid);
     const last = w.grappa.sends.filter((s) => s.target === CHANNEL).at(-1);
     expect(decodePayload(last?.payload ?? "").sid).toBe(epochSid);
+  });
+});
+
+describe("a channel row that arrives before its key", () => {
+  it("holds the row, then reads it once the key arrives", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    w.grappa.joinChannel(CHANNEL, a.nick);
+    w.grappa.joinChannel(CHANNEL, b.nick);
+    const roster = rosterFor(["alice", "Bob"]);
+    a.ctx.channelMembers = roster;
+    b.ctx.channelMembers = roster;
+
+    const sent = await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
+    expect(sent.channelE2e).toEqual([
+      expect.objectContaining({ kind: "channel_rotated", reason: "created" }),
+      expect.objectContaining({ kind: "channel_key_sent", to: "Bob" }),
+    ]);
+    const epochSid = await a.accounts.withAccount(
+      SLOT,
+      async ({ state }) => epochFor(state.groups, CHANNEL)?.sid,
+    );
+
+    // The gkey DM never reaches Bob's drain: it stays stranded below the
+    // watermark, and only the channel row arrives — before its key.
+    const realDoor = b.ctx.door;
+    let filtered = false;
+    b.ctx.door = (did) => {
+      const door = realDoor(did);
+      return {
+        ...door,
+        inbox: async (after) => {
+          const page = await door.inbox(after);
+          if (filtered) return page;
+          filtered = true;
+          return page.filter((m) => m.channel !== null);
+        },
+      };
+    };
+    const first = await b.client.drain(b.ctx);
+    b.ctx.door = realDoor;
+    // Held, not lost and not surfaced: no event, no epoch yet.
+    expect(first.channelE2e).toBeUndefined();
+    expect(await b.accounts.withAccount(SLOT, async ({ state }) => state.groups.held)).toEqual([
+      expect.objectContaining({ channel: CHANNEL, sid: epochSid, from: "alice" }),
+    ]);
+    expect(
+      await b.accounts.withAccount(SLOT, async ({ state }) => epochFor(state.groups, CHANNEL)),
+    ).toBeUndefined();
+
+    // Bob asks, Alice answers, and the next drain imports the key and
+    // retries the held row under it.
+    const asked = await b.client.requestChannelKey(b.ctx, CHANNEL);
+    expect(asked.channelE2e).toEqual([{ kind: "channel_key_requested", channel: CHANNEL }]);
+    const answered = await a.client.drain(a.ctx);
+    expect(answered.channelE2e).toEqual([
+      expect.objectContaining({ kind: "channel_key_sent", to: "Bob", sid: epochSid }),
+    ]);
+
+    const read = await b.client.drain(b.ctx);
+    expect(read.channelE2e).toEqual([
+      expect.objectContaining({ kind: "channel_key_received", from: "alice", sid: epochSid }),
+      expect.objectContaining({
+        kind: "channel_received",
+        from: "alice",
+        counter: 0,
+        body: "ciao a tutti",
+      }),
+    ]);
+    expect(await b.accounts.withAccount(SLOT, async ({ state }) => state.groups.held)).toEqual([]);
+    expect(
+      await b.accounts.withAccount(SLOT, async ({ state }) => epochFor(state.groups, CHANNEL)?.sid),
+    ).toBe(epochSid);
+  });
+
+  it("a row whose key never comes surfaces as undecryptable once it expires", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    w.grappa.joinChannel(CHANNEL, a.nick);
+    w.grappa.joinChannel(CHANNEL, b.nick);
+    const roster = rosterFor(["alice", "Bob"]);
+    a.ctx.channelMembers = roster;
+    b.ctx.channelMembers = roster;
+
+    await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
+    const epochSid = await a.accounts.withAccount(
+      SLOT,
+      async ({ state }) => epochFor(state.groups, CHANNEL)?.sid,
+    );
+
+    // Same stranding as the retry test: only the row arrives, never the key.
+    const realDoor = b.ctx.door;
+    let filtered = false;
+    b.ctx.door = (did) => {
+      const door = realDoor(did);
+      return {
+        ...door,
+        inbox: async (after) => {
+          const page = await door.inbox(after);
+          if (filtered) return page;
+          filtered = true;
+          return page.filter((m) => m.channel !== null);
+        },
+      };
+    };
+    const first = await b.client.drain(b.ctx);
+    b.ctx.door = realDoor;
+    expect(first.channelE2e).toBeUndefined();
+    expect(await b.accounts.withAccount(SLOT, async ({ state }) => state.groups.held)).toHaveLength(
+      1,
+    );
+
+    // Past the hold's lifetime, a drain with nothing new in the inbox
+    // surfaces the wait as undecryptable instead of holding it forever.
+    w.now += HELD_ROW_TTL_MS + 1;
+    const expired = await b.client.drain(b.ctx);
+    expect(expired.channelE2e).toEqual([
+      expect.objectContaining({
+        kind: "channel_undecryptable",
+        from: "alice",
+        sid: epochSid,
+        reason: "no-session",
+      }),
+    ]);
+    expect(await b.accounts.withAccount(SLOT, async ({ state }) => state.groups.held)).toEqual([]);
   });
 });

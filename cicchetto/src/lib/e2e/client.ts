@@ -84,6 +84,7 @@ import {
   type PinOutcome,
   type Result,
 } from "./engine";
+import { expireHeldRows, holdRow, takeHeldRows } from "./groupSessions";
 import type { Olm } from "./olm";
 import {
   type Challenge,
@@ -1071,6 +1072,46 @@ export function e2eClient(
         // account, and verifies a channel message against the sender's
         // pinned device key for the did grappa attests.
         const deps = channelDeps(ctx, engine, account);
+        // A no-session row, held for retry instead of surfaced — the key
+        // may still arrive, and the stash, sealed in the store, is now
+        // the only copy. Only the rows the hold drops past its cap
+        // surface, as undecryptable; a row with no sid to hold under
+        // surfaces as it came.
+        const holdNoSession = (
+          events: ChannelE2eEvent[],
+          channel: string,
+          from: string,
+          fromDid: string,
+          payload: string,
+          sid: string | null,
+        ): void => {
+          if (sid === null) {
+            events.push({
+              kind: "channel_undecryptable",
+              channel,
+              from,
+              sid: null,
+              reason: "no-session",
+            });
+            return;
+          }
+          for (const dropped of holdRow(state.groups, {
+            channel,
+            sid,
+            from,
+            fromDid,
+            payload,
+            receivedAt: now(),
+          })) {
+            events.push({
+              kind: "channel_undecryptable",
+              channel: dropped.channel,
+              from: dropped.from,
+              sid: dropped.sid,
+              reason: "no-session",
+            });
+          }
+        };
         for (;;) {
           const page = await door.inbox(after);
           const last = page.at(-1);
@@ -1101,7 +1142,17 @@ export function e2eClient(
                 m.fromDid,
                 m.payload,
               );
-              pageChannelEvents.push(...received.events);
+              // A row with no session yet is held for retry, not surfaced:
+              // the key may still arrive, and the stash — sealed in the
+              // store — is now the only copy. The watermark still advances
+              // and the row is ACKed as usual.
+              for (const e of received.events) {
+                if (e.kind === "channel_undecryptable" && e.reason === "no-session") {
+                  holdNoSession(pageChannelEvents, channel, m.from, m.fromDid, m.payload, e.sid);
+                } else {
+                  pageChannelEvents.push(e);
+                }
+              }
               pageChannelOutbound.push(...received.outbound);
               pageChannelCopies.push(...received.copies);
               outbound.push(...received.outbound);
@@ -1174,6 +1225,43 @@ export function e2eClient(
             }
             state.inbox = m.id;
           }
+          // A key that arrived on this page retries the rows held under
+          // it: each re-run reads under the new epoch, and a re-run that
+          // imports another epoch retries the rows held under that one
+          // too — the walk reads the events as they grow. A re-run still
+          // without a session is held again, never dropped.
+          const retriedKeys = new Set<string>();
+          for (let i = 0; i < pageChannelEvents.length; i++) {
+            const e = pageChannelEvents[i];
+            if (e === undefined || e.kind !== "channel_key_received") continue;
+            const key = `${fold(e.channel)}\u0000${e.sid}`;
+            if (retriedKeys.has(key)) continue;
+            retriedKeys.add(key);
+            for (const row of takeHeldRows(state.groups, e.channel, e.sid)) {
+              const re = await receiveChannel(
+                deps,
+                state.groups,
+                row.channel,
+                row.from,
+                row.fromDid,
+                row.payload,
+              );
+              for (const reEvent of re.events) {
+                if (reEvent.kind === "channel_undecryptable" && reEvent.reason === "no-session") {
+                  holdNoSession(
+                    pageChannelEvents,
+                    row.channel,
+                    row.from,
+                    row.fromDid,
+                    row.payload,
+                    reEvent.sid,
+                  );
+                } else {
+                  pageChannelEvents.push(reEvent);
+                }
+              }
+            }
+          }
           const sas = sasOutput(verifier);
           changes.push(...sas.changes);
           outbound.push(...sas.outbound);
@@ -1192,6 +1280,19 @@ export function e2eClient(
           if (read.length > 0) await door.ack(read);
           if (behind) break;
           after = last.id;
+        }
+        // Held rows that waited too long for a key that never came surface
+        // as undecryptable now — bounded, never silently lost. This runs
+        // after the page loop, so a key that arrived in this same drain
+        // already had its chance to retry them.
+        for (const expired of expireHeldRows(state.groups, now())) {
+          channelEvents.push({
+            kind: "channel_undecryptable",
+            channel: expired.channel,
+            from: expired.from,
+            sid: expired.sid,
+            reason: "no-session",
+          });
         }
         const ticked = engine.tick();
         const { report: end } = await finish(
