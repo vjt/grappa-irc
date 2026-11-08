@@ -379,6 +379,10 @@ const FileTrailer: Component<{ row: Message | undefined }> = (props) => {
         playAudio(outcome.url, target.name);
         return;
       }
+      // A second click while a viewer is open replaces it: the first blob
+      // goes now, not when the second closes.
+      const previous = toRevoke();
+      if (previous !== null) URL.revokeObjectURL(previous);
       openMediaViewer(outcome.url, outcome.media);
       setToRevoke(outcome.url);
     } finally {
