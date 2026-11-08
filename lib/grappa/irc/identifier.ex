@@ -135,7 +135,9 @@ defmodule Grappa.IRC.Identifier do
   # `+` and `!` still need at least one body byte. Nothing measured says
   # either stands alone: bahamut has no `+`/`!` channels at all, and RFC
   # 2812 gives `!` a mandatory 5-char channel id.
-  @channel_regex ~r/^(?:[#&][^\s,\x07]{0,49}|[+!][^\s,\x07]{1,49})$/
+  #
+  # Anchored `\A…\z` like `@nick_regex`, for the same reason (issue 2599).
+  @channel_regex ~r/\A(?:[#&][^\s,\x07]{0,49}|[+!][^\s,\x07]{1,49})\z/
 
   # GH #152 — the IRC `ident` (the `user` slot of `nick!user@host`, sent
   # in the USER command's first param). Free-form, non-unique — validated
@@ -155,17 +157,20 @@ defmodule Grappa.IRC.Identifier do
   # Used as URL path segment, PubSub topic component, log key value.
   # The cap is 32 (not 64 like the legacy `Network` schema's
   # `validate_length`) — A18 unified the rule here.
-  @network_slug_regex ~r/^[a-z0-9_\-]{1,32}$/
+  # Anchored `\A…\z` like `@nick_regex` (issue 2599).
+  @network_slug_regex ~r/\A[a-z0-9_\-]{1,32}\z/
 
   # Host: non-empty, no whitespace, no control chars. DNS-level rules
   # checked at connect time — this rejects only obviously-malformed
   # input. Accepts hostnames, IPv4 literals, and `[ipv6]` literals.
-  @host_regex ~r/^[^\s\x00-\x1f\x7f]+$/
+  # Anchored `\A…\z` like `@nick_regex` (issue 2599).
+  @host_regex ~r/\A[^\s\x00-\x1f\x7f]+\z/
 
   # Meta-sender marker for non-IRC-originated rows (e.g. REST POSTs by
   # the local operator before auth lands). Bracketed token: `<local>`,
   # `<system>`, etc.
-  @meta_sender_regex ~r/^<[^>\s]+>$/
+  # Anchored `\A…\z` like `@nick_regex` (issue 2599).
+  @meta_sender_regex ~r/\A<[^>\s]+>\z/
 
   # UX-4 bucket G: closed allowlist of well-known IRC services nicks.
   # Pre-bucket-G the source-of-truth was split — `Grappa.Session.Server`

@@ -614,6 +614,17 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_names(client, "no-prefix")
     end
 
+    # issue 2599 — these verbs check the channel with `valid_channel?/1`,
+    # now anchored `\A…\z`: a trailing newline no longer passes it.
+    test "rejects a channel with a trailing newline" do
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      client = start_client(port)
+
+      assert {:error, :invalid_line} = Client.send_kick(client, "#foo\n", "alice", "bye")
+      assert {:error, :invalid_line} = Client.send_names(client, "#foo\n")
+      assert {:error, :invalid_line} = Client.send_channel_modes(client, "#foo\n")
+    end
+
     # #221 — /who <mask>. WHO accepts a channel OR a host/nick mask (RFC 2812
     # §3.6.1). Pre-#221 send_who gated on valid_channel?, so a mask was
     # rejected outbound and never reached upstream — the first break in the
