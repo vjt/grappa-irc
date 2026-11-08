@@ -76,12 +76,7 @@ export type ChannelSigner = (text: string) => string;
  * False when the nick is not pinned, or the did is not one of its trusted
  * devices — a message from a sender this cic has no key for does not verify.
  */
-export type ChannelVerifier = (
-  nick: string,
-  did: string,
-  text: string,
-  sig: string,
-) => boolean;
+export type ChannelVerifier = (nick: string, did: string, text: string, sig: string) => boolean;
 
 /** The counters already accepted from one sender device under one epoch. */
 export type ReplayState = {
@@ -371,7 +366,9 @@ export async function decryptChannel(
   if (held === undefined || held.sid !== payload.sid) {
     return { ok: false, reason: "no-session", sid: payload.sid };
   }
-  if (!verify(sender, senderDid, channelSigText(payload.ch, payload.sid, payload.body), payload.sig)) {
+  if (
+    !verify(sender, senderDid, channelSigText(payload.ch, payload.sid, payload.body), payload.sig)
+  ) {
     return { ok: false, reason: "bad-signature", sid: payload.sid };
   }
   let plaintext: Uint8Array;

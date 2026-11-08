@@ -51,10 +51,10 @@ import type { E2eKeysWireDevice } from "../wireTypes";
 import type { AccountStore } from "./accountStore";
 import { type ByNick, noNicks, setNick } from "./byNick";
 import {
+  auditEpochRotation,
   type ChannelE2eDeps,
   type ChannelE2eEvent,
   type ChannelE2eResult,
-  auditEpochRotation,
   channelsWithEpoch,
   emitChannelE2eEvents,
   GKEY_TAG,
@@ -101,8 +101,8 @@ import {
   type SasView,
   Verifier,
 } from "./sas";
-import { decodePayload, fold, type ReceiveVerb, type SendVerb } from "./wire";
 import type { Account } from "./vodozemac/vodozemac_binding";
+import { decodePayload, fold, type ReceiveVerb, type SendVerb } from "./wire";
 
 /** One whole message grappa holds for this device (the `e2e_message` wire shape, minus its envelope). */
 export type InboxMessage = {
@@ -635,11 +635,7 @@ export function e2eClient(
   // against the sender's pinned device key for the did grappa attests
   // (`fromDid`). The roster comes from the context when the caller holds
   // one (`encryptedChats.ts` reads it off the members store).
-  function channelDeps(
-    ctx: E2eContext,
-    engine: Engine,
-    account: Account,
-  ): ChannelE2eDeps {
+  function channelDeps(ctx: E2eContext, engine: Engine, account: Account): ChannelE2eDeps {
     return {
       ownNick: ctx.ownNick,
       ownDid: engine.deviceId(),

@@ -93,9 +93,7 @@ const {
 } = await import("../lib/e2e/identity");
 const chats = await import("../lib/encryptedChats");
 const { applyPresenceEvent, seedMembers } = await import("../lib/members");
-const { __resetServerProtocolForTests, setServerProtocol } = await import(
-  "../lib/serverProtocol"
-);
+const { __resetServerProtocolForTests, setServerProtocol } = await import("../lib/serverProtocol");
 
 const ME = { kind: "user", id: "0b5e" };
 

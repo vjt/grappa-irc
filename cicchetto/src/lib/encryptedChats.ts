@@ -690,7 +690,11 @@ const exports_ = identityScopedStore((onIdentityChange) => {
    * while every cic was closed. A network held elsewhere runs nothing,
    * and is not retried: only the user moves it.
    */
-  async function auditChannelEpoch(slug: string, channel: string, members: string[]): Promise<void> {
+  async function auditChannelEpoch(
+    slug: string,
+    channel: string,
+    members: string[],
+  ): Promise<void> {
     try {
       const report = await run(slug, (client, ctx) =>
         client.auditChannelEpoch(ctx, channel, members),
@@ -878,10 +882,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       const decoded = decodeChannelKey(key);
       if (decoded === null || networkBySlug(decoded.slug) === undefined) return;
       void auditChannelEpoch(decoded.slug, decoded.name, members).catch((err: unknown) => {
-        console.warn(
-          `[e2e] could not audit the epoch on ${decoded.slug} ${decoded.name}`,
-          err,
-        );
+        console.warn(`[e2e] could not audit the epoch on ${decoded.slug} ${decoded.name}`, err);
       });
     });
     onCleanup(() => unsubscribeSeeded());

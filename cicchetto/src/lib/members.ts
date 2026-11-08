@@ -96,7 +96,11 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // The seed fires after the roster is stored, so a listener reads the
     // seeded roster (not the one before the burst): the audit's second
     // chance for a leave the socket missed.
-    for (const fn of [...membersSeededListeners]) fn(key, list.map((m) => m.nick));
+    for (const fn of [...membersSeededListeners])
+      fn(
+        key,
+        list.map((m) => m.nick),
+      );
   };
 
   // #1861 — the casemapping is passed IN rather than resolved here: this

@@ -46,10 +46,7 @@ async function importEpochKey(key: string): Promise<CryptoKey> {
     throw new Error("not an epoch key");
   }
   if (bytes.length !== 32) throw new Error("not an epoch key");
-  return globalThis.crypto.subtle.importKey("raw", bytes, "AES-GCM", false, [
-    "encrypt",
-    "decrypt",
-  ]);
+  return globalThis.crypto.subtle.importKey("raw", bytes, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
 /**
@@ -57,7 +54,10 @@ async function importEpochKey(key: string): Promise<CryptoKey> {
  * ciphertext, base64 unpadded. A fresh random nonce every time, so the same
  * plaintext twice is two different bodies.
  */
-export async function encryptEpoch(key: string, plaintext: Uint8Array<ArrayBuffer>): Promise<string> {
+export async function encryptEpoch(
+  key: string,
+  plaintext: Uint8Array<ArrayBuffer>,
+): Promise<string> {
   const cryptoKey = await importEpochKey(key);
   const nonce = randomBytes(12);
   const ciphertext = new Uint8Array(
@@ -85,10 +85,6 @@ export async function decryptEpoch(key: string, body: string): Promise<Uint8Arra
   const nonce = bytes.slice(0, 12);
   const ciphertext = bytes.slice(12);
   return new Uint8Array(
-    await globalThis.crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: nonce },
-      cryptoKey,
-      ciphertext,
-    ),
+    await globalThis.crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce }, cryptoKey, ciphertext),
   );
 }

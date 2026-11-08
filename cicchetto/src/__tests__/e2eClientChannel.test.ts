@@ -11,16 +11,8 @@
 // The protocol version is the module signal (`serverProtocol.ts`): 63
 // unless a test sets it lower.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  __resetServerProtocolForTests,
-  setServerProtocol,
-} from "../lib/serverProtocol";
-import {
-  chat,
-  inboxOf,
-  latestGrappa,
-  pair,
-} from "./helpers/e2eClients";
+import { __resetServerProtocolForTests, setServerProtocol } from "../lib/serverProtocol";
+import { chat, inboxOf, latestGrappa, pair } from "./helpers/e2eClients";
 import { routeApi } from "./helpers/e2eGrappa";
 import { olm } from "./helpers/olm";
 
