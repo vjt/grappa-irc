@@ -195,155 +195,6 @@ export class EstablishedSas {
 }
 
 /**
- * What `InboundGroupSession::decrypt` returns: the plaintext and the chain
- * index it was encrypted at.
- */
-export class GroupDecrypted {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * The chain index the message was encrypted at: the `i` of the v3
-     * group payload. Compare it with `first_known_index` to tell a replay
-     * from a new message.
-     */
-    readonly message_index: number;
-    /**
-     * The decrypted plaintext.
-     */
-    readonly plaintext: Uint8Array;
-}
-
-/**
- * What `GroupSession::encrypt` returns: the chain index and the ciphertext.
- */
-export class GroupEncrypted {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * The ciphertext, base64 standard unpadded: the `body` of the v3
-     * group payload.
-     */
-    readonly body: string;
-    /**
-     * The chain index this message was encrypted at: the `i` of the v3
-     * group payload.
-     */
-    readonly message_index: number;
-}
-
-/**
- * An outbound Megolm group session: one sender's key for one channel
- * epoch. It holds the signing key pair, so it lives on the device that
- * sends, never on a receiver.
- */
-export class GroupSession {
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Encrypts `plaintext` under the session. The returned message carries
-     * the chain index it was encrypted at.
-     */
-    encrypt(plaintext: Uint8Array): GroupEncrypted;
-    /**
-     * Restores a session from what `pickle` returned.
-     */
-    static from_pickle(pickle: string): GroupSession;
-    /**
-     * The chain index the next `encrypt` will use.
-     */
-    message_index(): number;
-    /**
-     * A new session with a fresh ratchet and signing key pair.
-     */
-    constructor();
-    /**
-     * The whole session, signing key included, as JSON. The caller
-     * encrypts it before it is stored anywhere.
-     */
-    pickle(): string;
-    /**
-     * The session id: the Ed25519 public key of this session, base64
-     * standard unpadded. This is the `sid` of the v3 group payload and of
-     * the `gkey` that distributes the key.
-     */
-    session_id(): string;
-    /**
-     * The session key to send to the other members, inside the pairwise
-     * Olm DM and never in the clear: the signed session key, base64
-     * standard unpadded. A receiver builds its `InboundGroupSession`
-     * from it.
-     */
-    session_key(): string;
-}
-
-/**
- * An inbound Megolm group session: one sender's key, held by a receiver.
- * It has the public key only, so it can decrypt and never encrypt.
- */
-export class InboundGroupSession {
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Permanently forgets every message key below `index`: messages
-     * encrypted before it can no longer be decrypted. False when the
-     * session is already past `index`.
-     */
-    advance_to(index: number): boolean;
-    /**
-     * Decrypts a group message: the `body` of the v3 group payload,
-     * base64 standard unpadded (padding is tolerated). The returned
-     * message carries the chain index it was encrypted at.
-     */
-    decrypt(message: string): GroupDecrypted;
-    /**
-     * The unsigned key for this session at `index`, base64 standard
-     * unpadded: hand it to a member that joined late, or to your other
-     * devices. `undefined` when the session has ratcheted past `index`.
-     */
-    export_at(index: number): string | undefined;
-    /**
-     * The unsigned key at the first known index: the widest key this
-     * session can still hand out.
-     */
-    export_at_first_known_index(): string;
-    /**
-     * The lowest chain index this session can still decrypt. Messages
-     * encrypted below it are unreadable: the key was handed out late, or
-     * the session was advanced past them.
-     */
-    first_known_index(): number;
-    /**
-     * Restores a session from what `pickle` returned.
-     */
-    static from_pickle(pickle: string): InboundGroupSession;
-    /**
-     * Builds the session from an unsigned exported key (`export_at`,
-     * `export_at_first_known_index`). There is no signature to check, so
-     * only take one from a source you already trust: a member you
-     * verified, or your own store.
-     */
-    static import(exported_key: string): InboundGroupSession;
-    /**
-     * Builds the session from the signed session key the sender shared
-     * (`GroupSession::session_key`): the signature is verified on decode,
-     * so a key that is not this session's (`sid`) fails here.
-     */
-    constructor(session_key: string);
-    /**
-     * The whole session, ratchet included, as JSON. The caller encrypts
-     * it before it is stored anywhere.
-     */
-    pickle(): string;
-    /**
-     * The session id: the Ed25519 public key of the sender's session,
-     * base64 standard unpadded. This is the `sid` of the v3 group payload.
-     */
-    session_id(): string;
-}
-
-/**
  * What `Account::create_inbound_session` returns: the session, taken once,
  * and the plaintext of the message that opened it.
  */
@@ -460,10 +311,6 @@ export interface InitOutput {
     readonly __wbg_encrypted_free: (a: number, b: number) => void;
     readonly __wbg_establishedecies_free: (a: number, b: number) => void;
     readonly __wbg_establishedsas_free: (a: number, b: number) => void;
-    readonly __wbg_groupdecrypted_free: (a: number, b: number) => void;
-    readonly __wbg_groupencrypted_free: (a: number, b: number) => void;
-    readonly __wbg_groupsession_free: (a: number, b: number) => void;
-    readonly __wbg_inboundgroupsession_free: (a: number, b: number) => void;
     readonly __wbg_inboundsession_free: (a: number, b: number) => void;
     readonly __wbg_sas_free: (a: number, b: number) => void;
     readonly __wbg_session_free: (a: number, b: number) => void;
@@ -498,27 +345,6 @@ export interface InitOutput {
     readonly establishedecies_encrypt: (a: number, b: number, c: number, d: number) => void;
     readonly establishedsas_calculate_mac: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly establishedsas_emoji_indices: (a: number, b: number, c: number, d: number) => void;
-    readonly groupdecrypted_message_index: (a: number) => number;
-    readonly groupdecrypted_plaintext: (a: number, b: number) => void;
-    readonly groupencrypted_body: (a: number, b: number) => void;
-    readonly groupencrypted_message_index: (a: number) => number;
-    readonly groupsession_encrypt: (a: number, b: number, c: number) => number;
-    readonly groupsession_from_pickle: (a: number, b: number, c: number) => void;
-    readonly groupsession_message_index: (a: number) => number;
-    readonly groupsession_new: () => number;
-    readonly groupsession_pickle: (a: number, b: number) => void;
-    readonly groupsession_session_id: (a: number, b: number) => void;
-    readonly groupsession_session_key: (a: number, b: number) => void;
-    readonly inboundgroupsession_advance_to: (a: number, b: number) => number;
-    readonly inboundgroupsession_decrypt: (a: number, b: number, c: number, d: number) => void;
-    readonly inboundgroupsession_export_at: (a: number, b: number, c: number) => void;
-    readonly inboundgroupsession_export_at_first_known_index: (a: number, b: number) => void;
-    readonly inboundgroupsession_first_known_index: (a: number) => number;
-    readonly inboundgroupsession_from_pickle: (a: number, b: number, c: number) => void;
-    readonly inboundgroupsession_import: (a: number, b: number, c: number) => void;
-    readonly inboundgroupsession_new: (a: number, b: number, c: number) => void;
-    readonly inboundgroupsession_pickle: (a: number, b: number) => void;
-    readonly inboundgroupsession_session_id: (a: number, b: number) => void;
     readonly inboundsession_plaintext: (a: number, b: number) => void;
     readonly inboundsession_take_session: (a: number) => number;
     readonly pre_key_session_id: (a: number, b: number, c: number) => void;
