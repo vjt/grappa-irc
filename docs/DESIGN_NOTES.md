@@ -6231,7 +6231,17 @@ the bottom above the last line.
 The reader's place is read in LINES (`ReadingAnchor` in `ScrollbackPane`): at
 the tail, or the first line in view and how far its top sits from the top of
 the view, negative when it is cut off above. A line cut off by more than it
-is tall after the re-render shows from its top. A new one-shot intent,
+is tall after the re-render shows from its top. "In view" means more than
+`TAIL_SUBPIXEL_PX` of the line shows, read from the line's RECT in the list's
+content coordinates: `offsetTop`/`offsetHeight` are whole pixels while a
+scroll position need not be (code review: the line above, sticking out by a
+fraction, passed for the line in view and was then grown into it), and they
+are relative to whichever ancestor is positioned, which `theme-has-bg` makes
+the list itself. After a line restore the pane publishes `atBottomNow` and the
+reach-tail follow as `onScroll` would, because a restore that writes nothing
+fires no scroll event (#1121's republish), and moves `lastScrollTop` with the
+write, because a restore that lowers `scrollTop` would otherwise read as the
+reader scrolling up (#168's class). A new one-shot intent,
 `reflow-preserve`, restores it through the single applier. Precedence:
 `overlay-freeze ▸ operator-tail ▸ mention-jump ▸ reflow-preserve ▸
 marker-activation ▸ tail-follow ▸ prepend-preserve`.

@@ -2262,7 +2262,19 @@ describe("EncryptedChatPane, issue 2610 — the ciphertext view keeps the reader
       return y;
     };
     const isLine = (el: Element) => el.classList.contains("scrollback-line");
+    // The same screen through `getBoundingClientRect`, the list's box at 0.
+    const nativeRect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const list = this.closest("[data-testid=scrollback]");
+      if (list === null || !(isLine(this) || isList(this))) return nativeRect.call(this);
+      const y = isList(this) ? 0 : top(this) - Math.min(stored, maxTop(list));
+      const h = isList(this) ? VIEWPORT_PX : height(this);
+      return { x: 0, y, top: y, bottom: y + h, left: 0, right: 0, width: 0, height: h } as DOMRect;
+    };
     const restores = [
+      () => {
+        Element.prototype.getBoundingClientRect = nativeRect;
+      },
       stage("offsetTop", (el) => (isLine(el) ? top(el) : undefined), null),
       stage("offsetHeight", (el) => (isLine(el) ? height(el) : undefined), null),
       stage("clientHeight", (el) => (isList(el) ? VIEWPORT_PX : undefined), null),
@@ -2305,10 +2317,11 @@ describe("EncryptedChatPane, issue 2610 — the ciphertext view keeps the reader
   const scrollback = () =>
     within("e2e-pane").querySelector("[data-testid=scrollback]") as HTMLElement;
   // The line at the top of the view, by its number in the window, and how far
-  // its top sits from the top of the view (negative: cut off above).
+  // its top sits from the top of the view (negative: cut off above). A pixel
+  // or less of a line is a sliver, not a line in view.
   const firstInView = () => {
     const list = scrollback();
-    const line = lines().find((l) => l.offsetTop + l.offsetHeight > list.scrollTop);
+    const line = lines().find((l) => l.offsetTop + l.offsetHeight > list.scrollTop + 1);
     return line === undefined
       ? null
       : { id: line.dataset.msgId, offset: line.offsetTop - list.scrollTop };
@@ -2389,6 +2402,44 @@ describe("EncryptedChatPane, issue 2610 — the ciphertext view keeps the reader
     }
   });
 
+  // An offset is whole pixels and a scroll position need not be: the line
+  // above the reader's can stick out by a fraction, and anchoring on it would
+  // grow it into the view and push the reader's line down.
+  it("a sliver of the line above is not the reader's line", async () => {
+    const restore = stageScreen();
+    try {
+      open(12);
+      // Line 4 runs 60–80: half a pixel of it shows above line 5.
+      await scrollUpTo(79.5);
+      expect(firstInView()).toEqual({ id: "5", offset: 0.5 });
+
+      setWireView("azzurra/bob");
+      expect(firstInView()).toEqual({ id: "5", offset: 0.5 });
+    } finally {
+      restore();
+    }
+  });
+
+  // A re-render that writes nothing fires no scroll event, so nothing else
+  // would see the bottom come within reach: line 1 stays where it was, and the
+  // plaintext under it ends 10px below the view.
+  it("a re-render that brings the bottom within reach without a write follows from there", async () => {
+    const restore = stageScreen();
+    try {
+      open(6);
+      setWireView("azzurra/bob");
+      await scrollUpTo(10);
+      expect(firstInView()).toEqual({ id: "1", offset: -10 });
+
+      setWireView(null);
+      expect(firstInView()).toEqual({ id: "1", offset: -10 });
+      expect(belowTail()).toBe(10);
+      expect(scrollback().dataset.follow).toBe("on");
+    } finally {
+      restore();
+    }
+  });
+
   it("a reader at the bottom stays at the bottom, into the ciphertext and back, and goes on following", async () => {
     const restore = stageScreen();
     try {
@@ -2448,6 +2499,35 @@ describe("EncryptedChatPane, issue 2610 — the ciphertext view keeps the reader
         expect(firstInView()).toEqual({ id: "4", offset: -10 });
         await releaseLock();
         expect(firstInView()).toEqual({ id: "4", offset: -10 });
+      } finally {
+        for (; held > 0; held -= 1) popOverlay(null);
+        restore();
+      }
+    });
+
+    // #1121 — lines that arrive under the lock leave a reader who was at the
+    // bottom above it and still following. The flip's own write, and the scroll
+    // event a browser fires for it (dispatched here: jsdom fires none), must
+    // not read as that reader scrolling up.
+    it("a reader the lock left above new lines, still following, is still following after the flips", async () => {
+      const restore = stageScreen();
+      try {
+        open(12);
+        await waitFor(() => expect(belowTail()).toBe(0));
+        await holdLock();
+        setRows(chatOf(16));
+        await waitFor(() => expect(lines()).toHaveLength(16));
+        await releaseLock();
+        // The premise: 80px above the bottom, following.
+        expect(belowTail()).toBe(80);
+        expect(scrollback().dataset.follow).toBe("on");
+
+        for (const view of ["azzurra/bob", null]) {
+          setWireView(view);
+          scrollback().dispatchEvent(new Event("scroll"));
+          expect(firstInView()).toEqual({ id: "8", offset: 0 });
+          expect(scrollback().dataset.follow).toBe("on");
+        }
       } finally {
         for (; held > 0; held -= 1) popOverlay(null);
         restore();

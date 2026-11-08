@@ -427,18 +427,29 @@ const lastFullyVisibleRowId = (listRef: HTMLDivElement): number | null => {
 // while every line keeps its height, and an in-place re-render (the encrypted
 // window's ciphertext view, issue 2513) changes them all at once. `top` is the
 // position to read it at: the live `scrollTop`, or the px an overlay freeze
-// holds. The content's own coordinates are `offsetTop` less the list's, as the
-// rows' offsetParent is the list's too. Null when no line is in view.
+// holds. "In view" means more than `TAIL_SUBPIXEL_PX` of the line shows: a
+// sliver of the line above is not the line being read. Null when none is.
 type ReadingAnchor = { kind: "tail" } | { kind: "line"; id: number; offset: number };
+
+// A line's box in the list's own content coordinates. From the rects and not
+// `offsetTop`/`offsetHeight`: those are snapped to whole pixels while a scroll
+// position need not be (a line above can stick out by a fraction and pass for
+// the line in view), and they are relative to whichever ancestor is positioned,
+// which a theme makes the list itself (`theme-has-bg`).
+const lineBox = (list: HTMLDivElement, row: HTMLElement): { y: number; height: number } => {
+  const box = row.getBoundingClientRect();
+  const origin = list.getBoundingClientRect().top + list.clientTop - list.scrollTop;
+  return { y: box.top - origin, height: box.height };
+};
 
 const readingAnchor = (list: HTMLDivElement, top: number): ReadingAnchor | null => {
   if (list.scrollHeight - top - list.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX) {
     return { kind: "tail" };
   }
   for (const row of list.querySelectorAll<HTMLElement>(".scrollback-line")) {
-    const y = row.offsetTop - list.offsetTop;
+    const { y, height } = lineBox(list, row);
     const id = row.dataset.msgId;
-    if (y + row.offsetHeight > top && id) {
+    if (y + height > top + TAIL_SUBPIXEL_PX && id) {
       return { kind: "line", id: Number.parseInt(id, 10), offset: y - top };
     }
   }
@@ -452,9 +463,9 @@ const anchoredTop = (list: HTMLDivElement, anchor: ReadingAnchor): number | null
   if (anchor.kind === "tail") return list.scrollHeight - list.clientHeight;
   const row = list.querySelector<HTMLElement>(`.scrollback-line[data-msg-id="${anchor.id}"]`);
   if (row === null) return null;
-  const y = row.offsetTop - list.offsetTop;
+  const { y, height } = lineBox(list, row);
   const top = y - anchor.offset;
-  return y + row.offsetHeight > top ? top : y;
+  return y + height > top + TAIL_SUBPIXEL_PX ? top : y;
 };
 
 // #360 — per-row geometry read for the mention-aware scroll-to-bottom badge.
@@ -2388,6 +2399,7 @@ const ScrollbackPane: Component<Props> = (props) => {
     on(
       [rows, key],
       ([next, k], prev) => {
+        reflowAnchor = null;
         if (!listRef || prev === undefined || prev[1] !== k || !sameLines(prev[0], next)) return;
         const held = isOverlayFrozen() ? overlayScrollSnapshot : null;
         const anchor = readingAnchor(listRef, held ?? listRef.scrollTop);
@@ -3912,10 +3924,18 @@ const ScrollbackPane: Component<Props> = (props) => {
   // the tail) in the re-rendered layout. SYNC, as the overlay-freeze and
   // marker-activation legs are and for their reason: the lines were swapped
   // before this ran and nothing has been painted since, so no frame shows the
-  // other lines the old px now points at. Reading `offsetTop` lays the new
+  // other lines the old px now points at. Reading the boxes lays the new
   // lines out first. A line that is gone writes nothing. The tail is THE tail
   // write, then the tail-follow's measured settle (#608), which writes again
   // only if an engine laid the new lines out after this read.
+  //
+  // A line is then published as `onScroll` would publish it, for the two cases
+  // `onScroll` cannot: a restore that writes nothing fires no scroll event, so
+  // the bottom coming within reach (shorter lines below) is seen here or not at
+  // all — #1121's republish, for the same reason; and a restore that LOWERS
+  // `scrollTop` fires one that would read as the reader scrolling up, turning
+  // off the follow of a reader the lock left above new lines (#168's class), so
+  // the baseline `onScroll` compares against moves with the write.
   const applyReflowPreserve = (anchor: ReadingAnchor): void => {
     if (!listRef) return;
     if (anchor.kind === "tail") {
@@ -3924,8 +3944,14 @@ const ScrollbackPane: Component<Props> = (props) => {
       return;
     }
     const top = anchoredTop(listRef, anchor);
-    if (top === null || listRef.scrollTop === top) return;
-    listRef.scrollTop = top;
+    if (top === null) return;
+    if (listRef.scrollTop !== top) listRef.scrollTop = top;
+    lastScrollTop = listRef.scrollTop;
+    const near =
+      listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight <=
+      SCROLL_BOTTOM_THRESHOLD_PX;
+    setAtBottomNow(near);
+    if (near) setFollowMode(nextFollowMode(followMode(), "reach-tail"));
   };
 
   // #608 (deep-review §6.4) — the prepend-preserve applier entrypoint. An older
