@@ -125,6 +125,23 @@ defmodule Grappa.E2eInboxTest do
       assert E2eInbox.list(device, 0) == []
     end
 
+    # Channel E2E (protocol v63): a channel row carries the folded
+    # channel name, a DM row carries nil; anything that is no channel
+    # is refused.
+    test "a channel entry comes back with its channel, a DM entry with nil; a non-channel is refused",
+         %{device: device} do
+      assert {:ok, %Entry{channel: "#grappa"}} =
+               E2eInbox.put(device, Map.put(message("alice", :msg), :channel, "#grappa"))
+
+      assert {:ok, %Entry{channel: nil}} = E2eInbox.put(device, message("bob", :msg))
+
+      assert {:error, %Ecto.Changeset{errors: errors}} =
+               E2eInbox.put(device, Map.put(message("alice", :msg), :channel, "not a channel"))
+
+      assert Keyword.has_key?(errors, :channel)
+      assert length(E2eInbox.list(device, 0)) == 2
+    end
+
     # issue 2599 — a TS6 UID, what solanum renames a client to on a
     # collision, is that client's nick on the wire. The peer half of this
     # test used to refuse it, on no ground but the portable charset

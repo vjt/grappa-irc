@@ -67,6 +67,10 @@ defmodule Grappa.Session.E2eSessionTest do
 
   @small ~s({"v":2})
 
+  # A channel (v3 group) payload, what a Megolm-style channel message
+  # carries; grappa never parses it, so the body is a placeholder.
+  @group_small ~s({"v":3,"ch":"#grappa","sid":"s1","i":0,"body":"AAAA"})
+
   describe "inbound" do
     test "a multi-line message reaches the user topic whole, for the device it names, and nothing is stored" do
       {server, pid, user, network} = connected_session()
@@ -94,7 +98,8 @@ defmodule Grappa.Session.E2eSessionTest do
                verb: :pkmsg,
                msgid: "q83vEjRWeJA",
                payload: payload,
-               own: false
+               own: false,
+               channel: nil
              }
 
       refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}, 100
@@ -256,6 +261,30 @@ defmodule Grappa.Session.E2eSessionTest do
       refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}
       assert Process.alive?(pid)
       assert rows(network) == 0
+    end
+
+    # Channel E2E (protocol v62): a line to a channel we joined is
+    # delivered like a DM, with the channel riding the event and the
+    # queue row — and, like a DM line, never stored.
+    test "a channel E2E message to a channel we joined is delivered with its channel and never stored" do
+      {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      IRCServer.feed(server, ":#{@nick}!u@h JOIN #grappa\r\n")
+      :ok = await_joined(pid, "#grappa")
+
+      [line] = channel_lines_from("alice", :msg, "q83vEjRWeJA", {@alice, "*"}, @group_small, "#grappa")
+      IRCServer.feed(server, line)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :e2e_message, verb: :msg, channel: "#grappa", from: "alice"}
+                     },
+                     @wire_timeout
+
+      assert [%E2eInbox.Entry{sender: "alice", channel: "#grappa"}] = E2eInbox.list(device, 0)
+      assert Process.alive?(pid)
+      assert text_rows(network) == 0
     end
 
     # The queue keys a message on its sender's nick, and refuses a row
@@ -836,6 +865,65 @@ defmodule Grappa.Session.E2eSessionTest do
   end
 
   describe "outbound" do
+    # Channel E2E (protocol v62): one `:msg` to `*` goes out as one line
+    # to the channel — IRC multicast does the fan-out, so the message
+    # costs one line, not one per member.
+    test "a channel :msg to a channel we joined goes out as one line to the channel" do
+      {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
+
+      IRCServer.feed(server, ":#{@nick}!u@h JOIN #grappa\r\n")
+      :ok = await_joined(pid, "#grappa")
+
+      assert {:ok, msgid} =
+               Session.send_e2e(
+                 {:user, user.id},
+                 network.id,
+                 "#grappa",
+                 :msg,
+                 :text,
+                 {device.did, "*"},
+                 @group_small,
+                 nil
+               )
+
+      assert E2e.msgid?(msgid)
+      {:ok, line} = IRCServer.wait_for_line(server, &String.contains?(&1, msgid), 10_000)
+      assert String.starts_with?(line, "PRIVMSG #grappa :")
+      ["PRIVMSG #grappa", body] = line |> String.trim_trailing("\r\n") |> String.split(" :", parts: 2)
+      assert {:ok, %{verb: :msg, from: from, to: "*"}} = E2e.parse(body)
+      assert from == device.did
+      assert text_rows(network) == 0
+    end
+
+    test "a channel message to a channel we never joined, with the wrong verb, or to a device is refused" do
+      {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
+      subject = {:user, user.id}
+
+      IRCServer.feed(server, ":#{@nick}!u@h JOIN #grappa\r\n")
+      :ok = await_joined(pid, "#grappa")
+
+      # Not a member: the facade passes the shape, the session refuses.
+      assert {:error, :bad_request} =
+               Session.send_e2e(subject, network.id, "#italia", :msg, :text, {device.did, "*"}, @group_small, nil)
+
+      # Only `:msg` goes to a channel: a PKMSG opens a pairwise session,
+      # a KEYREQ answers one.
+      assert {:error, :bad_request} =
+               Session.send_e2e(subject, network.id, "#grappa", :pkmsg, :text, {device.did, "*"}, @group_small, nil)
+
+      assert {:error, :bad_request} =
+               Session.send_e2e(subject, network.id, "#grappa", :keyreq, :control, {device.did, "*"}, @small, nil)
+
+      # A channel frame has no single recipient device.
+      assert {:error, :bad_request} =
+               Session.send_e2e(subject, network.id, "#grappa", :msg, :text, {device.did, @alice}, @group_small, nil)
+
+      assert Process.alive?(pid)
+      refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "PRIVMSG #"))
+    end
+
     # The pacer's lanes are keyed on the folded nick (the session folds),
     # and nothing else pins that: two spellings of one peer must share one
     # queue, or each spelling gets its own FLUD window and its own bound.
@@ -1205,7 +1293,8 @@ defmodule Grappa.Session.E2eSessionTest do
                verb: :pkmsg,
                msgid: msgid,
                payload: payload,
-               own: true
+               own: true,
+               channel: nil
              }
 
       assert [%E2eInbox.Entry{id: ^id, own: true, sender: @nick, payload: ^payload}] = E2eInbox.list(sibling, 0)
@@ -1943,6 +2032,32 @@ defmodule Grappa.Session.E2eSessionTest do
     Enum.map(lines, &":#{nick}!u@h PRIVMSG #{@nick} :#{&1}\r\n")
   end
 
+  # The same, to a channel: the frame is cut against the channel target
+  # and the line goes to the channel, not to our nick.
+  defp channel_lines_from(nick, verb, msgid, addresses, payload, channel) do
+    {:ok, lines} = E2e.fragment(verb, msgid, addresses, payload, LineSplit.frame_budget(channel, 512))
+    Enum.map(lines, &":#{nick}!u@h PRIVMSG #{channel} :#{&1}\r\n")
+  end
+
+  # Waits until the session's members map holds `channel`. A JOIN fed
+  # from the fake ircd is async — the line crosses the socket and the
+  # client before the session sees it — and a send that races it would
+  # be refused as not-a-member.
+  defp await_joined(pid, channel, timeout \\ 1_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+
+    if Map.has_key?(:sys.get_state(pid).members, channel) do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) < deadline do
+        Process.sleep(10)
+        await_joined(pid, channel, deadline - System.monotonic_time(:millisecond))
+      else
+        flunk("session never joined #{channel}")
+      end
+    end
+  end
+
   # Waits for the last line of a KEYS message to `nick`, checks it goes from
   # `*` to `asker`, and returns that message's payload, joined from its
   # lines and decoded.
@@ -2104,6 +2219,15 @@ defmodule Grappa.Session.E2eSessionTest do
   defp rows(network) do
     Message
     |> where([m], m.network_id == ^network.id)
+    |> Repo.aggregate(:count)
+  end
+
+  # Rows that carry message text. A JOIN is a row too (`kind: :join`), so
+  # the channel tests — which join first — count these, not `rows/1`:
+  # the property is that no E2E line is ever stored as a message.
+  defp text_rows(network) do
+    Message
+    |> where([m], m.network_id == ^network.id and m.kind in [:privmsg, :notice, :action])
     |> Repo.aggregate(:count)
   end
 

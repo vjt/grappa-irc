@@ -8130,14 +8130,14 @@ defmodule Grappa.Session.EventRouterTest do
       line = e2e_line(:msg, "q83vEjRWeJA")
       {:ok, fragment} = Grappa.IRC.E2e.parse(line)
 
-      assert {:cont, _, [{:e2e_fragment, "vjt-claude", ^fragment}]} =
+      assert {:cont, _, [{:e2e_fragment, "vjt-claude", ^fragment, nil}]} =
                EventRouter.route(msg(:privmsg, ["vjt", line], @peer), base_state())
     end
 
     test "our nick matches folded, like every other self-target check" do
       line = e2e_line(:pkmsg, "q83vEjRWeJA")
 
-      assert {:cont, _, [{:e2e_fragment, "vjt-claude", _}]} =
+      assert {:cont, _, [{:e2e_fragment, "vjt-claude", _, nil}]} =
                EventRouter.route(msg(:privmsg, ["VJT", line], @peer), base_state())
     end
 
@@ -8153,7 +8153,24 @@ defmodule Grappa.Session.EventRouterTest do
       end
     end
 
-    test "an E2E line to a channel is dropped: channel encryption does not exist yet" do
+    # Channel E2E (protocol v62): a line to a channel we are a member of
+    # is delivered with the folded channel name; one to a channel we never
+    # joined is not ours to read, and a statusmsg target (`@#italia`) is
+    # no channel at all.
+    test "an E2E line to a channel we joined becomes one :e2e_fragment effect naming the channel" do
+      line = e2e_line(:msg, "q83vEjRWeJA")
+      {:ok, fragment} = Grappa.IRC.E2e.parse(line)
+      joined = base_state(%{members: %{"#grappa" => %{"vjt-claude" => []}}})
+
+      assert {:cont, _, [{:e2e_fragment, "vjt-claude", ^fragment, "#grappa"}]} =
+               EventRouter.route(msg(:privmsg, ["#grappa", line], @peer), joined)
+
+      # Wire case folds to the members key.
+      assert {:cont, _, [{:e2e_fragment, "vjt-claude", ^fragment, "#grappa"}]} =
+               EventRouter.route(msg(:privmsg, ["#Grappa", line], @peer), joined)
+    end
+
+    test "an E2E line to a channel we never joined is dropped" do
       line = e2e_line(:msg, "q83vEjRWeJA")
       assert {:cont, _, []} = EventRouter.route(msg(:privmsg, ["#italia", line], @peer), base_state())
       assert {:cont, _, []} = EventRouter.route(msg(:privmsg, ["@#italia", line], @peer), base_state())

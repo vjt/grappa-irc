@@ -91,7 +91,8 @@ defmodule Grappa.E2eInbox do
           required(:verb) => Entry.verb(),
           required(:msgid) => String.t(),
           required(:payload) => String.t(),
-          optional(:own) => boolean()
+          optional(:own) => boolean(),
+          optional(:channel) => String.t()
         }
 
   @doc "Bytes one device's queue may hold, overhead included."

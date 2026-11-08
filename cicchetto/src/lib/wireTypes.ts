@@ -1415,6 +1415,7 @@ export type SessionWireE2eMessagePayload = {
   msgid: string;
   payload: string;
   own: boolean;
+  channel: string | null;
 };
 
 export type SessionWireE2eInboxPayload = {

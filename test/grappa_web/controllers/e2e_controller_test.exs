@@ -76,6 +76,25 @@ defmodule GrappaWeb.E2eControllerTest do
 
   defp listed_device!(user, network), do: hd(listed_devices!(user, network, 1))
 
+  # Waits until the session's members map holds `channel`. A JOIN fed
+  # from the fake ircd is async — the line crosses the socket and the
+  # client before the session sees it — and a send that races it would
+  # be refused as not-a-member.
+  defp await_joined(pid, channel, timeout \\ 1_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+
+    if Map.has_key?(:sys.get_state(pid).members, channel) do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) < deadline do
+        Process.sleep(10)
+        await_joined(pid, channel, deadline - System.monotonic_time(:millisecond))
+      else
+        flunk("session never joined #{channel}")
+      end
+    end
+  end
+
   # `n` devices of `user` on `network`, registered and listed under one master.
   defp listed_devices!(user, network, n) do
     master = E2eFixtures.identity()
@@ -133,6 +152,43 @@ defmodule GrappaWeb.E2eControllerTest do
       end
 
       refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "#{long_id} 2/"))
+    end
+
+    # Channel E2E (protocol v62): a `:msg` to `*` for a channel the
+    # subject joined answers 202 and the line reaches the channel; any
+    # other channel send is a 400.
+    test "202 for a channel :msg to a channel we joined, 400 for any other channel send", %{conn: conn, vjt: vjt} do
+      {server, network, device} = live_network(vjt)
+      path = "/networks/#{network.slug}/e2e/messages"
+      pid = Session.whereis({:user, vjt.id}, network.id)
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN #grappa\r\n")
+      :ok = await_joined(pid, "#grappa")
+
+      group = %{
+        target: "#grappa",
+        verb: "msg",
+        from: device.did,
+        to: "*",
+        payload: ~s({"v":3,"ch":"#grappa","sid":"s1","i":0,"body":"AAAA"})
+      }
+
+      assert %{"msgid" => msgid} = json_response(post(conn, path, group), 202)
+      assert E2e.msgid?(msgid)
+      {:ok, line} = IRCServer.wait_for_line(server, &String.contains?(&1, msgid), 10_000)
+      assert line == "PRIVMSG #grappa :\x01E2E MSG #{msgid} 1/1 #{device.did} * #{group.payload}\x01\r\n"
+
+      for body <- [
+            # Not a member: the facade passes the shape, the session refuses.
+            %{group | target: "#italia"},
+            # Only `:msg` goes to a channel.
+            %{group | verb: "pkmsg"},
+            %{group | verb: "keyreq"},
+            # A channel frame has no single recipient device.
+            %{group | to: "AaZaARRDyBk"}
+          ] do
+        assert json_response(post(conn, path, body), 400) == %{"error" => "bad_request"}, inspect(body)
+      end
     end
 
     test "400 for a verb outside the client set, an unknown priority, a non-nick target, addresses the verb may not carry, a payload that is not compact JSON text",

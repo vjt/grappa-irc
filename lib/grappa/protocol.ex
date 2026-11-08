@@ -1592,7 +1592,32 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: an older client ignores a field it
   # does not know.
-  @protocol_version 62
+  # 63 — channel E2E (Megolm-style group sessions, vjt's order 2026-11-08)
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: the server half of channel E2E. `POST /networks/:network_id/
+  # e2e/messages` accepts a `#channel` target, but only for `:msg` and only
+  # to `*` — one line to the channel, every member's grappa reassembles the
+  # same multicast; a channel target the subject is not a member of answers
+  # 400, as does any other verb to a channel. Inbound, a channel E2E
+  # PRIVMSG is reassembled exactly like a DM and queued into every listed
+  # device's inbox (`Grappa.E2eInbox.Entry.channel`, migration
+  # `20261108010000`), and `e2e_message` carries `channel` — the folded
+  # channel name, or null for a direct message — so a fetched message and a
+  # pushed one are one shape. The key itself never touches the server: it
+  # travels pairwise, encrypted inside the existing Olm DM between two
+  # members, and rotates on join/part/kick and periodically (client-side).
+  # Bumped on the #1393d rule: a client that shows a channel message in
+  # its channel cannot get the channel from a server predating the field —
+  # the field is absent and the message is indistinguishable from a DM.
+  #
+  # Checked for a collision before claiming 63: origin/main carries 62.
+  #
+  # @min_protocol_version stays at 1: an older client ignores an unknown
+  # `channel` field and shows the message as a DM from its sender —
+  # degraded, not broken — and never sends to a channel, since the door
+  # answers 400 on a server predating the number.
+  @protocol_version 63
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1633,7 +1658,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 62
+  @spec version() :: 63
   def version, do: @protocol_version
 
   @doc """
