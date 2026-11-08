@@ -806,16 +806,17 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       assert json_response(conn, 400)["error"] == "bad_request"
     end
 
-    # C4/DM fix-up: digit-leading target is neither a valid nick NOR a
-    # valid channel — validate_target_name rejects it with :bad_request.
-    test "POST with digit-leading target (neither nick nor channel) returns 400",
+    # C4/DM fix-up: a target that is neither a valid nick NOR a valid
+    # channel — validate_target_name rejects it with :bad_request. A comma
+    # makes it a target list (was "123bad", a nick since issue 2599).
+    test "POST with a target that is neither nick nor channel returns 400",
          %{conn: conn, vjt: vjt} do
       _ = setup_network(vjt, 9999, "azzurra")
 
       conn =
         conn
         |> put_req_header("content-type", "application/json")
-        |> post("/networks/azzurra/channels/123bad/messages", %{"body" => "hello"})
+        |> post("/networks/azzurra/channels/bad,target/messages", %{"body" => "hello"})
 
       assert json_response(conn, 400)["error"] == "bad_request"
     end
@@ -846,6 +847,30 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
 
       assert {:ok, "PRIVMSG someuser :hey there\r\n"} =
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG someuser"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # issue 2599 — the peer's nick is the upstream's call: IRCnet's `foo~`.
+    # The POST gate AND the persisted row (whose key is the peer) take it.
+    test "a DM to a nick the upstream allows (foo~) reaches the wire and persists",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/channels/foo~/messages", %{"body" => "ciao"})
+
+      body = json_response(conn, 201)
+      assert body["channel"] == "foo~"
+      assert body["dm_with"] == "foo~"
+
+      assert {:ok, "PRIVMSG foo~ :ciao\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG foo~"), 1_000)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

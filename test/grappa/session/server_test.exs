@@ -4394,6 +4394,48 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  # issue 2599 — a DM row's key is a nick the upstream decided: the PEER's
+  # (IRCnet's `foo~`), or OURS at receipt, which a collision turns into a UID.
+  describe "issue 2599 — DMs keyed on a nick outside the portable charset" do
+    test "an inbound DM from foo~ lands in foo~'s window" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, _} = setup_user_and_network(port)
+      own = "grappa-test"
+      subject = {:user, user.id}
+
+      _ = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      IRCServer.feed(server, ":foo~!u@host PRIVMSG #{own} :ciao\r\n")
+      IRCServer.feed(server, "PING :dm-barrier\r\n")
+      assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "PONG"), 2_000)
+
+      assert [row] = Scrollback.fetch(subject, network.id, "foo~", nil, 10, own, false)
+      assert row.dm_with == "foo~"
+      assert row.body == "ciao"
+    end
+
+    test "an inbound DM after the ircd renames us to our UID is kept" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, _} = setup_user_and_network(port)
+      uid = "0AAAAAAAB"
+      subject = {:user, user.id}
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      IRCServer.feed(server, ":grappa-test!u@host NICK :#{uid}\r\n")
+      IRCServer.feed(server, ":alice!u@host PRIVMSG #{uid} :ciao\r\n")
+      IRCServer.feed(server, "PING :uid-barrier\r\n")
+      assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "PONG"), 2_000)
+
+      assert [row] = Scrollback.fetch(subject, network.id, "alice", nil, 10, uid, false)
+      assert row.dm_with == "alice"
+      assert row.body == "ciao"
+      assert Process.alive?(pid)
+    end
+  end
+
   describe "issue 1365 + 2368 — a peer NICK change moves nothing, adds one row" do
     # The ruling (issue 1365, comment 5934112501, relayed from vjt on IRC):
     # a nick change causes NO database update; only the UI changes. The

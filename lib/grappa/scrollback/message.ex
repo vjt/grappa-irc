@@ -607,12 +607,15 @@ defmodule Grappa.Scrollback.Message do
   # IRC PRIVMSG accepts both channel targets (#chan, &local, etc.) and nick
   # targets for direct messages. The `:channel` column stores the PRIVMSG
   # target verbatim, so the constraint must accept both shapes (C4 fix-up).
+  # Issue 2599: a DM key is a nick the UPSTREAM decided — the peer's on an
+  # outbound DM, ours at receipt on an inbound one, which a collision turns
+  # into a UID — so it is `wire_nick?/1`, not the portable charset.
   # BUG2 fix-up: "$server" is the Grappa-internal synthetic channel for
   # server-origin NOTICEs and MOTD lines. It is not a valid IRC channel or
   # nick — add it as an explicit third branch so EventRouter can persist
   # server-window rows without changeset rejection.
   @spec valid_target?(term()) :: boolean()
-  defp valid_target?(s), do: Identifier.valid_channel?(s) or Identifier.valid_nick?(s) or s == "$server"
+  defp valid_target?(s), do: Identifier.valid_channel?(s) or Identifier.wire_nick?(s) or s == "$server"
 
   @doc """
   True iff the row threads a DM conversation — `dm_with` is set. Issue 1365
