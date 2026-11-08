@@ -425,6 +425,42 @@ defmodule Grappa.IRC.ClientTest do
                Client.send_invite(client, "#sniffo", "bad nick")
     end
 
+    test "send_whois/3 emits WHOIS nick, and WHOIS server nick with a target server" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      client = start_client(port)
+
+      :ok = Client.send_whois(client, "alice", nil)
+
+      assert {:ok, "WHOIS alice\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "WHOIS alice"), 1_000)
+
+      :ok = Client.send_whois(client, "alice", "irc.example.net")
+
+      assert {:ok, "WHOIS irc.example.net alice\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "WHOIS irc."), 1_000)
+    end
+
+    test "send_whowas/2 emits WHOWAS nick" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      client = start_client(port)
+
+      :ok = Client.send_whowas(client, "alice")
+
+      assert {:ok, "WHOWAS alice\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "WHOWAS"), 1_000)
+    end
+
+    # issue 2599 — these senders trust the nick predicate alone (no
+    # `safe_line_token?/1` beside it), so a predicate that let a final `\n`
+    # through put it on the wire.
+    test "send_whois/3 and send_whowas/2 reject a nick with a trailing newline" do
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      client = start_client(port)
+
+      assert {:error, :invalid_line} = Client.send_whois(client, "alice\n", nil)
+      assert {:error, :invalid_line} = Client.send_whowas(client, "alice\n")
+    end
+
     test "send_list_mode/3 emits MODE #chan b framing" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       client = start_client(port)

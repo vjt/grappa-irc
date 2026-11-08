@@ -62,6 +62,14 @@ defmodule Grappa.IRC.IdentifierTest do
       refute Identifier.valid_nick?(String.duplicate("a", 31))
       assert Identifier.valid_nick?(String.duplicate("a", 30))
     end
+
+    # issue 2599 — in PCRE `$` also matches BEFORE a final `\n`, so a
+    # `^…$` regex accepted `vjt\n` and let the newline reach every sender
+    # that trusts this predicate alone (`Client.send_whois/3` and friends).
+    test "rejects a trailing newline" do
+      refute Identifier.valid_nick?("vjt\n")
+      refute Identifier.valid_nick?("vjt\r\n")
+    end
   end
 
   # #1894 — the user-chosen auto-away nick suffix, validated on its own at

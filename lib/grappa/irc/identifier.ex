@@ -66,7 +66,11 @@ defmodule Grappa.IRC.Identifier do
   # validate and Identifier validate, only to land `:nick_rejected`
   # (432 ERR_ERRONEUSNICKNAME) at the upstream and restart-loop the
   # supervised Session.
-  @nick_regex ~r/^[A-Za-z\[\]\\`_^{|}][\w\[\]\\`_^{|}\-]{0,29}$/
+  #
+  # Anchored `\A…\z`, never `^…$` (issue 2599): in PCRE `$` also matches
+  # before a final `\n`, so the `^…$` form accepted `vjt\n` — the trap
+  # `@ident_regex` below already documents.
+  @nick_regex ~r/\A[A-Za-z\[\]\\`_^{|}][\w\[\]\\`_^{|}\-]{0,29}\z/
 
   # The nick length cap `@nick_regex` enforces (letter/special + up to 29
   # more = 30 total). Exposed via `truncate_nick/1` so seed paths can coerce
