@@ -1836,6 +1836,43 @@ from either server, so keeping the filter does no harm. One difference
 remains: when every mention was muted, a new server sends no bundle,
 while an old one sends a bundle that the filter empties.
 
+### 5l. Channels in common with the peer in a query (issue 2449)
+
+`GET /networks/:network_id/common-channels?nick=<nick>` answers "which
+channels do I share with this peer", for the query window's header:
+
+```
+GET /networks/azzurra/common-channels?nick=alice   →   {"channels": ["#grappa", "#sbiffo"]}
+```
+
+| field | value |
+|---|---|
+| `channels` | sorted channel names the caller shares with `nick` |
+
+The read lives in the session's own in-memory member lists
+(`Session.Server.state.members`), maintained incrementally on
+JOIN/PART/QUIT/KICK/NICK and rebuilt from the 353/366 burst on
+re-join — no NAMES/WHO round trip. Only **seeded** channels count: a
+channel joined but not yet 366-seeded holds only self and is excluded,
+so an unseeded channel is never reported as shared. The nick is folded
+under the network casemapping, like the member keys. Auth is the
+caller's own session (`Plugs.ResolveNetwork`); any nick is queryable
+because it is the caller's own view.
+
+There is **no push event** for this. A client derives the same answer
+locally — joined channels filtered by peer membership in the
+`members_seeded` lists, updated by the existing presence events — and
+recomputes on every JOIN/PART/QUIT/KICK/NICK. The fetch exists for the
+two gaps a purely local derivation cannot close: a presence-paused
+channel (§4a) whose peer join/part/quit the server stopped pushing, so
+the local map goes stale by design; and cold start, where locally "no
+shared channels" is indistinguishable from "lists not loaded yet".
+Fetch on query open; until it lands, do not render a zero.
+
+A new door, so additive (§2): `protocol_version` does not move. An
+older server answers 404; treat that as "unknown yet", not as zero —
+the same posture as the pre-fetch state above.
+
 ## 6. Rate limiting & flood protection (#630)
 
 grappa applies a **coarse per-subject inbound budget** across BOTH doors —
