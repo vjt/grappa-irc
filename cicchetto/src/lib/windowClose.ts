@@ -1,4 +1,5 @@
-import { ApiError, detachNetwork, patchNetwork, postPart } from "./api";
+import { detachNetwork, patchNetwork, postPart } from "./api";
+import { ApiError } from "./apiError";
 import { getSubject, token } from "./auth";
 import { channelKey } from "./channelKey";
 import { requestConfirm } from "./confirmDialog";

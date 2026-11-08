@@ -30,7 +30,6 @@
 
 import { createEffect } from "solid-js";
 import {
-  ApiError,
   clearE2eKeys,
   getE2eDeviceKeys,
   getE2eList,
@@ -40,6 +39,7 @@ import {
   removeE2eDevice,
   uploadE2eDeviceKeys,
 } from "../api";
+import { ApiError } from "../apiError";
 import { token } from "../auth";
 import { networks, user } from "../networks";
 import type { E2eKeysWireDeviceList, E2eKeysWireStatus } from "../wireTypes";

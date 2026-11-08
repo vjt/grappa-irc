@@ -19,13 +19,13 @@
 
 import { createEffect, createSignal, onCleanup } from "solid-js";
 import {
-  ApiError,
   answerE2eRequest,
   askE2eRequest,
   dismissE2eRequest,
   type E2eConsentLine,
   listE2eRequests,
 } from "./api";
+import { ApiError } from "./apiError";
 import { token } from "./auth";
 import { fold } from "./e2e/wire";
 import { askEncryptedKeys, encryptedDevice, openEncryptedChat } from "./encryptedChats";

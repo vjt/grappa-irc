@@ -1,12 +1,12 @@
 import { type Component, createResource, createSignal, For, Show } from "solid-js";
 import {
-  ApiError,
   type AvailableNetworkRow,
   addNetwork,
   type ConnectionState,
   getFeaturedChannels,
   postJoin,
 } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { token } from "./lib/auth";
 import { channelKey } from "./lib/channelKey";
 import { friendlyApiError } from "./lib/friendlyApiError";

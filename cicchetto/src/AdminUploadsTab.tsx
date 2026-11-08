@@ -8,10 +8,10 @@ import InlineConfirmButton from "./InlineConfirmButton";
 import {
   type AdminUpload,
   type AdminUploadsResponse,
-  ApiError,
   adminDeleteUpload,
   adminListUploads,
 } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { token } from "./lib/auth";
 import { formatBytes } from "./lib/formatBytes";
 

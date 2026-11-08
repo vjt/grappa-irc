@@ -1,5 +1,5 @@
 import { type Component, createEffect, createResource, createSignal, For, Show } from "solid-js";
-import { ApiError } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { token } from "./lib/auth";
 import { applyCustomTheme, getAppliedThemePayload } from "./lib/customTheme";
 import { friendlyApiError } from "./lib/friendlyApiError";

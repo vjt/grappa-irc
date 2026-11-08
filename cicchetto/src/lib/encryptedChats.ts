@@ -36,7 +36,6 @@
 
 import { createEffect, createSignal, onCleanup } from "solid-js";
 import {
-  ApiError,
   ackE2eDeviceInbox,
   claimE2eDeviceKeys,
   copyE2e,
@@ -44,6 +43,7 @@ import {
   listE2eDevices,
   sendE2e,
 } from "./api";
+import { ApiError } from "./apiError";
 import { token } from "./auth";
 import { type ChannelKey, channelKey } from "./channelKey";
 import { browserE2e } from "./e2e/browser";

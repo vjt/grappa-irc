@@ -14,7 +14,7 @@
 // door, and #1108's preview), and that pairing is the invariant that keeps the
 // operator's frame count produced by the code that does the sending.
 
-import { ApiError } from "./api";
+import { ApiError } from "./apiError";
 import { ctcpFrame, scrubCtcpDelimiters } from "./ctcpAction";
 import { splitMessageLines } from "./messageLines";
 import { sendMessage as sendWindowMessage } from "./scrollback";

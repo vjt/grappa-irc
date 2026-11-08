@@ -1,6 +1,5 @@
 import { batch, createEffect, createSignal } from "solid-js";
 import {
-  ApiError,
   sendMessage as apiSendMessage,
   countMessagesAfter,
   type GapProbe,
@@ -10,6 +9,7 @@ import {
   type MessageRelay,
   type ScrollbackMessage,
 } from "./api";
+import { ApiError } from "./apiError";
 import { getSubject, token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { sendLog, subjectKey } from "./e2e/orders";

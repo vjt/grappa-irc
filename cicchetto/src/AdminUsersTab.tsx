@@ -12,13 +12,13 @@ import { useRefreshSlot } from "./admin/refreshSlot";
 import InlineConfirmButton from "./InlineConfirmButton";
 import {
   type AdminUser,
-  ApiError,
   adminCreateUser,
   adminDeleteUser,
   adminListUsers,
   adminUpdateUserAdmin,
   adminUpdateUserPassword,
 } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { token } from "./lib/auth";
 import { operatorApiError } from "./lib/friendlyApiError";
 

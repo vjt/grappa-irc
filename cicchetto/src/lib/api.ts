@@ -11,6 +11,9 @@
 // unauthenticated 401 from `Plugs.Authn` and the credential-failure 401
 // from login both surface here as `ApiError`.
 
+// #2409 — the error type lives in its own module (no `vi.mock` touches it) and
+// is re-exported below; this import is what `readError` constructs.
+import { ApiError } from "./apiError";
 import { bootFetch } from "./bootFetch";
 import type { ModesEntry, TopicEntry } from "./channelTopic";
 import { getOrCreateClientId } from "./clientId";
@@ -1600,19 +1603,15 @@ export function assertNever(x: never): never {
   throw new Error(`unreachable discriminated-union variant: ${JSON.stringify(x)}`);
 }
 
-export class ApiError extends Error {
-  readonly status: number;
-  readonly code: string;
-  readonly info: Record<string, unknown>;
-
-  constructor(status: number, code: string, info: Record<string, unknown> = {}) {
-    super(`${status} ${code}`);
-    this.name = "ApiError";
-    this.status = status;
-    this.code = code;
-    this.info = info;
-  }
-}
+// #2409 — the class lives in `lib/apiError.ts` now and is RE-EXPORTED here,
+// so every `import { ApiError } from "./api"` keeps working and keeps naming
+// the same object (a re-export is the same class, so `instanceof` agrees
+// across both paths). The move exists because a test that replaces this whole
+// module with a `vi.mock` factory has to re-export anything a consumer
+// narrows on, and 39 of 60 factories did not — `instanceof undefined` then
+// threw inside the fetch's catch. `lib/apiError.ts` is a module no mock
+// touches. Narrowing callers import from there.
+export { ApiError } from "./apiError";
 
 // REV-K M20 (2026-05-22) — typed WS Channel push error mirroring
 // `ApiError`. The Channel error envelope is `{:error, %{error: "<token>"}}`
