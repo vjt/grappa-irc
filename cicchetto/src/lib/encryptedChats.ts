@@ -45,6 +45,7 @@ import {
   sendE2e,
 } from "./api";
 import { token } from "./auth";
+import { subscribeChannelE2eRows } from "./channelE2eRows";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { browserE2e } from "./e2e/browser";
 import { atNick, type ByNick, nickEntries, nickValues, noNicks } from "./e2e/byNick";
@@ -849,6 +850,11 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // `tickWaiting` logs each network's failure itself, and goes on.
     const tick = setInterval(() => void tickWaiting(), TICK_MS);
     onCleanup(() => clearInterval(tick));
+    // Channel E2E rows (wire v4): the decrypted channel lines land in
+    // the rows store, so a drain that ACKs them does not throw them away.
+    // No rendering here: the store only keeps them for the channel UI.
+    const unsubscribeRows = subscribeChannelE2eRows();
+    onCleanup(() => unsubscribeRows());
     // Channel E2E rotation triggers (wire v4): a member joined or left a
     // channel — the epoch key is distributed, or rotated. The delta's
     // roster is after the change; our own leave drops the channel's keys
