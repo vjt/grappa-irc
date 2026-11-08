@@ -7887,6 +7887,84 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  # Issue 2449 — channels in common with a peer, read from the live
+  # `state.members` map. No NAMES/WHO round trip; SEEDED channels only.
+  describe "common_channels/3" do
+    test "returns the sorted seeded channels shared with the nick" do
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#one", "#two", "#three"]})
+
+      pid = start_session_for(user, network)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#one\r\n")
+      IRCServer.feed(server, ":irc 353 grappa-test = #one :grappa-test alice bob\r\n")
+      IRCServer.feed(server, ":irc 366 grappa-test #one :End\r\n")
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#two\r\n")
+      IRCServer.feed(server, ":irc 353 grappa-test = #two :grappa-test alice\r\n")
+      IRCServer.feed(server, ":irc 366 grappa-test #two :End\r\n")
+      # #three: alice is there, but the channel is never seeded.
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#three\r\n")
+      IRCServer.feed(server, ":irc 353 grappa-test = #three :grappa-test alice carol\r\n")
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      assert {:ok, ["#one", "#two"]} =
+               Session.common_channels({:user, user.id}, network.id, "alice")
+
+      # bob shares only #one; carol shares nothing seeded (#three is
+      # unseeded, so she does not count there either).
+      assert {:ok, ["#one"]} =
+               Session.common_channels({:user, user.id}, network.id, "bob")
+
+      assert {:ok, []} =
+               Session.common_channels({:user, user.id}, network.id, "carol")
+
+      # A nick nobody holds shares nothing — same shape, not an error.
+      assert {:ok, []} =
+               Session.common_channels({:user, user.id}, network.id, "nobody")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "query nick is folded with the network casemapping (#537)" do
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#test"]})
+
+      pid = start_session_for(user, network)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
+      IRCServer.feed(server, ":irc 353 grappa-test = #test :grappa-test Alice\r\n")
+      IRCServer.feed(server, ":irc 366 grappa-test #test :End\r\n")
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      # Member keys are folded at ingress; the query must fold the
+      # same way, or "ALICE" would miss the "alice" key.
+      assert {:ok, ["#test"]} =
+               Session.common_channels({:user, user.id}, network.id, "ALICE")
+
+      assert {:ok, ["#test"]} =
+               Session.common_channels({:user, user.id}, network.id, "Alice")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "no session for (user, network) returns {:error, :no_session}" do
+      assert {:error, :no_session} =
+               Session.common_channels({:user, Ecto.UUID.generate()}, 999_999_999, "alice")
+    end
+  end
+
   describe "list_channels via GenServer.call" do
     test "returns Map.keys(SessionStateHelpers.members(state)) sorted alphabetically" do
       {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
