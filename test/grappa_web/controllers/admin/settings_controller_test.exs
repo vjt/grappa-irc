@@ -764,6 +764,71 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
       assert ServerSettings.static_mapping_prefix() == nil
     end
 
+    # issue 2546 — the probe is the ONE refusal that cannot be decided before
+    # the write pass (it has side effects), which is why `addressing` is
+    # applied FIRST there. Without that ordering the other subtrees would
+    # already be committed when the probe says no.
+    test "a probe refusal leaves upload, dcc and auto_away unwritten (issue 2546)",
+         %{conn: conn, session: session} do
+      expect(SourceAliasMock, :arm_check, fn _ -> {:error, :alias_not_permitted} end)
+
+      before = {
+        ServerSettings.get_upload_global_cap_bytes(),
+        ServerSettings.get_dcc_max_transfer_bytes(),
+        ServerSettings.get_auto_away_default_seconds()
+      }
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{
+          "upload" => %{"global_cap_bytes" => elem(before, 0) + 1},
+          "dcc" => %{"max_transfer_bytes" => 12_345},
+          "auto_away" => %{"default_debounce_seconds" => 300},
+          "addressing" => %{
+            "mode" => "static_mapping_with_reservations",
+            "static_mapping_prefix" => "2a03:4000:20:2d3:cb::/80"
+          }
+        })
+
+      assert %{"error" => "addressing_unusable", "reason" => "alias_not_permitted"} =
+               json_response(conn, 422)
+
+      assert {
+               ServerSettings.get_upload_global_cap_bytes(),
+               ServerSettings.get_dcc_max_transfer_bytes(),
+               ServerSettings.get_auto_away_default_seconds()
+             } == before
+    end
+
+    test "a :no_static_prefix refusal leaves upload, dcc and auto_away unwritten (issue 2546)",
+         %{conn: conn, session: session} do
+      before = {
+        ServerSettings.get_upload_global_cap_bytes(),
+        ServerSettings.get_dcc_max_transfer_bytes(),
+        ServerSettings.get_auto_away_default_seconds()
+      }
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{
+          "upload" => %{"global_cap_bytes" => elem(before, 0) + 1},
+          "dcc" => %{"max_transfer_bytes" => 12_345},
+          "auto_away" => %{"default_debounce_seconds" => 300},
+          "addressing" => %{"mode" => "static_mapping_with_reservations"}
+        })
+
+      assert %{"error" => "addressing_unusable", "reason" => "no_static_prefix"} =
+               json_response(conn, 422)
+
+      assert {
+               ServerSettings.get_upload_global_cap_bytes(),
+               ServerSettings.get_dcc_max_transfer_bytes(),
+               ServerSettings.get_auto_away_default_seconds()
+             } == before
+    end
+
     test "422 addressing_unusable :no_static_prefix when enabling mode 2 with no prefix",
          %{conn: conn, session: session} do
       # arm_check is never reached — a nil prefix cannot arm (no Mox expect set).
