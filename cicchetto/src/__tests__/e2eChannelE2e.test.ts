@@ -103,6 +103,7 @@ function makeSide(
   ownNick: string,
   clock: Clock,
   roster?: (channel: string) => string[] | undefined,
+  keyFrom?: (channel: string) => string | undefined,
 ): Side {
   const dm = fakeDm();
   return {
@@ -113,6 +114,7 @@ function makeSide(
       sign: signFor(ownNick),
       verify: verifyAll,
       rosterFor: roster,
+      keyFromFor: keyFrom,
       didsFor: (nick) => {
         const key = RING.get(fold(nick));
         return key === undefined ? undefined : [key.did];
@@ -125,8 +127,15 @@ function makeSide(
 }
 
 /** Alice and Bob, each with a side on the same clock. */
-function sides(clock: Clock, roster?: (channel: string) => string[] | undefined) {
-  return { alice: makeSide("alice", clock, roster), bob: makeSide("bob", clock, roster) };
+function sides(
+  clock: Clock,
+  roster?: (channel: string) => string[] | undefined,
+  keyFrom?: (channel: string) => string | undefined,
+) {
+  return {
+    alice: makeSide("alice", clock, roster, keyFrom),
+    bob: makeSide("bob", clock, roster, keyFrom),
+  };
 }
 
 /** The channel `:msg` outbound of a send result, if any. */
@@ -134,9 +143,9 @@ function channelMsg(res: { outbound: Outbound[] }): Outbound | undefined {
   return res.outbound.find((o) => o.target === CHAN);
 }
 
-/** Alice and Bob share an epoch: Alice sends, Bob imports her gkey and reads the line. */
+/** Alice and Bob share an epoch: Alice mints it explicitly, Bob imports her gkey and reads the line. */
 async function shareEpoch(s: ReturnType<typeof sides>, members: string[]) {
-  const sent = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "before", members);
+  distributeKey(s.alice.deps, s.alice.groups, CHAN, members);
   const gkey = s.alice.dm.sent[0]?.inner as Record<string, unknown> | undefined;
   if (gkey === undefined) throw new Error("alice sent no gkey");
   // Bob asked for the key first: a first epoch is only imported after asking.
@@ -144,6 +153,7 @@ async function shareEpoch(s: ReturnType<typeof sides>, members: string[]) {
   expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
     { kind: "channel_key_received", channel: CHAN, from: "alice", sid: gkey.sid as string },
   ]);
+  const sent = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "before", members);
   const payload = channelMsg(sent)?.payload ?? "";
   const read = await receiveChannel(
     s.bob.deps,
@@ -276,6 +286,7 @@ describe("requestKey", () => {
   it("asks nothing when an epoch is already held", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     expect(requestKey(s.alice.deps, s.alice.groups, CHAN)).toEqual({
       events: [],
@@ -290,6 +301,7 @@ describe("onKeyreq", () => {
     const clock = { t: NOW };
     const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
     const s = sides(clock, roster);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const sid = epochFor(s.alice.groups, CHAN)?.sid;
     s.alice.dm.sent.length = 0;
@@ -318,6 +330,7 @@ describe("onKeyreq", () => {
       outbound: [],
       copies: [],
     });
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     expect(onKeyreq(s.alice.deps, s.alice.groups, CHAN, "alice", didFor("alice"))).toEqual({
       events: [],
@@ -331,10 +344,67 @@ describe("onKeyreq", () => {
     });
   });
 
+  it("the topic designee mints the first epoch to answer a key request, and only then", async () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
+    const keyFrom = (channel: string) => (channel === CHAN ? "alice" : undefined);
+    const s = sides(clock, roster, keyFrom);
+    // Nobody holds an epoch yet: Alice is the designee, so she mints one
+    // to answer Bob's ask — and the key reaches him.
+    const answered = onKeyreq(s.alice.deps, s.alice.groups, CHAN, "bob", didFor("bob"));
+    const sid = epochFor(s.alice.groups, CHAN)?.sid;
+    expect(sid).toBeDefined();
+    expect(answered.events).toContainEqual(
+      expect.objectContaining({ kind: "channel_rotated", reason: "created", channel: CHAN }),
+    );
+    expect(answered.events).toContainEqual({ kind: "channel_key_sent", channel: CHAN, to: "bob", sid });
+    expect(s.alice.dm.sent.map((d) => d.nick)).toContain("bob");
+    // Bob imports it: the minted epoch is a real one.
+    const gkey = s.alice.dm.sent.find((d) => d.nick === "bob")?.inner as
+      | Record<string, unknown>
+      | undefined;
+    if (gkey === undefined) throw new Error("alice sent bob no gkey");
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
+    expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
+      expect.objectContaining({ kind: "channel_key_received", from: "alice" }),
+    ]);
+    // A duplicate ask inside the minute does not mint a second epoch.
+    clock.t = NOW + 1_000;
+    expect(onKeyreq(s.alice.deps, s.alice.groups, CHAN, "bob", didFor("bob"))).toEqual({
+      events: [],
+      outbound: [],
+      copies: [],
+    });
+    expect(epochFor(s.alice.groups, CHAN)?.sid).toBe(sid);
+  });
+
+  it("a non-designee mints nothing on a key request: the newcomer waits", async () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
+    const keyFrom = (channel: string) => (channel === CHAN ? "carol" : undefined);
+    const s = sides(clock, roster, keyFrom);
+    expect(onKeyreq(s.alice.deps, s.alice.groups, CHAN, "bob", didFor("bob"))).toEqual({
+      events: [],
+      outbound: [],
+      copies: [],
+    });
+    expect(epochFor(s.alice.groups, CHAN)).toBeUndefined();
+    expect(s.alice.dm.sent).toEqual([]);
+    // And with no topic tag at all, nobody bootstraps either.
+    const untagged = sides(clock, roster);
+    expect(onKeyreq(untagged.alice.deps, untagged.alice.groups, CHAN, "bob", didFor("bob"))).toEqual({
+      events: [],
+      outbound: [],
+      copies: [],
+    });
+    expect(epochFor(untagged.alice.groups, CHAN)).toBeUndefined();
+  });
+
   it("names the asker in the holders of the key it answers with", async () => {
     const clock = { t: NOW };
     const roster = (channel: string) => (channel === CHAN ? ["alice", "bob", "dave"] : undefined);
     const s = sides(clock, roster);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     // Dave never received the epoch: he is not a holder yet.
     expect(epochFor(s.alice.groups, CHAN)?.holders).toEqual([didFor("alice"), didFor("bob")]);
@@ -364,6 +434,7 @@ describe("onKeyreq", () => {
     let members = ["alice", "bob", "dave"];
     const roster = (channel: string) => (channel === CHAN ? members : undefined);
     const s = sides(clock, roster);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const sid = epochFor(s.alice.groups, CHAN)?.sid;
     // Dave is on the roster: answered.
@@ -396,6 +467,7 @@ describe("onKeyreq", () => {
     const s = sides(clock, roster);
     const known = s.alice.deps.didsFor;
     s.alice.deps.didsFor = (nick) => (fold(nick) === "dave" ? undefined : known(nick));
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob", "dave"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob", "dave"]);
     expect(epochFor(s.alice.groups, CHAN)?.sentTo).toEqual(["dave"]);
     const sid = epochFor(s.alice.groups, CHAN)?.sid;
@@ -411,6 +483,7 @@ describe("onKeyreq", () => {
     const clock = { t: NOW };
     const roster = (channel: string) => (channel === CHAN ? ["alice", "bob", "dave"] : undefined);
     const s = sides(clock, roster);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave", didFor("dave"));
     const oldSid = epochFor(s.alice.groups, CHAN)?.sid;
@@ -426,6 +499,7 @@ describe("onMemberJoined", () => {
   it("our own join drops the held epoch: it predates the rotation the others did without us", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     expect(epochFor(s.alice.groups, CHAN)).toBeDefined();
     const res = onMemberJoined(s.alice.deps, s.alice.groups, CHAN, "alice", ["alice", "bob"]);
@@ -447,6 +521,7 @@ describe("onMemberJoined", () => {
       outbound: [],
       copies: [],
     });
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     expect(
       onMemberJoined(s.alice.deps, s.alice.groups, CHAN, "dave", ["alice", "bob", "dave"]),
@@ -494,6 +569,7 @@ describe("onMemberLeft", () => {
         sid: epochFor(s.alice.groups, CHAN)?.sid,
       }),
     ]);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     const after = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "after", ["alice", "bob"]);
     const payload = channelMsg(after)?.payload ?? "";
     expect(
@@ -575,6 +651,7 @@ describe("onMemberLeft", () => {
   it("our own leave drops the whole channel, and sends nothing", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     s.alice.dm.sent.length = 0;
     const res = onMemberLeft(s.alice.deps, s.alice.groups, CHAN, "alice", ["bob"]);
@@ -592,6 +669,7 @@ describe("auditEpochRotation", () => {
   it("rotates when a holder is no longer on the roster, and distributes the new key", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob", "carol"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob", "carol"]);
     const oldSid = epochFor(s.alice.groups, CHAN)?.sid;
     s.alice.dm.sent.length = 0;
@@ -615,6 +693,7 @@ describe("auditEpochRotation", () => {
       outbound: [],
       copies: [],
     });
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     expect(auditEpochRotation(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"])).toEqual({
       events: [],
@@ -626,6 +705,7 @@ describe("auditEpochRotation", () => {
   it("a rename rotates nothing: the roster is per did, and the did did not change", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const oldSid = epochFor(s.alice.groups, CHAN)?.sid;
     // Bob renamed to Robert: the nick changed, the device did not. The
@@ -644,6 +724,7 @@ describe("auditEpochRotation", () => {
   it("is quiet when the mapping attributes a holder to a member this cic has not chatted with", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob", "carol"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob", "carol"]);
     // Carol's list has not landed on this cic: her did is not among the
     // roster dids, but the mapping attributes it to a nick still on the
@@ -662,6 +743,7 @@ describe("auditEpochRotation", () => {
   it("a rename whose new nick's list has not landed yet rotates once, fail closed", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const oldSid = epochFor(s.alice.groups, CHAN)?.sid;
     // Bob renamed to Robert; this cic has not re-pinned the new nick,
@@ -679,6 +761,7 @@ describe("auditEpochRotation", () => {
     const s = sides(clock);
     const known = s.alice.deps.didsFor;
     s.alice.deps.didsFor = (nick) => (fold(nick) === "dave" ? undefined : known(nick));
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob", "dave"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob", "dave"]);
     expect(epochFor(s.alice.groups, CHAN)?.sentTo).toEqual(["dave"]);
     expect(epochFor(s.alice.groups, CHAN)?.holders).not.toContain(didFor("dave"));
@@ -700,7 +783,7 @@ describe("auditEpochRotation", () => {
 });
 
 describe("sendChannel", () => {
-  it("creates the epoch on first send, distributes the key first, then sends one channel message", async () => {
+  it("queues the row without a key: it never mints an epoch, and never sends in the clear", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
     const res = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hello all", [
@@ -708,34 +791,61 @@ describe("sendChannel", () => {
       "bob",
       "carol",
     ]);
-    expect(s.alice.dm.sent.map((d) => d.nick)).toEqual(["bob", "carol"]);
-    expect(res.outbound).toHaveLength(3);
-    expect(res.outbound[0]?.target).toBe("bob");
-    expect(res.outbound[1]?.target).toBe("carol");
-    const channel = res.outbound[2];
-    expect(channel?.target).toBe(CHAN);
-    expect(channel?.verb).toBe("msg");
-    expect(channel?.to).toBe("*");
-    expect(channel?.from).toBe(didFor("alice"));
-    expect(channel?.ref).toBeUndefined();
-    expect(channel?.tag).toBeUndefined();
-    expect(res.events).toContainEqual(
-      expect.objectContaining({ kind: "channel_rotated", reason: "created" }),
-    );
-    // The second send reuses the epoch: no more gkeys.
-    s.alice.dm.sent.length = 0;
+    // No epoch was minted, no gkey DM went out, and no channel message
+    // either: the row waits in queue for the key.
+    expect(epochFor(s.alice.groups, CHAN)).toBeUndefined();
+    expect(s.alice.dm.sent).toEqual([]);
+    expect(res.outbound.filter((o) => o.target === CHAN && o.verb === "msg")).toHaveLength(1);
+    expect(
+      decodePayload(res.outbound.find((o) => o.target === CHAN)?.payload ?? ""),
+    ).toEqual({ v: 4, t: "keyreq", ch: "#grappa" });
+    expect(res.events).toContainEqual({ kind: "channel_key_missing", channel: CHAN });
+    expect(res.events).toContainEqual({ kind: "channel_key_requested", channel: CHAN });
+    // The key arrives from Bob: he mints it, Alice imports it after asking.
+    distributeKey(s.bob.deps, s.bob.groups, CHAN, ["alice", "bob", "carol"]);
+    const gkey = s.bob.dm.sent.find((d) => d.nick === "alice")?.inner as
+      | Record<string, unknown>
+      | undefined;
+    if (gkey === undefined) throw new Error("bob sent alice no gkey");
+    expect(receiveGkey(s.alice.deps, s.alice.groups, gkey, "bob", didFor("bob"))).toEqual([
+      expect.objectContaining({ kind: "channel_key_received", from: "bob" }),
+    ]);
+    // The next send flushes the queued row first, in order, then the new row.
     const again = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "again", [
       "alice",
       "bob",
       "carol",
     ]);
-    expect(again.outbound).toHaveLength(1);
-    expect(again.outbound[0]?.target).toBe(CHAN);
+    expect(again.outbound).toHaveLength(2);
+    expect(again.outbound.map((o) => o.target)).toEqual([CHAN, CHAN]);
+    const first = await receiveChannel(
+      s.bob.deps,
+      s.bob.groups,
+      CHAN,
+      "alice",
+      didFor("alice"),
+      again.outbound[0]?.payload ?? "",
+    );
+    expect(first.events).toEqual([
+      expect.objectContaining({ kind: "channel_received", body: "hello all" }),
+    ]);
+    const second = await receiveChannel(
+      s.bob.deps,
+      s.bob.groups,
+      CHAN,
+      "alice",
+      didFor("alice"),
+      again.outbound[1]?.payload ?? "",
+    );
+    expect(second.events).toEqual([
+      expect.objectContaining({ kind: "channel_received", body: "again" }),
+    ]);
   });
 
   it("audits before sending: a departed holder rotates the epoch first", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob", "carol"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob", "carol"]);
     const oldSid = epochFor(s.alice.groups, CHAN)?.sid;
     s.alice.dm.sent.length = 0;
@@ -760,6 +870,7 @@ describe("receiveChannel", () => {
     const clock = { t: NOW };
     const s = sides(clock);
     await shareEpoch(s, ["alice", "bob"]);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     const sent = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi bob", ["alice", "bob"]);
     const payload = channelMsg(sent)?.payload ?? "";
     const res = await receiveChannel(
@@ -787,6 +898,7 @@ describe("receiveChannel", () => {
     const clock = { t: NOW };
     const s = sides(clock);
     await shareEpoch(s, ["alice", "bob"]);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     const sent = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "once", ["alice", "bob"]);
     const payload = channelMsg(sent)?.payload ?? "";
     expect(
@@ -819,6 +931,7 @@ describe("receiveChannel", () => {
     const clock = { t: NOW };
     const s = sides(clock);
     await shareEpoch(s, ["alice", "bob"]);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     const sent = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "secret", ["alice", "bob"]);
     const payload = channelMsg(sent)?.payload ?? "";
     const envelope = decodePayload(payload);
@@ -849,6 +962,7 @@ describe("receiveChannel", () => {
   it("surfaces an unreadable channel message as undecryptable, never a throw", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     const sent = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "secret", ["alice", "bob"]);
     const payload = channelMsg(sent)?.payload ?? "";
     // Bob holds no session: no-session.
@@ -888,6 +1002,10 @@ describe("receiveChannel", () => {
   it("carries no plaintext counter in the v4 envelope", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, [
+      "alice",
+      "bob",
+    ]);
     const sent = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "count me", [
       "alice",
       "bob",
@@ -906,6 +1024,7 @@ describe("receiveChannel", () => {
   it("skips our own messages coming back through the inbox", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     const sent = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const payload = channelMsg(sent)?.payload ?? "";
     expect(
@@ -920,6 +1039,7 @@ describe("receiveChannel", () => {
     const clock = { t: NOW };
     const roster = (channel: string) => (channel === CHAN ? ["alice", "bob", "dave"] : undefined);
     const s = sides(clock, roster);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const sid = epochFor(s.alice.groups, CHAN)?.sid;
     s.alice.dm.sent.length = 0;
@@ -963,6 +1083,7 @@ describe("receiveGkey", () => {
   it("imports a valid key, and a re-sent key is a no-op", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const gkey = s.alice.dm.sent[0]?.inner as Record<string, unknown>;
     const sid = gkey.sid as string;
@@ -978,6 +1099,7 @@ describe("receiveGkey", () => {
     const clock = { t: NOW };
     const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
     const s = sides(clock, roster);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const first = s.alice.dm.sent[0]?.inner as Record<string, unknown>;
     requestKey(s.bob.deps, s.bob.groups, CHAN);
@@ -1075,6 +1197,7 @@ describe("receiveGkey", () => {
     const clock = { t: NOW };
     const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
     const s = sides(clock, roster);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const first = s.alice.dm.sent[0]?.inner as Record<string, unknown>;
     requestKey(s.bob.deps, s.bob.groups, CHAN);
@@ -1101,6 +1224,7 @@ describe("receiveGkey", () => {
     const clock = { t: NOW };
     const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
     const s = sides(clock, roster);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const first = s.alice.dm.sent[0]?.inner as Record<string, unknown>;
     requestKey(s.bob.deps, s.bob.groups, CHAN);
@@ -1223,6 +1347,7 @@ describe("rotateDue", () => {
       outbound: [],
       copies: [],
     });
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     const next = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "day two", ["alice", "bob"]);
     const nextPayload = channelMsg(next)?.payload ?? "";
     expect(
@@ -1238,6 +1363,7 @@ describe("rotateDue", () => {
     const clock = { t: NOW };
     // No roster at all: the election cannot run.
     const noRoster = sides(clock);
+    distributeKey(noRoster.alice.deps, noRoster.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(noRoster.alice.deps, noRoster.alice.groups, CHAN, "hi", ["alice", "bob"]);
     clock.t = NOW + DAY;
     expect((await rotateDue(noRoster.alice.deps, noRoster.alice.groups, [CHAN])).outbound).toEqual(
@@ -1267,7 +1393,9 @@ describe("channelsWithEpoch", () => {
     const clock = { t: NOW };
     const s = sides(clock);
     expect(channelsWithEpoch(s.alice.groups)).toEqual([]);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "one", ["alice", "bob"]);
+    distributeKey(s.alice.deps, s.alice.groups, "#other", ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, "#other", "two", ["alice", "bob"]);
     expect(channelsWithEpoch(s.alice.groups).sort()).toEqual(["#grappa", "#other"]);
     onMemberLeft(s.alice.deps, s.alice.groups, CHAN, "alice", ["bob"]);
@@ -1307,6 +1435,7 @@ describe("key copies", () => {
     const clock = { t: NOW };
     const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
     const s = sides(clock, roster);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const sid = epochFor(s.alice.groups, CHAN)?.sid;
     s.alice.dm.sent.length = 0;
