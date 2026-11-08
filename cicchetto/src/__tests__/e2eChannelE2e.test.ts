@@ -780,6 +780,41 @@ describe("auditEpochRotation", () => {
     expect(held?.holderNicks?.dave).toEqual([didFor("dave")]);
     expect(held?.sentTo).toEqual([]);
   });
+
+  it("a non-designated audit waits: it rotates nothing, even on a stale epoch", async () => {
+    const clock = { t: NOW };
+    const s = sides(clock);
+    // The epoch is stale — carol left — but Bob is not the designated
+    // rotator: the first remaining holder did is Alice's. Bob's audit
+    // waits for her cic; it mints nothing, and the epoch stands.
+    distributeKey(s.bob.deps, s.bob.groups, CHAN, ["alice", "bob", "carol"]);
+    const oldSid = epochFor(s.bob.groups, CHAN)?.sid;
+    s.bob.dm.sent.length = 0;
+    expect(
+      auditEpochRotation(s.bob.deps, s.bob.groups, CHAN, ["alice", "bob"]),
+    ).toEqual({
+      events: [],
+      outbound: [],
+      copies: [],
+    });
+    expect(epochFor(s.bob.groups, CHAN)?.sid).toBe(oldSid);
+    expect(s.bob.dm.sent).toEqual([]);
+  });
+
+  it("the designated audit rotates: exactly one mints the new epoch", async () => {
+    const clock = { t: NOW };
+    const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob", "carol"]);
+    const oldSid = epochFor(s.alice.groups, CHAN)?.sid;
+    s.alice.dm.sent.length = 0;
+    const res = auditEpochRotation(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
+    expect(res.events).toContainEqual(
+      expect.objectContaining({ kind: "channel_rotated", oldSid, reason: "member-left" }),
+    );
+    expect(epochFor(s.alice.groups, CHAN)?.sid).not.toBe(oldSid);
+    // The new key goes only to the members who remain.
+    expect(s.alice.dm.sent.map((d) => d.nick)).toEqual(["bob"]);
+  });
 });
 
 describe("sendChannel", () => {
@@ -1459,9 +1494,17 @@ describe("key copies", () => {
     expect(JSON.parse(left.copies[0]?.body ?? "")).toEqual(
       expect.objectContaining({ t: "gkey", sid: epochFor(s.alice.groups, CHAN)?.sid }),
     );
-    // Bob's epoch still names Carol as a holder, so the audit rotates and copies the new key.
+    // Bob's epoch still names Carol as a holder, but Bob is not the
+    // designated rotator — Alice is — so his audit waits: it rotates
+    // nothing and copies nothing. Alice already rotated on the leave,
+    // so her audit is quiet too.
     const audited = auditEpochRotation(s.bob.deps, s.bob.groups, CHAN, ["alice", "bob"]);
-    expect(audited.copies.map((c) => c.peer)).toEqual(["alice"]);
+    expect(audited).toEqual({ events: [], outbound: [], copies: [] });
+    expect(auditEpochRotation(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"])).toEqual({
+      events: [],
+      outbound: [],
+      copies: [],
+    });
   });
 
   it("is always present, empty when no gkey DM went out", () => {

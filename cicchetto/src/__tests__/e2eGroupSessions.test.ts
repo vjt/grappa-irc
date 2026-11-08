@@ -16,6 +16,7 @@ import {
   encryptChannel,
   epochFor,
   epochHoldersStale,
+  epochRemainingHolders,
   expireHeldRows,
   GROUP_ROTATION_INTERVAL_MS,
   type GroupSessionsState,
@@ -898,6 +899,25 @@ describe("holders and key requests", () => {
         ),
       ),
     ).toBe(false);
+    // The remaining holders are the election input: present by did, or
+    // settled by the mapping — a departed holder is out, and the rest
+    // stay in holder order.
+    expect(
+      epochRemainingHolders(
+        groups,
+        CHAN,
+        roster(["alice", "bob"], [didFor(RING, "alice"), didFor(RING, "bob")]),
+      ),
+    ).toEqual([didFor(RING, "alice"), didFor(RING, "bob")]);
+    // A holder this cic never chatted with is settled by the mapping,
+    // not dropped: its did is not in the roster's lists, but its nick is.
+    expect(
+      epochRemainingHolders(groups, CHAN, roster(["alice", "bob", "carol"], [didFor(RING, "alice")])),
+    ).toEqual([didFor(RING, "alice"), didFor(RING, "bob"), didFor(RING, "carol")]);
+    // No epoch, no holders.
+    expect(
+      epochRemainingHolders(newGroupSessionsState(), CHAN, roster(["alice"], [didFor(RING, "alice")])),
+    ).toEqual([]);
     // The holder set is per did: the roster in dids still matches in any order.
     expect(
       epochHoldersStale(
