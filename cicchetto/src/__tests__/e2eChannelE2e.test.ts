@@ -299,6 +299,40 @@ describe("onKeyreq", () => {
       copies: [],
     });
   });
+
+  it("names the asker in the holders of the key it answers with", async () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob", "dave"] : undefined);
+    const s = sides(clock, roster);
+    await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
+    // Dave never received the epoch: he is not a holder yet.
+    expect(epochFor(s.alice.groups, CHAN)?.holders).toEqual(["alice", "bob"]);
+    const sid = epochFor(s.alice.groups, CHAN)?.sid;
+    const answered = onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave");
+    expect(answered.events).toEqual([{ kind: "channel_key_sent", channel: CHAN, to: "dave", sid }]);
+    // The gkey Dave received names him in holders, and so does the stored epoch.
+    const inner = s.alice.dm.sent.find((d) => d.nick === "dave")?.inner as { holders: string[] };
+    expect(inner.holders).toEqual(["alice", "bob", "dave"]);
+    expect(epochFor(s.alice.groups, CHAN)?.holders).toEqual(["alice", "bob", "dave"]);
+    // A second answer does not duplicate him.
+    clock.t = NOW + 60_000;
+    onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave");
+    expect(epochFor(s.alice.groups, CHAN)?.holders).toEqual(["alice", "bob", "dave"]);
+  });
+
+  it("a keyreq-served peer's exit rotates the epoch", async () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob", "dave"] : undefined);
+    const s = sides(clock, roster);
+    await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
+    onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave");
+    const oldSid = epochFor(s.alice.groups, CHAN)?.sid;
+    const res = onMemberLeft(s.alice.deps, s.alice.groups, CHAN, "dave", ["alice", "bob"]);
+    expect(res.events).toContainEqual(
+      expect.objectContaining({ kind: "channel_rotated", oldSid, reason: "member-left" }),
+    );
+    expect(epochFor(s.alice.groups, CHAN)?.sid).not.toBe(oldSid);
+  });
 });
 
 describe("onMemberJoined", () => {
