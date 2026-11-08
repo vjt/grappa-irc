@@ -135,6 +135,8 @@ async function shareEpoch(s: ReturnType<typeof sides>, members: string[]) {
   const sent = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "before", members);
   const gkey = s.alice.dm.sent[0]?.inner as Record<string, unknown> | undefined;
   if (gkey === undefined) throw new Error("alice sent no gkey");
+  // Bob asked for the key first: a first epoch is only imported after asking.
+  requestKey(s.bob.deps, s.bob.groups, CHAN);
   expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
     { kind: "channel_key_received", channel: CHAN, from: "alice", sid: gkey.sid as string },
   ]);
@@ -732,6 +734,7 @@ describe("receiveGkey", () => {
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const gkey = s.alice.dm.sent[0]?.inner as Record<string, unknown>;
     const sid = gkey.sid as string;
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
     expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
       { kind: "channel_key_received", channel: CHAN, from: "alice", sid },
     ]);
@@ -745,6 +748,7 @@ describe("receiveGkey", () => {
     const s = sides(clock, roster);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const first = s.alice.dm.sent[0]?.inner as Record<string, unknown>;
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
     receiveGkey(s.bob.deps, s.bob.groups, first, "alice", didFor("alice"));
     const oldSid = epochFor(s.bob.groups, CHAN)?.sid;
     // A newer epoch whose holders still name Carol, who is no longer on the roster.
@@ -778,14 +782,91 @@ describe("receiveGkey", () => {
       key: newEpochKey(),
       holders: ["alice", "bob", "carol"],
     };
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
     expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
       { kind: "channel_key_received", channel: CHAN, from: "alice", sid: gkey.sid },
     ]);
   });
 
+  it("drops a gkey from a sender off the roster, even for a first import", () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
+    const s = sides(clock, roster);
+    const gkey = {
+      t: "gkey",
+      ch: CHAN,
+      sid: newEpochId(),
+      key: newEpochKey(),
+      holders: ["alice", "bob"],
+    };
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
+    expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "mallory", "did-mallory")).toEqual([
+      {
+        kind: "channel_dropped",
+        channel: CHAN,
+        reason: "sender-not-in-roster",
+        detail: expect.any(String),
+      },
+    ]);
+    expect(epochFor(s.bob.groups, CHAN)).toBeUndefined();
+  });
+
+  it("drops a first import when this device never asked for the key", () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
+    const s = sides(clock, roster);
+    const gkey = {
+      t: "gkey",
+      ch: CHAN,
+      sid: newEpochId(),
+      key: newEpochKey(),
+      holders: ["alice", "bob"],
+    };
+    // No requestKey call: the key is dropped, and the channel stays unarmed.
+    expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
+      {
+        kind: "channel_dropped",
+        channel: CHAN,
+        reason: "not-requested",
+        detail: expect.any(String),
+      },
+    ]);
+    expect(epochFor(s.bob.groups, CHAN)).toBeUndefined();
+    // Asking first lets the same key in.
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
+    expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
+      { kind: "channel_key_received", channel: CHAN, from: "alice", sid: gkey.sid },
+    ]);
+  });
+
+  it("replaces an epoch already held without asking again", async () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
+    const s = sides(clock, roster);
+    await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
+    const first = s.alice.dm.sent[0]?.inner as Record<string, unknown>;
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
+    receiveGkey(s.bob.deps, s.bob.groups, first, "alice", didFor("alice"));
+    const oldSid = epochFor(s.bob.groups, CHAN)?.sid;
+    // A newer epoch from the same sender supersedes by arrival, with no
+    // fresh request: the channel is already armed.
+    const second = {
+      t: "gkey",
+      ch: CHAN,
+      sid: newEpochId(),
+      key: newEpochKey(),
+      holders: ["alice", "bob"],
+    };
+    expect(receiveGkey(s.bob.deps, s.bob.groups, second, "alice", didFor("alice"))).toEqual([
+      { kind: "channel_key_received", channel: CHAN, from: "alice", sid: second.sid },
+    ]);
+    expect(epochFor(s.bob.groups, CHAN)?.sid).not.toBe(oldSid);
+  });
+
   it("drops a bad key, never stores it, never throws", () => {
     const clock = { t: NOW };
     const s = sides(clock);
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
     const badKey = { t: "gkey", ch: CHAN, sid: "sid-x", key: "not-a-key", holders: ["alice"] };
     expect(receiveGkey(s.bob.deps, s.bob.groups, badKey, "alice", didFor("alice"))).toEqual([
       {
