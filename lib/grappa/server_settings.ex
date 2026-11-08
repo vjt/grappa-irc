@@ -6,8 +6,9 @@ defmodule Grappa.ServerSettings do
 
   Typed accessors per setting. Each `get_*` returns the typed value
   (or a sane default if not set); each `put_*` validates + upserts
-  the row. Adding a new setting = add a (`get`, `put`) pair here +
-  document the key in the registry below.
+  the row, as `put_many/1` of one `t:write/0`. Adding a new setting =
+  add a (`get`, `put`) pair here, its `t:write/0` + `encode/1` clause,
+  and document the key in the registry below.
 
   ## Registry of known keys
 
@@ -50,10 +51,13 @@ defmodule Grappa.ServerSettings do
 
   ## PubSub broadcast on change
 
-  `put_*/1` broadcasts a `kind: "server_settings_changed"` event on
+  `put_many/1` — and so every `put_*` — broadcasts a
+  `kind: "server_settings_changed"` event on
   `Grappa.PubSub.Topic.server_settings/0` via
   `Grappa.PubSub.broadcast_event/2` — same single-source-of-truth path
-  every other context uses. Retained as an in-process signal for tests
+  every other context uses. ONE broadcast per committed call, AFTER the
+  commit (issue 2609): a write that rolls back announces nothing, and a
+  save of several keys announces once. Retained as an in-process signal for tests
   + any future internal subscriber. The cic fan-out path lives at
   `GrappaWeb.Admin.SettingsController`'s `PUT /admin/settings` (mirrors
   `GrappaWeb.AdminController.cic_bundle_changed/2`'s per-user-topic broadcast
@@ -232,6 +236,28 @@ defmodule Grappa.ServerSettings do
   @typedoc "The auto-away site-default ladder, in seconds; `0` is off (issue 2359)."
   @type auto_away_default_seconds :: 0 | 60 | 300 | 600 | 1800 | 3600
 
+  @typedoc "The settings whose one rule is \"a positive integer\" (see `t:write/0`)."
+  @type pos_int_setting ::
+          :upload_global_cap_bytes
+          | :upload_per_user_cap_bytes
+          | :upload_per_visitor_cap_bytes
+          | :upload_video_max_duration_seconds
+          | :dcc_max_transfer_bytes
+          | :dcc_global_cap_bytes
+
+  @typedoc """
+  One setting change, in parsed form — what `put_many/1` commits (issue
+  2609). The admin settings door parses its body into a list of these;
+  every single-key `put_*` is `put_many/1` of one.
+  """
+  @type write ::
+          {:upload_active_host, upload_host()}
+          | {:upload_per_file_cap_bytes, upload_category(), pos_integer()}
+          | {pos_int_setting(), pos_integer()}
+          | {:addressing_mode, addressing_mode()}
+          | {:static_mapping_prefix, String.t()}
+          | {:auto_away_default_seconds, auto_away_default_seconds() | nil}
+
   @type public_view :: %{
           upload: %{
             active_host: upload_host(),
@@ -266,11 +292,7 @@ defmodule Grappa.ServerSettings do
 
   @doc "Pins the upload host. Validates the value at the boundary."
   @spec put_upload_active_host(upload_host()) :: :ok | {:error, :invalid_value | :db_unavailable}
-  def put_upload_active_host(host) when host in [:embedded, :litterbox] do
-    put_raw(@key_upload_active_host, Atom.to_string(host))
-  end
-
-  def put_upload_active_host(_), do: {:error, :invalid_value}
+  def put_upload_active_host(host), do: put_many([{:upload_active_host, host}])
 
   # ---- upload.{image,video,document,audio}_per_file_cap_bytes ------
 
@@ -300,9 +322,9 @@ defmodule Grappa.ServerSettings do
   @spec max_upload_per_file_cap_bytes() :: unquote(@max_upload_per_file_cap_bytes)
   def max_upload_per_file_cap_bytes, do: @max_upload_per_file_cap_bytes
 
-  # ONE predicate, used by both the writer's guard and the pure validator
-  # below (issue 2546). Two copies would let a refusal drift back into the
-  # write pass — exactly the defect 2546 removes — and nothing would go red.
+  # ONE predicate, used by both `put_many/1`'s guard (`encode/1`) and the
+  # pure validator below (issue 2546). Two copies would let the door and the
+  # store disagree about what is legal, and nothing would go red.
   defguardp is_valid_per_file_cap(category, n)
             when category in @upload_categories and is_integer(n) and n > 0 and
                    n <= @max_upload_per_file_cap_bytes
@@ -313,11 +335,8 @@ defmodule Grappa.ServerSettings do
   """
   @spec put_upload_per_file_cap_bytes(upload_category(), pos_integer()) ::
           :ok | {:error, :invalid_value | :db_unavailable}
-  def put_upload_per_file_cap_bytes(category, n) when is_valid_per_file_cap(category, n) do
-    put_raw(cap_key_for(category), Integer.to_string(n))
-  end
-
-  def put_upload_per_file_cap_bytes(_, _), do: {:error, :invalid_value}
+  def put_upload_per_file_cap_bytes(category, n),
+    do: put_many([{:upload_per_file_cap_bytes, category, n}])
 
   @doc """
   Pure validity check for `put_upload_per_file_cap_bytes/2` — the SAME
@@ -365,11 +384,7 @@ defmodule Grappa.ServerSettings do
 
   @doc "Pins the global disk-budget byte ceiling. Must be a positive integer."
   @spec put_upload_global_cap_bytes(pos_integer()) :: :ok | {:error, :invalid_value | :db_unavailable}
-  def put_upload_global_cap_bytes(n) when is_integer(n) and n > 0 do
-    put_raw(@key_upload_global_cap_bytes, Integer.to_string(n))
-  end
-
-  def put_upload_global_cap_bytes(_), do: {:error, :invalid_value}
+  def put_upload_global_cap_bytes(n), do: put_many([{:upload_global_cap_bytes, n}])
 
   # ---- upload.per_{user,visitor}_cap_bytes (issue 2175) ------------
   #
@@ -385,11 +400,7 @@ defmodule Grappa.ServerSettings do
   @doc "Pins the per-USER live-bytes ceiling. Must be a positive integer."
   @spec put_upload_per_user_cap_bytes(pos_integer()) ::
           :ok | {:error, :invalid_value | :db_unavailable}
-  def put_upload_per_user_cap_bytes(n) when is_integer(n) and n > 0 do
-    put_raw(@key_upload_per_user_cap_bytes, Integer.to_string(n))
-  end
-
-  def put_upload_per_user_cap_bytes(_), do: {:error, :invalid_value}
+  def put_upload_per_user_cap_bytes(n), do: put_many([{:upload_per_user_cap_bytes, n}])
 
   @doc "Returns the per-VISITOR total live-bytes ceiling (default 100 MiB)."
   @spec get_upload_per_visitor_cap_bytes() :: pos_integer()
@@ -399,11 +410,7 @@ defmodule Grappa.ServerSettings do
   @doc "Pins the per-VISITOR live-bytes ceiling. Must be a positive integer."
   @spec put_upload_per_visitor_cap_bytes(pos_integer()) ::
           :ok | {:error, :invalid_value | :db_unavailable}
-  def put_upload_per_visitor_cap_bytes(n) when is_integer(n) and n > 0 do
-    put_raw(@key_upload_per_visitor_cap_bytes, Integer.to_string(n))
-  end
-
-  def put_upload_per_visitor_cap_bytes(_), do: {:error, :invalid_value}
+  def put_upload_per_visitor_cap_bytes(n), do: put_many([{:upload_per_visitor_cap_bytes, n}])
 
   @doc """
   The ceilings `Grappa.Uploads.create/4` checks, read in one place.
@@ -448,11 +455,8 @@ defmodule Grappa.ServerSettings do
   @doc "Pins the video-upload duration ceiling. Positive integer seconds only."
   @spec put_upload_video_max_duration_seconds(pos_integer()) ::
           :ok | {:error, :invalid_value | :db_unavailable}
-  def put_upload_video_max_duration_seconds(n) when is_integer(n) and n > 0 do
-    put_raw(@key_upload_video_max_duration_seconds, Integer.to_string(n))
-  end
-
-  def put_upload_video_max_duration_seconds(_), do: {:error, :invalid_value}
+  def put_upload_video_max_duration_seconds(n),
+    do: put_many([{:upload_video_max_duration_seconds, n}])
 
   # ---- addressing.mode (#543) --------------------------------------
 
@@ -472,11 +476,7 @@ defmodule Grappa.ServerSettings do
 
   @doc "Pins the outbound addressing mode. Validates against the closed set."
   @spec put_addressing_mode(addressing_mode()) :: :ok | {:error, :invalid_value | :db_unavailable}
-  def put_addressing_mode(mode) when mode in @addressing_modes do
-    put_raw(@key_addressing_mode, Atom.to_string(mode))
-  end
-
-  def put_addressing_mode(_), do: {:error, :invalid_value}
+  def put_addressing_mode(mode), do: put_many([{:addressing_mode, mode}])
 
   # ---- addressing.static_mapping_prefix (#543) ---------------------
 
@@ -517,23 +517,14 @@ defmodule Grappa.ServerSettings do
   Any other input → `{:error, :invalid_prefix}`.
   """
   @spec put_static_mapping_prefix(String.t()) :: :ok | {:error, :invalid_prefix | :db_unavailable}
-  def put_static_mapping_prefix(value) when is_binary(value) do
-    case validate_static_mapping_prefix(value) do
-      {:ok, canonical} ->
-        case put_raw(@key_static_mapping_prefix, canonical) do
-          :ok -> :ok
-          # A transient DB fault is backpressure, NOT a malformed prefix — keep
-          # it distinct so the controller surfaces a 503, never a 422 (#518).
-          {:error, :db_unavailable} = err -> err
-          {:error, _} -> {:error, :invalid_prefix}
-        end
-
-      {:error, :invalid_prefix} = err ->
-        err
+  def put_static_mapping_prefix(value) do
+    case put_many([{:static_mapping_prefix, value}]) do
+      {:error, :invalid_value} -> {:error, :invalid_prefix}
+      # A transient DB fault is backpressure, NOT a malformed prefix — it passes
+      # through distinct so a caller surfaces a 503, never a 422 (#518).
+      other -> other
     end
   end
-
-  def put_static_mapping_prefix(_), do: {:error, :invalid_prefix}
 
   # ---- dcc.max_transfer_bytes + dcc.global_cap_bytes (issue 2185) ---
   #
@@ -557,11 +548,7 @@ defmodule Grappa.ServerSettings do
   @doc "Pins the per-transfer DCC ceiling. Positive integer only."
   @spec put_dcc_max_transfer_bytes(pos_integer()) ::
           :ok | {:error, :invalid_value | :db_unavailable}
-  def put_dcc_max_transfer_bytes(n) when is_integer(n) and n > 0 do
-    put_raw(@key_dcc_max_transfer_bytes, Integer.to_string(n))
-  end
-
-  def put_dcc_max_transfer_bytes(_), do: {:error, :invalid_value}
+  def put_dcc_max_transfer_bytes(n), do: put_many([{:dcc_max_transfer_bytes, n}])
 
   @doc """
   Returns the whole DCC spool's disk budget in bytes (default 10 GiB).
@@ -575,11 +562,7 @@ defmodule Grappa.ServerSettings do
   @doc "Pins the DCC spool's disk budget. Positive integer only."
   @spec put_dcc_global_cap_bytes(pos_integer()) ::
           :ok | {:error, :invalid_value | :db_unavailable}
-  def put_dcc_global_cap_bytes(n) when is_integer(n) and n > 0 do
-    put_raw(@key_dcc_global_cap_bytes, Integer.to_string(n))
-  end
-
-  def put_dcc_global_cap_bytes(_), do: {:error, :invalid_value}
+  def put_dcc_global_cap_bytes(n), do: put_many([{:dcc_global_cap_bytes, n}])
 
   # ---- auto_away.default_debounce_seconds (issue 2359) ---------------
 
@@ -652,12 +635,8 @@ defmodule Grappa.ServerSettings do
   """
   @spec put_auto_away_default_seconds(auto_away_default_seconds() | nil) ::
           :ok | {:error, :invalid_value | :db_unavailable}
-  def put_auto_away_default_seconds(nil), do: delete_raw(@key_auto_away_default_seconds)
-
-  def put_auto_away_default_seconds(n) when n in @auto_away_default_seconds_ladder,
-    do: put_raw(@key_auto_away_default_seconds, Integer.to_string(n))
-
-  def put_auto_away_default_seconds(_), do: {:error, :invalid_value}
+  def put_auto_away_default_seconds(seconds),
+    do: put_many([{:auto_away_default_seconds, seconds}])
 
   @doc """
   Pure validity check for `put_auto_away_default_seconds/1` — `nil` (clear)
@@ -733,49 +712,105 @@ defmodule Grappa.ServerSettings do
     end
   end
 
-  defp put_raw(key, value) when is_binary(value) do
-    attrs = %{key: key, value: value}
+  # The settings whose one rule is "a positive integer", with the row each
+  # lands in (issue 2609) — one `encode/1` clause instead of six.
+  @pos_int_keys %{
+    upload_global_cap_bytes: @key_upload_global_cap_bytes,
+    upload_per_user_cap_bytes: @key_upload_per_user_cap_bytes,
+    upload_per_visitor_cap_bytes: @key_upload_per_visitor_cap_bytes,
+    upload_video_max_duration_seconds: @key_upload_video_max_duration_seconds,
+    dcc_max_transfer_bytes: @key_dcc_max_transfer_bytes,
+    dcc_global_cap_bytes: @key_dcc_global_cap_bytes
+  }
 
-    # #523 — ride out a transient SQLITE_BUSY on the setting write; sustained
-    # saturation degrades to `{:error, :db_unavailable}` → a clean 503 (#518)
-    # at the admin controller instead of a 500 raise.
-    result =
-      Repo.BusyRetry.run(fn ->
-        case Repo.get_by(Setting, key: key) do
-          nil -> %Setting{} |> Setting.changeset(attrs) |> Repo.insert()
-          %Setting{} = existing -> existing |> Setting.changeset(attrs) |> Repo.update()
-        end
-      end)
+  @doc """
+  Commits every write in `writes`, or none of them (issue 2609).
 
-    case result do
-      {:ok, _} ->
-        :ok = broadcast_changed()
-        :ok
+  Each write is checked against the rule its single-key `put_*` states
+  BEFORE the transaction opens, so one refused write refuses the whole list
+  and nothing is written. The rows then go in ONE `BEGIN IMMEDIATE`
+  transaction that `Repo.BusyRetry` retries WHOLE — retry outside,
+  transaction inside — so a `:db_unavailable` (#523 / #518) leaves every
+  key as it was. One `server_settings_changed` broadcast follows the
+  COMMIT, never a write, so no subscriber is told about a value that was
+  rolled back. An empty list writes nothing and broadcasts nothing.
+  """
+  @spec put_many([write()]) :: :ok | {:error, :invalid_value | :db_unavailable}
+  def put_many([]), do: :ok
 
-      {:error, :db_unavailable} = err ->
-        err
+  def put_many(writes) when is_list(writes) do
+    with {:ok, rows} <- encode_all(writes, []), do: commit(rows)
+  end
 
-      {:error, %Ecto.Changeset{}} ->
-        # Validation/uniqueness collision — shouldn't happen given
-        # the get-or-insert above; surface as a generic invalid_value
-        # rather than leaking changeset internals to callers.
-        {:error, :invalid_value}
+  defp encode_all([], rows), do: {:ok, Enum.reverse(rows)}
+
+  defp encode_all([write | rest], rows) do
+    case encode(write) do
+      {:ok, row} -> encode_all(rest, [row | rows])
+      :error -> {:error, :invalid_value}
     end
   end
 
-  # issue 2359 — the "back to the fallback" write. Absent row is the
-  # fallback, so a delete is the write; it broadcasts like `put_raw/2`
-  # because the RESOLVED value in `public_view/0` moved.
-  defp delete_raw(key) do
-    result =
-      Repo.BusyRetry.run(fn ->
-        {_, _} = Repo.delete_all(from(s in Setting, where: s.key == ^key))
-        {:ok, :deleted}
-      end)
+  # write → `{key, stored value}`, or `{key, nil}` for "no row". This is the
+  # store's own guard, for every caller: the admin door names the field it
+  # refuses before it ever builds a write, and this refuses what a door let
+  # through anyway.
+  defp encode({:upload_active_host, host}) when host in [:embedded, :litterbox],
+    do: {:ok, {@key_upload_active_host, Atom.to_string(host)}}
 
-    case result do
-      {:ok, _} -> broadcast_changed()
+  defp encode({:upload_per_file_cap_bytes, category, n}) when is_valid_per_file_cap(category, n),
+    do: {:ok, {cap_key_for(category), Integer.to_string(n)}}
+
+  defp encode({setting, n}) when is_map_key(@pos_int_keys, setting) and is_integer(n) and n > 0,
+    do: {:ok, {Map.fetch!(@pos_int_keys, setting), Integer.to_string(n)}}
+
+  defp encode({:addressing_mode, mode}) when mode in @addressing_modes,
+    do: {:ok, {@key_addressing_mode, Atom.to_string(mode)}}
+
+  # Stored masked + canonical, whatever spelling it arrives in.
+  defp encode({:static_mapping_prefix, value}) do
+    case validate_static_mapping_prefix(value) do
+      {:ok, canonical} -> {:ok, {@key_static_mapping_prefix, canonical}}
+      {:error, :invalid_prefix} -> :error
+    end
+  end
+
+  # issue 2359 — `nil` is the "back to the boot fallback" write: no row IS
+  # the fallback, so it deletes, and it still broadcasts because the
+  # RESOLVED value in `public_view/0` moved.
+  defp encode({:auto_away_default_seconds, nil}), do: {:ok, {@key_auto_away_default_seconds, nil}}
+
+  defp encode({:auto_away_default_seconds, n}) when n in @auto_away_default_seconds_ladder,
+    do: {:ok, {@key_auto_away_default_seconds, Integer.to_string(n)}}
+
+  defp encode(_), do: :error
+
+  defp commit(rows) do
+    tx = fn -> Repo.immediate_transaction(fn -> Enum.each(rows, &write_row!/1) end) end
+
+    case Repo.BusyRetry.run(tx) do
+      {:ok, :ok} -> broadcast_changed()
       {:error, :db_unavailable} = err -> err
+    end
+  end
+
+  # One row, only ever inside `commit/1`'s transaction: no retry of its own (a
+  # retry here would sleep holding the write lock — the enclosing engine
+  # retries the whole transaction) and no broadcast (that waits for the
+  # commit). It RAISES on failure, which is what rolls the transaction back.
+  # The get-then-insert cannot race a second writer's insert of the same key:
+  # `BEGIN IMMEDIATE` holds the write lock from the first statement.
+  defp write_row!({key, nil}) do
+    query = from(s in Setting, where: s.key == ^key)
+    Repo.delete_all(query)
+  end
+
+  defp write_row!({key, value}) do
+    attrs = %{key: key, value: value}
+
+    case Repo.get_by(Setting, key: key) do
+      nil -> %Setting{} |> Setting.changeset(attrs) |> Repo.insert!()
+      %Setting{} = existing -> existing |> Setting.changeset(attrs) |> Repo.update!()
     end
   end
 

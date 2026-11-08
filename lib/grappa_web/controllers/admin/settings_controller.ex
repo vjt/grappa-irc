@@ -81,11 +81,12 @@ defmodule GrappaWeb.Admin.SettingsController do
   (#1407 W-S3) — a typo is named, never absorbed, and it refuses the WHOLE
   body rather than applying the keys it did recognise.
 
-  A save is all-or-nothing (issue 2546): every key of the body is VALIDATED
-  before any is written, so a refused value leaves no sibling written behind
-  it. `validate_updates/1` is pure — it decides on the body alone, with no
-  write, no read and no state — and `apply_validated/1` only ever sees a
-  body it accepted.
+  A save is all-or-nothing. Every key of the body is VALIDATED before any is
+  written (issue 2546), so a refused value leaves no sibling written behind
+  it: `parse_updates/1` is pure — it decides on the body alone, with no
+  write, no read and no state — and turns the body into the list of writes
+  `Grappa.ServerSettings.put_many/1` commits in ONE transaction (issue
+  2609), so a `:db_unavailable` (503) leaves every key as it was too.
 
   ⚠️ The two `dcc` keys are NOT cross-validated against each other (vjt,
   issue 2185): a per-transfer ceiling above the spool budget is a legal
@@ -103,9 +104,10 @@ defmodule GrappaWeb.Admin.SettingsController do
   default move with it; sessions with their own delay do not.
 
   The intermediate `Grappa.ServerSettings.topic/0` broadcast that
-  `put_*/1` emits stays as an in-process signal for tests + any
-  future internal subscriber; the cic fan-out path lives HERE
-  (single explicit door, parity with `cic_bundle_changed`).
+  `put_many/1` emits — once per save, after the commit — stays as an
+  in-process signal for tests + any future internal subscriber; the cic
+  fan-out path lives HERE (single explicit door, parity with
+  `cic_bundle_changed`).
   """
 
   use GrappaWeb, :controller
@@ -115,30 +117,22 @@ defmodule GrappaWeb.Admin.SettingsController do
   alias Grappa.PubSub.Topic
   alias Grappa.ServerSettings.Wire, as: SettingsWire
 
-  # The four closed key sets. Since issue 2546 every entry here MUST have a
-  # matching PAIR of clauses — `validate_upload_key/2` AND `put_upload_key/2`
-  # (resp. `validate_dcc_key/2`/`put_dcc_key/2`,
-  # `validate_auto_away_key/2`/`apply_auto_away_key/2`, and the
-  # `resolve_addressing_*` pair) — adding a key to one and not the other is
-  # caught by that key's own per-key test, loudly, never silently.
+  # The four closed key sets. Every entry here MUST have its `parse_*_key/2`
+  # clause (resp. the `parse_addressing_*` pair) — and, for a new SETTING,
+  # its `Grappa.ServerSettings.write()` with the `encode/1` clause behind it.
   #
-  # ⚠️ **"Loudly" is exactly as strong as the per-key test and no stronger,
-  # and that was MEASURED rather than assumed (issue 2185).** A key WITH a
-  # per-key test is caught in both directions: dropping its clauses killed
-  # tests, and dropping it from this set while keeping the clauses killed
-  # others. (The counts #2185 recorded — 4 and 3 — measured the ONE-clause
-  # shape this file had before issue 2546; re-measured on the pair they are
-  # 8 and 6, so the old numbers are history, not a current claim.) But
-  # adding a key that NO test names — `spool_retention_seconds`, no clause,
+  # ⚠️ **A missing clause is caught exactly as well as that key's own test
+  # catches it, and that was MEASURED rather than assumed (issue 2185).**
+  # Adding a key that NO test names — `spool_retention_seconds`, no clause,
   # no test — left the suite green. Nothing structural pairs a set entry
-  # with its clauses: `reject_unknown_keys/3` compares strings at runtime,
-  # so the compiler cannot see the pair, and no test enumerates these sets.
-  # A key added here without its per-key test in the SAME pass ships a
-  # latent 500 on the first request that uses it — and a HALF pair is that
-  # same 500, on one of two sides: validate without put explodes in
-  # `put_*_key/2` DURING the write pass, after the keys sorted before it
-  # have committed; put without validate explodes in `validate_*_key/2`,
-  # before anything is written at all.
+  # with its clause: `reject_unknown_keys/3` compares strings at runtime, so
+  # the compiler cannot see the pair, and no test enumerates these sets. (The
+  # kill counts #2185 and issue 2546 recorded measured the one-clause and
+  # the validate/put-pair shapes this file had before issue 2609; they are
+  # history, not a claim about this shape.) A key added here without its
+  # test in the SAME pass ships a latent 500 on the first request that uses
+  # it — raised in the parse pass, so since issue 2609 always BEFORE anything
+  # is written.
   @upload_keys ~w(active_host image_per_file_cap_bytes video_per_file_cap_bytes
                   document_per_file_cap_bytes audio_per_file_cap_bytes
                   global_cap_bytes per_user_cap_bytes per_visitor_cap_bytes
@@ -218,89 +212,58 @@ defmodule GrappaWeb.Admin.SettingsController do
 
   # ---- Internal ----------------------------------------------------
 
-  # issue 2546 — two passes, and the ORDER is the fix. `validate_updates/1`
-  # is PURE: no write, no read, no state. It walks the whole body and refuses
-  # the first bad value, so nothing is committed when any key is refused.
-  # Only a body it accepts reaches `apply_validated/1`, where each `put_*`
-  # commits on its own.
+  # issue 2546 + 2609 — parse the whole body, probe, then commit ONCE.
+  # `parse_updates/1` is PURE (no write, no read, no state) and the only place
+  # this door checks a value: it turns the body into the writes
+  # `ServerSettings.put_many/1` commits in one transaction, refusing the first
+  # bad value. The addressing probe is the one refusal that needs the stored
+  # row, so it runs after parsing and before anything is written (#609).
+  # Nothing is written until every key has passed, and `put_many/1` writes
+  # all of them or — on `:db_unavailable` — none.
   defp apply_updates(params) when is_map(params) do
-    with :ok <- validate_updates(params), do: apply_validated(params)
+    with {:ok, writes} <- parse_updates(params),
+         :ok <- arm_for(Map.get(params, "addressing"), writes) do
+      ServerSettings.put_many(writes)
+    end
   end
 
   defp apply_updates(_), do: {:error, :bad_request}
 
-  defp validate_updates(params) do
-    with :ok <- validate_subtree(params, "upload", @upload_keys, &validate_upload_key/2),
-         :ok <- validate_subtree(params, "dcc", @dcc_keys, &validate_dcc_key/2),
-         :ok <- validate_subtree(params, "auto_away", @auto_away_keys, &validate_auto_away_key/2) do
-      validate_addressing(Map.get(params, "addressing"))
+  defp parse_updates(params) do
+    with {:ok, upload} <- parse_subtree(params, "upload", @upload_keys, &parse_upload_key/2),
+         {:ok, dcc} <- parse_subtree(params, "dcc", @dcc_keys, &parse_dcc_key/2),
+         {:ok, auto_away} <- parse_subtree(params, "auto_away", @auto_away_keys, &parse_auto_away_key/2),
+         {:ok, addressing} <- parse_addressing(Map.get(params, "addressing")) do
+      {:ok, upload ++ dcc ++ auto_away ++ addressing}
     end
   end
 
-  # The write pass. `addressing` goes FIRST because `arm_if_static/2` is a
-  # capability probe that can still refuse a save (a mode-2 target this
-  # substrate cannot arm): its refusal must land before any other subtree
-  # has committed. Every key here was validated above, so a `put_*` can only
-  # fail on `:db_unavailable`.
-  defp apply_validated(params) do
-    with :ok <- apply_addressing(Map.get(params, "addressing")),
-         :ok <- apply_subtree(params, "upload", @upload_keys, &apply_upload_key/2),
-         :ok <- apply_subtree(params, "dcc", @dcc_keys, &apply_dcc_key/2) do
-      apply_subtree(params, "auto_away", @auto_away_keys, &apply_auto_away_key/2)
-    end
-  end
-
-  # A present subtree. Absent → :ok (each is independently optional — an
+  # A present subtree. Absent → no writes (each is independently optional — an
   # empty body updates nothing); a non-map → bad_request (no silent swallow
-  # of a malformed shape).
-  defp validate_subtree(params, key, allowed, fun) do
+  # of a malformed shape). Gate then walk, in that order — see
+  # `reject_unknown_keys/3` for why the gate cannot move after the walk.
+  defp parse_subtree(params, key, allowed, fun) do
     case Map.get(params, key) do
       nil ->
-        :ok
+        {:ok, []}
 
       subtree when is_map(subtree) ->
-        validate_known_keys(subtree, allowed, key, fun)
+        with :ok <- reject_unknown_keys(subtree, allowed, key), do: traverse(Map.to_list(subtree), fun)
 
       _ ->
         {:error, :bad_request}
-    end
-  end
-
-  defp apply_subtree(params, key, allowed, fun) do
-    case Map.get(params, key) do
-      nil ->
-        :ok
-
-      subtree when is_map(subtree) ->
-        apply_known_keys(subtree, allowed, key, fun)
-
-      _ ->
-        {:error, :bad_request}
-    end
-  end
-
-  # Gate then walk, in that order — see `reject_unknown_keys/3` for why the
-  # gate cannot move after the walk.
-  defp validate_known_keys(subtree, allowed, key, fun) do
-    with :ok <- reject_unknown_keys(subtree, allowed, key) do
-      traverse(Map.to_list(subtree), fun)
-    end
-  end
-
-  defp apply_known_keys(subtree, allowed, key, fun) do
-    with :ok <- reject_unknown_keys(subtree, allowed, key) do
-      Enum.reduce_while(subtree, :ok, fn {k, v}, _ -> halt_or_cont(fun.(k, v)) end)
     end
   end
 
   # Collect-or-bail traversal (CLAUDE.md, "Recursive pattern match over
-  # `Enum.reduce_while/3`"): every key must pass, the first refusal is the
+  # `Enum.reduce_while/3`"): every key must parse, the first refusal is the
   # answer.
-  defp traverse([], _), do: :ok
+  defp traverse(pairs, fun), do: traverse(pairs, [], fun)
+  defp traverse([], writes, _), do: {:ok, Enum.reverse(writes)}
 
-  defp traverse([{k, v} | rest], fun) do
+  defp traverse([{k, v} | rest], writes, fun) do
     case fun.(k, v) do
-      :ok -> traverse(rest, fun)
+      {:ok, write} -> traverse(rest, [write | writes], fun)
       {:error, _} = err -> err
     end
   end
@@ -330,198 +293,119 @@ defmodule GrappaWeb.Admin.SettingsController do
     end
   end
 
-  # Per-key dispatch, split in two: `validate_*_key/2` decides (pure) and
-  # `put_*_key/2` writes. Validity lives ONLY in the validators — an applier
-  # assumes the key it is handed was already accepted, so the two cannot
-  # disagree about what is legal.
-  defp validate_upload_key("active_host", v) when v in ["embedded", "litterbox"], do: :ok
+  # Per-key parse: an accepted value becomes its `ServerSettings.write()`, a
+  # refused one names its dotted field. One clause set per key — there is no
+  # second, write-side copy to drift from it (issue 2609).
+  defp parse_upload_key("active_host", "embedded"), do: {:ok, {:upload_active_host, :embedded}}
+  defp parse_upload_key("active_host", "litterbox"), do: {:ok, {:upload_active_host, :litterbox}}
 
-  defp validate_upload_key("active_host", _),
+  defp parse_upload_key("active_host", _),
     do: {:error, {:invalid_setting, "upload.active_host"}}
 
-  defp validate_upload_key("image_per_file_cap_bytes", n), do: validate_per_file_cap(:image, n)
-  defp validate_upload_key("video_per_file_cap_bytes", n), do: validate_per_file_cap(:video, n)
-  defp validate_upload_key("document_per_file_cap_bytes", n), do: validate_per_file_cap(:document, n)
-  defp validate_upload_key("audio_per_file_cap_bytes", n), do: validate_per_file_cap(:audio, n)
+  defp parse_upload_key("image_per_file_cap_bytes", n), do: parse_per_file_cap(:image, n)
+  defp parse_upload_key("video_per_file_cap_bytes", n), do: parse_per_file_cap(:video, n)
+  defp parse_upload_key("document_per_file_cap_bytes", n), do: parse_per_file_cap(:document, n)
+  defp parse_upload_key("audio_per_file_cap_bytes", n), do: parse_per_file_cap(:audio, n)
 
-  defp validate_upload_key("global_cap_bytes", n) when is_integer(n) and n > 0, do: :ok
-
-  defp validate_upload_key("global_cap_bytes", _),
-    do: {:error, {:invalid_setting, "upload.global_cap_bytes"}}
+  defp parse_upload_key("global_cap_bytes", n),
+    do: parse_pos_int(:upload_global_cap_bytes, n, "upload.global_cap_bytes")
 
   # issue 2175 — TWO per-subject ceilings, never one shared knob: a
   # single field would silently move the disposable visitor and the
   # durable account together.
-  defp validate_upload_key("per_user_cap_bytes", n) when is_integer(n) and n > 0, do: :ok
+  defp parse_upload_key("per_user_cap_bytes", n),
+    do: parse_pos_int(:upload_per_user_cap_bytes, n, "upload.per_user_cap_bytes")
 
-  defp validate_upload_key("per_user_cap_bytes", _),
-    do: {:error, {:invalid_setting, "upload.per_user_cap_bytes"}}
+  defp parse_upload_key("per_visitor_cap_bytes", n),
+    do: parse_pos_int(:upload_per_visitor_cap_bytes, n, "upload.per_visitor_cap_bytes")
 
-  defp validate_upload_key("per_visitor_cap_bytes", n) when is_integer(n) and n > 0, do: :ok
-
-  defp validate_upload_key("per_visitor_cap_bytes", _),
-    do: {:error, {:invalid_setting, "upload.per_visitor_cap_bytes"}}
-
-  defp validate_upload_key("video_max_duration_seconds", n) when is_integer(n) and n > 0, do: :ok
-
-  defp validate_upload_key("video_max_duration_seconds", _),
-    do: {:error, {:invalid_setting, "upload.video_max_duration_seconds"}}
-
-  defp apply_upload_key(key, value) do
-    with :ok <- validate_upload_key(key, value), do: put_upload_key(key, value)
-  end
-
-  defp put_upload_key("active_host", "embedded"), do: ServerSettings.put_upload_active_host(:embedded)
-
-  defp put_upload_key("active_host", "litterbox"),
-    do: ServerSettings.put_upload_active_host(:litterbox)
-
-  defp put_upload_key("image_per_file_cap_bytes", n), do: put_per_file_cap(:image, n)
-  defp put_upload_key("video_per_file_cap_bytes", n), do: put_per_file_cap(:video, n)
-  defp put_upload_key("document_per_file_cap_bytes", n), do: put_per_file_cap(:document, n)
-  defp put_upload_key("audio_per_file_cap_bytes", n), do: put_per_file_cap(:audio, n)
-  defp put_upload_key("global_cap_bytes", n), do: ServerSettings.put_upload_global_cap_bytes(n)
-  defp put_upload_key("per_user_cap_bytes", n), do: ServerSettings.put_upload_per_user_cap_bytes(n)
-
-  defp put_upload_key("per_visitor_cap_bytes", n),
-    do: ServerSettings.put_upload_per_visitor_cap_bytes(n)
-
-  defp put_upload_key("video_max_duration_seconds", n),
-    do: ServerSettings.put_upload_video_max_duration_seconds(n)
+  defp parse_upload_key("video_max_duration_seconds", n),
+    do: parse_pos_int(:upload_video_max_duration_seconds, n, "upload.video_max_duration_seconds")
 
   # No unknown-key clause: `reject_unknown_keys/3` has already refused
   # every key outside `@upload_keys` before this walk begins.
 
   # ---- dcc.* (issue 2185) — key by key, like `upload` ----------------
   #
-  # Per-key rather than addressing's unit apply, because there is no probe
-  # and no ordering constraint to preserve: neither key's validity depends
-  # on the other's value. That independence is the RULING, not an
-  # accident — an operator may set the per-transfer ceiling above the
-  # spool budget, which only means nothing fits until they raise the
-  # budget. Cross-validating would make the order of two writes
-  # significant and break a UI that saves one field at a time.
-  defp validate_dcc_key("max_transfer_bytes", n) when is_integer(n) and n > 0, do: :ok
+  # Neither key's validity depends on the other's value. That independence
+  # is the RULING, not an accident — an operator may set the per-transfer
+  # ceiling above the spool budget, which only means nothing fits until they
+  # raise the budget. Cross-validating would refuse a legal end state to a UI
+  # that saves one field at a time.
+  defp parse_dcc_key("max_transfer_bytes", n),
+    do: parse_pos_int(:dcc_max_transfer_bytes, n, "dcc.max_transfer_bytes")
 
-  defp validate_dcc_key("max_transfer_bytes", _),
-    do: {:error, {:invalid_setting, "dcc.max_transfer_bytes"}}
-
-  defp validate_dcc_key("global_cap_bytes", n) when is_integer(n) and n > 0, do: :ok
-
-  defp validate_dcc_key("global_cap_bytes", _),
-    do: {:error, {:invalid_setting, "dcc.global_cap_bytes"}}
-
-  defp apply_dcc_key(key, value) do
-    with :ok <- validate_dcc_key(key, value), do: put_dcc_key(key, value)
-  end
-
-  defp put_dcc_key("max_transfer_bytes", n), do: ServerSettings.put_dcc_max_transfer_bytes(n)
-  defp put_dcc_key("global_cap_bytes", n), do: ServerSettings.put_dcc_global_cap_bytes(n)
+  defp parse_dcc_key("global_cap_bytes", n),
+    do: parse_pos_int(:dcc_global_cap_bytes, n, "dcc.global_cap_bytes")
 
   # ---- auto_away.* (issue 2359) ---------------------------------------
   #
   # The closed set is `ServerSettings`'s, so the controller does not restate
   # it: `valid_auto_away_default_seconds?/1` IS the ladder. `nil` (JSON
   # null) clears the stored value — the boot fallback applies again.
-  defp validate_auto_away_key("default_debounce_seconds", v) do
+  defp parse_auto_away_key("default_debounce_seconds", v) do
     if ServerSettings.valid_auto_away_default_seconds?(v),
-      do: :ok,
+      do: {:ok, {:auto_away_default_seconds, v}},
       else: {:error, {:invalid_setting, "auto_away.default_debounce_seconds"}}
   end
 
-  defp apply_auto_away_key("default_debounce_seconds", v) do
-    with :ok <- validate_auto_away_key("default_debounce_seconds", v) do
-      case ServerSettings.put_auto_away_default_seconds(v) do
-        :ok -> :ok
-        {:error, :db_unavailable} = err -> err
-        {:error, :invalid_value} -> {:error, {:invalid_setting, "auto_away.default_debounce_seconds"}}
-      end
-    end
-  end
-
-  # ---- addressing.* — probe-gated unit apply (#543 / #609) ----------
+  # ---- addressing.* — probe-gated (#543 / #609) ----------------------
   #
-  # Unlike `upload`, the addressing subtree is applied as a UNIT, not key by
-  # key: the #609 capability probe must run against the RESULTING (mode, prefix)
-  # — each taken from the body or, when the body omits it, the current row — and
-  # it must run BEFORE anything persists so an unusable mode-2 change never
-  # reaches the DB (vjt's order: preflight when the mode is SET, then hard-fail
-  # per-address at acquire).
-  defp apply_addressing(nil), do: :ok
+  # The pure half: closed key set, a mode in the closed set, a prefix that
+  # canonicalizes — decided on the BODY alone, mode before prefix (the order a
+  # body carrying two bad values is answered in). Nothing here reads the
+  # stored row; `arm_for/2` does, and only to probe.
+  defp parse_addressing(nil), do: {:ok, []}
 
-  defp apply_addressing(subtree) when is_map(subtree) do
+  defp parse_addressing(subtree) when is_map(subtree) do
     with :ok <- reject_unknown_keys(subtree, @addressing_keys, "addressing"),
-         {:ok, mode} <- resolve_addressing_mode(subtree),
-         {:ok, prefix} <- resolve_addressing_prefix(subtree),
-         :ok <- arm_if_static(mode, prefix),
-         :ok <- persist_addressing_prefix(subtree),
-         :ok <- persist_addressing_mode(subtree) do
-      :ok
+         {:ok, mode} <- parse_addressing_mode(subtree),
+         {:ok, prefix} <- parse_addressing_prefix(subtree) do
+      {:ok, prefix ++ mode}
     end
   end
 
-  defp apply_addressing(_), do: {:error, :bad_request}
+  defp parse_addressing(_), do: {:error, :bad_request}
 
-  # The pure half of the addressing apply: closed key set, a mode in the
-  # closed set, and a prefix that canonicalizes — all decided on the BODY
-  # alone. Nothing here reads the stored row: the one check that compares
-  # the body against what is already stored is `arm_if_static/2`, and it
-  # lives in the write pass, where it runs FIRST so its refusal still lands
-  # before any other subtree commits.
-  defp validate_addressing(nil), do: :ok
+  defp parse_addressing_mode(%{"mode" => "pool_with_reservations"}),
+    do: {:ok, [{:addressing_mode, :pool_with_reservations}]}
 
-  defp validate_addressing(subtree) when is_map(subtree) do
-    with :ok <- reject_unknown_keys(subtree, @addressing_keys, "addressing"),
-         :ok <- validate_addressing_mode(subtree),
-         :ok <- validate_addressing_prefix(subtree) do
-      :ok
-    end
-  end
+  defp parse_addressing_mode(%{"mode" => "static_mapping_with_reservations"}),
+    do: {:ok, [{:addressing_mode, :static_mapping_with_reservations}]}
 
-  defp validate_addressing(_), do: {:error, :bad_request}
+  defp parse_addressing_mode(%{"mode" => _}), do: {:error, {:invalid_setting, "addressing.mode"}}
+  defp parse_addressing_mode(_), do: {:ok, []}
 
-  # `is_map_key/2` rather than calling the resolver unconditionally: with the
-  # key ABSENT the resolver falls back to the stored value, which validation
-  # has no use for — it would be a read whose result is thrown away.
-  defp validate_addressing_mode(subtree) when is_map_key(subtree, "mode") do
-    with {:ok, _} <- resolve_addressing_mode(subtree), do: :ok
-  end
-
-  defp validate_addressing_mode(_), do: :ok
-
-  defp validate_addressing_prefix(subtree)
-       when is_map_key(subtree, "static_mapping_prefix") do
-    with {:ok, _} <- resolve_addressing_prefix(subtree), do: :ok
-  end
-
-  defp validate_addressing_prefix(_), do: :ok
-
-  # Target mode = the body's mode (validated against the closed set) or, when
-  # the body omits it, the currently stored mode.
-  defp resolve_addressing_mode(%{"mode" => "pool_with_reservations"}),
-    do: {:ok, :pool_with_reservations}
-
-  defp resolve_addressing_mode(%{"mode" => "static_mapping_with_reservations"}),
-    do: {:ok, :static_mapping_with_reservations}
-
-  defp resolve_addressing_mode(%{"mode" => _}),
-    do: {:error, {:invalid_setting, "addressing.mode"}}
-
-  defp resolve_addressing_mode(_), do: {:ok, ServerSettings.addressing_mode()}
-
-  # Target prefix = the body's prefix (validated + canonicalized, no persist)
-  # or, when the body omits it, the currently stored prefix (may be nil).
-  defp resolve_addressing_prefix(%{"static_mapping_prefix" => value}) when is_binary(value) do
+  # The write carries the CANONICAL prefix — the one the probe runs against.
+  defp parse_addressing_prefix(%{"static_mapping_prefix" => value}) do
     case ServerSettings.validate_static_mapping_prefix(value) do
-      {:ok, canonical} -> {:ok, canonical}
+      {:ok, canonical} -> {:ok, [{:static_mapping_prefix, canonical}]}
       {:error, :invalid_prefix} -> {:error, {:invalid_setting, "addressing.static_mapping_prefix"}}
     end
   end
 
-  defp resolve_addressing_prefix(%{"static_mapping_prefix" => _}),
-    do: {:error, {:invalid_setting, "addressing.static_mapping_prefix"}}
+  defp parse_addressing_prefix(_), do: {:ok, []}
 
-  defp resolve_addressing_prefix(_), do: {:ok, ServerSettings.static_mapping_prefix()}
+  # The probe runs against the RESULTING (mode, prefix) — each from the
+  # body's writes or, when the body omits it, the stored row — and BEFORE
+  # anything persists, so an unusable mode-2 change never reaches the DB
+  # (vjt's order: preflight when the mode is SET, then hard-fail per-address
+  # at acquire). No addressing subtree, no probe.
+  defp arm_for(nil, _), do: :ok
+
+  defp arm_for(_, writes) do
+    arm_if_static(
+      target(writes, :addressing_mode, &ServerSettings.addressing_mode/0),
+      target(writes, :static_mapping_prefix, &ServerSettings.static_mapping_prefix/0)
+    )
+  end
+
+  defp target(writes, setting, stored) do
+    case List.keyfind(writes, setting, 0) do
+      {^setting, value} -> value
+      nil -> stored.()
+    end
+  end
 
   # Capability gate: a mode-2 target must be armable on THIS substrate before it
   # is stored. `SourceAliasManager.arm/1` probes and, on success, adopts the
@@ -540,55 +424,18 @@ defmodule GrappaWeb.Admin.SettingsController do
 
   defp arm_if_static(:pool_with_reservations, _), do: :ok
 
-  # Persist only the keys the body carried (both already validated above).
-  # Prefix first, then mode, so mode 2 is never stored ahead of the prefix it
-  # needs.
-  defp persist_addressing_prefix(%{"static_mapping_prefix" => value}) when is_binary(value) do
-    case ServerSettings.put_static_mapping_prefix(value) do
-      :ok -> :ok
-      # #523/#518 — transient DB saturation → :db_unavailable → clean 503,
-      # NOT the 422 an invalid-setting tuple would render.
-      {:error, :db_unavailable} = err -> err
-      {:error, :invalid_prefix} -> {:error, {:invalid_setting, "addressing.static_mapping_prefix"}}
-    end
-  end
-
-  defp persist_addressing_prefix(_), do: :ok
-
-  defp persist_addressing_mode(%{"mode" => "pool_with_reservations"}),
-    do: ServerSettings.put_addressing_mode(:pool_with_reservations)
-
-  defp persist_addressing_mode(%{"mode" => "static_mapping_with_reservations"}),
-    do: ServerSettings.put_addressing_mode(:static_mapping_with_reservations)
-
-  defp persist_addressing_mode(_), do: :ok
-
-  # Translate per-key return to Enum.reduce_while continuation. `:ok`
-  # → continue; `{:error, _}` → halt with the error preserved.
-  defp halt_or_cont(:ok), do: {:cont, :ok}
-  defp halt_or_cont({:error, _} = err), do: {:halt, err}
-
   # The per-file caps delegate to the context's own predicate (issue 2546):
   # issue 2529 deliberately took the guard OUT of this controller and put it
-  # in `put_upload_per_file_cap_bytes/2`, so restating it here would be the
-  # regression, not the convention. This door's job is to NAME the field.
-  defp validate_per_file_cap(category, n) do
-    if ServerSettings.valid_upload_per_file_cap_bytes?(category, n) do
-      :ok
-    else
-      {:error, {:invalid_setting, "upload.#{category}_per_file_cap_bytes"}}
-    end
+  # in the context, so restating it here would be the regression, not the
+  # convention. This door's job is to NAME the field.
+  defp parse_per_file_cap(category, n) do
+    if ServerSettings.valid_upload_per_file_cap_bytes?(category, n),
+      do: {:ok, {:upload_per_file_cap_bytes, category, n}},
+      else: {:error, {:invalid_setting, "upload.#{category}_per_file_cap_bytes"}}
   end
 
-  # The write side keeps its `:invalid_value` translation as defence in
-  # depth: the validator above already refused every such value, so a
-  # refusal here means the two halves drifted apart.
-  defp put_per_file_cap(category, n) do
-    case ServerSettings.put_upload_per_file_cap_bytes(category, n) do
-      {:error, :invalid_value} -> {:error, {:invalid_setting, "upload.#{category}_per_file_cap_bytes"}}
-      other -> other
-    end
-  end
+  defp parse_pos_int(setting, n, _) when is_integer(n) and n > 0, do: {:ok, {setting, n}}
+  defp parse_pos_int(_, _, field), do: {:error, {:invalid_setting, field}}
 
   # Admin settings view. The `upload` subtree comes from public_view/0 via
   # the shared Wire projection; the `dcc` (issue 2185) and `addressing`

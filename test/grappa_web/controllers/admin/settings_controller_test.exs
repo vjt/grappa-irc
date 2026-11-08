@@ -1,6 +1,7 @@
 defmodule GrappaWeb.Admin.SettingsControllerTest do
   use GrappaWeb.ConnCase, async: false
 
+  import ExUnit.CaptureLog
   import Grappa.AuthFixtures
   import Mox
 
@@ -316,6 +317,111 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
                json_response(conn, 422)
 
       assert ServerSettings.get_upload_global_cap_bytes() == before_cap
+    end
+  end
+
+  describe "PUT /admin/settings — one transaction (issue 2609)" do
+    setup do
+      {_, session} = user_and_session(is_admin: true)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, ServerSettings.topic())
+      %{session: session}
+    end
+
+    # A fault at ONE key's write, whatever shape the write path has: the
+    # trigger aborts with SQLite's own busy text, so `Repo.BusyRetry`
+    # classifies it as write contention, rides it out and degrades to
+    # `:db_unavailable` — the fault issue 2609 is about. Created inside the
+    # test's Sandbox transaction, so SQLite's transactional DDL drops it with
+    # the rollback; the drop at the end is for the shared connection anyway.
+    defp fail_writes_of(key) do
+      for event <- ["INSERT", "UPDATE"] do
+        Repo.query!("""
+        CREATE TRIGGER w2609_fail_#{String.downcase(event)} BEFORE #{event} ON server_settings
+        WHEN NEW.key = '#{key}' BEGIN SELECT RAISE(ABORT, 'database is locked'); END
+        """)
+      end
+
+      :ok
+    end
+
+    defp drop_fault_triggers do
+      Repo.query!("DROP TRIGGER IF EXISTS w2609_fail_insert")
+      Repo.query!("DROP TRIGGER IF EXISTS w2609_fail_update")
+      :ok
+    end
+
+    defp settings_broadcasts(acc) do
+      receive do
+        %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :server_settings_changed} = payload} ->
+          settings_broadcasts([payload | acc])
+      after
+        0 -> Enum.reverse(acc)
+      end
+    end
+
+    test "a db_unavailable at the SECOND key's write leaves every key as it was and broadcasts nothing",
+         %{conn: conn, session: session} do
+      upload_before = ServerSettings.get_upload_global_cap_bytes()
+      dcc_before = ServerSettings.get_dcc_max_transfer_bytes()
+      :ok = fail_writes_of("dcc.max_transfer_bytes")
+
+      {conn, log} =
+        with_log(fn ->
+          conn
+          |> put_bearer(session.id)
+          |> put("/admin/settings", %{
+            "upload" => %{"global_cap_bytes" => upload_before + 1},
+            "dcc" => %{"max_transfer_bytes" => dcc_before + 1}
+          })
+        end)
+
+      :ok = drop_fault_triggers()
+
+      assert %{"error" => "db_unavailable"} = json_response(conn, 503)
+      # The 503 is BusyRetry giving up on the trigger's fault, not some other door.
+      assert log =~ "db write unavailable: SQLite write lock held by another writer"
+      assert ServerSettings.get_upload_global_cap_bytes() == upload_before
+      assert ServerSettings.get_dcc_max_transfer_bytes() == dcc_before
+      assert settings_broadcasts([]) == []
+    end
+
+    test "a save of several keys commits them all and broadcasts ONCE, carrying every new value",
+         %{conn: conn, session: session} do
+      global = ServerSettings.get_upload_global_cap_bytes() + 1
+      per_user = ServerSettings.get_upload_per_user_cap_bytes() + 1
+      dcc = ServerSettings.get_dcc_max_transfer_bytes() + 1
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{
+          "upload" => %{"global_cap_bytes" => global, "per_user_cap_bytes" => per_user},
+          "dcc" => %{"max_transfer_bytes" => dcc},
+          "auto_away" => %{"default_debounce_seconds" => 300}
+        })
+
+      assert json_response(conn, 200)
+      assert ServerSettings.get_upload_global_cap_bytes() == global
+      assert ServerSettings.get_upload_per_user_cap_bytes() == per_user
+      assert ServerSettings.get_dcc_max_transfer_bytes() == dcc
+      assert ServerSettings.get_auto_away_default_seconds() == 300
+
+      assert [
+               %{
+                 upload: %{global_cap_bytes: ^global, per_user_cap_bytes: ^per_user},
+                 auto_away: %{default_debounce_seconds: 300}
+               }
+             ] = settings_broadcasts([])
+    end
+
+    test "a body that writes nothing broadcasts nothing", %{conn: conn, session: session} do
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{"upload" => %{}})
+
+      assert json_response(conn, 200)
+      assert settings_broadcasts([]) == []
     end
   end
 
