@@ -1,5 +1,6 @@
 import {
   type Component,
+  createComputed,
   createEffect,
   createMemo,
   createSignal,
@@ -420,6 +421,42 @@ const lastFullyVisibleRowId = (listRef: HTMLDivElement): number | null => {
   return candidate;
 };
 
+// issue 2610 — where the reader is, said in LINES: at the tail, or the first
+// line in view (partly is enough) with how far its top sits from the top of the
+// view, negative when it is cut off above. A pixel offset names a place only
+// while every line keeps its height, and an in-place re-render (the encrypted
+// window's ciphertext view, issue 2513) changes them all at once. `top` is the
+// position to read it at: the live `scrollTop`, or the px an overlay freeze
+// holds. The content's own coordinates are `offsetTop` less the list's, as the
+// rows' offsetParent is the list's too. Null when no line is in view.
+type ReadingAnchor = { kind: "tail" } | { kind: "line"; id: number; offset: number };
+
+const readingAnchor = (list: HTMLDivElement, top: number): ReadingAnchor | null => {
+  if (list.scrollHeight - top - list.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX) {
+    return { kind: "tail" };
+  }
+  for (const row of list.querySelectorAll<HTMLElement>(".scrollback-line")) {
+    const y = row.offsetTop - list.offsetTop;
+    const id = row.dataset.msgId;
+    if (y + row.offsetHeight > top && id) {
+      return { kind: "line", id: Number.parseInt(id, 10), offset: y - top };
+    }
+  }
+  return null;
+};
+
+// The `scrollTop` that puts the reader back at `anchor` in the list as it is
+// laid out now, or null when its line is gone. A line cut off above by more
+// than it is now tall would leave the view entirely: it shows from its top.
+const anchoredTop = (list: HTMLDivElement, anchor: ReadingAnchor): number | null => {
+  if (anchor.kind === "tail") return list.scrollHeight - list.clientHeight;
+  const row = list.querySelector<HTMLElement>(`.scrollback-line[data-msg-id="${anchor.id}"]`);
+  if (row === null) return null;
+  const y = row.offsetTop - list.offsetTop;
+  const top = y - anchor.offset;
+  return y + row.offsetHeight > top ? top : y;
+};
+
 // #360 — per-row geometry read for the mention-aware scroll-to-bottom badge.
 // Mirrors `lastFullyVisibleRowId`'s offsetTop-based walk (cheap, layout-cached
 // — no getBoundingClientRect thrash) but tags each `.scrollback-line` with its
@@ -441,11 +478,12 @@ const readMentionGeom = (listRef: HTMLDivElement): ScrollbackLineGeom[] => {
   return out;
 };
 
-// THE tail write, shared by the three appliers that mean "put the pane at the
-// tail": activation's no-marker branch, the settle-wait's tail-follow, and the
-// operator tail. One function because those three were three VERBATIM copies of
-// the same five lines (measured: one md5 once indentation is stripped), so the
-// defect below had to be found three times and fixed three times.
+// THE tail write, shared by the appliers that mean "put the pane at the tail":
+// activation's no-marker branch, the settle-wait's tail-follow, the operator
+// tail, and (issue 2610) a re-render's reader at the tail. One function because
+// the first three were three VERBATIM copies of the same five lines (measured:
+// one md5 once indentation is stripped), so the defect below had to be found
+// three times and fixed three times.
 //
 // Two steps, and both are load-bearing:
 //
@@ -1426,6 +1464,22 @@ function sameRows(prev: Row[], next: Row[]): boolean {
   return prev.length === next.length && prev.every((row, i) => samePlainData(row, next[i]));
 }
 
+/**
+ * issue 2610 — the same rows in the same order, whatever they now say: a
+ * re-render in place (the encrypted window's ciphertext view), which adds and
+ * removes nothing, as opposed to a load, an arrival or a divider moving.
+ */
+function sameLines(prev: Row[], next: Row[]): boolean {
+  return (
+    prev.length === next.length && prev.every((row, i) => rowIdentity(row) === rowIdentity(next[i]))
+  );
+}
+
+const rowIdentity = (row: Row | undefined): string | undefined => {
+  if (row === undefined) return undefined;
+  return row.type === "message" ? `message:${row.msg.id}` : `${row.type}:${row.id}`;
+};
+
 // Rows are plain data: primitives, arrays and plain objects (the store's
 // message, an invite entry, a topic line). `===` first, so a message row's
 // `msg` compares by store reference for free and only the objects a run built
@@ -1490,7 +1544,10 @@ const ScrollbackPane: Component<Props> = (props) => {
   // ONLY the px to restore — the freeze itself derives from the live
   // `overlayCount()` in `isOverlayFrozen`, NOT from this being non-null — so it
   // is captured on each open edge and left harmlessly stale after close (no
-  // clear). Plain let — pure mutation, no Solid reactivity.
+  // clear). Plain let — pure mutation, no Solid reactivity. issue 2610: and it
+  // is re-anchored when the lines re-render in place under the freeze (see
+  // `applyScrollForContentChange`) — the px it held named a line, and the
+  // same px names another once every line has changed height.
   let overlayScrollSnapshot: number | null = null;
   // #219-general — the channel key the overlay snapshot was captured on. The
   // pane instance survives channel↔query switches (shared non-keyed Match), so
@@ -2314,6 +2371,33 @@ const ScrollbackPane: Component<Props> = (props) => {
   // nobody, so the `<For>` keeps its nodes (and the operator's selection) when
   // the traffic was for another window.
   const rows = createMemo(projectRows, undefined, { equals: sameRows });
+
+  // issue 2610 — the reader's place before an in-place re-render, read while
+  // the OLD lines are still in the DOM, for the length-effect to restore once
+  // the new ones are (`applyScrollForContentChange`). A pure computation and
+  // not an effect, because of WHEN it runs: Solid runs every memo and computed
+  // of an update before any effect, and the `<For>` swaps the line nodes in a
+  // render effect, so here the list is still laid out as the reader saw it,
+  // and by the length-effect it no longer is. Nothing else holds that reading
+  // once the lines are gone. Read only on a re-render of the same lines in the
+  // same window (a switch of window is the activation's, and a load, an
+  // arrival or a divider moving keep their own rules), at the px the reader is
+  // held at: the freeze's while a covering overlay holds the pane.
+  let reflowAnchor: { key: string; anchor: ReadingAnchor } | null = null;
+  createComputed(
+    on(
+      [rows, key],
+      ([next, k], prev) => {
+        if (!listRef || prev === undefined || prev[1] !== k || !sameLines(prev[0], next)) return;
+        const held = isOverlayFrozen() ? overlayScrollSnapshot : null;
+        const anchor = readingAnchor(listRef, held ?? listRef.scrollTop);
+        reflowAnchor = anchor === null ? null : { key: k, anchor };
+      },
+      // Not deferred: `on` records the previous input only on a run it does
+      // not skip, so a deferred first run would leave the first change after
+      // mount with nothing to compare against.
+    ),
+  );
 
   // #360 — refresh the mention badge after every rows() recreation (a live
   // message, the switch-time `refreshScrollback` catch-up, a cross-device
@@ -3774,9 +3858,9 @@ const ScrollbackPane: Component<Props> = (props) => {
         return;
       }
       default:
-        // mention-jump (applyMentionJump) + prepend-preserve (applyPrependPreserve)
-        // own dedicated entrypoints and never reach dispatchScrollWrite, so this
-        // arm stays unreachable.
+        // mention-jump (applyMentionJump), prepend-preserve (applyPrependPreserve)
+        // and reflow-preserve (applyReflowPreserve) own dedicated entrypoints and
+        // never reach dispatchScrollWrite, so this arm stays unreachable.
         return;
     }
   };
@@ -3787,9 +3871,22 @@ const ScrollbackPane: Component<Props> = (props) => {
   const applyScrollForContentChange = (): void => {
     if (!listRef) return;
     const k = key();
+    // issue 2610 — the reading the computed above took before the lines were
+    // replaced, if this change is an in-place re-render of this window. Spent
+    // here, whoever wins: it describes this change and no later one.
+    const reflow = reflowAnchor?.key === k ? reflowAnchor.anchor : null;
+    reflowAnchor = null;
     const intents: ScrollIntent[] = [];
     if (isOverlayFrozen()) {
+      // The freeze holds a px, and the re-render just gave that px to another
+      // line: what it held was the reader's place, so it holds that place in
+      // the new layout, now and at the close edge's restore, which replays it.
+      const reanchored = reflow === null ? null : anchoredTop(listRef, reflow);
+      if (reanchored !== null) overlayScrollSnapshot = reanchored;
       intents.push({ kind: "overlay-freeze", key: k, lifetime: "sticky" });
+    }
+    if (reflow !== null) {
+      intents.push({ kind: "reflow-preserve", key: k, lifetime: "one-shot" });
     }
     // #1229 — this DOM probe is what keeps a suppressed divider from being
     // activated: crossing the unread ceiling drops the divider (`injectMarker`),
@@ -3807,7 +3904,28 @@ const ScrollbackPane: Component<Props> = (props) => {
     }
     const { winner, reason } = resolveIntent(intents, k);
     logScrollDecision("content-change", intents, winner, reason);
-    if (winner) dispatchScrollWrite(winner);
+    if (winner?.kind === "reflow-preserve" && reflow !== null) applyReflowPreserve(reflow);
+    else if (winner) dispatchScrollWrite(winner);
+  };
+
+  // issue 2610 — the reflow-preserve write: the reader back at their line (or
+  // the tail) in the re-rendered layout. SYNC, as the overlay-freeze and
+  // marker-activation legs are and for their reason: the lines were swapped
+  // before this ran and nothing has been painted since, so no frame shows the
+  // other lines the old px now points at. Reading `offsetTop` lays the new
+  // lines out first. A line that is gone writes nothing. The tail is THE tail
+  // write, then the tail-follow's measured settle (#608), which writes again
+  // only if an engine laid the new lines out after this read.
+  const applyReflowPreserve = (anchor: ReadingAnchor): void => {
+    if (!listRef) return;
+    if (anchor.kind === "tail") {
+      scrollToTail(listRef);
+      tailFollowWhenSettled();
+      return;
+    }
+    const top = anchoredTop(listRef, anchor);
+    if (top === null || listRef.scrollTop === top) return;
+    listRef.scrollTop = top;
   };
 
   // #608 (deep-review §6.4) — the prepend-preserve applier entrypoint. An older

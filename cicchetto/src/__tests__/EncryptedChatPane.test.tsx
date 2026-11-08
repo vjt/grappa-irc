@@ -15,6 +15,8 @@ import { friendlyApiError } from "../lib/friendlyApiError";
 import {
   overlayCount,
   overlayEscapeDepth,
+  popOverlay,
+  pushOverlay,
   runTopmostOverlayEscape,
 } from "../lib/overlayScrollLock";
 import { wireBody } from "../lib/sendPipeline";
@@ -286,6 +288,35 @@ const composer = () =>
 const composeShut = () => (within("e2e-pane").querySelector(".e2e-compose") as HTMLElement).inert;
 const type = (text: string) => fireEvent.input(composer(), { target: { value: text } });
 const enter = () => fireEvent.keyDown(composer(), { key: "Enter" });
+
+// jsdom lays nothing out: a test stages the geometry it reads on the
+// prototype, for the elements `get` answers for, and every other element keeps
+// its native (zero) reading. A write to a staged element goes to `set`, or
+// nowhere when there is none (a reader holds the position). Returns the undo.
+const stage = (
+  name: string,
+  get: (el: HTMLElement) => number | undefined,
+  set: ((el: HTMLElement, value: number) => void) | null,
+): (() => void) => {
+  const native = Object.getOwnPropertyDescriptor(HTMLElement.prototype, name);
+  const inherited = Object.getOwnPropertyDescriptor(Element.prototype, name);
+  Object.defineProperty(HTMLElement.prototype, name, {
+    configurable: true,
+    get(this: HTMLElement) {
+      return get(this) ?? (native ?? inherited)?.get?.call(this);
+    },
+    set(this: HTMLElement, value: number) {
+      if (get(this) === undefined) (native ?? inherited)?.set?.call(this, value);
+      else set?.(this, value);
+    },
+  });
+  return () => {
+    if (native) Object.defineProperty(HTMLElement.prototype, name, native);
+    else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
+  };
+};
+
+const isList = (el: Element) => el.matches("[data-testid=scrollback]");
 
 describe("EncryptedChatPane", () => {
   it("loads the chat it shows, names the peer as the chat spells it, and composes in the compose box", () => {
@@ -683,36 +714,24 @@ describe("EncryptedChatPane", () => {
       Array.from(
         el.closest("[data-testid=scrollback]")?.querySelectorAll(".scrollback-line") ?? [],
       ).indexOf(el);
-    const isList = (el: Element) => el.matches("[data-testid=scrollback]");
-    const define = (name: string, get: (el: HTMLElement) => number | undefined) => {
-      const native = Object.getOwnPropertyDescriptor(HTMLElement.prototype, name);
-      const inherited = Object.getOwnPropertyDescriptor(Element.prototype, name);
-      Object.defineProperty(HTMLElement.prototype, name, {
-        configurable: true,
-        get(this: HTMLElement) {
-          return get(this) ?? (native ?? inherited)?.get?.call(this);
-        },
-        set(this: HTMLElement, value: number) {
-          if (get(this) === undefined) (native ?? inherited)?.set?.call(this, value);
-        },
-      });
-      return () => {
-        if (native) Object.defineProperty(HTMLElement.prototype, name, native);
-        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
-      };
-    };
     const restores = [
-      define("offsetTop", (el) =>
-        el.classList.contains("scrollback-line") ? lineIndex(el) * height : undefined,
+      stage(
+        "offsetTop",
+        (el) => (el.classList.contains("scrollback-line") ? lineIndex(el) * height : undefined),
+        null,
       ),
-      define("offsetHeight", (el) =>
-        el.classList.contains("scrollback-line") ? height : undefined,
+      stage(
+        "offsetHeight",
+        (el) => (el.classList.contains("scrollback-line") ? height : undefined),
+        null,
       ),
-      define("clientHeight", (el) => (isList(el) ? 150 : undefined)),
-      define("scrollHeight", (el) =>
-        isList(el) ? el.querySelectorAll(".scrollback-line").length * height : undefined,
+      stage("clientHeight", (el) => (isList(el) ? 150 : undefined), null),
+      stage(
+        "scrollHeight",
+        (el) => (isList(el) ? el.querySelectorAll(".scrollback-line").length * height : undefined),
+        null,
       ),
-      define("scrollTop", (el) => (isList(el) ? top.value : undefined)),
+      stage("scrollTop", (el) => (isList(el) ? top.value : undefined), null),
     ];
     return () => {
       for (const restore of restores) restore();
@@ -2203,5 +2222,261 @@ describe("EncryptedChatPane — messages on their way (issue 2577)", () => {
     expect(arrivingRows()).toHaveLength(1);
     setArrivals({});
     expect(arrivingRows()).toHaveLength(0);
+  });
+});
+
+// issue 2610 — switching the chat between its plaintext and its ciphertext
+// (issue 2513) re-renders every line in place, and a payload is longer than
+// the words it carries, so every line changes height at once: a scroll offset
+// kept in pixels then shows other lines. The reader's place is held in LINES:
+// at the bottom stays at the bottom (and follows); anywhere else the line at
+// the top of the view stays there, cut off by as much as it was.
+describe("EncryptedChatPane, issue 2610 — the ciphertext view keeps the reader's place", () => {
+  const PLAIN_PX = 20;
+  const CIPHER_PX = 60;
+  const VIEWPORT_PX = 100;
+
+  // What is under test is where the pane puts the reader when the lines change
+  // height, so jsdom gets a screen: lines stacked from 0, 20px tall in the
+  // plaintext and 60px in the ciphertext view, in a 100px viewport whose
+  // `scrollTop` clamps as a browser's does, also when the content under it
+  // shrinks. Every height is read off the line's CURRENT body, so a reading
+  // taken after the lines were replaced measures the new heights, and a cure
+  // that looked at the screen too late would say so.
+  const stageScreen = () => {
+    let stored = 0;
+    const height = (line: Element) =>
+      line.querySelector(".scrollback-body")?.textContent?.startsWith("E2E ")
+        ? CIPHER_PX
+        : PLAIN_PX;
+    const linesOf = (list: Element | null) =>
+      Array.from(list?.querySelectorAll(".scrollback-line") ?? []);
+    const extent = (list: Element) => linesOf(list).reduce((sum, l) => sum + height(l), 0);
+    const maxTop = (list: Element) => Math.max(0, extent(list) - VIEWPORT_PX);
+    const top = (line: Element) => {
+      let y = 0;
+      for (const l of linesOf(line.closest("[data-testid=scrollback]"))) {
+        if (l === line) return y;
+        y += height(l);
+      }
+      return y;
+    };
+    const isLine = (el: Element) => el.classList.contains("scrollback-line");
+    const restores = [
+      stage("offsetTop", (el) => (isLine(el) ? top(el) : undefined), null),
+      stage("offsetHeight", (el) => (isLine(el) ? height(el) : undefined), null),
+      stage("clientHeight", (el) => (isList(el) ? VIEWPORT_PX : undefined), null),
+      stage(
+        "scrollHeight",
+        (el) => (isList(el) ? Math.max(extent(el), VIEWPORT_PX) : undefined),
+        null,
+      ),
+      stage(
+        "scrollTop",
+        (el) => (isList(el) ? Math.min(stored, maxTop(el)) : undefined),
+        (el, value) => {
+          stored = Math.max(0, Math.min(value, maxTop(el)));
+        },
+      ),
+    ];
+    return () => {
+      for (const restore of restores) restore();
+    };
+  };
+
+  // Twelve of Bob's messages, each with the payload it crossed IRC as.
+  const chatOf = (n: number): ChatRow[] =>
+    Array.from({ length: n }, (_, i) => ({
+      kind: "in" as const,
+      id: `m${i + 1}`,
+      at: at + i,
+      nick: "Bob",
+      ed25519: KEY,
+      body: `riga ${i + 1}`,
+      wire: [
+        {
+          verb: "msg" as const,
+          msgid: `${String(i + 1).padStart(11, "x")}`,
+          payload: `{"ck":"${i}","bodies":{"d":"e"}}`,
+        },
+      ],
+    }));
+
+  const scrollback = () =>
+    within("e2e-pane").querySelector("[data-testid=scrollback]") as HTMLElement;
+  // The line at the top of the view, by its number in the window, and how far
+  // its top sits from the top of the view (negative: cut off above).
+  const firstInView = () => {
+    const list = scrollback();
+    const line = lines().find((l) => l.offsetTop + l.offsetHeight > list.scrollTop);
+    return line === undefined
+      ? null
+      : { id: line.dataset.msgId, offset: line.offsetTop - list.scrollTop };
+  };
+  // How far the view sits above the last line: 0 at the bottom. Raw pixels,
+  // never the pane's 50px "following" band, which would hide a short miss.
+  const belowTail = () => {
+    const list = scrollback();
+    return list.scrollHeight - list.scrollTop - list.clientHeight;
+  };
+  const frames = (n: number) =>
+    new Promise<void>((resolve) => {
+      const step = (left: number) =>
+        left === 0 ? resolve() : requestAnimationFrame(() => step(left - 1));
+      step(n);
+    });
+
+  // The pane opens at the bottom; the reader takes it up to `top`, as a
+  // finger or a wheel does (the input the pane reads as the reader's own).
+  const scrollUpTo = async (top: number) => {
+    const list = scrollback();
+    await waitFor(() => expect(belowTail()).toBe(0));
+    list.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    list.dispatchEvent(new Event("scroll"));
+    list.scrollTop = top;
+    list.dispatchEvent(new Event("scroll"));
+    expect(list.dataset.follow).toBe("off");
+  };
+
+  const open = (n: number) => {
+    setTrust({ master: KEY, verified: true, devices: 1 });
+    setRows(chatOf(n));
+    renderPane();
+  };
+
+  it("a reader in the middle keeps the line at the top of the view where it was, into the ciphertext and back", async () => {
+    const restore = stageScreen();
+    try {
+      open(12);
+      await scrollUpTo(70);
+      // Line 4 at the top, its first 10px above the view.
+      expect(firstInView()).toEqual({ id: "4", offset: -10 });
+
+      setWireView("azzurra/bob");
+      // The premise: the lines did grow, so 70px now shows other lines.
+      expect(lines()[3]?.offsetHeight).toBe(CIPHER_PX);
+      expect(firstInView()).toEqual({ id: "4", offset: -10 });
+      // And nothing moves it afterwards.
+      await frames(4);
+      expect(firstInView()).toEqual({ id: "4", offset: -10 });
+
+      setWireView(null);
+      expect(lines()[3]?.offsetHeight).toBe(PLAIN_PX);
+      expect(firstInView()).toEqual({ id: "4", offset: -10 });
+      await frames(4);
+      expect(firstInView()).toEqual({ id: "4", offset: -10 });
+      // Still the reader's own place: the pane does not start following.
+      expect(scrollback().dataset.follow).toBe("off");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a top line cut off by more than its plaintext height shows from its top when the plaintext comes back", async () => {
+    const restore = stageScreen();
+    try {
+      open(12);
+      setWireView("azzurra/bob");
+      // Line 4 runs 180–240 in the ciphertext: 50px of it above the view.
+      await scrollUpTo(230);
+      expect(firstInView()).toEqual({ id: "4", offset: -50 });
+
+      setWireView(null);
+      // 20px tall again, so "50px above" would put all of it out of sight.
+      expect(firstInView()).toEqual({ id: "4", offset: 0 });
+    } finally {
+      restore();
+    }
+  });
+
+  it("a reader at the bottom stays at the bottom, into the ciphertext and back, and goes on following", async () => {
+    const restore = stageScreen();
+    try {
+      open(12);
+      await waitFor(() => expect(belowTail()).toBe(0));
+
+      setWireView("azzurra/bob");
+      await waitFor(() => expect(belowTail()).toBe(0));
+      expect(scrollback().dataset.follow).toBe("on");
+      setRows(chatOf(13));
+      await waitFor(() => expect(lines()).toHaveLength(13));
+      await waitFor(() => expect(belowTail()).toBe(0));
+
+      setWireView(null);
+      await waitFor(() => expect(belowTail()).toBe(0));
+      expect(scrollback().dataset.follow).toBe("on");
+    } finally {
+      restore();
+    }
+  });
+
+  // issue 2583 — the rail's `ciphertext` entry flips the view in place and its
+  // menu stays open around it, holding the overlay lock (`createOverlayLock`
+  // in RailActions) that freezes the pane at the pixels it was at when the
+  // menu opened. Those pixels are no position once the lines change height.
+  describe("from the rail's menu, which holds the overlay lock while it is open", () => {
+    let held = 0;
+    const holdLock = async () => {
+      pushOverlay(null);
+      held += 1;
+      // The menu has been open a while when its entry is tapped.
+      await frames(3);
+    };
+    const releaseLock = async () => {
+      popOverlay(null);
+      held -= 1;
+      // The lock's close edge restores across two frames.
+      await frames(4);
+    };
+
+    it("a reader in the middle keeps the top line under the menu and once it closes, both ways", async () => {
+      const restore = stageScreen();
+      try {
+        open(12);
+        await scrollUpTo(70);
+        expect(firstInView()).toEqual({ id: "4", offset: -10 });
+
+        await holdLock();
+        expect(overlayCount()).toBe(1);
+        setWireView("azzurra/bob");
+        expect(firstInView()).toEqual({ id: "4", offset: -10 });
+        await releaseLock();
+        expect(firstInView()).toEqual({ id: "4", offset: -10 });
+
+        await holdLock();
+        setWireView(null);
+        expect(firstInView()).toEqual({ id: "4", offset: -10 });
+        await releaseLock();
+        expect(firstInView()).toEqual({ id: "4", offset: -10 });
+      } finally {
+        for (; held > 0; held -= 1) popOverlay(null);
+        restore();
+      }
+    });
+
+    it("a reader at the bottom stays at the bottom under the menu and once it closes, both ways", async () => {
+      const restore = stageScreen();
+      try {
+        open(12);
+        await waitFor(() => expect(belowTail()).toBe(0));
+
+        await holdLock();
+        setWireView("azzurra/bob");
+        expect(belowTail()).toBe(0);
+        await releaseLock();
+        expect(belowTail()).toBe(0);
+        expect(scrollback().dataset.follow).toBe("on");
+
+        await holdLock();
+        setWireView(null);
+        expect(belowTail()).toBe(0);
+        await releaseLock();
+        expect(belowTail()).toBe(0);
+        expect(scrollback().dataset.follow).toBe("on");
+      } finally {
+        for (; held > 0; held -= 1) popOverlay(null);
+        restore();
+      }
+    });
   });
 });

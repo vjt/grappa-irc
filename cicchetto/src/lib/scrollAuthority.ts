@@ -25,6 +25,7 @@ export type ScrollIntentKind =
   | "overlay-freeze" // hold the px captured at overlay-open while a covering overlay is up
   | "operator-tail" // explicit tail: own send / gesture / re-tap
   | "mention-jump" // smooth-scroll to a mention anchor below the fold
+  | "reflow-preserve" // keep the reader's line across an in-place re-render (issue 2610)
   | "marker-activation" // jump to the unread divider on window activation
   | "tail-follow" // stick to the tail because followMode is on
   | "prepend-preserve"; // preserve position across a top prepend (loadMore)
@@ -46,12 +47,21 @@ export type ScrollIntent = {
 
 // High → low. Index = priority; earlier wins. Single source of truth for the
 // ordering the review confirmed:
-//   overlay-freeze ▸ operator-tail ▸ mention-jump ▸ marker-activation ▸
-//   tail-follow ▸ prepend-preserve
+//   overlay-freeze ▸ operator-tail ▸ mention-jump ▸ reflow-preserve ▸
+//   marker-activation ▸ tail-follow ▸ prepend-preserve
+//
+// issue 2610 — `reflow-preserve` sits over the two content-change intents it
+// competes with. Over `tail-follow`: its reading of a reader at the tail IS
+// the tail, so the follower is tailed either way. Over `marker-activation`: a
+// re-render adds and removes no line, so it is not the late load the
+// activation latch re-asserts the divider against, and the reader keeps the
+// line they were looking at. Under the overlay freeze, which it re-anchors
+// instead of fighting (see the pane).
 const PRECEDENCE: readonly ScrollIntentKind[] = [
   "overlay-freeze",
   "operator-tail",
   "mention-jump",
+  "reflow-preserve",
   "marker-activation",
   "tail-follow",
   "prepend-preserve",
