@@ -961,8 +961,26 @@ crypto, and accepted. Forward secrecy is bounded, not true: epoch rotation
 plus a one-way hash-chain ratchet bounds exposure to the compromised epoch;
 true forward secrecy and post-compromise security need MLS (RFC 9420,
 TreeKEM), for which this stack has no ready library. Check
-`protocol_version >= 62` before offering channel E2E: below it the door
+`protocol_version >= 63` before offering channel E2E: below it the door
 answers 400 on a channel target, and `e2e_message` carries no `channel`.
+
+**Client decisions (PR #2, cicchetto).** The v3 `body` decrypts to a
+typed inner message, the DM convention: a chat message is
+`{"t": "text", "body": "..."}`, never raw text, so a rotation inside is
+unambiguous. A periodic rotation is a channel message whose v3 envelope
+still names the OLD `sid`, and whose plaintext is
+`{"t": "grotate", "sid": "<new sid>", "key": "<new session key>"}`:
+decrypt it with the old inbound session, import the new one, drop the
+old one. On JOIN the sender is deterministic off the roster — the member
+whose folded nick sorts first among the members other than the newcomer
+— so exactly one member sends the key, to the newcomer only. A member
+with no epoch yet creates one when its turn to send comes. A sender's
+old inbound sessions die the moment a newer session id of THEIRS
+arrives; a departed member's inbound sessions die on the leave; your
+own channel's sessions die when you leave it. A re-sent gkey for a
+session id already held is a no-op: the stored pickle has the
+further-advanced ratchet. Your own channel messages come back through
+the same inbox; skip them (the send path already showed them).
 
 **Your key bundle (v44, per device since v49).** A `KEYREQ` addressed to
 you is never delivered as an event: grappa answers it itself, connected
