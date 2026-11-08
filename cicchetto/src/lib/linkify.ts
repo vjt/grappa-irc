@@ -148,7 +148,15 @@ const TOKEN_REGEX =
   // biome-ignore lint/suspicious/noControlCharactersInRegex: `\x07` (BELL) is an RFC 2812 chanstring terminator — a channel name MUST stop at it, so matching it as a boundary is deliberate, not an accidental control char.
   /(?:https?:\/\/|ftp:\/\/|www\.)\S+|(?:[a-z0-9-]+\.)+[a-z]{2,}\/\S*|(^|[\s,([{<])(#[^\s,\x07]+)/gi;
 
-const TRAILING_PUNCT_RE = /[.,;:!?)\]}>]+$/;
+// #2440 — the quote marks belong in the class because a relayed or quoted
+// line routinely ends a link with one: `"Vulnerability (https://m.xkcd.com/3314/)"`
+// produced a link to `…/3314/)"`. The closing quote is the OUTERMOST
+// character, so stripping it first is what exposes the unbalanced `)` behind
+// it to the paren rule below — without `"` here the loop stops immediately and
+// both characters stay in the URL. Straight and typographic forms, plus the
+// guillemet, because the same line can arrive through a client that
+// autocorrects.
+const TRAILING_PUNCT_RE = /[.,;:!?)\]}>"'’”»]+$/;
 
 function stripTrailingPunctuation(token: string): { value: string; trailing: string } {
   // Special-case: balanced parens count -- if `(` count === `)` count,

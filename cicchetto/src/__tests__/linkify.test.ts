@@ -103,6 +103,30 @@ describe("linkify", () => {
         },
       ]);
     });
+
+    // #2440 — a relayed line that quotes a link inside parentheses ends the
+    // token with the quote, which used to hide the unbalanced `)` behind it.
+    it("strips a closing quote and the unbalanced ) it was hiding", () => {
+      const segments = linkify('"Vulnerability (https://m.xkcd.com/3314/)"');
+      expect(segments).toEqual([
+        { type: "text", value: '"Vulnerability (' },
+        {
+          type: "url",
+          value: "https://m.xkcd.com/3314/",
+          href: "https://m.xkcd.com/3314/",
+        },
+        { type: "text", value: ')"' },
+      ]);
+    });
+
+    it("strips a trailing typographic quote", () => {
+      const segments = linkify("see https://example.com/x”");
+      expect(segments).toEqual([
+        { type: "text", value: "see " },
+        { type: "url", value: "https://example.com/x", href: "https://example.com/x" },
+        { type: "text", value: "”" },
+      ]);
+    });
   });
 
   describe("bare-domain (scheme-less, host.tld/path) matches — GH #212", () => {
