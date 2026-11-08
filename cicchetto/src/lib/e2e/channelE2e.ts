@@ -127,8 +127,17 @@ export type ChannelE2eEvent =
     }
   | { kind: "channel_dropped"; channel: string; reason: string; detail?: string };
 
-/** What a step answered: its events, and the payloads for the send door. */
-export type ChannelE2eResult = { events: ChannelE2eEvent[]; outbound: Outbound[] };
+/**
+ * What a step answered: its events, the payloads for the send door, and
+ * `copies` — one per gkey DM sent, naming the peer it went to and the
+ * exact gkey inner as JSON, so the caller can pass the same key to this
+ * device's other devices. Always present, empty when no gkey went out.
+ */
+export type ChannelE2eResult = {
+  events: ChannelE2eEvent[];
+  outbound: Outbound[];
+  copies: { peer: string; body: string }[];
+};
 
 export type ChannelE2eDeps = {
   /** Our nick on the network now. */
@@ -157,7 +166,7 @@ export type ChannelE2eDeps = {
 };
 
 function emptyResult(): ChannelE2eResult {
-  return { events: [], outbound: [] };
+  return { events: [], outbound: [], copies: [] };
 }
 
 const foldOf = (nick: string): string => fold(nick);
@@ -221,7 +230,9 @@ export function distributeKey(
   const inner = gkeyInner(groups, channel);
   if (inner === undefined) return res;
   for (const member of others(members, deps.ownNick)) {
-    res.outbound.push(...deps.sendDm(member, { ...inner }));
+    const sent = { ...inner };
+    res.outbound.push(...deps.sendDm(member, sent));
+    res.copies.push({ peer: member, body: JSON.stringify(sent) });
     res.events.push({ kind: "channel_key_sent", channel, to: member, sid: inner.sid });
   }
   return res;
@@ -272,7 +283,9 @@ export function onKeyreq(
   if (foldOf(from) === foldOf(deps.ownNick)) return res;
   if (!keyreqAnswerDue(groups, channel, from, deps.now())) return res;
   markKeyreqAnswered(groups, channel, from, deps.now());
-  res.outbound.push(...deps.sendDm(from, { ...inner }));
+  const sent = { ...inner };
+  res.outbound.push(...deps.sendDm(from, sent));
+  res.copies.push({ peer: from, body: JSON.stringify(sent) });
   res.events.push({ kind: "channel_key_sent", channel, to: from, sid: inner.sid });
   return res;
 }
@@ -356,6 +369,7 @@ export function onMemberLeft(
       holders: members.map((m) => fold(m)),
     };
     res.outbound.push(...deps.sendDm(member, inner));
+    res.copies.push({ peer: member, body: JSON.stringify(inner) });
     res.events.push({ kind: "channel_key_sent", channel, to: member, sid: rotated.newSid });
   }
   return res;
@@ -387,7 +401,9 @@ export function auditEpochRotation(
   const inner = gkeyInner(groups, channel);
   if (inner === undefined) return res;
   for (const member of others(members, deps.ownNick)) {
-    res.outbound.push(...deps.sendDm(member, { ...inner }));
+    const sent = { ...inner };
+    res.outbound.push(...deps.sendDm(member, sent));
+    res.copies.push({ peer: member, body: JSON.stringify(sent) });
     res.events.push({ kind: "channel_key_sent", channel, to: member, sid: inner.sid });
   }
   return res;
@@ -463,6 +479,7 @@ export async function receiveChannel(
         },
       ],
       outbound: [],
+      copies: [],
     };
   }
   if (decoded.t === "keyreq") {
@@ -480,6 +497,7 @@ export async function receiveChannel(
             },
           ],
           outbound: [],
+          copies: [],
         };
       }
     } catch (err) {
@@ -495,6 +513,7 @@ export async function receiveChannel(
           },
         ],
         outbound: [],
+        copies: [],
       };
     }
     return onKeyreq(deps, groups, channel, from);
@@ -520,6 +539,7 @@ export async function receiveChannel(
         },
       ],
       outbound: [],
+      copies: [],
     };
   }
   if (decrypted.kind === "rotated") {
@@ -533,6 +553,7 @@ export async function receiveChannel(
         },
       ],
       outbound: [],
+      copies: [],
     };
   }
   return {
@@ -547,6 +568,7 @@ export async function receiveChannel(
       },
     ],
     outbound: [],
+    copies: [],
   };
 }
 
