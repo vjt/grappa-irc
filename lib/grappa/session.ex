@@ -1065,7 +1065,7 @@ defmodule Grappa.Session do
       # addresses' type. A client always sends from a device: `*` speaks for
       # the user, and only grappa does (KEYS, and the NACK of a message no
       # listed device could read).
-      Identifier.valid_nick?(target) and E2e.did?(from) and E2e.addressed?(verb, from, to) and
+      Identifier.wire_nick?(target) and E2e.did?(from) and E2e.addressed?(verb, from, to) and
           E2e.chunk?(payload) ->
         :ok
 
@@ -1247,12 +1247,13 @@ defmodule Grappa.Session do
     end
   end
 
-  # The peer of a consent line: one IRC token, and a nick.
+  # The peer of a consent line: one IRC token, and a nick as the upstream
+  # allows it (issue 2599).
   @spec validate_consent_target(String.t()) :: :ok | {:error, :invalid_line | :bad_request}
   defp validate_consent_target(target) do
     cond do
       not Identifier.safe_line_token?(target) -> {:error, :invalid_line}
-      Identifier.valid_nick?(target) -> :ok
+      Identifier.wire_nick?(target) -> :ok
       true -> {:error, :bad_request}
     end
   end

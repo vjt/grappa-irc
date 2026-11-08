@@ -427,8 +427,10 @@ defmodule Grappa.Session.EventRouter do
   #     has its plaintext, and decrypting our own ciphertext is not a thing;
   #   * a NOTICE: the agreed wire is PRIVMSG only (2430);
   #   * a sender that is not a nick — a server prefix, a prefix-less line
-  #     (`*`), a nick past our 30-character key: the offline queue keys a
-  #     message on its sender's nick and refuses the row otherwise;
+  #     (`*`), a sender past `Identifier.max_wire_nick_bytes/0`: the offline
+  #     queue keys a message on its sender's nick and refuses the row
+  #     otherwise. Same rule as `E2eInbox.Entry` (`wire_nick?/1`, issue
+  #     2599), or a sender passed here crashes the session at the queue;
   #   * a malformed frame, including the dropped `OFFLINE` verb.
   #
   # Reassembly is NOT done here: it needs the clock and a buffer that
@@ -439,7 +441,7 @@ defmodule Grappa.Session.EventRouter do
 
     with true <- nick_eq?(target, state.nick),
          false <- nick_eq?(sender, state.nick),
-         true <- Identifier.valid_nick?(sender),
+         true <- Identifier.wire_nick?(sender),
          {:ok, fragment} <- E2e.parse(body) do
       {:cont, state, [{:e2e_fragment, sender, fragment}]}
     else

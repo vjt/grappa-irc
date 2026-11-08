@@ -30,12 +30,6 @@ defmodule Grappa.E2eInbox.Entry do
 
   @type verb :: :keys | :pkmsg | :msg | :nack
 
-  # An own row's `sender` is our nick as the ircd last set it, which nothing
-  # validated (a UID forced on collision, a NICKLEN past 30), and nobody
-  # routes or groups by it; 128 bytes is four times the 30–32 most ircds cap
-  # NICKLEN at, so this bounds the column without refusing a real nick.
-  @max_own_sender_bytes 128
-
   @type t :: %__MODULE__{
           id: pos_integer() | nil,
           device_id: pos_integer() | nil,
@@ -68,15 +62,12 @@ defmodule Grappa.E2eInbox.Entry do
   @spec verbs() :: [verb(), ...]
   def verbs, do: @verbs
 
-  @doc "The most bytes an own row's `sender` may hold (a peer row's must be a nick)."
-  @spec max_own_sender_bytes() :: 128
-  def max_own_sender_bytes, do: @max_own_sender_bytes
-
   @doc """
   Builds an insert changeset. Every field is required but `own`, which
   defaults to false (a peer's message). The sender must be a nick on a
-  peer's row; on an own row it is our nick as the ircd set it, which is
-  bounded at `max_own_sender_bytes/0` and not judged as a nick. `from_did`
+  peer's row (`Grappa.IRC.Identifier.wire_nick?/1`); on an own row it is
+  our nick as the ircd set it, which is bounded at
+  `Grappa.IRC.Identifier.max_wire_nick_bytes/0` and not judged (R7). `from_did`
   is a device id or `*`, the msgid a token `Grappa.IRC.E2e.msgid?/1`
   accepts, and the payload no longer than the receiver's per-message
   bound. `bytes` is derived from the payload, never cast.
@@ -99,19 +90,23 @@ defmodule Grappa.E2eInbox.Entry do
   end
 
   # A peer is known by nick, so a peer row's sender must be one: it routes
-  # the row and keys the peer's share and the undeliverable notice. An own
-  # row's is only informational (the own share ignores it, expiry skips the
-  # row, the client ignores it), so it is bounded and not judged: a copy
-  # under a nick the ircd forced still queues.
+  # the row and keys the peer's share and the undeliverable notice. Which
+  # nicks exist is the upstream's call (issue 2599: IRCnet's `foo~`, a
+  # collision UID), so it is `wire_nick?/1` — the rule `EventRouter`'s
+  # `route_e2e` drops by, and the two MUST stay one rule: a sender the
+  # router passes and this refuses crashes the session at the queue.
+  # An own row's is only informational (the own share ignores it, expiry
+  # skips the row, the client ignores it), so it is bounded and not judged
+  # (R7): a copy under a nick the ircd forced still queues.
   @spec validate_sender(Ecto.Changeset.t()) :: Ecto.Changeset.t()
   defp validate_sender(changeset) do
     if get_field(changeset, :own),
-      do: validate_length(changeset, :sender, max: @max_own_sender_bytes, count: :bytes),
+      do: validate_length(changeset, :sender, max: Identifier.max_wire_nick_bytes(), count: :bytes),
       else: validate_change(changeset, :sender, &nick_errors/2)
   end
 
   @spec nick_errors(:sender, String.t()) :: [{:sender, String.t()}]
-  defp nick_errors(:sender, nick), do: if(Identifier.valid_nick?(nick), do: [], else: [sender: "is not a nick"])
+  defp nick_errors(:sender, nick), do: if(Identifier.wire_nick?(nick), do: [], else: [sender: "is not a nick"])
 
   @spec put_bytes(Ecto.Changeset.t()) :: Ecto.Changeset.t()
   defp put_bytes(changeset) do

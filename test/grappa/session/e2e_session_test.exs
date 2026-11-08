@@ -32,7 +32,7 @@ defmodule Grappa.Session.E2eSessionTest do
 
   alias Grappa.{E2eFixtures, E2eInbox, E2eKeys, E2eRequests, IRCServer, QueryWindows, Repo, Session}
   alias Grappa.E2eRequests.Request
-  alias Grappa.IRC.{Client, E2e, LineSplit}
+  alias Grappa.IRC.{Client, E2e, Identifier, LineSplit}
   alias Grappa.Networks.{Credentials, SessionPlan}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Message
@@ -260,9 +260,11 @@ defmodule Grappa.Session.E2eSessionTest do
 
     # The queue keys a message on its sender's nick, and refuses a row
     # whose sender is not one. A server prefix, a prefix-less line (`*`)
-    # and a nick past our 30-character key are all reachable from the wire,
-    # so they are dropped where the line is routed, not left to kill the
-    # session at the queue.
+    # and a sender past the wire-nick byte bound are all reachable from the
+    # wire, so they are dropped where the line is routed, not left to kill
+    # the session at the queue. (The third used to be "a nick past our
+    # 30-character key"; issue 2599 moved the key to the upstream's nick,
+    # so a 31-char nick is a sender now — see the test below.)
     test "an E2E line whose sender is not a nick is dropped and the session survives" do
       {server, pid, user, network} = connected_session()
       [device] = listed(user, network)
@@ -272,13 +274,31 @@ defmodule Grappa.Session.E2eSessionTest do
 
       IRCServer.feed(server, ":irc.example.net PRIVMSG #{@nick} :#{body}")
       IRCServer.feed(server, "PRIVMSG #{@nick} :#{body}")
-      IRCServer.feed(server, ":#{String.duplicate("a", 31)}!u@h PRIVMSG #{@nick} :#{body}")
+      too_long = String.duplicate("a", Identifier.max_wire_nick_bytes() + 1)
+      IRCServer.feed(server, ":#{too_long}!u@h PRIVMSG #{@nick} :#{body}")
       IRCServer.feed(server, line)
 
       assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: "alice"}}, @wire_timeout
       refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}
       assert Process.alive?(pid)
       assert [%E2eInbox.Entry{sender: "alice"}] = E2eInbox.list(device, 0)
+    end
+
+    # issue 2599 — the sender's nick is the upstream's call: IRCnet's `foo~`,
+    # a collision UID, a nick on a network whose NICKLEN passes 30. The
+    # router and the queue take the same rule, so each lands in the queue.
+    test "an E2E line from a nick the upstream allows is queued and delivered" do
+      {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      for nick <- ["foo~", "0AAAAAAAB", String.duplicate("a", 31)] do
+        Enum.each(lines_from(nick, :msg, E2e.new_msgid(), {@alice, device.did}, @small), &IRCServer.feed(server, &1))
+        assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: ^nick}}, @wire_timeout
+      end
+
+      assert Process.alive?(pid)
+      assert length(E2eInbox.list(device, 0)) == 3
     end
   end
 
@@ -1681,6 +1701,28 @@ defmodule Grappa.Session.E2eSessionTest do
       # Asking a peer already asked takes no new room, and its line is written at once.
       assert {:ok, %Request{state: :outgoing}} = Session.ask_e2e(subject, network.id, "peer1", device.did, @hint)
       assert_received {:wrote, "PRIVMSG peer1 :\x01E2E REQUEST " <> _}
+    end
+
+    # issue 2599 — the peer's nick is the upstream's call (IRCnet's `foo~`).
+    test "a nick the upstream allows is an address the send and request doors take" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      [device] = listed(user, network)
+
+      assert {:ok, %Request{state: :outgoing, peer: "foo~"}} =
+               Session.ask_e2e(subject, network.id, "foo~", device.did, @hint)
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(
+                 server,
+                 &String.starts_with?(&1, "PRIVMSG foo~ :\x01E2E REQUEST "),
+                 @consent_timeout
+               )
+
+      assert {:ok, _} = Session.send_e2e(subject, network.id, "foo~", :msg, :text, {device.did, @alice}, @small, nil)
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG foo~ :\x01E2E MSG "), @consent_timeout)
     end
 
     test "the doors refuse what is not a nick, a line outside the rule, an unlisted device, an unknown id, and no session" do

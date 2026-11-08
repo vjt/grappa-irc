@@ -125,23 +125,32 @@ defmodule Grappa.E2eInboxTest do
       assert E2eInbox.list(device, 0) == []
     end
 
-    test "an own row takes a sender the ircd forced, up to its bound; a peer row with it is refused",
+    # issue 2599 — a TS6 UID, what solanum renames a client to on a
+    # collision, is that client's nick on the wire. The peer half of this
+    # test used to refuse it, on no ground but the portable charset
+    # (41201a1e4: "Entry keeps `valid_nick?` for peer rows"); a peer row
+    # still has to carry a nick, and the router drops what is not one.
+    test "an own row takes a sender the ircd forced, up to its bound; so does a peer row, if it is a nick",
          %{device: device} do
-      # A TS6 UID, what solanum renames us to on a collision: not a nick.
       forced = "0AAAAAAAB"
       refute Identifier.valid_nick?(forced)
+      assert Identifier.wire_nick?(forced)
 
       assert {:ok, %Entry{own: true, sender: ^forced}} = E2eInbox.put(device, own_message(forced, ~s({"v":2})))
+      assert {:ok, %Entry{own: false, sender: ^forced}} = E2eInbox.put(device, message(forced, :msg))
+      assert {:ok, %Entry{own: false, sender: "foo~"}} = E2eInbox.put(device, message("foo~", :msg))
 
-      assert {:error, %Ecto.Changeset{errors: errors}} = E2eInbox.put(device, message(forced, :msg))
-      assert Keyword.has_key?(errors, :sender)
+      for not_a_nick <- ["irc.example.net", "*", "#italia"] do
+        assert {:error, %Ecto.Changeset{errors: errors}} = E2eInbox.put(device, message(not_a_nick, :msg))
+        assert Keyword.has_key?(errors, :sender), inspect(not_a_nick)
+      end
 
-      at_bound = String.duplicate("a", Entry.max_own_sender_bytes())
+      at_bound = String.duplicate("a", Identifier.max_wire_nick_bytes())
       assert {:ok, _} = E2eInbox.put(device, own_message(at_bound, ~s({"v":2})))
 
       assert {:error, %Ecto.Changeset{errors: errors}} = E2eInbox.put(device, own_message(at_bound <> "a", ~s({"v":2})))
       assert Keyword.has_key?(errors, :sender)
-      assert length(E2eInbox.list(device, 0)) == 2
+      assert length(E2eInbox.list(device, 0)) == 4
     end
 
     test "a device that goes takes its queue with it", %{subject: subject, network: network, device: device} do
