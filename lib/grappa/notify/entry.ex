@@ -63,9 +63,11 @@ defmodule Grappa.Notify.Entry do
 
   Subject XOR is required (`Grappa.Subject.validate_xor/1` attaches errors to
   the synthetic `:subject` key). `network_id` and `nick` are required;
-  `nick` must satisfy `Grappa.IRC.Identifier.valid_nick?/1` — a watch
+  `nick` must satisfy `Grappa.IRC.Identifier.wire_nick?/1` — a watch
   entry for a channel-shaped or garbage token would silently never
-  match a MONITOR/WATCH reply. The `assoc_constraint`s convert FK
+  match a MONITOR/WATCH reply. The WIRE predicate, not the portable one:
+  a watched nick is somebody else's, and the upstream decides its shape
+  (issue 2599: IRCnet's `foo~`, a collision UID). The `assoc_constraint`s convert FK
   violations into changeset errors, same convention as
   `QueryWindows.Window`.
   """
@@ -92,7 +94,7 @@ defmodule Grappa.Notify.Entry do
         changeset
 
       nick ->
-        if Identifier.valid_nick?(nick) do
+        if Identifier.wire_nick?(nick) do
           changeset
         else
           add_error(changeset, :nick, "is not a valid IRC nick")

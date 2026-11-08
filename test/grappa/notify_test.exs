@@ -108,6 +108,16 @@ defmodule Grappa.NotifyTest do
       assert a.id != b.id
     end
 
+    # issue 2599 — a watched nick is somebody else's, so the upstream decides
+    # what it looks like: IRCnet's `foo~` / `~foo`, a collision UID.
+    test "accepts a nick the upstream allows" do
+      user = user_fixture()
+      net = network_fixture()
+
+      assert {:ok, entries} = Notify.add({:user, user.id}, net.id, ["foo~", "~foo", "0AAAAAAAB"], user.name)
+      assert Enum.map(entries, & &1.nick) == ["foo~", "~foo", "0AAAAAAAB"]
+    end
+
     test "invalid nick rejects the whole batch with a changeset error" do
       user = user_fixture()
       net = network_fixture()
