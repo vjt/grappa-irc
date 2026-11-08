@@ -11,6 +11,7 @@
 // The protocol version is the module signal (`serverProtocol.ts`): 63
 // unless a test sets it lower.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { decodePayload, encodePayload } from "../lib/e2e/wire";
 import { __resetServerProtocolForTests, setServerProtocol } from "../lib/serverProtocol";
 import { chat, inboxOf, latestGrappa, pair } from "./helpers/e2eClients";
 import { routeApi } from "./helpers/e2eGrappa";
@@ -298,6 +299,62 @@ describe("e2eClient channel", () => {
     const read = await b.client.drain(b.ctx);
     expect(read.channelE2e).toEqual([
       expect.objectContaining({ kind: "channel_received", body: "ora mi leggi" }),
+    ]);
+  });
+
+  it("a channel message with a tampered signature is undecryptable, never received", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    w.grappa.joinChannel(CHANNEL, a.nick);
+    w.grappa.joinChannel(CHANNEL, b.nick);
+    const roster = rosterFor(["alice", "Bob"]);
+    a.ctx.channelMembers = roster;
+    b.ctx.channelMembers = roster;
+
+    // Bob asks first so the epoch imports when Alice answers the send.
+    await b.client.requestChannelKey(b.ctx, CHANNEL);
+    await a.client.drain(a.ctx);
+    await a.client.sendChannel(a.ctx, CHANNEL, "secret", ["alice", "Bob"]);
+
+    // Tamper the signature of the genuine channel :msg on its way to
+    // Bob's drain: the first base64 character of the signature flips, so
+    // the bytes no longer match what Alice signed.
+    const realDoor = b.ctx.door;
+    b.ctx.door = (did) => {
+      const door = realDoor(did);
+      const realInbox = door.inbox;
+      return {
+        ...door,
+        inbox: async (after) => {
+          const page = await realInbox(after);
+          return page.map((m) => {
+            if (m.channel !== CHANNEL) return m;
+            const envelope = decodePayload(m.payload);
+            const sig = String(envelope.sig);
+            return {
+              ...m,
+              payload: encodePayload({
+                ...envelope,
+                sig: `${sig[0] === "A" ? "B" : "A"}${sig.slice(1)}`,
+              }),
+            };
+          });
+        },
+      };
+    };
+
+    const read = await b.client.drain(b.ctx);
+    // The key arrives, the line does not: a verifier that always said yes
+    // would read it instead, so this test dies on that mutant.
+    expect(read.channelE2e).toEqual([
+      expect.objectContaining({ kind: "channel_key_received", from: "alice" }),
+      {
+        kind: "channel_undecryptable",
+        channel: CHANNEL,
+        from: "alice",
+        sid: expect.any(String),
+        reason: "bad-signature",
+      },
     ]);
   });
 
