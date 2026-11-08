@@ -3,45 +3,27 @@
 // the rotation rules, the channel send/receive paths) talks to this
 // adapter's interface, never to the wasm binding directly.
 //
-// THE CONTRACT FOR THE RUST WORKER. The wasm binding does not export
-// Megolm yet (vodozemac 0.11.1 has it in the crate; the binding in
-// `cicchetto/wasm/vodozemac-binding` needs `GroupSession` and
-// `InboundGroupSession` added, same conventions as the Olm half in
-// `lib.rs`: snake_case methods, keys and ciphertexts as standard base64
-// unpadded, pickles as JSON strings from `serde_json`, `from_pickle` /
-// `pickle` / `free`. The surface this adapter assumes:
+// THE WASM SURFACE (landed with the Rust worker's slice, commit
+// 1fc88a079 on e2e-channel-client-wasm). The binding exports
+// `GroupSession` and `InboundGroupSession` from vodozemac 0.11.1, same
+// conventions as the Olm half in `lib.rs`: snake_case methods, keys and
+// ciphertexts as standard base64 unpadded, pickles as JSON strings from
+// `serde_json`, `from_pickle` / `pickle` / `free`. The one shape that
+// matters: `encrypt` returns a `GroupEncrypted` carrying the chain index
+// AND the ciphertext together (`message_index`, `body` — readonly
+// getters), so the v3 payload's `i` and `body` come from one object and
+// never from a pre-read index; `decrypt` returns a `GroupDecrypted` the
+// same way (`plaintext`, `message_index`). If the Rust side's API ever
+// changes shape, ONLY this file changes: the interface below is what the
+// rest of the client is written against, and `megolm.ts` is the
+// reconciliation point.
 //
-//   GroupSession::new() -> GroupSession
-//   GroupSession::from_pickle(pickle: string) -> GroupSession
-//   GroupSession::session_id() -> string        (base64 of the signing key)
-//   GroupSession::message_index() -> number
-//   GroupSession::encrypt(plaintext: Uint8Array) -> string
-//       (the MegolmMessage, standard base64 unpadded)
-//   GroupSession::session_key() -> string       (base64 SessionKey)
-//   GroupSession::pickle() -> string
-//   InboundGroupSession::new(session_key: string) -> InboundGroupSession
-//   InboundGroupSession::from_pickle(pickle: string) -> InboundGroupSession
-//   InboundGroupSession::session_id() -> string
-//   InboundGroupSession::decrypt(ciphertext: string) -> DecryptedMessage
-//       ({ plaintext: Uint8Array, message_index: number })
-//   InboundGroupSession::pickle() -> string
-//
-// The names above are the vodozemac crate's (`GroupSession::session_key`,
-// `InboundGroupSession::new(&SessionKey, ...)`, `decrypt` returning a
-// `DecryptedMessage` with `plaintext` and `message_index`), spelled the
-// way this repo's binding spells the Olm half. If the Rust worker's final
-// API differs in names, shapes, or the encrypt/decrypt spelling (bytes
-// instead of base64 strings), ONLY this file changes: the interface below
-// is what the rest of the client is written against, and `megolm.ts` is
-// the reconciliation point.
-//
-// Until the exports land, `loadMegolm` throws `MegolmUnavailableError`
-// and channel E2E degrades to undecryptable (the DM path's behaviour for
-// a message that cannot be read); nothing here imports the vendored
-// binding's `.d.ts` Megolm types, because they do not exist yet.
+// When the binding predates the exports, `loadMegolm` throws
+// `MegolmUnavailableError` and channel E2E degrades to undecryptable
+// (the DM path's behaviour for a message that cannot be read).
 
 import { loadOlm } from "./olm";
-import { base64Unpadded, unbase64 } from "./wire";
+import { unbase64 } from "./wire";
 
 /** The binding has no Megolm exports yet, or refused to load them. */
 export class MegolmUnavailableError extends Error {}
@@ -56,8 +38,13 @@ export interface MegolmOutboundSession {
   sessionId(): string;
   /** The chain index the next `encrypt` writes. */
   messageIndex(): number;
-  /** The MegolmMessage for `plaintext`, standard base64 unpadded. */
-  encrypt(plaintext: Uint8Array): string;
+  /**
+   * The MegolmMessage for `plaintext`, and the chain index it was
+   * encrypted at: the `body` and the `i` of the v3 payload, from the
+   * same object, so no pre-read index can drift from the ciphertext.
+   * The body is standard base64 unpadded.
+   */
+  encrypt(plaintext: Uint8Array): { index: number; body: string };
   /** The session key to distribute (base64): what a peer imports. */
   sessionKey(): string;
   /** The whole session, ratchet included, as a string. Store it sealed. */
@@ -96,12 +83,18 @@ export interface MegolmAdapter {
   restoreInbound(pickle: string): MegolmInboundSession;
 }
 
-// --- the assumed wasm surface (see the header) ---------------------------
+// --- the wasm surface (see the header) ----------------------------------
+
+/** What `GroupSession::encrypt` returns: index and ciphertext together. */
+type WasmGroupEncrypted = {
+  body: string | (() => string);
+  message_index: number | (() => number);
+};
 
 type WasmGroupSession = {
   session_id(): string;
   message_index(): number;
-  encrypt(plaintext: Uint8Array): string | Uint8Array;
+  encrypt(plaintext: Uint8Array): WasmGroupEncrypted;
   session_key(): string;
   pickle(): string;
   free(): void;
@@ -198,7 +191,7 @@ export function megolmFromBinding(binding: unknown): MegolmAdapter {
     messageIndex: () => wasm.message_index(),
     encrypt: (plaintext) => {
       const out = wasm.encrypt(plaintext);
-      return typeof out === "string" ? out : base64Unpadded(out);
+      return { index: asValue(out.message_index), body: asValue(out.body) };
     },
     sessionKey: () => wasm.session_key(),
     pickle: () => wasm.pickle(),
