@@ -485,6 +485,13 @@ defmodule Grappa.Session.Wire do
   """
   @type members_index_payload :: %{members: [member()]}
 
+  @typedoc """
+  REST envelope returned by `GrappaWeb.CommonChannelsJSON.index/1`
+  (issue 2449): the sorted channels the caller shares with the queried
+  nick, seeded channels only.
+  """
+  @type common_channels_index_payload :: %{channels: [String.t()]}
+
   @type joined_payload :: %{
           kind: :joined,
           network: String.t(),
@@ -1536,6 +1543,19 @@ defmodule Grappa.Session.Wire do
   @spec members_index([Grappa.Session.member()]) :: members_index_payload()
   def members_index(members) when is_list(members) do
     %{members: Enum.map(members, &member/1)}
+  end
+
+  @doc """
+  Wraps the sorted channels-in-common list in the canonical REST
+  envelope `%{channels: [...]}` (issue 2449). The controller
+  (`GrappaWeb.CommonChannelsJSON.index/1`) delegates to this verb so
+  the envelope is a generated wire shape — cicchetto narrows it with
+  `narrowCommonChannelsIndexResponse/1` — instead of a second
+  hand-written mirror.
+  """
+  @spec common_channels_index([String.t()]) :: common_channels_index_payload()
+  def common_channels_index(channels) when is_list(channels) do
+    %{channels: channels}
   end
 
   @doc """
