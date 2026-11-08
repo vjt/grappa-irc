@@ -661,6 +661,479 @@ export class EstablishedSas {
 if (Symbol.dispose) EstablishedSas.prototype[Symbol.dispose] = EstablishedSas.prototype.free;
 
 /**
+ * What `InboundGroupSession::decrypt` returns: the plaintext and the chain
+ * index it was encrypted at.
+ */
+export class GroupDecrypted {
+    static __wrap(ptr) {
+        const obj = Object.create(GroupDecrypted.prototype);
+        obj.__wbg_ptr = ptr;
+        GroupDecryptedFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        GroupDecryptedFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_groupdecrypted_free(ptr, 0);
+    }
+    /**
+     * The chain index the message was encrypted at: the `i` of the v3
+     * group payload. Compare it with `first_known_index` to tell a replay
+     * from a new message.
+     * @returns {number}
+     */
+    get message_index() {
+        const ret = wasm.groupdecrypted_message_index(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * The decrypted plaintext.
+     * @returns {Uint8Array}
+     */
+    get plaintext() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.groupdecrypted_plaintext(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v1 = getArrayU8FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+}
+if (Symbol.dispose) GroupDecrypted.prototype[Symbol.dispose] = GroupDecrypted.prototype.free;
+
+/**
+ * What `GroupSession::encrypt` returns: the chain index and the ciphertext.
+ */
+export class GroupEncrypted {
+    static __wrap(ptr) {
+        const obj = Object.create(GroupEncrypted.prototype);
+        obj.__wbg_ptr = ptr;
+        GroupEncryptedFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        GroupEncryptedFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_groupencrypted_free(ptr, 0);
+    }
+    /**
+     * The ciphertext, base64 standard unpadded: the `body` of the v3
+     * group payload.
+     * @returns {string}
+     */
+    get body() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.groupencrypted_body(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * The chain index this message was encrypted at: the `i` of the v3
+     * group payload.
+     * @returns {number}
+     */
+    get message_index() {
+        const ret = wasm.groupencrypted_message_index(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+}
+if (Symbol.dispose) GroupEncrypted.prototype[Symbol.dispose] = GroupEncrypted.prototype.free;
+
+/**
+ * An outbound Megolm group session: one sender's key for one channel
+ * epoch. It holds the signing key pair, so it lives on the device that
+ * sends, never on a receiver.
+ */
+export class GroupSession {
+    static __wrap(ptr) {
+        const obj = Object.create(GroupSession.prototype);
+        obj.__wbg_ptr = ptr;
+        GroupSessionFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        GroupSessionFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_groupsession_free(ptr, 0);
+    }
+    /**
+     * Encrypts `plaintext` under the session. The returned message carries
+     * the chain index it was encrypted at.
+     * @param {Uint8Array} plaintext
+     * @returns {GroupEncrypted}
+     */
+    encrypt(plaintext) {
+        const ptr0 = passArray8ToWasm0(plaintext, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.groupsession_encrypt(this.__wbg_ptr, ptr0, len0);
+        return GroupEncrypted.__wrap(ret);
+    }
+    /**
+     * Restores a session from what `pickle` returned.
+     * @param {string} pickle
+     * @returns {GroupSession}
+     */
+    static from_pickle(pickle) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(pickle, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.groupsession_from_pickle(retptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return GroupSession.__wrap(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * The chain index the next `encrypt` will use.
+     * @returns {number}
+     */
+    message_index() {
+        const ret = wasm.groupsession_message_index(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * A new session with a fresh ratchet and signing key pair.
+     */
+    constructor() {
+        const ret = wasm.groupsession_new();
+        this.__wbg_ptr = ret;
+        GroupSessionFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * The whole session, signing key included, as JSON. The caller
+     * encrypts it before it is stored anywhere.
+     * @returns {string}
+     */
+    pickle() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.groupsession_pickle(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * The session id: the Ed25519 public key of this session, base64
+     * standard unpadded. This is the `sid` of the v3 group payload and of
+     * the `gkey` that distributes the key.
+     * @returns {string}
+     */
+    session_id() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.groupsession_session_id(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * The session key to send to the other members, inside the pairwise
+     * Olm DM and never in the clear: the signed session key, base64
+     * standard unpadded. A receiver builds its `InboundGroupSession`
+     * from it.
+     * @returns {string}
+     */
+    session_key() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.groupsession_session_key(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred1_0, deferred1_1, 1);
+        }
+    }
+}
+if (Symbol.dispose) GroupSession.prototype[Symbol.dispose] = GroupSession.prototype.free;
+
+/**
+ * An inbound Megolm group session: one sender's key, held by a receiver.
+ * It has the public key only, so it can decrypt and never encrypt.
+ */
+export class InboundGroupSession {
+    static __wrap(ptr) {
+        const obj = Object.create(InboundGroupSession.prototype);
+        obj.__wbg_ptr = ptr;
+        InboundGroupSessionFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        InboundGroupSessionFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_inboundgroupsession_free(ptr, 0);
+    }
+    /**
+     * Permanently forgets every message key below `index`: messages
+     * encrypted before it can no longer be decrypted. False when the
+     * session is already past `index`.
+     * @param {number} index
+     * @returns {boolean}
+     */
+    advance_to(index) {
+        const ret = wasm.inboundgroupsession_advance_to(this.__wbg_ptr, index);
+        return ret !== 0;
+    }
+    /**
+     * Decrypts a group message: the `body` of the v3 group payload,
+     * base64 standard unpadded (padding is tolerated). The returned
+     * message carries the chain index it was encrypted at.
+     * @param {string} message
+     * @returns {GroupDecrypted}
+     */
+    decrypt(message) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(message, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.inboundgroupsession_decrypt(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return GroupDecrypted.__wrap(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * The unsigned key for this session at `index`, base64 standard
+     * unpadded: hand it to a member that joined late, or to your other
+     * devices. `undefined` when the session has ratcheted past `index`.
+     * @param {number} index
+     * @returns {string | undefined}
+     */
+    export_at(index) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.inboundgroupsession_export_at(retptr, this.__wbg_ptr, index);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            let v1;
+            if (r0 !== 0) {
+                v1 = getStringFromWasm0(r0, r1);
+                wasm.__wbindgen_export4(r0, r1 * 1, 1);
+            }
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * The unsigned key at the first known index: the widest key this
+     * session can still hand out.
+     * @returns {string}
+     */
+    export_at_first_known_index() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.inboundgroupsession_export_at_first_known_index(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * The lowest chain index this session can still decrypt. Messages
+     * encrypted below it are unreadable: the key was handed out late, or
+     * the session was advanced past them.
+     * @returns {number}
+     */
+    first_known_index() {
+        const ret = wasm.inboundgroupsession_first_known_index(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Restores a session from what `pickle` returned.
+     * @param {string} pickle
+     * @returns {InboundGroupSession}
+     */
+    static from_pickle(pickle) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(pickle, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.inboundgroupsession_from_pickle(retptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return InboundGroupSession.__wrap(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Builds the session from an unsigned exported key (`export_at`,
+     * `export_at_first_known_index`). There is no signature to check, so
+     * only take one from a source you already trust: a member you
+     * verified, or your own store.
+     * @param {string} exported_key
+     * @returns {InboundGroupSession}
+     */
+    static import(exported_key) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(exported_key, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.inboundgroupsession_import(retptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return InboundGroupSession.__wrap(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Builds the session from the signed session key the sender shared
+     * (`GroupSession::session_key`): the signature is verified on decode,
+     * so a key that is not this session's (`sid`) fails here.
+     * @param {string} session_key
+     */
+    constructor(session_key) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(session_key, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.inboundgroupsession_new(retptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            this.__wbg_ptr = r0;
+            InboundGroupSessionFinalization.register(this, this.__wbg_ptr, this);
+            return this;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * The whole session, ratchet included, as JSON. The caller encrypts
+     * it before it is stored anywhere.
+     * @returns {string}
+     */
+    pickle() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.inboundgroupsession_pickle(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * The session id: the Ed25519 public key of the sender's session,
+     * base64 standard unpadded. This is the `sid` of the v3 group payload.
+     * @returns {string}
+     */
+    session_id() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.inboundgroupsession_session_id(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export4(deferred1_0, deferred1_1, 1);
+        }
+    }
+}
+if (Symbol.dispose) InboundGroupSession.prototype[Symbol.dispose] = InboundGroupSession.prototype.free;
+
+/**
  * What `Account::create_inbound_session` returns: the session, taken once,
  * and the plaintext of the message that opened it.
  */
@@ -1112,6 +1585,18 @@ const EstablishedEciesFinalization = (typeof FinalizationRegistry === 'undefined
 const EstablishedSasFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_establishedsas_free(ptr, 1));
+const GroupDecryptedFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_groupdecrypted_free(ptr, 1));
+const GroupEncryptedFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_groupencrypted_free(ptr, 1));
+const GroupSessionFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_groupsession_free(ptr, 1));
+const InboundGroupSessionFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_inboundgroupsession_free(ptr, 1));
 const InboundSessionFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_inboundsession_free(ptr, 1));
