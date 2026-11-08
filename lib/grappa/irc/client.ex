@@ -1028,15 +1028,16 @@ defmodule Grappa.IRC.Client do
   caller-supplied nick. The caller (`Grappa.Session.Server`) passes
   its `state.nick` as the nick arg so this helper stays a pure
   byte-encoding boundary with no Session-state dependency. Validates
-  nick syntax + rejects CR/LF/NUL in modes with
-  `{:error, :invalid_line}`.
+  the nick with `wire_nick?/1` — it is our nick as the ircd set it, a
+  collision UID included (issue 2599) — and rejects CR/LF/NUL in modes,
+  with `{:error, :invalid_line}`.
 
   Consolidates the raw `send_line` arm previously open-coded in
   `Grappa.Session.Server`'s `:send_umode` handle_call (resp-A4 close).
   """
   @spec send_umode(pid(), String.t(), String.t()) :: send_result()
   def send_umode(client, nick, modes) do
-    if Identifier.valid_nick?(nick) and Identifier.safe_line_token?(modes) do
+    if Identifier.wire_nick?(nick) and Identifier.safe_line_token?(modes) do
       send_line(client, "MODE #{nick} #{modes}\r\n")
     else
       reject_invalid_line(:umode)
@@ -1052,13 +1053,14 @@ defmodule Grappa.IRC.Client do
   `Session.Server` issues this query in the 001 RPL_WELCOME arm (#229)
   to make umodes visible from the moment of connect.
 
-  Validates the nick syntax with `{:error, :invalid_line}` on rejection.
+  Validates the nick with `wire_nick?/1` (our nick as the ircd set it,
+  issue 2599), `{:error, :invalid_line}` on rejection.
   Umode twin of `send_channel_modes/2` (bare `MODE #chan`) — the
   per-user analogue of #216's channel-mode-on-join query.
   """
   @spec send_umode_query(pid(), String.t()) :: send_result()
   def send_umode_query(client, nick) do
-    if Identifier.valid_nick?(nick),
+    if Identifier.wire_nick?(nick),
       do: send_line(client, "MODE #{nick}\r\n"),
       else: reject_invalid_line(:umode_query)
   end

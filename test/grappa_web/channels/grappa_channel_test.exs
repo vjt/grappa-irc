@@ -3722,6 +3722,23 @@ defmodule GrappaWeb.GrappaChannelTest do
       end
     end
 
+    # Our OWN nick as the ircd set it is the server's word too: a collision
+    # renames us to our UID, and `/umode` must still address it.
+    test "umode addresses our nick after the ircd renames us to a UID", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      IRCServer.feed(irc_server, ":grappa-snap!u@h NICK :0AAAAAAAB\r\n")
+      assert_push("event", %{kind: :own_nick_changed, nick: "0AAAAAAAB"})
+
+      ref = push(socket, "umode", %{"network_id" => network.id, "modes" => "+i"})
+      assert_reply(ref, :ok)
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(irc_server, &(&1 == "MODE 0AAAAAAAB +i\r\n"), 1_000)
+    end
+
     # The acceptance is "/whois foo~ works", not "the command leaves": its
     # replies must land where a portable nick's do. 616 is a leg no typed
     # handler knows, so it rides the `whois_leg?` correlation and would
