@@ -3666,6 +3666,103 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
   end
 
+  # issue 2599 — a verb naming SOMEBODY ELSE takes the nick the upstream
+  # allows, not the portable charset we register with: IRCnet's `foo~` and
+  # `~foo`, and the UID a collision renames a client to.
+  describe "a nick the upstream allows reaches it (issue 2599)" do
+    setup do
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network} = setup_user_and_network_with_session(port)
+      welcome_session_on_channel(irc_server, "#snap")
+
+      {:ok, _, socket} =
+        user.name
+        |> build_socket()
+        |> subscribe_and_join(Topic.user(user.name), %{})
+
+      %{irc_server: irc_server, socket: socket, network: network}
+    end
+
+    test "every verb that names a nick puts it on the wire", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      for nick <- ["foo~", "~foo", "0AAAAAAAB"] do
+        id = network.id
+
+        for {verb, payload, wire} <- [
+              {"op", %{"channel" => "#snap", "nicks" => [nick]}, "MODE #snap +o #{nick}\r\n"},
+              {"deop", %{"channel" => "#snap", "nicks" => [nick]}, "MODE #snap -o #{nick}\r\n"},
+              {"voice", %{"channel" => "#snap", "nicks" => [nick]}, "MODE #snap +v #{nick}\r\n"},
+              {"devoice", %{"channel" => "#snap", "nicks" => [nick]}, "MODE #snap -v #{nick}\r\n"},
+              {"kick", %{"channel" => "#snap", "nick" => nick, "reason" => "bye"}, "KICK #snap #{nick} :bye\r\n"},
+              {"invite", %{"channel" => "#snap", "nick" => nick}, "INVITE #{nick} #snap\r\n"},
+              {"whois", %{"nick" => nick}, "WHOIS #{nick}\r\n"},
+              {"whois", %{"nick" => nick, "server" => "irc.test.org"}, "WHOIS irc.test.org #{nick}\r\n"},
+              {"whowas", %{"nick" => nick}, "WHOWAS #{nick}\r\n"}
+            ] do
+          ref = push(socket, verb, Map.put(payload, "network_id", id))
+          assert_reply(ref, :ok)
+
+          assert {:ok, ^wire} = IRCServer.wait_for_line(irc_server, &(&1 == wire), 1_000),
+                 "#{verb} #{inspect(nick)} never reached the wire"
+        end
+
+        open_ref = push(socket, "open_query_window", %{"network_id" => id, "target_nick" => nick})
+        assert_reply(open_ref, :ok)
+
+        close_ref = push(socket, "close_query_window", %{"network_id" => id, "target_nick" => nick})
+        assert_reply(close_ref, :ok)
+
+        # Nothing cached for this nick: the lookup answers, the shape gate
+        # no longer refuses it.
+        lookup_ref = push(socket, "resolve_userhost", %{"network_id" => id, "nick" => nick})
+        assert_reply(lookup_ref, :error, %{error: "not_cached"})
+      end
+    end
+
+    # The acceptance is "/whois foo~ works", not "the command leaves": its
+    # replies must land where a portable nick's do. 616 is a leg no typed
+    # handler knows, so it rides the `whois_leg?` correlation and would
+    # otherwise reach the param-scan classifier.
+    test "a /whois for foo~ folds its replies into the same bundle a portable nick gets", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      portable = whois_round_trip(irc_server, socket, network, "alice")
+      wire = whois_round_trip(irc_server, socket, network, "foo~")
+
+      assert wire.target == "foo~"
+      assert wire.user == "user"
+      assert wire.server == "irc.test.org"
+      assert wire.idle_seconds == 42
+      assert length(wire.extra_lines) == 1
+      assert Map.drop(wire, [:target, :extra_lines]) == Map.drop(portable, [:target, :extra_lines])
+      assert length(wire.extra_lines) == length(portable.extra_lines)
+    end
+  end
+
+  defp whois_round_trip(irc_server, socket, network, nick) do
+    ref = push(socket, "whois", %{"network_id" => network.id, "nick" => nick})
+    assert_reply(ref, :ok)
+    {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "WHOIS #{nick}\r\n"), 1_000)
+
+    for line <- [
+          "311 grappa-snap #{nick} user host * :Real Name",
+          "312 grappa-snap #{nick} irc.test.org :Test server",
+          "317 grappa-snap #{nick} 42 1700000000 :seconds idle, signon time",
+          "616 grappa-snap #{nick} :an unhandled leg",
+          "318 grappa-snap #{nick} :End of /WHOIS list."
+        ] do
+      IRCServer.feed(irc_server, ":irc.test.org #{line}\r\n")
+    end
+
+    assert_push("event", %{kind: :whois_bundle, target: ^nick} = bundle)
+    bundle
+  end
+
   # #182 — foreground-suppression: the page reports its PWA visibility over
   # the user-level channel; the handler forwards it to WSPresence keyed by
   # the SAME transport_pid UserSocket.connect registers.
