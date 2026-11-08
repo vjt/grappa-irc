@@ -13,24 +13,24 @@ import {
   dropInboundFrom,
   encryptChannel,
   exportOutboundKey,
-  gkeyInner,
   GROUP_ROTATION_INTERVAL_MS,
+  type GroupSessionsState,
+  gkeyInner,
   importInbound,
   inboundFor,
   newGroupSessionsState,
   outboundFor,
   rotateOutboundForLeave,
   rotationDue,
-  type GroupSessionsState,
 } from "../lib/e2e/groupSessions";
 import type { MegolmAdapter } from "../lib/e2e/megolm";
 import {
   decodePayload,
   encodePayload,
   GROUP_WIRE_VERSION,
+  PayloadError,
   parseChannelPayload,
   parseGkeyInner,
-  PayloadError,
 } from "../lib/e2e/wire";
 import { fakeMegolmAdapter } from "./helpers/e2eMegolmFake";
 
@@ -85,9 +85,7 @@ describe("wire v3 shapes", () => {
     const inner = { t: "gkey", ch: "#grappa", sid: "sid-1", key: "a2V5" };
     expect(parseGkeyInner(inner)).toEqual(inner);
     expect(() => parseGkeyInner({ ...inner, t: "text" })).toThrow(PayloadError);
-    expect(() => parseGkeyInner({ t: "gkey", ch: "#grappa", sid: "sid-1" })).toThrow(
-      PayloadError,
-    );
+    expect(() => parseGkeyInner({ t: "gkey", ch: "#grappa", sid: "sid-1" })).toThrow(PayloadError);
     expect(() => parseGkeyInner({ ...inner, key: "" })).toThrow(PayloadError);
   });
 });
@@ -227,7 +225,7 @@ describe("group session store", () => {
     bobImports(bobGroups, bob, sid, key);
     dropInboundFrom(bobGroups, CHAN, "alice");
     expect(inboundFor(bobGroups, CHAN, "alice", sid)).toBeUndefined();
-    bobImports(bobGroups, bob, sid, key, NOW);
+    bobImports(bobGroups, bob, sid, key);
     dropChannel(bobGroups, CHAN);
     expect(inboundFor(bobGroups, CHAN, "alice", sid)).toBeUndefined();
     expect(outboundFor(bobGroups, CHAN)).toBeUndefined();
@@ -320,8 +318,12 @@ describe("periodic rotation", () => {
   it("builds nothing without an epoch, or when the epoch never spoke", () => {
     const groups = newGroupSessionsState();
     const adapter = fakeMegolmAdapter();
-    expect(buildPeriodicRotation(groups, adapter, CHAN, NOW + GROUP_ROTATION_INTERVAL_MS)).toBeNull();
+    expect(
+      buildPeriodicRotation(groups, adapter, CHAN, NOW + GROUP_ROTATION_INTERVAL_MS),
+    ).toBeNull();
     createOutbound(groups, adapter, CHAN, NOW);
-    expect(buildPeriodicRotation(groups, adapter, CHAN, NOW + GROUP_ROTATION_INTERVAL_MS)).toBeNull();
+    expect(
+      buildPeriodicRotation(groups, adapter, CHAN, NOW + GROUP_ROTATION_INTERVAL_MS),
+    ).toBeNull();
   });
 });

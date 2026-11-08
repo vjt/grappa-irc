@@ -36,17 +36,17 @@
 import type { MegolmAdapter, MegolmInboundSession, MegolmOutboundSession } from "./megolm";
 import { megolmBytes } from "./megolm";
 import {
+  type ChannelPayload,
   decodePayload,
   encodePayload,
   fold,
+  type GkeyInner,
   GROUP_WIRE_VERSION,
+  type GrotateInner,
+  PayloadError,
   parseChannelPayload,
   parseChannelTextInner,
   parseGrotateInner,
-  PayloadError,
-  type ChannelPayload,
-  type GkeyInner,
-  type GrotateInner,
 } from "./wire";
 
 /** A periodic rotation is due once an epoch is this old (ms): daily. */
@@ -112,11 +112,7 @@ export function inboundFor(
 }
 
 /** Whether a periodic rotation of `channel`'s epoch is due. */
-export function rotationDue(
-  state: GroupSessionsState,
-  channel: string,
-  now: number,
-): boolean {
+export function rotationDue(state: GroupSessionsState, channel: string, now: number): boolean {
   const held = outboundFor(state, channel);
   if (held === undefined) return false;
   // An epoch that never spoke has nothing to protect: rotating it only
@@ -182,9 +178,16 @@ function storeInbound(
   session: MegolmInboundSession,
   receivedAt: number,
 ): StoredGroupInbound {
-  const key = fold(channel);
-  const bySender = (state.inbound[key] ??= {});
-  const bySid = (bySender[fold(sender)] ??= {});
+  let bySender = state.inbound[fold(channel)];
+  if (bySender === undefined) {
+    bySender = {};
+    state.inbound[fold(channel)] = bySender;
+  }
+  let bySid = bySender[fold(sender)];
+  if (bySid === undefined) {
+    bySid = {};
+    bySender[fold(sender)] = bySid;
+  }
   const stored: StoredGroupInbound = {
     sid: session.sessionId(),
     pickle: session.pickle(),
@@ -261,7 +264,11 @@ export function importInbound(
     if (session.sessionId() !== sid) {
       throw new Error(`a gkey for ${sid} opened ${session.sessionId()}`);
     }
-    const bySender = (state.inbound[fold(channel)] ??= {});
+    let bySender = state.inbound[fold(channel)];
+    if (bySender === undefined) {
+      bySender = {};
+      state.inbound[fold(channel)] = bySender;
+    }
     bySender[fold(sender)] = {};
     storeInbound(state, channel, sender, session, now);
     return "imported";
@@ -271,11 +278,7 @@ export function importInbound(
 }
 
 /** Drops every inbound session `sender` holds on `channel`: they left. */
-export function dropInboundFrom(
-  state: GroupSessionsState,
-  channel: string,
-  sender: string,
-): void {
+export function dropInboundFrom(state: GroupSessionsState, channel: string, sender: string): void {
   const bySender = state.inbound[fold(channel)];
   if (bySender === undefined) return;
   delete bySender[fold(sender)];
@@ -340,12 +343,7 @@ export type ChannelDecrypt =
   | { ok: true; kind: "rotated"; sid: string; index: number; newSid: string }
   | {
       ok: false;
-      reason:
-        | "bad-payload"
-        | "channel-mismatch"
-        | "no-session"
-        | "decryption-failed"
-        | "bad-inner";
+      reason: "bad-payload" | "channel-mismatch" | "no-session" | "decryption-failed" | "bad-inner";
       sid: string | null;
     };
 

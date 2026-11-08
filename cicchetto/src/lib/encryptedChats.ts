@@ -78,13 +78,13 @@ import { type OrderScope, sendLog, subjectKey } from "./e2e/orders";
 import type { SasStep, SasView } from "./e2e/sas";
 import { fold } from "./e2e/wire";
 import { identityScopedStore } from "./identityScopedStore";
-import { onPresenceDelta } from "./members";
 import {
   casemappingForNetwork,
   chantypesForNetwork,
   frameBudgetBaseForNetwork,
   isupportForNetwork,
 } from "./isupport";
+import { onPresenceDelta } from "./members";
 import { networkBySlug, networks, user } from "./networks";
 import { encryptedWindowName } from "./windowKinds";
 import type { SessionWireE2eDropReason } from "./wireTypes";

@@ -62,15 +62,15 @@ import {
   dropChannel,
   dropInboundFrom,
   encryptChannel,
+  type GroupSessionsState,
   gkeyInner,
   importInbound,
   outboundFor,
   rotateOutboundForLeave,
   rotationDue,
-  type GroupSessionsState,
 } from "./groupSessions";
 import type { MegolmAdapter } from "./megolm";
-import { fold, parseGkeyInner, PayloadError } from "./wire";
+import { fold, PayloadError, parseGkeyInner } from "./wire";
 
 /** The tag of a gkey DM's `Engine.send`: its rows never exist (`chatStore` no-ops an `out` alone). */
 export const GKEY_TAG = "gkey";

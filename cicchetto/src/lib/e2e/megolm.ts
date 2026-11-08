@@ -156,9 +156,7 @@ function needFn(obj: unknown, name: string, what: string): void {
 
 /** The `Uint8Array` of a value the binding hands back as bytes or base64 text. */
 function asBytes(value: Uint8Array | string): Uint8Array<ArrayBuffer> {
-  return typeof value === "string"
-    ? unbase64(value)
-    : (value as Uint8Array<ArrayBuffer>);
+  return typeof value === "string" ? unbase64(value) : (value as Uint8Array<ArrayBuffer>);
 }
 
 /** A property of a wasm-bindgen struct: a getter, or a method, either way. */

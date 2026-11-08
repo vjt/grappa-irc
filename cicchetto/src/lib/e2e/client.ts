@@ -81,6 +81,7 @@ import {
   type PinOutcome,
   type Result,
 } from "./engine";
+import { loadMegolm, type MegolmAdapter } from "./megolm";
 import type { Olm } from "./olm";
 import {
   type Challenge,
@@ -99,7 +100,6 @@ import {
   Verifier,
 } from "./sas";
 import { fold, type ReceiveVerb, type SendVerb } from "./wire";
-import { loadMegolm, type MegolmAdapter } from "./megolm";
 
 /** One whole message grappa holds for this device (the `e2e_message` wire shape, minus its envelope). */
 export type InboxMessage = {
@@ -227,9 +227,11 @@ export type Report = {
   /**
    * Channel E2E events this operation produced (decrypted channel
    * messages, undecryptable ones, keys received or sent, rotations).
-   * The channel window has no DM row to show them in yet (see
-   * `channelE2e.ts`): they are also fanned out to the live listeners
-   * there, and the caller that owns the channel UI reads them here.
+   * Present only when non-empty, so a Report with nothing of the sort
+   * keeps its old shape. The channel window has no DM row to show them
+   * in yet (see `channelE2e.ts`): they are also fanned out to the live
+   * listeners there, and the caller that owns the channel UI reads them
+   * here.
    */
   channelE2e?: ChannelE2eEvent[];
 };
@@ -280,12 +282,7 @@ export type E2eClient = {
    * (`channelE2e.sendChannel`): the key is distributed pairwise first
    * when the epoch is new. The channel message itself takes no DM row.
    */
-  sendChannel(
-    ctx: E2eContext,
-    channel: string,
-    body: string,
-    members: string[],
-  ): Promise<Report>;
+  sendChannel(ctx: E2eContext, channel: string, body: string, members: string[]): Promise<Report>;
   /**
    * A membership delta on `channel`: `joined` the nick that joined (or
    * null), `left` the nick that left, was kicked, or quit (or null),
@@ -610,7 +607,11 @@ export function e2eClient(
   // the DM door for a gkey — through the engine, tagged `GKEY_TAG`, so
   // it writes no chat row (`chatStore`: an `out` alone never creates a
   // chat, and no row with that tag exists to move).
-  function channelDeps(ctx: E2eContext, engine: Engine, adapter: MegolmAdapter | null): ChannelE2eDeps {
+  function channelDeps(
+    ctx: E2eContext,
+    engine: Engine,
+    adapter: MegolmAdapter | null,
+  ): ChannelE2eDeps {
     return {
       adapter,
       ownNick: ctx.ownNick,
@@ -906,9 +907,7 @@ export function e2eClient(
               // dropped silently, and acknowledged like a DM's, readable
               // or not. Our own channel messages are skipped by the
               // receiver (the send path showed them).
-              channelEvents.push(
-                ...receiveChannel(deps, state.groups, channel, m.from, m.payload),
-              );
+              channelEvents.push(...receiveChannel(deps, state.groups, channel, m.from, m.payload));
               state.inbox = m.id;
               continue;
             }
@@ -992,7 +991,7 @@ export function e2eClient(
           waiting: end.waiting,
           unknownDevice: unknownDevice || end.unknownDevice,
           listBehind: behind,
-          channelE2e: channelEvents,
+          ...(channelEvents.length > 0 ? { channelE2e: channelEvents } : {}),
         };
       }),
 
@@ -1035,7 +1034,10 @@ export function e2eClient(
         );
         emitChannelE2eEvents(res.events);
         const report = await finish(ctx, engine, verifier, persist, door, [], res.outbound);
-        return { ...report, channelE2e: res.events };
+        return {
+          ...report,
+          ...(res.events.length > 0 ? { channelE2e: res.events } : {}),
+        };
       }),
 
     channelMembersChanged: (ctx, channel, joined, left, members) =>
@@ -1055,7 +1057,10 @@ export function e2eClient(
         }
         emitChannelE2eEvents(res.events);
         const report = await finish(ctx, engine, verifier, persist, door, [], res.outbound);
-        return { ...report, channelE2e: res.events };
+        return {
+          ...report,
+          ...(res.events.length > 0 ? { channelE2e: res.events } : {}),
+        };
       }),
 
     tick: (ctx) =>
@@ -1083,7 +1088,10 @@ export function e2eClient(
           changesFor(ticked.events, now(), null),
           [...ticked.outbound, ...rotated.outbound],
         );
-        return { ...report, channelE2e: rotated.events };
+        return {
+          ...report,
+          ...(rotated.events.length > 0 ? { channelE2e: rotated.events } : {}),
+        };
       }),
 
     rekey: (ctx, nick) => step(ctx, (engine) => engine.rekey(nick)),
