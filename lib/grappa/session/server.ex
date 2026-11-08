@@ -2934,8 +2934,10 @@ defmodule Grappa.Session.Server do
     folded = fold_key(state, nick)
 
     channels =
-      EventRouter.channels_with_member(state.members, folded)
-      |> Enum.filter(&MapSet.member?(state.seeded_channels, &1))
+      Enum.filter(
+        EventRouter.channels_with_member(state.members, folded),
+        &MapSet.member?(state.seeded_channels, &1)
+      )
 
     {:reply, {:ok, channels}, state}
   end

@@ -53,5 +53,5 @@ defmodule GrappaWeb.CommonChannelsController do
     end
   end
 
-  def index(_conn, _params), do: {:error, :bad_request}
+  def index(_, _), do: {:error, :bad_request}
 end
