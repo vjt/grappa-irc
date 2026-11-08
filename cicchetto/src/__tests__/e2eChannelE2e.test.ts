@@ -20,13 +20,8 @@ import {
   rotateDue,
   sendChannel,
 } from "../lib/e2e/channelE2e";
-import {
-  inboundFor,
-  newGroupSessionsState,
-  outboundFor,
-  type GroupSessionsState,
-} from "../lib/e2e/groupSessions";
 import type { Outbound } from "../lib/e2e/engine";
+import { inboundFor, newGroupSessionsState, outboundFor } from "../lib/e2e/groupSessions";
 import type { MegolmAdapter } from "../lib/e2e/megolm";
 import { encodePayload } from "../lib/e2e/wire";
 import { fakeMegolmAdapter } from "./helpers/e2eMegolmFake";
@@ -106,13 +101,12 @@ describe("join", () => {
   it("the designated sender sends the epoch key to the newcomer only", () => {
     const { alice } = sides();
     // Alice is designated (first of alice/bob/carol, newcomer dave excluded).
-    const res = onMemberJoined(
-      alice.deps,
-      alice.groups,
-      CHAN,
+    const res = onMemberJoined(alice.deps, alice.groups, CHAN, "dave", [
+      "alice",
+      "bob",
+      "carol",
       "dave",
-      ["alice", "bob", "carol", "dave"],
-    );
+    ]);
     expect(res.events.some((e) => e.kind === "channel_rotated" && e.reason === "created")).toBe(
       true,
     );
@@ -206,9 +200,7 @@ describe("leave", () => {
     const channelMsg = aliceSent.outbound.find((o) => o.target === CHAN);
     expect(
       receiveChannel(s.bob.deps, s.bob.groups, CHAN, "alice", channelMsg?.payload ?? ""),
-    ).toEqual([
-      expect.objectContaining({ kind: "channel_received", body: "before" }),
-    ]);
+    ).toEqual([expect.objectContaining({ kind: "channel_received", body: "before" })]);
     const oldSid = outboundFor(s.alice.groups, CHAN)?.sid;
 
     // Carol leaves. Alice rotates and distributes to Bob only.
@@ -230,9 +222,9 @@ describe("leave", () => {
     expect(inboundFor(s.bob.groups, CHAN, "alice", oldSid ?? "")).toBeUndefined();
     const after = sendChannel(s.alice.deps, s.alice.groups, CHAN, "after", ["alice", "bob"]);
     const afterMsg = after.outbound.find((o) => o.target === CHAN);
-    expect(receiveChannel(s.bob.deps, s.bob.groups, CHAN, "alice", afterMsg?.payload ?? "")).toEqual([
-      expect.objectContaining({ kind: "channel_received", body: "after" }),
-    ]);
+    expect(
+      receiveChannel(s.bob.deps, s.bob.groups, CHAN, "alice", afterMsg?.payload ?? ""),
+    ).toEqual([expect.objectContaining({ kind: "channel_received", body: "after" })]);
   });
 
   it("our own leave drops the whole channel, and sends nothing", () => {

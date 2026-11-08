@@ -7,11 +7,7 @@
 // worker's slice; when they land, `loadMegolm` (not tested here — it
 // needs the real wasm) is the integration point.
 import { describe, expect, it } from "vitest";
-import {
-  MegolmUnavailableError,
-  megolmFromBinding,
-  type MegolmAdapter,
-} from "../lib/e2e/megolm";
+import { type MegolmAdapter, MegolmUnavailableError, megolmFromBinding } from "../lib/e2e/megolm";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -26,9 +22,7 @@ function fakeBinding() {
     btoa(String.fromCharCode(...encoder.encode(text))).replace(/=+$/, "");
   const fromB64 = (b64: string): string =>
     decoder.decode(
-      Uint8Array.from(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)), (c) =>
-        c.charCodeAt(0),
-      ),
+      Uint8Array.from(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)), (c) => c.charCodeAt(0)),
     );
 
   class GroupSession {
