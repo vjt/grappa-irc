@@ -2141,6 +2141,32 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Returns the sorted channels the session shares with `nick`, from the
+  live in-memory member lists — no NAMES/WHO round trip.
+
+  Issue 2449: the query window's "channels in common" line. Only
+  channels whose NAMES burst has landed (366 RPL_ENDOFNAMES) are
+  counted — a joined-but-pre-366 channel's member list is unknowable,
+  so it is excluded rather than reported as not-shared. An empty list
+  means the peer shares no (seeded) channel with the caller, or is not
+  on the network at all; the two are indistinguishable from this
+  session's view, and the caller must not read more into it.
+
+  The query nick is folded with the network casemapping server-side
+  (`fold_key/2` in `Session.Server`); the facade passes it RAW, the
+  way `list_members/3` passes the channel. Any nick is queryable: the
+  answer is the caller's own observed membership, not a lookup of the
+  peer. Returns `{:error, :no_session}` if no session is registered
+  for `(subject, network_id)`.
+  """
+  @spec common_channels(subject(), integer(), String.t()) ::
+          {:ok, [String.t()]} | {:error, :no_session}
+  def common_channels(subject, network_id, nick)
+      when is_subject(subject) and is_integer(network_id) and is_binary(nick) do
+    call_session(subject, network_id, {:common_channels, nick})
+  end
+
+  @doc """
   Returns the cached topic for `channel` in the given session.
 
   Serves from the in-memory topic cache — no upstream TOPIC query is

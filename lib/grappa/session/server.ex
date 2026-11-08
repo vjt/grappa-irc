@@ -2912,6 +2912,35 @@ defmodule Grappa.Session.Server do
     {:reply, {:ok, counts}, state}
   end
 
+  # Returns the sorted channels the session shares with `nick`, from the
+  # live `state.members` map — no NAMES/WHO round trip. Public via
+  # `Grappa.Session.common_channels/3`.
+  #
+  # Issue 2449: the query window's "channels in common" line. SEEDED
+  # channels only, for the same reason `list_members/3` returns
+  # `:uninitialized`: a joined-but-pre-366 channel's member list is
+  # unknowable, and counting a peer as absent there would read as "not
+  # in common" for a channel they are about to turn out to share. A
+  # channel the operator has PARTed is gone from `state.members` and so
+  # is absent here too.
+  #
+  # The query nick is folded with the network casemapping (`fold_key/2`,
+  # #537) because member keys are folded at ingress (`normalize_nick/2`
+  # in the EventRouter) — a bare `String.downcase` would miss the peer
+  # on a network whose casemapping folds the rfc1459 national chars.
+  # The answer is the caller's OWN view: any nick is queryable, because
+  # the membership it reports is what this session has observed.
+  def handle_call({:common_channels, nick}, _, state) when is_binary(nick) do
+    nick = fold_key(state, nick)
+
+    channels =
+      state.members
+      |> Map.filter(fn {channel, _} -> MapSet.member?(state.seeded_channels, channel) end)
+      |> EventRouter.channels_with_member(nick)
+
+    {:reply, {:ok, channels}, state}
+  end
+
   # Returns a snapshot of the topic cache for `channel`. Serves from cache —
   # no upstream query. Public via `Grappa.Session.get_topic/3`.
   def handle_call({:get_topic, channel}, _, state) when is_binary(channel) do
