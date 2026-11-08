@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 #
 # issue 2603 — the `integration` workflow's docker compose plugin cache must be
-# FOUND by the runs after the one that saved it, and must miss on a version
-# bump.
+# FOUND by the runs after the one that saved it, must be writable by any shard
+# that downloaded it, and must miss on a version bump.
 #
 # The cache exists because a 504 from github.com/docker/compose/releases turned
 # all four shards red at once (run 42465678187). Of its failure modes, the WRONG
@@ -78,6 +78,13 @@ declares_restore_keys() {
     grep -qE '^[[:space:]]+restore-keys:' <<<"$1"
 }
 
+# A save gated on ONE shard throws away whatever binary another shard won: on
+# run 42469926842 the only writer lost the download and the shard that got a
+# 200 was not allowed to save.
+gated_on_one_shard() {
+    grep -qE '^[[:space:]]+if:.*matrix\.shard' <<<"$1"
+}
+
 # A minimal workflow carrying the pair, for aiming the predicates at shapes
 # that must fail. $1 = restore key, $2 = restore path, $3 = save path,
 # $4 = extra restore line.
@@ -129,6 +136,17 @@ GOOD_PATH='~/.docker/cli-plugins/docker-compose'
     refute same_cache "$(restore_step "$wf")" "$(save_step "$wf")"
     wf="$(fixture "$GOOD_KEY" '|' '|' '')"
     refute same_cache "$(restore_step "$wf")" "$(save_step "$wf")"
+}
+
+@test "issue 2603 — any shard that downloaded the compose plugin may save it" {
+    local save
+    save="$(save_step "$WORKFLOW")"
+    [ "$(grep -c '^---$' <<<"$save")" -eq 1 ]
+
+    refute gated_on_one_shard "$save"
+
+    # The shape this replaced, as a control: the predicate must fire on it.
+    gated_on_one_shard "        if: matrix.shard == 1 && steps.compose-cache.outputs.cache-hit != 'true'"
 }
 
 @test "issue 2603 — a COMPOSE_VER bump misses the compose cache" {
