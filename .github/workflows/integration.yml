@@ -292,23 +292,30 @@ jobs:
         # an entry every run IS a miss — so on those runs the retry window is
         # not a fallback behind the cache, it is the only defence there is.
         #
-        # `--retry`, not `--retry-all-errors`: every failure measured so far
-        # is a 504, which is in curl's transient set (a 504-then-200 server was
-        # recovered from locally), whereas `--retry-all-errors` also retries a
-        # 404, so a mistyped COMPOSE_VER would go red minutes late for nothing.
+        # `--retry-all-errors`, because plain `--retry` was measured giving up
+        # with attempts to spare. curl retries only what its retrycheck()
+        # calls transient (8.18.0, the runner's version: timeouts, resolve
+        # failures, HTTP 408/429/500/502/503/504/522/524) and any other error
+        # ends the loop. On run 42472296717 shard 4 got 502, 502, then exit 56
+        # — "Connection died, tried 5 times before giving up", which is
+        # libcurl's own fresh-connect counter, not `--retry` — and stopped
+        # with 8 retries left. Reproduced locally (curl 8.7.1, give-up line
+        # in its verbose log): a reset on a reused connection, or a reset or
+        # close mid-body (56, 18), ends plain `--retry` at once, and
+        # `--retry-all-errors` recovers, truncating the partial file before
+        # it retries. The price: a 404 from a mistyped
+        # COMPOSE_VER is retried for the whole window before it goes red.
         #
         # 11 attempts, 30s apart: ~5 min of waiting, plus however long each
         # failing attempt takes to fail. The first cut was 6 attempts 10s
         # apart, and on this change's own first run (42469926842) it lost on 3
-        # of 4 shards. Each got its first 504 ~11s in, then five more, 10s
-        # apart, each answered in ~30ms — while shard 4 got a 200 from the
-        # same URL at 10:06:14Z, inside that same minute. Why the retries
-        # answered at once is NOT known; it is not connection reuse, since
-        # under `-f` curl closes and reconnects for every retry (measured
-        # locally). So the wider window buys spread, not a model: eleven
-        # samples of an outage that is intermittent per request, over five
-        # minutes instead of one. Five minutes is the price on a shard whose
-        # alternative is a red and a 15-min rerun, far under the 60-min cap.
+        # of 4 shards: each got its first 504 ~11s in, then five more, each
+        # answered in ~30ms, while shard 4 got a 200 from the same URL inside
+        # that same minute. Why those retries answered at once is NOT known.
+        # So the wider window buys spread, not a model: eleven samples of an
+        # outage that is intermittent per request, over five minutes instead
+        # of one — the price on a shard whose alternative is a red and a
+        # 15-min rerun, far under the 60-min cap.
         #
         # Two checks back the cache key. The key must end in the pin THIS
         # shell sees: were COMPOSE_VER moved into a step's env, the key would
@@ -330,7 +337,7 @@ jobs:
           esac
           if [ "$CACHE_HIT" != "true" ]; then
             mkdir -p ~/.docker/cli-plugins
-            curl -fsSL --retry 10 --retry-delay 30 \
+            curl -fsSL --retry 10 --retry-delay 30 --retry-all-errors \
               "https://github.com/docker/compose/releases/download/${COMPOSE_VER}/docker-compose-linux-x86_64" \
               -o ~/.docker/cli-plugins/docker-compose
           fi
