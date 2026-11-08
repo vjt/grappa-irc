@@ -54,6 +54,7 @@ import {
   noNicks,
   setNick,
 } from "./byNick";
+import { type FileInner, parseFileInner } from "./fileInner";
 import { idBlock } from "./keyBundle";
 import type { Olm } from "./olm";
 import type { SasRecord } from "./sas";
@@ -233,7 +234,7 @@ type Sent = {
  */
 type Sibling = { did: string; curve25519: string };
 /** The copy of a text this device sent `peer`, waiting since `at` for a sibling's keys. */
-type WaitingCopy = { peer: string; body: string; at: number };
+type WaitingCopy = { peer: string; body: string; at: number; file?: FileInner };
 
 export type E2eState = {
   v: 2;
@@ -342,6 +343,7 @@ export type DropReason =
   | "non-canonical-key"
   | "undecodable-inner"
   | "inner-without-type"
+  | "file-malformed"
   | "unknown-nack-ref"
   | "bad-list"
   | "listreq-rate-limited"
@@ -420,7 +422,7 @@ export type E2eEvent =
   | { kind: "keys_renewed"; nick: string }
   | { kind: "keys_unanswered"; nick: string }
   | { kind: "sibling_keys_needed"; did: string }
-  | { kind: "copied"; peer: string; body: string; device: string };
+  | { kind: "copied"; peer: string; body: string; device: string; file?: FileInner };
 
 /**
  * A payload for grappa's send door, `from` this device's did `to` a did or
@@ -1287,10 +1289,10 @@ export class Engine {
    * it yet, so once while anything does. Call it only once grappa took the
    * text: one it refused reaches no device.
    */
-  copy(peer: string, body: string): CopyResult {
+  copy(peer: string, body: string, file?: FileInner): CopyResult {
     const res: CopyResult = { ...emptyResult(), copies: [] };
     for (const [ed25519, sibling] of this.listedSiblings(res)) {
-      const pending = [...this.liveCopies(ed25519, res), { peer, body, at: this.now() }];
+      const pending = [...this.liveCopies(ed25519, res), { peer, body, at: this.now(), file }];
       if (this.sessionsOf(sibling.curve25519).length > 0) {
         this.sendCopies(ed25519, sibling, pending, res);
         continue;
@@ -1402,8 +1404,9 @@ export class Engine {
     res: CopyResult,
   ): void {
     delete this.state.copyq[ed25519];
-    for (const { peer, body } of pending) {
-      const inner: CopyInner = { t: "copy", peer, body };
+    for (const { peer, body, file } of pending) {
+      const inner: CopyInner =
+        file === undefined ? { t: "copy", peer, body } : { t: "copy", peer, body, file };
       const encrypted = this.encryptOn(sibling.curve25519, ed25519, JSON.stringify(inner));
       try {
         this.sessionsOf(sibling.curve25519)[0] = encrypted.session.pickle();
@@ -1572,7 +1575,17 @@ export class Engine {
       res.events.push({ kind: "dropped", nick: this.ownNick, reason: "sibling-not-a-copy" });
       return false;
     }
-    res.events.push({ kind: "copied", peer, body, device });
+    const file =
+      inner.file === undefined ? undefined : parseFileInner(inner.file as Record<string, unknown>);
+    if (file !== undefined && typeof file === "string") {
+      res.events.push({ kind: "dropped", nick: this.ownNick, reason: "sibling-not-a-copy" });
+      return false;
+    }
+    res.events.push(
+      file === undefined
+        ? { kind: "copied", peer, body, device }
+        : { kind: "copied", peer, body, device, file },
+    );
     return true;
   }
 
@@ -2161,6 +2174,16 @@ export class Engine {
     if (sender !== null && binding !== fb(this.olm, sender, this.account.ed25519_key())) {
       res.events.push({ kind: "dropped", nick, reason: "inner-key-mismatch" });
       return undefined;
+    }
+    // issue 2517 — an attachment's fields are the peer's word and are checked
+    // before anything is done with them. Whether its `url` is THIS grappa's
+    // is the client's to say (`onGrappaOrigin`: it needs the page's origin).
+    if (rest.t === "file") {
+      const file = parseFileInner(rest);
+      if (typeof file === "string") {
+        res.events.push({ kind: "dropped", nick, reason: "file-malformed", detail: file });
+        return undefined;
+      }
     }
     return rest;
   }

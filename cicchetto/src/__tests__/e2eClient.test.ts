@@ -15,10 +15,11 @@ import {
   SIBLINGS_TTL_MS,
 } from "../lib/e2e/client";
 import { KEYREQ_RETRY_MS, LIST_TAG, OUTQ_TTL_MS } from "../lib/e2e/engine";
+import type { FileInner } from "../lib/e2e/fileInner";
 import { syncIdentity } from "../lib/e2e/identity";
 import { ORDER_TAG, UNCONFIRMED } from "../lib/e2e/orders";
 import { SAS_TAG } from "../lib/e2e/sas";
-import { decodePayload } from "../lib/e2e/wire";
+import { base64Unpadded, decodePayload } from "../lib/e2e/wire";
 import {
   chat,
   inboxOf,
@@ -1688,5 +1689,86 @@ describe("e2eClient, copies to our other devices", () => {
       [`[e2e] dropped an own nack from our device ${first.did}: not a copy`],
     ]);
     expect(w.grappa.sends.filter((s) => s.by === "alice")).toEqual([]);
+  });
+});
+
+// issue 2517 — a file in an encrypted query: the key, the URL and the
+// metadata ride the same inner the texts do, and a peer's URL is held to
+// this grappa's own upload path before anything would be fetched from it.
+describe("encrypted attachments (issue 2517)", () => {
+  const SLUG = "abcdefghijklmnopqrstuvwxyz";
+  const b64 = (n: number): string => base64Unpadded(new Uint8Array(n).fill(3));
+  const attachment = (over: Partial<FileInner> = {}): FileInner => ({
+    t: "file",
+    url: `${location.origin}/uploads/${SLUG}`,
+    key: b64(32),
+    iv: b64(12),
+    sha256: b64(32),
+    name: "holiday.jpg",
+    mime: "image/jpeg",
+    size: 1234,
+    category: "image",
+    expires_at: "2099-01-01T00:00:00Z",
+    ...over,
+  });
+
+  it("reaches the peer as a row that carries it, and is written here too", async () => {
+    const { a, b } = await pair();
+    const file = attachment();
+
+    await a.client.sendFile(a.ctx, "bob", file);
+    expect(await rowsOf(a, "bob")).toEqual([
+      expect.objectContaining({ kind: "out", body: "", file }),
+    ]);
+
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+
+    expect(await rowsOf(b, "alice")).toEqual([
+      expect.objectContaining({ kind: "in", nick: "alice", body: "", file }),
+    ]);
+  });
+
+  it("is dropped when its url is not this grappa's own upload", async () => {
+    const { a, b } = await pair();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const file = attachment({ url: `https://evil.example/uploads/${SLUG}` });
+
+    await a.client.sendFile(a.ctx, "bob", file);
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+
+    expect(await rowsOf(b, "alice")).toEqual([]);
+    expect(warn.mock.calls).toEqual([
+      ["[e2e] dropped a file from alice: not this grappa's upload"],
+    ]);
+  });
+
+  it("is dropped when a field of it is malformed", async () => {
+    const { a, b } = await pair();
+    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const file = attachment({ size: -1 });
+
+    await a.client.sendFile(a.ctx, "bob", file);
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+
+    expect(await rowsOf(b, "alice")).toEqual([]);
+  });
+
+  it("is copied to the sender's other device", async () => {
+    const { w, a, b } = await pair();
+    const a2 = await w.pairDevice(a);
+    await b.client.send(b.ctx, "alice", "hi alice");
+    for (const side of [b, a, a2, b, a, a2]) await side.client.drain(side.ctx);
+
+    const file = attachment();
+    await a.client.sendFile(a.ctx, "Bob", file);
+    await a2.client.drain(a2.ctx);
+
+    expect(await rowsOf(a2, "bob")).toEqual([
+      expect.objectContaining({ kind: "in", body: "hi alice" }),
+      expect.objectContaining({ kind: "out", body: "", state: "sent", file }),
+    ]);
   });
 });
