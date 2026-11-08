@@ -16,7 +16,13 @@ defmodule Grappa.IRC.Identifier do
   subset (lowercase alphanumeric + dash + underscore) so they can be
   used in URLs, log lines, and PubSub topics without escaping.
 
-  `valid_*?/1` predicates accept any term and return `false` for
+  Nicks get TWO predicates, and which one a site needs is the question it
+  must answer first (issue 2599): `portable_nick?/1` for a nick WE ask to
+  register with, `wire_nick?/1` for a nick the upstream chose — somebody
+  else's, or our own as the ircd set it. Holding the second to the first's
+  charset refused `/whois foo~` on IRCnet, where `~` is a nick character.
+
+  The predicates here accept any term and return `false` for
   non-binaries — convenient at the changeset boundary where the input
   may be `nil` or another type.
 
@@ -172,16 +178,31 @@ defmodule Grappa.IRC.Identifier do
   # every door uses the same predicate.
   # #371: seenserv / statserv / debugserv are Azzurra (bahamut)
   # pseudo-services. Absent from the allowlist their inbound NOTICEs
-  # fell through `route_non_channel_notice_non_chanserv/2`'s `valid_nick?`
+  # fell through `route_non_channel_notice_non_chanserv/2`'s nick
   # arm and opened a stray per-nick query window instead of landing on
   # the synthetic `$server` channel. Added in lockstep with the cic-side
   # twin in `cicchetto/src/lib/servicesSender.ts`.
   @services ~w(nickserv chanserv memoserv operserv botserv hostserv helpserv rootserv seenserv statserv debugserv)
 
-  @doc "True iff the input is a syntactically valid IRC nickname."
-  @spec valid_nick?(term()) :: boolean()
-  def valid_nick?(s) when is_binary(s), do: Regex.match?(@nick_regex, s)
-  def valid_nick?(_), do: false
+  @doc """
+  True iff `s` is a nick WE may ask to register with — one every ircd we
+  know of takes, from a charset that is the intersection of theirs.
+
+  This is the narrow nick, and it is narrow on purpose (issue 2599). The
+  registration NICK goes out before 001, so before the 005 that would say
+  what this network allows; a nick the ircd refuses there earns a 432,
+  which `Grappa.IRC.AuthFSM` turns into a stop, and the supervised session
+  restarts into the same 432. bahamut (all of prod) refuses `~`, so `foo~`
+  here would loop. The 30-byte cap is a dependency too:
+  `Grappa.IRC.LineSplit` budgets the relayed prefix on our own nick never
+  registering longer.
+
+  A nick somebody ELSE holds, or our own as the ircd set it, is
+  `wire_nick?/1` — never this.
+  """
+  @spec portable_nick?(term()) :: boolean()
+  def portable_nick?(s) when is_binary(s), do: Regex.match?(@nick_regex, s)
+  def portable_nick?(_), do: false
 
   @doc """
   True iff `s` is a well-formed nick as the WIRE may carry it — somebody
@@ -195,7 +216,7 @@ defmodule Grappa.IRC.Identifier do
   a control or blank byte, `,`, `!`, `@`, `.`, `*`, `?`, or a channel sigil
   `#` `&` `+` anywhere; a leading `:` or `$` — plus anything past
   `max_wire_nick_bytes/0` bytes. It is NOT the rule for a nick WE ask to
-  register with; see `valid_nick?/1`.
+  register with; see `portable_nick?/1`.
   """
   @spec wire_nick?(term()) :: boolean()
   def wire_nick?(s) when is_binary(s) and byte_size(s) in 1..@max_wire_nick_bytes,
@@ -234,7 +255,8 @@ defmodule Grappa.IRC.Identifier do
   A sibling `@nick_suffix_regex` would be a second spelling of the tail
   class, and two spellings drift — the mistake `channel_sigil?/1`'s
   moduledoc warns about one paragraph at a time. This function cannot
-  drift from `valid_nick?/1`, because it IS `valid_nick?/1`.
+  drift from `portable_nick?/1`, because it IS `portable_nick?/1` — the
+  narrow nick, since the suffix lands on OUR nick.
 
   This is a SYNTAX predicate, not a fit check: whether `nick <> s` clears
   the network's advertised `NICKLEN` is a per-network question its caller
@@ -244,7 +266,7 @@ defmodule Grappa.IRC.Identifier do
   def valid_nick_suffix?(""), do: false
 
   def valid_nick_suffix?(s) when is_binary(s),
-    do: valid_nick?(@nick_suffix_probe_base <> s)
+    do: portable_nick?(@nick_suffix_probe_base <> s)
 
   def valid_nick_suffix?(_), do: false
 
@@ -283,7 +305,7 @@ defmodule Grappa.IRC.Identifier do
   # for a constant getter is the constant, and a supertype spec is a
   # `contract_supertype` error under this project's settings. Change the
   # constant and this spec fails loudly — as does `max_nick_length/0`'s
-  # test, which pins it against what `valid_nick?/1` actually accepts.
+  # test, which pins it against what `portable_nick?/1` actually accepts.
   @spec max_nick_length() :: 30
   def max_nick_length, do: @max_nick_length
 
@@ -466,7 +488,7 @@ defmodule Grappa.IRC.Identifier do
 
   ident is a free-form, NON-unique attribute (GH #152 design note) —
   this is a shape validator, never a uniqueness key. Sibling to
-  `valid_nick?/1` / `valid_channel?/1`; the single source of truth for
+  `portable_nick?/1` / `valid_channel?/1`; the single source of truth for
   the ident shape, applied at both changeset boundaries (Credential +
   Visitor).
   """
@@ -776,7 +798,7 @@ defmodule Grappa.IRC.Identifier do
   def valid_sender?(s) when is_binary(s) do
     s == Grappa.IRC.Message.anonymous_sender() or
       Regex.match?(@meta_sender_regex, s) or
-      valid_nick?(s) or valid_host?(s)
+      wire_nick?(s) or valid_host?(s)
   end
 
   def valid_sender?(_), do: false

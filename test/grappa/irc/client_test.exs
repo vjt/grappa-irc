@@ -2022,6 +2022,12 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_nick(client, "vjt\r\nQUIT")
     end
 
+    # issue 2599 — the nick asked for is OURS, so it stays the portable one
+    # while the verbs naming somebody else take `foo~`: bahamut refuses `~`.
+    test "send_nick/2 still refuses a nick only the wire allows", %{client: client} do
+      assert {:error, :invalid_line} = Client.send_nick(client, "foo~")
+    end
+
     # Bundle C (#20 follow-up)
     test "send_oper/3 rejects CRLF in either field", %{client: client} do
       assert {:error, :invalid_line} = Client.send_oper(client, "vjt\r\nKILL", "pw")

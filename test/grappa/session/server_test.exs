@@ -12638,7 +12638,7 @@ defmodule Grappa.Session.ServerTest do
 
       # The silent wire is NOT enough on its own, measured on this test's
       # predecessor: with the cap lifted the over-long target reached
-      # `Client.send_nick/2` and `Identifier.valid_nick?/1` refused it one
+      # `Client.send_nick/2` and `Identifier.portable_nick?/1` refused it one
       # layer lower, leaving the wire just as quiet. Two different refusals
       # paint the same picture from outside, so the assertion names which
       # one ran and pins both numbers it read — and the log line is a

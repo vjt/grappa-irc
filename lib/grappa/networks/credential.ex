@@ -429,11 +429,12 @@ defmodule Grappa.Networks.Credential do
     # #1580 this is a call into the one shared predicate, not a
     # hand-copy pointed at a sibling.
     |> Subject.validate_xor()
-    # A8: nick syntax + length is the same `Identifier.valid_nick?/1`
-    # rule that `Grappa.Scrollback.Message.changeset/2` and the IRC
-    # parser already use — single regex, single source. The local
-    # `@nick_format` + `validate_length(:nick, ...)` pair was retired
-    # in favor of Identifier's RFC-aligned 30-char cap.
+    # A8: nick syntax + length is `Identifier.portable_nick?/1` — single
+    # regex, single source. The local `@nick_format` +
+    # `validate_length(:nick, ...)` pair was retired in favor of
+    # Identifier's RFC-aligned 30-char cap. The NARROW nick, because this
+    # is the nick we REGISTER with (issue 2599): a 432 before 001
+    # restart-loops the session.
     |> validate_change(:nick, &Identity.validate_nick/2)
     # GH #152 — ident shape guard. The `Identity.sanitize_ident/1` step
     # above has already stripped a leading `~` (anti-spoof, grappa runs no

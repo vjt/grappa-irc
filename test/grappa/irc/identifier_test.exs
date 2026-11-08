@@ -4,18 +4,18 @@ defmodule Grappa.IRC.IdentifierTest do
 
   alias Grappa.IRC.Identifier
 
-  describe "valid_nick?/1" do
+  describe "portable_nick?/1" do
     test "accepts RFC-shape nicks" do
-      assert Identifier.valid_nick?("vjt")
-      assert Identifier.valid_nick?("alice123")
-      assert Identifier.valid_nick?("bob_underscore")
-      assert Identifier.valid_nick?("user-with-dash")
-      assert Identifier.valid_nick?("[bracket]")
-      assert Identifier.valid_nick?("a")
+      assert Identifier.portable_nick?("vjt")
+      assert Identifier.portable_nick?("alice123")
+      assert Identifier.portable_nick?("bob_underscore")
+      assert Identifier.portable_nick?("user-with-dash")
+      assert Identifier.portable_nick?("[bracket]")
+      assert Identifier.portable_nick?("a")
     end
 
     test "rejects nicks starting with a digit" do
-      refute Identifier.valid_nick?("1abc")
+      refute Identifier.portable_nick?("1abc")
     end
 
     test "rejects nicks starting with a dash (RFC 2812 §2.3.1: dash is tail-only)" do
@@ -23,9 +23,9 @@ defmodule Grappa.IRC.IdentifierTest do
       # would round-trip `-foo` through Identifier validate but the
       # upstream rejects it (432 ERR_ERRONEUSNICKNAME) and the Session
       # restart-loops. Pin the rule here so it can't drift back.
-      refute Identifier.valid_nick?("-foo")
-      refute Identifier.valid_nick?("-")
-      refute Identifier.valid_nick?("--double")
+      refute Identifier.portable_nick?("-foo")
+      refute Identifier.portable_nick?("-")
+      refute Identifier.portable_nick?("--double")
     end
 
     property "rejects any nick with a leading dash, regardless of tail" do
@@ -33,7 +33,7 @@ defmodule Grappa.IRC.IdentifierTest do
       # so the property tests the leading-dash rule on otherwise-valid
       # inputs, not the length rule.
       check all(tail <- StreamData.string(:ascii, max_length: 29)) do
-        refute Identifier.valid_nick?("-" <> tail)
+        refute Identifier.portable_nick?("-" <> tail)
       end
     end
 
@@ -42,33 +42,33 @@ defmodule Grappa.IRC.IdentifierTest do
         Enum.concat([?A..?Z, ?a..?z, [?[, ?], ?\\, ?`, ?_, ?^, ?{, ?|, ?}]])
 
       check all(c <- StreamData.member_of(first_chars)) do
-        assert Identifier.valid_nick?(<<c>>)
+        assert Identifier.portable_nick?(<<c>>)
       end
     end
 
     test "rejects whitespace" do
-      refute Identifier.valid_nick?("with space")
-      refute Identifier.valid_nick?(" leading")
-      refute Identifier.valid_nick?("trailing ")
+      refute Identifier.portable_nick?("with space")
+      refute Identifier.portable_nick?(" leading")
+      refute Identifier.portable_nick?("trailing ")
     end
 
     test "rejects empty + nil + non-binary" do
-      refute Identifier.valid_nick?("")
-      refute Identifier.valid_nick?(nil)
-      refute Identifier.valid_nick?(:atom)
+      refute Identifier.portable_nick?("")
+      refute Identifier.portable_nick?(nil)
+      refute Identifier.portable_nick?(:atom)
     end
 
     test "rejects nicks longer than 30 chars" do
-      refute Identifier.valid_nick?(String.duplicate("a", 31))
-      assert Identifier.valid_nick?(String.duplicate("a", 30))
+      refute Identifier.portable_nick?(String.duplicate("a", 31))
+      assert Identifier.portable_nick?(String.duplicate("a", 30))
     end
 
     # issue 2599 — in PCRE `$` also matches BEFORE a final `\n`, so a
     # `^…$` regex accepted `vjt\n` and let the newline reach every sender
     # that trusts this predicate alone (`Client.send_whois/3` and friends).
     test "rejects a trailing newline" do
-      refute Identifier.valid_nick?("vjt\n")
-      refute Identifier.valid_nick?("vjt\r\n")
+      refute Identifier.portable_nick?("vjt\n")
+      refute Identifier.portable_nick?("vjt\r\n")
     end
   end
 
@@ -150,7 +150,7 @@ defmodule Grappa.IRC.IdentifierTest do
             ) do
         nick = List.to_string([head | rest])
 
-        assert Identifier.valid_nick?(nick)
+        assert Identifier.portable_nick?(nick)
         assert Identifier.wire_nick?(nick)
       end
     end
@@ -211,7 +211,7 @@ defmodule Grappa.IRC.IdentifierTest do
               suffix <- string(?a..?z, min_length: 1, max_length: 10)
             ) do
         assert Identifier.valid_nick_suffix?(suffix)
-        assert Identifier.valid_nick?(base <> suffix)
+        assert Identifier.portable_nick?(base <> suffix)
       end
     end
   end
@@ -254,7 +254,7 @@ defmodule Grappa.IRC.IdentifierTest do
             ) do
         out = Identifier.collision_fallback(base, suffix, cap)
 
-        assert Identifier.valid_nick?(out)
+        assert Identifier.portable_nick?(out)
         assert String.length(out) <= cap
         assert String.ends_with?(out, suffix)
       end
@@ -269,7 +269,7 @@ defmodule Grappa.IRC.IdentifierTest do
         assert String.match?(suffix, ~r/^[a-z0-9]+$/),
                "expected a nick-tail-safe suffix, got #{inspect(suffix)}"
 
-        assert Identifier.valid_nick?("vjt" <> suffix)
+        assert Identifier.portable_nick?("vjt" <> suffix)
       end
     end
 
@@ -280,11 +280,11 @@ defmodule Grappa.IRC.IdentifierTest do
   end
 
   describe "max_nick_length/0" do
-    test "matches the length valid_nick?/1 enforces" do
+    test "matches the length portable_nick?/1 enforces" do
       cap = Identifier.max_nick_length()
 
-      assert Identifier.valid_nick?(String.duplicate("a", cap))
-      refute Identifier.valid_nick?(String.duplicate("a", cap + 1))
+      assert Identifier.portable_nick?(String.duplicate("a", cap))
+      refute Identifier.portable_nick?(String.duplicate("a", cap + 1))
     end
   end
 
@@ -1051,7 +1051,7 @@ defmodule Grappa.IRC.IdentifierTest do
       # character class has no `.`, so a sender that carries one cannot be
       # a nick and is therefore the server. Proven, not assumed.
       check all(s <- StreamData.string(:ascii, min_length: 1, max_length: 20)) do
-        refute Identifier.valid_nick?(s) and Identifier.server_sender?(s)
+        refute Identifier.portable_nick?(s) and Identifier.server_sender?(s)
       end
     end
   end

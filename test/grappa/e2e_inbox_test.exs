@@ -133,7 +133,7 @@ defmodule Grappa.E2eInboxTest do
     test "an own row takes a sender the ircd forced, up to its bound; so does a peer row, if it is a nick",
          %{device: device} do
       forced = "0AAAAAAAB"
-      refute Identifier.valid_nick?(forced)
+      refute Identifier.portable_nick?(forced)
       assert Identifier.wire_nick?(forced)
 
       assert {:ok, %Entry{own: true, sender: ^forced}} = E2eInbox.put(device, own_message(forced, ~s({"v":2})))

@@ -362,7 +362,7 @@ defmodule Grappa.Session.NumericRouterTest do
     test "004 RPL_MYINFO: usermodes letters are NOT a query destination (bucket I)" do
       # Real-world Bahamut params: own_nick, servername, version,
       # usermodes, chanmodes — `oiwgrsk` is nick-shaped (letters only,
-      # ≤30 chars per `Identifier.valid_nick?`) and pre-fix routed to
+      # ≤30 chars per `Identifier.portable_nick?`) and pre-fix routed to
       # `{:query, "oiwgrsk"}`, leaking a ghost row into the Archive
       # section via list_archive's COALESCE(dm_with, channel).
       #
@@ -535,7 +535,7 @@ defmodule Grappa.Session.NumericRouterTest do
     # per-test notes.
     test "321 RPL_LISTSTART: the column header 'Channel' is NOT a query destination" do
       # RFC 1459's header row, verbatim. `params[1]` is the literal string
-      # "Channel" — a column label — and it satisfies `valid_nick?/1`, so the
+      # "Channel" — a column label — and it satisfies `portable_nick?/1`, so the
       # scan resolved it to {:query, "Channel"}. LATENT, not observed: #640's
       # `resolve_numeric_query_window/2` collapses the decision back to
       # $server unless a query window with that nick is open. It stops being
@@ -557,7 +557,7 @@ defmodule Grappa.Session.NumericRouterTest do
 
     test "323 RPL_LISTEND: stays on $server, and no longer by accident" do
       # Already reached $server pre-fix, but only because "End of /LIST"
-      # carries spaces and so fails `valid_nick?/1` — the same
+      # carries spaces and so fails `portable_nick?/1` — the same
       # accident-of-spelling that 262 RPL_ENDOFTRACE was covered for above.
       # Unlike 262 (where a dotless server name is a real wire shape that
       # made the pre-fix test RED), every ircd checked spells this trailing
@@ -679,7 +679,7 @@ defmodule Grappa.Session.NumericRouterTest do
     test "900 RPL_LOGGEDIN: the SASL ACCOUNT is NOT a query destination" do
       # solanum — `":%s 900 %s %s!%s@%s %s :You are now logged in as %s"`,
       # `modules/m_services.c:158`. `params[1]` is a nick!user@host mask
-      # and fails `valid_nick?/1` on the `!`, so the scan falls through to
+      # and fails `portable_nick?/1` on the `!`, so the scan falls through to
       # `params[2]` — the account name — and routes there whenever the
       # account differs from the nick.
       m = msg(900, ["vjt", "vjt!u@example.org", "marcello", "You are now logged in as marcello"])
@@ -689,7 +689,7 @@ defmodule Grappa.Session.NumericRouterTest do
 
     test "908 RPL_SASLMECHS: a lone advertised mech is NOT a query destination" do
       # `":%s 908 %s %s :are available SASL mechanisms"`. A multi-mech
-      # list carries commas and already fails `valid_nick?/1`; a server
+      # list carries commas and already fails `portable_nick?/1`; a server
       # advertising a bare "PLAIN" does not.
       m = msg(908, ["vjt", "PLAIN", "are available SASL mechanisms"])
       assert {:server, nil} = NumericRouter.route(m, state())
@@ -713,7 +713,7 @@ defmodule Grappa.Session.NumericRouterTest do
 
     test "472 ERR_UNKNOWNMODE: the mode CHARACTER is NOT a query destination" do
       # `":%s 472 %s %c :is an unknown mode char to me"` on both ircds;
-      # `valid_nick?/1` accepts a bare letter, so this is #184's stats
+      # `portable_nick?/1` accepts a bare letter, so this is #184's stats
       # letter with a mode letter in its place. bahamut defines the entry
       # and never emits it; solanum emits it live from `ircd/chmode.c:1380`.
       m = msg(472, ["vjt", "z", "is an unknown mode char to me"])

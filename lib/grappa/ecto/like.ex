@@ -8,7 +8,7 @@ defmodule Grappa.Ecto.Like do
 
   A raw `"%" <> input <> "%"` pattern is a footgun: `%` (any run) and `_`
   (any single char) are LIKE metacharacters, and an IRC nick legally
-  contains `_` (`Grappa.IRC.Identifier.valid_nick?/1`). So an operator
+  contains `_` (`Grappa.IRC.Identifier.portable_nick?/1`). So an operator
   typing `foo_bar` in the subject autocomplete would silently match
   `fooXbar` too. `escape/1` neutralises the three metacharacters (`\\`
   first, so the escapes it inserts aren't themselves re-escaped) and

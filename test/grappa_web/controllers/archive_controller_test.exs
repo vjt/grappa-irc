@@ -414,7 +414,7 @@ defmodule GrappaWeb.ArchiveControllerTest do
     test "400 on bare invalid target name (not channel-shaped, not nick-shaped)",
          %{conn: conn, vjt: vjt} do
       net = net_with_credential(vjt)
-      # NUL byte fails both Identifier.valid_channel? + valid_nick?.
+      # NUL byte fails both Identifier.valid_channel? + wire_nick?.
       conn = delete(conn, "/networks/#{net.slug}/archive/" <> URI.encode_www_form("bad\0name"))
 
       assert json_response(conn, 400)["error"] == "bad_request"

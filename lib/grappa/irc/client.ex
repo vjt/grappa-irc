@@ -724,14 +724,16 @@ defmodule Grappa.IRC.Client do
 
   @doc """
   Sends `NICK <new>\\r\\n`. Rejects CR/LF/NUL + malformed nick (whitespace,
-  non-RFC-2812 chars) with `{:error, :invalid_line}`. The upstream replays
+  non-RFC-2812 chars) with `{:error, :invalid_line}`. The nick asked for is
+  OURS, so it is held to the narrow `Identifier.portable_nick?/1`, not the
+  `wire_nick?/1` the verbs that name somebody else take. The upstream replays
   the NICK back so `Grappa.Session.EventRouter`'s NICK handler reconciles
   `state.nick` and emits the per-channel `:nick_change` persist effects;
   no scrollback row is written by this helper.
   """
   @spec send_nick(pid(), String.t()) :: send_result()
   def send_nick(client, nick) do
-    if Identifier.safe_line_token?(nick) and Identifier.valid_nick?(nick) do
+    if Identifier.safe_line_token?(nick) and Identifier.portable_nick?(nick) do
       send_line(client, "NICK #{nick}\r\n")
     else
       reject_invalid_line(:nick)
