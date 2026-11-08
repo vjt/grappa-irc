@@ -1639,7 +1639,25 @@ defmodule Grappa.Protocol do
   # @min_protocol_version stays at 1: an older client ignores an unknown
   # `channel` field and shows the message as a DM from its sender —
   # degraded, not broken.
-  @protocol_version 63
+  #
+  # ---------------------------------------------------------------------------
+  # 64 — `GET /networks/:network_id/common-channels?nick=<nick>` (issue 2449)
+  # ---------------------------------------------------------------------------
+  #
+  # NEW: a REST door answering the channels the caller shares with a peer,
+  # `{"channels": ["#a", "#b"]}`, sorted, SEEDED channels only, read from
+  # the live `Session.Server.state.members` map — no NAMES/WHO round trip.
+  # Bumped on the #1393d rule: a client that shows the "channels in
+  # common" line cannot get it from a server predating the door — the
+  # route answers 404 (SPA page) there, and the client must not read
+  # that as "no shared channels".
+  #
+  # Checked for a collision before claiming 64: origin/main carries 63.
+  #
+  # @min_protocol_version stays at 1: an older client never asks for the
+  # door, so nothing it does degrades — it simply has no common-channels
+  # line to show.
+  @protocol_version 64
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1680,7 +1698,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 63
+  @spec version() :: 64
   def version, do: @protocol_version
 
   @doc """

@@ -452,7 +452,14 @@ let _socket: Socket | null = null;
 // every such E2E push and inbox page as malformed. The server still emits
 // the key on every message; only the client's requirement moved.
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 63;
+//
+// 64 (issue 2449) — `GET /networks/:network_id/common-channels?nick=<nick>`:
+// the sorted channels the caller shares with the peer, seeded channels
+// only, read from the server's live member lists. Below 64 the route
+// answers 404 (SPA page), which is NOT "no shared channels" — the query
+// header keys off this number, not a status.
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 64;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

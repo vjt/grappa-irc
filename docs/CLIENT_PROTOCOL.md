@@ -1836,6 +1836,50 @@ from either server, so keeping the filter does no harm. One difference
 remains: when every mention was muted, a new server sends no bundle,
 while an old one sends a bundle that the filter empties.
 
+### 5l. Channels in common with a peer (issue 2449, v64)
+
+A query window wants a "channels in common" line, and the server
+already knows the answer: its per-channel member lists are live
+in-memory state, maintained from JOIN/353/PART/QUIT/KICK/NICK — no
+NAMES/WHO round trip is needed to answer.
+
+```
+GET /networks/:network_id/common-channels?nick=<nick>
+  → 200 {"channels": ["#a", "#b"]}
+```
+
+The list is sorted, and it holds SEEDED channels only — a channel
+whose NAMES burst has not landed yet (joined but pre-366) is
+EXCLUDED, because its member list is unknowable and reporting the
+peer as absent there would read as "not in common" for a channel
+they are about to turn out to share. The sibling door
+`GET /networks/:network_id/channels/:channel_id/members` makes the
+same distinction the other way: an unseeded channel answers 204
+there, so a client that refetches the member list on resume (§4a)
+already has the shape to tell "loading…" from "empty".
+
+Any nick is queryable: the answer is the caller's OWN observed
+membership, not a lookup of the peer. A peer that shares no seeded
+channel — or is not on the network at all — answers
+`{"channels": []}`; the two are indistinguishable from this
+session's view, so do not render them differently. A missing or
+blank `nick` is 400 `bad_request`; an unknown network or a session
+that is not running is 404 `not_found`, like `/members`.
+
+**Fetch it; do not derive it locally alone.** Your per-channel
+member lists (§4a) go stale by design for a channel you stopped
+reading — presence-paused channels stop pushing peer
+join/part/quit — and a cold start cannot tell "no shared channels"
+from "lists not loaded yet". Fetch on query open and on focus; a
+purely local derivation silently goes stale for backgrounded
+channels. There is deliberately NO push event for this: the fetch
+closes both gaps, and the existing join/part/quit/kick/nick_change
+events already keep a fetched answer fresh while the window is open.
+
+Check `protocol_version >= 64` before calling it. Below 64 the
+route does not exist and answers 404 with the SPA page — which is
+NOT "no shared channels", so key off the number, not the status.
+
 ## 6. Rate limiting & flood protection (#630)
 
 grappa applies a **coarse per-subject inbound budget** across BOTH doors —

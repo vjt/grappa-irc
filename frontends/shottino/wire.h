@@ -53,15 +53,15 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v62 -> v63 (`channel` optional): the `channel` key of
- * `e2e_message` moved from required-but-nullable to optional, so a server
- * predating v63 that sends no such key stays readable. No change to anything
- * shottino reads; a terminal that wants channel E2E would need the
- * group-session client half, which is a follow-up.
+ * Last read, v63 -> v64 (issue 2449): a new REST door,
+ * `GET …/common-channels?nick=<nick>`, answering the channels the caller
+ * shares with a peer from the server's live member lists. No change to
+ * anything shottino reads; a terminal that wants the query header's
+ * "channels in common" line would call the same door.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 63
+#define WIRE_PROTOCOL_VERSION 64
 
 #include <stdbool.h>
 #include <stddef.h>
