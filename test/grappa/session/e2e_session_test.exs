@@ -287,6 +287,92 @@ defmodule Grappa.Session.E2eSessionTest do
       assert text_rows(network) == 0
     end
 
+    # Channel E2E (protocol v62): the channel frame has no single
+    # recipient — a line to a channel we joined whose frame names a
+    # device instead of `*` is malformed and dropped, not delivered to
+    # that device alone.
+    test "a channel E2E line whose frame names a single device is dropped" do
+      {server, pid, user, network} = connected_session()
+      [device] = listed(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      IRCServer.feed(server, ":#{@nick}!u@h JOIN #grappa\r\n")
+      :ok = await_joined(pid, "#grappa")
+
+      [line] =
+        channel_lines_from("alice", :msg, "q83vEjRWeJA", {@alice, device.did}, @group_small, "#grappa")
+
+      IRCServer.feed(server, line)
+
+      # A good line last: once ITS event arrives, every line before it
+      # has been through the session.
+      [good] =
+        channel_lines_from("alice", :msg, "q83vEjRWeJB", {@alice, "*"}, @group_small, "#grappa")
+
+      IRCServer.feed(server, good)
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, msgid: "q83vEjRWeJB"}},
+                     @wire_timeout
+
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}
+      assert Process.alive?(pid)
+      assert [%E2eInbox.Entry{msgid: "q83vEjRWeJB"}] = E2eInbox.list(device, 0)
+    end
+
+    # A channel message that spans lines reassembles once and reaches
+    # every listed device — the multicast is one message, not one per
+    # device, and the queue holds one copy per device.
+    test "a multi-line channel E2E message arrives whole on every listed device" do
+      {server, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      [first] = listed(user, network)
+      second = add_listed_device!(subject, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      IRCServer.feed(server, ":#{@nick}!u@h JOIN #grappa\r\n")
+      :ok = await_joined(pid, "#grappa")
+
+      lines = channel_lines_from("alice", :msg, "q83vEjRWeJA", {@alice, "*"}, payload(800), "#grappa")
+      assert length(lines) >= 2
+      Enum.each(lines, &IRCServer.feed(server, &1))
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :e2e_message, to_did: a, msgid: "q83vEjRWeJA"}
+                     },
+                     @wire_timeout
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{kind: :e2e_message, to_did: b, msgid: "q83vEjRWeJA"}
+                     },
+                     @wire_timeout
+
+      assert Enum.sort([a, b]) == Enum.sort([first.did, second.did])
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}
+
+      assert [%E2eInbox.Entry{channel: "#grappa"}] = E2eInbox.list(first, 0)
+      assert [%E2eInbox.Entry{channel: "#grappa"}] = E2eInbox.list(second, 0)
+      assert Process.alive?(pid)
+      assert text_rows(network) == 0
+    end
+
+    # issue 2491, channel half: a channel message that reaches no listed
+    # device is answered with a NACK to the sender's nick, the same as a
+    # DM — the sender learns nobody on this side can read it.
+    test "a channel E2E message that reaches no listed device is answered with a NACK to the sender" do
+      {server, pid, _, _} = connected_session(0)
+      msgid = E2e.new_msgid()
+
+      IRCServer.feed(server, ":#{@nick}!u@h JOIN #grappa\r\n")
+      :ok = await_joined(pid, "#grappa")
+
+      [line] = channel_lines_from("alice", :msg, msgid, {@alice, "*"}, @group_small, "#grappa")
+      IRCServer.feed(server, line)
+
+      {:ok, line} = IRCServer.wait_for_line(server, &nack_of?(&1, "alice", msgid), @nack_timeout)
+      assert %{from: "*", to: @alice} = fragment_to(line, "alice")
+      assert Process.alive?(pid)
+    end
+
     # The queue keys a message on its sender's nick, and refuses a row
     # whose sender is not one. A server prefix, a prefix-less line (`*`)
     # and a sender past the wire-nick byte bound are all reachable from the

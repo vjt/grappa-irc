@@ -1405,6 +1405,7 @@ export const SESSION_WIRE_E2E_VERB = ["keys", "pkmsg", "msg", "nack"] as const;
 export type SessionWireE2eVerb = (typeof SESSION_WIRE_E2E_VERB)[number];
 
 export type SessionWireE2eMessagePayload = {
+  channel?: string | null;
   kind: "e2e_message";
   id: number;
   network: string;
@@ -1415,7 +1416,6 @@ export type SessionWireE2eMessagePayload = {
   msgid: string;
   payload: string;
   own: boolean;
-  channel: string | null;
 };
 
 export type SessionWireE2eInboxPayload = {

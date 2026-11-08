@@ -1292,6 +1292,7 @@ defmodule Grappa.Deploy.PreflightTest do
       20261015113204_add_messages_away_window_index
       20261023162005_add_own_to_e2e_inbox
       20261105045827_add_last_seen_at_to_e2e_devices
+      20261108010000_add_channel_to_e2e_inbox
     )
 
     test "every migration on disk classifies, and the HOT set is exactly the pinned one" do

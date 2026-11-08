@@ -571,6 +571,11 @@ defmodule Grappa.Session.Wire do
   # `channel` is the folded channel the message was sent to, or nil for
   # a direct message.
   @type e2e_message_payload :: %{
+          # Optional, not just nullable: a v61 server sends no `channel`
+          # key at all, and the client must keep reading its DM pages and
+          # pushes instead of dropping them as malformed. Absent means DM.
+          # (The `=>` entry leads: keyword entries must come last.)
+          optional(:channel) => String.t() | nil,
           kind: :e2e_message,
           id: pos_integer(),
           network: String.t(),
@@ -580,8 +585,7 @@ defmodule Grappa.Session.Wire do
           verb: e2e_verb(),
           msgid: String.t(),
           payload: String.t(),
-          own: boolean(),
-          channel: String.t() | nil
+          own: boolean()
         }
 
   @typedoc """

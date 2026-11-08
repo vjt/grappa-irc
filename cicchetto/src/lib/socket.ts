@@ -446,6 +446,12 @@ let _socket: Socket | null = null;
 // is the follow-up; until then cicchetto must not offer channel E2E, and
 // keys off this number, not a status. `MIN_SERVER_PROTOCOL_VERSION` stays
 // at 9.
+//
+// 63 — `channel` on `e2e_message` is optional, not required: a server
+// predating v63 sends no `channel` key at all, and requiring it dropped
+// every such E2E push and inbox page as malformed. The server still emits
+// the key on every message; only the client's requirement moved.
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
 export const CLIENT_PROTOCOL_VERSION = 63;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.

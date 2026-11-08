@@ -681,7 +681,7 @@ the KEYS as any key change (trust on first use, the key alarm, SAS).
 of YOUR other devices sent (see *Copies to your other devices* below): show
 it as sent, not received. `channel` (v63) is the folded channel name the
 message was sent to, or `null` for a direct message (see *Channel
-messages* below): show the message in that channel, not in a query.
+messages* below): show the message in that channel, not in a query. A server predating v63 omits the key entirely — read that as a DM.
 
 **One identity, several devices (v49).** A subject holds one E2E identity
 per network: a master Ed25519 key, and up to **4** devices it vouches for.
@@ -927,7 +927,9 @@ and the payload is the v3 group shape, one sender key per sender
 
 `ch` is the folded channel name, `sid` the group session id, `i` the
 chain index, `body` the ciphertext. A long message chunks `i/n` as a DM
-does, and receivers wait 60 s from its LAST line. grappa reassembles the
+does, and receivers wait 60 s from its LAST line. A channel line whose
+frame names a device instead of `*` is dropped as malformed — the
+channel frame has no single recipient. grappa reassembles the
 same multicast independently for every member and queues the whole message
 into every listed device's inbox, with `channel` set — so `e2e_message`
 carries the channel and the offline queue stays per-device (7 days, 1 MiB
