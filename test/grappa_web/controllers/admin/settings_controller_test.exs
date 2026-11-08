@@ -764,10 +764,11 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
       assert ServerSettings.static_mapping_prefix() == nil
     end
 
-    # issue 2546 — the probe is the ONE refusal that cannot be decided before
-    # the write pass (it has side effects), which is why `addressing` is
-    # applied FIRST there. Without that ordering the other subtrees would
-    # already be committed when the probe says no.
+    # issue 2546 — `addressing` is applied FIRST in the write pass because
+    # `arm_if_static/2` can still refuse a save there: the probe
+    # (`arm_check`) has side effects and cannot run in validation, and the
+    # `:no_static_prefix` clause is pure but shares the function. Without
+    # that ordering the other subtrees would already be committed.
     test "a probe refusal leaves upload, dcc and auto_away unwritten (issue 2546)",
          %{conn: conn, session: session} do
       expect(SourceAliasMock, :arm_check, fn _ -> {:error, :alias_not_permitted} end)
