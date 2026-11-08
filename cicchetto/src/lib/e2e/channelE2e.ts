@@ -62,6 +62,8 @@
 import type { Outbound } from "./engine";
 import {
   buildPeriodicRotation,
+  type ChannelSigner,
+  type ChannelVerifier,
   createEpoch,
   decryptChannel,
   dropChannel,
@@ -69,8 +71,6 @@ import {
   encryptChannel,
   epochFor,
   epochHoldersStale,
-  type ChannelSigner,
-  type ChannelVerifier,
   type GroupSessionsState,
   gkeyInner,
   importEpoch,
@@ -80,7 +80,13 @@ import {
   rotateEpochForLeave,
   rotationDue,
 } from "./groupSessions";
-import { decodePayload, fold, PayloadError, parseChannelKeyreqPayload, parseGkeyInner } from "./wire";
+import {
+  decodePayload,
+  fold,
+  PayloadError,
+  parseChannelKeyreqPayload,
+  parseGkeyInner,
+} from "./wire";
 
 /** The tag of a gkey DM's `Engine.send`: its rows never exist (`chatStore` no-ops an `out` alone). */
 export const GKEY_TAG = "gkey";
