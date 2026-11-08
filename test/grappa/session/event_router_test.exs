@@ -8124,6 +8124,15 @@ defmodule Grappa.Session.EventRouterTest do
       first
     end
 
+    # A channel line: the frame names no single device — `to` is `*`, the
+    # channel speaks for every member. A device-addressed frame to a
+    # channel is malformed and the router drops it (protocol v63).
+    defp e2e_channel_line(verb, msgid) do
+      payload = ~s({"v":2,"body":"#{String.duplicate("x", 900)}"})
+      {:ok, [first | _]} = Grappa.IRC.E2e.fragment(verb, msgid, {"If4x36FUomE", "*"}, payload, 300)
+      first
+    end
+
     @peer {:nick, "vjt-claude", "claude", "bot.example"}
 
     test "a PRIVMSG to our nick becomes one :e2e_fragment effect and nothing is persisted" do
@@ -8153,12 +8162,12 @@ defmodule Grappa.Session.EventRouterTest do
       end
     end
 
-    # Channel E2E (protocol v62): a line to a channel we are a member of
+    # Channel E2E (protocol v63): a line to a channel we are a member of
     # is delivered with the folded channel name; one to a channel we never
     # joined is not ours to read, and a statusmsg target (`@#italia`) is
     # no channel at all.
     test "an E2E line to a channel we joined becomes one :e2e_fragment effect naming the channel" do
-      line = e2e_line(:msg, "q83vEjRWeJA")
+      line = e2e_channel_line(:msg, "q83vEjRWeJA")
       {:ok, fragment} = Grappa.IRC.E2e.parse(line)
       joined = base_state(%{members: %{"#grappa" => %{"vjt-claude" => []}}})
 
@@ -8171,7 +8180,7 @@ defmodule Grappa.Session.EventRouterTest do
     end
 
     test "an E2E line to a channel we never joined is dropped" do
-      line = e2e_line(:msg, "q83vEjRWeJA")
+      line = e2e_channel_line(:msg, "q83vEjRWeJA")
       assert {:cont, _, []} = EventRouter.route(msg(:privmsg, ["#italia", line], @peer), base_state())
       assert {:cont, _, []} = EventRouter.route(msg(:privmsg, ["@#italia", line], @peer), base_state())
     end

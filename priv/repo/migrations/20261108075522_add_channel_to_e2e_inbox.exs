@@ -1,7 +1,7 @@
 defmodule Grappa.Repo.Migrations.AddChannelToE2eInbox do
   use Ecto.Migration
 
-  # Channel E2E (Megolm-style group sessions, protocol v62): one
+  # Channel E2E (Megolm-style group sessions, protocol v63): one
   # encrypted message, sent once as a PRIVMSG to the channel, is queued
   # into every listed device's inbox like a `to: *` DM — and the device
   # must know WHICH channel it came from, so the row carries it. NULL

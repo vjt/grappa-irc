@@ -1602,7 +1602,7 @@ defmodule Grappa.Protocol do
   # 400, as does any other verb to a channel. Inbound, a channel E2E
   # PRIVMSG is reassembled exactly like a DM and queued into every listed
   # device's inbox (`Grappa.E2eInbox.Entry.channel`, migration
-  # `20261108010000`), and `e2e_message` carries `channel` — the folded
+  # `20261108075522`), and `e2e_message` carries `channel` — the folded
   # channel name, or null for a direct message — so a fetched message and a
   # pushed one are one shape. The key itself never touches the server: it
   # travels pairwise, encrypted inside the existing Olm DM between two

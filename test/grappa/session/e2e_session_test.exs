@@ -263,7 +263,7 @@ defmodule Grappa.Session.E2eSessionTest do
       assert rows(network) == 0
     end
 
-    # Channel E2E (protocol v62): a line to a channel we joined is
+    # Channel E2E (protocol v63): a line to a channel we joined is
     # delivered like a DM, with the channel riding the event and the
     # queue row — and, like a DM line, never stored.
     test "a channel E2E message to a channel we joined is delivered with its channel and never stored" do
@@ -287,7 +287,7 @@ defmodule Grappa.Session.E2eSessionTest do
       assert text_rows(network) == 0
     end
 
-    # Channel E2E (protocol v62): the channel frame has no single
+    # Channel E2E (protocol v63): the channel frame has no single
     # recipient — a line to a channel we joined whose frame names a
     # device instead of `*` is malformed and dropped, not delivered to
     # that device alone.
@@ -368,8 +368,8 @@ defmodule Grappa.Session.E2eSessionTest do
       [line] = channel_lines_from("alice", :msg, msgid, {@alice, "*"}, @group_small, "#grappa")
       IRCServer.feed(server, line)
 
-      {:ok, line} = IRCServer.wait_for_line(server, &nack_of?(&1, "alice", msgid), @nack_timeout)
-      assert %{from: "*", to: @alice} = fragment_to(line, "alice")
+      {:ok, nack_line} = IRCServer.wait_for_line(server, &nack_of?(&1, "alice", msgid), @nack_timeout)
+      assert %{from: "*", to: @alice} = fragment_to(nack_line, "alice")
       assert Process.alive?(pid)
     end
 
@@ -951,7 +951,7 @@ defmodule Grappa.Session.E2eSessionTest do
   end
 
   describe "outbound" do
-    # Channel E2E (protocol v62): one `:msg` to `*` goes out as one line
+    # Channel E2E (protocol v63): one `:msg` to `*` goes out as one line
     # to the channel — IRC multicast does the fan-out, so the message
     # costs one line, not one per member.
     test "a channel :msg to a channel we joined goes out as one line to the channel" do

@@ -1994,7 +1994,7 @@ defmodule Grappa.Session.Server do
   def handle_call({:send_e2e, target, verb, lane, {from, to} = addresses, payload, expires_at}, _, state)
       when is_binary(target) and is_atom(verb) and is_atom(lane) and is_binary(from) and is_binary(to) and
              is_binary(payload) and (is_nil(expires_at) or is_integer(expires_at)) do
-    # Channel E2E (protocol v62): the session enforces what the facade
+    # Channel E2E (protocol v63): the session enforces what the facade
     # gates — a channel target goes out only as `:msg` to `*`, and only to
     # a channel the subject is a member of. Membership is the only
     # authorisation channel E2E has.
@@ -6667,7 +6667,7 @@ defmodule Grappa.Session.Server do
   # issue 2430 — one inbound E2E line addressed to us. It is never a row:
   # the whole message, once reassembled, goes to the client and nowhere
   # else (see `receive_e2e_fragment/4`). `channel` is nil for a DM, the
-  # folded channel name for a channel message (protocol v62).
+  # folded channel name for a channel message (protocol v63).
   defp apply_effects([{:e2e_fragment, from, fragment, channel} | rest], state) do
     apply_effects(rest, receive_e2e_fragment(state, from, fragment, channel))
   end
@@ -8538,7 +8538,7 @@ defmodule Grappa.Session.Server do
   # Issue 2577: a device whose queue did not take the message gets no
   # `e2e_message` for it, so it is told the message will not arrive.
   # `channel` is the folded channel the message was sent to, or nil for
-  # a DM (protocol v62); it rides the row so the client can show the
+  # a DM (protocol v63); it rides the row so the client can show the
   # message in the right channel.
   @spec queue_e2e_copy(String.t(), E2eReassembly.message(), E2eKeys.Device.t(), {t(), boolean()}, String.t() | nil) ::
           {t(), boolean()}
@@ -8876,7 +8876,7 @@ defmodule Grappa.Session.Server do
           String.t(),
           pos_integer() | nil
         ) :: {{:ok, String.t()} | {:error, :too_large | :rate_limited | :too_late}, t()}
-  # Channel E2E (protocol v62): a nick target is always fine here; a
+  # Channel E2E (protocol v63): a nick target is always fine here; a
   # channel target must be a `:msg` to `*` for a channel the subject is a
   # member of — membership is the only authorisation channel E2E has. The
   # target arrives in client case and `members` keys are folded, so it is

@@ -440,7 +440,7 @@ defmodule Grappa.Session.EventRouter do
   # outlives one line, which `Session.Server` owns.
   # A channel line whose frame names a single device instead of `*` is
   # dropped here, not delivered to that device: the channel frame has no
-  # single recipient (protocol v62), and a line that names one would
+  # single recipient (protocol v63), and a line that names one would
   # reach one device while the sender believes the channel has it.
   @spec route_e2e(Message.t(), state()) :: {:cont, state(), [effect()]}
   defp route_e2e(%Message{command: :privmsg, params: [target, body]} = msg, state) do

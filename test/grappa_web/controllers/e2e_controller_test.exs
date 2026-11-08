@@ -154,7 +154,7 @@ defmodule GrappaWeb.E2eControllerTest do
       refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "#{long_id} 2/"))
     end
 
-    # Channel E2E (protocol v62): a `:msg` to `*` for a channel the
+    # Channel E2E (protocol v63): a `:msg` to `*` for a channel the
     # subject joined answers 202 and the line reaches the channel; any
     # other channel send is a 400.
     test "202 for a channel :msg to a channel we joined, 400 for any other channel send", %{conn: conn, vjt: vjt} do
@@ -367,7 +367,7 @@ defmodule GrappaWeb.E2eControllerTest do
       assert did == device.did
     end
 
-    # Channel E2E (protocol v62): a queued channel message fetches with
+    # Channel E2E (protocol v63): a queued channel message fetches with
     # its channel, a DM with null — one shape for push and fetch.
     test "GET carries the channel of a queued channel message, null for a DM", %{
       conn: conn,
