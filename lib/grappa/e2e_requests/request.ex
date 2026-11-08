@@ -107,7 +107,8 @@ defmodule Grappa.E2eRequests.Request do
     ])
     |> validate_required([:network_id, :peer, :state, :inserted_at, :updated_at])
     |> validate_change(:peer, fn :peer, peer ->
-      if Identifier.valid_nick?(peer), do: [], else: [peer: "is not a nick"]
+      # Issue 2599 — the peer's nick is the upstream's call.
+      if Identifier.wire_nick?(peer), do: [], else: [peer: "is not a nick"]
     end)
     |> validate_change(:payload, fn :payload, payload ->
       if E2e.chunk?(payload), do: [], else: [payload: "is not compact JSON text"]

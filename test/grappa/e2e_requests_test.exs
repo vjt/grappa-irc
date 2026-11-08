@@ -328,6 +328,26 @@ defmodule Grappa.E2eRequestsTest do
                inbound!(ctx, "carol", :refuse, ctx.now, @other)
     end
 
+    # issue 2599 — the peer is a nick the upstream decided (IRCnet's `foo~`,
+    # a collision UID); a channel or a dotted server name is still not one.
+    test "the peer is a nick as the upstream allows it", ctx do
+      attrs = %{
+        user_id: elem(ctx.subject, 1),
+        network_id: ctx.network.id,
+        state: :incoming,
+        inserted_at: ctx.now,
+        updated_at: ctx.now
+      }
+
+      for peer <- ["foo~", "~foo", "0AAAAAAAB"],
+          do: assert(Request.changeset(%Request{}, Map.put(attrs, :peer, peer)).valid?, peer)
+
+      for peer <- ["#italia", "irc.example.net", "with space"] do
+        changeset = Request.changeset(%Request{}, Map.put(attrs, :peer, peer))
+        assert %{peer: [_]} = errors_on(changeset), peer
+      end
+    end
+
     test "is a device id or `*`, or nothing", ctx do
       attrs = %{
         user_id: elem(ctx.subject, 1),
