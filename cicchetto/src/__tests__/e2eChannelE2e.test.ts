@@ -135,6 +135,8 @@ async function shareEpoch(s: ReturnType<typeof sides>, members: string[]) {
   const sent = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "before", members);
   const gkey = s.alice.dm.sent[0]?.inner as Record<string, unknown> | undefined;
   if (gkey === undefined) throw new Error("alice sent no gkey");
+  // Bob asked for the key first: a first epoch is only imported after asking.
+  requestKey(s.bob.deps, s.bob.groups, CHAN);
   expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
     { kind: "channel_key_received", channel: CHAN, from: "alice", sid: gkey.sid as string },
   ]);
@@ -150,6 +152,7 @@ async function shareEpoch(s: ReturnType<typeof sides>, members: string[]) {
   expect(read).toEqual({
     events: [expect.objectContaining({ kind: "channel_received", body: "before" })],
     outbound: [],
+    copies: [],
   });
   return { sent, gkey };
 }
@@ -244,14 +247,19 @@ describe("requestKey", () => {
     const clock = { t: NOW };
     const s = sides(clock);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
-    expect(requestKey(s.alice.deps, s.alice.groups, CHAN)).toEqual({ events: [], outbound: [] });
+    expect(requestKey(s.alice.deps, s.alice.groups, CHAN)).toEqual({
+      events: [],
+      outbound: [],
+      copies: [],
+    });
   });
 });
 
 describe("onKeyreq", () => {
   it("answers once per asker per minute, then again after the minute", async () => {
     const clock = { t: NOW };
-    const s = sides(clock);
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
+    const s = sides(clock, roster);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const sid = epochFor(s.alice.groups, CHAN)?.sid;
     s.alice.dm.sent.length = 0;
@@ -263,6 +271,7 @@ describe("onKeyreq", () => {
     expect(onKeyreq(s.alice.deps, s.alice.groups, CHAN, "bob")).toEqual({
       events: [],
       outbound: [],
+      copies: [],
     });
     // After the minute, the same asker is answered again.
     clock.t = NOW + 60_000;
@@ -277,16 +286,82 @@ describe("onKeyreq", () => {
     expect(onKeyreq(s.alice.deps, s.alice.groups, CHAN, "bob")).toEqual({
       events: [],
       outbound: [],
+      copies: [],
     });
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     expect(onKeyreq(s.alice.deps, s.alice.groups, CHAN, "alice")).toEqual({
       events: [],
       outbound: [],
+      copies: [],
     });
     expect(onKeyreq(s.alice.deps, s.alice.groups, CHAN, "ALICE")).toEqual({
       events: [],
       outbound: [],
+      copies: [],
     });
+  });
+
+  it("names the asker in the holders of the key it answers with", async () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob", "dave"] : undefined);
+    const s = sides(clock, roster);
+    await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
+    // Dave never received the epoch: he is not a holder yet.
+    expect(epochFor(s.alice.groups, CHAN)?.holders).toEqual(["alice", "bob"]);
+    const sid = epochFor(s.alice.groups, CHAN)?.sid;
+    const answered = onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave");
+    expect(answered.events).toEqual([{ kind: "channel_key_sent", channel: CHAN, to: "dave", sid }]);
+    // The gkey Dave received names him in holders, and so does the stored epoch.
+    const inner = s.alice.dm.sent.find((d) => d.nick === "dave")?.inner as { holders: string[] };
+    expect(inner.holders).toEqual(["alice", "bob", "dave"]);
+    expect(epochFor(s.alice.groups, CHAN)?.holders).toEqual(["alice", "bob", "dave"]);
+    // A second answer does not duplicate him.
+    clock.t = NOW + 60_000;
+    onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave");
+    expect(epochFor(s.alice.groups, CHAN)?.holders).toEqual(["alice", "bob", "dave"]);
+  });
+
+  it("answers only while the asker is on the roster, and not without one", async () => {
+    const clock = { t: NOW };
+    let members = ["alice", "bob", "dave"];
+    const roster = (channel: string) => (channel === CHAN ? members : undefined);
+    const s = sides(clock, roster);
+    await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
+    const sid = epochFor(s.alice.groups, CHAN)?.sid;
+    // Dave is on the roster: answered.
+    expect(onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave").events).toEqual([
+      { kind: "channel_key_sent", channel: CHAN, to: "dave", sid },
+    ]);
+    // Dave left: the same ask, answered again a minute later, goes unanswered.
+    members = ["alice", "bob"];
+    clock.t = NOW + 60_000;
+    expect(onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave")).toEqual({
+      events: [],
+      outbound: [],
+      copies: [],
+    });
+    // With no roster held at all, nothing is answered either.
+    const noRoster = sides(clock);
+    await sendChannel(noRoster.alice.deps, noRoster.alice.groups, CHAN, "hi", ["alice", "bob"]);
+    expect(onKeyreq(noRoster.alice.deps, noRoster.alice.groups, CHAN, "bob")).toEqual({
+      events: [],
+      outbound: [],
+      copies: [],
+    });
+  });
+
+  it("a keyreq-served peer's exit rotates the epoch", async () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob", "dave"] : undefined);
+    const s = sides(clock, roster);
+    await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
+    onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave");
+    const oldSid = epochFor(s.alice.groups, CHAN)?.sid;
+    const res = onMemberLeft(s.alice.deps, s.alice.groups, CHAN, "dave", ["alice", "bob"]);
+    expect(res.events).toContainEqual(
+      expect.objectContaining({ kind: "channel_rotated", oldSid, reason: "member-left" }),
+    );
+    expect(epochFor(s.alice.groups, CHAN)?.sid).not.toBe(oldSid);
   });
 });
 
@@ -313,11 +388,12 @@ describe("onMemberJoined", () => {
     expect(onMemberJoined(s.alice.deps, s.alice.groups, CHAN, "alice", ["alice", "bob"])).toEqual({
       events: [],
       outbound: [],
+      copies: [],
     });
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     expect(
       onMemberJoined(s.alice.deps, s.alice.groups, CHAN, "dave", ["alice", "bob", "dave"]),
-    ).toEqual({ events: [], outbound: [] });
+    ).toEqual({ events: [], outbound: [], copies: [] });
     expect(s.alice.dm.sent).toHaveLength(1);
   });
 });
@@ -368,6 +444,7 @@ describe("onMemberLeft", () => {
     ).toEqual({
       events: [expect.objectContaining({ kind: "channel_received", body: "after" })],
       outbound: [],
+      copies: [],
     });
   });
 
@@ -380,6 +457,7 @@ describe("onMemberLeft", () => {
     expect(onMemberLeft(s.bob.deps, s.bob.groups, CHAN, "carol", ["alice", "bob"])).toEqual({
       events: [],
       outbound: [],
+      copies: [],
     });
     expect(epochFor(s.bob.groups, CHAN)?.sid).toBe(sid);
     expect(s.bob.dm.sent).toEqual([]);
@@ -391,11 +469,13 @@ describe("onMemberLeft", () => {
     expect(onMemberLeft(s.alice.deps, s.alice.groups, CHAN, "bob", ["alice"])).toEqual({
       events: [],
       outbound: [],
+      copies: [],
     });
     await shareEpoch(s, ["alice", "bob"]);
     expect(onMemberLeft(s.alice.deps, s.alice.groups, CHAN, "dave", ["alice", "bob"])).toEqual({
       events: [],
       outbound: [],
+      copies: [],
     });
     expect(s.alice.dm.sent).toHaveLength(1);
   });
@@ -441,11 +521,13 @@ describe("auditEpochRotation", () => {
     expect(auditEpochRotation(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"])).toEqual({
       events: [],
       outbound: [],
+      copies: [],
     });
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     expect(auditEpochRotation(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"])).toEqual({
       events: [],
       outbound: [],
+      copies: [],
     });
   });
 });
@@ -545,6 +627,7 @@ describe("receiveChannel", () => {
     ).toEqual({
       events: [expect.objectContaining({ kind: "channel_received", body: "once" })],
       outbound: [],
+      copies: [],
     });
     const again = await receiveChannel(
       s.bob.deps,
@@ -615,6 +698,7 @@ describe("receiveChannel", () => {
         },
       ],
       outbound: [],
+      copies: [],
     });
     // Garbage: bad-payload.
     expect(
@@ -630,6 +714,7 @@ describe("receiveChannel", () => {
         },
       ],
       outbound: [],
+      copies: [],
     });
   });
 
@@ -658,15 +743,16 @@ describe("receiveChannel", () => {
     const payload = channelMsg(sent)?.payload ?? "";
     expect(
       await receiveChannel(s.alice.deps, s.alice.groups, CHAN, "alice", didFor("alice"), payload),
-    ).toEqual({ events: [], outbound: [] });
+    ).toEqual({ events: [], outbound: [], copies: [] });
     expect(
       await receiveChannel(s.alice.deps, s.alice.groups, CHAN, "ALICE", didFor("alice"), payload),
-    ).toEqual({ events: [], outbound: [] });
+    ).toEqual({ events: [], outbound: [], copies: [] });
   });
 
   it("answers a newcomer's key request with a gkey DM, and ignores a foreign channel's", async () => {
     const clock = { t: NOW };
-    const s = sides(clock);
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob", "dave"] : undefined);
+    const s = sides(clock, roster);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const sid = epochFor(s.alice.groups, CHAN)?.sid;
     s.alice.dm.sent.length = 0;
@@ -713,6 +799,7 @@ describe("receiveGkey", () => {
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const gkey = s.alice.dm.sent[0]?.inner as Record<string, unknown>;
     const sid = gkey.sid as string;
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
     expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
       { kind: "channel_key_received", channel: CHAN, from: "alice", sid },
     ]);
@@ -726,6 +813,7 @@ describe("receiveGkey", () => {
     const s = sides(clock, roster);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const first = s.alice.dm.sent[0]?.inner as Record<string, unknown>;
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
     receiveGkey(s.bob.deps, s.bob.groups, first, "alice", didFor("alice"));
     const oldSid = epochFor(s.bob.groups, CHAN)?.sid;
     // A newer epoch whose holders still name Carol, who is no longer on the roster.
@@ -759,14 +847,91 @@ describe("receiveGkey", () => {
       key: newEpochKey(),
       holders: ["alice", "bob", "carol"],
     };
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
     expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
       { kind: "channel_key_received", channel: CHAN, from: "alice", sid: gkey.sid },
     ]);
   });
 
+  it("drops a gkey from a sender off the roster, even for a first import", () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
+    const s = sides(clock, roster);
+    const gkey = {
+      t: "gkey",
+      ch: CHAN,
+      sid: newEpochId(),
+      key: newEpochKey(),
+      holders: ["alice", "bob"],
+    };
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
+    expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "mallory", "did-mallory")).toEqual([
+      {
+        kind: "channel_dropped",
+        channel: CHAN,
+        reason: "sender-not-in-roster",
+        detail: expect.any(String),
+      },
+    ]);
+    expect(epochFor(s.bob.groups, CHAN)).toBeUndefined();
+  });
+
+  it("drops a first import when this device never asked for the key", () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
+    const s = sides(clock, roster);
+    const gkey = {
+      t: "gkey",
+      ch: CHAN,
+      sid: newEpochId(),
+      key: newEpochKey(),
+      holders: ["alice", "bob"],
+    };
+    // No requestKey call: the key is dropped, and the channel stays unarmed.
+    expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
+      {
+        kind: "channel_dropped",
+        channel: CHAN,
+        reason: "not-requested",
+        detail: expect.any(String),
+      },
+    ]);
+    expect(epochFor(s.bob.groups, CHAN)).toBeUndefined();
+    // Asking first lets the same key in.
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
+    expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
+      { kind: "channel_key_received", channel: CHAN, from: "alice", sid: gkey.sid },
+    ]);
+  });
+
+  it("replaces an epoch already held without asking again", async () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
+    const s = sides(clock, roster);
+    await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
+    const first = s.alice.dm.sent[0]?.inner as Record<string, unknown>;
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
+    receiveGkey(s.bob.deps, s.bob.groups, first, "alice", didFor("alice"));
+    const oldSid = epochFor(s.bob.groups, CHAN)?.sid;
+    // A newer epoch from the same sender supersedes by arrival, with no
+    // fresh request: the channel is already armed.
+    const second = {
+      t: "gkey",
+      ch: CHAN,
+      sid: newEpochId(),
+      key: newEpochKey(),
+      holders: ["alice", "bob"],
+    };
+    expect(receiveGkey(s.bob.deps, s.bob.groups, second, "alice", didFor("alice"))).toEqual([
+      { kind: "channel_key_received", channel: CHAN, from: "alice", sid: second.sid },
+    ]);
+    expect(epochFor(s.bob.groups, CHAN)?.sid).not.toBe(oldSid);
+  });
+
   it("drops a bad key, never stores it, never throws", () => {
     const clock = { t: NOW };
     const s = sides(clock);
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
     const badKey = { t: "gkey", ch: CHAN, sid: "sid-x", key: "not-a-key", holders: ["alice"] };
     expect(receiveGkey(s.bob.deps, s.bob.groups, badKey, "alice", didFor("alice"))).toEqual([
       {
@@ -821,6 +986,7 @@ describe("rotateDue", () => {
         },
       ],
       outbound: [],
+      copies: [],
     });
     const next = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "day two", ["alice", "bob"]);
     const nextPayload = channelMsg(next)?.payload ?? "";
@@ -829,6 +995,7 @@ describe("rotateDue", () => {
     ).toEqual({
       events: [expect.objectContaining({ kind: "channel_received", body: "day two" })],
       outbound: [],
+      copies: [],
     });
   });
 
@@ -870,6 +1037,70 @@ describe("channelsWithEpoch", () => {
     expect(channelsWithEpoch(s.alice.groups).sort()).toEqual(["#grappa", "#other"]);
     onMemberLeft(s.alice.deps, s.alice.groups, CHAN, "alice", ["bob"]);
     expect(channelsWithEpoch(s.alice.groups)).toEqual(["#other"]);
+  });
+});
+
+describe("key copies", () => {
+  it("records one copy per member a gkey DM went to, with the exact gkey inner", () => {
+    const clock = { t: NOW };
+    const s = sides(clock);
+    const res = distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob", "carol"]);
+    expect(res.copies).toHaveLength(2);
+    expect(res.copies.map((c) => c.peer)).toEqual(["bob", "carol"]);
+    const sid = epochFor(s.alice.groups, CHAN)?.sid;
+    for (const copy of res.copies) {
+      expect(JSON.parse(copy.body)).toEqual({
+        t: "gkey",
+        ch: "#grappa",
+        sid,
+        key: expect.any(String),
+        holders: ["alice", "bob", "carol"],
+      });
+      // The body is the exact inner the DM carried.
+      const dm = s.alice.dm.sent.find((d) => d.nick === copy.peer);
+      expect(JSON.stringify(dm?.inner)).toBe(copy.body);
+    }
+  });
+
+  it("records a copy when answering a key request, and none when nothing is sent", async () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
+    const s = sides(clock, roster);
+    await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
+    const sid = epochFor(s.alice.groups, CHAN)?.sid;
+    s.alice.dm.sent.length = 0;
+    const answered = onKeyreq(s.alice.deps, s.alice.groups, CHAN, "bob");
+    expect(answered.copies).toHaveLength(1);
+    expect(answered.copies[0]?.peer).toBe("bob");
+    expect(JSON.parse(answered.copies[0]?.body ?? "")).toEqual(
+      expect.objectContaining({ t: "gkey", sid }),
+    );
+    // A request that sends nothing copies nothing.
+    expect(requestKey(s.bob.deps, s.bob.groups, CHAN).copies).toEqual([]);
+  });
+
+  it("records copies on rotation, for the members who remain", async () => {
+    const clock = { t: NOW };
+    const s = sides(clock);
+    await shareEpoch(s, ["alice", "bob", "carol"]);
+    s.alice.dm.sent.length = 0;
+    const left = onMemberLeft(s.alice.deps, s.alice.groups, CHAN, "carol", ["alice", "bob"]);
+    expect(left.copies.map((c) => c.peer)).toEqual(["bob"]);
+    expect(JSON.parse(left.copies[0]?.body ?? "")).toEqual(
+      expect.objectContaining({ t: "gkey", sid: epochFor(s.alice.groups, CHAN)?.sid }),
+    );
+    // Bob's epoch still names Carol as a holder, so the audit rotates and copies the new key.
+    const audited = auditEpochRotation(s.bob.deps, s.bob.groups, CHAN, ["alice", "bob"]);
+    expect(audited.copies.map((c) => c.peer)).toEqual(["alice"]);
+  });
+
+  it("is always present, empty when no gkey DM went out", () => {
+    const clock = { t: NOW };
+    const s = sides(clock);
+    expect(requestKey(s.bob.deps, s.bob.groups, CHAN).copies).toEqual([]);
+    expect(onMemberJoined(s.bob.deps, s.bob.groups, CHAN, "dave", ["alice", "bob"]).copies).toEqual(
+      [],
+    );
   });
 });
 

@@ -16,18 +16,26 @@ import {
   encryptChannel,
   epochFor,
   epochHoldersStale,
+  expireHeldRows,
   GROUP_ROTATION_INTERVAL_MS,
   type GroupSessionsState,
   gkeyInner,
+  HELD_ROW_TTL_MS,
+  type HeldRow,
+  holdRow,
   importEpoch,
   KEYREQ_ANSWER_THROTTLE_MS,
   keyreqAnswerDue,
   keyreqPayload,
+  keyreqSentAtFor,
+  MAX_HELD_ROWS,
   markKeyreqAnswered,
+  markKeyreqSent,
   newGroupSessionsState,
   REPLAY_WINDOW,
   rotateEpochForLeave,
   rotationDue,
+  takeHeldRows,
 } from "../lib/e2e/groupSessions";
 import {
   channelSigText,
@@ -113,11 +121,19 @@ const ALICE_DID = didFor(RING, "alice");
 
 describe("state and constants", () => {
   it("starts empty at version 2, with the documented constants", () => {
-    expect(newGroupSessionsState()).toEqual({ v: 2, epochs: {}, keyreqAnsweredAt: {} });
+    expect(newGroupSessionsState()).toEqual({
+      v: 2,
+      epochs: {},
+      keyreqAnsweredAt: {},
+      keyreqSentAt: {},
+      held: [],
+    });
     expect(newGroupSessionsState().v).toBe(2);
     expect(GROUP_ROTATION_INTERVAL_MS).toBe(86_400_000);
     expect(REPLAY_WINDOW).toBe(128);
     expect(KEYREQ_ANSWER_THROTTLE_MS).toBe(60_000);
+    expect(MAX_HELD_ROWS).toBe(32);
+    expect(HELD_ROW_TTL_MS).toBe(3_600_000);
   });
 
   it("creates an epoch with folded holders, found under any case of the channel", () => {
@@ -507,6 +523,99 @@ describe("rotation", () => {
     const rotated = rotateEpochForLeave(groups, CHAN, ["alice", "bob"], NOW);
     expect(rotated.oldSid).toBeNull();
     expect(epochFor(groups, CHAN)?.sid).toBe(rotated.newSid);
+  });
+});
+
+describe("key requests sent", () => {
+  it("records when this device asked for a key, and clears it on import or drop", async () => {
+    const aliceGroups = newGroupSessionsState();
+    const bobGroups = newGroupSessionsState();
+    expect(keyreqSentAtFor(bobGroups, CHAN)).toBeUndefined();
+    markKeyreqSent(bobGroups, "#Grappa", NOW);
+    expect(keyreqSentAtFor(bobGroups, CHAN)).toBe(NOW);
+    expect(keyreqSentAtFor(bobGroups, "#other")).toBeUndefined();
+    // A successful import clears the outstanding request for the channel.
+    await encryptChannel(aliceGroups, CHAN, "hi", ["alice", "bob"], signAlice, NOW);
+    expect(importEpoch(bobGroups, CHAN, aliceGkey(aliceGroups), ALICE_DID, NOW)).toBe("imported");
+    expect(keyreqSentAtFor(bobGroups, CHAN)).toBeUndefined();
+    // Dropping the channel clears it too.
+    markKeyreqSent(bobGroups, CHAN, NOW);
+    dropChannel(bobGroups, CHAN);
+    expect(keyreqSentAtFor(bobGroups, CHAN)).toBeUndefined();
+    // Dropping just the epoch clears it as well.
+    markKeyreqSent(bobGroups, CHAN, NOW);
+    dropEpoch(bobGroups, CHAN);
+    expect(keyreqSentAtFor(bobGroups, CHAN)).toBeUndefined();
+  });
+
+  it("tolerates a state sealed before the field existed", () => {
+    const groups = newGroupSessionsState();
+    delete (groups as Partial<GroupSessionsState>).keyreqSentAt;
+    expect(keyreqSentAtFor(groups, CHAN)).toBeUndefined();
+    markKeyreqSent(groups, CHAN, NOW);
+    expect(keyreqSentAtFor(groups, CHAN)).toBe(NOW);
+  });
+});
+
+describe("held rows", () => {
+  const row = (sid: string, at: number, channel = CHAN): HeldRow => ({
+    channel,
+    sid,
+    from: "alice",
+    fromDid: ALICE_DID,
+    payload: `payload-${sid}-${at}`,
+    receivedAt: at,
+  });
+
+  it("holds rows, and takes back only the ones the new key unlocks", () => {
+    const groups = newGroupSessionsState();
+    expect(holdRow(groups, row("sid-1", NOW))).toEqual([]);
+    expect(holdRow(groups, row("sid-1", NOW + 1))).toEqual([]);
+    expect(holdRow(groups, row("sid-2", NOW + 2))).toEqual([]);
+    expect(groups.held).toHaveLength(3);
+    const taken = takeHeldRows(groups, CHAN, "sid-1");
+    expect(taken.map((r) => r.payload)).toEqual(["payload-sid-1-1000000", "payload-sid-1-1000001"]);
+    expect(groups.held).toHaveLength(1);
+    expect(taken.every((r) => r.sid === "sid-1")).toBe(true);
+    // Nothing left under that sid, and nothing under another channel.
+    expect(takeHeldRows(groups, CHAN, "sid-1")).toEqual([]);
+    expect(takeHeldRows(groups, "#other", "sid-2")).toEqual([]);
+    expect(groups.held).toHaveLength(1);
+  });
+
+  it("drops the oldest rows past the cap, and returns them instead of losing them silently", () => {
+    const groups = newGroupSessionsState();
+    const dropped: HeldRow[] = [];
+    for (let i = 0; i < MAX_HELD_ROWS + 2; i++) {
+      dropped.push(...holdRow(groups, row(`sid-${i}`, NOW + i)));
+    }
+    expect(groups.held).toHaveLength(MAX_HELD_ROWS);
+    expect(dropped.map((r) => r.payload)).toEqual([
+      "payload-sid-0-1000000",
+      "payload-sid-1-1000001",
+    ]);
+    expect(groups.held[0]?.payload).toBe("payload-sid-2-1000002");
+  });
+
+  it("expires rows older than the TTL, and keeps the fresh ones", () => {
+    const groups = newGroupSessionsState();
+    holdRow(groups, row("sid-old", NOW));
+    holdRow(groups, row("sid-fresh", NOW + HELD_ROW_TTL_MS));
+    const expired = expireHeldRows(groups, NOW + HELD_ROW_TTL_MS + 1);
+    expect(expired.map((r) => r.sid)).toEqual(["sid-old"]);
+    expect(groups.held.map((r) => r.sid)).toEqual(["sid-fresh"]);
+    // A row exactly at the TTL is not older than it: it survives.
+    expect(expireHeldRows(groups, NOW + HELD_ROW_TTL_MS)).toEqual([]);
+    expect(groups.held).toHaveLength(1);
+  });
+
+  it("tolerates a state sealed before the field existed", () => {
+    const groups = newGroupSessionsState();
+    delete (groups as Partial<GroupSessionsState>).held;
+    expect(holdRow(groups, row("sid-1", NOW))).toEqual([]);
+    expect(groups.held).toHaveLength(1);
+    expect(takeHeldRows(groups, CHAN, "sid-1")).toHaveLength(1);
+    expect(expireHeldRows(groups, NOW + HELD_ROW_TTL_MS + 1)).toEqual([]);
   });
 });
 
