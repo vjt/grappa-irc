@@ -273,7 +273,9 @@ export function requestKey(
  * first member with an open cic who holds the epoch answers with a gkey
  * DM. Duplicate answers are harmless (the first valid import wins), so
  * the answer is throttled per asker, not elected: every holder answers
- * once per asker per minute. Nothing when no epoch is held.
+ * once per asker per minute. The asker joins the stored epoch's holder
+ * set before the gkey is built, so the key they receive names them and
+ * their later exit rotates the epoch. Nothing when no epoch is held.
  */
 export function onKeyreq(
   deps: ChannelE2eDeps,
@@ -282,11 +284,15 @@ export function onKeyreq(
   from: string,
 ): ChannelE2eResult {
   const res = emptyResult();
-  const inner = gkeyInner(groups, channel);
-  if (inner === undefined) return res;
+  const held = epochFor(groups, channel);
+  if (held === undefined) return res;
   if (foldOf(from) === foldOf(deps.ownNick)) return res;
   if (!keyreqAnswerDue(groups, channel, from, deps.now())) return res;
   markKeyreqAnswered(groups, channel, from, deps.now());
+  const folded = foldOf(from);
+  if (!held.holders.includes(folded)) held.holders.push(folded);
+  const inner = gkeyInner(groups, channel);
+  if (inner === undefined) return res;
   const sent = { ...inner };
   res.outbound.push(...deps.sendDm(from, sent));
   res.copies.push({ peer: from, body: JSON.stringify(sent) });
