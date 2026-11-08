@@ -288,13 +288,27 @@ jobs:
         # match the local dev environment (CI/dev parity) so a workflow
         # that passes locally also passes on the runner.
         #
-        # The download runs on a cache MISS only. `--retry`, not
-        # `--retry-all-errors`: plain retry already covers the failure that
-        # was measured — 504 is in curl's transient set, and a 504-then-200
-        # server was recovered from locally — whereas `--retry-all-errors`
-        # also retries a 404, so a mistyped COMPOSE_VER would go red a minute
-        # late for nothing. The retries absorb a transient 5xx or timeout like
-        # the one measured; a sustained outage is what the cache is for.
+        # The download runs on a cache MISS only, and until some run has saved
+        # an entry every run IS a miss — so on those runs the retry window is
+        # not a fallback behind the cache, it is the only defence there is.
+        #
+        # `--retry`, not `--retry-all-errors`: every failure measured so far
+        # is a 504, which is in curl's transient set (a 504-then-200 server was
+        # recovered from locally), whereas `--retry-all-errors` also retries a
+        # 404, so a mistyped COMPOSE_VER would go red minutes late for nothing.
+        #
+        # 11 attempts, 30s apart: ~5 min of waiting, plus however long each
+        # failing attempt takes to fail. The first cut was 6 attempts 10s
+        # apart, and on this change's own first run (42469926842) it lost on 3
+        # of 4 shards. Each got its first 504 ~11s in, then five more, 10s
+        # apart, each answered in ~30ms — while shard 4 got a 200 from the
+        # same URL at 10:06:14Z, inside that same minute. Why the retries
+        # answered at once is NOT known; it is not connection reuse, since
+        # under `-f` curl closes and reconnects for every retry (measured
+        # locally). So the wider window buys spread, not a model: eleven
+        # samples of an outage that is intermittent per request, over five
+        # minutes instead of one. Five minutes is the price on a shard whose
+        # alternative is a red and a 15-min rerun, far under the 60-min cap.
         #
         # Two checks back the cache key. The key must end in the pin THIS
         # shell sees: were COMPOSE_VER moved into a step's env, the key would
@@ -316,7 +330,7 @@ jobs:
           esac
           if [ "$CACHE_HIT" != "true" ]; then
             mkdir -p ~/.docker/cli-plugins
-            curl -fsSL --retry 5 --retry-delay 10 \
+            curl -fsSL --retry 10 --retry-delay 30 \
               "https://github.com/docker/compose/releases/download/${COMPOSE_VER}/docker-compose-linux-x86_64" \
               -o ~/.docker/cli-plugins/docker-compose
           fi
@@ -329,8 +343,21 @@ jobs:
           fi
 
       - name: Save docker compose plugin (issue 2603)
-        # ONE writer, for the reason the dep cache's save step gives below:
-        # four shards would race to upload one immutable entry.
+        # EVERY shard that downloaded writes. The dep cache's shard-1 writer
+        # below has a reason that does not transfer: that writer reaches its
+        # save whatever happened, while this one writes only if its download
+        # succeeded, which is exactly the lottery this cache exists for. On run
+        # 42469926842 shard 1 lost it and shard 4 won it, and with shard 1 as
+        # the only writer the good binary was thrown away.
+        #
+        # A second writer on the same key is harmless, established in the
+        # toolkit bundled at this sha (dist/save-only/index.js): the entry is
+        # RESERVED before anything is uploaded; a losing reservation raises
+        # ReserveCacheError, logged at info ("Failed to save: ... another job
+        # may be creating this cache", possibly after a "Cache reservation
+        # failed" warning), and uploads nothing; saveImpl catches every error
+        # and saveOnlyRun exits 0. Whichever writer wins stored a binary that
+        # passed both checks above.
         #
         # It runs straight after the download, not at the end of the job, so a
         # red suite still warms the cache. And it keeps the IMPLIED `success()`
@@ -342,7 +369,7 @@ jobs:
         # finds an entry by key AND by a version hashed from the `path:` text,
         # so a drift is a miss on every run — green, silent, and this fix
         # undone. Pinned by test/infra/integration_compose_cache_test.bats.
-        if: matrix.shard == 1 && steps.compose-cache.outputs.cache-hit != 'true'
+        if: steps.compose-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.docker/cli-plugins/docker-compose
