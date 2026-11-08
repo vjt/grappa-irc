@@ -378,7 +378,7 @@ export function decryptChannel(
   }
   const held = inboundFor(state, channel, sender, payload.sid);
   if (held === undefined) return { ok: false, reason: "no-session", sid: payload.sid };
-  let plaintext: Uint8Array<ArrayBuffer>;
+  let plaintext: Uint8Array;
   let index: number;
   try {
     const out = withInbound(adapter, held, (session) => {

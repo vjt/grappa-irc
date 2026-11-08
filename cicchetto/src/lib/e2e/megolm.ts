@@ -143,8 +143,10 @@ function unavailable(what: string): MegolmUnavailableError {
 }
 
 function needFn(obj: unknown, name: string, what: string): void {
+  // A class is a function, not an object: the constructors under test are
+  // classes, so both spellings count.
   if (
-    typeof obj !== "object" ||
+    (typeof obj !== "object" && typeof obj !== "function") ||
     obj === null ||
     typeof (obj as Record<string, unknown>)[name] !== "function"
   ) {

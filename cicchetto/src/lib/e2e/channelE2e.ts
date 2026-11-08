@@ -70,7 +70,7 @@ import {
   type GroupSessionsState,
 } from "./groupSessions";
 import type { MegolmAdapter } from "./megolm";
-import { encodePayload, fold, parseGkeyInner, PayloadError } from "./wire";
+import { fold, parseGkeyInner, PayloadError } from "./wire";
 
 /** The tag of a gkey DM's `Engine.send`: its rows never exist (`chatStore` no-ops an `out` alone). */
 export const GKEY_TAG = "gkey";
@@ -212,9 +212,10 @@ export function distributeKey(
 
 /**
  * A member joined `channel` (the roster `members` is after the join).
- * We send the epoch key only when we are the designated sender; a join
- * of our own nick sends nothing (we wait for the key). Nothing is sent
- * when the roster names nobody else.
+ * We send the epoch key only when we are the designated sender, and
+ * only to the newcomer: the members who already hold the epoch need no
+ * copy of it. A join of our own nick sends nothing (we wait for the
+ * key). Nothing is sent when the roster names nobody else.
  */
 export function onMemberJoined(
   deps: ChannelE2eDeps,
@@ -226,7 +227,7 @@ export function onMemberJoined(
   if (foldOf(joined) === foldOf(deps.ownNick)) return emptyResult();
   const sender = designatedSender(members, joined);
   if (sender === undefined || foldOf(sender) !== foldOf(deps.ownNick)) return emptyResult();
-  return distributeKey(deps, groups, channel, members);
+  return distributeKey(deps, groups, channel, [joined]);
 }
 
 /**
