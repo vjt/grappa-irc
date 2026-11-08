@@ -6034,3 +6034,107 @@ would run their OLD code — still calling `valid_nick?/1` — against the NEW
 `Identifier`, which no longer has it, until their own load. A remote call
 always goes to the current module version, so the purged old `Identifier`
 does not help, and `EventRouter` runs on every inbound line.
+<!-- entry #2609 -->
+
+---
+
+## 2026-11-08 — issue 2609: an admin settings save is one transaction, parsed once
+
+Follow-up to issue 2546. The two rulings below are vjt's, RELAYED by the
+orchestrator from the peer vjt-claude-08 (20:50 and 20:53 UTC) and not seen
+first-hand: **Q1 = A0** (`SourceAliasManager.arm/1` stays BEFORE the
+transaction, with no compensation), **Q2 = dedupe** (the door validates once;
+the store keeps its own guards).
+
+### What was still wrong after issue 2546
+
+Measured on 87daa4cca through the controller, with the count-based
+`BusyRetry` fault seam calibrated in-tool (a bearer GET consumes 0 checks, a
+two-key PUT 2): a fault on the second `put` answered 503 with the FIRST key
+committed. And `put_raw/2` broadcast from inside the write, so a put inside a
+transaction that later rolled back had already told every subscriber a value
+the DB never committed (measured: one broadcast carrying the uncommitted
+value, none correcting it after the rollback).
+
+### The shape
+
+`Grappa.ServerSettings.put_many/1` takes a list of `t:write/0` — the parsed
+form of a setting change — checks each against the store's own guards BEFORE
+the transaction opens, writes the rows in ONE `Repo.immediate_transaction/1`
+that `Repo.BusyRetry.run/1` retries whole, and broadcasts once, after the
+commit. Every single-key `put_*` is `put_many/1` of one write, so
+`put_raw/2` and `delete_raw/1` are gone and there is one write path. An empty
+list writes and broadcasts nothing.
+
+The controller parses the body ONCE (`parse_updates/1`, pure, one
+`traverse/3`): each key's clause returns its typed write or names its dotted
+field. The validate/put clause pair per key, the whole write pass, its
+re-validation, and `Enum.reduce_while` + `halt_or_cont/1` are gone. The
+addressing probe (`arm_for/2`) runs between parse and commit, so a refusal
+still lands before anything is written (#609).
+
+### Retry outside, transaction inside — measured, not assumed
+
+On a temp WAL file with a second connection holding the write lock: a
+`BusyRetry` INSIDE the transaction never saw the fault — the wait happens at
+`BEGIN IMMEDIATE`, outside it — and a raw `Exqlite.Error` escaped (a 500);
+wrapped AROUND the transaction it classified `:busy_locked` and degraded to
+`:db_unavailable` after 5 attempts. When an inner retry does fire, it sleeps
+holding the write lock: a probe connection was refused the lock between each
+of 3 attempts. That is the rule `ReadCursor.delete_for_dm/3` and the
+`Accounts` family contract already state; this store now follows it.
+
+### Validation: twice, at two boundaries, and why the third went
+
+Per value the admin door now checks twice: the parse pass (it names the
+refused field) and `put_many/1`'s guards (they protect the store for every
+caller). The third check — the write pass re-running the door's own
+validator on the term it had just accepted — was not a boundary, and it was
+unobservable: a mutant that re-runs `parse_updates/1` before `put_many/1`
+turned 0 of 8785 tests red. A validator/store drift now reaches
+`put_many/1`, is refused before the transaction opens with nothing written,
+and surfaces as a 500 (`FallbackController` has no `:invalid_value` clause),
+not as a 422 after a partial commit.
+
+### The fault the tests use
+
+A trigger `RAISE(ABORT, 'database is locked')` on one key's INSERT/UPDATE,
+created inside the test's Sandbox transaction: `BusyRetry` classifies it as
+write contention and gives up after its budget, whatever the write path's
+shape. The count-based seam cannot say "the second key's write" across
+shapes: under `put_many/1` a request makes one attempt, so the check that
+used to be the second put is the second ATTEMPT. On unchanged code the
+trigger test was red where the defect is (upload `10737418241` vs
+`10737418240`); the one-broadcast test was red with 4 broadcasts.
+
+### Known, not done here
+
+- After a successful probe, a 503 still leaves the manager armed on a prefix
+  the DB does not hold (measured on main before this change) — issue 2612,
+  by ruling A0.
+- `:connection_closed` under a wrapped transaction: `BusyRetry` does not
+  retry it because "the row is durable", which inside an explicit
+  transaction is false (the transaction did not commit), so its terminal log
+  line would describe a write that did not land. Read, not measured; it
+  applies to every `BusyRetry.run(fn -> Repo.immediate_transaction(…) end)`
+  site, not only this one.
+- A single-key `put_*` is now `BEGIN IMMEDIATE` + read + write + `COMMIT`
+  instead of an autocommit write; a busy `BEGIN` costs a connection
+  disconnect (6 disconnect lines for 6 failed `BEGIN`s on the bench).
+
+### Measured
+
+- Targeted (`settings_controller_test`, `server_settings_test`): 156 tests,
+  0 failures. Full suite on c7cfb6074: 8785 tests, 79 properties, 8 doctests,
+  0 failures.
+- Mutants (full suite each): per-key commits (each row its own transaction,
+  still one broadcast) turned 1 of 8785 red, the trigger test; one
+  transaction with a broadcast per row turned 3 red — `put_many/1`'s
+  broadcast-once test, the trigger test (a broadcast from inside the
+  transaction that rolled back) and the controller's one-broadcast test; the
+  door's parse re-run before `put_many/1` turned 0 red. Every kill is a test
+  born with this change: the suite as it stood discriminated neither axis.
+- `lib/` diff: −118 lines (controller −153, `ServerSettings` +35 — the
+  `t:write/0` type and `put_many/1`'s doc).
+- Deploy: no defstruct, no module in `HotReload.LongLivedModules` touched —
+  HOT expected (read, preflight not run).
