@@ -451,5 +451,111 @@ defmodule GrappaWeb.ArchiveControllerTest do
       remaining = Scrollback.list_archive({:user, vjt.id}, net.id, MapSet.new())
       assert Enum.any?(remaining, &(&1.target == "#a"))
     end
+
+    # issue 2428 — `/clear` acts on the window the operator is SITTING IN, so
+    # the `$server` network tab is the case that filed the issue: an oper's
+    # server notices grow without bound, and the archive listing never offers
+    # the pseudo-channel (it is filtered out of `list_archive/3` by design),
+    # which used to leave this DELETE as the one door with no way to reach it.
+    test "$server → 204 + drops the server-window rows", %{conn: conn, vjt: vjt} do
+      net = net_with_credential(vjt)
+      :ok = seed_archive_rows(vjt, net)
+
+      Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(vjt.name))
+
+      conn = delete(conn, "/networks/#{net.slug}/archive/#{URI.encode_www_form("$server")}")
+
+      assert response(conn, 204) == ""
+
+      # The MOTD is gone; the channel and DM rows are untouched.
+      assert Scrollback.count_for_target({:user, vjt.id}, net.id, "$server") == 0
+      assert Scrollback.count_for_target({:user, vjt.id}, net.id, "#a") == 1
+      assert Scrollback.count_for_target({:user, vjt.id}, net.id, "vjt-peer") == 1
+
+      assert_received %Phoenix.Socket.Broadcast{
+        event: "event",
+        payload: %{kind: :archive_purged, target: "$server"}
+      }
+    end
+  end
+
+  # issue 2428 — the number `/clear`'s confirm names. Controller scope only:
+  # the counting predicate itself is pinned in `Grappa.ScrollbackTest`.
+  describe "GET /networks/:network_slug/archive/:target/count (issue 2428)" do
+    test "counts a channel's rows", %{conn: conn, vjt: vjt} do
+      net = net_with_credential(vjt)
+      :ok = seed_archive_rows(vjt, net)
+
+      conn = get(conn, "/networks/#{net.slug}/archive/#{URI.encode_www_form("#a")}/count")
+
+      assert json_response(conn, 200) == %{"count" => 1}
+    end
+
+    # The DM row is stored at `channel = "vjt-grappa", dm_with = "vjt-peer"`,
+    # so this also pins that the count uses the DELETE's peer predicate and
+    # not a `channel ==` match: the count must see the row the delete takes.
+    test "counts a query target's rows", %{conn: conn, vjt: vjt} do
+      net = net_with_credential(vjt)
+      :ok = seed_archive_rows(vjt, net)
+
+      conn = get(conn, "/networks/#{net.slug}/archive/vjt-peer/count")
+
+      assert json_response(conn, 200) == %{"count" => 1}
+    end
+
+    test "counts the $server window", %{conn: conn, vjt: vjt} do
+      net = net_with_credential(vjt)
+      :ok = seed_archive_rows(vjt, net)
+
+      conn = get(conn, "/networks/#{net.slug}/archive/#{URI.encode_www_form("$server")}/count")
+
+      assert json_response(conn, 200) == %{"count" => 1}
+    end
+
+    # A window with nothing in it answers 0 rather than 404: "how many" has an
+    # answer, and the caller decides that zero means "no confirm to open".
+    test "an empty target answers 0, not 404", %{conn: conn, vjt: vjt} do
+      net = net_with_credential(vjt)
+      :ok = seed_archive_rows(vjt, net)
+
+      conn = get(conn, "/networks/#{net.slug}/archive/#{URI.encode_www_form("#nothing")}/count")
+
+      assert json_response(conn, 200) == %{"count" => 0}
+    end
+
+    test "400 for a malformed target name", %{conn: conn, vjt: vjt} do
+      net = net_with_credential(vjt)
+
+      conn = get(conn, "/networks/#{net.slug}/archive/#{URI.encode_www_form("#bad name")}/count")
+
+      assert json_response(conn, 400) == %{"error" => "bad_request"}
+    end
+
+    test "401 without a bearer" do
+      net = network_fixture(slug: "az-#{System.unique_integer([:positive])}")
+
+      conn =
+        get(
+          Phoenix.ConnTest.build_conn(),
+          "/networks/#{net.slug}/archive/#{URI.encode_www_form("#a")}/count"
+        )
+
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "404 for cross-user network access", %{vjt: vjt} do
+      net = net_with_credential(vjt)
+      :ok = seed_archive_rows(vjt, net)
+
+      stranger = user_fixture(name: "stranger-#{System.unique_integer([:positive])}")
+      stranger_session = session_fixture(stranger)
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(stranger_session.id)
+        |> get("/networks/#{net.slug}/archive/#{URI.encode_www_form("#a")}/count")
+
+      assert json_response(conn, 404) == %{"error" => "not_found"}
+    end
   end
 end

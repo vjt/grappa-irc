@@ -2193,6 +2193,28 @@ catch-all page. A client that parses that body as JSON fails, and a
 client that tests only for 404 believes the route exists. Below v61, use
 an order of your own and do not post.
 
+### 8g. Clearing a window's history asks how much it will delete (issue 2428, v64)
+
+`DELETE /networks/:slug/archive/:target` — until now reachable only from the
+archive list — also drops the scrollback of an ACTIVE window: a joined
+channel, an open query, or the `$server` network tab. The active keyset only
+bounds what the archive LISTING offers; it is not a precondition on the
+delete. As with an archive entry, the channel is not parted and the query
+window is not closed: the rows go, the window stays.
+
+To name the number before the operator commits:
+
+* `GET /networks/:slug/archive/:target/count` → `{"count": n}`, the rows the
+  DELETE would drop for that window. A target with no rows answers
+  `{"count": 0}`, not 404.
+
+The count uses the DELETE's own predicate, so it is a promise about the rows
+that go and not an estimate from the rows this client happens to hold.
+
+Against a server older than v64 the route does not exist (404) — treat that
+as "cannot confirm", the way §8d says, and refuse the action instead of
+confirming blind.
+
 ## 9. Event kind inventory (issue 2260)
 
 Every `"event"` frame carries a `kind`. This is the complete set the server

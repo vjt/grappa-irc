@@ -1375,6 +1375,26 @@ defmodule Grappa.Scrollback do
   def target_kind(name) when is_binary(name), do: :query
 
   @doc """
+  The window classifier the WRITE side of the archive surface dispatches
+  on — `target_kind/1` plus the one carve-out that classifier deliberately
+  leaves to its callers.
+
+  `$server` is a pure `channel == ^"$server"` window (it can never carry
+  DM history, see `dm_eligible?/1`), but `target_kind/1` answers `:query`
+  for it because it carries no sigil. Both consumers here — the DELETE
+  (`ArchiveController.delete/2`) and the count (`count_for_target/3`) —
+  need the three-way answer, so it is stated once instead of being
+  re-derived at each door (issue 2428).
+
+  Note `:server` and `:channel` resolve to the SAME SQL predicate; the
+  atom is kept apart so a reader (and a future `$`-synthetic) can see that
+  the carve-out was made on purpose and not by the fold.
+  """
+  @spec window_kind(String.t()) :: :channel | :query | :server
+  def window_kind("$server"), do: :server
+  def window_kind(name) when is_binary(name), do: target_kind(name)
+
+  @doc """
   Adds the channel-vs-DM dispatch `WHERE` clause to a `Message`-bound
   query (a query already-bound to `Message` so the implicit `[m]`
   binding resolves).
@@ -1720,6 +1740,52 @@ defmodule Grappa.Scrollback do
       {:ok, {count, _}} -> {:ok, count}
       {:error, :db_unavailable} = err -> err
     end
+  end
+
+  @doc """
+  How many rows `/clear` would drop for ONE window — the number the confirm
+  modal names before the operator commits (issue 2428). The per-window twin
+  of `count_for_network/1`, which does the same job for issue 2320's network
+  delete: asked once, when the confirm opens, never on a render.
+
+  ## It counts what the DELETE deletes, not what the window READS
+
+  The predicate here is deliberately the delete's (`where_dm_peer/2` for a
+  query, `channel == ^canonical` for a channel or `$server`), and NOT the
+  read path's `channel_or_dm_where/3`. The two disagree in exactly one case:
+  an OWN-NICK target, where the read path narrows to self-messages
+  (`/msg <ownnick> body`) while `delete_for_dm/3` drops every row whose
+  folded `dm_with` is that nick — i.e. every inbound DM the account ever
+  received. A modal that counted the read shape would promise to remove a
+  handful of rows and then take the inbox. The count is a promise about the
+  delete, so it is spelled with the delete's own clause.
+
+  Read-only, so no `BusyRetry`: a busy database makes this fail loudly at
+  the confirm door, which is the right moment to fail.
+
+  Covered by the same indexes as the delete: `channel` and
+  `(subject, network_id, channel)` for the channel/$server arm, the folded
+  `COALESCE(dm_with, channel)` expression index for the query arm.
+  """
+  @spec count_for_target(subject(), integer(), String.t()) :: non_neg_integer()
+  def count_for_target(subject, network_id, target)
+      when is_integer(network_id) and is_binary(target) do
+    canonical = Identifier.canonical_target(target)
+
+    Message
+    |> Subject.subject_where(subject)
+    |> where([m], m.network_id == ^network_id)
+    |> then(fn query ->
+      case window_kind(target) do
+        # `$server` and `:channel` are the same `channel ==` predicate (see
+        # `window_kind/1`); both arms are kept so the dispatch mirrors the
+        # DELETE's rather than collapsing two named cases into a catch-all.
+        :server -> where(query, [m], m.channel == ^canonical)
+        :channel -> where(query, [m], m.channel == ^canonical)
+        :query -> where_dm_peer(query, canonical)
+      end
+    end)
+    |> Repo.aggregate(:count)
   end
 
   @doc """

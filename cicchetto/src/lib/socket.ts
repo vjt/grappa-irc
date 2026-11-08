@@ -452,7 +452,7 @@ let _socket: Socket | null = null;
 // every such E2E push and inbox page as malformed. The server still emits
 // the key on every message; only the client's requirement moved.
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 63;
+export const CLIENT_PROTOCOL_VERSION = 64;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //
