@@ -41,6 +41,7 @@ defmodule Grappa.E2eInbox.Entry do
           bytes: non_neg_integer() | nil,
           payload: String.t() | nil,
           own: boolean(),
+          channel: String.t() | nil,
           inserted_at: DateTime.t() | nil
         }
 
@@ -54,6 +55,10 @@ defmodule Grappa.E2eInbox.Entry do
     field :bytes, :integer
     field :payload, :string
     field :own, :boolean, default: false
+    # Channel E2E (protocol v63): the folded channel name the message was
+    # sent to, or nil for a direct message. The client needs it to show
+    # the message in the right channel; grappa never reads the payload.
+    field :channel, :string
 
     timestamps(type: :utc_datetime, updated_at: false)
   end
@@ -64,9 +69,11 @@ defmodule Grappa.E2eInbox.Entry do
 
   @doc """
   Builds an insert changeset. Every field is required but `own`, which
-  defaults to false (a peer's message). The sender must be a nick on a
-  peer's row (`Grappa.IRC.Identifier.wire_nick?/1`); on an own row it is
-  our nick as the ircd set it, which is bounded at
+  defaults to false (a peer's message), and `channel`, which is nil for
+  a direct message and the folded channel name for a channel message
+  (protocol v63). The sender must be a nick on a peer's row
+  (`Grappa.IRC.Identifier.wire_nick?/1`); on an own row it is our nick
+  as the ircd set it, which is bounded at
   `Grappa.IRC.Identifier.max_wire_nick_bytes/0` and not judged (R7). `from_did`
   is a device id or `*`, the msgid a token `Grappa.IRC.E2e.msgid?/1`
   accepts, and the payload no longer than the receiver's per-message
@@ -75,9 +82,12 @@ defmodule Grappa.E2eInbox.Entry do
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(entry, attrs) do
     entry
-    |> cast(attrs, [:device_id, :sender, :from_did, :verb, :msgid, :payload, :own])
+    |> cast(attrs, [:device_id, :sender, :from_did, :verb, :msgid, :payload, :own, :channel])
     |> validate_required([:device_id, :sender, :from_did, :verb, :msgid, :payload])
     |> validate_sender()
+    |> validate_change(:channel, fn :channel, channel ->
+      if is_nil(channel) or Identifier.valid_channel?(channel), do: [], else: [channel: "is not a channel"]
+    end)
     |> validate_change(:from_did, fn :from_did, from ->
       if from == "*" or E2e.did?(from), do: [], else: [from_did: "is not a device id"]
     end)

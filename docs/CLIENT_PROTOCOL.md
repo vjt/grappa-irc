@@ -646,7 +646,7 @@ Check `protocol_version >= 28`. ⚠️ There is no 27 — the shape moved twice
 before this version was published, and the pin gate requires a number per
 move. Nothing ever spoke 27.
 
-### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46; network name v47; devices v49; copies to your other devices v50; NACK from `*` v52; a device's `last_seen_at` v56 and `inserted_at` v57)
+### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46; network name v47; devices v49; copies to your other devices v50; NACK from `*` v52; a device's `last_seen_at` v56 and `inserted_at` v57; channel messages v63)
 
 An encrypted query is a conversation grappa carries and cannot read. The
 endpoints (cicchetto, or a bot using the shared Python package) run Olm via
@@ -660,7 +660,7 @@ fragments, and hands you one event per whole message and device:
 {"kind": "e2e_message", "network": "azzurra", "id": 4711, "from": "vjt-claude",
  "from_did": "AaZaARRDyBk", "to_did": "BoBBoBBoBBo", "verb": "pkmsg",
  "msgid": "q83vEjRWeJA", "payload": "{\"v\":2,\"id\":{…},\"bodies\":{…}}",
- "own": false}
+ "own": false, "channel": null}
 ```
 
 `payload` is the compact JSON text the peer sent, as a string, exactly as
@@ -679,7 +679,9 @@ the KEYS as any key change (trust on first use, the key alarm, SAS).
 `to_did` (v49) is the device of YOURS this copy is for. `own` (v50) is
 `false` on every message from a peer and `true` on a copy of a message one
 of YOUR other devices sent (see *Copies to your other devices* below): show
-it as sent, not received.
+it as sent, not received. `channel` (v63) is the folded channel name the
+message was sent to, or `null` for a direct message (see *Channel
+messages* below): show the message in that channel, not in a query.
 
 **One identity, several devices (v49).** A subject holds one E2E identity
 per network: a master Ed25519 key, and up to **4** devices it vouches for.
@@ -791,11 +793,13 @@ Sending:
 |---|---|
 | `POST /networks/:network_id/e2e/messages` `{"target", "verb", "from", "to", "payload", "priority"?, "expires_at"?}` | **202** `{"msgid": "…"}` — accepted, not delivered |
 
-`target` is a nick; `verb` is `keyreq`, `pkmsg`, `msg` or `nack` (lowercase);
+`target` is a nick, or for `:msg` a channel (see *Channel messages*
+below); `verb` is `keyreq`, `pkmsg`, `msg` or `nack` (lowercase);
 `from` is the sending device's `did`, and must be LISTED; `to` is the
 peer's device or `*`, in the combinations the frame allows: `keyreq` goes
 to `*`, `pkmsg` and `msg` to one device or to `*` (one message, one body per
-device), `nack` to one device. The four consent verbs of v53 (`REQUEST`,
+device), `nack` to one device. For a channel `:msg`, `to` is always `*`:
+the frame has no single recipient device. The four consent verbs of v53 (`REQUEST`,
 `ACCEPT`, `REFUSE`, `CANCEL`) do not go through this door: they move a
 request, and the requests resource sends them (§4i). `payload` is the
 compact JSON text you built
@@ -892,7 +896,9 @@ dropped for a bound once accepted: a message fits whole at the door or is
 refused there. When a message's first line fails at once, the push can
 reach you before the 202 does: match it by msgid whenever it comes.
 
-400 `bad_request` for a channel target, an unknown verb or priority,
+400 `bad_request` for a target that is not a nick (or, for `:msg`, a
+channel — a channel target with any other verb, a `to` other than `*`, or
+a channel you are not a member of), an unknown verb or priority,
 addresses the verb may not carry, a payload that is not compact JSON text,
 or an `expires_at` out of place; 400 `invalid_line` for a CR, LF or NUL in
 `target`; 422 `unknown_device` when `from` is not a listed device of yours
@@ -904,6 +910,57 @@ the whole message, or for a `keyreq` while a KEYS from that peer is still
 arriving (asking again then only doubles its cost); 404 `not_found` with no
 session on the network; 502 `upstream_unreachable` while the upstream link
 is down; 504 `session_timeout` if the session does not answer.
+
+**Channel messages (v63).** One encrypted message, sent ONCE as a PRIVMSG
+to the channel — IRC multicast does the fan-out for free, so a channel
+message costs one line, not one per member. The frame is the same CTCP
+shape, with the channel as its target and `to` always `*`:
+
+`\x01E2E msg <msgid> <i>/<n> <from> * <chunk>\x01`
+
+and the payload is the v3 group shape, one sender key per sender
+(Megolm-style), not one global key:
+
+```json
+{"v": 3, "ch": "#grappa", "sid": "<session id>", "i": 0, "body": "<Megolm ciphertext, base64 unpadded>"}
+```
+
+`ch` is the folded channel name, `sid` the group session id, `i` the
+chain index, `body` the ciphertext. A long message chunks `i/n` as a DM
+does, and receivers wait 60 s from its LAST line. grappa reassembles the
+same multicast independently for every member and queues the whole message
+into every listed device's inbox, with `channel` set — so `e2e_message`
+carries the channel and the offline queue stays per-device (7 days, 1 MiB
+per sender-nick share). A channel message that reaches no listed device is
+NACKed to the sender, as a DM, as for a DM. The pacer treats the channel
+as one recipient: one lane per channel, the same budgets. `e2e_incoming`
+and `e2e_incoming_lost` (§4l) name no channel in v63 — correlate them with
+the delivered message by `msgid`, which is unique per message. And a
+channel E2E line is never stored anywhere else, exactly as a DM line is
+not: no scrollback, no search, no push payload.
+
+The key never touches the server, and there is no endpoint that serves it:
+an endpoint serving the channel key kills the E2E. The key travels
+encrypted inside the existing pairwise Olm DM between two members — that
+DM is the invite and the bootstrap — as a `msg` whose payload is
+`{"t": "gkey", "ch": "#grappa", "sid": "…", "key": "…"}`. On JOIN, one
+member sends the current epoch key to the newcomer in one pairwise
+message. On PART or KICK the key rotates, mandatorily: the new key is
+distributed pairwise to ALL REMAINING members (one-time, O(n)) — you
+cannot encrypt the new key under the old key and post it in the channel,
+the departed member holds the old key. Rotation is periodic too: one
+channel message carrying the new key encrypted under the old key, which
+costs nothing — daily is fine. A departed member keeps the old key: they
+can re-read what they already received, nothing after. Rotation is only
+real if clients DELETE old keys. Membership on the IRC channel IS key
+access: grappa never sees the key and has no authorisation endpoint, and
+a member who leaks it reads the current epoch — that is unsolvable by
+crypto, and accepted. Forward secrecy is bounded, not true: epoch rotation
+plus a one-way hash-chain ratchet bounds exposure to the compromised epoch;
+true forward secrecy and post-compromise security need MLS (RFC 9420,
+TreeKEM), for which this stack has no ready library. Check
+`protocol_version >= 62` before offering channel E2E: below it the door
+answers 400 on a channel target, and `e2e_message` carries no `channel`.
 
 **Your key bundle (v44, per device since v49).** A `KEYREQ` addressed to
 you is never delivered as an event: grappa answers it itself, connected
@@ -2178,7 +2235,7 @@ forever.
 | `directory_progress` | user | `/LIST` scan progress count |
 | `e2e_incoming` | user | a peer's PKMSG or MSG spanning several lines began to arrive: `from`, `from_did`, `to` (a device id or `*`), `msgid`; ended by its `e2e_message` or by `e2e_incoming_lost` (§4l, v59) |
 | `e2e_incoming_lost` | user | a message `e2e_incoming` announced will not reach the device `to` names: `from_did`, `to`, `msgid` (§4l, v59) |
-| `e2e_message` | user | one whole end-to-end encrypted message for one of your devices (`to_did`, v49): from a peer, or, with `own: true` (v50), a copy of one your other device sent; payload never decoded; queued until that device acks (§4f) |
+| `e2e_message` | user | one whole end-to-end encrypted message for one of your devices (`to_did`, v49): from a peer, or, with `own: true` (v50), a copy of one your other device sent; `channel` (v63) names the channel it was sent to, or is null for a DM; payload never decoded; queued until that device acks (§4f) |
 | `e2e_pairing_closed` | user | a pairing rendezvous is gone: `closed` by a side, `expired`, or `replaced` by a newer open (§4g, v48) |
 | `e2e_pairing_message` | user | a side posted message `seq` on a pairing rendezvous; no payload, fetch it (§4g, v48) |
 | `e2e_pairing_offered` | user | a pairing rendezvous opened with the creator's key, offered to the account's other devices: its code and `expires_at`; also in each join snapshot until someone joins (§4g, v55) |

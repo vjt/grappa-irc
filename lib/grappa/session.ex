@@ -965,7 +965,10 @@ defmodule Grappa.Session do
   def e2e_priorities, do: @e2e_priorities
 
   @doc """
-  issue 2430 — sends one end-to-end encrypted message to `target` (a nick).
+  issue 2430 — sends one end-to-end encrypted message to `target` (a nick,
+  or, for `:msg`, a channel the subject is a member of — channel E2E,
+  protocol v63: one line to the channel, every member's grappa
+  reassembles the same multicast).
 
   `payload` is what the client built: the compact JSON text of the agreed
   payload (wire v2), which grappa never parses. `{from, to}` are the
@@ -1004,12 +1007,15 @@ defmodule Grappa.Session do
   silently.
 
   `{:error, :invalid_line}` for a CR/LF/NUL in `target`;
-  `{:error, :bad_request}` for a target that is not a nick, a verb outside
-  `e2e_send_verbs/0`, a priority outside `e2e_priorities/0`, addresses the
-  verb may not carry or a `from` that is not a did, a payload that is not
-  compact JSON text, or an `expires_at` that is not positive or rides
-  anything but a `:control` MSG or PKMSG; `{:error, :unknown_device}` when
-  `from` names no device of the subject's stored list;
+  `{:error, :bad_request}` for a target that is not a nick (or, for `:msg`,
+  a channel), a verb outside `e2e_send_verbs/0`, a priority outside
+  `e2e_priorities/0`, addresses the verb may not carry or a `from` that is
+  not a did, a payload that is not compact JSON text, or an `expires_at`
+  that is not positive or rides anything but a `:control` MSG or PKMSG —
+  and, from the session, for a channel target the subject is not a member
+  of (membership is the only authorisation channel E2E has); `{:error,
+  :unknown_device}` when `from` names no device of the subject's stored
+  list;
   `{:error, :too_large}` past `E2e.max_payload_bytes/0` or when the payload
   needs more than 64 lines;
   `{:error, :rate_limited}` when the peer's queue (32 text messages, 32
@@ -1061,17 +1067,43 @@ defmodule Grappa.Session do
       not known_e2e_send?(verb, priority, expires_at) ->
         {:error, :bad_request}
 
-      # `addressed?/3` takes any term, so it is also what judges the
-      # addresses' type. A client always sends from a device: `*` speaks for
-      # the user, and only grappa does (KEYS, and the NACK of a message no
-      # listed device could read).
-      Identifier.wire_nick?(target) and E2e.did?(from) and E2e.addressed?(verb, from, to) and
-          E2e.chunk?(payload) ->
+      # Channel E2E (protocol v63): a channel target takes only `:msg`
+      # (a PKMSG opens a pairwise session, a KEYREQ or NACK answers one)
+      # and only to `*` — the frame has no single recipient device, every
+      # member's grappa reassembles the same multicast line. Membership
+      # is the session's check (`e2e_channel_send_ok?/4`); this gate is shape.
+      e2e_send_target_ok?(target, verb, {from, to}, payload) ->
         :ok
 
       true ->
         {:error, :bad_request}
     end
+  end
+
+  # `addressed?/3` takes any term, so it is also what judges the
+  # addresses' type. A client always sends from a device: `*` speaks for
+  # the user, and only grappa does (KEYS, and the NACK of a message no
+  # listed device could read).
+  @spec e2e_send_target_ok?(String.t(), E2e.verb(), {String.t(), String.t()}, String.t()) :: boolean()
+  defp e2e_send_target_ok?(target, verb, addresses, payload) do
+    e2e_channel_target_ok?(target, verb, addresses, payload) or
+      e2e_nick_target_ok?(target, verb, addresses, payload)
+  end
+
+  # A channel target takes only `:msg` (a PKMSG opens a pairwise session,
+  # a KEYREQ or NACK answers one) and only to `*` — the frame has no
+  # single recipient device, every member's grappa reassembles the same
+  # multicast line.
+  @spec e2e_channel_target_ok?(String.t(), E2e.verb(), {String.t(), String.t()}, String.t()) :: boolean()
+  defp e2e_channel_target_ok?(target, verb, {from, to}, payload) do
+    Identifier.valid_channel?(target) and verb == :msg and to == "*" and E2e.did?(from) and
+      E2e.addressed?(verb, from, to) and E2e.chunk?(payload)
+  end
+
+  @spec e2e_nick_target_ok?(String.t(), E2e.verb(), {String.t(), String.t()}, String.t()) :: boolean()
+  defp e2e_nick_target_ok?(target, verb, {from, to}, payload) do
+    Identifier.wire_nick?(target) and E2e.did?(from) and E2e.addressed?(verb, from, to) and
+      E2e.chunk?(payload)
   end
 
   # A verb and a priority from the closed sets, and a deadline only where

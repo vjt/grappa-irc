@@ -567,7 +567,9 @@ defmodule Grappa.Session.Wire do
   # device that reads and acknowledges it. S1 (protocol 50): `own` is true
   # on a copy of a message the subject itself sent from another of its
   # devices (`from` is then our own nick, `from_did` our sending device),
-  # false on every message from a peer.
+  # false on every message from a peer. Channel E2E (protocol 62):
+  # `channel` is the folded channel the message was sent to, or nil for
+  # a direct message.
   @type e2e_message_payload :: %{
           kind: :e2e_message,
           id: pos_integer(),
@@ -578,7 +580,8 @@ defmodule Grappa.Session.Wire do
           verb: e2e_verb(),
           msgid: String.t(),
           payload: String.t(),
-          own: boolean()
+          own: boolean(),
+          channel: String.t() | nil
         }
 
   @typedoc """
@@ -1730,7 +1733,8 @@ defmodule Grappa.Session.Wire do
       verb: entry.verb,
       msgid: entry.msgid,
       payload: entry.payload,
-      own: entry.own
+      own: entry.own,
+      channel: entry.channel
     }
   end
 

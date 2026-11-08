@@ -341,8 +341,9 @@ defmodule Grappa.Session.EventRouter do
           | {:peer_nick_renamed, old_nick :: String.t()}
           # issue 2430 — one well-formed E2E line addressed to us. `from` is
           # the RAW nick (display); `Session.Server` folds it for the
-          # reassembly key.
-          | {:e2e_fragment, from :: String.t(), E2e.Fragment.t()}
+          # reassembly key. `channel` is nil for a DM, the folded channel
+          # name for a channel message (protocol v63).
+          | {:e2e_fragment, from :: String.t(), E2e.Fragment.t(), channel :: String.t() | nil}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -417,12 +418,14 @@ defmodule Grappa.Session.EventRouter do
 
   defp e2e?(_), do: false
 
-  # Only one shape is delivered: a well-formed PRIVMSG addressed to our own
-  # nick, from somebody else. The rest is dropped without a trace, each for
-  # a stated reason —
+  # Only two shapes are delivered: a well-formed PRIVMSG addressed to our
+  # own nick (a DM, channel nil), or to a channel we are a member of
+  # (channel E2E, protocol v63 — the folded channel name rides the effect
+  # so the reassembled message can be queued with its channel). The rest
+  # is dropped without a trace, each for a stated reason —
   #
-  #   * a CHANNEL target: there is no channel encryption yet (Megolm is
-  #     later), so nobody here can read it;
+  #   * a CHANNEL target we are NOT a member of: the sender is talking
+  #     to a channel we cannot read — same as a DM to someone else;
   #   * our OWN line echoed back (`echo-message`): we sent it, the client
   #     has its plaintext, and decrypting our own ciphertext is not a thing;
   #   * a NOTICE: the agreed wire is PRIVMSG only (2430);
@@ -439,17 +442,41 @@ defmodule Grappa.Session.EventRouter do
   defp route_e2e(%Message{command: :privmsg, params: [target, body]} = msg, state) do
     sender = Message.sender_nick(msg)
 
-    with true <- nick_eq?(target, state.nick),
-         false <- nick_eq?(sender, state.nick),
+    with false <- nick_eq?(sender, state.nick),
          true <- Identifier.wire_nick?(sender),
+         {:ok, channel} <- e2e_channel(target, state),
          {:ok, fragment} <- E2e.parse(body) do
-      {:cont, state, [{:e2e_fragment, sender, fragment}]}
+      {:cont, state, [{:e2e_fragment, sender, fragment, channel}]}
     else
       _ -> {:cont, state, []}
     end
   end
 
   defp route_e2e(%Message{}, state), do: {:cont, state, []}
+
+  # The channel a PRIVMSG target names, or nil for a DM to our own nick.
+  # A channel target must be one we are a member of: membership is the
+  # only authorisation channel E2E has — the key is distributed pairwise
+  # to members, so a line to a channel we never joined is not ours to
+  # read. The target arrives in wire case; `members` keys are folded,
+  # so it is normalised with this network's casemapping first.
+  @spec e2e_channel(String.t(), state()) :: {:ok, String.t() | nil} | :error
+  defp e2e_channel(target, state) do
+    cond do
+      nick_eq?(target, state.nick) ->
+        {:ok, nil}
+
+      Identifier.valid_channel?(target) ->
+        isupport = Map.get(state, :isupport, ISupport.default())
+        channel = normalize_channel(target, ISupport.casemapping(isupport))
+        members = Map.get(state, :members, %{})
+
+        if Map.has_key?(members, channel), do: {:ok, channel}, else: :error
+
+      true ->
+        :error
+    end
+  end
 
   # #162 — the /ignore delivery filter. Pure: reads `state.ignores`, which
   # Session.Server loads at init and re-syncs on mutation — already COMPILED

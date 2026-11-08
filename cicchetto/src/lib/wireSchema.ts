@@ -1207,6 +1207,7 @@ export const S_SessionWireE2eMessagePayload = {
     msgid: "s",
     payload: "s",
     own: "b",
+    channel: { u: ["s", "z"] },
   },
 } as const;
 

@@ -53,12 +53,11 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v61 -> v62 (issue 2597): two keys on `whois_bundle`,
- * `grappa_client_ips` and `grappa_client_last_known_ip` — where the grappa
- * user holding the WHOIS target connects from, null unless the asker's
- * session holds umode o/O or the asking client speaks for a grappa admin.
- * shottino reads the bundle key by key and reads neither, so a terminal
- * shows no address; showing one would be a feature, not a catch-up.
+ * Last read, v62 -> v63 (channel E2E): the server half of Megolm-style
+ * channel encryption — `POST …/e2e/messages` takes a `#channel` target
+ * for `:msg` to `*`, and `e2e_message` carries `channel` (null for a DM).
+ * No change to anything shottino reads; a terminal that wants channel
+ * E2E would need the group-session client half, which is a follow-up.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */

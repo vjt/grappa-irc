@@ -66,13 +66,15 @@ defmodule GrappaWeb.E2eController do
   `expires_at`. grappa starts the message only if its last line can leave
   2 s before it, so the answer can still be back in time.
 
-  400 `bad_request` for a target that is not a nick, a verb outside
-  `keyreq | pkmsg | msg | nack`, a priority outside `control | reactive |
-  text`, addresses the verb may not carry, a payload that is not compact
-  JSON text (printable ASCII, no space), or an `expires_at` that is not a
-  positive integer or rides anything but a `control` MSG/PKMSG; 422
-  `unknown_device` when `from` names no device of this subject's stored
-  list; 413 `too_large`
+  400 `bad_request` for a target that is not a nick — or, for `:msg`, a
+  channel the subject is a member of (channel E2E, protocol 62: one
+  `:msg` to `*` per channel, membership the only authorisation) — a verb
+  outside `keyreq | pkmsg | msg | nack`, a priority outside `control |
+  reactive | text`, addresses the verb may not carry, a payload that is
+  not compact JSON text (printable ASCII, no space), or an `expires_at`
+  that is not a positive integer or rides anything but a `control`
+  MSG/PKMSG; 422 `unknown_device` when `from` names no device of this
+  subject's stored list; 413 `too_large`
   past 32 KiB or 64 lines; 422 `too_late` when `expires_at` can already no
   longer be met; 429 `rate_limited` when the peer's queue (32 text
   messages, 32 lines in each of the urgent and reactive lanes) or the

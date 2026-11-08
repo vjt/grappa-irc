@@ -1994,8 +1994,16 @@ defmodule Grappa.Session.Server do
   def handle_call({:send_e2e, target, verb, lane, {from, to} = addresses, payload, expires_at}, _, state)
       when is_binary(target) and is_atom(verb) and is_atom(lane) and is_binary(from) and is_binary(to) and
              is_binary(payload) and (is_nil(expires_at) or is_integer(expires_at)) do
-    {reply, state} = queue_e2e_send(state, target, verb, lane, addresses, payload, expires_at)
-    {:reply, reply, state}
+    # Channel E2E (protocol v62): the session enforces what the facade
+    # gates — a channel target goes out only as `:msg` to `*`, and only to
+    # a channel the subject is a member of. Membership is the only
+    # authorisation channel E2E has.
+    if e2e_channel_send_ok?(state, target, verb, to) do
+      {reply, state} = queue_e2e_send(state, target, verb, lane, addresses, payload, expires_at)
+      {:reply, reply, state}
+    else
+      {:reply, {:error, :bad_request}, state}
+    end
   end
 
   # issue 2430 S1 — a copy of what one of the subject's devices sent, for
@@ -6658,9 +6666,10 @@ defmodule Grappa.Session.Server do
 
   # issue 2430 — one inbound E2E line addressed to us. It is never a row:
   # the whole message, once reassembled, goes to the client and nowhere
-  # else (see `receive_e2e_fragment/3`).
-  defp apply_effects([{:e2e_fragment, from, fragment} | rest], state) do
-    apply_effects(rest, receive_e2e_fragment(state, from, fragment))
+  # else (see `receive_e2e_fragment/4`). `channel` is nil for a DM, the
+  # folded channel name for a channel message (protocol v62).
+  defp apply_effects([{:e2e_fragment, from, fragment, channel} | rest], state) do
+    apply_effects(rest, receive_e2e_fragment(state, from, fragment, channel))
   end
 
   defp apply_effects([{:topic_changed, channel, entry} | rest], state) do
@@ -8251,8 +8260,8 @@ defmodule Grappa.Session.Server do
   # one that drops a buffered message, and each message that expires, says
   # it will not arrive. `in_flight/3` is asked BEFORE `put/4`: afterwards an
   # opened message and a dropped one both look like nothing buffered.
-  @spec receive_e2e_fragment(t(), String.t(), E2e.Fragment.t()) :: t()
-  defp receive_e2e_fragment(state, from, fragment) do
+  @spec receive_e2e_fragment(t(), String.t(), E2e.Fragment.t(), String.t() | nil) :: t()
+  defp receive_e2e_fragment(state, from, fragment, channel) do
     now = System.monotonic_time(:millisecond)
     {live, expired} = E2eReassembly.expire(state.e2e_reassembly, now)
     :ok = Enum.each(expired, &lose_e2e_incoming(state, &1, &1.to))
@@ -8261,7 +8270,7 @@ defmodule Grappa.Session.Server do
 
     case E2eReassembly.put(live, key, fragment, now) do
       {:complete, message, buffer} ->
-        deliver_e2e(arm_e2e_reassembly_sweep(%{state | e2e_reassembly: buffer}), from, message)
+        deliver_e2e(arm_e2e_reassembly_sweep(%{state | e2e_reassembly: buffer}), from, message, channel)
 
       {:pending, buffer} ->
         :ok = if before == :error, do: announce_e2e_incoming(state, from, fragment), else: :ok
@@ -8342,8 +8351,8 @@ defmodule Grappa.Session.Server do
   # device that asked, and is not started while an earlier KEYS to that
   # nick is still going out: one for several devices outlasts the asker's
   # retry, and a second behind it would only double its cost (O2 (a)).
-  @spec deliver_e2e(t(), String.t(), E2eReassembly.message()) :: t()
-  defp deliver_e2e(state, from, %{verb: :keyreq, from: asker}) do
+  @spec deliver_e2e(t(), String.t(), E2eReassembly.message(), String.t() | nil) :: t()
+  defp deliver_e2e(state, from, %{verb: :keyreq, from: asker}, _) do
     now = System.monotonic_time(:millisecond)
     key = fold_key(state, from)
     msgid = E2e.new_msgid()
@@ -8389,7 +8398,7 @@ defmodule Grappa.Session.Server do
   # A REQUEST that meets our consent is answered ACCEPT once the row is
   # written (`reply_consent/4`): a row that could not be written answers
   # nothing.
-  defp deliver_e2e(state, from, %{verb: verb, from: did, payload: payload})
+  defp deliver_e2e(state, from, %{verb: verb, from: did, payload: payload}, _)
        when verb in [:request, :accept, :refuse, :cancel] do
     now = DateTime.utc_now()
 
@@ -8425,7 +8434,7 @@ defmodule Grappa.Session.Server do
   # NACK or a KEYS that reaches nobody is dropped at debug: neither is a
   # message a device failed to read, and two grappas answering each
   # other's NACKs would never stop.
-  defp deliver_e2e(state, from, %{verb: verb, to: to} = message) do
+  defp deliver_e2e(state, from, %{verb: verb, to: to} = message, channel) do
     case e2e_recipients(state, to) do
       [] when verb in [:pkmsg, :msg] ->
         :ok = lose_e2e_incoming(state, message, to)
@@ -8436,7 +8445,7 @@ defmodule Grappa.Session.Server do
         state
 
       devices ->
-        {state, queued?} = Enum.reduce(devices, {state, false}, &queue_e2e_copy(from, message, &1, &2))
+        {state, queued?} = Enum.reduce(devices, {state, false}, &queue_e2e_copy(from, message, &1, &2, channel))
         :ok = if queued?, do: maybe_push_e2e(state, verb, from), else: :ok
         state
     end
@@ -8528,9 +8537,21 @@ defmodule Grappa.Session.Server do
 
   # Issue 2577: a device whose queue did not take the message gets no
   # `e2e_message` for it, so it is told the message will not arrive.
-  @spec queue_e2e_copy(String.t(), E2eReassembly.message(), E2eKeys.Device.t(), {t(), boolean()}) :: {t(), boolean()}
-  defp queue_e2e_copy(from, message, device, {state, queued?}) do
-    attrs = %{sender: from, from_did: message.from, verb: message.verb, msgid: message.msgid, payload: message.payload}
+  # `channel` is the folded channel the message was sent to, or nil for
+  # a DM (protocol v62); it rides the row so the client can show the
+  # message in the right channel.
+  @spec queue_e2e_copy(String.t(), E2eReassembly.message(), E2eKeys.Device.t(), {t(), boolean()}, String.t() | nil) ::
+          {t(), boolean()}
+  defp queue_e2e_copy(from, message, device, {state, queued?}, channel) do
+    attrs = %{
+      sender: from,
+      from_did: message.from,
+      verb: message.verb,
+      msgid: message.msgid,
+      payload: message.payload,
+      channel: channel
+    }
+
     put = put_e2e_entry(state, device, attrs)
     :ok = if match?({:error, _}, put), do: lose_e2e_incoming(state, message, device.did), else: :ok
 
@@ -8855,6 +8876,17 @@ defmodule Grappa.Session.Server do
           String.t(),
           pos_integer() | nil
         ) :: {{:ok, String.t()} | {:error, :too_large | :rate_limited | :too_late}, t()}
+  # Channel E2E (protocol v62): a nick target is always fine here; a
+  # channel target must be a `:msg` to `*` for a channel the subject is a
+  # member of — membership is the only authorisation channel E2E has. The
+  # target arrives in client case and `members` keys are folded, so it is
+  # folded first.
+  @spec e2e_channel_send_ok?(t(), String.t(), E2e.verb(), E2e.address()) :: boolean()
+  defp e2e_channel_send_ok?(state, target, verb, to) do
+    not Identifier.valid_channel?(target) or
+      (verb == :msg and to == "*" and Map.has_key?(state.members, fold_key(state, target)))
+  end
+
   defp queue_e2e_send(state, target, :keyreq, lane, addresses, payload, expires_at) do
     if E2eReassembly.pending?(
          state.e2e_reassembly,
