@@ -93,6 +93,8 @@ const {
 } = await import("../lib/e2e/identity");
 const chats = await import("../lib/encryptedChats");
 const { applyPresenceEvent, seedMembers } = await import("../lib/members");
+const { seedTopic } = await import("../lib/channelTopic");
+const { decodePayload } = await import("../lib/e2e/wire");
 const { __resetServerProtocolForTests, setServerProtocol } = await import("../lib/serverProtocol");
 
 const ME = { kind: "user", id: "0b5e" };
@@ -1418,7 +1420,7 @@ describe("encrypted chats, channel presence", () => {
   const CHANNEL = "#grappa";
 
   /** Mounts the glue, establishes the DM session, and sends the first channel message. */
-  async function established() {
+  async function established(tagged = true) {
     const dispose = createRoot((dispose) => {
       chats.mountEncryptedChats();
       return dispose;
@@ -1430,12 +1432,19 @@ describe("encrypted chats, channel presence", () => {
     await chats.drainE2e(net.slug);
 
     const key = channelKey(net.slug, CHANNEL);
+    grappa.joinChannel(CHANNEL, "alice");
+    grappa.joinChannel(CHANNEL, "Bob");
+    if (tagged) {
+      seedTopic(key, {
+        text: "welcome [e2e:1 key-from=alice]",
+        set_by: "alice",
+        set_at: null,
+      });
+    }
     seedMembers(key, [
       { nick: "alice", modes: [] },
       { nick: "Bob", modes: [] },
     ]);
-    grappa.joinChannel(CHANNEL, "alice");
-    grappa.joinChannel(CHANNEL, "Bob");
     setServerProtocol(63);
     await chats.sendChannelEncrypted(net.slug, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
     return { dispose, key };
@@ -1517,6 +1526,90 @@ describe("encrypted chats, channel presence", () => {
       setServerProtocol(62);
       presence(key, "part", "Bob");
       await vi.waitFor(() => expect(grappa.sends.length).toBe(afterEpoch));
+    } finally {
+      dispose();
+      __resetServerProtocolForTests();
+    }
+  });
+
+  it("a channel with no tag stays silent on joins, parts, and seeds", async () => {
+    const { dispose, key } = await established(false);
+    try {
+      const afterEpoch = grappa.sends.length;
+      // The glue's handlers run async: give them a moment, then the
+      // counts must still be exactly where the epoch left them.
+      const settle = () => new Promise((r) => setTimeout(r, 100));
+
+      presence(key, "join", "carol");
+      await settle();
+      expect(grappa.sends.length).toBe(afterEpoch);
+      presence(key, "part", "Bob");
+      await settle();
+      expect(grappa.sends.length).toBe(afterEpoch);
+      seedMembers(key, [
+        { nick: "alice", modes: [] },
+        { nick: "dave", modes: [] },
+      ]);
+      await settle();
+      expect(grappa.sends.length).toBe(afterEpoch);
+    } finally {
+      dispose();
+      __resetServerProtocolForTests();
+    }
+  });
+
+  it("a roster seed on a tagged channel asks for the key when none is held", async () => {
+    const dispose = createRoot((dispose) => {
+      chats.mountEncryptedChats();
+      return dispose;
+    });
+    try {
+      await chats.drainE2e(net.slug);
+      const key = channelKey(net.slug, CHANNEL);
+      grappa.joinChannel(CHANNEL, "alice");
+      seedTopic(key, {
+        text: "welcome [e2e:1 key-from=alice]",
+        set_by: "alice",
+        set_at: null,
+      });
+      setServerProtocol(63);
+      const before = grappa.sends.length;
+      seedMembers(key, [
+        { nick: "alice", modes: [] },
+        { nick: "Bob", modes: [] },
+      ]);
+      await vi.waitFor(() => expect(grappa.sends.length).toBeGreaterThan(before));
+      const last = grappa.sends.at(-1);
+      expect(last).toEqual(expect.objectContaining({ target: CHANNEL, to: "*" }));
+      expect(decodePayload(last?.payload ?? "")).toEqual({
+        v: 4,
+        t: "keyreq",
+        ch: CHANNEL,
+      });
+    } finally {
+      dispose();
+      __resetServerProtocolForTests();
+    }
+  });
+
+  it("our own join on a tagged channel asks for the key again", async () => {
+    const { dispose, key } = await established();
+    try {
+      // Alice drops off the roster without a live part: the seed audits
+      // and rotates, so the epoch she held is gone by the time she joins.
+      const beforeReseed = grappa.sends.length;
+      seedMembers(key, [{ nick: "Bob", modes: [] }]);
+      await vi.waitFor(() => expect(grappa.sends.length).toBeGreaterThan(beforeReseed));
+      const before = grappa.sends.length;
+      presence(key, "join", "alice");
+      await vi.waitFor(() => expect(grappa.sends.length).toBeGreaterThan(before));
+      const last = grappa.sends.at(-1);
+      expect(last).toEqual(expect.objectContaining({ target: CHANNEL, to: "*" }));
+      expect(decodePayload(last?.payload ?? "")).toEqual({
+        v: 4,
+        t: "keyreq",
+        ch: CHANNEL,
+      });
     } finally {
       dispose();
       __resetServerProtocolForTests();

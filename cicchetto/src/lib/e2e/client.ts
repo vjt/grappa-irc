@@ -216,6 +216,14 @@ export type E2eContext = {
    * missing; the audit is what enforces them).
    */
   channelMembers?: (channel: string) => string[] | undefined;
+  /**
+   * The nick the topic of `channel` names as the holder of its epoch key
+   * (`[e2e:1 key-from=<nick>]`), or null when the channel's topic carries
+   * no such tag: what marks a channel as encrypted. Absent when the
+   * caller holds no topics: the seed operation then treats every channel
+   * as unadvertised, and stays silent.
+   */
+  topicTagFor?: (channel: string) => string | null;
 };
 
 /**
@@ -307,6 +315,14 @@ export type E2eClient = {
    * `onMembersSeeded`) and before every channel send.
    */
   auditChannelEpoch(ctx: E2eContext, channel: string, members: string[]): Promise<Report>;
+  /**
+   * The roster seed for `channel` (`members.ts` `onMembersSeeded`): the
+   * audit against `members` and, when no epoch is held, the key request —
+   * in one operation, so the sealed record opens once. Silent on a
+   * channel whose topic carries no tag (`ctx.topicTagFor`): a cleartext
+   * channel's seed never opens the record at all.
+   */
+  seedChannel(ctx: E2eContext, channel: string, members: string[]): Promise<Report>;
   /**
    * A membership delta on `channel`: `joined` the nick that joined (or
    * null), `left` the nick that left, was kicked, or quit (or null),
@@ -1261,6 +1277,52 @@ export function e2eClient(
         };
       }),
 
+    seedChannel: (ctx, channel, members) => {
+      // A channel whose topic carries no tag is cleartext: the seed opens
+      // nothing at all — no audit, no ask, and the sealed record is never
+      // even loaded. The check runs before the lock, so the operation
+      // costs nothing there.
+      if ((ctx.topicTagFor?.(channel) ?? null) === null) {
+        return Promise.resolve({
+          chats: [],
+          pkmsgs: 0,
+          waiting: false,
+          unknownDevice: false,
+          listBehind: false,
+        });
+      }
+      return withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
+        const deps = channelDeps(ctx, engine, account);
+        const res: ChannelE2eResult = { events: [], outbound: [], copies: [] };
+        const audited = await auditEpochRotation(deps, state.groups, channel, members);
+        res.events.push(...audited.events);
+        res.outbound.push(...audited.outbound);
+        res.copies.push(...audited.copies);
+        // The ask a newcomer makes when it holds no epoch: it no-ops when
+        // one is held, so this only fires when the seed found none — the
+        // recovery for a leave/rejoin missed while the cic was closed.
+        const asked = requestKey(deps, state.groups, channel);
+        res.events.push(...asked.events);
+        res.outbound.push(...asked.outbound);
+        res.copies.push(...asked.copies);
+        const { report, refused } = await finish(
+          ctx,
+          engine,
+          verifier,
+          persist,
+          door,
+          [],
+          res.outbound,
+        );
+        const events = reconcileChannelSends(res.events, res.outbound, refused);
+        emitChannelE2eEvents(events);
+        return {
+          ...report,
+          ...(events.length > 0 ? { channelE2e: events } : {}),
+        };
+      });
+    },
+
     channelMembersChanged: (ctx, channel, joined, left, members) =>
       withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
         const deps = channelDeps(ctx, engine, account);
@@ -1269,6 +1331,18 @@ export function e2eClient(
           const r = await onMemberJoined(deps, state.groups, channel, joined, members);
           res.events.push(...r.events);
           res.outbound.push(...r.outbound);
+          res.copies.push(...r.copies);
+          if (fold(joined) === fold(ctx.ownNick)) {
+            // Our own join: the epoch held before the leave is dead (the
+            // join dropped it, if there was one), and a newcomer with no
+            // epoch asks for the key — the recovery for a leave/rejoin
+            // missed while the cic was closed. It no-ops when an epoch is
+            // held, so a join that kept one asks nothing.
+            const asked = requestKey(deps, state.groups, channel);
+            res.events.push(...asked.events);
+            res.outbound.push(...asked.outbound);
+            res.copies.push(...asked.copies);
+          }
         }
         if (left !== null) {
           // Our own leave is hygiene — the epoch is dropped — and runs
@@ -1279,6 +1353,7 @@ export function e2eClient(
             const r = await onMemberLeft(deps, state.groups, channel, left, members);
             res.events.push(...r.events);
             res.outbound.push(...r.outbound);
+            res.copies.push(...r.copies);
           }
         }
         const { report, refused } = await finish(

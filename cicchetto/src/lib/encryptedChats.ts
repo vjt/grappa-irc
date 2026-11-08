@@ -47,6 +47,7 @@ import {
 import { token } from "./auth";
 import { subscribeChannelE2eRows } from "./channelE2eRows";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
+import { parseE2eTopicTag, topicByChannel } from "./channelTopic";
 import { browserE2e } from "./e2e/browser";
 import { atNick, type ByNick, nickEntries, nickValues, noNicks } from "./e2e/byNick";
 import { type Chat, type ChatRow, isMessage, type SendDropped } from "./e2e/chatStore";
@@ -288,6 +289,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const channel =
     typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("grappa-e2e-chats");
 
+  /**
+   * The nick the topic of `channel` on `slug` names as the holder of its
+   * epoch key, or null when the channel's topic carries no tag: what marks
+   * a channel as encrypted. Read off the topic store, which the server
+   * seeds on JOIN.
+   */
+  const e2eTagFor = (slug: string, channel: string): string | null =>
+    parseE2eTopicTag(topicByChannel()[channelKey(slug, channel)]?.text ?? "");
+
   function contextFor(slug: string): Ctx {
     const bearer = token();
     const me = user();
@@ -317,6 +327,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           const list = membersByChannel()[channelKey(slug, channel)];
           return list === undefined ? undefined : list.map((m) => m.nick);
         },
+        // The nick the channel's topic names as the holder of its epoch
+        // key, or null when it carries no tag: the seed operation stays
+        // silent on an untagged channel.
+        topicTagFor: (channel) => e2eTagFor(slug, channel),
       },
     };
   }
@@ -686,20 +700,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   }
 
   /**
-   * The audit for `channel` against the roster `members`
-   * (`client.auditChannelEpoch`): rotates the epoch when a holder left
-   * while every cic was closed. A network held elsewhere runs nothing,
-   * and is not retried: only the user moves it.
+   * The roster seed for `channel` (`client.seedChannel`): the audit
+   * against `members` and, when no epoch is held, the key request — in
+   * one operation. The client stays silent on a channel whose topic
+   * carries no tag. A network held elsewhere runs nothing, and is not
+   * retried: only the user moves it.
    */
-  async function auditChannelEpoch(
-    slug: string,
-    channel: string,
-    members: string[],
-  ): Promise<void> {
+  async function seedChannel(slug: string, channel: string, members: string[]): Promise<void> {
     try {
-      const report = await run(slug, (client, ctx) =>
-        client.auditChannelEpoch(ctx, channel, members),
-      );
+      const report = await run(slug, (client, ctx) => client.seedChannel(ctx, channel, members));
       await afterReport(slug, report);
     } catch (err) {
       unlessElsewhere(err);
@@ -862,11 +871,16 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // The client gates the rotation on the server's protocol (63): a
     // delta on a server below it rotates nothing. A network held
     // elsewhere runs nothing (`channelMembersChanged` swallows that),
-    // and a channel on no network this browser knows is not ours.
+    // and a channel on no network this browser knows is not ours. A
+    // channel whose topic carries no tag is cleartext: its joins and
+    // parts never open the sealed record at all. An epoch held for a
+    // channel that stopped advertising still rotates, via the send-time
+    // audit before every send and the periodic rotation.
     const unsubscribePresence = onPresenceDelta((delta) => {
       const decoded = decodeChannelKey(delta.key);
       if (decoded === null || networkBySlug(decoded.slug) === undefined) return;
       if (delta.joined === null && delta.left === null) return;
+      if (e2eTagFor(decoded.slug, decoded.name) === null) return;
       void channelMembersChanged(
         decoded.slug,
         decoded.name,
@@ -882,13 +896,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     });
     onCleanup(() => unsubscribePresence());
     // A roster seeded (a NAMES burst after joining, or a join reply):
-    // the E2E audit for the channel runs then — a member who left while
-    // every cic was closed is caught here, not only on a live leave.
+    // the audit for the channel runs then — a member who left while
+    // every cic was closed is caught here, not only on a live leave —
+    // and, when no epoch is held, the seed asks for the key. Both ride
+    // one operation; a channel whose topic carries no tag stays silent.
     const unsubscribeSeeded = onMembersSeeded((key, members) => {
       const decoded = decodeChannelKey(key);
       if (decoded === null || networkBySlug(decoded.slug) === undefined) return;
-      void auditChannelEpoch(decoded.slug, decoded.name, members).catch((err: unknown) => {
-        console.warn(`[e2e] could not audit the epoch on ${decoded.slug} ${decoded.name}`, err);
+      void seedChannel(decoded.slug, decoded.name, members).catch((err: unknown) => {
+        console.warn(`[e2e] could not seed the epoch on ${decoded.slug} ${decoded.name}`, err);
       });
     });
     onCleanup(() => unsubscribeSeeded());
@@ -919,7 +935,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     sendEncrypted,
     sendChannelEncrypted,
     requestChannelKey,
-    auditChannelEpoch,
+    seedChannel,
     channelMembersChanged,
     encryptedSendSubmitted,
     lastEncryptedSend,
@@ -962,7 +978,7 @@ export const readEncryptedChat = exports_.readEncryptedChat;
 export const sendEncrypted = exports_.sendEncrypted;
 export const sendChannelEncrypted = exports_.sendChannelEncrypted;
 export const requestChannelKey = exports_.requestChannelKey;
-export const auditChannelEpoch = exports_.auditChannelEpoch;
+export const seedChannel = exports_.seedChannel;
 export const channelMembersChanged = exports_.channelMembersChanged;
 export const encryptedSendSubmitted = exports_.encryptedSendSubmitted;
 export const lastEncryptedSend = exports_.lastEncryptedSend;
