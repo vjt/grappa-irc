@@ -72,6 +72,13 @@ describe("e2eClient channel", () => {
     a.ctx.channelMembers = roster;
     b.ctx.channelMembers = roster;
 
+    // Bob asks for the key before Alice mints the epoch: a first epoch is
+    // only imported after asking, so the ask has to come first.
+    const asked = await b.client.requestChannelKey(b.ctx, CHANNEL);
+    expect(asked.channelE2e).toEqual([{ kind: "channel_key_requested", channel: CHANNEL }]);
+    const noAnswer = await a.client.drain(a.ctx);
+    expect(noAnswer.channelE2e).toBeUndefined();
+
     const before = w.grappa.sends.length;
     const sent = await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
     expect(sent.channelE2e).toEqual([
@@ -155,6 +162,13 @@ describe("e2eClient channel", () => {
     for (const side of [a, b, c]) w.grappa.joinChannel(CHANNEL, side.nick);
     const roster = rosterFor(["alice", "Bob", "carol"]);
     for (const side of [a, b, c]) side.ctx.channelMembers = roster;
+
+    // Bob and Carol ask for the key before Alice mints the epoch: a first
+    // epoch is only imported after asking, so the asks come first.
+    await b.client.requestChannelKey(b.ctx, CHANNEL);
+    await c.client.requestChannelKey(c.ctx, CHANNEL);
+    const noAnswer = await a.client.drain(a.ctx);
+    expect(noAnswer.channelE2e).toBeUndefined();
 
     await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice", "Bob", "carol"]);
     await b.client.drain(b.ctx);
@@ -262,6 +276,10 @@ describe("e2eClient channel", () => {
     await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice"]);
 
     w.grappa.joinChannel(CHANNEL, b.nick);
+    // The roster moves with the join: Alice answers only an asker on it.
+    const joinedRoster = rosterFor(["alice", "Bob"]);
+    a.ctx.channelMembers = joinedRoster;
+    b.ctx.channelMembers = joinedRoster;
     const before = w.grappa.sends.length;
     const asked = await b.client.requestChannelKey(b.ctx, CHANNEL);
     expect(asked.channelE2e).toEqual([{ kind: "channel_key_requested", channel: CHANNEL }]);
