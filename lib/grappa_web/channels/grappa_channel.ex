@@ -2030,8 +2030,11 @@ defmodule GrappaWeb.GrappaChannel do
       else: {:error, :invalid_channel}
   end
 
+  # issue 2599 — every `:nick` / `:nicks` arg names SOMEBODY ELSE (a kick,
+  # op or whois target, a query peer), so it takes the nick the upstream
+  # allows, not the portable charset we register with.
   defp validate_args([{:nick, value} | rest]) do
-    if Identifier.valid_nick?(value),
+    if Identifier.wire_nick?(value),
       do: validate_args(rest),
       else: {:error, :invalid_nick}
   end
@@ -2039,7 +2042,7 @@ defmodule GrappaWeb.GrappaChannel do
   defp validate_args([{:nicks, []} | _]), do: {:error, :invalid_nick}
 
   defp validate_args([{:nicks, list} | rest]) when is_list(list) do
-    if Enum.all?(list, &Identifier.valid_nick?/1),
+    if Enum.all?(list, &Identifier.wire_nick?/1),
       do: validate_args(rest),
       else: {:error, :invalid_nick}
   end

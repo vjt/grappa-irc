@@ -853,7 +853,7 @@ defmodule Grappa.IRC.Client do
   """
   @spec send_kick(pid(), String.t(), String.t(), String.t()) :: send_result()
   def send_kick(client, channel, nick, reason) do
-    if Identifier.valid_channel?(channel) and Identifier.valid_nick?(nick) and
+    if Identifier.valid_channel?(channel) and Identifier.wire_nick?(nick) and
          Identifier.safe_line_token?(reason) do
       send_line(client, "KICK #{channel} #{nick} :#{reason}\r\n")
     else
@@ -871,7 +871,7 @@ defmodule Grappa.IRC.Client do
   """
   @spec send_invite(pid(), String.t(), String.t()) :: send_result()
   def send_invite(client, channel, nick) do
-    if Identifier.valid_channel?(channel) and Identifier.valid_nick?(nick) do
+    if Identifier.valid_channel?(channel) and Identifier.wire_nick?(nick) do
       send_line(client, "INVITE #{nick} #{channel}\r\n")
     else
       reject_invalid_line(:invite)
@@ -929,7 +929,8 @@ defmodule Grappa.IRC.Client do
   `server` is the optional RFC 2812 §3.6.2 target-server the query routes
   through (#198): when nil the frame is the single-target `WHOIS <nick>`,
   when a binary the two-arg `WHOIS <server> <nick>` (the server answers on
-  behalf of the queried nick). The nick is validated with `valid_nick?/1`;
+  behalf of the queried nick). The nick is validated with `wire_nick?/1`
+  (somebody else's nick, so the upstream's charset, issue 2599);
   the server — a single routing slot that may be a server name or a nick —
   with the single-token `safe_oper_token?/1` predicate (no
   whitespace/CRLF/NUL, so it cannot splice an extra wire slot or inject a
@@ -939,13 +940,13 @@ defmodule Grappa.IRC.Client do
   """
   @spec send_whois(pid(), String.t(), String.t() | nil) :: send_result()
   def send_whois(client, nick, nil) do
-    if Identifier.valid_nick?(nick),
+    if Identifier.wire_nick?(nick),
       do: send_line(client, "WHOIS #{nick}\r\n"),
       else: reject_invalid_line(:whois)
   end
 
   def send_whois(client, nick, server) when is_binary(server) do
-    if Identifier.valid_nick?(nick) and Identifier.safe_oper_token?(server),
+    if Identifier.wire_nick?(nick) and Identifier.safe_oper_token?(server),
       do: send_line(client, "WHOIS #{server} #{nick}\r\n"),
       else: reject_invalid_line(:whois)
   end
@@ -965,7 +966,7 @@ defmodule Grappa.IRC.Client do
   """
   @spec send_whowas(pid(), String.t()) :: send_result()
   def send_whowas(client, nick) do
-    if Identifier.valid_nick?(nick),
+    if Identifier.wire_nick?(nick),
       do: send_line(client, "WHOWAS #{nick}\r\n"),
       else: reject_invalid_line(:whowas)
   end

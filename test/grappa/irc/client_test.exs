@@ -450,6 +450,31 @@ defmodule Grappa.IRC.ClientTest do
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "WHOWAS"), 1_000)
     end
 
+    # issue 2599 — a sender naming somebody else takes the nick the upstream
+    # allows: IRCnet's `foo~` / `~foo`, a collision UID, a NICKLEN past 30.
+    test "senders that name somebody else take the nick the upstream allows" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      client = start_client(port)
+
+      for nick <- ["foo~", "~foo", "0AAAAAAAB", String.duplicate("a", 31)] do
+        :ok = Client.send_whois(client, nick, nil)
+        :ok = Client.send_whois(client, nick, "irc.example.net")
+        :ok = Client.send_whowas(client, nick)
+        :ok = Client.send_kick(client, "#sniffo", nick, "bye")
+        :ok = Client.send_invite(client, "#sniffo", nick)
+
+        for line <- [
+              "WHOIS #{nick}\r\n",
+              "WHOIS irc.example.net #{nick}\r\n",
+              "WHOWAS #{nick}\r\n",
+              "KICK #sniffo #{nick} :bye\r\n",
+              "INVITE #{nick} #sniffo\r\n"
+            ] do
+          assert {:ok, ^line} = IRCServer.wait_for_line(server, &(&1 == line), 1_000)
+        end
+      end
+    end
+
     # issue 2599 — these senders trust the nick predicate alone (no
     # `safe_line_token?/1` beside it), so a predicate that let a final `\n`
     # through put it on the wire.
