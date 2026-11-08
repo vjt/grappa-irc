@@ -952,8 +952,10 @@ export function e2eClient(
 
   // Steps 2–4 for what an operation made: `changes` and what the verifier
   // made, then `outbound` and the verifier's payloads. The refusals the
-  // door answered ride along, for the caller to reconcile (a channel step
-  // reports a refused gkey or channel message as an event, not a log line).
+  // door answered ride along beside the report, for the caller to
+  // reconcile (a channel step reports a refused gkey or channel message
+  // as an event, not a log line) — never inside it: a Report's shape is
+  // its callers' contract, and an extra key breaks their exact matches.
   async function finish(
     ctx: E2eContext,
     engine: Engine,
@@ -962,7 +964,7 @@ export function e2eClient(
     door: Door,
     changes: ChatChange[],
     outbound: Outbound[],
-  ): Promise<Report & { refused: RefusedOutbound[] }> {
+  ): Promise<{ report: Report; refused: RefusedOutbound[] }> {
     const sas = sasOutput(verifier);
     const touched = new Set(sas.chats);
     for (const key of await chats.apply(ctx.slot, [...sas.changes, ...changes])) touched.add(key);
@@ -970,11 +972,13 @@ export function e2eClient(
     const sent = await flush(ctx, engine, persist, door, [...outbound, ...sas.outbound]);
     for (const key of await chats.apply(ctx.slot, sent.changes)) touched.add(key);
     return {
-      chats: [...touched],
-      pkmsgs: 0,
-      waiting: engine.waitsOnTheClock(),
-      unknownDevice: sent.unknownDevice,
-      listBehind: false,
+      report: {
+        chats: [...touched],
+        pkmsgs: 0,
+        waiting: engine.waitsOnTheClock(),
+        unknownDevice: sent.unknownDevice,
+        listBehind: false,
+      },
       refused: sent.refused,
     };
   }
@@ -983,7 +987,7 @@ export function e2eClient(
   const step = (ctx: E2eContext, act: (engine: Engine) => Result): Promise<Report> =>
     withEngine(ctx, async (engine, persist, verifier, door) => {
       const res = act(engine);
-      return finish(
+      const { report } = await finish(
         ctx,
         engine,
         verifier,
@@ -992,6 +996,7 @@ export function e2eClient(
         changesFor(res.events, now(), null),
         res.outbound,
       );
+      return report;
     });
 
   return {
@@ -1110,7 +1115,7 @@ export function e2eClient(
           after = last.id;
         }
         const ticked = engine.tick();
-        const end = await finish(
+        const { report: end } = await finish(
           ctx,
           engine,
           verifier,
@@ -1180,7 +1185,7 @@ export function e2eClient(
           body,
           members,
         );
-        const { refused, ...report } = await finish(
+        const { report, refused } = await finish(
           ctx,
           engine,
           verifier,
@@ -1213,7 +1218,7 @@ export function e2eClient(
       }
       return withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
         const res = requestKey(channelDeps(ctx, engine, account), state.groups, channel);
-        const { refused, ...report } = await finish(
+        const { report, refused } = await finish(
           ctx,
           engine,
           verifier,
@@ -1239,7 +1244,7 @@ export function e2eClient(
           channel,
           members,
         );
-        const { refused, ...report } = await finish(
+        const { report, refused } = await finish(
           ctx,
           engine,
           verifier,
@@ -1276,7 +1281,7 @@ export function e2eClient(
             res.outbound.push(...r.outbound);
           }
         }
-        const { refused, ...report } = await finish(
+        const { report, refused } = await finish(
           ctx,
           engine,
           verifier,
@@ -1307,7 +1312,7 @@ export function e2eClient(
               channelsWithEpoch(state.groups),
             )
           : { events: [], outbound: [] };
-        const { refused, ...report } = await finish(
+        const { report, refused } = await finish(
           ctx,
           engine,
           verifier,
@@ -1359,7 +1364,7 @@ export function e2eClient(
           nick,
           ed25519: peer.master,
         };
-        const report = await finish(
+        const { report } = await finish(
           ctx,
           engine,
           verifier,
@@ -1374,7 +1379,8 @@ export function e2eClient(
     verify: (ctx, nick, step) =>
       withEngine(ctx, async (engine, persist, verifier, door) => {
         await verifier.step(nick, step);
-        return finish(ctx, engine, verifier, persist, door, [], []);
+        const { report } = await finish(ctx, engine, verifier, persist, door, [], []);
+        return report;
       }),
 
     deleteChat: (ctx, nick) =>
@@ -1409,7 +1415,8 @@ export function e2eClient(
             wire: null,
           });
         }
-        return finish(ctx, engine, verifier, persist, door, changes, []);
+        const { report } = await finish(ctx, engine, verifier, persist, door, changes, []);
+        return report;
       }),
 
     identity: (ctx, nicks) =>
