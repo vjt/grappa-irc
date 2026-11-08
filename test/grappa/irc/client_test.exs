@@ -560,6 +560,19 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_umode(client, "bad nick", "+i")
     end
 
+    # issue 2599 — the nick is OURS as the ircd set it (`state.nick`): a
+    # collision UID is the server's word, not a malformed nick.
+    test "send_umode/3 and send_umode_query/2 address a nick the ircd forced on us" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      client = start_client(port)
+
+      :ok = Client.send_umode(client, "0AAAAAAAB", "+i")
+      :ok = Client.send_umode_query(client, "0AAAAAAAB")
+
+      assert {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "MODE 0AAAAAAAB +i\r\n"), 1_000)
+      assert {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "MODE 0AAAAAAAB\r\n"), 1_000)
+    end
+
     test "send_umode/3 rejects CR/LF/NUL in modes with {:error, :invalid_line}" do
       {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       client = start_client(port)
