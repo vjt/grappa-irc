@@ -67,7 +67,7 @@ import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { setReadingAtTailKey } from "./lib/readingAtTail";
 import { replyQuote, replyToMessage } from "./lib/replyQuote";
 import { isSettled, nextFollowMode, resolveIntent, type ScrollIntent } from "./lib/scrollAuthority";
-import type { ScrollbackSource } from "./lib/scrollbackSource";
+import { grappaScrollback, type ScrollbackSource } from "./lib/scrollbackSource";
 import {
   LOAD_MORE_THRESHOLD_PX,
   SCROLL_BOTTOM_THRESHOLD_PX,
@@ -87,6 +87,7 @@ import { MircBody } from "./MircText";
 import NextActiveButton from "./NextActiveButton";
 import NickText, { type PrefixGlyph } from "./NickText";
 import PeerAwayBanner from "./PeerAwayBanner";
+import ServerPeekPanel from "./ServerPeekPanel";
 import UserContextMenu from "./UserContextMenu";
 import WhoisCard from "./WhoisCard";
 import WhowasCard from "./WhowasCard";
@@ -4836,6 +4837,32 @@ const ScrollbackPane: Component<Props> = (props) => {
         {/* #386 — the #376 inline BANLIST card was superseded by the
             interactive BanlistModal (opened by /banlist, mounted in Shell),
             mirroring how the #169 /who modal replaced the inline WHO dump. */}
+        {/* issue 2625 — the `$server` peek: on a phone, the `$server` lines a
+            command was answered with, over the window it was typed in. Its
+            lines go through the SAME renderer and handlers as this pane's own
+            rows, so a nick in a services reply opens its query exactly as it
+            would in `$server`. They are grappa's rows whatever window hosts
+            the card (an encrypted query's source has slots of its own), so the
+            slots are grappa's too. The card short-circuits to null unless a
+            peek is open on this network (lib/serverPeek.ts). */}
+        <ServerPeekPanel
+          networkSlug={props.networkSlug}
+          line={(msg) => {
+            const slots = grappaScrollback.slots(msg);
+            return (
+              <ScrollbackLine
+                msg={msg}
+                userNick={userNick()}
+                networkSlug={props.networkSlug}
+                onNickClick={handleNickClick}
+                onNickContextMenu={handleNickContextMenu}
+                onJoinChannel={handleJoinChannel}
+                marker={slots.marker}
+                trailer={slots.trailer}
+              />
+            );
+          }}
+        />
       </div>
       {/* #693 — the far-behind bar. This pane holds the tail because the gap
           back to where the operator left off was bigger than one page;

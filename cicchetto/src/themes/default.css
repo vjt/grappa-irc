@@ -13568,6 +13568,60 @@ html.is-ios27-band .shell {
   font-size: 0.8rem;
 }
 
+/* issue 2625 — the `$server` peek: on a phone, the `$server` lines a command
+   was answered with, in a card over the window it was typed in. The LUSERS
+   card's frame (same family, same top-pinned overlay), with two differences
+   that both follow from what it holds:
+   - NO font-size of its own. Its rows are ordinary scrollback lines and keep
+     the window's `--font-size`, which is also the size `serverPeekFits`
+     counted columns and rows at before letting the card open.
+   - A ceiling on its HEIGHT: 40% of the VISIBLE viewport (`--vh` tracks the
+     on-screen keyboard, see viewportHeight.ts), with the body scrolling inside
+     it. A burst of replies — a services HELP wall is forty lines — must not
+     cover the window, least of all with the keyboard up while the next command
+     is typed. `SERVER_PEEK_MIN_ROWS` is sized against this 40%. */
+.server-peek {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(var(--vh, 1vh) * 40);
+  margin: 0.25rem 0.5rem 0.5rem 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  background: var(--bg-alt);
+}
+
+.server-peek-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-weight: bold;
+  color: var(--accent);
+  margin-bottom: 0.25rem;
+}
+
+.server-peek-title {
+  flex: 0 0 auto;
+}
+
+.server-peek-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.server-peek-close:hover {
+  color: var(--fg);
+}
+
+.server-peek-body {
+  min-height: 0;
+  overflow-y: auto;
+}
+
 /* P-0c — WHOWAS card. Mirror of `.whois-card` shape (inline ephemeral
    surface above scrollback) with a different accent so the operator can
    tell at a glance whether the reply is a live WHOIS or a historical
@@ -13619,8 +13673,8 @@ html.is-ios27-band .shell {
 
 /* #133 — enlarge the close (×) tap target on every top-pinned overlay
    card. The originals were ~14px glyphs with hairline padding — too small
-   to hit comfortably on touch (per chan request). One rule covers all four
-   affordances so they stay identical, and the hit box matches the project
+   to hit comfortably on touch (per chan request). One rule covers every
+   such affordance so they stay identical, and the hit box matches the project
    standard `44px` Apple-HIG touch target used elsewhere (`.topic-bar-*`).
    Negative block margins pull the tall button's contribution back out of
    the compact card header so it stays close to the title row height
@@ -13629,6 +13683,7 @@ html.is-ios27-band .shell {
 .whois-card-close,
 .whowas-card-close,
 .lusers-card-close,
+.server-peek-close,
 .peer-away-banner-close {
   display: inline-flex;
   align-items: center;
