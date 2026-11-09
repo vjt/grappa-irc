@@ -1836,6 +1836,63 @@ from either server, so keeping the filter does no harm. One difference
 remains: when every mention was muted, a new server sends no bundle,
 while an old one sends a bundle that the filter empties.
 
+### 5l. `/clear` counts the window before it wipes it (issue 2428, v64)
+
+From v64 `/clear` is two calls, not one. The confirm modal states how
+many rows are about to go, and the number comes from the server:
+
+```
+GET /networks/:network_id/archive/:target/count
+  → 200 {"target": "#sniffo", "kind": "channel", "count": 3412}
+```
+
+| key | value |
+|---|---|
+| `target` | the canonical spelling of the window you asked about — the same fold the DELETE broadcasts, so it matches the window key you hold |
+| `kind` | `"channel" \| "query" \| "server"` — the window's kind (`$server` is `"server"` here; the archive listing's entries never carry it) |
+| `count` | rows the DELETE will remove, exact — no cap |
+
+Then `DELETE /networks/:network_id/archive/:target` removes them and
+answers **204** with no body, broadcasting `archive_purged` with the
+target so every connected tab invalidates the live window too (§9).
+
+**Any window counts — including `$server`.** The target is
+URL-encoded (`$server` → `%24server`, `#sniffo` → `%23sniffo`); the
+count runs on the CURRENT window, which may not be in the archive
+listing at all. The listing excludes active windows and `$server`
+outright, so do not derive this number from it: a window with rows
+that is not archived would read `0` there and still lose history.
+
+**A valid target with no rows is `count: 0`, not a 404.** Absence of
+rows is a count, not a missing resource — the DELETE is idempotent
+the same way (204 on an empty window, and it still broadcasts).
+**404** is reserved for the network: an unknown slug, or a network
+that is not yours, collapses to `not_found` before either action
+runs. **400** is a target name that is neither channel-shaped, nor
+nick-shaped, nor `$server`. **429** `rate_limited` with a `retry-after`
+means the archive-read budget for this `(subject, network)` is spent:
+the count is an aggregate over the partition, the same cost class as
+the listing, and it spends the same token — one per call, shared with
+`GET …/archive`. The DELETE takes no archive token; it is a write,
+already covered by the coarse request budget (§6).
+
+**The count and the delete cannot disagree about the window.** Both
+dispatch on the same window predicate — pure `channel ==` for a
+channel or `$server`, the folded DM match for a peer — so the number
+the modal states is the number the delete removes, including rows a
+presence filter would hide (hiding is a render filter; `/clear`
+deletes hidden rows too). What the delete does NOT remove: the channel
+itself stays rejoinable upstream — the bouncer forgets the scrollback,
+the IRC server keeps the state — and for a channel the modal copy
+should say so.
+
+Check `protocol_version >= 64` before you send it. A server older
+than 64 has no such door: `GET …/count` is a 404 there, and its
+DELETE against `$server` still removes the rows — through the DM
+fold, incidentally, not as a contract — so a pre-64 server is where
+the count is missing, not the delete. v64 is the version that states
+the number first and deletes through a named arm.
+
 ## 6. Rate limiting & flood protection (#630)
 
 grappa applies a **coarse per-subject inbound budget** across BOTH doors —

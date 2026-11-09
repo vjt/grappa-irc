@@ -12,11 +12,14 @@ defmodule GrappaWeb.ArchiveController do
 
   `DELETE /networks/:network_id/archive/:target` drops the scrollback
   rows for the given target — channel-shaped or query-shaped — for the
-  authenticated subject + network. Sigil dispatch
-  (`Scrollback.target_kind/1`): `:channel` → `delete_for_channel/3`;
-  `:query` → `delete_for_dm/3`. Removes local history only: for
-  channel-kind targets the IRC server retains state and the channel
-  remains rejoinable from the operator's POV — the bouncer just
+  authenticated subject + network. Window dispatch
+  (`Scrollback.window_kind/1`): `:channel` → `delete_for_channel/3`;
+  `:query` → `delete_for_dm/3`; `:server` (`$server`) →
+  `delete_for_server/2` (issue 2428 — the server tab's rows live in
+  `messages` at `channel = "$server"`, so its delete is a pure
+  channel filter on the literal, not a new store). Removes local history
+  only: for channel-kind targets the IRC server retains state and the
+  channel remains rejoinable from the operator's POV — the bouncer just
   forgets the scrollback. Confirm-modal copy in cic states this
   explicitly. Returns 204 + broadcasts `:archive_purged` on
   `Topic.user(subject_label)` so connected cic tabs refresh the
@@ -25,6 +28,19 @@ defmodule GrappaWeb.ArchiveController do
   `archive_changed` without `target`, so cic's `scrollbackByChannel`
   retained the deleted rows in the live Solid store and ghost rows
   re-appeared on re-JOIN).
+
+  `GET /networks/:network_id/archive/:target/count` (issue 2428) answers
+  `{"target", "kind", "count"}` for ONE window — the count the `/clear`
+  confirm modal states before it DELETEs that target. `kind` is the
+  `window_kind/1` atom (`"channel" | "query" | "server"`); `count` is
+  `Scrollback.count_for_target/3`, the same predicate the matching
+  delete removes, so the modal never states a number the delete does
+  not remove. It answers for ANY window — seeded/active or not — which
+  is why it is not a slice of the listing: the listing excludes active
+  windows and `$server` outright, and `/clear` runs on the CURRENT
+  window. Metered with the same archive-read token as the listing (an
+  aggregate over the partition, same cost class); the DELETE stays
+  unmetered here — a write, already covered by the coarse budget.
 
   Subject-dispatched: visitors share the controller (no separate
   endpoint). Both users and visitors persist DM windows under the
@@ -38,8 +54,13 @@ defmodule GrappaWeb.ArchiveController do
   network)` bucket of its own (#1404), because it is an aggregate over
   the partition rather than a paged read and the coarse request budget
   meters writes by design. An empty bucket answers 429 `rate_limited`
-  with a `retry-after` and runs no query. The DELETE is a write and is
-  already covered by the coarse budget, so it takes no archive token.
+  with a `retry-after` and runs no query. The per-target count door
+  (issue 2428) takes its token from the SAME bucket: one count is one
+  aggregate over the same partition, so it is the same cost class and
+  the same bound — a count that spent a send token or no token at all
+  would let a modal-spam loop read the partition for free. The DELETE
+  is a write and is already covered by the coarse budget, so it takes
+  no archive token.
 
   Iso boundary: `Plugs.ResolveNetwork` collapses unknown-slug /
   not-your-network to 404 BEFORE this action runs. `:no_session` is
@@ -118,6 +139,53 @@ defmodule GrappaWeb.ArchiveController do
     end
   end
 
+  @doc """
+  `GET /networks/:network_id/archive/:target/count` (issue 2428) — the
+  row count the `/clear` confirm modal states for ONE window, before
+  it DELETEs that target.
+
+  Wire shape: `%{"target" => target, "kind" => "channel" | "query" |
+  "server", "count" => integer}`. `target` is the canonical spelling
+  (same fold the delete broadcasts), `kind` is `window_kind/1` on it,
+  `count` is `Scrollback.count_for_target/3` — the rows the matching
+  delete removes, so the modal cannot state a number the delete does
+  not remove. Answers for ANY window — the current one need not be in
+  the archive listing (`$server` never is) — and for a valid target
+  with no rows it answers `count: 0`, not a 404: absence of rows is a
+  count, not a missing resource (the DELETE is idempotent the same
+  way).
+
+  Order of checks: validate FIRST, then meter. A 400 spends no token —
+  the token is the bound on the aggregate, and a name that fails
+  validation never reaches one. The 404 for an unknown / not-your
+  network comes from `Plugs.ResolveNetwork` before this action runs.
+
+  Metered: one token per call from the per-`(subject, network)`
+  `#{@archive_read_bucket}` bucket, shared with the listing — one
+  count is one aggregate over the same partition.
+  """
+  @spec count(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, {:rate_limited, pos_integer()} | :bad_request}
+  def count(conn, %{"target" => target}) when is_binary(target) do
+    subject = conn.assigns.current_subject
+    network = conn.assigns.network
+    session_subject = Subject.to_session(subject)
+
+    with :ok <- validate_target_name(target),
+         :ok <- take_archive_token(session_subject, network.id) do
+      canonical_target =
+        Grappa.IRC.Identifier.canonical_target(target, Session.casemapping(session_subject, network.id))
+
+      render(conn, :count,
+        target: canonical_target,
+        kind: Scrollback.window_kind(canonical_target),
+        count: Scrollback.count_for_target(session_subject, network.id, canonical_target)
+      )
+    end
+  end
+
+  def count(_, _), do: {:error, :bad_request}
+
   # The token is taken BEFORE the keyset is built, so a refused listing
   # costs no query at all — a bound that still pays for the work it
   # refuses is not a bound.
@@ -137,13 +205,17 @@ defmodule GrappaWeb.ArchiveController do
 
   @doc """
   `DELETE /networks/:network_id/archive/:target` — drops scrollback for
-  one archive entry. Dispatch by sigil:
+  one window. Dispatch by `Scrollback.window_kind/1`:
 
     * channel-shaped target (`#`, `&`, `!`, `+` prefix) →
       `Scrollback.delete_for_channel/3` (pure channel = ^name filter).
     * query-shaped target (peer nick) → `Scrollback.delete_for_dm/3`
       (`dm_with = ^peer` case-insensitive, symmetric across inbound
       + outbound rows).
+    * `$server` → `Scrollback.delete_for_server/2` (issue 2428 — the
+      server tab IS deletable via this surface now; its rows live in
+      `messages` at `channel = "$server"`, so the arm is a pure
+      channel filter on the literal).
 
   Returns 204 with no body. Broadcasts `archive_purged` on
   `Topic.user(subject_label)` after a successful delete so any
@@ -152,18 +224,20 @@ defmodule GrappaWeb.ArchiveController do
   the deleted target. See `Wire.archive_purged_payload/2` for the
   envelope shape rationale (separate kind from `archive_changed` —
   the PART arm uses the lighter envelope without scrollback purge).
+  The broadcast carries the target, so cic invalidates the live
+  window too — including the `$server` tab, which `list_archive/3`
+  never lists and no archive refresh would otherwise touch.
 
   Validation is at-the-boundary per CLAUDE.md: invalid target name
   (not channel-shaped, not nick-shaped, not `$server`) → 400. Note
-  the `$server` pseudo-channel cannot be deleted via this surface
-  even when its name passes `validate_target_name/1` — it's filtered
-  out of `list_archive/3`'s output, so the operator cannot select
-  it from the UI in the first place; a hand-crafted DELETE against
-  `$server` collapses to a no-op `delete_for_channel/3` call (the
-  pseudo-channel has no rows ever stored at exactly `channel =
-  "$server"` modulo system messages, which are scoped per-channel
-  via the existing rules — leaving it as a soft no-op rather than a
-  separate 404 keeps the path simple).
+  the `$server` pseudo-channel is filtered out of `list_archive/3`'s
+  output, so the operator cannot select it from the archive UI in the
+  first place — but `/clear` runs on the CURRENT window, not on an
+  archive entry, so a hand-crafted DELETE against `$server` is a real
+  delete now, not the soft no-op this doc used to describe. (That
+  no-op reading rested on "no rows are ever stored at exactly
+  `channel = \"$server\"`" — stale: the rows land there, see
+  `Scrollback.delete_for_server/2`.)
   """
   @spec delete(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request}
   def delete(conn, %{"target" => target}) when is_binary(target) do
@@ -208,12 +282,15 @@ defmodule GrappaWeb.ArchiveController do
   @spec delete_for_target(String.t(), Grappa.Subject.t(), pos_integer()) ::
           {:ok, non_neg_integer()} | {:error, :db_unavailable}
   defp delete_for_target(canonical_target, session_subject, network_id) do
-    case Scrollback.target_kind(canonical_target) do
+    case Scrollback.window_kind(canonical_target) do
       :channel ->
         Scrollback.delete_for_channel(session_subject, network_id, canonical_target)
 
       :query ->
         Scrollback.delete_for_dm(session_subject, network_id, canonical_target)
+
+      :server ->
+        Scrollback.delete_for_server(session_subject, network_id)
     end
   end
 

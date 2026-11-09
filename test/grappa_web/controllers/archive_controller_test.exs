@@ -8,9 +8,15 @@ defmodule GrappaWeb.ArchiveControllerTest do
 
   `DELETE /networks/:network_id/archive/:target` drops the scrollback
   for one target (channel-shaped via `delete_for_channel/3`, query-
-  shaped via `delete_for_dm/3`) and broadcasts `archive_purged` on
-  the user-rooted topic so connected cic tabs refresh AND invalidate
-  the in-memory scrollback cache for the deleted target.
+  shaped via `delete_for_dm/3`, `$server` via `delete_for_server/2`)
+  and broadcasts `archive_purged` on the user-rooted topic so
+  connected cic tabs refresh AND invalidate the in-memory scrollback
+  cache for the deleted target.
+
+  `GET /networks/:network_id/archive/:target/count` (issue 2428)
+  answers the row count the `/clear` confirm modal states for one
+  window — channel, query, or `$server` — metered with the same
+  archive-read token as the listing.
 
   Scope of these tests: controller wiring (auth, iso boundary, JSON
   shape, active_keyset assembly, sigil dispatch on DELETE, broadcast
@@ -319,6 +325,147 @@ defmodule GrappaWeb.ArchiveControllerTest do
     end
   end
 
+  describe "GET /networks/:network_id/archive/:target/count (issue 2428)" do
+    test "channel-shaped target → 200 with the channel's row count",
+         %{conn: conn, vjt: vjt} do
+      net = net_with_credential(vjt)
+      :ok = seed_archive_rows(vjt, net)
+
+      # Two more #a rows: the seed holds one, the count must see all three.
+      for t <- [400, 410] do
+        {:ok, _} =
+          Scrollback.persist_event(%{
+            user_id: vjt.id,
+            network_id: net.id,
+            channel: "#a",
+            server_time: t,
+            kind: :privmsg,
+            sender: "vjt",
+            body: "more channel a",
+            meta: %{},
+            dm_with: nil
+          })
+      end
+
+      conn = get(conn, "/networks/#{net.slug}/archive/#{URI.encode_www_form("#a")}/count")
+
+      assert json_response(conn, 200) == %{
+               "target" => "#a",
+               "kind" => "channel",
+               "count" => 3
+             }
+    end
+
+    test "query-shaped target → 200, echoing the canonical (folded) spelling",
+         %{conn: conn, vjt: vjt} do
+      net = net_with_credential(vjt)
+      :ok = seed_archive_rows(vjt, net)
+
+      conn = get(conn, "/networks/#{net.slug}/archive/VJT-PEER/count")
+
+      assert json_response(conn, 200) == %{
+               "target" => "vjt-peer",
+               "kind" => "query",
+               "count" => 1
+             }
+    end
+
+    test "$server → 200 with kind server (countable though never archived)",
+         %{conn: conn, vjt: vjt} do
+      net = net_with_credential(vjt)
+      :ok = seed_archive_rows(vjt, net)
+
+      conn = get(conn, "/networks/#{net.slug}/archive/#{URI.encode_www_form("$server")}/count")
+
+      assert json_response(conn, 200) == %{
+               "target" => "$server",
+               "kind" => "server",
+               "count" => 1
+             }
+    end
+
+    test "valid target with no rows → 200 count 0, not 404", %{conn: conn, vjt: vjt} do
+      net = net_with_credential(vjt)
+      :ok = seed_archive_rows(vjt, net)
+
+      conn = get(conn, "/networks/#{net.slug}/archive/#{URI.encode_www_form("#ghost")}/count")
+
+      assert json_response(conn, 200) == %{
+               "target" => "#ghost",
+               "kind" => "channel",
+               "count" => 0
+             }
+    end
+
+    test "400 on bare invalid target name (not channel-shaped, not nick-shaped)",
+         %{conn: conn, vjt: vjt} do
+      net = net_with_credential(vjt)
+      # NUL byte fails both Identifier.valid_channel? + wire_nick?.
+      conn =
+        get(
+          conn,
+          "/networks/#{net.slug}/archive/" <> URI.encode_www_form("bad\0name") <> "/count"
+        )
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    # The count spends the SAME archive-read token as the listing: one
+    # count is one aggregate over the same partition. Spending the bucket
+    # through the listing must therefore refuse a count too — a separate
+    # bucket (or none) would let a modal-spam loop read the partition
+    # for free.
+    test "429 once the subject's archive bucket is spent — shared with the listing",
+         %{conn: conn, vjt: vjt} do
+      net = net_with_credential(vjt)
+      :ok = seed_archive_rows(vjt, net)
+
+      assert conn |> get("/networks/#{net.slug}/archive") |> Map.fetch!(:status) == 200
+
+      for _ <- 1..@archive_capacity, do: get(conn, "/networks/#{net.slug}/archive")
+
+      assert conn |> get("/networks/#{net.slug}/archive") |> Map.fetch!(:status) == 429,
+             "the listing bucket was expected to be empty by now"
+
+      refused =
+        get(conn, "/networks/#{net.slug}/archive/#{URI.encode_www_form("#a")}/count")
+
+      assert refused.status == 429
+      assert json_response(refused, 429) == %{"error" => "rate_limited"}
+
+      assert Plug.Conn.get_resp_header(refused, "retry-after") == [
+               Integer.to_string(@archive_retry_after)
+             ]
+    end
+
+    test "401 without bearer token", %{vjt: vjt} do
+      net = net_with_credential(vjt)
+
+      conn =
+        get(
+          Phoenix.ConnTest.build_conn(),
+          "/networks/#{net.slug}/archive/#{URI.encode_www_form("#a")}/count"
+        )
+
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "404 for cross-user network access (per-user iso)", %{vjt: vjt} do
+      net = net_with_credential(vjt)
+      :ok = seed_archive_rows(vjt, net)
+
+      stranger = user_fixture(name: "stranger-#{System.unique_integer([:positive])}")
+      stranger_session = session_fixture(stranger)
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(stranger_session.id)
+        |> get("/networks/#{net.slug}/archive/#{URI.encode_www_form("#a")}/count")
+
+      assert json_response(conn, 404) == %{"error" => "not_found"}
+    end
+  end
+
   describe "DELETE /networks/:network_slug/archive/:target (UX-1)" do
     test "channel-shaped target → 204 + drops channel rows + broadcasts archive_purged",
          %{conn: conn, vjt: vjt} do
@@ -392,6 +539,35 @@ defmodule GrappaWeb.ArchiveControllerTest do
       assert_received %Phoenix.Socket.Broadcast{
         event: "event",
         payload: %{kind: :archive_purged, network_slug: slug, target: "vjt-peer"}
+      }
+
+      assert slug == net.slug
+    end
+
+    test "$server → 204 + drops server-tab rows + broadcasts archive_purged (issue 2428)",
+         %{conn: conn, vjt: vjt} do
+      net = net_with_credential(vjt)
+      :ok = seed_archive_rows(vjt, net)
+
+      Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(vjt.name))
+
+      conn = delete(conn, "/networks/#{net.slug}/archive/#{URI.encode_www_form("$server")}")
+
+      assert response(conn, 204) == ""
+
+      # The $server rows are gone; every other window's rows survive.
+      assert Scrollback.count_for_target({:user, vjt.id}, net.id, "$server") == 0
+
+      remaining =
+        Scrollback.list_archive({:user, vjt.id}, net.id, MapSet.new())
+
+      assert Enum.any?(remaining, &(&1.target == "#a"))
+      assert Enum.any?(remaining, &(&1.target == "#b"))
+      assert Enum.any?(remaining, &(&1.target == "vjt-peer"))
+
+      assert_received %Phoenix.Socket.Broadcast{
+        event: "event",
+        payload: %{kind: :archive_purged, network_slug: slug, target: "$server"}
       }
 
       assert slug == net.slug

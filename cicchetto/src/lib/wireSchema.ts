@@ -1014,6 +1014,11 @@ export const S_ScrollbackWireArchiveChangedPayload = {
   o: { kind: { l: "archive_changed" }, network_slug: "s" },
 } as const;
 
+// Grappa.Scrollback.Wire.archive_count/0
+export const S_ScrollbackWireArchiveCount = {
+  o: { target: "s", kind: { e: ["channel", "query", "server"] }, count: "i" },
+} as const;
+
 // Grappa.Scrollback.Wire.archive_purged_payload/0
 export const S_ScrollbackWireArchivePurgedPayload = {
   o: { kind: { l: "archive_purged" }, network_slug: "s", target: "s" },
