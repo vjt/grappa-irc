@@ -1075,6 +1075,29 @@ export function narrowArchiveResponse(raw: unknown): ScrollbackWireArchiveWireIn
   return narrowRest(S_ScrollbackWireArchiveWireIndex, raw, "archive index");
 }
 
+/**
+ * `GET /networks/:slug/archive/:target/count` (issue 2428).
+ *
+ * Inline node, NOT a generated `S_*` schema: the count payload has no
+ * server-side typespec yet — the server half of this issue publishes it —
+ * so there is nothing for `mix grappa.gen_wire_types` to emit. The node
+ * mirrors the contract shape `{"target", "kind", "count"}` exactly,
+ * including the `"server"` kind the archive entry's `["channel",
+ * "query"]` enum never carries; once the generated schema lands, swap
+ * this node for it and delete this paragraph.
+ */
+export function narrowArchiveCountResponse(raw: unknown): {
+  target: string;
+  kind: "channel" | "query" | "server";
+  count: number;
+} {
+  return narrowRest(
+    { o: { target: "s", kind: { e: ["channel", "query", "server"] }, count: "i" } },
+    raw,
+    "archive count",
+  );
+}
+
 /** `GET /networks/:slug/channels`. */
 export function narrowChannelListResponse(raw: unknown): NetworksWireChannelJson[] {
   return narrowRest({ a: S_NetworksWireChannelJson }, raw, "channel list");

@@ -844,6 +844,75 @@ describe("deleteArchiveEntry (UX-1)", () => {
   });
 });
 
+describe("getArchiveCount (issue 2428)", () => {
+  it("GET /networks/:slug/archive/:target/count with bearer <redacted> percent-encoded target", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ target: "#sniffo", kind: "channel", count: 1234 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.getArchiveCount("tok", "freenode", "#sniffo")).resolves.toEqual({
+      target: "#sniffo",
+      kind: "channel",
+      count: 1234,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error("fetch not called");
+    const [url, opts] = call as [string, RequestInit];
+    expect(url).toBe("/networks/freenode/archive/%23sniffo/count");
+    expect((opts.headers as Record<string, string>).authorization).toBe("Bearer <redacted>");
+  });
+
+  it("the $server tab is a kind of its own, and its sigil is encoded", async () => {
+    stubFetch(200, { target: "$server", kind: "server", count: 9876 });
+
+    await expect(api.getArchiveCount("tok", "azzurra", "$server")).resolves.toEqual({
+      target: "$server",
+      kind: "server",
+      count: 9876,
+    });
+  });
+
+  it("a query-shaped target counts the DM window", async () => {
+    stubFetch(200, { target: "alice", kind: "query", count: 42 });
+
+    await expect(api.getArchiveCount("tok", "azzurra", "alice")).resolves.toEqual({
+      target: "alice",
+      kind: "query",
+      count: 42,
+    });
+  });
+
+  it("rejects a payload missing `count` (narrowing rejects)", async () => {
+    stubFetch(200, { target: "#sniffo", kind: "channel" });
+
+    await expect(api.getArchiveCount("tok", "freenode", "#sniffo")).rejects.toBeInstanceOf(
+      WireShapeError,
+    );
+  });
+
+  it("rejects a payload with an unknown `kind` (narrowing rejects)", async () => {
+    stubFetch(200, { target: "#sniffo", kind: "admin", count: 1 });
+
+    await expect(api.getArchiveCount("tok", "freenode", "#sniffo")).rejects.toBeInstanceOf(
+      WireShapeError,
+    );
+  });
+
+  it("rejects with ApiError on 4xx response", async () => {
+    stubFetch(404, { errors: { detail: "not_found" } });
+
+    await expect(api.getArchiveCount("tok", "freenode", "#bad")).rejects.toBeInstanceOf(
+      api.ApiError,
+    );
+  });
+});
+
 // REV-A (codebase-review-2026-05-22) — wire-shape superset regression
 // pins. The cic-side discriminated unions MUST be a superset of the
 // server-emitted closed sets. A future server-side arm addition (new
