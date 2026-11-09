@@ -1335,6 +1335,38 @@ describe("parseSlash — /credits (#1958)", () => {
   });
 });
 
+// issue 2428 — /clear: wipe the current window's history, behind a confirm
+// modal. Bare verb, no arguments — the window is the one the line was typed
+// in, resolved in compose.ts, so there is no target to spell here.
+describe("parseSlash — /clear (issue 2428)", () => {
+  it("bare /clear → clear", () => {
+    expect(parsePlain("/clear")).toEqual({ kind: "clear" });
+  });
+
+  it("the verb is case-insensitive, like every other verb", () => {
+    expect(parsePlain("/CLEAR")).toEqual({ kind: "clear" });
+  });
+
+  it("an argument is an error — there is no target to spell", () => {
+    expect(parsePlain("/clear #a")).toEqual({
+      kind: "error",
+      verb: "clear",
+      message: "/clear takes no arguments — it clears the current window",
+    });
+  });
+
+  it("a user alias may shadow /clear, like every verb but /alias + /unalias", () => {
+    expect(parseSlash("/clear", keysOf({ clear: "me is listening" }), DEFAULT_CHANTYPES)).toEqual({
+      kind: "me",
+      body: "is listening",
+    });
+  });
+
+  it("//clear stays the literal escape, like every other verb", () => {
+    expect(parsePlain("//clear")).toEqual({ kind: "privmsg", body: "/clear" });
+  });
+});
+
 describe("parseSlash — /lusers (P-0d, args #579)", () => {
   it("parses bare /lusers (no mask, no server)", () => {
     expect(parsePlain("/lusers")).toEqual({ kind: "lusers", mask: null, server: null });
@@ -2313,7 +2345,9 @@ describe("BUILTIN_VERBS (issue 2584)", () => {
     for (const verb of BUILTIN_VERBS) {
       expect(parsePlain(`/${verb}`)).not.toMatchObject({ message: `unknown command: /${verb}` });
     }
-    expect(BUILTIN_VERBS).toEqual(expect.arrayContaining(["whois", "w", "raw", "kickban", "j"]));
+    expect(BUILTIN_VERBS).toEqual(
+      expect.arrayContaining(["whois", "w", "raw", "kickban", "j", "clear"]),
+    );
     expect(new Set(BUILTIN_VERBS).size).toBe(BUILTIN_VERBS.length);
   });
 
