@@ -142,7 +142,7 @@ import {
 /** The tag of a gkey DM's `Engine.send`: its rows never exist (`chatStore` no-ops an `out` alone). */
 export const GKEY_TAG = "gkey";
 
-export type ChannelE2eEvent =
+export type ChannelE2eEvent = (
   | {
       kind: "channel_received";
       channel: string;
@@ -180,7 +180,17 @@ export type ChannelE2eEvent =
       newSid: string;
       reason: "created" | "member-left" | "periodic";
     }
-  | { kind: "channel_dropped"; channel: string; reason: string; detail?: string };
+  | { kind: "channel_dropped"; channel: string; reason: string; detail?: string }
+) & {
+  /**
+   * The network the event belongs to, when the step that raised it
+   * knows it: the rows store scopes by it, and the held-epoch registry
+   * keys by it. Events the drain raises without a network — held rows
+   * and expiry — carry none, and their readers fall back to the bare
+   * folded channel.
+   */
+  network?: string;
+};
 
 /**
  * What a step answered: its events, the payloads for the send door, and
@@ -199,6 +209,14 @@ export type ChannelE2eDeps = {
   ownNick: string;
   /** This device's did: the `from` of a channel `:msg`. */
   ownDid: string;
+  /**
+   * The network slug this device is on, when the caller knows it: the
+   * events the steps raise carry it, so the rows store can scope by it
+   * and the held-epoch registry can key by it. Absent when the caller
+   * holds no network — the steps then raise unstamped events, and their
+   * readers fall back to the bare folded channel.
+   */
+  network?: string;
   /** The clock (ms since epoch). */
   now: () => number;
   /** Signs a channel message's text with this device's Ed25519 key. */
