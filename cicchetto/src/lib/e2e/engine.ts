@@ -1575,8 +1575,13 @@ export class Engine {
       res.events.push({ kind: "dropped", nick: this.ownNick, reason: "sibling-not-a-copy" });
       return false;
     }
+    // `null` is "no attachment", not a malformed one: a sibling that writes
+    // the key with nothing in it is a text copy. Nothing on this path may
+    // throw on wire input.
     const file =
-      inner.file === undefined ? undefined : parseFileInner(inner.file as Record<string, unknown>);
+      inner.file === undefined || inner.file === null
+        ? undefined
+        : parseFileInner(inner.file as Record<string, unknown>);
     if (file !== undefined && typeof file === "string") {
       res.events.push({ kind: "dropped", nick: this.ownNick, reason: "sibling-not-a-copy" });
       return false;
