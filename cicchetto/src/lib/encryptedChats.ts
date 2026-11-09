@@ -320,6 +320,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         frameBudgetBase: frameBudgetBaseForNetwork(network.id),
         door: doors(bearer, slug),
         orders: (chal, challenger, at) => sendLog.confirms(chal, challenger, scope, at),
+        // The network this context is on: the channel E2E steps stamp
+        // their events with it, so the rows store can scope by it and
+        // the held-epoch registry can key by it.
+        slug,
         // The roster of a channel, as the members store holds it, or
         // undefined when it holds none: the channel E2E steps use it for
         // the gkey staleness check and the periodic-rotation election.

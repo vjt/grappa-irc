@@ -1639,11 +1639,20 @@ describe("encrypted chats, channel presence", () => {
   it("our own join on a tagged channel asks for the key again", async () => {
     const { dispose, key } = await established();
     try {
-      // Alice drops off the roster without a live part: the seed audits
-      // and rotates, so the epoch she held is gone by the time she joins.
+      // Alice drops off the roster without a live part: the seed drops
+      // the epoch she held before the leave — it predates the rejoin —
+      // and asks for the key again, so one keyreq goes out and nothing
+      // rotates (she is not the designated rotator of the epoch she
+      // just dropped, so the audit waits).
       const beforeReseed = grappa.sends.length;
       seedMembers(key, [{ nick: "Bob", modes: [] }]);
-      await vi.waitFor(() => expect(grappa.sends.length).toBeGreaterThan(beforeReseed));
+      await vi.waitFor(() => expect(grappa.sends.length).toBe(beforeReseed + 1));
+      expect(grappa.sends.at(-1)).toEqual(expect.objectContaining({ target: CHANNEL, to: "*" }));
+      expect(decodePayload(grappa.sends.at(-1)?.payload ?? "")).toEqual({
+        v: 4,
+        t: "keyreq",
+        ch: CHANNEL,
+      });
       const before = grappa.sends.length;
       presence(key, "join", "alice");
       await vi.waitFor(() => expect(grappa.sends.length).toBeGreaterThan(before));

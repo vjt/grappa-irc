@@ -67,6 +67,7 @@ import {
   requestKey,
   rotateDue,
   sendChannel,
+  syncChannelEpochHeld,
 } from "./channelE2e";
 import type {
   ChatChange,
@@ -227,6 +228,14 @@ export type E2eContext = {
    * as unadvertised, and stays silent.
    */
   topicTagFor?: (channel: string) => string | null;
+  /**
+   * The network slug this context is on, when the caller knows it: the
+   * channel E2E steps stamp their events with it, so the rows store can
+   * scope by it and the held-epoch registry can key by it. Absent in
+   * the harness contexts, which hold no network — the steps then raise
+   * unstamped events.
+   */
+  slug?: string;
 };
 
 /**
@@ -696,6 +705,7 @@ export function e2eClient(
     return {
       ownNick: ctx.ownNick,
       ownDid: engine.deviceId(),
+      network: ctx.slug,
       now,
       sign: (text) => account.sign(text),
       verify: (nick, did, text, sig) => {
@@ -1419,6 +1429,11 @@ export function e2eClient(
           res.copies,
         );
         const events = reconcileChannelSends(res.events, res.outbound, refused);
+        // The held-epoch registry learns the epoch this operation left
+        // behind, even when the step emitted nothing for it: a quiet
+        // send under an epoch held since the last reload still marks
+        // the cleartext that follows.
+        syncChannelEpochHeld(state.groups, channel, ctx.slug);
         emitChannelE2eEvents(events);
         return {
           ...report,
@@ -1553,6 +1568,7 @@ export function e2eClient(
           res.copies,
         );
         const events = reconcileChannelSends(res.events, res.outbound, refused);
+        syncChannelEpochHeld(state.groups, channel, ctx.slug);
         emitChannelE2eEvents(events);
         return {
           ...report,
@@ -1577,6 +1593,17 @@ export function e2eClient(
       return withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
         const deps = channelDeps(ctx, engine, account);
         const res: ChannelE2eResult = { events: [], outbound: [], copies: [] };
+        // The seed is the only signal of our own leave when the PART was
+        // missed: the roster names everyone but us, so the epoch held
+        // before the leave is dead. Drop it, and the ask below requests
+        // the key again. A later seed that names us — or a live join —
+        // re-asks from no epoch.
+        if (!members.some((m) => fold(m) === fold(ctx.ownNick))) {
+          const dropped = await onMemberLeft(deps, state.groups, channel, ctx.ownNick, members);
+          res.events.push(...dropped.events);
+          res.outbound.push(...dropped.outbound);
+          res.copies.push(...dropped.copies);
+        }
         const audited = await auditEpochRotation(deps, state.groups, channel, members);
         res.events.push(...audited.events);
         res.outbound.push(...audited.outbound);
@@ -1604,6 +1631,7 @@ export function e2eClient(
           res.copies,
         );
         const events = reconcileChannelSends(res.events, res.outbound, refused);
+        syncChannelEpochHeld(state.groups, channel, ctx.slug);
         emitChannelE2eEvents(events);
         return {
           ...report,
@@ -1661,6 +1689,7 @@ export function e2eClient(
           res.copies,
         );
         const events = reconcileChannelSends(res.events, res.outbound, refused);
+        syncChannelEpochHeld(state.groups, channel, ctx.slug);
         emitChannelE2eEvents(events);
         return {
           ...report,

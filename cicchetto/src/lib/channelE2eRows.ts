@@ -25,10 +25,13 @@
 // about a line the channel showed.
 
 import { createSignal } from "solid-js";
+import { isContentKind } from "./api";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
-import { type ChannelE2eEvent, onChannelE2eEvent } from "./e2e/channelE2e";
-import { fold } from "./e2e/wire";
+import { parseE2eTopicTag, topicByChannel } from "./channelTopic";
+import { type ChannelE2eEvent, hasChannelEpoch, onChannelE2eEvent } from "./e2e/channelE2e";
+import { decodePayload, fold, GROUP_WIRE_VERSION } from "./e2e/wire";
 import { identityScopedStore } from "./identityScopedStore";
+import type { ScrollbackMessageKind } from "./wireTypes";
 
 /** How many rows a channel keeps: the bound that keeps the store from growing without end. */
 export const MAX_CHANNEL_E2E_ROWS = 200;
@@ -54,6 +57,13 @@ export type ChannelE2eRow =
       from: string;
       sid: string | null;
       reason: Extract<ChannelE2eEvent, { kind: "channel_undecryptable" }>["reason"];
+    }
+  | {
+      id: number;
+      kind: "cleartext";
+      channel: string;
+      from: string;
+      body: string;
     };
 
 /** A stored row is believed when it has the shape a row has: the boundary parse drops the rest. */
@@ -68,6 +78,9 @@ function isStoredRow(row: unknown): row is ChannelE2eRow {
   }
   if (r.kind === "undecryptable") {
     return (r.sid === null || typeof r.sid === "string") && typeof r.reason === "string";
+  }
+  if (r.kind === "cleartext") {
+    return typeof r.body === "string";
   }
   return false;
 }
@@ -144,39 +157,86 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const rowKey = (event: ChannelE2eEvent): string =>
     event.network === undefined ? fold(event.channel) : channelKey(event.network, event.channel);
 
-  const append = (event: ChannelE2eEvent): void => {
-    if (event.kind !== "channel_received" && event.kind !== "channel_undecryptable") return;
-    const key = rowKey(event);
-    const channel = fold(event.channel);
-    const id = (nextId.get(channel) ?? 0) + 1;
-    nextId.set(channel, id);
-    const row: ChannelE2eRow =
-      event.kind === "channel_received"
-        ? {
-            id,
-            kind: "received",
-            channel,
-            from: event.from,
-            sid: event.sid,
-            counter: event.counter,
-            body: event.body,
-          }
-        : {
-            id,
-            kind: "undecryptable",
-            channel,
-            from: event.from,
-            sid: event.sid,
-            reason: event.reason,
-          };
+  /**
+   * Stores the row `build` makes (with the next synthetic id) in `key`'s
+   * bucket: the 200-row bound, and the durable copy, shared by the event
+   * append and the cleartext note below. A builder, not a spread: the
+   * row is a discriminated union, and spreading one loses the kind.
+   */
+  const storeRow = (key: string, channel: string, build: (id: number) => ChannelE2eRow): void => {
+    const folded = fold(channel);
+    const id = (nextId.get(folded) ?? 0) + 1;
+    nextId.set(folded, id);
     const prev = rowsByChannel();
-    const kept = [...(prev[key] ?? []), row];
+    const kept = [...(prev[key] ?? []), build(id)];
     if (kept.length > MAX_CHANNEL_E2E_ROWS) {
       kept.splice(0, kept.length - MAX_CHANNEL_E2E_ROWS);
     }
     const next = { ...prev, [key]: kept };
     setRowsByChannel(next);
     saveStoredRows(next);
+  };
+
+  const append = (event: ChannelE2eEvent): void => {
+    if (event.kind !== "channel_received" && event.kind !== "channel_undecryptable") return;
+    const key = rowKey(event);
+    if (event.kind === "channel_received") {
+      storeRow(key, event.channel, (id) => ({
+        id,
+        kind: "received",
+        channel: event.channel,
+        from: event.from,
+        sid: event.sid,
+        counter: event.counter,
+        body: event.body,
+      }));
+    } else {
+      storeRow(key, event.channel, (id) => ({
+        id,
+        kind: "undecryptable",
+        channel: event.channel,
+        from: event.from,
+        sid: event.sid,
+        reason: event.reason,
+      }));
+    }
+  };
+
+  /**
+   * Marks a cleartext channel row as cleartext: `message` arrived on the
+   * normal scrollback path, on a channel whose topic carries an E2E tag
+   * and this device holds an epoch for — so the cleartext is a fact
+   * about the sender, and the row is kept as a "cleartext" row for the
+   * UI to read. Everything else is silent: a line on an untagged
+   * channel, on a channel with no epoch held, a non-content kind, or a
+   * v4 envelope (ciphertext, not conversation) keeps no row. All gating
+   * is in here: the caller names the message and nothing else.
+   */
+  const noteCleartext = (
+    slug: string,
+    channel: string,
+    message: { kind: ScrollbackMessageKind; sender: string; body: string | null },
+  ): void => {
+    if (!isContentKind(message.kind)) return;
+    const body = message.body;
+    if (body === null) return;
+    if (parseE2eTopicTag(topicByChannel()[channelKey(slug, channel)]?.text ?? "") === null) return;
+    if (!hasChannelEpoch(channel, slug)) return;
+    try {
+      const decoded = decodePayload(body);
+      if (decoded.v === GROUP_WIRE_VERSION && (decoded.t === "msg" || decoded.t === "keyreq")) {
+        return;
+      }
+    } catch {
+      // Not an envelope: the body is cleartext conversation.
+    }
+    storeRow(channelKey(slug, channel), channel, (id) => ({
+      id,
+      kind: "cleartext",
+      channel,
+      from: message.sender,
+      body,
+    }));
   };
 
   // Subscribed once, from `encryptedChats.mountEncryptedChats`: a second
@@ -191,7 +251,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     };
   };
 
-  return { rowsByChannel, subscribe };
+  return { rowsByChannel, subscribe, noteCleartext };
 });
 
 /**
@@ -210,3 +270,6 @@ export const channelE2eRows = (key: ChannelKey): ChannelE2eRow[] => {
 
 /** Subscribes the store to live channel E2E events; answers the unsubscribe. */
 export const subscribeChannelE2eRows = exports_.subscribe;
+
+/** Marks a cleartext channel row as cleartext; see `noteCleartext`. */
+export const noteCleartextChannelMessage = exports_.noteCleartext;

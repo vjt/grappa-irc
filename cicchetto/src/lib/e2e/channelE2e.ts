@@ -258,6 +258,22 @@ function emptyResult(): ChannelE2eResult {
   return { events: [], outbound: [], copies: [] };
 }
 
+/**
+ * Stamps `result`'s events with the network `deps` knows, when it knows
+ * one: the rows store scopes by it, and the held-epoch registry keys by
+ * it. Identity when `deps.network` is undefined — the steps then raise
+ * unstamped events, and their readers fall back to the bare folded
+ * channel. Re-stamping an already-stamped result is a no-op: the stamp
+ * is the same network.
+ */
+function withNetwork(deps: ChannelE2eDeps, result: ChannelE2eResult): ChannelE2eResult {
+  if (deps.network === undefined) return result;
+  return {
+    ...result,
+    events: result.events.map((event) => ({ ...event, network: deps.network })),
+  };
+}
+
 const foldOf = (nick: string): string => fold(nick);
 
 /** The roster without `except`, in display spelling. */
@@ -386,7 +402,74 @@ export function onChannelE2eEvent(fn: (event: ChannelE2eEvent) => void): () => v
 /** Fans `events` out to the live listeners. The caller also returns them. */
 export function emitChannelE2eEvents(events: ChannelE2eEvent[]): void {
   for (const event of events) {
+    if (event.kind === "channel_key_received" || event.kind === "channel_rotated") {
+      noteChannelEpochHeld(event.channel, event.network);
+    } else if (
+      event.kind === "channel_dropped" &&
+      (event.reason === "own-leave" || event.reason === "rejoined")
+    ) {
+      noteChannelEpochDropped(event.channel, event.network);
+    }
     for (const fn of listeners) fn(event);
+  }
+}
+
+/**
+ * The channels this device holds an epoch for, as the client last knew:
+ * the held-epoch registry, keyed by the network-scoped channel key when
+ * the network is known, the bare folded channel otherwise. A row that
+ * arrives in cleartext on a channel in here is marked cleartext (the
+ * reader has the keys, so the cleartext is a fact about the sender, not
+ * about this device). Maintained from the events — a key received or an
+ * epoch rotated holds one, an own leave or a rejoin drops it — and from
+ * the operations, which sync it after a step that may have left an
+ * epoch held without emitting for it (a quiet seed, a refused
+ * rotation). Module-level, like the listeners: the client is one
+ * device on one identity, and the identity change clears it.
+ */
+const heldEpochChannels = new Set<string>();
+
+/** The registry key for `channel` on `network`: the channel key when the network is known. */
+function heldEpochKey(channel: string, network: string | undefined): string {
+  return network === undefined ? fold(channel) : `${network} ${fold(channel)}`;
+}
+
+/** Whether this device holds an epoch for `channel` (on `network`, when named). */
+export function hasChannelEpoch(channel: string, network?: string): boolean {
+  if (network !== undefined && heldEpochChannels.has(heldEpochKey(channel, network))) return true;
+  return heldEpochChannels.has(heldEpochKey(channel, undefined));
+}
+
+/** Records that this device holds an epoch for `channel` (on `network`, when named). */
+export function noteChannelEpochHeld(channel: string, network?: string): void {
+  heldEpochChannels.add(heldEpochKey(channel, network));
+}
+
+/** Records that this device holds no epoch for `channel`: both the network key and the bare key go. */
+export function noteChannelEpochDropped(channel: string, network?: string): void {
+  heldEpochChannels.delete(heldEpochKey(channel, network));
+  heldEpochChannels.delete(heldEpochKey(channel, undefined));
+}
+
+/** Clears the registry: the identity changed, and no held epoch survives it. */
+export function clearHeldChannelEpochs(): void {
+  heldEpochChannels.clear();
+}
+
+/**
+ * Syncs the registry for `channel` with the epoch `groups` holds for it
+ * now: an operation that left an epoch held without emitting for it — a
+ * quiet seed, a refused rotation — still leaves the registry current.
+ */
+export function syncChannelEpochHeld(
+  groups: GroupSessionsState,
+  channel: string,
+  network?: string,
+): void {
+  if (epochFor(groups, channel) === undefined) {
+    noteChannelEpochDropped(channel, network);
+  } else {
+    noteChannelEpochHeld(channel, network);
   }
 }
 
@@ -422,14 +505,14 @@ export function distributeKey(
     });
   }
   const inner = gkeyInner(groups, channel);
-  if (inner === undefined) return res;
+  if (inner === undefined) return withNetwork(deps, res);
   for (const member of others(members, deps.ownNick)) {
     const sent = { ...inner };
     res.outbound.push(...deps.sendDm(member, sent));
     res.copies.push({ peer: member, body: JSON.stringify(sent) });
     res.events.push({ kind: "channel_key_sent", channel, to: member, sid: inner.sid });
   }
-  return res;
+  return withNetwork(deps, res);
 }
 
 /**
@@ -446,7 +529,7 @@ export function requestKey(
   channel: string,
 ): ChannelE2eResult {
   const res = emptyResult();
-  if (epochFor(groups, channel) !== undefined) return res;
+  if (epochFor(groups, channel) !== undefined) return withNetwork(deps, res);
   markKeyreqSent(groups, channel, deps.now());
   res.events.push({ kind: "channel_key_requested", channel });
   res.outbound.push({
@@ -457,7 +540,7 @@ export function requestKey(
     payload: keyreqPayload(channel),
     priority: "text",
   });
-  return res;
+  return withNetwork(deps, res);
 }
 
 /**
@@ -538,8 +621,8 @@ export function onMemberJoined(
 ): ChannelE2eResult {
   void members;
   const res = emptyResult();
-  if (foldOf(joined) !== foldOf(deps.ownNick)) return res;
-  if (epochFor(groups, channel) === undefined) return res;
+  if (foldOf(joined) !== foldOf(deps.ownNick)) return withNetwork(deps, res);
+  if (epochFor(groups, channel) === undefined) return withNetwork(deps, res);
   dropEpoch(groups, channel);
   res.events.push({
     kind: "channel_dropped",
@@ -547,7 +630,7 @@ export function onMemberJoined(
     reason: "rejoined",
     detail: "the epoch held before the leave is dead; ask for the key again",
   });
-  return res;
+  return withNetwork(deps, res);
 }
 
 /**
@@ -572,10 +655,10 @@ export function onMemberLeft(
   if (foldOf(left) === foldOf(deps.ownNick)) {
     dropChannel(groups, channel);
     res.events.push({ kind: "channel_dropped", channel, reason: "own-leave" });
-    return res;
+    return withNetwork(deps, res);
   }
   const held = epochFor(groups, channel);
-  if (held === undefined) return res;
+  if (held === undefined) return withNetwork(deps, res);
   // The departed member's dids come from the epoch's nick mapping —
   // carried in the gkey inner, so any holder can resolve them without
   // ever having DM'd the departed member — falling back to this cic's
@@ -588,13 +671,13 @@ export function onMemberLeft(
     !held.holders.some((holder) => leftDids.includes(holder)) &&
     !sentToOf(held).some((nick) => foldOf(nick) === foldOf(left))
   ) {
-    return res;
+    return withNetwork(deps, res);
   }
   const remaining = others(members, deps.ownNick);
   const resolved = resolveMembers(deps, members);
   const remainingDids = resolved.dids;
   const remainingHolders = held.holders.filter((holder) => remainingDids.includes(holder));
-  if (designatedRotator(remainingHolders) !== deps.ownDid) return res;
+  if (designatedRotator(remainingHolders) !== deps.ownDid) return withNetwork(deps, res);
   const rotated = rotateEpochForLeave(groups, channel, remainingDids, deps.now(), {
     holderNicks: resolved.byNick,
     sentTo: resolved.unknown,
@@ -607,14 +690,14 @@ export function onMemberLeft(
     reason: "member-left",
   });
   const inner = gkeyInner(groups, channel);
-  if (inner === undefined) return res;
+  if (inner === undefined) return withNetwork(deps, res);
   for (const member of remaining) {
     const sent = { ...inner };
     res.outbound.push(...deps.sendDm(member, sent));
     res.copies.push({ peer: member, body: JSON.stringify(sent) });
     res.events.push({ kind: "channel_key_sent", channel, to: member, sid: rotated.newSid });
   }
-  return res;
+  return withNetwork(deps, res);
 }
 
 /**
@@ -645,12 +728,12 @@ export function auditEpochRotation(
   const res = emptyResult();
   reconcileSentTo(deps, groups, channel);
   const roster = resolveRoster(deps, members);
-  if (!epochHoldersStale(groups, channel, roster)) return res;
+  if (!epochHoldersStale(groups, channel, roster)) return withNetwork(deps, res);
   if (
     opts?.forSend !== true &&
     designatedRotator(epochRemainingHolders(groups, channel, roster)) !== deps.ownDid
   ) {
-    return res;
+    return withNetwork(deps, res);
   }
   const resolved = resolveMembers(deps, members);
   const rotated = rotateEpochForLeave(groups, channel, resolved.dids, deps.now(), {
@@ -665,14 +748,14 @@ export function auditEpochRotation(
     reason: "member-left",
   });
   const inner = gkeyInner(groups, channel);
-  if (inner === undefined) return res;
+  if (inner === undefined) return withNetwork(deps, res);
   for (const member of others(members, deps.ownNick)) {
     const sent = { ...inner };
     res.outbound.push(...deps.sendDm(member, sent));
     res.copies.push({ peer: member, body: JSON.stringify(sent) });
     res.events.push({ kind: "channel_key_sent", channel, to: member, sid: inner.sid });
   }
-  return res;
+  return withNetwork(deps, res);
 }
 
 /**
@@ -688,7 +771,7 @@ export async function flushPendingSends(
   channel: string,
 ): Promise<ChannelE2eResult> {
   const res = emptyResult();
-  if (epochFor(groups, channel) === undefined) return res;
+  if (epochFor(groups, channel) === undefined) return withNetwork(deps, res);
   for (const pending of takePendingSends(groups, channel)) {
     const encrypted = await encryptChannel(groups, channel, pending.body, deps.sign);
     res.outbound.push({
@@ -700,7 +783,7 @@ export async function flushPendingSends(
       priority: "text",
     });
   }
-  return res;
+  return withNetwork(deps, res);
 }
 
 /**
@@ -743,7 +826,7 @@ export async function sendChannel(
     res.events.push(...asked.events);
     res.outbound.push(...asked.outbound);
     res.copies.push(...asked.copies);
-    return res;
+    return withNetwork(deps, res);
   }
   const flushed = await flushPendingSends(deps, groups, channel);
   res.outbound.push(...flushed.outbound);
@@ -757,7 +840,7 @@ export async function sendChannel(
     payload: encrypted.payload,
     priority: "text",
   });
-  return res;
+  return withNetwork(deps, res);
 }
 
 /**
@@ -780,7 +863,7 @@ export async function receiveChannel(
   try {
     decoded = decodePayload(payloadText);
   } catch {
-    return {
+    return withNetwork(deps, {
       events: [
         {
           kind: "channel_undecryptable",
@@ -792,13 +875,13 @@ export async function receiveChannel(
       ],
       outbound: [],
       copies: [],
-    };
+    });
   }
   if (decoded.t === "keyreq") {
     try {
       const keyreq = parseChannelKeyreqPayload(decoded);
       if (fold(keyreq.ch) !== fold(channel)) {
-        return {
+        return withNetwork(deps, {
           events: [
             {
               kind: "channel_undecryptable",
@@ -810,11 +893,11 @@ export async function receiveChannel(
           ],
           outbound: [],
           copies: [],
-        };
+        });
       }
     } catch (err) {
       if (!(err instanceof PayloadError)) throw err;
-      return {
+      return withNetwork(deps, {
         events: [
           {
             kind: "channel_undecryptable",
@@ -826,9 +909,9 @@ export async function receiveChannel(
         ],
         outbound: [],
         copies: [],
-      };
+      });
     }
-    return onKeyreq(deps, groups, channel, from, fromDid);
+    return withNetwork(deps, onKeyreq(deps, groups, channel, from, fromDid));
   }
   const decrypted = await decryptChannel(
     groups,
@@ -840,7 +923,7 @@ export async function receiveChannel(
     deps.now(),
   );
   if (!decrypted.ok) {
-    return {
+    return withNetwork(deps, {
       events: [
         {
           kind: "channel_undecryptable",
@@ -852,7 +935,7 @@ export async function receiveChannel(
       ],
       outbound: [],
       copies: [],
-    };
+    });
   }
   if (decrypted.kind === "rotated") {
     // The grotate carried the new epoch under the old one's key, and this
@@ -867,7 +950,7 @@ export async function receiveChannel(
       ];
       held.holderNicks = byNick;
     }
-    return {
+    return withNetwork(deps, {
       events: [
         {
           kind: "channel_key_received",
@@ -878,9 +961,9 @@ export async function receiveChannel(
       ],
       outbound: [],
       copies: [],
-    };
+    });
   }
-  return {
+  return withNetwork(deps, {
     events: [
       {
         kind: "channel_received",
@@ -893,7 +976,7 @@ export async function receiveChannel(
     ],
     outbound: [],
     copies: [],
-  };
+  });
 }
 
 /**
@@ -1036,7 +1119,16 @@ export async function rotateDue(
     if (held === undefined) continue;
     const roster = deps.rosterFor?.(channel);
     if (roster === undefined) continue;
-    if (designatedRotator(held.holders) !== deps.ownDid) continue;
+    // The rotator is elected from the holders who REMAIN: a departed
+    // holder's did must not stay the designated rotator and stall the
+    // periodic rotation — the epoch's holder set is per did, and a did
+    // no longer on the roster is no member.
+    if (
+      designatedRotator(epochRemainingHolders(groups, channel, resolveRoster(deps, roster))) !==
+      deps.ownDid
+    ) {
+      continue;
+    }
     const rotated = await buildPeriodicRotation(groups, channel, deps.sign, deps.now());
     if (rotated === null) continue;
     res.events.push({
@@ -1055,7 +1147,7 @@ export async function rotateDue(
       priority: "text",
     });
   }
-  return res;
+  return withNetwork(deps, res);
 }
 
 /** The channels this device holds an epoch for. */
