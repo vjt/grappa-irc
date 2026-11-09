@@ -6138,3 +6138,39 @@ trigger test was red where the defect is (upload `10737418241` vs
   `t:write/0` type and `put_many/1`'s doc).
 - Deploy: no defstruct, no module in `HotReload.LongLivedModules` touched —
   HOT expected (read, preflight not run).
+<!-- entry #2392 -->
+
+---
+
+## 2026-11-09 — issue 2392: a drifted welcome holds the secret even with GhostRecovery armed
+
+Spun off from #2380. On a drifted registration — the server welcomes us as
+`<nick>_` because the ghost still holds `<nick>` — GhostRecovery sent the
+NickServ secret three times: in the `GHOST` verb, in the 001 built-in
+`IDENTIFY` for `<nick>_`, and after its `NICK` back. The second is the defect:
+the verb names no nick, so services check it against the nick in use, and at
+the 001 that is the fallback — a different account, possibly someone else's.
+It survived #2380 because `maybe_builtin_identify/4` held the secret only when
+NO identity sequence was armed; an armed GhostRecovery took the else branch and
+sent it.
+
+**The rule is #2380's, without the exception.** A drifted welcome always holds
+the secret in `deferred_identify_secret`; the sequence that owns the nick is
+what sends it, on the configured nick.
+
+- `:succeeded` — GhostRecovery emits `NICK <orig>` + `IDENTIFY` in one batch,
+  so the held slot is dropped unsent there (`advance_ghost/2`). Keeping it
+  would double the identify on the NICK echo.
+- `:failed` / `:ghost_timeout` — the slot SURVIVES. The #2253 reclaim (or the
+  operator's own `/nick`) can still bring the configured nick back, and the
+  NICK echo releases the held identify through `maybe_identify_on_reclaimed_nick/2`.
+  Dropping it on failure would leave the session unidentified with the secret
+  thrown away; a recovery that never brings the nick back leaves it held, the
+  bounded side.
+- `GHOST` still carries the secret in the verb — that is the verb's argument,
+  not an identify for a nick.
+
+Same rule #2371 applies to REGISTER: the secret only counts on the configured
+nick. Tests (CI only): success = exactly one IDENTIFY, after the FSM's `NICK`
+back and never before it; timeout then reclaim = exactly one, released by the
+reclaim echo.

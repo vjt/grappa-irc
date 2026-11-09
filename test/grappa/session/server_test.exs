@@ -10976,6 +10976,137 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # issue 2392 — the same 433/001 ladder, but every NICK after the welcome is
+    # echoed back: that is the wire shape of GhostRecovery's `NICK` back and of
+    # the #2253 reclaim, the two moments the held identify could leave.
+    defp ghost_echo_handler(nick) do
+      counter = :counters.new(1, [])
+
+      fn state, line ->
+        if String.starts_with?(line, "NICK ") do
+          {:reply, ghost_echo_response(counter, nick), state}
+        else
+          {:reply, nil, state}
+        end
+      end
+    end
+
+    defp ghost_echo_response(counter, nick) do
+      n = :counters.get(counter, 1)
+      :counters.add(counter, 1, 1)
+
+      case n do
+        0 -> ":server 433 * #{nick} :Nickname is already in use.\r\n"
+        1 -> ":server 001 #{nick}_ :Welcome\r\n"
+        _ -> ":#{nick}_!u@h NICK :#{nick}\r\n"
+      end
+    end
+
+    # issue 2392 — a drifted registration with GhostRecovery armed used to send
+    # the secret THREE times, and the second went out at the 001 for `<nick>_`:
+    # a nick that is not the configured one, so a different (possibly someone
+    # else's) account. The 001 built-in now holds the secret like #2380 does on
+    # the plain reclaim path; the FSM's own identify after its `NICK` back is
+    # the only one, and the echo of that `NICK` must not add a second.
+    test "issue 2392 — a drifted welcome with GhostRecovery armed identifies once, on the configured nick" do
+      nick = "v_t18i_#{System.unique_integer([:positive])}"
+
+      {server, port} = IRCServer.start_server(ghost_echo_handler(nick))
+      {anon_visitor, network} = visitor_with_network(port, nick: nick)
+      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, network.id, "s3cret")
+      registered_visitor = Grappa.Repo.reload!(anon_visitor)
+
+      pid = start_visitor_session_for(registered_visitor, network)
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :GHOST #{nick} s3cret\r\n"),
+          1_000
+        )
+
+      # The 001 for `<nick>_` has been processed (`fetch` is a `:sys.get_state`
+      # barrier behind the socket hop): no identify left, and the secret sits
+      # in the held slot.
+      state = SessionStateHelpers.fetch(pid)
+      assert SessionStateHelpers.nick(state) == "#{nick}_"
+      assert Map.get(state, :deferred_identify_secret) == "s3cret"
+      refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "IDENTIFY"))
+
+      IRCServer.feed(
+        server,
+        ":NickServ!services@services.azzurra.org NOTICE #{nick}_ :#{nick} has been ghosted.\r\n"
+      )
+
+      IRCServer.feed(server, ":server 401 #{nick}_ #{nick} :No such nick\r\n")
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :IDENTIFY s3cret\r\n"),
+          1_000
+        )
+
+      # Barrier: the echo of the FSM's own `NICK` back has been processed too.
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      lines = IRCServer.sent_lines(server)
+      assert Enum.count(lines, &String.contains?(&1, "IDENTIFY")) == 1
+
+      # The one identify follows the LAST `NICK #{nick}` — the FSM's rename
+      # back — never the registration.
+      nick_positions = for {"NICK #{nick}\r\n", i} <- Enum.with_index(lines), do: i
+      assert line_index(lines, "PRIVMSG NickServ :IDENTIFY s3cret\r\n") > List.last(nick_positions)
+
+      assert is_nil(Map.get(SessionStateHelpers.fetch(pid), :deferred_identify_secret))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # issue 2392 — the other half of the rule. A recovery that FAILS must not
+    # throw the secret away: the #2253 reclaim may still bring the configured
+    # nick back, and its echo is the release the held identify waits for.
+    test "issue 2392 — a ghost timeout keeps the secret for a later reclaim" do
+      nick = "v_t18u_#{System.unique_integer([:positive])}"
+
+      {server, port} = IRCServer.start_server(ghost_echo_handler(nick))
+      {anon_visitor, network} = visitor_with_network(port, nick: nick)
+      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, network.id, "s3cret")
+      registered_visitor = Grappa.Repo.reload!(anon_visitor)
+
+      pid = start_visitor_session_for(registered_visitor, network)
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :GHOST #{nick} s3cret\r\n"),
+          1_000
+        )
+
+      # The 8s deadline delivered directly — same callback as the timer, no wait.
+      send(pid, :ghost_timeout)
+      state = SessionStateHelpers.fetch(pid)
+      assert is_nil(SessionStateHelpers.ghost_recovery(state))
+      assert Map.get(state, :deferred_identify_secret) == "s3cret"
+      refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "IDENTIFY"))
+
+      # The reclaim (or the operator's own `/nick`) brings the configured nick
+      # back; the echo is what releases the held secret.
+      IRCServer.feed(server, ":#{nick}_!u@h NICK :#{nick}\r\n")
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :IDENTIFY s3cret\r\n"),
+          1_000
+        )
+
+      assert Enum.count(IRCServer.sent_lines(server), &String.contains?(&1, "IDENTIFY")) == 1
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test ":ghost_timeout in :awaiting_ghost_notice clears ghost_recovery + ghost_timer" do
       nick = "v_t18t_#{System.unique_integer([:positive])}"
 

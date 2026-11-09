@@ -5408,14 +5408,19 @@ defmodule Grappa.Session.Server do
   # sends it, once, to the right nick (`maybe_identify_on_reclaimed_nick/2`),
   # and the `+r` that follows releases the deferred autojoin. Same rule #2371
   # applies to REGISTER: the secret only counts on the configured nick.
-  # A GhostRecovery in flight keeps the old behaviour — it sends its own
-  # IDENTIFY after its `NICK` back, and it is not this issue's to change.
+  # issue 2392 — a GhostRecovery in flight is the same rule, not an exception.
+  # A drifted welcome HOLDS the secret whether or not a sequence is armed: at
+  # the 001 for `<nick>_` the built-in would name the fallback nick, the very
+  # account this rule keeps the secret away from. On `:succeeded` the slot is
+  # dropped unsent (the FSM sends its own IDENTIFY after its `NICK` back, and
+  # the echo must not send a second one); on `:failed` / `:ghost_timeout` it
+  # stays, so a later reclaim onto the configured nick still identifies.
   @spec maybe_builtin_identify(t(), String.t() | nil, boolean(), String.t()) :: t()
   defp maybe_builtin_identify(state, secret, false, welcomed_nick)
        when is_binary(secret) and secret != "" do
     drifted? = fold_key(state, welcomed_nick) != fold_key(state, configured_nick(state))
 
-    if drifted? and not identity_sequence_armed?(state),
+    if drifted?,
       do: Map.put(state, :deferred_identify_secret, secret),
       else: send_perform_line(state, "PRIVMSG NickServ :IDENTIFY #{secret}")
   end
@@ -5831,7 +5836,10 @@ defmodule Grappa.Session.Server do
       # just undid.
       :succeeded ->
         :ok = cancel_and_drain(state.ghost_timer, :ghost_timeout)
-        {:noreply, clear_ghost(state)}
+        # issue 2392 — the FSM sends its own IDENTIFY in the same batch as the
+        # `NICK` back, on the configured nick. The held built-in is dropped
+        # unsent here, or the NICK echo would send it a second time.
+        {:noreply, state |> Map.put(:deferred_identify_secret, nil) |> clear_ghost()}
 
       :failed ->
         :ok = cancel_and_drain(state.ghost_timer, :ghost_timeout)
