@@ -520,6 +520,21 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     }));
   };
 
+  // issue 2429 — the services console's `>` prompt is a SECOND door onto the
+  // same window's history. A line typed to NickServ is the same line whether
+  // it left the modal or the service's own query window, so the modal does
+  // not get a history of its own: it records into the key the query window
+  // already uses, and walks the same list. `recordSentLine` is the write half
+  // (the modal sends through `sendBodyLines`, not `submit`, so nothing else
+  // would push); `historyLines` is a READ — the modal keeps its own cursor
+  // and stashed draft, because the store's are the query window's, and a walk
+  // in the modal must not move the cursor under the composer behind it.
+  const recordSentLine = (key: ChannelKey, body: string): void => {
+    if (body.trim() !== "") pushHistory(key, body);
+  };
+
+  const historyLines = (key: ChannelKey): string[] => getState(key).history;
+
   // #666 — send a free-text body as one PRIVMSG per line via the resumable,
   // self-pacing `sendBodyLines`, mirroring the UNSENT remainder into the draft
   // after every line so the composer holds ONLY what has not gone out — never
@@ -1535,6 +1550,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     setDraft,
     recallPrev,
     recallNext,
+    recordSentLine,
+    historyLines,
     submit,
     tabComplete,
     isDraining,
@@ -1549,6 +1566,8 @@ export const getDraft = exports_.getDraft;
 export const setDraft = exports_.setDraft;
 export const recallPrev = exports_.recallPrev;
 export const recallNext = exports_.recallNext;
+export const recordSentLine = exports_.recordSentLine;
+export const historyLines = exports_.historyLines;
 export const submit = exports_.submit;
 export const tabComplete = exports_.tabComplete;
 export const isDraining = exports_.isDraining;

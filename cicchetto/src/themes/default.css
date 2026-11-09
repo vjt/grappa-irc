@@ -12713,6 +12713,28 @@ html.is-ios27-band .shell {
   color: var(--muted);
 }
 
+/* issue 2429 — the prompt's visible submit (the composer's paper plane, same
+   accent recipe). Greying rides `aria-disabled`, never `:disabled`: a disabled
+   form control is not a mouse-event target, and the `mousedown` cancel that
+   keeps the keyboard up (#59) is exactly what it would stop receiving — the
+   #1059 lesson, restated here because this button is a second copy of it. */
+.service-modal-send {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  padding: 0.25rem 0.75rem;
+  cursor: pointer;
+}
+
+.service-modal-send[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Inline send-error row (between the notice-mirror body and the `>` prompt) —
  * shown only when a prompt command fails to send; the typed line is kept in
  * the input for retry. Same phosphor-red accent as the compose-box alert. */
