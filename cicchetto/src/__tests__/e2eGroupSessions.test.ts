@@ -831,7 +831,12 @@ describe("held rows", () => {
     expect(groups.held).toHaveLength(3);
     const taken = takeHeldRowsWithEpoch(groups);
     expect(taken.map((r) => r.payload)).toEqual([`payload-${sid}-1000000`]);
-    expect(groups.held.map((r) => r.sid)).toEqual(["sid-other"]);
+    // The row under another channel stays held even though it names the
+    // same sid: its channel has no epoch.
+    expect(groups.held.map((r) => [r.channel, r.sid])).toEqual([
+      [CHAN, "sid-other"],
+      ["#other", sid],
+    ]);
     expect(takeHeldRowsWithEpoch(groups)).toEqual([]);
   });
 
