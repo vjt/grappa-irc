@@ -634,6 +634,9 @@ describe("e2eClient channel", () => {
     const roster = rosterFor(["alice", "Bob"]);
     a.ctx.channelMembers = roster;
     b.ctx.channelMembers = roster;
+    // Only #grappa advertises the tag here: without it the seed opens
+    // nothing at all, and the drop below never runs.
+    b.ctx.topicTagFor = (channel) => (channel === CHANNEL ? "alice" : null);
     await b.client.requestChannelKey(b.ctx, CHANNEL);
     await a.client.drain(a.ctx);
     await a.client.createChannelEpoch(a.ctx, CHANNEL, ["alice", "Bob"]);
