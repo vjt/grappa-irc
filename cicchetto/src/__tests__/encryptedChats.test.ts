@@ -53,6 +53,7 @@ vi.mock("../lib/networks", () => ({
   user: () => me(),
   networks: () => list(),
   networkBySlug: (slug: string) => list()?.find((n) => n.slug === slug),
+  networkIdBySlug: (slug: string) => list()?.find((n) => n.slug === slug)?.id,
 }));
 vi.mock("../lib/e2e/olm", () => ({ loadOlm: async () => olm() }));
 
