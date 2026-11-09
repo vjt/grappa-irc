@@ -565,6 +565,61 @@ describe("e2eClient channel", () => {
       expect.objectContaining({ kind: "channel_rotated", reason: "member-left" }),
     ]);
   });
+
+  it("a non-designated send rotates the stale epoch before sending, never under it", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    w.grappa.joinChannel(CHANNEL, a.nick);
+    w.grappa.joinChannel(CHANNEL, b.nick);
+    const roster = rosterFor(["alice", "Bob"]);
+    a.ctx.channelMembers = roster;
+    b.ctx.channelMembers = roster;
+    await b.client.requestChannelKey(b.ctx, CHANNEL);
+    await a.client.drain(a.ctx);
+    // Carol holds the epoch too, but no side of hers exists here: she is
+    // the departed holder the roster no longer names.
+    await a.client.createChannelEpoch(a.ctx, CHANNEL, ["alice", "Bob", "carol"]);
+    await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice", "Bob", "carol"]);
+    await b.client.drain(b.ctx);
+    const oldSid = await b.accounts.withAccount(
+      SLOT,
+      async ({ state }) => epochFor(state.groups, CHANNEL)?.sid,
+    );
+
+    // Bob sends with carol gone from the roster: Alice sorts first, so
+    // Bob is not the designated rotator — and still rotates before
+    // sending, instead of speaking under the epoch carol still reads.
+    const sent = await b.client.sendChannel(b.ctx, CHANNEL, "after carol left", ["alice", "Bob"]);
+    const newSid = await b.accounts.withAccount(
+      SLOT,
+      async ({ state }) => epochFor(state.groups, CHANNEL)?.sid,
+    );
+    expect(newSid).not.toBe(oldSid);
+    expect(sent.channelE2e).toEqual([
+      expect.objectContaining({ kind: "channel_rotated", oldSid, reason: "member-left" }),
+      expect.objectContaining({ kind: "channel_key_sent", to: "alice", sid: newSid }),
+    ]);
+    // The new key goes pairwise to Alice first, then the row under the new epoch.
+    const after = w.grappa.sends.filter((s) => s.target === CHANNEL);
+    expect(after.at(-1)).toEqual(expect.objectContaining({ target: CHANNEL, to: "*" }));
+    expect(decodePayload(after.at(-1)?.payload ?? "").sid).toBe(newSid);
+    // Carol holds no key for the new epoch: its holders are Alice and Bob alone.
+    const holders = await b.accounts.withAccount(
+      SLOT,
+      async ({ state }) => epochFor(state.groups, CHANNEL)?.holders,
+    );
+    expect(holders?.sort()).toEqual([(await ownOf(a)).did, (await ownOf(b)).did].sort());
+    // Alice drains the rotation and reads the row under the new epoch.
+    const read = await a.client.drain(a.ctx);
+    expect(read.channelE2e).toEqual([
+      expect.objectContaining({ kind: "channel_key_received", from: "Bob", sid: newSid }),
+      expect.objectContaining({
+        kind: "channel_received",
+        from: "Bob",
+        body: "after carol left",
+      }),
+    ]);
+  });
 });
 
 describe("channel rotation reaches our other device", () => {
