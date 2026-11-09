@@ -141,6 +141,11 @@ test.describe("issue 2311 — the date pill follows the day", () => {
     // wheel, so every one re-arms the linger. `loadMore` fires on the way and
     // rebuilds every row, which unmounts the pill for a frame — that is why a
     // null reading is not a failure here, only a step that did not land yet.
+    //
+    // The budget is bounded by the TEST's own 30s, not by this poll: a 60s
+    // timeout here (as this line used to say) can never fire, and a real
+    // failure then reports "Test timeout of 30000ms exceeded" with the poll's
+    // own message lost — which is exactly how #2311's first red arrived.
     await expect
       .poll(
         async () => {
@@ -148,7 +153,7 @@ test.describe("issue 2311 — the date pill follows the day", () => {
           const label = await recordedLabel();
           return label !== null && label !== initialLabel;
         },
-        { timeout: 60_000, intervals: [150] },
+        { timeout: 20_000, intervals: [150] },
       )
       .toBe(true);
 
