@@ -26,7 +26,12 @@ afterEach(() => {
 async function fresh() {
   const rows = await import("../lib/channelE2eRows");
   const events = await import("../lib/e2e/channelE2e");
-  return { ...rows, emitChannelE2eEvents: events.emitChannelE2eEvents };
+  const topics = await import("../lib/channelTopic");
+  return {
+    ...rows,
+    emitChannelE2eEvents: events.emitChannelE2eEvents,
+    seedTopic: topics.seedTopic,
+  };
 }
 
 describe("channelE2eRows", () => {
@@ -338,6 +343,138 @@ describe("channelE2eRows", () => {
           r.kind === "received" ? r.body : "",
         ),
       ).toEqual(["held before the key", "live after the key"]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("marks a cleartext row on a tagged channel with a held epoch", async () => {
+    const {
+      channelE2eRows,
+      subscribeChannelE2eRows,
+      emitChannelE2eEvents,
+      noteCleartextChannelMessage,
+      seedTopic,
+    } = await fresh();
+    const unsubscribe = subscribeChannelE2eRows();
+    try {
+      seedTopic(channelKey("azzurra", "#grappa"), {
+        text: "welcome [e2e:1 key-from=alice]",
+        set_by: "alice",
+        set_at: null,
+      });
+      emitChannelE2eEvents([
+        {
+          kind: "channel_key_received",
+          channel: "#grappa",
+          network: "azzurra",
+          from: "alice",
+          sid: "s1",
+        },
+      ]);
+      noteCleartextChannelMessage("azzurra", "#grappa", {
+        kind: "privmsg",
+        sender: "bob",
+        body: "in the clear",
+      });
+      expect(channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([
+        { id: 1, kind: "cleartext", channel: "#grappa", from: "bob", body: "in the clear" },
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("keeps no cleartext row without a held epoch", async () => {
+    const { channelE2eRows, subscribeChannelE2eRows, noteCleartextChannelMessage, seedTopic } =
+      await fresh();
+    const unsubscribe = subscribeChannelE2eRows();
+    try {
+      seedTopic(channelKey("azzurra", "#grappa"), {
+        text: "welcome [e2e:1 key-from=alice]",
+        set_by: "alice",
+        set_at: null,
+      });
+      noteCleartextChannelMessage("azzurra", "#grappa", {
+        kind: "privmsg",
+        sender: "bob",
+        body: "in the clear",
+      });
+      expect(channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("keeps no cleartext row on an untagged channel", async () => {
+    const {
+      channelE2eRows,
+      subscribeChannelE2eRows,
+      emitChannelE2eEvents,
+      noteCleartextChannelMessage,
+    } = await fresh();
+    const unsubscribe = subscribeChannelE2eRows();
+    try {
+      emitChannelE2eEvents([
+        {
+          kind: "channel_key_received",
+          channel: "#grappa",
+          network: "azzurra",
+          from: "alice",
+          sid: "s1",
+        },
+      ]);
+      noteCleartextChannelMessage("azzurra", "#grappa", {
+        kind: "privmsg",
+        sender: "bob",
+        body: "in the clear",
+      });
+      expect(channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("keeps no cleartext row for a v4 envelope, a non-content line, or an empty body", async () => {
+    const {
+      channelE2eRows,
+      subscribeChannelE2eRows,
+      emitChannelE2eEvents,
+      noteCleartextChannelMessage,
+      seedTopic,
+    } = await fresh();
+    const unsubscribe = subscribeChannelE2eRows();
+    try {
+      seedTopic(channelKey("azzurra", "#grappa"), {
+        text: "welcome [e2e:1 key-from=alice]",
+        set_by: "alice",
+        set_at: null,
+      });
+      emitChannelE2eEvents([
+        {
+          kind: "channel_key_received",
+          channel: "#grappa",
+          network: "azzurra",
+          from: "alice",
+          sid: "s1",
+        },
+      ]);
+      noteCleartextChannelMessage("azzurra", "#grappa", {
+        kind: "privmsg",
+        sender: "bob",
+        body: JSON.stringify({ v: 4, t: "msg", ch: "#grappa", sid: "s1", body: "x", sig: "y" }),
+      });
+      noteCleartextChannelMessage("azzurra", "#grappa", {
+        kind: "join",
+        sender: "bob",
+        body: "bob joined",
+      });
+      noteCleartextChannelMessage("azzurra", "#grappa", {
+        kind: "privmsg",
+        sender: "bob",
+        body: null,
+      });
+      expect(channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([]);
     } finally {
       unsubscribe();
     }

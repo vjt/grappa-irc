@@ -11,7 +11,7 @@
 // The protocol version is the module signal (`serverProtocol.ts`): 63
 // unless a test sets it lower.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { epochFor, HELD_ROW_TTL_MS } from "../lib/e2e/groupSessions";
+import { epochFor, GROUP_ROTATION_INTERVAL_MS, HELD_ROW_TTL_MS } from "../lib/e2e/groupSessions";
 import { decodePayload, encodePayload } from "../lib/e2e/wire";
 import { __resetServerProtocolForTests, setServerProtocol } from "../lib/serverProtocol";
 import { chat, inboxOf, latestGrappa, ownOf, pair, rowsOf, SLOT } from "./helpers/e2eClients";
@@ -158,9 +158,9 @@ describe("e2eClient channel", () => {
         body: "ciao a tutti",
       }),
     ]);
-    expect(
-      await a.accounts.withAccount(SLOT, async ({ state }) => state.groups.pending),
-    ).toEqual([]);
+    expect(await a.accounts.withAccount(SLOT, async ({ state }) => state.groups.pending)).toEqual(
+      [],
+    );
   });
 
   it("a queued row the user cancels never goes out, even once the key arrives", async () => {
@@ -175,11 +175,16 @@ describe("e2eClient channel", () => {
     await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
     const cancelled = await a.client.cancelPendingChannelSends(a.ctx, CHANNEL);
     expect(cancelled.channelE2e).toEqual([
-      { kind: "channel_dropped", channel: CHANNEL, reason: "send-cancelled", detail: "ciao a tutti" },
+      {
+        kind: "channel_dropped",
+        channel: CHANNEL,
+        reason: "send-cancelled",
+        detail: "ciao a tutti",
+      },
     ]);
-    expect(
-      await a.accounts.withAccount(SLOT, async ({ state }) => state.groups.pending),
-    ).toEqual([]);
+    expect(await a.accounts.withAccount(SLOT, async ({ state }) => state.groups.pending)).toEqual(
+      [],
+    );
 
     // The key arrives later, and nothing of the cancelled row goes out:
     // Bob only answers Alice's earlier key request.
@@ -618,6 +623,74 @@ describe("e2eClient channel", () => {
         from: "Bob",
         body: "after carol left",
       }),
+    ]);
+  });
+
+  it("a seed that no longer names us drops the dead epoch and asks for the key again", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    w.grappa.joinChannel(CHANNEL, a.nick);
+    w.grappa.joinChannel(CHANNEL, b.nick);
+    const roster = rosterFor(["alice", "Bob"]);
+    a.ctx.channelMembers = roster;
+    b.ctx.channelMembers = roster;
+    await b.client.requestChannelKey(b.ctx, CHANNEL);
+    await a.client.drain(a.ctx);
+    await a.client.createChannelEpoch(a.ctx, CHANNEL, ["alice", "Bob"]);
+    await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
+    await b.client.drain(b.ctx);
+
+    // Bob left and rejoined while his cic was closed, so the seed names
+    // alice alone: the epoch held before the leave is dead, and the seed
+    // drops it and asks for the key again instead of keeping it.
+    const seeded = await b.client.seedChannel(b.ctx, CHANNEL, ["alice"]);
+    expect(seeded.channelE2e).toEqual([
+      { kind: "channel_dropped", channel: CHANNEL, reason: "own-leave" },
+      { kind: "channel_key_requested", channel: CHANNEL },
+    ]);
+    const epoch = await b.accounts.withAccount(SLOT, async ({ state }) =>
+      epochFor(state.groups, CHANNEL),
+    );
+    expect(epoch).toBeUndefined();
+
+    // A later seed that names Bob again asks from no epoch — and Alice,
+    // who still holds it, answers, so the rejoin recovers.
+    const reseeded = await b.client.seedChannel(b.ctx, CHANNEL, ["alice", "Bob"]);
+    expect(reseeded.channelE2e).toEqual([{ kind: "channel_key_requested", channel: CHANNEL }]);
+    const answered = await a.client.drain(a.ctx);
+    expect(answered.channelE2e).toContainEqual(
+      expect.objectContaining({ kind: "channel_key_sent", to: "Bob" }),
+    );
+  });
+
+  it("a periodic rotation is not stalled by a departed holder's did", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    w.grappa.joinChannel(CHANNEL, a.nick);
+    w.grappa.joinChannel(CHANNEL, b.nick);
+    const roster = rosterFor(["alice", "Bob"]);
+    a.ctx.channelMembers = roster;
+    b.ctx.channelMembers = roster;
+    await b.client.requestChannelKey(b.ctx, CHANNEL);
+    await a.client.drain(a.ctx);
+    await a.client.createChannelEpoch(a.ctx, CHANNEL, ["alice", "Bob"]);
+    await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
+    await b.client.drain(b.ctx);
+
+    // Bob speaks under the epoch while alice is still on the roster,
+    // so his device counts as having spoken under it — then alice
+    // leaves without a processed leave event: the roster names Bob
+    // alone, and the day passes.
+    await b.client.sendChannel(b.ctx, CHANNEL, "spoke", ["alice", "Bob"]);
+    b.ctx.channelMembers = rosterFor(["Bob"]);
+    w.now += GROUP_ROTATION_INTERVAL_MS;
+
+    // The designated rotator was alice's did — she is gone — so the
+    // election falls to Bob, the first REMAINING holder, and the epoch
+    // rotates on schedule instead of stalling.
+    const ticked = await b.client.tick(b.ctx);
+    expect(ticked.channelE2e).toEqual([
+      expect.objectContaining({ kind: "channel_rotated", reason: "periodic" }),
     ]);
   });
 });
