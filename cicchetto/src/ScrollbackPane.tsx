@@ -31,7 +31,12 @@ import { isChannelName } from "./lib/chantypes";
 import { type CommandOutputEntry, commandOutputByWindow } from "./lib/commandOutput";
 import { stripCtcpAction } from "./lib/ctcpAction";
 import { formatDayLabel } from "./lib/dateFormat";
-import { type DaySeparatorSighting, pillDayAt, placeOf, topBandRootMargin } from "./lib/dayPill";
+import {
+  type DaySeparatorSighting,
+  pillDayAt,
+  placeOfRect,
+  topBandRootMargin,
+} from "./lib/dayPill";
 import { diagPush } from "./lib/diagLog";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { e2eRequestWith } from "./lib/e2eRequests";
@@ -1766,33 +1771,61 @@ const ScrollbackPane: Component<Props> = (props) => {
     setPillDay(pillDayAt(daySightings.values()));
   };
 
+  // issue 2311 — the place of every separator is read from the BOXES, never
+  // cached from an observer entry. An `IntersectionObserverEntry` reports a
+  // TRANSITION: a wheel, a trackpad swipe or any jump larger than the band
+  // takes a separator from above to below in one frame with the ratio never
+  // leaving zero, no entry is delivered, and a place cached from the last one
+  // keeps saying "above" for a separator that has left the screen. The pill
+  // then names a day that has already scrolled away and stays there. The
+  // separators are a handful of elements, so a pass over their rects is cheap
+  // — one forced layout per frame while scrolling, not per row.
+  const measureDayPlaces = (): void => {
+    const pane = listRef;
+    if (!pane) return;
+    const paneTop = pane.getBoundingClientRect().top;
+    let changed = false;
+    for (const [el, sighting] of daySightings) {
+      const place = placeOfRect(el.getBoundingClientRect(), paneTop, DATE_PILL_BAND_PX);
+      if (place === sighting.place) continue;
+      daySightings.set(el, { dayAt: sighting.dayAt, place });
+      changed = true;
+    }
+    if (changed) refreshPillDay();
+  };
+
+  // One pass per frame, however many scroll events land in it: the same
+  // coalescing the pane's other per-frame work uses.
+  let dayMeasureFrame: number | undefined;
+  const scheduleDayMeasure = (): void => {
+    if (dayMeasureFrame !== undefined) return;
+    dayMeasureFrame = requestAnimationFrame(() => {
+      dayMeasureFrame = undefined;
+      measureDayPlaces();
+    });
+  };
+
   // Rebuilt rather than reconfigured, because `rootMargin` is fixed at
   // construction and it encodes the pane's HEIGHT (see `topBandRootMargin`).
   // The existing #285 ResizeObserver already knows when that height moves and
   // calls this from there; there is no second observer for it.
+  //
+  // Since #2311 the observer is a TRIGGER, not the answer: it fires when a
+  // separator crosses the band's edge, and every firing re-reads the boxes.
+  // A crossing it misses costs nothing, because the scroll handler runs the
+  // same pass; what it still earns its place for is the changes that are not
+  // scrolls — a row remount after a `rows()` change, a re-layout.
   const rebuildDayBandObserver = (): void => {
     if (typeof IntersectionObserver === "undefined" || !listRef) return;
     const root = listRef;
     dayBandObserver?.disconnect();
-    dayBandObserver = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const known = daySightings.get(entry.target);
-          // An entry can be delivered for a target unobserved since it was
-          // queued (the `<For>` recreates every row on a rows() change). Its
-          // sighting is gone and must not come back.
-          if (known === undefined) continue;
-          daySightings.set(entry.target, { dayAt: known.dayAt, place: placeOf(entry) });
-        }
-        refreshPillDay();
-      },
-      {
-        root,
-        rootMargin: topBandRootMargin(root.clientHeight, DATE_PILL_BAND_PX),
-        threshold: 0,
-      },
-    );
+    dayBandObserver = new IntersectionObserver(() => measureDayPlaces(), {
+      root,
+      rootMargin: topBandRootMargin(root.clientHeight, DATE_PILL_BAND_PX),
+      threshold: 0,
+    });
     for (const el of daySightings.keys()) dayBandObserver.observe(el);
+    measureDayPlaces();
   };
 
   // Called from the separator's `ref`, which for the first render runs BEFORE
@@ -1802,6 +1835,9 @@ const ScrollbackPane: Component<Props> = (props) => {
   const observeDaySeparator = (el: HTMLElement, dayAt: number): void => {
     daySightings.set(el, { dayAt, place: "below" });
     dayBandObserver?.observe(el);
+    // Seeded "below" is a placeholder, not a reading: the box is measured on
+    // the next frame, once the row has been laid out (#2311).
+    scheduleDayMeasure();
     onCleanup(() => {
       dayBandObserver?.unobserve(el);
       daySightings.delete(el);
@@ -2755,6 +2791,7 @@ const ScrollbackPane: Component<Props> = (props) => {
       // beside the ResizeObserver that rebuilds one and the settle timer the
       // other is a sibling of.
       dayBandObserver?.disconnect();
+      if (dayMeasureFrame !== undefined) cancelAnimationFrame(dayMeasureFrame);
       disarmDatePill();
       if (scrollSettleTimer !== undefined) {
         window.clearTimeout(scrollSettleTimer);
@@ -4288,6 +4325,10 @@ const ScrollbackPane: Component<Props> = (props) => {
     // length-effect re-assert + the overlay-snapshot close restore own the
     // reader's position for the overlay's whole lifetime.
     if (isOverlayFrozen()) return;
+    // issue 2311 — the pill's places are geometry, and this is the signal that
+    // geometry moved. Coalesced to one pass per frame; the separators are a
+    // handful of elements, not a row per message.
+    scheduleDayMeasure();
     const st = listRef.scrollTop;
     const distance = listRef.scrollHeight - st - listRef.clientHeight;
     // #168 / #608 — the follow INTENT (`followMode`) flips FALSE only on an
