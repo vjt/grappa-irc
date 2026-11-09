@@ -1,9 +1,11 @@
-import type { Component } from "solid-js";
+import { type Component, onMount } from "solid-js";
 import ContextMenu, { type ContextMenuAction, type ContextMenuItem } from "./ContextMenu";
+import { token } from "./lib/auth";
 import { casemappingForSlug } from "./lib/casemapping";
 import { sendCtcpQuery } from "./lib/ctcpQuery";
 import { openEncryptedWindow } from "./lib/encryptedWindow";
-import { nickEquals } from "./lib/nickEquals";
+import { addIgnore, delIgnore, ignoresBySlug, refreshIgnores } from "./lib/ignoreList";
+import { asciiFold, nickEquals } from "./lib/nickEquals";
 import { banMenuItems, runOpsVerb } from "./lib/opsMenu";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
@@ -33,6 +35,9 @@ import {
 //
 // #1192 added a ninth entry: a CTCP group that drills down rather than six more
 // rows on a menu that already has eight.
+//
+// issue 2483 added the Ignore/Unignore row: the same `ignoreList.ts` door the
+// `/ignore` verb and the settings sub-page use, labelled by the list itself.
 
 // #1192 — the verbs worth a menu row. Small and closed on purpose: `/ctcp` is
 // still there for anything else, and every entry here costs a row on a menu
@@ -63,6 +68,49 @@ export type Props = {
 
 const UserContextMenu: Component<Props> = (props) => {
   const isOp = (): boolean => props.ownModes.includes("@");
+
+  // issue 2483 — the row is Ignore or Unignore depending on whether this nick
+  // is already on the network's list. The list lives in `ignoreList.ts`, the
+  // store `/ignore` and the settings sub-page write, so a menu opened after
+  // either of them sees the truth without a second source.
+  //
+  // The mask is the bare `nick!*@*` the server itself normalises `/ignore
+  // alice` to (Grappa.IRC.Mask.normalize/2), which is why the comparison
+  // folds both sides: the stored entry is the NORMALISED mask, and a nick's
+  // case is the server's business, not ours.
+  const ignoreMask = (): string => `${props.targetNick}!*@*`;
+  const alreadyIgnored = (): boolean => {
+    const want = asciiFold(ignoreMask());
+    return (ignoresBySlug()[props.networkSlug] ?? []).some((e) => asciiFold(e.mask) === want);
+  };
+
+  // The store only holds what a server round-trip returned, and a menu can be
+  // the first thing opened after a reload — an empty list would then read as
+  // "not ignored" for a nick that is. Fetch when this network has never been
+  // loaded; a failure leaves the row on Ignore, which the server answers
+  // idempotently ("is already ignored") rather than doing the wrong thing.
+  onMount(() => {
+    const t = token();
+    if (t === null || ignoresBySlug()[props.networkSlug] !== undefined) return;
+    void refreshIgnores(t, props.networkSlug).catch((err: unknown) => {
+      console.warn(`[ignore-menu] could not load the ignore list for ${props.networkSlug}`, err);
+    });
+  });
+
+  // issue 2483 — same door as `/ignore <nick>` / `/unignore <nick>`: the
+  // ignoreList store, which mirrors the server's answer. Detached like every
+  // other row here — a menu item has no inline error channel — but never bare,
+  // so a refused mutation is a console line and not an unhandled rejection.
+  const ignoreAction = (): void => {
+    const t = token();
+    if (t === null) return;
+    const slug = props.networkSlug;
+    const mask = ignoreMask();
+    const op = alreadyIgnored() ? delIgnore(t, slug, mask, null) : addIgnore(t, slug, mask, null);
+    void op.catch((err: unknown) => {
+      console.warn(`[ignore-menu] ${alreadyIgnored() ? "unignore" : "ignore"} ${mask} failed`, err);
+    });
+  };
 
   // Every verb dispatches identically — the seam owns the #640 source-window
   // echo and the #600 register-before-send ordering, so there is nothing here
@@ -143,6 +191,16 @@ const UserContextMenu: Component<Props> = (props) => {
       host: props.targetHost,
       ownModes: props.ownModes,
     }),
+    {
+      // issue 2483 — the personal twin of the ban rows: the same "do something
+      // about this nick" cluster, but a LOCAL rule that needs no channel
+      // privilege, so it is always enabled. The label follows the list: a nick
+      // already on it offers the way OFF, which is the only thing an operator
+      // can be looking for when they right-click someone they never see.
+      label: alreadyIgnored() ? "Unignore" : "Ignore",
+      enabled: true,
+      action: ignoreAction,
+    },
     {
       label: "WHOIS",
       // Always enabled — no perm required.

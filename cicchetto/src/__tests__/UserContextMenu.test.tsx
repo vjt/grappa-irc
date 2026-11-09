@@ -76,6 +76,41 @@ vi.mock("../lib/selection", () => ({
 // We also need to mock pushWhois — UserContextMenu uses pushWhois from socket.ts.
 // The mock above covers it.
 
+// issue 2483 — the Ignore/Unignore row reads and writes the ignore-list store,
+// the same one `/ignore` and the settings sub-page use. Boundary spies: what
+// the store does with the server's answer is pinned in ignoreList's own tests.
+const mockIgnoresBySlug = vi.fn(
+  (): Record<string, { mask: string; text_pattern: string | null }[]> => ({}),
+);
+const mockRefreshIgnores = vi.fn(async () => []);
+const mockAddIgnore = vi.fn(async () => ({
+  masks: [],
+  entries: [],
+  mask: "alice!*@*",
+  text_pattern: null,
+  outcome: "added",
+}));
+const mockDelIgnore = vi.fn(async () => ({
+  masks: [],
+  entries: [],
+  mask: "alice!*@*",
+  text_pattern: null,
+  outcome: "removed",
+}));
+
+vi.mock("../lib/ignoreList", () => ({
+  ignoresBySlug: () => mockIgnoresBySlug(),
+  refreshIgnores: (...args: unknown[]) => mockRefreshIgnores(...(args as [])),
+  addIgnore: (...args: unknown[]) => mockAddIgnore(...(args as [])),
+  delIgnore: (...args: unknown[]) => mockDelIgnore(...(args as [])),
+}));
+
+// The row's mutations need a token; the rest of auth is the real module.
+vi.mock("../lib/auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/auth")>()),
+  token: () => "tok",
+}));
+
 import { channelKey } from "../lib/channelKey";
 import { seedFromTest } from "../lib/members";
 import {
@@ -115,12 +150,30 @@ beforeEach(() => {
     m.mockResolvedValue(undefined);
   }
   seedFromTest(channelKey("freenode", "#grappa"), [{ nick: "alice", modes: [] }]);
+  // issue 2483 — an empty list and a resolving fetch are the "nothing ignored
+  // yet" baseline; the tests that need an entry override it.
+  mockIgnoresBySlug.mockReturnValue({});
+  mockRefreshIgnores.mockResolvedValue([]);
+  mockAddIgnore.mockResolvedValue({
+    masks: [],
+    entries: [],
+    mask: "alice!*@*",
+    text_pattern: null,
+    outcome: "added",
+  });
+  mockDelIgnore.mockResolvedValue({
+    masks: [],
+    entries: [],
+    mask: "alice!*@*",
+    text_pattern: null,
+    outcome: "removed",
+  });
   __resetForTest();
 });
 
 describe("UserContextMenu", () => {
-  describe("renders all 12 items", () => {
-    it("shows Op, Deop, Voice, Devoice, Kick, Ban nick, Ban host, Kickban, WHOIS, CTCP, Encrypted query, Query", () => {
+  describe("renders all 13 items", () => {
+    it("shows Op, Deop, Voice, Devoice, Kick, Ban nick, Ban host, Kickban, Ignore, WHOIS, CTCP, Encrypted query, Query", () => {
       render(() => <UserContextMenu {...baseProps} />);
       expect(screen.getByRole("button", { name: /^op$/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /^deop$/i })).toBeInTheDocument();
@@ -132,6 +185,8 @@ describe("UserContextMenu", () => {
       expect(screen.getByRole("button", { name: /^kickban$/i })).toBeInTheDocument();
       // issue 2346 — the ambiguous bare "Ban" is gone.
       expect(screen.queryByRole("button", { name: /^ban$/i })).toBeNull();
+      // issue 2483 — the nick is not on the list yet, so the row offers Ignore.
+      expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /^whois$/i })).toBeInTheDocument();
       // #1192 — the shell appends the ▸, so the accessible name carries it.
       expect(screen.getByRole("button", { name: /^ctcp ▸$/i })).toBeInTheDocument();
@@ -148,6 +203,67 @@ describe("UserContextMenu", () => {
         b.textContent?.trim(),
       );
       expect(labels.slice(-2)).toEqual(["Encrypted query", "Query"]);
+    });
+  });
+
+  // issue 2483 — Ignore / Unignore in the nick menu. The row is the same door
+  // as `/ignore <nick>`: the ignoreList store, keyed by the network slug, on
+  // the `nick!*@*` mask the server itself normalises a bare nick to.
+  describe("Ignore / Unignore (issue 2483)", () => {
+    it("Ignore adds nick!*@* through the store", async () => {
+      render(() => <UserContextMenu {...baseProps} />);
+      pressAndClick(screen.getByRole("button", { name: /^ignore$/i }));
+      await flush();
+      expect(mockAddIgnore).toHaveBeenCalledWith("tok", "freenode", "alice!*@*", null);
+      expect(mockDelIgnore).not.toHaveBeenCalled();
+    });
+
+    it("an already-ignored nick offers Unignore and removes the same mask", async () => {
+      mockIgnoresBySlug.mockReturnValue({
+        freenode: [{ mask: "alice!*@*", text_pattern: null }],
+      });
+      render(() => <UserContextMenu {...baseProps} />);
+      expect(screen.queryByRole("button", { name: /^ignore$/i })).toBeNull();
+      pressAndClick(screen.getByRole("button", { name: /^unignore$/i }));
+      await flush();
+      expect(mockDelIgnore).toHaveBeenCalledWith("tok", "freenode", "alice!*@*", null);
+      expect(mockAddIgnore).not.toHaveBeenCalled();
+    });
+
+    it("matches the stored mask case-insensitively", () => {
+      // The server hands back the NORMALISED mask; a nick's case is its own
+      // business, so the comparison folds.
+      mockIgnoresBySlug.mockReturnValue({
+        freenode: [{ mask: "Alice!*@*", text_pattern: null }],
+      });
+      render(() => <UserContextMenu {...baseProps} />);
+      expect(screen.getByRole("button", { name: /^unignore$/i })).toBeInTheDocument();
+    });
+
+    it("an entry for a different nick leaves the row on Ignore", () => {
+      mockIgnoresBySlug.mockReturnValue({
+        freenode: [{ mask: "bob!*@*", text_pattern: null }],
+      });
+      render(() => <UserContextMenu {...baseProps} />);
+      expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+    });
+
+    it("loads the list on open when this network has never been fetched", async () => {
+      render(() => <UserContextMenu {...baseProps} />);
+      await flush();
+      expect(mockRefreshIgnores).toHaveBeenCalledWith("tok", "freenode");
+    });
+
+    it("does not refetch a list the store already holds", async () => {
+      mockIgnoresBySlug.mockReturnValue({ freenode: [] });
+      render(() => <UserContextMenu {...baseProps} />);
+      await flush();
+      expect(mockRefreshIgnores).not.toHaveBeenCalled();
+    });
+
+    it("is always enabled, in any mode and on our own nick", () => {
+      render(() => <UserContextMenu {...baseProps} ownModes={[]} targetNick="Me" />);
+      expect(screen.getByRole("button", { name: /^ignore$/i })).not.toBeDisabled();
     });
   });
 
