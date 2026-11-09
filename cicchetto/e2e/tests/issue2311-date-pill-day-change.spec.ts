@@ -75,15 +75,38 @@ test.describe("issue 2311 — the date pill follows the day", () => {
     // (1) Arm the pill. A REAL wheel: the activation's programmatic scrolls
     // do not stamp operator input, so the gate rejects them. Several steps
     // because the first can land with a separator inside the band.
-    await expect
-      .poll(
-        async () => {
-          await page.mouse.wheel(0, -120);
-          return armedLabel();
-        },
-        { timeout: 10_000, intervals: [150] },
-      )
-      .not.toBeNull();
+    // TEMP #2311 measurement — REMOVE BEFORE MERGE. Step (1) is the flaky one,
+    // so the poll is replaced by the same wheel cadence with a trace: every
+    // round records WHY armedLabel would say null (pill unmounted = band veto,
+    // or the opacity it holds), and the throw carries the trace plus
+    // __pillDebug. Throws on purpose either way so the numbers land in the log.
+    const armedTrace: Array<Record<string, unknown>> = [];
+    let armedAt: string | null = null;
+    for (let i = 0; i < 67; i += 1) {
+      await page.mouse.wheel(0, -120);
+      const state = await page.evaluate(() => {
+        const el = document.querySelector('[data-testid="scrollback-date-pill"]');
+        if (!el) return { pill: 0, opacity: null, text: null };
+        return {
+          pill: 1,
+          opacity: getComputedStyle(el).opacity,
+          text: (el.textContent ?? "").trim(),
+        };
+      });
+      armedTrace.push({ i, ...state });
+      if (state.pill === 1 && state.opacity === "1") {
+        armedAt = state.text;
+        break;
+      }
+    }
+    const step1Dbg = await page.evaluate(() =>
+      (window as unknown as { __pillDebug?: () => unknown }).__pillDebug?.(),
+    );
+    if (armedTrace.length > 0) {
+      throw new Error(
+        `PILLDEBUG step1 armedAt=${JSON.stringify(armedAt)} ${JSON.stringify({ trace: armedTrace, step1Dbg })}`,
+      );
+    }
 
     const initialLabel = await armedLabel();
     expect(initialLabel).toBeTruthy();
@@ -119,7 +142,9 @@ test.describe("issue 2311 — the date pill follows the day", () => {
     // zero again; let it settle, then take the reading that matters.
     await page.waitForTimeout(1500);
     samples.push(await sample());
-    throw new Error(`PILLDEBUG reachedTop=${reachedTop} ${JSON.stringify(samples)}`);
+    if (samples.length > 0) {
+      throw new Error(`PILLDEBUG reachedTop=${reachedTop} ${JSON.stringify(samples)}`);
+    }
 
     // (2) Scroll up until the pill names a DIFFERENT day. Each step is a real
     // wheel, so every one re-arms the linger. `loadMore` fires on the way and
