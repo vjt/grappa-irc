@@ -156,6 +156,23 @@ upload_dirs() {
     grep -qx 'pkgver=@GRAPPA_VERSION@' "$PKGBUILD"
 }
 
+@test "#2574 the AUR client recipe opts out of the debug split, in the recipe and in .SRCINFO" {
+    # makepkg's DEFAULT is to split a `shottino-debug` package out, and the
+    # release workflow's `shottino-*.pkg.tar.zst` glob is wide enough to
+    # publish it — a shipped package nobody decided to ship. The bouncer's
+    # recipe already says `!debug`; the client takes the same position.
+    #
+    # Both carriers, because .SRCINFO is committed here (makepkg does not run
+    # on this host) and a hand-edit that touches only one leaves the AUR
+    # metadata claiming the opposite of the recipe.
+    grep -qx "options=('!debug')" "$PKGBUILD_CLIENT"
+    grep -qxE '^\s*options = !debug$' "$SRCINFO_CLIENT"
+
+    # The reference the fix is measured against, so a future bouncer recipe
+    # dropping `!debug` is caught here rather than by a release asset list.
+    grep -qE "^options=\(.*'!debug'.*\)" "$PKGBUILD"
+}
+
 @test "#1447 the AUR client recipe does not drag the bouncer's build stack onto a client-only host" {
     # The whole point of #1447: a machine that wants the terminal client must
     # not need elixir, erlang or bun to get it. Derived from the bouncer's

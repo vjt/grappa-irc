@@ -61,6 +61,15 @@ source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${_grappaver}.ta
 # hash via updpkgsums, exactly as it does for the bouncer recipe.
 sha256sums=('SKIP')
 
+# No debug split (#2574). makepkg's default produces a `shottino-debug`
+# package, and the release workflow's `shottino-*.pkg.tar.zst` glob publishes it
+# as if it were a decision. Nobody made that decision: the bouncer's recipe
+# already says `!debug`, and this is the client taking the same position.
+# `!strip` is NOT here on purpose — the bouncer's payload is a self-contained
+# ERTS blob that must not be mangled, while shottino is one ordinary C binary
+# that stripping is fine for.
+options=('!debug')
+
 # GitHub tag tarballs extract to <repo>-<version>/ — and the version there is
 # the GRAPPA tag, not this package's.
 _srcdir="grappa-irc-${_grappaver}"
