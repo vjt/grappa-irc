@@ -424,6 +424,174 @@ describe("ServiceModal (#290)", () => {
     });
   });
 
+  // issue 2429 — the prompt grows the composer's three affordances the modal
+  // lacked: a visible send button, ArrowUp/ArrowDown history recall, and the
+  // swipe equivalents. The history is the SERVICE QUERY WINDOW's compose
+  // history (shared, not duplicated): a line typed to NickServ is the same
+  // line whether it left this console or that window.
+  describe("send button and history recall (issue 2429)", () => {
+    const open = async (
+      slug: string,
+    ): Promise<{ input: HTMLTextAreaElement; button: HTMLElement }> => {
+      render(() => <ServiceModal />);
+      openServiceModal(slug, "NickServ");
+      const input = (await screen.findByTestId("service-modal-input")) as HTMLTextAreaElement;
+      await waitFor(() => expect(document.activeElement).toBe(input));
+      return { input, button: screen.getByLabelText("send command") };
+    };
+
+    // #925's activation rides the pointer: a click alone is what iOS withholds.
+    const pressButton = (button: HTMLElement): void => {
+      fireEvent.pointerDown(button, { pointerId: 1 });
+      fireEvent.pointerUp(button, { pointerId: 1 });
+    };
+
+    const type = (el: HTMLTextAreaElement, value: string): void => {
+      fireEvent.input(el, { target: { value } });
+    };
+
+    it("sends the typed line on a button press and clears on success", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const { input, button } = await open("svc-2429-button");
+
+      type(input, "HELP");
+      pressButton(button);
+
+      expect(pipeline.sendBodyLines).toHaveBeenCalledWith(
+        "svc-2429-button",
+        "NickServ",
+        "HELP",
+        false,
+      );
+      await waitFor(() => expect(input.value).toBe(""));
+    });
+
+    it("greys the button (aria-disabled, never disabled) on an empty draft and refuses the press", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const { input, button } = await open("svc-2429-empty");
+
+      // `aria-disabled`, not `disabled`: a disabled control is not a
+      // mouse-event target, and this button's activation IS a pointer event.
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+      expect(button.hasAttribute("disabled")).toBe(false);
+
+      pressButton(button);
+      expect(pipeline.sendBodyLines).not.toHaveBeenCalled();
+
+      type(input, "HELP");
+      await waitFor(() => expect(button.getAttribute("aria-disabled")).toBe("false"));
+    });
+
+    it("ArrowUp recalls the line just sent, ArrowDown walks back to the live draft", async () => {
+      const { input } = await open("svc-2429-arrows");
+
+      type(input, "IDENTIFY hunter2");
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(input.value).toBe(""));
+
+      type(input, "half-typed");
+      fireEvent.keyDown(input, { key: "ArrowUp" });
+      await waitFor(() => expect(input.value).toBe("IDENTIFY hunter2"));
+
+      fireEvent.keyDown(input, { key: "ArrowDown" });
+      await waitFor(() => expect(input.value).toBe("half-typed"));
+    });
+
+    it("shares the service query window's compose history", async () => {
+      const compose = await import("../lib/compose");
+      const slug = "svc-2429-shared";
+      // A line the operator sent from the query window's own composer.
+      compose.recordSentLine(channelKey(slug, "NickServ"), "GHOST oldnick s3cret");
+
+      const { input } = await open(slug);
+      fireEvent.keyDown(input, { key: "ArrowUp" });
+      await waitFor(() => expect(input.value).toBe("GHOST oldnick s3cret"));
+
+      // …and the reverse: a line sent from the modal is recallable there.
+      fireEvent.keyDown(input, { key: "ArrowDown" });
+      type(input, "INFO vjt");
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(input.value).toBe(""));
+      expect(compose.getDraft(channelKey(slug, "NickServ"))).toBe("");
+      fireEvent.keyDown(input, { key: "ArrowUp" });
+      await waitFor(() => expect(input.value).toBe("INFO vjt"));
+    });
+
+    it("does not record a line whose send failed", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const compose = await import("../lib/compose");
+      const slug = "svc-2429-failed";
+      vi.mocked(pipeline.sendBodyLines).mockRejectedValueOnce(new Error("boom"));
+
+      const { input } = await open(slug);
+      type(input, "IDENTIFY hunter2");
+      fireEvent.keyDown(input, { key: "Enter" });
+      await screen.findByTestId("service-modal-prompt-error");
+
+      fireEvent.keyDown(input, { key: "ArrowUp" });
+      await waitFor(() => expect(input.value).toBe("IDENTIFY hunter2"));
+      expect(compose.historyLines(channelKey(slug, "NickServ"))).toEqual([]);
+    });
+
+    it("keeps the history across a close and reopen", async () => {
+      const slug = "svc-2429-reopen";
+      const first = await open(slug);
+      type(first.input, "HELP");
+      fireEvent.keyDown(first.input, { key: "Enter" });
+      await waitFor(() => expect(first.input.value).toBe(""));
+
+      closeServiceModal();
+      openServiceModal(slug, "NickServ");
+      const input = (await screen.findByTestId("service-modal-input")) as HTMLTextAreaElement;
+      fireEvent.keyDown(input, { key: "ArrowUp" });
+      await waitFor(() => expect(input.value).toBe("HELP"));
+    });
+
+    // jsdom has no TouchEvent/Touch constructor: plain Events with
+    // touches/changedTouches shaped on, the same fake the compose-box swipe
+    // tests use. The handlers read only `.length`, `[0]`, `.clientX/Y`.
+    describe("swipe recall", () => {
+      type Pt = { clientX: number; clientY: number };
+      const touchEvent = (type: string, pts: Pt[]): Event => {
+        const ev = new Event(type, { bubbles: true, cancelable: true });
+        const ended = type === "touchend";
+        Object.defineProperty(ev, "touches", { value: ended ? [] : pts });
+        Object.defineProperty(ev, "targetTouches", { value: ended ? [] : pts });
+        Object.defineProperty(ev, "changedTouches", { value: pts });
+        return ev;
+      };
+      const flick = (ta: Element, startY: number, endY: number): void => {
+        ta.dispatchEvent(touchEvent("touchstart", [{ clientX: 100, clientY: startY }]));
+        ta.dispatchEvent(touchEvent("touchmove", [{ clientX: 100, clientY: endY }]));
+        ta.dispatchEvent(touchEvent("touchend", [{ clientX: 100, clientY: endY }]));
+      };
+
+      it("swipe up recalls the previous line", async () => {
+        const { input } = await open("svc-2429-swipe-up");
+        type(input, "HELP");
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(input.value).toBe(""));
+
+        flick(input, 300, 220);
+        await waitFor(() => expect(input.value).toBe("HELP"));
+      });
+
+      it("swipe down returns to the live draft only when there is one", async () => {
+        const { input } = await open("svc-2429-swipe-down");
+        type(input, "HELP");
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(input.value).toBe(""));
+
+        flick(input, 300, 220);
+        await waitFor(() => expect(input.value).toBe("HELP"));
+
+        flick(input, 220, 300);
+        // Walked back to the bottom, where the parked draft was empty.
+        await waitFor(() => expect(input.value).toBe(""));
+      });
+    });
+  });
+
   it("closes on the × button", () => {
     const slug = "svc-close";
     openServiceModal(slug, "NickServ");

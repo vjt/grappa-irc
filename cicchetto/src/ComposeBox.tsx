@@ -33,6 +33,7 @@ import { frameBudgetBaseForNetwork } from "./lib/isupport";
 import { createNetworkReconnect } from "./lib/networkReconnect";
 import { networkBySlug } from "./lib/networks";
 import { routeClipboardPaste, routePastedInput } from "./lib/pasteRoute";
+import { releasedInside } from "./lib/pointerActivation";
 import {
   claimAxis,
   type DragAxis,
@@ -143,15 +144,6 @@ type Feedback = { text: string; severity: "error" | "notice" };
 // other notices ("notify: watching gigi").
 const AWAY_SET_NOTICE = "away: you are marked as away";
 const AWAY_UNSET_NOTICE = "away: you are no longer away";
-
-// #925 — did the pointer come up inside the box it went down on? The one
-// piece of geometry in the send button's pointer-driven activation, kept
-// pure so the abort-by-sliding-off case is decidable without touch physics.
-// Inclusive on all four edges: a release exactly on the boundary is a
-// release on the control.
-function releasedInside(rect: DOMRect, x: number, y: number): boolean {
-  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-}
 
 // The amber seam line. Its own component only so the feedback `Show`'s
 // fallback stays a single expression; the copy and the precedence live at

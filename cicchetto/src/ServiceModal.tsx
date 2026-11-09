@@ -1,16 +1,33 @@
-import { type Component, createEffect, createSignal, For, onMount, Show } from "solid-js";
+import {
+  type Component,
+  createEffect,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
 import { createBackdropDismiss } from "./lib/backdropDismiss";
 import { casemappingForSlug } from "./lib/casemapping";
 import { type ChannelKey, channelKey } from "./lib/channelKey";
-import { placeCaretInView } from "./lib/composeCaret";
+import { historyLines, recordSentLine } from "./lib/compose";
+import { placeCaretAtEndInView, placeCaretInView } from "./lib/composeCaret";
 import { trapTabKey } from "./lib/focusTrap";
 import { friendlyError } from "./lib/friendlyError";
 import { isComposingKeystroke } from "./lib/imeComposition";
 import { nickEquals } from "./lib/nickEquals";
 import { createOverlayLock } from "./lib/overlayScrollLock";
+import { releasedInside } from "./lib/pointerActivation";
 import { selectedChannel } from "./lib/selection";
 import { sendBodyLines } from "./lib/sendPipeline";
 import { closeServiceModal, serviceMirrorRows, serviceModalState } from "./lib/serviceModal";
+import {
+  claimAxis,
+  type DragAxis,
+  gestureAction,
+  type Point,
+  type ScrollBoundary,
+} from "./lib/swipe";
 import { type TabCycle, tabCompleteStep } from "./lib/tabCompletion";
 import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import { MircBody } from "./MircText";
@@ -67,6 +84,54 @@ const ServiceModal: Component = () => {
         // the reason inline — never a silent console-only swallow (CLAUDE.md
         // "no silent-swallow at boundaries"; same posture as ComposeBox).
         const [sendError, setSendError] = createSignal<string | null>(null);
+        // issue 2429 — in-flight truth for the send button. Without it a
+        // second press re-sends the line still sitting in the draft (the
+        // draft clears only on success, by design), which Enter already did.
+        const [sending, setSending] = createSignal(false);
+
+        // issue 2429 — history recall. The LIST is the service query window's
+        // compose history (lib/compose `historyLines`), shared rather than
+        // duplicated: a line typed to NickServ is the same line whether it
+        // left this console or that window. The CURSOR and the parked draft
+        // are local, though — the store's belong to the composer behind this
+        // modal, and walking history here must not move them there.
+        const historyKey = (): ChannelKey => channelKey(st.networkSlug, st.service);
+        let historyCursor: number | null = null;
+        let stashedDraft = "";
+        const resetHistoryWalk = (): void => {
+          historyCursor = null;
+          stashedDraft = "";
+        };
+        // #173/#1105 — a recalled line can overflow the one-row box: put the
+        // caret at the end and scroll it into view, as the composer does.
+        const revealRecalledCaret = (): void => {
+          const el = inputRef;
+          if (el !== undefined) queueMicrotask(() => placeCaretAtEndInView(el));
+        };
+        const recallOlder = (): void => {
+          const hist = historyLines(historyKey());
+          if (hist.length === 0) return;
+          if (historyCursor === null) stashedDraft = draft();
+          historyCursor = historyCursor === null ? hist.length - 1 : Math.max(0, historyCursor - 1);
+          setDraft(hist[historyCursor] ?? draft());
+          revealRecalledCaret();
+        };
+        const recallNewer = (): void => {
+          if (historyCursor === null) return;
+          const hist = historyLines(historyKey());
+          const next = historyCursor + 1;
+          if (next >= hist.length) {
+            // Back at the bottom — the live draft parked on the way up.
+            historyCursor = null;
+            const restored = stashedDraft;
+            stashedDraft = "";
+            setDraft(restored);
+          } else {
+            historyCursor = next;
+            setDraft(hist[next] ?? "");
+          }
+          revealRecalledCaret();
+        };
 
         // Notice-mirror: this network's rows from wherever the server routes
         // this service's arrivals — `$server`, or the service's own query
@@ -84,14 +149,34 @@ const ServiceModal: Component = () => {
 
         const send = (): void => {
           const line = draft().trim();
-          if (line === "") return;
+          if (line === "" || sending()) return;
           setSendError(null);
+          setSending(true);
           // Clear the draft ONLY once the send resolves; on failure keep the
           // typed line (retry without re-typing) and show the reason inline.
           sendBodyLines(st.networkSlug, st.service, line, false)
-            .then(() => setDraft(""))
-            .catch((e: unknown) => setSendError(friendlyError(e)));
+            .then(() => {
+              // issue 2429 — recorded the moment it is out, as the composer's
+              // takeDraft does, so a line that failed to leave never pollutes
+              // the history. Then back to the live bottom.
+              recordSentLine(historyKey(), line);
+              resetHistoryWalk();
+              setDraft("");
+            })
+            .catch((e: unknown) => setSendError(friendlyError(e)))
+            .finally(() => setSending(false));
         };
+
+        // issue 2429 — the send button's pointer-driven activation, the
+        // composer's own contract (#925): a `click` is what iOS withholds
+        // from a press it routes into a long-press, `pointerup` fires either
+        // way; the synthetic click that follows is swallowed so one tap
+        // cannot send twice; and `mousedown` is cancelled so tapping the
+        // button does not steal focus from the prompt and collapse the
+        // on-screen keyboard (#59). Plain `let`s: nothing renders off them.
+        let pressedPointerId: number | null = null;
+        let sentFromPointer = false;
+        const nothingToSend = (): boolean => draft().trim() === "";
 
         // Auto-scroll the mirror to the newest line as notices arrive (the
         // help wall + prompt replies land at the tail). scrollHeight is 0 in
@@ -149,6 +234,78 @@ const ServiceModal: Component = () => {
           // #1113 — the compose doors' caret placement: the completion can land
           // on a wrapped line the one-row box is not showing.
           queueMicrotask(() => placeCaretInView(ta, step.newCursor));
+        };
+
+        // issue 2429 — swipe recall, the composer's gesture (#203/#178) over
+        // this prompt: swipe UP = ArrowUp (older history, unconditional — the
+        // stock mobile keyboard has no arrows, and an up-flick is the only
+        // coherent intent over a one-row box); swipe DOWN = ArrowDown (newer,
+        // gated on a non-empty draft: a down-flick's job is walking back to
+        // the live draft parked on the way up). The scroll-boundary handoff
+        // (#123) is kept even though a newline cannot survive in this prompt
+        // — a pasted one is flattened to a space — because the box can still
+        // scroll a long line horizontally, and the composer's rule is "inner
+        // scroll owns the drag until it runs out of room".
+        //
+        // Bound via addEventListener on the element, NOT JSX onTouch*: Solid
+        // delegates touch to a single PASSIVE document listener, where
+        // preventDefault silently no-ops, and touchmove must be non-passive
+        // to suppress iOS's native scroll at the handoff.
+        let swipeStart: Point | null = null;
+        let swipeStartTime = 0;
+        let claimedAxis: DragAxis | null = null;
+        const scrollBoundary = (el: HTMLTextAreaElement): ScrollBoundary => {
+          const maxScroll = el.scrollHeight - el.clientHeight;
+          return { atTop: el.scrollTop <= 0, atBottom: el.scrollTop >= maxScroll - 1 };
+        };
+        const onTouchStart = (e: TouchEvent): void => {
+          const t = e.touches.length === 1 ? e.touches[0] : undefined;
+          swipeStart = t ? { x: t.clientX, y: t.clientY } : null;
+          swipeStartTime = performance.now();
+          claimedAxis = null;
+        };
+        const onTouchMove = (e: TouchEvent): void => {
+          if (swipeStart === null || e.touches.length !== 1) return;
+          const t = e.touches[0];
+          if (t === undefined) return;
+          if (claimedAxis === null) {
+            const el = e.currentTarget as HTMLTextAreaElement;
+            // #1205 — a non-collapsed selection is a handle drag, not a
+            // gesture; live like the boundary, unreadable counts as collapsed.
+            claimedAxis = claimAxis(
+              swipeStart,
+              { x: t.clientX, y: t.clientY },
+              scrollBoundary(el),
+              el.selectionStart !== el.selectionEnd,
+            );
+            if (claimedAxis === null) return;
+          }
+          e.preventDefault();
+        };
+        const onTouchEnd = (e: TouchEvent): void => {
+          const start = swipeStart;
+          const claimed = claimedAxis;
+          swipeStart = null;
+          const t = e.changedTouches[0];
+          if (start === null || t === undefined || claimed === null) return;
+          const action = gestureAction(
+            start,
+            { x: t.clientX, y: t.clientY },
+            performance.now() - swipeStartTime,
+          );
+          if (action === "recall-prev") recallOlder();
+          else if (action === "recall-next" && draft().trim() !== "") recallNewer();
+        };
+        const bindPrompt = (el: HTMLTextAreaElement): void => {
+          inputRef = el;
+          el.addEventListener("touchstart", onTouchStart, { passive: true });
+          el.addEventListener("touchmove", onTouchMove, { passive: false });
+          el.addEventListener("touchend", onTouchEnd, { passive: true });
+          onCleanup(() => {
+            el.removeEventListener("touchstart", onTouchStart);
+            el.removeEventListener("touchmove", onTouchMove);
+            el.removeEventListener("touchend", onTouchEnd);
+          });
         };
 
         return (
@@ -229,7 +386,7 @@ const ServiceModal: Component = () => {
                     was not the trigger. A textarea keeps line breaks, so the
                     two handlers below hold the old single-line contract. */}
                 <textarea
-                  ref={inputRef}
+                  ref={bindPrompt}
                   rows={1}
                   class="service-modal-prompt-input"
                   data-testid="service-modal-input"
@@ -243,6 +400,9 @@ const ServiceModal: Component = () => {
                   onInput={(e) => {
                     setSendError(null);
                     tabCycle = null;
+                    // Any explicit edit ends the history walk, as at the
+                    // composer: we are typing a line, not recalling one.
+                    resetHistoryWalk();
                     // A pasted line break would ride into sendBodyLines as a
                     // SECOND command to the service; it becomes a space, as
                     // the old single-line field effectively did.
@@ -252,14 +412,22 @@ const ServiceModal: Component = () => {
                     setDraft(flat);
                   }}
                   onKeyDown={(e) => {
+                    // issue 2041 — the arrows walk an IME candidate list too,
+                    // so the guard sits above the whole chord table.
+                    if (isComposingKeystroke(e)) return;
                     if (e.key === "Enter") {
-                      // issue 2041 — the Enter that commits an IME candidate
-                      // is not a send.
-                      if (isComposingKeystroke(e)) return;
                       // Every Enter sends, Shift+Enter included: there is no
                       // second line to open.
                       e.preventDefault();
                       send();
+                    } else if (e.key === "ArrowUp") {
+                      // issue 2429 — no first-line guard needed: a newline
+                      // cannot live in this prompt (paste flattens it).
+                      e.preventDefault();
+                      recallOlder();
+                    } else if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      recallNewer();
                     } else if (e.key === "Tab") {
                       // Consumed even with nothing to complete, as at the
                       // compose box; lib/focusTrap leaves a prevented Tab alone.
@@ -268,6 +436,61 @@ const ServiceModal: Component = () => {
                     }
                   }}
                 />
+                {/* issue 2429 — the visible submit the mobile keyboard never
+                    gave this prompt. Same pointer contract as the composer's
+                    send button (#925): activation on `pointerup` (a click is
+                    what iOS withholds on a long-press), the synthetic click
+                    that follows swallowed, `mousedown` cancelled so the tap
+                    does not collapse the keyboard (#59), and `aria-disabled`
+                    — NEVER `disabled`, which is not a mouse-event target and
+                    so would stop receiving the very events this needs. */}
+                <button
+                  type="button"
+                  class="service-modal-send"
+                  aria-label="send command"
+                  aria-busy={sending()}
+                  aria-disabled={nothingToSend() || sending()}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onPointerDown={(e) => {
+                    pressedPointerId = e.pointerId;
+                    sentFromPointer = false;
+                  }}
+                  onPointerUp={(e) => {
+                    if (pressedPointerId !== e.pointerId) return;
+                    pressedPointerId = null;
+                    // Sliding off to abort is the platform's cancel
+                    // affordance for an irreversible action — hit-test it.
+                    if (
+                      !releasedInside(e.currentTarget.getBoundingClientRect(), e.clientX, e.clientY)
+                    )
+                      return;
+                    if (nothingToSend() || sending()) return;
+                    sentFromPointer = true;
+                    send();
+                  }}
+                  onClick={(e) => {
+                    // Only a pointer-generated click (detail > 0) is the
+                    // duplicate; a keyboard activation reports detail 0 and
+                    // must always send, since no pointerup carried it.
+                    if (sentFromPointer && e.detail > 0) e.preventDefault();
+                  }}
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                    data-testid="service-modal-send-glyph"
+                  >
+                    <line x1="22" y1="2" x2="11" y2="13" />
+                    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                  </svg>
+                </button>
               </footer>
             </div>
           </div>
