@@ -176,7 +176,7 @@ if Mix.env() in [:dev, :test] do
     # integer, so a typo is a 422 and not a silently dense corpus.
     defp parse_seed_gap(%{"seed_gap_ms" => gap}) when is_integer(gap) and gap > 0, do: {:ok, gap}
     defp parse_seed_gap(%{"seed_gap_ms" => _}), do: :error
-    defp parse_seed_gap(_entry), do: {:ok, nil}
+    defp parse_seed_gap(_), do: {:ok, nil}
 
     defp put_seed_gap(seed, nil), do: seed
     defp put_seed_gap(seed, gap), do: Map.put(seed, :seed_gap_ms, gap)

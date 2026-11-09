@@ -217,7 +217,7 @@ if Mix.env() in [:dev, :test] do
     # #2311 — only a caller that asked for a wider corpus gets one; the
     # absent key must reach `seed_channel` as the default, not as a value.
     defp seed_gap_opts(%{seed_gap_ms: gap}) when is_integer(gap) and gap > 0, do: [gap_ms: gap]
-    defp seed_gap_opts(_seed), do: []
+    defp seed_gap_opts(_), do: []
 
     @doc """
     Removes the subject named `name`: unbinds every credential (which
