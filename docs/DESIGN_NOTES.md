@@ -6298,9 +6298,11 @@ first `createComputed` in cic, because of when it runs: Solid runs every memo
 and computed of an update before any effect, and the `<For>` swaps the line
 nodes in a render effect, so the computed reads the list as the reader saw it
 and the length-effect, which restores, reads the new one. Measured, not
-argued: the same body as a `createEffect` reads the swapped list, and every
-pane arm of the issue that flips the view goes red (the one that does not
-flip, the arrival above, stays green). The `on` is not deferred on purpose: a
+argued: with the same body as a `createEffect`, every pane arm whose reader
+the re-render has to move goes red. Two stay green: the arrival above, which
+is no re-render, and the lock's within-reach arm, whose reader sits on the
+chat's first line, a position the same pixel names in both layouts (that arm
+pins the follow, not the anchor). The `on` is not deferred on purpose: a
 deferred first run does not record the previous input, so the first change
 after mount had nothing to compare against (read in solid-js 1.9.17's
 `on`, and seen as the one direction of the flip that passed).
