@@ -1092,11 +1092,7 @@ export function narrowArchiveCountResponse(raw: unknown): {
   kind: "channel" | "query" | "server";
   count: number;
 } {
-  return narrowRest(
-    S_ScrollbackWireArchiveCount,
-    raw,
-    "archive count",
-  );
+  return narrowRest(S_ScrollbackWireArchiveCount, raw, "archive count");
 }
 
 /** `GET /networks/:slug/channels`. */
