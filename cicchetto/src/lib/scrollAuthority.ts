@@ -51,8 +51,11 @@ export type ScrollIntent = {
 //   marker-activation ▸ tail-follow ▸ prepend-preserve
 //
 // issue 2610 — `reflow-preserve` sits over the two content-change intents it
-// competes with. Over `tail-follow`: its reading of a reader at the tail IS
-// the tail, so the follower is tailed either way. Over `marker-activation`: a
+// competes with. Over `tail-follow`: a reader within the bottom band reads as
+// the tail and is tailed either way; a follower further up (#1121's, left
+// there by lines that arrived under an overlay) reads as a line and keeps it,
+// as the issue asks of anyone not at the bottom, until the next arrival tails
+// them. Over `marker-activation`: a
 // re-render adds and removes no line, so it is not the late load the
 // activation latch re-asserts the divider against, and the reader keeps the
 // line they were looking at. Under the overlay freeze, which it re-anchors

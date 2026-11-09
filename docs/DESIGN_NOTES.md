@@ -6224,7 +6224,9 @@ list's row menu (`ContextMenu`, no freeze) nothing re-anchored a reader in the
 middle; through the rail's `ciphertext` entry (issue 2583) the menu stays open
 around the entry and holds the overlay lock, so the freeze re-asserted the OLD
 pixels after the flip and replayed them at close, which left even a reader at
-the bottom above the last line.
+the bottom above the last line. "No freeze" holds on a desktop only: on a
+phone the window list lives in the left drawer, which holds the overlay lock
+itself (`Shell`), so both doors reach the frozen branch there.
 
 ### What holds the place
 
@@ -6246,13 +6248,21 @@ reader scrolling up (#168's class). A new one-shot intent,
 `overlay-freeze ▸ operator-tail ▸ mention-jump ▸ reflow-preserve ▸
 marker-activation ▸ tail-follow ▸ prepend-preserve`.
 
-* Over `tail-follow`: its reading of a reader at the tail IS the tail, so a
-  follower is tailed either way (THE tail write, then the measured settle).
+* Over `tail-follow`: a reader within the bottom band
+  (`SCROLL_BOTTOM_THRESHOLD_PX`) reads as the tail and is tailed either way
+  (THE tail write, then the measured settle). A follower further up — #1121's,
+  left there by lines that arrived under an overlay — reads as a LINE and
+  keeps it, as the issue asks of anyone not at the bottom; before this change
+  a same-lines update tailed them on the next frame, now the next arrival
+  does. The pane arm "a reader the lock left above new lines, still
+  following" pins exactly that.
 * Over `marker-activation`: a re-render adds and removes no line, so it is
   not the late load the activation latch re-asserts the divider against. A
-  reader who opened an unread chat and flips without scrolling keeps the line
-  at the top, not the divider centred. Deliberate; reversible by moving one
-  entry in `PRECEDENCE`.
+  reader who opened an unread chat and flips without touching it keeps the
+  line at the top, rather than having the divider put back at the top
+  (`activationAnchor` lands it with `block: "start"`). Deliberate; reversible
+  by moving one entry in `PRECEDENCE`, and a pane arm ("a flip while the
+  window's activation still holds") goes red if it moves.
 * Under `overlay-freeze`, which it RE-ANCHORS instead of fighting: the
   freeze's `overlayScrollSnapshot` is rewritten to the reader's line in the
   new layout, so the content-change re-assert and the close edge's restore
@@ -6260,12 +6270,25 @@ marker-activation ▸ tail-follow ▸ prepend-preserve`.
   the reader was following is a fact about the open edge (#1121), and a
   re-render does not change it. This is #1701's "the px is a proxy for a
   position" applied to the content instead of the box.
+* And when the freeze hands the pane back, its close edge
+  (`applyOverlayRestore`) publishes what the no-lock door publishes after its
+  write (review of PR 2621). `lastScrollTop` moves to where the reader now is:
+  `onScroll` skipped every event during the hold, so its baseline was the
+  position before it, and against that a re-anchored reader's next small
+  scroll DOWN read as a scroll up and turned the follow off. And the reach-tail
+  edge, when the restored position is within reach of the tail: the
+  orchestrator's call, least surprise — the same screen and the same gesture
+  end in the same follow state whichever door the flip came through. It only
+  ever turns the follow ON, so #1121's ruling stands: lines that arrived
+  underneath push the tail away and are no scroll-up.
 
 Only a re-render of the same rows, in the same order, in the same window
 counts (`sameLines` + the key). A load, an arrival, a divider moving or a
 window switch keep their own rules: the slice is cut on that boundary, not on
 the encrypted window, so any source that re-renders its lines in place gets
-the same treatment.
+the same treatment. The identity half is pinned by a pane arm: a message
+landing where its arriving row was (issue 2577) keeps the length and changes
+an identity, so it is an arrival and a follower is tailed for it.
 
 ### When the reading is taken
 
@@ -6275,8 +6298,9 @@ first `createComputed` in cic, because of when it runs: Solid runs every memo
 and computed of an update before any effect, and the `<For>` swaps the line
 nodes in a render effect, so the computed reads the list as the reader saw it
 and the length-effect, which restores, reads the new one. Measured, not
-argued: the same body as a `createEffect` reads the swapped list, and all five
-of the issue's vitest arms go red. The `on` is not deferred on purpose: a
+argued: the same body as a `createEffect` reads the swapped list, and every
+pane arm of the issue that flips the view goes red (the one that does not
+flip, the arrival above, stays green). The `on` is not deferred on purpose: a
 deferred first run does not record the previous input, so the first change
 after mount had nothing to compare against (read in solid-js 1.9.17's
 `on`, and seen as the one direction of the flip that passed).
@@ -6293,7 +6317,14 @@ after mount had nothing to compare against (read in solid-js 1.9.17's
 ### Limits, not claimed
 
 * The overlay effect's deferred restores capture their target in a closure on
-  each edge, so a re-render within two frames of the lock opening or closing
-  is overwritten by the px of that edge. A tap cannot land inside that window.
-* The e2e runs on desktop chromium only; the phone reaches the rail's entry
-  through the right drawer, not exercised.
+  each edge. At the CLOSE edge a re-render within its two frames is
+  overwritten by the px captured at the close (line 4 became line 2). At the
+  OPEN edge it heals itself: the re-render's own overlay-freeze re-assert
+  reads the live, re-anchored snapshot two frames later, after the open
+  edge's restore (the line held on every frame). Both measured with vitest
+  probes in the review of PR 2621, not kept as arms. A tap cannot land inside
+  either window.
+* The e2e runs on desktop chromium only. On a phone the window list's door
+  goes through the left drawer's overlay lock as the rail's menu does
+  everywhere: the frozen branch the vitest arms cover, not exercised end to
+  end there.
