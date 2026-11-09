@@ -2558,5 +2558,65 @@ describe("EncryptedChatPane, issue 2610 — the ciphertext view keeps the reader
         restore();
       }
     });
+
+    // Review F1 — a re-anchor under the lock moves `scrollTop` while `onScroll`
+    // is held off, and nothing then told `onScroll` where the reader now is: its
+    // baseline stayed at the tail write before the lock (the scroll event a
+    // browser fires for it, dispatched here: jsdom fires none), in the old
+    // layout and far below the line the plaintext puts the reader on. Their
+    // next small scroll DOWN then read as a scroll up and turned off the follow.
+    it("a reader the lock left above new lines and re-anchored lower under it scrolls down and still follows", async () => {
+      const restore = stageScreen();
+      try {
+        open(12);
+        setWireView("azzurra/bob");
+        await waitFor(() => expect(belowTail()).toBe(0));
+        scrollback().dispatchEvent(new Event("scroll"));
+        await holdLock();
+        setRows(chatOf(24));
+        await waitFor(() => expect(lines()).toHaveLength(24));
+        setWireView(null);
+        await releaseLock();
+        // The premise: line 11 at the top of the view, well above the bottom,
+        // still following (#1121).
+        expect(firstInView()).toEqual({ id: "11", offset: 0 });
+        expect(belowTail()).toBe(180);
+        expect(scrollback().dataset.follow).toBe("on");
+
+        const list = scrollback();
+        list.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+        list.scrollTop += 5;
+        list.dispatchEvent(new Event("scroll"));
+        expect(belowTail()).toBe(175);
+        expect(list.dataset.follow).toBe("on");
+      } finally {
+        for (; held > 0; held -= 1) popOverlay(null);
+        restore();
+      }
+    });
+
+    // Review F3, the orchestrator's call (least surprise): the same screen and
+    // the same gesture end in the same follow state whichever door the flip came
+    // through. Without a lock, a flip that brings the bottom within reach
+    // follows from there (above); under the lock, its close edge does the same.
+    it("a re-render under the lock that brings the bottom within reach follows from there once it closes", async () => {
+      const restore = stageScreen();
+      try {
+        open(6);
+        setWireView("azzurra/bob");
+        await scrollUpTo(10);
+        expect(firstInView()).toEqual({ id: "1", offset: -10 });
+
+        await holdLock();
+        setWireView(null);
+        await releaseLock();
+        expect(firstInView()).toEqual({ id: "1", offset: -10 });
+        expect(belowTail()).toBe(10);
+        expect(scrollback().dataset.follow).toBe("on");
+      } finally {
+        for (; held > 0; held -= 1) popOverlay(null);
+        restore();
+      }
+    });
   });
 });

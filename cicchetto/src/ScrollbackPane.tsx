@@ -4062,15 +4062,30 @@ const ScrollbackPane: Component<Props> = (props) => {
     // `onScroll` never re-measures. Both consumers of a stale-true `atBottomNow`
     // then lie in the same direction — the floating scroll-to-bottom button
     // stays unmounted, and `readingAtTailKey` keeps telling `selection.ts` to
-    // suppress this window's unread badge. Published BEFORE the no-op early
-    // return, because the held-position case IS the one that goes stale.
-    setAtBottomNow(
-      listRef.scrollHeight - restoreTo - listRef.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX,
-    );
-    if (listRef.scrollTop === restoreTo) return;
-    const intent: ScrollIntent = { kind: "overlay-freeze", key: snapKey, lifetime: "sticky" };
-    logScrollDecision("overlay-restore", [intent], intent, "overlay-restore");
-    listRef.scrollTop = restoreTo;
+    // suppress this window's unread badge. Published whether or not a write
+    // follows, because the held-position case IS the one that goes stale.
+    const near =
+      listRef.scrollHeight - restoreTo - listRef.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX;
+    setAtBottomNow(near);
+    // issue 2610 (review F3, the orchestrator's call: least surprise) — and the
+    // reach-tail edge with it, as `onScroll` and `applyReflowPreserve` take it: a
+    // reader the hold leaves within reach of the tail (a re-render under it made
+    // the lines below shorter) follows from there, whichever door they came in
+    // by. It only ever turns the follow ON, so #1121's intent above — lines that
+    // arrived underneath are no scroll-up — is untouched.
+    if (near) setFollowMode(nextFollowMode(followMode(), "reach-tail"));
+    if (listRef.scrollTop !== restoreTo) {
+      const intent: ScrollIntent = { kind: "overlay-freeze", key: snapKey, lifetime: "sticky" };
+      logScrollDecision("overlay-restore", [intent], intent, "overlay-restore");
+      listRef.scrollTop = restoreTo;
+    }
+    // issue 2610 (review F1) — `onScroll` skipped every event while the hold
+    // lasted, so its baseline is still where the reader was before it. A
+    // re-render under the hold re-anchors them lower (`scrollTop` in the new
+    // layout), and against the stale baseline their next small scroll DOWN read
+    // as a scroll up and turned the follow off. Read back rather than
+    // `restoreTo`: a browser clamps a position past the end.
+    lastScrollTop = listRef.scrollTop;
   };
 
   // #608 — the applier's smooth-scroll INTERRUPT (W9). The mention-jump is the
