@@ -6357,6 +6357,19 @@ async function effectSignature(): Promise<string[]> {
 }
 
 describe("#1396 — dispatch characterization over every arm", () => {
+  // The table below is characterized against a `patchNetwork` that REFUSES:
+  // the connect/bounce arms need a stop at their park leg, and the pin records
+  // the refusal's friendly copy. That refusal used to be INHERITED from an
+  // earlier test's `mockRejectedValue` — which also carried that test's module
+  // graph. After #2409 moved `ApiError` into its own module, the leaked
+  // rejection threw a class from a graph this suite no longer shares, so every
+  // arm read it as an untyped throw and the pin collapsed to "send failed".
+  // Declare the refusal here, with this graph's class.
+  beforeEach(async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.patchNetwork).mockRejectedValue(new ApiError(503, "too_many_sessions"));
+  });
+
   // The reference is the `case` labels transcribed from the switch, which is
   // outside the table being checked. Reconciled BOTH ways: an arm no draft
   // reaches is an unprotected arm, and a draft naming an arm that no longer
