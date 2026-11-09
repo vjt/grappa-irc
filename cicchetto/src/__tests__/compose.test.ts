@@ -238,7 +238,17 @@ vi.mock("../lib/encryptedChats", async () => {
     equals: false,
   });
   deleteChat.fire = setDeleted;
-  return { sendEncrypted: vi.fn(async () => undefined), encryptedChatDeleted };
+  // compose.ts also reads the encrypted-channel seam: a channel is
+  // encrypted only when its topic tag says so, so the default here is
+  // false — every pre-existing fixture stays on the cleartext path —
+  // and the encrypted send is a stub, exercised in encryptedChats' own
+  // tests.
+  return {
+    sendEncrypted: vi.fn(async () => undefined),
+    sendChannelEncrypted: vi.fn(async () => undefined),
+    channelEncrypted: vi.fn(() => false),
+    encryptedChatDeleted,
+  };
 });
 
 // Mock selection.ts — compose.ts reads selectedChannel for channel-context verbs.
