@@ -1,0 +1,267 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ScrollbackMessage } from "../lib/api";
+import { channelKey } from "../lib/channelKey";
+import { SERVER_WINDOW_NAME } from "../lib/windowKinds";
+
+// issue 2625 — the `$server` peek store. A command ARMS it; the first `$server`
+// line inside the reply window OPENS it; once open it is a live view over every
+// `$server` line past the high-water mark taken at the command, until it is
+// closed. Only on the mobile layout, only where the screen holds enough text at
+// the user's font size, and never on a device that opted out.
+//
+// The scrollback store is the REAL one (the peek is a view over it, so a fake
+// would test the fake); the form factor and the selection are the two boundary
+// sources, mocked as signals so a test can flip them.
+
+const form = vi.hoisted(() => ({ mobile: true }));
+vi.mock("../lib/theme", () => ({
+  isMobile: () => form.mobile,
+  prefersDark: () => false,
+  applyTheme: vi.fn(),
+}));
+
+vi.mock("../lib/selection", async () => {
+  const { createSignal } = await import("solid-js");
+  const [selectedChannel, setSelectedChannel] = createSignal<{
+    networkSlug: string;
+    channelName: string;
+    kind: string;
+  } | null>(null);
+  return { selectedChannel, setSelectedChannel };
+});
+
+const SLUG = "azzurra";
+const SERVER = channelKey(SLUG, SERVER_WINDOW_NAME);
+const T0 = Date.UTC(2026, 10, 9, 0, 25, 0);
+
+const row = (id: number, body: string, slug = SLUG): ScrollbackMessage => ({
+  id,
+  network: slug,
+  channel: SERVER_WINDOW_NAME,
+  server_time: T0,
+  kind: "notice",
+  sender: "NickServ",
+  body,
+  meta: {},
+});
+
+type Peek = typeof import("../lib/serverPeek");
+type Scrollback = typeof import("../lib/scrollback");
+
+const load = async (): Promise<{ peek: Peek; sb: Scrollback }> => ({
+  peek: await import("../lib/serverPeek"),
+  sb: await import("../lib/scrollback"),
+});
+
+const bodies = (rows: readonly ScrollbackMessage[]): (string | null)[] => rows.map((m) => m.body);
+
+// An iPhone 15 in Safari (the e2e `webkit-iphone-15` viewport) at the default
+// 14px: 46 columns, 33 rows, well inside the gate.
+const phone = () => {
+  vi.stubGlobal("innerWidth", 393);
+  vi.stubGlobal("innerHeight", 659);
+};
+
+describe("serverPeekFits (issue 2625)", () => {
+  it("pins the thresholds and the reply window", async () => {
+    const { peek } = await load();
+    expect(peek.SERVER_PEEK_MIN_COLS).toBe(36);
+    expect(peek.SERVER_PEEK_MIN_ROWS).toBe(12);
+    expect(peek.SERVER_PEEK_REPLY_WINDOW_MS).toBe(10_000);
+  });
+
+  // A 10px font makes both metrics whole numbers (advance 6px, line 14px), so
+  // the edges below are the thresholds themselves, not a rounding of them.
+  it.each([
+    [216, 168, true, "exactly 36 columns and 12 rows"],
+    [215.9, 168, false, "one sliver under 36 columns"],
+    [216, 167.9, false, "one sliver under 12 rows"],
+  ])("at 10px, %spx x %spx fits=%s (%s)", async (w, h, fits) => {
+    const { peek } = await load();
+    expect(peek.serverPeekFits(w, h, 10)).toBe(fits);
+  });
+
+  // The phones the e2e suite drives, at the font presets (fontSize.ts).
+  it.each([
+    ["iPhone 15, M 14px", 393, 659, 14, true],
+    ["iPhone 15, XL 18px (36.4 columns)", 393, 659, 18, true],
+    ["iPhone 15, XXL 20px (32.8 columns)", 393, 659, 20, false],
+    ["Pixel 7, M 14px", 412, 839, 14, true],
+    ["Pixel 7, XXL 20px (34.3 columns)", 412, 839, 20, false],
+    ["iPhone 15, 28px ceiling (23.4 columns)", 393, 659, 28, false],
+    ["iPhone SE landscape, 22px (12.2 rows)", 667, 375, 22, true],
+    ["iPhone SE landscape, 24px (11.2 rows)", 667, 375, 24, false],
+  ])("%s → %s", async (_label, w, h, f, fits) => {
+    const { peek } = await load();
+    expect(peek.serverPeekFits(w as number, h as number, f as number)).toBe(fits);
+  });
+});
+
+describe("serverPeek store (issue 2625)", () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    localStorage.clear();
+    form.mobile = true;
+    phone();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(T0);
+    // `resetModules` leaves the MOCK registry alone, so the selection signal
+    // is the same object in every test: a `$server` selected by one test would
+    // close the next test's peek the moment it opened.
+    (await import("../lib/selection")).setSelectedChannel(null);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("shows nothing before any command", async () => {
+    const { peek, sb } = await load();
+    sb.appendToScrollback(SERVER, row(1, "a server notice nobody asked for"));
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  it("opens on the first $server line after a command, with only the lines after it", async () => {
+    const { peek, sb } = await load();
+    sb.appendToScrollback(SERVER, row(41, "an older line"));
+    peek.armServerPeek(SLUG);
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+
+    vi.setSystemTime(T0 + 800);
+    sb.appendToScrollback(SERVER, row(42, "Nickname vjt is registered"));
+
+    expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["Nickname vjt is registered"]);
+  });
+
+  it("keeps showing every line $server receives while open, so the next command's output appends", async () => {
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    sb.appendToScrollback(SERVER, row(1, "first reply"));
+    vi.setSystemTime(T0 + 60_000);
+    peek.armServerPeek(SLUG);
+    sb.appendToScrollback(SERVER, row(2, "second reply"));
+    expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["first reply", "second reply"]);
+  });
+
+  it("opens for a line at exactly the end of the reply window", async () => {
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    vi.setSystemTime(T0 + 10_000);
+    sb.appendToScrollback(SERVER, row(1, "a slow reply"));
+    expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["a slow reply"]);
+  });
+
+  it("stays shut for a line one millisecond past the window, and for every line after it", async () => {
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    vi.setSystemTime(T0 + 10_001);
+    sb.appendToScrollback(SERVER, row(1, "too late to be a reply"));
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+    sb.appendToScrollback(SERVER, row(2, "and so is this"));
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  it("does not arm on the desktop layout", async () => {
+    form.mobile = false;
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    sb.appendToScrollback(SERVER, row(1, "reply"));
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  it("does not arm where the screen is too small for the font size", async () => {
+    localStorage.setItem("cicchetto.fontSize", "28");
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    sb.appendToScrollback(SERVER, row(1, "reply"));
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  it("does not arm on a device that opted out", async () => {
+    localStorage.setItem("cicchetto.serverPeek", "false");
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    sb.appendToScrollback(SERVER, row(1, "reply"));
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  it("closes on dismiss, and a later line does not bring it back", async () => {
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    sb.appendToScrollback(SERVER, row(1, "reply"));
+    peek.closeServerPeek();
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+    sb.appendToScrollback(SERVER, row(2, "more of the reply"));
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  it("closes when that network's $server window is opened, and not for another window", async () => {
+    const { peek, sb } = await load();
+    const selection = await import("../lib/selection");
+    peek.armServerPeek(SLUG);
+    sb.appendToScrollback(SERVER, row(1, "reply"));
+
+    selection.setSelectedChannel({ networkSlug: SLUG, channelName: "#grappa", kind: "channel" });
+    expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["reply"]);
+
+    selection.setSelectedChannel({ networkSlug: SLUG, channelName: "$server", kind: "server" });
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  it("closes when the device opts out while it is open", async () => {
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    sb.appendToScrollback(SERVER, row(1, "reply"));
+    peek.setServerPeekEnabled(false);
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  it("forgets an open peek on logout, like every client-side buffer", async () => {
+    const auth = await import("../lib/auth");
+    auth.setToken("tok-a");
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    sb.appendToScrollback(SERVER, row(1, "reply"));
+    expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["reply"]);
+    auth.setToken(null);
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  it("belongs to the network the command was typed on", async () => {
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    sb.appendToScrollback(channelKey("libera", SERVER_WINDOW_NAME), row(7, "elsewhere", "libera"));
+    expect(peek.serverPeekRows("libera")).toEqual([]);
+    sb.appendToScrollback(SERVER, row(8, "here"));
+    expect(peek.serverPeekRows("libera")).toEqual([]);
+    expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["here"]);
+  });
+});
+
+describe("serverPeek preference (issue 2625)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    localStorage.clear();
+  });
+
+  it("is on for a device that never set it", async () => {
+    const { peek } = await load();
+    expect(peek.getServerPeekEnabled()).toBe(true);
+  });
+
+  it("a stored value it cannot read falls back to on, never to off", async () => {
+    localStorage.setItem("cicchetto.serverPeek", "0");
+    const { peek } = await load();
+    expect(peek.getServerPeekEnabled()).toBe(true);
+  });
+
+  it("turning it off is remembered across a page load", async () => {
+    const first = await import("../lib/serverPeek");
+    first.setServerPeekEnabled(false);
+    expect(localStorage.getItem("cicchetto.serverPeek")).toBe("false");
+    vi.resetModules();
+    const reloaded = await import("../lib/serverPeek");
+    expect(reloaded.getServerPeekEnabled()).toBe(false);
+  });
+});
