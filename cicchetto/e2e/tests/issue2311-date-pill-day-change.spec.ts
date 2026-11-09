@@ -83,7 +83,6 @@ test.describe("issue 2311 — the date pill follows the day", () => {
     const armedTrace: Array<Record<string, unknown>> = [];
     let armedAt: string | null = null;
     for (let i = 0; i < 67; i += 1) {
-      const at = Date.now();
       await page.mouse.wheel(0, -120);
       const state = await page.evaluate(() => {
         const el = document.querySelector('[data-testid="scrollback-date-pill"]');
@@ -94,14 +93,11 @@ test.describe("issue 2311 — the date pill follows the day", () => {
           text: (el.textContent ?? "").trim(),
         };
       });
-      armedTrace.push({ i, at, ...state });
+      armedTrace.push({ i, ...state });
       if (state.pill === 1 && state.opacity === "1") {
         armedAt = state.text;
         break;
       }
-      // Same cadence as expect.poll's intervals: [150] — a wheel with no gap
-      // would outrun any opacity transition and fake the failure.
-      await page.waitForTimeout(150);
     }
     const step1Dbg = await page.evaluate(() =>
       (window as unknown as { __pillDebug?: () => unknown }).__pillDebug?.(),
