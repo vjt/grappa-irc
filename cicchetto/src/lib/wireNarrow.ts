@@ -35,6 +35,7 @@ import {
   S_NetworksServersAdminWireT,
   S_NetworksWireChannelJson,
   S_NetworksWireCredentialJson,
+  S_ScrollbackWireArchiveCount,
   S_ScrollbackWireArchiveWireIndex,
   S_ScrollbackWireT,
   S_SessionLogWireListResult,
@@ -1092,7 +1093,7 @@ export function narrowArchiveCountResponse(raw: unknown): {
   count: number;
 } {
   return narrowRest(
-    { o: { target: "s", kind: { e: ["channel", "query", "server"] }, count: "i" } },
+    S_ScrollbackWireArchiveCount,
     raw,
     "archive count",
   );
