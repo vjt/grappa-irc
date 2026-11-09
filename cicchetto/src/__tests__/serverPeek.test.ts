@@ -162,6 +162,18 @@ describe("serverPeek store (issue 2625)", () => {
     expect(peek.serverPeekRows(SLUG)).toEqual([]);
   });
 
+  // The line already in `$server` when the command is typed is not its reply:
+  // it must not count as the first line past the mark, or the card would open
+  // at once, empty, and take whatever came after — however late.
+  it("does not count the line already in $server as the reply", async () => {
+    const { peek, sb } = await load();
+    sb.appendToScrollback(SERVER, row(41, "an older line"));
+    peek.armServerPeek(SLUG);
+    vi.setSystemTime(T0 + 10_001);
+    sb.appendToScrollback(SERVER, row(42, "a notice past the reply window"));
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
   it("does not arm on the desktop layout", async () => {
     form.mobile = false;
     const { peek, sb } = await load();
@@ -172,6 +184,17 @@ describe("serverPeek store (issue 2625)", () => {
 
   it("does not arm where the screen is too small for the font size", async () => {
     localStorage.setItem("cicchetto.fontSize", "28");
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    sb.appendToScrollback(SERVER, row(1, "reply"));
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  // The width is the COLUMN axis: at XXL an iPhone 15 holds 32.75 columns and
+  // 23.5 rows, so it is the columns that refuse it. Read the other way round
+  // (659 wide, 393 tall) the same screen would fit, 54.9 by 14.
+  it("does not arm where the width holds too few columns, though the height has rows to spare", async () => {
+    localStorage.setItem("cicchetto.fontSize", "XXL");
     const { peek, sb } = await load();
     peek.armServerPeek(SLUG);
     sb.appendToScrollback(SERVER, row(1, "reply"));
@@ -205,6 +228,10 @@ describe("serverPeek store (issue 2625)", () => {
     selection.setSelectedChannel({ networkSlug: SLUG, channelName: "#grappa", kind: "channel" });
     expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["reply"]);
 
+    // Another network's `$server` does not hold these lines.
+    selection.setSelectedChannel({ networkSlug: "libera", channelName: "$server", kind: "server" });
+    expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["reply"]);
+
     selection.setSelectedChannel({ networkSlug: SLUG, channelName: "$server", kind: "server" });
     expect(peek.serverPeekRows(SLUG)).toEqual([]);
   });
@@ -217,7 +244,11 @@ describe("serverPeek store (issue 2625)", () => {
     expect(peek.serverPeekRows(SLUG)).toEqual([]);
   });
 
-  it("forgets an open peek on logout, like every client-side buffer", async () => {
+  // The scrollback store empties on logout too, so "no rows right after the
+  // logout" holds whether or not the peek forgot itself. What only the peek's
+  // own reset prevents is the NEXT account's `$server` lines landing in a card
+  // nobody in that session asked for.
+  it("forgets an open peek on logout: the next account's $server lines open nothing", async () => {
     const auth = await import("../lib/auth");
     auth.setToken("tok-a");
     const { peek, sb } = await load();
@@ -225,6 +256,10 @@ describe("serverPeek store (issue 2625)", () => {
     sb.appendToScrollback(SERVER, row(1, "reply"));
     expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["reply"]);
     auth.setToken(null);
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+
+    auth.setToken("tok-b");
+    sb.appendToScrollback(SERVER, row(2, "the next account's server notice"));
     expect(peek.serverPeekRows(SLUG)).toEqual([]);
   });
 
