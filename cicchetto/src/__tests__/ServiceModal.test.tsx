@@ -248,8 +248,11 @@ describe("ServiceModal (#290)", () => {
       expect(document.activeElement).toBe(input);
     });
 
-    it("Shift+Tab from the close button (the first stop) wraps to the prompt", async () => {
-      const { input, close } = await open("svc-trap-back");
+    // issue 2429 added the send button AFTER the prompt, so the last stop is
+    // no longer the prompt: the wrap goes to the button. The prompt stays one
+    // native Tab away from it, which the case below pins.
+    it("Shift+Tab from the close button (the first stop) wraps to the send button (the last stop)", async () => {
+      const { close } = await open("svc-trap-back");
       close.focus();
       const ev = new KeyboardEvent("keydown", {
         key: "Tab",
@@ -259,7 +262,23 @@ describe("ServiceModal (#290)", () => {
       });
       close.dispatchEvent(ev);
       expect(ev.defaultPrevented).toBe(true);
-      expect(document.activeElement).toBe(input);
+      expect(document.activeElement).toBe(screen.getByLabelText("send command"));
+    });
+
+    it("Shift+Tab from the send button (the last stop) is left to the browser", async () => {
+      await open("svc-trap-last");
+      const sendButton = screen.getByLabelText("send command");
+      sendButton.focus();
+      const ev = new KeyboardEvent("keydown", {
+        key: "Tab",
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      sendButton.dispatchEvent(ev);
+      // An inner stop's Tab is the browser's; jsdom does not move focus, so
+      // the assertable half is that the trap did NOT claim the key.
+      expect(ev.defaultPrevented).toBe(false);
     });
 
     it("Tab between two inner stops is left to the browser", async () => {
@@ -268,6 +287,19 @@ describe("ServiceModal (#290)", () => {
       const ev = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
       close.dispatchEvent(ev);
       expect(ev.defaultPrevented).toBe(false);
+    });
+
+    // The forward edge of the trap. Before issue 2429 the last stop was the
+    // prompt, which consumes Tab for completion, so this wrap was unreachable
+    // and therefore never proven; the send button makes it reachable.
+    it("Tab from the send button (the last stop) wraps to the close button", async () => {
+      const { close } = await open("svc-trap-fwd-edge");
+      const sendButton = screen.getByLabelText("send command");
+      sendButton.focus();
+      const ev = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+      sendButton.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(close);
     });
   });
 
