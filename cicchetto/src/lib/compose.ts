@@ -94,6 +94,7 @@ import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
 import { sendMessage as sendWindowMessage } from "./scrollback";
 import { selectedChannel, setSelectedChannel } from "./selection";
 import { draftLines, sendBodyLines, wireBody } from "./sendPipeline";
+import { armServerPeek } from "./serverPeek";
 import { isServicesSender } from "./servicesSender";
 import { parseSlash, type SlashCommand, splitSlash } from "./slashCommands";
 import { peelStatusmsg } from "./statusmsg";
@@ -897,6 +898,22 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       resolveBareWhoisNick,
       sendAction,
     };
+
+    // issue 2625 — a command ARMS the `$server` peek, here, after every early
+    // refusal and before anything is sent: the high-water mark must be taken
+    // before a reply can exist. Not what is SAID (`isSaid`, the issue 2536
+    // split: conversation has no reply in `$server`), not bare `/ns` (the
+    // services console already shows those lines), and not from `$server`,
+    // where the reply is already on screen. `typed` is null for text and for a
+    // line the parser refused, the same "is it a command" the counter asks.
+    if (
+      typed !== null &&
+      !isSaid(cmd) &&
+      cmd.kind !== "service-modal" &&
+      submittedFrom !== SERVER_WINDOW_NAME
+    ) {
+      armServerPeek(networkSlug);
+    }
 
     let result: SubmitResult;
     try {

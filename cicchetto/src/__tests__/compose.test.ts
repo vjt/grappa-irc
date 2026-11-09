@@ -398,6 +398,14 @@ vi.mock("../lib/serviceModal", () => ({
   serviceModalState: vi.fn(() => null),
 }));
 
+// issue 2625 — the `$server` peek is a boundary here: what arming DOES (the
+// gates, the mark, the reply window) is pinned in serverPeek.test.ts against
+// the real scrollback store, which this file mocks away. What compose owns is
+// WHICH submissions arm it, and that it happens before the send.
+vi.mock("../lib/serverPeek", () => ({
+  armServerPeek: vi.fn(),
+}));
+
 // #229 — nickEquals is used by the /mode <ownnick> self-nick gate. Real
 // impl is pinned in nickEquals.test.ts; here a boundary stub (ASCII
 // case-insensitive compare is enough for the dispatch tests). #412 — the
@@ -7950,5 +7958,63 @@ describe("compose — command counts and `/` completion (issue 2584)", () => {
     const compose = await import("../lib/compose");
     expect(compose.tabComplete(k, "vj", 2, true)?.newInput).toBe("vjt: ");
     expect(compose.commandCycle(k)).toBeNull();
+  });
+});
+
+// issue 2625 — which submissions arm the `$server` peek. A command arms it,
+// once, before it is sent (the high-water mark must precede any reply); what
+// is SAID does not (plain text and `/me`, the issue 2536 split: conversation
+// has no reply in `$server`), nor a line the parser refused, nor bare `/ns`
+// (the services console already shows its replies), nor anything typed in
+// `$server` itself, where the reply is already on screen.
+describe("compose — arming the $server peek (issue 2625)", () => {
+  const send = async (draft: string, from = "#a") => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    vi.mocked(sb.sendMessage).mockResolvedValue();
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", from);
+    compose.setDraft(k, draft);
+    return compose.submit(k, "freenode", from);
+  };
+
+  const armed = async () => {
+    const peek = await import("../lib/serverPeek");
+    return vi.mocked(peek.armServerPeek).mock.calls;
+  };
+
+  it.each([
+    ["a services command", "/ns info vjt"],
+    ["a /msg to a service", "/msg NickServ help"],
+    ["a command whose answer is a server numeric", "/away gone fishing"],
+  ])("%s arms it for the submitting network", async (_label, draft) => {
+    expect(await send(draft)).toEqual({ ok: true });
+    expect(await armed()).toEqual([["freenode"]]);
+  });
+
+  it("arms before the line is sent, so the mark precedes the reply", async () => {
+    await send("/ns info vjt");
+    const peek = await import("../lib/serverPeek");
+    const sb = await import("../lib/scrollback");
+    const armedAt = vi.mocked(peek.armServerPeek).mock.invocationCallOrder[0];
+    const sentAt = vi.mocked(sb.sendMessage).mock.invocationCallOrder[0];
+    expect(armedAt).toBeDefined();
+    expect(sentAt).toBeDefined();
+    expect(armedAt).toBeLessThan(sentAt as number);
+  });
+
+  it.each([
+    ["plain text", "hello there"],
+    ["/me", "/me waves"],
+    ["bare /ns (the services console)", "/ns"],
+    ["a line the parser refused", "/kick"],
+  ])("%s does not arm it", async (_label, draft) => {
+    await send(draft);
+    expect(await armed()).toEqual([]);
+  });
+
+  it("a command typed in $server does not arm it", async () => {
+    await send("/ns info vjt", SERVER_WINDOW_NAME);
+    expect(await armed()).toEqual([]);
   });
 });
