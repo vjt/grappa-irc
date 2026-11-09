@@ -722,6 +722,40 @@ describe("SettingsDrawer display options section (#443)", () => {
     });
   });
 
+  // issue 2625 — the `$server` peek's opt-out, per DEVICE like the command
+  // menu (whether a card fits over the window is a question about the screen).
+  // The real module, so what is asserted is what this device reads back.
+  describe("$server peek (issue 2625)", () => {
+    beforeEach(async () => {
+      (await import("../lib/serverPeek")).setServerPeekEnabled(true);
+    });
+
+    it("shows the peek toggle on by default, in the options fieldset", () => {
+      wrap(true);
+      openSub("display-settings-entry");
+      const toggle = screen.getByTestId("server-peek-toggle") as HTMLInputElement;
+      expect(toggle.checked).toBe(true);
+      expect(toggle.closest("fieldset")).toBe(
+        screen.getByTestId("command-menu-toggle").closest("fieldset"),
+      );
+    });
+
+    it("turning it off is remembered on this device", async () => {
+      const peek = await import("../lib/serverPeek");
+      wrap(true);
+      openSub("display-settings-entry");
+      fireEvent.click(screen.getByTestId("server-peek-toggle"));
+      expect(peek.getServerPeekEnabled()).toBe(false);
+      expect(localStorage.getItem("cicchetto.serverPeek")).toBe("false");
+    });
+
+    it("the per-device blurb names it", () => {
+      wrap(true);
+      openSub("display-settings-entry");
+      expect(screen.getByTestId("display-checkboxes-hint").textContent).toMatch(/\$server/);
+    });
+  });
+
   // #1766 part 1 — the mobile window bar toggle. Default CHECKED: the bar is
   // opt-OUT, and a dozen e2e specs address `.bottom-bar` on the strength of
   // that. It is the one SYNCED row of the three, so the click has to reach the
