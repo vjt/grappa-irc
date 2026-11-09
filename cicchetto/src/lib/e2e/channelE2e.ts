@@ -87,6 +87,7 @@
 // them once it has a local-row design; `Report.channelE2e` (client.ts)
 // carries the same events for the drain that produced them.
 
+import { atNick, type ByNick, nickEntries, noNicks, setNick } from "./byNick";
 import type { Outbound } from "./engine";
 import {
   buildPeriodicRotation,
@@ -104,6 +105,7 @@ import {
   gkeyInner,
   holderNicksOf,
   holdersStale,
+  holdGkey,
   importEpoch,
   keyreqAnswerDue,
   keyreqPayload,
@@ -115,6 +117,7 @@ import {
   rotateEpochForLeave,
   rotationDue,
   sentToOf,
+  takeHeldGkeys,
   takePendingSends,
 } from "./groupSessions";
 import {
@@ -263,14 +266,14 @@ function didsOf(deps: ChannelE2eDeps, nicks: string[]): string[] {
 function resolveMembers(
   deps: ChannelE2eDeps,
   members: string[],
-): { dids: string[]; byNick: Record<string, string[]>; unknown: string[] } {
+): { dids: string[]; byNick: ByNick<string[]>; unknown: string[] } {
   const dids = didsOf(deps, members);
-  const byNick: Record<string, string[]> = {};
+  const byNick = noNicks<string[]>();
   const unknown: string[] = [];
   for (const member of members) {
     const known = deps.didsFor(member);
     if (known !== undefined) {
-      byNick[foldOf(member)] = [...known];
+      setNick(byNick, member, [...known]);
     } else if (foldOf(member) !== foldOf(deps.ownNick)) {
       unknown.push(foldOf(member));
     }
@@ -293,22 +296,31 @@ function reconcileSentTo(deps: ChannelE2eDeps, groups: GroupSessionsState, chann
   const held = epochFor(groups, channel);
   if (held === undefined) return;
   const sentTo = sentToOf(held);
-  if (sentTo.length === 0) return;
-  const byNick = holderNicksOf(held);
-  const remaining: string[] = [];
-  for (const nick of sentTo) {
-    const dids = deps.didsFor(nick);
-    if (dids === undefined) {
-      remaining.push(nick);
-      continue;
+  if (sentTo.length > 0) {
+    const byNick = holderNicksOf(held);
+    const remaining: string[] = [];
+    for (const nick of sentTo) {
+      const dids = deps.didsFor(nick);
+      if (dids === undefined) {
+        remaining.push(nick);
+        continue;
+      }
+      setNick(byNick, nick, [...dids]);
+      for (const did of dids) {
+        if (!held.holders.includes(did)) held.holders.push(did);
+      }
     }
-    byNick[foldOf(nick)] = [...dids];
-    for (const did of dids) {
-      if (!held.holders.includes(did)) held.holders.push(did);
-    }
+    held.holderNicks = byNick;
+    held.sentTo = remaining;
   }
-  held.holderNicks = byNick;
-  held.sentTo = remaining;
+  // A gkey held while the roster was unknown is retried now: the audit
+  // runs on roster seed, so this is the moment its checks can run for
+  // real. A retry that still cannot run stays held; one that imports
+  // updates the epoch in place, and the audit below then judges the
+  // new epoch. The retry's events have nowhere to go here — the audit
+  // has no event channel — so a drop in this path is silent; the
+  // import, which is what heals the epoch, is not.
+  retryHeldGkeys(deps, groups, channel);
 }
 
 /**
@@ -381,6 +393,7 @@ export function distributeKey(
     const created = createEpoch(groups, channel, resolved.dids, deps.now(), {
       holderNicks: resolved.byNick,
       sentTo: resolved.unknown,
+      minter: deps.ownDid,
     });
     res.events.push({
       kind: "channel_rotated",
@@ -440,11 +453,14 @@ export function requestKey(
  * channel — and not at all when no roster is held: other members can
  * answer, and the asker can re-ask. The asker's did joins the stored
  * epoch's holder set before the gkey is built, so the key they receive
- * names their device and their later exit rotates the epoch. Nothing
- * when no epoch is held — except the bootstrap: the topic designee
- * (`keyFromFor`) mints the first epoch to answer an explicit key
- * request, and only then. Minting to answer an ask is the bootstrap, not
- * a send side effect: a send without a key queues, it never mints.
+ * names their device and their later exit rotates the epoch. When the
+ * answer enlarged the holder set, the updated key is re-distributed to
+ * the holders this device knows, so their sets converge on the new
+ * member too — the rotator learns them even though it did not answer.
+ * Nothing when no epoch is held — except the bootstrap: the topic
+ * designee (`keyFromFor`) mints the first epoch to answer an explicit
+ * key request, and only then. Minting to answer an ask is the bootstrap,
+ * not a send side effect: a send without a key queues, it never mints.
  */
 export function onKeyreq(
   deps: ChannelE2eDeps,
@@ -475,17 +491,46 @@ export function onKeyreq(
     return res;
   }
   markKeyreqAnswered(groups, channel, fromDid, deps.now());
-  if (!held.holders.includes(fromDid)) held.holders.push(fromDid);
+  let changed = false;
+  if (!held.holders.includes(fromDid)) {
+    held.holders.push(fromDid);
+    changed = true;
+  }
   const byNick = holderNicksOf(held);
-  byNick[foldOf(from)] = [...new Set([...(byNick[foldOf(from)] ?? []), fromDid])];
+  const known = atNick(byNick, from) ?? [];
+  if (!known.includes(fromDid)) {
+    setNick(byNick, from, [...new Set([...known, fromDid])]);
+    changed = true;
+  }
   held.holderNicks = byNick;
-  held.sentTo = sentToOf(held).filter((nick) => foldOf(nick) !== foldOf(from));
+  const sentTo = sentToOf(held).filter((nick) => foldOf(nick) !== foldOf(from));
+  if (sentTo.length !== sentToOf(held).length) changed = true;
+  held.sentTo = sentTo;
   const inner = gkeyInner(groups, channel);
   if (inner === undefined) return res;
   const sent = { ...inner };
   res.outbound.push(...deps.sendDm(from, sent));
   res.copies.push({ peer: from, body: JSON.stringify(sent) });
   res.events.push({ kind: "channel_key_sent", channel, to: from, sid: inner.sid });
+  if (changed) {
+    // The answerer learned a member the other holders do not know yet:
+    // re-distribute the updated key — same sid, same seq, enlarged
+    // holder set — to the holders it knows, so their sets converge and
+    // the rotator, whoever it is, rotates at that member's exit. The
+    // asker already has this key; ourselves need no DM. A re-send of
+    // the same epoch merges on arrival, so a duplicate is harmless.
+    const recipients = new Set<string>();
+    for (const [nick] of nickEntries(holderNicksOf(held))) recipients.add(nick);
+    for (const nick of sentToOf(held)) recipients.add(nick);
+    recipients.delete(foldOf(deps.ownNick));
+    recipients.delete(foldOf(from));
+    for (const nick of recipients) {
+      const redistributed = { ...inner };
+      res.outbound.push(...deps.sendDm(nick, redistributed));
+      res.copies.push({ peer: nick, body: JSON.stringify(redistributed) });
+      res.events.push({ kind: "channel_key_sent", channel, to: nick, sid: inner.sid });
+    }
+  }
   return res;
 }
 
@@ -552,7 +597,7 @@ export function onMemberLeft(
   // never landed counts as a holder too: the DM may still reach them.
   // Either way the rotation is gated on the epoch, so a cleartext
   // channel's joins and parts never mint one.
-  const leftDids = holderNicksOf(held)[foldOf(left)] ?? deps.didsFor(left) ?? [];
+  const leftDids = atNick(holderNicksOf(held), left) ?? deps.didsFor(left) ?? [];
   if (
     !held.holders.some((holder) => leftDids.includes(holder)) &&
     !sentToOf(held).some((nick) => foldOf(nick) === foldOf(left))
@@ -821,9 +866,8 @@ export async function receiveChannel(
     if (held !== undefined && held.sid === decrypted.newSid) {
       if (!held.holders.includes(deps.ownDid)) held.holders.push(deps.ownDid);
       const byNick = holderNicksOf(held);
-      byNick[foldOf(deps.ownNick)] = [
-        ...new Set([...(byNick[foldOf(deps.ownNick)] ?? []), deps.ownDid]),
-      ];
+      const known = atNick(byNick, deps.ownNick) ?? [];
+      setNick(byNick, deps.ownNick, [...new Set([...known, deps.ownDid])]);
       held.holderNicks = byNick;
     }
     return {
@@ -856,18 +900,180 @@ export async function receiveChannel(
 }
 
 /**
+ * The import of one gkey, with the checks `receiveGkey` runs: the
+ * sender's device must be on the roster when one is held — its did must
+ * be one of the sender's devices, falling back to the nick while the
+ * sender's list is unknown — and a first epoch is imported only after
+ * this device asked for the key — a key nobody asked for never arms the
+ * channel. A re-sent key merges its holder set into the held epoch; a
+ * key for an epoch whose holders name a did no longer in the roster is
+ * stale and is dropped, never stored; a key whose seq is not a first
+ * epoch at 0, a successor at exactly the held seq + 1, or a same-seq
+ * rival that wins the minter tie-break is superseded and is dropped,
+ * never stored; a key that is not an epoch key is dropped, never
+ * stored. The importer's own did joins the holder set: it holds the
+ * key now. `held: true` means the gkey was NOT judged: an epoch is held
+ * but no roster is, so the sender and staleness checks would run
+ * provisionally — the caller holds it for retry instead. Never throws
+ * on wire input.
+ */
+function attemptGkey(
+  deps: ChannelE2eDeps,
+  groups: GroupSessionsState,
+  gkey: GkeyInner,
+  from: string,
+  fromDid: string,
+): { events: ChannelE2eEvent[]; held: boolean } {
+  const roster = deps.rosterFor?.(gkey.ch);
+  if (roster !== undefined && !senderOnRoster(deps, roster, from, fromDid)) {
+    return {
+      events: [
+        {
+          kind: "channel_dropped",
+          channel: gkey.ch,
+          reason: "sender-not-in-roster",
+          detail: "the sender's device is not on the roster",
+        },
+      ],
+      held: false,
+    };
+  }
+  const held = epochFor(groups, gkey.ch);
+  if (held === undefined && keyreqSentAtFor(groups, gkey.ch) === undefined) {
+    // A first epoch is imported only after this device asked for the
+    // key: a key nobody asked for never arms the channel, and the audit
+    // — which returns early with no epoch held — never DMs a clear
+    // channel's roster over it.
+    return {
+      events: [
+        {
+          kind: "channel_dropped",
+          channel: gkey.ch,
+          reason: "not-requested",
+          detail: "no key request is outstanding for the channel",
+        },
+      ],
+      held: false,
+    };
+  }
+  if (held !== undefined && roster === undefined) {
+    // No roster to check the sender or the holders against: the gkey
+    // waits for the roster rather than replacing the held epoch on
+    // provisional checks.
+    return { events: [], held: true };
+  }
+  if (
+    held !== undefined &&
+    held.sid !== gkey.sid &&
+    roster !== undefined &&
+    holdersStale(
+      gkey.holders,
+      gkey.holderNicks ?? noNicks(),
+      gkey.sentTo ?? [],
+      resolveRoster(deps, roster),
+    )
+  ) {
+    // Replacing an epoch: a gkey whose holders name a did no longer in
+    // the roster is stale — the epoch it opens is already dead.
+    return {
+      events: [
+        {
+          kind: "channel_dropped",
+          channel: gkey.ch,
+          reason: "stale-gkey",
+          detail: "its holders name a device no longer in the roster",
+        },
+      ],
+      held: false,
+    };
+  }
+  try {
+    const imported = importEpoch(
+      groups,
+      gkey.ch,
+      gkey,
+      fromDid,
+      deps.now(),
+      roster !== undefined ? resolveRoster(deps, roster) : undefined,
+    );
+    if (imported === "imported") {
+      const nowHeld = epochFor(groups, gkey.ch);
+      if (nowHeld !== undefined && !nowHeld.holders.includes(deps.ownDid)) {
+        nowHeld.holders.push(deps.ownDid);
+      }
+      return {
+        events: [{ kind: "channel_key_received", channel: gkey.ch, from, sid: gkey.sid }],
+        held: false,
+      };
+    }
+    if (imported === "already-held") {
+      const nowHeld = epochFor(groups, gkey.ch);
+      if (nowHeld !== undefined && !nowHeld.holders.includes(deps.ownDid)) {
+        nowHeld.holders.push(deps.ownDid);
+      }
+      return { events: [], held: false };
+    }
+    return {
+      events: [
+        {
+          kind: "channel_dropped",
+          channel: gkey.ch,
+          reason: "superseded-gkey",
+          detail: "a key is already held for this epoch sequence",
+        },
+      ],
+      held: false,
+    };
+  } catch (err) {
+    return {
+      events: [
+        {
+          kind: "channel_dropped",
+          channel: gkey.ch,
+          reason: "bad-gkey",
+          detail: err instanceof Error ? err.message : String(err),
+        },
+      ],
+      held: false,
+    };
+  }
+}
+
+/**
+ * Retries the gkeys held for `channel`: the roster seeded, or another
+ * gkey arrived, so their checks can run now. One whose checks still
+ * cannot run stays held; the rest import or drop with their reasons.
+ * The events are the retry's own: the caller returns them where it can
+ * (a gkey arrival), and drops them where it cannot (the audit, which
+ * has no event channel — the import still updates the epoch in place).
+ */
+function retryHeldGkeys(
+  deps: ChannelE2eDeps,
+  groups: GroupSessionsState,
+  channel: string,
+): ChannelE2eEvent[] {
+  const events: ChannelE2eEvent[] = [];
+  for (const held of takeHeldGkeys(groups, channel)) {
+    const attempt = attemptGkey(deps, groups, held.gkey, held.from, held.fromDid);
+    if (attempt.held) {
+      // Still no roster: back in the hold, with its arrival time kept.
+      // The take shrank the list first, so this cannot evict anything.
+      holdGkey(groups, held);
+      continue;
+    }
+    events.push(...attempt.events);
+  }
+  return events;
+}
+
+/**
  * A gkey DM from `from`'s device `fromDid`, as the Olm engine delivered
- * its inner message: imports the epoch it carries. The sender's device
- * must be on the roster when one is held — its did must be one of the
- * sender's devices, falling back to the nick while the sender's list is
- * unknown — and a first epoch is imported only after this device asked
- * for the key — a key nobody asked for never arms the channel. A re-sent
- * key is a no-op; a key for an epoch whose holders name a did no longer
- * in the roster is stale and is dropped, never stored; a key whose seq is
- * not above the held epoch's is superseded — the first valid gkey wins —
- * and is dropped, never stored; a key that is not an epoch key is
- * dropped, never stored. The importer's own did joins the holder set: it
- * holds the key now. Never throws on wire input.
+ * its inner message: imports the epoch it carries. Gkeys held while the
+ * roster was unknown are retried first — the roster may have seeded
+ * since — then this one is judged. When an epoch is held and no roster
+ * is, the gkey is held for retry instead of replacing the epoch on
+ * provisional checks; the audit retries it once the roster seeds.
+ * Never throws on wire input.
  */
 export function receiveGkey(
   deps: ChannelE2eDeps,
@@ -890,89 +1096,28 @@ export function receiveGkey(
       },
     ];
   }
-  const roster = deps.rosterFor?.(gkey.ch);
-  if (roster !== undefined && !senderOnRoster(deps, roster, from, fromDid)) {
-    return [
-      {
+  const events: ChannelE2eEvent[] = [];
+  events.push(...retryHeldGkeys(deps, groups, gkey.ch));
+  const attempt = attemptGkey(deps, groups, gkey, from, fromDid);
+  if (attempt.held) {
+    for (const evicted of holdGkey(groups, {
+      channel: gkey.ch,
+      gkey,
+      from,
+      fromDid,
+      receivedAt: deps.now(),
+    })) {
+      events.push({
         kind: "channel_dropped",
-        channel: gkey.ch,
-        reason: "sender-not-in-roster",
-        detail: "the sender's device is not on the roster",
-      },
-    ];
-  }
-  const held = epochFor(groups, gkey.ch);
-  if (held === undefined && keyreqSentAtFor(groups, gkey.ch) === undefined) {
-    // A first epoch is imported only after this device asked for the
-    // key: a key nobody asked for never arms the channel, and the audit
-    // — which returns early with no epoch held — never DMs a clear
-    // channel's roster over it. With no roster held the sender check
-    // above passes provisionally; the audit rotates if the holders
-    // prove stale once the roster is in.
-    return [
-      {
-        kind: "channel_dropped",
-        channel: gkey.ch,
-        reason: "not-requested",
-        detail: "no key request is outstanding for the channel",
-      },
-    ];
-  }
-  if (held !== undefined && held.sid !== gkey.sid) {
-    // Replacing an epoch: a gkey whose holders name a did no longer in
-    // the roster is stale — the epoch it opens is already dead. The
-    // audit is what rotates it if the holders prove stale once the
-    // roster is in.
-    const heldRoster = deps.rosterFor?.(gkey.ch);
-    if (
-      heldRoster !== undefined &&
-      holdersStale(
-        gkey.holders,
-        gkey.holderNicks ?? {},
-        gkey.sentTo ?? [],
-        resolveRoster(deps, heldRoster),
-      )
-    ) {
-      return [
-        {
-          kind: "channel_dropped",
-          channel: gkey.ch,
-          reason: "stale-gkey",
-          detail: "its holders name a device no longer in the roster",
-        },
-      ];
+        channel: evicted.channel,
+        reason: "held-gkey-evicted",
+        detail: "a held key was evicted past the cap",
+      });
     }
+    return events;
   }
-  try {
-    const imported = importEpoch(groups, gkey.ch, gkey, fromDid, deps.now());
-    if (imported === "imported") {
-      const nowHeld = epochFor(groups, gkey.ch);
-      if (nowHeld !== undefined && !nowHeld.holders.includes(deps.ownDid)) {
-        nowHeld.holders.push(deps.ownDid);
-      }
-      return [{ kind: "channel_key_received", channel: gkey.ch, from, sid: gkey.sid }];
-    }
-    if (imported === "superseded") {
-      return [
-        {
-          kind: "channel_dropped",
-          channel: gkey.ch,
-          reason: "superseded-gkey",
-          detail: "a key is already held for this epoch sequence",
-        },
-      ];
-    }
-    return [];
-  } catch (err) {
-    return [
-      {
-        kind: "channel_dropped",
-        channel: gkey.ch,
-        reason: "bad-gkey",
-        detail: err instanceof Error ? err.message : String(err),
-      },
-    ];
-  }
+  events.push(...attempt.events);
+  return events;
 }
 
 /**

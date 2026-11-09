@@ -1157,15 +1157,39 @@ export function e2eClient(
               // surfaced as undecryptable — never dropped silently, and
               // acknowledged like a DM's, readable or not. Our own
               // channel messages are skipped by the receiver (the send
-              // path showed them).
-              const received = await receiveChannel(
-                deps,
-                state.groups,
-                channel,
-                m.from,
-                m.fromDid,
-                m.payload,
-              );
+              // path showed them). A step that throws must not kill the
+              // drain: the row surfaces as undecryptable instead, the
+              // watermark still advances, and the ACK follows as usual —
+              // one bad row never wedges the inbox behind it.
+              let received: ChannelE2eResult;
+              try {
+                received = await receiveChannel(
+                  deps,
+                  state.groups,
+                  channel,
+                  m.from,
+                  m.fromDid,
+                  m.payload,
+                );
+              } catch (err) {
+                console.debug(
+                  "[e2e] a channel row threw while reading; surfacing it as undecryptable",
+                  err,
+                );
+                received = {
+                  events: [
+                    {
+                      kind: "channel_undecryptable",
+                      channel,
+                      from: m.from,
+                      sid: null,
+                      reason: "decryption-failed",
+                    },
+                  ],
+                  outbound: [],
+                  copies: [],
+                };
+              }
               // A row with no session yet is held for retry, not surfaced:
               // the key may still arrive, and the stash — sealed in the
               // store — is now the only copy. The watermark still advances

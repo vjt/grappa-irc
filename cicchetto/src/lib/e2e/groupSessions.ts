@@ -46,15 +46,18 @@
 // rotator waits, even on a stale epoch — if the rotator's cic is closed
 // the rotation waits with it, nobody else usurps it, and there is no
 // timeout election. Every epoch carries a SEQUENCE NUMBER — 0 for a first
-// epoch, +1 per rotation — and the FIRST valid gkey wins: a gkey whose
-// seq is not above the held epoch's is dropped, so a late duplicate, or
-// a concurrent mint that lost the race, never replaces the key already
-// taken; only a rotation successor (a higher seq) imports. Two devices
-// that mint the same seq concurrently still fork — each keeps the first
-// it saw — and the fork heals at the next rotation, when one epoch is
-// minted and distributed to all. Rotation is only real if clients delete
-// old keys (§4f); this module is where that happens. No keys are kept
-// for channels left (`dropChannel`).
+// epoch, +1 per rotation — and a gkey imports only as a first epoch at
+// seq 0, or as a successor at exactly the held seq + 1, or as a
+// same-seq rival that wins the minter tie-break: any other seq is
+// dropped, never stored, so no sender-chosen seq can supersede the
+// rotation that follows it. Two devices that mint the same seq
+// concurrently resolve by that tie-break — among same-seq rivals the
+// one from the lower minter did wins deterministically on every
+// receiver, and the loser, on receiving the winner's gkey, replaces
+// its own minted epoch — so the fork heals as soon as the winner's
+// gkey arrives, not only at the next rotation. Rotation is only real
+// if clients delete old keys (§4f); this module is where that happens.
+// No keys are kept for channels left (`dropChannel`).
 //
 // SEND WITHOUT A KEY. A row with no epoch waits in queue (`pending`),
 // never mints one, and never goes out in the clear: `encryptChannel`
@@ -76,6 +79,7 @@
 // before any plaintext is shown. The window bounds the state: at most
 // one entry per sender device, 128 counters each.
 
+import { atNick, type ByNick, nickEntries, nicksFrom, noNicks, setNick } from "./byNick";
 import { decryptEpoch, encryptEpoch, isEpochKey, newEpochId, newEpochKey } from "./channelCrypto";
 import {
   type ChannelPayload,
@@ -131,13 +135,21 @@ export type StoredEpoch = {
   key: string;
   /**
    * The epoch's sequence number: 0 for a first epoch, +1 per rotation.
-   * The first valid gkey wins: a gkey whose seq is not above the held
-   * epoch's is dropped, so a late duplicate never replaces the key
-   * already taken; a rotation successor (higher seq) still imports. A
-   * record sealed before this field existed opens without it: read it
-   * through `seqOf`.
+   * A gkey imports only as a first epoch at seq 0, or as a successor
+   * at exactly the held seq + 1, or as a same-seq rival that wins the
+   * minter tie-break: any other seq is dropped, never stored. A record
+   * sealed before this field existed opens without it: read it through
+   * `seqOf`.
    */
   seq: number;
+  /**
+   * The did that minted this epoch: this device's did for an epoch it
+   * created, the sender's did for one it imported (the gkey names it,
+   * falling back to the sender when an older gkey carries none). The
+   * tie-break among same-seq rivals reads it. A record sealed before
+   * this field existed opens without it: read it through `minterOf`.
+   */
+  minter: string | null;
   /** When the epoch was created (ms since epoch). */
   createdAt: number;
   /** How many messages went under this epoch: 0, it never spoke. */
@@ -152,8 +164,12 @@ export type StoredEpoch = {
    * inner, so any holder can tell a departed member's dids from a
    * presence event naming only the nick. A record sealed before this
    * field existed opens without it: read it through `holderNicksOf`.
+   * A `ByNick`: a nick is a peer-chosen string, so the mapping is only
+   * ever read through `atNick` and written through `setNick`/`nicksFrom`
+   * — never indexed directly, where `constructor` would resolve to
+   * Object.prototype's member. The sealed JSON stays a plain object.
    */
-  holderNicks: Record<string, string[]>;
+  holderNicks: ByNick<string[]>;
   /**
    * The folded nicks the key was DM'd to whose device lists were unknown
    * at distribution time: they may still receive it (the engine resolves
@@ -213,13 +229,36 @@ export type PendingSend = {
 export const MAX_PENDING_SENDS = 32;
 
 /**
+ * A gkey that arrived while the roster was not yet held: kept for retry,
+ * not imported — without a roster the sender and staleness checks run
+ * provisionally, so the key waits until the roster seeds and the checks
+ * can run for real. `channel` is the folded channel name, `gkey` the
+ * parsed inner as delivered, `from`/`fromDid` its sender, `receivedAt`
+ * when it arrived (ms since epoch). The retry runs when the roster
+ * seeds (the audit reconciles first) and on the next gkey for the
+ * channel; past the cap the oldest are dropped, and returned — never
+ * silently — so the caller can surface them.
+ */
+export type HeldGkey = {
+  channel: string;
+  gkey: GkeyInner;
+  from: string;
+  fromDid: string;
+  receivedAt: number;
+};
+
+/** How many gkeys may wait for the roster in total: the cap keeps the hold bounded. */
+export const MAX_HELD_GKEYS = 32;
+
+/**
  * The epochs, as `E2eState.groups` holds them. `epochs` is keyed by folded
  * channel name; `keyreqAnsweredAt` by `${folded channel}:${asker did}`,
  * the last time this device answered that asker's key request on that
  * channel; `keyreqSentAt` by folded channel, the last time this device
  * broadcast a key request for it; `held` is the session-less rows held
  * for retry; `pending` is the rows this device queued while it held no
- * epoch, waiting for the key. A channel name is folded (`fold`) because
+ * epoch, waiting for the key; `heldGkeys` is the gkeys held for retry
+ * until the roster seeds. A channel name is folded (`fold`) because
  * §4f's `ch` is the folded name.
  */
 export type GroupSessionsState = {
@@ -229,10 +268,19 @@ export type GroupSessionsState = {
   keyreqSentAt: Record<string, number>;
   held: HeldRow[];
   pending: PendingSend[];
+  heldGkeys: HeldGkey[];
 };
 
 export function newGroupSessionsState(): GroupSessionsState {
-  return { v: 3, epochs: {}, keyreqAnsweredAt: {}, keyreqSentAt: {}, held: [], pending: [] };
+  return {
+    v: 3,
+    epochs: {},
+    keyreqAnsweredAt: {},
+    keyreqSentAt: {},
+    held: [],
+    pending: [],
+    heldGkeys: [],
+  };
 }
 
 /** The epoch held for `channel`, if any. */
@@ -266,7 +314,7 @@ export function rotationDue(state: GroupSessionsState, channel: string, now: num
  */
 export function holdersStale(
   holders: string[],
-  holderNicks: Record<string, string[]>,
+  holderNicks: ByNick<string[]>,
   sentTo: string[],
   roster: RosterDids,
 ): boolean {
@@ -276,7 +324,7 @@ export function holdersStale(
   for (const holder of holders) {
     if (present.has(holder)) continue;
     const attributed = roster.nicks.some((nick) =>
-      (holderNicks[fold(nick)] ?? []).includes(holder),
+      (atNick(holderNicks, nick) ?? []).includes(holder),
     );
     if (!attributed) return true;
   }
@@ -307,13 +355,13 @@ export function epochHoldersStale(
  */
 export function remainingHolders(
   holders: string[],
-  holderNicks: Record<string, string[]>,
+  holderNicks: ByNick<string[]>,
   roster: RosterDids,
 ): string[] {
   const present = new Set(roster.dids);
   return holders.filter((holder) => {
     if (present.has(holder)) return true;
-    return roster.nicks.some((nick) => (holderNicks[fold(nick)] ?? []).includes(holder));
+    return roster.nicks.some((nick) => (atNick(holderNicks, nick) ?? []).includes(holder));
   });
 }
 
@@ -333,9 +381,14 @@ export function seqOf(epoch: StoredEpoch): number {
   return epoch.seq ?? 0;
 }
 
+/** `epoch`'s minter did, defaulting a record sealed before it existed to its sender, if any. */
+export function minterOf(epoch: StoredEpoch): string | null {
+  return epoch.minter ?? epoch.receivedFrom ?? null;
+}
+
 /** `epoch`'s nick mapping, defaulting a record sealed before it existed to empty. */
-export function holderNicksOf(epoch: StoredEpoch): Record<string, string[]> {
-  return epoch.holderNicks ?? {};
+export function holderNicksOf(epoch: StoredEpoch): ByNick<string[]> {
+  return epoch.holderNicks ?? noNicks();
 }
 
 /** `epoch`'s sent-to nicks, defaulting a record sealed before it existed to empty. */
@@ -495,6 +548,44 @@ export function expireHeldRows(state: GroupSessionsState, now: number): HeldRow[
   return expired;
 }
 
+/**
+ * The gkeys held for retry, defaulting a record sealed before the field
+ * existed to an empty list.
+ */
+function heldGkeys(state: GroupSessionsState): HeldGkey[] {
+  const rows = state.heldGkeys ?? [];
+  state.heldGkeys = rows;
+  return rows;
+}
+
+/**
+ * Holds `gkey` for retry: it arrived while the roster was not yet held,
+ * so its checks could not run. The gkey is stored under its folded
+ * channel name. Past the cap the oldest are dropped, and returned —
+ * never silently — so the caller can surface them.
+ */
+export function holdGkey(state: GroupSessionsState, held: HeldGkey): HeldGkey[] {
+  const rows = heldGkeys(state);
+  rows.push({ ...held, channel: fold(held.channel) });
+  const dropped: HeldGkey[] = [];
+  while (rows.length > MAX_HELD_GKEYS) {
+    const oldest = rows.shift();
+    if (oldest !== undefined) dropped.push(oldest);
+  }
+  return dropped;
+}
+
+/**
+ * Takes the gkeys held for `channel`: the roster seeded, or another
+ * gkey arrived, so the caller retries them now. They leave the hold.
+ */
+export function takeHeldGkeys(state: GroupSessionsState, channel: string): HeldGkey[] {
+  const rows = heldGkeys(state);
+  const taken = rows.filter((r) => fold(r.channel) === fold(channel));
+  state.heldGkeys = rows.filter((r) => fold(r.channel) !== fold(channel));
+  return taken;
+}
+
 /** Stores `epoch` as `channel`'s epoch, replacing whatever was held. */
 function storeEpoch(state: GroupSessionsState, channel: string, epoch: StoredEpoch): StoredEpoch {
   state.epochs[fold(channel)] = epoch;
@@ -507,25 +598,34 @@ function storeEpoch(state: GroupSessionsState, channel: string, epoch: StoredEpo
  * roster to dids and includes this device's did. `extra` carries the
  * nick mapping for those dids (`holderNicks`) and the nicks the key was
  * DM'd to whose dids were unknown (`sentTo`): both travel in the gkey
- * inner, so every holder learns them. The caller distributes its key
- * (`gkeyInner`) before anyone can read a message under it.
+ * inner, so every holder learns them. `extra.minter` names the device
+ * that minted the epoch — the caller passes its own did; without it
+ * the record names no minter and a same-seq tie-break falls back to
+ * first-wins. The caller distributes its key (`gkeyInner`) before
+ * anyone can read a message under it.
  */
 export function createEpoch(
   state: GroupSessionsState,
   channel: string,
   holders: string[],
   now: number,
-  extra?: { holderNicks?: Record<string, string[]>; sentTo?: string[]; seq?: number },
+  extra?: {
+    holderNicks?: ByNick<string[]>;
+    sentTo?: string[];
+    seq?: number;
+    minter?: string;
+  },
 ): StoredEpoch {
   return storeEpoch(state, channel, {
     sid: newEpochId(),
     key: newEpochKey(),
     seq: extra?.seq ?? 0,
+    minter: extra?.minter ?? null,
     createdAt: now,
     messages: 0,
     counter: 0,
     holders: [...holders],
-    holderNicks: { ...(extra?.holderNicks ?? {}) },
+    holderNicks: nicksFrom(nickEntries(extra?.holderNicks ?? noNicks())),
     sentTo: [...(extra?.sentTo ?? [])],
     receivedAt: now,
     receivedFrom: null,
@@ -548,15 +648,63 @@ export function dropChannel(state: GroupSessionsState, channel: string): void {
 }
 
 /**
+ * Unions `gkey`'s holder set into the epoch already held for the same
+ * sid: a re-sent key (a re-distribution after an answer) carries the
+ * holders its sender has learned since, and every holder's set must
+ * converge on them, so a member the answerer learned is one the
+ * rotator knows too. The merge unions the holder dids, the nick
+ * mapping per nick, and the sent-to nicks. When `roster` is given the
+ * merge is filtered by it: a did counts only when the roster names it,
+ * or the merged mapping attributes it to a nick still on the roster,
+ * and a sent-to nick counts only while on the roster — so a stale
+ * re-send cannot resurrect a departed did, and the mapping keeps only
+ * the nicks still on the roster. Without a roster the merge is
+ * unfiltered: the audit filters once the roster is in.
+ */
+function mergeEpochHolders(held: StoredEpoch, gkey: GkeyInner, roster?: RosterDids): void {
+  const mergedNicks = nicksFrom(nickEntries(holderNicksOf(held)));
+  for (const [nick, dids] of nickEntries(gkey.holderNicks ?? noNicks<string[]>())) {
+    const known = atNick(mergedNicks, nick) ?? [];
+    setNick(mergedNicks, nick, [...new Set([...known, ...dids])]);
+  }
+  let holders = [...new Set([...held.holders, ...gkey.holders])];
+  let sentTo = [...new Set([...sentToOf(held), ...(gkey.sentTo ?? [])])];
+  if (roster !== undefined) {
+    const rosterNicks = new Set(roster.nicks.map((n) => fold(n)));
+    const pruned = noNicks<string[]>();
+    for (const [nick, dids] of nickEntries(mergedNicks)) {
+      if (rosterNicks.has(fold(nick))) setNick(pruned, nick, dids);
+    }
+    const present = new Set(roster.dids);
+    holders = holders.filter((holder) => {
+      if (present.has(holder)) return true;
+      return roster.nicks.some((nick) => (atNick(pruned, nick) ?? []).includes(holder));
+    });
+    sentTo = sentTo.filter((nick) => rosterNicks.has(fold(nick)));
+    held.holderNicks = pruned;
+  } else {
+    held.holderNicks = mergedNicks;
+  }
+  held.holders = holders;
+  held.sentTo = sentTo;
+}
+
+/**
  * Imports the epoch `gkey` carries for `channel`: a gkey DM brought it,
  * or a grotate inside a channel message. The key must be a 32-byte epoch
  * key, or the import throws and nothing is stored. An import of the epoch
- * already held is a no-op (a re-sent gkey). Otherwise the FIRST valid
- * gkey wins: a gkey whose seq is not above the held epoch's is dropped
- * as superseded — a late duplicate, or a concurrent mint that lost the
- * race, never replaces the key already taken — and only a rotation
- * successor (a higher seq) imports. The new epoch's counters start over.
- * `fromDid` is the did of the member whose gkey it was, for the record.
+ * already held merges its holder set into the held one (a re-sent gkey)
+ * and is otherwise a no-op. Otherwise the seq decides: a first epoch
+ * imports only at seq 0; a successor imports only at exactly the held
+ * seq + 1; a same-seq rival imports only when it wins the minter
+ * tie-break — the one from the lower minter did wins, deterministically
+ * on every receiver, and the loser replaces its own minted epoch on
+ * receiving the winner's gkey. Any other seq is dropped as superseded,
+ * never stored. The new epoch's counters start over. `fromDid` is the
+ * did of the member whose gkey it was, for the record; the gkey names
+ * its minter, falling back to the sender when an older gkey carries
+ * none. `roster`, when given, filters the merge of an already-held
+ * epoch, so a stale re-send cannot resurrect a departed did.
  */
 export function importEpoch(
   state: GroupSessionsState,
@@ -564,20 +712,42 @@ export function importEpoch(
   gkey: GkeyInner,
   fromDid: string,
   now: number,
+  roster?: RosterDids,
 ): "imported" | "already-held" | "superseded" {
-  if (epochFor(state, channel)?.sid === gkey.sid) return "already-held";
-  if (!isEpochKey(gkey.key)) throw new Error(`a gkey for ${gkey.sid} is not an epoch key`);
   const held = epochFor(state, channel);
-  if (held !== undefined && gkey.seq <= seqOf(held)) return "superseded";
+  if (held !== undefined && held.sid === gkey.sid) {
+    if (!isEpochKey(gkey.key)) throw new Error(`a gkey for ${gkey.sid} is not an epoch key`);
+    if (gkey.key !== held.key) {
+      throw new Error(`a re-sent gkey for ${gkey.sid} carries a different key`);
+    }
+    mergeEpochHolders(held, gkey, roster);
+    return "already-held";
+  }
+  if (!isEpochKey(gkey.key)) throw new Error(`a gkey for ${gkey.sid} is not an epoch key`);
+  if (held === undefined) {
+    // A first epoch is seq 0: a higher seq has no held epoch to succeed,
+    // so it is dropped rather than trusted as the channel's first key.
+    if (gkey.seq !== 0) return "superseded";
+  } else if (gkey.seq === seqOf(held)) {
+    // A same-seq rival: the lower minter did wins. Without a minter on
+    // either side there is nothing to break the tie with, so the first
+    // epoch taken stands.
+    const incomingMinter = gkey.minter ?? fromDid;
+    const heldMinter = minterOf(held);
+    if (heldMinter === null || incomingMinter >= heldMinter) return "superseded";
+  } else if (gkey.seq !== seqOf(held) + 1) {
+    return "superseded";
+  }
   storeEpoch(state, channel, {
     sid: gkey.sid,
     key: gkey.key,
     seq: gkey.seq,
+    minter: gkey.minter ?? fromDid,
     createdAt: now,
     messages: 0,
     counter: 0,
     holders: [...gkey.holders],
-    holderNicks: { ...(gkey.holderNicks ?? {}) },
+    holderNicks: nicksFrom(nickEntries(gkey.holderNicks ?? noNicks())),
     sentTo: [...(gkey.sentTo ?? [])],
     receivedAt: now,
     receivedFrom: fromDid,
@@ -606,8 +776,10 @@ export function gkeyInner(state: GroupSessionsState, channel: string): GkeyInner
     seq: seqOf(held),
     holders: [...held.holders],
   };
+  const minter = minterOf(held);
+  if (minter !== null) inner.minter = minter;
   const byNick = holderNicksOf(held);
-  if (Object.keys(byNick).length > 0) inner.holderNicks = { ...byNick };
+  if (nickEntries(byNick).length > 0) inner.holderNicks = nicksFrom(nickEntries(byNick));
   const sentTo = sentToOf(held);
   if (sentTo.length > 0) inner.sentTo = [...sentTo];
   return inner;
@@ -756,15 +928,17 @@ export async function decryptChannel(
     // change on a periodic rotation, so the holder set — and its nick
     // mapping and sent-to nicks — carry over. Its seq is the old one's
     // +1: the receiver computes the same number from the epoch it holds.
+    // Its minter is the device that sent the rotation.
     storeEpoch(state, channel, {
       sid: rotated.sid,
       key: rotated.key,
       seq: seqOf(held) + 1,
+      minter: senderDid,
       createdAt: now,
       messages: 0,
       counter: 0,
       holders: [...held.holders],
-      holderNicks: { ...holderNicksOf(held) },
+      holderNicks: nicksFrom(nickEntries(holderNicksOf(held))),
       sentTo: [...sentToOf(held)],
       receivedAt: now,
       receivedFrom: senderDid,
@@ -799,13 +973,23 @@ export function rotateEpochForLeave(
   channel: string,
   holders: string[],
   now: number,
-  extra?: { holderNicks?: Record<string, string[]>; sentTo?: string[] },
+  extra?: { holderNicks?: ByNick<string[]>; sentTo?: string[]; minter?: string },
 ): { oldSid: string | null; newSid: string; key: string; seq: number } {
   const held = epochFor(state, channel);
   const oldSid = held?.sid ?? null;
   const seq = (held === undefined ? 0 : seqOf(held)) + 1;
+  // The minter is the designated rotator: the first remaining holder
+  // did in sorted order — the caller is gated on being exactly that
+  // device — unless the caller names it explicitly.
+  const remaining =
+    held === undefined ? [] : held.holders.filter((holder) => holders.includes(holder)).sort();
+  const minter = extra?.minter ?? remaining[0] ?? null;
   dropEpoch(state, channel);
-  const created = createEpoch(state, channel, holders, now, { ...extra, seq });
+  const created = createEpoch(state, channel, holders, now, {
+    ...extra,
+    seq,
+    ...(minter !== null ? { minter } : {}),
+  });
   return { oldSid, newSid: created.sid, key: created.key, seq };
 }
 
@@ -841,17 +1025,20 @@ export async function buildPeriodicRotation(
     sig: sign(channelSigText(fold(channel), oldSid, ciphertext)),
   };
   // Stored only once the rotation message exists: a failure above leaves
-  // the old epoch in place, and the next tick tries again.
+  // the old epoch in place, and the next tick tries again. The minter
+  // is the designated rotator — the first holder did, which the caller
+  // is gated on being — so a receiver's tie-break reads the same did.
   dropEpoch(state, channel);
   storeEpoch(state, channel, {
     sid: newSid,
     key: newKey,
     seq: seqOf(held) + 1,
+    minter: [...held.holders].sort()[0] ?? null,
     createdAt: now,
     messages: 0,
     counter: 0,
     holders: [...held.holders],
-    holderNicks: { ...holderNicksOf(held) },
+    holderNicks: nicksFrom(nickEntries(holderNicksOf(held))),
     sentTo: [...sentToOf(held)],
     receivedAt: now,
     receivedFrom: null,

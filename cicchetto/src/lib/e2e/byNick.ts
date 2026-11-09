@@ -6,9 +6,13 @@
 // so no stored record changes shape and none needs reading anew.
 
 import { atKey, type ByKey, deleteKey, keyEntries, keyValues, setKey } from "../byKey";
-import { fold } from "./wire";
 
 declare const folded: unique symbol;
+
+/** The ASCII case fold of a nick (CASEMAPPING=ascii, grappa's `canonical_target`). */
+export function fold(nick: string): string {
+  return nick.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
 
 /**
  * Folded nick → T. An interface, not a type alias: an alias of an object type

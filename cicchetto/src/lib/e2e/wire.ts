@@ -10,7 +10,13 @@
 // Keys and signatures are standard base64 WITHOUT padding, as vodozemac
 // prints them; only a device id is base64url.
 
+import { type ByNick, nicksFrom } from "./byNick";
 import type { Olm } from "./olm";
+
+// The nick fold lives with the nick-keyed records now (`byNick`): the
+// wire module imports the brand from there, and re-exports the fold so
+// every existing `from "./wire"` site keeps working.
+export { fold } from "./byNick";
 
 /** The verbs cic sends through grappa's send door (it never sends KEYS: grappa answers KEYREQ). */
 export type SendVerb = "keyreq" | "pkmsg" | "msg" | "nack";
@@ -368,8 +374,10 @@ export function parseChannelKeyreqPayload(payload: Record<string, unknown>): Cha
  * present, names the folded nicks the key was DM'd to whose device lists
  * were unknown at distribution time: they may still receive it (the
  * engine resolves their keys lazily), so they count as holders-to-be
- * until their dids land. Never sent in the clear, never through the
- * server.
+ * until their dids land. `minter`, when present, names the did that
+ * minted the epoch, so a re-distributed key still names its minter
+ * rather than its re-distributor. Never sent in the clear, never
+ * through the server.
  */
 export type GkeyInner = {
   t: "gkey";
@@ -379,12 +387,17 @@ export type GkeyInner = {
   holders: string[];
   /**
    * The epoch's sequence number: 0 for a first epoch, +1 per rotation.
-   * The first valid gkey wins: a gkey whose seq is not above the held
-   * epoch's is dropped, so a late duplicate never replaces the key
-   * already taken; a rotation successor (higher seq) still imports.
+   * A gkey imports only as a first epoch at seq 0, or as a successor
+   * at exactly the held seq + 1, or as a same-seq rival that wins the
+   * minter tie-break: any other seq is dropped, never stored.
    */
   seq: number;
-  holderNicks?: Record<string, string[]>;
+  /**
+   * The did that minted the epoch. Absent on a gkey sealed before the
+   * field existed: the importer then reads the sender as the minter.
+   */
+  minter?: string;
+  holderNicks?: ByNick<string[]>;
   sentTo?: string[];
 };
 
@@ -415,6 +428,14 @@ export function parseGkeyInner(inner: Record<string, unknown>): GkeyInner {
     holders: holders as string[],
     seq: seq ?? 0,
   };
+  // A gkey sealed before `minter` existed names no minter: the importer
+  // reads the sender as the minter then.
+  if (inner.minter !== undefined) {
+    if (typeof inner.minter !== "string" || inner.minter === "") {
+      throw new PayloadError("bad minter");
+    }
+    parsed.minter = inner.minter;
+  }
   if (inner.holderNicks !== undefined) {
     const byNick = inner.holderNicks;
     if (
@@ -427,7 +448,12 @@ export function parseGkeyInner(inner: Record<string, unknown>): GkeyInner {
     ) {
       throw new PayloadError("bad holderNicks");
     }
-    parsed.holderNicks = byNick as Record<string, string[]>;
+    // Read through the nick brand, never by indexing the parsed object:
+    // a nick is a peer-chosen string, and `constructor` would resolve
+    // to Object.prototype's member on a plain record.
+    parsed.holderNicks = nicksFrom(
+      Object.entries(byNick as Record<string, string[]>) as [string, string[]][],
+    );
   }
   if (inner.sentTo !== undefined) {
     const sentTo = inner.sentTo;
@@ -467,11 +493,6 @@ export function parseChannelTextInner(inner: Record<string, unknown>): ChannelTe
   const c = inner.c;
   if (typeof c !== "number" || !Number.isInteger(c) || c < 0) throw new PayloadError("bad c");
   return { t: "text", c, body };
-}
-
-/** The ASCII case fold of a nick (CASEMAPPING=ascii, grappa's `canonical_target`). */
-export function fold(nick: string): string {
-  return nick.replace(/[A-Z]/g, (c) => c.toLowerCase());
 }
 
 // How many lines a payload takes, counted the way grappa does when it
