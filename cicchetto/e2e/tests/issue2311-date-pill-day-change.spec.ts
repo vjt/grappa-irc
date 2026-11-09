@@ -107,26 +107,53 @@ test.describe("issue 2311 — the date pill follows the day", () => {
     // string: the production rule is "the latest separator ABOVE the top band
     // wins", so read that separator out of the DOM and compare. Both halves
     // come from the same frame, so a mid-transition reading cannot pass.
-    const reading = await page.evaluate(() => {
-      const paneEl = document.querySelector('[data-testid="scrollback"]') as HTMLElement | null;
-      if (!paneEl) throw new Error("scrollback container not found");
-      const paneTop = paneEl.getBoundingClientRect().top;
-      const separators = Array.from(document.querySelectorAll('[data-testid="day-separator"]'));
-      const above = separators.filter((el) => el.getBoundingClientRect().bottom <= paneTop);
-      const pillEl = document.querySelector('[data-testid="scrollback-date-pill"]');
+    //
+    // Polled, with a small upward nudge each attempt, for two reasons: the
+    // observer updates asynchronously (a reading one frame stale would name
+    // the previous day), and a `loadMore` landing between the loop and this
+    // check can rebuild the rows and put a separator in the band, where the
+    // honest answer is no pill at all.
+    let settled: string | null = null;
 
-      return {
-        pill: pillEl?.textContent?.trim() ?? null,
-        opacity: pillEl === null ? "0" : getComputedStyle(pillEl).opacity,
-        expected: above.length === 0 ? null : (above[above.length - 1].textContent?.trim() ?? null),
-        aboveCount: above.length,
-      };
-    });
+    await expect
+      .poll(
+        async () => {
+          await page.mouse.wheel(0, -60);
+          const reading = await page.evaluate(() => {
+            const paneEl = document.querySelector(
+              '[data-testid="scrollback"]',
+            ) as HTMLElement | null;
+            if (!paneEl) throw new Error("scrollback container not found");
+            const paneTop = paneEl.getBoundingClientRect().top;
+            const separators = Array.from(
+              document.querySelectorAll('[data-testid="day-separator"]'),
+            );
+            const above = separators.filter((el) => el.getBoundingClientRect().bottom <= paneTop);
+            const pillEl = document.querySelector('[data-testid="scrollback-date-pill"]');
 
-    // A boundary really was crossed: at least one separator is above the band.
-    expect(reading.aboveCount).toBeGreaterThan(0);
-    expect(reading.opacity).toBe("1");
-    expect(reading.pill).toBe(reading.expected);
-    expect(reading.pill).not.toBe(initialLabel);
+            return {
+              pill: pillEl?.textContent?.trim() ?? null,
+              opacity: pillEl === null ? "0" : getComputedStyle(pillEl).opacity,
+              expected:
+                above.length === 0 ? null : (above[above.length - 1].textContent?.trim() ?? null),
+              aboveCount: above.length,
+            };
+          });
+
+          // A boundary really was crossed (at least one separator above the
+          // band), the pill is showing, and it names the separator the rule
+          // says it must.
+          settled =
+            reading.aboveCount > 0 && reading.opacity === "1" && reading.pill === reading.expected
+              ? reading.pill
+              : null;
+
+          return settled;
+        },
+        { timeout: 15_000, intervals: [150] },
+      )
+      .not.toBeNull();
+
+    expect(settled).not.toBe(initialLabel);
   });
 });
