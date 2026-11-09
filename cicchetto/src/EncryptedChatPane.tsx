@@ -25,7 +25,7 @@ import {
 } from "./EncryptedRail";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { ApiError, type ScrollbackMessage } from "./lib/api";
-import { playAudio } from "./lib/audioPlayer";
+import { activeAudio, playAudio } from "./lib/audioPlayer";
 import { channelKey } from "./lib/channelKey";
 import { requestConfirm } from "./lib/confirmDialog";
 import { isCtcpAction, stripCtcpAction } from "./lib/ctcpAction";
@@ -343,27 +343,58 @@ const Trailer: Component<{ row: Message | undefined; pinned: string | undefined 
 const FileTrailer: Component<{ row: Message | undefined }> = (props) => {
   const [busy, setBusy] = createSignal(false);
   const [failure, setFailure] = createSignal<string | null>(null);
-  // The object URL of an inline file, held only while its viewer is open.
-  const [toRevoke, setToRevoke] = createSignal<string | null>(null);
+  // The decrypted blob URL this card minted, and WHO is using it: the media
+  // viewer, or the docked audio player. Held here rather than handed over,
+  // because a URL nobody owns is a URL nobody revokes — the plaintext would
+  // stay in memory for the life of the page.
+  const [owned, setOwned] = createSignal<{ url: string; by: "viewer" | "player" } | null>(null);
+  // The open in flight, so unmounting the card takes the fetch with it and a
+  // late answer cannot mint a URL for a component that no longer exists.
+  let inflight: AbortController | null = null;
   const file = (): FileInner | undefined =>
     props.row?.kind === "in" || props.row?.kind === "out" ? props.row.file : undefined;
 
+  const release = (): void => {
+    const current = owned();
+    if (current === null) return;
+    URL.revokeObjectURL(current.url);
+    setOwned(null);
+  };
+
+  // The viewer is closed (or replaced): its blob goes.
   createEffect(() => {
     if (mediaViewerState() !== null) return;
-    const url = toRevoke();
-    if (url !== null) {
-      URL.revokeObjectURL(url);
-      setToRevoke(null);
-    }
+    if (owned()?.by === "viewer") release();
+  });
+
+  // The player stopped, or moved to another source: the audio blob goes.
+  createEffect(() => {
+    const playing = activeAudio();
+    if (owned()?.by !== "player") return;
+    if (playing?.href === owned()?.url) return;
+    release();
+  });
+
+  // The card leaving the screen (window switch, list re-render, sign-out)
+  // ends both the open and whatever URL it was holding.
+  onCleanup(() => {
+    inflight?.abort();
+    inflight = null;
+    release();
   });
 
   const open = async (target: FileInner): Promise<void> => {
     if (busy()) return;
     setBusy(true);
     setFailure(null);
+    inflight?.abort();
+    const controller = new AbortController();
+    inflight = controller;
     try {
-      const outcome = await openEncryptedFile(target);
+      const outcome = await openEncryptedFile(target, controller.signal);
       if (!outcome.ok) {
+        // A cancelled open is this card going away, not a refusal to report.
+        if (outcome.error === "cancelled") return;
         setFailure(
           outcome.error === "expired"
             ? "expired"
@@ -374,18 +405,20 @@ const FileTrailer: Component<{ row: Message | undefined }> = (props) => {
         return;
       }
       if (outcome.kind === "download") return;
+      // A second click replaces whatever this card was showing: the first
+      // blob goes now, not when the second closes.
+      release();
       if (outcome.media === "audio") {
-        // The docked player owns the URL for as long as it plays.
+        // The docked player plays it; the card keeps the URL so the blob can
+        // go when the source does.
         playAudio(outcome.url, target.name);
+        setOwned({ url: outcome.url, by: "player" });
         return;
       }
-      // A second click while a viewer is open replaces it: the first blob
-      // goes now, not when the second closes.
-      const previous = toRevoke();
-      if (previous !== null) URL.revokeObjectURL(previous);
       openMediaViewer(outcome.url, outcome.media);
-      setToRevoke(outcome.url);
+      setOwned({ url: outcome.url, by: "viewer" });
     } finally {
+      if (inflight === controller) inflight = null;
       setBusy(false);
     }
   };
