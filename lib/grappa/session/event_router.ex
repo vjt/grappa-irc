@@ -4572,7 +4572,8 @@ defmodule Grappa.Session.EventRouter do
   # The capture-confirmation slot (#90/#129): ONE identity-confirmation
   # primitive serves both staged secrets. If BOTH are staged, REGISTER wins
   # — it is correct-by-construction (a wrong register never gets confirmed),
-  # whereas a stale wrong identify could still be inside its 10s window.
+  # whereas a stale wrong identify could still be inside its ceiling window
+  # (issue 2388 — 60s, released early by this very `:acquired` transition).
   # Both fields are optional from the pure router's POV (pure unit tests on
   # user sessions skip them → `Map.get` nil).
   #

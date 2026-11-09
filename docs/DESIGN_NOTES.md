@@ -6138,3 +6138,95 @@ trigger test was red where the defect is (upload `10737418241` vs
   `t:write/0` type and `put_many/1`'s doc).
 - Deploy: no defstruct, no module in `HotReload.LongLivedModules` touched —
   HOT expected (read, preflight not run).
+<!-- entry #2388 -->
+
+---
+
+## 2026-11-09 — issue 2388: the pending-auth window is a ceiling released by the identity, not a 10s SLA
+
+**The defect.** `@pending_auth_timeout_ms` was 10s, commented as "generous for
+an upstream NickServ → +r round-trip; even a sluggish ircd should confirm in
+<2s". It also threw away a typed VISITOR `IDENTIFY` whose `+r` was merely
+LATE: the #2380 investigation measured one at 29s. The built-in identify loses
+nothing (the secret is already stored), but a visitor's typed password was
+discarded and never committed — the same root as #2380, a timer sized for
+prompt services.
+
+**The wait is now a ceiling, 60s.** The same number and the same reasoning as
+#2380's `@autojoin_defer_ms`: ~2× the measured slow case, and the normal case
+does not pay it. The release signal is the NORMALIZED identity transition
+(`:session_identity_changed, :acquired` → EventRouter's
+`identity_secret_effects/2`), which commits the secret and cancels the timer
+the moment it lands — whatever its source (`+r` umode, 900, account-notify,
+330), because #388 already normalized those into one primitive. Only the "no
+identity ever" paths wait the ceiling out.
+
+**On elapse the secret is still DISCARDED.** That is the fail-safe, not the
+defect: it is what keeps a wrong password out of the visitor DB. What changed
+is that the discard says so — `pending IDENTIFY discarded: no identity before
+the ceiling` at warning, with the subject KIND (`:user | :visitor`), never the
+password. No `elapsed_ms`: at the timer the only value available is the ceiling
+constant, and #1960's rule is that a bare `elapsed_ms` must carry
+`:attribution` — a constant posing as a measurement is worse than silence. The
+old `debug` line was silent, which is why a 29s `+r` took a prod log read to
+find (#2380's lesson).
+
+**No 401-NickServ early release, unlike #2380.** There the release fires the
+JOINs; here it would DROP a secret. An early discard saves only memory, and
+the bounded side to err on is to wait: a `+r` that arrives at 30s is still a
+`+r`.
+
+**Test seam.** `:pending_auth_timeout_ms`, copied into state at `init` exactly
+like `:autojoin_defer_ms`, so the production number is pinned by a test that
+does not override it while the discard path is exercised with a 300ms seam.
+`Session.Server`'s state block changes (one key in the `t` type and in the
+`init` literal), so `Grappa.Deploy.Preflight` classifies this **COLD**; the
+`Map.get` at every read site (#229) is what keeps a hot-reloaded process from
+`KeyError`-ing regardless, and a session that predates the key falls back to the
+module attribute.
+
+**Measured.** Not run locally (no suites on the Pi, vjt 2026-11-09): `lib/`
+compiles clean with `--warnings-as-errors` and `mix format --check-formatted`
+passes on every touched file. CI is the arbiter.
+
+**The wider window does not widen what can be COMMITTED — measured, not assumed.**
+A wrong password sitting in the slot for 60s is only harmful if an `:acquired`
+fires that the slot's password did not cause. The named candidate was
+RecoverIdentity sending the SAVED secret: if that path skipped the NSInterceptor
+capture, `identity_secret_effects` would commit the stale wrong password over the
+good one. It does not skip it. `RecoverIdentity` builds
+`PRIVMSG NickServ :IDENTIFY <nick> <secret>` (`lib/grappa/session/recover_identity.ex:231`),
+the host pushes those lines through `emit_reply_lines/3`
+(`server.ex:2491`, `server.ex:6062`), which turns each into `{:reply, line, origin}`
+(`server.ex:6023`), whose arm calls `send_outbound/3` (`server.ex:7469`), which
+sniffs through `capture_outbound_ns_secret/2` (`server.ex:5653`) before sending;
+the `:identify` capture stages the slot (`server.ex:5583`) and `stage_pending_auth/2`
+OVERWRITES it, latest-wins (`server.ex:5502`). So the recover IDENTIFY replaces
+the stale typed password with the saved one before the `+r` it causes, and what
+gets committed is the saved secret. Every other IDENTIFY this connection emits
+takes the same door: typed verbs, the built-in at 001 (`send_perform_line/2`),
+the perform list, GhostRecovery.
+
+The residual class is `:acquired` from a source that is not our IDENTIFY at all
+— `900` (SASL), inbound `ACCOUNT`, `330` about ourselves
+(`event_router.ex:1096`, `:1043`, `:1906`). There a stale slot WOULD be
+committed. It is unreachable on prod: those feed the `account` axis, which
+`IdentityState` gates on `account-notify` being ACKed and which is display-only
+on bahamut, where `+r` alone decides — and `+r` only follows an IDENTIFY. The
+same reasoning is already applied once in the codebase: `221` RPL_UMODEIS
+deliberately does not feed `identity_secret_effects/2` because the identity it
+reports may predate the staged secret (`event_router.ex:1493`).
+
+**This exclusion expires with bahamut.** The residual `900`/`ACCOUNT`/`330` class
+reopens the moment grappa serves a network with `account-notify` (solanum), where
+those three DO count towards the verdict: there a stale slot can be committed by
+an identity the slot's password did not cause, and the 60s ceiling is exactly the
+window that makes it likely. Whoever lands the first solanum session revisits this
+number — the ceiling is safe only for as long as `+r` alone decides.
+
+**No negative signal is available to shorten the slot.** A wrong password comes
+back as a NickServ NOTICE, and #347 forbids parsing NOTICE text for identity;
+there is no numeric for it (the only password-mismatch numeric the codebase
+knows, `464` ERR_PASSWDMISMATCH, is the OPER one,
+`lib/grappa/irc/client.ex:757`). So the only honest bound on a wrong password is
+the ceiling itself.
