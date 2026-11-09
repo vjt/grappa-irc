@@ -1766,37 +1766,6 @@ const ScrollbackPane: Component<Props> = (props) => {
     setPillDay(pillDayAt(daySightings.values()));
   };
 
-  // TEMP #2311 measurement — REMOVE BEFORE MERGE. Exposes the pill's sighting
-  // map so an e2e run can tell "the observer never saw the paginated
-  // separators" from "it saw them and the rule said no".
-  if (typeof window !== "undefined") {
-    (window as unknown as { __pillDebug?: unknown }).__pillDebug = () => {
-      const dom = [...document.querySelectorAll('[data-testid="day-separator"]')];
-      const pill = document.querySelector('[data-testid="scrollback-date-pill"]');
-      return {
-        sightings: daySightings.size,
-        connected: [...daySightings.keys()].filter((el) => (el as Element).isConnected).length,
-        // In DOCUMENT order, each with the place the map holds for it, so a
-        // non-monotonic run (a "below" above a separator reported "above") is
-        // visible instead of averaged away by the insertion order of the map.
-        ordered: dom.map((el) => {
-          const s = daySightings.get(el);
-          return {
-            label: (el.textContent ?? "").trim(),
-            place: s?.place ?? "untracked",
-            dayAt: s?.dayAt ?? null,
-          };
-        }),
-        dom: dom.length,
-        pillDay: pillDay(),
-        pillLabel: pill === null ? null : (pill.textContent ?? "").trim(),
-        scrollTop: listRef?.scrollTop ?? null,
-        scrollHeight: listRef?.scrollHeight ?? null,
-        clientHeight: listRef?.clientHeight ?? null,
-      };
-    };
-  }
-
   // Rebuilt rather than reconfigured, because `rootMargin` is fixed at
   // construction and it encodes the pane's HEIGHT (see `topBandRootMargin`).
   // The existing #285 ResizeObserver already knows when that height moves and

@@ -88,39 +88,6 @@ test.describe("issue 2311 — the date pill follows the day", () => {
     const initialLabel = await armedLabel();
     expect(initialLabel).toBeTruthy();
 
-    // TEMP #2311 measurement — REMOVE BEFORE MERGE. Scroll all the way up with
-    // real wheels all the way to the TOP (the earlier trace needed ~156 of
-    // them; 30 left the pane mid-buffer, which measures nothing), sampling the
-    // map on the way, then dump the samples. Fails on purpose so the numbers
-    // land in the CI log.
-    const sample = () =>
-      page.evaluate(() => ({
-        dbg: (window as unknown as { __pillDebug?: () => unknown }).__pillDebug?.(),
-      }));
-    const samples: unknown[] = [];
-    let reachedTop = false;
-    for (let i = 0; i < 400; i += 1) {
-      await page.mouse.wheel(0, -240);
-      if (i % 20 === 0) {
-        await page.waitForTimeout(150);
-        samples.push(await sample());
-      }
-      const top = await page.evaluate(
-        () =>
-          (document.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null)
-            ?.scrollTop ?? -1,
-      );
-      if (top === 0) {
-        reachedTop = true;
-        break;
-      }
-    }
-    // A `loadMore` landing at the top re-renders and can push the offset off
-    // zero again; let it settle, then take the reading that matters.
-    await page.waitForTimeout(1500);
-    samples.push(await sample());
-    throw new Error(`PILLDEBUG reachedTop=${reachedTop} ${JSON.stringify(samples)}`);
-
     // (2) Scroll up until the pill names a DIFFERENT day. Each step is a real
     // wheel, so every one re-arms the linger. `loadMore` fires on the way and
     // rebuilds every row, which unmounts the pill for a frame — that is why a
