@@ -55,11 +55,28 @@ export type FileRefusal =
   | "bad-expiry";
 
 /**
+ * A media type as RFC 6838 writes it: `type/subtype`, both from the token
+ * alphabet, neither empty. Deliberately strict — this field is the PEER's
+ * word and it is shown on the card, so anything outside the token set (bidi
+ * overrides, C0/C1 controls, mIRC formatting bytes, a `//` or a `:` that
+ * could read as a link) is refused rather than rendered.
+ */
+const MIME = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$/i;
+
+/**
  * The `file` inner in `inner` when every field of it is well formed, or why
  * not. Shape only: whether `url` is THIS grappa's is `onGrappaOrigin`, which
  * needs the page's origin and is therefore the caller's.
+ *
+ * NEVER THROWS on wire input, whatever the caller hands it. A sibling copy
+ * can carry `file: null` (a text message serialised by a peer that writes the
+ * key anyway), and `null.t` used to raise a TypeError inside the drain — one
+ * that aborted the whole drain, so every message after it stopped arriving
+ * and the same crash repeated on every retry. A non-object is a refusal like
+ * any other.
  */
 export function parseFileInner(inner: Record<string, unknown>): FileInner | FileRefusal {
+  if (typeof inner !== "object" || inner === null) return "not-a-file";
   if (inner.t !== "file") return "not-a-file";
   const { url, key, iv, sha256, name, mime, size, category, expires_at } = inner;
   if (typeof url !== "string") return "bad-url";
@@ -67,7 +84,7 @@ export function parseFileInner(inner: Record<string, unknown>): FileInner | File
   if (typeof iv !== "string" || byteLength(iv) !== 12) return "bad-iv";
   if (typeof sha256 !== "string" || byteLength(sha256) !== 32) return "bad-sha256";
   if (typeof name !== "string" || name === "") return "bad-name";
-  if (typeof mime !== "string" || mime === "") return "bad-mime";
+  if (typeof mime !== "string" || !MIME.test(mime)) return "bad-mime";
   if (typeof size !== "number" || !Number.isInteger(size) || size < 0) return "bad-size";
   if (!FILE_CATEGORIES.includes(category as UploadCategory)) return "bad-category";
   if (typeof expires_at !== "string" || Number.isNaN(Date.parse(expires_at))) return "bad-expiry";
@@ -119,11 +136,19 @@ export function onGrappaOrigin(url: string, origin: string): boolean {
  */
 const bannedInName = (cp: number): boolean =>
   cp <= 0x1f ||
-  cp === 0x7f ||
+  // C1: the other control block. `cp <= 0x1f` misses 0x80–0x9f, which some
+  // terminals and editors still read as controls.
+  (cp >= 0x7f && cp <= 0x9f) ||
   cp === 0x2f ||
   cp === 0x5c ||
+  // Zero-width and invisible separators: a name made of them shows nothing
+  // and saves as something else.
+  (cp >= 0x200b && cp <= 0x200f) ||
   (cp >= 0x202a && cp <= 0x202e) ||
-  (cp >= 0x2066 && cp <= 0x2069);
+  (cp >= 0x2060 && cp <= 0x2069) ||
+  cp === 0xfeff ||
+  // The TAG block: an entire second message can ride in a filename.
+  (cp >= 0xe0000 && cp <= 0xe007f);
 
 /** The longest name this client shows or saves. */
 export const FILENAME_MAX = 120;

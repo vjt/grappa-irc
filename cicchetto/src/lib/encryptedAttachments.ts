@@ -58,7 +58,13 @@ export async function sendEncryptedAttachment(req: AttachmentRequest): Promise<A
     return { ok: false, error: `Unsupported file type — ${mime || "unknown"}.` };
   }
   const cap = embeddedHost.maxFileSizeBytes(category);
-  if (cap !== null && req.file.size > cap) {
+  // The cap is on what ACTUALLY uploads, and a video's transcode changes its
+  // size — the plain path says the same thing and checks after the transform
+  // (`uploadOrchestrator`'s "Cap check runs on the file that will ACTUALLY
+  // upload"). Refusing a video here on its ORIGINAL size turned away files the
+  // transcode would have brought under the limit; the post-strip check below
+  // still refuses one that is genuinely too big.
+  if (category !== "video" && cap !== null && req.file.size > cap) {
     return { ok: false, error: `File is too large (max ${formatBytes(cap)}).` };
   }
 
@@ -95,12 +101,26 @@ export async function sendEncryptedAttachment(req: AttachmentRequest): Promise<A
     iv: sealed.iv,
     sha256: sealed.sha256,
     name: stripped.file.name,
-    mime,
+    // The type of the file that GOES, not of the one that came in: a video's
+    // transcode answers `video/mp4`, and the inner used to keep the original
+    // (`video/quicktime`), so the peer's card named a container the bytes are
+    // not and `inlineKindOf` sent a playable mp4 down the save path.
+    mime: baseMime(stripped.file.type) || mime,
     size: bytes.length,
     category,
     expires_at: answer.expiresAt,
   };
-  await sendEncryptedFile(req.networkSlug, req.peer, inner);
+  // The upload already succeeded, so a throw here would leave the compose box
+  // stuck on "uploading" with the blob on the server and no message naming
+  // it. Every way out of this function is an answer.
+  try {
+    await sendEncryptedFile(req.networkSlug, req.peer, inner);
+  } catch {
+    return {
+      ok: false,
+      error: "The file uploaded but the message carrying its key was not sent. Try again.",
+    };
+  }
   return { ok: true };
 }
 

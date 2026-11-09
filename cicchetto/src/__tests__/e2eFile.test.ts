@@ -77,6 +77,13 @@ describe("parseFileInner (issue 2517)", () => {
       [{ sha256: b64(20) }, "bad-sha256"],
       [{ name: "" }, "bad-name"],
       [{ mime: "" }, "bad-mime"],
+      // The mime is the PEER's word and it is shown on the card: a value
+      // outside the RFC 6838 token set (bidi overrides, controls, anything
+      // that could read as a link) is refused at the door, not rendered.
+      [{ mime: "image/png‮" }, "bad-mime"],
+      [{ mime: "text/html; charset=utf-8" }, "bad-mime"],
+      [{ mime: "https://evil.test/x" }, "bad-mime"],
+      [{ mime: "image" }, "bad-mime"],
       [{ size: -1 }, "bad-size"],
       [{ size: 1.5 }, "bad-size"],
       [{ category: "executable" as FileInner["category"] }, "bad-category"],
@@ -86,6 +93,16 @@ describe("parseFileInner (issue 2517)", () => {
     for (const [over, reason] of cases) {
       expect(parseFileInner(fileInner(over))).toBe(reason);
     }
+  });
+
+  // A sibling copy can write `file: null` for a text message. `null.t` used
+  // to raise a TypeError inside the drain, which aborted the whole drain —
+  // every later message stopped arriving, and every retry hit the same row.
+  it("never throws on wire input that is not an object", () => {
+    expect(parseFileInner(null as unknown as Record<string, unknown>)).toBe("not-a-file");
+    expect(parseFileInner(undefined as unknown as Record<string, unknown>)).toBe("not-a-file");
+    expect(parseFileInner("file" as unknown as Record<string, unknown>)).toBe("not-a-file");
+    expect(parseFileInner(7 as unknown as Record<string, unknown>)).toBe("not-a-file");
   });
 });
 

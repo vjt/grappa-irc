@@ -6382,6 +6382,21 @@ describe("S1 sibling copies — receive", () => {
     ).toEqual([copiedFrom(b, "bob", "hello")]);
   });
 
+  it("a copy that carries `file: null` is a text copy, not a dropped one", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    // #2517 — a sibling can write the key with nothing in it. `parseFileInner`
+    // used to raise a TypeError on it, which aborted the whole drain: every
+    // later message stopped arriving, and every retry hit the same row.
+    const inner = { t: "copy", peer: "bob", body: "hello", file: null };
+    expect(takesCopy(alice, a, b, asPkmsg(copyWritten(b.account, alice.master, a, inner)))).toEqual(
+      {
+        events: [copiedFrom(b, "bob", "hello")],
+        outbound: [],
+      },
+    );
+  });
+
   it("a pre-key copy whose fb binds another pair of devices is dropped: no session, no sibling", () => {
     const alice = ownAccount("alice", 3);
     const [a, b, c] = alice.devices as [OwnDevice, OwnDevice, OwnDevice];

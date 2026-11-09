@@ -38,11 +38,24 @@ export function inlineKindOf(mime: string): "image" | "video" | "audio" | null {
  * Fetches `file`'s ciphertext, checks its digest, opens it with the key the
  * message carried, and answers the blob to render or to save. Never throws:
  * every failure is a sentence for the card.
+ *
+ * `signal` is the CALLER's lifetime (the card that started the open). An
+ * aborted signal takes the fetch down with it, and — the half that matters —
+ * stops a blob URL from being minted for a component that is already gone:
+ * nobody would be left holding it, so nobody would revoke it, and the
+ * plaintext would sit in memory until the page unloaded.
  */
-export async function openEncryptedFile(file: FileInner): Promise<OpenOutcome> {
+export async function openEncryptedFile(
+  file: FileInner,
+  signal?: AbortSignal,
+): Promise<OpenOutcome> {
+  // Read through a function on purpose: TypeScript narrows a `signal?.aborted`
+  // comparison to `false` for the rest of the function, but an abort can
+  // arrive during any of the awaits below — the narrowing would be a lie.
+  const isAborted = (): boolean => signal?.aborted === true;
   let ciphertext: Uint8Array<ArrayBuffer>;
   try {
-    const res = await fetch(file.url, { credentials: "same-origin" });
+    const res = await fetch(file.url, { credentials: "same-origin", signal });
     if (res.status === 404) {
       return {
         ok: false,
@@ -52,14 +65,16 @@ export async function openEncryptedFile(file: FileInner): Promise<OpenOutcome> {
     if (!res.ok) return { ok: false, error: `the server answered ${res.status}` };
     ciphertext = new Uint8Array(await res.arrayBuffer());
   } catch {
-    return { ok: false, error: "the download failed" };
+    return { ok: false, error: isAborted() ? "cancelled" : "the download failed" };
   }
+  if (isAborted()) return { ok: false, error: "cancelled" };
 
   if ((await sha256Base64(ciphertext)) !== file.sha256) {
     return { ok: false, error: "the file does not match the digest in the message" };
   }
   const plaintext = await openBytes(ciphertext, file.key, file.iv);
   if (plaintext === null) return { ok: false, error: "the file could not be decrypted" };
+  if (isAborted()) return { ok: false, error: "cancelled" };
 
   const media = inlineKindOf(file.mime);
   if (media !== null) {

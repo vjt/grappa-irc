@@ -501,11 +501,14 @@ function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): Ch
         if (inbox !== null) {
           // An attachment (issue 2517) is copied the same way, and its `url`
           // is held to the same rule as a peer's: this grappa's own upload.
+          // `!= null` on purpose: a sibling can write `file: null` for a text
+          // copy, and reading `.url` off it threw inside the drain — which
+          // took every message after it down with it, on every retry.
           const file =
-            e.file !== undefined && onGrappaOrigin(e.file.url, location.origin)
+            e.file != null && onGrappaOrigin(e.file.url, location.origin)
               ? storedFile(e.file)
               : undefined;
-          if (e.file !== undefined && file === undefined) {
+          if (e.file != null && file === undefined) {
             console.warn(`[e2e] dropped a copied file to ${e.peer}: not this grappa's upload`);
             break;
           }

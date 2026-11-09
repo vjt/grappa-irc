@@ -1575,8 +1575,14 @@ export class Engine {
       res.events.push({ kind: "dropped", nick: this.ownNick, reason: "sibling-not-a-copy" });
       return false;
     }
+    // `null` is "no attachment", not a malformed one: a sibling that writes
+    // the key with nothing in it is a text copy, and `parseFileInner(null)`
+    // used to raise a TypeError that aborted the whole drain — every later
+    // message stopped arriving, and every retry hit the same row.
     const file =
-      inner.file === undefined ? undefined : parseFileInner(inner.file as Record<string, unknown>);
+      inner.file === undefined || inner.file === null
+        ? undefined
+        : parseFileInner(inner.file as Record<string, unknown>);
     if (file !== undefined && typeof file === "string") {
       res.events.push({ kind: "dropped", nick: this.ownNick, reason: "sibling-not-a-copy" });
       return false;
