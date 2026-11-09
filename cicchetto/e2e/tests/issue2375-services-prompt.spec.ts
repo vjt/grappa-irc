@@ -76,10 +76,13 @@ test("issue 2375 — bare /ns focuses the `>` prompt, which completes, keeps foc
   await expect(prompt).toHaveValue(`INFO ${nick} ${CHANNEL} `);
   await expect(composeTextarea(page)).toHaveValue("");
 
-  // (2b) Shift+Tab off the close button (the first stop) wraps to the prompt,
-  // and the keystrokes after that still belong to the prompt, not to the
-  // compose box behind the scrim.
+  // (2b) Shift+Tab off the close button (the first stop) wraps to the send
+  // button, which issue 2429 put AFTER the prompt and so made the last stop;
+  // one more Shift+Tab is native and lands on the prompt. The keystrokes after
+  // that still belong to the prompt, not to the compose box behind the scrim.
   await modal.getByLabel("close").focus();
+  await page.keyboard.press("Shift+Tab");
+  await expect(modal.locator(".service-modal-send")).toBeFocused();
   await page.keyboard.press("Shift+Tab");
   await expect(prompt).toBeFocused();
   await page.keyboard.type("x");
