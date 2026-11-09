@@ -803,6 +803,14 @@ defmodule GrappaWeb.Router do
     get "/archive", ArchiveController, :index
     delete "/archive/:target", ArchiveController, :delete
 
+    # issue 2428 — the /clear confirm-modal count: how many rows the
+    # current window holds. Declared AFTER the collection routes:
+    # Phoenix matches in order and `/archive/:target/count` has its own
+    # segment count, so it never shadows the `:target` DELETE above (and
+    # no `GET /archive/:target` route exists for it to collide with).
+    # Same #693 ordering pattern as `/messages/count`.
+    get "/archive/:target/count", ArchiveController, :count
+
     post "/nick", NickController, :create
 
     # #247 — /notify presence watch list. GET combines the DB list with

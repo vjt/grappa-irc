@@ -225,6 +225,38 @@ defmodule Grappa.Scrollback.Wire do
   end
 
   @typedoc """
+  Issue 2428 — one window's row count, the number the `/clear`
+  confirm modal states (`GrappaWeb.ArchiveJSON.count/1`).
+
+  `kind` is the three-way `Scrollback.window_kind/1` union, NOT the
+  listing's two-way one: the server tab is countable even though it is
+  never archived, so `"server"` is a value the archive entry type
+  (`archive_wire_entry`) deliberately does NOT carry. Same S14
+  convention as that type — the `:channel | :query | :server` atom
+  passes through UNCHANGED (Jason stringifies at the JSON edge) so
+  `mix grappa.gen_wire_types` pins the `"channel" | "query" |
+  "server"` literal union.
+  """
+  @type archive_count :: %{
+          target: String.t(),
+          kind: :channel | :query | :server,
+          count: non_neg_integer()
+        }
+
+  @doc """
+  Renders one `Scrollback.count_for_target/3` answer as its public
+  wire shape. The `:kind` atom passes through UNCHANGED — see
+  `archive_entry/1` for why the typed contract keeps the closed
+  union instead of stringifying at this boundary.
+  """
+  @spec archive_count(String.t(), Scrollback.window_kind(), non_neg_integer()) ::
+          archive_count()
+  def archive_count(target, kind, count)
+      when kind in [:channel, :query, :server] and is_integer(count) and count >= 0 do
+    %{target: target, kind: kind, count: count}
+  end
+
+  @typedoc """
   UX-1 (2026-05-17) — `archive_changed` push payload broadcast on
   `Topic.user(subject_label)` after a successful archive-entry mutation
   that affects the network's archive LIST shape (e.g. PART moves a
