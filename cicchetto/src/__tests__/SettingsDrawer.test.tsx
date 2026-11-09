@@ -730,7 +730,9 @@ describe("SettingsDrawer display options section (#443)", () => {
       (await import("../lib/serverPeek")).setServerPeekEnabled(true);
     });
 
-    it("shows the peek toggle on by default, in the options fieldset", () => {
+    // The default itself (on) is pinned in serverPeek.test.ts; this file pins
+    // that the box shows what the device has.
+    it("shows the peek toggle checked where it is on, in the options fieldset", () => {
       wrap(true);
       openSub("display-settings-entry");
       const toggle = screen.getByTestId("server-peek-toggle") as HTMLInputElement;
@@ -738,6 +740,13 @@ describe("SettingsDrawer display options section (#443)", () => {
       expect(toggle.closest("fieldset")).toBe(
         screen.getByTestId("command-menu-toggle").closest("fieldset"),
       );
+    });
+
+    it("shows it unchecked on a device that opted out", async () => {
+      (await import("../lib/serverPeek")).setServerPeekEnabled(false);
+      wrap(true);
+      openSub("display-settings-entry");
+      expect((screen.getByTestId("server-peek-toggle") as HTMLInputElement).checked).toBe(false);
     });
 
     it("turning it off is remembered on this device", async () => {
