@@ -49,8 +49,19 @@ function subjectNameFor(testInfo: TestInfo): string {
   return `s${digest.slice(0, 8)}`;
 }
 
-export function provisionSpecSubject(testInfo: TestInfo): Promise<SpecSubject> {
-  return provision(testInfo, subjectNameFor(testInfo), true);
+// #2311 — the seed is calibrated for scroll density (200 rows ≈ 20s of
+// corpus), which is exactly ONE day separator, so a spec about the day
+// boundary has nothing to cross. `seedGapMs` widens the spacing without
+// moving the newest row off "now"; a spec opts in through the `specSeed`
+// fixture option (`test.use({ specSeed: { seedGapMs } })`), everything else
+// keeps the calibrated default.
+export type SpecSeedOverrides = { seedGapMs?: number };
+
+export function provisionSpecSubject(
+  testInfo: TestInfo,
+  seedOverrides: SpecSeedOverrides = {},
+): Promise<SpecSubject> {
+  return provision(testInfo, subjectNameFor(testInfo), true, seedOverrides);
 }
 
 // issue 2430 — a SECOND subject in the same test, for specs about two people
@@ -68,7 +79,12 @@ export function provisionPeerSubject(testInfo: TestInfo, role: string): Promise<
   return provision(testInfo, `p${digest.slice(0, 8)}`, false);
 }
 
-async function provision(testInfo: TestInfo, name: string, seed: boolean): Promise<SpecSubject> {
+async function provision(
+  testInfo: TestInfo,
+  name: string,
+  seed: boolean,
+  seedOverrides: SpecSeedOverrides = {},
+): Promise<SpecSubject> {
   const admin = getSeededAdmin();
 
   const res = await fetch(`${GRAPPA_BASE_URL}/admin/test/subject`, {
@@ -85,6 +101,13 @@ async function provision(testInfo: TestInfo, name: string, seed: boolean): Promi
             name: channel,
             seed_count: SEED_COUNT,
             seed_sender: SEED_SENDER,
+            // Absent means "the default" on the server; sending `undefined`
+            // would be the same thing to JSON.stringify, but the explicit
+            // spread keeps the calibrated request byte-identical for every
+            // spec that does not opt in.
+            ...(seedOverrides.seedGapMs === undefined
+              ? {}
+              : { seed_gap_ms: seedOverrides.seedGapMs }),
           }))
         : [],
     }),

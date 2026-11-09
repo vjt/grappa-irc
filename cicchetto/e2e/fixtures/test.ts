@@ -3,6 +3,7 @@ import {
   consumedSpecNicks,
   provisionSpecSubject,
   readSpecLiveNick,
+  type SpecSeedOverrides,
   setCurrentSpecSubject,
   teardownSpecSubject,
 } from "./specSubject";
@@ -83,19 +84,22 @@ export interface CspViolation {
 // biome-ignore-start lint/suspicious/noConfusingVoidType: Playwright's auto-fixture declaration shape
 export const test = base.extend<{
   _specSubject: void;
+  // #2311 — per-file opt-in to a wider seed corpus. `test.use({ specSeed })`
+  // only affects the file that writes it; every other spec provisions with
+  // the calibrated 200-rows-over-20-seconds default.
+  specSeed: SpecSeedOverrides;
   cspViolations: CspViolation[];
   _cspGuard: void;
   _unrouteGuard: void;
 }>({
   // biome-ignore-end lint/suspicious/noConfusingVoidType: Playwright's auto-fixture declaration shape
+  specSeed: [{}, { option: true }],
   _specSubject: [
-    // The empty destructuring pattern is load-bearing: Playwright reads the
-    // first parameter's pattern to decide which fixtures to instantiate, and
-    // rejects a non-destructured one outright. `{}` is how a fixture declares
-    // it needs none — it is an API contract, not a stray empty pattern.
-    // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture-dependency declaration
-    async ({}, use, testInfo) => {
-      const subject = await provisionSpecSubject(testInfo);
+    // The destructuring pattern is load-bearing: Playwright reads the first
+    // parameter's pattern to decide which fixtures to instantiate, and
+    // rejects a non-destructured one outright.
+    async ({ specSeed }, use, testInfo) => {
+      const subject = await provisionSpecSubject(testInfo, specSeed);
       setCurrentSpecSubject(subject);
       try {
         await use();

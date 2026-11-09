@@ -68,7 +68,8 @@ if Mix.env() in [:dev, :test] do
     @type channel_seed :: %{
             required(:name) => String.t(),
             required(:seed_count) => non_neg_integer(),
-            required(:seed_sender) => String.t()
+            required(:seed_sender) => String.t(),
+            optional(:seed_gap_ms) => pos_integer()
           }
 
     @type params :: %{
@@ -199,10 +200,24 @@ if Mix.env() in [:dev, :test] do
 
     defp seed_all(_, _, []), do: :ok
 
-    defp seed_all(user, cred, [%{name: name, seed_count: count, seed_sender: sender} | rest]) do
-      :ok = SubjectSession.seed_channel(user.id, cred.network_id, name, count, sender)
+    defp seed_all(user, cred, [%{name: name, seed_count: count, seed_sender: sender} = seed | rest]) do
+      :ok =
+        SubjectSession.seed_channel(
+          user.id,
+          cred.network_id,
+          name,
+          count,
+          sender,
+          seed_gap_opts(seed)
+        )
+
       seed_all(user, cred, rest)
     end
+
+    # #2311 — only a caller that asked for a wider corpus gets one; the
+    # absent key must reach `seed_channel` as the default, not as a value.
+    defp seed_gap_opts(%{seed_gap_ms: gap}) when is_integer(gap) and gap > 0, do: [gap_ms: gap]
+    defp seed_gap_opts(_seed), do: []
 
     @doc """
     Removes the subject named `name`: unbinds every credential (which

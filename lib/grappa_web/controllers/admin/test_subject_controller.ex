@@ -158,14 +158,27 @@ if Mix.env() in [:dev, :test] do
     defp parse_seed([], acc), do: {:ok, Enum.reverse(acc)}
 
     defp parse_seed(
-           [%{"name" => name, "seed_count" => count, "seed_sender" => sender} | rest],
+           [%{"name" => name, "seed_count" => count, "seed_sender" => sender} = entry | rest],
            acc
          )
          when is_binary(name) and is_integer(count) and count >= 0 and is_binary(sender) and
                 byte_size(sender) > 0 do
-      parse_seed(rest, [%{name: name, seed_count: count, seed_sender: sender} | acc])
+      with {:ok, gap} <- parse_seed_gap(entry) do
+        seed = %{name: name, seed_count: count, seed_sender: sender}
+        parse_seed(rest, [put_seed_gap(seed, gap) | acc])
+      end
     end
 
     defp parse_seed(_, _), do: :error
+
+    # #2311 — optional per-channel spacing. Absent keeps the ~20s default
+    # every scroll spec is calibrated against; a value must be a positive
+    # integer, so a typo is a 422 and not a silently dense corpus.
+    defp parse_seed_gap(%{"seed_gap_ms" => gap}) when is_integer(gap) and gap > 0, do: {:ok, gap}
+    defp parse_seed_gap(%{"seed_gap_ms" => _}), do: :error
+    defp parse_seed_gap(_entry), do: {:ok, nil}
+
+    defp put_seed_gap(seed, nil), do: seed
+    defp put_seed_gap(seed, gap), do: Map.put(seed, :seed_gap_ms, gap)
   end
 end
