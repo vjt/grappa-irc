@@ -1,18 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-// #2409 — the REAL class, imported STATICALLY. The code under test
-// (`sendPipeline`, `friendlyError`) narrows with `err instanceof ApiError`
-// against the class it imports from `lib/apiError.ts`, so a lookalike would
-// fail every one of those arms. A dynamic `import()` from INSIDE a `vi.mock`
-// factory resolves in the mocker's own module graph and hands back a SECOND
-// copy of the class, so the suite's throws never matched the `instanceof` in
-// the code under test. This import is the same module instance they see.
-import { ApiError } from "../lib/apiError";
 import { keysOf, noKeys } from "../lib/byKey";
 import { type ChannelKey, channelKey } from "../lib/channelKey";
 import { DEFAULT_CHANTYPES } from "../lib/chantypes";
 import type { SlashCommand } from "../lib/slashCommands";
 import { LIST_WINDOW_NAME, SERVER_WINDOW_NAME } from "../lib/windowKinds";
 import { BLANK_BODY_ERROR, serverAcceptsBody } from "./serverBodyPredicate";
+
+// #2409 — the class the code under test narrows on, read from the CURRENT
+// module graph. `beforeEach` calls `vi.resetModules()`, so every test's
+// `await import(...)` builds a FRESH graph: a static import at the top of
+// this file (or a copy the `vi.mock` factory cached on its first run) belongs
+// to the graph that was thrown away, and `err instanceof ApiError` against it
+// is false for the class `sendPipeline`/`friendlyError` actually imported.
+// Re-read after every reset, and let the factory hand out that same one.
+let ApiError!: typeof import("../lib/apiError").ApiError;
 
 vi.mock("../lib/api", () => {
   // compose.ts's catch does `e instanceof ChannelPushError` (#62) — the
@@ -406,8 +407,11 @@ vi.mock("../lib/nickEquals", async (importOriginal) => ({
   nickEquals: (a: string, b: string) => a.toLowerCase() === b.toLowerCase(),
 }));
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.resetModules();
+  // #2409 — after the reset, and before any test imports the code under test:
+  // this is the class that graph's `lib/apiError.ts` will be.
+  ({ ApiError } = await import("../lib/apiError"));
   localStorage.clear();
   // #772 — drafts persist in sessionStorage, so it needs the same per-test
   // wipe localStorage gets or one test's draft seeds the next one's boot.
