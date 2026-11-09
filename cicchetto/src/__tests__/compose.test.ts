@@ -2273,19 +2273,17 @@ describe("compose submit — slash command dispatch", () => {
     );
   });
 
-  // issue 2179 — the KNOWN GAP, pinned as the refusal it is rather than left to
-  // prose. `+` is also a chantype, so `+#b` hits the #12/#343 channel guard in
-  // the PURE parser before compose ever sees it. Curing that means teaching
-  // `parseSlash` a per-network membership fact it does not have, on a target
-  // genuinely ambiguous with a legal channel name (`+#b` IS a valid RFC
-  // channel spelling) — declined, and accepted as a gap.
+  // issue 2227 — the gap this test used to pin as a refusal is CLOSED. `+` is
+  // both the voice sigil and an RFC channel sigil, so the old #12/#343 guard,
+  // total on byte 0, refused `+#b` before compose ever saw it — while
+  // `/notice +#b` and `/msg @#b` went through. The guard now asks whether the
+  // target IS a channel (slashCommands.ts `isBareChannelTarget`), so `+#b`
+  // reaches the #2179 peel and is keyed to the channel behind the level.
   //
-  // What this test buys: the gap is a REFUSAL and not a regression. The 2179
-  // shapes `@#b` / `%#b` reach the new path, this one does not reach it, and
-  // — the half that matters — it does not fall back into the phantom window
-  // the issue exists to remove. If the parser guard is ever taught the
-  // membership set, this test goes red and points at the decision.
-  it("issue 2179 — /msg +#chan stays refused by the parser, with no phantom window", async () => {
+  // What this test buys now: the shape that used to stop at the parser does
+  // not fall back into the phantom query window the issue exists to remove,
+  // and the echo is keyed to `#b`, not to `+#b` (a channel nobody is in).
+  it("issue 2227 — /msg +#chan reaches the peel, keyed to the channel, no phantom window", async () => {
     localStorage.setItem("grappa-token", "tok");
     const sb = await import("../lib/scrollback");
     const qw = await import("../lib/queryWindows");
@@ -2297,10 +2295,11 @@ describe("compose submit — slash command dispatch", () => {
     compose.setDraft(k, "/msg +#b ops only");
     const result = await compose.submit(k, "freenode", "#a");
 
-    // The #343 guidance, not a silent drop.
-    expect(result).toMatchObject({ error: expect.stringContaining("+#b") });
-    // Nothing sent under ANY spelling, and no window invented for it.
-    expect(sb.sendMessage).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true });
+    expect(sb.sendMessage).toHaveBeenCalledWith("freenode", "#b", "ops only", {
+      kind: "statusmsg",
+      target: "+#b",
+    });
     expect(qw.openQueryWindowState).not.toHaveBeenCalled();
     expect(sel.setSelectedChannel).not.toHaveBeenCalled();
   });
