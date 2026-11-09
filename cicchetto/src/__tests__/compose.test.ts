@@ -1,4 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// #2409 — the REAL class, imported STATICALLY. The code under test
+// (`sendPipeline`, `friendlyError`) narrows with `err instanceof ApiError`
+// against the class it imports from `lib/apiError.ts`, so a lookalike would
+// fail every one of those arms. A dynamic `import()` from INSIDE a `vi.mock`
+// factory resolves in the mocker's own module graph and hands back a SECOND
+// copy of the class, so the suite's throws never matched the `instanceof` in
+// the code under test. This import is the same module instance they see.
+import { ApiError } from "../lib/apiError";
 import { keysOf, noKeys } from "../lib/byKey";
 import { type ChannelKey, channelKey } from "../lib/channelKey";
 import { DEFAULT_CHANTYPES } from "../lib/chantypes";
@@ -6,17 +14,11 @@ import type { SlashCommand } from "../lib/slashCommands";
 import { LIST_WINDOW_NAME, SERVER_WINDOW_NAME } from "../lib/windowKinds";
 import { BLANK_BODY_ERROR, serverAcceptsBody } from "./serverBodyPredicate";
 
-vi.mock("../lib/api", async () => {
-  // #2409 — the REAL class, not a stub with the same shape. The code under
-  // test (`sendPipeline`, `friendlyApiError`) narrows with
-  // `err instanceof ApiError` against the class it imports from
-  // `lib/apiError.ts`, so a lookalike defined here would fail every one of
-  // those arms. This is the whole reason the class moved out of `api.ts`.
-  const { ApiError } = await import("../lib/apiError");
+vi.mock("../lib/api", () => {
   // compose.ts's catch does `e instanceof ChannelPushError` (#62) — the
   // mock MUST export the class or that reference is `undefined` and the
   // instanceof throws for EVERY non-ApiError rejection. Mirror the real
-  // shape (code + info) like the ApiError stub above.
+  // shape (code + info) like the real `ApiError` exported above.
   class ChannelPushError extends Error {
     readonly code: string;
     readonly info: Record<string, unknown>;
@@ -760,17 +762,12 @@ describe("compose submit — slash command dispatch", () => {
   it("#863 — a whitespace-only line does not abort the rest of the paste", async () => {
     localStorage.setItem("grappa-token", "tok");
     const sb = await import("../lib/scrollback");
-    const api = await import("../lib/api");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
 
     vi.mocked(sb.sendMessage).mockImplementation(async (_slug, _target, body) => {
       if (!serverAcceptsBody(body)) {
-        throw new api.ApiError(
-          BLANK_BODY_ERROR.status,
-          BLANK_BODY_ERROR.code,
-          BLANK_BODY_ERROR.info,
-        );
+        throw new ApiError(BLANK_BODY_ERROR.status, BLANK_BODY_ERROR.code, BLANK_BODY_ERROR.info);
       }
       return undefined as never;
     });
@@ -791,7 +788,6 @@ describe("compose submit — slash command dispatch", () => {
   it("#666 — fatal mid-paste keeps only the residue; resume sends only the remainder (no dup)", async () => {
     localStorage.setItem("grappa-token", "tok");
     const sb = await import("../lib/scrollback");
-    const api = await import("../lib/api");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
 
@@ -799,7 +795,7 @@ describe("compose submit — slash command dispatch", () => {
     let n = 0;
     vi.mocked(sb.sendMessage).mockImplementation(async () => {
       n += 1;
-      if (n === 4) throw new api.ApiError(400, "invalid_line");
+      if (n === 4) throw new ApiError(400, "invalid_line");
       return undefined as never;
     });
 
@@ -831,7 +827,6 @@ describe("compose submit — slash command dispatch", () => {
     try {
       localStorage.setItem("grappa-token", "tok");
       const sb = await import("../lib/scrollback");
-      const api = await import("../lib/api");
       const compose = await import("../lib/compose");
       const k = channelKey("freenode", "#a");
 
@@ -843,7 +838,7 @@ describe("compose submit — slash command dispatch", () => {
         n += 1;
         if (n === 3 && !refused) {
           refused = true;
-          throw new api.ApiError(429, "rate_limited", { retry_after: 2 });
+          throw new ApiError(429, "rate_limited", { retry_after: 2 });
         }
         return undefined as never;
       });
@@ -887,7 +882,6 @@ describe("compose submit — slash command dispatch", () => {
     try {
       localStorage.setItem("grappa-token", "tok");
       const sb = await import("../lib/scrollback");
-      const api = await import("../lib/api");
       const compose = await import("../lib/compose");
       const k = channelKey("freenode", "#a");
 
@@ -895,7 +889,7 @@ describe("compose submit — slash command dispatch", () => {
       let n = 0;
       vi.mocked(sb.sendMessage).mockImplementation(async () => {
         n += 1;
-        if (n >= 2) throw new api.ApiError(429, "rate_limited", { retry_after: 1 });
+        if (n >= 2) throw new ApiError(429, "rate_limited", { retry_after: 1 });
         return undefined as never;
       });
 
@@ -925,7 +919,6 @@ describe("compose submit — slash command dispatch", () => {
     try {
       localStorage.setItem("grappa-token", "tok");
       const sb = await import("../lib/scrollback");
-      const api = await import("../lib/api");
       const compose = await import("../lib/compose");
       const k = channelKey("freenode", "#a");
 
@@ -937,7 +930,7 @@ describe("compose submit — slash command dispatch", () => {
         n += 1;
         if (n === 2 && !refused) {
           refused = true;
-          throw new api.ApiError(429, "rate_limited", { retry_after: 2 });
+          throw new ApiError(429, "rate_limited", { retry_after: 2 });
         }
         return undefined as never;
       });
@@ -983,7 +976,6 @@ describe("compose submit — slash command dispatch", () => {
     try {
       localStorage.setItem("grappa-token", "tok");
       const sb = await import("../lib/scrollback");
-      const api = await import("../lib/api");
       const compose = await import("../lib/compose");
       const k = channelKey("freenode", "#a");
 
@@ -999,7 +991,7 @@ describe("compose submit — slash command dispatch", () => {
         n += 1;
         if (n === 2 && !refused) {
           refused = true;
-          throw new api.ApiError(429, "rate_limited", { retry_after: 2 });
+          throw new ApiError(429, "rate_limited", { retry_after: 2 });
         }
         return undefined as never;
       });
@@ -1024,7 +1016,6 @@ describe("compose submit — slash command dispatch", () => {
     try {
       localStorage.setItem("grappa-token", "tok");
       const sb = await import("../lib/scrollback");
-      const api = await import("../lib/api");
       const compose = await import("../lib/compose");
       const members = await import("../lib/members");
       const k = channelKey("freenode", "#a");
@@ -1035,7 +1026,7 @@ describe("compose submit — slash command dispatch", () => {
         n += 1;
         if (n === 2 && !refused) {
           refused = true;
-          throw new api.ApiError(429, "rate_limited", { retry_after: 2 });
+          throw new ApiError(429, "rate_limited", { retry_after: 2 });
         }
         return undefined as never;
       });
@@ -1072,7 +1063,6 @@ describe("compose submit — slash command dispatch", () => {
     try {
       localStorage.setItem("grappa-token", "tok");
       const sb = await import("../lib/scrollback");
-      const api = await import("../lib/api");
       const compose = await import("../lib/compose");
       const k = channelKey("freenode", "#a");
 
@@ -1082,7 +1072,7 @@ describe("compose submit — slash command dispatch", () => {
         n += 1;
         if (n === 2 && !refused) {
           refused = true;
-          throw new api.ApiError(429, "rate_limited", { retry_after: 2 });
+          throw new ApiError(429, "rate_limited", { retry_after: 2 });
         }
         return undefined as never;
       });
@@ -1118,7 +1108,6 @@ describe("compose submit — slash command dispatch", () => {
     try {
       localStorage.setItem("grappa-token", "tok");
       const sb = await import("../lib/scrollback");
-      const api = await import("../lib/api");
       const compose = await import("../lib/compose");
       const draining = channelKey("freenode", "#a");
       const other = channelKey("freenode", "#b");
@@ -1129,7 +1118,7 @@ describe("compose submit — slash command dispatch", () => {
         n += 1;
         if (n === 2 && !refused) {
           refused = true;
-          throw new api.ApiError(429, "rate_limited", { retry_after: 2 });
+          throw new ApiError(429, "rate_limited", { retry_after: 2 });
         }
         return undefined as never;
       });
@@ -1157,7 +1146,6 @@ describe("compose submit — slash command dispatch", () => {
     try {
       localStorage.setItem("grappa-token", "tok");
       const sb = await import("../lib/scrollback");
-      const api = await import("../lib/api");
       const compose = await import("../lib/compose");
       const k = channelKey("freenode", "#a");
 
@@ -1166,8 +1154,8 @@ describe("compose submit — slash command dispatch", () => {
       let n = 0;
       vi.mocked(sb.sendMessage).mockImplementation(async () => {
         n += 1;
-        if (n === 2) throw new api.ApiError(429, "rate_limited", { retry_after: 2 });
-        if (n === 3) throw new api.ApiError(400, "invalid_line");
+        if (n === 2) throw new ApiError(429, "rate_limited", { retry_after: 2 });
+        if (n === 3) throw new ApiError(400, "invalid_line");
         return undefined as never;
       });
 
@@ -1198,7 +1186,6 @@ describe("compose submit — slash command dispatch", () => {
     try {
       localStorage.setItem("grappa-token", "tok");
       const sb = await import("../lib/scrollback");
-      const api = await import("../lib/api");
       const compose = await import("../lib/compose");
       const source = channelKey("freenode", "#a");
       const query = channelKey("freenode", "bob");
@@ -1209,7 +1196,7 @@ describe("compose submit — slash command dispatch", () => {
         n += 1;
         if (n === 2 && !refused) {
           refused = true;
-          throw new api.ApiError(429, "rate_limited", { retry_after: 2 });
+          throw new ApiError(429, "rate_limited", { retry_after: 2 });
         }
         return undefined as never;
       });
@@ -1245,7 +1232,6 @@ describe("compose submit — slash command dispatch", () => {
   it("#907 — /msg claims the composer BEFORE it awaits the query-topic join", async () => {
     localStorage.setItem("grappa-token", "tok");
     const sb = await import("../lib/scrollback");
-    const api = await import("../lib/api");
     const qtj = await import("../lib/queryTopicJoin");
     const compose = await import("../lib/compose");
     const source = channelKey("freenode", "#a");
@@ -1263,7 +1249,7 @@ describe("compose submit — slash command dispatch", () => {
     let n = 0;
     vi.mocked(sb.sendMessage).mockImplementation(async () => {
       n += 1;
-      if (n === 2) throw new api.ApiError(400, "invalid_line");
+      if (n === 2) throw new ApiError(400, "invalid_line");
       return undefined as never;
     });
 
@@ -1301,7 +1287,6 @@ describe("compose submit — slash command dispatch", () => {
     try {
       localStorage.setItem("grappa-token", "tok");
       const sb = await import("../lib/scrollback");
-      const api = await import("../lib/api");
       const compose = await import("../lib/compose");
       const source = channelKey("freenode", "#a");
       const query = channelKey("freenode", "bob");
@@ -1312,7 +1297,7 @@ describe("compose submit — slash command dispatch", () => {
         n += 1;
         if (n === 2 && !refused) {
           refused = true;
-          throw new api.ApiError(429, "rate_limited", { retry_after: 2 });
+          throw new ApiError(429, "rate_limited", { retry_after: 2 });
         }
         return undefined as never;
       });
@@ -2305,7 +2290,6 @@ describe("compose submit — slash command dispatch", () => {
   it("#723 — a partial /msg leaves the residue ONLY in the query window; the source is emptied", async () => {
     localStorage.setItem("grappa-token", "tok");
     const sb = await import("../lib/scrollback");
-    const api = await import("../lib/api");
     const compose = await import("../lib/compose");
     const source = channelKey("freenode", "#a");
     const query = channelKey("freenode", "bob");
@@ -2314,7 +2298,7 @@ describe("compose submit — slash command dispatch", () => {
     let n = 0;
     vi.mocked(sb.sendMessage).mockImplementation(async () => {
       n += 1;
-      if (n === 2) throw new api.ApiError(400, "invalid_line");
+      if (n === 2) throw new ApiError(400, "invalid_line");
       return undefined as never;
     });
 
@@ -2360,7 +2344,6 @@ describe("compose submit — slash command dispatch", () => {
   it("#723 — a partial /msg into a busy query window keeps the residue in the source, re-addressed", async () => {
     localStorage.setItem("grappa-token", "tok");
     const sb = await import("../lib/scrollback");
-    const api = await import("../lib/api");
     const compose = await import("../lib/compose");
     const source = channelKey("freenode", "#a");
     const query = channelKey("freenode", "bob");
@@ -2368,7 +2351,7 @@ describe("compose submit — slash command dispatch", () => {
     let n = 0;
     vi.mocked(sb.sendMessage).mockImplementation(async () => {
       n += 1;
-      if (n === 2) throw new api.ApiError(400, "invalid_line");
+      if (n === 2) throw new ApiError(400, "invalid_line");
       return undefined as never;
     });
 
@@ -2400,12 +2383,11 @@ describe("compose submit — slash command dispatch", () => {
   it("#723 — a single-line /msg into a busy query window says where the text went", async () => {
     localStorage.setItem("grappa-token", "tok");
     const sb = await import("../lib/scrollback");
-    const api = await import("../lib/api");
     const compose = await import("../lib/compose");
     const source = channelKey("freenode", "#a");
     const query = channelKey("freenode", "bob");
 
-    vi.mocked(sb.sendMessage).mockRejectedValue(new api.ApiError(400, "invalid_line"));
+    vi.mocked(sb.sendMessage).mockRejectedValue(new ApiError(400, "invalid_line"));
 
     compose.setDraft(query, "half typed reply");
     compose.setDraft(source, "/msg bob hi");
@@ -2424,11 +2406,10 @@ describe("compose submit — slash command dispatch", () => {
   it("#723 — a partial /msg to a service keeps its /msg <service> (no channel spill)", async () => {
     localStorage.setItem("grappa-token", "tok");
     const sb = await import("../lib/scrollback");
-    const api = await import("../lib/api");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
 
-    vi.mocked(sb.sendMessage).mockRejectedValue(new api.ApiError(400, "invalid_line"));
+    vi.mocked(sb.sendMessage).mockRejectedValue(new ApiError(400, "invalid_line"));
 
     compose.setDraft(k, "/msg nickserv IDENTIFY s3cret");
     const result = await compose.submit(k, "freenode", "#a");
@@ -2457,7 +2438,7 @@ describe("compose submit — slash command dispatch", () => {
     let n = 0;
     vi.mocked(sb.sendMessage).mockImplementation(async () => {
       n += 1;
-      if (n === 2) throw new api.ApiError(400, "invalid_line");
+      if (n === 2) throw new ApiError(400, "invalid_line");
       return undefined as never;
     });
 
@@ -2485,14 +2466,13 @@ describe("compose submit — slash command dispatch", () => {
   it("#723 — the / escape covers only the first char; later slash lines stay verbatim", async () => {
     localStorage.setItem("grappa-token", "tok");
     const sb = await import("../lib/scrollback");
-    const api = await import("../lib/api");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
 
     let n = 0;
     vi.mocked(sb.sendMessage).mockImplementation(async () => {
       n += 1;
-      if (n === 2) throw new api.ApiError(400, "invalid_line");
+      if (n === 2) throw new ApiError(400, "invalid_line");
       return undefined as never;
     });
 
@@ -2517,14 +2497,13 @@ describe("compose submit — slash command dispatch", () => {
   it("#723 — a partial /me keeps its /me so the remainder resends as an ACTION", async () => {
     localStorage.setItem("grappa-token", "tok");
     const sb = await import("../lib/scrollback");
-    const api = await import("../lib/api");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
 
     let n = 0;
     vi.mocked(sb.sendMessage).mockImplementation(async () => {
       n += 1;
-      if (n === 2) throw new api.ApiError(400, "invalid_line");
+      if (n === 2) throw new ApiError(400, "invalid_line");
       return undefined as never;
     });
 
@@ -2838,7 +2817,7 @@ describe("compose submit — slash command dispatch", () => {
     // fall through to err.message).
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
-    vi.mocked(api.postTopic).mockRejectedValue(new api.ApiError(503, "network_busy"));
+    vi.mocked(api.postTopic).mockRejectedValue(new ApiError(503, "network_busy"));
 
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
@@ -2985,7 +2964,6 @@ describe("#904 — one-deep send queue", () => {
   it("#904 — a failed send hands the line back IN FRONT of what was typed meanwhile", async () => {
     localStorage.setItem("grappa-token", "tok");
     const acks = await deferredSend();
-    const api = await import("../lib/api");
     const compose = await import("../lib/compose");
 
     compose.setDraft(k, "first");
@@ -2993,7 +2971,7 @@ describe("#904 — one-deep send queue", () => {
     await Promise.resolve();
     compose.setDraft(k, "typed later");
 
-    acks[0]?.reject(new api.ApiError(400, "invalid_line"));
+    acks[0]?.reject(new ApiError(400, "invalid_line"));
     expect(await done).toHaveProperty("error");
 
     // Both survive, in the order they were written.
@@ -3004,7 +2982,6 @@ describe("#904 — one-deep send queue", () => {
     localStorage.setItem("grappa-token", "tok");
     const acks = await deferredSend();
     const sb = await import("../lib/scrollback");
-    const api = await import("../lib/api");
     const compose = await import("../lib/compose");
 
     compose.setDraft(k, "first");
@@ -3013,7 +2990,7 @@ describe("#904 — one-deep send queue", () => {
     compose.setDraft(k, "second");
     await compose.submit(k, "freenode", "#a");
 
-    acks[0]?.reject(new api.ApiError(400, "invalid_line"));
+    acks[0]?.reject(new ApiError(400, "invalid_line"));
     expect(await done).toHaveProperty("error");
 
     // A dead link fires nothing further; both lines come back, in order.
@@ -3049,13 +3026,12 @@ describe("#904 — one-deep send queue", () => {
   it("#904 — a failed multi-line drain leaves ONLY its residue, not the whole paste", async () => {
     localStorage.setItem("grappa-token", "tok");
     const sb = await import("../lib/scrollback");
-    const api = await import("../lib/api");
     const compose = await import("../lib/compose");
 
     let n = 0;
     vi.mocked(sb.sendMessage).mockImplementation(async () => {
       n += 1;
-      if (n === 2) throw new api.ApiError(400, "invalid_line");
+      if (n === 2) throw new ApiError(400, "invalid_line");
       return undefined as never;
     });
 
@@ -3937,7 +3913,7 @@ describe("compose submit — T32 verbs", () => {
   it("/connect on a saturated client-cap surfaces friendly copy not raw wire token", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
-    vi.mocked(api.patchNetwork).mockRejectedValue(new api.ApiError(503, "too_many_sessions"));
+    vi.mocked(api.patchNetwork).mockRejectedValue(new ApiError(503, "too_many_sessions"));
 
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
@@ -4058,7 +4034,7 @@ describe("compose submit — /reconnect (#1796)", () => {
   it("/reconnect does not run the connect leg when the park leg fails", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
-    vi.mocked(api.patchNetwork).mockRejectedValueOnce(new api.ApiError(503, "too_many_sessions"));
+    vi.mocked(api.patchNetwork).mockRejectedValueOnce(new ApiError(503, "too_many_sessions"));
 
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
@@ -4080,7 +4056,7 @@ describe("compose submit — /reconnect (#1796)", () => {
   it("/reconnect on a network that is not connected names /connect as the cure", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
-    vi.mocked(api.patchNetwork).mockRejectedValueOnce(new api.ApiError(400, "not_connected"));
+    vi.mocked(api.patchNetwork).mockRejectedValueOnce(new ApiError(400, "not_connected"));
 
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
@@ -4157,7 +4133,7 @@ describe("compose submit — /cycle (#1796)", () => {
   it("/cycle does not join when the part fails", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
-    vi.mocked(api.postPart).mockRejectedValueOnce(new api.ApiError(404, "not_found"));
+    vi.mocked(api.postPart).mockRejectedValueOnce(new ApiError(404, "not_found"));
 
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
@@ -5712,7 +5688,7 @@ describe("compose submit — watch-family verbs (#356)", () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
     const compose = await import("../lib/compose");
-    vi.mocked(api.postIgnore).mockRejectedValueOnce(new api.ApiError(422, "invalid_mask"));
+    vi.mocked(api.postIgnore).mockRejectedValueOnce(new ApiError(422, "invalid_mask"));
     const k = channelKey("freenode", "#a");
     compose.setDraft(k, "/ignore nick@host!user");
     const result = await compose.submit(k, "freenode", "#a");
@@ -6003,7 +5979,6 @@ describe("compose /ame + /amsg pacing against the send door (#431)", () => {
       localStorage.setItem("grappa-token", "tok");
       await setWindows(joinedOn("freenode", SEVEN));
       const sb = await import("../lib/scrollback");
-      const api = await import("../lib/api");
       const compose = await import("../lib/compose");
 
       // The bucket admits its 5-token burst, then refuses the 6th ONCE with a
@@ -6016,7 +5991,7 @@ describe("compose /ame + /amsg pacing against the send door (#431)", () => {
         n += 1;
         if (n === 6 && !refused) {
           refused = true;
-          throw new api.ApiError(429, "rate_limited", { retry_after: 3 });
+          throw new ApiError(429, "rate_limited", { retry_after: 3 });
         }
         return undefined as never;
       });
