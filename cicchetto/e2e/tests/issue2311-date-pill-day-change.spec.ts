@@ -45,7 +45,6 @@ test.describe("issue 2311 — the date pill follows the day", () => {
       .toBeGreaterThanOrEqual(REST_PAGE_SIZE);
 
     const pane = page.locator('[data-testid="scrollback"]');
-    const pill = page.locator('[data-testid="scrollback-date-pill"]');
 
     // The precondition, guarded rather than assumed: with a pane that does not
     // overflow, "scrolled up" is unreachable and the assertions below would be
@@ -61,31 +60,81 @@ test.describe("issue 2311 — the date pill follows the day", () => {
     if (!box) throw new Error("scrollback bounding box null");
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
 
-    // The pill's label, or null when it is not showing one. Two reasons for
+    // The pill's label, or null when it has not shown one. Two reasons for
     // null and both are honest, transient states: the element is unmounted
     // while a separator sits IN the band (the double-print veto), and it is
     // mounted at opacity 0 until an operator scroll arms it.
-    const armedLabel = async (): Promise<string | null> => {
-      if ((await pill.count()) === 0) return null;
-      const opacity = await pill.evaluate((el) => getComputedStyle(el).opacity);
-      if (opacity !== "1") return null;
-      return (await pill.textContent())?.trim() ?? null;
-    };
+    //
+    // Read through a recorder INSIDE the page rather than sampled from here.
+    // The pill fades in over 200ms (`.scrollback-date-pill`, default.css), so
+    // a sample landing mid-transition reads a fractional opacity and calls a
+    // pill that IS arming "not armed". Whether the poll's 150ms grid falls
+    // inside that 200ms window is left to the runner's load — and that is the
+    // difference between a green and a red for the same code. The recorder
+    // samples every frame from before the first wheel and keeps the
+    // transitions, so what it reports is what the reader actually saw.
+    type PillSample = { opacity: string | null; label: string | null };
+    const startPillRecorder = (): Promise<void> =>
+      page.evaluate(() => {
+        const w = window as unknown as {
+          __pillRecorder?: { samples: PillSample[]; stop: () => void };
+        };
+        const samples: PillSample[] = [];
+        let frame = 0;
+        const tick = (): void => {
+          const el = document.querySelector('[data-testid="scrollback-date-pill"]');
+          const sample: PillSample = {
+            opacity: el === null ? null : getComputedStyle(el).opacity,
+            label: el === null ? null : (el.textContent ?? "").trim(),
+          };
+          const prev = samples[samples.length - 1];
+          // Transitions only: a per-frame log of a static pill is noise.
+          if (
+            prev === undefined ||
+            prev.opacity !== sample.opacity ||
+            prev.label !== sample.label
+          ) {
+            samples.push(sample);
+          }
+          frame = requestAnimationFrame(tick);
+        };
+        frame = requestAnimationFrame(tick);
+        w.__pillRecorder = { samples, stop: () => cancelAnimationFrame(frame) };
+      });
+
+    // The label the recorder last saw FULLY shown (opacity exactly 1, the same
+    // test the pill's own `-shown` class makes), or null if it never got there.
+    const recordedLabel = (): Promise<string | null> =>
+      page.evaluate(() => {
+        const w = window as unknown as {
+          __pillRecorder?: { samples: { opacity: string | null; label: string | null }[] };
+        };
+        const shown = (w.__pillRecorder?.samples ?? []).filter(
+          (s) => s.opacity === "1" && s.label !== null,
+        );
+        return shown.length === 0 ? null : (shown[shown.length - 1].label ?? null);
+      });
+
+    const stopPillRecorder = (): Promise<void> =>
+      page.evaluate(() => {
+        (window as unknown as { __pillRecorder?: { stop: () => void } }).__pillRecorder?.stop();
+      });
 
     // (1) Arm the pill. A REAL wheel: the activation's programmatic scrolls
     // do not stamp operator input, so the gate rejects them. Several steps
     // because the first can land with a separator inside the band.
+    await startPillRecorder();
     await expect
       .poll(
         async () => {
           await page.mouse.wheel(0, -120);
-          return armedLabel();
+          return recordedLabel();
         },
         { timeout: 10_000, intervals: [150] },
       )
       .not.toBeNull();
 
-    const initialLabel = await armedLabel();
+    const initialLabel = await recordedLabel();
     expect(initialLabel).toBeTruthy();
 
     // (2) Scroll up until the pill names a DIFFERENT day. Each step is a real
@@ -96,12 +145,17 @@ test.describe("issue 2311 — the date pill follows the day", () => {
       .poll(
         async () => {
           await page.mouse.wheel(0, -240);
-          const label = await armedLabel();
+          const label = await recordedLabel();
           return label !== null && label !== initialLabel;
         },
         { timeout: 60_000, intervals: [150] },
       )
       .toBe(true);
+
+    // Step (3) reads the pill and the separators in the SAME frame, which a
+    // recorder cannot do: its samples are already a frame old by the time they
+    // are read back. The recorder has said what it had to say.
+    await stopPillRecorder();
 
     // (3) The new label is the day that scrolled past, not just any other
     // string: the production rule is "the latest separator ABOVE the top band
