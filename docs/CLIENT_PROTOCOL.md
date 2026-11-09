@@ -986,14 +986,18 @@ The first member with an open cic who holds the epoch answers with a
 gkey DM; duplicate answers are harmless — a re-sent gkey for the epoch
 already held is a no-op. The FIRST valid gkey wins: a gkey imports
 only when no epoch is held, or when its `seq` is above the held
-epoch's — a rotation successor. A gkey at the same or a lower sequence
-with a different sid is superseded and dropped, so a late duplicate,
-or a concurrent mint that lost the race, never replaces the key
-already taken. Two devices that mint the same sequence concurrently
-still fork — each keeps the first it saw — and the fork heals at the
-next rotation, when one epoch is minted and distributed to all. A
-first epoch is imported only after this device asked for the key: a
-key nobody asked for never arms the channel. A key request is
+epoch's — a rotation successor. A gkey at the same sequence with a
+different sid resolves by the minting device: the imports take the
+first valid gkey by epoch sequence, then by the minting device, so
+receivers converge on one epoch and a fork from two devices minting
+the same sequence concurrently heals on receipt, not at the next
+rotation. A gkey at a lower sequence is superseded and dropped, so a
+late duplicate, or a concurrent mint that lost the race, never
+replaces the key already taken. A gkey whose sequence lies beyond the
+bound the import allows is dropped too, whatever its sender: the
+bound is the import's own, and a key from far ahead is not a key to
+take. A first epoch is imported only after this device asked for the
+key: a key nobody asked for never arms the channel. A key request is
 answered only while the asker is on the roster, and the answer names
 the asker in the epoch's holders. If nobody holds an epoch yet, only
 the member the channel topic names as its key holder
@@ -1002,9 +1006,13 @@ an explicit key request. If nobody has an open cic, the newcomer
 waits — there is no server-side fallback. A row without a key waits
 in queue: it never mints an epoch of its own, and never goes out in
 the clear. The key request goes out on the channel, and the row goes
-out under the key once someone with an open cic gives it. Cleartext
-only when the client asks and the user confirms, per row or until the
-key arrives — never automatically, never silently. On PART, KICK or
+out under the key once someone with an open cic gives it. What is
+typed in the compose field of an encrypted channel goes out the same
+way, through the channel send, never through the cleartext door: with
+no epoch it queues and asks, with a stale epoch it rotates first (see
+the audit below). Cleartext only when the client asks and the user
+confirms, per row or until the key arrives — never automatically,
+never silently. On PART, KICK or
 QUIT the epoch rotates, mandatorily: the designated rotator — the
 first holder DID in sorted order among the REMAINING holders of the
 epoch — mints a new epoch and distributes it pairwise to ALL
@@ -1013,32 +1021,56 @@ under the old key and post it in the channel, the departed member
 holds the old key. A member that is not the designated rotator does
 nothing on the exit. If the designated rotator's cic is closed, the
 rotation waits: nobody else usurps it, and there is no timeout
-election — two minters would bifurcate the epoch. The audit is gated
-the same way: on cic open, and before every send, the holder set is
-compared with the true roster, in dids, and only the designated
-rotator rotates on a holder who left. Rotation is periodic
+election — two minters would bifurcate the epoch. The audit compares
+the holder set with the true roster, in dids, on cic open and before
+every send — and the two audits elect differently. On cic open only
+the designated rotator rotates: a closed designated rotator's
+rotation waits with it. Before a send, instead, whoever finds the
+stale epoch rotates it himself, so no row goes out under a key a
+departed holder still reads; two finders minting at once resolve by
+epoch sequence, then by the minting device, on receipt. A leave and
+rejoin missed while the cic was closed is recovered from the roster
+seed: a seed that no longer names this device drops the dead epoch
+and asks for the key again. A leave and rejoin that completes entirely
+while the cic is closed, where the first seed already names this
+device again, is indistinguishable from a plain reconnect at seed
+time, and the dead epoch is kept — the seed alone cannot tell them
+apart. Rotation is periodic
 too: one channel message carrying the new key encrypted under the old
 key, which costs nothing — daily is fine — whose plaintext is
 `{"t": "grotate", "c": <the sender's next counter under the old epoch>,
 "sid": "<new sid>", "key": "<new key>"}` and whose v4 envelope still
 names the OLD `sid`:
 decrypt it with the old epoch, import the new one, drop the old one.
+The periodic rotator is elected from the holders who remain: a
+departed holder's did must not stay the designated rotator and stall
+the rotation.
 A departed member keeps the old key: they can re-read what they
 already received, nothing after. Rotation is only real if clients
 DELETE old keys, and no keys are kept for channels left. The holder
 set is audited against the true roster on cic open AND before every
 send, in dids: anyone in the set who is no longer in the roster
-triggers rotation — but only the designated rotator rotates, so an
-exit that happened while every cic was closed still rotates the epoch
-the moment the designated rotator's cic opens or a message is about
-to go out. A holder did counts as still a member when a roster
+triggers rotation — on cic open only the designated rotator rotates,
+so an exit that happened while every cic was closed still rotates
+the epoch the moment the designated rotator's cic opens; before a
+send, whoever finds the stale epoch rotates it himself, so the same
+exit rotates the moment a message is about to go out under it. A holder did counts as still a member when a roster
 device list names it, or when the epoch's nick mapping attributes it
 to a nick still on the roster — the mapping is what settles a member
 this cic has not chatted with. A rename whose new nick's list has not
 landed yet rotates once, fail closed: until the list lands the audit
 cannot tell the rename from a departure. A gkey is dropped when its
 sender is off the roster, or when its holder set names someone who
-already left and it would replace the epoch held. Membership on the
+already left and it would replace the epoch held. A row that arrives
+in cleartext on an encrypted channel is marked as cleartext, in
+clients that hold the keys: the reader has the key, so the cleartext
+is a fact about the sender, not about this device, and the row is
+kept as a cleartext row for the UI to read — never silently shown as
+a decrypted line. Decrypted rows are kept per network, scoped by the
+channel key, so two networks' same-named channels never share rows,
+and persist across reloads, so a reload does not lose decrypted
+lines; rows the drain raises without a network read back under the
+network bucket. Membership on the
 IRC
 channel IS key access: grappa never sees the key and has no
 authorisation endpoint, and a member who leaks it reads the current
@@ -1063,25 +1095,35 @@ one. On JOIN the newcomer asks, it does not wait to be told: it
 broadcasts a `keyreq` on the channel, and the first member with an open
 cic who holds the epoch answers with a gkey DM. A row without a key
 waits in queue: the client never mints an epoch to send one, and
-never sends it in the clear. The first epoch is minted only by the
+never sends it in the clear. What is typed in the compose field of an
+encrypted channel goes out through the channel send, never through
+the cleartext door: with no epoch it queues and asks, with a stale
+epoch it rotates first. The first epoch is minted only by the
 topic designee, and only to answer an explicit key request; any other
 creation is an explicit user action in the channel config. A re-sent
 gkey for the epoch already held is a no-op, and the first valid gkey
-wins by epoch sequence. Your own channel messages come back through
+wins by epoch sequence, then by the minting device: receivers converge
+on one epoch, and a fork from two devices minting the same sequence
+concurrently heals on receipt. Your own channel messages come back through
 the same inbox; skip them (the send path already showed them). The
 epoch is one record per channel — there is no per-sender store — and
 its holder set is the audit input: on cic open, and before every send,
 the client compares the holder set with the true roster, and anyone in
-the set who is no longer in the roster triggers rotation — and only
-the designated rotator, the first remaining holder did in sorted
-order, rotates on it. Rotation is
+the set who is no longer in the roster triggers rotation — on cic open
+only the designated rotator, the first remaining holder did in sorted
+order, rotates on it; before a send, whoever finds the stale epoch
+rotates it himself, so no row goes out under a key a departed holder
+still reads. A roster seed that no longer names this device drops the
+dead epoch and asks for the key again. Rotation is
 gated on encrypted channels only: a cleartext channel's joins and
 parts never mint an epoch, never send a gkey, and never touch the key
 store. A rejected message is never silently lost: a channel line that
 fails signature verification, decryption, or the replay check is
 surfaced as an undecryptable event with its reason, and a gkey the
 engine refuses to send is reported as a failed key send, not
-recorded as sent. A channel row that arrives before its key is held
+recorded as sent. A cleartext row on a tagged channel this device
+holds an epoch for is kept as a cleartext row, never shown as a
+decrypted line. A channel row that arrives before its key is held
 for retry, bounded in count and time, and retried when the key
 arrives — never dropped silently. The inbound replay state is indexed on the sender
 DEVICE (`received.device`), never on the nick: a rename must not make
