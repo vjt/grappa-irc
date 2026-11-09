@@ -39,7 +39,13 @@
 //     out on the channel, and the row goes out under the key once
 //     someone with an open cic gives it. Cleartext only when the client
 //     asks and the user confirms, per row or until the key arrives —
-//     never automatically, never silently; the step has no such path.
+//     never automatically, never silently; the step has no such path. A
+//     row WITH a stale epoch does not wait: whoever finds the old epoch
+//     rotates it himself before sending — he mints the new epoch and
+//     distributes it to the members who remain, then sends under it.
+//     Two finders may mint at once; the imports resolve the duplicates
+//     by epoch sequence, then by the minting device (the first valid
+//     gkey wins), so the members converge on one epoch.
 //   * Leave / kick / quit: mandatory rotation. The rotator is
 //     deterministic off the roster — the device whose did sorts first
 //     among the REMAINING holder dids — so exactly one member mints the
@@ -50,10 +56,12 @@
 //     gkey inner), so any holder can tell a holder left without ever
 //     having DM'd them; a member the key was sent to whose dids never
 //     landed counts as a holder too. A member whose audit finds a
-//     departed holder rotates too — but only when it IS the designated
-//     rotator (first remaining holder did): a closed designated
-//     rotator's rotation waits, nobody else usurps it, there is no
-//     timeout election.
+//     departed holder rotates too — on cic open only when it IS the
+//     designated rotator (first remaining holder did): a closed
+//     designated rotator's rotation waits, nobody else usurps it, there
+//     is no timeout election. Before a SEND, instead, whoever finds the
+//     stale epoch rotates it himself: a send never goes out under an
+//     epoch a departed holder still reads.
 //   * Periodic rotation: daily, one channel message carrying the new key
 //     encrypted under the old key (membership unchanged, so the old key
 //     may carry the new one). The rotator is the first holder did.
@@ -71,7 +79,12 @@
 //     with. Otherwise the epoch rotates, fail closed: a missed departure
 //     is a leak, a spurious rotation is one new epoch. A rename whose
 //     new nick's list has not landed yet rotates once, until the list
-//     lands and the did check settles it.
+//     lands and the did check settles it. The two audits elect
+//     differently: on cic open only the designated rotator — the first
+//     remaining holder did in sorted order — rotates, and a device that
+//     is not it waits; before a send, whoever finds the stale epoch
+//     rotates it himself, so no send goes out under a key a departed
+//     holder still reads.
 //
 // A decrypted channel message is a `channel_received` event; one that
 // cannot be read is `channel_undecryptable`, never a silent drop and never
@@ -592,24 +605,33 @@ export function onMemberLeft(
  * rotation — the new epoch goes pairwise to the roster that remains —
  * which covers an exit that happened while every cic was closed. The
  * sent-to nicks are reconciled first, so a member whose list landed
- * counts as the holder it is. Exactly one rotates: the first remaining
- * holder did in sorted order. A device that is not the designated
- * rotator waits — the rotator's cic is the one that rotates, and if its
- * cic is closed the rotation waits with it: nobody else usurps it, and
- * there is no timeout election (two minters would bifurcate the epoch).
- * Nothing when the holders are all still members, or no epoch is held.
+ * counts as the holder it is. On cic open exactly one rotates: the
+ * first remaining holder did in sorted order. A device that is not the
+ * designated rotator waits — the rotator's cic is the one that rotates,
+ * and if its cic is closed the rotation waits with it: nobody else
+ * usurps it, and there is no timeout election (two minters would
+ * bifurcate the epoch). Before a send (`forSend`), instead, whoever
+ * finds the stale epoch rotates it himself: a send never goes out
+ * under an epoch a departed holder still reads, and the imports
+ * resolve concurrent mints by epoch sequence, then by the minting
+ * device. Nothing when the holders are all still members, or no epoch
+ * is held.
  */
 export function auditEpochRotation(
   deps: ChannelE2eDeps,
   groups: GroupSessionsState,
   channel: string,
   members: string[],
+  opts?: { forSend?: boolean },
 ): ChannelE2eResult {
   const res = emptyResult();
   reconcileSentTo(deps, groups, channel);
   const roster = resolveRoster(deps, members);
   if (!epochHoldersStale(groups, channel, roster)) return res;
-  if (designatedRotator(epochRemainingHolders(groups, channel, roster)) !== deps.ownDid) {
+  if (
+    opts?.forSend !== true &&
+    designatedRotator(epochRemainingHolders(groups, channel, roster)) !== deps.ownDid
+  ) {
     return res;
   }
   const resolved = resolveMembers(deps, members);
@@ -666,15 +688,16 @@ export async function flushPendingSends(
 /**
  * Sends `body` to `channel`, encrypted under the channel's epoch. The
  * holder set is audited against the roster first: a departed holder
- * rotates the epoch before anything goes under it. When no epoch is
- * held the row waits in queue — it never mints one, and never goes out
- * in the clear: the key request goes out on the channel, and the row
- * goes out under the key once someone with an open cic gives it. What
- * waited before it goes first, in order. The channel `:msg` itself
- * carries no `ref` or `tag`: it has no DM row to move, and the caller
- * must not mistake it for one (`client.ts` flushes untagged payloads
- * without row changes). The caller flushes the outbound, gkey DMs first,
- * in order.
+ * rotates the epoch before anything goes under it — whoever finds the
+ * stale epoch rotates it himself, so a send never goes out under a key
+ * a departed holder still reads. When no epoch is held the row waits in
+ * queue — it never mints one, and never goes out in the clear: the key
+ * request goes out on the channel, and the row goes out under the key
+ * once someone with an open cic gives it. What waited before it goes
+ * first, in order. The channel `:msg` itself carries no `ref` or `tag`:
+ * it has no DM row to move, and the caller must not mistake it for one
+ * (`client.ts` flushes untagged payloads without row changes). The
+ * caller flushes the outbound, gkey DMs first, in order.
  */
 export async function sendChannel(
   deps: ChannelE2eDeps,
@@ -684,7 +707,7 @@ export async function sendChannel(
   members: string[],
 ): Promise<ChannelE2eResult> {
   const res = emptyResult();
-  const audited = auditEpochRotation(deps, groups, channel, members);
+  const audited = auditEpochRotation(deps, groups, channel, members, { forSend: true });
   res.events.push(...audited.events);
   res.outbound.push(...audited.outbound);
   res.copies.push(...audited.copies);
