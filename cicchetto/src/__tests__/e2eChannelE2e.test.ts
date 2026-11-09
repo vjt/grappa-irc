@@ -5,6 +5,7 @@
 // no network, no real timers.
 import { generateKeyPairSync, type KeyObject, sign, verify } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { atNick } from "../lib/e2e/byNick";
 import { newEpochId, newEpochKey } from "../lib/e2e/channelCrypto";
 import {
   auditEpochRotation,
@@ -357,7 +358,12 @@ describe("onKeyreq", () => {
     expect(answered.events).toContainEqual(
       expect.objectContaining({ kind: "channel_rotated", reason: "created", channel: CHAN }),
     );
-    expect(answered.events).toContainEqual({ kind: "channel_key_sent", channel: CHAN, to: "bob", sid });
+    expect(answered.events).toContainEqual({
+      kind: "channel_key_sent",
+      channel: CHAN,
+      to: "bob",
+      sid,
+    });
     expect(s.alice.dm.sent.map((d) => d.nick)).toContain("bob");
     // Bob imports it: the minted epoch is a real one.
     const gkey = s.alice.dm.sent.find((d) => d.nick === "bob")?.inner as
@@ -392,7 +398,9 @@ describe("onKeyreq", () => {
     expect(s.alice.dm.sent).toEqual([]);
     // And with no topic tag at all, nobody bootstraps either.
     const untagged = sides(clock, roster);
-    expect(onKeyreq(untagged.alice.deps, untagged.alice.groups, CHAN, "bob", didFor("bob"))).toEqual({
+    expect(
+      onKeyreq(untagged.alice.deps, untagged.alice.groups, CHAN, "bob", didFor("bob")),
+    ).toEqual({
       events: [],
       outbound: [],
       copies: [],
@@ -410,7 +418,12 @@ describe("onKeyreq", () => {
     expect(epochFor(s.alice.groups, CHAN)?.holders).toEqual([didFor("alice"), didFor("bob")]);
     const sid = epochFor(s.alice.groups, CHAN)?.sid;
     const answered = onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave", didFor("dave"));
-    expect(answered.events).toEqual([{ kind: "channel_key_sent", channel: CHAN, to: "dave", sid }]);
+    // Dave is answered, and the enlarged key is re-distributed to Bob,
+    // the other holder, so his set converges on Dave too.
+    expect(answered.events).toEqual([
+      { kind: "channel_key_sent", channel: CHAN, to: "dave", sid },
+      { kind: "channel_key_sent", channel: CHAN, to: "bob", sid },
+    ]);
     // The gkey Dave received names him in holders, and so does the stored epoch.
     const inner = s.alice.dm.sent.find((d) => d.nick === "dave")?.inner as { holders: string[] };
     expect(inner.holders).toEqual([didFor("alice"), didFor("bob"), didFor("dave")]);
@@ -437,9 +450,11 @@ describe("onKeyreq", () => {
     distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const sid = epochFor(s.alice.groups, CHAN)?.sid;
-    // Dave is on the roster: answered.
+    // Dave is on the roster: answered, and the enlarged key is
+    // re-distributed to Bob, the other holder.
     expect(onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave", didFor("dave")).events).toEqual([
       { kind: "channel_key_sent", channel: CHAN, to: "dave", sid },
+      { kind: "channel_key_sent", channel: CHAN, to: "bob", sid },
     ]);
     // Dave left: the same ask, answered again a minute later, goes unanswered.
     members = ["alice", "bob"];
@@ -472,10 +487,17 @@ describe("onKeyreq", () => {
     expect(epochFor(s.alice.groups, CHAN)?.sentTo).toEqual(["dave"]);
     const sid = epochFor(s.alice.groups, CHAN)?.sid;
     const answered = onKeyreq(s.alice.deps, s.alice.groups, CHAN, "dave", didFor("dave"));
-    expect(answered.events).toEqual([{ kind: "channel_key_sent", channel: CHAN, to: "dave", sid }]);
+    // Dave is answered, and the enlarged key is re-distributed to Bob,
+    // the other holder, so his set converges on Dave too.
+    expect(answered.events).toEqual([
+      { kind: "channel_key_sent", channel: CHAN, to: "dave", sid },
+      { kind: "channel_key_sent", channel: CHAN, to: "bob", sid },
+    ]);
     const held = epochFor(s.alice.groups, CHAN);
     expect(held?.holders).toContain(didFor("dave"));
-    expect(held?.holderNicks?.dave).toEqual([didFor("dave")]);
+    expect(held === undefined ? undefined : atNick(held.holderNicks, "dave")).toEqual([
+      didFor("dave"),
+    ]);
     expect(held?.sentTo).toEqual([]);
   });
 
@@ -492,6 +514,94 @@ describe("onKeyreq", () => {
       expect.objectContaining({ kind: "channel_rotated", oldSid, reason: "member-left" }),
     );
     expect(epochFor(s.alice.groups, CHAN)?.sid).not.toBe(oldSid);
+  });
+
+  it("a keyreq answer re-distributes the enlarged holder set, so the rotator learns the new member", async () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) =>
+      channel === CHAN ? ["alice", "bob", "carol", "dave"] : undefined;
+    const s = sides(clock, roster);
+    // Alice mints and distributes to Bob and Carol; Bob imports.
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob", "carol"]);
+    await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob", "carol"]);
+    const bobGkey = s.alice.dm.sent.find((d) => d.nick === "bob")?.inner as Record<string, unknown>;
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
+    expect(receiveGkey(s.bob.deps, s.bob.groups, bobGkey, "alice", didFor("alice"))).toEqual([
+      { kind: "channel_key_received", channel: CHAN, from: "alice", sid: bobGkey.sid as string },
+    ]);
+    // Dave asks; Bob — not the rotator — answers him.
+    s.bob.dm.sent.length = 0;
+    const answered = onKeyreq(s.bob.deps, s.bob.groups, CHAN, "dave", didFor("dave"));
+    expect(answered.events).toContainEqual({
+      kind: "channel_key_sent",
+      channel: CHAN,
+      to: "dave",
+      sid: expect.any(String),
+    });
+    // And the enlarged key goes to Alice and Carol too, so their sets
+    // converge on Dave — without it, Alice would never rotate at his exit.
+    expect(answered.events).toContainEqual({
+      kind: "channel_key_sent",
+      channel: CHAN,
+      to: "alice",
+      sid: expect.any(String),
+    });
+    expect(answered.events).toContainEqual({
+      kind: "channel_key_sent",
+      channel: CHAN,
+      to: "carol",
+      sid: expect.any(String),
+    });
+    expect(s.bob.dm.sent.map((d) => d.nick).sort()).toEqual(["alice", "carol", "dave"]);
+    // Alice takes the re-distributed key: a re-send of the epoch she
+    // holds, so it merges Dave into her holder set.
+    const redistributed = s.bob.dm.sent.find((d) => d.nick === "alice")?.inner as Record<
+      string,
+      unknown
+    >;
+    expect(receiveGkey(s.alice.deps, s.alice.groups, redistributed, "bob", didFor("bob"))).toEqual(
+      [],
+    );
+    expect(epochFor(s.alice.groups, CHAN)?.holders).toContain(didFor("dave"));
+    // Dave leaves: Alice is the designated rotator — the first
+    // remaining holder did — so she rotates, and Bob and Carol get the
+    // new key.
+    const oldSid = epochFor(s.alice.groups, CHAN)?.sid;
+    const left = onMemberLeft(s.alice.deps, s.alice.groups, CHAN, "dave", [
+      "alice",
+      "bob",
+      "carol",
+    ]);
+    expect(left.events).toContainEqual(
+      expect.objectContaining({ kind: "channel_rotated", oldSid, reason: "member-left" }),
+    );
+    expect(epochFor(s.alice.groups, CHAN)?.sid).not.toBe(oldSid);
+    expect(left.copies.map((c) => c.peer).sort()).toEqual(["bob", "carol"]);
+  });
+
+  it("answers a key request from a nick that names a prototype member, without throwing", async () => {
+    const clock = { t: NOW };
+    const roster = (channel: string) =>
+      channel === CHAN ? ["alice", "bob", "constructor"] : undefined;
+    const s = sides(clock, roster);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
+    await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
+    // "constructor" is not in the ring, so this cic has no list for
+    // them: the sender check falls back to the nick, and the answer
+    // records their did under the nick without resolving the prototype.
+    const sid = epochFor(s.alice.groups, CHAN)?.sid;
+    const answered = onKeyreq(s.alice.deps, s.alice.groups, CHAN, "constructor", "did-constructor");
+    expect(answered.events).toContainEqual({
+      kind: "channel_key_sent",
+      channel: CHAN,
+      to: "constructor",
+      sid,
+    });
+    const held = epochFor(s.alice.groups, CHAN);
+    expect(held?.holders).toContain("did-constructor");
+    expect(held === undefined ? undefined : atNick(held.holderNicks, "constructor")).toEqual([
+      "did-constructor",
+    ]);
   });
 });
 
@@ -777,7 +887,9 @@ describe("auditEpochRotation", () => {
     });
     const held = epochFor(s.alice.groups, CHAN);
     expect(held?.holders).toContain(didFor("dave"));
-    expect(held?.holderNicks?.dave).toEqual([didFor("dave")]);
+    expect(held === undefined ? undefined : atNick(held.holderNicks, "dave")).toEqual([
+      didFor("dave"),
+    ]);
     expect(held?.sentTo).toEqual([]);
   });
 
@@ -790,9 +902,7 @@ describe("auditEpochRotation", () => {
     distributeKey(s.bob.deps, s.bob.groups, CHAN, ["alice", "bob", "carol"]);
     const oldSid = epochFor(s.bob.groups, CHAN)?.sid;
     s.bob.dm.sent.length = 0;
-    expect(
-      auditEpochRotation(s.bob.deps, s.bob.groups, CHAN, ["alice", "bob"]),
-    ).toEqual({
+    expect(auditEpochRotation(s.bob.deps, s.bob.groups, CHAN, ["alice", "bob"])).toEqual({
       events: [],
       outbound: [],
       copies: [],
@@ -831,9 +941,11 @@ describe("sendChannel", () => {
     expect(epochFor(s.alice.groups, CHAN)).toBeUndefined();
     expect(s.alice.dm.sent).toEqual([]);
     expect(res.outbound.filter((o) => o.target === CHAN && o.verb === "msg")).toHaveLength(1);
-    expect(
-      decodePayload(res.outbound.find((o) => o.target === CHAN)?.payload ?? ""),
-    ).toEqual({ v: 4, t: "keyreq", ch: "#grappa" });
+    expect(decodePayload(res.outbound.find((o) => o.target === CHAN)?.payload ?? "")).toEqual({
+      v: 4,
+      t: "keyreq",
+      ch: "#grappa",
+    });
     expect(res.events).toContainEqual({ kind: "channel_key_missing", channel: CHAN });
     expect(res.events).toContainEqual({ kind: "channel_key_requested", channel: CHAN });
     // The key arrives from Bob: he mints it, Alice imports it after asking.
@@ -1037,10 +1149,7 @@ describe("receiveChannel", () => {
   it("carries no plaintext counter in the v4 envelope", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
-    distributeKey(s.alice.deps, s.alice.groups, CHAN, [
-      "alice",
-      "bob",
-    ]);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     const sent = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "count me", [
       "alice",
       "bob",
@@ -1340,6 +1449,44 @@ describe("receiveGkey", () => {
       receiveGkey(s.bob.deps, s.bob.groups, { t: "text", body: "hi" }, "alice", didFor("alice")),
     ).toEqual([expect.objectContaining({ kind: "channel_dropped", reason: "bad-gkey" })]);
   });
+
+  it("a gkey that would replace the held epoch waits while the roster is unknown, and imports once it seeds", async () => {
+    const clock = { t: NOW };
+    const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob", "carol"]);
+    await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob", "carol"]);
+    const first = s.alice.dm.sent.find((d) => d.nick === "bob")?.inner as Record<string, unknown>;
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
+    expect(receiveGkey(s.bob.deps, s.bob.groups, first, "alice", didFor("alice"))).toEqual([
+      { kind: "channel_key_received", channel: CHAN, from: "alice", sid: first.sid as string },
+    ]);
+    const oldSid = epochFor(s.bob.groups, CHAN)?.sid;
+    // Carol leaves: Alice rotates and distributes the seq 1 key to Bob.
+    s.alice.dm.sent.length = 0;
+    const left = onMemberLeft(s.alice.deps, s.alice.groups, CHAN, "carol", ["alice", "bob"]);
+    expect(left.events).toContainEqual(
+      expect.objectContaining({ kind: "channel_rotated", reason: "member-left" }),
+    );
+    const successor = s.alice.dm.sent.find((d) => d.nick === "bob")?.inner as
+      | Record<string, unknown>
+      | undefined;
+    if (successor === undefined) throw new Error("alice sent bob no rotated key");
+    // Bob holds no roster yet: the new key waits instead of replacing
+    // the epoch he holds — nothing is stored.
+    expect(receiveGkey(s.bob.deps, s.bob.groups, successor, "alice", didFor("alice"))).toEqual([]);
+    expect(epochFor(s.bob.groups, CHAN)?.sid).toBe(oldSid);
+    expect(epochFor(s.bob.groups, CHAN)?.seq).toBe(0);
+    // The roster seeds: the audit retries the held key, the checks run
+    // for real now, and the epoch is replaced.
+    s.bob.deps.rosterFor = (channel: string) => (channel === CHAN ? ["alice", "bob"] : undefined);
+    expect(auditEpochRotation(s.bob.deps, s.bob.groups, CHAN, ["alice", "bob"])).toEqual({
+      events: [],
+      outbound: [],
+      copies: [],
+    });
+    expect(epochFor(s.bob.groups, CHAN)?.sid).toBe(successor.sid as string);
+    expect(epochFor(s.bob.groups, CHAN)?.seq).toBe(1);
+  });
 });
 
 describe("rotateDue", () => {
@@ -1453,6 +1600,7 @@ describe("key copies", () => {
         sid,
         key: expect.any(String),
         seq: 0,
+        minter: didFor("alice"),
         holders: [didFor("alice"), didFor("bob"), didFor("carol")],
         holderNicks: {
           alice: [didFor("alice")],
