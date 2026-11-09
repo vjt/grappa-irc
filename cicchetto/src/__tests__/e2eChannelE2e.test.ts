@@ -32,6 +32,7 @@ import {
   decodePayload,
   encodePayload,
   fold,
+  type GkeyInner,
   GROUP_WIRE_VERSION,
   parseChannelPayload,
 } from "../lib/e2e/wire";
@@ -793,6 +794,40 @@ describe("auditEpochRotation", () => {
     });
     expect(s.alice.dm.sent.map((d) => d.nick)).toEqual(["bob"]);
     expect(epochFor(s.alice.groups, CHAN)?.sid).not.toBe(oldSid);
+  });
+
+  it("surfaces a held gkey's retry: a key held pre-roster imports on the audit", async () => {
+    const clock = { t: NOW };
+    const s = sides(clock, () => ["alice", "bob"]);
+    const { gkey } = await shareEpoch(s, ["alice", "bob", "carol"]);
+    // Alice rotates on Carol's exit: the seq-1 gkey to Bob.
+    const left = onMemberLeft(s.alice.deps, s.alice.groups, CHAN, "carol", ["alice", "bob"]);
+    expect(left.events).toContainEqual(
+      expect.objectContaining({ kind: "channel_rotated", reason: "member-left" }),
+    );
+    const rotated = s.alice.dm.sent.filter((d) => d.nick === "bob").at(-1)?.inner as
+      | GkeyInner
+      | undefined;
+    expect(rotated).toBeDefined();
+    expect(rotated?.seq).toBe(1);
+    // Bob's roster is not loaded yet: the seq-1 gkey is held, not judged.
+    s.bob.deps.rosterFor = () => undefined;
+    expect(receiveGkey(s.bob.deps, s.bob.groups, rotated ?? {}, "alice", didFor("alice"))).toEqual(
+      [],
+    );
+    expect(epochFor(s.bob.groups, CHAN)?.sid).toBe(gkey.sid as string);
+    // The roster seeds: the audit retries the held gkey and surfaces the import.
+    s.bob.deps.rosterFor = () => ["alice", "bob"];
+    const res = auditEpochRotation(s.bob.deps, s.bob.groups, CHAN, ["alice", "bob"]);
+    expect(res.events).toContainEqual(
+      expect.objectContaining({
+        kind: "channel_key_received",
+        channel: CHAN,
+        from: "alice",
+        sid: rotated?.sid as string,
+      }),
+    );
+    expect(epochFor(s.bob.groups, CHAN)?.sid).toBe(rotated?.sid as string);
   });
 
   it("is quiet when every holder is still a member, or no epoch is held", async () => {

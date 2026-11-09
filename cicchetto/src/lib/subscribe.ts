@@ -5,6 +5,7 @@ import { socketUserName, token } from "./auth";
 import { incrementBadge, setBadge } from "./badge";
 import { playBeep } from "./beep";
 import { casemappingForSlug } from "./casemapping";
+import { noteCleartextChannelMessage } from "./channelE2eRows";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { dropChannelTopicState, seedModes, seedTopic } from "./channelTopic";
 import { isDocumentVisible } from "./documentVisibility";
@@ -690,6 +691,11 @@ moduleRoot(() => {
             )
           ) {
             routeMessage(slug, key, name, message, ownNick);
+            // A cleartext line on an encrypted channel is marked as
+            // cleartext: the reader holds the keys, so the cleartext is
+            // a fact about the sender. The note gates itself — untagged
+            // channels and channels with no epoch held keep no row.
+            noteCleartextChannelMessage(slug, name, message);
           }
 
           // A peer's NICK moves no window state here (issue 1365, ruling

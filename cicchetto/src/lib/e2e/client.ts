@@ -67,6 +67,7 @@ import {
   requestKey,
   rotateDue,
   sendChannel,
+  syncChannelEpochHeld,
 } from "./channelE2e";
 import type {
   ChatChange,
@@ -86,7 +87,13 @@ import {
   type PinOutcome,
   type Result,
 } from "./engine";
-import { dropPendingSends, expireHeldRows, holdRow, takeHeldRows } from "./groupSessions";
+import {
+  dropPendingSends,
+  expireHeldRows,
+  holdRow,
+  takeHeldRows,
+  takeHeldRowsWithEpoch,
+} from "./groupSessions";
 import type { Olm } from "./olm";
 import {
   type Challenge,
@@ -227,6 +234,14 @@ export type E2eContext = {
    * as unadvertised, and stays silent.
    */
   topicTagFor?: (channel: string) => string | null;
+  /**
+   * The network slug this context is on, when the caller knows it: the
+   * channel E2E steps stamp their events with it, so the rows store can
+   * scope by it and the held-epoch registry can key by it. Absent in
+   * the harness contexts, which hold no network — the steps then raise
+   * unstamped events.
+   */
+  slug?: string;
 };
 
 /**
@@ -696,6 +711,7 @@ export function e2eClient(
     return {
       ownNick: ctx.ownNick,
       ownDid: engine.deviceId(),
+      network: ctx.slug,
       now,
       sign: (text) => account.sign(text),
       verify: (nick, did, text, sig) => {
@@ -1286,14 +1302,38 @@ export function e2eClient(
             if (retriedKeys.has(key)) continue;
             retriedKeys.add(key);
             for (const row of takeHeldRows(state.groups, e.channel, e.sid)) {
-              const re = await receiveChannel(
-                deps,
-                state.groups,
-                row.channel,
-                row.from,
-                row.fromDid,
-                row.payload,
-              );
+              // A step that throws must not kill the drain: the row
+              // surfaces as undecryptable instead, the watermark still
+              // advances, and the ACK follows as usual.
+              let re: ChannelE2eResult;
+              try {
+                re = await receiveChannel(
+                  deps,
+                  state.groups,
+                  row.channel,
+                  row.from,
+                  row.fromDid,
+                  row.payload,
+                );
+              } catch (err) {
+                console.debug(
+                  "[e2e] a held channel row threw while reading; surfacing it as undecryptable",
+                  err,
+                );
+                re = {
+                  events: [
+                    {
+                      kind: "channel_undecryptable",
+                      channel: row.channel,
+                      from: row.from,
+                      sid: null,
+                      reason: "decryption-failed",
+                    },
+                  ],
+                  outbound: [],
+                  copies: [],
+                };
+              }
               for (const reEvent of re.events) {
                 if (reEvent.kind === "channel_undecryptable" && reEvent.reason === "no-session") {
                   holdNoSession(
@@ -1347,6 +1387,65 @@ export function e2eClient(
           if (read.length > 0) await door.ack(read);
           if (behind) break;
           after = last.id;
+        }
+        // Rows held for a key that arrived outside this drain — a
+        // roster seed's audit retry, a key request answered while the
+        // drain was idle — are retried now that their epoch is held,
+        // instead of waiting for a later key event or their TTL. A
+        // re-run that imports another epoch retries the rows held
+        // under that one too; a re-run still without a session is
+        // held again, never dropped.
+        for (let round = 0; round < 8; round++) {
+          const ready = takeHeldRowsWithEpoch(state.groups);
+          if (ready.length === 0) break;
+          let imported = false;
+          for (const row of ready) {
+            let re: ChannelE2eResult;
+            try {
+              re = await receiveChannel(
+                deps,
+                state.groups,
+                row.channel,
+                row.from,
+                row.fromDid,
+                row.payload,
+              );
+            } catch (err) {
+              console.debug(
+                "[e2e] a held channel row threw while reading; surfacing it as undecryptable",
+                err,
+              );
+              re = {
+                events: [
+                  {
+                    kind: "channel_undecryptable",
+                    channel: row.channel,
+                    from: row.from,
+                    sid: null,
+                    reason: "decryption-failed",
+                  },
+                ],
+                outbound: [],
+                copies: [],
+              };
+            }
+            for (const reEvent of re.events) {
+              if (reEvent.kind === "channel_key_received") imported = true;
+              if (reEvent.kind === "channel_undecryptable" && reEvent.reason === "no-session") {
+                holdNoSession(
+                  channelEvents,
+                  row.channel,
+                  row.from,
+                  row.fromDid,
+                  row.payload,
+                  reEvent.sid,
+                );
+              } else {
+                channelEvents.push(reEvent);
+              }
+            }
+          }
+          if (!imported) break;
         }
         // Held rows that waited too long for a key that never came surface
         // as undecryptable now — bounded, never silently lost. This runs
@@ -1443,6 +1542,11 @@ export function e2eClient(
           res.copies,
         );
         const events = reconcileChannelSends(res.events, res.outbound, refused);
+        // The held-epoch registry learns the epoch this operation left
+        // behind, even when the step emitted nothing for it: a quiet
+        // send under an epoch held since the last reload still marks
+        // the cleartext that follows.
+        syncChannelEpochHeld(state.groups, channel, ctx.slug);
         emitChannelE2eEvents(events);
         return {
           ...report,
@@ -1577,6 +1681,7 @@ export function e2eClient(
           res.copies,
         );
         const events = reconcileChannelSends(res.events, res.outbound, refused);
+        syncChannelEpochHeld(state.groups, channel, ctx.slug);
         emitChannelE2eEvents(events);
         return {
           ...report,
@@ -1601,6 +1706,17 @@ export function e2eClient(
       return withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
         const deps = channelDeps(ctx, engine, account);
         const res: ChannelE2eResult = { events: [], outbound: [], copies: [] };
+        // The seed is the only signal of our own leave when the PART was
+        // missed: the roster names everyone but us, so the epoch held
+        // before the leave is dead. Drop it, and the ask below requests
+        // the key again. A later seed that names us — or a live join —
+        // re-asks from no epoch.
+        if (!members.some((m) => fold(m) === fold(ctx.ownNick))) {
+          const dropped = await onMemberLeft(deps, state.groups, channel, ctx.ownNick, members);
+          res.events.push(...dropped.events);
+          res.outbound.push(...dropped.outbound);
+          res.copies.push(...dropped.copies);
+        }
         const audited = await auditEpochRotation(deps, state.groups, channel, members);
         res.events.push(...audited.events);
         res.outbound.push(...audited.outbound);
@@ -1628,6 +1744,7 @@ export function e2eClient(
           res.copies,
         );
         const events = reconcileChannelSends(res.events, res.outbound, refused);
+        syncChannelEpochHeld(state.groups, channel, ctx.slug);
         emitChannelE2eEvents(events);
         return {
           ...report,
@@ -1685,6 +1802,7 @@ export function e2eClient(
           res.copies,
         );
         const events = reconcileChannelSends(res.events, res.outbound, refused);
+        syncChannelEpochHeld(state.groups, channel, ctx.slug);
         emitChannelE2eEvents(events);
         return {
           ...report,

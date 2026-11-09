@@ -40,12 +40,15 @@
 // the day passes, and the epoch rotates: the old key is deleted outright
 // — encrypting with it again would hand the departed member new messages
 // under a key they hold — and the new key goes pairwise to the members
-// who remain. Exactly ONE rotates on an exit: the designated rotator,
-// the first remaining holder did in sorted order (see `channelE2e`).
-// The audit is gated the same way: a device that is not the designated
-// rotator waits, even on a stale epoch — if the rotator's cic is closed
-// the rotation waits with it, nobody else usurps it, and there is no
-// timeout election. Every epoch carries a SEQUENCE NUMBER — 0 for a first
+// who remain. Exactly ONE rotates on an exit, by the ruling: on the
+// cic-open audit the designated rotator — the first remaining holder
+// did in sorted order (see `channelE2e`) — and on a send, whoever
+// finds the stale epoch rotates it himself before sending, with
+// concurrent mints resolved by the (seq, minter did) tie-break. A
+// device that is not the designated rotator waits on the cic-open
+// audit, even on a stale epoch — if the rotator's cic is closed the
+// rotation waits with it, nobody else usurps it, and there is no
+// timeout election — but a send never waits: it rotates first. Every epoch carries a SEQUENCE NUMBER — 0 for a first
 // epoch, +1 per rotation — and a gkey imports only as a first epoch at
 // seq 0, or as a successor at exactly the held seq + 1, or as a
 // same-seq rival that wins the minter tie-break: any other seq is
@@ -532,6 +535,20 @@ export function takeHeldRows(state: GroupSessionsState, channel: string, sid: st
   const rows = heldRows(state);
   const taken = rows.filter((r) => fold(r.channel) === fold(channel) && r.sid === sid);
   state.held = rows.filter((r) => !(fold(r.channel) === fold(channel) && r.sid === sid));
+  return taken;
+}
+
+/**
+ * Takes the held rows whose epoch is now held: a key that arrived
+ * outside the drain — a roster seed's audit retry, a key request
+ * answered while the drain was idle — heals the epoch, and the rows
+ * held under it are retried now instead of waiting for a later key
+ * event or their TTL. They leave the hold.
+ */
+export function takeHeldRowsWithEpoch(state: GroupSessionsState): HeldRow[] {
+  const rows = heldRows(state);
+  const taken = rows.filter((r) => epochFor(state, r.channel)?.sid === r.sid);
+  state.held = rows.filter((r) => epochFor(state, r.channel)?.sid !== r.sid);
   return taken;
 }
 
