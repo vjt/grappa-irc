@@ -665,6 +665,16 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   }
 
   /**
+   * Whether `channel` on `slug` is in encrypted mode: its topic carries
+   * an E2E tag, so a row typed there goes out encrypted, never in the
+   * clear (compose routes on this). A channel whose topic has no tag is
+   * cleartext, whatever the key store holds for it.
+   */
+  function channelEncrypted(slug: string, channel: string): boolean {
+    return e2eTagFor(slug, channel) !== null;
+  }
+
+  /**
    * Sends `body` to `channel`, encrypted under the channel's epoch
    * (wire v4): the key is distributed pairwise first when the epoch is
    * new. `members` is the roster the channel window holds. The channel
@@ -934,6 +944,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     readEncryptedChat,
     sendEncrypted,
     sendChannelEncrypted,
+    channelEncrypted,
     requestChannelKey,
     seedChannel,
     channelMembersChanged,
@@ -977,6 +988,7 @@ export const encryptedChatHasMessages = exports_.encryptedChatHasMessages;
 export const readEncryptedChat = exports_.readEncryptedChat;
 export const sendEncrypted = exports_.sendEncrypted;
 export const sendChannelEncrypted = exports_.sendChannelEncrypted;
+export const channelEncrypted = exports_.channelEncrypted;
 export const requestChannelKey = exports_.requestChannelKey;
 export const seedChannel = exports_.seedChannel;
 export const channelMembersChanged = exports_.channelMembersChanged;
