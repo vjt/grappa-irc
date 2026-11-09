@@ -99,6 +99,29 @@ stamp() {
     grep -q 'maxgap=10.0' <<<"$out"
 }
 
+@test "a line a few ms behind its predecessor is disorder, not a 24 h silence" {
+    # #2443 — `docker logs` interleaves a container's stdout and stderr, so a
+    # line can arrive a few ms behind the one before it. Reading every
+    # backward step as a midnight rollover turned those 5 ms into 86400 s: a
+    # GAP far over the threshold, which fired the retention trigger on a run
+    # whose services never went quiet.
+    local out
+    out="$( {
+        stamp '08:41:11.720' 'request_id=GODNYdI2phhkN70ADYWB'
+        stamp '08:41:11.720590' 'Parameters: %{"channel_id" => "#spec-w0"}'
+        stamp '08:41:11.715395' 'request_id=GODNYdI2phhkN70ADYWB <- 5 ms behind'
+        stamp '08:41:12.720590' 'after'
+    } | scan 10 )"
+
+    refute grep -q 'GAP' <<<"$out"
+    grep -q 'gaps_ge_10=0' <<<"$out"
+    # The true silence is still measured, and from the HIGH-WATER stamp: the
+    # out-of-order line must not become the origin of the next delta, or the
+    # reorder skew would be counted twice (08:41:12.720590 - 08:41:11.720590
+    # = 1 s, not 1 s + 5 ms).
+    grep -q 'maxgap=1.0' <<<"$out"
+}
+
 @test "each damage signature is counted by itself and not by another" {
     local out
     out="$( {

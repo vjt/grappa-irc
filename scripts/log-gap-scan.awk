@@ -322,17 +322,36 @@ BEGIN {
     # Positions rather than a regex — this runs over a million lines.
     if (substr($0, 5, 1) == "-" && substr($0, 11, 1) == "T") {
         t = substr($0, 12, 2) * 3600 + substr($0, 15, 2) * 60 + substr($0, 18, 9)
+        ordered = 1
         if (prev >= 0) {
             d = t - prev
-            if (d < 0) d += 86400          # midnight rollover
+            if (d < -43200) {
+                # #2443 — a midnight rollover is the clock going from late
+                # evening to early morning, i.e. back by nearly a day. Any
+                # smaller backward step is not a rollover: `docker logs`
+                # interleaves a container's stdout and stderr, so concurrent
+                # lines can arrive a few ms out of order. Reading that as a
+                # rollover turns 5 ms into 86400 s — a false GAP that fires
+                # retention and poisons the attribution.
+                d += 86400
+            } else if (d < 0) {
+                # Out of order, not silent: the lines are concurrent.
+                d = 0
+                # ...and this line does NOT become the origin of the next
+                # delta: it is behind the high-water stamp, and measuring
+                # from it would count the reorder skew a second time.
+                ordered = 0
+            }
             if (d > maxgap) { maxgap = d; maxat = prevstamp }
             if (d >= THRESH) {
                 ngap++
                 printf "%s\tGAP\t%.1f\t%s -> %s\n", SVC, d, prevstamp, substr($0, 12, 12)
             }
         }
-        prev = t
-        prevstamp = substr($0, 12, 12)
+        if (ordered) {
+            prev = t
+            prevstamp = substr($0, 12, 12)
+        }
     }
 
     count_signatures($0)
