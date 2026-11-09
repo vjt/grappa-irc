@@ -357,7 +357,12 @@ describe("onKeyreq", () => {
     expect(answered.events).toContainEqual(
       expect.objectContaining({ kind: "channel_rotated", reason: "created", channel: CHAN }),
     );
-    expect(answered.events).toContainEqual({ kind: "channel_key_sent", channel: CHAN, to: "bob", sid });
+    expect(answered.events).toContainEqual({
+      kind: "channel_key_sent",
+      channel: CHAN,
+      to: "bob",
+      sid,
+    });
     expect(s.alice.dm.sent.map((d) => d.nick)).toContain("bob");
     // Bob imports it: the minted epoch is a real one.
     const gkey = s.alice.dm.sent.find((d) => d.nick === "bob")?.inner as
@@ -392,7 +397,9 @@ describe("onKeyreq", () => {
     expect(s.alice.dm.sent).toEqual([]);
     // And with no topic tag at all, nobody bootstraps either.
     const untagged = sides(clock, roster);
-    expect(onKeyreq(untagged.alice.deps, untagged.alice.groups, CHAN, "bob", didFor("bob"))).toEqual({
+    expect(
+      onKeyreq(untagged.alice.deps, untagged.alice.groups, CHAN, "bob", didFor("bob")),
+    ).toEqual({
       events: [],
       outbound: [],
       copies: [],
@@ -790,9 +797,7 @@ describe("auditEpochRotation", () => {
     distributeKey(s.bob.deps, s.bob.groups, CHAN, ["alice", "bob", "carol"]);
     const oldSid = epochFor(s.bob.groups, CHAN)?.sid;
     s.bob.dm.sent.length = 0;
-    expect(
-      auditEpochRotation(s.bob.deps, s.bob.groups, CHAN, ["alice", "bob"]),
-    ).toEqual({
+    expect(auditEpochRotation(s.bob.deps, s.bob.groups, CHAN, ["alice", "bob"])).toEqual({
       events: [],
       outbound: [],
       copies: [],
@@ -831,9 +836,11 @@ describe("sendChannel", () => {
     expect(epochFor(s.alice.groups, CHAN)).toBeUndefined();
     expect(s.alice.dm.sent).toEqual([]);
     expect(res.outbound.filter((o) => o.target === CHAN && o.verb === "msg")).toHaveLength(1);
-    expect(
-      decodePayload(res.outbound.find((o) => o.target === CHAN)?.payload ?? ""),
-    ).toEqual({ v: 4, t: "keyreq", ch: "#grappa" });
+    expect(decodePayload(res.outbound.find((o) => o.target === CHAN)?.payload ?? "")).toEqual({
+      v: 4,
+      t: "keyreq",
+      ch: "#grappa",
+    });
     expect(res.events).toContainEqual({ kind: "channel_key_missing", channel: CHAN });
     expect(res.events).toContainEqual({ kind: "channel_key_requested", channel: CHAN });
     // The key arrives from Bob: he mints it, Alice imports it after asking.
@@ -1037,10 +1044,7 @@ describe("receiveChannel", () => {
   it("carries no plaintext counter in the v4 envelope", async () => {
     const clock = { t: NOW };
     const s = sides(clock);
-    distributeKey(s.alice.deps, s.alice.groups, CHAN, [
-      "alice",
-      "bob",
-    ]);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
     const sent = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "count me", [
       "alice",
       "bob",
