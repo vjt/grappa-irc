@@ -43,6 +43,7 @@ import {
   rotateEpochForLeave,
   rotationDue,
   takeHeldRows,
+  takeHeldRowsWithEpoch,
   takePendingSends,
 } from "../lib/e2e/groupSessions";
 import {
@@ -818,6 +819,20 @@ describe("held rows", () => {
     expect(takeHeldRows(groups, CHAN, "sid-1")).toEqual([]);
     expect(takeHeldRows(groups, "#other", "sid-2")).toEqual([]);
     expect(groups.held).toHaveLength(1);
+  });
+
+  it("takes back only the rows whose epoch is now held", () => {
+    const groups = newGroupSessionsState();
+    createEpoch(groups, CHAN, [ALICE_DID, didFor(RING, "bob")], NOW);
+    const sid = epochFor(groups, CHAN)?.sid ?? "";
+    holdRow(groups, row(sid, NOW));
+    holdRow(groups, row("sid-other", NOW + 1));
+    holdRow(groups, row(sid, NOW + 2, "#other"));
+    expect(groups.held).toHaveLength(3);
+    const taken = takeHeldRowsWithEpoch(groups);
+    expect(taken.map((r) => r.payload)).toEqual([`payload-${sid}-1000000`]);
+    expect(groups.held.map((r) => r.sid)).toEqual(["sid-other"]);
+    expect(takeHeldRowsWithEpoch(groups)).toEqual([]);
   });
 
   it("drops the oldest rows past the cap, and returns them instead of losing them silently", () => {

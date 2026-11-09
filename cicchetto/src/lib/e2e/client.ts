@@ -89,7 +89,13 @@ import {
   type Result,
 } from "./engine";
 import { type FileInner, onGrappaOrigin, sanitizeFileName } from "./fileInner";
-import { dropPendingSends, expireHeldRows, holdRow, takeHeldRows } from "./groupSessions";
+import {
+  dropPendingSends,
+  expireHeldRows,
+  holdRow,
+  takeHeldRows,
+  takeHeldRowsWithEpoch,
+} from "./groupSessions";
 import type { Olm } from "./olm";
 import {
   type Challenge,
@@ -1393,14 +1399,38 @@ export function e2eClient(
             if (retriedKeys.has(key)) continue;
             retriedKeys.add(key);
             for (const row of takeHeldRows(state.groups, e.channel, e.sid)) {
-              const re = await receiveChannel(
-                deps,
-                state.groups,
-                row.channel,
-                row.from,
-                row.fromDid,
-                row.payload,
-              );
+              // A step that throws must not kill the drain: the row
+              // surfaces as undecryptable instead, the watermark still
+              // advances, and the ACK follows as usual.
+              let re: ChannelE2eResult;
+              try {
+                re = await receiveChannel(
+                  deps,
+                  state.groups,
+                  row.channel,
+                  row.from,
+                  row.fromDid,
+                  row.payload,
+                );
+              } catch (err) {
+                console.debug(
+                  "[e2e] a held channel row threw while reading; surfacing it as undecryptable",
+                  err,
+                );
+                re = {
+                  events: [
+                    {
+                      kind: "channel_undecryptable",
+                      channel: row.channel,
+                      from: row.from,
+                      sid: null,
+                      reason: "decryption-failed",
+                    },
+                  ],
+                  outbound: [],
+                  copies: [],
+                };
+              }
               for (const reEvent of re.events) {
                 if (reEvent.kind === "channel_undecryptable" && reEvent.reason === "no-session") {
                   holdNoSession(
@@ -1454,6 +1484,65 @@ export function e2eClient(
           if (read.length > 0) await door.ack(read);
           if (behind) break;
           after = last.id;
+        }
+        // Rows held for a key that arrived outside this drain — a
+        // roster seed's audit retry, a key request answered while the
+        // drain was idle — are retried now that their epoch is held,
+        // instead of waiting for a later key event or their TTL. A
+        // re-run that imports another epoch retries the rows held
+        // under that one too; a re-run still without a session is
+        // held again, never dropped.
+        for (let round = 0; round < 8; round++) {
+          const ready = takeHeldRowsWithEpoch(state.groups);
+          if (ready.length === 0) break;
+          let imported = false;
+          for (const row of ready) {
+            let re: ChannelE2eResult;
+            try {
+              re = await receiveChannel(
+                deps,
+                state.groups,
+                row.channel,
+                row.from,
+                row.fromDid,
+                row.payload,
+              );
+            } catch (err) {
+              console.debug(
+                "[e2e] a held channel row threw while reading; surfacing it as undecryptable",
+                err,
+              );
+              re = {
+                events: [
+                  {
+                    kind: "channel_undecryptable",
+                    channel: row.channel,
+                    from: row.from,
+                    sid: null,
+                    reason: "decryption-failed",
+                  },
+                ],
+                outbound: [],
+                copies: [],
+              };
+            }
+            for (const reEvent of re.events) {
+              if (reEvent.kind === "channel_key_received") imported = true;
+              if (reEvent.kind === "channel_undecryptable" && reEvent.reason === "no-session") {
+                holdNoSession(
+                  channelEvents,
+                  row.channel,
+                  row.from,
+                  row.fromDid,
+                  row.payload,
+                  reEvent.sid,
+                );
+              } else {
+                channelEvents.push(reEvent);
+              }
+            }
+          }
+          if (!imported) break;
         }
         // Held rows that waited too long for a key that never came surface
         // as undecryptable now — bounded, never silently lost. This runs

@@ -338,10 +338,19 @@ function resolveRoster(deps: ChannelE2eDeps, members: string[]): RosterDids {
  * the holder set: a member the key was DM'd to while unknown is a holder
  * once its dids are known, and the nick mapping learns them. Runs
  * before any check that consults the holders, so the set is fresh.
+ * Answers the events of the held-gkey retry it runs: a gkey held while
+ * the roster was unknown is retried now — the audit runs on roster seed,
+ * so this is the moment its checks can run for real — and the caller
+ * surfaces them, so a retry that imports is a `channel_key_received`
+ * the drain can act on, not a silent in-place heal.
  */
-function reconcileSentTo(deps: ChannelE2eDeps, groups: GroupSessionsState, channel: string): void {
+function reconcileSentTo(
+  deps: ChannelE2eDeps,
+  groups: GroupSessionsState,
+  channel: string,
+): ChannelE2eEvent[] {
   const held = epochFor(groups, channel);
-  if (held === undefined) return;
+  if (held === undefined) return [];
   const sentTo = sentToOf(held);
   if (sentTo.length > 0) {
     const byNick = holderNicksOf(held);
@@ -364,10 +373,9 @@ function reconcileSentTo(deps: ChannelE2eDeps, groups: GroupSessionsState, chann
   // runs on roster seed, so this is the moment its checks can run for
   // real. A retry that still cannot run stays held; one that imports
   // updates the epoch in place, and the audit below then judges the
-  // new epoch. The retry's events have nowhere to go here — the audit
-  // has no event channel — so a drop in this path is silent; the
-  // import, which is what heals the epoch, is not.
-  retryHeldGkeys(deps, groups, channel);
+  // new epoch. The retry's events are returned, so the caller can
+  // surface them — an import is a key receipt the drain acts on.
+  return retryHeldGkeys(deps, groups, channel);
 }
 
 /**
@@ -771,7 +779,7 @@ export function auditEpochRotation(
   opts?: { forSend?: boolean },
 ): ChannelE2eResult {
   const res = emptyResult();
-  reconcileSentTo(deps, groups, channel);
+  res.events.push(...reconcileSentTo(deps, groups, channel));
   const roster = resolveRoster(deps, members);
   if (!epochHoldersStale(groups, channel, roster)) return withNetwork(deps, res);
   if (
@@ -1168,8 +1176,8 @@ function attemptGkey(
  * gkey arrived, so their checks can run now. One whose checks still
  * cannot run stays held; the rest import or drop with their reasons.
  * The events are the retry's own: the caller returns them where it can
- * (a gkey arrival), and drops them where it cannot (the audit, which
- * has no event channel — the import still updates the epoch in place).
+ * (a gkey arrival, the audit — which surfaces them through its result),
+ * so an import is a key receipt the drain can act on.
  */
 function retryHeldGkeys(
   deps: ChannelE2eDeps,
