@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
+import { batch, createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../lib/api";
 import { channelKey } from "../lib/channelKey";
@@ -2618,5 +2618,65 @@ describe("EncryptedChatPane, issue 2610 — the ciphertext view keeps the reader
         restore();
       }
     });
+
+    // Review F4 — a re-render is the SAME lines. A message landing where its
+    // arriving row was (issue 2577) is one row out and one in at the same
+    // length: an arrival, and a follower is taken to the tail for it, even one
+    // the lock left above new lines, where a re-render would keep their line.
+    it("a message landing where its arriving row was is an arrival: a follower above the tail is taken there", async () => {
+      const restore = stageScreen();
+      try {
+        open(12);
+        setArrivals({
+          "azzurra/bob": [{ nick: "Bob", fromDid: "AaZaARRDyBk", msgid: "q83vEjRWeJA", at }],
+        });
+        await waitFor(() => expect(belowTail()).toBe(0));
+        await holdLock();
+        setRows(chatOf(16));
+        await waitFor(() => expect(lines()).toHaveLength(16));
+        await releaseLock();
+        // The premise: above the bottom, still following (#1121), the arriving
+        // row still last.
+        expect(belowTail()).toBeGreaterThan(50);
+        expect(scrollback().dataset.follow).toBe("on");
+        expect(scrollback().lastElementChild?.matches("[data-testid=scrollback-arriving]")).toBe(
+          true,
+        );
+
+        batch(() => {
+          setRows(chatOf(17));
+          setArrivals({});
+        });
+        await waitFor(() => expect(lines()).toHaveLength(17));
+        await waitFor(() => expect(belowTail()).toBe(0));
+      } finally {
+        for (; held > 0; held -= 1) popOverlay(null);
+        restore();
+      }
+    });
+  });
+
+  // Review F4 — the precedence over the activation. A chat opened on its unread
+  // divider holds the activation latch until the reader's own input, and the
+  // latch puts the divider back on every rows change. A flip is not a load, so
+  // the line at the top of the view stays.
+  it("a flip while the window's activation still holds keeps the line at the top of the view", async () => {
+    const restore = stageScreen();
+    try {
+      setChat({ nick: "Bob", open: true, unread: 3 });
+      open(12);
+      await frames(4);
+      expect(within("e2e-pane").querySelector("[data-testid=unread-marker]")).not.toBeNull();
+      // Placed with no input of the reader's: the latch still holds.
+      scrollback().scrollTop = 70;
+      expect(firstInView()).toEqual({ id: "4", offset: -10 });
+
+      setWireView("azzurra/bob");
+      expect(firstInView()).toEqual({ id: "4", offset: -10 });
+      await frames(4);
+      expect(firstInView()).toEqual({ id: "4", offset: -10 });
+    } finally {
+      restore();
+    }
   });
 });
