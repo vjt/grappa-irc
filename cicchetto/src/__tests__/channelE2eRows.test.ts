@@ -4,6 +4,7 @@
 // rows, in arrival order, for the channel UI to read once it has a
 // local-row design.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { channelKey } from "../lib/channelKey";
 
 vi.mock("../lib/api", () => ({
   setOn401Handler: vi.fn(),
@@ -37,6 +38,7 @@ describe("channelE2eRows", () => {
         {
           kind: "channel_received",
           channel: "#grappa",
+          network: "azzurra",
           from: "alice",
           sid: "s1",
           counter: 0,
@@ -45,6 +47,7 @@ describe("channelE2eRows", () => {
         {
           kind: "channel_received",
           channel: "#grappa",
+          network: "azzurra",
           from: "bob",
           sid: "s1",
           counter: 1,
@@ -53,13 +56,14 @@ describe("channelE2eRows", () => {
         {
           kind: "channel_received",
           channel: "#grappa",
+          network: "azzurra",
           from: "alice",
           sid: "s1",
           counter: 2,
           body: "three",
         },
       ]);
-      expect(channelE2eRows("#grappa")).toEqual([
+      expect(channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([
         {
           id: 1,
           kind: "received",
@@ -101,6 +105,7 @@ describe("channelE2eRows", () => {
         {
           kind: "channel_received",
           channel: "#grappa",
+          network: "azzurra",
           from: "alice",
           sid: "s1",
           counter: 0,
@@ -109,6 +114,7 @@ describe("channelE2eRows", () => {
         {
           kind: "channel_undecryptable",
           channel: "#grappa",
+          network: "azzurra",
           from: "bob",
           sid: "s1",
           reason: "bad-signature",
@@ -116,12 +122,13 @@ describe("channelE2eRows", () => {
         {
           kind: "channel_undecryptable",
           channel: "#grappa",
+          network: "azzurra",
           from: "carol",
           sid: null,
           reason: "no-session",
         },
       ]);
-      expect(channelE2eRows("#grappa")).toEqual([
+      expect(channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([
         {
           id: 1,
           kind: "received",
@@ -161,13 +168,14 @@ describe("channelE2eRows", () => {
       const events = Array.from({ length: MAX_CHANNEL_E2E_ROWS + 5 }, (_unused, i) => ({
         kind: "channel_received" as const,
         channel: "#grappa",
+        network: "azzurra",
         from: "alice",
         sid: "s1",
         counter: i,
         body: `row ${i}`,
       }));
       emitChannelE2eEvents(events);
-      const rows = channelE2eRows("#grappa");
+      const rows = channelE2eRows(channelKey("azzurra", "#grappa"));
       expect(rows).toHaveLength(MAX_CHANNEL_E2E_ROWS);
       expect(rows[0]).toEqual(expect.objectContaining({ id: 6, counter: 5, body: "row 5" }));
       expect(rows.at(-1)).toEqual(
@@ -191,13 +199,14 @@ describe("channelE2eRows", () => {
         {
           kind: "channel_rotated",
           channel: "#grappa",
+          network: "azzurra",
           oldSid: null,
           newSid: "s1",
           reason: "created",
         },
         { kind: "channel_dropped", channel: "#grappa", reason: "send-refused" },
       ]);
-      expect(channelE2eRows("#grappa")).toEqual([]);
+      expect(channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([]);
     } finally {
       unsubscribe();
     }
@@ -211,6 +220,7 @@ describe("channelE2eRows", () => {
         {
           kind: "channel_received",
           channel: "#grappa",
+          network: "azzurra",
           from: "alice",
           sid: "s1",
           counter: 0,
@@ -219,6 +229,7 @@ describe("channelE2eRows", () => {
         {
           kind: "channel_received",
           channel: "#sbiffo",
+          network: "azzurra",
           from: "bob",
           sid: "s2",
           counter: 0,
@@ -227,20 +238,156 @@ describe("channelE2eRows", () => {
         {
           kind: "channel_received",
           channel: "#grappa",
+          network: "azzurra",
           from: "alice",
           sid: "s1",
           counter: 1,
           body: "g2",
         },
       ]);
-      expect(channelE2eRows("#grappa").map((r) => r.id)).toEqual([1, 2]);
-      expect(channelE2eRows("#sbiffo").map((r) => r.id)).toEqual([1]);
-      expect(channelE2eRows("#grappa").map((r) => (r.kind === "received" ? r.body : ""))).toEqual([
-        "g1",
-        "g2",
-      ]);
+      expect(channelE2eRows(channelKey("azzurra", "#grappa")).map((r) => r.id)).toEqual([1, 2]);
+      expect(channelE2eRows(channelKey("azzurra", "#sbiffo")).map((r) => r.id)).toEqual([1]);
+      expect(
+        channelE2eRows(channelKey("azzurra", "#grappa")).map((r) =>
+          r.kind === "received" ? r.body : "",
+        ),
+      ).toEqual(["g1", "g2"]);
     } finally {
       unsubscribe();
+    }
+  });
+
+  it("scopes rows by network: two networks' same-named channels never share rows", async () => {
+    const { channelE2eRows, subscribeChannelE2eRows, emitChannelE2eEvents } = await fresh();
+    const unsubscribe = subscribeChannelE2eRows();
+    try {
+      emitChannelE2eEvents([
+        {
+          kind: "channel_received",
+          channel: "#grappa",
+          network: "azzurra",
+          from: "alice",
+          sid: "s1",
+          counter: 0,
+          body: "azzurra one",
+        },
+        {
+          kind: "channel_received",
+          channel: "#grappa",
+          network: "freenode",
+          from: "bob",
+          sid: "s1",
+          counter: 0,
+          body: "freenode one",
+        },
+        {
+          kind: "channel_received",
+          channel: "#grappa",
+          network: "azzurra",
+          from: "alice",
+          sid: "s1",
+          counter: 1,
+          body: "azzurra two",
+        },
+      ]);
+      expect(
+        channelE2eRows(channelKey("azzurra", "#grappa")).map((r) =>
+          r.kind === "received" ? r.body : "",
+        ),
+      ).toEqual(["azzurra one", "azzurra two"]);
+      expect(
+        channelE2eRows(channelKey("freenode", "#grappa")).map((r) =>
+          r.kind === "received" ? r.body : "",
+        ),
+      ).toEqual(["freenode one"]);
+      // The ids never collide inside one channel's read, across networks.
+      const azzurraIds = channelE2eRows(channelKey("azzurra", "#grappa")).map((r) => r.id);
+      const freenodeIds = channelE2eRows(channelKey("freenode", "#grappa")).map((r) => r.id);
+      expect(new Set(azzurraIds).size).toBe(azzurraIds.length);
+      expect(azzurraIds.filter((id) => freenodeIds.includes(id))).toEqual([]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("reads rows the drain raised without a network under the network bucket", async () => {
+    const { channelE2eRows, subscribeChannelE2eRows, emitChannelE2eEvents } = await fresh();
+    const unsubscribe = subscribeChannelE2eRows();
+    try {
+      emitChannelE2eEvents([
+        {
+          kind: "channel_received",
+          channel: "#grappa",
+          from: "alice",
+          sid: "s1",
+          counter: 0,
+          body: "held before the key",
+        },
+        {
+          kind: "channel_received",
+          channel: "#grappa",
+          network: "azzurra",
+          from: "bob",
+          sid: "s1",
+          counter: 1,
+          body: "live after the key",
+        },
+      ]);
+      expect(
+        channelE2eRows(channelKey("azzurra", "#grappa")).map((r) =>
+          r.kind === "received" ? r.body : "",
+        ),
+      ).toEqual(["held before the key", "live after the key"]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("keeps rows across a fresh import, and the next row continues the sequence", async () => {
+    const first = await fresh();
+    const unsubscribe = first.subscribeChannelE2eRows();
+    try {
+      first.emitChannelE2eEvents([
+        {
+          kind: "channel_received",
+          channel: "#grappa",
+          network: "azzurra",
+          from: "alice",
+          sid: "s1",
+          counter: 0,
+          body: "before reload",
+        },
+      ]);
+      expect(first.channelE2eRows(channelKey("azzurra", "#grappa"))).toHaveLength(1);
+    } finally {
+      unsubscribe();
+    }
+    // The module reloads — its memory rows go with it — and reads the
+    // durable copy back. localStorage is NOT cleared between the two
+    // imports: that is the reload.
+    vi.resetModules();
+    const second = await fresh();
+    expect(second.channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([
+      expect.objectContaining({ id: 1, body: "before reload" }),
+    ]);
+    const unsubscribe2 = second.subscribeChannelE2eRows();
+    try {
+      second.emitChannelE2eEvents([
+        {
+          kind: "channel_received",
+          channel: "#grappa",
+          network: "azzurra",
+          from: "bob",
+          sid: "s1",
+          counter: 1,
+          body: "after reload",
+        },
+      ]);
+      expect(second.channelE2eRows(channelKey("azzurra", "#grappa")).map((r) => r.id)).toEqual([
+        1, 2,
+      ]);
+    } finally {
+      unsubscribe2();
     }
   });
 });
