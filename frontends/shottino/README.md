@@ -73,6 +73,9 @@ starts spelling its own.
 make
 ```
 
+Run both from the repository root — that is where `configure` lives, and
+the top-level `Makefile` builds and installs shottino and nothing else.
+
 Dependencies checked by `./configure`:
 
 - C compiler with C11 support
@@ -80,14 +83,16 @@ Dependencies checked by `./configure`:
 - `ncursesw`
 - OpenSSL (`libssl`, `libcrypto`)
 - pthread support
-
-Also needed by `make`, not probed by `./configure`:
-
-- Rust (`cargo`, 1.85 or newer). End-to-end encryption is vodozemac, the
+- Rust (`cargo`, at least the `rust-version` in
+  `e2e/vodozemac-c/Cargo.toml`). End-to-end encryption is vodozemac, the
   same crate and version cicchetto uses, linked as a small Rust static
-  library (`e2e/vodozemac-c`). It is a build dependency only. Without a
-  host `cargo`, `make` runs the same build in the pinned Rust Docker image
-  through `scripts/shottino-cargo.sh`.
+  library (`e2e/vodozemac-c`). It is a build dependency only, and `cargo`
+  fetches the crate's dependencies from crates.io on the first build.
+  `./configure` looks for `CARGO=…`, then `cargo` on `PATH`, then
+  `~/.cargo/bin/cargo` (where rustup puts it), and records the one it found
+  in `config.mk`, so `sudo make install` uses the same one. On a host with
+  no Rust but a working Docker it falls back to the pinned Rust image
+  through `scripts/shottino-cargo.sh`. With neither, it stops and says so.
 
 Optional runtime dependencies (only for media link previews — see below):
 
