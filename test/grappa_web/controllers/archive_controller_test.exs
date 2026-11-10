@@ -525,8 +525,11 @@ defmodule GrappaWeb.ArchiveControllerTest do
 
     test "400 for a malformed target name", %{conn: conn, vjt: vjt} do
       net = net_with_credential(vjt)
-
-      conn = get(conn, "/networks/#{net.slug}/archive/#{URI.encode_www_form("#bad name")}/count")
+      # NUL byte fails both Identifier.valid_channel? + wire_nick?. A space
+      # would not do: URI.encode_www_form turns it into "+", which the path
+      # decoder leaves as a literal "+" — a valid channel character, so the
+      # request would reach the controller well-formed and answer 200.
+      conn = get(conn, "/networks/#{net.slug}/archive/" <> URI.encode_www_form("bad\0name") <> "/count")
 
       assert json_response(conn, 400) == %{"error" => "bad_request"}
     end
