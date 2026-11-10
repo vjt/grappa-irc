@@ -6138,3 +6138,75 @@ trigger test was red where the defect is (upload `10737418241` vs
   `t:write/0` type and `put_many/1`'s doc).
 - Deploy: no defstruct, no module in `HotReload.LongLivedModules` touched —
   HOT expected (read, preflight not run).
+<!-- entry #2587 -->
+
+---
+
+## 2026-11-10 — #2587: shottino builds on FreeBSD, and from its own directory
+
+**Supported, by ruling:** FreeBSD is a shottino target (nextime's ruling on
+the issue, 2026-11-10). Verified on a FreeBSD 15.1-RELEASE-p6
+VM (the reporter's version) under QEMU: `./configure && make && make install`
+from the repo root and from `frontends/shottino`, the full `make check`
+(ASan/UBSan, every suite green), and `make call` + `make install` putting
+`shottino-call` beside `shottino`. No FreeBSD CI job: the issue accepted a
+documented manual build, and the README carries it.
+
+### Feature macros are measured, not tabled
+
+`CPPFLAGS ?= -D_POSIX_C_SOURCE=200809L` was right only by accident on Linux:
+Debian's `ncursesw.pc` adds `-D_DEFAULT_SOURCE`, which puts `SOCK_CLOEXEC`,
+`cfmakeraw`, `usleep` and `wcwidth` back. On FreeBSD an explicit
+`_POSIX_C_SOURCE` turns `__BSD_VISIBLE` off and its `.pc` adds nothing.
+`configure` now compiles and links one probe using those names plus
+`MSG_NOSIGNAL` and ncursesw's `get_wch`, against three candidate sets, keeps
+the first that works, and writes it as `FEATURE_CPPFLAGS`. glibc picks the
+historical set, so Linux flags are byte-identical; FreeBSD picks
+`-DNCURSES_WIDECHAR=1` (default visibility). A uname table was rejected: an
+unknown libc gets whichever set works. `CPPFLAGS += $(FEATURE_CPPFLAGS)`,
+not `?=`, so a packager's environment `CPPFLAGS` no longer drops the macros.
+
+`-Werror=implicit-function-declaration` joined the always-on `WARNINGS` (not
+`-Werror`): an undeclared function is otherwise a warning that still links,
+which is how the FreeBSD log carried four of them, and it is what makes the
+probe mean anything.
+
+### `config.mk` is per host, so it is no longer tracked
+
+The real `configure` moved to `frontends/shottino/` and writes `config.mk`
+beside the Makefile that reads it; the root `configure` and `Makefile` only
+forward. The tracked root `config.mk` used to be rewritten by every
+`./configure`, dirtying the tree, and `infra/packaging/build.sh` carried a
+snapshot/`trap`/restore dance so `Grappa.Version` would not report the
+release as unreleased. Untracking the file deleted the dance. **Do not track
+it again** — the dirty-tree failure comes straight back.
+
+### bmake
+
+FreeBSD's `make` reads `BSDmakefile` before `Makefile`, so both directories
+carry one that forwards every requested target to `gmake`, with bmake's
+`MAKEFLAGS` dropped and command-line variables passed explicitly. Every
+requested target is made `.PHONY` with an explicit rule: `.DEFAULT:` alone
+does not fire for a target that exists, and `make call` beside the `call/`
+directory answered "up to date" and built nothing — measured.
+
+### Code
+
+- `self_exe_path()` replaces two `readlink("/proc/self/exe")` calls; FreeBSD
+  answers through `sysctl(KERN_PROC_PATHNAME)` and mounts no `/proc` by
+  default, so both callers (the MCP shim path, the call-helper lookup) fell
+  back silently there.
+- `e2e_no_core_dumps()` adds FreeBSD's `PROC_TRACE_CTL_DISABLE`, the twin of
+  Linux's `PR_SET_DUMPABLE`, with a matching `PROC_TRACE_STATUS` assertion in
+  `test_e2eapp` — the Linux-only check had left FreeBSD one check short.
+- Two `printf`-style helpers lacked `format` attributes; clang's
+  `-Wformat-nonliteral` (via `-Wformat=2`) found them, gcc does not.
+- `shottino-call`: clang ignores `-static-libstdc++ -static-libgcc` and links
+  base's `libc++.so.1`/`libcxxrt.so.1`, present on every FreeBSD. `configure`
+  keeps the flags only when the compiler links with them silently.
+
+### Known, not done
+
+The voice/video/call defaults name Linux capture devices (`pulse:default`,
+`v4l2:/dev/video0`); the README tells FreeBSD users to set them. Capture on
+FreeBSD was not exercised.

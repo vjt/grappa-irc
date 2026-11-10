@@ -240,7 +240,10 @@ Two details make that work and are easy to get wrong:
   linked with the C++ driver** (`c++`), with `-static-libstdc++
   -static-libgcc`. Linking with `cc` fails on `__cxxabiv1` vtables, and
   linking without the static flags adds a `libstdc++.so.6` runtime
-  dependency that the whole point was to avoid.
+  dependency that the whole point was to avoid. `./configure` passes the
+  static flags only where the compiler uses them: on FreeBSD clang links
+  base's `libc++.so.1`/`libcxxrt.so.1` whatever it is told, and those are
+  on every FreeBSD install (#2587).
 - The helper is **not built by `make all`**. The packaging path runs
   `make -C frontends/shottino` and must keep producing one binary with no
   new dependencies; building the helper additionally needs cmake and a
@@ -253,8 +256,12 @@ the packaging path is untouched:
 
 ```sh
 git submodule update --init --recursive frontends/shottino/vendor/libdatachannel
-make -C frontends/shottino call
+make call            # from the repo root or from frontends/shottino
+make install         # installs shottino-call beside shottino once built
 ```
+
+On FreeBSD it needs `pkg install cmake` on top of the client's build
+dependencies; the C++ compiler is base's clang (#2587).
 
 ```
 usage: shottino-call [--whip <url>] [--whep <url>] [options]

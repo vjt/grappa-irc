@@ -131,3 +131,6 @@ frontends/shottino/call/*.o
 # Python bytecode (tools/)
 __pycache__/
 *.py[co]
+
+# Written by ./configure (#2587: no longer tracked — it is per host).
+/frontends/shottino/config.mk

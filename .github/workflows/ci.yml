@@ -277,7 +277,7 @@ jobs:
         run: |
           make -C frontends/shottino clean
           make -C frontends/shottino \
-            CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2 $(sed -n 's/^CFLAGS_DEPS := //p' config.mk)"
+            CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2 $(sed -n 's/^CFLAGS_DEPS := //p' frontends/shottino/config.mk)"
 
       # The media helper is a separate opt-in target (`make call`) because
       # linking it wants cmake, a C++ toolchain and a multi-minute
@@ -291,7 +291,7 @@ jobs:
       - name: Compile the media helper (warnings are errors)
         run: |
           make -C frontends/shottino call-compile \
-            CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2 $(sed -n 's/^CFLAGS_DEPS := //p' config.mk)"
+            CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2 $(sed -n 's/^CFLAGS_DEPS := //p' frontends/shottino/config.mk)"
 
       # Suites build with ASan+UBSan (see the Makefile): this is C parsing
       # attacker-shaped input off a websocket, and a leak or a one-past-
