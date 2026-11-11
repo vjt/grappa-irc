@@ -388,15 +388,11 @@ function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): Ch
         // never shown; an ACK means nothing here (cic challenges no one).
         // The row names the master that wrote it, the key the user pins.
         // issue 2517 — an attachment is a message too: the engine checked its
-        // shape, and its `url` must be this grappa's own upload path, or the
-        // peer could make this client fetch anywhere.
-        if (e.inner.t === "file") {
-          // The engine already refused a malformed one (`file-malformed`) before
-          // this event existed, so what arrives is a checked `FileInner`. Taking
-          // its verdict is what keeps the two layers from disagreeing: a re-parse
-          // here left an arm no receive could ever reach.
-          const file = e.inner as unknown as FileInner;
-          if (onGrappaOrigin(file.url, location.origin) && inbox !== null) {
+        // shape and put the checked `FileInner` on the event, and its `url`
+        // must be this grappa's own upload path, or the peer could make this
+        // client fetch anywhere.
+        if (e.file !== undefined) {
+          if (onGrappaOrigin(e.file.url, location.origin)) {
             changes.push({
               op: "add",
               nick: e.nick,
@@ -408,18 +404,14 @@ function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): Ch
                 nick: e.nick,
                 ed25519: e.master,
                 body: "",
-                file: storedFile(file),
+                file: storedFile(e.file),
                 ...wire,
               },
             });
           } else {
-            // Say WHICH refusal. One `else` used to call every one of them "not
-            // this grappa's upload", including the `inbox === null` miss (a
-            // message with no row to file it under), which sent the next reader
-            // after the wrong bug.
-            const why =
-              inbox === null ? "no inbox row to file it under" : "not this grappa's upload";
-            console.warn(`[e2e] dropped a file from ${e.nick}: ${why}`);
+            // The only refusal left here: a `received` comes from a drain,
+            // which always has the inbox row to file it under.
+            console.warn(`[e2e] dropped a file from ${e.nick}: not this grappa's upload`);
           }
           break;
         }
