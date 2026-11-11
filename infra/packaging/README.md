@@ -150,10 +150,11 @@ instead of recording it here. This paragraph carried "one ~180 KB binary"
 for a long time with nothing behind it; a number in prose goes stale in
 silence, while one in the build log is always that build's, on that host.
 
-`build.sh` snapshots and restores `config.mk` around `./configure`:
-that file is tracked, and leaving it modified makes the tree dirty, which
-`Grappa.Version` reads as unreleased (`-<shortsha>` instead of the bare
-tag) and would fail the release workflow's version proof.
+`./configure` writes `frontends/shottino/config.mk`, which is gitignored,
+so building shottino leaves the tree clean. It must stay untracked: a
+modified tracked file makes the tree dirty, which `Grappa.Version` reads as
+unreleased (`-<shortsha>` instead of the bare tag) and would fail the
+release workflow's version proof.
 
 ## Building the `.deb`
 

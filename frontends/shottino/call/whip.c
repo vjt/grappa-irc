@@ -294,6 +294,7 @@ void whip_response_free(struct whip_response *r) {
 
 #define WHIP_MAX_RESPONSE (256u * 1024u)
 
+static void set_err(char *err, size_t err_sz, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 static void set_err(char *err, size_t err_sz, const char *fmt, ...) {
     if (!err || err_sz == 0) return;
     va_list ap;

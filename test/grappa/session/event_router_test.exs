@@ -77,6 +77,24 @@ defmodule Grappa.Session.EventRouterTest do
     %Message{command: command, params: params, prefix: prefix, tags: %{}}
   end
 
+  # #2480 / #2398 — `build_persist/6` stamps `server_time` from the wall clock
+  # (`System.system_time(:millisecond)`), so two routes of the SAME line differ
+  # on that field whenever the two calls straddle a millisecond. A test that
+  # compares two routes' effects is asserting what the ROUTER did, not what the
+  # clock said, so the stamp is dropped instead of pinned — the router exposes
+  # no injectable clock, and making it one would be a product change for a
+  # test's convenience. Only `:server_time` is dropped: every other field of
+  # every effect is still compared exactly.
+  defp without_server_time(effects) do
+    Enum.map(effects, fn
+      {:persist, kind, attrs} when is_map(attrs) ->
+        {:persist, kind, Map.delete(attrs, :server_time)}
+
+      other ->
+        other
+    end)
+  end
+
   # issue 2140 — a membership-sigil defect only surfaces across a SEQUENCE of
   # wire lines (MODE, then a seed, then MODE), so thread the state through one
   # line at a time. Asserts `:cont` rather than matching it away: a route that
@@ -7997,7 +8015,10 @@ defmodule Grappa.Session.EventRouterTest do
       # `ignores` key itself, so tuple equality would fail for that reason alone.
       {:cont, _, with_mask} = EventRouter.route(notice, ignoring(["*!*@*"]))
       {:cont, _, without} = EventRouter.route(notice, ignoring([]))
-      assert with_mask == without
+      # The same line routed twice: identical effects except the wall-clock
+      # stamp `build_persist/6` mints per call (#2480, #2398), which the
+      # filter under test never reads.
+      assert without_server_time(with_mask) == without_server_time(without)
       assert with_mask != []
     end
 

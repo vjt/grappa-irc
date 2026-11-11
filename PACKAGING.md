@@ -76,8 +76,6 @@ would overwrite each other.
 
 **Not part of the contract:**
 
-- `shottino-debug-<S>-1-x86_64.pkg.tar.zst`, a by-product of `makepkg`'s
-  debug packages. It is on the release today and may go away.
 - The container images `ghcr.io/vjt/grappa` and `ghcr.io/vjt/grappa-shottino`.
   The same pipeline publishes them, but they are not release assets;
   [`INSTALL.md`](INSTALL.md) documents them.

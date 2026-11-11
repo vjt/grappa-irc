@@ -1,5 +1,6 @@
 import {
   type Component,
+  createComputed,
   createEffect,
   createMemo,
   createSignal,
@@ -66,7 +67,7 @@ import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { setReadingAtTailKey } from "./lib/readingAtTail";
 import { replyQuote, replyToMessage } from "./lib/replyQuote";
 import { isSettled, nextFollowMode, resolveIntent, type ScrollIntent } from "./lib/scrollAuthority";
-import type { ScrollbackSource } from "./lib/scrollbackSource";
+import { grappaScrollback, type ScrollbackSource } from "./lib/scrollbackSource";
 import {
   LOAD_MORE_THRESHOLD_PX,
   SCROLL_BOTTOM_THRESHOLD_PX,
@@ -86,6 +87,7 @@ import { MircBody } from "./MircText";
 import NextActiveButton from "./NextActiveButton";
 import NickText, { type PrefixGlyph } from "./NickText";
 import PeerAwayBanner from "./PeerAwayBanner";
+import ServerPeekPanel from "./ServerPeekPanel";
 import UserContextMenu from "./UserContextMenu";
 import WhoisCard from "./WhoisCard";
 import WhowasCard from "./WhowasCard";
@@ -420,6 +422,53 @@ const lastFullyVisibleRowId = (listRef: HTMLDivElement): number | null => {
   return candidate;
 };
 
+// issue 2610 — where the reader is, said in LINES: at the tail, or the first
+// line in view (partly is enough) with how far its top sits from the top of the
+// view, negative when it is cut off above. A pixel offset names a place only
+// while every line keeps its height, and an in-place re-render (the encrypted
+// window's ciphertext view, issue 2513) changes them all at once. `top` is the
+// position to read it at: the live `scrollTop`, or the px an overlay freeze
+// holds. "In view" means more than `TAIL_SUBPIXEL_PX` of the line shows: a
+// sliver of the line above is not the line being read. Null when none is.
+type ReadingAnchor = { kind: "tail" } | { kind: "line"; id: number; offset: number };
+
+// A line's box in the list's own content coordinates. From the rects and not
+// `offsetTop`/`offsetHeight`: those are snapped to whole pixels while a scroll
+// position need not be (a line above can stick out by a fraction and pass for
+// the line in view), and they are relative to whichever ancestor is positioned,
+// which a theme makes the list itself (`theme-has-bg`).
+const lineBox = (list: HTMLDivElement, row: HTMLElement): { y: number; height: number } => {
+  const box = row.getBoundingClientRect();
+  const origin = list.getBoundingClientRect().top + list.clientTop - list.scrollTop;
+  return { y: box.top - origin, height: box.height };
+};
+
+const readingAnchor = (list: HTMLDivElement, top: number): ReadingAnchor | null => {
+  if (list.scrollHeight - top - list.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX) {
+    return { kind: "tail" };
+  }
+  for (const row of list.querySelectorAll<HTMLElement>(".scrollback-line")) {
+    const { y, height } = lineBox(list, row);
+    const id = row.dataset.msgId;
+    if (y + height > top + TAIL_SUBPIXEL_PX && id) {
+      return { kind: "line", id: Number.parseInt(id, 10), offset: y - top };
+    }
+  }
+  return null;
+};
+
+// The `scrollTop` that puts the reader back at `anchor` in the list as it is
+// laid out now, or null when its line is gone. A line cut off above by more
+// than it is now tall would leave the view entirely: it shows from its top.
+const anchoredTop = (list: HTMLDivElement, anchor: ReadingAnchor): number | null => {
+  if (anchor.kind === "tail") return list.scrollHeight - list.clientHeight;
+  const row = list.querySelector<HTMLElement>(`.scrollback-line[data-msg-id="${anchor.id}"]`);
+  if (row === null) return null;
+  const { y, height } = lineBox(list, row);
+  const top = y - anchor.offset;
+  return y + height > top + TAIL_SUBPIXEL_PX ? top : y;
+};
+
 // #360 — per-row geometry read for the mention-aware scroll-to-bottom badge.
 // Mirrors `lastFullyVisibleRowId`'s offsetTop-based walk (cheap, layout-cached
 // — no getBoundingClientRect thrash) but tags each `.scrollback-line` with its
@@ -441,11 +490,12 @@ const readMentionGeom = (listRef: HTMLDivElement): ScrollbackLineGeom[] => {
   return out;
 };
 
-// THE tail write, shared by the three appliers that mean "put the pane at the
-// tail": activation's no-marker branch, the settle-wait's tail-follow, and the
-// operator tail. One function because those three were three VERBATIM copies of
-// the same five lines (measured: one md5 once indentation is stripped), so the
-// defect below had to be found three times and fixed three times.
+// THE tail write, shared by the appliers that mean "put the pane at the tail":
+// activation's no-marker branch, the settle-wait's tail-follow, the operator
+// tail, and (issue 2610) a re-render's reader at the tail. One function because
+// the first three were three VERBATIM copies of the same five lines (measured:
+// one md5 once indentation is stripped), so the defect below had to be found
+// three times and fixed three times.
 //
 // Two steps, and both are load-bearing:
 //
@@ -1426,6 +1476,22 @@ function sameRows(prev: Row[], next: Row[]): boolean {
   return prev.length === next.length && prev.every((row, i) => samePlainData(row, next[i]));
 }
 
+/**
+ * issue 2610 — the same rows in the same order, whatever they now say: a
+ * re-render in place (the encrypted window's ciphertext view), which adds and
+ * removes nothing, as opposed to a load, an arrival or a divider moving.
+ */
+function sameLines(prev: Row[], next: Row[]): boolean {
+  return (
+    prev.length === next.length && prev.every((row, i) => rowIdentity(row) === rowIdentity(next[i]))
+  );
+}
+
+const rowIdentity = (row: Row | undefined): string | undefined => {
+  if (row === undefined) return undefined;
+  return row.type === "message" ? `message:${row.msg.id}` : `${row.type}:${row.id}`;
+};
+
 // Rows are plain data: primitives, arrays and plain objects (the store's
 // message, an invite entry, a topic line). `===` first, so a message row's
 // `msg` compares by store reference for free and only the objects a run built
@@ -1490,7 +1556,10 @@ const ScrollbackPane: Component<Props> = (props) => {
   // ONLY the px to restore — the freeze itself derives from the live
   // `overlayCount()` in `isOverlayFrozen`, NOT from this being non-null — so it
   // is captured on each open edge and left harmlessly stale after close (no
-  // clear). Plain let — pure mutation, no Solid reactivity.
+  // clear). Plain let — pure mutation, no Solid reactivity. issue 2610: and it
+  // is re-anchored when the lines re-render in place under the freeze (see
+  // `applyScrollForContentChange`) — the px it held named a line, and the
+  // same px names another once every line has changed height.
   let overlayScrollSnapshot: number | null = null;
   // #219-general — the channel key the overlay snapshot was captured on. The
   // pane instance survives channel↔query switches (shared non-keyed Match), so
@@ -2314,6 +2383,34 @@ const ScrollbackPane: Component<Props> = (props) => {
   // nobody, so the `<For>` keeps its nodes (and the operator's selection) when
   // the traffic was for another window.
   const rows = createMemo(projectRows, undefined, { equals: sameRows });
+
+  // issue 2610 — the reader's place before an in-place re-render, read while
+  // the OLD lines are still in the DOM, for the length-effect to restore once
+  // the new ones are (`applyScrollForContentChange`). A pure computation and
+  // not an effect, because of WHEN it runs: Solid runs every memo and computed
+  // of an update before any effect, and the `<For>` swaps the line nodes in a
+  // render effect, so here the list is still laid out as the reader saw it,
+  // and by the length-effect it no longer is. Nothing else holds that reading
+  // once the lines are gone. Read only on a re-render of the same lines in the
+  // same window (a switch of window is the activation's, and a load, an
+  // arrival or a divider moving keep their own rules), at the px the reader is
+  // held at: the freeze's while a covering overlay holds the pane.
+  let reflowAnchor: { key: string; anchor: ReadingAnchor } | null = null;
+  createComputed(
+    on(
+      [rows, key],
+      ([next, k], prev) => {
+        reflowAnchor = null;
+        if (!listRef || prev === undefined || prev[1] !== k || !sameLines(prev[0], next)) return;
+        const held = isOverlayFrozen() ? overlayScrollSnapshot : null;
+        const anchor = readingAnchor(listRef, held ?? listRef.scrollTop);
+        reflowAnchor = anchor === null ? null : { key: k, anchor };
+      },
+      // Not deferred: `on` records the previous input only on a run it does
+      // not skip, so a deferred first run would leave the first change after
+      // mount with nothing to compare against.
+    ),
+  );
 
   // #360 — refresh the mention badge after every rows() recreation (a live
   // message, the switch-time `refreshScrollback` catch-up, a cross-device
@@ -3774,9 +3871,9 @@ const ScrollbackPane: Component<Props> = (props) => {
         return;
       }
       default:
-        // mention-jump (applyMentionJump) + prepend-preserve (applyPrependPreserve)
-        // own dedicated entrypoints and never reach dispatchScrollWrite, so this
-        // arm stays unreachable.
+        // mention-jump (applyMentionJump), prepend-preserve (applyPrependPreserve)
+        // and reflow-preserve (applyReflowPreserve) own dedicated entrypoints and
+        // never reach dispatchScrollWrite, so this arm stays unreachable.
         return;
     }
   };
@@ -3787,9 +3884,22 @@ const ScrollbackPane: Component<Props> = (props) => {
   const applyScrollForContentChange = (): void => {
     if (!listRef) return;
     const k = key();
+    // issue 2610 — the reading the computed above took before the lines were
+    // replaced, if this change is an in-place re-render of this window. Spent
+    // here, whoever wins: it describes this change and no later one.
+    const reflow = reflowAnchor?.key === k ? reflowAnchor.anchor : null;
+    reflowAnchor = null;
     const intents: ScrollIntent[] = [];
     if (isOverlayFrozen()) {
+      // The freeze holds a px, and the re-render just gave that px to another
+      // line: what it held was the reader's place, so it holds that place in
+      // the new layout, now and at the close edge's restore, which replays it.
+      const reanchored = reflow === null ? null : anchoredTop(listRef, reflow);
+      if (reanchored !== null) overlayScrollSnapshot = reanchored;
       intents.push({ kind: "overlay-freeze", key: k, lifetime: "sticky" });
+    }
+    if (reflow !== null) {
+      intents.push({ kind: "reflow-preserve", key: k, lifetime: "one-shot" });
     }
     // #1229 — this DOM probe is what keeps a suppressed divider from being
     // activated: crossing the unread ceiling drops the divider (`injectMarker`),
@@ -3807,7 +3917,41 @@ const ScrollbackPane: Component<Props> = (props) => {
     }
     const { winner, reason } = resolveIntent(intents, k);
     logScrollDecision("content-change", intents, winner, reason);
-    if (winner) dispatchScrollWrite(winner);
+    if (winner?.kind === "reflow-preserve" && reflow !== null) applyReflowPreserve(reflow);
+    else if (winner) dispatchScrollWrite(winner);
+  };
+
+  // issue 2610 — the reflow-preserve write: the reader back at their line (or
+  // the tail) in the re-rendered layout. SYNC, as the overlay-freeze and
+  // marker-activation legs are and for their reason: the lines were swapped
+  // before this ran and nothing has been painted since, so no frame shows the
+  // other lines the old px now points at. Reading the boxes lays the new
+  // lines out first. A line that is gone writes nothing. The tail is THE tail
+  // write, then the tail-follow's measured settle (#608), which writes again
+  // only if an engine laid the new lines out after this read.
+  //
+  // A line is then published as `onScroll` would publish it, for the two cases
+  // `onScroll` cannot: a restore that writes nothing fires no scroll event, so
+  // the bottom coming within reach (shorter lines below) is seen here or not at
+  // all — #1121's republish, for the same reason; and a restore that LOWERS
+  // `scrollTop` fires one that would read as the reader scrolling up, turning
+  // off the follow of a reader the lock left above new lines (#168's class), so
+  // the baseline `onScroll` compares against moves with the write.
+  const applyReflowPreserve = (anchor: ReadingAnchor): void => {
+    if (!listRef) return;
+    if (anchor.kind === "tail") {
+      scrollToTail(listRef);
+      tailFollowWhenSettled();
+      return;
+    }
+    const top = anchoredTop(listRef, anchor);
+    if (top === null) return;
+    if (listRef.scrollTop !== top) listRef.scrollTop = top;
+    lastScrollTop = listRef.scrollTop;
+    const near =
+      listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX;
+    setAtBottomNow(near);
+    if (near) setFollowMode(nextFollowMode(followMode(), "reach-tail"));
   };
 
   // #608 (deep-review §6.4) — the prepend-preserve applier entrypoint. An older
@@ -3919,15 +4063,30 @@ const ScrollbackPane: Component<Props> = (props) => {
     // `onScroll` never re-measures. Both consumers of a stale-true `atBottomNow`
     // then lie in the same direction — the floating scroll-to-bottom button
     // stays unmounted, and `readingAtTailKey` keeps telling `selection.ts` to
-    // suppress this window's unread badge. Published BEFORE the no-op early
-    // return, because the held-position case IS the one that goes stale.
-    setAtBottomNow(
-      listRef.scrollHeight - restoreTo - listRef.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX,
-    );
-    if (listRef.scrollTop === restoreTo) return;
-    const intent: ScrollIntent = { kind: "overlay-freeze", key: snapKey, lifetime: "sticky" };
-    logScrollDecision("overlay-restore", [intent], intent, "overlay-restore");
-    listRef.scrollTop = restoreTo;
+    // suppress this window's unread badge. Published whether or not a write
+    // follows, because the held-position case IS the one that goes stale.
+    const near =
+      listRef.scrollHeight - restoreTo - listRef.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX;
+    setAtBottomNow(near);
+    // issue 2610 (review F3, the orchestrator's call: least surprise) — and the
+    // reach-tail edge with it, as `onScroll` and `applyReflowPreserve` take it: a
+    // reader the hold leaves within reach of the tail (a re-render under it made
+    // the lines below shorter) follows from there, whichever door they came in
+    // by. It only ever turns the follow ON, so #1121's intent above — lines that
+    // arrived underneath are no scroll-up — is untouched.
+    if (near) setFollowMode(nextFollowMode(followMode(), "reach-tail"));
+    if (listRef.scrollTop !== restoreTo) {
+      const intent: ScrollIntent = { kind: "overlay-freeze", key: snapKey, lifetime: "sticky" };
+      logScrollDecision("overlay-restore", [intent], intent, "overlay-restore");
+      listRef.scrollTop = restoreTo;
+    }
+    // issue 2610 (review F1) — `onScroll` skipped every event while the hold
+    // lasted, so its baseline is still where the reader was before it. A
+    // re-render under the hold re-anchors them lower (`scrollTop` in the new
+    // layout), and against the stale baseline their next small scroll DOWN read
+    // as a scroll up and turned the follow off. Read back rather than
+    // `restoreTo`: a browser clamps a position past the end.
+    lastScrollTop = listRef.scrollTop;
   };
 
   // #608 — the applier's smooth-scroll INTERRUPT (W9). The mention-jump is the
@@ -4678,6 +4837,32 @@ const ScrollbackPane: Component<Props> = (props) => {
         {/* #386 — the #376 inline BANLIST card was superseded by the
             interactive BanlistModal (opened by /banlist, mounted in Shell),
             mirroring how the #169 /who modal replaced the inline WHO dump. */}
+        {/* issue 2625 — the `$server` peek: on a phone, the `$server` lines a
+            command was answered with, over the window it was typed in. Its
+            lines go through the SAME renderer and handlers as this pane's own
+            rows, so a nick in a services reply opens its query exactly as it
+            would in `$server`. They are grappa's rows whatever window hosts
+            the card (an encrypted query's source has slots of its own), so the
+            slots are grappa's too. The card short-circuits to null unless a
+            peek is open on this network (lib/serverPeek.ts). */}
+        <ServerPeekPanel
+          networkSlug={props.networkSlug}
+          line={(msg) => {
+            const slots = grappaScrollback.slots(msg);
+            return (
+              <ScrollbackLine
+                msg={msg}
+                userNick={userNick()}
+                networkSlug={props.networkSlug}
+                onNickClick={handleNickClick}
+                onNickContextMenu={handleNickContextMenu}
+                onJoinChannel={handleJoinChannel}
+                marker={slots.marker}
+                trailer={slots.trailer}
+              />
+            );
+          }}
+        />
       </div>
       {/* #693 — the far-behind bar. This pane holds the tail because the gap
           back to where the operator left off was bigger than one page;

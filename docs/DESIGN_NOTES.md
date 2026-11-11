@@ -6138,6 +6138,386 @@ trigger test was red where the defect is (upload `10737418241` vs
   `t:write/0` type and `put_many/1`'s doc).
 - Deploy: no defstruct, no module in `HotReload.LongLivedModules` touched —
   HOT expected (read, preflight not run).
+<!-- entry #2587 -->
+
+---
+
+## 2026-11-10 — #2587: shottino builds on FreeBSD, and from its own directory
+
+**Supported, by ruling:** FreeBSD is a shottino target (nextime's ruling on
+the issue, 2026-11-10). Verified on a FreeBSD 15.1-RELEASE-p6
+VM (the reporter's version) under QEMU: `./configure && make && make install`
+from the repo root and from `frontends/shottino`, the full `make check`
+(ASan/UBSan, every suite green), and `make call` + `make install` putting
+`shottino-call` beside `shottino`. No FreeBSD CI job: the issue accepted a
+documented manual build, and the README carries it.
+
+### Feature macros are measured, not tabled
+
+`CPPFLAGS ?= -D_POSIX_C_SOURCE=200809L` was right only by accident on Linux:
+Debian's `ncursesw.pc` adds `-D_DEFAULT_SOURCE`, which puts `SOCK_CLOEXEC`,
+`cfmakeraw`, `usleep` and `wcwidth` back. On FreeBSD an explicit
+`_POSIX_C_SOURCE` turns `__BSD_VISIBLE` off and its `.pc` adds nothing.
+`configure` now compiles and links one probe using those names plus
+`MSG_NOSIGNAL` and ncursesw's `get_wch`, against three candidate sets, keeps
+the first that works, and writes it as `FEATURE_CPPFLAGS`. glibc picks the
+historical set, so Linux flags are byte-identical; FreeBSD picks
+`-DNCURSES_WIDECHAR=1` (default visibility). A uname table was rejected: an
+unknown libc gets whichever set works. `CPPFLAGS += $(FEATURE_CPPFLAGS)`,
+not `?=`, so a packager's environment `CPPFLAGS` no longer drops the macros.
+
+`-Werror=implicit-function-declaration` joined the always-on `WARNINGS` (not
+`-Werror`): an undeclared function is otherwise a warning that still links,
+which is how the FreeBSD log carried four of them, and it is what makes the
+probe mean anything.
+
+### `config.mk` is per host, so it is no longer tracked
+
+The real `configure` moved to `frontends/shottino/` and writes `config.mk`
+beside the Makefile that reads it; the root `configure` and `Makefile` only
+forward. The tracked root `config.mk` used to be rewritten by every
+`./configure`, dirtying the tree, and `infra/packaging/build.sh` carried a
+snapshot/`trap`/restore dance so `Grappa.Version` would not report the
+release as unreleased. Untracking the file deleted the dance. **Do not track
+it again** — the dirty-tree failure comes straight back.
+
+### bmake
+
+FreeBSD's `make` reads `BSDmakefile` before `Makefile`, so both directories
+carry one that forwards every requested target to `gmake`, with bmake's
+`MAKEFLAGS` dropped and command-line variables passed explicitly. Every
+requested target is made `.PHONY` with an explicit rule: `.DEFAULT:` alone
+does not fire for a target that exists, and `make call` beside the `call/`
+directory answered "up to date" and built nothing — measured.
+
+### Code
+
+- `self_exe_path()` replaces two `readlink("/proc/self/exe")` calls; FreeBSD
+  answers through `sysctl(KERN_PROC_PATHNAME)` and mounts no `/proc` by
+  default, so both callers (the MCP shim path, the call-helper lookup) fell
+  back silently there.
+- `e2e_no_core_dumps()` adds FreeBSD's `PROC_TRACE_CTL_DISABLE`, the twin of
+  Linux's `PR_SET_DUMPABLE`, with a matching `PROC_TRACE_STATUS` assertion in
+  `test_e2eapp` — the Linux-only check had left FreeBSD one check short.
+- Two `printf`-style helpers lacked `format` attributes; clang's
+  `-Wformat-nonliteral` (via `-Wformat=2`) found them, gcc does not.
+- `shottino-call`: clang ignores `-static-libstdc++ -static-libgcc` and links
+  base's `libc++.so.1`/`libcxxrt.so.1`, present on every FreeBSD. `configure`
+  keeps the flags only when the compiler links with them silently.
+
+### Known, not done
+
+The voice/video/call defaults name Linux capture devices (`pulse:default`,
+`v4l2:/dev/video0`); the README tells FreeBSD users to set them. Capture on
+FreeBSD was not exercised.
+<!-- entry #2610 -->
+
+---
+
+## 2026-11-08 — issue 2610: an in-place re-render keeps the reader's line, not the reader's pixels
+
+Switching an encrypted chat between its plaintext and its ciphertext (issue
+2513) re-renders every line in place, and a payload is longer than the words
+it carries, so every line changes height at once. A scroll offset kept in
+pixels then shows other lines. Two doors, two failures: through the window
+list's row menu (`ContextMenu`, no freeze) nothing re-anchored a reader in the
+middle; through the rail's `ciphertext` entry (issue 2583) the menu stays open
+around the entry and holds the overlay lock, so the freeze re-asserted the OLD
+pixels after the flip and replayed them at close, which left even a reader at
+the bottom above the last line. "No freeze" holds on a desktop only: on a
+phone the window list lives in the left drawer, which holds the overlay lock
+itself (`Shell`), so both doors reach the frozen branch there.
+
+### What holds the place
+
+The reader's place is read in LINES (`ReadingAnchor` in `ScrollbackPane`): at
+the tail, or the first line in view and how far its top sits from the top of
+the view, negative when it is cut off above. A line cut off by more than it
+is tall after the re-render shows from its top. "In view" means more than
+`TAIL_SUBPIXEL_PX` of the line shows, read from the line's RECT in the list's
+content coordinates: `offsetTop`/`offsetHeight` are whole pixels while a
+scroll position need not be (code review: the line above, sticking out by a
+fraction, passed for the line in view and was then grown into it), and they
+are relative to whichever ancestor is positioned, which `theme-has-bg` makes
+the list itself. After a line restore the pane publishes `atBottomNow` and the
+reach-tail follow as `onScroll` would, because a restore that writes nothing
+fires no scroll event (#1121's republish), and moves `lastScrollTop` with the
+write, because a restore that lowers `scrollTop` would otherwise read as the
+reader scrolling up (#168's class). A new one-shot intent,
+`reflow-preserve`, restores it through the single applier. Precedence:
+`overlay-freeze ▸ operator-tail ▸ mention-jump ▸ reflow-preserve ▸
+marker-activation ▸ tail-follow ▸ prepend-preserve`.
+
+* Over `tail-follow`: a reader within the bottom band
+  (`SCROLL_BOTTOM_THRESHOLD_PX`) reads as the tail and is tailed either way
+  (THE tail write, then the measured settle). A follower further up — #1121's,
+  left there by lines that arrived under an overlay — reads as a LINE and
+  keeps it, as the issue asks of anyone not at the bottom; before this change
+  a same-lines update tailed them on the next frame, now the next arrival
+  does. The pane arm "a reader the lock left above new lines, still
+  following" pins exactly that.
+* Over `marker-activation`: a re-render adds and removes no line, so it is
+  not the late load the activation latch re-asserts the divider against. A
+  reader who opened an unread chat and flips without touching it keeps the
+  line at the top, rather than having the divider put back at the top
+  (`activationAnchor` lands it with `block: "start"`). Deliberate; reversible
+  by moving one entry in `PRECEDENCE`, and a pane arm ("a flip while the
+  window's activation still holds") goes red if it moves.
+* Under `overlay-freeze`, which it RE-ANCHORS instead of fighting: the
+  freeze's `overlayScrollSnapshot` is rewritten to the reader's line in the
+  new layout, so the content-change re-assert and the close edge's restore
+  replay the right place. `overlaySnapshotDistance` is left alone: whether
+  the reader was following is a fact about the open edge (#1121), and a
+  re-render does not change it. This is #1701's "the px is a proxy for a
+  position" applied to the content instead of the box.
+* And when the freeze hands the pane back, its close edge
+  (`applyOverlayRestore`) publishes what the no-lock door publishes after its
+  write (review of PR 2621). `lastScrollTop` moves to where the reader now is:
+  `onScroll` skipped every event during the hold, so its baseline was the
+  position before it, and against that a re-anchored reader's next small
+  scroll DOWN read as a scroll up and turned the follow off. And the reach-tail
+  edge, when the restored position is within reach of the tail: the
+  orchestrator's call, least surprise — the same screen and the same gesture
+  end in the same follow state whichever door the flip came through. It only
+  ever turns the follow ON, so #1121's ruling stands: lines that arrived
+  underneath push the tail away and are no scroll-up.
+
+Only a re-render of the same rows, in the same order, in the same window
+counts (`sameLines` + the key). A load, an arrival, a divider moving or a
+window switch keep their own rules: the slice is cut on that boundary, not on
+the encrypted window, so any source that re-renders its lines in place gets
+the same treatment. The identity half is pinned by a pane arm: a message
+landing where its arriving row was (issue 2577) keeps the length and changes
+an identity, so it is an arrival and a follower is tailed for it.
+
+### When the reading is taken
+
+It has to be taken while the OLD lines are still laid out, and nothing holds
+it once they are gone. It is taken in a `createComputed` on `[rows, key]`, the
+first `createComputed` in cic, because of when it runs: Solid runs every memo
+and computed of an update before any effect, and the `<For>` swaps the line
+nodes in a render effect, so the computed reads the list as the reader saw it
+and the length-effect, which restores, reads the new one. Measured, not
+argued: with the same body as a `createEffect`, every pane arm whose reader
+the re-render has to move goes red. Two stay green: the arrival above, which
+is no re-render, and the lock's within-reach arm, whose reader sits on the
+chat's first line, a position the same pixel names in both layouts (that arm
+pins the follow, not the anchor). The `on` is not deferred on purpose: a
+deferred first run does not record the previous input, so the first change
+after mount had nothing to compare against (read in solid-js 1.9.17's
+`on`, and seen as the one direction of the flip that passed).
+
+### Rejected
+
+* prepend-preserve's arithmetic: it shifts by the growth of `scrollHeight`,
+  right only when all of it lands above the view; a re-render grows above and
+  below it.
+* A seam on the toggle's store write, in the shape of `PrependCommitSeam`:
+  the doors are the rail and the window list, which know no pane, so it would
+  take a registry of mounted panes to reach the one to ask.
+
+### Limits, not claimed
+
+* The overlay effect's deferred restores capture their target in a closure on
+  each edge. At the CLOSE edge a re-render within its two frames is
+  overwritten by the px captured at the close (line 4 became line 2). At the
+  OPEN edge it heals itself: the re-render's own overlay-freeze re-assert
+  reads the live, re-anchored snapshot two frames later, after the open
+  edge's restore (the line held on every frame). Both measured with vitest
+  probes in the review of PR 2621, not kept as arms. A tap cannot land inside
+  either window.
+* The e2e runs on desktop chromium only. On a phone the window list's door
+  goes through the left drawer's overlay lock as the rail's menu does
+  everywhere: the frozen branch the vitest arms cover, not exercised end to
+  end there.
+<!-- entry #2625 -->
+
+---
+
+## 2026-11-09 — #2625: on a phone, a command's `$server` replies open a card over the window
+
+vjt's request (2026-11-09 00:22, relayed through vjt-claude on the issue):
+on mobile, read the NOTICEs a command is answered with without leaving the
+window it was typed in; further commands keep feeding the same card; an
+opt-out; and only where the screen has room at the user's font size. The two
+open questions the issue left (which lines count, which threshold) were the
+implementer's to decide; the decisions are below. cic-only: no server, wire
+or `lib/` change, so the deploy class is the cic bundle.
+
+### A view over `$server`, never a copy
+
+`lib/serverPeek.ts` holds no buffer. The card is a filtered live view over the
+scrollback store (`$server` rows with `id > sinceId`), the verb the #290
+services console already uses. Dismissing it moves, marks and hides nothing:
+every line is still in `$server`, read or unread exactly as before.
+
+### Which lines: correlation by TIME, because nothing else can correlate
+
+A command ARMS the peek (the high-water mark is taken in compose, before the
+send — the #1518 ordering); the first `$server` line to arrive LIVE within
+`SERVER_PEEK_REPLY_WINDOW_MS` (10 s) OPENS it, a later one disarms it, and
+the card starts AT that line. Once open, the card shows every line `$server`
+receives from there until it is dismissed — which is what makes the second
+command's output append.
+
+LIVE, because a page is not a reply (review finding on PR 2650). The
+reconnect refresh and a first load bring rows the server already held when
+the command was typed, and the high-water mark cannot tell them from a reply
+when `$server` was never loaded this session: it is 0 and every backlog row
+is past it, so the card opened on backlog and kept showing it. A reply is
+stored after the command reaches the server, so it reaches this client on
+the WS, and every backlog row is older than it. `scrollback.ts` therefore
+publishes an EVENT signal, `lastLiveArrival`, written by `appendToScrollback`
+(the one live verb) and by none of the page verbs, and on the identity-reset
+list beside its siblings `lastOwnSend` and `ownSendSubmitted`. The peek opens
+only on a live `$server` arrival past the mark, and because the card starts
+at that arrival, a page that lands afterwards stays out of it whichever order
+the race takes. The arrival already there when the command is typed does not
+count either: the mark rules it out while `$server` still holds it, and
+after a purge, when the mark is back to 0, the arm keeps the event object it
+saw and ignores it.
+
+Per-command correlation was rejected, not overlooked: bahamut has no
+`labeled-response`, and cic must not parse IRC to guess which NOTICE answers
+which command. It does not need to: the server already routes what it
+recognises (WHOIS, WHO, LIST, the #127 info family, CTCP replies) to surfaces
+of their own before anything reaches `$server`, so what is left there after a
+command is the residue those surfaces did not take — services NOTICEs, error
+numerics, server NOTICEs. The accepted price: an unrelated server NOTICE that
+lands inside the 10 s after a command opens the card too.
+
+A command is any typed slash verb that is not SAID (plain text and `/me`, the
+issue 2536 `isSaid` split: conversation has no reply in `$server`), not bare
+`/ns` (the services console already shows those lines) and not typed in
+`$server` itself, where the reply is already on screen.
+
+### Where it fits, per DEVICE
+
+The card arms only on the mobile layout, and only when the screen holds
+`SERVER_PEEK_MIN_COLS` = 36 columns and `SERVER_PEEK_MIN_ROWS` = 12 rows of
+text at the user's font size (`serverPeekFits(innerWidth, innerHeight,
+fontPx)`, counting 0.6em per column and 1.4 per row). 36 columns leave 16
+for the body after `HH:MM:SS -NickServ- `; 12 rows leave the card (40% of
+the visible height at most) a header and four lines. On the e2e phones:
+iPhone 15 (393×659) passes up to XL 18px and stops at XXL 20px; Pixel 7
+(412×839) stops at XXL; a landscape iPhone SE (667×375) passes at 22px and
+stops at 24px, on rows.
+
+The opt-out is ON by default ("non è utile a tutti" — an opt-OUT) and lives
+in this device's localStorage (`cicchetto.serverPeek`), not in the synced
+display prefs: whether a card fits over the window is a question about the
+screen, the same reasoning as the command menu (issue 2584, vjt's ruling Q1).
+The issue body said "per-user"; vjt's own words said only "con opt-out", and
+per-device is the choice, stated rather than inherited.
+
+### Closing, and what it does not cover
+
+The card closes on its ✕, on selecting that network's `$server` (reading
+what the card shows), on logout, and when the device stops taking it (review
+finding on PR 2650): the setting goes off, the layout leaves mobile, or a
+resize — a rotation is one — leaves the screen short of 36 columns or 12
+rows at the user's font size. One predicate answers "does this device take
+the card" (opted in, mobile layout, `serverPeekFits` on the live window
+size, re-read on a per-resize tick because `innerWidth`/`innerHeight` are
+not signals); `arm` asks it, and a store effect closes an open or armed card
+the moment it says no. It CLOSES rather than hides: the card does not come
+back when the screen does, and the lines are still in `$server`. It shows
+only on the windows of the network the command was typed on.
+
+Not covered, declared: NickServ replies re-keyed into an open NickServ query
+(#400) never reach `$server`, so they open no card. The font size is not a
+signal, so a size picked while the card is up is not asked about until the
+next resize. On Android with `interactive-widget=resizes-content` the
+keyboard shrinks `innerHeight`, so the rows gate reads the shrunken height
+there: on a screen that holds under 12 rows with the keyboard up, the card
+does not arm, and a card that opened with the keyboard down closes when the
+keyboard comes up (it fires a resize). Unmeasured on a device.
+
+### Measured
+
+- Mutants, one at a time on a detached bench, each counted over
+  `vitest related <mutated file>` (timeout raised to 30 s so that only
+  assertion reds count — the bench shared the host with another worker's
+  mutants and an unmutated run lost 4 tests to 5 s import timeouts): 34
+  mutants on the new code. 29 killed on the first pass with 49 reds; 5
+  survived (width/height swapped at the fit gate, `>=` where the first reply
+  line is detected, closing on ANY network's `$server`, dropping the
+  identity reset, the settings box hard-wired checked), each got its test,
+  and all 5 then died to exactly that test, one red each. 0 reds outside the
+  issue 2625 tests across both passes.
+- Review round (PR 2650): each new test of a new behaviour was red on the
+  previous head for the reason it names, and each new guard but two (the
+  arrival's key check and its mark check, the next two bullets) was mutated
+  on its own over serverPeek, scrollback, ServerPeekPanel, ScrollbackPane,
+  compose and SettingsDrawer (937 tests, all counts on that round's head).
+  Opening at the old mark instead of at the arrival: 2 reds. The old
+  store-watching open rule: 3 reds (refresh page, first-load page, page
+  landing after the card opened). No live-arrival write: 15 reds. No
+  identity reset of `lastLiveArrival`: 1 red. No close effect: 4 reds
+  (opt-out, layout under an open card, layout under an armed one,
+  rotation). No resize listener, or the tick not read: 1 red each, the
+  rotation. Hiding instead of closing (the gate moved into `rows`): 2 reds,
+  one of them the "does not come back" assertion. Dropping the arm's `seen`
+  guard turned NOTHING red at first: in every state the suite built, the
+  arrival seen at the arm was a row `$server` still held, so the mark ruled
+  it out too. The state where only `seen` speaks is a purged `$server`; a
+  test of it (green on the previous head, since the guard was already
+  there) is the one red that mutant now turns. The same pass found the
+  dismiss and opt-out tests asserting only the absence they started from:
+  with the card never opening, both stayed green. They now assert the card
+  was open first.
+- Second review round: the arrival's key check (only a line in the armed
+  network's `$server` counts) turned NOTHING red when deleted, as the
+  delta review measured. `lastLiveArrival` is one signal for every window,
+  and the one cross-network case let the real reply land inside the
+  window, where a card wrongly opened by the other network's line still
+  showed it. Two cases now put the only `$server` line past the window,
+  after a channel line and after another network's `$server` line inside
+  it. Deleting the check turns exactly those two red over the same six
+  suites (939 tests).
+- Third review round: the arrival's mark check (a live line at or below the
+  mark taken at the command does not count, `arrival.id <= st.sinceId`)
+  turned NOTHING red either, deleted or with `<` for `<=`, as the second
+  delta review measured. It mirrors the `seen` guard above: in every state
+  the suite built, the arrival already there at the arm was both the one
+  seen and under the mark, so each guard hid the other, and the purge case
+  isolates only `seen`. The state where only the mark speaks is the WS copy
+  of a row a reconnect refresh already brought, landing after a command
+  typed between the two (the page and the push are separate paths). A case
+  of it now turns red under both mutants, one red each over the same six
+  suites (940 tests). The `arrival === null` half of the `seen` line is
+  pinned by the compiler: without it, `tsc` fails on `arrival` possibly
+  being null.
+- The logout test was overdetermined, found by the identity-reset mutant:
+  the scrollback store empties on logout too, so "no rows after logout"
+  held with or without the peek's reset. It now asserts what only that
+  reset prevents — the next account's `$server` lines opening a card.
+- e2e (`issue2625-server-peek.spec.ts`, 7 tests on chromium, Pixel 7 and
+  iPhone 15): the card opens on `/ns help` over the channel, appends the
+  second command's output, ✕ closes it, the lines are in `$server`; no card
+  when opted out, at XXL, or on the desktop layout — each absence asserted
+  only after the NickServ NOTICE frame provably reached the page. Measured
+  at 14px in both e2e projects, on whatever face their browsers resolve
+  from the shipped stack inside the Linux container (not SF Mono on a
+  device; which face it was is unmeasured): 0.6001em per column, 1.3996 per
+  row (the fit check counts 0.6 and 1.4); the card capped at 40% of the
+  visible height to within 0.01px (335.59 of 335.6 on the Pixel, 263.59 of
+  263.6 on the iPhone), its body scrolled and pinned to the newest line.
+- The fit arm first ran at the 28px ceiling and died before the command on
+  both phones: at 28px the bottom bar's network header covers the channel
+  tab (Playwright's hit test), so a spec cannot select a channel there. A
+  bottom-bar fault at the font ceiling, reported, not fixed here; the arm
+  runs at XXL, the first preset neither phone fits, which is also where the
+  boundary is.
+
+### Not measured
+
+- The 10 s window: nothing on the agent's side can time Azzurra's services
+  (m42 is unreachable from here); it is a choice, not a measurement.
+- The 36/12 tie-breaks: chosen from the layout arithmetic above, not from a
+  user study.
+- A real iPhone or Android device: the e2e projects are WebKit and Chromium
+  with device descriptors, not the devices.
 <!-- entry #2388 -->
 
 ---

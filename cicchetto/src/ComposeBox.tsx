@@ -8,7 +8,6 @@ import {
   untrack,
 } from "solid-js";
 import CommandMenu from "./CommandMenu";
-import { isDiagEnabled } from "./DiagFloat";
 import { awayByNetwork } from "./lib/awayStatus";
 import { channelKey } from "./lib/channelKey";
 import {
@@ -26,20 +25,14 @@ import {
 } from "./lib/compose";
 import { placeCaretAtEndInView, placeCaretInView } from "./lib/composeCaret";
 import { composePlaceholder } from "./lib/composePlaceholder";
-import { diagPush } from "./lib/diagLog";
 import { frameBudgetForTarget } from "./lib/frameBudget";
 import { isComposingKeystroke } from "./lib/imeComposition";
 import { frameBudgetBaseForNetwork } from "./lib/isupport";
 import { createNetworkReconnect } from "./lib/networkReconnect";
 import { networkBySlug } from "./lib/networks";
 import { routeClipboardPaste, routePastedInput } from "./lib/pasteRoute";
-import {
-  claimAxis,
-  type DragAxis,
-  gestureAction,
-  type Point,
-  type ScrollBoundary,
-} from "./lib/swipe";
+import { createPointerSend } from "./lib/pointerSend";
+import { bindSwipeRecall } from "./lib/swipeRecall";
 import { activeHost } from "./lib/uploadHost";
 import {
   cancelUpload,
@@ -144,15 +137,6 @@ type Feedback = { text: string; severity: "error" | "notice" };
 const AWAY_SET_NOTICE = "away: you are marked as away";
 const AWAY_UNSET_NOTICE = "away: you are no longer away";
 
-// #925 — did the pointer come up inside the box it went down on? The one
-// piece of geometry in the send button's pointer-driven activation, kept
-// pure so the abort-by-sliding-off case is decidable without touch physics.
-// Inclusive on all four edges: a release exactly on the boundary is a
-// release on the control.
-function releasedInside(rect: DOMRect, x: number, y: number): boolean {
-  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-}
-
 // The amber seam line. Its own component only so the feedback `Show`'s
 // fallback stays a single expression; the copy and the precedence live at
 // the call site.
@@ -169,11 +153,6 @@ const SplitWarningLine: Component<{ text: string | null }> = (props) => (
 const ComposeBox: Component<Props> = (props) => {
   const key = () => channelKey(props.networkSlug, props.channelName);
 
-  // #925 — send-button press bookkeeping. Plain `let`s, not signals: nothing
-  // renders off them, they only carry state from one event to the next within
-  // a single press.
-  let pressedPointerId: number | null = null;
-  let sentFromPointer = false;
   const [feedback, setFeedback] = createSignal<Feedback | null>(null);
   // Auto-dismiss handle for a shown NOTICE. Held so a new input / new submit /
   // unmount can cancel a pending fire — otherwise a stale timer would clear a
@@ -241,30 +220,6 @@ const ComposeBox: Component<Props> = (props) => {
 
   let pickerInput: HTMLInputElement | undefined;
   let textareaEl: HTMLTextAreaElement | undefined;
-  let swipeStart: Point | null = null;
-  // Wall-clock at touchstart (ms). Feeds the touchend velocity gate so a slow
-  // release is told apart from a fast flick. Browser time is legitimate here —
-  // the Date.now / performance.now ban is a workflow-script rule, not cic
-  // runtime. Reset every touchstart; read once, at touchend.
-  let swipeStartTime = 0;
-  let claimedAxis: DragAxis | null = null;
-  // issue 2356 — touchmoves received this touch, claimed or not. Diag only:
-  // it splits "no touchmove ever arrived" from "moved, but not claimed".
-  let moveCount = 0;
-  // issue 2356 — touchstart's own event timestamp. Diag only: END prints the
-  // touchend's timestamp minus this one, read off the events rather than off
-  // the handler clock, so events queued behind other work don't shrink it.
-  let swipeStartStamp = 0;
-  // On-device gesture diagnostics (#123): captured once per touch at
-  // touchstart so the flag is read a single time, not per move. When on,
-  // touchstart / claim / touchend push a line into diagLog for DiagFloat to
-  // render — the evidence webkit playwright can't produce.
-  let diagOn = false;
-
-  const scrollBoundary = (el: HTMLTextAreaElement): ScrollBoundary => {
-    const maxScroll = el.scrollHeight - el.clientHeight;
-    return { atTop: el.scrollTop <= 0, atBottom: el.scrollTop >= maxScroll - 1 };
-  };
 
   // #173 — after a history recall the controlled `value` swaps to the recalled
   // line, but the pure compose store (recallPrev/recallNext) only mutates the
@@ -320,167 +275,35 @@ const ComposeBox: Component<Props> = (props) => {
   // Swipe gestures on the textarea give a stock mobile keyboard (no Tab, no
   // arrows) the same affordances as keys: swipe RIGHT = Tab (nick complete),
   // swipe UP = ArrowUp (older history), swipe DOWN = ArrowDown (newer
-  // history). A swipe — not double-tap — because double-tap collides with the
-  // OS word-select. TOUCH (not pointer) events: only touchmove.preventDefault
-  // reliably suppresses iOS's native scroll + drag-to-select.
-  //
-  // #123 nested-scroll boundary handoff (2026-07-03) — the textarea is an
-  // INNER scroll surface; the swipe is the OUTER gesture. The inner scroll owns
-  // the vertical drag WHILE it still has room in that direction; the instant it
-  // hits its edge (finger-up → bottom, finger-down → top), it CEDES the rest of
-  // this same touch to the gesture. That is why the boundary is read LIVE on
-  // every touchmove, not snapshotted at touchstart: a frozen snapshot only ever
-  // handed off from an already-at-edge start, so a mid-scrolled draft ate the
-  // drag and the gesture only fired on a SECOND touch (the "double-swipe" bug;
-  // it appeared to work solely at scrollTop === 0). `claimAxis` owns the
-  // direction→edge mapping; the flick test is deferred to touchend over the
-  // WHOLE gesture (`gestureAction`), where displacement + elapsed are reliable.
-  //
-  // These are bound via a ref + addEventListener (see bindSwipe), NOT JSX
-  // onTouch* — Solid delegates touch events to a single PASSIVE listener on
-  // `document`, where preventDefault silently no-ops. We need an element-level,
-  // explicitly non-passive touchmove listener to preventDefault at the handoff.
-  const onTouchStart = (e: TouchEvent) => {
-    const t = e.touches.length === 1 ? e.touches[0] : undefined;
-    swipeStart = t ? { x: t.clientX, y: t.clientY } : null;
-    swipeStartTime = performance.now();
-    swipeStartStamp = e.timeStamp;
-    claimedAxis = null;
-    moveCount = 0;
-    diagOn = isDiagEnabled();
-    if (diagOn && textareaEl && t) {
-      const el = textareaEl;
-      // issue 2356 — `cx` is where the finger landed, in px from the left
-      // edge of the textarea's text (its content box): negative is the
-      // padding or the border, positive is over the typed text or past its
-      // end. END's dx/dy are touchend's own point measured from this one.
-      const textLeft =
-        el.getBoundingClientRect().left +
-        el.clientLeft +
-        Number.parseFloat(getComputedStyle(el).paddingLeft);
-      diagPush(
-        `TS cx=${Math.round(t.clientX - textLeft)} y=${Math.round(t.clientY)} st=${el.scrollTop} sh=${el.scrollHeight} ch=${el.clientHeight} sel=${el.selectionStart},${el.selectionEnd}`,
-      );
-    }
-  };
-
-  const onTouchMove = (e: TouchEvent) => {
-    moveCount += 1;
-    if (swipeStart === null || e.touches.length !== 1) return;
-    const t = e.touches[0];
-    if (t === undefined) return;
-    if (claimedAxis === null) {
-      // Read the scroll boundary LIVE every move: the textarea may have
-      // native-scrolled to its edge DURING this touch, and the gesture must
-      // hand off the instant it does. A vertical drag WITH room returns null →
-      // we stay hands-off so pan-y scrolls the draft.
-      const boundary = textareaEl ? scrollBoundary(textareaEl) : { atTop: true, atBottom: true };
-      // #1205 — the DOM half of the selection gate: a non-collapsed selection
-      // means this horizontal drag is a handle drag, and claiming it would
-      // preventDefault the very thing the user is doing. Live like the
-      // boundary, and unreadable counts as collapsed (the pre-#1205 claim).
-      const selectionActive =
-        textareaEl !== undefined && textareaEl.selectionStart !== textareaEl.selectionEnd;
-      claimedAxis = claimAxis(
-        swipeStart,
-        { x: t.clientX, y: t.clientY },
-        boundary,
-        selectionActive,
-      );
-      if (claimedAxis === null) return;
-      if (diagOn) {
-        const st = textareaEl ? textareaEl.scrollTop : -1;
-        diagPush(
-          `CLAIM ${claimedAxis} up=${t.clientY - swipeStart.y < 0} atTop=${boundary.atTop} atBot=${boundary.atBottom} st=${st}`,
-        );
-      }
-    }
-    // Suppress native scroll + drag-to-select once we own the gesture.
-    e.preventDefault();
-  };
-
-  const onTouchEnd = (e: TouchEvent) => {
-    const start = swipeStart;
-    const claimed = claimedAxis;
-    swipeStart = null;
-    const t = e.changedTouches[0];
-    if (start === null || t === undefined) return;
-    const end = { x: t.clientX, y: t.clientY };
-    // Full-gesture velocity + direction → action (null: never claimed / slow
-    // release / no mapped direction). The boundary gate already ran at claim.
-    const action =
-      claimed === null ? null : gestureAction(start, end, performance.now() - swipeStartTime);
-    if (diagOn) {
-      const st = textareaEl ? textareaEl.scrollTop : -1;
-      // issue 2356 — dx, the move count and the selection are what separate
-      // the three ways a horizontal drag goes unclaimed (#1205 selection, no
-      // touchmove, under the slop) from each other and from a tap. `ms` is
-      // this touchend's timestamp minus touchstart's, which times the
-      // touchend against the drag the finger made.
-      const sel = textareaEl ? `${textareaEl.selectionStart},${textareaEl.selectionEnd}` : "-";
-      diagPush(
-        `END claimed=${claimed ?? "no"} act=${action ?? "none"} dy=${Math.round(end.y - start.y)} st=${st} dx=${Math.round(end.x - start.x)} moves=${moveCount} ms=${Math.round(e.timeStamp - swipeStartStamp)} sel=${sel}`,
-      );
-    }
-    switch (action) {
-      case "recall-prev":
-        // #203 — swipe-UP recalls unconditionally (parity with ArrowUp;
-        // see gestureRecallAllowed's doc). No empty-draft gate here.
+  // history). The binding itself lives in `lib/swipeRecall` — issue 2429 gave
+  // the services console the same gesture, and the review of it refused the
+  // second copy. It binds via addEventListener on the element, NOT JSX
+  // onTouch* (Solid's delegated touch listener is passive, where
+  // preventDefault no-ops).
+  const bindSwipe = (el: HTMLTextAreaElement): void => {
+    textareaEl = el;
+    const unbind = bindSwipeRecall(el, {
+      onPrev: () => {
         recallPrev(key());
         scrollRecallCaretIntoView();
-        break;
-      case "recall-next":
-        // #178 — swipe-DOWN recall stays gated on a non-empty draft.
-        if (gestureRecallAllowed()) {
-          recallNext(key());
-          scrollRecallCaretIntoView();
-        }
-        break;
-      case "tab-complete": {
-        const ta = e.currentTarget as HTMLTextAreaElement;
+      },
+      onNext: () => {
+        recallNext(key());
+        scrollRecallCaretIntoView();
+      },
+      canNext: gestureRecallAllowed,
+      // #1113 — same reveal as the keybinding door (Shell.cycleNickComplete):
+      // one completion engine, one caret placement.
+      onTab: (ta) => {
         const result = tabComplete(key(), getDraft(key()), ta.selectionEnd, true);
         if (!result) return;
-        // #1113 — same reveal as the keybinding door (Shell.cycleNickComplete):
-        // one completion engine, one caret placement.
         queueMicrotask(() => {
           placeCaretInView(ta, result.newCursor);
         });
-        break;
-      }
-    }
-  };
-
-  // issue 2356 — a touch the platform takes away ends here instead of at
-  // touchend, so it fires nothing. For a one-finger touch, a TS with no END
-  // already says that no touchend arrived (the ring drops its OLDEST lines,
-  // so an END cannot scroll out while its TS is still shown); this line
-  // tells a cancel apart from a touch that got neither event.
-  const onTouchCancel = (e: TouchEvent) => {
-    const start = swipeStart;
-    const t = e.changedTouches[0];
-    if (!diagOn || start === null || t === undefined) return;
-    const st = textareaEl ? textareaEl.scrollTop : -1;
-    const sel = textareaEl ? `${textareaEl.selectionStart},${textareaEl.selectionEnd}` : "-";
-    diagPush(
-      `CANCEL claimed=${claimedAxis ?? "no"} dy=${Math.round(t.clientY - start.y)} st=${st} dx=${Math.round(t.clientX - start.x)} moves=${moveCount} sel=${sel}`,
-    );
-  };
-
-  // Bind the swipe listeners on the textarea element itself, bypassing
-  // Solid's passive document-level event delegation (touchmove MUST be
-  // non-passive for preventDefault to take). onCleanup removes them when the
-  // ComposeBox is disposed (e.g. channel switch re-creates the textarea).
-  const bindSwipe = (el: HTMLTextAreaElement): void => {
-    textareaEl = el;
-    el.addEventListener("touchstart", onTouchStart, { passive: true });
-    el.addEventListener("touchmove", onTouchMove, { passive: false });
-    el.addEventListener("touchend", onTouchEnd, { passive: true });
-    el.addEventListener("touchcancel", onTouchCancel, { passive: true });
+      },
+    });
     onCleanup(() => {
-      el.removeEventListener("touchstart", onTouchStart);
-      el.removeEventListener("touchmove", onTouchMove);
-      el.removeEventListener("touchend", onTouchEnd);
-      el.removeEventListener("touchcancel", onTouchCancel);
+      unbind();
       textareaEl = undefined;
     });
   };
@@ -686,6 +509,15 @@ const ComposeBox: Component<Props> = (props) => {
       showNotice(result.ok);
     }
   };
+
+  // #925 — the send button's activation contract, shared with the services
+  // console's button (issue 2429; see `lib/pointerSend`).
+  const sendButton = createPointerSend({
+    canSend: () => !nothingToSend(),
+    send: () => void doSubmit(),
+    // `type="submit"` inside a `<form>`: the click's default action sends.
+    activateOnBareClick: false,
+  });
 
   const onKeyDown = (e: KeyboardEvent) => {
     // issue 2041 — an IME composition owns the keystroke, not us. The Enter
@@ -946,54 +778,13 @@ const ComposeBox: Component<Props> = (props) => {
           // button[aria-disabled="true"]` carries the greying that
           // `:disabled` used to (default.css).
           aria-disabled={nothingToSend()}
-          // #59: keep the textarea focused when sending via the button.
-          // Tapping a <button> moves focus off the textarea, which collapses
-          // the native on-screen keyboard (Android especially). The cancel
-          // lands on `mousedown` — the legacy focus-shift carrier — and NEVER
-          // on `pointerdown`, which is also iOS's gesture-start signal
-          // (lib/keepKeyboard.ts states the rule and the bug that wrote it).
-          // The document-level keepKeyboard listener already does this on
-          // iOS; this one is what covers Android, where that listener is
-          // isIos()-gated and so does nothing at all.
-          onMouseDown={(e) => e.preventDefault()}
-          // #925 — activation rides the POINTER, not the click. A `type=
-          // "submit"` button sends only when a `click` reaches the form, and
-          // on real iOS a press the OS routes into a long-press gesture
-          // synthesizes no mouse events at all (vjt measured exactly that for
-          // #366, 2026-07-21): `:active` lights up, no click ever arrives, the
-          // text stays in the field. `pointerup` fires either way.
-          onPointerDown={(e) => {
-            pressedPointerId = e.pointerId;
-            // Re-arm: the previous press may have sent without ever producing
-            // a click to consume the swallow flag.
-            sentFromPointer = false;
-          }}
-          onPointerUp={(e) => {
-            if (pressedPointerId !== e.pointerId) return;
-            pressedPointerId = null;
-            // Touch pointers are implicitly captured by the element the press
-            // landed on, so a release anywhere still targets this button.
-            // Sliding off to abort is the platform's cancel affordance and it
-            // must keep working for an irreversible action — hit-test it.
-            if (!releasedInside(e.currentTarget.getBoundingClientRect(), e.clientX, e.clientY)) {
-              return;
-            }
-            // #1059 — the empty-draft refusal, now that the button is no
-            // longer `disabled` and so genuinely receives this event. The pump
-            // would no-op an empty body anyway, but an activation that reaches
-            // it has already armed the click swallow, so refuse it here where
-            // the control's own affordance says it is refused.
-            if (nothingToSend()) return;
-            sentFromPointer = true;
-            void doSubmit();
-          }}
-          // The synthetic click that follows a normal tap would submit the
-          // form a second time. Swallow it — but only a pointer-generated
-          // click (`detail > 0`): a keyboard activation reports detail 0 and
-          // must always reach the form, since no pointerup carried its send.
-          onClick={(e) => {
-            if (sentFromPointer && e.detail > 0) e.preventDefault();
-          }}
+          // #59/#925/#1059 — the activation contract (mousedown cancel, the
+          // pointerup send, the click swallow) lives in `lib/pointerSend`, one
+          // implementation shared with the services console's send button
+          // (issue 2429). `activateOnBareClick` stays off here: this button is
+          // `type="submit"` inside a `<form>`, so a keyboard activation's
+          // DEFAULT ACTION is the send.
+          {...sendButton}
         >
           {/* #241 — in-flight feedback. While a send is in flight for THIS
               window (#904 moved that truth into the store, where it survives
