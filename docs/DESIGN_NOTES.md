@@ -6585,39 +6585,50 @@ A wrong password sitting in the slot for 60s is only harmful if an `:acquired`
 fires that the slot's password did not cause. The named candidate was
 RecoverIdentity sending the SAVED secret: if that path skipped the NSInterceptor
 capture, `identity_secret_effects` would commit the stale wrong password over the
-good one. It does not skip it. `RecoverIdentity` builds
-`PRIVMSG NickServ :IDENTIFY <nick> <secret>` (`lib/grappa/session/recover_identity.ex:231`),
-the host pushes those lines through `emit_reply_lines/3`
-(`server.ex:2491`, `server.ex:6062`), which turns each into `{:reply, line, origin}`
-(`server.ex:6023`), whose arm calls `send_outbound/3` (`server.ex:7469`), which
-sniffs through `capture_outbound_ns_secret/2` (`server.ex:5653`) before sending;
-the `:identify` capture stages the slot (`server.ex:5583`) and `stage_pending_auth/2`
-OVERWRITES it, latest-wins (`server.ex:5502`). So the recover IDENTIFY replaces
+good one. It does not skip it. `RecoverIdentity.identify/1` builds
+`PRIVMSG NickServ :IDENTIFY <nick> <secret>`; the host pushes those lines
+through `emit_reply_lines/3` (from `handle_call(:recover_identity, …)` and from
+`advance_recover/2`), which turns each into `{:reply, line, origin}` for
+`apply_effects/2`, whose `{:reply, …}` clause calls `send_outbound/3`, which
+sniffs through `capture_outbound_ns_secret/2` before sending; the `:identify`
+capture stages the slot through `stage_pending_auth/2`, which OVERWRITES it,
+latest-wins. So the recover IDENTIFY replaces
 the stale typed password with the saved one before the `+r` it causes, and what
 gets committed is the saved secret. Every other IDENTIFY this connection emits
 takes the same door: typed verbs, the built-in at 001 (`send_perform_line/2`),
 the perform list, GhostRecovery.
 
 The residual class is `:acquired` from a source that is not our IDENTIFY at all
-— `900` (SASL), inbound `ACCOUNT`, `330` about ourselves
-(`event_router.ex:1096`, `:1043`, `:1906`). There a stale slot WOULD be
-committed. It is unreachable on prod: those feed the `account` axis, which
+— `900` (SASL), inbound `ACCOUNT`, `330` about ourselves (each an
+`EventRouter.do_route/2` clause that feeds `identity_secret_effects/2`). There a
+stale slot WOULD be committed. It is unreachable on prod: those feed the
+`account` axis, which
 `IdentityState` gates on `account-notify` being ACKed and which is display-only
 on bahamut, where `+r` alone decides — and `+r` only follows an IDENTIFY. The
 same reasoning is already applied once in the codebase: `221` RPL_UMODEIS
 deliberately does not feed `identity_secret_effects/2` because the identity it
-reports may predate the staged secret (`event_router.ex:1493`).
+reports may predate the staged secret (the comment on `EventRouter`'s `221`
+`do_route/2` clause).
 
-**This exclusion expires with bahamut.** The residual `900`/`ACCOUNT`/`330` class
-reopens the moment grappa serves a network with `account-notify` (solanum), where
-those three DO count towards the verdict: there a stale slot can be committed by
-an identity the slot's password did not cause, and the 60s ceiling is exactly the
-window that makes it likely. Whoever lands the first solanum session revisits this
-number — the ceiling is safe only for as long as `+r` alone decides.
+**This exclusion holds only while no `visitor_enabled` network ACKs
+`account-notify`.** A stale IDENTIFY slot is only ever COMMITTED for a visitor:
+a user session ignores the commit effect unless a REGISTER secret is staged
+(`commit_user_registration/3`'s last clause logs it and does nothing), and
+REGISTER wins when both are. A visitor only reaches `visitor_enabled` networks
+(`Visitors.Login`'s `resolve_visitor_network/1`). And grappa already requests
+`account-notify` opportunistically on every network (`AuthFSM`'s
+`@opportunistic_caps`), so "a network with `account-notify`" names nothing that
+changes when the risk goes live. The switch to watch is a `visitor_enabled`
+network whose ircd ACKs `account-notify`: there the residual
+`900`/`ACCOUNT`/`330` class DOES count towards the verdict, a stale slot can be
+committed by an identity its password did not cause, and the 60s ceiling is
+exactly the window that makes it likely. Whoever enables visitors on such a
+network revisits this number — the ceiling is safe only for as long as `+r`
+alone decides on every network a visitor can reach.
 
 **No negative signal is available to shorten the slot.** A wrong password comes
 back as a NickServ NOTICE, and #347 forbids parsing NOTICE text for identity;
 there is no numeric for it (the only password-mismatch numeric the codebase
-knows, `464` ERR_PASSWDMISMATCH, is the OPER one,
-`lib/grappa/irc/client.ex:757`). So the only honest bound on a wrong password is
+knows, `464` ERR_PASSWDMISMATCH, is the OPER one, documented on
+`IRC.Client.send_oper/3`). So the only honest bound on a wrong password is
 the ceiling itself.
