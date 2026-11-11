@@ -223,10 +223,16 @@ describe("#2409 a refused target is not retried", () => {
     // page whose probe says the remainder is more than a page.
     listMessagesSpy.mockResolvedValueOnce([row(1)]);
     await loadInitialScrollback("net", REFUSED);
-    listMessagesAfterSpy.mockResolvedValueOnce(fullPageFor(listMessagesAfterSpy));
+    // The page has to be released AFTER the call is on the wire: its size is
+    // read back from the limit the module asked for, and there is no call to
+    // read it off until `refreshScrollback` has made one.
+    const page = gate<ScrollbackMessage[]>();
+    listMessagesAfterSpy.mockReturnValueOnce(page.promise);
     countMessagesAfterSpy.mockResolvedValueOnce(probe(400));
     listMessagesSpy.mockResolvedValueOnce([row(500)]);
-    await refreshScrollback("net", REFUSED);
+    const refreshing = refreshScrollback("net", REFUSED);
+    page.release(fullPageFor(listMessagesAfterSpy));
+    await refreshing;
 
     // …and the latch from a verb that is not the cold load.
     listMessagesSpy.mockRejectedValue(refuse(400));
