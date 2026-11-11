@@ -140,9 +140,6 @@ vi.mock("../lib/networks", () => ({
 // real state machine in voiceDictation.test.ts. Default: not available, which
 // is also what jsdom gives every pre-existing case (no SpeechRecognition).
 const [mockDictationAvailable, setMockDictationAvailable] = createSignal<boolean | null>(false);
-// #2611 — the API's presence is the cheap, synchronous half: the button is
-// drawn from this, and the engine is asked only on the press.
-const [mockDictationSupported, setMockDictationSupported] = createSignal(false);
 const [mockDictating, setMockDictating] = createSignal(false);
 const mockCheckDictation = vi.fn(async () => mockDictationAvailable() === true);
 // The real `startDictation` asks the engine before it starts; the mock does
@@ -155,7 +152,6 @@ const mockProbeDictation = vi.fn();
 
 vi.mock("../lib/voiceDictation", () => ({
   dictationAvailable: () => mockDictationAvailable(),
-  dictationSupported: () => mockDictationSupported(),
   dictationState: () =>
     mockDictating()
       ? { phase: "listening", startedAt: 0, nextSendAt: 0, interim: "" }
@@ -2620,14 +2616,18 @@ describe("ComposeBox — the microphone takes the send slot on an empty box", ()
   const mic = () => screen.queryByTestId("compose-mic");
 
   const setMockDictation = (available: boolean | null): void => {
-    setMockDictationSupported(true);
     setMockDictationAvailable(available);
   };
 
   afterEach(() => {
-    setMockDictationSupported(false);
     setMockDictationAvailable(false);
     setMockDictating(false);
+    // The draft and the pump are driven per-case here (a live draft is the
+    // point of the last two): put them back, or a red leaves `getDraft`
+    // answering the case's own value and turns the next ones red too.
+    vi.mocked(compose_.getDraft).mockReturnValue("");
+    vi.mocked(compose_.setDraft).mockReset();
+    vi.mocked(compose_.submit).mockReset();
   });
 
   it("no microphone, and the send button, when the engine cannot dictate on device", () => {
@@ -2648,9 +2648,9 @@ describe("ComposeBox — the microphone takes the send slot on an empty box", ()
 
   // The regression that took a whole e2e shard down: mounting a compose box
   // asked the engine (`available()`/`install()`) inside the render/mount path,
-  // and in headless Chromium that crashed the renderer. The question now goes
-  // out from a task of its own, after the mount.
-  it("mounting only schedules the question, and never asks it inline", () => {
+  // and in headless Chromium that crashed the renderer. The mount only ARMS
+  // the question now; the first gesture asks it (voiceDictation.test.ts).
+  it("mounting only arms the question, and never asks it inline", () => {
     setMockDictation(null);
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
     expect(mockCheckDictation).not.toHaveBeenCalled();
@@ -2690,6 +2690,7 @@ describe("ComposeBox — the microphone takes the send slot on an empty box", ()
   });
 
   it("the send button sends and starts no dictation", async () => {
+    vi.mocked(compose_.submit).mockResolvedValue({ ok: true });
     setMockDictation(true);
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
     fireEvent.input(screen.getByLabelText("compose message"), { target: { value: "hi" } });
@@ -2697,6 +2698,9 @@ describe("ComposeBox — the microphone takes the send slot on an empty box", ()
 
     fireEvent.click(sendButton() as HTMLElement);
 
+    // Both halves: the name says it sends, and the tap is the microphone's
+    // slot — so the test must show it is the send that happened.
+    expect(compose_.submit).toHaveBeenCalledTimes(1);
     expect(mockStartDictation).not.toHaveBeenCalled();
   });
 
@@ -2761,6 +2765,77 @@ describe("ComposeBox — the microphone takes the send slot on an empty box", ()
 
     fireEvent.click(control as HTMLElement);
     expect(mockStopDictation).toHaveBeenCalledTimes(1);
+    expect(mockStartDictation).not.toHaveBeenCalled();
+  });
+
+  // The delta-2 review's MAJOR B: ruling (c) held only on an empty box. While
+  // listening, typing one character made the slot swap the stop control for
+  // the send button, and the only ways back were to send the line or delete it.
+  it("while listening, typing keeps the stop control", () => {
+    const [draft, setDraft] = createSignal("");
+    vi.mocked(compose_.getDraft).mockImplementation(() => draft());
+    vi.mocked(compose_.setDraft).mockImplementation((_key: string, text: string) => setDraft(text));
+    setMockDictation(true);
+    setMockDictating(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    fireEvent.input(screen.getByLabelText("compose message"), { target: { value: "x" } });
+
+    expect(draft()).toBe("x");
+    expect(mic()?.getAttribute("aria-label")).toBe("stop dictating and send");
+    expect(sendButton()).toBeNull();
+  });
+
+  // The delta-2 review's MAJOR D: the send button leaves the DOM inside its own
+  // activation — the send empties the draft synchronously, the slot swaps to
+  // the microphone before the handler returns, and the compat `mousedown` and
+  // `click` a real tap still owes land on the microphone. #1059's invariant is
+  // what that breaks: the focus-keep cancel must still run, and the click that
+  // belongs to the send must not start a dictation nobody asked for.
+  it("after a send that empties the box, the compat mousedown and click land on the microphone and do nothing", () => {
+    const [draft, setDraft] = createSignal("hi");
+    vi.mocked(compose_.getDraft).mockImplementation(() => draft());
+    vi.mocked(compose_.submit).mockImplementation(async () => {
+      // The production pump takes the text out at the head of `submit`, before
+      // its first await: an async body runs synchronously up to that await.
+      setDraft("");
+      return { ok: true };
+    });
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const send = screen.getByRole("button", { name: /send message/i });
+    Object.defineProperty(send, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 300, right: 344, top: 500, bottom: 544, width: 44, height: 44 }),
+    });
+    const at = (type: string): MouseEvent => {
+      const e = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        clientX: 322,
+        clientY: 522,
+      });
+      Object.defineProperty(e, "pointerId", { value: 1 });
+      return e;
+    };
+
+    send.dispatchEvent(at("pointerdown"));
+    send.dispatchEvent(at("pointerup"));
+
+    // The send went out and the slot swapped under the finger…
+    expect(compose_.submit).toHaveBeenCalledTimes(1);
+    expect(sendButton()).toBeNull();
+    const control = mic();
+    expect(control).not.toBeNull();
+
+    // …and the events a real tap still owes are harmless on the new control.
+    const md = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    control?.dispatchEvent(md);
+    expect(md.defaultPrevented).toBe(true);
+
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 });
+    control?.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
     expect(mockStartDictation).not.toHaveBeenCalled();
   });
 });

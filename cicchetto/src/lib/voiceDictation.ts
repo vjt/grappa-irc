@@ -83,21 +83,12 @@ function recognitionCtor(): (RecognitionCtor & RecognitionStatic) | null {
 }
 
 /**
- * Whether the browser has the API at all — synchronous and free, so the
- * compose box can draw its microphone without touching the engine. It does
- * NOT promise on-device recognition: that answer is `checkDictation()`, and
- * it is asked on the press, never on mount.
- */
-export function dictationSupported(): boolean {
-  return recognitionCtor() !== null;
-}
-
-/**
  * Whether dictation may be offered, asking once per page. `true` only when
  * the engine runs locally for the UI's language: `available()` absent means
  * the browser is too old to promise it, and `downloadable` is installed
- * first (the model is the browser's, not ours). Called from the press, so
- * both the question and the download happen inside a user gesture.
+ * first (the model is the browser's, not ours). Called from the operator's
+ * first gesture (`probeDictation`), so both the question and the download
+ * happen inside a user gesture.
  */
 export async function checkDictation(): Promise<boolean> {
   const ready = dictationReady();
@@ -126,31 +117,48 @@ export async function checkDictation(): Promise<boolean> {
 }
 
 /**
- * Asks the engine ONCE per page, off the mount path.
+ * Asks the engine ONCE per page, from the operator's FIRST gesture.
  *
  * vjt's ruling on the issue (2026-11-11) rejects a microphone that appears on
- * the cheap `dictationSupported()` and vanishes on the first tap: the button
- * is offered only where on-device recognition is actually usable, which means
- * `available()` has to be asked before the button is drawn. Asking it from the
- * MOUNT was measured to take the renderer down in CI (a channel window:
- * "Target crashed", then the shard), so it is asked from a task of its own,
- * after the frame that drew the box has committed — no native call inside a
- * render or a mount effect. The answer lands in `dictationAvailable()`; until
- * it does, the compose box keeps its send button.
+ * the cheap API check and vanishes on the first tap: the button is offered only
+ * where on-device recognition is actually usable, which means `available()` has
+ * to be asked before the button is drawn.
+ *
+ * It is NOT asked from the mount, nor from a task scheduled by it. That native
+ * call was measured taking the renderer down in CI — a channel window mounting
+ * a compose box: "Target crashed", then the whole shard — and the mount is the
+ * one place where no human asked for anything: `install()` there is a model
+ * download nobody requested, outside any user gesture. So the mount only ARMS
+ * the question, and the first pointerdown or keydown anywhere asks it, once.
+ * The answer lands in `dictationAvailable()`; until it does, the compose box
+ * keeps its send button.
  */
-let probeStarted = false;
-export function probeDictation(): void {
-  if (probeStarted) return;
-  probeStarted = true;
-  setTimeout(() => {
-    void checkDictation();
-  }, 0);
+const PROBE_EVENTS = ["pointerdown", "keydown"] as const;
+let probeArmed = false;
+let probeAsk: (() => void) | null = null;
+
+function disarmProbe(): void {
+  if (probeAsk === null) return;
+  for (const type of PROBE_EVENTS) document.removeEventListener(type, probeAsk, true);
+  probeAsk = null;
 }
 
-/** Test seam — forget what the check answered. */
+export function probeDictation(): void {
+  if (probeArmed) return;
+  probeArmed = true;
+  const ask = (): void => {
+    disarmProbe();
+    void checkDictation();
+  };
+  probeAsk = ask;
+  for (const type of PROBE_EVENTS) document.addEventListener(type, ask, true);
+}
+
+/** Test seam — forget what the check answered, and disarm the question. */
 export function __resetDictationForTests(): void {
   setDictationReady(null);
-  probeStarted = false;
+  disarmProbe();
+  probeArmed = false;
   stopDictation();
 }
 
@@ -331,6 +339,14 @@ function finishDictation(): void {
  * same happened at the one-minute cap.
  */
 export function stopDictation(): void {
+  // 🔴 A SECOND STOP, while the first still waits on the engine (the 2 s
+  // grace). The session is already ending, and the second call would overwrite
+  // `finishTimer` without clearing the first: the leaked timer later ends
+  // whatever session is running THEN, which nobody stopped, and whose engine
+  // nothing can reach any more. A second stop is one tap away — during the
+  // grace the control still reads "stop dictating and send" — and a window
+  // switch or an unmount reaches it too. The first stop owns the ending.
+  if (finishTimer !== null) return;
   if (timer !== null) clearInterval(timer);
   timer = null;
   const engine = recognition;

@@ -35,6 +35,7 @@ import { micLevel, startMicMeter, stopMicMeter } from "./lib/micLevel";
 import { createNetworkReconnect } from "./lib/networkReconnect";
 import { networkBySlug } from "./lib/networks";
 import { routeClipboardPaste, routePastedInput } from "./lib/pasteRoute";
+import { releasedInside } from "./lib/pointerActivation";
 import { createPointerSend } from "./lib/pointerSend";
 import { bindSwipeRecall } from "./lib/swipeRecall";
 import { activeHost } from "./lib/uploadHost";
@@ -570,19 +571,15 @@ const ComposeBox: Component<Props> = (props) => {
     ),
   );
 
-  // The availability question, asked once per page and never on the mount
-  // path (see `probeDictation`): until it answers, the send button is what an
-  // empty box shows.
-  onMount(() => probeDictation());
-
   // #2611 — nothing native here, on purpose. `checkDictation()` asks the
   // engine `available()` and may `install()` a model: both are native calls,
-  // and doing them when the box merely MOUNTS was measured to crash the
-  // renderer (a channel window in CI: "Target crashed", then the shard
-  // dies). The question is asked on the mic's press instead, inside the
-  // gesture; until then the button exists on the cheap, synchronous
-  // `dictationSupported()`, and `dictationAvailable() === false` takes it
-  // away when the engine says it cannot recognize locally.
+  // and asking them when the box merely MOUNTS was measured to take the
+  // renderer down (a channel window in CI: "Target crashed", then the shard
+  // dies). `probeDictation` only ARMS the question here; the first gesture
+  // anywhere on the page asks it, once, inside that gesture. Until it
+  // answers, an empty box shows its send button, and
+  // `dictationAvailable() === false` keeps it there.
+  onMount(() => probeDictation());
 
   createEffect(() => {
     if (!dictating()) {

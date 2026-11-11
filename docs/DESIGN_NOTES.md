@@ -6701,3 +6701,58 @@ there is no numeric for it (the only password-mismatch numeric the codebase
 knows, `464` ERR_PASSWDMISMATCH, is the OPER one, documented on
 `IRC.Client.send_oper/3`). So the only honest bound on a wrong password is
 the ceiling itself.
+<!-- entry #2611 -->
+
+---
+
+## 2026-11-11 — issue 2611: dictation in the compose box, on device or not at all
+
+**On device, and nothing else.** `SpeechRecognition` without
+`processLocally` sends the audio to the vendor — on Chrome, to Google — so a
+browser that cannot recognize locally gets no microphone at all. No WASM
+fallback: vjt's ruling on the issue.
+
+**The rulings, as they stand.** (a) On an EMPTY box the microphone takes the
+send button's place: there is nothing to send, so the one control there is the
+microphone. (b) It is offered only where on-device recognition is actually
+usable — `available()` has to answer before the button is drawn, because a
+microphone that appears on the cheap API check and vanishes on the first tap
+is worse than none. (c) While a session runs the control is stop-and-send,
+with a glyph that says so: the same microphone in red still reads "start".
+
+### The question is asked from the operator's first gesture
+
+Asking `available()` (and `install()`, which downloads the browser's model)
+when a compose box merely MOUNTED was measured taking the renderer down in CI:
+a channel window mounting the box died about 0.2 s later, "Target crashed",
+then the whole shard — 75 of 75 integration failures on the head, and 74 of
+them 78–266 ms after a tap. Scheduling it from a `setTimeout(0)` did not stop
+it. The mount now only ARMS the question; the first `pointerdown`/`keydown`
+anywhere asks it, once per page, inside that gesture — which is where
+`install()` belongs anyway. Until the answer lands the compose box keeps its
+send button.
+
+### The slot swaps under the finger, so the cancel moved with it
+
+A send empties the draft synchronously (`takeDraft` runs before the pump's
+first `await`), so on a box where dictation is available the slot swaps to the
+microphone INSIDE the send button's own activation. #1059's invariant — the
+send button must remain a mouse-event target across its own activation, where
+the #59 keyboard-preserve cancel lives — cannot hold for an element that is
+gone. The cancel therefore lives on the microphone too, and the microphone is
+pointer-activated like the send button: a compat `click` that lands on it
+because the slot swapped under a finger that pressed Send is swallowed by
+`detail > 0`, so it never starts a dictation nobody asked for. While a session
+runs the slot stays the stop control whatever is typed, or the only way back
+to it would be to send the line or delete it.
+
+### A dictated segment is its own message
+
+It never touches the draft: appending it sent a half-typed line unfinished,
+and a half-typed COMMAND would have run with the dictated words as its
+arguments. The session is pinned to the window it started in — a switch stops
+it rather than sending private words to whatever window is open next — and
+stopping keeps the handlers attached until the engine finalises, so the
+utterance in flight goes out. A second stop during that 2 s grace does
+nothing: it used to overwrite the timer guarding the ending, and the leaked
+one later ended whatever session was running then.

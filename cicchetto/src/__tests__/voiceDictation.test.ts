@@ -8,7 +8,9 @@ import {
   checkDictation,
   DICTATION_PREFIX,
   DictationSession,
-  dictationSupported,
+  dictationState,
+  FINISH_GRACE_MS,
+  probeDictation,
   SEGMENT_MS,
   SESSION_MS,
   startDictation,
@@ -168,16 +170,6 @@ describe("checkDictation (issue 2611)", () => {
     expect(await checkDictation()).toBe(false);
   });
 
-  // #2611 — the cheap half: whether the API exists is answered without
-  // touching the engine, because the compose box asks it on every mount.
-  it("answers the API's presence synchronously, asking the engine nothing", () => {
-    expect(dictationSupported()).toBe(false);
-    const available = vi.fn(async () => "available");
-    withRecognition({ available });
-    expect(dictationSupported()).toBe(true);
-    expect(available).not.toHaveBeenCalled();
-  });
-
   it("offers none when the engine cannot promise local recognition", async () => {
     withRecognition({ available: async () => "unavailable" });
     expect(await checkDictation()).toBe(false);
@@ -235,7 +227,111 @@ describe("checkDictation (issue 2611)", () => {
     expect(sent).toEqual([`${DICTATION_PREFIX}prima`]);
   });
 
-  it("prefixes nothing itself: the prefix belongs to the caller", () => {
+  it("carries the marker every dictated message is sent with", () => {
     expect(DICTATION_PREFIX).toBe("🔊 ");
+  });
+
+  // The delta-2 review's MAJOR A: a second stop during the 2 s grace
+  // overwrote `finishTimer` without clearing the first, and the leaked timer
+  // later ended whatever session was running then — an engine still listening
+  // with no UI and no reference left to stop it. A second stop is one tap away
+  // (during the grace the control still reads "stop dictating and send").
+  it("a second stop during the grace does not end the session that comes after it", async () => {
+    vi.useFakeTimers();
+    try {
+      // `stop()` answers nothing: the grace is what ends the first session,
+      // and the test decides when the engine finalises.
+      const engine = {
+        lang: "",
+        continuous: false,
+        interimResults: false,
+        processLocally: false,
+        starts: 0,
+        stops: 0,
+        onresult: null as null | ((event: unknown) => void),
+        onerror: null as null | (() => void),
+        onend: null as null | (() => void),
+        start() {
+          engine.starts += 1;
+        },
+        stop() {
+          engine.stops += 1;
+        },
+        abort() {},
+      };
+      const Ctor = (() => engine) as unknown as new () => unknown;
+      vi.stubGlobal(
+        "SpeechRecognition",
+        Object.assign(Ctor, { available: async () => "available" }),
+      );
+      const sent: string[] = [];
+      const send = (text: string): void => {
+        sent.push(text);
+      };
+
+      await startDictation(send);
+      stopDictation();
+      expect(engine.stops).toBe(1);
+
+      vi.advanceTimersByTime(500);
+      stopDictation();
+      // The second stop does not reach the engine again: the first owns it.
+      expect(engine.stops).toBe(1);
+
+      engine.onend?.();
+      expect(dictationState().phase).toBe("idle");
+
+      await startDictation(send);
+      expect(dictationState().phase).toBe("listening");
+
+      // The first stop's timer, had it leaked, would end this session here.
+      vi.advanceTimersByTime(FINISH_GRACE_MS + 1_000);
+      expect(dictationState().phase).toBe("listening");
+      expect(engine.stops).toBe(1);
+    } finally {
+      // End the session under the fake clock, so no real grace timer outlives
+      // this case and no `finishTimer` survives into the next one.
+      __resetDictationForTests();
+      vi.advanceTimersByTime(FINISH_GRACE_MS + 1);
+      vi.useRealTimers();
+    }
+  });
+});
+
+// The delta-2 review's BLOCKER: asking the engine when a compose box merely
+// mounted took the renderer down in CI. The question is armed by the mount and
+// asked by the operator's first gesture, once per page.
+describe("probeDictation (issue 2611)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    __resetDictationForTests();
+  });
+
+  const withEngine = () => {
+    const available = vi.fn(async () => "available");
+    vi.stubGlobal("SpeechRecognition", Object.assign(class {}, { available }));
+    return available;
+  };
+
+  it("asks the engine nothing until the first gesture, then once", async () => {
+    const available = withEngine();
+    probeDictation();
+    await Promise.resolve();
+    expect(available).not.toHaveBeenCalled();
+
+    document.dispatchEvent(new Event("pointerdown"));
+    await vi.waitFor(() => expect(available).toHaveBeenCalledTimes(1));
+
+    document.dispatchEvent(new Event("pointerdown"));
+    await Promise.resolve();
+    expect(available).toHaveBeenCalledTimes(1);
+  });
+
+  it("is armed once per page, whatever asks it again", async () => {
+    const available = withEngine();
+    probeDictation();
+    probeDictation();
+    document.dispatchEvent(new Event("keydown"));
+    await vi.waitFor(() => expect(available).toHaveBeenCalledTimes(1));
   });
 });
