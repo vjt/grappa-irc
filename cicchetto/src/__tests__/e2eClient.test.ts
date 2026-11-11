@@ -1770,11 +1770,13 @@ describe("encrypted attachments (issue 2517)", () => {
     expect((row as { file?: FileInner }).file?.name).toBe("....evilgnp.exe");
   });
 
-  // N5 — say WHICH refusal. A malformed inner is not "not this grappa's
-  // upload", and calling it that sent the next reader after the wrong bug.
-  it("says a malformed inner is malformed, not a foreign url", async () => {
+  // N5 — say WHICH refusal, and let the layer that refuses say it. A malformed
+  // inner never reaches this client: the engine drops it (`file-malformed`)
+  // before a `received` event exists, so there is no re-parse to disagree with.
+  it("lets the engine refuse a malformed inner, and writes no row for it", async () => {
     const { a, b } = await pair();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const file = attachment({ key: "AAAA" });
 
     await a.client.sendFile(a.ctx, "bob", file);
@@ -1782,7 +1784,9 @@ describe("encrypted attachments (issue 2517)", () => {
     await b.client.drain(b.ctx);
 
     expect(await rowsOf(b, "alice")).toEqual([]);
-    expect(warn.mock.calls).toEqual([["[e2e] dropped a file from alice: bad-key"]]);
+    // No warning of its own: the engine's drop is the whole trace, at debug.
+    expect(warn.mock.calls).toEqual([]);
+    expect(debug.mock.calls).toContainEqual(["[e2e] dropped a message from alice: file-malformed"]);
   });
 
   // The copy path holds the url to the same rule as the peer path: a sibling
@@ -1805,8 +1809,10 @@ describe("encrypted attachments (issue 2517)", () => {
     expect(await rowsOf(a2, "bob")).toEqual([
       expect.objectContaining({ kind: "in", body: "hi alice" }),
     ]);
+    // The log names the peer as the sender wrote it ("Bob"), not as the chat is
+    // keyed: display stays raw (CLAUDE.md).
     expect(warn.mock.calls).toEqual([
-      ["[e2e] dropped a copied file to bob: not this grappa's upload"],
+      ["[e2e] dropped a copied file to Bob: not this grappa's upload"],
     ]);
   });
 
