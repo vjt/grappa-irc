@@ -766,6 +766,18 @@ describe("ServiceModal (#290)", () => {
           input.dispatchEvent(touchEvent("touchend", [{ clientX: 160, clientY: 302 }]));
 
           await waitFor(() => expect(input.value).toBe("INFO vjt "));
+
+          // A SECOND right drag, still forward. `tabCompleteStep` takes idx = 0
+          // on the first press, where `forward` makes no difference; only a
+          // continued cycle tells Tab from Shift-Tab. This drag must advance to
+          // the NEXT candidate, which is what pins the direction the
+          // `bindPrompt` comment claims.
+          input.setSelectionRange(input.value.length, input.value.length);
+          input.dispatchEvent(touchEvent("touchstart", [{ clientX: 100, clientY: 300 }]));
+          input.dispatchEvent(touchEvent("touchmove", [{ clientX: 160, clientY: 302 }]));
+          input.dispatchEvent(touchEvent("touchend", [{ clientX: 160, clientY: 302 }]));
+
+          await waitFor(() => expect(input.value).toBe("INFO vjtbot "));
         } finally {
           setSelectedChannel(null);
         }

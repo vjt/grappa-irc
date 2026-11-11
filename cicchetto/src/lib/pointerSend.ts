@@ -82,14 +82,16 @@ export function createPointerSend(opts: PointerSendOptions): PointerSendHandlers
         return;
       }
       // 🔴 THE FLAG DIES HERE, whatever carried this click, and for two
-      // different paths. MEASURED (the delta review's MAJOR): an ordinary tap
-      // whose `detail > 0` click DOES arrive — the branch above used to return
-      // without clearing, so the flag stayed set and the next keyboard
-      // Enter/Space, a detail-0 click, was swallowed: one pointer send and the
-      // button answered the keyboard no more. NOT measured here: a pointer
-      // send on real iOS can produce NO click at all (the long-press case the
-      // pointer activation exists for), which leaves the flag set for the same
-      // swallow.
+      // different paths. Path A, an ordinary tap whose `detail > 0` click DOES
+      // arrive: the branch above used to return without clearing, so the flag
+      // stayed set and the next keyboard Enter/Space, a detail-0 click, was
+      // swallowed — one pointer send and the button answered the keyboard no
+      // more. Measured in the delta-1 review; no committed test, held
+      // transitively. Path B, a pointer send on real iOS that produces NO click
+      // at all (the long-press case the pointer activation exists for), which
+      // leaves the flag set for the same swallow: pinned by "still sends from
+      // the keyboard after a pointer send whose click never came", the no-click
+      // itself being the #366 device measurement in this file's header.
       sentFromPointer = false;
       // No pointerup carried this click. Where the click IS the activation
       // (no form behind it), it must send; where a form's default action
