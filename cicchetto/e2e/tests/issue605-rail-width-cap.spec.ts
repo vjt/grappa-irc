@@ -98,7 +98,14 @@ async function boxWidth(page: Page, selector: string): Promise<number> {
 // header); when cicchetto starts booting from `GET /boot` (#1679), the new
 // door has to be added here too — and checked against /boot's own shape,
 // not assumed to match this one.
-const NETWORKS_PATH = /\/networks(\?|$)/;
+//
+// Anchored at the start of the PATH, because `answerFetchInPage` tests the
+// ABSOLUTE URL: an unanchored `/networks` also matches `GET /admin/networks`
+// (`adminListNetworks`), whose envelope has another shape. The origin is
+// left open on purpose — the app's relative fetch resolves against the
+// page's `baseURL`, not `GRAPPA_BASE_URL`, which is the runner's own line to
+// grappa — so anchoring on `GRAPPA_BASE_URL` would match nothing at all.
+const NETWORKS_PATH = /^https?:\/\/[^/]+\/networks(\?|$)/;
 
 type ConnectionRow = { connection?: { server?: string } | null };
 
