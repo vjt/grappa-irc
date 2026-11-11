@@ -3,7 +3,8 @@ import {
   consumedSpecNicks,
   provisionSpecSubject,
   readSpecLiveNick,
-  type SpecSeedOverrides,
+  SEED_GAP_MS,
+  type SpecSeed,
   setCurrentSpecSubject,
   teardownSpecSubject,
 } from "./specSubject";
@@ -86,14 +87,14 @@ export const test = base.extend<{
   _specSubject: void;
   // #2311 — per-file opt-in to a wider seed corpus. `test.use({ specSeed })`
   // only affects the file that writes it; every other spec provisions with
-  // the calibrated 200-rows-over-20-seconds default.
-  specSeed: SpecSeedOverrides;
+  // the calibrated 200-rows-over-20-seconds `SEED_GAP_MS`.
+  specSeed: SpecSeed;
   cspViolations: CspViolation[];
   _cspGuard: void;
   _unrouteGuard: void;
 }>({
   // biome-ignore-end lint/suspicious/noConfusingVoidType: Playwright's auto-fixture declaration shape
-  specSeed: [{}, { option: true }],
+  specSeed: [{ seedGapMs: SEED_GAP_MS }, { option: true }],
   _specSubject: [
     // The destructuring pattern is load-bearing: Playwright reads the first
     // parameter's pattern to decide which fixtures to instantiate, and

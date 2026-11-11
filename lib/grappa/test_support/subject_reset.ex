@@ -115,6 +115,11 @@ if Mix.env() in [:dev, :test] do
 
     @reset_timeout_ms 5_000
     @autojoin_timeout_ms 5_000
+    # The reset wire carries no spacing — its seed fields default, unlike
+    # the provisioning verb's — so it seeds at the compose-time seeder's
+    # 100ms (`mix grappa.seed_scrollback`), the density the scroll specs
+    # are calibrated against.
+    @seed_gap_ms 100
 
     @type baseline_channel :: %{
             required(:name) => String.t(),
@@ -312,7 +317,7 @@ if Mix.env() in [:dev, :test] do
           raise "subject reset: scrollback purge for #{name} found the DB saturated — baseline not clean"
       end
 
-      SubjectSession.seed_channel(user.id, cred.network_id, name, count, sender)
+      SubjectSession.seed_channel(user.id, cred.network_id, name, count, sender, @seed_gap_ms)
     end
 
     defp respawn_each(_, []), do: :ok

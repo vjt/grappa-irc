@@ -31,7 +31,7 @@ defmodule Grappa.TestSupport.SubjectProvisionTest do
         network_slug: slug,
         nick: name,
         autojoin_channels: ["#bofh"],
-        seed: [%{name: "#bofh", seed_count: 3, seed_sender: "seed-bot"}]
+        seed: [%{name: "#bofh", seed_count: 3, seed_sender: "seed-bot", seed_gap_ms: 100}]
       },
       overrides
     )

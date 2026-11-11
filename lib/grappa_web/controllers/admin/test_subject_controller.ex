@@ -21,12 +21,18 @@ if Mix.env() in [:dev, :test] do
 
         {"name": "s3f9a1", "password": "…", "network_slug": "bahamut-test",
          "nick": "s3f9a1", "autojoin_channels": ["#bofh"],
-         "seed": [{"name": "#bofh", "seed_count": 200, "seed_sender": "seed-bot"}]}
+         "seed": [{"name": "#bofh", "seed_count": 200, "seed_sender": "seed-bot",
+                   "seed_gap_ms": 100}]}
 
     Every field is required. There is no default for any of them: a
     provisioning verb that silently substitutes a channel, a nick or a
     seed depth would hand the caller a subject that is not the one it
     asked for, and the spec would assert against the difference.
+    `seed_gap_ms` (the spacing between seeded rows, a positive integer,
+    #2311) is a seed property like the depth and is required for the
+    same reason: 100 is the density the scroll specs are calibrated
+    against, and a spec about a day boundary asks for a corpus wide
+    enough to cross one.
 
     201 body is `{token, subject: {kind, id, name}, phases}` — the same
     `subject` envelope `POST /auth/login` returns, so a caller can hand
@@ -158,27 +164,14 @@ if Mix.env() in [:dev, :test] do
     defp parse_seed([], acc), do: {:ok, Enum.reverse(acc)}
 
     defp parse_seed(
-           [%{"name" => name, "seed_count" => count, "seed_sender" => sender} = entry | rest],
+           [%{"name" => name, "seed_count" => count, "seed_sender" => sender, "seed_gap_ms" => gap} | rest],
            acc
          )
          when is_binary(name) and is_integer(count) and count >= 0 and is_binary(sender) and
-                byte_size(sender) > 0 do
-      with {:ok, gap} <- parse_seed_gap(entry) do
-        seed = %{name: name, seed_count: count, seed_sender: sender}
-        parse_seed(rest, [put_seed_gap(seed, gap) | acc])
-      end
+                byte_size(sender) > 0 and is_integer(gap) and gap > 0 do
+      parse_seed(rest, [%{name: name, seed_count: count, seed_sender: sender, seed_gap_ms: gap} | acc])
     end
 
     defp parse_seed(_, _), do: :error
-
-    # #2311 — optional per-channel spacing. Absent keeps the ~20s default
-    # every scroll spec is calibrated against; a value must be a positive
-    # integer, so a typo is a 422 and not a silently dense corpus.
-    defp parse_seed_gap(%{"seed_gap_ms" => gap}) when is_integer(gap) and gap > 0, do: {:ok, gap}
-    defp parse_seed_gap(%{"seed_gap_ms" => _}), do: :error
-    defp parse_seed_gap(_), do: {:ok, nil}
-
-    defp put_seed_gap(seed, nil), do: seed
-    defp put_seed_gap(seed, gap), do: Map.put(seed, :seed_gap_ms, gap)
   end
 end

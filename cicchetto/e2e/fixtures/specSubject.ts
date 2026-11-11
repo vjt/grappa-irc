@@ -29,6 +29,8 @@ import { AUTOJOIN_CHANNELS, getSeededAdmin, NETWORK_SLUG } from "./seedData";
 // what the whole scroll/marker family of specs is calibrated against.
 const SEED_COUNT = 200;
 const SEED_SENDER = "seed-bot";
+// …and the seeder's 100ms between rows (its `@gap_ms`): 200 rows ≈ 20s.
+export const SEED_GAP_MS = 100;
 const PASSWORD = "test-password-not-secret";
 
 export type SpecSubject = {
@@ -51,17 +53,14 @@ function subjectNameFor(testInfo: TestInfo): string {
 
 // #2311 — the seed is calibrated for scroll density (200 rows ≈ 20s of
 // corpus), which is exactly ONE day separator, so a spec about the day
-// boundary has nothing to cross. `seedGapMs` widens the spacing without
-// moving the newest row off "now"; a spec opts in through the `specSeed`
-// fixture option (`test.use({ specSeed: { seedGapMs } })`), everything else
-// keeps the calibrated default.
-export type SpecSeedOverrides = { seedGapMs?: number };
+// boundary has nothing to cross. `seedGapMs` is the spacing between rows, and
+// the newest row stays at "now" whatever it is. A spec widens it through the
+// `specSeed` fixture option (`test.use({ specSeed: { seedGapMs } })`), whose
+// default is `SEED_GAP_MS`.
+export type SpecSeed = { seedGapMs: number };
 
-export function provisionSpecSubject(
-  testInfo: TestInfo,
-  seedOverrides: SpecSeedOverrides = {},
-): Promise<SpecSubject> {
-  return provision(testInfo, subjectNameFor(testInfo), true, seedOverrides);
+export function provisionSpecSubject(testInfo: TestInfo, seed: SpecSeed): Promise<SpecSubject> {
+  return provision(testInfo, subjectNameFor(testInfo), seed);
 }
 
 // issue 2430 — a SECOND subject in the same test, for specs about two people
@@ -76,14 +75,13 @@ export function provisionPeerSubject(testInfo: TestInfo, role: string): Promise<
   const digest = createHash("sha1")
     .update([...testInfo.titlePath, role].join("\u0000"))
     .digest("hex");
-  return provision(testInfo, `p${digest.slice(0, 8)}`, false);
+  return provision(testInfo, `p${digest.slice(0, 8)}`, null);
 }
 
 async function provision(
   testInfo: TestInfo,
   name: string,
-  seed: boolean,
-  seedOverrides: SpecSeedOverrides = {},
+  seed: SpecSeed | null,
 ): Promise<SpecSubject> {
   const admin = getSeededAdmin();
 
@@ -96,20 +94,15 @@ async function provision(
       network_slug: NETWORK_SLUG,
       nick: name,
       autojoin_channels: AUTOJOIN_CHANNELS,
-      seed: seed
-        ? AUTOJOIN_CHANNELS.map((channel) => ({
-            name: channel,
-            seed_count: SEED_COUNT,
-            seed_sender: SEED_SENDER,
-            // Absent means "the default" on the server; sending `undefined`
-            // would be the same thing to JSON.stringify, but the explicit
-            // spread keeps the calibrated request byte-identical for every
-            // spec that does not opt in.
-            ...(seedOverrides.seedGapMs === undefined
-              ? {}
-              : { seed_gap_ms: seedOverrides.seedGapMs }),
-          }))
-        : [],
+      seed:
+        seed === null
+          ? []
+          : AUTOJOIN_CHANNELS.map((channel) => ({
+              name: channel,
+              seed_count: SEED_COUNT,
+              seed_sender: SEED_SENDER,
+              seed_gap_ms: seed.seedGapMs,
+            })),
     }),
   });
 

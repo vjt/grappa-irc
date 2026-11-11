@@ -45,7 +45,6 @@ if Mix.env() in [:dev, :test] do
     @welcome_timeout_ms 5_000
     @autojoin_timeout_ms 5_000
     @autojoin_poll_interval_ms 50
-    @default_seed_gap_ms 100
 
     @typedoc """
     Wall-clock of each span bringing a session up, in milliseconds. The
@@ -74,15 +73,14 @@ if Mix.env() in [:dev, :test] do
 
     @doc """
     Inserts `count` synthetic `:privmsg` rows from `sender` into
-    `(user_id, network_id, channel)`, monotonically spaced
-    #{@default_seed_gap_ms}ms apart and ending at "now".
+    `(user_id, network_id, channel)`, monotonically spaced `gap_ms`
+    apart and ending at "now".
 
-    `:gap_ms` overrides the spacing (#2311). The default corpus is
-    ~20s wide, which is what every scroll spec is calibrated against
-    and what yields exactly ONE day separator; a spec about the day
-    boundary needs a corpus that crosses midnight, and widening the
-    gap is the whole of that change — the newest row still lands at
-    "now", so nothing else about the seed moves.
+    The spacing is the caller's (#2311). 100ms makes the ~20s corpus
+    every scroll spec is calibrated against, which yields exactly ONE
+    day separator; a spec about the day boundary asks for a gap wide
+    enough to cross midnight. The newest row lands at "now" whatever
+    the gap, so nothing else about the seed moves.
 
     Does NOT truncate first — callers that need a truncate own that
     decision (`SubjectReset` truncates because the channel already
@@ -95,17 +93,12 @@ if Mix.env() in [:dev, :test] do
             String.t(),
             non_neg_integer(),
             String.t(),
-            keyword()
+            pos_integer()
           ) :: :ok
-    def seed_channel(user_id, network_id, channel, count, sender, opts \\ [])
+    def seed_channel(user_id, network_id, channel, count, sender, gap_ms)
         when is_binary(user_id) and is_integer(network_id) and is_binary(channel) and
-               is_integer(count) and count >= 0 and is_binary(sender) do
-      gap_ms = Keyword.get(opts, :gap_ms, @default_seed_gap_ms)
-
-      unless is_integer(gap_ms) and gap_ms > 0 do
-        raise ArgumentError, "seed_channel/6: :gap_ms must be a positive integer, got #{inspect(gap_ms)}"
-      end
-
+               is_integer(count) and count >= 0 and is_binary(sender) and is_integer(gap_ms) and
+               gap_ms > 0 do
       base_time = System.system_time(:millisecond) - count * gap_ms
 
       Enum.each(1..count//1, fn i ->
