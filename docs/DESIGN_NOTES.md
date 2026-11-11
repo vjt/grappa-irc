@@ -6756,3 +6756,24 @@ stopping keeps the handlers attached until the engine finalises, so the
 utterance in flight goes out. A second stop during that 2 s grace does
 nothing: it used to overwrite the timer guarding the ending, and the leaked
 one later ended whatever session was running then.
+
+### The gesture asks one cheap question; the press pays for the model
+
+The first gesture asks `available()` and nothing else. `install()` — the model
+DOWNLOAD — waits for the press on the microphone, because a download triggered
+by an unrelated first tap is the same defect the mount's `available()` was, one
+call later: every page load, every test, a model nobody asked for. A browser
+that answers `downloadable` is still offered the button; a press that cannot
+get the model takes the button away rather than leaving one that answers
+nothing.
+
+### Two things the slot must not take away
+
+A send IN FLIGHT keeps the send button, spinner and all: on an empty box the
+microphone would otherwise take the slot and hide #241's only feedback exactly
+while the operator is waiting for it. And a KEYBOARD activation (Enter/Space on
+the `type="submit"` button) leaves the focus on a button the send itself
+removes — `activeElement` lands on `<body>` and the next keystroke goes
+nowhere — so the caret is handed back to the field once the send resolves. A
+pointer send never needs it: `mousedown` cancels the focus shift (#59), so the
+button was never focused.

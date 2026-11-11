@@ -149,6 +149,9 @@ const mockStartDictation = vi.fn(async (_send: unknown) => {
 });
 const mockStopDictation = vi.fn();
 const mockProbeDictation = vi.fn();
+// The press pays for a downloadable model (`ensureDictationModel`); the mock
+// says the model is there unless a case says otherwise.
+const mockEnsureModel = vi.fn(async () => mockDictationAvailable() === true);
 
 vi.mock("../lib/voiceDictation", () => ({
   dictationAvailable: () => mockDictationAvailable(),
@@ -157,6 +160,7 @@ vi.mock("../lib/voiceDictation", () => ({
       ? { phase: "listening", startedAt: 0, nextSendAt: 0, interim: "" }
       : { phase: "idle" },
   checkDictation: () => mockCheckDictation(),
+  ensureDictationModel: () => mockEnsureModel(),
   probeDictation: () => mockProbeDictation(),
   startDictation: (send: (text: string) => void) => mockStartDictation(send),
   stopDictation: (...args: unknown[]) => mockStopDictation(...args),
@@ -2872,5 +2876,95 @@ describe("ComposeBox — the microphone takes the send slot on an empty box", ()
     control?.dispatchEvent(click);
     expect(click.defaultPrevented).toBe(true);
     expect(mockStartDictation).not.toHaveBeenCalled();
+  });
+
+  // The delta-3 review's MINOR: the microphone's pointer path was a hand-rolled
+  // copy of `createPointerSend`, and NOTHING exercised it — every case above
+  // presses with `fireEvent.click`, whose `detail` is 0, so they all take the
+  // keyboard branch. A tap is how the feature is used on a phone.
+  const tapOn = (el: HTMLElement, opts: { id?: number; upInside?: boolean } = {}): void => {
+    const rect = { left: 300, right: 344, top: 500, bottom: 544, width: 44, height: 44 };
+    Object.defineProperty(el, "getBoundingClientRect", { configurable: true, value: () => rect });
+    const at = (type: string, x: number): MouseEvent => {
+      const e = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: 522 });
+      Object.defineProperty(e, "pointerId", { value: opts.id ?? 1 });
+      return e;
+    };
+    el.dispatchEvent(at("pointerdown", 322));
+    el.dispatchEvent(at("pointerup", opts.upInside === false ? 900 : 322));
+  };
+
+  it("a TAP on the microphone starts dictation once, and the compat click adds nothing", () => {
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const control = mic() as HTMLElement;
+
+    tapOn(control);
+    expect(mockStartDictation).toHaveBeenCalledTimes(1);
+
+    // The pointer-generated click the browser sends after the tap: it belongs
+    // to the press `pointerup` already answered.
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 });
+    control.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(mockStartDictation).toHaveBeenCalledTimes(1);
+  });
+
+  it("a tap that comes up OUTSIDE the microphone does nothing", () => {
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    tapOn(mic() as HTMLElement, { upInside: false });
+
+    expect(mockStartDictation).not.toHaveBeenCalled();
+  });
+
+  it("a pointerup that belongs to another pointer does nothing", () => {
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    tapOn(mic() as HTMLElement, { id: 2 });
+
+    expect(mockStartDictation).not.toHaveBeenCalled();
+  });
+
+  // The delta-3 review's D-SPIN: with dictation available the microphone took
+  // the slot on an empty box, so the #241 spinner could never show — the one
+  // piece of feedback that a line is on its way was unreachable exactly while
+  // the operator was waiting for it.
+  it("an in-flight send keeps the send button, and its spinner, on an empty box", () => {
+    setMockDictation(true);
+    setMockSending(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    expect(sendButton()).not.toBeNull();
+    expect(sendButton()?.querySelector("[data-testid='compose-send-spinner']")).not.toBeNull();
+    expect(mic()).toBeNull();
+  });
+
+  // The delta-3 review's D-FOCUS: a keyboard activation (Enter/Space on the
+  // `type="submit"` button) submits the form, the send empties the draft, the
+  // slot swaps, and the focused button goes with it — `activeElement` lands on
+  // `<body>` and the next keystroke goes nowhere.
+  it("a keyboard send hands the caret back to the field the slot took the button from", async () => {
+    const [draft, setDraft] = createSignal("hi");
+    vi.mocked(compose_.getDraft).mockImplementation(() => draft());
+    vi.mocked(compose_.submit).mockImplementation(async () => {
+      setDraft("");
+      return { ok: true };
+    });
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    const send = sendButton() as HTMLElement;
+    send.focus();
+    expect(document.activeElement).toBe(send);
+
+    // Enter/Space on a submit button: the form's default action is the send.
+    fireEvent.submit(send.closest("form") as HTMLFormElement);
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText("compose message")),
+    );
   });
 });

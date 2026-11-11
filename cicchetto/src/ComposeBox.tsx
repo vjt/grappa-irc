@@ -35,7 +35,6 @@ import { micLevel, startMicMeter, stopMicMeter } from "./lib/micLevel";
 import { createNetworkReconnect } from "./lib/networkReconnect";
 import { networkBySlug } from "./lib/networks";
 import { routeClipboardPaste, routePastedInput } from "./lib/pasteRoute";
-import { releasedInside } from "./lib/pointerActivation";
 import { createPointerSend } from "./lib/pointerSend";
 import { bindSwipeRecall } from "./lib/swipeRecall";
 import { activeHost } from "./lib/uploadHost";
@@ -50,6 +49,7 @@ import {
 import {
   dictationAvailable,
   dictationState,
+  ensureDictationModel,
   probeDictation,
   SESSION_MS,
   startDictation,
@@ -538,23 +538,43 @@ const ComposeBox: Component<Props> = (props) => {
     void sendText(target.key, target.networkSlug, target.channelName, text);
   };
 
-  const startDictationHere = (): void => {
+  // The press pays for the model: `probeDictation` only asked `available()`,
+  // and a browser that answered `downloadable` still has nothing local until
+  // this runs. Asked HERE and not at the probe, because a download triggered by
+  // an unrelated first tap is the same defect the probe exists to avoid.
+  const startDictationHere = async (): Promise<void> => {
+    const ready = await ensureDictationModel();
+    // The press was answered with a refusal: the button is gone by now
+    // (`dictationAvailable() === false`), and there is nothing to start.
+    if (!ready) return;
     dictationTarget = {
       key: key(),
       networkSlug: props.networkSlug,
       channelName: props.channelName,
     };
-    void startDictation(sendDictated);
+    await startDictation(sendDictated);
   };
 
   /** What a press on the microphone does: start a session, or end the one running. */
   const toggleDictation = (): void => {
     if (dictating()) stopDictation();
-    else startDictationHere();
+    else void startDictationHere();
   };
 
-  // The pointer a press on the microphone belongs to (see its `onPointerUp`).
-  let micPointerId: number | null = null;
+  // The microphone's activation contract: the SAME one the send button uses
+  // (`lib/pointerSend`, one implementation since issue 2429 — the last
+  // hand-rolled copy drifted). Two things are its own: `canSend` always says
+  // yes (a press is a toggle, not a send), and every pointer click is somebody
+  // else's, because the slot can swap the microphone in under a finger that
+  // was pressing send (see `swallowEveryPointerClick`).
+  const micButton = createPointerSend({
+    canSend: () => true,
+    send: toggleDictation,
+    // No form behind it: a keyboard Enter/Space reports `detail === 0` and is
+    // the only click that activates here.
+    activateOnBareClick: true,
+    swallowEveryPointerClick: true,
+  });
 
   // A window switch ends the session rather than letting it keep recording
   // into a box that is no longer the one it was started from.
@@ -613,6 +633,14 @@ const ComposeBox: Component<Props> = (props) => {
   // second one, which is how the operator's next message got eaten.
   const doSubmit = async (): Promise<void> => {
     clearFeedback();
+    // issue 2611 — a KEYBOARD activation (Enter/Space on the `type="submit"`
+    // send button) leaves the focus on a button that the send itself takes
+    // away: the draft empties, the slot swaps, and `activeElement` lands on
+    // `<body>`. Where dictation is available the slot is the microphone, so
+    // the operator's next keystroke goes nowhere. Remember who was focused and
+    // hand the caret back to the field. A POINTER send never gets here with the
+    // button focused: `onMouseDown` cancels the focus shift (#59).
+    const focusWasOnSend = document.activeElement === sendEl;
     const result = await submit(key(), props.networkSlug, props.channelName);
     // #356 — three outcomes:
     //   {error}          → sticky red alert (except the "empty" no-op marker).
@@ -624,7 +652,15 @@ const ComposeBox: Component<Props> = (props) => {
     } else if (typeof result.ok === "string") {
       showNotice(result.ok);
     }
+    // The slot swapped under the keyboard and took the focused button with it:
+    // `activeElement` is `<body>` only in that case (a refused send leaves the
+    // draft, and the button, where they were). Give the caret back.
+    if (focusWasOnSend && document.activeElement === document.body) textareaEl?.focus();
   };
+
+  // The send button element, for the focus hand-back in `doSubmit`: the slot
+  // can take the focused button away mid-activation (issue 2611).
+  let sendEl: HTMLButtonElement | undefined;
 
   // #925 — the send button's activation contract, shared with the services
   // console's button (issue 2429; see `lib/pointerSend`).
@@ -896,9 +932,17 @@ const ComposeBox: Component<Props> = (props) => {
 
             While listening the control is stop-and-send, and it SAYS so with a
             different glyph: the same microphone in red would still read as
-            "start", which is the opposite of what a press does. */}
+            "start", which is the opposite of what a press does.
+
+            A send IN FLIGHT keeps the send button where it is: the #241
+            spinner is the only feedback that the line is on its way, and a
+            microphone swapped over it would take that away exactly while the
+            operator is waiting for it. A running session still wins the slot —
+            the stop control is the only way back to it. */}
         <Show
-          when={dictationAvailable() === true && (dictating() || nothingToSend())}
+          when={
+            dictationAvailable() === true && (dictating() || (nothingToSend() && !isSending(key())))
+          }
           fallback={
             /* UX-6 bucket F (2026-05-21) — arrow glyph + aria-label
                preserve a11y + byRole queries. SVG (not Unicode ➤) so the
@@ -909,6 +953,12 @@ const ComposeBox: Component<Props> = (props) => {
             <button
               type="submit"
               aria-label="send message"
+              ref={(el) => {
+                sendEl = el;
+                onCleanup(() => {
+                  if (sendEl === el) sendEl = undefined;
+                });
+              }}
               // #241 — expose the in-flight state to assistive tech: the spinner
               // itself is decorative (aria-hidden), so aria-busy is the a11y twin
               // of the visual swap. Screen readers announce the busy state instead
@@ -937,11 +987,14 @@ const ComposeBox: Component<Props> = (props) => {
               // button[aria-disabled="true"]` carries the greying that
               // `:disabled` used to (default.css).
               //
-              // issue 2611 — and the slot does not swap it out mid-activation:
-              // when a send empties the box the microphone takes this button's
-              // place before the compat `mousedown` arrives, so the cancel it
-              // carries moved onto the microphone too (`onMouseDown` there), and
-              // that button's click swallow keeps the compat click from
+              // issue 2611 — WHERE THE INVARIANT STOPS HOLDING. It holds for as
+              // long as this slot is this button's, which is everywhere except a
+              // browser that can dictate: there a send that empties the box puts
+              // the microphone in the slot before the compat `mousedown` arrives,
+              // and the invariant cannot hold for an element that is gone. The
+              // cancel did not go with it into a copy — the microphone carries
+              // the SAME contract (`createPointerSend`, `lib/pointerSend`), and
+              // its `swallowEveryPointerClick` keeps the compat click from
               // starting a dictation nobody asked for.
               aria-disabled={nothingToSend()}
               // #59/#925/#1059 — the activation contract (mousedown cancel, the
@@ -952,6 +1005,16 @@ const ComposeBox: Component<Props> = (props) => {
               // DEFAULT ACTION is the send.
               {...sendButton}
             >
+              {/* #241 — in-flight feedback. While a send is in flight for THIS
+                  window (#904 moved that truth into the store, where it survives
+                  the unmount a window switch causes; it clears on the send's 201
+                  ack, the server persisting+broadcasting atomically) the
+                  paper-plane arrow is swapped for a CSS spinner; it reverts
+                  to the arrow on resolution. Non-optimistic: the spinner
+                  reflects the REAL in-flight window, it does NOT fake a sent
+                  row (cic never originates state). The spinner is a decorative
+                  (`aria-hidden`) ring like the arrow it replaces — the
+                  button's `aria-label` carries the a11y name in both states. */}
               <Show
                 when={isSending(key())}
                 fallback={
@@ -988,38 +1051,11 @@ const ComposeBox: Component<Props> = (props) => {
             aria-label={dictating() ? "stop dictating and send" : "dictate"}
             aria-pressed={dictating()}
             data-testid="compose-mic"
-            // #59 — this control is what the finger is on when a send empties
-            // the box and the slot swaps under it: the compat `mousedown` that
-            // follows the send's `pointerup` lands HERE, and without the cancel
-            // it steals focus and collapses the keyboard exactly as #1059 says.
-            onMouseDown={(e) => e.preventDefault()}
-            // #925, the send button's contract: activation rides the POINTER.
-            // The compat click after a tap is swallowed by `detail > 0` —
-            // including the one that belongs to the send button's activation
-            // and only lands here because the slot swapped under it, which must
-            // NOT start a dictation.
-            onPointerDown={(e) => {
-              micPointerId = e.pointerId;
-            }}
-            onPointerUp={(e) => {
-              if (micPointerId !== e.pointerId) return;
-              micPointerId = null;
-              if (!releasedInside(e.currentTarget.getBoundingClientRect(), e.clientX, e.clientY)) {
-                return;
-              }
-              toggleDictation();
-            }}
-            onClick={(e) => {
-              // A keyboard activation reports `detail === 0` and is the only
-              // click that acts here: every pointer click was already answered
-              // by its own `pointerup`, and a click with no pointerup of ours
-              // behind it is the send button's, not a press on the microphone.
-              if (e.detail > 0) {
-                e.preventDefault();
-                return;
-              }
-              toggleDictation();
-            }}
+            // #59/#925/#1059 — the same activation contract as the send button
+            // (`lib/pointerSend`), with its own two answers: `canSend` always
+            // yes, and every pointer click swallowed because the slot can swap
+            // this control in under a finger that was pressing send.
+            {...micButton}
           >
             <Show
               when={dictating()}

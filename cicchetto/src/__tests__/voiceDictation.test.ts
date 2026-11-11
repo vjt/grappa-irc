@@ -8,7 +8,9 @@ import {
   checkDictation,
   DICTATION_PREFIX,
   DictationSession,
+  dictationAvailable,
   dictationState,
+  ensureDictationModel,
   FINISH_GRACE_MS,
   probeDictation,
   SEGMENT_MS,
@@ -163,7 +165,7 @@ describe("checkDictation (issue 2611)", () => {
     // `new (() => engine)()` throws "function is not a constructor". A plain
     // function is, and `new` keeps the object a constructor returns — which is
     // exactly the fake the module then talks to.
-    // biome-ignore lint: `new` needs a constructable function, an arrow is not one
+    // biome-ignore lint/complexity/useArrowFunction: `new` needs a constructable function, an arrow is not one
     const Ctor = function () {
       return engine;
     } as unknown as new () => unknown;
@@ -192,11 +194,41 @@ describe("checkDictation (issue 2611)", () => {
     const install = vi.fn(async () => true);
     withRecognition({ available: async () => "downloadable", install });
     expect(await checkDictation()).toBe(true);
+    // The offer does NOT pay for the model: `available()` is the cheap
+    // question, and the download waits for the press (see
+    // `ensureDictationModel`). A download on the page's first unrelated tap
+    // was the defect the probe exists to avoid, one call later.
+    expect(install).toHaveBeenCalledTimes(0);
+
+    __resetDictationForTests();
+    withRecognition({ available: async () => "downloadable", install: async () => false });
+    expect(await checkDictation()).toBe(true);
+  });
+
+  it("downloads the model on the press, and takes the button away if it fails", async () => {
+    const install = vi.fn(async () => true);
+    withRecognition({ available: async () => "downloadable", install });
+    expect(await checkDictation()).toBe(true);
+    expect(await ensureDictationModel()).toBe(true);
+    expect(install).toHaveBeenCalledTimes(1);
+    // Once is enough: a second press does not download again.
+    expect(await ensureDictationModel()).toBe(true);
     expect(install).toHaveBeenCalledTimes(1);
 
     __resetDictationForTests();
     withRecognition({ available: async () => "downloadable", install: async () => false });
-    expect(await checkDictation()).toBe(false);
+    expect(await checkDictation()).toBe(true);
+    expect(await ensureDictationModel()).toBe(false);
+    // A control that answers nothing is worse than no control.
+    expect(dictationAvailable()).toBe(false);
+  });
+
+  it("has nothing to download when the model is already there", async () => {
+    const install = vi.fn(async () => true);
+    withRecognition({ available: async () => "available", install });
+    expect(await checkDictation()).toBe(true);
+    expect(await ensureDictationModel()).toBe(true);
+    expect(install).toHaveBeenCalledTimes(0);
   });
 
   // The review's MAJOR: `stopDictation` nulled `onresult` BEFORE `engine.stop()`,
@@ -263,7 +295,7 @@ describe("checkDictation (issue 2611)", () => {
         },
         abort() {},
       };
-      // biome-ignore lint: `new` needs a constructable function, an arrow is not one
+      // biome-ignore lint/complexity/useArrowFunction: `new` needs a constructable function, an arrow is not one
       const Ctor = function () {
         return engine;
       } as unknown as new () => unknown;

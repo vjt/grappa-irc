@@ -44,12 +44,21 @@ export const dictationState = dictation;
 
 // Whether this browser can dictate at all: the constructor exists AND the
 // engine can run locally for the UI's language. `null` until asked, and the
-// check is only asked on the operator's press — `available()`/`install()` are
-// native calls, and asking them when a compose box merely mounts was measured
-// to take the renderer down (a channel window in CI: "Target crashed", 30s,
-// then the whole shard). Nothing native runs until a human asks to dictate.
+// check is only asked from a gesture — `available()` is a native call, and
+// asking it when a compose box merely mounts was measured to take the renderer
+// down (a channel window in CI: "Target crashed", 30s, then the whole shard).
+// Nothing native runs until a human does something.
+//
+// `install()` — the model DOWNLOAD — is not part of that first question: it is
+// asked only when the operator presses the microphone, because a download
+// nobody asked for is the same defect one call later. A browser whose answer is
+// `downloadable` is still offered the button; the press pays for the download.
 const [dictationReady, setDictationReady] = createSignal<boolean | null>(null);
 export const dictationAvailable = dictationReady;
+
+// The engine said `downloadable`: the button is offered, the model is not here
+// yet. `ensureDictationModel()` is what fetches it, on the press.
+let modelPending = false;
 
 /** The constructor the browser exposes, if any (Chrome ships the prefixed one). */
 type RecognitionCtor = new () => Recognition;
@@ -85,35 +94,58 @@ function recognitionCtor(): (RecognitionCtor & RecognitionStatic) | null {
 /**
  * Whether dictation may be offered, asking once per page. `true` only when
  * the engine runs locally for the UI's language: `available()` absent means
- * the browser is too old to promise it, and `downloadable` is installed
- * first (the model is the browser's, not ours). Called from the operator's
- * first gesture (`probeDictation`), so both the question and the download
- * happen inside a user gesture.
+ * the browser is too old to promise it. `downloadable` counts as an offer —
+ * the model is the browser's, not ours, and downloading it is a separate
+ * question this function does NOT ask (see `ensureDictationModel`).
+ *
+ * Called from the operator's first gesture (`probeDictation`), so the question
+ * happens inside a user gesture.
  */
 export async function checkDictation(): Promise<boolean> {
   const ready = dictationReady();
   if (ready !== null) return ready;
   const ctor = recognitionCtor();
   let can = false;
-  if (ctor !== null) {
-    const lang = resolveLocale();
-    if (ctor.available === undefined) {
+  if (ctor !== null && ctor.available !== undefined) {
+    try {
+      const answer = await ctor.available({ langs: [resolveLocale()], processLocally: true });
+      can = answer === "available" || answer === "downloadable";
+      modelPending = answer === "downloadable" && ctor.install !== undefined;
+    } catch {
       can = false;
-    } else {
-      try {
-        const answer = await ctor.available({ langs: [lang], processLocally: true });
-        can =
-          answer === "available" ||
-          (answer === "downloadable" &&
-            ctor.install !== undefined &&
-            (await ctor.install({ langs: [lang] })));
-      } catch {
-        can = false;
-      }
     }
   }
   setDictationReady(can);
   return can;
+}
+
+/**
+ * Fetches the model when `checkDictation` found it downloadable. Called from
+ * the PRESS on the microphone, never from a gesture that merely happened to
+ * be the page's first: a model download nobody asked for is the defect this
+ * whole probe exists to avoid, one call later.
+ *
+ * A failed download takes the button away (`dictationAvailable() === false`)
+ * rather than leaving a control that answers nothing.
+ */
+export async function ensureDictationModel(): Promise<boolean> {
+  if (!modelPending) return dictationReady() === true;
+  const ctor = recognitionCtor();
+  if (ctor?.install === undefined) {
+    modelPending = false;
+    setDictationReady(false);
+    return false;
+  }
+  try {
+    const ok = await ctor.install({ langs: [resolveLocale()] });
+    modelPending = false;
+    if (!ok) setDictationReady(false);
+    return ok;
+  } catch {
+    modelPending = false;
+    setDictationReady(false);
+    return false;
+  }
 }
 
 /**
@@ -127,11 +159,14 @@ export async function checkDictation(): Promise<boolean> {
  * It is NOT asked from the mount, nor from a task scheduled by it. That native
  * call was measured taking the renderer down in CI — a channel window mounting
  * a compose box: "Target crashed", then the whole shard — and the mount is the
- * one place where no human asked for anything: `install()` there is a model
- * download nobody requested, outside any user gesture. So the mount only ARMS
- * the question, and the first pointerdown or keydown anywhere asks it, once.
- * The answer lands in `dictationAvailable()`; until it does, the compose box
- * keeps its send button.
+ * one place where no human asked for anything, outside any user gesture. So the
+ * mount only ARMS the question, and the first pointerdown or keydown anywhere
+ * asks it, once. The answer lands in `dictationAvailable()`; until it does, the
+ * compose box keeps its send button.
+ *
+ * The gesture that asks is only the cheap question: `available()`. The model
+ * DOWNLOAD (`install()`) waits for the press on the microphone, so a first tap
+ * on an unrelated tab costs one query and no download.
  */
 const PROBE_EVENTS = ["pointerdown", "keydown"] as const;
 let probeArmed = false;
@@ -157,6 +192,7 @@ export function probeDictation(): void {
 /** Test seam — forget what the check answered, and disarm the question. */
 export function __resetDictationForTests(): void {
   setDictationReady(null);
+  modelPending = false;
   disarmProbe();
   probeArmed = false;
   stopDictation();
