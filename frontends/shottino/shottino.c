@@ -44,6 +44,10 @@
 #ifdef __linux__
 #include <sys/prctl.h>
 #endif
+#ifdef __FreeBSD__
+#include <sys/procctl.h>
+#include <sys/sysctl.h>
+#endif
 #include <limits.h>
 #include <dirent.h>
 #include <glob.h>
@@ -3409,6 +3413,23 @@ static bool conn_write_all(struct tls_conn *conn, const char *buf, size_t len) {
         off += (size_t)n;
     }
     return true;
+}
+
+/* The absolute path of the running binary, into `out` (NUL-terminated);
+ * false when the system will not say. Linux answers through
+ * /proc/self/exe, FreeBSD through sysctl — it mounts no /proc by default,
+ * so the readlink alone left both callers on their fallback there (#2587). */
+static bool self_exe_path(char *out, size_t out_sz) {
+#ifdef __FreeBSD__
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+    size_t len = out_sz;
+    return sysctl(mib, 4, out, &len, NULL, 0) == 0 && len > 1;
+#else
+    ssize_t n = readlink("/proc/self/exe", out, out_sz - 1);
+    if (n <= 0) return false;
+    out[n] = 0;
+    return true;
+#endif
 }
 
 /* Case-insensitive substring search — ours, not the libc's.
@@ -12382,9 +12403,8 @@ static char *llm_call_claude_cli(struct app *app, const struct llm_config *cfg,
             FILE *cf = fopen(mcp_config, "w");
             if (cf) {
                 char self[PATH_MAX];
-                ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
-                if (n > 0) self[n] = 0;
-                else snprintf(self, sizeof(self), "shottino"); /* PATH, as a last resort */
+                if (!self_exe_path(self, sizeof(self)))
+                    snprintf(self, sizeof(self), "shottino"); /* PATH, as a last resort */
                 /* alwaysLoad: without it the CLI connects --mcp-config
                  * servers asynchronously and can start the turn before
                  * the shim has registered anything. Losing that race
@@ -15485,11 +15505,16 @@ static void e2e_key_hash(struct app *app, char *out, size_t out_sz) {
 
 /* A process holding the data key writes no core: a dump is the key, and
  * whatever was decrypted, on disk in the clear. Linux also stops other
- * processes of the user attaching (ptrace) or reading /proc/<pid>/mem;
+ * processes of the user attaching (ptrace) or reading /proc/<pid>/mem, and
+ * FreeBSD's PROC_TRACE_CTL is the same refusal (ptrace, procfs, core);
  * RLIMIT_CORE is the portable half. Once on, it stays on for the run. */
 static void e2e_no_core_dumps(void) {
 #ifdef __linux__
     prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+#endif
+#ifdef __FreeBSD__
+    int trace = PROC_TRACE_CTL_DISABLE;
+    procctl(P_PID, getpid(), PROC_TRACE_CTL, &trace);
 #endif
     struct rlimit none = {0, 0};
     setrlimit(RLIMIT_CORE, &none);
@@ -22977,9 +23002,7 @@ static bool call_helper_path(struct app *app, char *out, size_t out_sz) {
     /* Beside this binary first: they are built and installed together,
      * so this is the overwhelmingly common answer. */
     char self[PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
-    if (n > 0) {
-        self[n] = 0;
+    if (self_exe_path(self, sizeof(self))) {
         char *slash = strrchr(self, '/');
         if (slash) {
             *slash = 0;
@@ -28470,6 +28493,7 @@ static void ircd_queue_locked(struct ircd_client *c, const char *line, size_t le
     c->out[c->out_len++] = '\n';
 }
 
+static void ircd_vsend_locked(struct ircd_client *c, const char *fmt, va_list ap) __attribute__((format(printf, 2, 0)));
 static void ircd_vsend_locked(struct ircd_client *c, const char *fmt, va_list ap) {
     char line[IRCD_LINE_MAX + 256];
     int n = vsnprintf(line, sizeof(line), fmt, ap);

@@ -271,8 +271,8 @@ TEST(pkmsg_ver_is_a_lists_ver) {
 
 TEST(bodies_are_one_to_four_dids_of_strings) {
     const char *bad[] = {"{}",
-                         "{\"aaaaaaaaaaa\":\"B\",\"bbbbbbbbbbb\":\"B\",\"ccccccccccc\":\"B\","
-                         "\"ddddddddddd\":\"B\",\"eeeeeeeeeee\":\"B\"}",
+                         ("{\"aaaaaaaaaaa\":\"B\",\"bbbbbbbbbbb\":\"B\",\"ccccccccccc\":\"B\","
+                          "\"ddddddddddd\":\"B\",\"eeeeeeeeeee\":\"B\"}"),
                          "{\"a/aaaaaaaaa\":\"B\"}", "{\"aaaaaaaaaaa\":1}", "[]", "\"B\""};
     for (size_t i = 0; i < 6; i++) {
         char *pk = xfmt("{\"v\":2,\"id\":" ID ",\"master\":{\"ed25519\":\"M\",\"cert\":\"C\","
@@ -2006,7 +2006,7 @@ TEST(pair_initial_payload_crosses_the_relay) {
     /* After the initial, both ways are the ECIES message as is. */
     char *done = e2e_pair_done(NULL, 0);
     char *ct = vz(vz_established_ecies_encrypt(out, (const uint8_t *)done, strlen(done)));
-    vz_buf p2;
+    vz_buf p2 = {0};
     CHECK(in && vz_established_ecies_decrypt(in, ct, &p2) == 0 && p2.len == strlen(done) &&
           memcmp(p2.ptr, done, p2.len) == 0);
     vz_buf_free(p2);

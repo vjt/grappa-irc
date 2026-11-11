@@ -145,26 +145,11 @@ cp -a "${REL_DIR}/." "${STAGING}/usr/lib/grappa/"
 SHOTTINO_BIN="${SHOTTINO_STAGING}/usr/bin/shottino"
 if [ "${SKIP_SHOTTINO:-}" != "1" ]; then
 	say "building shottino → ${SHOTTINO_BIN}"
-	# ./configure rewrites ${REPO_ROOT}/config.mk, a TRACKED file. Snapshot
-	# and restore it so the build leaves the tree exactly as it found it.
-	# Why: docs/OPERATIONS.md § "Packaging (infra/packaging/)".
-	cfg="${REPO_ROOT}/config.mk"
-	cfg_backup=""
-	if [ -f "${cfg}" ]; then
-		cfg_backup="$(mktemp)"
-		cp -a "${cfg}" "${cfg_backup}"
-	fi
-	restore_config_mk() {
-		if [ -n "${cfg_backup}" ] && [ -f "${cfg_backup}" ]; then
-			mv -f "${cfg_backup}" "${cfg}"
-		fi
-	}
-	# Restore on ANY exit path, including a failed compile below.
-	trap restore_config_mk EXIT
 	(
 		cd "${REPO_ROOT}"
-		# configure probes ncursesw + openssl through pkg-config and writes
-		# config.mk, which the Makefile reads. Fails loudly on a missing dep.
+		# configure probes ncursesw, openssl, the feature macros and cargo,
+		# and writes frontends/shottino/config.mk (untracked, gitignored —
+		# the tree stays clean). Fails loudly on a missing dep.
 		./configure --prefix=/usr
 		make -C frontends/shottino clean
 		make -C frontends/shottino
@@ -181,10 +166,6 @@ if [ "${SKIP_SHOTTINO:-}" != "1" ]; then
 	# in prose goes stale silently, a number in the build log is always the one
 	# from that build.
 	say "shottino binary: $(wc -c <"${SHOTTINO_BIN}" | tr -d ' ') bytes ($(uname -s) $(uname -m))"
-	# Put config.mk back now that the compile is done, and drop the trap so
-	# it cannot fire twice.
-	restore_config_mk
-	trap - EXIT
 fi
 
 # ── nfpm ───────────────────────────────────────────────────────────────────

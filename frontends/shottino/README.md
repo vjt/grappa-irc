@@ -1,6 +1,7 @@
 # shottino
 
-Standalone Linux terminal client for grappa's REST + Phoenix Channels surface.
+Standalone terminal client for grappa's REST + Phoenix Channels surface, for
+Linux and FreeBSD.
 
 Shottino is intentionally a terminal facade over grappa's JSON API. It does not
 parse IRC and does not connect to upstream IRC servers.
@@ -73,13 +74,38 @@ starts spelling its own.
 make
 ```
 
-Run both from the repository root — that is where `configure` lives, and
-the top-level `Makefile` builds and installs shottino and nothing else.
+Run them from the repository root or from `frontends/shottino` — the
+root's `configure` and `Makefile` only forward to the ones here, so either
+way the result is shottino and nothing else. `configure` writes
+`config.mk` into this directory (it is per host, so it is not tracked).
+
+### Platforms
+
+- **Linux** (glibc) — Debian/Ubuntu, Arch, Fedora; built in CI.
+- **FreeBSD** 15 (and GhostBSD, which is FreeBSD underneath; #2587). Base
+  already carries ncursesw, OpenSSL and their `.pc` files, so:
+
+  ```sh
+  pkg install pkgconf gmake rust
+  ./configure
+  make            # bmake reads BSDmakefile, which hands everything to gmake
+  make install    # as root, or doas/sudo
+  ```
+
+  The voice, video and call defaults name Linux capture devices
+  (`pulse:default`, `v4l2:/dev/video0`); on FreeBSD set `voice.source`,
+  `voice.sink` and `video.source` to what your ffmpeg can open there, e.g.
+  `oss:/dev/dsp`.
+
+`configure` measures which feature-test macros expose what shottino needs
+beyond POSIX (they differ by libc) and records them in `config.mk`. Building
+without running `configure` first still works on glibc, with the defaults.
 
 Dependencies checked by `./configure`:
 
 - C compiler with C11 support
-- `pkg-config`
+- `pkg-config` (`pkgconf` on FreeBSD)
+- GNU make (`gmake` on FreeBSD)
 - `ncursesw`
 - OpenSSL (`libssl`, `libcrypto`)
 - pthread support
