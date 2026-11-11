@@ -2696,7 +2696,9 @@ describe("ComposeBox — the microphone takes the send slot on an empty box", ()
 
     fireEvent.click(mic() as HTMLElement);
 
-    expect(mockStartDictation).toHaveBeenCalledTimes(1);
+    // The press now pays for the model first (`ensureDictationModel`), so the
+    // session starts a microtask later, not inside the handler.
+    await waitFor(() => expect(mockStartDictation).toHaveBeenCalledTimes(1));
     expect(compose_.submit).not.toHaveBeenCalled();
   });
 
@@ -2750,6 +2752,9 @@ describe("ComposeBox — the microphone takes the send slot on an empty box", ()
     // The press STARTS the session, so it has to land while `dictating()` is
     // still false: a press on a running session is the stop.
     fireEvent.click(mic() as HTMLElement);
+    // The press pays for the model first, so the session starts a microtask
+    // later; the handler it hands us is what a segment arrives on.
+    await waitFor(() => expect(mockStartDictation).toHaveBeenCalledTimes(1));
     const send = (mockStartDictation.mock.calls.at(-1) as unknown as [(t: string) => void])[0];
     setMockDictating(true);
     fireEvent.input(screen.getByLabelText("compose message"), { target: { value: "/part" } });
@@ -2778,6 +2783,8 @@ describe("ComposeBox — the microphone takes the send slot on an empty box", ()
     // Start first (a press while `dictating()` is true is the stop), then let
     // the session be running: the switch is what the effect has to catch.
     fireEvent.click(mic() as HTMLElement);
+    // The press pays for the model first: the session starts a microtask later.
+    await waitFor(() => expect(mockStartDictation).toHaveBeenCalledTimes(1));
     const send = (mockStartDictation.mock.calls.at(-1) as unknown as [(t: string) => void])[0];
     setMockDictating(true);
 
@@ -2894,13 +2901,14 @@ describe("ComposeBox — the microphone takes the send slot on an empty box", ()
     el.dispatchEvent(at("pointerup", opts.upInside === false ? 900 : 322));
   };
 
-  it("a TAP on the microphone starts dictation once, and the compat click adds nothing", () => {
+  it("a TAP on the microphone starts dictation once, and the compat click adds nothing", async () => {
     setMockDictation(true);
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
     const control = mic() as HTMLElement;
 
     tapOn(control);
-    expect(mockStartDictation).toHaveBeenCalledTimes(1);
+    // The press pays for the model first: the session starts a microtask later.
+    await waitFor(() => expect(mockStartDictation).toHaveBeenCalledTimes(1));
 
     // The pointer-generated click the browser sends after the tap: it belongs
     // to the press `pointerup` already answered.
