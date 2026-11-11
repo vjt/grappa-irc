@@ -1767,23 +1767,66 @@ describe("encrypted attachments (issue 2517)", () => {
     await b.client.drain(b.ctx);
 
     const [row] = await rowsOf(b, "alice");
-    expect((row as { file?: FileInner }).file?.name).toBe("....evignp.exe");
+    expect((row as { file?: FileInner }).file?.name).toBe("....evilgnp.exe");
+  });
+
+  // N5 — say WHICH refusal. A malformed inner is not "not this grappa's
+  // upload", and calling it that sent the next reader after the wrong bug.
+  it("says a malformed inner is malformed, not a foreign url", async () => {
+    const { a, b } = await pair();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const file = attachment({ key: "AAAA" });
+
+    await a.client.sendFile(a.ctx, "bob", file);
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+
+    expect(await rowsOf(b, "alice")).toEqual([]);
+    expect(warn.mock.calls).toEqual([["[e2e] dropped a file from alice: bad-key"]]);
   });
 
   // The copy path holds the url to the same rule as the peer path: a sibling
   // that copies a file naming another host must not put a row here.
   it("drops a copied file whose url is not this grappa's own upload", async () => {
-    const { w, a } = await pair();
+    const { w, a, b } = await pair();
     const a2 = await w.pairDevice(a);
+    // The copy arm files its row under the chat's inbox item, so there must BE
+    // one: without the exchange the refusal is "no inbox row", and the origin
+    // check below is never reached (which is how this test used to pass
+    // without pinning anything).
+    await b.client.send(b.ctx, "alice", "hi alice");
+    for (const side of [b, a, a2, b, a, a2]) await side.client.drain(side.ctx);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const file = attachment({ url: `https://evil.example/uploads/${SLUG}` });
 
     await a.client.sendFile(a.ctx, "Bob", file);
     await a2.client.drain(a2.ctx);
 
-    expect(await rowsOf(a2, "bob")).toEqual([]);
+    expect(await rowsOf(a2, "bob")).toEqual([
+      expect.objectContaining({ kind: "in", body: "hi alice" }),
+    ]);
     expect(warn.mock.calls).toEqual([
       ["[e2e] dropped a copied file to bob: not this grappa's upload"],
+    ]);
+  });
+
+  // N7 — a copy carrying neither text nor file: a sibling that does not know
+  // about files sends the message with an empty body and no `file`, and a
+  // `sent` row with nothing in it is not a line the operator ever wrote.
+  it("writes no row for a copy that carries neither text nor file", async () => {
+    const { w, a, b } = await pair();
+    const a2 = await w.pairDevice(a);
+    await b.client.send(b.ctx, "alice", "hi alice");
+    for (const side of [b, a, a2, b, a, a2]) await side.client.drain(side.ctx);
+
+    await a.client.send(a.ctx, "Bob", "");
+    // It went: the sender has its own row for it.
+    expect((await rowsOf(a, "bob")).some((r) => r.kind === "out" && r.body === "")).toBe(true);
+
+    await a2.client.drain(a2.ctx);
+
+    expect(await rowsOf(a2, "bob")).toEqual([
+      expect.objectContaining({ kind: "in", body: "hi alice" }),
     ]);
   });
 
