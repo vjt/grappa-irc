@@ -865,7 +865,7 @@ describe("getArchiveCount (issue 2428)", () => {
     if (!call) throw new Error("fetch not called");
     const [url, opts] = call as [string, RequestInit];
     expect(url).toBe("/networks/freenode/archive/%23sniffo/count");
-    expect((opts.headers as Record<string, string>).authorization).toBe("Bearer <redacted>");
+    expect((opts.headers as Record<string, string>).authorization).toBe("Bearer tok");
   });
 
   it("the $server tab is a kind of its own, and its sigil is encoded", async () => {
