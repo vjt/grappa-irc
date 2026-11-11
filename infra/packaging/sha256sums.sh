@@ -24,8 +24,8 @@
 # carry what CI built and the script refuses.
 #
 # Coverage is EVERYTHING on the release except SHA256SUMS itself: assets no
-# expected kind names (shottino-debug today), and assets an earlier run
-# attached that this one did not rebuild (a repair whose leg failed). The file
+# expected kind names, and assets an earlier run attached that this one did
+# not rebuild (a repair whose leg failed). The file
 # describes what can be downloaded; which assets are part of the contract is
 # PACKAGING.md's call, not this script's.
 #
