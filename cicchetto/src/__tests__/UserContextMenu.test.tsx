@@ -89,7 +89,7 @@ vi.mock("../lib/selection", () => ({
 // `fetch` is faked. `serverList` is what the server holds — GET answers it —
 // and a test queues the answer the server gives a mutation: what
 // `IgnoresController` sends back (the resulting list, the normalised entry and
-// the outcome) or a refusal.
+// the outcome; 201 for an add, 200 for a removal) or a refusal.
 type Entry = { mask: string; text_pattern: string | null };
 let serverList: Entry[] = [];
 let mutationAnswer: (() => Response) | null = null;
@@ -231,7 +231,7 @@ describe("UserContextMenu", () => {
 
     it("Ignore adds the person entry nick!*@*, and the row then reads Unignore", async () => {
       mutationAnswer = () =>
-        jsonResponse(200, {
+        jsonResponse(201, {
           ...listBody([{ mask: "alice!*@*", text_pattern: null }]),
           mask: "alice!*@*",
           text_pattern: null,
@@ -289,7 +289,7 @@ describe("UserContextMenu", () => {
       expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
 
       mutationAnswer = () =>
-        jsonResponse(200, { ...listBody([person, targeted]), ...person, outcome: "added" });
+        jsonResponse(201, { ...listBody([person, targeted]), ...person, outcome: "added" });
       pressAndClick(screen.getByRole("button", { name: /^ignore$/i }));
       expect(await screen.findByRole("button", { name: /^unignore$/i })).toBeInTheDocument();
       expect(requestsOf("POST").map((r) => r.body)).toEqual([person]);

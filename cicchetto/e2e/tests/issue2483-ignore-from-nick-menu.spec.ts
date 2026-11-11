@@ -116,12 +116,13 @@ test("issue 2483 — Ignore from the nick menu silences that nick, and Unignore 
     await expect(menuRow(page, "Unignore")).toHaveCount(0);
 
     // The controller pushes the resulting list into the live session BEFORE it
-    // answers, so once the POST is back the server is already filtering.
+    // answers, so once the POST is back the server is already filtering. 201:
+    // `IgnoresController.create` answers a new entry as Created.
     const added = page.waitForResponse(
       (r) => r.request().method() === "POST" && r.url().endsWith(ignoresUrl),
     );
     await menuRow(page, "Ignore").click();
-    expect((await added).status()).toBe(200);
+    expect((await added).status()).toBe(201);
 
     // (2) The ignored nick speaks, then PARTs on the same connection: the part
     // row's arrival is the barrier that makes the absence a fact.
