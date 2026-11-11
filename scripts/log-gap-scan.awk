@@ -334,7 +334,18 @@ BEGIN {
                 # rollover turns 5 ms into 86400 s — a false GAP that fires
                 # retention and poisons the attribution.
                 d += 86400
-            } else if (d < 0) {
+            } else if (d > 43200) {
+                # The same disorder seen across midnight: a line from just
+                # before it arriving after one from just after it steps the
+                # clock FORWARD by nearly a day. Brought back by a day it is
+                # a small backward step, and the disorder arm below takes it.
+                # Only time of day is read, so a true silence of more than
+                # half a day reads as disorder too — and so does every line
+                # after it, until the clock is back within half a day of the
+                # high-water stamp.
+                d -= 86400
+            }
+            if (d < 0) {
                 # Out of order, not silent: the lines are concurrent.
                 d = 0
                 # ...and this line does NOT become the origin of the next
