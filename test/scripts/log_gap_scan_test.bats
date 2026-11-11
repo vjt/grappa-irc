@@ -138,6 +138,25 @@ stamp() {
     grep -q 'maxgap_at=08:41:10.000' <<<"$out"
 }
 
+@test "a line a few ms behind across midnight is disorder too, not a 24 h silence" {
+    # The same disorder seen from the other side of midnight: 23:59:59.998
+    # arrives after 00:00:00.001, so time-of-day steps FORWARD by nearly a
+    # day. Read as a forward silence it is 86400 s; it is 3 ms of disorder,
+    # and the line must not become the origin of the next delta either.
+    local out
+    out="$( {
+        stamp '23:59:59.999' 'before midnight'
+        stamp '00:00:00.001' 'after midnight'
+        stamp '23:59:59.998' '3 ms behind, across midnight'
+        stamp '00:00:01.000' 'after'
+    } | scan 10 )"
+
+    refute grep -q 'GAP' <<<"$out"
+    grep -q 'gaps_ge_10=0' <<<"$out"
+    grep -q 'maxgap=1.0' <<<"$out"
+    grep -q 'maxgap_at=00:00:00.001' <<<"$out"
+}
+
 @test "each damage signature is counted by itself and not by another" {
     local out
     out="$( {
