@@ -17,17 +17,11 @@ import { friendlyError } from "./lib/friendlyError";
 import { isComposingKeystroke } from "./lib/imeComposition";
 import { nickEquals } from "./lib/nickEquals";
 import { createOverlayLock } from "./lib/overlayScrollLock";
-import { releasedInside } from "./lib/pointerActivation";
+import { createPointerSend } from "./lib/pointerSend";
 import { selectedChannel } from "./lib/selection";
 import { sendBodyLines } from "./lib/sendPipeline";
 import { closeServiceModal, serviceMirrorRows, serviceModalState } from "./lib/serviceModal";
-import {
-  claimAxis,
-  type DragAxis,
-  gestureAction,
-  type Point,
-  type ScrollBoundary,
-} from "./lib/swipe";
+import { bindSwipeRecall } from "./lib/swipeRecall";
 import { type TabCycle, tabCompleteStep } from "./lib/tabCompletion";
 import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import { MircBody } from "./MircText";
@@ -167,16 +161,19 @@ const ServiceModal: Component = () => {
             .finally(() => setSending(false));
         };
 
-        // issue 2429 — the send button's pointer-driven activation, the
-        // composer's own contract (#925): a `click` is what iOS withholds
-        // from a press it routes into a long-press, `pointerup` fires either
-        // way; the synthetic click that follows is swallowed so one tap
-        // cannot send twice; and `mousedown` is cancelled so tapping the
-        // button does not steal focus from the prompt and collapse the
-        // on-screen keyboard (#59). Plain `let`s: nothing renders off them.
-        let pressedPointerId: number | null = null;
-        let sentFromPointer = false;
         const nothingToSend = (): boolean => draft().trim() === "";
+
+        // issue 2429 — the send button's activation contract, the composer's
+        // own (#925) and now ONE implementation for both (`lib/pointerSend`).
+        // `activateOnBareClick` is ON here: unlike the composer's, this button
+        // is a bare `type="button"` with no `<form>` around it, so the click a
+        // keyboard Enter/Space (or assistive tech) produces is itself the
+        // activation — nothing else would send.
+        const sendButton = createPointerSend({
+          canSend: () => !nothingToSend() && !sending(),
+          send,
+          activateOnBareClick: true,
+        });
 
         // Auto-scroll the mirror to the newest line as notices arrive (the
         // help wall + prompt replies land at the tail). scrollHeight is 0 in
@@ -241,71 +238,17 @@ const ServiceModal: Component = () => {
         // stock mobile keyboard has no arrows, and an up-flick is the only
         // coherent intent over a one-row box); swipe DOWN = ArrowDown (newer,
         // gated on a non-empty draft: a down-flick's job is walking back to
-        // the live draft parked on the way up). The scroll-boundary handoff
-        // (#123) is kept even though a newline cannot survive in this prompt
-        // — a pasted one is flattened to a space — because the box can still
-        // scroll a long line horizontally, and the composer's rule is "inner
-        // scroll owns the drag until it runs out of room".
-        //
-        // Bound via addEventListener on the element, NOT JSX onTouch*: Solid
-        // delegates touch to a single PASSIVE document listener, where
-        // preventDefault silently no-ops, and touchmove must be non-passive
-        // to suppress iOS's native scroll at the handoff.
-        let swipeStart: Point | null = null;
-        let swipeStartTime = 0;
-        let claimedAxis: DragAxis | null = null;
-        const scrollBoundary = (el: HTMLTextAreaElement): ScrollBoundary => {
-          const maxScroll = el.scrollHeight - el.clientHeight;
-          return { atTop: el.scrollTop <= 0, atBottom: el.scrollTop >= maxScroll - 1 };
-        };
-        const onTouchStart = (e: TouchEvent): void => {
-          const t = e.touches.length === 1 ? e.touches[0] : undefined;
-          swipeStart = t ? { x: t.clientX, y: t.clientY } : null;
-          swipeStartTime = performance.now();
-          claimedAxis = null;
-        };
-        const onTouchMove = (e: TouchEvent): void => {
-          if (swipeStart === null || e.touches.length !== 1) return;
-          const t = e.touches[0];
-          if (t === undefined) return;
-          if (claimedAxis === null) {
-            const el = e.currentTarget as HTMLTextAreaElement;
-            // #1205 — a non-collapsed selection is a handle drag, not a
-            // gesture; live like the boundary, unreadable counts as collapsed.
-            claimedAxis = claimAxis(
-              swipeStart,
-              { x: t.clientX, y: t.clientY },
-              scrollBoundary(el),
-              el.selectionStart !== el.selectionEnd,
-            );
-            if (claimedAxis === null) return;
-          }
-          e.preventDefault();
-        };
-        const onTouchEnd = (e: TouchEvent): void => {
-          const start = swipeStart;
-          const claimed = claimedAxis;
-          swipeStart = null;
-          const t = e.changedTouches[0];
-          if (start === null || t === undefined || claimed === null) return;
-          const action = gestureAction(
-            start,
-            { x: t.clientX, y: t.clientY },
-            performance.now() - swipeStartTime,
-          );
-          if (action === "recall-prev") recallOlder();
-          else if (action === "recall-next" && draft().trim() !== "") recallNewer();
-        };
+        // the live draft parked on the way up). The binding itself is the
+        // composer's, in `lib/swipeRecall` — the scroll-boundary handoff
+        // (#123) and the touch-not-pointer rule included.
         const bindPrompt = (el: HTMLTextAreaElement): void => {
           inputRef = el;
-          el.addEventListener("touchstart", onTouchStart, { passive: true });
-          el.addEventListener("touchmove", onTouchMove, { passive: false });
-          el.addEventListener("touchend", onTouchEnd, { passive: true });
-          onCleanup(() => {
-            el.removeEventListener("touchstart", onTouchStart);
-            el.removeEventListener("touchmove", onTouchMove);
-            el.removeEventListener("touchend", onTouchEnd);
+          const unbind = bindSwipeRecall(el, {
+            onPrev: recallOlder,
+            onNext: recallNewer,
+            canNext: () => draft().trim() !== "",
           });
+          onCleanup(unbind);
         };
 
         return (
@@ -437,43 +380,24 @@ const ServiceModal: Component = () => {
                   }}
                 />
                 {/* issue 2429 — the visible submit the mobile keyboard never
-                    gave this prompt. Same pointer contract as the composer's
-                    send button (#925): activation on `pointerup` (a click is
+                    gave this prompt. The activation contract is the composer's
+                    send button's (#925), one implementation in
+                    `lib/pointerSend`: activation on `pointerup` (a click is
                     what iOS withholds on a long-press), the synthetic click
                     that follows swallowed, `mousedown` cancelled so the tap
                     does not collapse the keyboard (#59), and `aria-disabled`
                     — NEVER `disabled`, which is not a mouse-event target and
-                    so would stop receiving the very events this needs. */}
+                    so would stop receiving the very events this needs. Unlike
+                    the composer's, this button has no `<form>` behind it, so
+                    `activateOnBareClick` makes a keyboard Enter/Space send
+                    too. */}
                 <button
                   type="button"
                   class="service-modal-send"
                   aria-label="send command"
                   aria-busy={sending()}
                   aria-disabled={nothingToSend() || sending()}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onPointerDown={(e) => {
-                    pressedPointerId = e.pointerId;
-                    sentFromPointer = false;
-                  }}
-                  onPointerUp={(e) => {
-                    if (pressedPointerId !== e.pointerId) return;
-                    pressedPointerId = null;
-                    // Sliding off to abort is the platform's cancel
-                    // affordance for an irreversible action — hit-test it.
-                    if (
-                      !releasedInside(e.currentTarget.getBoundingClientRect(), e.clientX, e.clientY)
-                    )
-                      return;
-                    if (nothingToSend() || sending()) return;
-                    sentFromPointer = true;
-                    send();
-                  }}
-                  onClick={(e) => {
-                    // Only a pointer-generated click (detail > 0) is the
-                    // duplicate; a keyboard activation reports detail 0 and
-                    // must always send, since no pointerup carried it.
-                    if (sentFromPointer && e.detail > 0) e.preventDefault();
-                  }}
+                  {...sendButton}
                 >
                   <svg
                     width="16"

@@ -368,6 +368,38 @@ describe("ServiceModal (#290)", () => {
       expect(pipeline.sendBodyLines).not.toHaveBeenCalled();
     });
 
+    // issue 2041 — the guard sits ABOVE the whole chord table, so the arrows
+    // and Tab are IME-safe too, not just Enter. An IME walks its candidate
+    // list with the arrows and commits with Tab; acting on either — or
+    // preventDefault-ing it — eats the keystroke the IME is waiting for.
+    it("an ArrowUp that walks an IME candidate list does not recall", async () => {
+      const el = await open("svc-ta-ime-arrow");
+      fireEvent.input(el, { target: { value: "にほん" } });
+      const ev = new KeyboardEvent("keydown", {
+        key: "ArrowUp",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      el.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(false);
+      expect(el.value).toBe("にほん");
+    });
+
+    it("a Tab that commits an IME composition is left to the IME", async () => {
+      const el = await open("svc-ta-ime-tab");
+      fireEvent.input(el, { target: { value: "にほん" } });
+      const ev = new KeyboardEvent("keydown", {
+        key: "Tab",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      el.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(false);
+      expect(el.value).toBe("にほん");
+    });
+
     it("a pasted line break becomes a space, so one Enter sends one line", async () => {
       const pipeline = await import("../lib/sendPipeline");
       const el = await open("svc-ta-paste");
@@ -514,6 +546,64 @@ describe("ServiceModal (#290)", () => {
       await waitFor(() => expect(button.getAttribute("aria-disabled")).toBe("false"));
     });
 
+    // The review of this PR caught the copy-paste: the click handler was the
+    // composer's, whose comment says a keyboard activation "must always send,
+    // since no pointerup carried it" — true THERE only because the button is
+    // `type="submit"` in a `<form>`. This button is a bare `type="button"` with
+    // no form, so a detail-0 click reached a handler that never sent: Enter or
+    // Space on the focus trap's last stop did nothing.
+    it("sends on a keyboard activation — a click with no pointerup behind it", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const { input, button } = await open("svc-2429-keyboard");
+
+      type(input, "HELP");
+      // Enter/Space on a button fire a click with `detail === 0`.
+      fireEvent.click(button, { detail: 0 });
+
+      expect(pipeline.sendBodyLines).toHaveBeenCalledWith(
+        "svc-2429-keyboard",
+        "NickServ",
+        "HELP",
+        false,
+      );
+      await waitFor(() => expect(input.value).toBe(""));
+    });
+
+    it("does not send twice on one pointer press (the synthetic click is swallowed)", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const { input, button } = await open("svc-2429-no-double");
+
+      type(input, "HELP");
+      pressButton(button);
+      // The browser follows the pointerup with a pointer-generated click.
+      fireEvent.click(button, { detail: 1 });
+
+      expect(pipeline.sendBodyLines).toHaveBeenCalledTimes(1);
+    });
+
+    // The PR body lists the in-flight guard as a feature: a second press while
+    // the first send is still out must not re-send the line still in the draft.
+    it("refuses a second press while the first send is in flight", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const slug = "svc-2429-in-flight";
+      let release: () => void = () => {};
+      vi.mocked(pipeline.sendBodyLines).mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+
+      const { input, button } = await open(slug);
+      type(input, "HELP");
+      pressButton(button);
+      pressButton(button);
+
+      expect(pipeline.sendBodyLines).toHaveBeenCalledTimes(1);
+      release();
+      await waitFor(() => expect(input.value).toBe(""));
+    });
+
     it("ArrowUp recalls the line just sent, ArrowDown walks back to the live draft", async () => {
       const { input } = await open("svc-2429-arrows");
 
@@ -608,7 +698,13 @@ describe("ServiceModal (#290)", () => {
         await waitFor(() => expect(input.value).toBe("HELP"));
       });
 
-      it("swipe down returns to the live draft only when there is one", async () => {
+      // Renamed from "…only when there is one": the non-empty-draft gate on
+      // this direction cannot change an outcome here (off a walk `recallNewer`
+      // is a no-op on a null cursor; on a walk the draft is a recalled history
+      // line, which is never blank, and any edit ends the walk). The gate is
+      // kept for parity with the composer's #178 rule; what this test checks is
+      // the walk back to the draft parked on the way up.
+      it("swipe down walks back toward the live draft parked on the way up", async () => {
         const { input } = await open("svc-2429-swipe-down");
         type(input, "HELP");
         fireEvent.keyDown(input, { key: "Enter" });
