@@ -49,10 +49,13 @@
 //   rare in practice, and widening the guard to a real-TLD allowlist
 //   isn't worth the bytes.
 // - URL chars stop at whitespace or terminal punctuation (`.`, `,`,
-//   `;`, `:`, `!`, `?`, closing `)`, `]`, `}`, `>`) so a sentence
-//   like "see https://example.com." doesn't include the trailing
-//   period in the link. (URLs that contain those chars internally
-//   work fine — only TRAILING terminal punctuation is stripped.)
+//   `;`, `:`, `!`, `?`, closing `)`, `]`, `}`, `>`, and — since #2440 —
+//   closing quotes `"`, `'`, `”`, `’`, `»`) so a sentence like "see
+//   https://example.com." doesn't include the trailing period in the
+//   link. (URLs that contain those chars internally work fine — only
+//   TRAILING terminal punctuation is stripped.) The quotes are stripped
+//   OUTERMOST-first, which is what exposes a balanced-paren candidate
+//   hidden behind one to the paren rule below.
 // - Parens balance: if a URL contains `(` and `)` in equal counts
 //   (common for Wikipedia links), trailing `)` is preserved; if
 //   unbalanced (a closing paren around the URL), it's stripped.
@@ -73,6 +76,9 @@
 // - negative: trailing-`.`/`,`/`)` exclusion, sentence boundaries,
 //   bare-domain false-positive guards (no-path, versions, node.js)
 // - balanced parens, IDN pass-through
+// - closing quotes (#2440): `"`/`'`/`”`/`’`/`»` each stripped, and the
+//   unbalanced `)` a quote was hiding exposed behind it; the same class
+//   applies to the CHANNEL arm (`see #sniffo"` offers `#sniffo`)
 // - channels (#648): positive (`#chan`, hyphen/underscore, digit-led
 //   `#7dtd`), URL-wins-over-`#section`, trailing-punct + paren strip,
 //   comma-stop, negatives (bare `#`, digits-only `#1`, `&`/`+`/`!`
@@ -156,6 +162,19 @@ const TOKEN_REGEX =
 // both characters stay in the URL. Straight and typographic forms, plus the
 // guillemet, because the same line can arrive through a client that
 // autocorrects.
+//
+// This class is shared by the URL arm and the CHANNEL arm, so it moves both:
+// `see #sniffo"` now renders as channel `#sniffo` plus a text quote, where it
+// used to offer a click-to-join for `#sniffo"` (#730 sends a real JOIN). That
+// is the better behaviour and it is exactly what `.`/`!`/`?` already do — a
+// channel whose real name ends in a quote is now offered under the wrong name
+// in the same pre-existing way as one ending in `.`. Pinned by a test rather
+// than left as a side effect.
+//
+// Scope, deliberately: only the closing forms the issue named (`"`, `'`,
+// `”`, `’`, `»`). The German opening-style marks `“`/`‘` and the single
+// guillemet `›` are NOT here, so `„https://x.y/z“` still links to `z“`; a
+// line that needs them is a follow-up, not a defect this issue covers.
 const TRAILING_PUNCT_RE = /[.,;:!?)\]}>"'’”»]+$/;
 
 function stripTrailingPunctuation(token: string): { value: string; trailing: string } {
