@@ -5,15 +5,20 @@ import { pressAndClick } from "./helpers/pointerEvents";
 // C5.1 — UserContextMenu: right-click submenu on member nick.
 //
 // Tests assert:
-//   1. All 11 items render (op/deop/voice/devoice/kick/ban nick/ban host/
-//      kickban/WHOIS/CTCP/query — issue 2346 replaced the bare "ban").
+//   1. All 13 items render (op/deop/voice/devoice/kick/ban nick/ban host/
+//      kickban/ignore/WHOIS/CTCP/encrypted query/query — issue 2346 replaced
+//      the bare "ban", issue 2430 added Encrypted query, issue 2483 Ignore).
 //   2. When own nick has @-mode, op-gated items are enabled.
 //   3. When own nick lacks @-mode, op-gated items are disabled (not hidden).
 //   4. WHOIS + Query are always enabled regardless of modes; Encrypted query
-//      too, unless the nick is our own (issue 2430).
+//      and Ignore too, unless the nick is our own (issues 2430, 2483).
 //   5. Clicking an enabled item fires the correct socket push.
-//   6. Clicking outside fires onClose.
-//   7. Pressing Escape fires onClose.
+//   6. The Ignore row (issue 2483) reads Ignore or Unignore from the real
+//      ignore-list store, follows the list as it lands, adds or removes the
+//      pattern-less `nick!*@*` entry, folds with the network's casemapping,
+//      and turns a refusal into the menu's toast.
+//   7. Clicking outside fires onClose.
+//   8. Pressing Escape fires onClose.
 
 const mockPushChannelOp = vi.fn();
 const mockPushChannelDeop = vi.fn();
