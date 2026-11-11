@@ -68,7 +68,7 @@ import {
   type PinOutcome,
   type Result,
 } from "./engine";
-import { type FileInner, onGrappaOrigin, parseFileInner, sanitizeFileName } from "./fileInner";
+import { type FileInner, onGrappaOrigin, sanitizeFileName } from "./fileInner";
 import type { Olm } from "./olm";
 import {
   type Challenge,
@@ -391,12 +391,12 @@ function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): Ch
         // shape, and its `url` must be this grappa's own upload path, or the
         // peer could make this client fetch anywhere.
         if (e.inner.t === "file") {
-          const file = parseFileInner(e.inner);
-          if (
-            typeof file !== "string" &&
-            onGrappaOrigin(file.url, location.origin) &&
-            inbox !== null
-          ) {
+          // The engine already refused a malformed one (`file-malformed`) before
+          // this event existed, so what arrives is a checked `FileInner`. Taking
+          // its verdict is what keeps the two layers from disagreeing: a re-parse
+          // here left an arm no receive could ever reach.
+          const file = e.inner as unknown as FileInner;
+          if (onGrappaOrigin(file.url, location.origin) && inbox !== null) {
             changes.push({
               op: "add",
               nick: e.nick,
@@ -414,15 +414,11 @@ function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): Ch
             });
           } else {
             // Say WHICH refusal. One `else` used to call every one of them "not
-            // this grappa's upload", including a malformed inner and the
-            // `inbox === null` miss (a message with no row to file it under),
-            // which sent the next reader after the wrong bug.
+            // this grappa's upload", including the `inbox === null` miss (a
+            // message with no row to file it under), which sent the next reader
+            // after the wrong bug.
             const why =
-              typeof file === "string"
-                ? file
-                : inbox === null
-                  ? "no inbox row to file it under"
-                  : "not this grappa's upload";
+              inbox === null ? "no inbox row to file it under" : "not this grappa's upload";
             console.warn(`[e2e] dropped a file from ${e.nick}: ${why}`);
           }
           break;
