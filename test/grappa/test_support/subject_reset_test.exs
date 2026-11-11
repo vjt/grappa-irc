@@ -11,9 +11,11 @@ defmodule Grappa.TestSupport.SubjectResetTest do
   """
   use Grappa.DataCase, async: false
 
+  import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.{Notify, QueryWindows, ReadCursor, ScrollbackHelpers, UserSettings}
+  alias Grappa.{Notify, QueryWindows, ReadCursor, Repo, ScrollbackHelpers, UserSettings}
+  alias Grappa.Scrollback.Message
   alias Grappa.TestSupport.SubjectReset
 
   defp insert_message(subject_attrs, network_id, channel, server_time, body \\ "msg") do
@@ -110,6 +112,26 @@ defmodule Grappa.TestSupport.SubjectResetTest do
 
       assert Enum.all?(Map.values(phases), &(is_integer(&1) and &1 >= 0))
       assert phases.total_ms >= phases.drain_ms
+    end
+
+    test "re-seeds a baseline channel at the calibrated 100ms spacing", %{user: user, network: network} do
+      # The reset wire carries no spacing (#2311 made it the provisioning
+      # verb's caller's, not this verb's): the specs that re-seed through
+      # `resetSubject(baselineSeed)` are calibrated against the compose-time
+      # seeder's 100ms, and that is what they must keep getting.
+      baseline = %{network.slug => [%{name: "#bofh", seed_count: 3, seed_sender: "seed-bot"}]}
+      assert {:ok, _} = SubjectReset.reset!(user.name, %{baseline_seed: baseline})
+
+      times =
+        Repo.all(
+          from(m in Message,
+            where: m.user_id == ^user.id and m.network_id == ^network.id and m.channel == "#bofh",
+            order_by: [asc: m.server_time],
+            select: m.server_time
+          )
+        )
+
+      assert times |> Enum.chunk_every(2, 1, :discard) |> Enum.map(fn [a, b] -> b - a end) == [100, 100]
     end
 
     test "returns {:error, :user_not_found} for unknown user_name" do
