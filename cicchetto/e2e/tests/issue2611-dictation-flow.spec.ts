@@ -12,12 +12,14 @@
 // as a `result` event. `stop()` finalises: it answers `onend` and nothing else,
 // which is the ordinary "say a sentence, tap stop" gesture.
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
-import { assertMessagePersisted } from "../fixtures/grappaApi";
+import { assertMessagePersisted, joinChannel, listChannelNames } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
-const OTHER_CHANNEL = AUTOJOIN_CHANNELS[1];
+// The seed autojoins exactly ONE channel, so the second window has to be a
+// real one this spec joins itself — `AUTOJOIN_CHANNELS[1]` is `undefined`.
+const otherChannel = (): string => `#i2611sw-${crypto.randomUUID().slice(0, 6)}`;
 
 // The page's handle on the fake, so the spec can make it say something.
 type SpeechPage = {
@@ -128,6 +130,16 @@ test.describe("issue 2611 — dictating a line, end to end", () => {
   });
 
   test("a window switch mid-session stops it, and its words go nowhere", async ({ page }) => {
+    // Join the second window BEFORE login: cic reads the channel list at boot,
+    // and `joinChannel` only returns when the POST is accepted — the row lands
+    // once the upstream JOIN completes, so wait on the list, not on the POST.
+    const other = otherChannel();
+    const vjt = specUser();
+    await joinChannel(vjt.token, NETWORK_SLUG, other);
+    await expect
+      .poll(() => listChannelNames(vjt.token, NETWORK_SLUG), { timeout: 20_000 })
+      .toContain(other);
+
     await installFakeEngine(page);
     await loginAs(page, specUser());
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
@@ -143,7 +155,7 @@ test.describe("issue 2611 — dictating a line, end to end", () => {
     // switch does not remount it, so the session has to be ended by hand —
     // otherwise every segment said in a private query goes out in whatever
     // channel is open next.
-    await selectChannel(page, NETWORK_SLUG, OTHER_CHANNEL);
+    await selectChannel(page, NETWORK_SLUG, other);
     await expect
       .poll(() => page.evaluate(() => (window as unknown as SpeechPage).__speechEngine?.stopped))
       .toBe(1);

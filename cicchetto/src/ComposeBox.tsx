@@ -513,7 +513,12 @@ const ComposeBox: Component<Props> = (props) => {
   // there is the microphone — the send button's name and meaning are not
   // taken away from it, they are simply not the question while the field is
   // empty. With text in the box the send button is back, unchanged.
-  const dictating = (): boolean => dictationState().phase === "listening";
+  // A MEMO, not a function: the engine writes a fresh state object every
+  // second (`voiceDictation.ts` tick) and on every interim result, so a plain
+  // reader would make the effect below re-run on each of those — and its
+  // cleanup stops the session. The memo only propagates when the boolean
+  // itself flips.
+  const dictating = createMemo((): boolean => dictationState().phase === "listening");
   const [dictationNow, setDictationNow] = createSignal(Date.now());
   // Where the current session was started. A dictated segment goes to THAT
   // window and no other: the compose box is ONE component whose props follow
