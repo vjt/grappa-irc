@@ -149,6 +149,17 @@ function summary_line(svc, nlines, mg, mat) {
         CNT["lockstall_resolved"], CNT["lockstall_unattributed"], CNT["lockstall_nif"])
 }
 
+# Days since a fixed epoch for a Gregorian date, so consecutive days differ
+# by exactly 1 across month, year and leap-day boundaries. January and
+# February count as months 13 and 14 of the year before, which puts the
+# leap day at the end of a year, where the month term needs no leap rule.
+# The arguments come from `substr`, i.e. STRINGS, and a string compares
+# with a number as a string ("08" < 3 is true): hence `m + 0`.
+function day_number(y, m, d) {
+    if (m + 0 < 3) { y--; m += 12 }
+    return 365 * y + int(y / 4) - int(y / 100) + int(y / 400) + int((153 * (m - 3) + 2) / 5) + d
+}
+
 function bail(msg) {
     print "log-gap-scan.awk: CONTROL FAILED — " msg >"/dev/stderr"
     print "log-gap-scan.awk: refusing to print a census it cannot vouch for" >"/dev/stderr"
@@ -321,32 +332,20 @@ BEGIN {
     # `docker logs --timestamps` prefixes RFC3339: 2026-08-16T12:09:04.535…Z.
     # Positions rather than a regex — this runs over a million lines.
     if (substr($0, 5, 1) == "-" && substr($0, 11, 1) == "T") {
+        day = day_number(substr($0, 1, 4), substr($0, 6, 2), substr($0, 9, 2))
         t = substr($0, 12, 2) * 3600 + substr($0, 15, 2) * 60 + substr($0, 18, 9)
         ordered = 1
         if (prev >= 0) {
-            d = t - prev
-            if (d < -43200) {
-                # #2443 — a midnight rollover is the clock going from late
-                # evening to early morning, i.e. back by nearly a day. Any
-                # smaller backward step is not a rollover: `docker logs`
-                # interleaves a container's stdout and stderr, so concurrent
-                # lines can arrive a few ms out of order. Reading that as a
-                # rollover turns 5 ms into 86400 s — a false GAP that fires
-                # retention and poisons the attribution.
-                d += 86400
-            } else if (d > 43200) {
-                # The same disorder seen across midnight: a line from just
-                # before it arriving after one from just after it steps the
-                # clock FORWARD by nearly a day. Brought back by a day it is
-                # a small backward step, and the disorder arm below takes it.
-                # Only time of day is read, so a true silence of more than
-                # half a day reads as disorder too — and so does every line
-                # after it, until the clock is back within half a day of the
-                # high-water stamp.
-                d -= 86400
-            }
+            # #2443 — the delta is read from the date as well as the time.
+            # From time of day alone, midnight had to be guessed, and every
+            # guess misread something: a step back of a few ms became an
+            # 86400 s silence, and a true silence of more than half a day
+            # became disorder.
+            d = (day - prevday) * 86400 + t - prev
             if (d < 0) {
-                # Out of order, not silent: the lines are concurrent.
+                # Out of order, not silent: `docker logs` interleaves a
+                # container's stdout and stderr, so concurrent lines can
+                # arrive a few ms out of order.
                 d = 0
                 # ...and this line does NOT become the origin of the next
                 # delta: it is behind the high-water stamp, and measuring
@@ -361,6 +360,7 @@ BEGIN {
         }
         if (ordered) {
             prev = t
+            prevday = day
             prevstamp = substr($0, 12, 12)
         }
     }

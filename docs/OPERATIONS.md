@@ -1272,8 +1272,11 @@ silent change to what counts as a gap would move the retention policy
 without touching the script that implements it — which is why
 `scripts/log-gap-scan.awk` is pinned clause by clause in
 `test/scripts/log_gap_scan_test.bats` (threshold boundary from both
-sides, arithmetic, midnight rollover, one case per damage signature,
-and the refusal to default a missing threshold).
+sides, arithmetic, the delta read from the stamp's date as well as its
+time — across midnight, a year end, a leap day, and a silence of more
+than half a day — out-of-order lines worth no silence and measured from
+the high-water stamp, one case per damage signature, and the refusal to
+default a missing threshold).
 
 The scanner also carries its own controls, in BEGIN, before a single input
 line is read: each signature's known-answer sample must raise ITS counter and

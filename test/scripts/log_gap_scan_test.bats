@@ -54,8 +54,14 @@ scan() {
 }
 
 # A `docker logs --timestamps` line: RFC3339 stamp, then the payload.
+# `stamp` is on 2026-08-16; `stamp_on` names the date, for a case that
+# crosses one.
 stamp() {
-    printf '2026-08-16T%s000000Z %s\n' "$1" "$2"
+    stamp_on 2026-08-16 "$1" "$2"
+}
+
+stamp_on() {
+    printf '%sT%s000000Z %s\n' "$1" "$2" "$3"
 }
 
 @test "a silence AT the threshold is named; one just below it is not" {
@@ -90,11 +96,11 @@ stamp() {
 }
 
 @test "a silence across midnight is a silence, not a negative number" {
-    # Without the rollover this reads as -86390 s, which is not merely
+    # Read from time of day alone this is -86390 s, which is not merely
     # wrong: it is BELOW the threshold, so a stall spanning midnight would
-    # discard the bytes that prove it.
+    # discard the bytes that prove it. The stamp's date makes it 10 s.
     local out
-    out="$( { stamp '23:59:59.' before; stamp '00:00:09.' after; } | scan 10 )"
+    out="$( { stamp '23:59:59.' before; stamp_on 2026-08-17 '00:00:09.' after; } | scan 10 )"
     grep -q 'svc	GAP	10.0' <<<"$out"
     grep -q 'maxgap=10.0' <<<"$out"
 }
@@ -140,21 +146,83 @@ stamp() {
 
 @test "a line a few ms behind across midnight is disorder too, not a 24 h silence" {
     # The same disorder seen from the other side of midnight: 23:59:59.998
-    # arrives after 00:00:00.001, so time-of-day steps FORWARD by nearly a
-    # day. Read as a forward silence it is 86400 s; it is 3 ms of disorder,
-    # and the line must not become the origin of the next delta either.
+    # on the 16th arrives after 00:00:00.001 on the 17th. Time of day alone
+    # steps FORWARD by nearly a day, an 86400 s silence; the full stamp says
+    # 3 ms back, which is disorder, and the line must not become the origin
+    # of the next delta either.
     local out
     out="$( {
         stamp '23:59:59.999' 'before midnight'
-        stamp '00:00:00.001' 'after midnight'
+        stamp_on 2026-08-17 '00:00:00.001' 'after midnight'
         stamp '23:59:59.998' '3 ms behind, across midnight'
-        stamp '00:00:01.000' 'after'
+        stamp_on 2026-08-17 '00:00:01.000' 'after'
     } | scan 10 )"
 
     refute grep -q 'GAP' <<<"$out"
     grep -q 'gaps_ge_10=0' <<<"$out"
     grep -q 'maxgap=1.0' <<<"$out"
     grep -q 'maxgap_at=00:00:00.001' <<<"$out"
+}
+
+@test "a silence of more than half a day is a silence, not disorder" {
+    # From time of day alone a step forward of more than 12 h is as likely
+    # to be disorder across midnight, and reading it that way left the
+    # scanner blind to every line after it. The date settles it.
+    local out
+    out="$( {
+        stamp '00:00:00.000' a
+        stamp '13:00:00.000' b
+        stamp '13:00:05.000' c
+        stamp '13:00:20.000' d
+    } | scan 10 )"
+
+    grep -q 'svc	GAP	46800.0	00:00:00.000 -> 13:00:00.000' <<<"$out"
+    grep -q 'svc	GAP	15.0	13:00:05.000 -> 13:00:20.000' <<<"$out"
+    grep -q 'gaps_ge_10=2' <<<"$out"
+}
+
+@test "a silence of more than half a day across midnight is a silence too" {
+    # 20:00 -> 09:00 is 11 h back by time of day, which used to read as
+    # disorder; the next day's date makes it 13 h forward.
+    local out
+    out="$( {
+        stamp '20:00:00.000' a
+        stamp_on 2026-08-17 '09:00:00.000' b
+        stamp_on 2026-08-17 '09:00:05.000' c
+        stamp_on 2026-08-17 '09:00:20.000' d
+    } | scan 10 )"
+
+    grep -q 'svc	GAP	46800.0	20:00:00.000 -> 09:00:00.000' <<<"$out"
+    grep -q 'svc	GAP	15.0	09:00:05.000 -> 09:00:20.000' <<<"$out"
+    grep -q 'gaps_ge_10=2' <<<"$out"
+}
+
+@test "a change of year is 100 ms, not a year back" {
+    # The date is read in full: 31 December to 1 January is one day on,
+    # not eleven months back.
+    local out
+    out="$( {
+        stamp_on 2026-12-31 '23:59:59.9' 'last line of the year'
+        stamp_on 2027-01-01 '00:00:00.0' 'first line of the next'
+    } | scan 10 )"
+
+    refute grep -q 'GAP' <<<"$out"
+    grep -q 'gaps_ge_10=0' <<<"$out"
+    grep -q 'maxgap=0.1' <<<"$out"
+    grep -q 'maxgap_at=23:59:59.900' <<<"$out"
+}
+
+@test "consecutive days are 86400 s apart across month, year and leap-day edges" {
+    # Each pair is one day apart: a month end, a year end, February in a
+    # common year, both sides of a leap day, and the two century rules
+    # (2100 is not a leap year, 2000 is).
+    local pair out
+    for pair in 2026-08-31,2026-09-01 2026-12-31,2027-01-01 2027-02-28,2027-03-01 \
+        2028-02-28,2028-02-29 2028-02-29,2028-03-01 2100-02-28,2100-03-01 \
+        2000-02-29,2000-03-01; do
+        out="$( { stamp_on "${pair%,*}" '12:00:00.' a; stamp_on "${pair#*,}" '12:00:00.' b; } | scan 10 )"
+        grep -q 'svc	GAP	86400.0' <<<"$out" || { echo "$pair: $out"; false; }
+    done
 }
 
 @test "each damage signature is counted by itself and not by another" {
