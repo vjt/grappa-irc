@@ -1,0 +1,241 @@
+// issue 2611 — dictation's rules, away from the browser: a segment goes out
+// every 15 seconds, only finalized words are sent, silence sends nothing,
+// and a session stops at a minute. The on-device check is here too: a
+// browser that cannot promise local recognition gets no microphone.
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  __resetDictationForTests,
+  checkDictation,
+  DICTATION_PREFIX,
+  DictationSession,
+  dictationSupported,
+  SEGMENT_MS,
+  SESSION_MS,
+  startDictation,
+  stopDictation,
+} from "../lib/voiceDictation";
+
+const clock = () => {
+  let at = 0;
+  return {
+    now: () => at,
+    advance: (ms: number) => {
+      at += ms;
+    },
+  };
+};
+
+describe("DictationSession (issue 2611)", () => {
+  it("sends what the window holds every 15 seconds, and only then", () => {
+    const time = clock();
+    const sent: string[] = [];
+    const session = new DictationSession(time.now, (text) => sent.push(text));
+
+    session.final("hello");
+    time.advance(SEGMENT_MS - 1);
+    expect(session.tick()).toBe(false);
+    expect(sent).toEqual([]);
+
+    time.advance(1);
+    expect(session.tick()).toBe(false);
+    expect(sent).toEqual(["hello"]);
+
+    session.final(" again");
+    time.advance(SEGMENT_MS);
+    session.tick();
+    expect(sent).toEqual(["hello", "again"]);
+  });
+
+  it("sends nothing for a silent window, and keeps the cadence", () => {
+    const time = clock();
+    const sent: string[] = [];
+    const session = new DictationSession(time.now, (text) => sent.push(text));
+
+    time.advance(SEGMENT_MS);
+    session.tick();
+    expect(sent).toEqual([]);
+
+    // The window has moved on: words arriving now wait for the next one.
+    session.final("late");
+    session.tick();
+    expect(sent).toEqual([]);
+    time.advance(SEGMENT_MS);
+    session.tick();
+    expect(sent).toEqual(["late"]);
+  });
+
+  it("ends at a minute, sending what is left", () => {
+    const time = clock();
+    const sent: string[] = [];
+    const session = new DictationSession(time.now, (text) => sent.push(text));
+
+    session.final("first");
+    time.advance(SEGMENT_MS);
+    session.tick();
+    session.final("last");
+    time.advance(SESSION_MS);
+
+    expect(session.tick()).toBe(true);
+    expect(sent).toEqual(["first", "last"]);
+  });
+
+  it("answers the instant of the next send, never past the cap", () => {
+    const time = clock();
+    const session = new DictationSession(time.now, () => undefined);
+
+    expect(session.nextSendAt).toBe(SEGMENT_MS);
+    time.advance(SEGMENT_MS);
+    session.flush();
+    expect(session.nextSendAt).toBe(2 * SEGMENT_MS);
+
+    // 🔴 THE CLAMP, and the only shape that pins it: a flush late enough that
+    // a whole segment would run PAST the cap. At 50 s, `lastSendAt + 15 s` is
+    // 65 s and the answer must still be 60 — a flush at 45 s leaves both arms
+    // equal at 60 and a mutant that drops the `Math.min` survives.
+    time.advance(2 * SEGMENT_MS + 5_000);
+    session.flush();
+    expect(session.nextSendAt).toBe(SESSION_MS);
+  });
+
+  // The platform's word, not ours: whether a final carries a leading space is
+  // its business, so two finals must not glue into one word (by reading, not
+  // measured) and must not double the space either.
+  it("puts one space between two finals, and only where there is none", () => {
+    const time = clock();
+    const sent: string[] = [];
+    const session = new DictationSession(time.now, (text) => sent.push(text));
+
+    session.final("ciao");
+    session.final("a tutti");
+    time.advance(SEGMENT_MS);
+    session.tick();
+    expect(sent).toEqual(["ciao a tutti"]);
+
+    session.final("ok");
+    session.final(" bene");
+    time.advance(SEGMENT_MS);
+    session.tick();
+    expect(sent).toEqual(["ciao a tutti", "ok bene"]);
+  });
+});
+
+describe("checkDictation (issue 2611)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    __resetDictationForTests();
+  });
+
+  const withRecognition = (statics: Record<string, unknown>): void => {
+    vi.stubGlobal("SpeechRecognition", Object.assign(class {}, statics));
+  };
+
+  // A recognition engine that behaves as the spec says: `stop()` finalises the
+  // audio captured so far and answers `onresult`, then `onend`.
+  const fakeEngine = (finalOnStop?: string) => {
+    const engine = {
+      lang: "",
+      continuous: false,
+      interimResults: false,
+      processLocally: false,
+      started: 0,
+      onresult: null as null | ((event: unknown) => void),
+      onerror: null as null | (() => void),
+      onend: null as null | (() => void),
+      say(transcript: string, isFinal: boolean) {
+        engine.onresult?.({ resultIndex: 0, results: [{ isFinal, 0: { transcript } }] });
+      },
+      start() {
+        engine.started += 1;
+      },
+      stop() {
+        if (finalOnStop !== undefined) engine.say(finalOnStop, true);
+        engine.onend?.();
+      },
+      abort() {},
+    };
+    return engine;
+  };
+
+  const withRecognitionFor = (engine: ReturnType<typeof fakeEngine>): void => {
+    // A factory, not a constructor that returns an object (biome refuses the
+    // latter): the module only ever calls `new Ctor()`, and a function is a
+    // valid constructor target for `new`.
+    const Ctor = (() => engine) as unknown as new () => unknown;
+    vi.stubGlobal("SpeechRecognition", Object.assign(Ctor, { available: async () => "available" }));
+  };
+
+  it("offers no microphone where there is no SpeechRecognition at all", async () => {
+    expect(await checkDictation()).toBe(false);
+  });
+
+  // #2611 — the cheap half: whether the API exists is answered without
+  // touching the engine, because the compose box asks it on every mount.
+  it("answers the API's presence synchronously, asking the engine nothing", () => {
+    expect(dictationSupported()).toBe(false);
+    const available = vi.fn(async () => "available");
+    withRecognition({ available });
+    expect(dictationSupported()).toBe(true);
+    expect(available).not.toHaveBeenCalled();
+  });
+
+  it("offers none when the engine cannot promise local recognition", async () => {
+    withRecognition({ available: async () => "unavailable" });
+    expect(await checkDictation()).toBe(false);
+  });
+
+  it("offers none when the browser cannot say whether it is local", async () => {
+    withRecognition({});
+    expect(await checkDictation()).toBe(false);
+  });
+
+  it("offers one when the model is there, or when it can be installed", async () => {
+    withRecognition({ available: async () => "available" });
+    expect(await checkDictation()).toBe(true);
+
+    __resetDictationForTests();
+    const install = vi.fn(async () => true);
+    withRecognition({ available: async () => "downloadable", install });
+    expect(await checkDictation()).toBe(true);
+    expect(install).toHaveBeenCalledTimes(1);
+
+    __resetDictationForTests();
+    withRecognition({ available: async () => "downloadable", install: async () => false });
+    expect(await checkDictation()).toBe(false);
+  });
+
+  // The review's MAJOR: `stopDictation` nulled `onresult` BEFORE `engine.stop()`,
+  // and `stop()` is what makes the engine finalise the utterance in flight. Say
+  // a sentence and tap stop — the ordinary gesture — and none of it went out.
+  // The fake does what the Web Speech spec says `stop()` does: it delivers a
+  // final result for the audio captured so far, then `onend`.
+  it("sends the utterance in flight when the operator stops", async () => {
+    const engine = fakeEngine("ciao a tutti");
+    withRecognitionFor(engine);
+    const sent: string[] = [];
+
+    await startDictation((text) => sent.push(text));
+    expect(engine.started).toBe(1);
+    expect(sent).toEqual([]);
+
+    stopDictation();
+
+    expect(sent).toEqual([`${DICTATION_PREFIX}ciao a tutti`]);
+  });
+
+  // Control for the case above: the same fake, words finalised BEFORE the tap.
+  it("still sends the words that were already final when the operator stops", async () => {
+    const engine = fakeEngine();
+    withRecognitionFor(engine);
+    const sent: string[] = [];
+
+    await startDictation((text) => sent.push(text));
+    engine.say("prima", true);
+    stopDictation();
+
+    expect(sent).toEqual([`${DICTATION_PREFIX}prima`]);
+  });
+
+  it("prefixes nothing itself: the prefix belongs to the caller", () => {
+    expect(DICTATION_PREFIX).toBe("🔊 ");
+  });
+});

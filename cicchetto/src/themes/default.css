@@ -6068,6 +6068,76 @@ html.is-ios27-band .shell {
   color: var(--mode-halfop);
 }
 
+/* issue 2611 — the microphone button, a sibling of the paper plane rather
+   than its stand-in. Inherits `.compose-box button`'s accent fill; only its
+   width differs (an icon-sized square, not a padded pill), and the live
+   state is a colour swap so a press that is LISTENING never looks like the
+   send button's greyed-out refusal. */
+.compose-box .compose-box-mic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.6rem;
+}
+
+.compose-box .compose-box-mic--live {
+  background: var(--error, #e06c75);
+  color: var(--bg);
+}
+
+/* issue 2611 — the dictation hint above the compose box: the microphone's
+   level as five bars, the session's elapsed time, and the countdown to the
+   automatic send. Quiet by design (it is a hint, not an alert). */
+.compose-dictation {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.25rem 1rem;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--mode-halfop);
+}
+
+.compose-dictation-wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 1rem;
+}
+
+.compose-dictation-wave i {
+  display: block;
+  width: 3px;
+  height: 100%;
+  border-radius: 1px;
+  background: currentColor;
+  transform-origin: center;
+  /* The level rides a custom property set once per animation frame; each bar
+     scales by a different share of it, so the five read as a waveform rather
+     than one block. */
+  transform: scaleY(calc(0.15 + var(--mic-level, 0) * var(--bar-share, 0.5)));
+}
+
+.compose-dictation-wave i:nth-child(1) {
+  --bar-share: 0.45;
+}
+
+.compose-dictation-wave i:nth-child(2) {
+  --bar-share: 0.8;
+}
+
+.compose-dictation-wave i:nth-child(3) {
+  --bar-share: 1;
+}
+
+.compose-dictation-wave i:nth-child(4) {
+  --bar-share: 0.7;
+}
+
+.compose-dictation-wave i:nth-child(5) {
+  --bar-share: 0.4;
+}
+
 /* issue 2584 — the `/` command menu. The slot is a zero-height anchor on the
    compose form's top edge, so the menu floats OVER the bottom of the
    scrollback instead of pushing it up: a pane that resized on every keystroke

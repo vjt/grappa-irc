@@ -3,13 +3,15 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  on,
   onCleanup,
+  onMount,
   Show,
   untrack,
 } from "solid-js";
 import CommandMenu from "./CommandMenu";
 import { awayByNetwork } from "./lib/awayStatus";
-import { channelKey } from "./lib/channelKey";
+import { type ChannelKey, channelKey } from "./lib/channelKey";
 import {
   commandCycle,
   draftFramePreview,
@@ -19,6 +21,7 @@ import {
   isSending,
   recallNext,
   recallPrev,
+  sendText,
   setDraft,
   submit,
   tabComplete,
@@ -28,6 +31,7 @@ import { composePlaceholder } from "./lib/composePlaceholder";
 import { frameBudgetForTarget } from "./lib/frameBudget";
 import { isComposingKeystroke } from "./lib/imeComposition";
 import { frameBudgetBaseForNetwork } from "./lib/isupport";
+import { micLevel, startMicMeter, stopMicMeter } from "./lib/micLevel";
 import { createNetworkReconnect } from "./lib/networkReconnect";
 import { networkBySlug } from "./lib/networks";
 import { routeClipboardPaste, routePastedInput } from "./lib/pasteRoute";
@@ -42,6 +46,14 @@ import {
   uploadBatch,
   uploadState,
 } from "./lib/uploadOrchestrator";
+import {
+  dictationAvailable,
+  dictationState,
+  probeDictation,
+  SESSION_MS,
+  startDictation,
+  stopDictation,
+} from "./lib/voiceDictation";
 import { encryptedWindowPeer } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
 import { NOT_JOINED_STATES } from "./lib/windowStateSets";
@@ -490,6 +502,113 @@ const ComposeBox: Component<Props> = (props) => {
   // `disabled` attribute — see the button below for why.
   const nothingToSend = (): boolean => getDraft(key()).trim() === "";
 
+  // ---- Dictation (issue 2611) --------------------------------------
+  //
+  // The microphone REPLACES the send button while the box is empty, and only
+  // where the engine can recognize ON DEVICE (`voiceDictation.ts` says why
+  // there is no fallback, and why the answer is asked before the button is
+  // drawn). vjt's ruling on the issue (2026-11-11) rejected the second-button
+  // workaround: on an empty box there is nothing to send, so the one control
+  // there is the microphone — the send button's name and meaning are not
+  // taken away from it, they are simply not the question while the field is
+  // empty. With text in the box the send button is back, unchanged.
+  const dictating = (): boolean => dictationState().phase === "listening";
+  const [dictationNow, setDictationNow] = createSignal(Date.now());
+  // Where the current session was started. A dictated segment goes to THAT
+  // window and no other: the compose box is ONE component whose props follow
+  // the selection, so it is not remounted on a window switch, and words said
+  // in a private query must never go out in whatever channel is open next.
+  let dictationTarget: { key: ChannelKey; networkSlug: string; channelName: string } | null = null;
+
+  // A dictated segment goes out as a message of its own, through the same
+  // dispatch a submitted draft takes — and never through the buffer. The
+  // operator's half-typed line stays where it is: appending to it sent an
+  // unfinished sentence, and a half-typed COMMAND would have run with the
+  // dictated words as its arguments (measured by the review).
+  const sendDictated = (text: string): void => {
+    const target = dictationTarget;
+    if (target === null || target.key !== key()) {
+      // The operator switched windows mid-session. The words belong to the
+      // window the session started in, and there is no honest way to send
+      // them from here: stop, and drop them.
+      stopDictation();
+      return;
+    }
+    void sendText(target.key, target.networkSlug, target.channelName, text);
+  };
+
+  const startDictationHere = (): void => {
+    dictationTarget = {
+      key: key(),
+      networkSlug: props.networkSlug,
+      channelName: props.channelName,
+    };
+    void startDictation(sendDictated);
+  };
+
+  /** What a press on the microphone does: start a session, or end the one running. */
+  const toggleDictation = (): void => {
+    if (dictating()) stopDictation();
+    else startDictationHere();
+  };
+
+  // The pointer a press on the microphone belongs to (see its `onPointerUp`).
+  let micPointerId: number | null = null;
+
+  // A window switch ends the session rather than letting it keep recording
+  // into a box that is no longer the one it was started from.
+  createEffect(
+    on(
+      key,
+      () => {
+        if (dictating() && dictationTarget?.key !== key()) {
+          dictationTarget = null;
+          stopDictation();
+        }
+      },
+      { defer: true },
+    ),
+  );
+
+  // The availability question, asked once per page and never on the mount
+  // path (see `probeDictation`): until it answers, the send button is what an
+  // empty box shows.
+  onMount(() => probeDictation());
+
+  // #2611 — nothing native here, on purpose. `checkDictation()` asks the
+  // engine `available()` and may `install()` a model: both are native calls,
+  // and doing them when the box merely MOUNTS was measured to crash the
+  // renderer (a channel window in CI: "Target crashed", then the shard
+  // dies). The question is asked on the mic's press instead, inside the
+  // gesture; until then the button exists on the cheap, synchronous
+  // `dictationSupported()`, and `dictationAvailable() === false` takes it
+  // away when the engine says it cannot recognize locally.
+
+  createEffect(() => {
+    if (!dictating()) {
+      stopMicMeter();
+      return;
+    }
+    void startMicMeter();
+    const tick = setInterval(() => setDictationNow(Date.now()), 500);
+    onCleanup(() => {
+      clearInterval(tick);
+      stopMicMeter();
+      stopDictation();
+    });
+  });
+
+  /** The hint's two clocks, in whole seconds: elapsed, and left before the next send. */
+  const dictationClocks = (): { elapsed: number; next: number } | null => {
+    const state = dictationState();
+    if (state.phase !== "listening") return null;
+    const now = dictationNow();
+    return {
+      elapsed: Math.min(SESSION_MS, Math.floor((now - state.startedAt) / 1000)),
+      next: Math.max(0, Math.ceil((state.nextSendAt - now) / 1000)),
+    };
+  };
+
   // #904 — no component-local in-flight gate any more. The store owns the
   // one-deep queue keyed on the WINDOW, and it is the only thing that can
   // tell a second Enter (queue it) from a third (refuse it) — a `sending()`
@@ -639,6 +758,33 @@ const ComposeBox: Component<Props> = (props) => {
           onPick={pickCommand}
         />
       </div>
+      {/* issue 2611 — while dictating: the microphone's level, how long the
+          session has run, and how long before the words gathered so far go
+          out on their own. It sits above the box, where the next message
+          would appear. */}
+      <Show when={dictationClocks()}>
+        {(clocks) => (
+          <div class="compose-dictation" data-testid="compose-dictation" role="status">
+            <span
+              class="compose-dictation-wave"
+              aria-hidden="true"
+              style={{ "--mic-level": String(micLevel()) }}
+            >
+              <i />
+              <i />
+              <i />
+              <i />
+              <i />
+            </span>
+            <span class="compose-dictation-time" data-testid="compose-dictation-elapsed">
+              {clocks().elapsed}s / {Math.round(SESSION_MS / 1000)}s
+            </span>
+            <span class="compose-dictation-next" data-testid="compose-dictation-next">
+              send in {clocks().next}s
+            </span>
+          </div>
+        )}
+      </Show>
       <form
         class={`compose-box${greyed() ? " compose-box-greyed" : ""}`}
         onSubmit={(e) => {
@@ -741,88 +887,180 @@ const ComposeBox: Component<Props> = (props) => {
           // coupling to the a11y label.
           data-compose-input
         />
-        {/* UX-6 bucket F (2026-05-21) — arrow glyph + aria-label
-            preserve a11y + byRole queries. SVG (not Unicode ➤) so the
-            glyph survives Linux/Windows font-stack fallback — `.compose-box
-            button` inherits `--font-mono` whose Consolas/Liberation/DejaVu
-            members lack Dingbats-block codepoints. Matches the camera-
-            icon SVG precedent on the sibling picker button. */}
-        <button
-          type="submit"
-          aria-label="send message"
-          // #241 — expose the in-flight state to assistive tech: the spinner
-          // itself is decorative (aria-hidden), so aria-busy is the a11y twin
-          // of the visual swap. Screen readers announce the busy state instead
-          // of only the disabled state.
-          aria-busy={isSending(key())}
-          // #1059 — `aria-disabled`, NEVER `disabled`. A disabled form control
-          // is not a mouse-event target, and #925 moved this button's send
-          // from `click` to `pointerup`, which on a real tap runs BEFORE
-          // `mousedown`: the send empties the draft, an attribute-driven
-          // refusal would flip `disabled` on mid-tap, and the `mousedown`
-          // carrying the #59 focus-steal cancel below would never be
-          // dispatched. Focus leaves the textarea and iOS collapses the
-          // keyboard — tapping Send dismissed it while Enter did not, which is
-          // exactly the asymmetry #1059 was reported with.
-          //
-          // The invariant: THE SEND BUTTON MUST REMAIN A MOUSE-EVENT TARGET
-          // ACROSS ITS OWN ACTIVATION, because that is where the
-          // keyboard-preserve cancel lives. `:565` already carries this lesson
-          // for the textarea (readOnly, not disabled, for the same keyboard).
-          // Deferring the flip by a frame would also close the window and is
-          // deliberately NOT the fix: it makes the guard timing-dependent,
-          // which is the shape of the bug, not of its remedy.
-          //
-          // The refusal it replaces is not lost — it moved into `onPointerUp`,
-          // where an activation is what has to be refused. `.compose-box
-          // button[aria-disabled="true"]` carries the greying that
-          // `:disabled` used to (default.css).
-          aria-disabled={nothingToSend()}
-          // #59/#925/#1059 — the activation contract (mousedown cancel, the
-          // pointerup send, the click swallow) lives in `lib/pointerSend`, one
-          // implementation shared with the services console's send button
-          // (issue 2429). `activateOnBareClick` stays off here: this button is
-          // `type="submit"` inside a `<form>`, so a keyboard activation's
-          // DEFAULT ACTION is the send.
-          {...sendButton}
+        {/* issue 2611 — THE MICROPHONE TAKES THE SEND BUTTON'S PLACE while the
+            box is empty, and only where on-device recognition is usable
+            (`dictationAvailable() === true`, asked off the mount path — see
+            `probeDictation`). vjt's ruling on the issue: not a second button,
+            and no microphone that appears on the cheap API check and vanishes
+            on the first tap. With text in the box this slot is the send
+            button, unchanged, name included — and while a session runs the
+            slot stays the stop control whatever is typed, or the only way back
+            to it would be to send the line or delete it.
+
+            While listening the control is stop-and-send, and it SAYS so with a
+            different glyph: the same microphone in red would still read as
+            "start", which is the opposite of what a press does. */}
+        <Show
+          when={dictationAvailable() === true && (dictating() || nothingToSend())}
+          fallback={
+            /* UX-6 bucket F (2026-05-21) — arrow glyph + aria-label
+               preserve a11y + byRole queries. SVG (not Unicode ➤) so the
+               glyph survives Linux/Windows font-stack fallback — `.compose-box
+               button` inherits `--font-mono` whose Consolas/Liberation/DejaVu
+               members lack Dingbats-block codepoints. Matches the camera-
+               icon SVG precedent on the sibling picker button. */
+            <button
+              type="submit"
+              aria-label="send message"
+              // #241 — expose the in-flight state to assistive tech: the spinner
+              // itself is decorative (aria-hidden), so aria-busy is the a11y twin
+              // of the visual swap. Screen readers announce the busy state instead
+              // of only the disabled state.
+              aria-busy={isSending(key())}
+              // #1059 — `aria-disabled`, NEVER `disabled`. A disabled form control
+              // is not a mouse-event target, and #925 moved this button's send
+              // from `click` to `pointerup`, which on a real tap runs BEFORE
+              // `mousedown`: the send empties the draft, an attribute-driven
+              // refusal would flip `disabled` on mid-tap, and the `mousedown`
+              // carrying the #59 focus-steal cancel below would never be
+              // dispatched. Focus leaves the textarea and iOS collapses the
+              // keyboard — tapping Send dismissed it while Enter did not, which is
+              // exactly the asymmetry #1059 was reported with.
+              //
+              // The invariant: THE SEND BUTTON MUST REMAIN A MOUSE-EVENT TARGET
+              // ACROSS ITS OWN ACTIVATION, because that is where the
+              // keyboard-preserve cancel lives. `:565` already carries this lesson
+              // for the textarea (readOnly, not disabled, for the same keyboard).
+              // Deferring the flip by a frame would also close the window and is
+              // deliberately NOT the fix: it makes the guard timing-dependent,
+              // which is the shape of the bug, not of its remedy.
+              //
+              // The refusal it replaces is not lost — it moved into `onPointerUp`,
+              // where an activation is what has to be refused. `.compose-box
+              // button[aria-disabled="true"]` carries the greying that
+              // `:disabled` used to (default.css).
+              //
+              // issue 2611 — and the slot does not swap it out mid-activation:
+              // when a send empties the box the microphone takes this button's
+              // place before the compat `mousedown` arrives, so the cancel it
+              // carries moved onto the microphone too (`onMouseDown` there), and
+              // that button's click swallow keeps the compat click from
+              // starting a dictation nobody asked for.
+              aria-disabled={nothingToSend()}
+              // #59/#925/#1059 — the activation contract (mousedown cancel, the
+              // pointerup send, the click swallow) lives in `lib/pointerSend`, one
+              // implementation shared with the services console's send button
+              // (issue 2429). `activateOnBareClick` stays off here: this button is
+              // `type="submit"` inside a `<form>`, so a keyboard activation's
+              // DEFAULT ACTION is the send.
+              {...sendButton}
+            >
+              <Show
+                when={isSending(key())}
+                fallback={
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                    data-testid="compose-send-glyph"
+                  >
+                    <line x1="22" y1="2" x2="11" y2="13" />
+                    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                  </svg>
+                }
+              >
+                <span
+                  class="compose-send-spinner"
+                  aria-hidden="true"
+                  data-testid="compose-send-spinner"
+                />
+              </Show>
+            </button>
+          }
         >
-          {/* #241 — in-flight feedback. While a send is in flight for THIS
-              window (#904 moved that truth into the store, where it survives
-              the unmount a window switch causes; it clears on the send's 201
-              ack, the server persisting+broadcasting atomically) the
-              paper-plane arrow is swapped for a CSS spinner; it reverts
-              to the arrow on resolution. Non-optimistic: the spinner
-              reflects the REAL in-flight window, it does NOT fake a sent
-              row (cic never originates state). The spinner is a decorative
-              (`aria-hidden`) ring like the arrow it replaces — the
-              button's `aria-label` carries the a11y name in both states. */}
-          <Show
-            when={isSending(key())}
-            fallback={
+          <button
+            type="button"
+            class="compose-box-mic"
+            classList={{ "compose-box-mic--live": dictating() }}
+            aria-label={dictating() ? "stop dictating and send" : "dictate"}
+            aria-pressed={dictating()}
+            data-testid="compose-mic"
+            // #59 — this control is what the finger is on when a send empties
+            // the box and the slot swaps under it: the compat `mousedown` that
+            // follows the send's `pointerup` lands HERE, and without the cancel
+            // it steals focus and collapses the keyboard exactly as #1059 says.
+            onMouseDown={(e) => e.preventDefault()}
+            // #925, the send button's contract: activation rides the POINTER.
+            // The compat click after a tap is swallowed by `detail > 0` —
+            // including the one that belongs to the send button's activation
+            // and only lands here because the slot swapped under it, which must
+            // NOT start a dictation.
+            onPointerDown={(e) => {
+              micPointerId = e.pointerId;
+            }}
+            onPointerUp={(e) => {
+              if (micPointerId !== e.pointerId) return;
+              micPointerId = null;
+              if (!releasedInside(e.currentTarget.getBoundingClientRect(), e.clientX, e.clientY)) {
+                return;
+              }
+              toggleDictation();
+            }}
+            onClick={(e) => {
+              // A keyboard activation reports `detail === 0` and is the only
+              // click that acts here: every pointer click was already answered
+              // by its own `pointerup`, and a click with no pointerup of ours
+              // behind it is the send button's, not a press on the microphone.
+              if (e.detail > 0) {
+                e.preventDefault();
+                return;
+              }
+              toggleDictation();
+            }}
+          >
+            <Show
+              when={dictating()}
+              fallback={
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                  data-testid="compose-mic-glyph"
+                >
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  <line x1="12" y1="19" x2="12" y2="23" />
+                  <line x1="8" y1="23" x2="16" y2="23" />
+                </svg>
+              }
+            >
+              {/* Stop-and-send: a filled square, the transport's own "stop". */}
               <svg
                 width="16"
                 height="16"
                 viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
+                fill="currentColor"
+                stroke="none"
                 aria-hidden="true"
-                data-testid="compose-send-glyph"
+                data-testid="compose-mic-stop-glyph"
               >
-                <line x1="22" y1="2" x2="11" y2="13" />
-                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                <rect x="6" y="6" width="12" height="12" rx="1.5" />
               </svg>
-            }
-          >
-            <span
-              class="compose-send-spinner"
-              data-testid="compose-send-spinner"
-              aria-hidden="true"
-            />
-          </Show>
-        </button>
+            </Show>
+          </button>
+        </Show>
       </form>
       <Show when={uploadState(key())}>
         {(st) => (
