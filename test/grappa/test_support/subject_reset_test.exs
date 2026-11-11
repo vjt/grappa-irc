@@ -11,11 +11,9 @@ defmodule Grappa.TestSupport.SubjectResetTest do
   """
   use Grappa.DataCase, async: false
 
-  import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.{Notify, QueryWindows, ReadCursor, Repo, ScrollbackHelpers, UserSettings}
-  alias Grappa.Scrollback.Message
+  alias Grappa.{Notify, QueryWindows, ReadCursor, ScrollbackHelpers, UserSettings}
   alias Grappa.TestSupport.SubjectReset
 
   defp insert_message(subject_attrs, network_id, channel, server_time, body \\ "msg") do
@@ -122,15 +120,7 @@ defmodule Grappa.TestSupport.SubjectResetTest do
       baseline = %{network.slug => [%{name: "#bofh", seed_count: 3, seed_sender: "seed-bot"}]}
       assert {:ok, _} = SubjectReset.reset!(user.name, %{baseline_seed: baseline})
 
-      times =
-        Repo.all(
-          from(m in Message,
-            where: m.user_id == ^user.id and m.network_id == ^network.id and m.channel == "#bofh",
-            order_by: [asc: m.server_time],
-            select: m.server_time
-          )
-        )
-
+      times = ScrollbackHelpers.server_times(user.id, network.id, "#bofh")
       assert times |> Enum.chunk_every(2, 1, :discard) |> Enum.map(fn [a, b] -> b - a end) == [100, 100]
     end
 

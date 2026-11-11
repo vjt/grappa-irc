@@ -10,25 +10,13 @@ defmodule Grappa.TestSupport.SubjectSessionTest do
   """
   use Grappa.DataCase, async: true
 
-  import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.Repo
-  alias Grappa.Scrollback.Message
+  alias Grappa.ScrollbackHelpers
   alias Grappa.TestSupport.SubjectSession
 
   setup do
     %{user: user_fixture(name: "seed-#{System.unique_integer([:positive])}"), network: network_fixture()}
-  end
-
-  defp seeded_times(user, network, channel) do
-    Repo.all(
-      from(m in Message,
-        where: m.user_id == ^user.id and m.network_id == ^network.id and m.channel == ^channel,
-        order_by: [asc: m.server_time],
-        select: m.server_time
-      )
-    )
   end
 
   describe "seed_channel/6" do
@@ -39,7 +27,7 @@ defmodule Grappa.TestSupport.SubjectSessionTest do
       :ok = SubjectSession.seed_channel(user.id, network.id, "#bofh", 4, "seed-bot", 250)
       after_call = System.system_time(:millisecond)
 
-      times = seeded_times(user, network, "#bofh")
+      times = ScrollbackHelpers.server_times(user.id, network.id, "#bofh")
 
       assert length(times) == 4
       assert times |> Enum.chunk_every(2, 1, :discard) |> Enum.map(fn [a, b] -> b - a end) == [250, 250, 250]
@@ -56,7 +44,7 @@ defmodule Grappa.TestSupport.SubjectSessionTest do
                    SubjectSession.seed_channel(user.id, network.id, "#bofh", 3, "seed-bot", unquote(gap))
                  end)
 
-        assert seeded_times(user, network, "#bofh") == []
+        assert ScrollbackHelpers.server_times(user.id, network.id, "#bofh") == []
       end
     end
   end

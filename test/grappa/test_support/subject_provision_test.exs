@@ -20,11 +20,9 @@ defmodule Grappa.TestSupport.SubjectProvisionTest do
   """
   use Grappa.DataCase, async: false
 
-  import Ecto.Query
   import Grappa.AuthFixtures
 
   alias Grappa.{Accounts, IRCServer, Networks, ReadCursor, Repo, ScrollbackHelpers}
-  alias Grappa.Scrollback.Message
   alias Grappa.TestSupport.SubjectProvision
 
   defp params(name, slug, overrides) do
@@ -92,15 +90,7 @@ defmodule Grappa.TestSupport.SubjectProvisionTest do
       assert {:ok, %{user: user}} =
                SubjectProvision.provision!(params(name, network.slug, %{autojoin_channels: [], seed: seed}))
 
-      times =
-        Repo.all(
-          from(m in Message,
-            where: m.user_id == ^user.id and m.network_id == ^network.id and m.channel == "#bofh",
-            order_by: [asc: m.server_time],
-            select: m.server_time
-          )
-        )
-
+      times = ScrollbackHelpers.server_times(user.id, network.id, "#bofh")
       assert times |> Enum.chunk_every(2, 1, :discard) |> Enum.map(fn [a, b] -> b - a end) == [250, 250]
 
       assert :ok = SubjectProvision.teardown!(name)
