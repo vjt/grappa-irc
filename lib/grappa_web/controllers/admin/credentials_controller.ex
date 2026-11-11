@@ -265,7 +265,8 @@ defmodule GrappaWeb.Admin.CredentialsController do
   An actual write emits `:credential_updated` with `session_action:
   :server_pass_set | :server_pass_cleared` — the value never rides the event.
   A body that omits the key keeps the stored one and emits nothing, because
-  nothing changed.
+  nothing changed; a body carrying `null` is the same no-op (Ecto's `cast/3`
+  ignores a nil param), so it emits nothing either.
   """
   @spec update_server_pass(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :not_found | :bad_request | Ecto.Changeset.t()}
@@ -277,7 +278,15 @@ defmodule GrappaWeb.Admin.CredentialsController do
          {:ok, credential} <- Credentials.get_credential_by_ids(user_id, network_id),
          {:ok, updated} <-
            Credentials.update_server_pass(credential, Map.take(params, ["server_pass"])) do
-      :ok = emit_server_pass_updated(user, network, params, conn)
+      :ok =
+        emit_server_pass_updated(
+          user,
+          network,
+          Credential.upstream_server_pass(credential),
+          Credential.upstream_server_pass(updated),
+          conn
+        )
+
       json(conn, server_pass_wire(updated))
     end
   end
@@ -286,11 +295,21 @@ defmodule GrappaWeb.Admin.CredentialsController do
   # `create`/`delete` emit too, so an admin writing or wiping another user's
   # upstream PASS was the one mutation that left no trace. The action says
   # set/cleared; the secret itself never reaches the event.
-  defp emit_server_pass_updated(user, network, params, conn) do
-    case Map.fetch(params, "server_pass") do
-      {:ok, ""} -> emit_credential_updated(user, network, :server_pass_cleared, conn)
-      {:ok, _} -> emit_credential_updated(user, network, :server_pass_set, conn)
-      :error -> :ok
+  #
+  # The action comes from the BEFORE/AFTER transition, never from the request
+  # body. The body is not a reliable witness: `{"server_pass": null}` is a
+  # 200 with the row untouched (Ecto's `cast/3` ignores a nil param), and a
+  # body-only reading would have logged `:server_pass_set` for a write that
+  # never happened — a false audit entry is worse than a missing one.
+  defp emit_server_pass_updated(user, network, before, after_value, conn) do
+    case {before, after_value} do
+      # Set-ness did not move (both empty, or the same secret retyped).
+      {nil, nil} -> :ok
+      {value, value} -> :ok
+      # Empty -> set.
+      {nil, _} -> emit_credential_updated(user, network, :server_pass_set, conn)
+      # Set -> empty.
+      {_, nil} -> emit_credential_updated(user, network, :server_pass_cleared, conn)
     end
   end
 

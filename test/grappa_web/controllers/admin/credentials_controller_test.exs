@@ -1242,6 +1242,22 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
       refute_receive %Phoenix.Socket.Broadcast{topic: "grappa:admin:events"}, 200
     end
 
+    # An explicit `null` is the same no-op as an omitted key: Ecto's `cast/3`
+    # ignores a nil param, the row is untouched, and a body-only reading of
+    # the action would have logged a `:server_pass_set` for a write that never
+    # happened. The action comes from the before/after transition.
+    test "PUT server_pass with a null value emits nothing", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      session = admin_session()
+      {user, network, _} = bound_credential()
+
+      conn = put_server_pass(conn, session, user.id, network.id, %{server_pass: nil})
+      assert json_response(conn, 200) == %{"server_pass_set" => false}
+
+      refute_receive %Phoenix.Socket.Broadcast{topic: "grappa:admin:events"}, 200
+    end
+
     test "DELETE emits :credential_unbound with actor", %{conn: conn} do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
 
