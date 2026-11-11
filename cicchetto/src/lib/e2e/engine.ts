@@ -428,8 +428,9 @@ export type E2eEvent =
 
 /**
  * What `inner()` hands on: the message without its `fb`, and — when it is a
- * `t: "file"` — the `FileInner` it checked. A file's own object never travels
- * on: it can carry any key the peer wrote, and none of them may reach a row.
+ * `t: "file"` — the `FileInner` it checked. The decrypted message stays `msg`
+ * even for a file, because `deliver` still has to read its `lv`; a file's own
+ * object never reaches a row, the checked `file` is what travels on.
  */
 type Inner = { msg: Record<string, unknown>; file?: FileInner };
 
@@ -2199,9 +2200,10 @@ export class Engine {
         res.events.push({ kind: "dropped", nick, reason: "file-malformed", detail: file });
         return undefined;
       }
-      // The checked one replaces the peer's object, in the message too: what
-      // travels on must carry the fields that were checked and no other.
-      return { msg: file, file };
+      // The checked one travels on as `file`; `msg` stays the decrypted
+      // message, `lv` included, because `deliver` reads that `lv` to decide
+      // whether to ask for a newer device list — a file asks like any other.
+      return { msg: rest, file };
     }
     return { msg: rest };
   }
@@ -2238,7 +2240,10 @@ export class Engine {
         master,
         device: device.ed25519,
         verified,
-        inner: rest,
+        // A file hands on the object `inner()` checked — exactly the fields it
+        // checked, no key the peer invented — never the decrypted message it
+        // came from (that one is `msg`, kept whole only for its `lv`).
+        inner: inner.file ?? rest,
         ...(inner.file === undefined ? {} : { file: inner.file }),
       });
     }
