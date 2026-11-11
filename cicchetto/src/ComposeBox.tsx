@@ -515,6 +515,8 @@ const ComposeBox: Component<Props> = (props) => {
   const sendButton = createPointerSend({
     canSend: () => !nothingToSend(),
     send: () => void doSubmit(),
+    // `type="submit"` inside a `<form>`: the click's default action sends.
+    activateOnBareClick: false,
   });
 
   const onKeyDown = (e: KeyboardEvent) => {

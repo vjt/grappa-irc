@@ -33,8 +33,11 @@ export type PointerSendOptions = {
    * `false` for the composer, whose button is `type="submit"` inside a
    * `<form>` whose `onSubmit` does the sending — there the click's DEFAULT
    * ACTION is the send, and calling `send()` here too would send twice.
+   *
+   * REQUIRED, not defaulted: the two answers are opposites, and a default
+   * would silently pick one for the next surface that grows a send button.
    */
-  activateOnBareClick?: boolean;
+  activateOnBareClick: boolean;
 };
 
 export type PointerSendHandlers = {
@@ -75,13 +78,20 @@ export function createPointerSend(opts: PointerSendOptions): PointerSendHandlers
       // listening).
       if (sentFromPointer && e.detail > 0) {
         e.preventDefault();
+        sentFromPointer = false;
         return;
       }
-      if (sentFromPointer) return;
+      // 🔴 THE FLAG DIES HERE, whatever carried this click. A pointer send on
+      // real iOS can produce NO click at all (the long-press case the pointer
+      // activation exists for), leaving `sentFromPointer` set; a keyboard
+      // Enter/Space that follows then arrives as a detail-0 click, and a guard
+      // on this flag swallowed it — one pointer send, and the button answered
+      // the keyboard no more (measured, the delta review's MAJOR).
+      sentFromPointer = false;
       // No pointerup carried this click. Where the click IS the activation
       // (no form behind it), it must send; where a form's default action
       // sends, it must be left alone.
-      if (opts.activateOnBareClick !== true) return;
+      if (!opts.activateOnBareClick) return;
       if (!opts.canSend()) return;
       opts.send();
     },
