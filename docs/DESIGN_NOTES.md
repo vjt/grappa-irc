@@ -6425,7 +6425,9 @@ affected, and this is unmeasured on a device.
   second command's output, ✕ closes it, the lines are in `$server`; no card
   when opted out, at XXL, or on the desktop layout — each absence asserted
   only after the NickServ NOTICE frame provably reached the page. Measured
-  on the shipped font at 14px, both phones: 0.6001em per column, 1.3996 per
+  at 14px in both e2e projects, on whatever face their browsers resolve
+  from the shipped stack inside the Linux container (not SF Mono on a
+  device; which face it was is unmeasured): 0.6001em per column, 1.3996 per
   row (the fit check counts 0.6 and 1.4); the card capped at 40% of the
   visible height to within 0.01px (335.59 of 335.6 on the Pixel, 263.59 of
   263.6 on the iPhone), its body scrolled and pinned to the newest line.
