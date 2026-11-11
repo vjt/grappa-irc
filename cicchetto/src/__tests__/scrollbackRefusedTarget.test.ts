@@ -243,9 +243,14 @@ describe("#2409 a refused target is not retried", () => {
 
       backfill.fail(refuse(400));
       await more;
+      // The FIRST refusal latches and says so — counted here, before the
+      // second verb lands, so this is the line `loadMore` wrote and not just
+      // the total of two verbs that both stayed quiet.
+      expect(latchLines(warn)).toBe(1);
       refresh.fail(refuse(400));
       await refreshing;
 
+      // …and the second one on the same key stays quiet: one line per key.
       expect(latchLines(warn)).toBe(1);
     } finally {
       warn.mockRestore();
