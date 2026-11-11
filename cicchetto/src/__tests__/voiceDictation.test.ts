@@ -176,6 +176,24 @@ describe("checkDictation (issue 2611)", () => {
     expect(await checkDictation()).toBe(false);
   });
 
+  it("asks a driven browser nothing, even when it has the engine", async () => {
+    // `available()` is a native call, and in a driven Chromium it is what
+    // closes the renderer: measured in CI, four e2e shards cancelled at the
+    // 60-minute timeout on 81bbdfe58, 3/4 green with the call suppressed on
+    // 68d1b411b. So the page never makes it under automation.
+    const available = vi.fn(async () => "available");
+    withRecognition({ available });
+    const original = Object.getOwnPropertyDescriptor(Navigator.prototype, "webdriver");
+    Object.defineProperty(navigator, "webdriver", { configurable: true, get: () => true });
+    try {
+      expect(await checkDictation()).toBe(false);
+      expect(available).toHaveBeenCalledTimes(0);
+    } finally {
+      if (original === undefined) Reflect.deleteProperty(navigator, "webdriver");
+      else Object.defineProperty(navigator, "webdriver", original);
+    }
+  });
+
   it("offers none when the engine cannot promise local recognition", async () => {
     withRecognition({ available: async () => "unavailable" });
     expect(await checkDictation()).toBe(false);

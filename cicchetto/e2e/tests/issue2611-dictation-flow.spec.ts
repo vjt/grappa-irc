@@ -28,6 +28,11 @@ type SpeechPage = {
 /** Installs the fake before any page script runs. */
 async function installFakeEngine(page: import("@playwright/test").Page): Promise<void> {
   await page.addInitScript(() => {
+    // The page does not ask a driven browser for a microphone
+    // (`checkDictation` refuses under `navigator.webdriver`, because the
+    // native `available()` call closes a headless renderer). This spec is the
+    // operator's side of that gate with the engine faked, so it says so.
+    Object.defineProperty(navigator, "webdriver", { configurable: true, get: () => false });
     type Handler = ((event: unknown) => void) | null;
     class FakeRecognition {
       static available = async () => "available";

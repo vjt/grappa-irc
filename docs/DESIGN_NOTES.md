@@ -6732,6 +6732,21 @@ anywhere asks it, once per page, inside that gesture — which is where
 `install()` belongs anyway. Until the answer lands the compose box keeps its
 send button.
 
+**But the call is the defect, not the moment.** Moving the question to the
+first gesture did not save the page: on `81bbdfe58` (run 43092659314) all four
+e2e shards hung on their first gesture — every spec's first tap — and were
+cancelled at the 60-minute job timeout (74/63, 18/54, 95/103, 35/64
+pass/fail). The same head with `available()` suppressed under
+`navigator.webdriver` (`68d1b411b`, run 43102121774) ran 3/4 shards green and
+the fourth finished 286 passed / 2 failed, the two reds being the dictation
+specs that suppression itself disables. So a driven browser is never asked:
+`checkDictation` answers `false` without touching the engine, and no
+microphone is exactly what ruling (b) wants there. A real operator's browser
+is not driven and asks as before. The feature spec lifts the gate with a fake
+engine to run the flow end to end; the blocker spec pins the refusal — the
+page survives the gesture that used to kill it, and the native engine was
+never called.
+
 ### The slot swaps under the finger, so the cancel moved with it
 
 A send empties the draft synchronously (`takeDraft` runs before the pump's

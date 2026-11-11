@@ -104,6 +104,21 @@ function recognitionCtor(): (RecognitionCtor & RecognitionStatic) | null {
 export async function checkDictation(): Promise<boolean> {
   const ready = dictationReady();
   if (ready !== null) return ready;
+  // An automated browser never asks the engine anything. `available()` is a
+  // native call, and in a driven Chromium it is the call ITSELF that closes
+  // the renderer: measured on 81bbdfe58 (run 43092659314) every one of the
+  // four e2e shards hung on its first gesture and was cancelled at the
+  // 60-minute job timeout (74/63, 18/54, 95/103, 35/64 pass/fail); on
+  // 68d1b411b (run 43102121774), the same head with this one call suppressed,
+  // 3/4 shards ran green and the fourth finished 286 passed / 2 failed — the
+  // two reds being the dictation specs, which the suppression itself
+  // disables. Moving the call from the mount to the first gesture did not
+  // save the page; the call is the defect. A browser under
+  // `navigator.webdriver` is not an operator, and it gets no microphone.
+  if (navigator.webdriver === true) {
+    setDictationReady(false);
+    return false;
+  }
   const ctor = recognitionCtor();
   let can = false;
   if (ctor !== null && ctor.available !== undefined) {

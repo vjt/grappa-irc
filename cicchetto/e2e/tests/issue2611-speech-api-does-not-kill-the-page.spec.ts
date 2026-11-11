@@ -4,20 +4,49 @@
 // engine from the mount path (`available()`, and `install()` for a
 // downloadable model), and in headless Chromium that native call took the
 // renderer down: 75 of 75 shard-4 failures were pages that closed 78–266 ms
-// after a tap, none of them with a snapshot to look at. The vitest arms can
-// only see the JS around the call — the question is now armed by the mount and
-// asked from the operator's first gesture — and a fake `SpeechRecognition`
-// installed in the page could not reproduce a crash inside the real one. This
-// is the spec that opens a channel window in a browser with the API present
-// and then asks the page whether it is still there.
+// after a tap, none of them with a snapshot to look at. Moving the question to
+// the operator's first gesture did not save the page either — measured on
+// 81bbdfe58 (run 43092659314), all four e2e shards hung on their first gesture
+// and were cancelled at the 60-minute timeout. The call is the defect, not the
+// moment it is made.
+//
+// So the page refuses to ask a driven browser at all (`checkDictation` returns
+// false under `navigator.webdriver`; the dictation-flow spec lifts that gate
+// with a fake engine to run the feature). What this spec pins is that refusal:
+// open a channel window in a browser that HAS the API, give it the gesture
+// that used to kill it, and the page is still there, the box still there, and
+// the native engine was never asked.
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specUser, test } from "../fixtures/test";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
+type Spy = { asked: number };
+
 test.describe("issue 2611 — a compose box in a browser with the speech API", () => {
-  test("opening a channel window leaves the page alive, with its compose box", async ({ page }) => {
+  test("opening a channel window leaves the page alive, and asks the engine nothing", async ({
+    page,
+  }) => {
+    // Counts the calls the page makes into the browser's own engine. The
+    // wrapper is ours; the engine under it is not.
+    await page.addInitScript(() => {
+      const scope = window as unknown as {
+        SpeechRecognition?: { available?: unknown };
+        webkitSpeechRecognition?: { available?: unknown };
+        __speechAsked: Spy;
+      };
+      scope.__speechAsked = { asked: 0 };
+      for (const ctor of [scope.SpeechRecognition, scope.webkitSpeechRecognition]) {
+        if (ctor === undefined || typeof ctor.available !== "function") continue;
+        const native = ctor.available as (...args: unknown[]) => unknown;
+        ctor.available = (...args: unknown[]) => {
+          scope.__speechAsked.asked += 1;
+          return native.apply(ctor, args);
+        };
+      }
+    });
+
     await loginAs(page, specUser());
 
     // Read from the page, never stubbed: the crash lived inside the browser's
@@ -29,7 +58,8 @@ test.describe("issue 2611 — a compose box in a browser with the speech API", (
 
     await selectChannel(page, NETWORK_SLUG, CHANNEL);
 
-    // A gesture, as a human gives one: this is what asks the engine now.
+    // A gesture, as a human gives one: this is what asks the engine in a
+    // browser that is not driven.
     const compose = page.getByLabel("compose message");
     await compose.click();
     // The probe's native call and the window the crash was measured in.
@@ -38,13 +68,12 @@ test.describe("issue 2611 — a compose box in a browser with the speech API", (
     // Alive, and the box still there. A crashed renderer answers neither.
     expect(page.isClosed()).toBe(false);
     await expect(compose).toBeVisible();
-    // One control in the send slot: the paper plane, or the microphone if the
-    // engine answered that it can dictate on device (a headless Chromium with
-    // no speech model does not, and its answer is what the probe decides).
-    await expect(
-      page.locator(
-        '.compose-box button[aria-label="send message"], .compose-box [data-testid="compose-mic"]',
-      ),
-    ).toHaveCount(1);
+    // And the engine was never asked: the refusal is what keeps the page up.
+    expect(
+      await page.evaluate(() => (window as unknown as { __speechAsked: Spy }).__speechAsked),
+    ).toEqual({ asked: 0 });
+    // One control in the send slot: the paper plane, because a driven browser
+    // is never offered the microphone.
+    await expect(page.locator('.compose-box button[aria-label="send message"]')).toHaveCount(1);
   });
 });
