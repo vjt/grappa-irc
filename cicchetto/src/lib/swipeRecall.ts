@@ -33,13 +33,12 @@ export type SwipeRecallOptions = {
   /** A down-flick's job is walking back toward a parked draft: gate it. */
   canNext: () => boolean;
   /**
-   * swipe RIGHT — the Tab affordance (nick/channel completion). REQUIRED, and
-   * `null` is a surface stating out loud that it has nothing to complete: the
-   * drag is still claimed (the axis is the gesture's) and does nothing. Both
-   * current surfaces complete — the composer its draft, the console its
-   * prompt — so an optional field only ever hid a surface that forgot to say.
+   * swipe RIGHT — the Tab affordance (nick/channel completion). REQUIRED: both
+   * current surfaces complete, the composer its draft and the console its
+   * prompt, so an optional field only ever hid a surface that forgot to say. A
+   * future surface with nothing to complete says so with a no-op.
    */
-  onTab: ((el: HTMLTextAreaElement) => void) | null;
+  onTab: (el: HTMLTextAreaElement) => void;
 };
 
 /** Bind the listeners; returns the unbind. */
@@ -156,7 +155,7 @@ export function bindSwipeRecall(el: HTMLTextAreaElement, opts: SwipeRecallOption
         if (opts.canNext()) opts.onNext();
         break;
       case "tab-complete":
-        opts.onTab?.(el);
+        opts.onTab(el);
         break;
     }
   };
