@@ -20,6 +20,15 @@ vi.mock("../lib/theme", () => ({
   applyTheme: vi.fn(),
 }));
 
+// The two page doors a `$server` backlog comes through — the reconnect refresh
+// (`listMessagesAfter`) and a first load (`listMessages`) — so a test can land
+// a page of rows that existed before the command.
+vi.mock(import("../lib/api"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  listMessages: vi.fn(),
+  listMessagesAfter: vi.fn(),
+}));
+
 vi.mock("../lib/selection", async () => {
   const { createSignal } = await import("solid-js");
   const [selectedChannel, setSelectedChannel] = createSignal<{
@@ -172,6 +181,75 @@ describe("serverPeek store (issue 2625)", () => {
     vi.setSystemTime(T0 + 10_001);
     sb.appendToScrollback(SERVER, row(42, "a notice past the reply window"));
     expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  // A page is not a reply. The reconnect refresh brings `$server` rows the
+  // server already held when the command was typed (a disconnect's worth, or
+  // with `$server` never loaded this session, its oldest page from `after=0`);
+  // the mark cannot tell them from a reply when `$server` was never loaded,
+  // because it is 0 and every one of them is past it.
+  it("does not open on backlog a reconnect refresh brings in while armed", async () => {
+    const { peek, sb } = await load();
+    const api = await import("../lib/api");
+    (await import("../lib/auth")).setToken("tok-2625");
+    vi.mocked(api.listMessagesAfter).mockResolvedValue([row(5, "MOTD line"), row(6, "Welcome")]);
+    peek.armServerPeek(SLUG);
+
+    await sb.refreshScrollback(SLUG, SERVER_WINDOW_NAME);
+
+    // The backlog did land in `$server`; it just is not the command's reply.
+    expect(bodies(sb.scrollbackByChannel()[SERVER] ?? [])).toEqual(["MOTD line", "Welcome"]);
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+
+    vi.setSystemTime(T0 + 800);
+    sb.appendToScrollback(SERVER, row(50, "Nickname vjt is registered"));
+    expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["Nickname vjt is registered"]);
+  });
+
+  it("does not open on the page a first load of $server brings in while armed", async () => {
+    const { peek, sb } = await load();
+    const api = await import("../lib/api");
+    (await import("../lib/auth")).setToken("tok-2625");
+    // The first load baselines `$server`'s read cursor to the page's tail.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) }),
+    );
+    vi.mocked(api.listMessages).mockResolvedValue([row(6, "Welcome"), row(5, "MOTD line")]);
+    peek.armServerPeek(SLUG);
+
+    await sb.loadInitialScrollback(SLUG, SERVER_WINDOW_NAME);
+
+    expect(bodies(sb.scrollbackByChannel()[SERVER] ?? [])).toEqual(["MOTD line", "Welcome"]);
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  // The other order of the same race: the refresh asked for its page before
+  // the reply arrived (cursor 0, `$server` empty), and the page lands after the
+  // card is open. Its rows are older than the reply, so they stay out of it.
+  it("keeps backlog that lands after the card opened out of the card", async () => {
+    const { peek, sb } = await load();
+    const api = await import("../lib/api");
+    (await import("../lib/auth")).setToken("tok-2625");
+    let land: (rows: ScrollbackMessage[]) => void = () => {};
+    vi.mocked(api.listMessagesAfter).mockReturnValue(
+      new Promise<ScrollbackMessage[]>((resolve) => {
+        land = resolve;
+      }),
+    );
+    peek.armServerPeek(SLUG);
+    const refresh = sb.refreshScrollback(SLUG, SERVER_WINDOW_NAME);
+
+    sb.appendToScrollback(SERVER, row(50, "Nickname vjt is registered"));
+    land([row(5, "MOTD line"), row(6, "Welcome")]);
+    await refresh;
+
+    expect(bodies(sb.scrollbackByChannel()[SERVER] ?? [])).toEqual([
+      "MOTD line",
+      "Welcome",
+      "Nickname vjt is registered",
+    ]);
+    expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["Nickname vjt is registered"]);
   });
 
   it("does not arm on the desktop layout", async () => {

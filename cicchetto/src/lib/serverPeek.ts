@@ -1,10 +1,10 @@
-import { createEffect, createSignal } from "solid-js";
+import { createEffect, createSignal, untrack } from "solid-js";
 import type { ScrollbackMessage } from "./api";
 import { channelKey } from "./channelKey";
 import { getFontSizePx } from "./fontSize";
 import { identityScopedStore } from "./identityScopedStore";
 import { moduleRoot } from "./moduleRoot";
-import { scrollbackByChannel } from "./scrollback";
+import { lastLiveArrival, scrollbackByChannel } from "./scrollback";
 import { selectedChannel } from "./selection";
 import { isMobile } from "./theme";
 import { SERVER_WINDOW_NAME } from "./windowKinds";
@@ -31,9 +31,18 @@ import { SERVER_WINDOW_NAME } from "./windowKinds";
 // surfaces of their own BEFORE anything reaches `$server`. What is left in
 // `$server` after a command is therefore the residue those surfaces did not
 // take: services NOTICEs, error numerics, server NOTICEs. So the rule is time,
-// not content: a command ARMS the peek, and the first `$server` line inside
-// the window opens it. Once open it shows everything `$server` receives until
-// it is dismissed, which is what makes the second command's output append.
+// not content: a command ARMS the peek, and the first `$server` line to arrive
+// LIVE inside the window opens it. Once open it shows everything `$server`
+// receives from that line on until it is dismissed, which is what makes the
+// second command's output append.
+//
+// LIVE, because a page is not a reply. The reconnect refresh and a first load
+// bring rows the server already held when the command was typed, and the
+// high-water mark cannot tell them apart when `$server` was never loaded this
+// session (it is 0). A reply is stored after the command reaches the server,
+// so it reaches this client on the WS (`lastLiveArrival`), and every backlog
+// row is older than it: the card starts AT the first live line, so a page
+// that lands later, in either order, stays out of it.
 //
 // A command is every dispatched slash verb except what is SAID (plain text and
 // `/me`, the issue 2536 split): conversation has no reply in `$server`. Bare
@@ -119,8 +128,18 @@ const pref = moduleRoot(() => {
 // One at a time, like the services console: a command on another network
 // re-arms there and the old card goes.
 
+type LiveArrival = ReturnType<typeof lastLiveArrival>;
+
 type PeekState =
-  | { phase: "armed"; networkSlug: string; sinceId: number; armedAt: number }
+  | {
+      phase: "armed";
+      networkSlug: string;
+      sinceId: number;
+      armedAt: number;
+      // The live arrival already there when the command was typed: the
+      // event is the last one, not a fresh one, so it must not count.
+      seen: LiveArrival;
+    }
   | { phase: "open"; networkSlug: string; sinceId: number };
 
 const serverRows = (networkSlug: string): readonly ScrollbackMessage[] =>
@@ -130,15 +149,21 @@ const peek = identityScopedStore((onIdentityChange) => {
   const [state, setState] = createSignal<PeekState | null>(null);
   onIdentityChange(() => setState(null));
 
-  // The first line past the mark opens the card if it came inside the window
-  // and disarms it otherwise. The store is read only while armed, so nothing
-  // here runs per line once the peek is open or idle.
+  // The first LIVE `$server` line past the mark opens the card if it came
+  // inside the window and disarms it otherwise, and the card starts at that
+  // line. A page never gets here. The arrivals are read only while armed, so
+  // nothing here runs per line once the peek is open or idle.
   createEffect(() => {
     const st = state();
     if (st === null || st.phase !== "armed") return;
-    if (!serverRows(st.networkSlug).some((m) => m.id > st.sinceId)) return;
+    const arrival = lastLiveArrival();
+    if (arrival === null || arrival === st.seen) return;
+    if (arrival.key !== channelKey(st.networkSlug, SERVER_WINDOW_NAME)) return;
+    if (arrival.id <= st.sinceId) return;
     const inWindow = Date.now() - st.armedAt <= SERVER_PEEK_REPLY_WINDOW_MS;
-    setState(inWindow ? { phase: "open", networkSlug: st.networkSlug, sinceId: st.sinceId } : null);
+    setState(
+      inWindow ? { phase: "open", networkSlug: st.networkSlug, sinceId: arrival.id - 1 } : null,
+    );
   });
 
   // Opening that network's `$server` window is reading what the card shows,
@@ -162,7 +187,13 @@ const peek = identityScopedStore((onIdentityChange) => {
     const st = state();
     if (st !== null && st.phase === "open" && st.networkSlug === networkSlug) return;
     const sinceId = serverRows(networkSlug).reduce((max, m) => (m.id > max ? m.id : max), 0);
-    setState({ phase: "armed", networkSlug, sinceId, armedAt: Date.now() });
+    setState({
+      phase: "armed",
+      networkSlug,
+      sinceId,
+      armedAt: Date.now(),
+      seen: untrack(lastLiveArrival),
+    });
   };
 
   const close = (): void => {
