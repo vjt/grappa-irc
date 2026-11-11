@@ -12,11 +12,14 @@
 //     the visible height and above the compose box, pinned to its newest line;
 //     a second command appends to the same card; ✕ closes it; and the lines
 //     were never moved, they are in `$server`.
-// (2) The same command with the card OFF on this device, and at a font size
-//     the phone cannot fit (28px), opens nothing — asserted only AFTER the
-//     reply provably reached the page (the WebSocket frame on the `$server`
-//     topic), then the reply is found in `$server`, so "nothing opened" cannot
-//     be "nothing arrived".
+// (2) The same command with the card OFF on this device, and at XXL (20px),
+//     the first font preset neither phone fits (iPhone 15 32.75 columns,
+//     Pixel 7 34.3), opens nothing — asserted only AFTER the reply provably
+//     reached the page (the WebSocket frame on the `$server` topic), then the
+//     reply is found in `$server`, so "nothing opened" cannot be "nothing
+//     arrived". Not the 28px ceiling: there the bottom bar's network header
+//     covers the channel tab on both phones (Playwright's hit test, measured
+//     2026-11-11), so no spec can select a channel to type in.
 // (3) The desktop layout opens nothing either: the request is a phone's.
 //
 // The CSS half — the 40% ceiling, the place over the compose box, the
@@ -79,7 +82,7 @@ function nickservReplyOnServerTopic(page: Page): { arrived: () => Promise<void> 
 
 test("@webkit @touch issue 2625 — a command's $server replies open a card over the window, and keep coming", async ({
   page,
-}) => {
+}, testInfo) => {
   const nick = specNick();
   await loginAs(page, specUser());
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: nick });
@@ -170,6 +173,7 @@ test("@webkit @touch issue 2625 — a command's $server replies open a card over
   });
   expect(metrics).not.toBeNull();
   const m = JSON.stringify(metrics);
+  console.log(`[issue2625 ${testInfo.project.name}] ${JSON.stringify({ ...geom, ...metrics })}`);
   expect(metrics?.advanceEm, `column width the fit check assumes: 0.6em (${m})`).toBeGreaterThan(
     0.57,
   );
@@ -186,7 +190,11 @@ test("@webkit @touch issue 2625 — a command's $server replies open a card over
 
 for (const arm of [
   { label: "with the card turned off on this device", key: "cicchetto.serverPeek", value: "false" },
-  { label: "at a font size the phone cannot fit (28px)", key: "cicchetto.fontSize", value: "28" },
+  {
+    label: "at XXL, the first font preset the phone cannot fit",
+    key: "cicchetto.fontSize",
+    value: "XXL",
+  },
 ]) {
   test(`@webkit @touch issue 2625 — no card ${arm.label}`, async ({ page }) => {
     await page.addInitScript(([k, v]) => localStorage.setItem(k, v), [arm.key, arm.value]);
