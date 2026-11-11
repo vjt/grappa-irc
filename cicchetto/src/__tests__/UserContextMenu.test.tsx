@@ -1,5 +1,5 @@
 import { render, screen } from "@solidjs/testing-library";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
 import { pressAndClick } from "./helpers/pointerEvents";
 
 // C5.1 — UserContextMenu: right-click submenu on member nick.
@@ -76,42 +76,44 @@ vi.mock("../lib/selection", () => ({
 // We also need to mock pushWhois — UserContextMenu uses pushWhois from socket.ts.
 // The mock above covers it.
 
-// issue 2483 — the Ignore/Unignore row reads and writes the ignore-list store,
-// the same one `/ignore` and the settings sub-page use. Boundary spies: what
-// the store does with the server's answer is pinned in ignoreList's own tests.
-const mockIgnoresBySlug = vi.fn(
-  (): Record<string, { mask: string; text_pattern: string | null }[]> => ({}),
-);
-const mockRefreshIgnores = vi.fn(async () => []);
-const mockAddIgnore = vi.fn(async () => ({
-  masks: [],
-  entries: [],
-  mask: "alice!*@*",
-  text_pattern: null,
-  outcome: "added",
-}));
-const mockDelIgnore = vi.fn(async () => ({
-  masks: [],
-  entries: [],
-  mask: "alice!*@*",
-  text_pattern: null,
-  outcome: "removed",
-}));
+// issue 2483 — the Ignore/Unignore row runs on the REAL ignoreList store, the
+// real REST client and the real auth token, so what these tests assert is what
+// the operator sees: the label the store's mirrored list produces. Only
+// `fetch` is faked. `serverList` is what the server holds — GET answers it —
+// and a test queues the answer the server gives a mutation: what
+// `IgnoresController` sends back (the resulting list, the normalised entry and
+// the outcome) or a refusal.
+type Entry = { mask: string; text_pattern: string | null };
+let serverList: Entry[] = [];
+let mutationAnswer: (() => Response) | null = null;
+const ignoreRequests: Array<{ method: string; url: string; body: unknown }> = [];
 
-vi.mock("../lib/ignoreList", () => ({
-  ignoresBySlug: () => mockIgnoresBySlug(),
-  refreshIgnores: (...args: unknown[]) => mockRefreshIgnores(...(args as [])),
-  addIgnore: (...args: unknown[]) => mockAddIgnore(...(args as [])),
-  delIgnore: (...args: unknown[]) => mockDelIgnore(...(args as [])),
-}));
+const jsonResponse = (status: number, body: unknown): Response =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+const listBody = (entries: Entry[]) => ({ masks: entries.map((e) => e.mask), entries });
 
-// The row's mutations need a token; the rest of auth is the real module.
-vi.mock("../lib/auth", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../lib/auth")>()),
-  token: () => "tok",
-}));
+const fakeFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const url = String(input);
+  const method = init?.method ?? "GET";
+  if (!url.startsWith("/networks/")) throw new Error(`unexpected fetch: ${method} ${url}`);
+  ignoreRequests.push({
+    method,
+    url,
+    body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
+  });
+  if (method === "GET") return jsonResponse(200, listBody(serverList));
+  if (mutationAnswer === null) throw new Error(`no answer queued for ${method} ${url}`);
+  return mutationAnswer();
+};
 
+const requestsOf = (method: string) => ignoreRequests.filter((r) => r.method === method);
+
+import { setToken } from "../lib/auth";
 import { channelKey } from "../lib/channelKey";
+import { ignoresBySlug, refreshIgnores } from "../lib/ignoreList";
 import { seedFromTest } from "../lib/members";
 import {
   __resetForTest,
@@ -121,6 +123,8 @@ import {
 import UserContextMenu from "../UserContextMenu";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+
+let fetchSpy: MockInstance<typeof fetch>;
 
 const baseProps = {
   networkSlug: "freenode",
@@ -150,25 +154,21 @@ beforeEach(() => {
     m.mockResolvedValue(undefined);
   }
   seedFromTest(channelKey("freenode", "#grappa"), [{ nick: "alice", modes: [] }]);
-  // issue 2483 — an empty list and a resolving fetch are the "nothing ignored
-  // yet" baseline; the tests that need an entry override it.
-  mockIgnoresBySlug.mockReturnValue({});
-  mockRefreshIgnores.mockResolvedValue([]);
-  mockAddIgnore.mockResolvedValue({
-    masks: [],
-    entries: [],
-    mask: "alice!*@*",
-    text_pattern: null,
-    outcome: "added",
-  });
-  mockDelIgnore.mockResolvedValue({
-    masks: [],
-    entries: [],
-    mask: "alice!*@*",
-    text_pattern: null,
-    outcome: "removed",
-  });
+  // issue 2483 — nothing ignored yet, no mutation answer queued, and a token:
+  // the tests that need more say so.
+  serverList = [];
+  mutationAnswer = null;
+  ignoreRequests.length = 0;
+  fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(fakeFetch);
+  setToken("tok");
   __resetForTest();
+});
+
+afterEach(() => {
+  // Logging out is the store's own reset (identityScopedStore): the next test
+  // starts with no list loaded for any network.
+  setToken(null);
+  fetchSpy.mockRestore();
 });
 
 describe("UserContextMenu", () => {
@@ -210,55 +210,78 @@ describe("UserContextMenu", () => {
   // as `/ignore <nick>`: the ignoreList store, keyed by the network slug, on
   // the `nick!*@*` mask the server itself normalises a bare nick to.
   describe("Ignore / Unignore (issue 2483)", () => {
-    it("Ignore adds nick!*@* through the store", async () => {
+    // The list the server answered has landed in the store — the barrier that
+    // makes a label read after it a statement about the list, not about a
+    // fetch still in flight.
+    const listLoaded = () => vi.waitFor(() => expect(ignoresBySlug().freenode).toEqual(serverList));
+
+    it("Ignore adds the person entry nick!*@*, and the row then reads Unignore", async () => {
+      mutationAnswer = () =>
+        jsonResponse(200, {
+          ...listBody([{ mask: "alice!*@*", text_pattern: null }]),
+          mask: "alice!*@*",
+          text_pattern: null,
+          outcome: "added",
+        });
       render(() => <UserContextMenu {...baseProps} />);
+      await listLoaded();
       pressAndClick(screen.getByRole("button", { name: /^ignore$/i }));
-      await flush();
-      expect(mockAddIgnore).toHaveBeenCalledWith("tok", "freenode", "alice!*@*", null);
-      expect(mockDelIgnore).not.toHaveBeenCalled();
+
+      expect(await screen.findByRole("button", { name: /^unignore$/i })).toBeInTheDocument();
+      expect(requestsOf("POST")).toEqual([
+        {
+          method: "POST",
+          url: "/networks/freenode/ignores",
+          body: { mask: "alice!*@*", text_pattern: null },
+        },
+      ]);
+      expect(requestsOf("DELETE")).toEqual([]);
     });
 
-    it("an already-ignored nick offers Unignore and removes the same mask", async () => {
-      mockIgnoresBySlug.mockReturnValue({
-        freenode: [{ mask: "alice!*@*", text_pattern: null }],
-      });
+    it("a nick already on the list reads Unignore once the list arrives, and Unignore removes it", async () => {
+      serverList = [{ mask: "alice!*@*", text_pattern: null }];
+      mutationAnswer = () =>
+        jsonResponse(200, {
+          ...listBody([]),
+          mask: "alice!*@*",
+          text_pattern: null,
+          outcome: "removed",
+        });
+      // Opened before this network's list was ever fetched: the row has to
+      // follow the list when it lands, not keep what it read at open.
       render(() => <UserContextMenu {...baseProps} />);
-      expect(screen.queryByRole("button", { name: /^ignore$/i })).toBeNull();
-      pressAndClick(screen.getByRole("button", { name: /^unignore$/i }));
-      await flush();
-      expect(mockDelIgnore).toHaveBeenCalledWith("tok", "freenode", "alice!*@*", null);
-      expect(mockAddIgnore).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+      pressAndClick(await screen.findByRole("button", { name: /^unignore$/i }));
+
+      expect(await screen.findByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+      // The pattern-less removal: no `text_pattern` query, so it names the
+      // person entry and nothing else.
+      expect(requestsOf("DELETE").map((r) => r.url)).toEqual([
+        "/networks/freenode/ignores/alice!*%40*",
+      ]);
+      expect(requestsOf("POST")).toEqual([]);
     });
 
-    it("matches the stored mask case-insensitively", () => {
-      // The server hands back the NORMALISED mask; a nick's case is its own
-      // business, so the comparison folds.
-      mockIgnoresBySlug.mockReturnValue({
-        freenode: [{ mask: "Alice!*@*", text_pattern: null }],
-      });
-      render(() => <UserContextMenu {...baseProps} />);
-      expect(screen.getByRole("button", { name: /^unignore$/i })).toBeInTheDocument();
+    it("matches the stored mask whatever case the nick is shown in", async () => {
+      // The server stores the FOLDED mask; the nick on screen keeps its case.
+      serverList = [{ mask: "alice!*@*", text_pattern: null }];
+      render(() => <UserContextMenu {...baseProps} targetNick="Alice" />);
+      expect(await screen.findByRole("button", { name: /^unignore$/i })).toBeInTheDocument();
     });
 
-    it("an entry for a different nick leaves the row on Ignore", () => {
-      mockIgnoresBySlug.mockReturnValue({
-        freenode: [{ mask: "bob!*@*", text_pattern: null }],
-      });
+    it("an entry for a different nick leaves the row on Ignore", async () => {
+      serverList = [{ mask: "bob!*@*", text_pattern: null }];
       render(() => <UserContextMenu {...baseProps} />);
+      await listLoaded();
       expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
     });
 
-    it("loads the list on open when this network has never been fetched", async () => {
-      render(() => <UserContextMenu {...baseProps} />);
-      await flush();
-      expect(mockRefreshIgnores).toHaveBeenCalledWith("tok", "freenode");
-    });
-
     it("does not refetch a list the store already holds", async () => {
-      mockIgnoresBySlug.mockReturnValue({ freenode: [] });
+      await refreshIgnores("tok", "freenode");
+      expect(requestsOf("GET")).toHaveLength(1);
       render(() => <UserContextMenu {...baseProps} />);
       await flush();
-      expect(mockRefreshIgnores).not.toHaveBeenCalled();
+      expect(requestsOf("GET")).toHaveLength(1);
     });
 
     it("is always enabled, in any mode and on our own nick", () => {
