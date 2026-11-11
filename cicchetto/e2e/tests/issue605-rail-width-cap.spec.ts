@@ -25,14 +25,15 @@
 // card's data actually crosses, then measure the rail's real bounding box.
 //
 // #2258 — WHERE THAT BOUNDARY IS, read off the code rather than guessed:
-//   * `ServerInfoCard.tsx:96-101` renders `connection.server:port` from its
-//     `network` prop; `RailContext.tsx:150-151` feeds that prop
+//   * `ServerInfoCard` renders `connection.server:port` from
+//     `props.network.connection`; `RailContext` feeds that prop
 //     `networkBySlug(...)`.
-//   * `lib/networks.ts:299-305` resolves it from the `networks` resource,
-//     which `lib/networks.ts:137-149` fills from `listNetworks()` ALONE —
-//     `lib/api.ts:2577-2583`, i.e. `GET /networks`. The only other mutation
-//     of that resource is `lib/networks.ts:287-292`, and it patches `nick`
-//     and nothing else.
+//   * `networkBySlug` (lib/networks.ts) resolves it from the `networks`
+//     resource, whose `createResource` fetcher fills it from
+//     `listNetworks()` ALONE — i.e. `GET /networks`. The resource's other
+//     two writers carry no `connection`: `mutateNetworkNick` patches `nick`
+//     and nothing else, and the identity purge empties it
+//     (`mutateNetworksResource([])`).
 //   * `GET /boot` (#1679) answers the same rows server-side
 //     (`boot_controller.ex`), but cic has NO consumer for it: grepping
 //     `cicchetto/src` for a `/boot` request finds only the service worker's
@@ -123,7 +124,7 @@ async function stubConnectionSources(page: Page, token: string): Promise<void> {
     body: JSON.stringify(body),
   });
 
-  // The door the card actually reads (`lib/api.ts:2577`). Answered for the
+  // The door the card actually reads (`listNetworks`). Answered for the
   // boot fetch AND for every `connection_state_changed` refetch, because the
   // stub wraps `window.fetch` rather than one request.
   await answerFetchInPage(page, { url: NETWORKS_PATH, method: "GET" }, async () => {
