@@ -164,6 +164,23 @@ stamp_on() {
     grep -q 'maxgap_at=00:00:00.001' <<<"$out"
 }
 
+@test "a step back of any size is disorder: no rollover is guessed" {
+    # With the date read, no backward step is a midnight in disguise, not
+    # even one of more than half a day. A rollover arm put back "to be
+    # safe" would turn this 13 h-late line into an 11 h silence.
+    local out
+    out="$( {
+        stamp '12:00:00.000' 'high-water'
+        stamp_on 2026-08-15 '23:00:00.000' '13 h behind'
+        stamp '12:00:05.000' 'after'
+    } | scan 10 )"
+
+    refute grep -q 'GAP' <<<"$out"
+    grep -q 'gaps_ge_10=0' <<<"$out"
+    grep -q 'maxgap=5.0' <<<"$out"
+    grep -q 'maxgap_at=12:00:00.000' <<<"$out"
+}
+
 @test "a silence of more than half a day is a silence, not disorder" {
     # From time of day alone a step forward of more than 12 h is as likely
     # to be disorder across midnight, and reading it that way left the
