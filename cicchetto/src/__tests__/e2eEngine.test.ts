@@ -3354,6 +3354,24 @@ describe("a PKMSG (W receiver checks, in order)", () => {
     expect(readBy(a)).toEqual([fileInner()]);
   });
 
+  it("hands on the file it checked, not the peer's object, so no extra key travels", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    listedPeer(a, "bob", bob, 1);
+    // issue 2517, delta5 — the inner is the peer's word, and a key it invents
+    // rides along it. `parseFileInner` keeps the fields it checked and hands
+    // that object on, as `file` and as the message: nothing else survives.
+    const evil = { ...fileInner(), evil: "sender-key" };
+
+    takes(a, "bob", "pkmsg", didOf(device), written(a, bob, device, evil, "one-time"), newMsgid());
+
+    const [event] = eventsOf(a, "received");
+    expect(event?.file).toEqual(fileInner());
+    expect(event?.inner).toEqual(fileInner());
+    expect(Object.hasOwn(event?.inner ?? {}, "evil")).toBe(false);
+  });
+
   it("lets a curve's real holder take it back from a device that only claimed it, and sends the holder what waited", () => {
     const a = me("alice");
     const mallory = peerWith(1);
