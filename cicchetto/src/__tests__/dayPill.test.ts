@@ -22,7 +22,7 @@ import {
 // box is described the same way, so `top` here is relative to the viewport.
 const PANE_TOP = 100;
 const BAND = 40;
-const box = (top: number, height = 20) => ({ top, height });
+const box = (top: number) => ({ top, height: 20 });
 
 describe("placeOfRect — which side of the top band a separator's box is on", () => {
   it("calls BAND a box that overlaps the strip, wherever it starts", () => {
@@ -40,6 +40,14 @@ describe("placeOfRect — which side of the top band a separator's box is on", (
     // lose (#2311): the box still answers, and nothing was ever delivered.
     expect(placeOfRect(box(40), PANE_TOP, BAND)).toBe("above");
     expect(placeOfRect(box(160), PANE_TOP, BAND)).toBe("below");
+  });
+
+  it("ends the band where the strip ends: a box starting there is BELOW", () => {
+    // The strip is [paneTop, paneTop + band). A separator whose top sits on
+    // its lower edge is entirely clear of it, so its date is in flow and the
+    // pill must not claim it; one pixel higher it overlaps the strip.
+    expect(placeOfRect(box(PANE_TOP + BAND), PANE_TOP, BAND)).toBe("below");
+    expect(placeOfRect(box(PANE_TOP + BAND - 1), PANE_TOP, BAND)).toBe("band");
   });
 
   it("treats the top edge itself as visible, never as scrolled past", () => {
