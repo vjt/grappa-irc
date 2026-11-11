@@ -400,7 +400,8 @@ export type UndecryptableReason =
  * `keys_renewed` that the pinned master answered with fresh sessions, a
  * `keys_unanswered` that nothing answered in `OUTQ_TTL_MS`, or that the
  * answer opened no session or carried our own identity. Another master
- * answering is the `key_alarm`.
+ * answering is the `key_alarm`. A `received` that is a `t: "file"` also
+ * carries `file`: the attachment `inner()` checked, not the peer's object.
  */
 export type E2eEvent =
   | {
@@ -410,6 +411,7 @@ export type E2eEvent =
       device: string;
       verified: boolean;
       inner: Record<string, unknown>;
+      file?: FileInner;
     }
   | { kind: "key_alarm"; nick: string; pinned: string; presented: string }
   | { kind: "undecryptable"; nick: string; msgid: string; reason: UndecryptableReason }
@@ -423,6 +425,13 @@ export type E2eEvent =
   | { kind: "keys_unanswered"; nick: string }
   | { kind: "sibling_keys_needed"; did: string }
   | { kind: "copied"; peer: string; body: string; device: string; file?: FileInner };
+
+/**
+ * What `inner()` hands on: the message without its `fb`, and — when it is a
+ * `t: "file"` — the `FileInner` it checked. A file's own object never travels
+ * on: it can carry any key the peer wrote, and none of them may reach a row.
+ */
+type Inner = { msg: Record<string, unknown>; file?: FileInner };
 
 /**
  * A payload for grappa's send door, `from` this device's did `to` a did or
@@ -1570,7 +1579,7 @@ export class Engine {
   private readCopy(device: string, plaintext: Uint8Array, preKey: boolean, res: Result): boolean {
     const inner = this.inner(this.ownNick, plaintext, preKey ? device : null, res);
     if (inner === undefined) return false;
-    const { t, peer, body } = inner;
+    const { t, peer, body } = inner.msg;
     if (t !== "copy" || typeof peer !== "string" || peer === "" || typeof body !== "string") {
       res.events.push({ kind: "dropped", nick: this.ownNick, reason: "sibling-not-a-copy" });
       return false;
@@ -1580,9 +1589,9 @@ export class Engine {
     // used to raise a TypeError that aborted the whole drain — every later
     // message stopped arriving, and every retry hit the same row.
     const file =
-      inner.file === undefined || inner.file === null
+      inner.msg.file === undefined || inner.msg.file === null
         ? undefined
-        : parseFileInner(inner.file as Record<string, unknown>);
+        : parseFileInner(inner.msg.file as Record<string, unknown>);
     if (file !== undefined && typeof file === "string") {
       res.events.push({ kind: "dropped", nick: this.ownNick, reason: "sibling-not-a-copy" });
       return false;
@@ -2159,7 +2168,7 @@ export class Engine {
     plaintext: Uint8Array,
     sender: string | null,
     res: Result,
-  ): Record<string, unknown> | undefined {
+  ): Inner | undefined {
     let inner: unknown;
     try {
       inner = JSON.parse(decoder.decode(plaintext));
@@ -2190,8 +2199,11 @@ export class Engine {
         res.events.push({ kind: "dropped", nick, reason: "file-malformed", detail: file });
         return undefined;
       }
+      // The checked one replaces the peer's object, in the message too: what
+      // travels on must carry the fields that were checked and no other.
+      return { msg: file, file };
     }
-    return rest;
+    return { msg: rest };
   }
 
   /**
@@ -2209,11 +2221,11 @@ export class Engine {
     nick: string,
     master: string,
     device: PeerDevice,
-    inner: Record<string, unknown>,
+    inner: Inner,
     bodies: Record<string, string>,
     res: Result,
   ): void {
-    const { lv, ...rest } = inner;
+    const { lv, ...rest } = inner.msg;
     if (rest.t === "list") {
       this.onList(nick, rest, res);
     } else if (rest.t === "listreq") {
@@ -2227,6 +2239,7 @@ export class Engine {
         device: device.ed25519,
         verified,
         inner: rest,
+        ...(inner.file === undefined ? {} : { file: inner.file }),
       });
     }
     const ours = new Set(this.own.list.devices.map((ed25519) => did(this.olm, ed25519)));

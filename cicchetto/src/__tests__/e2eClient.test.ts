@@ -1756,6 +1756,20 @@ describe("encrypted attachments (issue 2517)", () => {
     expect(await rowsOf(b, "alice")).toEqual([]);
   });
 
+  // issue 2517, delta5 — the row keeps the FileInner the engine checked, not
+  // the object the peer wrote: a key it invented must not be stored with it.
+  it("keeps the fields of the file that were checked, not the extra keys", async () => {
+    const { a, b } = await pair();
+    const file = { ...attachment(), evil: "sender-key" } as unknown as FileInner;
+
+    await a.client.sendFile(a.ctx, "bob", file);
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+
+    const [row] = await rowsOf(b, "alice");
+    expect((row as { file?: FileInner }).file).toEqual(attachment());
+  });
+
   // The name is the peer's word: sanitised once, at the store door, so no
   // path separator or bidi override reaches the row the card renders.
   it("keeps a sanitised name, not the one the peer wrote", async () => {
