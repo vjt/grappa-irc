@@ -80,8 +80,9 @@ const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknow
   { code: "image_reencode_failed", matches: /couldn't be processed/i },
   // S6 (review 2026-07-19) — mode-1 login throttle.
   { code: "too_many_attempts", matches: /too many login attempts/i },
-  // #247 (review 2026-07-19 R1) — /notify watch-list cap.
-  { code: "list_full", matches: /watch list.*is full/i },
+  // #247 (review 2026-07-19 R1) — a per-network list cap: the /notify watch
+  // list's and the ignore list's, so the copy names neither (issue 2483).
+  { code: "list_full", matches: /^the list is full for this network\./i },
   { code: "invalid_mask", matches: /ignore mask.*not valid/i },
   // #364 bucket H (cross-surface S3) — FallbackController tokens that
   // reached operator-visible alerts as raw `<status> <code>` because

@@ -265,10 +265,14 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // themes-specific rate_limited "try tomorrow" copy.
       return "Too many login attempts. Wait a few minutes and try again.";
     case "list_full":
-      // #247 (review 2026-07-19 R1) — the /notify watch list hit its
-      // per-network cap (`Grappa.Notify.max_entries/0`). A bounded
-      // resource, not a rate — the recourse is pruning, not waiting.
-      return "Your watch list for this network is full. Remove an entry first.";
+      // #247 (review 2026-07-19 R1) — a per-network list hit its cap. A
+      // bounded resource, not a rate — the recourse is pruning, not waiting.
+      // TWO lists answer it: the /notify watch list
+      // (`Grappa.Notify.max_entries/0`) and, since #162, the ignore list
+      // (`UserSettings`, 100 per network), so the copy names neither — the
+      // surface showing it already says which list it is (issue 2483: the
+      // nick menu's "Ignore: …" toast read "Your watch list" before this).
+      return "The list is full for this network. Remove an entry first.";
     case "too_late":
       // issue 2430 — 422 from `POST /networks/:id/e2e/messages`: an order's
       // answer (`expires_at`) that could no longer reach the bot in time. The
