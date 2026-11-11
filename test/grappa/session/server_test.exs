@@ -11056,7 +11056,7 @@ defmodule Grappa.Session.ServerTest do
 
       # The one identify follows the LAST `NICK #{nick}` — the FSM's rename
       # back — never the registration.
-      nick_positions = for {"NICK #{nick}\r\n", i} <- Enum.with_index(lines), do: i
+      nick_positions = for {line, i} <- Enum.with_index(lines), line == "NICK #{nick}\r\n", do: i
       assert line_index(lines, "PRIVMSG NickServ :IDENTIFY s3cret\r\n") > List.last(nick_positions)
 
       assert is_nil(Map.get(SessionStateHelpers.fetch(pid), :deferred_identify_secret))
