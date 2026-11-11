@@ -50,8 +50,10 @@ vi.mock("../lib/ctcpQuery", () => ({
 
 vi.mock("../lib/networks", () => ({
   // #1861 — casemappingForSlug (lib/casemapping.ts) resolves the fold
-  // through this map, so the mock has to carry it.
-  networkIdBySlug: () => undefined,
+  // through this map, so the mock has to carry it. It resolves freenode to
+  // its id so a test can seed that network's 005 CASEMAPPING (issue 2483);
+  // unseeded, the id reads the bahamut default, `ascii`.
+  networkIdBySlug: (slug: string) => (slug === "freenode" ? 42 : undefined),
   networks: vi.fn(() => [{ id: 42, slug: "freenode", inserted_at: "x", updated_at: "y" }]),
 }));
 
@@ -114,6 +116,7 @@ const requestsOf = (method: string) => ignoreRequests.filter((r) => r.method ===
 import { setToken } from "../lib/auth";
 import { channelKey } from "../lib/channelKey";
 import { ignoresBySlug, refreshIgnores } from "../lib/ignoreList";
+import { DEFAULT_ISUPPORT, seedIsupport } from "../lib/isupport";
 import { seedFromTest } from "../lib/members";
 import {
   __resetForTest,
@@ -161,6 +164,7 @@ beforeEach(() => {
   ignoreRequests.length = 0;
   fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(fakeFetch);
   setToken("tok");
+  seedIsupport(42, DEFAULT_ISUPPORT);
   __resetForTest();
 });
 
@@ -295,6 +299,27 @@ describe("UserContextMenu", () => {
       serverList = [{ mask: "alice!*@*", text_pattern: null }];
       render(() => <UserContextMenu {...baseProps} targetNick="Alice" />);
       expect(await screen.findByRole("button", { name: /^unignore$/i })).toBeInTheDocument();
+    });
+
+    it("folds with the network's casemapping: on rfc1459, foo[1] is the stored foo{1}!*@*", async () => {
+      // The server folds the nick part with the NETWORK's casemapping before
+      // storing it (`Grappa.IRC.Mask.normalize/2`): on solanum/Libera
+      // `/ignore foo[1]` stores `foo{1}!*@*`, because the ircd calls them one
+      // person.
+      seedIsupport(42, { ...DEFAULT_ISUPPORT, casemapping: "rfc1459" });
+      serverList = [{ mask: "foo{1}!*@*", text_pattern: null }];
+      render(() => <UserContextMenu {...baseProps} targetNick="foo[1]" />);
+      await listLoaded();
+      expect(screen.getByRole("button", { name: /^unignore$/i })).toBeInTheDocument();
+    });
+
+    it("folds ASCII only on an ascii network, where foo[1] and foo{1} are two people", async () => {
+      // bahamut (Azzurra, all of prod) leaves `[ ] \ ~` alone: the national
+      // fold must not run where the ircd does not run it.
+      serverList = [{ mask: "foo{1}!*@*", text_pattern: null }];
+      render(() => <UserContextMenu {...baseProps} targetNick="foo[1]" />);
+      await listLoaded();
+      expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
     });
 
     it("an entry for a different nick leaves the row on Ignore", async () => {

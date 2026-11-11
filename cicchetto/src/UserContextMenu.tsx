@@ -5,7 +5,7 @@ import { casemappingForSlug } from "./lib/casemapping";
 import { sendCtcpQuery } from "./lib/ctcpQuery";
 import { openEncryptedWindow } from "./lib/encryptedWindow";
 import { addIgnore, delIgnore, ignoresBySlug, refreshIgnores } from "./lib/ignoreList";
-import { asciiFold, nickEquals } from "./lib/nickEquals";
+import { nickEquals, normalizeNick } from "./lib/nickEquals";
 import { banMenuItems, runOpsVerb } from "./lib/opsMenu";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
@@ -76,8 +76,10 @@ const UserContextMenu: Component<Props> = (props) => {
   //
   // The mask is the bare `nick!*@*` the server itself normalises `/ignore
   // alice` to (Grappa.IRC.Mask.normalize/2), which is why the comparison
-  // folds both sides: the stored entry is the NORMALISED mask, and a nick's
-  // case is the server's business, not ours.
+  // folds both sides: the stored entry is the NORMALISED mask, its nick folded
+  // with the NETWORK's casemapping. So the fold here is the network-aware
+  // `normalizeNick`, not the blind `asciiFold`: on rfc1459 `foo[1]` is stored
+  // as `foo{1}!*@*`, while on ascii (bahamut) the two stay two people.
   //
   // Only the PERSON entry counts — that mask with no text pattern. Since issue
   // 2294 an entry is the pair (mask, text_pattern), and a targeted one
@@ -86,9 +88,10 @@ const UserContextMenu: Component<Props> = (props) => {
   // (`UserSettings.remove_ignore/5`), and a person nobody can ignore.
   const ignoreMask = (): string => `${props.targetNick}!*@*`;
   const alreadyIgnored = (): boolean => {
-    const want = asciiFold(ignoreMask());
+    const casemapping = casemappingForSlug(props.networkSlug);
+    const want = normalizeNick(ignoreMask(), casemapping);
     return (ignoresBySlug()[props.networkSlug] ?? []).some(
-      (e) => e.text_pattern === null && asciiFold(e.mask) === want,
+      (e) => e.text_pattern === null && normalizeNick(e.mask, casemapping) === want,
     );
   };
 
