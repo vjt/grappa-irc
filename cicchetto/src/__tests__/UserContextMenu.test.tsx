@@ -373,9 +373,17 @@ describe("UserContextMenu", () => {
       expect(requestsOf("GET")).toHaveLength(1);
     });
 
-    it("is always enabled, in any mode and on our own nick", () => {
-      render(() => <UserContextMenu {...baseProps} ownModes={[]} targetNick="Me" />);
+    it("needs no channel privilege: enabled without @ on someone else", () => {
+      render(() => <UserContextMenu {...baseProps} ownModes={[]} />);
       expect(screen.getByRole("button", { name: /^ignore$/i })).not.toBeDisabled();
+    });
+
+    it("is disabled on our own nick, in any case", () => {
+      // The delivery filter never drops our own lines (`EventRouter.ignored?/2`),
+      // so `<me>!*@*` would do nothing to us and silence whoever holds the nick
+      // next — after our own /nick, or a Guest rename.
+      render(() => <UserContextMenu {...baseProps} targetNick="ME" />);
+      expect(screen.getByRole("button", { name: /^ignore$/i })).toBeDisabled();
     });
   });
 

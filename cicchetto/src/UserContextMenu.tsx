@@ -23,7 +23,8 @@ import {
 // Op / deop / voice / devoice / kick and the issue 2346 ban rows (Ban nick /
 // Ban host / Kickban, from `lib/opsMenu`) are all gated on own-nick @ mode,
 // disabled-but-NOT-hidden when unmet; WHOIS + CTCP + Query are always enabled,
-// and so is "Encrypted query" (issue 2430) unless the nick is our own.
+// and so are "Encrypted query" (issue 2430) and Ignore/Unignore (issue 2483)
+// unless the nick is our own.
 //
 // Dispatches to existing socket.ts push helpers — no new IRC-issuance path —
 // and every op verb, like the Ignore/Unignore row, goes through `runOpsVerb`,
@@ -69,6 +70,8 @@ export type Props = {
 
 const UserContextMenu: Component<Props> = (props) => {
   const isOp = (): boolean => props.ownModes.includes("@");
+  const isOwnNick = (): boolean =>
+    nickEquals(props.targetNick, props.ownNick, casemappingForSlug(props.networkSlug));
 
   // issue 2483 — the row is Ignore or Unignore depending on whether this nick
   // is already on the network's list. The list lives in `ignoreList.ts`, the
@@ -209,11 +212,16 @@ const UserContextMenu: Component<Props> = (props) => {
     {
       // issue 2483 — the personal twin of the ban rows: the same "do something
       // about this nick" cluster, but a LOCAL rule that needs no channel
-      // privilege, so it is always enabled. The label follows the list: a nick
-      // already on it offers the way OFF, which is the only thing an operator
-      // can be looking for when they right-click someone they never see.
+      // privilege. The label follows the list: a nick already on it offers the
+      // way OFF, which is the only thing an operator can be looking for when
+      // they right-click someone they never see.
+      //
+      // Not on our own nick: the delivery filter never drops our own lines
+      // (`EventRouter.ignored?/2`), so `<me>!*@*` would do nothing to us and
+      // silence whoever holds the nick next — after our own /nick, or a Guest
+      // rename.
       label: alreadyIgnored() ? "Unignore" : "Ignore",
-      enabled: true,
+      enabled: !isOwnNick(),
       action: ignoreAction,
     },
     {
@@ -237,7 +245,7 @@ const UserContextMenu: Component<Props> = (props) => {
       // ABOVE Query, as #1192 put CTCP: the last row stays a verb that is
       // always enabled and closes the menu (the #487 clamp e2e clicks it).
       label: "Encrypted query",
-      enabled: !nickEquals(props.targetNick, props.ownNick, casemappingForSlug(props.networkSlug)),
+      enabled: !isOwnNick(),
       action: () => {
         void openEncryptedWindow(props.networkSlug, props.targetNick).catch((err: unknown) => {
           console.warn(`[e2e] could not open an encrypted query with ${props.targetNick}`, err);
