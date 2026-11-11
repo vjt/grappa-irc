@@ -183,6 +183,19 @@ describe("serverPeek store (issue 2625)", () => {
     expect(peek.serverPeekRows(SLUG)).toEqual([]);
   });
 
+  // The same line once `$server`'s rows are gone. The mark rules the last live
+  // line out only while `$server` still holds it; after a purge the mark is 0,
+  // and what is left to say the line is old is that it arrived before the arm.
+  it("does not count the line already in $server as the reply after $server was purged", async () => {
+    const { peek, sb } = await load();
+    sb.appendToScrollback(SERVER, row(41, "an older line"));
+    sb.purgeScrollback(SERVER);
+    peek.armServerPeek(SLUG);
+    vi.setSystemTime(T0 + 10_001);
+    sb.appendToScrollback(SERVER, row(42, "a notice past the reply window"));
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
   // A page is not a reply. The reconnect refresh brings `$server` rows the
   // server already held when the command was typed (a disconnect's worth, or
   // with `$server` never loaded this session, its oldest page from `after=0`);
