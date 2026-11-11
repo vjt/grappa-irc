@@ -3361,7 +3361,7 @@ describe("a PKMSG (W receiver checks, in order)", () => {
     listedPeer(a, "bob", bob, 1);
     // issue 2517, delta5 — the inner is the peer's word, and a key it invents
     // rides along it. `parseFileInner` keeps the fields it checked and hands
-    // that object on, as `file` and as the message: nothing else survives.
+    // that object on, as `file` and as the event's inner: nothing else survives.
     const evil = { ...fileInner(), evil: "sender-key" };
 
     takes(a, "bob", "pkmsg", didOf(device), written(a, bob, device, evil, "one-time"), newMsgid());
@@ -3370,6 +3370,25 @@ describe("a PKMSG (W receiver checks, in order)", () => {
     expect(event?.file).toEqual(fileInner());
     expect(event?.inner).toEqual(fileInner());
     expect(Object.hasOwn(event?.inner ?? {}, "evil")).toBe(false);
+  });
+
+  // issue 2517, delta6 — the fix above made the CHECKED FileInner the message
+  // itself, and `lv` is not one of its ten fields: every file message then read
+  // as "no list version", and a peer holding a newer device list was never
+  // asked for it (W "After any decrypt"). A file asks like a text does.
+  it("a file message naming a newer list asks for it, like a text one", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    talking(a, "bob", bob, device);
+    const says = (inner: Record<string, unknown>): Result =>
+      takes(a, "bob", "msg", didOf(device), msgFrom(a, device, JSON.stringify(inner)), newMsgid());
+
+    // The stored list is at version 1: `lv: 1` asks nothing, `lv: 2` does.
+    expect(says({ t: "text", body: "x", lv: 1 }).outbound).toEqual([]);
+    expect(says({ ...fileInner(), lv: 2 }).outbound.map((o) => [o.verb, o.tag])).toEqual([
+      ["msg", LIST_TAG],
+    ]);
   });
 
   it("lets a curve's real holder take it back from a device that only claimed it, and sends the holder what waited", () => {
