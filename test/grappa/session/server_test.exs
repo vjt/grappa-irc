@@ -9085,6 +9085,8 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = IRCServer.await_handshake(server, 1_000)
 
+      assert {:ok, %{identified: false}} = Session.session_snapshot({:user, user.id}, network.id)
+
       log =
         capture_log(fn ->
           {:ok, :no_persist} =
@@ -9099,8 +9101,57 @@ defmodule Grappa.Session.ServerTest do
       assert is_nil(SessionStateHelpers.pending_auth_timer(state))
 
       assert log =~ "[warning] pending IDENTIFY discarded: no identity before the ceiling"
+      refute log =~ "session is identified"
       assert log =~ "subject_kind=user"
       refute log =~ "elapsed_ms"
+      refute log =~ "s3cret"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # The release is the `:acquired` TRANSITION, so an IDENTIFY sent while the
+    # session is ALREADY identified gets none, and its slot waits the ceiling
+    # out as well. "No identity" would be false there: the line says what it
+    # observed at the discard.
+    test "already identified: the discard says the session is identified, not that there is no identity" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, credential} = setup_user_and_network(port)
+
+      {:ok, base_plan} = SessionPlan.resolve(credential)
+      plan = Map.put(base_plan, :pending_auth_timeout_ms, 300)
+      {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      nick = SessionStateHelpers.nick(SessionStateHelpers.fetch(pid))
+
+      send(
+        pid,
+        {:irc, %Message{command: :mode, params: [nick, "+r"], prefix: {:server, "irc.example.test"}, tags: %{}}}
+      )
+
+      assert {:ok, %{identified: true}} = Session.session_snapshot({:user, user.id}, network.id)
+
+      log =
+        capture_log(fn ->
+          {:ok, :no_persist} =
+            Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
+
+          # Past the seam ceiling, so the timer itself fires.
+          Process.sleep(500)
+        end)
+
+      state = SessionStateHelpers.fetch(pid)
+      assert is_nil(SessionStateHelpers.pending_auth(state))
+      assert is_nil(SessionStateHelpers.pending_auth_timer(state))
+      assert {:ok, %{identified: true}} = Session.session_snapshot({:user, user.id}, network.id)
+
+      assert log =~
+               "[warning] pending IDENTIFY discarded: session is identified, " <>
+                 "but no identity transition released the slot before the ceiling"
+
+      refute log =~ "no identity before the ceiling"
+      assert log =~ "subject_kind=user"
       refute log =~ "s3cret"
 
       :ok = GenServer.stop(pid, :normal, 1_000)

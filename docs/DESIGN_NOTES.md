@@ -6538,15 +6538,23 @@ does not pay it. The release signal is the NORMALIZED identity transition
 (`:session_identity_changed, :acquired` → EventRouter's
 `identity_secret_effects/2`), which commits the secret and cancels the timer
 the moment it lands — whatever its source (`+r` umode, 900, account-notify,
-330), because #388 already normalized those into one primitive. Only the "no
-identity ever" paths wait the ceiling out.
+330), because #388 already normalized those into one primitive. Only a slot
+that no identity TRANSITION releases waits the ceiling out — see below for the
+already-identified case.
 
 **On elapse the secret is still DISCARDED.** That is the fail-safe, not the
 defect: it is what keeps a wrong password out of the visitor DB. What changed
-is that the discard says so — `pending IDENTIFY discarded: no identity before
-the ceiling` at warning, with the subject KIND (`:user | :visitor`), never the
-password. No `elapsed_ms`: at the timer the only value available is the ceiling
-constant, and #1960's rule is that a bare `elapsed_ms` must carry
+is that the discard says so, at warning, with the subject KIND
+(`:user | :visitor`) and never the password — and says what it OBSERVED,
+reading `IdentityState.identified?/1` at the discard. The release is the
+`:acquired` TRANSITION, so an IDENTIFY sent while the session is ALREADY
+identified gets none and waits the ceiling out too; "no identity" would be
+false there. So the line is `pending IDENTIFY discarded: no identity before the
+ceiling` when the session holds no identity, and `pending IDENTIFY discarded:
+session is identified, but no identity transition released the slot before the
+ceiling` when it does. Both stay warnings: in either case a typed password was
+dropped uncommitted. No `elapsed_ms`: at the timer the only value available is
+the ceiling constant, and #1960's rule is that a bare `elapsed_ms` must carry
 `:attribution` — a constant posing as a measurement is worse than silence. The
 old `debug` line was silent, which is why a 29s `+r` took a prod log read to
 find (#2380's lesson).

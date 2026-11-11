@@ -172,9 +172,10 @@ defmodule Grappa.Session.Server do
   # (`:session_identity_changed, :acquired` → EventRouter's
   # `identity_secret_effects/2`), which commits the secret and cancels this
   # timer the moment it lands, whatever the source (`+r` umode, 900,
-  # account-notify, 330). Only the "no identity ever" paths wait the ceiling,
-  # and on elapse the secret is STILL discarded — that is the fail-safe that
-  # keeps a wrong password out of the visitor DB.
+  # account-notify, 330). Only a slot no identity TRANSITION releases waits
+  # the ceiling — no identity ever, or an IDENTIFY sent while already
+  # identified — and on elapse the secret is STILL discarded: that is the
+  # fail-safe that keeps a wrong password out of the visitor DB.
   #
   # No 401-NickServ early release here, unlike #2380's autojoin: there the
   # release fires JOINs, here it would DROP a secret, so the bounded side is
@@ -3968,8 +3969,13 @@ defmodule Grappa.Session.Server do
   # No `elapsed_ms`: the timer has fired, so the only value available is the
   # ceiling itself — a CONSTANT, not a measurement, and #1960's rule
   # (config/config.exs) is that a bare `elapsed_ms` must carry `:attribution`.
+  #
+  # The release is the `:acquired` TRANSITION, so a session that is ALREADY
+  # identified gets none when it sends another IDENTIFY: its slot waits the
+  # ceiling out too. "No identity" would be false there, so the line reads
+  # the verdict at the discard and says which of the two it observed.
   def handle_info(:pending_auth_timeout, state) do
-    Logger.warning("pending IDENTIFY discarded: no identity before the ceiling",
+    Logger.warning("pending IDENTIFY discarded: " <> pending_auth_discard_reason(state),
       subject_kind: elem(state.subject, 0)
     )
 
@@ -5502,14 +5508,25 @@ defmodule Grappa.Session.Server do
     :ok = cancel_and_drain(state.pending_auth_timer, :pending_auth_timeout)
 
     # issue 2388 — the ceiling, not a fixed SLA: the `+r` (or any identity
-    # source) releases the slot the moment it lands, so only the
-    # "no identity ever" path actually waits this out.
+    # source) releases the slot the moment it lands, so only a slot no
+    # identity TRANSITION releases actually waits this out.
     ceiling_ms = Map.get(state, :pending_auth_timeout_ms, @pending_auth_timeout_ms)
 
     timer = Process.send_after(self(), :pending_auth_timeout, ceiling_ms)
     deadline = System.monotonic_time(:millisecond) + ceiling_ms
 
     %{state | pending_auth: {password, deadline}, pending_auth_timer: timer}
+  end
+
+  # issue 2388 — what the `:pending_auth_timeout` discard observed: the
+  # identity verdict at the ceiling. Identified there, with the slot still
+  # held, means no `:acquired` transition arrived while it was staged — e.g.
+  # an IDENTIFY sent while the session was already identified.
+  @spec pending_auth_discard_reason(t()) :: String.t()
+  defp pending_auth_discard_reason(state) do
+    if IdentityState.identified?(state),
+      do: "session is identified, but no identity transition released the slot before the ceiling",
+      else: "no identity before the ceiling"
   end
 
   # #129: REGISTER's secret goes in an UNTIMED slot. Services grant +r
