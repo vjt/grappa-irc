@@ -1205,6 +1205,39 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
       refute inspect(payload) =~ "gate-pass"
     end
 
+    # A rotation: the slot already holds a secret and a DIFFERENT one lands.
+    # Both sides are set, so set-ness did not move — but the secret did, and
+    # the write has to answer 200 and say so.
+    test "PUT a different server_pass over an existing one emits :server_pass_set", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      session = admin_session()
+      {user, network, cred} = bound_credential()
+      {:ok, _} = Credentials.update_server_pass(cred, %{"server_pass" => "old-gate-pass"})
+      user_id = user.id
+      net_id = network.id
+
+      conn = put_server_pass(conn, session, user.id, network.id, %{server_pass: "new-gate-pass"})
+      assert json_response(conn, 200) == %{"server_pass_set" => true}
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload:
+                         %{
+                           kind: :credential_updated,
+                           user_id: ^user_id,
+                           network_id: ^net_id,
+                           session_action: :server_pass_set
+                         } = payload
+                     },
+                     500
+
+      # Neither secret is in the event, in any key.
+      refute inspect(payload) =~ "old-gate-pass"
+      refute inspect(payload) =~ "new-gate-pass"
+    end
+
     test "PUT server_pass \"\" emits :credential_updated with :server_pass_cleared", %{conn: conn} do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
 

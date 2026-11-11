@@ -310,6 +310,10 @@ defmodule GrappaWeb.Admin.CredentialsController do
       {nil, _} -> emit_credential_updated(user, network, :server_pass_set, conn)
       # Set -> empty.
       {_, nil} -> emit_credential_updated(user, network, :server_pass_cleared, conn)
+      # Set -> a DIFFERENT secret: a rotation. The slot still ends up set, so
+      # the action is the same one; without this clause the case has no arm
+      # for it and the write raises after the row has already been saved.
+      {_, _} -> emit_credential_updated(user, network, :server_pass_set, conn)
     end
   end
 
