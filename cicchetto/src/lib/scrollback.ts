@@ -636,14 +636,14 @@ const exports = identityScopedStore((onIdentityChange) => {
   } | null>(null);
 
   // Identity-transition cleanup, and the SSOT for what an identity transition
-  // clears. Thirteen registered resets fired by the factory's
+  // clears. Fourteen registered resets fired by the factory's
   // createEffect(on(token, ...)) — eight Set.clear() (loadedChannels +
   // loadMore{InFlight,Exhausted} + loadNewer{InFlight,Exhausted}, #161 +
-  // refreshInFlight + refreshQueued, #1593 + jumpInFlight, #788) + five
+  // refreshInFlight + refreshQueued, #1593 + jumpInFlight, #788) + six
   // signal flushes
   // (scrollbackByChannel + lastOwnSend + ownSendSubmitted, #580 +
-  // farBehindByChannel, #693 + measuredUnreadByChannel, #947). Order matches
-  // the pre-A3 inline shape.
+  // farBehindByChannel, #693 + measuredUnreadByChannel, #947 +
+  // lastLiveArrival, issue 2625). Order matches the pre-A3 inline shape.
   //
   // #788 — the last two are registered here, away from their declarations
   // beside the verbs that own them, precisely BECAUSE that distance is how
@@ -674,6 +674,7 @@ const exports = identityScopedStore((onIdentityChange) => {
   onIdentityChange(() => setOwnSendSubmitted(null));
   onIdentityChange(() => setFarBehindByChannel({}));
   onIdentityChange(() => setMeasuredUnreadByChannel({}));
+  onIdentityChange(() => setLastLiveArrival(null));
 
   // Insert an incoming message into the per-channel ascending list at its
   // (server_time, id) position, deduping by id. REST + WS can overlap: the

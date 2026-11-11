@@ -695,6 +695,21 @@ describe("scrollback verbs", () => {
     dispose();
   });
 
+  // issue 2625 — `lastLiveArrival` is identity-scoped like the two send
+  // signals above: what the previous account's WS delivered is not news to the
+  // next one, and it names a row the next account's store does not hold.
+  it("an identity change forgets the last live arrival (issue 2625)", async () => {
+    const auth = await import("../lib/auth");
+    auth.setToken("tok-a");
+    const scrollback = await import("../lib/scrollback");
+    const key = channelKey("freenode", "#grappa");
+    scrollback.appendToScrollback(key, mkRow(7, 1000));
+    expect(scrollback.lastLiveArrival()).toEqual({ key, id: 7 });
+
+    auth.setToken("tok-b");
+    expect(scrollback.lastLiveArrival()).toBeNull();
+  });
+
   it("appendToScrollback dedupes by id (first wins)", async () => {
     localStorage.setItem("grappa-token", "tok");
     const scrollback = await import("../lib/scrollback");
