@@ -13,12 +13,16 @@ import { SERVER_WINDOW_NAME } from "../lib/windowKinds";
 // would test the fake); the form factor and the selection are the two boundary
 // sources, mocked as signals so a test can flip them.
 
-const form = vi.hoisted(() => ({ mobile: true }));
-vi.mock("../lib/theme", () => ({
-  isMobile: () => form.mobile,
-  prefersDark: () => false,
-  applyTheme: vi.fn(),
-}));
+// `vi.hoisted` holds the setter so a test can flip the layout under an open
+// card; the mock registry outlives `resetModules`, so it is one signal for the
+// whole file, put back to mobile in `beforeEach`.
+const form = vi.hoisted(() => ({ setMobile: (_mobile: boolean): void => {} }));
+vi.mock("../lib/theme", async () => {
+  const { createSignal } = await import("solid-js");
+  const [isMobile, setMobile] = createSignal(true);
+  form.setMobile = (mobile) => void setMobile(mobile);
+  return { isMobile, prefersDark: () => false, applyTheme: vi.fn() };
+});
 
 // The two page doors a `$server` backlog comes through — the reconnect refresh
 // (`listMessagesAfter`) and a first load (`listMessages`) — so a test can land
@@ -110,7 +114,7 @@ describe("serverPeek store (issue 2625)", () => {
   beforeEach(async () => {
     vi.resetModules();
     localStorage.clear();
-    form.mobile = true;
+    form.setMobile(true);
     phone();
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(T0);
@@ -266,7 +270,7 @@ describe("serverPeek store (issue 2625)", () => {
   });
 
   it("does not arm on the desktop layout", async () => {
-    form.mobile = false;
+    form.setMobile(false);
     const { peek, sb } = await load();
     peek.armServerPeek(SLUG);
     sb.appendToScrollback(SERVER, row(1, "reply"));
@@ -304,6 +308,7 @@ describe("serverPeek store (issue 2625)", () => {
     const { peek, sb } = await load();
     peek.armServerPeek(SLUG);
     sb.appendToScrollback(SERVER, row(1, "reply"));
+    expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["reply"]);
     peek.closeServerPeek();
     expect(peek.serverPeekRows(SLUG)).toEqual([]);
     sb.appendToScrollback(SERVER, row(2, "more of the reply"));
@@ -331,7 +336,50 @@ describe("serverPeek store (issue 2625)", () => {
     const { peek, sb } = await load();
     peek.armServerPeek(SLUG);
     sb.appendToScrollback(SERVER, row(1, "reply"));
+    expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["reply"]);
     peek.setServerPeekEnabled(false);
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  // The screen is asked again whenever it changes, not only at the command:
+  // the card goes when the layout leaves mobile, and it stays gone when the
+  // layout comes back (the lines are still in `$server`).
+  it("closes when the layout leaves mobile while it is open, and does not come back with it", async () => {
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    sb.appendToScrollback(SERVER, row(1, "reply"));
+    expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["reply"]);
+
+    form.setMobile(false);
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+    form.setMobile(true);
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  it("disarms when the layout leaves mobile before the reply", async () => {
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    form.setMobile(false);
+    form.setMobile(true);
+    sb.appendToScrollback(SERVER, row(1, "reply"));
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  // The XXL iPhone 15 of the test above, held the other way first: landscape
+  // holds 54.9 columns by 14 rows, so the card opens; turned to portrait it
+  // holds 32.75 columns, and the resize that comes with the turn takes it away.
+  it("closes when a rotation leaves too few columns for the font size", async () => {
+    localStorage.setItem("cicchetto.fontSize", "XXL");
+    vi.stubGlobal("innerWidth", 659);
+    vi.stubGlobal("innerHeight", 393);
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    sb.appendToScrollback(SERVER, row(1, "reply"));
+    expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["reply"]);
+
+    vi.stubGlobal("innerWidth", 393);
+    vi.stubGlobal("innerHeight", 659);
+    window.dispatchEvent(new Event("resize"));
     expect(peek.serverPeekRows(SLUG)).toEqual([]);
   });
 

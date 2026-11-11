@@ -53,10 +53,16 @@ import { SERVER_WINDOW_NAME } from "./windowKinds";
 //
 // The card opens only on the mobile layout and only when the screen, at the
 // user's font size, holds SERVER_PEEK_MIN_COLS columns and SERVER_PEEK_MIN_ROWS
-// rows of text (`serverPeekFits`). The opt-out lives in this device's
-// localStorage, like the command menu (issue 2584, vjt's ruling Q1): whether
-// a card fits over the window is a question about the screen, and a phone and
-// a desktop on one account answer it differently.
+// rows of text (`serverPeekFits`). The question is asked again whenever the
+// answer can change under a card already up — the layout, a resize (a
+// rotation is one), the opt-out — and a no closes it. The font size is not
+// on that list: it is not a signal, so a size picked while the card is up is
+// not asked about until the next resize.
+//
+// The opt-out lives in this device's localStorage, like the command menu
+// (issue 2584, vjt's ruling Q1): whether a card fits over the window is a
+// question about the screen, and a phone and a desktop on one account answer
+// it differently.
 
 /**
  * How long after a command the first `$server` line still counts as its
@@ -123,6 +129,24 @@ const pref = moduleRoot(() => {
   return { enabled, setEnabled };
 });
 
+// A tick per window resize, so the fit below is re-read when the screen turns
+// or a window is dragged: `innerWidth` / `innerHeight` are not signals.
+const resizes = moduleRoot(() => {
+  const [count, setCount] = createSignal(0);
+  window.addEventListener("resize", () => setCount((n) => n + 1));
+  return count;
+});
+
+// Whether this device, as it stands now, takes the card at all.
+const allowed = (): boolean => {
+  resizes();
+  return (
+    pref.enabled() &&
+    isMobile() &&
+    serverPeekFits(window.innerWidth, window.innerHeight, getFontSizePx())
+  );
+};
+
 // ---------------------------------------------------------------------------
 // The peek itself. `armed` waits for the first reply line; `open` is the view.
 // One at a time, like the services console: a command on another network
@@ -148,6 +172,13 @@ const serverRows = (networkSlug: string): readonly ScrollbackMessage[] =>
 const peek = identityScopedStore((onIdentityChange) => {
   const [state, setState] = createSignal<PeekState | null>(null);
   onIdentityChange(() => setState(null));
+
+  // The screen stopped holding the card, or the device opted out: an open or
+  // armed card goes at once, not at the next command, and does not come back
+  // when the screen does.
+  createEffect(() => {
+    if (!allowed()) setState(null);
+  });
 
   // The first LIVE `$server` line past the mark opens the card if it came
   // inside the window and disarms it otherwise, and the card starts at that
@@ -182,8 +213,7 @@ const peek = identityScopedStore((onIdentityChange) => {
   // follows). A command while the card is open on its network changes
   // nothing — the card already shows what comes next.
   const arm = (networkSlug: string): void => {
-    if (!pref.enabled() || !isMobile()) return;
-    if (!serverPeekFits(window.innerWidth, window.innerHeight, getFontSizePx())) return;
+    if (!allowed()) return;
     const st = state();
     if (st !== null && st.phase === "open" && st.networkSlug === networkSlug) return;
     const sinceId = serverRows(networkSlug).reduce((max, m) => (m.id > max ? m.id : max), 0);
@@ -220,10 +250,8 @@ export function getServerPeekEnabled(): boolean {
   return pref.enabled();
 }
 
-// Turning it off takes an open card away too: the setting is answered at once,
-// not at the next command.
+// Turning it off takes an open card away too (the store's `allowed` effect).
 export function setServerPeekEnabled(on: boolean): void {
   localStorage.setItem(STORAGE_KEY, on ? "true" : "false");
   pref.setEnabled(on);
-  if (!on) peek.close();
 }
