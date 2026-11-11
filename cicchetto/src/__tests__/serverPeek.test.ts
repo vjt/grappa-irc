@@ -269,6 +269,28 @@ describe("serverPeek store (issue 2625)", () => {
     expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["Nickname vjt is registered"]);
   });
 
+  // The mirror of the purge case: here only the mark speaks. The refresh and
+  // the WS push are separate paths, so a `$server` row stored during a refresh
+  // can land by the page first and by the WS second. A command typed between
+  // the two arms with that row already under its mark, and its WS copy is a
+  // live arrival that is not the one seen at the arm.
+  it("does not open on the WS copy of a row a refresh page already brought", async () => {
+    const { peek, sb } = await load();
+    const api = await import("../lib/api");
+    (await import("../lib/auth")).setToken("tok-2625");
+    vi.mocked(api.listMessagesAfter).mockResolvedValue([row(5, "MOTD line"), row(6, "Welcome")]);
+    await sb.refreshScrollback(SLUG, SERVER_WINDOW_NAME);
+    peek.armServerPeek(SLUG);
+
+    vi.setSystemTime(T0 + 300);
+    sb.appendToScrollback(SERVER, row(6, "Welcome"));
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+
+    vi.setSystemTime(T0 + 800);
+    sb.appendToScrollback(SERVER, row(7, "Nickname vjt is registered"));
+    expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["Nickname vjt is registered"]);
+  });
+
   it("does not arm on the desktop layout", async () => {
     form.setMobile(false);
     const { peek, sb } = await load();
