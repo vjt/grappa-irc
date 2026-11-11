@@ -6563,4 +6563,3 @@ wrong:
   player stopped or re-tuned), and on sign-out with everything else. The card
   still takes its own FETCH down when it unmounts, and a URL minted after that
   abort is revoked on the spot rather than left for nobody.
-
