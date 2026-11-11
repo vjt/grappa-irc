@@ -159,10 +159,14 @@ describe("checkDictation (issue 2611)", () => {
   };
 
   const withRecognitionFor = (engine: ReturnType<typeof fakeEngine>): void => {
-    // A factory, not a constructor that returns an object (biome refuses the
-    // latter): the module only ever calls `new Ctor()`, and a function is a
-    // valid constructor target for `new`.
-    const Ctor = (() => engine) as unknown as new () => unknown;
+    // `new Ctor()` needs a CONSTRUCTABLE function, and an arrow is not one:
+    // `new (() => engine)()` throws "function is not a constructor". A plain
+    // function is, and `new` keeps the object a constructor returns — which is
+    // exactly the fake the module then talks to.
+    // biome-ignore lint: `new` needs a constructable function, an arrow is not one
+    const Ctor = function () {
+      return engine;
+    } as unknown as new () => unknown;
     vi.stubGlobal("SpeechRecognition", Object.assign(Ctor, { available: async () => "available" }));
   };
 
@@ -259,7 +263,10 @@ describe("checkDictation (issue 2611)", () => {
         },
         abort() {},
       };
-      const Ctor = (() => engine) as unknown as new () => unknown;
+      // biome-ignore lint: `new` needs a constructable function, an arrow is not one
+      const Ctor = function () {
+        return engine;
+      } as unknown as new () => unknown;
       vi.stubGlobal(
         "SpeechRecognition",
         Object.assign(Ctor, { available: async () => "available" }),

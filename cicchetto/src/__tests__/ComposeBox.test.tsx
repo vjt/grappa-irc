@@ -2668,6 +2668,13 @@ describe("ComposeBox — the microphone takes the send slot on an empty box", ()
   });
 
   it("with text in the box the send button is back, unchanged and named", async () => {
+    // The slot reads the draft through `getDraft`, which the default mock
+    // answers with a constant: a constant is not reactive, so the `Show` would
+    // never re-evaluate and this case would pin nothing. A live draft, as the
+    // store is in production.
+    const [draft, setDraft] = createSignal("");
+    vi.mocked(compose_.getDraft).mockImplementation(() => draft());
+    vi.mocked(compose_.setDraft).mockImplementation((_key: string, text: string) => setDraft(text));
     setMockDictation(true);
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
 
@@ -2690,13 +2697,34 @@ describe("ComposeBox — the microphone takes the send slot on an empty box", ()
   });
 
   it("the send button sends and starts no dictation", async () => {
+    const [draft, setDraft] = createSignal("");
+    vi.mocked(compose_.getDraft).mockImplementation(() => draft());
+    vi.mocked(compose_.setDraft).mockImplementation((_key: string, text: string) => setDraft(text));
     vi.mocked(compose_.submit).mockResolvedValue({ ok: true });
     setMockDictation(true);
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
     fireEvent.input(screen.getByLabelText("compose message"), { target: { value: "hi" } });
     await waitFor(() => expect(sendButton()).not.toBeNull());
 
-    fireEvent.click(sendButton() as HTMLElement);
+    // The #925 contract, which is what a real tap is: the send rides
+    // `pointerup`, and jsdom's all-zero rect would read as "released outside".
+    const button = sendButton() as HTMLElement;
+    Object.defineProperty(button, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 300, right: 344, top: 500, bottom: 544, width: 44, height: 44 }),
+    });
+    const at = (type: string): MouseEvent => {
+      const e = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        clientX: 322,
+        clientY: 522,
+      });
+      Object.defineProperty(e, "pointerId", { value: 1 });
+      return e;
+    };
+    button.dispatchEvent(at("pointerdown"));
+    button.dispatchEvent(at("pointerup"));
 
     // Both halves: the name says it sends, and the tap is the microphone's
     // slot — so the test must show it is the send that happened.
@@ -2709,12 +2737,17 @@ describe("ComposeBox — the microphone takes the send slot on an empty box", ()
   // unfinished, and a half-typed COMMAND ran with the dictated words as its
   // arguments. The segment is its own message, and the draft is untouched.
   it("a dictated segment is its own message and leaves the draft alone", async () => {
+    const [draft, setDraft] = createSignal("");
+    vi.mocked(compose_.getDraft).mockImplementation(() => draft());
+    vi.mocked(compose_.setDraft).mockImplementation((_key: string, text: string) => setDraft(text));
     setMockDictation(true);
-    setMockDictating(true);
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
 
+    // The press STARTS the session, so it has to land while `dictating()` is
+    // still false: a press on a running session is the stop.
     fireEvent.click(mic() as HTMLElement);
     const send = (mockStartDictation.mock.calls.at(-1) as unknown as [(t: string) => void])[0];
+    setMockDictating(true);
     fireEvent.input(screen.getByLabelText("compose message"), { target: { value: "/part" } });
 
     send("🔊 ciao a tutti");
@@ -2735,12 +2768,14 @@ describe("ComposeBox — the microphone takes the send slot on an empty box", ()
   // whatever window the operator opened next.
   it("a window switch mid-dictation stops the session, and its words go nowhere", async () => {
     setMockDictation(true);
-    setMockDictating(true);
     const [channel, setChannel] = createSignal("#a");
     render(() => <ComposeBox networkSlug="freenode" channelName={channel()} />);
 
+    // Start first (a press while `dictating()` is true is the stop), then let
+    // the session be running: the switch is what the effect has to catch.
     fireEvent.click(mic() as HTMLElement);
     const send = (mockStartDictation.mock.calls.at(-1) as unknown as [(t: string) => void])[0];
+    setMockDictating(true);
 
     setChannel("#b");
     await waitFor(() => expect(mockStopDictation).toHaveBeenCalledTimes(1));
