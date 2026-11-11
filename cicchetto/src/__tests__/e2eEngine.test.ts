@@ -760,6 +760,21 @@ async function say(g: Grappa, side: Me, nick: string, body: string): Promise<voi
 
 const text = (body: string) => ({ t: "text", body });
 
+/** A well-formed `t: "file"` inner (issue 2517); `over` is what makes it refused. */
+const fileInner = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  t: "file",
+  url: `/uploads/${SLUG}`,
+  key: base64Unpadded(new Uint8Array(32)),
+  iv: base64Unpadded(new Uint8Array(12)),
+  sha256: base64Unpadded(new Uint8Array(32)),
+  name: "holiday.jpg",
+  mime: "image/jpeg",
+  size: 1234,
+  category: "image",
+  expires_at: "2099-01-01T00:00:00Z",
+  ...over,
+});
+
 /** `text(body)` as `side`'s engine writes it: with the version of its own list. */
 const ours = (side: Me, body: string) => ({ ...text(body), lv: side.own.list.ver });
 
@@ -3281,6 +3296,62 @@ describe("a PKMSG (W receiver checks, in order)", () => {
     expect(dropsOf(a)).toEqual(["inner-key-mismatch"]);
     expect(readBy(a)).toEqual([text("one")]);
     elsewhere.free();
+  });
+
+  it("drops a malformed file inner here, so no client has one to re-parse", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    listedPeer(a, "bob", bob, 1);
+    // issue 2517 — every field of a `t: "file"` is the peer's word. The engine
+    // checks them and refuses, saying which one: a client that re-parsed the
+    // same inner would be reading a `received` event this layer never sends.
+    const malformed = { ...fileInner(), key: "AAAA" };
+
+    takes(
+      a,
+      "bob",
+      "pkmsg",
+      didOf(device),
+      written(a, bob, device, malformed, "one-time"),
+      newMsgid(),
+    );
+
+    expect(eventsOf(a, "dropped")).toEqual([
+      { kind: "dropped", nick: "bob", reason: "file-malformed", detail: "bad-key" },
+    ]);
+    expect(readBy(a)).toEqual([]);
+  });
+
+  it("takes a well-formed file inner as a message, and drops the same one when a field goes", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    listedPeer(a, "bob", bob, 1);
+
+    takes(
+      a,
+      "bob",
+      "pkmsg",
+      didOf(device),
+      written(a, bob, device, fileInner(), "one-time"),
+      newMsgid(),
+    );
+    expect(dropsOf(a)).toEqual([]);
+    expect(readBy(a)).toEqual([fileInner()]);
+
+    takes(
+      a,
+      "bob",
+      "pkmsg",
+      didOf(device),
+      written(a, bob, device, { ...fileInner(), size: -1 }, "one-time"),
+      newMsgid(),
+    );
+    expect(eventsOf(a, "dropped")).toEqual([
+      { kind: "dropped", nick: "bob", reason: "file-malformed", detail: "bad-size" },
+    ]);
+    expect(readBy(a)).toEqual([fileInner()]);
   });
 
   it("lets a curve's real holder take it back from a device that only claimed it, and sends the holder what waited", () => {
