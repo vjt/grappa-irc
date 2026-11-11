@@ -569,6 +569,30 @@ describe("ServiceModal (#290)", () => {
       await waitFor(() => expect(input.value).toBe(""));
     });
 
+    // The delta review's MAJOR: a pointer send on real iOS can produce NO
+    // click (the long-press case the pointer activation exists for), leaving
+    // the swallow flag armed — and a guard on that flag then ate every
+    // keyboard activation until the next tap.
+    it("still sends from the keyboard after a pointer send whose click never came", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const { input, button } = await open("svc-2429-kb-after-pointer");
+
+      type(input, "HELP");
+      pressButton(button);
+      // No synthetic click follows: the tap sent, and the flag stayed armed.
+      await waitFor(() => expect(input.value).toBe(""));
+
+      type(input, "INFO vjt");
+      fireEvent.click(button, { detail: 0 });
+
+      expect(pipeline.sendBodyLines).toHaveBeenLastCalledWith(
+        "svc-2429-kb-after-pointer",
+        "NickServ",
+        "INFO vjt",
+        false,
+      );
+    });
+
     it("does not send twice on one pointer press (the synthetic click is swallowed)", async () => {
       const pipeline = await import("../lib/sendPipeline");
       const { input, button } = await open("svc-2429-no-double");
