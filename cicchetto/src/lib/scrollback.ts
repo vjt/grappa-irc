@@ -484,9 +484,19 @@ const exports = identityScopedStore((onIdentityChange) => {
   // catch that lands after a bearer rotation must not write into the NEW
   // identity's set. `loadInitialScrollback` used to be the only caller that
   // remembered; centralising it means a new verb cannot forget.
+  // #2409 — the one place a 400 is remembered, and the one place it is logged.
+  // The log belongs HERE rather than in each catch: two of the seven call sites
+  // (`fetchOlderPage`, the `loadNewer` catch) had no console line at all, so a
+  // bad `before` from `loadMore` latched the whole window — the reconnect
+  // refresh included — leaving no trace. Once per key, on the FIRST refusal:
+  // the latch is forward-only within an identity, so every later verb it
+  // short-circuits never reaches the wire and has nothing to say.
   const noteFetchFailure = (t: string, key: ChannelKey, err: unknown): void => {
     if (identityMoved(t)) return;
-    if (err instanceof ApiError && err.status === 400) rejectedTargets.add(key);
+    if (!(err instanceof ApiError && err.status === 400)) return;
+    if (rejectedTargets.has(key)) return;
+    rejectedTargets.add(key);
+    console.warn("[scrollback] target refused, window latched", key, err);
   };
   // issue 2333 — the cold load currently running per key, so `jumpToMessage`
   // can wait it out instead of racing it. Entries delete themselves when the
@@ -1272,8 +1282,11 @@ const exports = identityScopedStore((onIdentityChange) => {
     if (identityMoved(t)) return false;
     // #2409 — a latched target is refused whatever the anchor: a tap on a
     // mention row would otherwise put the same refused GET back on the wire.
-    if (rejectedTargets.has(key)) return false;
+    // Read AFTER the local hit below: a row already in the pane needs no
+    // network at all, and refusing that jump would send the mention tap to the
+    // marker or the tail instead of to the mention.
     if ((scrollbackByChannel()[key] ?? []).some((m) => m.id === id)) return true;
+    if (rejectedTargets.has(key)) return false;
     if (jumpInFlight.has(key)) return false;
     jumpInFlight.add(key);
     try {
@@ -1495,12 +1508,8 @@ const exports = identityScopedStore((onIdentityChange) => {
       // skips one live-delivery catch-up while re-paying for a cold load.
       if (identityMoved(t)) return;
       // A latched cold load is PERMANENT for this identity: the pane will say
-      // "no messages yet" for the rest of it, and nothing else would ever say
-      // why. The other latching catches keep their console line; this one now
-      // does too, so a dead window is diagnosable instead of merely dead.
-      if (err instanceof ApiError && err.status === 400) {
-        console.warn("[scrollback] target refused, window latched", slug, name, err);
-      }
+      // "no messages yet" for the rest of it. `noteFetchFailure` says why, once
+      // per key, for every verb that can latch.
       noteFetchFailure(t, key, err);
       loadedChannels.delete(key);
     } finally {

@@ -16,7 +16,7 @@
 
 import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ScrollbackMessage } from "../lib/api";
+import type { GapProbe, ScrollbackMessage } from "../lib/api";
 import { ApiError } from "../lib/apiError";
 
 // Mirrors scrollbackIdentityRotation.test.ts: keep scrollback's transitive
@@ -45,12 +45,14 @@ vi.mock("../lib/auth", () => ({
 
 const listMessagesSpy = vi.fn<(...a: unknown[]) => Promise<ScrollbackMessage[]>>();
 const listMessagesAfterSpy = vi.fn<(...a: unknown[]) => Promise<ScrollbackMessage[]>>();
+const countMessagesAfterSpy = vi.fn<(...a: unknown[]) => Promise<GapProbe>>();
 vi.mock("../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
     ...actual,
     listMessages: (...args: unknown[]) => listMessagesSpy(...args),
     listMessagesAfter: (...args: unknown[]) => listMessagesAfterSpy(...args),
+    countMessagesAfter: (...args: unknown[]) => countMessagesAfterSpy(...args),
   };
 });
 
@@ -92,12 +94,41 @@ const row = (id: number): ScrollbackMessage => ({
   meta: {},
 });
 
+// A gap probe answer; `isFarBehind` is `gap > PAGE_LIMIT`.
+const probe = (gap: number, events = 0): GapProbe => ({ gap, messages: gap - events, events });
+
+// The page size the module ASKED for, read back off the wire rather than
+// hardcoded: a `PAGE_LIMIT` that drifts would otherwise stop entering the
+// full-page branch and the case would pass because it tested nothing.
+const fullPageFor = (spy: { mock: { calls: unknown[][] } }): ScrollbackMessage[] => {
+  const limit = spy.mock.calls[0]?.[4];
+  if (typeof limit !== "number") throw new Error("no page limit observed on the wire");
+  return Array.from({ length: limit }, (_, i) => row(i + 1));
+};
+
+// Hold a REST call open so another verb can run strictly inside its await.
+const gate = <T>(): {
+  promise: Promise<T>;
+  release: (value: T) => void;
+  fail: (e: Error) => void;
+} => {
+  let release!: (value: T) => void;
+  let fail!: (e: Error) => void;
+  const promise = new Promise<T>((resolve, reject) => {
+    release = resolve;
+    fail = reject;
+  });
+  return { promise, release, fail };
+};
+
 describe("#2409 a refused target is not retried", () => {
   beforeEach(() => {
     listMessagesSpy.mockReset();
     listMessagesSpy.mockResolvedValue([]);
     listMessagesAfterSpy.mockReset();
     listMessagesAfterSpy.mockResolvedValue([]);
+    countMessagesAfterSpy.mockReset();
+    countMessagesAfterSpy.mockResolvedValue(probe(0));
     setReadCursorSpy.mockClear();
     freshIdentity();
   });
@@ -183,13 +214,97 @@ describe("#2409 a refused target is not retried", () => {
   // the way in: every tap on the far-behind bar or on a mention row was one
   // more refused GET for the jail.
   it("does not put a refused target back on the wire from jumpToUnread", async () => {
-    const { loadInitialScrollback, jumpToUnread } = await import("../lib/scrollback");
-    listMessagesSpy.mockRejectedValue(refuse(400));
+    const { loadInitialScrollback, loadMore, refreshScrollback, jumpToUnread } = await import(
+      "../lib/scrollback"
+    );
+    // `jumpToUnread` refuses on `!far` BEFORE it ever reads the latch, so a
+    // case that starts from a latched-but-not-far-behind key passes with the
+    // guard removed. The far-behind record has to come first: a full refresh
+    // page whose probe says the remainder is more than a page.
+    listMessagesSpy.mockResolvedValueOnce([row(1)]);
     await loadInitialScrollback("net", REFUSED);
+    listMessagesAfterSpy.mockResolvedValueOnce(fullPageFor(listMessagesAfterSpy));
+    countMessagesAfterSpy.mockResolvedValueOnce(probe(400));
+    listMessagesSpy.mockResolvedValueOnce([row(500)]);
+    await refreshScrollback("net", REFUSED);
+
+    // …and the latch from a verb that is not the cold load.
+    listMessagesSpy.mockRejectedValue(refuse(400));
+    await loadMore("net", REFUSED, () => undefined);
+    listMessagesSpy.mockClear();
+    listMessagesAfterSpy.mockClear();
+    countMessagesAfterSpy.mockClear();
+
+    expect(await jumpToUnread("net", REFUSED)).toBe(false);
+
+    expect(listMessagesSpy).not.toHaveBeenCalled();
+    expect(listMessagesAfterSpy).not.toHaveBeenCalled();
+  });
+
+  // `probeGap` reads the latch itself rather than trusting its callers: a
+  // refresh reads the latch, then awaits its page, and a CONCURRENT verb can
+  // latch the key inside that await. The probe is the next request the refresh
+  // would spend, so it is the one the guard has to stop.
+  it("does not probe a target another verb latched during the refresh", async () => {
+    const { loadInitialScrollback, loadNewer, refreshScrollback } = await import(
+      "../lib/scrollback"
+    );
+    // A pane with a row, so `loadNewer` gets past its empty-pane short-circuit.
+    listMessagesSpy.mockResolvedValueOnce([row(1)]);
+    await loadInitialScrollback("net", REFUSED);
+
+    const page = gate<ScrollbackMessage[]>();
+    listMessagesAfterSpy.mockReturnValueOnce(page.promise);
+    const refreshing = refreshScrollback("net", REFUSED);
+
+    // The concurrent verb latches the key while the refresh is in flight.
+    listMessagesAfterSpy.mockRejectedValue(refuse(400));
+    await loadNewer("net", REFUSED);
+
+    // A FULL page: the shape that makes the refresh probe for the remainder.
+    page.release(fullPageFor(listMessagesAfterSpy));
+    await refreshing;
+
+    expect(countMessagesAfterSpy).not.toHaveBeenCalled();
+  });
+
+  // #788 — the identity check lives inside `noteFetchFailure`, so a catch that
+  // lands AFTER a rotation must not write into the new identity's set. The
+  // existing rotation case covers a 400 that lands BEFORE it; this is the
+  // other half.
+  it("a 400 that lands after a rotation does not latch the new identity", async () => {
+    const { refreshScrollback } = await import("../lib/scrollback");
+    const page = gate<ScrollbackMessage[]>();
+    listMessagesAfterSpy.mockReturnValueOnce(page.promise);
+    const refreshing = refreshScrollback("net", REFUSED);
+
+    freshIdentity();
+    await Promise.resolve(); // let the identity-scoped reset run
+    page.fail(refuse(400));
+    await refreshing;
+
+    listMessagesAfterSpy.mockResolvedValue([]);
+    await refreshScrollback("net", REFUSED);
+
+    expect(listMessagesAfterSpy).toHaveBeenCalledTimes(2);
+  });
+
+  // The latch is about the WIRE, not about the pane: a row already rendered
+  // needs no request, and refusing that jump sends a mention tap to the marker
+  // or the tail instead of to the mention. So the latch is read AFTER the
+  // local hit.
+  it("still jumps to a row already in the pane on a latched target", async () => {
+    const { loadInitialScrollback, refreshScrollback, jumpToMessage } = await import(
+      "../lib/scrollback"
+    );
+    listMessagesSpy.mockResolvedValueOnce([row(1)]);
+    await loadInitialScrollback("net", REFUSED);
+    listMessagesAfterSpy.mockRejectedValue(refuse(400));
+    await refreshScrollback("net", REFUSED);
     listMessagesSpy.mockClear();
     listMessagesAfterSpy.mockClear();
 
-    expect(await jumpToUnread("net", REFUSED)).toBe(false);
+    expect(await jumpToMessage("net", REFUSED, 1)).toBe(true);
 
     expect(listMessagesSpy).not.toHaveBeenCalled();
     expect(listMessagesAfterSpy).not.toHaveBeenCalled();
