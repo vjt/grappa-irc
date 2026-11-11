@@ -5176,9 +5176,10 @@ time" per GitHub's changelog of 2025-06-03). On their own they would only show
 GitHub agreeing with itself, so the script also hashes every file the run
 attached (`release_assets.sh found`, the same set) and refuses unless each one
 matches a digest on the release. It covers everything the release holds except
-`SHA256SUMS` itself, including `shottino-debug` and any asset an earlier run
-left that a failed repair leg did not replace: the file describes what can be
-downloaded, and which assets are the contract is `PACKAGING.md`'s business.
+`SHA256SUMS` itself, including an asset no expected kind names and any asset
+an earlier run left that a failed repair leg did not replace: the file
+describes what can be downloaded, and which assets are the contract is
+`PACKAGING.md`'s business.
 
 It refuses on a missing or malformed digest. Whether the API reports every
 digest the moment `gh release upload` returns is **not measured** (no release

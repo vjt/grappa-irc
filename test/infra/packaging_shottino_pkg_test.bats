@@ -203,6 +203,17 @@ upload_dirs() {
     grep -qx 'pkgname = shottino' "$SRCINFO_CLIENT"
 }
 
+@test "#2574 the AUR client recipe builds no debug package, so none reaches the release" {
+    # makepkg splits a <pkgname>-debug package unless options carries !debug,
+    # and the release's 'shottino-*.pkg.tar.zst' glob then publishes it as a
+    # second "client" package nobody decided to ship. The bouncer's recipe
+    # already opts out; the client's must too, in the recipe AND the
+    # committed .SRCINFO.
+    grep -qE "^options=\(.*'!debug'.*\)$" "$PKGBUILD"
+    grep -qE "^options=\(.*'!debug'.*\)$" "$PKGBUILD_CLIENT"
+    grep -qE '^\s*options = !debug$' "$SRCINFO_CLIENT"
+}
+
 # ── Its own version line, derived from the header ──────────────────────────
 
 @test "#1447 version.sh with no argument still prints the repo VERSION" {
