@@ -6354,10 +6354,28 @@ every line is still in `$server`, read or unread exactly as before.
 ### Which lines: correlation by TIME, because nothing else can correlate
 
 A command ARMS the peek (the high-water mark is taken in compose, before the
-send — the #1518 ordering); the first `$server` line within
-`SERVER_PEEK_REPLY_WINDOW_MS` (10 s) OPENS it, a later one disarms it. Once
-open, the card shows every line `$server` receives until it is dismissed —
-which is what makes the second command's output append.
+send — the #1518 ordering); the first `$server` line to arrive LIVE within
+`SERVER_PEEK_REPLY_WINDOW_MS` (10 s) OPENS it, a later one disarms it, and
+the card starts AT that line. Once open, the card shows every line `$server`
+receives from there until it is dismissed — which is what makes the second
+command's output append.
+
+LIVE, because a page is not a reply (review finding on PR 2650). The
+reconnect refresh and a first load bring rows the server already held when
+the command was typed, and the high-water mark cannot tell them from a reply
+when `$server` was never loaded this session: it is 0 and every backlog row
+is past it, so the card opened on backlog and kept showing it. A reply is
+stored after the command reaches the server, so it reaches this client on
+the WS, and every backlog row is older than it. `scrollback.ts` therefore
+publishes an EVENT signal, `lastLiveArrival`, written by `appendToScrollback`
+(the one live verb) and by none of the page verbs, and on the identity-reset
+list beside its siblings `lastOwnSend` and `ownSendSubmitted`. The peek opens
+only on a live `$server` arrival past the mark, and because the card starts
+at that arrival, a page that lands afterwards stays out of it whichever order
+the race takes. The arrival already there when the command is typed does not
+count either: the mark rules it out while `$server` still holds it, and
+after a purge, when the mark is back to 0, the arm keeps the event object it
+saw and ignores it.
 
 Per-command correlation was rejected, not overlooked: bahamut has no
 `labeled-response`, and cic must not parse IRC to guess which NOTICE answers
@@ -6395,14 +6413,25 @@ per-device is the choice, stated rather than inherited.
 ### Closing, and what it does not cover
 
 The card closes on its ✕, on selecting that network's `$server` (reading
-what the card shows), on turning the setting off, and on logout. It shows
+what the card shows), on logout, and when the device stops taking it (review
+finding on PR 2650): the setting goes off, the layout leaves mobile, or a
+resize — a rotation is one — leaves the screen short of 36 columns or 12
+rows at the user's font size. One predicate answers "does this device take
+the card" (opted in, mobile layout, `serverPeekFits` on the live window
+size, re-read on a per-resize tick because `innerWidth`/`innerHeight` are
+not signals); `arm` asks it, and a store effect closes an open or armed card
+the moment it says no. It CLOSES rather than hides: the card does not come
+back when the screen does, and the lines are still in `$server`. It shows
 only on the windows of the network the command was typed on.
 
 Not covered, declared: NickServ replies re-keyed into an open NickServ query
-(#400) never reach `$server`, so they open no card. On Android with
-`interactive-widget=resizes-content` the keyboard shrinks `innerHeight`, so
-the rows gate reads the shrunken height there; only a screen under 12 rows is
-affected, and this is unmeasured on a device.
+(#400) never reach `$server`, so they open no card. The font size is not a
+signal, so a size picked while the card is up is not asked about until the
+next resize. On Android with `interactive-widget=resizes-content` the
+keyboard shrinks `innerHeight`, so the rows gate reads the shrunken height
+there: on a screen that holds under 12 rows with the keyboard up, the card
+does not arm, and a card that opened with the keyboard down closes when the
+keyboard comes up (it fires a resize). Unmeasured on a device.
 
 ### Measured
 
@@ -6416,6 +6445,26 @@ affected, and this is unmeasured on a device.
   identity reset, the settings box hard-wired checked), each got its test,
   and all 5 then died to exactly that test, one red each. 0 reds outside the
   issue 2625 tests across both passes.
+- Review round (PR 2650): each new test of a new behaviour was red on the
+  previous head for the reason it names, and each new guard was mutated on
+  its own over serverPeek, scrollback, ServerPeekPanel, ScrollbackPane,
+  compose and SettingsDrawer (937 tests, all counts on the final head).
+  Opening at the old mark instead of at the arrival: 2 reds. The old
+  store-watching open rule: 3 reds (refresh page, first-load page, page
+  landing after the card opened). No live-arrival write: 15 reds. No
+  identity reset of `lastLiveArrival`: 1 red. No close effect: 4 reds
+  (opt-out, layout under an open card, layout under an armed one,
+  rotation). No resize listener, or the tick not read: 1 red each, the
+  rotation. Hiding instead of closing (the gate moved into `rows`): 2 reds,
+  one of them the "does not come back" assertion. Dropping the arm's `seen`
+  guard turned NOTHING red at first: in every state the suite built, the
+  arrival seen at the arm was a row `$server` still held, so the mark ruled
+  it out too. The state where only `seen` speaks is a purged `$server`; a
+  test of it (green on the previous head, since the guard was already
+  there) is the one red that mutant now turns. The same pass found the
+  dismiss and opt-out tests asserting only the absence they started from:
+  with the card never opening, both stayed green. They now assert the card
+  was open first.
 - The logout test was overdetermined, found by the identity-reset mutant:
   the scrollback store empties on logout too, so "no rows after logout"
   held with or without the peek's reset. It now asserts what only that
