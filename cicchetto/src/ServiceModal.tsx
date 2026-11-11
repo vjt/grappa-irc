@@ -238,15 +238,20 @@ const ServiceModal: Component = () => {
         // stock mobile keyboard has no arrows, and an up-flick is the only
         // coherent intent over a one-row box); swipe DOWN = ArrowDown (newer,
         // gated on a non-empty draft: a down-flick's job is walking back to
-        // the live draft parked on the way up). The binding itself is the
-        // composer's, in `lib/swipeRecall` — the scroll-boundary handoff
-        // (#123) and the touch-not-pointer rule included.
+        // the live draft parked on the way up); swipe RIGHT = Tab (nick and
+        // channel completion), the same `complete` the key door uses — the
+        // stock mobile keyboard has no Tab key either, and Tab is this
+        // prompt's only completion door. The binding itself is the composer's,
+        // in `lib/swipeRecall` — the scroll-boundary handoff (#123) and the
+        // touch-not-pointer rule included.
         const bindPrompt = (el: HTMLTextAreaElement): void => {
           inputRef = el;
           const unbind = bindSwipeRecall(el, {
             onPrev: recallOlder,
             onNext: recallNewer,
             canNext: () => draft().trim() !== "",
+            // The key door's forward direction (Tab, not Shift-Tab).
+            onTab: (ta) => complete(ta, true),
           });
           onCleanup(unbind);
         };

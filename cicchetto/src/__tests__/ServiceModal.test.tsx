@@ -741,6 +741,35 @@ describe("ServiceModal (#290)", () => {
         // Walked back to the bottom, where the parked draft was empty.
         await waitFor(() => expect(input.value).toBe(""));
       });
+
+      // A right drag is this prompt's Tab, and the stock mobile keyboard has
+      // no Tab key: the console's prompt is the second door onto the ONE
+      // completion engine (#2375), and the drag used to be claimed
+      // (`preventDefault`) while completing nothing, because `bindPrompt`
+      // passed no `onTab` — the field was optional and said so quietly.
+      it("swipe right completes the nick, as Tab does", async () => {
+        const slug = "svc-2429-swipe-right";
+        const chan = "#grappa";
+        seedFromTest(channelKey(slug, chan), [
+          { nick: "vjt", modes: [] },
+          { nick: "vjtbot", modes: [] },
+        ]);
+        setSelectedChannel({ networkSlug: slug, channelName: chan, kind: "channel" });
+        try {
+          const { input } = await open(slug);
+          type(input, "INFO vj");
+          input.setSelectionRange(input.value.length, input.value.length);
+
+          // A fast right drag: start, a mostly-horizontal move, release.
+          input.dispatchEvent(touchEvent("touchstart", [{ clientX: 100, clientY: 300 }]));
+          input.dispatchEvent(touchEvent("touchmove", [{ clientX: 160, clientY: 302 }]));
+          input.dispatchEvent(touchEvent("touchend", [{ clientX: 160, clientY: 302 }]));
+
+          await waitFor(() => expect(input.value).toBe("INFO vjt "));
+        } finally {
+          setSelectedChannel(null);
+        }
+      });
     });
   });
 
