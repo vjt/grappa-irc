@@ -320,6 +320,15 @@ vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/encryptedChats")>()),
   ownDevice: (slug: string): string | undefined => ownDevices()[slug],
 }));
+// issue 2625 — what the `$server` peek store answers for an open card, per
+// network: a signal, so one test can open a card and every other test sees
+// none. When the store opens and closes is serverPeek.test.ts's business; here
+// only WHERE the pane puts the card is.
+const [peekRows, setPeekRows] = createSignal<Record<string, ScrollbackMessage[]>>({});
+vi.mock("../lib/serverPeek", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/serverPeek")>()),
+  serverPeekRows: (slug: string): readonly ScrollbackMessage[] => peekRows()[slug] ?? [],
+}));
 
 import { type ChannelKey, channelKey } from "../lib/channelKey";
 // #325 — the REAL channelTopic store (not mocked). `seedTopic` stages a topic
@@ -7349,6 +7358,7 @@ describe("ScrollbackPane", () => {
 
     afterEach(() => {
       dismissWhoisCard("overlaynet");
+      setPeekRows({});
     });
 
     it("mounts the WHOIS card inside the overlay layer, separate from the scroll list", () => {
@@ -7364,6 +7374,36 @@ describe("ScrollbackPane", () => {
       // ...and the overlay must NOT wrap the scroll list — that separation
       // is what keeps the reader's scroll position stable when a card mounts.
       expect(overlay).not.toContainElement(list);
+    });
+
+    // issue 2625 — the `$server` peek card is one of these cards, and for it
+    // the separation is load-bearing twice: every `.scrollback-line` query the
+    // pane makes (the reading anchor, the anchored top, the gestures'
+    // `closest()`) runs on the scroll list, so a card drawn INSIDE it would put
+    // its `$server` rows among the window's own lines.
+    it("mounts the $server peek card inside the overlay layer, outside the scroll list", () => {
+      setPeekRows({
+        overlaynet: [
+          {
+            id: 9001,
+            network: "overlaynet",
+            channel: "$server",
+            server_time: 0,
+            kind: "notice",
+            sender: "NickServ",
+            body: "Nickname carol is registered",
+            meta: {},
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="overlaynet" channelName="#x" kind="channel" />);
+
+      const overlay = screen.getByTestId("scrollback-overlay");
+      const card = screen.getByTestId("server-peek");
+      const list = screen.getByTestId("scrollback");
+
+      expect(overlay).toContainElement(card);
+      expect(list).not.toContainElement(card);
     });
   });
 
