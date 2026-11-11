@@ -6446,9 +6446,10 @@ keyboard comes up (it fires a resize). Unmeasured on a device.
   and all 5 then died to exactly that test, one red each. 0 reds outside the
   issue 2625 tests across both passes.
 - Review round (PR 2650): each new test of a new behaviour was red on the
-  previous head for the reason it names, and each new guard was mutated on
-  its own over serverPeek, scrollback, ServerPeekPanel, ScrollbackPane,
-  compose and SettingsDrawer (937 tests, all counts on the final head).
+  previous head for the reason it names, and each new guard but one (the
+  arrival's key check, next bullet) was mutated on its own over serverPeek,
+  scrollback, ServerPeekPanel, ScrollbackPane, compose and SettingsDrawer
+  (937 tests, all counts on that round's head).
   Opening at the old mark instead of at the arrival: 2 reds. The old
   store-watching open rule: 3 reds (refresh page, first-load page, page
   landing after the card opened). No live-arrival write: 15 reds. No
@@ -6465,6 +6466,15 @@ keyboard comes up (it fires a resize). Unmeasured on a device.
   dismiss and opt-out tests asserting only the absence they started from:
   with the card never opening, both stayed green. They now assert the card
   was open first.
+- Second review round: the arrival's key check (only a line in the armed
+  network's `$server` counts) turned NOTHING red when deleted, as the
+  delta review measured. `lastLiveArrival` is one signal for every window,
+  and the one cross-network case let the real reply land inside the
+  window, where a card wrongly opened by the other network's line still
+  showed it. Two cases now put the only `$server` line past the window,
+  after a channel line and after another network's `$server` line inside
+  it. Deleting the check turns exactly those two red over the same six
+  suites (939 tests).
 - The logout test was overdetermined, found by the identity-reset mutant:
   the scrollback store empties on logout too, so "no rows after logout"
   held with or without the peek's reset. It now asserts what only that
