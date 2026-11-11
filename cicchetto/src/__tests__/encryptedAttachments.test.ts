@@ -181,13 +181,55 @@ describe("sendEncryptedAttachment (issue 2517)", () => {
 
   it("answers an upload refusal as a sentence, never a throw", async () => {
     // `uploadEncryptedCiphertext` REJECTS with an `UploadError` (xhrUpload's
-    // contract); it does not resolve one.
+    // contract); it does not resolve one. The embedded host's real 413 carries
+    // the `file_too_large` token and the server's `max_bytes`, and the shared
+    // copy renders that threshold — a bodyless 413 has nothing to read.
+    upload.fn.mockRejectedValue({
+      kind: "http",
+      status: 413,
+      body: JSON.stringify({ error: "file_too_large", max_bytes: 10 * 1024 * 1024 }),
+    });
+
+    const outcome = await sendEncryptedAttachment(request(fileOf("a.pdf", "application/pdf", 10)));
+
+    expect(outcome).toEqual({ ok: false, error: "File is too large (max 10 MB)." });
+    expect(sendFile.fn).not.toHaveBeenCalled();
+  });
+
+  // A host that answers 413 with no token at all (a proxy in front of the
+  // server, an empty body): nothing to read, so the status-based generic.
+  it("falls back to the status generic when a 413 carries no token", async () => {
     upload.fn.mockRejectedValue({ kind: "http", status: 413, body: "" });
 
     const outcome = await sendEncryptedAttachment(request(fileOf("a.pdf", "application/pdf", 10)));
 
-    expect(outcome).toEqual({ ok: false, error: "File is too large for the server." });
-    expect(sendFile.fn).not.toHaveBeenCalled();
+    expect(outcome).toEqual({ ok: false, error: "Upload rejected (413) — try a different file." });
+  });
+
+  // NIT — the shared copy lost the encrypted door's own 401 line when the two
+  // were merged: "try a different file" is not the recourse for a dead session.
+  it("says the session is gone on a 401, not 'try a different file'", async () => {
+    upload.fn.mockRejectedValue({ kind: "http", status: 401, body: "" });
+
+    const outcome = await sendEncryptedAttachment(request(fileOf("a.pdf", "application/pdf", 10)));
+
+    expect(outcome).toEqual({ ok: false, error: "Not signed in, so the upload was refused." });
+  });
+
+  // N3 — the stages before the upload (the strip, the seal) can throw, and the
+  // caller has nothing to catch with: every way out of this verb is an answer.
+  it("answers a throwing strip instead of rejecting", async () => {
+    strip.image.mockImplementation(() => {
+      throw new Error("strip blew up");
+    });
+
+    const outcome = await sendEncryptedAttachment(request(fileOf("a.png", "image/png", 10)));
+
+    expect(outcome).toEqual({
+      ok: false,
+      error: "The file could not be prepared for sending. Try again.",
+    });
+    expect(upload.fn).not.toHaveBeenCalled();
   });
 
   // N3 — the upload had already succeeded, so a throw here left the compose

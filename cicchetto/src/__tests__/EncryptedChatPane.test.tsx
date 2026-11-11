@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { batch, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../lib/api";
-import { closeAudio, playAudio } from "../lib/audioPlayer";
+import { activeAudio, closeAudio, playAudio } from "../lib/audioPlayer";
 import { channelKey } from "../lib/channelKey";
 import { setDraft } from "../lib/compose";
 import { acceptConfirm, confirmRequest, dismissConfirm } from "../lib/confirmDialog";
@@ -14,7 +14,7 @@ import { SAS_EMOJI } from "../lib/e2e/sasEmoji";
 import { base64Unpadded } from "../lib/e2e/wire";
 import type { Arriving } from "../lib/encryptedArriving";
 import { friendlyApiError } from "../lib/friendlyApiError";
-import { closeMediaViewer, mediaViewerState } from "../lib/mediaViewer";
+import { closeMediaViewer, mediaViewerState, openMediaViewer } from "../lib/mediaViewer";
 import {
   overlayCount,
   overlayEscapeDepth,
@@ -2771,12 +2771,50 @@ describe("an encrypted attachment's card (issue 2517)", () => {
     await waitFor(() => expect(revoke).toHaveBeenCalledWith("blob:probe-image"));
   });
 
-  it("does not hand a viewer URL to the player, nor keep it after the source moves", async () => {
+  // The viewer and the player are two owners of one registry: a source that
+  // moves on one of them must not collect the URL the OTHER still names.
+  it("keeps a viewer URL when the player tunes elsewhere, and revokes it when the viewer closes", async () => {
     await openTheImage();
 
-    // The player takes a different source: the image's URL is nobody's now.
+    // The player takes a source of its own: the image's URL is still the
+    // viewer's, so the registry must not collect it.
     playAudio("blob:another-source", "radio");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(revoke).not.toHaveBeenCalled();
+    expect(mediaViewerState()?.href).toBe("blob:probe-image");
+
+    closeMediaViewer();
     await waitFor(() => expect(revoke).toHaveBeenCalledWith("blob:probe-image"));
     closeAudio();
+  });
+
+  // The player half of the MAJOR's cure, unpinned until now: a row rebuild
+  // unmounts the card, and the docked player keeps naming the decrypted URL.
+  // A registry that only counted the viewer collected it there.
+  it("keeps a player URL while the player names it, across a row rebuild", async () => {
+    openEncryptedFile.mockResolvedValue({
+      ok: true,
+      kind: "inline",
+      url: "blob:probe-audio",
+      media: "audio",
+    });
+    setRows([withFile]);
+    renderPane();
+    fireEvent.click(screen.getByTestId("e2e-file-open"));
+    await waitFor(() => expect(activeAudio()?.href).toBe("blob:probe-audio"));
+
+    // ONE more message rebuilds every row and unmounts the card.
+    setRows([withFile, plain]);
+    await waitFor(() => expect(lines()).toHaveLength(2));
+    // The viewer moves onto a source of its own: nobody but the player names
+    // the audio URL now, and it must stay alive.
+    openMediaViewer("blob:other-image", "image");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(revoke).not.toHaveBeenCalled();
+    expect(activeAudio()?.href).toBe("blob:probe-audio");
+
+    closeAudio();
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith("blob:probe-audio"));
   });
 });
