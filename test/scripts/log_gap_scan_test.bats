@@ -115,11 +115,27 @@ stamp() {
 
     refute grep -q 'GAP' <<<"$out"
     grep -q 'gaps_ge_10=0' <<<"$out"
-    # The true silence is still measured, and from the HIGH-WATER stamp: the
-    # out-of-order line must not become the origin of the next delta, or the
-    # reorder skew would be counted twice (08:41:12.720590 - 08:41:11.720590
-    # = 1 s, not 1 s + 5 ms).
+    # The true silence is still measured: 1 s, not 86400 s. This does NOT pin
+    # where it is measured from — `%.1f` prints 1.000 and 1.005 alike — so
+    # the high-water rule has its own case below.
     grep -q 'maxgap=1.0' <<<"$out"
+}
+
+@test "a line behind the high-water stamp does not become the origin of the next delta" {
+    # #2443 — measuring from the out-of-order line would count the reorder
+    # skew a second time. Here that skew is what carries a 9.95 s silence
+    # across the threshold: 08:41:19.950 - 08:41:09.900 = 10.05 s, a GAP that
+    # would keep a green run's bytes for a silence that never reached 10 s.
+    local out
+    out="$( {
+        stamp '08:41:10.000' 'high-water'
+        stamp '08:41:09.900' '100 ms behind'
+        stamp '08:41:19.950' 'after'
+    } | scan 10 )"
+
+    refute grep -q 'GAP' <<<"$out"
+    grep -q 'gaps_ge_10=0' <<<"$out"
+    grep -q 'maxgap_at=08:41:10.000' <<<"$out"
 }
 
 @test "each damage signature is counted by itself and not by another" {
