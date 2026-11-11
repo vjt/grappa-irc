@@ -78,10 +78,18 @@ const UserContextMenu: Component<Props> = (props) => {
   // alice` to (Grappa.IRC.Mask.normalize/2), which is why the comparison
   // folds both sides: the stored entry is the NORMALISED mask, and a nick's
   // case is the server's business, not ours.
+  //
+  // Only the PERSON entry counts — that mask with no text pattern. Since issue
+  // 2294 an entry is the pair (mask, text_pattern), and a targeted one
+  // (`alice!*@*` + `*spam*`) silences some of her lines, not her. Counting it
+  // would offer an Unignore whose pattern-less removal touches nothing
+  // (`UserSettings.remove_ignore/5`), and a person nobody can ignore.
   const ignoreMask = (): string => `${props.targetNick}!*@*`;
   const alreadyIgnored = (): boolean => {
     const want = asciiFold(ignoreMask());
-    return (ignoresBySlug()[props.networkSlug] ?? []).some((e) => asciiFold(e.mask) === want);
+    return (ignoresBySlug()[props.networkSlug] ?? []).some(
+      (e) => e.text_pattern === null && asciiFold(e.mask) === want,
+    );
   };
 
   // The store only holds what a server round-trip returned, and a menu can be

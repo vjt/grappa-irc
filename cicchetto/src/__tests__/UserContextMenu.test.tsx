@@ -262,6 +262,34 @@ describe("UserContextMenu", () => {
       expect(requestsOf("POST")).toEqual([]);
     });
 
+    it("a targeted entry is not the person: the row offers Ignore, and the round trip leaves it standing", async () => {
+      // issue 2294 — an entry is the PAIR (mask, text_pattern). `alice!*@*` +
+      // `*spam*` drops only her spam; it does not mean "alice is ignored", and
+      // a pattern-less removal would not touch it (`UserSettings.remove_ignore/5`
+      // answers `not_ignored`), so offering Unignore here would be a dead row.
+      const targeted = { mask: "alice!*@*", text_pattern: "*spam*" };
+      const person = { mask: "alice!*@*", text_pattern: null };
+      serverList = [targeted];
+      render(() => <UserContextMenu {...baseProps} />);
+      await listLoaded();
+      expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+
+      mutationAnswer = () =>
+        jsonResponse(200, { ...listBody([person, targeted]), ...person, outcome: "added" });
+      pressAndClick(screen.getByRole("button", { name: /^ignore$/i }));
+      expect(await screen.findByRole("button", { name: /^unignore$/i })).toBeInTheDocument();
+      expect(requestsOf("POST").map((r) => r.body)).toEqual([person]);
+
+      mutationAnswer = () =>
+        jsonResponse(200, { ...listBody([targeted]), ...person, outcome: "removed" });
+      pressAndClick(screen.getByRole("button", { name: /^unignore$/i }));
+      expect(await screen.findByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+      expect(requestsOf("DELETE").map((r) => r.url)).toEqual([
+        "/networks/freenode/ignores/alice!*%40*",
+      ]);
+      expect(ignoresBySlug().freenode).toEqual([targeted]);
+    });
+
     it("matches the stored mask whatever case the nick is shown in", async () => {
       // The server stores the FOLDED mask; the nick on screen keeps its case.
       serverList = [{ mask: "alice!*@*", text_pattern: null }];
