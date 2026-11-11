@@ -6330,3 +6330,117 @@ after mount had nothing to compare against (read in solid-js 1.9.17's
   goes through the left drawer's overlay lock as the rail's menu does
   everywhere: the frozen branch the vitest arms cover, not exercised end to
   end there.
+<!-- entry #2625 -->
+
+---
+
+## 2026-11-09 — #2625: on a phone, a command's `$server` replies open a card over the window
+
+vjt's request (2026-11-09 00:22, relayed through vjt-claude on the issue):
+on mobile, read the NOTICEs a command is answered with without leaving the
+window it was typed in; further commands keep feeding the same card; an
+opt-out; and only where the screen has room at the user's font size. The two
+open questions the issue left (which lines count, which threshold) were the
+implementer's to decide; the decisions are below. cic-only: no server, wire
+or `lib/` change, so the deploy class is the cic bundle.
+
+### A view over `$server`, never a copy
+
+`lib/serverPeek.ts` holds no buffer. The card is a filtered live view over the
+scrollback store (`$server` rows with `id > sinceId`), the verb the #290
+services console already uses. Dismissing it moves, marks and hides nothing:
+every line is still in `$server`, read or unread exactly as before.
+
+### Which lines: correlation by TIME, because nothing else can correlate
+
+A command ARMS the peek (the high-water mark is taken in compose, before the
+send — the #1518 ordering); the first `$server` line within
+`SERVER_PEEK_REPLY_WINDOW_MS` (10 s) OPENS it, a later one disarms it. Once
+open, the card shows every line `$server` receives until it is dismissed —
+which is what makes the second command's output append.
+
+Per-command correlation was rejected, not overlooked: bahamut has no
+`labeled-response`, and cic must not parse IRC to guess which NOTICE answers
+which command. It does not need to: the server already routes what it
+recognises (WHOIS, WHO, LIST, the #127 info family, CTCP replies) to surfaces
+of their own before anything reaches `$server`, so what is left there after a
+command is the residue those surfaces did not take — services NOTICEs, error
+numerics, server NOTICEs. The accepted price: an unrelated server NOTICE that
+lands inside the 10 s after a command opens the card too.
+
+A command is any typed slash verb that is not SAID (plain text and `/me`, the
+issue 2536 `isSaid` split: conversation has no reply in `$server`), not bare
+`/ns` (the services console already shows those lines) and not typed in
+`$server` itself, where the reply is already on screen.
+
+### Where it fits, per DEVICE
+
+The card arms only on the mobile layout, and only when the screen holds
+`SERVER_PEEK_MIN_COLS` = 36 columns and `SERVER_PEEK_MIN_ROWS` = 12 rows of
+text at the user's font size (`serverPeekFits(innerWidth, innerHeight,
+fontPx)`, counting 0.6em per column and 1.4 per row). 36 columns leave 16
+for the body after `HH:MM:SS -NickServ- `; 12 rows leave the card (40% of
+the visible height at most) a header and four lines. On the e2e phones:
+iPhone 15 (393×659) passes up to XL 18px and stops at XXL 20px; Pixel 7
+(412×839) stops at XXL; a landscape iPhone SE (667×375) passes at 22px and
+stops at 24px, on rows.
+
+The opt-out is ON by default ("non è utile a tutti" — an opt-OUT) and lives
+in this device's localStorage (`cicchetto.serverPeek`), not in the synced
+display prefs: whether a card fits over the window is a question about the
+screen, the same reasoning as the command menu (issue 2584, vjt's ruling Q1).
+The issue body said "per-user"; vjt's own words said only "con opt-out", and
+per-device is the choice, stated rather than inherited.
+
+### Closing, and what it does not cover
+
+The card closes on its ✕, on selecting that network's `$server` (reading
+what the card shows), on turning the setting off, and on logout. It shows
+only on the windows of the network the command was typed on.
+
+Not covered, declared: NickServ replies re-keyed into an open NickServ query
+(#400) never reach `$server`, so they open no card. On Android with
+`interactive-widget=resizes-content` the keyboard shrinks `innerHeight`, so
+the rows gate reads the shrunken height there; only a screen under 12 rows is
+affected, and this is unmeasured on a device.
+
+### Measured
+
+- Mutants, one at a time on a detached bench, each counted over
+  `vitest related <mutated file>` (timeout raised to 30 s so that only
+  assertion reds count — the bench shared the host with another worker's
+  mutants and an unmutated run lost 4 tests to 5 s import timeouts): 34
+  mutants on the new code. 29 killed on the first pass with 49 reds; 5
+  survived (width/height swapped at the fit gate, `>=` where the first reply
+  line is detected, closing on ANY network's `$server`, dropping the
+  identity reset, the settings box hard-wired checked), each got its test,
+  and all 5 then died to exactly that test, one red each. 0 reds outside the
+  issue 2625 tests across both passes.
+- The logout test was overdetermined, found by the identity-reset mutant:
+  the scrollback store empties on logout too, so "no rows after logout"
+  held with or without the peek's reset. It now asserts what only that
+  reset prevents — the next account's `$server` lines opening a card.
+- e2e (`issue2625-server-peek.spec.ts`, 7 tests on chromium, Pixel 7 and
+  iPhone 15): the card opens on `/ns help` over the channel, appends the
+  second command's output, ✕ closes it, the lines are in `$server`; no card
+  when opted out, at XXL, or on the desktop layout — each absence asserted
+  only after the NickServ NOTICE frame provably reached the page. Measured
+  on the shipped font at 14px, both phones: 0.6001em per column, 1.3996 per
+  row (the fit check counts 0.6 and 1.4); the card capped at 40% of the
+  visible height to within 0.01px (335.59 of 335.6 on the Pixel, 263.59 of
+  263.6 on the iPhone), its body scrolled and pinned to the newest line.
+- The fit arm first ran at the 28px ceiling and died before the command on
+  both phones: at 28px the bottom bar's network header covers the channel
+  tab (Playwright's hit test), so a spec cannot select a channel there. A
+  bottom-bar fault at the font ceiling, reported, not fixed here; the arm
+  runs at XXL, the first preset neither phone fits, which is also where the
+  boundary is.
+
+### Not measured
+
+- The 10 s window: nothing on the agent's side can time Azzurra's services
+  (m42 is unreachable from here); it is a choice, not a measurement.
+- The 36/12 tie-breaks: chosen from the layout arithmetic above, not from a
+  user study.
+- A real iPhone or Android device: the e2e projects are WebKit and Chromium
+  with device descriptors, not the devices.
