@@ -10,10 +10,15 @@
 //
 // ## Why the separators' boxes, and only theirs
 //
-// Reading `getBoundingClientRect()` for the rows near the top on every `scroll`
-// event is a forced layout per event on the one path the pane cannot afford it
-// (#782 / #1041). Only the day SEPARATORS are read — a handful of elements, not
-// a row per message — because the day can only change where one of them sits.
+// #2304 kept rect reads off the scroll path altogether: reading the rows near
+// the top on every `scroll` event forces a layout per event. Since #2311 (below)
+// the pane does read rects while scrolling, and bounds it two ways. The pass is
+// coalesced to one per FRAME, however many scroll events land in it. And only
+// the day SEPARATORS are read, because the day can only change where one of
+// them sits: one box per distinct day among the loaded rows, never one per
+// message. That second bound is not a small constant — in a quiet channel
+// scrolled far back every loaded row can be a different day, and the scroll-up
+// prepend applies no ring cap — but no smaller set can answer.
 //
 // #2311 is why the reading comes from the boxes and not from the
 // `IntersectionObserver` entry that used to cache it. An entry reports a
@@ -53,8 +58,8 @@ export type DaySeparatorSighting = {
  * the intersection ratio never leaving zero. No entry is delivered, and a
  * place cached from the last one keeps saying "above" for a separator that has
  * left the screen — the pill then names a day that is no longer at the top
- * (#2311). Reading the rects costs one box per separator per pass, and the
- * separators are a handful.
+ * (#2311). Reading the rects costs one box per separator per pass; the header
+ * says what bounds that.
  *
  * `paneTop` is the pane's own top edge in the same viewport coordinates;
  * `bandPx` the strip at the top of the pane the pill occupies. The pane's top

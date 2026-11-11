@@ -3,8 +3,7 @@
 // seed corpus is 200 rows 100ms apart, ~20 seconds wide, which yields exactly
 // one day separator and leaves the pill nothing to change to. The day-change
 // decision itself is unit-covered with a pinned clock; what was missing is the
-// COMPOSITION — a live IntersectionObserver over a corpus that crosses
-// midnight.
+// COMPOSITION — the pane's live geometry over a corpus that crosses midnight.
 //
 // So this spec seeds the same 200 rows far enough apart to cross at least two
 // local midnights (200 × 20min = 66h40m > 48h, so two boundaries exist no
@@ -168,10 +167,10 @@ test.describe("issue 2311 — the date pill follows the day", () => {
     // come from the same frame, so a mid-transition reading cannot pass.
     //
     // Polled, with a small upward nudge each attempt, for two reasons: the
-    // observer updates asynchronously (a reading one frame stale would name
-    // the previous day), and a `loadMore` landing between the loop and this
-    // check can rebuild the rows and put a separator in the band, where the
-    // honest answer is no pill at all.
+    // pill updates asynchronously, on the next animation frame (a reading one
+    // frame stale would name the previous day), and a `loadMore` landing
+    // between the loop and this check can rebuild the rows and put a separator
+    // in the band, where the honest answer is no pill at all.
     let settled: string | null = null;
 
     await expect

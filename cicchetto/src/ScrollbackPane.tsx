@@ -1777,9 +1777,10 @@ const ScrollbackPane: Component<Props> = (props) => {
   // takes a separator from above to below in one frame with the ratio never
   // leaving zero, no entry is delivered, and a place cached from the last one
   // keeps saying "above" for a separator that has left the screen. The pill
-  // then names a day that has already scrolled away and stays there. The
-  // separators are a handful of elements, so a pass over their rects is cheap
-  // — one forced layout per frame while scrolling, not per row.
+  // then names a day that has already scrolled away and stays there. A pass
+  // reads one box per separator — one per distinct day among the loaded rows,
+  // not per message, though not a fixed number either (`lib/dayPill.ts`) — and
+  // forces at most one layout per frame while scrolling.
   const measureDayPlaces = (): void => {
     const pane = listRef;
     if (!pane) return;
@@ -1812,9 +1813,12 @@ const ScrollbackPane: Component<Props> = (props) => {
   //
   // Since #2311 the observer is a TRIGGER, not the answer: it fires when a
   // separator crosses the band's edge, and every firing re-reads the boxes.
-  // A crossing it misses costs nothing, because the scroll handler runs the
-  // same pass; what it still earns its place for is the changes that are not
-  // scrolls — a row remount after a `rows()` change, a re-layout.
+  // Scrolls do not depend on it (the scroll handler runs the same pass), nor
+  // does a separator's mount (`observeDaySeparator` schedules one). What is
+  // left to it is a re-layout that is neither, and there it keeps the
+  // transition semantics the scroll path no longer has: a re-layout that
+  // carries a separator across the whole band in one frame delivers nothing,
+  // and its place stays stale until the next pass.
   const rebuildDayBandObserver = (): void => {
     if (typeof IntersectionObserver === "undefined" || !listRef) return;
     const root = listRef;
@@ -4326,8 +4330,8 @@ const ScrollbackPane: Component<Props> = (props) => {
     // reader's position for the overlay's whole lifetime.
     if (isOverlayFrozen()) return;
     // issue 2311 — the pill's places are geometry, and this is the signal that
-    // geometry moved. Coalesced to one pass per frame; the separators are a
-    // handful of elements, not a row per message.
+    // geometry moved. Coalesced to one pass per frame, over the separators only
+    // (one per day among the loaded rows, not one per message).
     scheduleDayMeasure();
     const st = listRef.scrollTop;
     const distance = listRef.scrollHeight - st - listRef.clientHeight;
@@ -4897,8 +4901,8 @@ const ScrollbackPane: Component<Props> = (props) => {
                     class="scrollback-day-separator"
                     data-testid="day-separator"
                     // issue 2304 — the floating pill watches these, and only
-                    // these: the day can change nowhere else, so a handful of
-                    // elements carry what a per-row observer would cost.
+                    // these: the day can change nowhere else, so one element
+                    // per day stands in for a per-row read.
                     ref={(el) => observeDaySeparator(el, at)}
                   >
                     <span class="scrollback-day-separator-line" />
