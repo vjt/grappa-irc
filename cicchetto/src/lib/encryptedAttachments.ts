@@ -21,6 +21,7 @@ import { sendEncryptedFile } from "./encryptedChats";
 import { formatBytes } from "./formatBytes";
 import { encryptedVideoOutcome, stripImageMetadata } from "./metadataStrip";
 import { baseMime, categoryOf, type UploadCategory } from "./uploadCategory";
+import { friendlyErrorMessage } from "./uploadFailureMessage";
 import {
   type EncryptedUploadAnswer,
   embeddedHost,
@@ -47,9 +48,30 @@ export type AttachmentRequest = {
 
 /**
  * Sends `file` to `peer` in an encrypted query, or says why it cannot be
- * sent. Never throws on a refusal: every way out is an answer.
+ * sent. Never throws: every way out is an answer.
+ *
+ * The `try` is not decoration. Only the upload and the send had their own
+ * catches; the stages BEFORE them — the metadata strip, the video transcode,
+ * the seal, even `arrayBuffer()` — could throw straight out of here, and the
+ * caller (`dispatchEncrypted`) has nothing to catch with: measured, a plain
+ * `Error` out of `stripImageMetadata` left the upload card on "uploading" at
+ * 0/4 bytes with no error, plus an unhandled rejection. A preparation that
+ * throws is a refusal like any other, so it gets the same shape.
  */
 export async function sendEncryptedAttachment(req: AttachmentRequest): Promise<AttachmentOutcome> {
+  try {
+    return await prepareAndSendEncrypted(req);
+  } catch {
+    return {
+      ok: false,
+      error: req.signal.aborted
+        ? "Upload cancelled."
+        : "The file could not be prepared for sending. Try again.",
+    };
+  }
+}
+
+async function prepareAndSendEncrypted(req: AttachmentRequest): Promise<AttachmentOutcome> {
   const mime = baseMime(req.file.type);
   const category = categoryOf(mime);
   // The same accept gate as the plain path, against the same store: the
@@ -91,7 +113,7 @@ export async function sendEncryptedAttachment(req: AttachmentRequest): Promise<A
       req.signal,
     );
   } catch (err) {
-    return { ok: false, error: uploadFailure(err as UploadError) };
+    return { ok: false, error: friendlyErrorMessage(err as UploadError, null) };
   }
 
   const inner: FileInner = {
@@ -185,16 +207,4 @@ function imageRefusal(
     case "malformed":
       return "That image is damaged, so its metadata could not be removed.";
   }
-}
-
-/** The sentence for an upload that failed: the same shapes the plain door answers. */
-function uploadFailure(err: UploadError): string {
-  if (err.kind === "abort") return "Upload cancelled.";
-  if (err.kind === "network") return "Upload failed — network error. Retry?";
-  if (err.kind === "http") {
-    if (err.status === 413) return "File is too large for the server.";
-    if (err.status === 401) return "Not signed in, so the upload was refused.";
-    return `Upload rejected (${err.status}) — try a different file.`;
-  }
-  return "Upload failed. Retry?";
 }

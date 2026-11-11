@@ -25,11 +25,12 @@ import {
 } from "./EncryptedRail";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { ApiError, type ScrollbackMessage } from "./lib/api";
-import { activeAudio, playAudio } from "./lib/audioPlayer";
+import { playAudio } from "./lib/audioPlayer";
 import { channelKey } from "./lib/channelKey";
 import { requestConfirm } from "./lib/confirmDialog";
 import { isCtcpAction, stripCtcpAction } from "./lib/ctcpAction";
 import { formatDateTime } from "./lib/dateFormat";
+import { adoptDecryptedUrl } from "./lib/decryptedBlobUrls";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { formatDurationSince } from "./lib/duration";
 import {
@@ -69,7 +70,7 @@ import {
 import { openEncryptedFile } from "./lib/encryptedFileOpen";
 import { formatBytes } from "./lib/formatBytes";
 import { friendlyApiError } from "./lib/friendlyApiError";
-import { mediaViewerState, openMediaViewer } from "./lib/mediaViewer";
+import { openMediaViewer } from "./lib/mediaViewer";
 import { createOverlayLock } from "./lib/overlayScrollLock";
 import type { ArrivingLine, ScrollbackSource } from "./lib/scrollbackSource";
 import { formatTimestamp } from "./lib/timeFormat";
@@ -343,44 +344,24 @@ const Trailer: Component<{ row: Message | undefined; pinned: string | undefined 
 const FileTrailer: Component<{ row: Message | undefined }> = (props) => {
   const [busy, setBusy] = createSignal(false);
   const [failure, setFailure] = createSignal<string | null>(null);
-  // The decrypted blob URL this card minted, and WHO is using it: the media
-  // viewer, or the docked audio player. Held here rather than handed over,
-  // because a URL nobody owns is a URL nobody revokes — the plaintext would
-  // stay in memory for the life of the page.
-  const [owned, setOwned] = createSignal<{ url: string; by: "viewer" | "player" } | null>(null);
   // The open in flight, so unmounting the card takes the fetch with it and a
   // late answer cannot mint a URL for a component that no longer exists.
   let inflight: AbortController | null = null;
   const file = (): FileInner | undefined =>
     props.row?.kind === "in" || props.row?.kind === "out" ? props.row.file : undefined;
 
-  const release = (): void => {
-    const current = owned();
-    if (current === null) return;
-    URL.revokeObjectURL(current.url);
-    setOwned(null);
-  };
-
-  // The viewer is closed (or replaced): its blob goes.
-  createEffect(() => {
-    if (mediaViewerState() !== null) return;
-    if (owned()?.by === "viewer") release();
-  });
-
-  // The player stopped, or moved to another source: the audio blob goes.
-  createEffect(() => {
-    const playing = activeAudio();
-    if (owned()?.by !== "player") return;
-    if (playing?.href === owned()?.url) return;
-    release();
-  });
-
-  // The card leaving the screen (window switch, list re-render, sign-out)
-  // ends both the open and whatever URL it was holding.
+  // 🔴 THE CARD DOES NOT OWN THE DECRYPTED URL. The media viewer and the docked
+  // player outlive it: every change to the chat's rows rebuilds the message
+  // objects, the scrollback's `<For>` recreates every row, and this component
+  // goes with the old one. A card that revoked its own URL in `onCleanup` (the
+  // first cut did) revoked the plaintext out from under an open viewer or a
+  // docked player — measured: open an image, receive ONE message, `blob:` is
+  // revoked while `mediaViewerState()` still points at it. Ownership lives in
+  // `lib/decryptedBlobUrls`, which keeps a URL exactly as long as one of those
+  // two surfaces names it. Unmounting still takes the FETCH with it.
   onCleanup(() => {
     inflight?.abort();
     inflight = null;
-    release();
   });
 
   const open = async (target: FileInner): Promise<void> => {
@@ -405,18 +386,23 @@ const FileTrailer: Component<{ row: Message | undefined }> = (props) => {
         return;
       }
       if (outcome.kind === "download") return;
-      // A second click replaces whatever this card was showing: the first
-      // blob goes now, not when the second closes.
-      release();
+      // The card went away between the mint and the hand-over: nobody would
+      // name this URL, so nobody would revoke it. Drop it here.
+      if (controller.signal.aborted) {
+        URL.revokeObjectURL(outcome.url);
+        return;
+      }
+      // A second click replaces whatever was showing: the first blob goes as
+      // soon as no surface names it, which the registry sees for itself.
       if (outcome.media === "audio") {
-        // The docked player plays it; the card keeps the URL so the blob can
-        // go when the source does.
+        // The docked player plays it; the registry keeps the URL alive for as
+        // long as the source does.
         playAudio(outcome.url, target.name);
-        setOwned({ url: outcome.url, by: "player" });
+        adoptDecryptedUrl(outcome.url);
         return;
       }
       openMediaViewer(outcome.url, outcome.media);
-      setOwned({ url: outcome.url, by: "viewer" });
+      adoptDecryptedUrl(outcome.url);
     } finally {
       if (inflight === controller) inflight = null;
       setBusy(false);
