@@ -42,9 +42,11 @@
 # that survives a green run.
 #
 # What it reports, per service:
-#   - the largest silence between consecutive timestamped lines, and when
-#     it started. A quiet stack still logs its 5 s healthcheck cadence, so
-#     a maxgap materially above that is the signal.
+#   - the largest silence before a timestamped line, counted from the
+#     latest stamp seen so far (a line stamped behind it is out of order
+#     and worth no silence), and when it started. A quiet stack still logs
+#     its 5 s healthcheck cadence, so a maxgap materially above that is the
+#     signal.
 #   - every silence at or over THRESH seconds, individually.
 #   - counts of the damage signatures that accompany the regime: a
 #     statement or a checked-out connection held for 30-something seconds

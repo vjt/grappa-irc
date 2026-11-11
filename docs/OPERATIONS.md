@@ -1159,9 +1159,11 @@ logs* — never 7 of 626, because the other 567 were never asked.
 
 So the trap now streams each service's log through
 `scripts/log-gap-scan.awk` on every exit and keeps only what it
-measured: the largest silence between consecutive lines, every silence
-at or over `GAP_THRESHOLD` (10 s — above the 5 s healthcheck cadence,
-below the 30 s `busy_timeout`), and counts of the damage signatures
+measured: the largest silence before a line (counted from the latest
+stamp seen so far, so a line that arrives out of order is worth none),
+every silence at or over `GAP_THRESHOLD` (10 s — above the 5 s
+healthcheck cadence, below the 30 s `busy_timeout`), and counts of the
+damage signatures
 (`db=3xxxx`, `idle=3xxxx`, a dropped scrollback row, a saturated pool, a
 retry budget exhausted against a held write lock, and — since #1420 — both
 edges of a `LockWatch` stall episode, `lockstall` / `lockstall_resolved`).
