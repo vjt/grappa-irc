@@ -11025,9 +11025,16 @@ defmodule Grappa.Session.ServerTest do
           1_000
         )
 
-      # The 001 for `<nick>_` has been processed (`fetch` is a `:sys.get_state`
-      # barrier behind the socket hop): no identify left, and the secret sits
-      # in the held slot.
+      # Barrier: the 001 for `<nick>_` went out before the server read GHOST,
+      # so the PONG to a PING fed now proves the session has processed it.
+      # `fetch` alone is no barrier here: `:sys.get_state` orders only behind
+      # what is already in the session's mailbox, and the 001 may still be in
+      # flight. Its own token, because `wait_for_line/3` also matches lines
+      # already received and the `PING :flush` below must not match this one.
+      IRCServer.feed(server, "PING :welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :welcome\r\n"), 1_000)
+
+      # No identify left, and the secret sits in the held slot.
       state = SessionStateHelpers.fetch(pid)
       assert SessionStateHelpers.nick(state) == "#{nick}_"
       assert Map.get(state, :deferred_identify_secret) == "s3cret"
@@ -11083,6 +11090,12 @@ defmodule Grappa.Session.ServerTest do
           &(&1 == "PRIVMSG NickServ :GHOST #{nick} s3cret\r\n"),
           1_000
         )
+
+      # Barrier, as in the test above: the 001 for `<nick>_` is processed
+      # before the deadline lands, the order the 8s timer has in the field.
+      # Without it the timeout overtakes the 001 and the slot is still empty.
+      IRCServer.feed(server, "PING :welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :welcome\r\n"), 1_000)
 
       # The 8s deadline delivered directly — same callback as the timer, no wait.
       send(pid, :ghost_timeout)
