@@ -26,8 +26,9 @@ import {
 // and so is "Encrypted query" (issue 2430) unless the nick is our own.
 //
 // Dispatches to existing socket.ts push helpers — no new IRC-issuance path —
-// and every op verb goes through `runOpsVerb`, so a rejected push is a toast
-// rather than an unhandled rejection behind a menu that has already closed.
+// and every op verb, like the Ignore/Unignore row, goes through `runOpsVerb`,
+// so a rejected push is a toast rather than an unhandled rejection behind a
+// menu that has already closed.
 //
 // The chrome (portal, backdrop, Escape, the #487 measured viewport clamp) lives
 // in `ContextMenu`, shared since #1067 added the long-press message menu. This
@@ -110,17 +111,20 @@ const UserContextMenu: Component<Props> = (props) => {
 
   // issue 2483 — same door as `/ignore <nick>` / `/unignore <nick>`: the
   // ignoreList store, which mirrors the server's answer. Detached like every
-  // other row here — a menu item has no inline error channel — but never bare,
-  // so a refused mutation is a console line and not an unhandled rejection.
+  // other row here, and through the same `runOpsVerb`: the menu is gone by the
+  // time the server answers, so a refusal (a full list, a 5xx, a dropped
+  // connection) is a toast the operator sees, never a silent console line.
   const ignoreAction = (): void => {
     const t = token();
     if (t === null) return;
     const slug = props.networkSlug;
     const mask = ignoreMask();
-    const op = alreadyIgnored() ? delIgnore(t, slug, mask, null) : addIgnore(t, slug, mask, null);
-    void op.catch((err: unknown) => {
-      console.warn(`[ignore-menu] ${alreadyIgnored() ? "unignore" : "ignore"} ${mask} failed`, err);
-    });
+    const unignore = alreadyIgnored();
+    // The store has already mirrored the answer; the toast only needs the settle.
+    const settled: Promise<void> = (
+      unignore ? delIgnore(t, slug, mask, null) : addIgnore(t, slug, mask, null)
+    ).then(() => undefined);
+    runOpsVerb(unignore ? "Unignore" : "Ignore", settled);
   };
 
   // Every verb dispatches identically — the seam owns the #640 source-window

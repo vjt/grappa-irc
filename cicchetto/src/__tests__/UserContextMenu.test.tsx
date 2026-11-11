@@ -113,11 +113,14 @@ const fakeFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<
 
 const requestsOf = (method: string) => ignoreRequests.filter((r) => r.method === method);
 
+import { ApiError } from "../lib/api";
 import { setToken } from "../lib/auth";
 import { channelKey } from "../lib/channelKey";
+import { friendlyError } from "../lib/friendlyError";
 import { ignoresBySlug, refreshIgnores } from "../lib/ignoreList";
 import { DEFAULT_ISUPPORT, seedIsupport } from "../lib/isupport";
 import { seedFromTest } from "../lib/members";
+import { dismissOpsMenuToast, opsMenuToasts } from "../lib/opsMenu";
 import {
   __resetForTest,
   overlayEscapeDepth,
@@ -165,6 +168,8 @@ beforeEach(() => {
   fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(fakeFetch);
   setToken("tok");
   seedIsupport(42, DEFAULT_ISUPPORT);
+  // The menu's toast queue is a module singleton that outlives a test.
+  for (const t of opsMenuToasts()) dismissOpsMenuToast(t.id);
   __resetForTest();
 });
 
@@ -327,6 +332,37 @@ describe("UserContextMenu", () => {
       render(() => <UserContextMenu {...baseProps} />);
       await listLoaded();
       expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+    });
+
+    // A menu row's action is synchronous and the menu is gone by the time the
+    // server answers, so a refusal has nowhere inline to land: it is the
+    // menu's toast (`runOpsVerb`), the way a refused Op or Kick is.
+    it("a refused Ignore is a toast naming the row, and the row stays Ignore", async () => {
+      // `list_full`: the server caps a network's list at 100 entries.
+      mutationAnswer = () => jsonResponse(422, { error: "list_full" });
+      render(() => <UserContextMenu {...baseProps} />);
+      await listLoaded();
+      expect(opsMenuToasts()).toEqual([]);
+      pressAndClick(screen.getByRole("button", { name: /^ignore$/i }));
+
+      await vi.waitFor(() => expect(opsMenuToasts()).toHaveLength(1));
+      expect(opsMenuToasts()[0]?.message).toBe(
+        `Ignore: ${friendlyError(new ApiError(422, "list_full"))}`,
+      );
+      expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+    });
+
+    it("a refused Unignore is a toast too, and the row stays Unignore", async () => {
+      serverList = [{ mask: "alice!*@*", text_pattern: null }];
+      mutationAnswer = () => jsonResponse(500, { errors: { detail: "Internal Server Error" } });
+      render(() => <UserContextMenu {...baseProps} />);
+      pressAndClick(await screen.findByRole("button", { name: /^unignore$/i }));
+
+      await vi.waitFor(() => expect(opsMenuToasts()).toHaveLength(1));
+      expect(opsMenuToasts()[0]?.message).toBe(
+        `Unignore: ${friendlyError(new ApiError(500, "Internal Server Error"))}`,
+      );
+      expect(screen.getByRole("button", { name: /^unignore$/i })).toBeInTheDocument();
     });
 
     it("does not refetch a list the store already holds", async () => {
