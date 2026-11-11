@@ -1979,7 +1979,9 @@ const exports = identityScopedStore((onIdentityChange) => {
       //
       // #2409 — "the next reconnect retries" is exactly the loop when the
       // error is a 400: the server is not going to change its mind about the
-      // target. Latch it; the log line above stays as the one record of it.
+      // target. Latch it. A first 400 leaves TWO records, the latch line from
+      // `noteFetchFailure` above and the failure line below; a later 400 on
+      // the same key leaves only the second.
       noteFetchFailure(t, key, err);
       console.error("[scrollback] refreshScrollback failed", slug, name, err);
     } finally {

@@ -106,6 +106,13 @@ const fullPageFor = (spy: { mock: { calls: unknown[][] } }): ScrollbackMessage[]
   return Array.from({ length: limit }, (_, i) => row(i + 1));
 };
 
+// The latch line, counted off a `console.warn` spy. Nothing else in the suite
+// reads `console.warn`, so before this case existed both the line and the
+// early return in front of it could be deleted with the suite green.
+const LATCH_LINE = "[scrollback] target refused, window latched";
+const latchLines = (warn: { mock: { calls: unknown[][] } }): number =>
+  warn.mock.calls.filter((call) => call[0] === LATCH_LINE).length;
+
 // Hold a REST call open so another verb can run strictly inside its await.
 const gate = <T>(): {
   promise: Promise<T>;
@@ -208,6 +215,41 @@ describe("#2409 a refused target is not retried", () => {
     await loadNewer("net", REFUSED);
 
     expect(listMessagesAfterSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // The latch line is the operator's only signal that a window went dead, and
+  // `loadMore` / `loadNewer` used to leave none at all. It has to fire — once,
+  // on the key's FIRST refusal, whoever the verb is — so this case pins both
+  // halves: a second refused verb on the same key stays quiet.
+  it("logs one latch line per key, on the first refusal", async () => {
+    const { loadInitialScrollback, loadMore, refreshScrollback } = await import(
+      "../lib/scrollback"
+    );
+    // A pane with a row, so `loadMore` gets past its empty-pane short-circuit.
+    listMessagesSpy.mockResolvedValueOnce([row(1)]);
+    await loadInitialScrollback("net", REFUSED);
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      // Two different verbs on the wire for the same key at once: `loadMore`
+      // (listMessages) and `refreshScrollback` (listMessagesAfter), each held
+      // open so the other is still in flight when the 400 lands.
+      const backfill = gate<ScrollbackMessage[]>();
+      const refresh = gate<ScrollbackMessage[]>();
+      listMessagesSpy.mockReturnValueOnce(backfill.promise);
+      listMessagesAfterSpy.mockReturnValueOnce(refresh.promise);
+      const more = loadMore("net", REFUSED, () => undefined);
+      const refreshing = refreshScrollback("net", REFUSED);
+
+      backfill.fail(refuse(400));
+      await more;
+      refresh.fail(refuse(400));
+      await refreshing;
+
+      expect(latchLines(warn)).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   // The two jumps WRITE the latch in their catch but used to never read it on
