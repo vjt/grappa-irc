@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { batch, createSignal } from "solid-js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../lib/api";
+import { closeAudio, playAudio } from "../lib/audioPlayer";
 import { channelKey } from "../lib/channelKey";
 import { setDraft } from "../lib/compose";
 import { acceptConfirm, confirmRequest, dismissConfirm } from "../lib/confirmDialog";
@@ -10,8 +11,10 @@ import type { PeerTrust } from "../lib/e2e/client";
 import type { ElsewhereReason } from "../lib/e2e/identity";
 import type { SasView } from "../lib/e2e/sas";
 import { SAS_EMOJI } from "../lib/e2e/sasEmoji";
+import { base64Unpadded } from "../lib/e2e/wire";
 import type { Arriving } from "../lib/encryptedArriving";
 import { friendlyApiError } from "../lib/friendlyApiError";
+import { closeMediaViewer, mediaViewerState } from "../lib/mediaViewer";
 import {
   overlayCount,
   overlayEscapeDepth,
@@ -93,6 +96,7 @@ const sendCtcpQuery = vi.hoisted(() => vi.fn(async () => undefined));
 const loadMore = vi.hoisted(() => vi.fn(async () => undefined));
 const loadNewer = vi.hoisted(() => vi.fn(async () => undefined));
 const refreshScrollback = vi.hoisted(() => vi.fn(async () => undefined));
+const openEncryptedFile = vi.hoisted(() => vi.fn());
 const panel = vi.hoisted(() => ({
   onClose: null as null | (() => void),
   mounted: 0,
@@ -193,6 +197,10 @@ vi.mock("../lib/clipboard", () => ({ copyText }));
 vi.mock("../lib/ctcpQuery", () => ({ sendCtcpQuery }));
 // grappa's paging verbs (issue 2512): spies, so a test reads that the window
 // pages nothing from grappa's scrollback.
+// issue 2517 — the attachment's open is a boundary spy: these tests pin what
+// the CARD does with the outcome (who owns the blob URL), not the
+// fetch-and-decrypt, which has its own file.
+vi.mock("../lib/encryptedFileOpen", () => ({ openEncryptedFile }));
 vi.mock("../lib/scrollback", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/scrollback")>()),
   loadMore,
@@ -2678,5 +2686,97 @@ describe("EncryptedChatPane, issue 2610 — the ciphertext view keeps the reader
     } finally {
       restore();
     }
+  });
+});
+
+// issue 2517 — the attachment card, and WHO owns the decrypted blob URL. The
+// card does not outlive the surfaces that use the URL: every change to the
+// chat's rows rebuilds the row objects, the scrollback's <For> recreates every
+// row, and the old card unmounts. The first cut revoked its own URL there and
+// took the plaintext out from under an open viewer (measured by the review).
+describe("an encrypted attachment's card (issue 2517)", () => {
+  const SLUG = "abcdefghijklmnopqrstuvwxyz";
+  const b64 = (n: number): string => base64Unpadded(new Uint8Array(n).fill(3));
+  const attachment = {
+    t: "file" as const,
+    url: `${location.origin}/uploads/${SLUG}`,
+    key: b64(32),
+    iv: b64(12),
+    sha256: b64(32),
+    name: "holiday.jpg",
+    mime: "image/jpeg",
+    size: 1234,
+    category: "image" as const,
+    expires_at: "2099-01-01T00:00:00Z",
+  };
+  const withFile: ChatRow = {
+    kind: "in",
+    id: "1",
+    at,
+    nick: "Bob",
+    ed25519: KEY,
+    body: "",
+    file: attachment,
+  };
+  const plain: ChatRow = {
+    kind: "in",
+    id: "2",
+    at: at + 1_000,
+    nick: "Bob",
+    ed25519: KEY,
+    body: "ciao",
+  };
+
+  let revoke: ReturnType<typeof vi.fn<(url: string) => void>>;
+
+  beforeEach(() => {
+    revoke = vi.fn<(url: string) => void>();
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(revoke);
+    openEncryptedFile.mockResolvedValue({
+      ok: true,
+      kind: "inline",
+      url: "blob:probe-image",
+      media: "image",
+    });
+    setTrust({ master: KEY, verified: true, devices: 1 });
+  });
+
+  afterEach(() => {
+    closeMediaViewer();
+    vi.restoreAllMocks();
+  });
+
+  const openTheImage = async (): Promise<void> => {
+    setRows([withFile]);
+    renderPane();
+    fireEvent.click(screen.getByTestId("e2e-file-open"));
+    await waitFor(() => expect(mediaViewerState()?.href).toBe("blob:probe-image"));
+  };
+
+  it("keeps the blob alive when one more message rebuilds the row under an open viewer", async () => {
+    await openTheImage();
+
+    // ONE more message: every row object is rebuilt, the old card unmounts.
+    setRows([withFile, plain]);
+    await waitFor(() => expect(lines()).toHaveLength(2));
+
+    expect(revoke).not.toHaveBeenCalled();
+    expect(mediaViewerState()?.href).toBe("blob:probe-image");
+  });
+
+  it("revokes the blob once the viewer closes", async () => {
+    await openTheImage();
+
+    closeMediaViewer();
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith("blob:probe-image"));
+  });
+
+  it("does not hand a viewer URL to the player, nor keep it after the source moves", async () => {
+    await openTheImage();
+
+    // The player takes a different source: the image's URL is nobody's now.
+    playAudio("blob:another-source", "radio");
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith("blob:probe-image"));
+    closeAudio();
   });
 });

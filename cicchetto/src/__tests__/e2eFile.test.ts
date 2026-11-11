@@ -158,10 +158,28 @@ describe("openEncryptedFile (issue 2517)", () => {
     );
   };
 
+  // The ORDER is the claim in the name, and the outcome alone does not pin it:
+  // with GCM a decrypt-then-compare lands on the same refusal. So both halves
+  // are recorded on one clock, and the digest has to come first — and the
+  // decrypt must not run at all.
   it("checks the digest before it decrypts, and renders nothing on a mismatch", async () => {
     const sealed = await sealBytes(bytes(32));
     served(sealed.ciphertext);
-    const digest = vi.spyOn(crypto.subtle, "digest");
+    const calls: string[] = [];
+    const realDigest = crypto.subtle.digest.bind(crypto.subtle);
+    const realDecrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+    vi.spyOn(crypto.subtle, "digest").mockImplementation(((
+      ...args: Parameters<typeof realDigest>
+    ) => {
+      calls.push("digest");
+      return realDigest(...args);
+    }) as typeof crypto.subtle.digest);
+    vi.spyOn(crypto.subtle, "decrypt").mockImplementation(((
+      ...args: Parameters<typeof realDecrypt>
+    ) => {
+      calls.push("decrypt");
+      return realDecrypt(...args);
+    }) as typeof crypto.subtle.decrypt);
 
     const outcome = await openEncryptedFile(
       fileInner({ key: sealed.key, iv: sealed.iv, sha256: b64(32), size: 32 }),
@@ -171,7 +189,7 @@ describe("openEncryptedFile (issue 2517)", () => {
       ok: false,
       error: "the file does not match the digest in the message",
     });
-    expect(digest).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(["digest"]);
   });
 
   it("refuses a file its key does not open", async () => {
@@ -215,5 +233,11 @@ describe("openEncryptedFile (issue 2517)", () => {
     );
     expect(html).toEqual({ ok: true, kind: "download" });
     expect(created).toHaveBeenCalledTimes(2);
+    // The saved blob's type is NOT the peer's `mime`: a download is an
+    // unknown-type file by definition, and typing it `text/html` would hand
+    // the OS a document it might open rather than save.
+    const saved = created.mock.calls[1]?.[0];
+    expect(saved).toBeInstanceOf(Blob);
+    expect((saved as Blob).type).toBe("application/octet-stream");
   });
 });

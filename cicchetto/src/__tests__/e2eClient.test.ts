@@ -1756,6 +1756,37 @@ describe("encrypted attachments (issue 2517)", () => {
     expect(await rowsOf(b, "alice")).toEqual([]);
   });
 
+  // The name is the peer's word: sanitised once, at the store door, so no
+  // path separator or bidi override reaches the row the card renders.
+  it("keeps a sanitised name, not the one the peer wrote", async () => {
+    const { a, b } = await pair();
+    const file = attachment({ name: "../../evil\u202Egnp.exe" });
+
+    await a.client.sendFile(a.ctx, "bob", file);
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+
+    const [row] = await rowsOf(b, "alice");
+    expect((row as { file?: FileInner }).file?.name).toBe("....evignp.exe");
+  });
+
+  // The copy path holds the url to the same rule as the peer path: a sibling
+  // that copies a file naming another host must not put a row here.
+  it("drops a copied file whose url is not this grappa's own upload", async () => {
+    const { w, a } = await pair();
+    const a2 = await w.pairDevice(a);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const file = attachment({ url: `https://evil.example/uploads/${SLUG}` });
+
+    await a.client.sendFile(a.ctx, "Bob", file);
+    await a2.client.drain(a2.ctx);
+
+    expect(await rowsOf(a2, "bob")).toEqual([]);
+    expect(warn.mock.calls).toEqual([
+      ["[e2e] dropped a copied file to bob: not this grappa's upload"],
+    ]);
+  });
+
   it("is copied to the sender's other device", async () => {
     const { w, a, b } = await pair();
     const a2 = await w.pairDevice(a);

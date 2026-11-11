@@ -413,7 +413,17 @@ function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): Ch
               },
             });
           } else {
-            console.warn(`[e2e] dropped a file from ${e.nick}: not this grappa's upload`);
+            // Say WHICH refusal. One `else` used to call every one of them "not
+            // this grappa's upload", including a malformed inner and the
+            // `inbox === null` miss (a message with no row to file it under),
+            // which sent the next reader after the wrong bug.
+            const why =
+              typeof file === "string"
+                ? file
+                : inbox === null
+                  ? "no inbox row to file it under"
+                  : "not this grappa's upload";
+            console.warn(`[e2e] dropped a file from ${e.nick}: ${why}`);
           }
           break;
         }
@@ -512,6 +522,12 @@ function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): Ch
             console.warn(`[e2e] dropped a copied file to ${e.peer}: not this grappa's upload`);
             break;
           }
+          // A copy with nothing in it and no attachment: a sibling that does
+          // not know about files (an older device) sends the message with an
+          // empty body and no `file`, and a `sent` row with nothing in it is
+          // not a line the operator ever wrote. Nothing to show, nothing to
+          // keep.
+          if (e.body === "" && file === undefined) break;
           changes.push({
             op: "add",
             nick: e.peer,
