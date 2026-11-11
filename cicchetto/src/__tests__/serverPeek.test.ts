@@ -411,6 +411,38 @@ describe("serverPeek store (issue 2625)", () => {
     expect(peek.serverPeekRows("libera")).toEqual([]);
     expect(bodies(peek.serverPeekRows(SLUG))).toEqual(["here"]);
   });
+
+  // The live arrival is ONE signal for every window, so while armed the peek
+  // sees each line of every channel and query on every network, and only the
+  // key check tells a `$server` reply from the rest. The case above cannot
+  // show it: a wrong line opening the card there still leaves the real reply
+  // inside it. Here nothing that belongs in the card arrives inside the
+  // window, so a card opened by the wrong line is the only way to show the
+  // late notice.
+  it("does not open on a channel line inside the window", async () => {
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    vi.setSystemTime(T0 + 800);
+    sb.appendToScrollback(channelKey(SLUG, "#grappa"), {
+      ...row(7, "chatter in a channel"),
+      channel: "#grappa",
+      kind: "privmsg",
+      sender: "vjt",
+    });
+    vi.setSystemTime(T0 + 10_001);
+    sb.appendToScrollback(SERVER, row(8, "an unrelated notice past the reply window"));
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
+
+  it("does not open on another network's $server line inside the window", async () => {
+    const { peek, sb } = await load();
+    peek.armServerPeek(SLUG);
+    vi.setSystemTime(T0 + 800);
+    sb.appendToScrollback(channelKey("libera", SERVER_WINDOW_NAME), row(7, "elsewhere", "libera"));
+    vi.setSystemTime(T0 + 10_001);
+    sb.appendToScrollback(SERVER, row(8, "an unrelated notice past the reply window"));
+    expect(peek.serverPeekRows(SLUG)).toEqual([]);
+  });
 });
 
 describe("serverPeek preference (issue 2625)", () => {
