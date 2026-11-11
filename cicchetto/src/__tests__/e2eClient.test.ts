@@ -15,10 +15,11 @@ import {
   SIBLINGS_TTL_MS,
 } from "../lib/e2e/client";
 import { KEYREQ_RETRY_MS, LIST_TAG, OUTQ_TTL_MS } from "../lib/e2e/engine";
+import type { FileInner } from "../lib/e2e/fileInner";
 import { syncIdentity } from "../lib/e2e/identity";
 import { ORDER_TAG, UNCONFIRMED } from "../lib/e2e/orders";
 import { SAS_TAG } from "../lib/e2e/sas";
-import { decodePayload } from "../lib/e2e/wire";
+import { base64Unpadded, decodePayload } from "../lib/e2e/wire";
 import {
   chat,
   inboxOf,
@@ -1688,5 +1689,180 @@ describe("e2eClient, copies to our other devices", () => {
       [`[e2e] dropped an own nack from our device ${first.did}: not a copy`],
     ]);
     expect(w.grappa.sends.filter((s) => s.by === "alice")).toEqual([]);
+  });
+});
+
+// issue 2517 — a file in an encrypted query: the key, the URL and the
+// metadata ride the same inner the texts do, and a peer's URL is held to
+// this grappa's own upload path before anything would be fetched from it.
+describe("encrypted attachments (issue 2517)", () => {
+  const SLUG = "abcdefghijklmnopqrstuvwxyz";
+  const b64 = (n: number): string => base64Unpadded(new Uint8Array(n).fill(3));
+  const attachment = (over: Partial<FileInner> = {}): FileInner => ({
+    t: "file",
+    url: `${location.origin}/uploads/${SLUG}`,
+    key: b64(32),
+    iv: b64(12),
+    sha256: b64(32),
+    name: "holiday.jpg",
+    mime: "image/jpeg",
+    size: 1234,
+    category: "image",
+    expires_at: "2099-01-01T00:00:00Z",
+    ...over,
+  });
+
+  it("reaches the peer as a row that carries it, and is written here too", async () => {
+    const { a, b } = await pair();
+    const file = attachment();
+
+    await a.client.sendFile(a.ctx, "bob", file);
+    expect(await rowsOf(a, "bob")).toEqual([
+      expect.objectContaining({ kind: "out", body: "", file }),
+    ]);
+
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+
+    expect(await rowsOf(b, "alice")).toEqual([
+      expect.objectContaining({ kind: "in", nick: "alice", body: "", file }),
+    ]);
+  });
+
+  it("is dropped when its url is not this grappa's own upload", async () => {
+    const { a, b } = await pair();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const file = attachment({ url: `https://evil.example/uploads/${SLUG}` });
+
+    await a.client.sendFile(a.ctx, "bob", file);
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+
+    expect(await rowsOf(b, "alice")).toEqual([]);
+    expect(warn.mock.calls).toEqual([
+      ["[e2e] dropped a file from alice: not this grappa's upload"],
+    ]);
+  });
+
+  it("is dropped when a field of it is malformed", async () => {
+    const { a, b } = await pair();
+    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const file = attachment({ size: -1 });
+
+    await a.client.sendFile(a.ctx, "bob", file);
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+
+    expect(await rowsOf(b, "alice")).toEqual([]);
+  });
+
+  // issue 2517, delta5 — the row keeps the FileInner the engine checked, not
+  // the object the peer wrote: a key it invented must not be stored with it.
+  it("keeps the fields of the file that were checked, not the extra keys", async () => {
+    const { a, b } = await pair();
+    const file = { ...attachment(), evil: "sender-key" } as unknown as FileInner;
+
+    await a.client.sendFile(a.ctx, "bob", file);
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+
+    const [row] = await rowsOf(b, "alice");
+    expect((row as { file?: FileInner }).file).toEqual(attachment());
+  });
+
+  // The name is the peer's word: sanitised once, at the store door, so no
+  // path separator or bidi override reaches the row the card renders.
+  it("keeps a sanitised name, not the one the peer wrote", async () => {
+    const { a, b } = await pair();
+    const file = attachment({ name: "../../evil\u202Egnp.exe" });
+
+    await a.client.sendFile(a.ctx, "bob", file);
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+
+    const [row] = await rowsOf(b, "alice");
+    expect((row as { file?: FileInner }).file?.name).toBe("....evilgnp.exe");
+  });
+
+  // N5 — say WHICH refusal, and let the layer that refuses say it. A malformed
+  // inner never reaches this client: the engine drops it (`file-malformed`)
+  // before a `received` event exists, so there is no re-parse to disagree with.
+  it("lets the engine refuse a malformed inner, and writes no row for it", async () => {
+    const { a, b } = await pair();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const file = attachment({ key: "AAAA" });
+
+    await a.client.sendFile(a.ctx, "bob", file);
+    await a.client.drain(a.ctx);
+    await b.client.drain(b.ctx);
+
+    expect(await rowsOf(b, "alice")).toEqual([]);
+    // No warning of its own: the engine's drop is the whole trace, at debug.
+    expect(warn.mock.calls).toEqual([]);
+    expect(debug.mock.calls).toContainEqual(["[e2e] dropped a message from alice: file-malformed"]);
+  });
+
+  // The copy path holds the url to the same rule as the peer path: a sibling
+  // that copies a file naming another host must not put a row here.
+  it("drops a copied file whose url is not this grappa's own upload", async () => {
+    const { w, a, b } = await pair();
+    const a2 = await w.pairDevice(a);
+    // The copy arm files its row under the chat's inbox item, so there must BE
+    // one: without the exchange the refusal is "no inbox row", and the origin
+    // check below is never reached (which is how this test used to pass
+    // without pinning anything).
+    await b.client.send(b.ctx, "alice", "hi alice");
+    for (const side of [b, a, a2, b, a, a2]) await side.client.drain(side.ctx);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const file = attachment({ url: `https://evil.example/uploads/${SLUG}` });
+
+    await a.client.sendFile(a.ctx, "Bob", file);
+    await a2.client.drain(a2.ctx);
+
+    expect(await rowsOf(a2, "bob")).toEqual([
+      expect.objectContaining({ kind: "in", body: "hi alice" }),
+    ]);
+    // The log names the peer as the sender wrote it ("Bob"), not as the chat is
+    // keyed: display stays raw (CLAUDE.md).
+    expect(warn.mock.calls).toEqual([
+      ["[e2e] dropped a copied file to Bob: not this grappa's upload"],
+    ]);
+  });
+
+  // N7 — a copy carrying neither text nor file: a sibling that does not know
+  // about files sends the message with an empty body and no `file`, and a
+  // `sent` row with nothing in it is not a line the operator ever wrote.
+  it("writes no row for a copy that carries neither text nor file", async () => {
+    const { w, a, b } = await pair();
+    const a2 = await w.pairDevice(a);
+    await b.client.send(b.ctx, "alice", "hi alice");
+    for (const side of [b, a, a2, b, a, a2]) await side.client.drain(side.ctx);
+
+    await a.client.send(a.ctx, "Bob", "");
+    // It went: the sender has its own row for it.
+    expect((await rowsOf(a, "bob")).some((r) => r.kind === "out" && r.body === "")).toBe(true);
+
+    await a2.client.drain(a2.ctx);
+
+    expect(await rowsOf(a2, "bob")).toEqual([
+      expect.objectContaining({ kind: "in", body: "hi alice" }),
+    ]);
+  });
+
+  it("is copied to the sender's other device", async () => {
+    const { w, a, b } = await pair();
+    const a2 = await w.pairDevice(a);
+    await b.client.send(b.ctx, "alice", "hi alice");
+    for (const side of [b, a, a2, b, a, a2]) await side.client.drain(side.ctx);
+
+    const file = attachment();
+    await a.client.sendFile(a.ctx, "Bob", file);
+    await a2.client.drain(a2.ctx);
+
+    expect(await rowsOf(a2, "bob")).toEqual([
+      expect.objectContaining({ kind: "in", body: "hi alice" }),
+      expect.objectContaining({ kind: "out", body: "", state: "sent", file }),
+    ]);
   });
 });

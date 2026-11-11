@@ -54,6 +54,7 @@ import {
   noNicks,
   setNick,
 } from "./byNick";
+import { type FileInner, parseFileInner } from "./fileInner";
 import { idBlock } from "./keyBundle";
 import type { Olm } from "./olm";
 import type { SasRecord } from "./sas";
@@ -233,7 +234,7 @@ type Sent = {
  */
 type Sibling = { did: string; curve25519: string };
 /** The copy of a text this device sent `peer`, waiting since `at` for a sibling's keys. */
-type WaitingCopy = { peer: string; body: string; at: number };
+type WaitingCopy = { peer: string; body: string; at: number; file?: FileInner };
 
 export type E2eState = {
   v: 2;
@@ -342,6 +343,7 @@ export type DropReason =
   | "non-canonical-key"
   | "undecodable-inner"
   | "inner-without-type"
+  | "file-malformed"
   | "unknown-nack-ref"
   | "bad-list"
   | "listreq-rate-limited"
@@ -398,7 +400,8 @@ export type UndecryptableReason =
  * `keys_renewed` that the pinned master answered with fresh sessions, a
  * `keys_unanswered` that nothing answered in `OUTQ_TTL_MS`, or that the
  * answer opened no session or carried our own identity. Another master
- * answering is the `key_alarm`.
+ * answering is the `key_alarm`. A `received` that is a `t: "file"` also
+ * carries `file`: the attachment `inner()` checked, not the peer's object.
  */
 export type E2eEvent =
   | {
@@ -408,6 +411,7 @@ export type E2eEvent =
       device: string;
       verified: boolean;
       inner: Record<string, unknown>;
+      file?: FileInner;
     }
   | { kind: "key_alarm"; nick: string; pinned: string; presented: string }
   | { kind: "undecryptable"; nick: string; msgid: string; reason: UndecryptableReason }
@@ -420,7 +424,15 @@ export type E2eEvent =
   | { kind: "keys_renewed"; nick: string }
   | { kind: "keys_unanswered"; nick: string }
   | { kind: "sibling_keys_needed"; did: string }
-  | { kind: "copied"; peer: string; body: string; device: string };
+  | { kind: "copied"; peer: string; body: string; device: string; file?: FileInner };
+
+/**
+ * What `inner()` hands on: the message without its `fb`, and — when it is a
+ * `t: "file"` — the `FileInner` it checked. The decrypted message stays `msg`
+ * even for a file, because `deliver` still has to read its `lv`; a file's own
+ * object never reaches a row, the checked `file` is what travels on.
+ */
+type Inner = { msg: Record<string, unknown>; file?: FileInner };
 
 /**
  * A payload for grappa's send door, `from` this device's did `to` a did or
@@ -1287,10 +1299,10 @@ export class Engine {
    * it yet, so once while anything does. Call it only once grappa took the
    * text: one it refused reaches no device.
    */
-  copy(peer: string, body: string): CopyResult {
+  copy(peer: string, body: string, file?: FileInner): CopyResult {
     const res: CopyResult = { ...emptyResult(), copies: [] };
     for (const [ed25519, sibling] of this.listedSiblings(res)) {
-      const pending = [...this.liveCopies(ed25519, res), { peer, body, at: this.now() }];
+      const pending = [...this.liveCopies(ed25519, res), { peer, body, at: this.now(), file }];
       if (this.sessionsOf(sibling.curve25519).length > 0) {
         this.sendCopies(ed25519, sibling, pending, res);
         continue;
@@ -1402,8 +1414,9 @@ export class Engine {
     res: CopyResult,
   ): void {
     delete this.state.copyq[ed25519];
-    for (const { peer, body } of pending) {
-      const inner: CopyInner = { t: "copy", peer, body };
+    for (const { peer, body, file } of pending) {
+      const inner: CopyInner =
+        file === undefined ? { t: "copy", peer, body } : { t: "copy", peer, body, file };
       const encrypted = this.encryptOn(sibling.curve25519, ed25519, JSON.stringify(inner));
       try {
         this.sessionsOf(sibling.curve25519)[0] = encrypted.session.pickle();
@@ -1567,12 +1580,28 @@ export class Engine {
   private readCopy(device: string, plaintext: Uint8Array, preKey: boolean, res: Result): boolean {
     const inner = this.inner(this.ownNick, plaintext, preKey ? device : null, res);
     if (inner === undefined) return false;
-    const { t, peer, body } = inner;
+    const { t, peer, body } = inner.msg;
     if (t !== "copy" || typeof peer !== "string" || peer === "" || typeof body !== "string") {
       res.events.push({ kind: "dropped", nick: this.ownNick, reason: "sibling-not-a-copy" });
       return false;
     }
-    res.events.push({ kind: "copied", peer, body, device });
+    // `null` is "no attachment", not a malformed one: a sibling that writes
+    // the key with nothing in it is a text copy, and `parseFileInner(null)`
+    // used to raise a TypeError that aborted the whole drain — every later
+    // message stopped arriving, and every retry hit the same row.
+    const file =
+      inner.msg.file === undefined || inner.msg.file === null
+        ? undefined
+        : parseFileInner(inner.msg.file as Record<string, unknown>);
+    if (file !== undefined && typeof file === "string") {
+      res.events.push({ kind: "dropped", nick: this.ownNick, reason: "sibling-not-a-copy" });
+      return false;
+    }
+    res.events.push(
+      file === undefined
+        ? { kind: "copied", peer, body, device }
+        : { kind: "copied", peer, body, device, file },
+    );
     return true;
   }
 
@@ -2140,7 +2169,7 @@ export class Engine {
     plaintext: Uint8Array,
     sender: string | null,
     res: Result,
-  ): Record<string, unknown> | undefined {
+  ): Inner | undefined {
     let inner: unknown;
     try {
       inner = JSON.parse(decoder.decode(plaintext));
@@ -2162,7 +2191,21 @@ export class Engine {
       res.events.push({ kind: "dropped", nick, reason: "inner-key-mismatch" });
       return undefined;
     }
-    return rest;
+    // issue 2517 — an attachment's fields are the peer's word and are checked
+    // before anything is done with them. Whether its `url` is THIS grappa's
+    // is the client's to say (`onGrappaOrigin`: it needs the page's origin).
+    if (rest.t === "file") {
+      const file = parseFileInner(rest);
+      if (typeof file === "string") {
+        res.events.push({ kind: "dropped", nick, reason: "file-malformed", detail: file });
+        return undefined;
+      }
+      // The checked one travels on as `file`; `msg` stays the decrypted
+      // message, `lv` included, because `deliver` reads that `lv` to decide
+      // whether to ask for a newer device list — a file asks like any other.
+      return { msg: rest, file };
+    }
+    return { msg: rest };
   }
 
   /**
@@ -2180,11 +2223,11 @@ export class Engine {
     nick: string,
     master: string,
     device: PeerDevice,
-    inner: Record<string, unknown>,
+    inner: Inner,
     bodies: Record<string, string>,
     res: Result,
   ): void {
-    const { lv, ...rest } = inner;
+    const { lv, ...rest } = inner.msg;
     if (rest.t === "list") {
       this.onList(nick, rest, res);
     } else if (rest.t === "listreq") {
@@ -2197,7 +2240,11 @@ export class Engine {
         master,
         device: device.ed25519,
         verified,
-        inner: rest,
+        // A file hands on the object `inner()` checked — exactly the fields it
+        // checked, no key the peer invented — never the decrypted message it
+        // came from (that one is `msg`, kept whole only for its `lv`).
+        inner: inner.file ?? rest,
+        ...(inner.file === undefined ? {} : { file: inner.file }),
       });
     }
     const ours = new Set(this.own.list.devices.map((ed25519) => did(this.olm, ed25519)));

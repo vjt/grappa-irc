@@ -51,6 +51,7 @@ import type { AccountStore } from "./accountStore";
 import { type ByNick, noNicks, setNick } from "./byNick";
 import type {
   ChatChange,
+  ChatRow,
   ChatStore,
   CheckFailure,
   DoorRefusal,
@@ -67,6 +68,7 @@ import {
   type PinOutcome,
   type Result,
 } from "./engine";
+import { type FileInner, onGrappaOrigin, sanitizeFileName } from "./fileInner";
 import type { Olm } from "./olm";
 import {
   type Challenge,
@@ -217,6 +219,12 @@ export type E2eClient = {
   drain(ctx: E2eContext): Promise<Report>;
   /** Sends `body` to `nick`, encrypted, and writes it to their chat. */
   send(ctx: E2eContext, nick: string, body: string): Promise<Report>;
+  /**
+   * Sends the attachment `file` to `nick`, encrypted (issue 2517): the inner
+   * that carries its key, its URL and its metadata, and the row that shows
+   * it here.
+   */
+  sendFile(ctx: E2eContext, nick: string, file: FileInner): Promise<Report>;
   /** Reports messages that waited too long for keys, and sends what waited on the clock. */
   tick(ctx: E2eContext): Promise<Report>;
   /**
@@ -323,7 +331,7 @@ const REFUSALS: Record<DoorRefusal, true> = {
 const isRefusal = (answer: string): answer is DoorRefusal => Object.hasOwn(REFUSALS, answer);
 
 /** A text grappa took a payload of for the first time: what our siblings get a copy of. */
-type Taken = { nick: string; body: string };
+type Taken = { nick: string; body: string; file?: FileInner };
 
 /** What a step of keys asked for again (`Engine.rekey`) writes to the chat. */
 const REKEY_PHASE = {
@@ -357,6 +365,16 @@ const fromInbox = (m: InboxMessage): FromInbox => ({
   wire: wirePayload(m.verb, m.msgid, m.payload),
 });
 
+/**
+ * issue 2517 — the name an attachment is kept and shown under: sanitised
+ * once, here, so no bidi override or path separator ever reaches the store
+ * or the screen, and named plainly when nothing printable is left.
+ */
+const storedFile = (file: FileInner): FileInner => ({
+  ...file,
+  name: sanitizeFileName(file.name) || "attachment",
+});
+
 /** The chat changes `events` make; rows from the inbox message `inbox` get ids derived from it. */
 function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): ChatChange[] {
   const changes: ChatChange[] = [];
@@ -369,6 +387,34 @@ function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): Ch
         // Only text is shown. A CHAL is answered in the drain (`answer`),
         // never shown; an ACK means nothing here (cic challenges no one).
         // The row names the master that wrote it, the key the user pins.
+        // issue 2517 — an attachment is a message too: the engine checked its
+        // shape and put the checked `FileInner` on the event, and its `url`
+        // must be this grappa's own upload path, or the peer could make this
+        // client fetch anywhere.
+        if (e.file !== undefined) {
+          if (onGrappaOrigin(e.file.url, location.origin)) {
+            changes.push({
+              op: "add",
+              nick: e.nick,
+              unread: true,
+              row: {
+                kind: "in",
+                id,
+                at,
+                nick: e.nick,
+                ed25519: e.master,
+                body: "",
+                file: storedFile(e.file),
+                ...wire,
+              },
+            });
+          } else {
+            // The only refusal left here: a `received` comes from a drain,
+            // which always has the inbox row to file it under.
+            console.warn(`[e2e] dropped a file from ${e.nick}: not this grappa's upload`);
+          }
+          break;
+        }
         if (e.inner.t === "text" && typeof e.inner.body === "string" && inbox !== null) {
           changes.push({
             op: "add",
@@ -451,6 +497,25 @@ function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): Ch
         // A text one of our siblings sent `peer`: ours, so it reads as sent
         // here too, in the chat with `peer` (made if this device has none).
         if (inbox !== null) {
+          // An attachment (issue 2517) is copied the same way, and its `url`
+          // is held to the same rule as a peer's: this grappa's own upload.
+          // `!= null` on purpose: a sibling can write `file: null` for a text
+          // copy, and reading `.url` off it threw inside the drain — which
+          // took every message after it down with it, on every retry.
+          const file =
+            e.file != null && onGrappaOrigin(e.file.url, location.origin)
+              ? storedFile(e.file)
+              : undefined;
+          if (e.file != null && file === undefined) {
+            console.warn(`[e2e] dropped a copied file to ${e.peer}: not this grappa's upload`);
+            break;
+          }
+          // A copy with nothing in it and no attachment: a sibling that does
+          // not know about files (an older device) sends the message with an
+          // empty body and no `file`, and a `sent` row with nothing in it is
+          // not a line the operator ever wrote. Nothing to show, nothing to
+          // keep.
+          if (e.body === "" && file === undefined) break;
           changes.push({
             op: "add",
             nick: e.peer,
@@ -462,6 +527,7 @@ function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): Ch
               body: e.body,
               state: "sent",
               reason: null,
+              ...(file === undefined ? {} : { file }),
             },
           });
         }
@@ -625,7 +691,9 @@ export function e2eClient(
     const texts: Taken[] = [];
     for (const [tag, nick] of engine.alone() ? [] : taken) {
       const row = (await chats.rows(ctx.slot, nick)).find((r) => r.id === tag);
-      if (row?.kind === "out" && row.state !== "sent") texts.push({ nick, body: row.body });
+      if (row?.kind === "out" && row.state !== "sent") {
+        texts.push({ nick, body: row.body, file: row.file });
+      }
     }
     return {
       changes: [...changes, ...(await copyOut(engine, persist, door, texts))],
@@ -671,7 +739,7 @@ export function e2eClient(
   ): Promise<ChatChange[]> {
     if (texts.length === 0) return [];
     const listed = await listSiblings(engine, door);
-    const copied: CopyResult[] = texts.map(({ nick, body }) => engine.copy(nick, body));
+    const copied: CopyResult[] = texts.map(({ nick, body, file }) => engine.copy(nick, body, file));
     for (const e of copied.flatMap((r) => r.events)) {
       if (e.kind === "sibling_keys_needed") {
         copied.push(engine.siblingKeys(e.did, await claim(door, e.did)));
@@ -813,6 +881,36 @@ export function e2eClient(
       );
     });
 
+  // The one send path (issue 2517 factored it out of `send`): `inner` is what
+  // the peer's devices read, `row` what this device's chat keeps of it.
+  function sendInner(
+    ctx: E2eContext,
+    nick: string,
+    inner: Record<string, unknown>,
+    row: (tag: string) => ChatRow,
+  ): Promise<Report> {
+    return withEngine(ctx, async (engine, persist, _verifier, door) => {
+      const tag = crypto.randomUUID();
+      const res = engine.send(nick, inner, tag, null, null);
+      const touched = new Set(
+        await chats.apply(ctx.slot, [
+          { op: "add", nick, unread: false, row: row(tag) },
+          ...changesFor(res.events, now(), null),
+        ]),
+      );
+      await persist();
+      const sent = await flush(ctx, engine, persist, door, res.outbound);
+      for (const key of await chats.apply(ctx.slot, sent.changes)) touched.add(key);
+      return {
+        chats: [...touched],
+        pkmsgs: 0,
+        waiting: engine.waitsOnTheClock(),
+        unknownDevice: sent.unknownDevice,
+        listBehind: false,
+      };
+    });
+  }
+
   return {
     drain: (ctx) =>
       withEngine(ctx, async (engine, persist, verifier, door, state) => {
@@ -907,31 +1005,27 @@ export function e2eClient(
       }),
 
     send: (ctx, nick, body) =>
-      withEngine(ctx, async (engine, persist, _verifier, door) => {
-        const tag = crypto.randomUUID();
-        const res = engine.send(nick, { t: "text", body }, tag, null, null);
-        const touched = new Set(
-          await chats.apply(ctx.slot, [
-            {
-              op: "add",
-              nick,
-              unread: false,
-              row: { kind: "out", id: tag, at: now(), body, state: "sending", reason: null },
-            },
-            ...changesFor(res.events, now(), null),
-          ]),
-        );
-        await persist();
-        const sent = await flush(ctx, engine, persist, door, res.outbound);
-        for (const key of await chats.apply(ctx.slot, sent.changes)) touched.add(key);
-        return {
-          chats: [...touched],
-          pkmsgs: 0,
-          waiting: engine.waitsOnTheClock(),
-          unknownDevice: sent.unknownDevice,
-          listBehind: false,
-        };
-      }),
+      sendInner(ctx, nick, { t: "text", body }, (tag) => ({
+        kind: "out",
+        id: tag,
+        at: now(),
+        body,
+        state: "sending",
+        reason: null,
+      })),
+
+    // issue 2517 — an attachment: the inner is the whole `file` object, and
+    // the row carries it too, so the card survives a reload.
+    sendFile: (ctx, nick, file) =>
+      sendInner(ctx, nick, file, (tag) => ({
+        kind: "out",
+        id: tag,
+        at: now(),
+        body: "",
+        state: "sending",
+        reason: null,
+        file: storedFile(file),
+      })),
 
     tick: (ctx) =>
       withEngine(ctx, async (engine, persist, verifier, door) => {

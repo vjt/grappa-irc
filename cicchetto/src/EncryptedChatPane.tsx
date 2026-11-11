@@ -25,10 +25,12 @@ import {
 } from "./EncryptedRail";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { ApiError, type ScrollbackMessage } from "./lib/api";
+import { playAudio } from "./lib/audioPlayer";
 import { channelKey } from "./lib/channelKey";
 import { requestConfirm } from "./lib/confirmDialog";
 import { isCtcpAction, stripCtcpAction } from "./lib/ctcpAction";
 import { formatDateTime } from "./lib/dateFormat";
+import { adoptDecryptedUrl } from "./lib/decryptedBlobUrls";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { formatDurationSince } from "./lib/duration";
 import {
@@ -38,6 +40,7 @@ import {
   type Message,
   type OutFailure,
 } from "./lib/e2e/chatStore";
+import type { FileInner } from "./lib/e2e/fileInner";
 import type { ElsewhereReason, HeldDevices } from "./lib/e2e/identity";
 import type { SasStep, SasView } from "./lib/e2e/sas";
 import { SAS_EMOJI } from "./lib/e2e/sasEmoji";
@@ -64,7 +67,10 @@ import {
   unreadableStep,
   verifyEncrypted,
 } from "./lib/encryptedChats";
+import { openEncryptedFile } from "./lib/encryptedFileOpen";
+import { formatBytes } from "./lib/formatBytes";
 import { friendlyApiError } from "./lib/friendlyApiError";
+import { openMediaViewer } from "./lib/mediaViewer";
 import { createOverlayLock } from "./lib/overlayScrollLock";
 import type { ArrivingLine, ScrollbackSource } from "./lib/scrollbackSource";
 import { formatTimestamp } from "./lib/timeFormat";
@@ -234,6 +240,11 @@ function ciphertextOf(row: Message): string {
 // (lib/compose.ts), so a body in that envelope is the scrollback's action
 // line, which unwraps it, ours or the peer's. Not in the ciphertext view:
 // there the line is the payloads it crossed IRC as, and they are no action.
+/** issue 2517 — an attachment as its line reads: what it is, how big, and when it goes. */
+export function fileCard(file: FileInner): string {
+  return `📎 ${file.name} · ${formatBytes(file.size)} · ${file.mime} · expires ${formatDateTime(Date.parse(file.expires_at))}`;
+}
+
 function lineOf(
   row: Message,
   seq: number,
@@ -247,6 +258,13 @@ function lineOf(
   switch (row.kind) {
     case "in":
     case "out": {
+      // issue 2517 — an attachment reads as a card: the name, the size, the
+      // type and when it goes. Nothing is fetched to draw it, and the
+      // download is the trailer's button (see `FileTrailer`).
+      if (row.file !== undefined && !ciphertext) {
+        const sender = row.kind === "in" ? row.nick : ownNick;
+        return { ...line, kind: "privmsg", sender, body: fileCard(row.file) };
+      }
       const kind = !ciphertext && isCtcpAction(row.body) ? "action" : "privmsg";
       const sender = row.kind === "in" ? row.nick : ownNick;
       return { ...line, kind, sender, body: body(row.body) };
@@ -316,6 +334,109 @@ const Trailer: Component<{ row: Message | undefined; pinned: string | undefined 
     </Match>
   </Switch>
 );
+
+/**
+ * issue 2517 — the attachment's one action, in the line's trailer slot: the
+ * click that fetches the ciphertext, checks its digest, decrypts it and opens
+ * or saves it. Nothing is fetched until this button is pressed, because a
+ * fetch tells grappa this address and the time the file was opened.
+ */
+const FileTrailer: Component<{ row: Message | undefined }> = (props) => {
+  const [busy, setBusy] = createSignal(false);
+  const [failure, setFailure] = createSignal<string | null>(null);
+  // The open in flight, so unmounting the card takes the fetch with it and a
+  // late answer cannot mint a URL for a component that no longer exists.
+  let inflight: AbortController | null = null;
+  const file = (): FileInner | undefined =>
+    props.row?.kind === "in" || props.row?.kind === "out" ? props.row.file : undefined;
+
+  // 🔴 THE CARD DOES NOT OWN THE DECRYPTED URL. The media viewer and the docked
+  // player outlive it: every change to the chat's rows rebuilds the message
+  // objects, the scrollback's `<For>` recreates every row, and this component
+  // goes with the old one. A card that revoked its own URL in `onCleanup` (the
+  // first cut did) revoked the plaintext out from under an open viewer or a
+  // docked player — measured: open an image, receive ONE message, `blob:` is
+  // revoked while `mediaViewerState()` still points at it. Ownership lives in
+  // `lib/decryptedBlobUrls`, which keeps a URL exactly as long as one of those
+  // two surfaces names it. Unmounting still takes the FETCH with it.
+  onCleanup(() => {
+    inflight?.abort();
+    inflight = null;
+  });
+
+  const open = async (target: FileInner): Promise<void> => {
+    if (busy()) return;
+    setBusy(true);
+    setFailure(null);
+    inflight?.abort();
+    const controller = new AbortController();
+    inflight = controller;
+    try {
+      const outcome = await openEncryptedFile(target, controller.signal);
+      if (!outcome.ok) {
+        // A cancelled open is this card going away, not a refusal to report.
+        if (outcome.error === "cancelled") return;
+        setFailure(
+          outcome.error === "expired"
+            ? "expired"
+            : outcome.error === "gone"
+              ? "gone from the server"
+              : outcome.error,
+        );
+        return;
+      }
+      if (outcome.kind === "download") return;
+      // The card went away between the mint and the hand-over: nobody would
+      // name this URL, so nobody would revoke it. Drop it here.
+      if (controller.signal.aborted) {
+        URL.revokeObjectURL(outcome.url);
+        return;
+      }
+      // A second click replaces whatever was showing: the first blob goes as
+      // soon as no surface names it, which the registry sees for itself.
+      if (outcome.media === "audio") {
+        // The docked player plays it; the registry keeps the URL alive for as
+        // long as the source does.
+        playAudio(outcome.url, target.name);
+        adoptDecryptedUrl(outcome.url);
+        return;
+      }
+      openMediaViewer(outcome.url, outcome.media);
+      adoptDecryptedUrl(outcome.url);
+    } finally {
+      if (inflight === controller) inflight = null;
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Show when={file()}>
+      {(target) => (
+        <>
+          {" "}
+          <button
+            type="button"
+            class="e2e-file-open"
+            data-testid="e2e-file-open"
+            disabled={busy()}
+            title={`download ${target().name}`}
+            onClick={() => void open(target())}
+          >
+            {busy() ? "opening…" : "⬇ open"}
+          </button>
+          <Show when={failure()}>
+            {(why) => (
+              <span class="e2e-file-error" data-testid="e2e-file-error">
+                {" "}
+                — {why()}
+              </span>
+            )}
+          </Show>
+        </>
+      )}
+    </Show>
+  );
+};
 
 const REPLACE_CONFIRM =
   "start a new identity anyway: every other device of this account loses this identity " +
@@ -842,7 +963,12 @@ const EncryptedChatPane: Component<Props> = (props) => {
     history: null,
     slots: (msg) => ({
       marker: <Lock />,
-      trailer: <Trailer row={rowBySeq().get(msg.id)} pinned={peerTrust()?.master} />,
+      trailer: (
+        <>
+          <FileTrailer row={rowBySeq().get(msg.id)} />
+          <Trailer row={rowBySeq().get(msg.id)} pinned={peerTrust()?.master} />
+        </>
+      ),
     }),
     arriving: (key) => (key === windowKey() ? arriving() : []),
   };

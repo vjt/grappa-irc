@@ -2,8 +2,10 @@ import { createSignal } from "solid-js";
 import { previewKindOf } from "./attachmentPreview";
 import type { ChannelKey } from "./channelKey";
 import { type ConfirmAttachment, dismissConfirm, requestConfirm } from "./confirmDialog";
+import { type AttachmentOutcome, sendEncryptedAttachment } from "./encryptedAttachments";
 import { formatBytes } from "./formatBytes";
 import { sendMessage } from "./scrollback";
+import { serverProtocol } from "./serverProtocol";
 import { serverSettings } from "./serverSettings";
 import {
   baseMime,
@@ -12,7 +14,14 @@ import {
   normalizeUploadFile,
   type UploadCategory,
 } from "./uploadCategory";
-import { activeHost, type UploadError, type UploadHost, type UploadProgress } from "./uploadHost";
+import { friendlyErrorMessage } from "./uploadFailureMessage";
+import {
+  activeHost,
+  embeddedHost,
+  type UploadError,
+  type UploadHost,
+  type UploadProgress,
+} from "./uploadHost";
 import {
   getUploadConfirmEnabled,
   getUploadTtlSeconds,
@@ -70,6 +79,11 @@ export type UploadStateEntry = {
   phase: "transcoding" | "uploading";
   error?: string;
 };
+
+// issue 2517 — the wire protocol that carries an encrypted file's ciphertext
+// (CLIENT_PROTOCOL §4k): below it grappa has no such door, and an encrypted
+// window keeps the 2512 refusal.
+const ENCRYPTED_UPLOAD_PROTOCOL = 58;
 
 // Per-category PRIVMSG prefix — IRC stays text only; the emoji is the
 // whole "media type" signal on the wire.
@@ -344,114 +358,6 @@ export function privacyModalState(): PrivacyModalState {
   return modalState();
 }
 
-// Fixed MB spelling for the "X of Y MB sent" upload-PROGRESS line only. A
-// progress counter that flips KB→MB→GB as it climbs reads worse than a stable
-// unit, so this stays deliberately MB-only ("N MB", "<0.1" floor so a nonzero
-// count never reads as zero). The one-shot CAP/size surfaces (file_too_large +
-// the pre-check and transcode caps) now spell their limit via the adaptive
-// `formatBytes` (#411), so a sub-MB cap reads "512 KB" not "0.5 MB" and agrees
-// with `friendlyApiError` — this is NOT that formatter.
-function mbLabel(bytes: number): string {
-  const mb = bytes / (1024 * 1024);
-  if (mb < 0.1) return "<0.1";
-  if (mb >= 10 || Number.isInteger(mb)) return Math.round(mb).toString();
-  return mb.toFixed(1);
-}
-
-// #364 bucket H (cross-surface S4) — the embedded upload host
-// (/api/uploads) rejects with a JSON body `{error: "<token>", ...}` whose
-// FallbackController comments each promise cic renders per-token copy. The
-// litterbox host emits plain-text error bodies (no token), so a non-JSON /
-// token-less body falls through to the status-based generic below. Parsing
-// the token lets us give the RIGHT recourse: 507 is admin action (retrying
-// can't fix a full disk), metadata_strip_failed fails identically for any
-// file of the same kind (so "try a different file" misleads), file_too_large
-// carries the actionable max_bytes threshold. Per
-// `feedback_no_localized_strings_server_side`.
-function parseUploadErrorToken(body: string): { error?: string; max_bytes?: number } | null {
-  try {
-    const parsed: unknown = JSON.parse(body);
-    if (typeof parsed === "object" && parsed !== null) {
-      return parsed as { error?: string; max_bytes?: number };
-    }
-  } catch {
-    /* plain-text host body (litterbox) or empty — no token */
-  }
-  return null;
-}
-
-function httpUploadMessage(status: number, body: string): string {
-  const token = parseUploadErrorToken(body);
-  switch (token?.error) {
-    case "insufficient_storage": {
-      // 507 — the store is at capacity. Mirrors network_busy's admin
-      // affordance (friendlyApiError): the recourse is the operator, NOT a
-      // retry that can't free disk.
-      return "The upload store is full. Ask your server admin to free space, then try again.";
-    }
-    case "file_too_large": {
-      // 413 — server per-file cap. Render the max_bytes the server threads
-      // "so cic can render the actionable threshold" (same `formatBytes`
-      // spelling as the client-side pre-check and friendlyApiError, #411);
-      // fall back to a capless message if the field is absent.
-      const cap =
-        typeof token?.max_bytes === "number" ? ` (max ${formatBytes(token.max_bytes)})` : "";
-      return `File is too large${cap}.`;
-    }
-    case "metadata_strip_failed": {
-      // 422 — EXIF/QuickTime strip failed and the boundary fails CLOSED. A
-      // different file of the SAME kind fails identically, so the generic
-      // "try a different file" is wrong advice.
-      return "Couldn't remove metadata from that file, so it wasn't uploaded.";
-    }
-    case "unsupported_media_type": {
-      // 415 — belt-and-braces vs dispatchUpload's client-side accept gate;
-      // a cap/host drift or proxy path can still surface it.
-      return "That file type isn't supported.";
-    }
-    default: {
-      // Token-less body (litterbox plain text, empty, or an unknown token)
-      // → status-based generic. Loud, never silent.
-      if (status >= 400 && status < 500) {
-        return `Upload rejected (${status}) — try a different file.`;
-      }
-      return `Upload service unavailable (${status}). Retry?`;
-    }
-  }
-}
-
-function friendlyErrorMessage(err: UploadError, lastProgress: UploadProgress | null): string {
-  switch (err.kind) {
-    case "network": {
-      // XHR error events carry no status; the last progress event is
-      // the only forensic signal. Three honest cases: progress never
-      // OBSERVED (null — hosts with supportsProgress: false never fire
-      // one, so claiming "no bytes" would be a lie), observed zero
-      // (server never took a byte), observed nonzero (the stream was
-      // cut — e.g. the 2026-06-10 host-nginx 4m body cap).
-      if (lastProgress === null) {
-        return "Upload failed — network error. Retry?";
-      }
-      if (lastProgress.loaded === 0) {
-        return "Upload failed — no bytes were sent (network or server unreachable). Retry?";
-      }
-      const sent = mbLabel(lastProgress.loaded);
-      const of = lastProgress.total > 0 ? ` of ${mbLabel(lastProgress.total)}` : "";
-      return `Upload failed — connection dropped (${sent}${of} MB sent). Retry?`;
-    }
-    case "abort":
-      // Caller short-circuits this path (silent state clear) — included
-      // for exhaustiveness only.
-      return "Upload cancelled.";
-    case "http":
-      return httpUploadMessage(err.status, err.body);
-    case "invalid_response":
-      return "Upload completed but the server returned an invalid response.";
-    case "provider":
-      return err.message;
-  }
-}
-
 function unsupportedTypeMessage(host: UploadHost): string {
   // Category list derived from the emoji map — one source of truth for
   // "which categories exist" inside this module.
@@ -510,7 +416,12 @@ async function dispatchUpload(
   ttlSeconds: number | null,
   videoProcessing: boolean | null,
 ): Promise<void> {
-  const host = activeHost();
+  // issue 2517 — an encrypted window's bytes ALWAYS land on the embedded host
+  // (`dispatchEncrypted` uploads there whatever the admin picked), so the type
+  // gate below must ask the host that will actually receive them. Asking
+  // `activeHost()` refused a type the embedded host accepts — and passed one
+  // it does not — for a file that never goes near the active host.
+  const host = encryptedWindowPeer(channelName) !== null ? embeddedHost : activeHost();
 
   // #49 root fix: lastAttempt is the user's LATEST selection, recorded
   // before any gate can reject — retry always retries what the error
@@ -544,6 +455,17 @@ async function dispatchUpload(
   // settle silently (Task 6 quality-review follow-up, landed with
   // Task 7, 2026-06-09).
   inflight.get(key)?.controller.abort();
+
+  // issue 2517 — an encrypted window takes the other door: the strip and the
+  // seal happen here, the bytes go up as ciphertext, and the key rides the
+  // message. Every gate above (the type gate, the batch's answers) is the
+  // plain path's; the cap below is not, because it is the category's own and
+  // it is checked on the plaintext.
+  const peer = encryptedWindowPeer(channelName);
+  if (peer !== null) {
+    await dispatchEncrypted(key, networkSlug, channelName, peer, file, ttlSeconds);
+    return;
+  }
 
   // Controller + inflight registration happen BEFORE the transform so
   // cancelUpload can abort an in-flight video transcode, not just the
@@ -645,6 +567,69 @@ async function dispatchUpload(
         error: friendlyErrorMessage(err, lastProgress),
       });
     });
+}
+
+// issue 2517 — the encrypted branch of `dispatchUpload`: one file, sealed on
+// this device and sent through the encrypted query. The in-flight entry, the
+// stale-controller guards and the error slot are the plain path's, so cancel
+// and retry mean the same thing here. The TTL comes off the embedded host's
+// ladder because grappa's own store is the only door §4k has, whatever host
+// the admin picked for plain uploads.
+async function dispatchEncrypted(
+  key: ChannelKey,
+  networkSlug: string,
+  channelName: string,
+  peer: string,
+  file: File,
+  ttlSeconds: number | null,
+): Promise<void> {
+  const controller = new AbortController();
+  inflight.set(key, { controller, file, networkSlug, channelName });
+  setEntry(key, { filename: file.name, loaded: 0, total: file.size, phase: "uploading" });
+
+  const ttl =
+    pickHostTokenFromSeconds(embeddedHost, ttlSeconds ?? uploadTtlSeconds()) ??
+    embeddedHost.defaultTtl ??
+    undefined;
+
+  // The verb answers rather than throws, and this catch is the belt to that
+  // braces: whatever a future edit does, the card must not sit on "uploading"
+  // forever with no error and an unhandled rejection behind it.
+  let outcome: AttachmentOutcome;
+  try {
+    outcome = await sendEncryptedAttachment({
+      networkSlug,
+      peer,
+      file,
+      ttl,
+      maxDurationSeconds: videoMaxDurationSeconds(),
+      signal: controller.signal,
+      onPhase: (phase, loaded, total) => {
+        if (inflight.get(key)?.controller !== controller) return;
+        setEntry(key, { filename: file.name, loaded, total, phase });
+      },
+    });
+  } catch {
+    outcome = { ok: false, error: "The file could not be sent. Try again." };
+  }
+  if (inflight.get(key)?.controller !== controller) return;
+  inflight.delete(key);
+  if (controller.signal.aborted) {
+    setEntry(key, null);
+    return;
+  }
+  if (outcome.ok) {
+    setEntry(key, null);
+    pumpQueue(key);
+    return;
+  }
+  setEntry(key, {
+    filename: file.name,
+    loaded: 0,
+    total: 0,
+    phase: "uploading",
+    error: outcome.error,
+  });
 }
 
 // #201 — the ceiling is a server setting now; MAX_DURATION_SECONDS is
@@ -923,7 +908,11 @@ export function triggerUploads(
   // door every surface shares (picker, paste, drop, the OS share target),
   // before any notice or confirm, and said where the compose box says why.
   const [first] = rawFiles;
-  if (encryptedWindowPeer(channelName) !== null && first !== undefined) {
+  if (
+    encryptedWindowPeer(channelName) !== null &&
+    first !== undefined &&
+    (serverProtocol() ?? 0) < ENCRYPTED_UPLOAD_PROTOCOL
+  ) {
     setEntry(key, {
       filename: first.name,
       loaded: 0,
@@ -983,7 +972,11 @@ export function triggerUploads(
   // where the old placement in `startUpload` asked per FILE: an operator who
   // declines "don't show this again" is asked once for the drop, not once per
   // file in it, which matches the Send confirm's own granularity.
-  const host = activeHost();
+  // issue 2517 — the notice states WHERE the bytes go and for how long, so it
+  // names the host that will receive them: an encrypted window's file is
+  // sealed and sent to the embedded host, never to the admin's active one.
+  // Asking `activeHost()` here described a destination the file does not use.
+  const host = encryptedWindowPeer(channelName) !== null ? embeddedHost : activeHost();
   const acked = localStorage.getItem(privacyKey(host));
   if (acked === null || acked === "") {
     pendingTrigger = proceed;
@@ -1006,7 +999,9 @@ export function triggerUploads(
     // deliberately NOT written back to `upload_ttl_seconds` — a one-off stays
     // one-off, and a dialog the operator opened to look at their files is not
     // where a durable preference should be changed by accident.
-    const confirmHost = activeHost();
+    // Same rule as the notice above: the TTL this dialog seeds from is the
+    // one the file will be uploaded under, so it comes from the receiving host.
+    const confirmHost = encryptedWindowPeer(channelName) !== null ? embeddedHost : activeHost();
     const [batchTtlSeconds, setBatchTtlSeconds] = createSignal<number | null>(
       effectiveTtlSeconds(confirmHost),
     );

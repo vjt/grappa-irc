@@ -10,6 +10,7 @@
 // Keys and signatures are standard base64 WITHOUT padding, as vodozemac
 // prints them; only a device id is base64url.
 
+import type { FileInner } from "./fileInner";
 import type { Olm } from "./olm";
 
 /** The verbs cic sends through grappa's send door (it never sends KEYS: grappa answers KEYREQ). */
@@ -73,9 +74,10 @@ export type NackPayload = { ref: string };
 /**
  * The inner message of a copy (S1): the text `body` a device of the account
  * sent `peer`, encrypted to the account's other devices; a pre-key body adds
- * `fb`, as one to a peer does.
+ * `fb`, as one to a peer does. An attachment (issue 2517) rides `file`, and
+ * its `body` is then empty: the copy says what the peer got, not words.
  */
-export type CopyInner = { t: "copy"; peer: string; body: string };
+export type CopyInner = { t: "copy"; peer: string; body: string; file?: FileInner };
 
 /** A payload that does not decode, or lacks a field its verb needs. */
 export class PayloadError extends Error {}

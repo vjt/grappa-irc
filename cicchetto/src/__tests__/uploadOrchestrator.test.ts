@@ -20,6 +20,33 @@ vi.mock("../lib/userSettings", async () => {
   };
 });
 
+// issue 2517 — the encrypted door is a branch of the same pipeline, gated on
+// the server's protocol. Both are read at dispatch, so the tests below drive
+// them per case.
+const proto = vi.hoisted(() => ({ version: null as number | null }));
+vi.mock("../lib/serverProtocol", () => ({ serverProtocol: () => proto.version }));
+
+const att = vi.hoisted(() => ({
+  calls: [] as Array<{
+    networkSlug: string;
+    peer: string;
+    file: File;
+    ttl: string | undefined;
+    maxDurationSeconds: number;
+    signal: AbortSignal;
+    onPhase: (phase: "transcoding" | "uploading", loaded: number, total: number) => void;
+  }>,
+  outcome: { ok: true } as { ok: true } | { ok: false; error: string },
+}));
+vi.mock("../lib/encryptedAttachments", () => ({
+  sendEncryptedAttachment: vi.fn(
+    async (req: (typeof att.calls)[number]): Promise<typeof att.outcome> => {
+      att.calls.push(req);
+      return att.outcome;
+    },
+  ),
+}));
+
 vi.mock("../lib/uploadHost", async () => {
   const actual = await vi.importActual<typeof import("../lib/uploadHost")>("../lib/uploadHost");
   return {
@@ -95,6 +122,7 @@ import {
   confirmRequest,
   dismissConfirm,
 } from "../lib/confirmDialog";
+import { sendEncryptedAttachment } from "../lib/encryptedAttachments";
 import { sendMessage } from "../lib/scrollback";
 import { setServerSettings } from "../lib/serverSettings";
 import { activeHost, type UploadHost } from "../lib/uploadHost";
@@ -2202,5 +2230,102 @@ describe("uploads from an encrypted query (issue 2512)", () => {
       error: "an encrypted chat sends text only: the upload host would keep this file unencrypted",
     });
     expect(sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+// issue 2517 — on a server that has the encrypted upload door (§4k, v58) an
+// encrypted query takes it: the file is stripped, sealed and sent through the
+// encrypted query, and nothing of it touches the plain host. Below v58 the
+// 2512 refusal stands (the block above).
+describe("uploads from an encrypted query on a v58 server (issue 2517)", () => {
+  const e2e = channelKey(slug, "$e2e:Bob");
+
+  beforeEach(() => {
+    proto.version = 58;
+    att.calls.length = 0;
+    att.outcome = { ok: true };
+    // The notice an encrypted window shows names the host that RECEIVES the
+    // bytes — the embedded one — so the ack that lets the batch through is
+    // the embedded host's, not the mocked `activeHost()`'s.
+    localStorage.setItem("image-upload-privacy-acknowledged:embedded", "1");
+    vi.mocked(activeHost).mockReturnValue(categoryHost());
+  });
+
+  afterEach(() => {
+    proto.version = null;
+  });
+
+  it("takes the encrypted door, with the peer and the embedded host's TTL", async () => {
+    triggerUploads(e2e, slug, "$e2e:Bob", [sampleImage()]);
+
+    await vi.waitFor(() => expect(att.calls.length).toBe(1));
+    expect(att.calls[0]).toMatchObject({
+      networkSlug: slug,
+      peer: "Bob",
+      ttl: "86400",
+    });
+    // Nothing went through the plain host, and no URL was said in clear.
+    expect(pendingResolvers.length).toBe(0);
+    expect(sendMessage).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(uploadState(e2e)).toBeNull());
+  });
+
+  it("says why when the file cannot be sent, and posts nothing", async () => {
+    att.outcome = { ok: false, error: "File is too large (max 10 MB)." };
+
+    triggerUploads(e2e, slug, "$e2e:Bob", [sampleImage()]);
+
+    await vi.waitFor(() =>
+      expect(uploadState(e2e)).toMatchObject({ error: "File is too large (max 10 MB)." }),
+    );
+    expect(pendingResolvers.length).toBe(0);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  // N4 — the type gate asks the host that will RECEIVE the bytes. This active
+  // host refuses image/png; the embedded one accepts it, so the file goes.
+  // With the gate back on `activeHost()` this test goes red.
+  it("gates the type on the embedded host, not the admin's active one", async () => {
+    vi.mocked(activeHost).mockReturnValue(
+      makeTestHost({
+        acceptedMimeTypes: { image: ["image/gif"], video: [], document: [], audio: [] },
+      }),
+    );
+
+    triggerUploads(e2e, slug, "$e2e:Bob", [sampleImage()]);
+
+    await vi.waitFor(() => expect(att.calls.length).toBe(1));
+  });
+
+  // N4 — the Send confirm's TTL ladder belongs to the host that receives the
+  // batch too. This active host has no 86400 on its ladder, so seeding from it
+  // would show "1 hour"; the embedded host's default is what the file will be
+  // uploaded under.
+  it("seeds the Send confirm's TTL from the embedded host, not the active one", async () => {
+    vi.mocked(userSettings.getUploadConfirmEnabled).mockResolvedValue(true);
+    await loadUploadConfirmEnabled("tok");
+    vi.mocked(activeHost).mockReturnValue(
+      makeTestHost({
+        ttlOptions: [{ value: "1h", label: "1 hour", seconds: 3600 }],
+        defaultTtl: "1h",
+      }),
+    );
+
+    triggerUploads(e2e, slug, "$e2e:Bob", [sampleImage()]);
+
+    expect(confirmRequest()?.choice?.value()).toBe("86400");
+  });
+
+  // N3 — the verb answers rather than throws, and this catch is the belt to
+  // that braces: whatever a future edit does, the card must not sit on
+  // "uploading" forever with an unhandled rejection behind it.
+  it("answers a rejection from the encrypted door instead of leaving it uploading", async () => {
+    vi.mocked(sendEncryptedAttachment).mockRejectedValueOnce(new Error("boom"));
+
+    triggerUploads(e2e, slug, "$e2e:Bob", [sampleImage()]);
+
+    await vi.waitFor(() =>
+      expect(uploadState(e2e)).toMatchObject({ error: "The file could not be sent. Try again." }),
+    );
   });
 });

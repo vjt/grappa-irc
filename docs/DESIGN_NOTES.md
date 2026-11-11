@@ -6518,3 +6518,48 @@ keyboard comes up (it fires a resize). Unmeasured on a device.
   user study.
 - A real iPhone or Android device: the e2e projects are WebKit and Chromium
   with device descriptors, not the devices.
+<!-- entry #2517c -->
+
+---
+
+## 2026-11-11 — #2517c: the encrypted attachment's card, and who owns the plaintext
+
+Slice 3 wires #2517a's door and #2517b's strip into the compose box: a file
+dropped in an encrypted window is stripped, sealed on this device, uploaded as
+ciphertext, and sent as a `t: "file"` inner inside the Olm message. Four
+decisions this slice made, each of them a place where the obvious wiring is
+wrong:
+
+* **The gates ask the host that RECEIVES the bytes.** An encrypted window's
+  file always lands on the embedded host (`/api/uploads`), whatever upload host
+  the admin configured, because the ciphertext must be grappa's own: a
+  third-party host would hold it under a URL this client cannot vouch for. So
+  the type gate, the privacy notice and the TTL default read `embeddedHost`
+  when the window is encrypted, not `activeHost()`. Asking the active host
+  refused a type the receiving host accepts, and the notice named a destination
+  the file never goes to.
+* **A video there is always transcoded.** #2517b recorded this as owed by
+  slice 3: the processing-off switch (issue 2157) does not apply in an
+  encrypted window, because the "send the original" fallback has nobody to
+  strip it. The user is not asked and not told twice — the privacy notice's
+  host and TTL are the terms, and the transcode is not a choice here.
+* **The send answers; it never throws.** Only the upload and the final send
+  had catches, and the stages before them — the metadata strip, the transcode,
+  the seal, `arrayBuffer()` — could throw straight out of the verb, where the
+  orchestrator has nothing to catch with: measured, a plain `Error` out of
+  `stripImageMetadata` left the upload card on "uploading" at 0/4 bytes with no
+  error and an unhandled rejection behind it. A preparation that throws is a
+  refusal like any other now, and the orchestrator keeps a catch of its own so
+  a future edit cannot put the card back in that state.
+* **The CARD does not own the decrypted blob URL.** The media viewer and the
+  docked audio player outlive it: any change to the chat's rows rebuilds every
+  message object, the scrollback's `<For>` recreates every row, and the card
+  unmounts with the old one. The first cut revoked its own URL in `onCleanup`
+  and revoked the plaintext out from under an open viewer — measured: open an
+  image, receive ONE message, and the `blob:` URL is gone while
+  `mediaViewerState()` still points at it. Ownership lives in
+  `lib/decryptedBlobUrls`: a URL minted for a decrypted attachment is revoked
+  the moment neither surface names it any more (viewer closed or replaced,
+  player stopped or re-tuned), and on sign-out with everything else. The card
+  still takes its own FETCH down when it unmounts, and a URL minted after that
+  abort is revoked on the spot rather than left for nobody.

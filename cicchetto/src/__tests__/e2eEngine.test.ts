@@ -760,6 +760,21 @@ async function say(g: Grappa, side: Me, nick: string, body: string): Promise<voi
 
 const text = (body: string) => ({ t: "text", body });
 
+/** A well-formed `t: "file"` inner (issue 2517); `over` is what makes it refused. */
+const fileInner = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  t: "file",
+  url: `/uploads/${SLUG}`,
+  key: base64Unpadded(new Uint8Array(32)),
+  iv: base64Unpadded(new Uint8Array(12)),
+  sha256: base64Unpadded(new Uint8Array(32)),
+  name: "holiday.jpg",
+  mime: "image/jpeg",
+  size: 1234,
+  category: "image",
+  expires_at: "2099-01-01T00:00:00Z",
+  ...over,
+});
+
 /** `text(body)` as `side`'s engine writes it: with the version of its own list. */
 const ours = (side: Me, body: string) => ({ ...text(body), lv: side.own.list.ver });
 
@@ -3281,6 +3296,99 @@ describe("a PKMSG (W receiver checks, in order)", () => {
     expect(dropsOf(a)).toEqual(["inner-key-mismatch"]);
     expect(readBy(a)).toEqual([text("one")]);
     elsewhere.free();
+  });
+
+  it("drops a malformed file inner here, so no client has one to re-parse", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    listedPeer(a, "bob", bob, 1);
+    // issue 2517 — every field of a `t: "file"` is the peer's word. The engine
+    // checks them and refuses, saying which one: a client that re-parsed the
+    // same inner would be reading a `received` event this layer never sends.
+    const malformed = { ...fileInner(), key: "AAAA" };
+
+    takes(
+      a,
+      "bob",
+      "pkmsg",
+      didOf(device),
+      written(a, bob, device, malformed, "one-time"),
+      newMsgid(),
+    );
+
+    expect(eventsOf(a, "dropped")).toEqual([
+      { kind: "dropped", nick: "bob", reason: "file-malformed", detail: "bad-key" },
+    ]);
+    expect(readBy(a)).toEqual([]);
+  });
+
+  it("takes a well-formed file inner as a message, and drops the same one when a field goes", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    listedPeer(a, "bob", bob, 1);
+
+    takes(
+      a,
+      "bob",
+      "pkmsg",
+      didOf(device),
+      written(a, bob, device, fileInner(), "one-time"),
+      newMsgid(),
+    );
+    expect(dropsOf(a)).toEqual([]);
+    expect(readBy(a)).toEqual([fileInner()]);
+
+    takes(
+      a,
+      "bob",
+      "pkmsg",
+      didOf(device),
+      written(a, bob, device, { ...fileInner(), size: -1 }, "one-time"),
+      newMsgid(),
+    );
+    expect(eventsOf(a, "dropped")).toEqual([
+      { kind: "dropped", nick: "bob", reason: "file-malformed", detail: "bad-size" },
+    ]);
+    expect(readBy(a)).toEqual([fileInner()]);
+  });
+
+  it("hands on the file it checked, not the peer's object, so no extra key travels", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    listedPeer(a, "bob", bob, 1);
+    // issue 2517, delta5 — the inner is the peer's word, and a key it invents
+    // rides along it. `parseFileInner` keeps the fields it checked and hands
+    // that object on, as `file` and as the event's inner: nothing else survives.
+    const evil = { ...fileInner(), evil: "sender-key" };
+
+    takes(a, "bob", "pkmsg", didOf(device), written(a, bob, device, evil, "one-time"), newMsgid());
+
+    const [event] = eventsOf(a, "received");
+    expect(event?.file).toEqual(fileInner());
+    expect(event?.inner).toEqual(fileInner());
+    expect(Object.hasOwn(event?.inner ?? {}, "evil")).toBe(false);
+  });
+
+  // issue 2517, delta6 — the fix above made the CHECKED FileInner the message
+  // itself, and `lv` is not one of its ten fields: every file message then read
+  // as "no list version", and a peer holding a newer device list was never
+  // asked for it (W "After any decrypt"). A file asks like a text does.
+  it("a file message naming a newer list asks for it, like a text one", () => {
+    const a = me("alice");
+    const bob = peerWith(1);
+    const [device] = bob.devices as [Account];
+    talking(a, "bob", bob, device);
+    const says = (inner: Record<string, unknown>): Result =>
+      takes(a, "bob", "msg", didOf(device), msgFrom(a, device, JSON.stringify(inner)), newMsgid());
+
+    // The stored list is at version 1: `lv: 1` asks nothing, `lv: 2` does.
+    expect(says({ t: "text", body: "x", lv: 1 }).outbound).toEqual([]);
+    expect(says({ ...fileInner(), lv: 2 }).outbound.map((o) => [o.verb, o.tag])).toEqual([
+      ["msg", LIST_TAG],
+    ]);
   });
 
   it("lets a curve's real holder take it back from a device that only claimed it, and sends the holder what waited", () => {
@@ -6380,6 +6488,21 @@ describe("S1 sibling copies — receive", () => {
     expect(
       takesCopy(alice, a, b, asPkmsg(copyWritten(b.account, alice.master, a, copy))).events,
     ).toEqual([copiedFrom(b, "bob", "hello")]);
+  });
+
+  it("a copy that carries `file: null` is a text copy, not a dropped one", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    // #2517 — a sibling can write the key with nothing in it. `parseFileInner`
+    // used to raise a TypeError on it, which aborted the whole drain: every
+    // later message stopped arriving, and every retry hit the same row.
+    const inner = { t: "copy", peer: "bob", body: "hello", file: null };
+    expect(takesCopy(alice, a, b, asPkmsg(copyWritten(b.account, alice.master, a, inner)))).toEqual(
+      {
+        events: [copiedFrom(b, "bob", "hello")],
+        outbound: [],
+      },
+    );
   });
 
   it("a pre-key copy whose fb binds another pair of devices is dropped: no session, no sibling", () => {
