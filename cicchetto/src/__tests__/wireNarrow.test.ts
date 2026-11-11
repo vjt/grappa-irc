@@ -1252,6 +1252,25 @@ describe("narrowAdminEvent — bucket 4 mutation kinds", () => {
     expect(narrowAdminEvent(ev)).toEqual(ev);
   });
 
+  // #2606 — an admin wrote or wiped another user's upstream PASS. Neither
+  // touches a session; both must survive narrowing so the audit row renders.
+  for (const action of ["server_pass_set", "server_pass_cleared"]) {
+    it(`credential_updated — :${action} passes (#2606)`, () => {
+      const ev = {
+        kind: "credential_updated",
+        user_id: "u",
+        user_name: "n",
+        network_id: 7,
+        network_slug: "azzurra",
+        session_action: action,
+        actor_user_id: "a",
+        actor_user_name: "v",
+        at: "t",
+      };
+      expect(narrowAdminEvent(ev)).toEqual(ev);
+    });
+  }
+
   it("credential_unbound — valid passes", () => {
     const ev = {
       kind: "credential_unbound",

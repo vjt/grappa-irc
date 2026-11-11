@@ -597,7 +597,7 @@ describe("AdminUserPage — the server PASS slot (#2606)", () => {
     expect(hint).toContain("stored: set");
   });
 
-  it("sends a typed server password to its own endpoint, after the credential write", async () => {
+  it("sends a typed server password to its own endpoint", async () => {
     vi.mocked(adminListCredentials).mockResolvedValue([SERVER_PASS_CRED, FOREIGN_CRED]);
     mountPage();
     await pageReady();
@@ -620,6 +620,90 @@ describe("AdminUserPage — the server PASS slot (#2606)", () => {
     // PATCH is not sent just to carry it.
     expect(adminUpdateCredential).not.toHaveBeenCalled();
     expect(adminBindCredential).not.toHaveBeenCalled();
+  });
+
+  // The order is not cosmetic: the admin PATCH restarts a live session when
+  // `auth_method` changes (#2474) and the restart re-reads its plan in
+  // `init/1`. A PASS that lands after that PATCH is one registration too
+  // late. On a BOUND row the slot already exists, so the PUT goes first.
+  it("puts the PASS BEFORE the credential PATCH on a bound row", async () => {
+    vi.mocked(adminListCredentials).mockResolvedValue([SERVER_PASS_CRED, FOREIGN_CRED]);
+    vi.mocked(adminUpdateCredential).mockResolvedValue({
+      ...SERVER_PASS_CRED,
+      nick: "alice2",
+      session_action: "left_alone",
+      session_error: null,
+    });
+    mountPage();
+    await pageReady();
+
+    await screen.findByTestId(`admin-user-network-server-pass-${NETWORK.id}`);
+    fireEvent.input(screen.getByTestId(`admin-user-network-nick-${NETWORK.id}`), {
+      target: { value: "alice2" },
+    });
+    fireEvent.input(screen.getByTestId(`admin-user-network-server-pass-${NETWORK.id}`), {
+      target: { value: "gate-pass" },
+    });
+    fireEvent.click(screen.getByTestId(`admin-user-network-save-${NETWORK.id}`));
+
+    await waitFor(() => expect(adminUpdateCredential).toHaveBeenCalled());
+    expect(adminPutServerPass).toHaveBeenCalledWith(
+      "test-bearer",
+      USER.id,
+      NETWORK.id,
+      "gate-pass",
+    );
+    // The sentinels make a MISSING call fail the comparison instead of
+    // silently comparing `undefined`: -Infinity never sorts after anything,
+    // +Infinity never sorts before it.
+    const put = vi.mocked(adminPutServerPass).mock.invocationCallOrder[0] ?? -Infinity;
+    const patch = vi.mocked(adminUpdateCredential).mock.invocationCallOrder[0] ?? Infinity;
+    expect(put).toBeLessThan(patch);
+  });
+
+  // Only an UNBOUND row needs bind-then-PUT: before the bind there is no row
+  // for the PASS endpoint to write to.
+  it("binds first, then puts the PASS, on an unbound row", async () => {
+    vi.mocked(adminListCredentials).mockResolvedValue([FOREIGN_CRED]);
+    vi.mocked(adminBindCredential).mockResolvedValue({
+      ...SERVER_PASS_CRED,
+      session_action: "spawned",
+      session_error: null,
+    });
+    mountPage();
+    await pageReady();
+
+    fireEvent.click(checkbox(NETWORK.id));
+    fireEvent.input(screen.getByTestId(`admin-user-network-nick-${NETWORK.id}`), {
+      target: { value: "alice" },
+    });
+    fireEvent.change(screen.getByTestId(`admin-user-network-auth-method-${NETWORK.id}`), {
+      target: { value: "server_pass" },
+    });
+    await screen.findByTestId(`admin-user-network-server-pass-${NETWORK.id}`);
+    fireEvent.input(screen.getByTestId(`admin-user-network-server-pass-${NETWORK.id}`), {
+      target: { value: "gate-pass" },
+    });
+    fireEvent.click(screen.getByTestId(`admin-user-network-save-${NETWORK.id}`));
+
+    await waitFor(() => expect(adminPutServerPass).toHaveBeenCalled());
+    // Same sentinels as the bound-row test above: a missing call must fail,
+    // not compare `undefined`.
+    const bind = vi.mocked(adminBindCredential).mock.invocationCallOrder[0] ?? -Infinity;
+    const put = vi.mocked(adminPutServerPass).mock.invocationCallOrder[0] ?? Infinity;
+    expect(bind).toBeLessThan(put);
+  });
+
+  // #1993 / #2606 — the OTHER box keeps its relabel on every method: the
+  // admin console once offered a single "password" box, and a mutant that
+  // puts that label back must die here.
+  it("labels the NickServ box 'nickserv password', never the bare 'password'", async () => {
+    mountPage();
+    await pageReady();
+
+    const pw = screen.getByTestId(`admin-user-network-password-${NETWORK.id}`);
+    expect(screen.getByLabelText("nickserv password")).toBe(pw);
+    expect(screen.queryByLabelText("password")).toBeNull();
   });
 
   it("clears the slot through the same endpoint, with the empty string", async () => {

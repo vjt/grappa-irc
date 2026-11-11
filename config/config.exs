@@ -387,7 +387,21 @@ config :phoenix, :json_library, Jason
 # the entire identity in this design; anything that lands in stdout
 # persists across container restarts and ships out with any log
 # forwarder. Per CLAUDE.md Security: "credentials … never logged."
-config :phoenix, :filter_parameters, ["password", "token"]
+#
+# #2606 — the match is a SUBSTRING on the key, so `"password"` never covered
+# the three keys that carry an upstream secret under another name:
+# `server_pass` (the dedicated PASS slot, #1044), `oper_pass` (the perform
+# surface) and `nickserv_pass`. They are listed by their exact names rather
+# than by a bare `"pass"`, which would also swallow `passkey_required` and
+# friends — redaction is cheap, but a filter that hides the shape of a
+# request it is not protecting is a debugging tax with no security return.
+config :phoenix, :filter_parameters, [
+  "password",
+  "token",
+  "server_pass",
+  "oper_pass",
+  "nickserv_pass"
+]
 
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",

@@ -1170,6 +1170,78 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
                      500
     end
 
+    # #2606 — the audit trail the PASS verb owed: an admin writing or wiping
+    # another user's upstream PASS is a credential mutation like the others,
+    # and until this it was the only one that left no event. The VALUE never
+    # rides the event — the action says which way the slot moved.
+    test "PUT server_pass emits :credential_updated with :server_pass_set", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      session = admin_session()
+      {user, network, _} = bound_credential()
+      user_id = user.id
+      net_id = network.id
+
+      _ = put_server_pass(conn, session, user.id, network.id, %{server_pass: "gate-pass"})
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload:
+                         %{
+                           kind: :credential_updated,
+                           user_id: ^user_id,
+                           network_id: ^net_id,
+                           session_action: :server_pass_set,
+                           actor_user_id: actor_id,
+                           actor_user_name: actor_name
+                         } = payload
+                     },
+                     500
+
+      assert is_binary(actor_id)
+      assert is_binary(actor_name)
+      # The secret is not in the event, in any key.
+      refute inspect(payload) =~ "gate-pass"
+    end
+
+    test "PUT server_pass \"\" emits :credential_updated with :server_pass_cleared", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      session = admin_session()
+      {user, network, cred} = bound_credential()
+      {:ok, _} = Credentials.update_server_pass(cred, %{"server_pass" => "gate-pass"})
+      user_id = user.id
+      net_id = network.id
+
+      _ = put_server_pass(conn, session, user.id, network.id, %{server_pass: ""})
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       event: "event",
+                       payload: %{
+                         kind: :credential_updated,
+                         user_id: ^user_id,
+                         network_id: ^net_id,
+                         session_action: :server_pass_cleared
+                       }
+                     },
+                     500
+    end
+
+    # Leave-blank-to-keep changes nothing, so it must not claim a change.
+    test "PUT server_pass with an empty body emits nothing", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
+
+      session = admin_session()
+      {user, network, cred} = bound_credential()
+      {:ok, _} = Credentials.update_server_pass(cred, %{"server_pass" => "gate-pass"})
+
+      _ = put_server_pass(conn, session, user.id, network.id, %{})
+
+      refute_receive %Phoenix.Socket.Broadcast{topic: "grappa:admin:events"}, 200
+    end
+
     test "DELETE emits :credential_unbound with actor", %{conn: conn} do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
 

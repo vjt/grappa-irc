@@ -12,5 +12,5 @@
 # This line states the COVERAGE on purpose: widening or narrowing what
 # the digest spans is not a wire-shape change, the gate cannot tell one
 # from the other, and reading the pin is the only place a review sees it.
-protocol_version = 63
-shape_digest = sha256:5274daa576b33ce3f0dfda14e29a607cf42ef741ca9e404667af01d76323118d
+protocol_version = 65
+shape_digest = sha256:1f5ffa627e2fc363e654b6d8d2426d2f6c0809cced4a169dcdf7e967de1e2140

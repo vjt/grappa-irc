@@ -55,7 +55,7 @@ defmodule GrappaWeb.Admin.CredentialsController do
 
   alias Grappa.{Accounts, AdminEvents, LiveIntrospection, Networks, Operator}
   alias Grappa.AdminEvents.Wire, as: AdminEventsWire
-  alias Grappa.Networks.{Credential, Credentials}
+  alias Grappa.Networks.{Credential, Credentials, Wire}
   alias Grappa.Networks.Credentials.AdminWire
   alias GrappaWeb.Admin.{AuthPlug, SubjectLabels}
   alias GrappaWeb.Validation
@@ -241,7 +241,7 @@ defmodule GrappaWeb.Admin.CredentialsController do
   def server_pass(conn, %{"user_id" => raw_user_id, "network_id" => raw_network_id}) do
     with {:ok, user_id} <- parse_uuid(raw_user_id),
          {:ok, network_id} <- parse_int(raw_network_id),
-         {:ok, credential} <- fetch_credential_by_ids(user_id, network_id) do
+         {:ok, credential} <- Credentials.get_credential_by_ids(user_id, network_id) do
       json(conn, server_pass_wire(credential))
     end
   end
@@ -261,25 +261,43 @@ defmodule GrappaWeb.Admin.CredentialsController do
   Returns `200` with `{server_pass_set}`; `422 validation_failed` on a value
   that is not a single wire token (spaces / CR / LF / NUL); `404 not_found`
   on an unknown binding; `400 bad_request` on malformed URL params.
+
+  An actual write emits `:credential_updated` with `session_action:
+  :server_pass_set | :server_pass_cleared` — the value never rides the event.
+  A body that omits the key keeps the stored one and emits nothing, because
+  nothing changed.
   """
   @spec update_server_pass(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :not_found | :bad_request | Ecto.Changeset.t()}
   def update_server_pass(conn, %{"user_id" => raw_user_id, "network_id" => raw_network_id} = params) do
     with {:ok, user_id} <- parse_uuid(raw_user_id),
          {:ok, network_id} <- parse_int(raw_network_id),
-         {:ok, credential} <- fetch_credential_by_ids(user_id, network_id),
+         {:ok, user} <- fetch_user(user_id),
+         {:ok, network} <- fetch_network(network_id),
+         {:ok, credential} <- Credentials.get_credential_by_ids(user_id, network_id),
          {:ok, updated} <-
            Credentials.update_server_pass(credential, Map.take(params, ["server_pass"])) do
+      :ok = emit_server_pass_updated(user, network, params, conn)
       json(conn, server_pass_wire(updated))
     end
   end
 
-  # #2606 — set-ness only. The secret is NEVER serialised, the same shape the
-  # user-facing `NetworksController.server_pass_wire/1` renders.
-  @spec server_pass_wire(Credential.t()) :: %{server_pass_set: boolean()}
-  defp server_pass_wire(%Credential{} = credential) do
-    %{server_pass_set: Credential.upstream_server_pass(credential) != nil}
+  # #2606 — the audit trail this verb owed: `update/2` emits on every edit and
+  # `create`/`delete` emit too, so an admin writing or wiping another user's
+  # upstream PASS was the one mutation that left no trace. The action says
+  # set/cleared; the secret itself never reaches the event.
+  defp emit_server_pass_updated(user, network, params, conn) do
+    case Map.fetch(params, "server_pass") do
+      {:ok, ""} -> emit_credential_updated(user, network, :server_pass_cleared, conn)
+      {:ok, _} -> emit_credential_updated(user, network, :server_pass_set, conn)
+      :error -> :ok
+    end
   end
+
+  # #2606 — set-ness only. The secret is NEVER serialised. ONE owner for the
+  # shape: the user-facing door renders the same map through the same
+  # function, so a future change to the answer cannot drift between them.
+  defp server_pass_wire(%Credential{} = credential), do: Wire.server_pass_json(credential)
 
   defp emit_credential_bound(user, network, cred, conn) do
     {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
@@ -334,15 +352,6 @@ defmodule GrappaWeb.Admin.CredentialsController do
       nil -> {:error, :not_found}
     end
   end
-
-  # #2606 — the binding, straight from the (user_id, network_id) pair, for the
-  # verbs that need the credential but not the structs around it. The public
-  # sibling is `Credentials.get_credential_by_ids/2`; this only narrows the
-  # spec for the controller's `with` chain.
-  @spec fetch_credential_by_ids(String.t(), integer()) ::
-          {:ok, Credential.t()} | {:error, :not_found}
-  defp fetch_credential_by_ids(user_id, network_id),
-    do: Credentials.get_credential_by_ids(user_id, network_id)
 
   defp fetch_network(id) do
     case Networks.get_network(id) do

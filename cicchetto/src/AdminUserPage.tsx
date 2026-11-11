@@ -280,8 +280,12 @@ const AdminUserPage: Component<Props> = (props) => {
           states[c.network_id] = (
             await adminGetServerPass(t, props.user.id, c.network_id)
           ).server_pass_set;
-        } catch {
-          // left unread on purpose
+        } catch (e) {
+          // The entry stays absent and the status line says nothing — that is
+          // the honest UI for "we could not read it". But silence alone hides
+          // a systematic failure (say a 403 after an `is_admin` flip) behind a
+          // hint that simply never appears, so the reason goes to the console.
+          console.warn(`admin: server PASS set-ness unreadable for network ${c.network_id}`, e);
         }
       }),
     );
@@ -349,6 +353,19 @@ const AdminUserPage: Component<Props> = (props) => {
       // is no credential edit to send, and an empty PATCH would ask the
       // server to decide whether to stop a session over nothing.
       const patch = existing === undefined ? null : patchOf(existing, f);
+      // #2606 — ORDER MATTERS on a BOUND row. The admin PATCH restarts a live
+      // session when `auth_method` changes (#2474): the restart re-reads its
+      // plan from the DB in `init/1`, so a PASS that lands AFTER the PATCH is
+      // one registration too late and the server refuses it (plus a Backoff
+      // bump) before the next restart picks the secret up. The slot already
+      // exists on a bound row, so the PUT can and must go first. Only an
+      // UNBOUND row needs bind-then-PUT, because there is no row to write to
+      // before the bind.
+      const passFirst = existing !== undefined && f.server_pass !== "";
+      if (passFirst) {
+        const state = await adminPutServerPass(t, props.user.id, id, f.server_pass);
+        setServerPassSet({ ...serverPassSet(), [id]: state.server_pass_set });
+      }
       const saved =
         existing === undefined
           ? await adminBindCredential(t, {
@@ -364,10 +381,9 @@ const AdminUserPage: Component<Props> = (props) => {
             ? await adminUpdateCredential(t, props.user.id, id, patch)
             : existing;
       recordOutcome(id, saved);
-      // #2606 — the server PASS rides its own endpoint, AFTER the credential
-      // write: on an unbound network the slot only exists once the bind has
-      // landed. Blank leaves the stored one alone, like the password field.
-      if (f.server_pass !== "") {
+      // #2606 — on an unbound row the bind above created the slot, so the PUT
+      // follows it. Blank leaves the stored one alone, like the password field.
+      if (!passFirst && f.server_pass !== "") {
         const state = await adminPutServerPass(t, props.user.id, id, f.server_pass);
         setServerPassSet({ ...serverPassSet(), [id]: state.server_pass_set });
       }

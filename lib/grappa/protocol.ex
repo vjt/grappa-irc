@@ -1639,7 +1639,32 @@ defmodule Grappa.Protocol do
   # @min_protocol_version stays at 1: an older client ignores an unknown
   # `channel` field and shows the message as a DM from its sender —
   # degraded, not broken.
-  @protocol_version 63
+  #
+  # ---------------------------------------------------------------------------
+  # 65 — issue 2606: an admin's write to another user's server PASS is logged
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `server_pass_set` and `server_pass_cleared` to `credential_updated`'s
+  # `session_action` on the admin events topic, emitted by the dedicated
+  # `PUT /admin/credentials/:user_id/:network_id/server_pass` (#2606). Neither
+  # touches a session — the secret is spent at registration — but an admin
+  # overwriting or wiping another user's upstream PASS used to leave no event
+  # at all, while every other admin credential mutation did. The VALUE never
+  # rides the event; the action alone says which way the slot moved.
+  #
+  # Bumped on the #1393d rule: an admin console that renders the new actions
+  # cannot get them from a server predating the verb.
+  #
+  # Checked for a collision before claiming 65: origin/main carries 63, and
+  # the two open PRs for issue 2428 (#2627 `feat/2428-clear-window`, #2644
+  # `issue-2428-clear-modal`) both already claim 64. Whoever merges first
+  # keeps it; this branch takes the next free number rather than shipping a
+  # second 64 that only a merge-order accident would resolve.
+  #
+  # @min_protocol_version stays at 1: an older admin console drops an event
+  # whose `session_action` it does not know (the tolerance #51 documents), and
+  # nothing a non-admin client sees changed.
+  @protocol_version 65
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1680,7 +1705,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 63
+  @spec version() :: 65
   def version, do: @protocol_version
 
   @doc """
