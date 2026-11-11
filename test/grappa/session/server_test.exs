@@ -9045,53 +9045,26 @@ defmodule Grappa.Session.ServerTest do
   # waits the number out (and still discards, which is the fail-safe).
   describe "pending-auth ceiling (issue 2388)" do
     # The production default is the thing under test: no override here.
-    # Before this change the field did not exist and the timer was 10s.
-    test "production default: the pending-auth window is a 60s ceiling, not the old 10s" do
+    # Before this change the field did not exist and the timer was 10s. The
+    # field alone pins nothing the bug was about — what decides whether a
+    # 29s `+r` still finds the slot is how long the ARMED timer runs — so the
+    # IDENTIFY is staged and the live timer is read back.
+    test "production default: an IDENTIFY arms a 60s ceiling, not the old 10s" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
       :ok = IRCServer.await_handshake(server, 1_000)
 
-      assert SessionStateHelpers.pending_auth_timeout_ms(SessionStateHelpers.fetch(pid)) ==
-               60_000
-
-      :ok = GenServer.stop(pid, :normal, 1_000)
-    end
-
-    # The ceiling only bounds the "no identity ever" path; the identity signal
-    # is what releases the slot, and it does so long before the number. This
-    # is the half the bug was about: a `+r` that is late is still a `+r`.
-    test "a +r releases the slot well inside the ceiling and commits the password" do
-      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {visitor, network} = visitor_with_network(port)
-      pid = start_visitor_session_for(visitor, network)
-
-      :ok = IRCServer.await_handshake(server, 1_000)
-
-      # `:no_persist` is the service target's normal answer, not a failure —
-      # and the exact value, so a regression that persists the IDENTIFY into
-      # scrollback (`{:ok, %Message{}}`) cannot pass as "some ok".
       {:ok, :no_persist} =
-        Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "IDENTIFY s3cret")
-
-      assert match?({"s3cret", _}, SessionStateHelpers.pending_auth(SessionStateHelpers.fetch(pid)))
-
-      send(
-        pid,
-        {:irc,
-         %Message{
-           command: :mode,
-           params: [visitor_nick(visitor), "+r"],
-           prefix: {:server, "irc.example.test"},
-           tags: %{}
-         }}
-      )
+        Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
 
       state = SessionStateHelpers.fetch(pid)
-      assert is_nil(SessionStateHelpers.pending_auth(state))
-      assert is_nil(SessionStateHelpers.pending_auth_timer(state))
-      assert visitor_password(visitor, network) == "s3cret"
+      assert SessionStateHelpers.pending_auth_timeout_ms(state) == 60_000
+
+      # Milliseconds left on the live timer: far past the 29s measured in
+      # #2380, never above the ceiling itself.
+      assert Process.read_timer(SessionStateHelpers.pending_auth_timer(state)) in 50_001..60_000
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

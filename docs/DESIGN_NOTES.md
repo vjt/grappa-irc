@@ -6558,7 +6558,10 @@ the bounded side to err on is to wait: a `+r` that arrives at 30s is still a
 
 **Test seam.** `:pending_auth_timeout_ms`, copied into state at `init` exactly
 like `:autojoin_defer_ms`, so the production number is pinned by a test that
-does not override it while the discard path is exercised with a 300ms seam.
+does not override it while the discard path is exercised with a 300ms seam. That
+test reads the ARMED timer back (`Process.read_timer/1` after a staged IDENTIFY),
+not only the copied field: a field that says 60s beside a timer armed at 10s is
+exactly the defect, and it left every test green until the timer was read.
 `Session.Server`'s state block changes (one key in the `t` type and in the
 `init` literal), so `Grappa.Deploy.Preflight` classifies this **COLD**; the
 `Map.get` at every read site (#229) is what keeps a hot-reloaded process from
