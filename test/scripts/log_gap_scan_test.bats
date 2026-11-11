@@ -11,9 +11,13 @@
 # changing a line of the script that implements it.
 #
 # So every clause of the definition is pinned here: the threshold
-# boundary, the arithmetic, the rollover, and one assertion per damage
-# signature. The scanner is fed on stdin, which is how integration.sh
-# uses it — no fixture files, no stack, no lane.
+# boundary from both sides, the arithmetic, the delta read from the
+# stamp's date as well as its time (across midnight, a year end, a leap
+# day, and a silence of more than half a day), out-of-order lines worth
+# no silence and measured from the high-water stamp, one assertion per
+# damage signature, and the refusal to default a missing threshold. The
+# scanner is fed on stdin, which is how integration.sh uses it — no
+# fixture files, no stack, no lane.
 
 load ../bats_helpers
 
