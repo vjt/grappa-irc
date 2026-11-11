@@ -103,6 +103,72 @@ describe("linkify", () => {
         },
       ]);
     });
+
+    // #2440 — a relayed line that quotes a link inside parentheses ends the
+    // token with the quote, which used to hide the unbalanced `)` behind it.
+    it("strips a closing quote and the unbalanced ) it was hiding", () => {
+      const segments = linkify('"Vulnerability (https://m.xkcd.com/3314/)"');
+      expect(segments).toEqual([
+        { type: "text", value: '"Vulnerability (' },
+        {
+          type: "url",
+          value: "https://m.xkcd.com/3314/",
+          href: "https://m.xkcd.com/3314/",
+        },
+        { type: "text", value: ')"' },
+      ]);
+    });
+
+    it("strips a trailing typographic quote", () => {
+      const segments = linkify("see https://example.com/x”");
+      expect(segments).toEqual([
+        { type: "text", value: "see " },
+        { type: "url", value: "https://example.com/x", href: "https://example.com/x" },
+        { type: "text", value: "”" },
+      ]);
+    });
+
+    // The other three members of the class #2440 added. Each one died to no
+    // test before (MEASURED in review: removing `'`, `’` or `»` left the
+    // suite green), so each gets its own case.
+    it("strips a trailing straight single quote", () => {
+      const segments = linkify("see 'https://example.com/x'");
+      expect(segments).toEqual([
+        { type: "text", value: "see '" },
+        { type: "url", value: "https://example.com/x", href: "https://example.com/x" },
+        { type: "text", value: "'" },
+      ]);
+    });
+
+    it("strips a trailing typographic single quote", () => {
+      const segments = linkify("see https://example.com/x’");
+      expect(segments).toEqual([
+        { type: "text", value: "see " },
+        { type: "url", value: "https://example.com/x", href: "https://example.com/x" },
+        { type: "text", value: "’" },
+      ]);
+    });
+
+    it("strips a trailing guillemet", () => {
+      const segments = linkify("see «https://example.com/x»");
+      expect(segments).toEqual([
+        { type: "text", value: "see «" },
+        { type: "url", value: "https://example.com/x", href: "https://example.com/x" },
+        { type: "text", value: "»" },
+      ]);
+    });
+
+    // The class is shared with the CHANNEL arm, so a quote after a channel
+    // name now ends the token — the click-to-join must offer `#sniffo`, not
+    // `#sniffo"` (#730 sends a real JOIN on that name).
+    it("strips a trailing quote from a channel token too", () => {
+      const segments = linkify('see #sniffo"');
+      expect(segments).toEqual([
+        { type: "text", value: "see " },
+        { type: "channel", value: "#sniffo" },
+        { type: "text", value: '"' },
+      ]);
+    });
   });
 
   describe("bare-domain (scheme-less, host.tld/path) matches — GH #212", () => {

@@ -384,6 +384,9 @@ describe("ComposeBox", () => {
       expect(click.defaultPrevented).toBe(false);
       // The form's own onSubmit carries the send for this path; the button
       // must simply keep out of the way of its default activation behaviour.
+      // Pinned, not assumed: the click's default action really does reach the
+      // form, so the send happens (the pointer press above was the first).
+      expect(compose_.submit).toHaveBeenCalledTimes(2);
     });
 
     it("does not send when the finger slides off the button before release", () => {

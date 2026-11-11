@@ -622,15 +622,28 @@ const exports = identityScopedStore((onIdentityChange) => {
     equals: false,
   });
 
+  // issue 2625 — the row the WS just delivered, as an EVENT: what arrived
+  // LIVE, as opposed to what a page brought. `appendToScrollback` is the one
+  // verb that writes it; the pages (first load, reconnect refresh, load more
+  // or newer, jump) never do, so a reader can tell a row the server stored
+  // after it started listening from backlog that was already there. The
+  // `$server` peek opens on this, never on a page. Each write is a fresh
+  // object, so a reader can also tell "nothing arrived since I looked" by
+  // identity, without a counter.
+  const [lastLiveArrival, setLastLiveArrival] = createSignal<{
+    key: ChannelKey;
+    id: number;
+  } | null>(null);
+
   // Identity-transition cleanup, and the SSOT for what an identity transition
-  // clears. Thirteen registered resets fired by the factory's
+  // clears. Fourteen registered resets fired by the factory's
   // createEffect(on(token, ...)) — eight Set.clear() (loadedChannels +
   // loadMore{InFlight,Exhausted} + loadNewer{InFlight,Exhausted}, #161 +
-  // refreshInFlight + refreshQueued, #1593 + jumpInFlight, #788) + five
+  // refreshInFlight + refreshQueued, #1593 + jumpInFlight, #788) + six
   // signal flushes
   // (scrollbackByChannel + lastOwnSend + ownSendSubmitted, #580 +
-  // farBehindByChannel, #693 + measuredUnreadByChannel, #947). Order matches
-  // the pre-A3 inline shape.
+  // farBehindByChannel, #693 + measuredUnreadByChannel, #947 +
+  // lastLiveArrival, issue 2625). Order matches the pre-A3 inline shape.
   //
   // #788 — the last two are registered here, away from their declarations
   // beside the verbs that own them, precisely BECAUSE that distance is how
@@ -661,6 +674,7 @@ const exports = identityScopedStore((onIdentityChange) => {
   onIdentityChange(() => setOwnSendSubmitted(null));
   onIdentityChange(() => setFarBehindByChannel({}));
   onIdentityChange(() => setMeasuredUnreadByChannel({}));
+  onIdentityChange(() => setLastLiveArrival(null));
 
   // Insert an incoming message into the per-channel ascending list at its
   // (server_time, id) position, deduping by id. REST + WS can overlap: the
@@ -874,6 +888,7 @@ const exports = identityScopedStore((onIdentityChange) => {
 
   const appendToScrollback = (key: ChannelKey, msg: ScrollbackMessage) => {
     appendPageToScrollback(key, [msg]);
+    setLastLiveArrival({ key, id: msg.id });
   };
 
   // Merge a freshly-fetched REST page into the per-channel list. Server
@@ -1990,6 +2005,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     refreshScrollback,
     sendMessage,
     lastOwnSend,
+    lastLiveArrival,
     ownSendSubmitted,
     wasLoaded,
   };
@@ -2010,5 +2026,6 @@ export const purgeScrollback = exports.purgeScrollback;
 export const refreshScrollback = exports.refreshScrollback;
 export const sendMessage = exports.sendMessage;
 export const lastOwnSend = exports.lastOwnSend;
+export const lastLiveArrival = exports.lastLiveArrival;
 export const ownSendSubmitted = exports.ownSendSubmitted;
 export const wasLoaded = exports.wasLoaded;

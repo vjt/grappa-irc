@@ -118,6 +118,7 @@ import {
 } from "./lib/push";
 import { reconnectConnectedNetworks } from "./lib/reconnect";
 import { selectedChannel } from "./lib/selection";
+import { getServerPeekEnabled, setServerPeekEnabled } from "./lib/serverPeek";
 import { serverSettings } from "./lib/serverSettings";
 import { consumePendingSettingsPage, type SettingsSubPage } from "./lib/settingsNav";
 import { isShareableSubject, openShareModal, SHARE_SESSION_LABEL } from "./lib/shareModal";
@@ -394,6 +395,12 @@ const SettingsDrawer: Component<Props> = (props) => {
   };
   const onCommandMenuEntriesChange = (e: Event) => {
     setCommandMenuEntries(Number((e.currentTarget as HTMLSelectElement).value));
+  };
+
+  // issue 2625 — the `$server` peek's opt-out, per device like the two above,
+  // and like them the module signal IS the state.
+  const onServerPeekChange = (e: Event) => {
+    setServerPeekEnabled((e.currentTarget as HTMLInputElement).checked);
   };
 
   // #1766 — like the #914 row, no drawer-local mirror: `getShowBottomBar()` IS
@@ -2888,13 +2895,30 @@ const SettingsDrawer: Component<Props> = (props) => {
                   </select>
                 </label>
 
+                {/* issue 2625 — the `$server` peek: on a phone, a card with the
+                  `$server` lines a command was answered with, over the window
+                  it was typed in. ON by default — an opt-OUT, as asked ("non è
+                  utile a tutti") — and PER-DEVICE for the command menu's
+                  reason: whether a card fits over the window is a question
+                  about the screen. */}
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={getServerPeekEnabled()}
+                    onChange={onServerPeekChange}
+                    data-testid="server-peek-toggle"
+                  />
+                  show $server replies to a command over the window, on a phone
+                </label>
+
                 {/* The one thing the merge HIDES, said out loud rather than
                   inherited: these rows do not persist alike. Most are #449
                   server-backed and converge across every device on the
-                  account; the jump button and the command menu are per-DEVICE
-                  localStorage, and deliberately so — #914's complaint was
-                  about a viewport, not an account, and so is how many commands
-                  fit above the compose box (issue 2584). Under one legend, identical-looking rows would
+                  account; the jump button, the command menu and the $server
+                  peek are per-DEVICE localStorage, and deliberately so —
+                  #914's complaint was about a viewport, not an account, and so
+                  is how many commands fit above the compose box (issue 2584)
+                  and whether a card fits over the window (issue 2625). Under one legend, identical-looking rows would
                   otherwise behave differently on a second device with nothing
                   on screen to say why. Phrased by BEHAVIOUR rather than by
                   position ("the first two" until #2029 added a third synced
@@ -2902,8 +2926,8 @@ const SettingsDrawer: Component<Props> = (props) => {
                   time one arrives, silently, because nothing type-checks a
                   sentence. */}
                 <p class="settings-section-blurb" data-testid="display-checkboxes-hint">
-                  The jump button and the command menu are remembered on this device alone — the
-                  rest follow your account onto every device you use.
+                  The jump button, the command menu and the $server replies card are remembered on
+                  this device alone — the rest follow your account onto every device you use.
                 </p>
               </fieldset>
             </section>

@@ -248,8 +248,11 @@ describe("ServiceModal (#290)", () => {
       expect(document.activeElement).toBe(input);
     });
 
-    it("Shift+Tab from the close button (the first stop) wraps to the prompt", async () => {
-      const { input, close } = await open("svc-trap-back");
+    // issue 2429 added the send button AFTER the prompt, so the last stop is
+    // no longer the prompt: the wrap goes to the button. The prompt stays one
+    // native Tab away from it, which the case below pins.
+    it("Shift+Tab from the close button (the first stop) wraps to the send button (the last stop)", async () => {
+      const { close } = await open("svc-trap-back");
       close.focus();
       const ev = new KeyboardEvent("keydown", {
         key: "Tab",
@@ -259,7 +262,23 @@ describe("ServiceModal (#290)", () => {
       });
       close.dispatchEvent(ev);
       expect(ev.defaultPrevented).toBe(true);
-      expect(document.activeElement).toBe(input);
+      expect(document.activeElement).toBe(screen.getByLabelText("send command"));
+    });
+
+    it("Shift+Tab from the send button (the last stop) is left to the browser", async () => {
+      await open("svc-trap-last");
+      const sendButton = screen.getByLabelText("send command");
+      sendButton.focus();
+      const ev = new KeyboardEvent("keydown", {
+        key: "Tab",
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      sendButton.dispatchEvent(ev);
+      // An inner stop's Tab is the browser's; jsdom does not move focus, so
+      // the assertable half is that the trap did NOT claim the key.
+      expect(ev.defaultPrevented).toBe(false);
     });
 
     it("Tab between two inner stops is left to the browser", async () => {
@@ -268,6 +287,19 @@ describe("ServiceModal (#290)", () => {
       const ev = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
       close.dispatchEvent(ev);
       expect(ev.defaultPrevented).toBe(false);
+    });
+
+    // The forward edge of the trap. Before issue 2429 the last stop was the
+    // prompt, which consumes Tab for completion, so this wrap was unreachable
+    // and therefore never proven; the send button makes it reachable.
+    it("Tab from the send button (the last stop) wraps to the close button", async () => {
+      const { close } = await open("svc-trap-fwd-edge");
+      const sendButton = screen.getByLabelText("send command");
+      sendButton.focus();
+      const ev = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+      sendButton.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(close);
     });
   });
 
@@ -334,6 +366,38 @@ describe("ServiceModal (#290)", () => {
         }),
       );
       expect(pipeline.sendBodyLines).not.toHaveBeenCalled();
+    });
+
+    // issue 2041 — the guard sits ABOVE the whole chord table, so the arrows
+    // and Tab are IME-safe too, not just Enter. An IME walks its candidate
+    // list with the arrows and commits with Tab; acting on either — or
+    // preventDefault-ing it — eats the keystroke the IME is waiting for.
+    it("an ArrowUp that walks an IME candidate list does not recall", async () => {
+      const el = await open("svc-ta-ime-arrow");
+      fireEvent.input(el, { target: { value: "にほん" } });
+      const ev = new KeyboardEvent("keydown", {
+        key: "ArrowUp",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      el.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(false);
+      expect(el.value).toBe("にほん");
+    });
+
+    it("a Tab that commits an IME composition is left to the IME", async () => {
+      const el = await open("svc-ta-ime-tab");
+      fireEvent.input(el, { target: { value: "にほん" } });
+      const ev = new KeyboardEvent("keydown", {
+        key: "Tab",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      el.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(false);
+      expect(el.value).toBe("にほん");
     });
 
     it("a pasted line break becomes a space, so one Enter sends one line", async () => {
@@ -421,6 +485,303 @@ describe("ServiceModal (#290)", () => {
       tab(el, false);
       await waitFor(() => expect(el.value).toBe("INFO vjt "));
       expect(compose.getDraft(channelKey(SLUG, CHAN))).toBe("");
+    });
+  });
+
+  // issue 2429 — the prompt grows the composer's three affordances the modal
+  // lacked: a visible send button, ArrowUp/ArrowDown history recall, and the
+  // swipe equivalents. The history is the SERVICE QUERY WINDOW's compose
+  // history (shared, not duplicated): a line typed to NickServ is the same
+  // line whether it left this console or that window.
+  describe("send button and history recall (issue 2429)", () => {
+    const open = async (
+      slug: string,
+    ): Promise<{ input: HTMLTextAreaElement; button: HTMLElement }> => {
+      render(() => <ServiceModal />);
+      openServiceModal(slug, "NickServ");
+      const input = (await screen.findByTestId("service-modal-input")) as HTMLTextAreaElement;
+      await waitFor(() => expect(document.activeElement).toBe(input));
+      return { input, button: screen.getByLabelText("send command") };
+    };
+
+    // #925's activation rides the pointer: a click alone is what iOS withholds.
+    const pressButton = (button: HTMLElement): void => {
+      fireEvent.pointerDown(button, { pointerId: 1 });
+      fireEvent.pointerUp(button, { pointerId: 1 });
+    };
+
+    const type = (el: HTMLTextAreaElement, value: string): void => {
+      fireEvent.input(el, { target: { value } });
+    };
+
+    it("sends the typed line on a button press and clears on success", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const { input, button } = await open("svc-2429-button");
+
+      type(input, "HELP");
+      pressButton(button);
+
+      expect(pipeline.sendBodyLines).toHaveBeenCalledWith(
+        "svc-2429-button",
+        "NickServ",
+        "HELP",
+        false,
+      );
+      await waitFor(() => expect(input.value).toBe(""));
+    });
+
+    it("greys the button (aria-disabled, never disabled) on an empty draft and refuses the press", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const { input, button } = await open("svc-2429-empty");
+
+      // `aria-disabled`, not `disabled`: a disabled control is not a
+      // mouse-event target, and this button's activation IS a pointer event.
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+      expect(button.hasAttribute("disabled")).toBe(false);
+
+      pressButton(button);
+      expect(pipeline.sendBodyLines).not.toHaveBeenCalled();
+
+      type(input, "HELP");
+      await waitFor(() => expect(button.getAttribute("aria-disabled")).toBe("false"));
+    });
+
+    // The review of this PR caught the copy-paste: the click handler was the
+    // composer's, whose comment says a keyboard activation "must always send,
+    // since no pointerup carried it" — true THERE only because the button is
+    // `type="submit"` in a `<form>`. This button is a bare `type="button"` with
+    // no form, so a detail-0 click reached a handler that never sent: Enter or
+    // Space on the focus trap's last stop did nothing.
+    it("sends on a keyboard activation — a click with no pointerup behind it", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const { input, button } = await open("svc-2429-keyboard");
+
+      type(input, "HELP");
+      // Enter/Space on a button fire a click with `detail === 0`.
+      fireEvent.click(button, { detail: 0 });
+
+      expect(pipeline.sendBodyLines).toHaveBeenCalledWith(
+        "svc-2429-keyboard",
+        "NickServ",
+        "HELP",
+        false,
+      );
+      await waitFor(() => expect(input.value).toBe(""));
+    });
+
+    // The delta review's MAJOR: a pointer send on real iOS can produce NO
+    // click (the long-press case the pointer activation exists for), leaving
+    // the swallow flag armed — and a guard on that flag then ate every
+    // keyboard activation until the next tap.
+    it("still sends from the keyboard after a pointer send whose click never came", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const { input, button } = await open("svc-2429-kb-after-pointer");
+
+      type(input, "HELP");
+      pressButton(button);
+      // No synthetic click follows: the tap sent, and the flag stayed armed.
+      await waitFor(() => expect(input.value).toBe(""));
+
+      type(input, "INFO vjt");
+      fireEvent.click(button, { detail: 0 });
+
+      expect(pipeline.sendBodyLines).toHaveBeenLastCalledWith(
+        "svc-2429-kb-after-pointer",
+        "NickServ",
+        "INFO vjt",
+        false,
+      );
+    });
+
+    it("does not send twice on one pointer press (the synthetic click is swallowed)", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const { input, button } = await open("svc-2429-no-double");
+
+      type(input, "HELP");
+      pressButton(button);
+      // The browser follows the pointerup with a pointer-generated click.
+      fireEvent.click(button, { detail: 1 });
+
+      expect(pipeline.sendBodyLines).toHaveBeenCalledTimes(1);
+    });
+
+    // The PR body lists the in-flight guard as a feature: a second press while
+    // the first send is still out must not re-send the line still in the draft.
+    it("refuses a second press while the first send is in flight", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const slug = "svc-2429-in-flight";
+      let release: () => void = () => {};
+      vi.mocked(pipeline.sendBodyLines).mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+
+      const { input, button } = await open(slug);
+      type(input, "HELP");
+      pressButton(button);
+      pressButton(button);
+
+      expect(pipeline.sendBodyLines).toHaveBeenCalledTimes(1);
+      release();
+      await waitFor(() => expect(input.value).toBe(""));
+    });
+
+    it("ArrowUp recalls the line just sent, ArrowDown walks back to the live draft", async () => {
+      const { input } = await open("svc-2429-arrows");
+
+      type(input, "IDENTIFY hunter2");
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(input.value).toBe(""));
+
+      type(input, "half-typed");
+      fireEvent.keyDown(input, { key: "ArrowUp" });
+      await waitFor(() => expect(input.value).toBe("IDENTIFY hunter2"));
+
+      fireEvent.keyDown(input, { key: "ArrowDown" });
+      await waitFor(() => expect(input.value).toBe("half-typed"));
+    });
+
+    it("shares the service query window's compose history", async () => {
+      const compose = await import("../lib/compose");
+      const slug = "svc-2429-shared";
+      // A line the operator sent from the query window's own composer.
+      compose.recordSentLine(channelKey(slug, "NickServ"), "GHOST oldnick s3cret");
+
+      const { input } = await open(slug);
+      fireEvent.keyDown(input, { key: "ArrowUp" });
+      await waitFor(() => expect(input.value).toBe("GHOST oldnick s3cret"));
+
+      // …and the reverse: a line sent from the modal is recallable there.
+      fireEvent.keyDown(input, { key: "ArrowDown" });
+      type(input, "INFO vjt");
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(input.value).toBe(""));
+      expect(compose.getDraft(channelKey(slug, "NickServ"))).toBe("");
+      fireEvent.keyDown(input, { key: "ArrowUp" });
+      await waitFor(() => expect(input.value).toBe("INFO vjt"));
+    });
+
+    it("does not record a line whose send failed", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const compose = await import("../lib/compose");
+      const slug = "svc-2429-failed";
+      vi.mocked(pipeline.sendBodyLines).mockRejectedValueOnce(new Error("boom"));
+
+      const { input } = await open(slug);
+      type(input, "IDENTIFY hunter2");
+      fireEvent.keyDown(input, { key: "Enter" });
+      await screen.findByTestId("service-modal-prompt-error");
+
+      fireEvent.keyDown(input, { key: "ArrowUp" });
+      await waitFor(() => expect(input.value).toBe("IDENTIFY hunter2"));
+      expect(compose.historyLines(channelKey(slug, "NickServ"))).toEqual([]);
+    });
+
+    it("keeps the history across a close and reopen", async () => {
+      const slug = "svc-2429-reopen";
+      const first = await open(slug);
+      type(first.input, "HELP");
+      fireEvent.keyDown(first.input, { key: "Enter" });
+      await waitFor(() => expect(first.input.value).toBe(""));
+
+      closeServiceModal();
+      openServiceModal(slug, "NickServ");
+      const input = (await screen.findByTestId("service-modal-input")) as HTMLTextAreaElement;
+      fireEvent.keyDown(input, { key: "ArrowUp" });
+      await waitFor(() => expect(input.value).toBe("HELP"));
+    });
+
+    // jsdom has no TouchEvent/Touch constructor: plain Events with
+    // touches/changedTouches shaped on, the same fake the compose-box swipe
+    // tests use. The handlers read only `.length`, `[0]`, `.clientX/Y`.
+    describe("swipe recall", () => {
+      type Pt = { clientX: number; clientY: number };
+      const touchEvent = (type: string, pts: Pt[]): Event => {
+        const ev = new Event(type, { bubbles: true, cancelable: true });
+        const ended = type === "touchend";
+        Object.defineProperty(ev, "touches", { value: ended ? [] : pts });
+        Object.defineProperty(ev, "targetTouches", { value: ended ? [] : pts });
+        Object.defineProperty(ev, "changedTouches", { value: pts });
+        return ev;
+      };
+      const flick = (ta: Element, startY: number, endY: number): void => {
+        ta.dispatchEvent(touchEvent("touchstart", [{ clientX: 100, clientY: startY }]));
+        ta.dispatchEvent(touchEvent("touchmove", [{ clientX: 100, clientY: endY }]));
+        ta.dispatchEvent(touchEvent("touchend", [{ clientX: 100, clientY: endY }]));
+      };
+
+      it("swipe up recalls the previous line", async () => {
+        const { input } = await open("svc-2429-swipe-up");
+        type(input, "HELP");
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(input.value).toBe(""));
+
+        flick(input, 300, 220);
+        await waitFor(() => expect(input.value).toBe("HELP"));
+      });
+
+      // Renamed from "…only when there is one": the non-empty-draft gate on
+      // this direction cannot change an outcome here (off a walk `recallNewer`
+      // is a no-op on a null cursor; on a walk the draft is a recalled history
+      // line, which is never blank, and any edit ends the walk). The gate is
+      // kept for parity with the composer's #178 rule; what this test checks is
+      // the walk back to the draft parked on the way up.
+      it("swipe down walks back toward the live draft parked on the way up", async () => {
+        const { input } = await open("svc-2429-swipe-down");
+        type(input, "HELP");
+        fireEvent.keyDown(input, { key: "Enter" });
+        await waitFor(() => expect(input.value).toBe(""));
+
+        flick(input, 300, 220);
+        await waitFor(() => expect(input.value).toBe("HELP"));
+
+        flick(input, 220, 300);
+        // Walked back to the bottom, where the parked draft was empty.
+        await waitFor(() => expect(input.value).toBe(""));
+      });
+
+      // A right drag is this prompt's Tab, and the stock mobile keyboard has
+      // no Tab key: the console's prompt is the second door onto the ONE
+      // completion engine (#2375), and the drag used to be claimed
+      // (`preventDefault`) while completing nothing, because `bindPrompt`
+      // passed no `onTab` — the field was optional and said so quietly.
+      it("swipe right completes the nick, as Tab does", async () => {
+        const slug = "svc-2429-swipe-right";
+        const chan = "#grappa";
+        seedFromTest(channelKey(slug, chan), [
+          { nick: "vjt", modes: [] },
+          { nick: "vjtbot", modes: [] },
+        ]);
+        setSelectedChannel({ networkSlug: slug, channelName: chan, kind: "channel" });
+        try {
+          const { input } = await open(slug);
+          type(input, "INFO vj");
+          input.setSelectionRange(input.value.length, input.value.length);
+
+          // A fast right drag: start, a mostly-horizontal move, release.
+          input.dispatchEvent(touchEvent("touchstart", [{ clientX: 100, clientY: 300 }]));
+          input.dispatchEvent(touchEvent("touchmove", [{ clientX: 160, clientY: 302 }]));
+          input.dispatchEvent(touchEvent("touchend", [{ clientX: 160, clientY: 302 }]));
+
+          await waitFor(() => expect(input.value).toBe("INFO vjt "));
+
+          // A SECOND right drag, still forward. `tabCompleteStep` takes idx = 0
+          // on the first press, where `forward` makes no difference; only a
+          // continued cycle tells Tab from Shift-Tab. This drag must advance to
+          // the NEXT candidate, which is what pins the direction the
+          // `bindPrompt` comment claims.
+          input.setSelectionRange(input.value.length, input.value.length);
+          input.dispatchEvent(touchEvent("touchstart", [{ clientX: 100, clientY: 300 }]));
+          input.dispatchEvent(touchEvent("touchmove", [{ clientX: 160, clientY: 302 }]));
+          input.dispatchEvent(touchEvent("touchend", [{ clientX: 160, clientY: 302 }]));
+
+          await waitFor(() => expect(input.value).toBe("INFO vjtbot "));
+        } finally {
+          setSelectedChannel(null);
+        }
+      });
     });
   });
 

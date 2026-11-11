@@ -5437,6 +5437,11 @@ TEST(the_masked_line_is_the_passphrase_alone_and_leaves_nothing) {
 #ifdef __linux__
     CHECK(prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) == 0);
 #endif
+#ifdef __FreeBSD__
+    /* PROC_TRACE_STATUS answers -1 once tracing is disabled for the process. */
+    int trace = 0;
+    CHECK(procctl(P_PID, getpid(), PROC_TRACE_STATUS, &trace) == 0 && trace == -1);
+#endif
     free_e2e_app(app);
     test_keyring_mode(NULL);
 }
