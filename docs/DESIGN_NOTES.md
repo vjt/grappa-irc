@@ -6446,10 +6446,10 @@ keyboard comes up (it fires a resize). Unmeasured on a device.
   and all 5 then died to exactly that test, one red each. 0 reds outside the
   issue 2625 tests across both passes.
 - Review round (PR 2650): each new test of a new behaviour was red on the
-  previous head for the reason it names, and each new guard but one (the
-  arrival's key check, next bullet) was mutated on its own over serverPeek,
-  scrollback, ServerPeekPanel, ScrollbackPane, compose and SettingsDrawer
-  (937 tests, all counts on that round's head).
+  previous head for the reason it names, and each new guard but two (the
+  arrival's key check and its mark check, the next two bullets) was mutated
+  on its own over serverPeek, scrollback, ServerPeekPanel, ScrollbackPane,
+  compose and SettingsDrawer (937 tests, all counts on that round's head).
   Opening at the old mark instead of at the arrival: 2 reds. The old
   store-watching open rule: 3 reds (refresh page, first-load page, page
   landing after the card opened). No live-arrival write: 15 reds. No
@@ -6475,6 +6475,19 @@ keyboard comes up (it fires a resize). Unmeasured on a device.
   after a channel line and after another network's `$server` line inside
   it. Deleting the check turns exactly those two red over the same six
   suites (939 tests).
+- Third review round: the arrival's mark check (a live line at or below the
+  mark taken at the command does not count, `arrival.id <= st.sinceId`)
+  turned NOTHING red either, deleted or with `<` for `<=`, as the second
+  delta review measured. It mirrors the `seen` guard above: in every state
+  the suite built, the arrival already there at the arm was both the one
+  seen and under the mark, so each guard hid the other, and the purge case
+  isolates only `seen`. The state where only the mark speaks is the WS copy
+  of a row a reconnect refresh already brought, landing after a command
+  typed between the two (the page and the push are separate paths). A case
+  of it now turns red under both mutants, one red each over the same six
+  suites (940 tests). The `arrival === null` half of the `seen` line is
+  pinned by the compiler: without it, `tsc` fails on `arrival` possibly
+  being null.
 - The logout test was overdetermined, found by the identity-reset mutant:
   the scrollback store empties on logout too, so "no rows after logout"
   held with or without the peek's reset. It now asserts what only that
