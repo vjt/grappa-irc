@@ -595,9 +595,11 @@ const ComposeBox: Component<Props> = (props) => {
   // engine `available()` and may `install()` a model: both are native calls,
   // and asking them when the box merely MOUNTS was measured to take the
   // renderer down (a channel window in CI: "Target crashed", then the shard
-  // dies). `probeDictation` only ARMS the question here; the first gesture
-  // anywhere on the page asks it, once, inside that gesture. Until it
-  // answers, an empty box shows its send button, and
+  // dies). `probeDictation` only ARMS the question, and the app arms it at
+  // boot (`main.tsx`): the click that mounts this box is already too late to
+  // be the first gesture, measured on run 43109271955 shard 2. The call here
+  // stays as the idempotent backstop (any mount that beat the boot arm).
+  // Until the answer lands, an empty box shows its send button, and
   // `dictationAvailable() === false` keeps it there.
   onMount(() => probeDictation());
 
