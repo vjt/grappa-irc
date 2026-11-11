@@ -1,5 +1,7 @@
 ROOT := ../..
--include $(ROOT)/config.mk
+# Written by ./configure (this directory's, or the root one, which forwards
+# here). Optional: a plain `make` on a glibc host builds with the defaults.
+-include config.mk
 
 CC ?= cc
 # Warnings and hardening are NOT part of the overridable CFLAGS.
@@ -14,11 +16,21 @@ CC ?= cc
 # The sanitizers ride only the TEST binaries, so the shipped one deserves
 # the flags that cost nothing. -Wformat=2 is deliberate: every varargs
 # helper here already carries __attribute__((format)), so it has something
-# to check.
+# to check. -Werror=implicit-function-declaration on its own (not -Werror,
+# which a user's newer compiler must not turn into a failed build): an
+# undeclared function is assumed to return int and still links, which
+# silently breaks any that returns a pointer. The FreeBSD log in #2587
+# carried four of them as mere warnings.
 CFLAGS ?= -O2
-WARNINGS := -std=c11 -Wall -Wextra -Wpedantic -Wformat=2
+WARNINGS := -std=c11 -Wall -Wextra -Wpedantic -Wformat=2 -Werror=implicit-function-declaration
 HARDENING := -fstack-protector-strong -D_FORTIFY_SOURCE=2
-CPPFLAGS ?= -D_POSIX_C_SOURCE=200809L
+# Which feature-test macros expose the non-POSIX names shottino uses is a
+# property of the libc, so ./configure measures it into FEATURE_CPPFLAGS
+# (#2587). The default is the glibc answer for a build with no config.mk.
+# Appended, not `?=`: a CPPFLAGS from the environment (dpkg-buildflags,
+# makepkg) used to REPLACE this outright and drop the macros with it.
+FEATURE_CPPFLAGS ?= -D_POSIX_C_SOURCE=200809L
+CPPFLAGS += $(FEATURE_CPPFLAGS)
 CFLAGS += $(WARNINGS) $(HARDENING)
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
@@ -310,7 +322,11 @@ check-web:
 #     is C++ inside, and linking with $(CC) fails on __cxxabiv1 vtables.
 #   - -static-libstdc++ -static-libgcc, or the binary picks up a
 #     libstdc++.so.6 runtime dependency that was the thing being avoided.
+#     ./configure keeps them only where the compiler uses them: FreeBSD's
+#     clang links base's libc++/libcxxrt dynamically whatever it is told,
+#     and those are part of every FreeBSD install (#2587).
 CXX ?= c++
+CALL_STATIC_LDFLAGS ?= -static-libstdc++ -static-libgcc
 LDC_DIR := vendor/libdatachannel
 LDC_BUILD := vendor/build
 LDC_LIBS := $(LDC_BUILD)/libdatachannel.a \
@@ -379,7 +395,7 @@ $(CALL_BIN): $(CALL_SRC) call/whip.h call/media.h call/note.h http.h $(LDC_LIBS)
 	$(CC) $(CALL_CFLAGS) -c -o call/media.o call/media.c
 	$(CC) $(CALL_CFLAGS) -c -o call/note.o call/note.c
 	$(CXX) -o $@ call/main.o call/whip.o call/media.o call/note.o http.o $(LDC_LIBS) \
-	  -static-libstdc++ -static-libgcc -lssl -lcrypto -lpthread -lm
+	  $(CALL_STATIC_LDFLAGS) -lssl -lcrypto -lpthread -lm
 
 # The helper rides along WHEN IT HAS BEEN BUILT, and is not a
 # prerequisite: `make install` must keep working on a machine without

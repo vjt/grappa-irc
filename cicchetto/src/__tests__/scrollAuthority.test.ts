@@ -64,6 +64,19 @@ describe("resolveIntent — precedence", () => {
     expect(r.winner?.kind).toBe("marker-activation");
   });
 
+  // issue 2610 — an in-place re-render keeps the reader's line: over the
+  // activation's divider re-assert and the tail-follow (a reader at the tail
+  // is anchored on the tail), under the jump a tap asks for.
+  test("reflow-preserve beats marker-activation and tail-follow, and mention-jump beats it", () => {
+    const over = resolveIntent(
+      [intent("tail-follow"), intent("marker-activation"), intent("reflow-preserve")],
+      K,
+    );
+    expect(over.winner?.kind).toBe("reflow-preserve");
+    const under = resolveIntent([intent("reflow-preserve"), intent("mention-jump")], K);
+    expect(under.winner?.kind).toBe("mention-jump");
+  });
+
   test("prepend-preserve is the lowest — tail-follow wins over it", () => {
     const r = resolveIntent([intent("prepend-preserve"), intent("tail-follow")], K);
     expect(r.winner?.kind).toBe("tail-follow");

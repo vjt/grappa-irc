@@ -5020,18 +5020,14 @@ own distro: `release.yml`'s `rpm` job runs in a `fedora:43` container with
 its own Fedora ERTS, the `deb` job on the Ubuntu runner. The Arch recipe
 sidesteps the constraint completely by being a source package (below).
 
-**PRODUCTION TRAP — `./configure` dirties a TRACKED file.** The shottino
-step runs `./configure`, which rewrites `config.mk`, and `config.mk` is
-tracked. Leaving it modified makes `git status --porcelain` non-empty;
-`Grappa.Version` reads a dirty tree as unreleased and appends
-`-<shortsha>` instead of reporting the bare tag, which fails the release
-workflow's "Prove the artifact reports the bare tag version" step. The
-`mix release` runs earlier in the current step order, so today the damage
-is invisible — silently depending on that ordering is the trap for
-whoever reorders this next. `build.sh` snapshots `config.mk`, installs a
-`trap … EXIT` so the restore fires on ANY exit path including a failed
-compile, and restores explicitly afterwards. Deleting either half of that
-trap dance reintroduces the dirty tree.
+**`./configure` leaves the tree clean (#2587).** It writes
+`frontends/shottino/config.mk`, which is gitignored. It used to rewrite a
+TRACKED root `config.mk`, which made `git status --porcelain` non-empty —
+`Grappa.Version` reads that as unreleased and appends `-<shortsha>`, failing
+the release workflow's bare-tag proof — and `build.sh` carried a
+snapshot/`trap … EXIT`/restore dance to hide it. The file is per host by
+nature, so it stopped being tracked and the dance went with it. **Never
+track it again**: the dirty-tree failure comes straight back.
 
 ### shottino ships as its own package (#1447)
 
@@ -5180,9 +5176,10 @@ time" per GitHub's changelog of 2025-06-03). On their own they would only show
 GitHub agreeing with itself, so the script also hashes every file the run
 attached (`release_assets.sh found`, the same set) and refuses unless each one
 matches a digest on the release. It covers everything the release holds except
-`SHA256SUMS` itself, including `shottino-debug` and any asset an earlier run
-left that a failed repair leg did not replace: the file describes what can be
-downloaded, and which assets are the contract is `PACKAGING.md`'s business.
+`SHA256SUMS` itself, including an asset no expected kind names and any asset
+an earlier run left that a failed repair leg did not replace: the file
+describes what can be downloaded, and which assets are the contract is
+`PACKAGING.md`'s business.
 
 It refuses on a missing or malformed digest. Whether the API reports every
 digest the moment `gh release upload` returns is **not measured** (no release

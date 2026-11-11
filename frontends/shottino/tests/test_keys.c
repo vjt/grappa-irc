@@ -26,7 +26,12 @@
 #undef main
 
 #include "test.h"
+/* forkpty: <pty.h> on glibc, <libutil.h> on FreeBSD (#2587); -lutil on both. */
+#ifdef __FreeBSD__
+#include <libutil.h>
+#else
 #include <pty.h>
+#endif
 
 /* Feed one sequence and read back the single key it should become.
  * Anything left in the queue afterwards is reported by the caller: a

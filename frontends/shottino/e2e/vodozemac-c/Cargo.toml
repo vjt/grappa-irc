@@ -2,6 +2,8 @@
 name = "vodozemac-c"
 version = "0.0.0"
 edition = "2024"
+# The floor edition 2024 needs. ./configure reads it from here.
+rust-version = "1.85"
 publish = false
 description = "shottino's C binding over vodozemac: the native twin of cicchetto/wasm/vodozemac-binding"
 
