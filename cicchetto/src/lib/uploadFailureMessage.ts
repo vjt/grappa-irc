@@ -44,6 +44,10 @@ function parseUploadErrorToken(body: string): { error?: string; max_bytes?: numb
 }
 
 function httpUploadMessage(status: number, body: string): string {
+  // 401 — the session is gone, and neither door can fix that by picking a
+  // different file. The encrypted door said so in its own copy before the two
+  // were merged here; the shared sentence now serves both.
+  if (status === 401) return "Not signed in, so the upload was refused.";
   const token = parseUploadErrorToken(body);
   switch (token?.error) {
     case "insufficient_storage": {
