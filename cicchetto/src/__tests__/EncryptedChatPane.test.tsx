@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { batch, createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../lib/api";
+import { ApiError } from "../lib/apiError";
 import { channelKey } from "../lib/channelKey";
 import { setDraft } from "../lib/compose";
 import { acceptConfirm, confirmRequest, dismissConfirm } from "../lib/confirmDialog";

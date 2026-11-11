@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { ApiError, setOn401Handler } from "../lib/api";
+import { setOn401Handler } from "../lib/api";
+import { ApiError } from "../lib/apiError";
 import {
   copyTheme,
   createTheme,

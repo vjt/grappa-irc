@@ -16,7 +16,8 @@
 
 import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type ScrollbackMessage } from "../lib/api";
+import type { ScrollbackMessage } from "../lib/api";
+import { ApiError } from "../lib/apiError";
 
 // Mirrors scrollbackIdentityRotation.test.ts: keep scrollback's transitive
 // graph from opening a real WebSocket against jsdom's about:blank base URL.
@@ -74,6 +75,23 @@ const freshIdentity = (): void => {
 // The real class, not a lookalike: the latch reads `instanceof ApiError`.
 const refuse = (status: number): Error => new ApiError(status, "bad_request");
 
+// A name the server actually refuses. `"#"` was the issue's case before #2424
+// made it a valid target, so using it here would read as a claim it no longer
+// makes — any refused name works as a fixture.
+const REFUSED = "bad name";
+
+// One row, enough for the verbs that refuse to page an EMPTY pane.
+const row = (id: number): ScrollbackMessage => ({
+  id,
+  network: "net",
+  channel: REFUSED,
+  server_time: id,
+  kind: "privmsg",
+  sender: "alice",
+  body: `m${id}`,
+  meta: {},
+});
+
 describe("#2409 a refused target is not retried", () => {
   beforeEach(() => {
     listMessagesSpy.mockReset();
@@ -88,9 +106,9 @@ describe("#2409 a refused target is not retried", () => {
     const { loadInitialScrollback } = await import("../lib/scrollback");
     listMessagesSpy.mockRejectedValue(refuse(400));
 
-    await loadInitialScrollback("net", "#");
+    await loadInitialScrollback("net", REFUSED);
     // The re-selection that used to replay the same refused GET.
-    await loadInitialScrollback("net", "#");
+    await loadInitialScrollback("net", REFUSED);
 
     expect(listMessagesSpy).toHaveBeenCalledTimes(1);
   });
@@ -99,9 +117,9 @@ describe("#2409 a refused target is not retried", () => {
     const { refreshScrollback } = await import("../lib/scrollback");
     listMessagesAfterSpy.mockRejectedValue(refuse(400));
 
-    await refreshScrollback("net", "#");
+    await refreshScrollback("net", REFUSED);
     // Every join-ok and every reconnect sweep calls this verb again.
-    await refreshScrollback("net", "#");
+    await refreshScrollback("net", REFUSED);
 
     expect(listMessagesAfterSpy).toHaveBeenCalledTimes(1);
   });
@@ -110,8 +128,8 @@ describe("#2409 a refused target is not retried", () => {
     const { refreshScrollback } = await import("../lib/scrollback");
     listMessagesAfterSpy.mockRejectedValue(refuse(500));
 
-    await refreshScrollback("net", "#");
-    await refreshScrollback("net", "#");
+    await refreshScrollback("net", REFUSED);
+    await refreshScrollback("net", REFUSED);
 
     expect(listMessagesAfterSpy).toHaveBeenCalledTimes(2);
   });
@@ -119,13 +137,74 @@ describe("#2409 a refused target is not retried", () => {
   it("forgets the refusal on an identity change", async () => {
     const { refreshScrollback } = await import("../lib/scrollback");
     listMessagesAfterSpy.mockRejectedValue(refuse(400));
-    await refreshScrollback("net", "#");
+    await refreshScrollback("net", REFUSED);
 
     freshIdentity();
     await Promise.resolve(); // let the identity-scoped reset run
     listMessagesAfterSpy.mockResolvedValue([]);
-    await refreshScrollback("net", "#");
+    await refreshScrollback("net", REFUSED);
 
     expect(listMessagesAfterSpy).toHaveBeenCalledTimes(2);
+  });
+
+  // One case per verb, same shape as the two above. The reviewers measured
+  // that removing BOTH the `loadMore` and the `loadNewer` guard left the
+  // whole suite green (M34), so these two are the ones that actually pin
+  // the latch rather than a neighbour's.
+
+  it("does not re-fetch a loadMore the server refused with 400", async () => {
+    const { loadInitialScrollback, loadMore } = await import("../lib/scrollback");
+    // A pane with one row, so the verb gets past its empty-pane short-circuit.
+    listMessagesSpy.mockResolvedValueOnce([row(1)]);
+    await loadInitialScrollback("net", REFUSED);
+    listMessagesSpy.mockRejectedValue(refuse(400));
+
+    await loadMore("net", REFUSED, () => undefined);
+    // Every scroll-to-top gesture asks again.
+    await loadMore("net", REFUSED, () => undefined);
+
+    // One cold load + exactly one refused backfill.
+    expect(listMessagesSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not re-fetch a loadNewer the server refused with 400", async () => {
+    const { loadInitialScrollback, loadNewer } = await import("../lib/scrollback");
+    listMessagesSpy.mockResolvedValueOnce([row(1)]);
+    await loadInitialScrollback("net", REFUSED);
+    listMessagesAfterSpy.mockRejectedValue(refuse(400));
+
+    await loadNewer("net", REFUSED);
+    await loadNewer("net", REFUSED);
+
+    expect(listMessagesAfterSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // The two jumps WRITE the latch in their catch but used to never read it on
+  // the way in: every tap on the far-behind bar or on a mention row was one
+  // more refused GET for the jail.
+  it("does not put a refused target back on the wire from jumpToUnread", async () => {
+    const { loadInitialScrollback, jumpToUnread } = await import("../lib/scrollback");
+    listMessagesSpy.mockRejectedValue(refuse(400));
+    await loadInitialScrollback("net", REFUSED);
+    listMessagesSpy.mockClear();
+    listMessagesAfterSpy.mockClear();
+
+    expect(await jumpToUnread("net", REFUSED)).toBe(false);
+
+    expect(listMessagesSpy).not.toHaveBeenCalled();
+    expect(listMessagesAfterSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not put a refused target back on the wire from jumpToMessage", async () => {
+    const { loadInitialScrollback, jumpToMessage } = await import("../lib/scrollback");
+    listMessagesSpy.mockRejectedValue(refuse(400));
+    await loadInitialScrollback("net", REFUSED);
+    listMessagesSpy.mockClear();
+    listMessagesAfterSpy.mockClear();
+
+    expect(await jumpToMessage("net", REFUSED, 42)).toBe(false);
+
+    expect(listMessagesSpy).not.toHaveBeenCalled();
+    expect(listMessagesAfterSpy).not.toHaveBeenCalled();
   });
 });

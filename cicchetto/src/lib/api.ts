@@ -1603,14 +1603,22 @@ export function assertNever(x: never): never {
   throw new Error(`unreachable discriminated-union variant: ${JSON.stringify(x)}`);
 }
 
-// #2409 — the class lives in `lib/apiError.ts` now and is RE-EXPORTED here,
-// so every `import { ApiError } from "./api"` keeps working and keeps naming
-// the same object (a re-export is the same class, so `instanceof` agrees
-// across both paths). The move exists because a test that replaces this whole
-// module with a `vi.mock` factory has to re-export anything a consumer
-// narrows on, and 39 of 60 factories did not — `instanceof undefined` then
-// threw inside the fetch's catch. `lib/apiError.ts` is a module no mock
-// touches. Narrowing callers import from there.
+// #2409 — `ApiError` lives in `lib/apiError.ts` and is re-exported here.
+//
+// Why the re-export STAYS (it was challenged in review and the answer is not
+// "we forgot"): the class moved out because a suite that replaces THIS module
+// with a `vi.mock` factory has to re-export anything a consumer narrows on,
+// and 39 of 60 factories did not — `instanceof undefined` then threw inside
+// the fetch's catch. `lib/apiError.ts` is a module no mock touches.
+//
+// Two kinds of caller still need the name on `api`:
+//   * `api.test.ts` tests `api.ts` itself and asserts `api.ApiError`;
+//   * the mock factories that DO re-export it (`ApiError: real.ApiError`)
+//     would lose the name they forward if this line went away.
+//
+// Every other caller — production and tests alike — imports from
+// `./apiError`, so a NEW narrowing site has one obvious home and the two
+// paths cannot drift into two classes.
 export { ApiError } from "./apiError";
 
 // REV-K M20 (2026-05-22) — typed WS Channel push error mirroring
