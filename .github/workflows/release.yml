@@ -44,6 +44,12 @@ name: release
 #              a docker_validation dry-run it re-exports the amd64 image from
 #              the build cache, so the pre-tag smoke finally smokes something.
 #              amd64 only: the arm64 leg is proven by the build.
+#   * cic    — builds the cicchetto bundle once, with the digest-pinned
+#              toolchain of scripts/bun.sh, and signs a build-provenance
+#              attestation over every file of it (issue 2642). Tag push only.
+#              Its tarball + per-file manifest ride to the release through
+#              publish, as OPTIONAL assets: a red leg here never stops the
+#              packages.
 #   * publish — attaches deb + rpm + pkg.tar.zst + the regenerated
 #              PKGBUILD/.SRCINFO to the GitHub Release. Runs even if a package
 #              job FAILED and attaches ONLY what built (#504): a broken distro
@@ -91,14 +97,15 @@ name: release
 #     `VERSION` (a repair republishes a tag's own images, it never re-versions
 #     them) and why the pushed images carry
 #     `chat.grappa.image.scaffolding-revision` recording where the recipe came
-#     from. smoke pulls what was PUBLISHED, exactly as on a tag push.
+#     from. smoke pulls what was PUBLISHED, exactly as on a tag push. A repair
+#     never rebuilds the cicchetto bundle: `cic` attests on a tag push only.
 #   * DOCKER DRY-RUN (`docker_validation=true`): a ZERO-PUBLICATION validation of
 #     the release-image job ITSELF (not a copy of it — the same job that ships).
 #     Only the docker job runs; it builds `Dockerfile.release` multi-arch from
 #     the DISPATCHED ref (a branch, so it works BEFORE merge, when only the
 #     branch carries the file) with `push:false` and no registry login — it
 #     proves the build (arm64 QEMU + ABI-lockstep assertion + cic + mix release)
-#     and publishes NOTHING. deb/arch/rpm/publish are skipped. Run it with:
+#     and publishes NOTHING. deb/arch/rpm/cic/publish are skipped. Run it with:
 #       gh workflow run release.yml --ref <branch> -f docker_validation=true
 #   * DEB DRY-RUN (`deb_validation=true`, #1714): the same idea for the package
 #     job — a ZERO-PUBLICATION validation of the deb job ITSELF, from the
@@ -107,9 +114,9 @@ name: release
 #     AHEAD of the uploads: unprovable, the first thing to discover a broken arm
 #     would be a blocked release cut. No tag is involved (`RELEASE_TAG` resolves
 #     to the dispatched ref, the two tag-comparing steps opt out) and
-#     arch/rpm/docker/publish are skipped — `deb` still uploads its artifact, so
-#     it is the `publish` exclusion, not an empty artifact set, that keeps
-#     branch-built packages off a real release. Run it with:
+#     arch/rpm/docker/cic/publish are skipped — `deb` still uploads its
+#     artifact, so it is the `publish` exclusion, not an empty artifact set,
+#     that keeps branch-built packages off a real release. Run it with:
 #       gh workflow run release.yml --ref <branch> -f deb_validation=true
 #
 # The tag-push path is unchanged by the dry-run plumbing: the default publishes.
@@ -128,16 +135,16 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Repair path only: existing release tag to (re)build deb/arch/rpm + ghcr images for, and attach assets to (e.g. v0.6.0). Images build from the tag's tree with the DISPATCHED ref's Dockerfiles. Ignored when docker_validation is true."
+        description: "Repair path only: existing release tag to (re)build deb/arch/rpm + ghcr images for, and attach assets to (e.g. v0.6.0). Images build from the tag's tree with the DISPATCHED ref's Dockerfiles. The attested cicchetto bundle is not rebuilt: it comes from a tag push only. Ignored when docker_validation is true."
         required: false
         type: string
       docker_validation:
-        description: "Zero-publication validation of the release-image job: build Dockerfile.release multi-arch from the DISPATCHED ref (branch), push:false, NOTHING published. Skips deb/arch/rpm/publish."
+        description: "Zero-publication validation of the release-image job: build Dockerfile.release multi-arch from the DISPATCHED ref (branch), push:false, NOTHING published. Skips deb/arch/rpm/cic/publish."
         required: false
         type: boolean
         default: false
       deb_validation:
-        description: "Zero-publication validation of the .deb job: build + install the package from the DISPATCHED ref (branch) and run its proofs, including the #1714 distribution-hop arms. No tag involved, NOTHING published. Skips arch/rpm/docker/publish."
+        description: "Zero-publication validation of the .deb job: build + install the package from the DISPATCHED ref (branch) and run its proofs, including the #1714 distribution-hop arms. No tag involved, NOTHING published. Skips arch/rpm/docker/cic/publish."
         required: false
         type: boolean
         default: false
@@ -1713,9 +1720,93 @@ jobs:
           GRAPPA_SMOKE_PREVIOUS_VERSION: ${{ steps.prev.outputs.version }}
         run: scripts/smoke-release-image.sh
 
+  cic:
+    name: build + attest cicchetto dist
+    # issue 2642 — the browser runs whatever bundle a grappa serves, and nothing
+    # let anyone check WHAT it serves. This job builds the bundle once, from the
+    # tag, with the toolchain the dev scripts pin by digest (scripts/bun.sh: one
+    # bun, one runtime, one libc), then signs a build-provenance attestation over
+    # every file of the dist and over the two assets that carry it. publish
+    # attaches those assets with the packages.
+    #
+    # TAG PUSH ONLY, because of what an attestation says. It binds the bytes to
+    # the ref and commit that triggered the run. On a repair dispatch that ref is
+    # the dispatched branch while the tree is the tag's, so the statement would
+    # name a source that does not produce these bytes. On a validation dispatch
+    # it would put a public, permanent Sigstore entry on a branch build. A failed
+    # attempt is repaired by re-running it on the TAG's run, which keeps the
+    # tag's ref and commit.
+    #
+    # The assets are OPTIONAL in release_assets.sh, not expected: a red leg here
+    # must not hold back the packages, and a repair, which skips this job, must
+    # not mark a release partial for assets it never rebuilds.
+    #
+    # The job's permissions REPLACE the workflow's `contents: write`: the OIDC
+    # token Sigstore signs with, the attestation store, and a read-only
+    # checkout. Nothing here writes to the release.
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout (full history — the credit roll is part of the bundle)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # credits.sh bakes `git shortlog` into the bundle (#1773) and answers
+          # a shallow clone with no contributors: other bytes.
+          fetch-depth: 0
+
+      # The same gate as deb/arch/rpm/docker, and here it must hold BEFORE the
+      # attestation, which cannot be taken back: a tag cut without bumping
+      # VERSION would otherwise get a public statement for assets named after
+      # the previous version, on the very run every sibling job refused.
+      - name: Verify the tag matches the VERSION file
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          srcv="$(infra/packaging/version.sh)"
+          echo "tag=$tag VERSION=$srcv"
+          if [ "$tag" != "$srcv" ]; then
+            echo "::error::tag v$tag does not match the VERSION file ($srcv) — bump VERSION before cutting the tag"
+            exit 1
+          fi
+
+      # The same two commands, at the tag on a full clone, rebuild the bundle
+      # anywhere with docker, byte for byte (docs/OPERATIONS.md §
+      # "`release_cic_dist.sh` — the attested cicchetto bundle (issue 2642)").
+      # `run build` also installs the e2e dependencies on its own; they do not
+      # enter the bundle.
+      - name: Build the bundle with the pinned toolchain
+        run: |
+          scripts/bun.sh install --frozen-lockfile
+          scripts/bun.sh run build
+
+      - name: Pack the dist and write its manifest
+        run: infra/packaging/release_cic_dist.sh pack cicchetto/dist cic-release "$(infra/packaging/version.sh)" > "$RUNNER_TEMP/cic-subjects"
+
+      # No `if:` and no `continue-on-error:` here or on the upload: a failed
+      # attestation must leave nothing for publish to attach.
+      - name: Attest every bundle file, the tarball and the manifest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/cic-subjects
+
+      # `path` is pack's out dir. Finding nothing there is red: the action's
+      # default is a warning, a green step with no artifact behind it.
+      - name: Upload the attested dist
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cicchetto-dist
+          path: cic-release/*
+          if-no-files-found: error
+
   publish:
     name: publish GitHub Release assets
-    needs: [deb, arch, rpm]
+    needs: [deb, arch, rpm, cic]
+    # `cic` is waited for so its artifact exists when the download below runs;
+    # it is skipped on every dispatch, and a skipped or red `cic` does not stop
+    # this job (`!cancelled()`).
     # Run once BOTH package jobs have settled, even if one FAILED (only a run
     # cancel skips this). A distro-specific breakage (#504 defect 2) must not
     # withhold the artifacts that built green: the attach step collects whatever

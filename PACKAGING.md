@@ -49,14 +49,24 @@ https://github.com/vjt/grappa-irc/releases/download/v<VERSION>/<asset>
 | `shottino-<S>-1-x86_64.pkg.tar.zst` | client, Arch package | x86_64 |
 | `PKGBUILD`, `default.SRCINFO` | bouncer, Arch source recipe and its metadata | — |
 | `shottino.PKGBUILD`, `shottino.SRCINFO` | client, Arch source recipe and its metadata | — |
+| `cicchetto-dist-<V>.tar.gz` | the cicchetto web client as built for this tag, attested ([The cicchetto bundle](#the-cicchetto-bundle)) | — |
+| `cicchetto-dist-<V>.sha256` | that bundle's per-file manifest | — |
 | `SHA256SUMS` | checksums of every asset on the release ([Checksums](#checksums)) | — |
 
 The set is the expected-asset table in `infra/packaging/release_assets.sh`,
-plus `SHA256SUMS`, which the publish job adds from the first release after
-v1.6.2 on. The pipeline refuses to **create** a release when an expected
+the two optional `cicchetto-dist-<V>` assets described below, and
+`SHA256SUMS`, which the publish job adds from the first release after v1.6.2
+on. The pipeline refuses to **create** a release when an expected
 package is missing (#1591). If a later run tops up an existing release with
 a package still missing, the release notes open with a "Partial release"
 warning that names it.
+
+The two `cicchetto-dist-<V>` assets are an **optional** kind in that script:
+a release is complete without them, and neither the refusal nor the "Partial
+release" warning covers them. They are built only when a tag is pushed, never
+by a repair run, and a failure there does not hold back the packages. The
+first release to carry them is the first tag cut with the `cic` job in
+`release.yml`; no earlier release has them.
 
 Two spellings are GitHub's, not ours. Use the published name:
 
@@ -113,6 +123,57 @@ asset in its API (the `digest` field of a release asset).
 
 `SHA256SUMS` is **not signed**. It catches a corrupted or truncated
 download; it does not protect against someone who can modify the release.
+
+## The cicchetto bundle
+
+A browser runs whatever JavaScript the grappa instance serves it, the
+end-to-end encryption code included. These two assets let anyone check what
+a release's web client is, and compare a server's copy with it.
+
+- `cicchetto-dist-<V>.tar.gz` is the built client (`cicchetto/dist`). It
+  extracts **flat**, with no top directory: `tar -xzf <file> -C <dir>`.
+- `cicchetto-dist-<V>.sha256` lists every file in it, one
+  `<sha256><two spaces><path>` line each, the path relative to the bundle
+  root, in C-locale byte order (`infra/packaging/release_cic_dist.sh manifest`).
+  `sha256sum -c` run from inside an extracted or served tree checks it.
+
+The release job signs a build-provenance attestation over **every file of the
+bundle and over both assets**, with GitHub's
+[artifact attestations](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
+(Sigstore). Each of those files verifies on its own, without the manifest in
+hand:
+
+```sh
+gh attestation verify <file> -R vjt/grappa-irc \
+  --signer-workflow vjt/grappa-irc/.github/workflows/release.yml \
+  --source-ref refs/tags/v<V>
+```
+
+Keep both flags. Without them, `-R` accepts an attestation from any workflow
+of the repository on any ref, so a file attested for a different tag would
+verify as well.
+
+The files can also be rebuilt from source: the release builds them with the
+toolchain `scripts/bun.sh` pins by digest, and the same commands at the tag,
+on a full clone, give the same files. See
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) § "`release_cic_dist.sh` — the
+attested cicchetto bundle (issue 2642)" for the commands and for what was
+measured.
+
+A file fetched from a running grappa verifies only if that server serves
+this release's bundle byte for byte, and **no install path deploys it yet**.
+Each one builds its own copy of the client, and none is checked against this
+manifest:
+
+- the `.deb` and `.rpm` packages (`infra/packaging/build.sh`) and the Arch
+  packages (`infra/packaging/aur/PKGBUILD`);
+- the container image (`Dockerfile.release`);
+- a FreeBSD jail install (`infra/freebsd/jail_cic_build.sh`, built with
+  `npm`);
+- a Linux systemd install (`infra/linux/cic_build.sh`);
+- the Docker Compose deploy (the `cicchetto-build` service in
+  `compose.yaml`). It runs the same pinned image and the same two commands as
+  the release job, but nothing has compared its output with the manifest.
 
 ## Bouncer package layout
 

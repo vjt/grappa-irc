@@ -103,13 +103,22 @@ init_repo() {
     [[ "$output" == *'"contributors":[{"name":"Ada Lovelace","nick":null,"commits":3},{"name":"Grace Hopper","nick":null,"commits":1}]'* ]]
 }
 
-@test "the sha and the date are the ones HEAD actually carries" {
+@test "the sha and the date are the ones HEAD actually carries, the sha nine hex wide (issue 2642)" {
     init_repo
     commit_as "Ada Lovelace" "ada@example.invalid" "one"
 
-    local sha date
-    sha="$(git -C "$REPO" rev-parse --short HEAD)"
+    local sha date auto
+    sha="$(git -C "$REPO" rev-parse HEAD)"
+    sha="${sha:0:9}"
     date="$(git -C "$REPO" log -1 --format=%cI)"
+
+    # A bare `--short` is sized from the clone's object count: 7 hex in this
+    # sandbox, 9 in today's full clone, 10 from 2^18 objects on. The sha is
+    # baked into the bundle, so that width would make the attested bytes
+    # depend on how much history the building clone holds. Pre-state: this
+    # repo is one where the auto width is NOT nine, or the case proves nothing.
+    auto="$(git -C "$REPO" rev-parse --short HEAD)"
+    [ "${#auto}" -ne 9 ]
 
     run "$SANDBOX_SCRIPT"
 
