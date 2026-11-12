@@ -136,6 +136,16 @@ const MIRRORS: readonly Mirror[] = [
     production: SERVER_WINDOW_NAME,
     origin: "SERVER_WINDOW_NAME (src/lib/windowKinds.ts)",
   },
+  // issue 2641 — the far-behind spec seeds the server window through the
+  // admin reset surface and plants its read cursor there, so `$server` is the
+  // storage key those REST calls name. 2024's argument holds: it is a copy
+  // with an original, not an open question, and the runner cannot import it.
+  {
+    file: "e2e/tests/issue2641-far-behind-clears-the-float.spec.ts",
+    name: "SERVER_WINDOW",
+    production: SERVER_WINDOW_NAME,
+    origin: "SERVER_WINDOW_NAME (src/lib/windowKinds.ts)",
+  },
 
   {
     file: "e2e/tests/issue1105-reply-quote-caret-visible.spec.ts",
