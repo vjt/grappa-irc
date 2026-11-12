@@ -2,10 +2,11 @@
 // encrypted chat is a banner pinned over the plaintext query, and on a phone
 // its TEXT must not sit under the floated ☰.
 //
-// The corner. On every mobile non-channel window `.shell-chrome` floats its
-// lone ☰ over the pane's top-right corner at z-index 41 (#985), and its left
-// `#` door over the top-left one while the window bar is off (#1766). The
-// banner lives in the pane's pinned band, whose top edge is that same corner.
+// The corner. On a phone's query and server windows (the scrollback kinds
+// other than a channel, `kindHasScrollback`) `.shell-chrome` floats its lone
+// ☰ over the pane's top-right corner at z-index 41 (#985), and its left `#`
+// door over the top-left one while the window bar is off (#1766). The banner
+// lives in the pane's pinned band, whose top edge is that same corner.
 // Measured before the fix (webkit-iphone-15, 393 wide: ☰ at x 331–379,
 // y 7–55; chromium-pixel-touch, 412 wide: x 350–398): Accept and Reject wrap
 // below the text and were never covered, but the first line of the text ran

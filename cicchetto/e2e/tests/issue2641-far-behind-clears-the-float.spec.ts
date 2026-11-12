@@ -5,7 +5,8 @@
 // `#` door covered the start of `N unread — jump back`, so the count could
 // not be read, and the ☰ covered the × entirely, so the bar could not be
 // dismissed by tap. The corner is the one issue 2486 measured for the
-// encrypted-chat banner: on every mobile non-channel window `.shell-chrome`
+// encrypted-chat banner: on a phone's query and server windows (the
+// scrollback kinds other than a channel, `kindHasScrollback`) `.shell-chrome`
 // floats its lone ☰ over the pane's top-right corner at z-index 41 (#985),
 // and its left `#` door over the top-left one while the window bar is off
 // (#1766). The far-behind bar shares the pane's pinned band with that banner,
