@@ -15,13 +15,25 @@
 // WHAT MAKES IT ABLE TO FAIL. The precondition asserts the collision is real
 // (the bar's own box meets every mounted float), so a layout that simply
 // moved them apart cannot leave this green while retiring what it guards.
-// Then the label must win the hit test at both ends of every line of its
-// text — the reporter's unreadable count is the LEADING end — and the × must
-// be the topmost element at its centre, keep the 44px floor, and dismiss on a
-// tap. On the bar-on arm only the ☰ floats and the label never reaches it, so
-// that arm reddens on the ×; on the bar-off arm the `#` door sits over the
-// label's first glyphs, so that arm reddens on the label first. Between them
-// each of the theme's two clearance rules has an arm only it can turn red.
+// Then no box of the label's TEXT may meet a float's box — issue 2486's
+// oracle, shared through `fixtures/cornerFloats.ts` — and the × must be the
+// topmost element at its centre, keep the 44px floor, and dismiss on a tap.
+//
+// Why boxes, and not the hit-test probes at both ends of the text that the
+// first cut of this spec used. Measured on that cut's red (cure reverted,
+// both touch projects): the probes met the door only at x 26 and x 28, the
+// two sides of the boundary between the count's own text node and the rest
+// of the label. The probe at the label's leading end found it clear: the
+// text starts at the bar's 0.5rem inset (x 7) and the door at
+// `--pane-chrome-inset-inline-start` (x 14), so the first glyph stays
+// visible, as in the report (`2… ad — jump back`). By the same numbers, a
+// label rendered as ONE text node would have put both probes outside the
+// door and passed on the broken layout. That last step is inferred from the
+// theme's tokens, not run.
+//
+// On the bar-on arm only the ☰ floats and the label never reaches it, so
+// that arm reddens on the ×. On the bar-off arm the `#` door sits over the
+// count, so that arm reddens on the label first.
 //
 // The channel arm and the desktop arm are the other half of the rule: a
 // window with no float keeps the full width. On a phone's channel window the
@@ -99,8 +111,10 @@ async function makeFarBehind(user: SeededUser, storageName: string): Promise<voi
   expect(seeded.length, `issue 2641 — ${storageName} was not seeded`).toBe(LARGE_SEED_COUNT);
   const cursor = seeded[seeded.length - UNREAD_TARGET - 1];
   if (!cursor) throw new Error(`issue 2641 — no seeded row to plant the cursor on`);
-  // Guard the precondition: at or under the page the window never goes far
-  // behind and every assertion below would pass by testing nothing.
+  // Guard the seed, not the outcome. Every arm waits for the bar before it
+  // asserts anything else, so a window that never went far behind fails
+  // there regardless, but on a 10 s attach timeout that names the bar. This
+  // names the seed.
   expect(seeded.filter((row) => row.id > cursor.id).length).toBeGreaterThan(MAX_HTTP_LIMIT);
   await setReadCursorToId(user.token, NETWORK_SLUG, storageName, cursor.id);
 }
@@ -113,41 +127,45 @@ async function farBehindBar(page: Page): Promise<Locator> {
 }
 
 /**
- * Every point where the label's text does NOT win the hit test, probed at
- * both ends of each line box of the text. Empty is the pass. The text's own
- * line boxes rather than the button's: the button stretches (`flex: 1`), and
- * what the reporter could not read was the glyphs.
+ * The boxes of the label's TEXT, one per line box of each of its text nodes.
+ * The glyphs rather than the button's box: the button stretches (`flex: 1`)
+ * up to the ×, and what the reporter could not read was the text.
  */
-async function labelMisses(jump: Locator): Promise<string[]> {
+async function labelTextBoxes(jump: Locator): Promise<Box[]> {
   return jump.evaluate((el) => {
     const range = document.createRange();
     range.selectNodeContents(el);
-    const lines = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0);
-    if (lines.length === 0) return ["the label has no text box"];
-    const misses: string[] = [];
-    for (const line of lines) {
-      const y = line.top + line.height / 2;
-      for (const x of [line.left + 1, line.right - 1]) {
-        const hit = document.elementFromPoint(x, y);
-        if (hit !== el && !el.contains(hit)) {
-          misses.push(`(${Math.round(x)}, ${Math.round(y)}) → ${hit?.outerHTML.slice(0, 80)}`);
-        }
-      }
-    }
-    return misses;
+    return Array.from(range.getClientRects())
+      .filter((r) => r.width > 0 && r.height > 0)
+      .map((r) => ({ x: r.x, y: r.y, width: r.width, height: r.height }));
   });
 }
 
 /**
- * THE OUTCOME, shared by every arm: the whole label is readable, the × is
- * under the finger at its centre with its 44px floor intact, and pressing it
- * takes the bar away — a tap on the touch projects, a click on the desktop
- * one, which has no touch to tap with.
+ * THE OUTCOME, shared by every arm: no box of the label's text meets a
+ * mounted float, the × is under the finger at its centre with its 44px floor
+ * intact, and pressing it takes the bar away — a tap on the touch projects, a
+ * click on the desktop one, which has no touch to tap with. `floats` is
+ * empty where nothing floats; there the arm's claim is the symmetric padding
+ * `assertFullWidth` reads, not a clearance.
  */
-async function assertBarUsable(page: Page, bar: Locator, touch: boolean): Promise<void> {
+async function assertBarUsable(
+  page: Page,
+  bar: Locator,
+  touch: boolean,
+  floats: readonly Box[],
+): Promise<void> {
   const jump = bar.getByTestId("far-behind-jump");
   await expect(jump).toHaveText(/\d+ unread/);
-  expect(await labelMisses(jump), "the far-behind label is covered").toEqual([]);
+  const text = await labelTextBoxes(jump);
+  expect(text.length, "the far-behind label has no text box").toBeGreaterThan(0);
+  for (const float of floats) {
+    const under = text.filter((line) => meet(line, float));
+    expect(
+      under,
+      `the far-behind label runs under the float at ${JSON.stringify(float)}: ${JSON.stringify(under)}`,
+    ).toEqual([]);
+  }
 
   const dismiss = bar.getByTestId("far-behind-dismiss");
   const dismissBox = await box(dismiss);
@@ -214,7 +232,7 @@ async function assertServerBarClearsTheFloats(page: Page, leftDoor: boolean): Pr
     ).toBe(true);
   }
 
-  await assertBarUsable(page, bar, true);
+  await assertBarUsable(page, bar, true, floats);
 }
 
 test("@webkit @touch issue 2641 — a far-behind server window keeps its bar clear of the ☰", async ({
@@ -244,7 +262,7 @@ test("@webkit @touch issue 2641 — on a channel window the far-behind bar keeps
   await expect(page.locator(".shell-chrome")).toHaveCount(0);
 
   await assertFullWidth(bar);
-  await assertBarUsable(page, bar, true);
+  await assertBarUsable(page, bar, true, []);
 });
 
 test("issue 2641 — on a desktop the far-behind bar keeps its full width", async ({ page }) => {
@@ -259,5 +277,5 @@ test("issue 2641 — on a desktop the far-behind bar keeps its full width", asyn
   await expect(page.locator(".shell-chrome")).toHaveCount(0);
 
   await assertFullWidth(bar);
-  await assertBarUsable(page, bar, false);
+  await assertBarUsable(page, bar, false, []);
 });

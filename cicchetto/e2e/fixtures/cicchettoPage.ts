@@ -1381,8 +1381,10 @@ export async function closeSettings(page: Page): Promise<void> {
 }
 
 // #1766 — turn the mobile window bar off from Display settings, the way an
-// operator does. Four specs carried this body verbatim before issue 2641 made
-// it five; one door, for the same reason openSettingsSection is one.
+// operator does. Four specs carried this body before issue 2641 made it five,
+// three verbatim and issue 2511's with the bar-gone assertion folded in (it
+// now sits at that spec's call site); one door, for the same reason
+// openSettingsSection is one.
 //
 // The toggle must start CHECKED: the bar ships shown, so an already-unchecked
 // toggle means the caller is running against a build whose default is
