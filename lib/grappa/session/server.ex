@@ -7480,10 +7480,13 @@ defmodule Grappa.Session.Server do
   # than calling the sender directly — it was the one free-form path that
   # reached the wire without the NickServ sniff — and warned that #1390 was
   # about to move the GhostRecovery/RecoverIdentity lines onto this grammar,
-  # whose lines DO carry a secret (GhostRecovery's `GHOST <nick> <pwd>`,
-  # RecoverIdentity's `IDENTIFY <nick> <pwd>`, `RECOVER` and `RELEASE`). Slice 6
-  # made that move: it is safe only because #1394 landed first, and the hole
-  # would have opened here with no test turning red in the other order.
+  # two of which are lines the sniff captures: GhostRecovery's
+  # `GHOST <nick> <pwd>` and RecoverIdentity's `IDENTIFY <nick> <pwd>`.
+  # RecoverIdentity's `RECOVER` and `RELEASE` carry the secret too, but
+  # `NSInterceptor` has no verb for them, so they cross this arm uncaptured
+  # with or without #1394. Slice 6 made that move: it is safe only because
+  # #1394 landed first, and the hole would have opened here with no test
+  # turning red in the other order.
   #
   # `origin` rides on the effect because the three producers are no longer
   # distinguishable at this arm; the door reports it on the drop warning.
