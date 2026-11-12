@@ -31,10 +31,13 @@
 # attested cicchetto bundle (issue 2642)".
 #
 # Refuses (exit 1, reason on stderr) on:
+#   - a <dist-dir> that is not a directory;
 #   - a dist without index.html (not a built bundle);
 #   - a dist holding anything but files and directories (a symlink would ride
 #     in the tarball while the manifest of regular files left it out);
 #   - a version that is not `X.Y.Z` or `X.Y.Z-<pre>` (it names the assets).
+# `pack` checks all of it before it touches <out-dir>, so a refusal leaves no
+# file under an asset's name for an upload glob to collect.
 # Usage errors exit 2.
 #
 # Contract pinned by test/infra/release_cic_dist_test.bats.
@@ -53,30 +56,36 @@ refuse() {
 
 check_dist() {
 	local dist="$1" odd
-	[ -d "$dist" ] || die_usage
+	[ -d "$dist" ] || refuse "${dist} is not a directory"
 	[ -f "$dist/index.html" ] || refuse "${dist} has no index.html — not a built cicchetto dist"
 	odd="$(find "$dist" ! -type f ! -type d -print)"
 	[ -z "$odd" ] || refuse "${dist} holds something that is neither a file nor a directory: ${odd%%$'\n'*}"
 }
 
-manifest() {
-	local dist="$1" path
-	check_dist "$dist"
+# The manifest lines of a dist check_dist has accepted.
+list() {
+	local path
 	(
-		cd "$dist"
+		cd "$1"
 		find . -type f -print | LC_ALL=C sort | while IFS= read -r path; do
 			sha256sum -- "${path#./}"
 		done
 	)
 }
 
+manifest() {
+	check_dist "$1"
+	list "$1"
+}
+
 pack() {
 	local dist="$1" out="$2" version="$3" name
 	[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] ||
 		refuse "version '${version}' is neither X.Y.Z nor X.Y.Z-<pre>"
+	check_dist "$dist"
 	name="cicchetto-dist-${version}"
 	mkdir -p "$out"
-	manifest "$dist" > "$out/$name.sha256"
+	list "$dist" > "$out/$name.sha256"
 	tar -C "$dist" -czf "$out/$name.tar.gz" .
 	cat "$out/$name.sha256"
 	(cd "$out" && sha256sum -- "$name.tar.gz" "$name.sha256")

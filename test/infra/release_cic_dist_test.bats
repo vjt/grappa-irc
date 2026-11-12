@@ -142,6 +142,35 @@ hex_of() {
     (cd "$out" && sha256sum -c "$BATS_TEST_TMPDIR/assets.sha256" >/dev/null)
 }
 
+@test "issue 2642 — a missing dist is refused by name, and nothing names it a usage error" {
+    run "$SCRIPT" manifest "$BATS_TEST_TMPDIR/no-such-dir"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"$BATS_TEST_TMPDIR/no-such-dir is not a directory"* ]]
+    [[ "$output" != *usage:* ]]
+}
+
+@test "issue 2642 — pack: a refused dist leaves the out dir untouched" {
+    # The out dir would otherwise hold a 0-byte file under the real asset's
+    # name, which is what an upload glob collects.
+    run "$SCRIPT" pack "$BATS_TEST_TMPDIR/no-such-dir" "$BATS_TEST_TMPDIR/out" 1.7.0
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"$BATS_TEST_TMPDIR/no-such-dir is not a directory"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/out" ]
+
+    rm "$DIST/index.html"
+    run "$SCRIPT" pack "$DIST" "$BATS_TEST_TMPDIR/out" 1.7.0
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no index.html"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/out" ]
+
+    # An out dir that already exists keeps exactly what it held.
+    mkdir -p "$BATS_TEST_TMPDIR/out"
+    printf 'keep\n' > "$BATS_TEST_TMPDIR/out/other"
+    run "$SCRIPT" pack "$DIST" "$BATS_TEST_TMPDIR/out" 1.7.0
+    [ "$status" -eq 1 ]
+    [ "$(ls "$BATS_TEST_TMPDIR/out")" = other ]
+}
+
 @test "issue 2642 — pack: a version that is not X.Y.Z or X.Y.Z-<pre> is refused" {
     for v in "" 1.7 v1.7.0 1.7.0/x '1.7.0~rc1'; do
         run "$SCRIPT" pack "$DIST" "$BATS_TEST_TMPDIR/out" "$v"
@@ -155,8 +184,6 @@ hex_of() {
     run "$SCRIPT"
     [ "$status" -eq 2 ]
     run "$SCRIPT" manifest
-    [ "$status" -eq 2 ]
-    run "$SCRIPT" manifest "$BATS_TEST_TMPDIR/no-such-dir"
     [ "$status" -eq 2 ]
     run "$SCRIPT" pack "$DIST" "$BATS_TEST_TMPDIR/out"
     [ "$status" -eq 2 ]
