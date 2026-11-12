@@ -44,6 +44,12 @@ name: release
 #              a docker_validation dry-run it re-exports the amd64 image from
 #              the build cache, so the pre-tag smoke finally smokes something.
 #              amd64 only: the arm64 leg is proven by the build.
+#   * cic    — builds the cicchetto bundle once, with the digest-pinned
+#              toolchain of scripts/bun.sh, and signs a build-provenance
+#              attestation over every file of it (issue 2642). Tag push only.
+#              Its tarball + per-file manifest ride to the release through
+#              publish, as OPTIONAL assets: a red leg here never stops the
+#              packages.
 #   * publish — attaches deb + rpm + pkg.tar.zst + the regenerated
 #              PKGBUILD/.SRCINFO to the GitHub Release. Runs even if a package
 #              job FAILED and attaches ONLY what built (#504): a broken distro
@@ -1713,9 +1719,75 @@ jobs:
           GRAPPA_SMOKE_PREVIOUS_VERSION: ${{ steps.prev.outputs.version }}
         run: scripts/smoke-release-image.sh
 
+  cic:
+    name: build + attest cicchetto dist
+    # issue 2642 — the browser runs whatever bundle a grappa serves, and nothing
+    # let anyone check WHAT it serves. This job builds the bundle once, from the
+    # tag, with the toolchain the dev scripts pin by digest (scripts/bun.sh: one
+    # bun, one runtime, one libc), then signs a build-provenance attestation over
+    # every file of the dist and over the two assets that carry it. publish
+    # attaches those assets with the packages.
+    #
+    # TAG PUSH ONLY, because of what an attestation says. It binds the bytes to
+    # the ref and commit that triggered the run. On a repair dispatch that ref is
+    # the dispatched branch while the tree is the tag's, so the statement would
+    # name a source that does not produce these bytes. On a validation dispatch
+    # it would put a public, permanent Sigstore entry on a branch build. A failed
+    # attempt is repaired by re-running it on the TAG's run, which keeps the
+    # tag's ref and commit.
+    #
+    # The assets are OPTIONAL in release_assets.sh, not expected: a red leg here
+    # must not hold back the packages, and a repair, which skips this job, must
+    # not mark a release partial for assets it never rebuilds.
+    #
+    # The job's permissions REPLACE the workflow's `contents: write`: the OIDC
+    # token Sigstore signs with, the attestation store, and a read-only
+    # checkout. Nothing here writes to the release.
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout (full history — the credit roll is part of the bundle)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # credits.sh bakes `git shortlog` into the bundle (#1773) and answers
+          # a shallow clone with no contributors: other bytes.
+          fetch-depth: 0
+
+      # The same two commands rebuild the bundle anywhere with docker, byte for
+      # byte (docs/OPERATIONS.md § "`cic_dist.sh` — the attested cicchetto
+      # bundle (issue 2642)"). `run build` also installs the e2e dependencies on
+      # its own; they do not enter the bundle.
+      - name: Build the bundle with the pinned toolchain
+        run: |
+          scripts/bun.sh install --frozen-lockfile
+          scripts/bun.sh run build
+
+      - name: Pack the dist and write its manifest
+        run: infra/packaging/cic_dist.sh pack cicchetto/dist cic-release "$(infra/packaging/version.sh)" > "$RUNNER_TEMP/cic-subjects"
+
+      # No `if:` and no `continue-on-error:` here or on the upload: a failed
+      # attestation must leave nothing for publish to attach.
+      - name: Attest every bundle file, the tarball and the manifest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/cic-subjects
+
+      - name: Upload the attested dist
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cicchetto-dist
+          path: cic-release/*
+
   publish:
     name: publish GitHub Release assets
-    needs: [deb, arch, rpm]
+    needs: [deb, arch, rpm, cic]
+    # `cic` is waited for so its artifact exists when the download below runs;
+    # it is skipped on every dispatch, and a skipped or red `cic` does not stop
+    # this job (`!cancelled()`).
     # Run once BOTH package jobs have settled, even if one FAILED (only a run
     # cancel skips this). A distro-specific breakage (#504 defect 2) must not
     # withhold the artifacts that built green: the attach step collects whatever

@@ -5,10 +5,10 @@
 #
 # Subcommands (contract pinned by test/infra/release_assets_test.bats —
 # fit the script to it):
-#   found <dir>       every file under <dir> matching an expected kind BY
-#                     NAME at ANY depth, sorted, one per line. Name-, not
-#                     path-matched: download-artifact sometimes unpacks the
-#                     tree flat.
+#   found <dir>       every file under <dir> matching an expected or optional
+#                     kind BY NAME at ANY depth, sorted, one per line. Name-,
+#                     not path-matched: download-artifact sometimes unpacks
+#                     the tree flat.
 #   missing <dir>     the human LABEL of each expected kind with no matching
 #                     file, one per line. Empty output = complete set.
 #   notice <dir>      nothing if complete; else a sentinel-delimited markdown
@@ -82,19 +82,32 @@ expected_kinds() {
 		'shottino.SRCINFO	Arch .SRCINFO recipe, client'
 }
 
+# OPTIONAL kinds: attached when they built, never counted missing (issue 2642).
+# The attested cicchetto bundle comes from a job that runs on a tag push only
+# (release.yml's `cic`, which says why). A repair dispatch skips it, so as an
+# expected kind it would mark every repaired release partial. And a red leg
+# there must not block the packages from shipping. `found` lists these, so
+# publish attaches them and sha256sums.sh checks them; `missing`, `notice`,
+# `publishable` and `apply-body` never see them.
+optional_kinds() {
+	printf '%s\n' \
+		'cicchetto-dist-*.tar.gz	cicchetto bundle, attested dist (.tar.gz)' \
+		'cicchetto-dist-*.sha256	cicchetto bundle, per-file manifest (.sha256)'
+}
+
 # Sentinel markers delimiting the partial-release block inside a release
 # body. `apply-body` keys strip/replace off these, never off the block
 # TEXT, so the block wording can change without breaking idempotency.
 SENTINEL_START='<!-- grappa:partial-release:start -->'
 SENTINEL_END='<!-- grappa:partial-release:end -->'
 
-# found <dir> — every expected-kind file under <dir>, by name at any depth,
-# sorted. The publish job's attach list.
+# found <dir> — every expected- or optional-kind file under <dir>, by name at
+# any depth, sorted. The publish job's attach list.
 found() {
 	local dir="$1" pat label
 	while IFS=$'\t' read -r pat label; do
 		find "$dir" -type f -name "$pat"
-	done < <(expected_kinds) | sort
+	done < <(expected_kinds; optional_kinds) | sort
 }
 
 # missing <dir> — the label of every expected kind with no matching file.
