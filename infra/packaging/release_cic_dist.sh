@@ -16,9 +16,10 @@
 #                                     (`tar -xzf … -C <dir>`), no top directory
 #   cicchetto-dist-<version>.sha256   the manifest of the same tree
 # and prints the attestation subjects on stdout: the manifest's lines, then the
-# two assets under their asset names. One attestation then covers every served
-# file by itself, so `gh attestation verify <file>` works on a file fetched
-# from a running grappa, without the manifest in hand.
+# two assets under their asset names. One attestation then covers every file
+# by itself, so `gh attestation verify <file>` works on any one of them
+# without the manifest in hand, including a copy a grappa serves, once that
+# grappa serves these exact bytes.
 #
 # WHY one implementation for producer and checker: the release job writes the
 # manifest with `manifest`, and whatever later compares a tree against it (a

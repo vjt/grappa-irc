@@ -6721,9 +6721,10 @@ The subjects are every file of the dist plus the two assets, in one
 attestation (`subject-checksums`). With only the tarball attested, checking a
 served file would take three steps: download the manifest, verify the
 manifest, look the file up in it. With every file a subject,
-`gh attestation verify <file>` works on a file fetched straight from a
-running grappa. The cost is 82 subjects today, against the action's limit of
-1024.
+`gh attestation verify <file>` works on any one file by itself, including a
+copy fetched from a running grappa once that grappa serves these exact bytes;
+no install path deploys them yet (Not covered, below). The cost is 82
+subjects today, against the action's limit of 1024.
 
 ### Tag push only
 
@@ -6735,7 +6736,11 @@ Sigstore entry on a branch build, and those modes exist to publish nothing.
 Neither may exist, so the job's `if:` admits `push` alone. The cost is that
 no dry run reaches the attest step: the first tag after this lands is its
 first execution. A transient failure is repaired by re-running the tag's own
-run, which keeps the tag's ref; a defect in the job takes a new tag.
+run, which keeps the tag's ref; a defect in the job takes a new tag. And
+because nothing else in the run is as irrevocable, the job runs the same
+tag-against-`VERSION` gate as deb/arch/rpm/docker before it builds: a tag cut
+without the bump must not get a statement for the previous version's assets
+while every sibling refuses the run.
 
 ### Optional, not expected
 
@@ -6745,8 +6750,12 @@ An expected kind fails both ways. A repair skips the job, so every repaired
 release would be marked partial for assets it was never meant to rebuild. And
 a red `cic` leg would stop `publish` from creating the release, holding back
 packages that have nothing to do with it. The price: a release can ship
-without the bundle, and only the red job says so. A deploy that needs the
-bundle will notice.
+without the bundle, and only the red job says so. That holds because the
+upload sets `if-no-files-found: error`; the action's default is a warning,
+which would have made a missing bundle a green job. A deploy that needs the
+bundle will notice. What keeps a skipped or red `cic` from skipping publish
+is publish's `!cancelled()`: since `cic` sits in its `needs`, that guard
+carries the promise, so it is pinned now beside the edge it defuses.
 
 ### The toolchain is `scripts/bun.sh`, not `setup-bun`
 
@@ -6757,14 +6766,23 @@ resolves to the latest release: the v1.6.4 `.deb` job's log reads
 Measured, same bun and same lock: vite under `node` changed 6 of 80 files
 against vite under bun. So the attested build runs in the digest-pinned image
 the dev scripts use, and anyone with docker reproduces it with the same two
-commands. The measurements, and the four inputs that do change the bytes:
+commands. The measurements, and the five inputs that do change the bytes:
 `docs/OPERATIONS.md` § "`release_cic_dist.sh` — the attested cicchetto bundle
 (issue 2642)".
 
+The fifth surfaced in review: `credits.sh` baked `git rev-parse --short`,
+whose width git sizes from the clone's packed object count (9 hex at 262143
+objects, 10 at 262144, measured on one commit). It now asks for `--short=9`,
+today's width, so the size of the building clone no longer reaches the
+credit roll.
+
 ### Not covered
 
-What the packages and the container image install. Each builds its own copy
-of the client, and none is checked against the manifest. Nor is what
-production serves: the jail builds with `npm` against no committed lockfile.
-An `npm install` of the same tree, simulated on Linux with node 24, differs
-in 10 of 80 files. Both belong to the deploy slice.
+What any install path puts in front of a browser. The packages, the container
+image and all three from-source deploys build their own copy of the client,
+and none is checked against the manifest. The jail builds with `npm` against
+no committed lockfile; an `npm install` of the same tree, simulated on Linux
+with node 24, differs in 10 of 80 files. Linux systemd runs an unfrozen
+`bun install`. The Docker Compose deploy runs the same pinned image and the
+same two commands as the release job and may well give the same files, but
+nobody has compared them. All of it belongs to the deploy slice.

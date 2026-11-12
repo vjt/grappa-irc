@@ -54,8 +54,9 @@ https://github.com/vjt/grappa-irc/releases/download/v<VERSION>/<asset>
 | `SHA256SUMS` | checksums of every asset on the release ([Checksums](#checksums)) | — |
 
 The set is the expected-asset table in `infra/packaging/release_assets.sh`,
-plus `SHA256SUMS`, which the publish job adds from the first release after
-v1.6.2 on. The pipeline refuses to **create** a release when an expected
+the two optional `cicchetto-dist-<V>` assets described below, and
+`SHA256SUMS`, which the publish job adds from the first release after v1.6.2
+on. The pipeline refuses to **create** a release when an expected
 package is missing (#1591). If a later run tops up an existing release with
 a package still missing, the release notes open with a "Partial release"
 warning that names it.
@@ -63,8 +64,9 @@ warning that names it.
 The two `cicchetto-dist-<V>` assets are an **optional** kind in that script:
 a release is complete without them, and neither the refusal nor the "Partial
 release" warning covers them. They are built only when a tag is pushed, never
-by a repair run, and a failure there does not hold back the packages. They
-appear from the first release after v1.6.4 on.
+by a repair run, and a failure there does not hold back the packages. The
+first release to carry them is the first tag cut with the `cic` job in
+`release.yml`; no earlier release has them.
 
 Two spellings are GitHub's, not ours. Use the published name:
 
@@ -126,7 +128,7 @@ download; it does not protect against someone who can modify the release.
 
 A browser runs whatever JavaScript the grappa instance serves it, the
 end-to-end encryption code included. These two assets let anyone check what
-a release's web client is, and compare it with what a server serves.
+a release's web client is, and compare a server's copy with it.
 
 - `cicchetto-dist-<V>.tar.gz` is the built client (`cicchetto/dist`). It
   extracts **flat**, with no top directory: `tar -xzf <file> -C <dir>`.
@@ -138,8 +140,8 @@ a release's web client is, and compare it with what a server serves.
 The release job signs a build-provenance attestation over **every file of the
 bundle and over both assets**, with GitHub's
 [artifact attestations](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
-(Sigstore). A single file, whether from the tarball or downloaded from a
-running grappa, verifies on its own:
+(Sigstore). Each of those files verifies on its own, without the manifest in
+hand:
 
 ```sh
 gh attestation verify <file> -R vjt/grappa-irc \
@@ -158,9 +160,20 @@ on a full clone, give the same files. See
 attested cicchetto bundle (issue 2642)" for the commands and for what was
 measured.
 
-What this does **not** cover: the bundle a package installs. The `.deb`,
-`.rpm` and Arch packages and the container image each build their own copy of
-the client and are not checked against this manifest.
+A file fetched from a running grappa verifies only if that server serves
+this release's bundle byte for byte, and **no install path deploys it yet**.
+Each one builds its own copy of the client, and none is checked against this
+manifest:
+
+- the `.deb` and `.rpm` packages (`infra/packaging/build.sh`) and the Arch
+  packages (`infra/packaging/aur/PKGBUILD`);
+- the container image (`Dockerfile.release`);
+- a FreeBSD jail install (`infra/freebsd/jail_cic_build.sh`, built with
+  `npm`);
+- a Linux systemd install (`infra/linux/cic_build.sh`);
+- the Docker Compose deploy (the `cicchetto-build` service in
+  `compose.yaml`). It runs the same pinned image and the same two commands as
+  the release job, but nothing has compared its output with the manifest.
 
 ## Bouncer package layout
 

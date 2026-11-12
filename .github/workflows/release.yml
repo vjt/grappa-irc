@@ -1772,10 +1772,11 @@ jobs:
             exit 1
           fi
 
-      # The same two commands rebuild the bundle anywhere with docker, byte for
-      # byte (docs/OPERATIONS.md § "`release_cic_dist.sh` — the attested
-      # cicchetto bundle (issue 2642)"). `run build` also installs the e2e
-      # dependencies on its own; they do not enter the bundle.
+      # The same two commands, at the tag on a full clone, rebuild the bundle
+      # anywhere with docker, byte for byte (docs/OPERATIONS.md §
+      # "`release_cic_dist.sh` — the attested cicchetto bundle (issue 2642)").
+      # `run build` also installs the e2e dependencies on its own; they do not
+      # enter the bundle.
       - name: Build the bundle with the pinned toolchain
         run: |
           scripts/bun.sh install --frozen-lockfile
