@@ -9037,8 +9037,129 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  # issue 2388 — the pending-auth window was a 10s SLA that DISCARDED a typed
+  # visitor IDENTIFY whose `+r` was merely LATE (29s measured in the #2380
+  # investigation), and the password is unrecoverable once dropped. It is now
+  # a CEILING, the same shape as #2380's `@autojoin_defer_ms`: the release is
+  # the normalized identity transition, and only the "no identity ever" path
+  # waits the number out (and still discards, which is the fail-safe).
+  describe "pending-auth ceiling (issue 2388)" do
+    # The production default is the thing under test: no override here.
+    # Before this change the field did not exist and the timer was 10s. The
+    # field alone pins nothing the bug was about — what decides whether a
+    # 29s `+r` still finds the slot is how long the ARMED timer runs — so the
+    # IDENTIFY is staged and the live timer is read back.
+    test "production default: an IDENTIFY arms a 60s ceiling, not the old 10s" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      {:ok, :no_persist} =
+        Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
+
+      state = SessionStateHelpers.fetch(pid)
+      assert SessionStateHelpers.pending_auth_timeout_ms(state) == 60_000
+
+      # Milliseconds left on the live timer: far past the 29s measured in
+      # #2380, never above the ceiling itself.
+      assert Process.read_timer(SessionStateHelpers.pending_auth_timer(state)) in 50_001..60_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # The discard is the fail-safe (a wrong password must never reach the
+    # visitor DB), so it stays — but it says so now, and names the subject
+    # KIND: the silent `debug` line is why a 29s `+r` took a prod log read to
+    # find (#2380's lesson). No `elapsed_ms`: the only value available at the
+    # timer is the ceiling constant, which #1960's rule forbids without
+    # `:attribution`. The secret must never appear in the log.
+    test "no identity: the slot is discarded at the ceiling, logged, and the secret never printed" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, credential} = setup_user_and_network(port)
+
+      {:ok, base_plan} = SessionPlan.resolve(credential)
+      plan = Map.put(base_plan, :pending_auth_timeout_ms, 300)
+      {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      assert {:ok, %{identified: false}} = Session.session_snapshot({:user, user.id}, network.id)
+
+      log =
+        capture_log(fn ->
+          {:ok, :no_persist} =
+            Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
+
+          # Past the seam ceiling, so the timer itself fires.
+          Process.sleep(500)
+        end)
+
+      state = SessionStateHelpers.fetch(pid)
+      assert is_nil(SessionStateHelpers.pending_auth(state))
+      assert is_nil(SessionStateHelpers.pending_auth_timer(state))
+
+      assert log =~ "[warning] pending IDENTIFY discarded: no identity before the ceiling"
+      refute log =~ "session is identified"
+      assert log =~ "subject_kind=user"
+      refute log =~ "elapsed_ms"
+      refute log =~ "s3cret"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # The release is the `:acquired` TRANSITION, so an IDENTIFY sent while the
+    # session is ALREADY identified gets none, and its slot waits the ceiling
+    # out as well. "No identity" would be false there: the line says what it
+    # observed at the discard.
+    test "already identified: the discard says the session is identified, not that there is no identity" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, credential} = setup_user_and_network(port)
+
+      {:ok, base_plan} = SessionPlan.resolve(credential)
+      plan = Map.put(base_plan, :pending_auth_timeout_ms, 300)
+      {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      nick = SessionStateHelpers.nick(SessionStateHelpers.fetch(pid))
+
+      send(
+        pid,
+        {:irc, %Message{command: :mode, params: [nick, "+r"], prefix: {:server, "irc.example.test"}, tags: %{}}}
+      )
+
+      assert {:ok, %{identified: true}} = Session.session_snapshot({:user, user.id}, network.id)
+
+      log =
+        capture_log(fn ->
+          {:ok, :no_persist} =
+            Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
+
+          # Past the seam ceiling, so the timer itself fires.
+          Process.sleep(500)
+        end)
+
+      state = SessionStateHelpers.fetch(pid)
+      assert is_nil(SessionStateHelpers.pending_auth(state))
+      assert is_nil(SessionStateHelpers.pending_auth_timer(state))
+      assert {:ok, %{identified: true}} = Session.session_snapshot({:user, user.id}, network.id)
+
+      assert log =~
+               "[warning] pending IDENTIFY discarded: session is identified, " <>
+                 "but no identity transition released the slot before the ceiling"
+
+      refute log =~ "no identity before the ceiling"
+      assert log =~ "subject_kind=user"
+      refute log =~ "s3cret"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   # #129: the register→auth-code flow grants +r minutes-to-hours after
-  # REGISTER, far outside the 10s `pending_auth` window. A captured
+  # REGISTER, far outside the `pending_auth` ceiling (issue 2388). A captured
   # REGISTER secret is staged in a SEPARATE, UNTIMED slot
   # (`pending_registration_secret`) that survives the `pending_auth`
   # timeout and is committed on the same +r transition. Register wins if

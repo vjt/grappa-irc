@@ -20,6 +20,8 @@ defmodule Grappa.ScrollbackHelpers do
     top_level?: true,
     deps: [Grappa.Repo, Grappa.Scrollback]
 
+  import Ecto.Query
+
   alias Grappa.Repo
   alias Grappa.Scrollback.Message
 
@@ -57,5 +59,22 @@ defmodule Grappa.ScrollbackHelpers do
     end)
     |> Enum.chunk_every(2_000)
     |> Enum.each(&Repo.insert_all(Message, &1))
+  end
+
+  @doc """
+  issue 2311 — the `server_time` of every row `user_id` holds in
+  `(network_id, channel)`, oldest first. What the seed-spacing tests read
+  back: the spacing they assert is the gaps between consecutive values.
+  """
+  @spec server_times(Ecto.UUID.t(), integer(), String.t()) :: [integer()]
+  def server_times(user_id, network_id, channel) do
+    query =
+      from(m in Message,
+        where: m.user_id == ^user_id and m.network_id == ^network_id and m.channel == ^channel,
+        order_by: [asc: m.server_time],
+        select: m.server_time
+      )
+
+    Repo.all(query)
   end
 end

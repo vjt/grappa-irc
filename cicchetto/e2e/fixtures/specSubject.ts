@@ -29,6 +29,8 @@ import { AUTOJOIN_CHANNELS, getSeededAdmin, NETWORK_SLUG } from "./seedData";
 // what the whole scroll/marker family of specs is calibrated against.
 const SEED_COUNT = 200;
 const SEED_SENDER = "seed-bot";
+// …and the seeder's 100ms between rows (its `@gap_ms`): 200 rows ≈ 20s.
+export const SEED_GAP_MS = 100;
 const PASSWORD = "test-password-not-secret";
 
 export type SpecSubject = {
@@ -49,8 +51,16 @@ function subjectNameFor(testInfo: TestInfo): string {
   return `s${digest.slice(0, 8)}`;
 }
 
-export function provisionSpecSubject(testInfo: TestInfo): Promise<SpecSubject> {
-  return provision(testInfo, subjectNameFor(testInfo), true);
+// #2311 — the seed is calibrated for scroll density (200 rows ≈ 20s of
+// corpus), which is exactly ONE day separator, so a spec about the day
+// boundary has nothing to cross. `seedGapMs` is the spacing between rows, and
+// the newest row stays at "now" whatever it is. A spec widens it through the
+// `specSeed` fixture option (`test.use({ specSeed: { seedGapMs } })`), whose
+// default is `SEED_GAP_MS`.
+export type SpecSeed = { seedGapMs: number };
+
+export function provisionSpecSubject(testInfo: TestInfo, seed: SpecSeed): Promise<SpecSubject> {
+  return provision(testInfo, subjectNameFor(testInfo), seed);
 }
 
 // issue 2430 — a SECOND subject in the same test, for specs about two people
@@ -65,10 +75,14 @@ export function provisionPeerSubject(testInfo: TestInfo, role: string): Promise<
   const digest = createHash("sha1")
     .update([...testInfo.titlePath, role].join("\u0000"))
     .digest("hex");
-  return provision(testInfo, `p${digest.slice(0, 8)}`, false);
+  return provision(testInfo, `p${digest.slice(0, 8)}`, null);
 }
 
-async function provision(testInfo: TestInfo, name: string, seed: boolean): Promise<SpecSubject> {
+async function provision(
+  testInfo: TestInfo,
+  name: string,
+  seed: SpecSeed | null,
+): Promise<SpecSubject> {
   const admin = getSeededAdmin();
 
   const res = await fetch(`${GRAPPA_BASE_URL}/admin/test/subject`, {
@@ -80,13 +94,15 @@ async function provision(testInfo: TestInfo, name: string, seed: boolean): Promi
       network_slug: NETWORK_SLUG,
       nick: name,
       autojoin_channels: AUTOJOIN_CHANNELS,
-      seed: seed
-        ? AUTOJOIN_CHANNELS.map((channel) => ({
-            name: channel,
-            seed_count: SEED_COUNT,
-            seed_sender: SEED_SENDER,
-          }))
-        : [],
+      seed:
+        seed === null
+          ? []
+          : AUTOJOIN_CHANNELS.map((channel) => ({
+              name: channel,
+              seed_count: SEED_COUNT,
+              seed_sender: SEED_SENDER,
+              seed_gap_ms: seed.seedGapMs,
+            })),
     }),
   });
 

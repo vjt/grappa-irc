@@ -42,9 +42,11 @@
 # that survives a green run.
 #
 # What it reports, per service:
-#   - the largest silence between consecutive timestamped lines, and when
-#     it started. A quiet stack still logs its 5 s healthcheck cadence, so
-#     a maxgap materially above that is the signal.
+#   - the largest silence before a timestamped line, counted from the
+#     latest stamp seen so far (a line stamped behind it is out of order
+#     and worth no silence), and when it started. A quiet stack still logs
+#     its 5 s healthcheck cadence, so a maxgap materially above that is the
+#     signal.
 #   - every silence at or over THRESH seconds, individually.
 #   - counts of the damage signatures that accompany the regime: a
 #     statement or a checked-out connection held for 30-something seconds
@@ -147,6 +149,17 @@ function summary_line(svc, nlines, mg, mat) {
         CNT["db30"], CNT["idle30"], CNT["dropped"], CNT["saturated"], \
         CNT["interrupted"], CNT["orphaned"], CNT["lockheld"], CNT["lockstall"], \
         CNT["lockstall_resolved"], CNT["lockstall_unattributed"], CNT["lockstall_nif"])
+}
+
+# Days since a fixed epoch for a Gregorian date, so consecutive days differ
+# by exactly 1 across month, year and leap-day boundaries. January and
+# February count as months 13 and 14 of the year before, which puts the
+# leap day at the end of a year, where the month term needs no leap rule.
+# The arguments come from `substr`, i.e. STRINGS, and a string compares
+# with a number as a string ("08" < 3 is true): hence `m + 0`.
+function day_number(y, m, d) {
+    if (m + 0 < 3) { y--; m += 12 }
+    return 365 * y + int(y / 4) - int(y / 100) + int(y / 400) + int((153 * (m - 3) + 2) / 5) + d
 }
 
 function bail(msg) {
@@ -321,18 +334,37 @@ BEGIN {
     # `docker logs --timestamps` prefixes RFC3339: 2026-08-16T12:09:04.535…Z.
     # Positions rather than a regex — this runs over a million lines.
     if (substr($0, 5, 1) == "-" && substr($0, 11, 1) == "T") {
+        day = day_number(substr($0, 1, 4), substr($0, 6, 2), substr($0, 9, 2))
         t = substr($0, 12, 2) * 3600 + substr($0, 15, 2) * 60 + substr($0, 18, 9)
+        ordered = 1
         if (prev >= 0) {
-            d = t - prev
-            if (d < 0) d += 86400          # midnight rollover
+            # #2443 — the delta is read from the date as well as the time.
+            # From time of day alone, midnight had to be guessed, and every
+            # guess misread something: a step back of a few ms became an
+            # 86400 s silence, and a true silence of more than half a day
+            # became disorder.
+            d = (day - prevday) * 86400 + t - prev
+            if (d < 0) {
+                # Out of order, not silent: `docker logs` interleaves a
+                # container's stdout and stderr, so concurrent lines can
+                # arrive a few ms out of order.
+                d = 0
+                # ...and this line does NOT become the origin of the next
+                # delta: it is behind the high-water stamp, and measuring
+                # from it would count the reorder skew a second time.
+                ordered = 0
+            }
             if (d > maxgap) { maxgap = d; maxat = prevstamp }
             if (d >= THRESH) {
                 ngap++
                 printf "%s\tGAP\t%.1f\t%s -> %s\n", SVC, d, prevstamp, substr($0, 12, 12)
             }
         }
-        prev = t
-        prevstamp = substr($0, 12, 12)
+        if (ordered) {
+            prev = t
+            prevday = day
+            prevstamp = substr($0, 12, 12)
+        }
     }
 
     count_signatures($0)

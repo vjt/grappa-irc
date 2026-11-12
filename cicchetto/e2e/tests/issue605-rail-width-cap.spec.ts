@@ -21,9 +21,35 @@
 // This is the WIRING proof (feedback_ux_e2e_mandatory): vitest/jsdom is
 // blind to grid track sizing, so only real browser layout can assert the
 // cap. We reproduce morph's condition deterministically by rewriting the
-// seeded network's `connection.server` to a long IPv6 at the
-// `GET /networks` boundary — the same store hydration path #474 asserts
-// against — then measure the rail's real bounding box.
+// seeded network's `connection.server` to a long IPv6 at the boundary the
+// card's data actually crosses, then measure the rail's real bounding box.
+//
+// #2258 — WHERE THAT BOUNDARY IS, read off the code rather than guessed:
+//   * `ServerInfoCard` renders `connection.server:port` from
+//     `props.network.connection`; `RailContext` feeds that prop
+//     `networkBySlug(...)`.
+//   * `networkBySlug` (lib/networks.ts) resolves it from the `networks`
+//     resource, whose `createResource` fetcher fills it from
+//     `listNetworks()` ALONE — i.e. `GET /networks`. The resource's other
+//     two writers carry no `connection`: `mutateNetworkNick` patches `nick`
+//     and nothing else, and the identity purge empties it
+//     (`mutateNetworksResource([])`).
+//   * `GET /boot` (#1679) answers the same rows server-side
+//     (`boot_controller.ex`), but cic has NO consumer for it: grepping
+//     `cicchetto/src` for a `/boot` request finds only the service worker's
+//     navigation denylist. It is not a door today, so it is NOT stubbed:
+//     an arm nothing exercises rots silently and would lie exactly when a
+//     client starts reading it. Whoever makes cic boot from /boot adds that
+//     door to the stub below, against /boot's own shape.
+// So there is ONE door, and the red run was not a second fetch — it was
+// `page.route` LOSING the request. That failure is measured, three times,
+// and `fixtures/fetchInPage.ts` documents it, including on
+// `webkit-iphone-15`, the very leg that went red here (#1702). A route that
+// is not applied hands the page the REAL rows for the whole window, which is
+// exactly the shape recorded on PR 2257: not a race, the real testnet
+// `172.18.0.4:6667` across nine locator resolutions over five seconds.
+// The rewrite therefore happens IN THE PAGE — `window.fetch` is wrapped
+// before any app script runs — below the layer that can lose it.
 //
 // TWO engines on purpose (feedback_playwright_webkit_not_ios_scroll:
 // "CSS=@webkit"). `fit-content()` never shrinks a track below its
@@ -39,6 +65,8 @@
 
 import type { Page } from "@playwright/test";
 import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
+import { answerFetchInPage } from "../fixtures/fetchInPage";
+import { GRAPPA_BASE_URL } from "../fixtures/grappaApi";
 import { NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specUser, test } from "../fixtures/test";
 
@@ -66,30 +94,59 @@ async function boxWidth(page: Page, selector: string): Promise<number> {
   return Math.round(box.width);
 }
 
+// The one envelope that hands the card a `connection.server` is answered
+// HERE, in the page's own realm. Today that is `/networks` only (see the
+// header); when cicchetto starts booting from `GET /boot` (#1679), the new
+// door has to be added here too — and checked against /boot's own shape,
+// not assumed to match this one.
+//
+// Anchored at the start of the PATH, because `answerFetchInPage` tests the
+// ABSOLUTE URL: an unanchored `/networks` also matches `GET /admin/networks`
+// (`adminListNetworks`), whose envelope has another shape. The origin is
+// left open on purpose — the app's relative fetch resolves against the
+// page's `baseURL`, not `GRAPPA_BASE_URL`, which is the runner's own line to
+// grappa — so anchoring on `GRAPPA_BASE_URL` would match nothing at all.
+const NETWORKS_PATH = /^https?:\/\/[^/]+\/networks(\?|$)/;
+
+type ConnectionRow = { connection?: { server?: string } | null };
+
+function withLongServer(rows: ConnectionRow[]): ConnectionRow[] {
+  return rows.map((n) =>
+    n.connection ? { ...n, connection: { ...n.connection, server: LONG_IPV6 } } : n,
+  );
+}
+
+async function stubConnectionSources(page: Page, token: string): Promise<void> {
+  const headers = { authorization: `Bearer ${token}`, accept: "application/json" };
+  const answer = (body: unknown) => ({
+    status: 200,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  // The door the card actually reads (`listNetworks`). Answered for the
+  // boot fetch AND for every `connection_state_changed` refetch, because the
+  // stub wraps `window.fetch` rather than one request.
+  await answerFetchInPage(page, { url: NETWORKS_PATH, method: "GET" }, async () => {
+    const res = await fetch(`${GRAPPA_BASE_URL}/networks`, { headers });
+    // A real failure is not this spec's business: let it through so the app
+    // reports it exactly as it would with no stub at all.
+    if (!res.ok) return undefined;
+    return answer(withLongServer((await res.json()) as ConnectionRow[]));
+  });
+}
+
 // The shared assertion, run on both engines. Rewrites the seeded
 // network's dialled server to a long IPv6 BEFORE the SPA fetches
-// /networks (registered before loginAs, which goto's "/"), so the store
+// /networks (stubbed before loginAs, which goto's "/"), so the store
 // hydrates the wide-content card and any connection_state_changed refetch
 // stays patched. Then asserts the card renders that full IPv6 AND the
 // rail is capped — a pair that is unsatisfiable unless the cap binds (the
 // content wants ~380px), so it is not a tautology: the un-fixed
 // `max-content` baseline balloons and fails both assertions.
 async function assertServerRailCapped(page: Page): Promise<void> {
-  await page.route(
-    (url) => url.pathname === "/networks",
-    async (route) => {
-      const res = await route.fetch();
-      const rows = (await res.json()) as Array<{
-        connection?: { server?: string } | null;
-      }>;
-      const patched = rows.map((n) =>
-        n.connection ? { ...n, connection: { ...n.connection, server: LONG_IPV6 } } : n,
-      );
-      await route.fulfill({ response: res, json: patched });
-    },
-  );
-
   const vjt = specUser();
+  await stubConnectionSources(page, vjt.token);
   await loginAs(page, vjt);
 
   // Focus the server window (no WS-ready dance — server windows have no

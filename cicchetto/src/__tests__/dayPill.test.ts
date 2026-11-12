@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   type DaySeparatorSighting,
   pillDayAt,
-  placeOf,
-  type TopBandObservation,
+  placeOfRect,
   topBandRootMargin,
 } from "../lib/dayPill";
 
@@ -19,45 +18,48 @@ import {
 // place. A sign error in any of the three is silent — the pill just shows the
 // wrong date, or none.
 
-const obs = (isIntersecting: boolean, top: number, rootTop: number | null): TopBandObservation => ({
-  isIntersecting,
-  boundingClientRect: { top },
-  rootBounds: rootTop === null ? null : { top: rootTop },
-});
+// The pane's top edge and the band, in viewport coordinates: a separator's
+// box is described the same way, so `top` here is relative to the viewport.
+const PANE_TOP = 100;
+const BAND = 40;
+const box = (top: number) => ({ top, height: 20 });
 
-describe("placeOf — which side of the top band a separator was seen on", () => {
-  it("calls an intersecting separator BAND, wherever its box starts", () => {
-    // The root is already shrunk to the band by `rootMargin`, so intersecting
-    // IS "inside the band" — no arithmetic needed, and none wanted: the
-    // observer computed it against the real rects.
-    expect(placeOf(obs(true, 100, 100))).toBe("band");
-    expect(placeOf(obs(true, 80, 100))).toBe("band");
-    expect(placeOf(obs(true, 120, 100))).toBe("band");
+describe("placeOfRect — which side of the top band a separator's box is on", () => {
+  it("calls BAND a box that overlaps the strip, wherever it starts", () => {
+    // Inside the band, flush with the pane's top edge, and straddling it: the
+    // date is on screen in all three, so the pill must keep quiet.
+    expect(placeOfRect(box(130), PANE_TOP, BAND)).toBe("band");
+    expect(placeOfRect(box(100), PANE_TOP, BAND)).toBe("band");
+    expect(placeOfRect(box(90), PANE_TOP, BAND)).toBe("band");
   });
 
-  it("separates ABOVE from BELOW by the root's own top edge", () => {
-    // A non-intersecting separator is entirely on one side. Above means it has
-    // scrolled off the top: its day is the day of whatever is now at the top of
-    // the viewport, which is exactly what the pill has to say.
-    expect(placeOf(obs(false, 40, 100))).toBe("above");
-    expect(placeOf(obs(false, 160, 100))).toBe("below");
+  it("separates ABOVE from BELOW by the pane's own top edge", () => {
+    // Above means it has scrolled off the top: its day is the day of whatever
+    // is now at the top of the viewport, which is exactly what the pill has to
+    // say. This is the reading a skipped IntersectionObserver crossing used to
+    // lose (#2311): the box still answers, and nothing was ever delivered.
+    expect(placeOfRect(box(40), PANE_TOP, BAND)).toBe("above");
+    expect(placeOfRect(box(160), PANE_TOP, BAND)).toBe("below");
   });
 
-  it("treats the top edge itself as BELOW — the boundary belongs to the visible side", () => {
-    // Equality has to land somewhere and this is the conservative side: a
-    // separator whose top is exactly the root's top is fully visible, so the
-    // date is already on screen and the pill must not claim it has scrolled
-    // past. The intersecting case above would normally catch this first.
-    expect(placeOf(obs(false, 100, 100))).toBe("below");
+  it("ends the band where the strip ends: a box starting there is BELOW", () => {
+    // The strip is [paneTop, paneTop + band). A separator whose top sits on
+    // its lower edge is entirely clear of it, so its date is in flow and the
+    // pill must not claim it; one pixel higher it overlaps the strip.
+    expect(placeOfRect(box(PANE_TOP + BAND), PANE_TOP, BAND)).toBe("below");
+    expect(placeOfRect(box(PANE_TOP + BAND - 1), PANE_TOP, BAND)).toBe("band");
   });
 
-  it("declines to guess when the root box is unavailable", () => {
-    // `rootBounds` is null when the root is in another document — not reachable
-    // here, but the DOM types say it can be and the alternative is reading
-    // `undefined.top`. BELOW is the answer that shows no pill rather than the
-    // answer that shows a wrong one.
-    expect(placeOf(obs(false, 40, null))).toBe("below");
-    expect(placeOf(obs(false, 160, null))).toBe("below");
+  it("treats the top edge itself as visible, never as scrolled past", () => {
+    // A separator whose top is exactly the pane's top is fully on screen, so
+    // its date is in flow and the pill must not claim it has gone.
+    expect(placeOfRect(box(100), PANE_TOP, BAND)).not.toBe("above");
+  });
+
+  it("keeps a separator whose bottom just left the strip ABOVE", () => {
+    // top = -30, height = 20: the whole box is above the pane, so the day has
+    // scrolled past even though the box is only 30px up.
+    expect(placeOfRect(box(70), PANE_TOP, BAND)).toBe("above");
   });
 });
 

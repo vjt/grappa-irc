@@ -51,6 +51,7 @@ import { assertMessagePersisted, GRAPPA_BASE_URL, type SeededUser } from "../fix
 import { IrcPeer } from "../fixtures/ircClient";
 import { forwardPageDiagnostics } from "../fixtures/pageDiagnostics";
 import { getSeededAdmin, NETWORK_SLUG } from "../fixtures/seedData";
+import { SEED_GAP_MS } from "../fixtures/specSubject";
 import { expect, test } from "../fixtures/test";
 
 const SCROLL_TO_BOTTOM = '[data-testid="scroll-to-bottom"]';
@@ -108,7 +109,9 @@ async function provisionDeepSubject(
       network_slug: NETWORK_SLUG,
       nick: name,
       autojoin_channels: [channel],
-      seed: [{ name: channel, seed_count: SEED_ROWS, seed_sender: "seed-bot" }],
+      seed: [
+        { name: channel, seed_count: SEED_ROWS, seed_sender: "seed-bot", seed_gap_ms: SEED_GAP_MS },
+      ],
     }),
   });
   if (res.status !== 201) {
