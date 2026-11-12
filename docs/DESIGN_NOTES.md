@@ -6721,6 +6721,9 @@ sent it.
 the secret in `deferred_identify_secret`, and the one thing that sends it is
 the server's echo of a `NICK` onto the configured nick
 (`maybe_identify_on_reclaimed_nick/2`), whichever path sent that `NICK`.
+That includes an echo that lands while GhostRecovery still waits on its
+WHOIS (the operator's own `/nick`, read by the server first). Only an armed
+RecoverIdentity, which sends its own IDENTIFY, drops the held one unsent.
 
 - `:succeeded` — GhostRecovery emits `NICK <orig>` alone and no `IDENTIFY` of
   its own. Its echo releases the held one, exactly as on the #2253 reclaim, so
@@ -6750,4 +6753,5 @@ restages it, latest-wins, with the same secret.
 Same rule #2371 applies to REGISTER: the secret only counts on the configured
 nick. Tests: success = no IDENTIFY while the `NICK` back is unconfirmed, then
 exactly one once it is echoed, after the last `NICK <nick>`; timeout then
-reclaim = exactly one, released by the reclaim echo.
+reclaim = exactly one, released by the reclaim echo; an echo while the ghost
+waits on its WHOIS = exactly one, and the 311 that follows adds none.
