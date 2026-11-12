@@ -3,6 +3,7 @@
 // parsers, and the line count that keeps cic from handing grappa a message it
 // would refuse for length.
 import { describe, expect, it } from "vitest";
+import { atNick } from "../lib/e2e/byNick";
 import {
   base64Unpadded,
   base64Url,
@@ -23,6 +24,7 @@ import {
   MAX_FRAGMENTS,
   type MasterList,
   PayloadError,
+  parseGkeyInner,
   parseKeys,
   parseMasterList,
   parseMsg,
@@ -356,6 +358,42 @@ describe("parsers", () => {
     expect(() => parseNack({ v: 1, ref: "R" })).toThrow(PayloadError);
     expect(() => parseMsg({ v: 2, bodies: { aaaaaaaaaaa: "B" } })).toThrow(PayloadError);
     expect(() => parseNack({ v: 2 })).toThrow(PayloadError);
+  });
+
+  it("parseGkeyInner reads a nick mapping keyed by a peer-chosen string through the brand", () => {
+    // Built from JSON text, as wire input arrives: an object literal
+    // would set the prototype instead of an own "__proto__" entry.
+    const parsed = parseGkeyInner(
+      JSON.parse(
+        `{"t":"gkey","ch":"#grappa","sid":"sid-1","key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","seq":0,"minter":"did-alice","holders":["did-alice"],"holderNicks":{"constructor":["did-alice"],"__proto__":["did-bob"]}}`,
+      ) as Record<string, unknown>,
+    );
+    expect(parsed.minter).toBe("did-alice");
+    expect(
+      parsed.holderNicks === undefined ? undefined : atNick(parsed.holderNicks, "constructor"),
+    ).toEqual(["did-alice"]);
+    expect(
+      parsed.holderNicks === undefined ? undefined : atNick(parsed.holderNicks, "__proto__"),
+    ).toEqual(["did-bob"]);
+    expect(
+      parsed.holderNicks === undefined ? undefined : atNick(parsed.holderNicks, "toString"),
+    ).toBeUndefined();
+    expect(Object.hasOwn({}, "__proto__")).toBe(false);
+  });
+
+  it("parseGkeyInner refuses a minter that is not a non-empty string", () => {
+    const base = {
+      t: "gkey",
+      ch: "#grappa",
+      sid: "sid-1",
+      key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      seq: 0,
+      holders: ["did-alice"],
+    };
+    expect(parseGkeyInner({ ...base, minter: "did-alice" }).minter).toBe("did-alice");
+    expect(parseGkeyInner(base).minter).toBeUndefined();
+    expect(() => parseGkeyInner({ ...base, minter: "" })).toThrow(PayloadError);
+    expect(() => parseGkeyInner({ ...base, minter: 1 })).toThrow(PayloadError);
   });
 });
 

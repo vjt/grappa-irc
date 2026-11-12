@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AccountStore } from "../lib/e2e/accountStore";
 import { nicksFrom } from "../lib/e2e/byNick";
 import type { E2eState } from "../lib/e2e/engine";
+import { newGroupSessionsState } from "../lib/e2e/groupSessions";
 import type { Account } from "../lib/e2e/vodozemac/vodozemac_binding";
 import { DEVICE_CAP, type IdBlock } from "../lib/e2e/wire";
 import { Grappa, routeApi } from "./helpers/e2eGrappa";
@@ -243,6 +244,7 @@ function lived(): E2eState {
     siblings: { "E-sib": { did: "AbZbARRDyBk", curve25519: "K-sib" } },
     copyq: { "E-sib": [{ peer: "bob", body: "hi", at: 1 }] },
     keysAsked: nicksFrom([["bob", { nick: "bob", at: 1 }]]),
+    groups: newGroupSessionsState(),
   };
 }
 

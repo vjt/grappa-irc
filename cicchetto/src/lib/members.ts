@@ -33,6 +33,52 @@ import { nickEquals } from "./nickEquals";
 
 export type { ChannelMembers, MemberEntry, MemberGender } from "./memberTypes";
 
+// Channel E2E rotation trigger (wire v4, CLIENT_PROTOCOL §4f): a
+// membership delta on a channel — who joined or left, and the roster
+// after the change — for the E2E client to distribute the epoch key on a
+// join and rotate it on a leave. `nick_change` and `mode` are not deltas:
+// the member did not leave. Listeners are module-level (not
+// identity-scoped): the E2E glue subscribes once per mount, and a logout
+// clears the rosters, so a stale listener would see no channel it knows.
+export type PresenceDelta = {
+  key: ChannelKey;
+  joined: string | null;
+  left: string | null;
+  /** The roster's nicks after the change, display spelling. */
+  members: string[];
+};
+
+type PresenceDeltaListener = (delta: PresenceDelta) => void;
+
+const presenceDeltaListeners = new Set<PresenceDeltaListener>();
+
+/** Subscribes to membership deltas; answers the unsubscribe. */
+export function onPresenceDelta(fn: PresenceDeltaListener): () => void {
+  presenceDeltaListeners.add(fn);
+  return () => {
+    presenceDeltaListeners.delete(fn);
+  };
+}
+
+/**
+ * Runs when the roster for a channel is seeded (a NAMES burst after
+ * joining, or a join reply): the E2E audit for that channel runs then,
+ * comparing the epoch's holders with the true roster — a member who left
+ * while every cic was closed is caught here, not only on a live leave.
+ * `members` is the seeded roster's nicks, display spelling.
+ */
+type MembersSeededListener = (key: ChannelKey, members: string[]) => void;
+
+const membersSeededListeners = new Set<MembersSeededListener>();
+
+/** Subscribes to roster seeds; answers the unsubscribe. */
+export function onMembersSeeded(fn: MembersSeededListener): () => void {
+  membersSeededListeners.add(fn);
+  return () => {
+    membersSeededListeners.delete(fn);
+  };
+}
+
 const exports_ = identityScopedStore((onIdentityChange) => {
   const [membersByChannel, setMembersByChannel] = createSignal<Record<ChannelKey, ChannelMembers>>(
     {},
@@ -47,6 +93,14 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   // signal write — no REST fetch path remains.
   const seedMembers = (key: ChannelKey, list: ChannelMembers): void => {
     setMembersByChannel((prev) => ({ ...prev, [key]: list }));
+    // The seed fires after the roster is stored, so a listener reads the
+    // seeded roster (not the one before the burst): the audit's second
+    // chance for a leave the socket missed.
+    for (const fn of [...membersSeededListeners])
+      fn(
+        key,
+        list.map((m) => m.nick),
+      );
   };
 
   // #1861 — the casemapping is passed IN rather than resolved here: this
@@ -58,6 +112,23 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     msg: ScrollbackMessage,
     casemapping: Casemapping,
   ): void => {
+    // The delta this event is, for the channel E2E listeners: a join or a
+    // leave, judged on the event's kind, not on the list diff (a nick
+    // change is both a leave and a join of the list, and neither for the
+    // key: the member did not leave). A join of a nick already listed, or
+    // a leave of one not listed, changes nothing and notifies nobody.
+    let joined: string | null = null;
+    let left: string | null = null;
+    if (msg.kind === "join") joined = msg.sender;
+    else if (msg.kind === "part" || msg.kind === "quit") left = msg.sender;
+    else if (msg.kind === "kick") {
+      left = typeof msg.meta.target === "string" ? msg.meta.target : null;
+    }
+    const before = membersByChannel()[key] ?? [];
+    const wasPresent = (nick: string): boolean =>
+      before.some((m) => nickEquals(m.nick, nick, casemapping));
+    const isPresent = (nick: string, list: ChannelMembers): boolean =>
+      list.some((m) => nickEquals(m.nick, nick, casemapping));
     setMembersByChannel((prev) => {
       const current = prev[key] ?? [];
 
@@ -112,6 +183,18 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         }
       }
     });
+    if (joined !== null && wasPresent(joined)) joined = null;
+    const afterList = membersByChannel()[key] ?? [];
+    if (left !== null && isPresent(left, afterList)) left = null;
+    if (joined !== null || left !== null) {
+      const delta: PresenceDelta = {
+        key,
+        joined,
+        left,
+        members: afterList.map((m) => m.nick),
+      };
+      for (const fn of presenceDeltaListeners) fn(delta);
+    }
   };
 
   // Test seam: lets unit tests inject a known-state member list without

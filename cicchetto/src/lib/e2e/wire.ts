@@ -10,7 +10,13 @@
 // Keys and signatures are standard base64 WITHOUT padding, as vodozemac
 // prints them; only a device id is base64url.
 
+import { type ByNick, nicksFrom } from "./byNick";
 import type { Olm } from "./olm";
+
+// The nick fold lives with the nick-keyed records now (`byNick`): the
+// wire module imports the brand from there, and re-exports the fold so
+// every existing `from "./wire"` site keeps working.
+export { fold } from "./byNick";
 
 /** The verbs cic sends through grappa's send door (it never sends KEYS: grappa answers KEYREQ). */
 export type SendVerb = "keyreq" | "pkmsg" | "msg" | "nack";
@@ -293,9 +299,200 @@ export function parseNack(payload: Record<string, unknown>): NackPayload {
   return { ref: str(payload, "ref") };
 }
 
-/** The ASCII case fold of a nick (CASEMAPPING=ascii, grappa's `canonical_target`). */
-export function fold(nick: string): string {
-  return nick.replace(/[A-Z]/g, (c) => c.toLowerCase());
+// --- channel E2E (wire v4, CLIENT_PROTOCOL §4f "Channel messages") --------
+//
+// A channel message's payload is the v4 group shape: ONE AEAD key per
+// channel epoch, shared by every member of the epoch, not one key per
+// sender. `ch` is the folded channel name, `sid` the epoch id, `body` the
+// AES-GCM ciphertext (nonce prepended, base64 unpadded), `sig` the sender's
+// Ed25519 device signature over `channelSigText(ch, sid, body)`. The
+// plaintext inside `body` is itself a typed inner message, the DM
+// convention (`t` names it): `{"t":"text","c":0,"body":"..."}` for a chat
+// message, `{"t":"grotate","c":0,"sid":"...","key":"..."}` for a periodic
+// rotation (see `groupSessions.ts`). `c` is the per-sender counter: it
+// lives INSIDE the authenticated part — the AEAD ciphertext and the
+// signature both cover it — and the envelope carries no plaintext
+// counter at all. Raw text is never a channel plaintext: without the `t`
+// the rotation message and a chat message are indistinguishable, and a
+// chat message that happens to parse as a rotation would be eaten as key
+// material. A key request is an envelope of its own, `t: "keyreq"`, with
+// no ciphertext and no signature: a newcomer asking the channel for the
+// epoch key.
+export const GROUP_WIRE_VERSION = 4;
+/** What a device signs a channel message with: `E.sign(CHANNEL_SIG_PREFIX + ch + ":" + sid + ":" + body)`. */
+export const CHANNEL_SIG_PREFIX = "irc-e2e:v4:chan:";
+
+/** The text a device signs for a channel message: the folded channel, the epoch, the body as sent. */
+export function channelSigText(ch: string, sid: string, body: string): string {
+  return `${CHANNEL_SIG_PREFIX}${ch}:${sid}:${body}`;
+}
+
+/** The v4 group payload of a channel `:msg` (see §4f). */
+export type ChannelPayload = {
+  v: 4;
+  t: "msg";
+  ch: string;
+  sid: string;
+  body: string;
+  sig: string;
+};
+
+export function parseChannelPayload(payload: Record<string, unknown>): ChannelPayload {
+  if (payload.v !== GROUP_WIRE_VERSION) throw new PayloadError("unsupported version");
+  if (payload.t !== "msg") throw new PayloadError("not a channel message");
+  const ch = str(payload, "ch");
+  const sid = str(payload, "sid");
+  const body = str(payload, "body");
+  const sig = str(payload, "sig");
+  if (ch === "" || sid === "" || body === "" || sig === "") {
+    throw new PayloadError("empty channel field");
+  }
+  return { v: GROUP_WIRE_VERSION, t: "msg", ch, sid, body, sig };
+}
+
+/** The v4 key-request envelope of a channel `:msg` (see §4f). */
+export type ChannelKeyreqPayload = { v: 4; t: "keyreq"; ch: string };
+
+export function parseChannelKeyreqPayload(payload: Record<string, unknown>): ChannelKeyreqPayload {
+  if (payload.v !== GROUP_WIRE_VERSION) throw new PayloadError("unsupported version");
+  if (payload.t !== "keyreq") throw new PayloadError("not a key request");
+  const ch = str(payload, "ch");
+  if (ch === "") throw new PayloadError("empty channel field");
+  return { v: GROUP_WIRE_VERSION, t: "keyreq", ch };
+}
+
+/**
+ * The key of a channel epoch, carried inside the pairwise Olm DM to a
+ * member (`{"t":"gkey","ch":"#grappa","sid":"...","key":"...","holders":["..."]}`):
+ * `key` is the 32-byte epoch key (base64), `sid` the epoch it opens,
+ * `holders` the dids of every device that received this epoch key (the
+ * distributor's roster snapshot at distribution time, in dids — never
+ * nicks). `holderNicks`, when present, names which nick each holder did
+ * belongs to (`{folded nick: [did, ...]}`): a holder that reads the
+ * inner learns the mapping, so any holder can tell a departed member's
+ * dids from a presence event naming only the nick. `sentTo`, when
+ * present, names the folded nicks the key was DM'd to whose device lists
+ * were unknown at distribution time: they may still receive it (the
+ * engine resolves their keys lazily), so they count as holders-to-be
+ * until their dids land. `minter`, when present, names the did that
+ * minted the epoch, so a re-distributed key still names its minter
+ * rather than its re-distributor. Never sent in the clear, never
+ * through the server.
+ */
+export type GkeyInner = {
+  t: "gkey";
+  ch: string;
+  sid: string;
+  key: string;
+  holders: string[];
+  /**
+   * The epoch's sequence number: 0 for a first epoch, +1 per rotation.
+   * A gkey imports only as a first epoch at seq 0, or as a successor
+   * at exactly the held seq + 1, or as a same-seq rival that wins the
+   * minter tie-break: any other seq is dropped, never stored.
+   */
+  seq: number;
+  /**
+   * The did that minted the epoch. Absent on a gkey sealed before the
+   * field existed: the importer then reads the sender as the minter.
+   */
+  minter?: string;
+  holderNicks?: ByNick<string[]>;
+  sentTo?: string[];
+};
+
+export function parseGkeyInner(inner: Record<string, unknown>): GkeyInner {
+  if (inner.t !== "gkey") throw new PayloadError("not a gkey");
+  const ch = str(inner, "ch");
+  const sid = str(inner, "sid");
+  const key = str(inner, "key");
+  if (ch === "" || sid === "" || key === "") throw new PayloadError("empty gkey field");
+  const holders = inner.holders;
+  if (
+    !Array.isArray(holders) ||
+    holders.length === 0 ||
+    !holders.every((h) => typeof h === "string" && h !== "")
+  ) {
+    throw new PayloadError("bad holders");
+  }
+  // An inner sealed before `seq` existed opens as a first epoch.
+  const seq = inner.seq;
+  if (seq !== undefined && (typeof seq !== "number" || !Number.isInteger(seq) || seq < 0)) {
+    throw new PayloadError("bad seq");
+  }
+  const parsed: GkeyInner = {
+    t: "gkey",
+    ch,
+    sid,
+    key,
+    holders: holders as string[],
+    seq: seq ?? 0,
+  };
+  // A gkey sealed before `minter` existed names no minter: the importer
+  // reads the sender as the minter then.
+  if (inner.minter !== undefined) {
+    if (typeof inner.minter !== "string" || inner.minter === "") {
+      throw new PayloadError("bad minter");
+    }
+    parsed.minter = inner.minter;
+  }
+  if (inner.holderNicks !== undefined) {
+    const byNick = inner.holderNicks;
+    if (
+      typeof byNick !== "object" ||
+      byNick === null ||
+      Array.isArray(byNick) ||
+      !Object.values(byNick).every(
+        (dids) => Array.isArray(dids) && dids.every((d) => typeof d === "string" && d !== ""),
+      )
+    ) {
+      throw new PayloadError("bad holderNicks");
+    }
+    // Read through the nick brand, never by indexing the parsed object:
+    // a nick is a peer-chosen string, and `constructor` would resolve
+    // to Object.prototype's member on a plain record.
+    parsed.holderNicks = nicksFrom(
+      Object.entries(byNick as Record<string, string[]>) as [string, string[]][],
+    );
+  }
+  if (inner.sentTo !== undefined) {
+    const sentTo = inner.sentTo;
+    if (!Array.isArray(sentTo) || !sentTo.every((n) => typeof n === "string" && n !== "")) {
+      throw new PayloadError("bad sentTo");
+    }
+    parsed.sentTo = sentTo as string[];
+  }
+  return parsed;
+}
+
+/**
+ * A periodic rotation, carried as a channel message encrypted under the OLD
+ * epoch's key: `key` is the NEW epoch's 32-byte key (base64), `sid` the new
+ * epoch it opens, `c` the sender's counter under the OLD epoch. The v4
+ * envelope around it still names the OLD `sid`: the reader decrypts with
+ * the old epoch key, then imports this one.
+ */
+export type GrotateInner = { t: "grotate"; c: number; sid: string; key: string };
+
+export function parseGrotateInner(inner: Record<string, unknown>): GrotateInner {
+  if (inner.t !== "grotate") throw new PayloadError("not a grotate");
+  const sid = str(inner, "sid");
+  const key = str(inner, "key");
+  if (sid === "" || key === "") throw new PayloadError("empty grotate field");
+  const c = inner.c;
+  if (typeof c !== "number" || !Number.isInteger(c) || c < 0) throw new PayloadError("bad c");
+  return { t: "grotate", c, sid, key };
+}
+
+/** A channel chat message as epoch plaintext: `c` is the sender's counter in this epoch, the `body` is shown, nothing else. */
+export type ChannelTextInner = { t: "text"; c: number; body: string };
+
+export function parseChannelTextInner(inner: Record<string, unknown>): ChannelTextInner {
+  if (inner.t !== "text") throw new PayloadError("not a channel text");
+  const body = str(inner, "body");
+  const c = inner.c;
+  if (typeof c !== "number" || !Number.isInteger(c) || c < 0) throw new PayloadError("bad c");
+  return { t: "text", c, body };
 }
 
 // How many lines a payload takes, counted the way grappa does when it

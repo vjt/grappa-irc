@@ -78,11 +78,17 @@ import {
 import { countCommand, rankCommands } from "./commandUsage";
 import { ctcpFrame, scrubCtcpDelimiters } from "./ctcpAction";
 import { documentTeardownEpoch, documentTornDownSince } from "./documentTeardown";
-import { encryptedChatDeleted, sendEncrypted } from "./encryptedChats";
+import {
+  channelEncrypted,
+  encryptedChatDeleted,
+  sendChannelEncrypted,
+  sendEncrypted,
+} from "./encryptedChats";
 import { type FramePreview, framePreview } from "./frameBudget";
 import { friendlyError } from "./friendlyError";
 import { identityScopedStore } from "./identityScopedStore";
 import { sigilRankForNetwork } from "./isupport";
+import { membersByChannel } from "./members";
 import { splitMessageLines } from "./messageLines";
 import { networkBySlug, networkIdBySlug, user } from "./networks";
 import { nickEquals } from "./nickEquals";
@@ -204,7 +210,10 @@ const loadPersistedDrafts = (): Record<ChannelKey, ComposeState> => {
 const persistDrafts = (states: Record<ChannelKey, ComposeState>): void => {
   const drafts: Record<string, string> = {};
   for (const [key, state] of Object.entries(states)) {
-    const encrypted = encryptedWindowPeer(decodeChannelKey(key as ChannelKey)?.name ?? "") !== null;
+    const decoded = decodeChannelKey(key as ChannelKey);
+    const encrypted =
+      encryptedWindowPeer(decoded?.name ?? "") !== null ||
+      channelEncrypted(decoded?.slug ?? "", decoded?.name ?? "");
     if (state.draft !== "" && !encrypted) drafts[key] = state.draft;
   }
   const keys = Object.keys(drafts);
@@ -236,7 +245,10 @@ export const draftFramePreview = (
   if (budget === null) return null;
   // issue 2512 — an encrypted query sends one encrypted message, sized by the
   // E2E engine (which says "too long" on the row), never split as PRIVMSGs.
+  // An encrypted channel is the same: one encrypted message under the
+  // channel's epoch, never split as PRIVMSGs.
   if (encryptedWindowPeer(target) !== null) return null;
+  if (channelEncrypted(networkSlug, target)) return null;
   const cmd = parseSlash(draft, aliases(), chantypesForSlug(networkSlug));
   if (cmd.kind !== "privmsg" && cmd.kind !== "me") return null;
   if (target === SERVER_WINDOW_NAME && cmd.kind === "privmsg") return null;
@@ -273,13 +285,17 @@ const actsToPeer = (networkSlug: string, peer: string, cmd: SlashCommand): boole
  * block said there is no burst, a block handed to a command (`/msg x ` and
  * twenty lines) fans out in clear as anywhere. issue 2543 — an ACTION for the
  * peer is said there too, so a block handed to one is never offered the
- * guard's way out, the text file that would put it on the upload host.
+ * guard's way out, the text file that would put it on the upload host. An
+ * encrypted channel is the same: what is said there goes out as ONE
+ * encrypted message under the channel's epoch.
  */
 export const sentEncrypted = (networkSlug: string, channelName: string, draft: string): boolean => {
-  const peer = encryptedWindowPeer(channelName);
-  if (peer === null) return false;
   const cmd = parseSlash(draft, aliases(), chantypesForSlug(networkSlug));
-  return isSaid(cmd) || actsToPeer(networkSlug, peer, cmd);
+  if (!isSaid(cmd)) {
+    const peer = encryptedWindowPeer(channelName);
+    return peer !== null && actsToPeer(networkSlug, peer, cmd);
+  }
+  return encryptedWindowPeer(channelName) !== null || channelEncrypted(networkSlug, channelName);
 };
 
 /**
@@ -304,6 +320,27 @@ const sayEncrypted = async (
     await sendEncrypted(networkSlug, peer, wireBody(said, action));
   } catch (e) {
     console.warn(`[e2e] could not send to ${peer}`, e);
+    throw e;
+  }
+};
+
+// A channel row out encrypted, under the channel's epoch: one encrypted
+// message however many lines the draft held, with the roster the channel
+// window holds. Empty body sends nothing. A send that never reached the
+// engine is logged and rethrown: the caller's pump hands the text back.
+const sayChannelEncrypted = async (
+  networkSlug: string,
+  channel: string,
+  body: string,
+  action: boolean,
+): Promise<void> => {
+  const said = scrubCtcpDelimiters(body);
+  if (said.trim() === "") return;
+  const members = membersByChannel()[channelKey(networkSlug, channel)]?.map((m) => m.nick) ?? [];
+  try {
+    await sendChannelEncrypted(networkSlug, channel, wireBody(said, action), members);
+  } catch (e) {
+    console.warn(`[e2e] could not send to ${channel}`, e);
     throw e;
   }
 };
@@ -760,6 +797,20 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // aims there, never at `$e2e:<nick>`, a window grappa has never heard of
     // (and whose 4xx feeds fail2ban, grappa-irc#160).
     const commandWindow = peer ?? submittedFrom;
+
+    // An encrypted channel, like an encrypted query: what is said goes
+    // out encrypted, as ONE message (`sayChannelEncrypted`), under the
+    // channel's epoch — never through the cleartext door. Commands still
+    // run in clear, same rule as the encrypted query: a command is not
+    // part of the encrypted conversation.
+    if (isSaid(cmd) && channelEncrypted(networkSlug, submittedFrom)) {
+      try {
+        await sayChannelEncrypted(networkSlug, submittedFrom, cmd.body, cmd.kind === "me");
+        return { ok: true };
+      } catch (e) {
+        return { error: friendlyError(e) };
+      }
+    }
 
     // CP13 S9 — server-window only accepts slash-commands. The window
     // has no IRC target a PRIVMSG could go to. Plain text gets a friendly

@@ -54,6 +54,8 @@ import {
   noNicks,
   setNick,
 } from "./byNick";
+import type { GroupSessionsState } from "./groupSessions";
+import { newGroupSessionsState } from "./groupSessions";
 import { idBlock } from "./keyBundle";
 import type { Olm } from "./olm";
 import type { SasRecord } from "./sas";
@@ -288,6 +290,15 @@ export type E2eState = {
   /** Master Ed25519 key → the SAS running with it (`sas.ts`): its public half. */
   sas: Record<string, SasRecord>;
   /**
+   * The channel E2E group sessions (`groupSessions.ts`): this device's
+   * outbound epoch per channel, and the inbound sessions per (channel,
+   * sender, session id). Stored with the account, sealed in the same
+   * record, so a reload keeps the epochs; a record sealed before this
+   * field existed opens with an empty store (`accountStore` spreads
+   * `newState()` underneath the stored state).
+   */
+  groups: GroupSessionsState;
+  /**
    * Device Ed25519 key → our sibling of that key. Its sessions are in
    * `sessions` with every other; a sibling is never in `devices`, and so
    * never bound to a nick.
@@ -323,6 +334,7 @@ export function newState(): E2eState {
     nextRef: 1,
     inbox: 0,
     sas: {},
+    groups: newGroupSessionsState(),
     siblings: {},
     copyq: {},
     keysAsked: noNicks(),
@@ -583,12 +595,50 @@ export class Engine {
   }
 
   /**
+   * The dids of the devices `nick`'s pinned master vouches for now: the
+   * roster's dids for the channel E2E steps (holders and roster are per
+   * did, never per nick). Undefined when the nick is not pinned — its
+   * devices are unknown, and the caller falls back to the nick, or skips
+   * the member until its list lands.
+   */
+  deviceDids(nick: string): string[] | undefined {
+    const master = atNick(this.state.pins, nick);
+    const record = master === undefined ? undefined : this.state.masters[master];
+    if (master === undefined || record === undefined) return undefined;
+    return this.trustedDevices(master).map((device) => device.did);
+  }
+
+  /**
+   * The dids of our own devices: this device, and the siblings our
+   * master's list still names. Our own nick is never a pinned peer, so
+   * `deviceDids` cannot list us — the channel E2E steps resolve our own
+   * nick through here.
+   */
+  ownDids(): string[] {
+    const dids = new Set<string>([this.deviceId()]);
+    for (const [ed25519, sibling] of Object.entries(this.state.siblings)) {
+      if (this.ourListNames(ed25519)) dids.add(sibling.did);
+    }
+    return [...dids];
+  }
+
+  /**
    * The device `ed25519` bound under `master` if that master vouches for it
    * now (rule 4: listed, or certified past the stored list, and not revoked).
    * A SAS verifies a master only through such a device (W "SAS").
    */
   trusted(master: string, ed25519: string): PeerDevice | undefined {
     return this.trustedDevices(master).find((device) => device.ed25519 === ed25519);
+  }
+
+  /**
+   * The Ed25519 key of the device `did` bound under `master`, if that
+   * master vouches for it now: the key a channel message's signature is
+   * verified against. Undefined when the did is not one of the master's
+   * trusted devices — a sender this cic has no key for.
+   */
+  trustedDid(master: string, did: string): string | undefined {
+    return this.trustedDevices(master).find((device) => device.did === did)?.ed25519;
   }
 
   /**
