@@ -1290,6 +1290,38 @@ describe("listMembers reads the STATUS, not just res.ok (#1430 audit, #1680 door
   });
 });
 
+describe("listCommonChannels (issue 2449)", () => {
+  it("returns the narrowed channels on 200", async () => {
+    stubFetch(200, { channels: ["#grappa", "#sbiffo"] });
+    await expect(api.listCommonChannels("t", "azzurra", "alice")).resolves.toEqual([
+      "#grappa",
+      "#sbiffo",
+    ]);
+  });
+
+  it("encodes the nick into the query string", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ channels: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await api.listCommonChannels("t", "azzurra", "alice bob");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/networks/azzurra/common-channels?nick=alice%20bob",
+      expect.anything(),
+    );
+  });
+
+  it("fails loud on a shape mismatch", async () => {
+    stubFetch(200, { channels: "#grappa" });
+    await expect(api.listCommonChannels("t", "azzurra", "alice")).rejects.toBeInstanceOf(
+      WireShapeError,
+    );
+  });
+});
+
 describe("converted REST doors fail loud on a shape mismatch (#1400)", () => {
   it("rejects an admin vhost response that is missing a required field", async () => {
     // The deploy-window case: cic ahead of its server. Before #1400 this

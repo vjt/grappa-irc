@@ -1355,6 +1355,10 @@ export type SessionWireMembersIndexPayload = {
   members: SessionWireMember[];
 };
 
+export type SessionWireCommonChannelsIndexPayload = {
+  channels: string[];
+};
+
 export type SessionWireJoinedPayload = {
   kind: "joined";
   network: string;

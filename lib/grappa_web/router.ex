@@ -800,6 +800,11 @@ defmodule GrappaWeb.Router do
 
     get "/channels/:channel_id/members", MembersController, :index
 
+    # Issue 2449 — channels in common with a nick, for the query window.
+    # Declared AFTER the `/channels/:channel_id/...` routes: different
+    # segment count, so no shadowing either way.
+    get "/common-channels", CommonChannelsController, :index
+
     get "/archive", ArchiveController, :index
     delete "/archive/:target", ArchiveController, :delete
 

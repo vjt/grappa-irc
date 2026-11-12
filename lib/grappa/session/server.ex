@@ -2939,6 +2939,50 @@ defmodule Grappa.Session.Server do
     {:reply, {:ok, counts}, state}
   end
 
+  # Returns the sorted channels the session shares with `nick`, from the
+  # live `state.members` map — no NAMES/WHO round trip. Public via
+  # `Grappa.Session.common_channels/3`.
+  #
+  # Issue 2449: the query window's "channels in common" line. SEEDED
+  # channels only, for the same reason `list_members/3` returns
+  # `:uninitialized`: a joined-but-pre-366 channel's member list is
+  # unknowable, and counting a peer as absent there would read as "not
+  # in common" for a channel they are about to turn out to share. A
+  # channel the operator has PARTed is gone from `state.members` and so
+  # is absent here too.
+  #
+  # The comparison is folded on BOTH sides (`fold_key/2`, #537) — NOT a
+  # `Map.has_key?` on the folded query, and NOT a reuse of
+  # `EventRouter.channels_with_member/2`. Member keys carry WIRE case:
+  # the JOIN handler stores the raw sender and the 353 handler stores
+  # the raw token (`split_mode_prefix/2` does not fold); only the
+  # CHANNEL keys and the userhost/peer-profile cache keys are folded at
+  # ingress (the M1 measurement's "member keys are folded" holds for
+  # those caches, not for this map — caught by the fold test, which
+  # failed on its first run). A folded query against raw keys misses
+  # ("ALICE" vs key "Alice"), so each member key is folded at read
+  # time. Linear scan with a fold per member — same order as
+  # `channels_with_member/2`, fine at real channel counts.
+  #
+  # The answer is the caller's OWN view: any nick is queryable, because
+  # the membership it reports is what this session has observed.
+  def handle_call({:common_channels, nick}, _, state) when is_binary(nick) do
+    folded = fold_key(state, nick)
+
+    channels =
+      state.members
+      |> Enum.filter(fn {channel, _} -> MapSet.member?(state.seeded_channels, channel) end)
+      |> Enum.filter(fn {_, ch_members} ->
+        Enum.any?(ch_members, fn {member_nick, _} ->
+          fold_key(state, member_nick) == folded
+        end)
+      end)
+      |> Enum.map(fn {channel, _} -> channel end)
+      |> Enum.sort()
+
+    {:reply, {:ok, channels}, state}
+  end
+
   # Returns a snapshot of the topic cache for `channel`. Serves from cache —
   # no upstream query. Public via `Grappa.Session.get_topic/3`.
   def handle_call({:get_topic, channel}, _, state) when is_binary(channel) do

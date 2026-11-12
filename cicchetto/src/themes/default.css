@@ -13234,6 +13234,45 @@ html.is-ios27-band .shell {
   color: var(--fg);
 }
 
+/* Issue 2449 — channels-in-common banner. Same in-flow slot as
+   `.peer-away-banner` (a row at the top of `.scrollback` in DM
+   windows, stacking directly under it), same dim panel, but NOT
+   italic — the channel names are navigation, not a status line. */
+.common-channels-banner {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 0.25rem 0.5rem 0.5rem 0.5rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  background: var(--bg-alt);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.common-channels-label {
+  color: var(--muted);
+}
+
+.common-channels-channel {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.common-channels-channel:hover {
+  text-decoration: underline;
+}
+
+.common-channels-sep {
+  color: var(--muted);
+}
+
 /* P-0e — invite-ack synthetic rows. Renders inline at the bottom of
    channel scrollback when the operator's /invite is acked by 341
    RPL_INVITING. NOT persisted; ephemeral per page-load. Visual: thin
