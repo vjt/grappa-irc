@@ -5194,6 +5194,66 @@ it. Pure shell like its sibling, so it runs under bats
 (`test/infra/release_sha256sums_test.bats`, which also pins the step's wiring
 in `release.yml`).
 
+### `cic_dist.sh` — the attested cicchetto bundle (issue 2642)
+
+`release.yml`'s `cic` job builds the web client once per tag and attests it.
+The job builds with `scripts/bun.sh`, the same digest-pinned `oven/bun` image
+the dev scripts use, on a `fetch-depth: 0` checkout. `cic_dist.sh pack` then
+writes `cicchetto-dist-<V>.tar.gz` and its per-file manifest
+`cicchetto-dist-<V>.sha256`, and prints the attestation subjects: every
+manifest line plus the two assets. `actions/attest-build-provenance` signs
+those subjects in one attestation (`subject-checksums`). publish attaches the
+two assets with the packages, so `SHA256SUMS` covers them too. How a reader
+verifies: `PACKAGING.md` § "The cicchetto bundle".
+
+**Tag push only.** An attestation names the ref and commit of the run that
+made it. A repair dispatch runs on the dispatched branch but checks out the
+tag's tree, so its attestation would name a source that does not build those
+bytes. A validation dispatch would put a public, permanent Sigstore entry on
+a branch build. If the job fails on a tag, re-run it **on the tag's own run**
+(`gh run rerun <run-id> --failed`): the re-run keeps the tag's ref and
+commit. A defect in the job itself takes a new tag, since a re-run replays
+the workflow as it was at that tag.
+
+**Optional, not expected.** `release_assets.sh` lists the two assets in
+`optional_kinds`. `found` includes them, so publish attaches them and
+`sha256sums.sh` checks them. `missing` and `publishable` ignore them. A repair
+skips the job, so as expected kinds they would mark every repaired release
+partial, and a red `cic` leg would block creating the release.
+
+**Rebuilding it.** At the tag, on a full clone:
+
+```sh
+scripts/bun.sh install --frozen-lockfile
+scripts/bun.sh run build
+infra/packaging/cic_dist.sh manifest cicchetto/dist | diff - cicchetto-dist-<V>.sha256
+```
+
+Measured on 2026-11-12, at `4e32d689d`, 80 files: two builds from a fresh
+`node_modules` each gave identical manifests. So did an arm64 host against an
+emulated amd64 one, and the debian `oven/bun:1.3.14` image against the alpine
+one that `Dockerfile.release` builds with. A one-byte change to a source
+string changed the main chunk, `index.html` and `service-worker.js`. Four
+inputs DO change the bytes, and the commands above hold all four still:
+
+- **What runs vite.** The same bun and the same `bun.lock`, but `vite` started
+  by `node` (installed beside bun, so its shebang wins) changed 6 of 80 files,
+  the main chunk included. The pinned image has no `node`. Root cause not
+  established.
+- **What resolves the dependencies.** `npm install` against `package.json`,
+  without `bun.lock`, changed 10 of 80 files.
+- **Where the output goes.** A source map's `sources` are relative to the map
+  file, so a different `--outDir` depth changed all 6 `.map` files and
+  nothing else. A virtual module's entry is relative to the filesystem root,
+  so the same `outDir` under a different absolute mount changed 1 `.map`.
+  `scripts/bun.sh` always mounts at `/app`, building into `dist`.
+- **The checkout depth.** `credits.sh` bakes `git shortlog` into the bundle
+  and gives a shallow clone no contributors. Read from the script, not
+  measured.
+
+Not measured: a build on the GitHub runner itself. The first tag push after
+this landed is the first run of the job and of the attest step.
+
 ### `prerelease_flag.sh` — the release marker, derived from the tag (#1636)
 
 **Every release the pipeline ever cut was published as a full release.**
