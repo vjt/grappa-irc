@@ -5478,11 +5478,14 @@ defmodule Grappa.Session.Server do
   # sent then would go to exactly the account it was held back from.
   #
   # One-shot: the slot is emptied whichever way this resolves, so the secret
-  # leaves at most once. If an identity sequence (RecoverIdentity) owns the
-  # nick it sends its own IDENTIFY, so the slot is dropped unsent rather than
-  # doubling it. Any rename onto the configured nick consumes it — the reclaim,
-  # or the operator's own `/nick` after a refused reclaim — because the nick in
-  # use is the right one either way. `Map.get` for #229 hot-reload safety.
+  # leaves at most once. If RecoverIdentity is mid-sequence it sends its own
+  # IDENTIFY, so the slot is dropped unsent rather than doubling it. An armed
+  # GhostRecovery is not that case: it sends no IDENTIFY (issue 2392), so an
+  # echo that lands while it still waits on its WHOIS — the operator's `/nick`,
+  # read by the server first — sends the held one, or nothing ever would. Any
+  # rename onto the configured nick consumes it — the reclaim, or the operator's
+  # own `/nick` after a refused reclaim — because the nick in use is the right
+  # one either way. `Map.get` for #229 hot-reload safety.
   @spec maybe_identify_on_reclaimed_nick(t(), t()) :: t()
   defp maybe_identify_on_reclaimed_nick(%{nick: prev}, %{nick: next} = state)
        when prev != next do
@@ -5497,7 +5500,7 @@ defmodule Grappa.Session.Server do
 
   @spec send_held_identify(t(), String.t()) :: t()
   defp send_held_identify(state, secret) do
-    if identity_sequence_armed?(state),
+    if match?(%RecoverIdentity{}, Map.get(state, :recover_identity)),
       do: state,
       else: send_perform_line(state, "PRIVMSG NickServ :IDENTIFY #{secret}")
   end
