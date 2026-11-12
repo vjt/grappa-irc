@@ -1757,6 +1757,20 @@ jobs:
           # a shallow clone with no contributors: other bytes.
           fetch-depth: 0
 
+      # The same gate as deb/arch/rpm/docker, and here it must hold BEFORE the
+      # attestation, which cannot be taken back: a tag cut without bumping
+      # VERSION would otherwise get a public statement for assets named after
+      # the previous version, on the very run every sibling job refused.
+      - name: Verify the tag matches the VERSION file
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          srcv="$(infra/packaging/version.sh)"
+          echo "tag=$tag VERSION=$srcv"
+          if [ "$tag" != "$srcv" ]; then
+            echo "::error::tag v$tag does not match the VERSION file ($srcv) — bump VERSION before cutting the tag"
+            exit 1
+          fi
+
       # The same two commands rebuild the bundle anywhere with docker, byte for
       # byte (docs/OPERATIONS.md § "`release_cic_dist.sh` — the attested
       # cicchetto bundle (issue 2642)"). `run build` also installs the e2e
@@ -1776,11 +1790,14 @@ jobs:
         with:
           subject-checksums: ${{ runner.temp }}/cic-subjects
 
+      # `path` is pack's out dir. Finding nothing there is red: the action's
+      # default is a warning, a green step with no artifact behind it.
       - name: Upload the attested dist
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cicchetto-dist
           path: cic-release/*
+          if-no-files-found: error
 
   publish:
     name: publish GitHub Release assets

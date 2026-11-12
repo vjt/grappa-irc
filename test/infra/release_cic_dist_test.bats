@@ -244,6 +244,41 @@ publish_needs_cic() {
     job_of "$1" publish | grep -qE '^    needs: \[([a-z, ]*, )?cic(, [a-z, ]*)?\]$'
 }
 
+# The pushed tag is the VERSION the assets are named from, checked before the
+# attestation, the one publication of the run that cannot be taken back.
+# deb/arch/rpm/docker each refuse a mismatch; a cic leg that went on would
+# sign assets of a version the rest of the run refused.
+cic_gates_tag_on_version() {
+    local job
+    job="$(job_of "$1" cic)"
+    grep -qxF '          tag="${GITHUB_REF_NAME#v}"' <<<"$job" &&
+        grep -qxF '          srcv="$(infra/packaging/version.sh)"' <<<"$job" &&
+        grep -qxF '          if [ "$tag" != "$srcv" ]; then' <<<"$job" &&
+        grep -qxF '            exit 1' <<<"$job" &&
+        awk '/^          if \[ "\$tag" != "\$srcv" \]; then$/ && !g { g = NR }
+             /uses: actions\/attest-build-provenance@/ && !a { a = NR }
+             END { exit !(g && a && g < a) }' <<<"$job"
+}
+
+# The upload collects the directory pack wrote, and finding nothing there is
+# red. upload-artifact's own default is a warning: the step stays green, no
+# artifact exists, and the release ships without the bundle.
+cic_uploads_what_pack_wrote() {
+    local job out
+    job="$(job_of "$1" cic)"
+    out="$(sed -nE 's#^.*release_cic_dist\.sh pack [^ ]+ ([^ ]+) .*$#\1#p' <<<"$job")"
+    [ -n "$out" ] &&
+        grep -qxF "          path: ${out}/*" <<<"$job" &&
+        grep -qxF '          if-no-files-found: error' <<<"$job"
+}
+
+# `!cancelled()` is what keeps a skipped or red cic from skipping publish.
+# Without an `if:` that overrides it, GitHub skips a job when one of its needs
+# did not succeed, and cic is skipped on every dispatch.
+publish_survives_cic() {
+    job_of "$1" publish | grep -qE '^    if: \$\{\{ !cancelled\(\) && '
+}
+
 @test "issue 2642 — the cic job attests on a tag push only, with scoped permissions" {
     cic_tag_push_only "$WORKFLOW" || {
         printf 'release.yml'"'"'s cic job is not gated to a tag push:\n' >&2
@@ -273,7 +308,24 @@ publish_needs_cic() {
     }
 }
 
-@test "issue 2642 — RED: the predicates reject a dispatch gate, a widened scope, a commented attest, a late attest" {
+@test "issue 2642 — the cic job refuses a tag that is not VERSION, uploads what pack wrote or goes red, and a skipped cic does not skip publish" {
+    cic_gates_tag_on_version "$WORKFLOW" || {
+        printf 'the cic job does not check the pushed tag against VERSION before it attests\n' >&2
+        return 1
+    }
+    cic_uploads_what_pack_wrote "$WORKFLOW" || {
+        printf 'the cic upload does not collect pack'"'"'s out dir with if-no-files-found: error:\n' >&2
+        job_of "$WORKFLOW" cic | grep -E '^          (path|if-no-files-found):' >&2
+        return 1
+    }
+    publish_survives_cic "$WORKFLOW" || {
+        printf 'publish'"'"'s if: does not open with !cancelled():\n' >&2
+        job_of "$WORKFLOW" publish | grep -E '^    if:' >&2
+        return 1
+    }
+}
+
+@test "issue 2642 — RED: the predicates reject each wiring defect they exist for" {
     local live="$BATS_TEST_TMPDIR/live.yml"
     cat > "$live" <<'EOF'
 jobs:
@@ -287,6 +339,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - name: Verify the tag matches the VERSION file
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          srcv="$(infra/packaging/version.sh)"
+          if [ "$tag" != "$srcv" ]; then
+            exit 1
+          fi
       - run: |
           scripts/bun.sh install --frozen-lockfile
           scripts/bun.sh run build
@@ -296,8 +355,12 @@ jobs:
         with:
           subject-checksums: ${{ runner.temp }}/cic-subjects
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: cic-release/*
+          if-no-files-found: error
   publish:
     needs: [deb, arch, rpm, cic]
+    if: ${{ !cancelled() && github.event_name == 'push' }}
 EOF
     # POSITIVE control: predicates broken into always-false would report every
     # RED below as a pass.
@@ -306,6 +369,9 @@ EOF
     cic_builds_pinned "$live"
     cic_attests_before_upload "$live"
     publish_needs_cic "$live"
+    cic_gates_tag_on_version "$live"
+    cic_uploads_what_pack_wrote "$live"
+    publish_survives_cic "$live"
 
     local v="$BATS_TEST_TMPDIR/v.yml"
 
@@ -337,4 +403,37 @@ EOF
     # publish no longer waiting for it.
     sed 's/    needs: \[deb, arch, rpm, cic\]/    needs: [deb, arch, rpm]/' "$live" > "$v"
     refute publish_needs_cic "$v"
+
+    # No tag gate at all.
+    awk '/^      - name: Verify the tag matches the VERSION file$/ { skip = 1; next }
+         skip && /^      - / { skip = 0 }
+         !skip' "$live" > "$v"
+    refute grep -q 'GITHUB_REF_NAME' "$v"
+    refute cic_gates_tag_on_version "$v"
+
+    # A gate that reports the mismatch and carries on.
+    sed '/^            exit 1$/d' "$live" > "$v"
+    refute cic_gates_tag_on_version "$v"
+
+    # The gate moved past the attestation.
+    awk '/^      - name: Verify the tag matches the VERSION file$/ { hold = 1 }
+         hold && /^      - / && !/Verify the tag/ { hold = 0 }
+         hold { gate = gate $0 "\n"; next }
+         { print }
+         /^          subject-checksums:/ { printf "%s", gate }' "$live" > "$v"
+    grep -q 'GITHUB_REF_NAME' "$v"
+    refute cic_gates_tag_on_version "$v"
+
+    # The upload looking somewhere pack never wrote.
+    sed 's|^          path: cic-release/\*$|          path: cic-out/*|' "$live" > "$v"
+    refute cic_uploads_what_pack_wrote "$v"
+
+    # An empty upload let through as a warning.
+    sed 's/^          if-no-files-found: error$/          if-no-files-found: warn/' "$live" > "$v"
+    refute cic_uploads_what_pack_wrote "$v"
+
+    # publish without the guard that outlives a skipped cic.
+    sed 's/^    if: \${{ !cancelled() && /    if: ${{ /' "$live" > "$v"
+    grep -qxF "    if: \${{ github.event_name == 'push' }}" "$v"
+    refute publish_survives_cic "$v"
 }
