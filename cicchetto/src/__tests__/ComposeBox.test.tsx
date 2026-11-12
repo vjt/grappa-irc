@@ -2543,7 +2543,13 @@ describe("ComposeBox — the `/` menu and a refusing composer (issue 2584)", () 
     vi.mocked(compose.isDraining).mockReturnValue(false);
   });
 
-  const menuEntries = () => screen.queryAllByRole("option").map((el) => el.textContent);
+  // issue 2616 — a row is now the verb PLUS a muted caption, so the row's own
+  // textContent is "whoiswho is on the other end…". These assertions are about
+  // WHICH verbs the menu offers, so read the verb span.
+  const menuEntries = () =>
+    screen
+      .queryAllByRole("option")
+      .map((el) => el.querySelector(".command-menu-verb")?.textContent);
 
   it("offers commands for a lone `/` in a writable composer", async () => {
     const compose = await import("../lib/compose");

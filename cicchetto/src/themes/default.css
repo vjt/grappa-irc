@@ -6106,7 +6106,9 @@ html.is-ios27-band .shell {
   z-index: 45;
   display: flex;
   flex-direction: column;
-  min-width: 10rem;
+  /* issue 2616 — wide enough for a caption under the verb. It still never
+     passes the viewport: the max-width is what clips a long line on a phone. */
+  min-width: 18rem;
   max-width: calc(100% - 1rem);
   background: var(--bg-alt);
   border: 1px solid var(--border);
@@ -6118,14 +6120,39 @@ html.is-ios27-band .shell {
   color: var(--fg);
   border: none;
   /* A thumb's row (#306's floor): on a phone a tap here is the way to pick a
-     command that does not depend on the swipe (issue 2356). */
+     command that does not depend on the swipe (issue 2356). Two lines are
+     still one tap target. */
   min-height: var(--tap-min);
   padding: 0.3rem 1rem;
   font-family: var(--font-mono);
   font-size: var(--font-size);
   text-align: left;
   cursor: pointer;
+  /* issue 2616 — the verb over its caption, both flush left. The row clips
+     rather than wrapping: a wrapped caption would make the menu cover the
+     whole scrollback on a phone. */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.command-menu-verb {
   white-space: nowrap;
+}
+
+/* issue 2616 — the muted line under the verb: prose, so not the mono face,
+   a touch smaller, one line with an ellipsis. */
+.command-menu-caption {
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 0.85em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .command-menu-entry:hover,

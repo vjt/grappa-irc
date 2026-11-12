@@ -52,15 +52,22 @@ const mount = () => {
 const type = (textarea: HTMLTextAreaElement, value: string) =>
   fireEvent.input(textarea, { target: { value } });
 
+const options = (root: ParentNode) =>
+  Array.from(root.querySelectorAll("[data-testid=command-menu] [role=option]"));
+
+// issue 2616 — a row is now the verb AND its caption, so the verb is read off
+// its own span: these tests are about which commands are offered, not about
+// the prose under them (the caption has its own tests below).
 const entries = (root: ParentNode) =>
-  Array.from(root.querySelectorAll("[data-testid=command-menu] [role=option]")).map(
-    (el) => el.textContent,
-  );
+  options(root).map((el) => el.querySelector(".command-menu-verb")?.textContent ?? el.textContent);
+
+const captions = (root: ParentNode) =>
+  options(root).map((el) => el.querySelector(".command-menu-caption")?.textContent ?? null);
 
 const selected = (root: ParentNode) =>
-  Array.from(root.querySelectorAll("[data-testid=command-menu] [role=option]"))
+  options(root)
     .filter((el) => el.getAttribute("aria-selected") === "true")
-    .map((el) => el.textContent);
+    .map((el) => el.querySelector(".command-menu-verb")?.textContent ?? el.textContent);
 
 describe("ComposeBox — the `/` command menu (issue 2584)", () => {
   beforeEach(() => {
@@ -133,6 +140,34 @@ describe("ComposeBox — the `/` command menu (issue 2584)", () => {
     expect(entries(container)).toEqual([]);
   });
 
+  // issue 2616 — the muted line under each verb, and the alias rule.
+  it("shows a caption under the verb, inside the row", () => {
+    const { container, textarea } = mount();
+    type(textarea, "/whois");
+
+    expect(captions(container)).toEqual(["who is on the other end: user, host, real name"]);
+    // Inside the option: the row's accessible name carries the prose, with no
+    // aria-label to keep in step.
+    const option = options(container)[0];
+    if (option === undefined) throw new Error("no /whois entry");
+    expect(option.textContent).toContain("/whois");
+    expect(option.textContent).toContain("who is on the other end");
+  });
+
+  it("captions an alias with its expansion, not a description it has not got", async () => {
+    setToken("tok");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ aliases: { zz: "whois $1" } }), { status: 200 }),
+    );
+    await refreshAliases();
+    const { container, textarea } = mount();
+
+    type(textarea, "/zz");
+
+    expect(entries(container)).toEqual(["/zz"]);
+    expect(captions(container)).toEqual(["whois $1"]);
+  });
+
   it("closes on send", async () => {
     // A command that runs locally, so the send succeeds and nothing is handed
     // back to the box (a refused line comes back, and with it the menu).
@@ -202,8 +237,8 @@ describe("ComposeBox — the `/` command menu (issue 2584)", () => {
     const { container, textarea } = mount();
     textarea.focus();
     type(textarea, "/wh");
-    const option = Array.from(container.querySelectorAll("[role=option]")).find(
-      (el) => el.textContent === "/whois",
+    const option = options(container).find(
+      (el) => el.querySelector(".command-menu-verb")?.textContent === "/whois",
     );
     if (option === undefined) throw new Error("no /whois entry");
 

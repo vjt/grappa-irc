@@ -1,6 +1,6 @@
 import { type Component, createMemo, createSignal, For, Show } from "solid-js";
 import { getCommandMenuEnabled, getCommandMenuEntries } from "./lib/commandMenu";
-import { rankCommands } from "./lib/commandUsage";
+import { describeCommand, rankCommands } from "./lib/commandUsage";
 import type { CommandCycle } from "./lib/compose";
 import { createOverlayEscape } from "./lib/overlayScrollLock";
 
@@ -83,7 +83,16 @@ const CommandMenu: Component<Props> = (props) => {
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => props.onPick(verb)}
               >
-                /{verb}
+                {/* issue 2616 — the verb, then a muted line saying what it
+                    does. Both live INSIDE the option, so the accessible name
+                    of the row is "whois, who is on the other end…" with no
+                    aria-label to keep in step. A verb with no description
+                    (a forgotten table line, an alias with an empty
+                    expansion) renders the verb alone. */}
+                <span class="command-menu-verb">/{verb}</span>
+                <Show when={describeCommand(verb)}>
+                  {(caption) => <span class="command-menu-caption">{caption()}</span>}
+                </Show>
               </button>
             )}
           </For>
