@@ -11146,14 +11146,9 @@ defmodule Grappa.Session.ServerTest do
           1_000
         )
 
-      # Barrier: the 001 for `<nick>_` went out before the server read GHOST,
-      # so the PONG to a PING fed now proves the session has processed it.
-      # `fetch` alone is no barrier here: `:sys.get_state` orders only behind
-      # what is already in the session's mailbox, and the 001 may still be in
-      # flight. Its own token, because `wait_for_line/3` also matches lines
-      # already received and the `PING :flush` below must not match this one.
-      IRCServer.feed(server, "PING :welcome\r\n")
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :welcome\r\n"), 1_000)
+      # Barrier: the 001 for `<nick>_` went out before the server read GHOST, and
+      # `fetch` alone orders only behind what is already in the session's mailbox.
+      flush_server(server)
 
       # No identify left, and the secret sits in the held slot.
       state = SessionStateHelpers.fetch(pid)
@@ -11176,8 +11171,7 @@ defmodule Grappa.Session.ServerTest do
         )
 
       # Barrier: the echo of the FSM's own `NICK` back has been processed too.
-      IRCServer.feed(server, "PING :flush\r\n")
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+      flush_server(server)
 
       lines = IRCServer.sent_lines(server)
       assert Enum.count(lines, &String.contains?(&1, "IDENTIFY")) == 1
@@ -11215,8 +11209,7 @@ defmodule Grappa.Session.ServerTest do
       # Barrier, as in the test above: the 001 for `<nick>_` is processed
       # before the deadline lands, the order the 8s timer has in the field.
       # Without it the timeout overtakes the 001 and the slot is still empty.
-      IRCServer.feed(server, "PING :welcome\r\n")
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :welcome\r\n"), 1_000)
+      flush_server(server)
 
       # The 8s deadline delivered directly — same callback as the timer, no wait.
       send(pid, :ghost_timeout)
@@ -11235,6 +11228,9 @@ defmodule Grappa.Session.ServerTest do
           &(&1 == "PRIVMSG NickServ :IDENTIFY s3cret\r\n"),
           1_000
         )
+
+      # Barrier: anything else the echo sent is on the wire before the count.
+      flush_server(server)
 
       assert Enum.count(IRCServer.sent_lines(server), &String.contains?(&1, "IDENTIFY")) == 1
 
