@@ -63,7 +63,10 @@ defmodule Grappa.Session.GhostRecoveryTest do
       assert {:cont, ^state, []} = GhostRecovery.step(state, msg)
     end
 
-    test ":awaiting_whois on 401 for our queried nick → :succeeded + NICK + IDENTIFY" do
+    # issue 2392 — the `NICK` back is the ONLY line. The identify is the host's
+    # held built-in, released by the echo of this `NICK`, so it goes out once
+    # and only after the server has confirmed the rename.
+    test ":awaiting_whois on 401 for our queried nick → :succeeded + NICK back alone" do
       state = %GhostRecovery{
         phase: :awaiting_whois,
         orig_nick: "vjt",
@@ -76,8 +79,7 @@ defmodule Grappa.Session.GhostRecoveryTest do
       assert {:stop, next, lines} = GhostRecovery.step(state, msg)
 
       assert next.phase == :succeeded
-      assert "NICK vjt\r\n" in lines
-      assert "PRIVMSG NickServ :IDENTIFY s3cret\r\n" in lines
+      assert lines == ["NICK vjt\r\n"]
     end
 
     test ":awaiting_whois on 311 for our queried nick → :failed" do
@@ -130,8 +132,7 @@ defmodule Grappa.Session.GhostRecoveryTest do
 
       assert {:stop, next, lines} = GhostRecovery.step(state, msg)
       assert next.phase == :succeeded
-      assert "NICK Kazam\r\n" in lines
-      assert "PRIVMSG NickServ :IDENTIFY s3cret\r\n" in lines
+      assert lines == ["NICK Kazam\r\n"]
     end
 
     test ":awaiting_whois on 311 for a case-fold echo still fails-fast (#525)" do
