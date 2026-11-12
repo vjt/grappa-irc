@@ -160,12 +160,28 @@ defmodule Grappa.Session.Server do
   """
   @type window_ref :: %{kind: NumericRouter.window_kind(), target: String.t() | nil}
 
-  # 10s is generous for an upstream NickServ → +r MODE round-trip; even
-  # a sluggish ircd should confirm in <2s. The timer is a fail-safe so
-  # an unconfirmed password doesn't sit on the heap forever, NOT an SLA.
-  # Wrong passwords get wiped after this window, so the visitor DB
-  # never sees them.
-  @pending_auth_timeout_ms 10_000
+  # issue 2388 — the pending-auth rendezvous window. It was 10s, sized for a
+  # NickServ → +r round-trip that "even a sluggish ircd" should finish in <2s,
+  # and so it also threw away a typed VISITOR IDENTIFY whose `+r` was merely
+  # LATE: 29s measured in the #2380 investigation, and the password is
+  # unrecoverable once dropped.
+  #
+  # The number is a CEILING, not an SLA — the same shape as #2380's
+  # `@autojoin_defer_ms`: ~2× the measured slow case, and the normal case does
+  # not pay it. The release signal is the NORMALIZED identity transition
+  # (`:session_identity_changed, :acquired` → EventRouter's
+  # `identity_secret_effects/2`), which commits the secret and cancels this
+  # timer the moment it lands, whatever the source (`+r` umode, 900,
+  # account-notify, 330). Only a slot no identity TRANSITION releases waits
+  # the ceiling — no identity ever, or an IDENTIFY sent while already
+  # identified — and on elapse the secret is STILL discarded: that is the
+  # fail-safe that keeps a wrong password out of the visitor DB.
+  #
+  # No 401-NickServ early release here, unlike #2380's autojoin: there the
+  # release fires JOINs, here it would DROP a secret, so the bounded side is
+  # to wait. Copied into state at init (opts-overridable as a test seam),
+  # like `autojoin_defer_ms`.
+  @pending_auth_timeout_ms 60_000
 
   # 8s is the GhostRecovery 4-step round-trip budget (NICK_ → GHOST →
   # NickServ NOTICE → WHOIS → 401-vs-311). NickServ acknowledgements
@@ -464,6 +480,9 @@ defmodule Grappa.Session.Server do
           # #347 deferred-autojoin fallback window — test seam. Production
           # omits it and inherits `@autojoin_defer_ms`.
           optional(:autojoin_defer_ms) => pos_integer(),
+          # issue 2388 pending-auth ceiling — test seam. Production omits it
+          # and inherits `@pending_auth_timeout_ms`.
+          optional(:pending_auth_timeout_ms) => pos_integer(),
           # issue 2253 bounded nick-reclaim delay — test seam. Production
           # omits it and inherits `@nick_reclaim_ms`.
           optional(:nick_reclaim_ms) => pos_integer(),
@@ -620,6 +639,11 @@ defmodule Grappa.Session.Server do
           notify_ref: reference() | nil,
           pending_auth: nil | {String.t(), integer()},
           pending_auth_timer: reference() | nil,
+          # issue 2388 — the pending-auth CEILING (config default
+          # `@pending_auth_timeout_ms`, opts-overridable for tests), copied
+          # into state at init. Read via `Map.get` (hot-reload). See
+          # `stage_pending_auth/2`.
+          pending_auth_timeout_ms: pos_integer(),
           pending_registration_secret: String.t() | nil,
           pending_password: String.t() | nil,
           # issue 2380 — the built-in identify a drifted 001 welcome held for
@@ -1253,6 +1277,9 @@ defmodule Grappa.Session.Server do
       # nil until 001 arms it (only for :nickserv_identify with autojoin).
       autojoin_defer_ms: Map.get(opts, :autojoin_defer_ms, @autojoin_defer_ms),
       autojoin_defer_timer: nil,
+      # issue 2388 — the pending-auth ceiling, same init-time copy as above so
+      # a hot deploy reaches a live session at its next `init`.
+      pending_auth_timeout_ms: Map.get(opts, :pending_auth_timeout_ms, @pending_auth_timeout_ms),
       # issue 2114 — empty at spawn: a fresh process has refused nothing yet.
       queued_joins: [],
       client: nil,
@@ -3930,11 +3957,28 @@ defmodule Grappa.Session.Server do
     delegate(msg, arm_presence(state))
   end
 
-  # Cleared 10s after the last NSInterceptor capture if no +r MODE
-  # confirmation arrived (Task 15 lands the +r observer + atomic commit).
-  # Wrong passwords never reach the visitor DB by virtue of this clear.
+  # Cleared at the ceiling after the last NSInterceptor capture if no identity
+  # confirmation arrived (the release is `:session_identity_changed,
+  # :acquired`, which commits the secret and cancels this timer). Wrong
+  # passwords never reach the visitor DB by virtue of this clear.
+  #
+  # issue 2388 — the discard says so: the old silent `debug` line is why a
+  # 29s `+r` took a prod log read to find (same lesson as #2380's deferred
+  # autojoin). The password NEVER appears here or anywhere else in the log.
+  #
+  # No `elapsed_ms`: the timer has fired, so the only value available is the
+  # ceiling itself — a CONSTANT, not a measurement, and #1960's rule
+  # (config/config.exs) is that a bare `elapsed_ms` must carry `:attribution`.
+  #
+  # The release is the `:acquired` TRANSITION, so a session that is ALREADY
+  # identified gets none when it sends another IDENTIFY: its slot waits the
+  # ceiling out too. "No identity" would be false there, so the line reads
+  # the verdict at the discard and says which of the two it observed.
   def handle_info(:pending_auth_timeout, state) do
-    Logger.debug("pending_auth discarded — +r MODE timeout")
+    Logger.warning("pending IDENTIFY discarded: " <> pending_auth_discard_reason(state),
+      subject_kind: elem(state.subject, 0)
+    )
+
     {:noreply, %{state | pending_auth: nil, pending_auth_timer: nil}}
   end
 
@@ -5463,17 +5507,34 @@ defmodule Grappa.Session.Server do
   defp stage_pending_auth(state, password) do
     :ok = cancel_and_drain(state.pending_auth_timer, :pending_auth_timeout)
 
-    timer = Process.send_after(self(), :pending_auth_timeout, @pending_auth_timeout_ms)
-    deadline = System.monotonic_time(:millisecond) + @pending_auth_timeout_ms
+    # issue 2388 — the ceiling, not a fixed SLA: the `+r` (or any identity
+    # source) releases the slot the moment it lands, so only a slot no
+    # identity TRANSITION releases actually waits this out.
+    ceiling_ms = Map.get(state, :pending_auth_timeout_ms, @pending_auth_timeout_ms)
+
+    timer = Process.send_after(self(), :pending_auth_timeout, ceiling_ms)
+    deadline = System.monotonic_time(:millisecond) + ceiling_ms
 
     %{state | pending_auth: {password, deadline}, pending_auth_timer: timer}
   end
 
+  # issue 2388 — what the `:pending_auth_timeout` discard observed: the
+  # identity verdict at the ceiling. Identified there, with the slot still
+  # held, means no `:acquired` transition arrived while it was staged — e.g.
+  # an IDENTIFY sent while the session was already identified.
+  @spec pending_auth_discard_reason(t()) :: String.t()
+  defp pending_auth_discard_reason(state) do
+    if IdentityState.identified?(state),
+      do: "session is identified, but no identity transition released the slot before the ceiling",
+      else: "no identity before the ceiling"
+  end
+
   # #129: REGISTER's secret goes in an UNTIMED slot. Services grant +r
   # minutes-to-hours after REGISTER (the user submits an emailed auth code
-  # via `/ns AUTH` later), so the 10s `pending_auth` timer would discard it
-  # long before +r ever arrives. No timer here: held until the +r transition
-  # commits it (`apply_effects/2`) or the session terminates (GC). A second
+  # via `/ns AUTH` later), so the `pending_auth` ceiling (60s, issue 2388)
+  # would discard it long before +r ever arrives. No timer here: held until
+  # the +r transition commits it (`apply_effects/2`) or the session
+  # terminates (GC). A second
   # REGISTER overwrites (latest-wins, mailbox FIFO). The unconfirmed secret
   # is never persisted — the DB invariant `password_encrypted set ⟺
   # permanent` stays pristine.

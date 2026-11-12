@@ -1159,9 +1159,11 @@ logs* — never 7 of 626, because the other 567 were never asked.
 
 So the trap now streams each service's log through
 `scripts/log-gap-scan.awk` on every exit and keeps only what it
-measured: the largest silence between consecutive lines, every silence
-at or over `GAP_THRESHOLD` (10 s — above the 5 s healthcheck cadence,
-below the 30 s `busy_timeout`), and counts of the damage signatures
+measured: the largest silence before a line (counted from the latest
+stamp seen so far, so a line that arrives out of order is worth none),
+every silence at or over `GAP_THRESHOLD` (10 s — above the 5 s
+healthcheck cadence, below the 30 s `busy_timeout`), and counts of the
+damage signatures
 (`db=3xxxx`, `idle=3xxxx`, a dropped scrollback row, a saturated pool, a
 retry budget exhausted against a held write lock, and — since #1420 — both
 edges of a `LockWatch` stall episode, `lockstall` / `lockstall_resolved`).
@@ -1272,8 +1274,11 @@ silent change to what counts as a gap would move the retention policy
 without touching the script that implements it — which is why
 `scripts/log-gap-scan.awk` is pinned clause by clause in
 `test/scripts/log_gap_scan_test.bats` (threshold boundary from both
-sides, arithmetic, midnight rollover, one case per damage signature,
-and the refusal to default a missing threshold).
+sides, arithmetic, the delta read from the stamp's date as well as its
+time — across midnight, a year end, a leap day, and a silence of more
+than half a day — out-of-order lines worth no silence and measured from
+the high-water stamp, one case per damage signature, and the refusal to
+default a missing threshold).
 
 The scanner also carries its own controls, in BEGIN, before a single input
 line is read: each signature's known-answer sample must raise ITS counter and
