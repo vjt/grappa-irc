@@ -5663,12 +5663,16 @@ defmodule Grappa.Session.Server do
   # TWICE — harmless for `:identify` (idempotent staging) but not for
   # `:set_passwd`/`:reset_passwd`, which commit on-send.
   #
-  # `origin` is not decoration: the two callers fail in different incidents —
-  # a dropped ghost-recovery line means a GHOST, a WHOIS or one of its two
-  # NICKs never went out, a dropped reply means an answer to a stranger was
-  # lost — and one message for both would erase which. It rides as Logger
-  # metadata rather than as prose so the message itself stays one greppable
-  # string.
+  # `origin` is not decoration. The door has ONE caller, the `{:reply, _, _}`
+  # arm of `apply_effects/2`, which both paths reach (`emit_reply_lines/3`
+  # maps the sub-machine lines onto it), so only `origin` still says which of
+  # the three producers lost a line, and each loss is a different incident: a
+  # dropped ghost-recovery line means a GHOST, a WHOIS or one of its two NICKs
+  # never went out, a dropped recover-identity line means a NICK, an IDENTIFY,
+  # a RECOVER or a RELEASE never went out, and a dropped reply means an answer
+  # to a stranger was lost. One message for all three would erase which. It
+  # rides as Logger metadata rather than as prose so the message itself stays
+  # one greppable string.
   #
   # Fire-and-forget on send failure (REV-E H11): a dead socket must not
   # MatchError the Session, which a strict `:ok =` bind used to do on both
