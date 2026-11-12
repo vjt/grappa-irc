@@ -1,19 +1,24 @@
 import { render, screen } from "@solidjs/testing-library";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
 import { pressAndClick } from "./helpers/pointerEvents";
 
 // C5.1 — UserContextMenu: right-click submenu on member nick.
 //
 // Tests assert:
-//   1. All 11 items render (op/deop/voice/devoice/kick/ban nick/ban host/
-//      kickban/WHOIS/CTCP/query — issue 2346 replaced the bare "ban").
+//   1. All 13 items render (op/deop/voice/devoice/kick/ban nick/ban host/
+//      kickban/ignore/WHOIS/CTCP/encrypted query/query — issue 2346 replaced
+//      the bare "ban", issue 2430 added Encrypted query, issue 2483 Ignore).
 //   2. When own nick has @-mode, op-gated items are enabled.
 //   3. When own nick lacks @-mode, op-gated items are disabled (not hidden).
 //   4. WHOIS + Query are always enabled regardless of modes; Encrypted query
-//      too, unless the nick is our own (issue 2430).
+//      and Ignore too, unless the nick is our own (issues 2430, 2483).
 //   5. Clicking an enabled item fires the correct socket push.
-//   6. Clicking outside fires onClose.
-//   7. Pressing Escape fires onClose.
+//   6. The Ignore row (issue 2483) reads Ignore or Unignore from the real
+//      ignore-list store, follows the list as it lands, adds or removes the
+//      pattern-less `nick!*@*` entry, folds with the network's casemapping,
+//      and turns a refusal into the menu's toast.
+//   7. Clicking outside fires onClose.
+//   8. Pressing Escape fires onClose.
 
 const mockPushChannelOp = vi.fn();
 const mockPushChannelDeop = vi.fn();
@@ -50,8 +55,10 @@ vi.mock("../lib/ctcpQuery", () => ({
 
 vi.mock("../lib/networks", () => ({
   // #1861 — casemappingForSlug (lib/casemapping.ts) resolves the fold
-  // through this map, so the mock has to carry it.
-  networkIdBySlug: () => undefined,
+  // through this map, so the mock has to carry it. It resolves freenode to
+  // its id so a test can seed that network's 005 CASEMAPPING (issue 2483);
+  // unseeded, the id reads the bahamut default, `ascii`.
+  networkIdBySlug: (slug: string) => (slug === "freenode" ? 42 : undefined),
   networks: vi.fn(() => [{ id: 42, slug: "freenode", inserted_at: "x", updated_at: "y" }]),
 }));
 
@@ -76,8 +83,49 @@ vi.mock("../lib/selection", () => ({
 // We also need to mock pushWhois — UserContextMenu uses pushWhois from socket.ts.
 // The mock above covers it.
 
+// issue 2483 — the Ignore/Unignore row runs on the REAL ignoreList store, the
+// real REST client and the real auth token, so what these tests assert is what
+// the operator sees: the label the store's mirrored list produces. Only
+// `fetch` is faked. `serverList` is what the server holds — GET answers it —
+// and a test queues the answer the server gives a mutation: what
+// `IgnoresController` sends back (the resulting list, the normalised entry and
+// the outcome; 201 for an add, 200 for a removal) or a refusal.
+type Entry = { mask: string; text_pattern: string | null };
+let serverList: Entry[] = [];
+let mutationAnswer: (() => Response) | null = null;
+const ignoreRequests: Array<{ method: string; url: string; body: unknown }> = [];
+
+const jsonResponse = (status: number, body: unknown): Response =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+const listBody = (entries: Entry[]) => ({ masks: entries.map((e) => e.mask), entries });
+
+const fakeFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const url = String(input);
+  const method = init?.method ?? "GET";
+  if (!url.startsWith("/networks/")) throw new Error(`unexpected fetch: ${method} ${url}`);
+  ignoreRequests.push({
+    method,
+    url,
+    body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
+  });
+  if (method === "GET") return jsonResponse(200, listBody(serverList));
+  if (mutationAnswer === null) throw new Error(`no answer queued for ${method} ${url}`);
+  return mutationAnswer();
+};
+
+const requestsOf = (method: string) => ignoreRequests.filter((r) => r.method === method);
+
+import { ApiError } from "../lib/api";
+import { setToken } from "../lib/auth";
 import { channelKey } from "../lib/channelKey";
+import { friendlyError } from "../lib/friendlyError";
+import { ignoresBySlug, refreshIgnores } from "../lib/ignoreList";
+import { DEFAULT_ISUPPORT, seedIsupport } from "../lib/isupport";
 import { seedFromTest } from "../lib/members";
+import { dismissOpsMenuToast, opsMenuToasts } from "../lib/opsMenu";
 import {
   __resetForTest,
   overlayEscapeDepth,
@@ -86,6 +134,8 @@ import {
 import UserContextMenu from "../UserContextMenu";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+
+let fetchSpy: MockInstance<typeof fetch>;
 
 const baseProps = {
   networkSlug: "freenode",
@@ -115,12 +165,29 @@ beforeEach(() => {
     m.mockResolvedValue(undefined);
   }
   seedFromTest(channelKey("freenode", "#grappa"), [{ nick: "alice", modes: [] }]);
+  // issue 2483 — nothing ignored yet, no mutation answer queued, and a token:
+  // the tests that need more say so.
+  serverList = [];
+  mutationAnswer = null;
+  ignoreRequests.length = 0;
+  fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(fakeFetch);
+  setToken("tok");
+  seedIsupport(42, DEFAULT_ISUPPORT);
+  // The menu's toast queue is a module singleton that outlives a test.
+  for (const t of opsMenuToasts()) dismissOpsMenuToast(t.id);
   __resetForTest();
 });
 
+afterEach(() => {
+  // Logging out is the store's own reset (identityScopedStore): the next test
+  // starts with no list loaded for any network.
+  setToken(null);
+  fetchSpy.mockRestore();
+});
+
 describe("UserContextMenu", () => {
-  describe("renders all 12 items", () => {
-    it("shows Op, Deop, Voice, Devoice, Kick, Ban nick, Ban host, Kickban, WHOIS, CTCP, Encrypted query, Query", () => {
+  describe("renders all 13 items", () => {
+    it("shows Op, Deop, Voice, Devoice, Kick, Ban nick, Ban host, Kickban, Ignore, WHOIS, CTCP, Encrypted query, Query", () => {
       render(() => <UserContextMenu {...baseProps} />);
       expect(screen.getByRole("button", { name: /^op$/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /^deop$/i })).toBeInTheDocument();
@@ -132,6 +199,8 @@ describe("UserContextMenu", () => {
       expect(screen.getByRole("button", { name: /^kickban$/i })).toBeInTheDocument();
       // issue 2346 — the ambiguous bare "Ban" is gone.
       expect(screen.queryByRole("button", { name: /^ban$/i })).toBeNull();
+      // issue 2483 — the nick is not on the list yet, so the row offers Ignore.
+      expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /^whois$/i })).toBeInTheDocument();
       // #1192 — the shell appends the ▸, so the accessible name carries it.
       expect(screen.getByRole("button", { name: /^ctcp ▸$/i })).toBeInTheDocument();
@@ -148,6 +217,178 @@ describe("UserContextMenu", () => {
         b.textContent?.trim(),
       );
       expect(labels.slice(-2)).toEqual(["Encrypted query", "Query"]);
+    });
+  });
+
+  // issue 2483 — Ignore / Unignore in the nick menu. The row is the same door
+  // as `/ignore <nick>`: the ignoreList store, keyed by the network slug, on
+  // the `nick!*@*` mask the server itself normalises a bare nick to.
+  describe("Ignore / Unignore (issue 2483)", () => {
+    // The list the server answered has landed in the store — the barrier that
+    // makes a label read after it a statement about the list, not about a
+    // fetch still in flight.
+    const listLoaded = () => vi.waitFor(() => expect(ignoresBySlug().freenode).toEqual(serverList));
+
+    it("Ignore adds the person entry nick!*@*, and the row then reads Unignore", async () => {
+      mutationAnswer = () =>
+        jsonResponse(201, {
+          ...listBody([{ mask: "alice!*@*", text_pattern: null }]),
+          mask: "alice!*@*",
+          text_pattern: null,
+          outcome: "added",
+        });
+      render(() => <UserContextMenu {...baseProps} />);
+      await listLoaded();
+      pressAndClick(screen.getByRole("button", { name: /^ignore$/i }));
+
+      expect(await screen.findByRole("button", { name: /^unignore$/i })).toBeInTheDocument();
+      expect(requestsOf("POST")).toEqual([
+        {
+          method: "POST",
+          url: "/networks/freenode/ignores",
+          body: { mask: "alice!*@*", text_pattern: null },
+        },
+      ]);
+      expect(requestsOf("DELETE")).toEqual([]);
+    });
+
+    it("a nick already on the list reads Unignore once the list arrives, and Unignore removes it", async () => {
+      serverList = [{ mask: "alice!*@*", text_pattern: null }];
+      mutationAnswer = () =>
+        jsonResponse(200, {
+          ...listBody([]),
+          mask: "alice!*@*",
+          text_pattern: null,
+          outcome: "removed",
+        });
+      // Opened before this network's list was ever fetched: the row has to
+      // follow the list when it lands, not keep what it read at open.
+      render(() => <UserContextMenu {...baseProps} />);
+      expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+      pressAndClick(await screen.findByRole("button", { name: /^unignore$/i }));
+
+      expect(await screen.findByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+      // The pattern-less removal: no `text_pattern` query, so it names the
+      // person entry and nothing else.
+      expect(requestsOf("DELETE").map((r) => r.url)).toEqual([
+        "/networks/freenode/ignores/alice!*%40*",
+      ]);
+      expect(requestsOf("POST")).toEqual([]);
+    });
+
+    it("a targeted entry is not the person: the row offers Ignore, and the round trip leaves it standing", async () => {
+      // issue 2294 — an entry is the PAIR (mask, text_pattern). `alice!*@*` +
+      // `*spam*` drops only her spam; it does not mean "alice is ignored", and
+      // a pattern-less removal would not touch it (`UserSettings.remove_ignore/5`
+      // answers `not_ignored`), so offering Unignore here would be a dead row.
+      const targeted = { mask: "alice!*@*", text_pattern: "*spam*" };
+      const person = { mask: "alice!*@*", text_pattern: null };
+      serverList = [targeted];
+      render(() => <UserContextMenu {...baseProps} />);
+      await listLoaded();
+      expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+
+      mutationAnswer = () =>
+        jsonResponse(201, { ...listBody([person, targeted]), ...person, outcome: "added" });
+      pressAndClick(screen.getByRole("button", { name: /^ignore$/i }));
+      expect(await screen.findByRole("button", { name: /^unignore$/i })).toBeInTheDocument();
+      expect(requestsOf("POST").map((r) => r.body)).toEqual([person]);
+
+      mutationAnswer = () =>
+        jsonResponse(200, { ...listBody([targeted]), ...person, outcome: "removed" });
+      pressAndClick(screen.getByRole("button", { name: /^unignore$/i }));
+      expect(await screen.findByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+      expect(requestsOf("DELETE").map((r) => r.url)).toEqual([
+        "/networks/freenode/ignores/alice!*%40*",
+      ]);
+      expect(ignoresBySlug().freenode).toEqual([targeted]);
+    });
+
+    it("matches the stored mask whatever case the nick is shown in", async () => {
+      // The server stores the FOLDED mask; the nick on screen keeps its case.
+      serverList = [{ mask: "alice!*@*", text_pattern: null }];
+      render(() => <UserContextMenu {...baseProps} targetNick="Alice" />);
+      expect(await screen.findByRole("button", { name: /^unignore$/i })).toBeInTheDocument();
+    });
+
+    it("folds with the network's casemapping: on rfc1459, foo[1] is the stored foo{1}!*@*", async () => {
+      // The server folds the nick part with the NETWORK's casemapping before
+      // storing it (`Grappa.IRC.Mask.normalize/2`): on solanum/Libera
+      // `/ignore foo[1]` stores `foo{1}!*@*`, because the ircd calls them one
+      // person.
+      seedIsupport(42, { ...DEFAULT_ISUPPORT, casemapping: "rfc1459" });
+      serverList = [{ mask: "foo{1}!*@*", text_pattern: null }];
+      render(() => <UserContextMenu {...baseProps} targetNick="foo[1]" />);
+      await listLoaded();
+      expect(screen.getByRole("button", { name: /^unignore$/i })).toBeInTheDocument();
+    });
+
+    it("folds ASCII only on an ascii network, where foo[1] and foo{1} are two people", async () => {
+      // bahamut (Azzurra, all of prod) leaves `[ ] \ ~` alone: the national
+      // fold must not run where the ircd does not run it.
+      serverList = [{ mask: "foo{1}!*@*", text_pattern: null }];
+      render(() => <UserContextMenu {...baseProps} targetNick="foo[1]" />);
+      await listLoaded();
+      expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+    });
+
+    it("an entry for a different nick leaves the row on Ignore", async () => {
+      serverList = [{ mask: "bob!*@*", text_pattern: null }];
+      render(() => <UserContextMenu {...baseProps} />);
+      await listLoaded();
+      expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+    });
+
+    // A menu row's action is synchronous and the menu is gone by the time the
+    // server answers, so a refusal has nowhere inline to land: it is the
+    // menu's toast (`runOpsVerb`), the way a refused Op or Kick is.
+    it("a refused Ignore is a toast naming the row, and the row stays Ignore", async () => {
+      // `list_full`: the server caps a network's list at 100 entries.
+      mutationAnswer = () => jsonResponse(422, { error: "list_full" });
+      render(() => <UserContextMenu {...baseProps} />);
+      await listLoaded();
+      expect(opsMenuToasts()).toEqual([]);
+      pressAndClick(screen.getByRole("button", { name: /^ignore$/i }));
+
+      await vi.waitFor(() => expect(opsMenuToasts()).toHaveLength(1));
+      expect(opsMenuToasts()[0]?.message).toBe(
+        `Ignore: ${friendlyError(new ApiError(422, "list_full"))}`,
+      );
+      expect(screen.getByRole("button", { name: /^ignore$/i })).toBeInTheDocument();
+    });
+
+    it("a refused Unignore is a toast too, and the row stays Unignore", async () => {
+      serverList = [{ mask: "alice!*@*", text_pattern: null }];
+      mutationAnswer = () => jsonResponse(500, { errors: { detail: "Internal Server Error" } });
+      render(() => <UserContextMenu {...baseProps} />);
+      pressAndClick(await screen.findByRole("button", { name: /^unignore$/i }));
+
+      await vi.waitFor(() => expect(opsMenuToasts()).toHaveLength(1));
+      expect(opsMenuToasts()[0]?.message).toBe(
+        `Unignore: ${friendlyError(new ApiError(500, "Internal Server Error"))}`,
+      );
+      expect(screen.getByRole("button", { name: /^unignore$/i })).toBeInTheDocument();
+    });
+
+    it("does not refetch a list the store already holds", async () => {
+      await refreshIgnores("tok", "freenode");
+      expect(requestsOf("GET")).toHaveLength(1);
+      render(() => <UserContextMenu {...baseProps} />);
+      await flush();
+      expect(requestsOf("GET")).toHaveLength(1);
+    });
+
+    it("needs no channel privilege: enabled without @ on someone else", () => {
+      render(() => <UserContextMenu {...baseProps} ownModes={[]} />);
+      expect(screen.getByRole("button", { name: /^ignore$/i })).not.toBeDisabled();
+    });
+
+    it("is disabled on our own nick, in any case", () => {
+      // The delivery filter never drops our own lines (`EventRouter.ignored?/2`),
+      // so `<me>!*@*` would do nothing to us and silence whoever holds the nick
+      // next — after our own /nick, or a Guest rename.
+      render(() => <UserContextMenu {...baseProps} targetNick="ME" />);
+      expect(screen.getByRole("button", { name: /^ignore$/i })).toBeDisabled();
     });
   });
 
