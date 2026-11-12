@@ -6,12 +6,15 @@ defmodule Grappa.Session.NSInterceptor do
   `kind` (`:identify | :register | :set_passwd`) so the host can pick the
   right action: IDENTIFY-family captures stage the TIMED `pending_auth`;
   REGISTER captures stage the UNTIMED `pending_registration_secret` (#129 —
-  register grants +r minutes-to-hours later, outside the 10s window);
+  register grants +r minutes-to-hours later, outside the pending-auth
+  ceiling — issue 2388);
   SET PASSWD captures are committed OPTIMISTICALLY on-send (#131 — an
   already-identified session rotating its password emits no `+r`, so there
   is no rendezvous to stage against). Staged captures are committed to the
-  visitor row ONLY on +r MODE observation (the timed slot is also discarded
-  on the `@pending_auth_timeout_ms` timeout). Wrong passwords never touch
+  visitor row ONLY on the identity transition (`+r` MODE or any other source,
+  #388); the timed slot is released by that same signal and only DISCARDED at
+  the `@pending_auth_timeout_ms` ceiling if no identity ever arrives (issue
+  2388). Wrong passwords never touch
   the DB; a rejected SET PASSWD leaves a stored password that never took,
   which the operator repairs by retyping it into the per-network password field (#124, Settings -> General).
 
@@ -140,7 +143,8 @@ defmodule Grappa.Session.NSInterceptor do
 
   @typedoc """
   The captured verb's class. `:identify` covers IDENTIFY/ID/SIDENTIFY/
-  GHOST/PASS — services grant +r synchronously (within the 10s window),
+  GHOST/PASS — services grant +r synchronously (within the pending-auth
+  ceiling, issue 2388),
   so the host stages a TIMED `pending_auth`. `:register` is the
   register→auth-code flow (#129): services email an auth code and grant
   +r minutes-to-hours later, far outside that window, so the host stages

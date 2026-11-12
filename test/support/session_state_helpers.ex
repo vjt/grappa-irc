@@ -97,6 +97,10 @@ defmodule Grappa.SessionStateHelpers do
   @spec pending_auth_timer(snapshot()) :: term()
   def pending_auth_timer(state), do: state.pending_auth_timer
 
+  @doc "The pending-auth ceiling in ms (issue 2388), copied into state at init."
+  @spec pending_auth_timeout_ms(snapshot()) :: term()
+  def pending_auth_timeout_ms(state), do: state.pending_auth_timeout_ms
+
   @doc "Captured registration secret awaiting the `+r` commit, or `nil`."
   @spec pending_registration_secret(snapshot()) :: term()
   def pending_registration_secret(state), do: state.pending_registration_secret
