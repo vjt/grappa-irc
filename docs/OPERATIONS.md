@@ -2002,8 +2002,8 @@ D** — see **Running the published image** below.
   ABI-lockstep assertion + cic + `mix release`) and pushes nothing, moves no
   `:latest`. Since #1162 it then DEPLOYS that image and probes it (the `smoke`
   job, below) instead of only proving it compiles — so the dry-run is a smoke
-  test in fact and not just in name. deb/arch/rpm/publish are skipped for this
-  run. The default
+  test in fact and not just in name. deb/arch/rpm/cic/publish are skipped for
+  this run. The default
   (`docker_validation=false`) tag-push path is unchanged — it publishes. The
   arm64 leg is QEMU-emulated on the amd64 runner; a stale QEMU crashes the
   emulated BEAM JIT at the first `mix` call, so the job pins a recent

@@ -97,14 +97,15 @@ name: release
 #     `VERSION` (a repair republishes a tag's own images, it never re-versions
 #     them) and why the pushed images carry
 #     `chat.grappa.image.scaffolding-revision` recording where the recipe came
-#     from. smoke pulls what was PUBLISHED, exactly as on a tag push.
+#     from. smoke pulls what was PUBLISHED, exactly as on a tag push. A repair
+#     never rebuilds the cicchetto bundle: `cic` attests on a tag push only.
 #   * DOCKER DRY-RUN (`docker_validation=true`): a ZERO-PUBLICATION validation of
 #     the release-image job ITSELF (not a copy of it — the same job that ships).
 #     Only the docker job runs; it builds `Dockerfile.release` multi-arch from
 #     the DISPATCHED ref (a branch, so it works BEFORE merge, when only the
 #     branch carries the file) with `push:false` and no registry login — it
 #     proves the build (arm64 QEMU + ABI-lockstep assertion + cic + mix release)
-#     and publishes NOTHING. deb/arch/rpm/publish are skipped. Run it with:
+#     and publishes NOTHING. deb/arch/rpm/cic/publish are skipped. Run it with:
 #       gh workflow run release.yml --ref <branch> -f docker_validation=true
 #   * DEB DRY-RUN (`deb_validation=true`, #1714): the same idea for the package
 #     job — a ZERO-PUBLICATION validation of the deb job ITSELF, from the
@@ -113,9 +114,9 @@ name: release
 #     AHEAD of the uploads: unprovable, the first thing to discover a broken arm
 #     would be a blocked release cut. No tag is involved (`RELEASE_TAG` resolves
 #     to the dispatched ref, the two tag-comparing steps opt out) and
-#     arch/rpm/docker/publish are skipped — `deb` still uploads its artifact, so
-#     it is the `publish` exclusion, not an empty artifact set, that keeps
-#     branch-built packages off a real release. Run it with:
+#     arch/rpm/docker/cic/publish are skipped — `deb` still uploads its
+#     artifact, so it is the `publish` exclusion, not an empty artifact set,
+#     that keeps branch-built packages off a real release. Run it with:
 #       gh workflow run release.yml --ref <branch> -f deb_validation=true
 #
 # The tag-push path is unchanged by the dry-run plumbing: the default publishes.
@@ -134,16 +135,16 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Repair path only: existing release tag to (re)build deb/arch/rpm + ghcr images for, and attach assets to (e.g. v0.6.0). Images build from the tag's tree with the DISPATCHED ref's Dockerfiles. Ignored when docker_validation is true."
+        description: "Repair path only: existing release tag to (re)build deb/arch/rpm + ghcr images for, and attach assets to (e.g. v0.6.0). Images build from the tag's tree with the DISPATCHED ref's Dockerfiles. The attested cicchetto bundle is not rebuilt: it comes from a tag push only. Ignored when docker_validation is true."
         required: false
         type: string
       docker_validation:
-        description: "Zero-publication validation of the release-image job: build Dockerfile.release multi-arch from the DISPATCHED ref (branch), push:false, NOTHING published. Skips deb/arch/rpm/publish."
+        description: "Zero-publication validation of the release-image job: build Dockerfile.release multi-arch from the DISPATCHED ref (branch), push:false, NOTHING published. Skips deb/arch/rpm/cic/publish."
         required: false
         type: boolean
         default: false
       deb_validation:
-        description: "Zero-publication validation of the .deb job: build + install the package from the DISPATCHED ref (branch) and run its proofs, including the #1714 distribution-hop arms. No tag involved, NOTHING published. Skips arch/rpm/docker/publish."
+        description: "Zero-publication validation of the .deb job: build + install the package from the DISPATCHED ref (branch) and run its proofs, including the #1714 distribution-hop arms. No tag involved, NOTHING published. Skips arch/rpm/docker/cic/publish."
         required: false
         type: boolean
         default: false
