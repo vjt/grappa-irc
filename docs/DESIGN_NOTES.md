@@ -6587,3 +6587,65 @@ seed property hands the caller a subject it did not ask for. The Playwright
 fixture owns the calibrated `SEED_GAP_MS = 100` beside `SEED_COUNT`, and a
 spec widens it with `test.use({ specSeed: { seedGapMs } })`. The legacy reset
 verb's wire carries no spacing, so `SubjectReset` keeps the 100 ms itself.
+<!-- entry #2641 -->
+
+---
+
+## 2026-11-12 — issue 2641: the pinned band clears the corner floats, not one of its bars
+
+**Symptom (iPhone PWA, server window, after an instance restart).** The
+far-behind bar ran under both corner floats: the left `#` door (window bar
+off, #1766) covered the start of `N unread — jump back`, so the count could
+not be read, and the ☰ (`.shell-chrome`, z 41, #985) covered the whole ×, so
+the bar could not be dismissed by tap.
+
+**Why it was missed.** Issue 2486 put the far-behind bar and the peer's
+encrypted-chat banner in one pinned band (`.scrollback-pinned`) and, in the
+same change, taught the banner to clear the floats: a `.shell-main:has(...)`
+pair that pads the side a float sits on by `--chrome-tap-min` plus the
+`--pane-chrome-inset-*` tokens, for as long as that float is mounted. The
+pair was written against `.e2e-request-banner`, so the band's other child
+kept the full width. The issue's "the banner has the same exposure" line
+was already false when it was filed (the pair is on 874d804dd); only the bar
+was exposed.
+
+**Decision: the clearance belongs to the band.** The pair now targets
+`.scrollback-pinned > :is(.e2e-request-banner, .scrollback-far-behind)`, with
+the same tokens and no new number. The issue offered a second cure, pushing
+the band below the toggle row; 2486 had already chosen the inset for this
+band, and one band gets one answer. Where nothing floats (a phone's channel
+window, whose TopicBar hosts the ☰ in flow, and every desktop window) the
+`:has()` does not match and the bar keeps its symmetric padding.
+
+**A list, not `> *`.** The first cut was `.scrollback-pinned > *`, so a third
+pinned bar would have inherited the clearance by construction. Measured:
+biome's `noDescendingSpecificity` pairs a trailing `> *` with every later
+`> *` in the theme, and that cut took `bun run check` from 61 warnings to 65
+for one rule; the list leaves it at 61. The price is written in the rule's
+comment: a third bar pinned in the band has to join the list.
+
+**Evidence.** `issue2641-far-behind-clears-the-float.spec.ts`, four arms: a
+far-behind server window on the two touch projects with the window bar on and
+off, a channel window on the same two, and a desktop server window.
+Red on the parent of the cure, 4 failed / 3 passed: with the window bar on,
+the × lost the hit test at its centre on both touch projects (its box at
+x 342–386 on webkit-iphone-15 and 361–405 on chromium-pixel-touch, under the
+☰ 2486 measured at 331–379 / 350–398); with it off, the label lost it at
+x 26 and 28 on both, under the `#` door; the channel and desktop arms
+passed, as they must. That each half of the pair owns one of the two red
+arms is INFERRED, not measured with a one-half mutant: the first arm mounts
+no door, so only the trailing half can act there, and the second reddened at
+the label's LEADING end, which the trailing half does not move. Green with the
+cure: 23 of 23, run together with the 2486, #1766 and issue 2161 specs. The
+served dist was read after each run: the parent shipped the banner-only pair
+(`index-eTe0AMUW.css`), the cure the two-bar pair (`index-BkE9SHSK.css`).
+
+**Also in the change.** The four specs that turned the window bar off from
+Display settings carried the same body; it is `hideWindowBar()` in
+`cicchettoPage.ts` now, and 2486's `box`/`meet`/`onTop` live in
+`fixtures/cornerFloats.ts`, since both specs hold the same rule.
+
+**Not covered.** No wallpaper arm: the cure is geometry, not stacking, and
+2486's wallpaper arm holds the same pair with the pane as a stacking
+context. Playwright's device descriptors are not the reporter's iPhone; the
+geometry is measured on webkit-iphone-15 and chromium-pixel-touch only.
