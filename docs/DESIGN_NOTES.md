@@ -6766,8 +6766,8 @@ bundle:
   #1766 and issue 2161 specs.
 
 So each half of the pair turns an arm red on its own assertion. Only the
-trailing half has an arm the other cannot touch: the bar-off arm reddens
-under either deletion.
+trailing half has an arm the other cannot touch, the bar-on one; the bar-off
+arm reddens under either deletion.
 
 **The first label check, and why it was replaced.** The spec first probed
 the hit test at both ends of each text box. On the cure-reverted parent
