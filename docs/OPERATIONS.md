@@ -5194,11 +5194,11 @@ it. Pure shell like its sibling, so it runs under bats
 (`test/infra/release_sha256sums_test.bats`, which also pins the step's wiring
 in `release.yml`).
 
-### `cic_dist.sh` — the attested cicchetto bundle (issue 2642)
+### `release_cic_dist.sh` — the attested cicchetto bundle (issue 2642)
 
 `release.yml`'s `cic` job builds the web client once per tag and attests it.
 The job builds with `scripts/bun.sh`, the same digest-pinned `oven/bun` image
-the dev scripts use, on a `fetch-depth: 0` checkout. `cic_dist.sh pack` then
+the dev scripts use, on a `fetch-depth: 0` checkout. `release_cic_dist.sh pack` then
 writes `cicchetto-dist-<V>.tar.gz` and its per-file manifest
 `cicchetto-dist-<V>.sha256`, and prints the attestation subjects: every
 manifest line plus the two assets. `actions/attest-build-provenance` signs
@@ -5226,7 +5226,7 @@ partial, and a red `cic` leg would block creating the release.
 ```sh
 scripts/bun.sh install --frozen-lockfile
 scripts/bun.sh run build
-infra/packaging/cic_dist.sh manifest cicchetto/dist | diff - cicchetto-dist-<V>.sha256
+infra/packaging/release_cic_dist.sh manifest cicchetto/dist | diff - cicchetto-dist-<V>.sha256
 ```
 
 Measured on 2026-11-12, at `4e32d689d`, 80 files: two builds from a fresh

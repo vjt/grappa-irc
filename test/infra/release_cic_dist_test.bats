@@ -2,7 +2,7 @@
 #
 # issue 2642 — the attested cicchetto bundle a release carries, in two halves.
 #
-#   1. infra/packaging/cic_dist.sh, the logic: the per-file manifest, the
+#   1. infra/packaging/release_cic_dist.sh, the logic: the per-file manifest, the
 #      tarball that extracts to the same tree, and the attestation subjects.
 #      Pure shell, exercised on a real directory tree.
 #   2. release.yml's `cic` job, the wiring: tag push only, scoped permissions,
@@ -19,7 +19,7 @@ load ../bats_helpers
 
 setup() {
     REPO_SRC="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
-    SCRIPT="$REPO_SRC/infra/packaging/cic_dist.sh"
+    SCRIPT="$REPO_SRC/infra/packaging/release_cic_dist.sh"
     WORKFLOW="$REPO_SRC/.github/workflows/release.yml"
 
     # A dist shaped like vite's: hashed assets with their maps, the service
@@ -202,11 +202,11 @@ cic_builds_pinned() {
 cic_attests_before_upload() {
     local job
     job="$(job_of "$1" cic)"
-    grep -qF 'infra/packaging/cic_dist.sh pack cicchetto/dist cic-release "$(infra/packaging/version.sh)" > "$RUNNER_TEMP/cic-subjects"' <<<"$job" &&
+    grep -qF 'infra/packaging/release_cic_dist.sh pack cicchetto/dist cic-release "$(infra/packaging/version.sh)" > "$RUNNER_TEMP/cic-subjects"' <<<"$job" &&
         grep -qE '^        uses: actions/attest-build-provenance@[0-9a-f]{40} # v[0-9.]+$' <<<"$job" &&
         grep -qxF '          subject-checksums: ${{ runner.temp }}/cic-subjects' <<<"$job" &&
         refute grep -qE '^      (- |  )(if|continue-on-error):' <<<"$job" &&
-        awk '/cic_dist\.sh pack / && !p { p = NR }
+        awk '/release_cic_dist\.sh pack / && !p { p = NR }
              /uses: actions\/attest-build-provenance@/ && !a { a = NR }
              /uses: actions\/upload-artifact@/ && !u { u = NR }
              END { exit !(p && a && u && p < a && a < u) }' <<<"$job"
@@ -263,7 +263,7 @@ jobs:
       - run: |
           scripts/bun.sh install --frozen-lockfile
           scripts/bun.sh run build
-      - run: infra/packaging/cic_dist.sh pack cicchetto/dist cic-release "$(infra/packaging/version.sh)" > "$RUNNER_TEMP/cic-subjects"
+      - run: infra/packaging/release_cic_dist.sh pack cicchetto/dist cic-release "$(infra/packaging/version.sh)" > "$RUNNER_TEMP/cic-subjects"
       - name: Attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -304,7 +304,7 @@ EOF
     refute cic_attests_before_upload "$v"
 
     # The upload moved ahead of the attestation.
-    awk '/upload-artifact/ { next } { print } /^      - run: infra\/packaging\/cic_dist\.sh/ { print "      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2" }' "$live" > "$v"
+    awk '/upload-artifact/ { next } { print } /^      - run: infra\/packaging\/release_cic_dist\.sh/ { print "      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2" }' "$live" > "$v"
     refute cic_attests_before_upload "$v"
 
     # publish no longer waiting for it.

@@ -132,7 +132,7 @@ a release's web client is, and compare it with what a server serves.
   extracts **flat**, with no top directory: `tar -xzf <file> -C <dir>`.
 - `cicchetto-dist-<V>.sha256` lists every file in it, one
   `<sha256><two spaces><path>` line each, the path relative to the bundle
-  root, in C-locale byte order (`infra/packaging/cic_dist.sh manifest`).
+  root, in C-locale byte order (`infra/packaging/release_cic_dist.sh manifest`).
   `sha256sum -c` run from inside an extracted or served tree checks it.
 
 The release job signs a build-provenance attestation over **every file of the
@@ -154,8 +154,9 @@ verify as well.
 The files can also be rebuilt from source: the release builds them with the
 toolchain `scripts/bun.sh` pins by digest, and the same commands at the tag,
 on a full clone, give the same files. See
-[`docs/OPERATIONS.md`](docs/OPERATIONS.md) § "`cic_dist.sh` — the attested
-cicchetto bundle (issue 2642)" for the commands and for what was measured.
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md) § "`release_cic_dist.sh` — the
+attested cicchetto bundle (issue 2642)" for the commands and for what was
+measured.
 
 What this does **not** cover: the bundle a package installs. The `.deb`,
 `.rpm` and Arch packages and the container image each build their own copy of

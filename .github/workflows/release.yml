@@ -1758,16 +1758,16 @@ jobs:
           fetch-depth: 0
 
       # The same two commands rebuild the bundle anywhere with docker, byte for
-      # byte (docs/OPERATIONS.md § "`cic_dist.sh` — the attested cicchetto
-      # bundle (issue 2642)"). `run build` also installs the e2e dependencies on
-      # its own; they do not enter the bundle.
+      # byte (docs/OPERATIONS.md § "`release_cic_dist.sh` — the attested
+      # cicchetto bundle (issue 2642)"). `run build` also installs the e2e
+      # dependencies on its own; they do not enter the bundle.
       - name: Build the bundle with the pinned toolchain
         run: |
           scripts/bun.sh install --frozen-lockfile
           scripts/bun.sh run build
 
       - name: Pack the dist and write its manifest
-        run: infra/packaging/cic_dist.sh pack cicchetto/dist cic-release "$(infra/packaging/version.sh)" > "$RUNNER_TEMP/cic-subjects"
+        run: infra/packaging/release_cic_dist.sh pack cicchetto/dist cic-release "$(infra/packaging/version.sh)" > "$RUNNER_TEMP/cic-subjects"
 
       # No `if:` and no `continue-on-error:` here or on the upload: a failed
       # attestation must leave nothing for publish to attach.

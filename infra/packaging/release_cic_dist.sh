@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# cic_dist.sh — the attested cicchetto bundle a release carries (issue 2642).
+# release_cic_dist.sh — the attested cicchetto bundle a release carries
+# (issue 2642).
 #
-#   cic_dist.sh manifest <dist-dir>
-#   cic_dist.sh pack <dist-dir> <out-dir> <version>
+#   release_cic_dist.sh manifest <dist-dir>
+#   release_cic_dist.sh pack <dist-dir> <out-dir> <version>
 #
 # `manifest` prints one `<sha256><two spaces><path>` line per file of a built
 # cicchetto dist, the path relative to <dist-dir>, in `LC_ALL=C` order. It is
@@ -26,8 +27,8 @@
 #
 # The tarball is NOT reproducible and does not need to be: the claim is about
 # the files, and the manifest names them. The files ARE reproducible from the
-# same toolchain — see docs/OPERATIONS.md § "`cic_dist.sh` — the attested
-# cicchetto bundle (issue 2642)".
+# same toolchain — see docs/OPERATIONS.md § "`release_cic_dist.sh` — the
+# attested cicchetto bundle (issue 2642)".
 #
 # Refuses (exit 1, reason on stderr) on:
 #   - a dist without index.html (not a built bundle);
@@ -46,7 +47,7 @@ die_usage() {
 }
 
 refuse() {
-	printf 'cic_dist.sh: %s\n' "$1" >&2
+	printf '%s: %s\n' "${0##*/}" "$1" >&2
 	exit 1
 }
 

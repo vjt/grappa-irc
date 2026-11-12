@@ -6758,8 +6758,8 @@ Measured, same bun and same lock: vite under `node` changed 6 of 80 files
 against vite under bun. So the attested build runs in the digest-pinned image
 the dev scripts use, and anyone with docker reproduces it with the same two
 commands. The measurements, and the four inputs that do change the bytes:
-`docs/OPERATIONS.md` § "`cic_dist.sh` — the attested cicchetto bundle (issue
-2642)".
+`docs/OPERATIONS.md` § "`release_cic_dist.sh` — the attested cicchetto bundle
+(issue 2642)".
 
 ### Not covered
 
