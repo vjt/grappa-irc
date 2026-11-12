@@ -20,20 +20,30 @@
 // topmost element at its centre, keep the 44px floor, and dismiss on a tap.
 //
 // Why boxes, and not the hit-test probes at both ends of the text that the
-// first cut of this spec used. Measured on that cut's red (cure reverted,
-// both touch projects): the probes met the door only at x 26 and x 28, the
-// two sides of the boundary between the count's own text node and the rest
-// of the label. The probe at the label's leading end found it clear: the
-// text starts at the bar's 0.5rem inset (x 7) and the door at
-// `--pane-chrome-inset-inline-start` (x 14), so the first glyph stays
-// visible, as in the report (`2… ad — jump back`). By the same numbers, a
-// label rendered as ONE text node would have put both probes outside the
-// door and passed on the broken layout. That last step is inferred from the
-// theme's tokens, not run.
+// first cut of this spec used. That cut's red (cure reverted, both touch
+// projects) met the door only at x 26 and x 28, and this oracle's red shows
+// why. The label is two text boxes, the count (x 7 to 27.2) and the rest
+// (to x 154.7), under a door at x 14 to 62. The probes at 26 and 28 sit
+// either side of that seam, and the probe at the leading end (x 8) is clear
+// of the door, so the first glyph stays visible, as in the report
+// (`2… ad — jump back`). A label rendered as ONE text node would have put
+// both probes outside the door and passed on the broken layout. That is
+// computed from the measured boxes, not run.
 //
-// On the bar-on arm only the ☰ floats and the label never reaches it, so
-// that arm reddens on the ×. On the bar-off arm the `#` door sits over the
-// count, so that arm reddens on the label first.
+// Measured with the cure reverted and with each of the theme's two rules
+// deleted on its own, on both touch projects each time:
+//   - cure reverted: 4 failed / 3 passed. The bar-on arm reddens on the ×
+//     (its box at x 342 on webkit-iphone-15 and x 361 on
+//     chromium-pixel-touch, under the ☰). The bar-off arm reddens on the
+//     label, whose text meets the door;
+//   - leading rule deleted: 2 failed / 5 passed. Only the bar-off arm
+//     reddens, on the label;
+//   - trailing rule deleted: 4 failed / 3 passed. Both server arms redden,
+//     on the ×. The label passes there, because the leading rule still
+//     clears the door.
+// So each rule turns an arm red on its own assertion. Only the trailing
+// rule has an arm (bar-on) that the other cannot touch: the bar-off arm
+// reddens under either deletion. Channel and desktop pass in all three.
 //
 // The channel arm and the desktop arm are the other half of the rule: a
 // window with no float keeps the full width. On a phone's channel window the
