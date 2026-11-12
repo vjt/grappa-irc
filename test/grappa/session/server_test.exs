@@ -8599,10 +8599,10 @@ defmodule Grappa.Session.ServerTest do
     # #1394 — the ghost-recovery flush is the one outbound path that carries a
     # NickServ secret without crossing a `handle_call`: GhostRecovery emits
     # `PRIVMSG NickServ :GHOST <nick> <pwd>` (the interceptor captures the
-    # LAST token, so the GHOST stages too, not just the `:succeeded`
-    # IDENTIFY). It is the door's only behavioural witness, so it is pinned
-    # here rather than left implied by the ghost-recovery describe, which
-    # asserts nothing about capture.
+    # LAST token, so the GHOST stages; since issue 2392 the FSM sends no
+    # IDENTIFY of its own). It is the door's only behavioural witness, so it
+    # is pinned here rather than left implied by the ghost-recovery describe,
+    # which asserts nothing about capture.
     #
     # Attribution is bought by feeding NO 001: the shared `ghost_handler/1`
     # answers the underscore NICK with a welcome, and that welcome runs
@@ -11049,10 +11049,10 @@ defmodule Grappa.Session.ServerTest do
       end)
     end
 
-    test "GhostRecovery success path: NickServ NOTICE → 401 → :succeeded + pending_auth staged + IDENTIFY emitted" do
+    test "GhostRecovery success path: NOTICE → 401 → NICK back; its echo sends IDENTIFY + stages pending_auth" do
       nick = "v_t18s_#{System.unique_integer([:positive])}"
 
-      {server, port} = IRCServer.start_server(ghost_handler(nick))
+      {server, port} = IRCServer.start_server(ghost_no_echo_handler(nick))
       {anon_visitor, network} = visitor_with_network(port, nick: nick)
       {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, network.id, "s3cret")
       registered_visitor = Grappa.Repo.reload!(anon_visitor)
@@ -11073,9 +11073,11 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, ":NickServ!services@services.azzurra.org NOTICE #{nick}_ :#{nick} has been ghosted.\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "WHOIS #{nick}\r\n"), 1_000)
 
-      # 401 → Server emits NICK back + IDENTIFY + stages pending_auth.
+      # 401 → Server emits the NICK back; the server's echo of it sends the
+      # held IDENTIFY, which stages pending_auth.
       IRCServer.feed(server, ":server 401 #{nick}_ #{nick} :No such nick\r\n")
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK #{nick}\r\n"), 1_000)
+      flush_server(server)
+      IRCServer.feed(server, ":#{nick}_!u@h NICK :#{nick}\r\n")
 
       {:ok, _} =
         IRCServer.wait_for_line(
@@ -11085,8 +11087,7 @@ defmodule Grappa.Session.ServerTest do
         )
 
       # Flush so the success-path state mutation is visible.
-      IRCServer.feed(server, "PING :flush\r\n")
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+      flush_server(server)
 
       state = SessionStateHelpers.fetch(pid)
       assert is_nil(SessionStateHelpers.ghost_recovery(state))
@@ -11097,29 +11098,31 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    # issue 2392 — the same 433/001 ladder, but every NICK after the welcome is
-    # echoed back: that is the wire shape of GhostRecovery's `NICK` back and of
-    # the #2253 reclaim, the two moments the held identify could leave.
-    defp ghost_echo_handler(nick) do
+    # issue 2392 — the same 433/001 ladder, but a NICK after the welcome gets no
+    # reply. The test feeds the echo itself, so it decides when the server
+    # confirms a rename and can read the wire before it does: that echo is the
+    # one moment the held identify may leave, after GhostRecovery's `NICK` back
+    # as after the #2253 reclaim.
+    defp ghost_no_echo_handler(nick) do
       counter = :counters.new(1, [])
 
       fn state, line ->
         if String.starts_with?(line, "NICK ") do
-          {:reply, ghost_echo_response(counter, nick), state}
+          {:reply, ghost_no_echo_response(counter, nick), state}
         else
           {:reply, nil, state}
         end
       end
     end
 
-    defp ghost_echo_response(counter, nick) do
+    defp ghost_no_echo_response(counter, nick) do
       n = :counters.get(counter, 1)
       :counters.add(counter, 1, 1)
 
       case n do
         0 -> ":server 433 * #{nick} :Nickname is already in use.\r\n"
         1 -> ":server 001 #{nick}_ :Welcome\r\n"
-        _ -> ":#{nick}_!u@h NICK :#{nick}\r\n"
+        _ -> nil
       end
     end
 
@@ -11127,12 +11130,13 @@ defmodule Grappa.Session.ServerTest do
     # the secret THREE times, and the second went out at the 001 for `<nick>_`:
     # a nick that is not the configured one, so a different (possibly someone
     # else's) account. The 001 built-in now holds the secret like #2380 does on
-    # the plain reclaim path; the FSM's own identify after its `NICK` back is
-    # the only one, and the echo of that `NICK` must not add a second.
+    # the plain reclaim path, and GhostRecovery's `NICK` back sends nothing
+    # else: the held identify goes out once, when the server echoes that
+    # `NICK`, and not before.
     test "issue 2392 — a drifted welcome with GhostRecovery armed identifies once, on the configured nick" do
       nick = "v_t18i_#{System.unique_integer([:positive])}"
 
-      {server, port} = IRCServer.start_server(ghost_echo_handler(nick))
+      {server, port} = IRCServer.start_server(ghost_no_echo_handler(nick))
       {anon_visitor, network} = visitor_with_network(port, nick: nick)
       {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, network.id, "s3cret")
       registered_visitor = Grappa.Repo.reload!(anon_visitor)
@@ -11163,6 +11167,20 @@ defmodule Grappa.Session.ServerTest do
 
       IRCServer.feed(server, ":server 401 #{nick}_ #{nick} :No such nick\r\n")
 
+      # Barrier: the 401 is processed, so the `NICK` back is on the wire. Still
+      # no identify: the rename is not confirmed yet, and the secret is held.
+      flush_server(server)
+
+      before_echo = IRCServer.sent_lines(server)
+      assert Enum.count(before_echo, &(&1 == "NICK #{nick}\r\n")) == 2
+      refute Enum.any?(before_echo, &String.contains?(&1, "IDENTIFY"))
+      after_401 = SessionStateHelpers.fetch(pid)
+      assert is_nil(SessionStateHelpers.ghost_recovery(after_401))
+      assert Map.get(after_401, :deferred_identify_secret) == "s3cret"
+
+      # The server confirms the rename; its echo releases the held identify.
+      IRCServer.feed(server, ":#{nick}_!u@h NICK :#{nick}\r\n")
+
       {:ok, _} =
         IRCServer.wait_for_line(
           server,
@@ -11170,7 +11188,7 @@ defmodule Grappa.Session.ServerTest do
           1_000
         )
 
-      # Barrier: the echo of the FSM's own `NICK` back has been processed too.
+      # Barrier: anything else the echo sent is on the wire before the count.
       flush_server(server)
 
       lines = IRCServer.sent_lines(server)
@@ -11192,7 +11210,7 @@ defmodule Grappa.Session.ServerTest do
     test "issue 2392 — a ghost timeout keeps the secret for a later reclaim" do
       nick = "v_t18u_#{System.unique_integer([:positive])}"
 
-      {server, port} = IRCServer.start_server(ghost_echo_handler(nick))
+      {server, port} = IRCServer.start_server(ghost_no_echo_handler(nick))
       {anon_visitor, network} = visitor_with_network(port, nick: nick)
       {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, network.id, "s3cret")
       registered_visitor = Grappa.Repo.reload!(anon_visitor)

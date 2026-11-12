@@ -6718,12 +6718,16 @@ NO identity sequence was armed; an armed GhostRecovery took the else branch and
 sent it.
 
 **The rule is #2380's, without the exception.** A drifted welcome always holds
-the secret in `deferred_identify_secret`; the sequence that owns the nick is
-what sends it, on the configured nick.
+the secret in `deferred_identify_secret`, and the one thing that sends it is
+the server's echo of a `NICK` onto the configured nick
+(`maybe_identify_on_reclaimed_nick/2`), whichever path sent that `NICK`.
 
-- `:succeeded` — GhostRecovery emits `NICK <orig>` + `IDENTIFY` in one batch,
-  so the held slot is dropped unsent there (`advance_ghost/2`). Keeping it
-  would double the identify on the NICK echo.
+- `:succeeded` — GhostRecovery emits `NICK <orig>` alone and no `IDENTIFY` of
+  its own. Its echo releases the held one, exactly as on the #2253 reclaim, so
+  IDENTIFY is sent once, after the server has confirmed the rename: the order
+  RecoverIdentity's reclaim leg has kept since #623, because services set `+r`
+  only for an IDENTIFY on the nick in use. Until the echo the slot stays held,
+  so a `NICK` back that never lands ends like `:failed`.
 - `:failed` / `:ghost_timeout` — the slot SURVIVES. The #2253 reclaim (or the
   operator's own `/nick`) can still bring the configured nick back, and the
   NICK echo releases the held identify through `maybe_identify_on_reclaimed_nick/2`.
@@ -6733,7 +6737,17 @@ what sends it, on the configured nick.
 - `GHOST` still carries the secret in the verb — that is the verb's argument,
   not an identify for a nick.
 
+A perform list that consumes `$nickserv_pass` holds nothing, so a recovered
+nick gets no IDENTIFY from grappa: the same as the plain reclaim path, and a
+change from the FSM's old unconditional one.
+
+Issue 2388's entry lists GhostRecovery among the IDENTIFY senders that stage
+the pending-auth slot through `capture_outbound_ns_secret/2`. That IDENTIFY is
+now the held built-in, sent through `send_perform_line/2`, which is the same
+door: the `GHOST` at the 433 stages the slot first, and the echo's IDENTIFY
+restages it, latest-wins, with the same secret.
+
 Same rule #2371 applies to REGISTER: the secret only counts on the configured
-nick. Tests (CI only): success = exactly one IDENTIFY, after the FSM's `NICK`
-back and never before it; timeout then reclaim = exactly one, released by the
-reclaim echo.
+nick. Tests: success = no IDENTIFY while the `NICK` back is unconfirmed, then
+exactly one once it is echoed, after the last `NICK <nick>`; timeout then
+reclaim = exactly one, released by the reclaim echo.

@@ -15,7 +15,11 @@ defmodule Grappa.Session.GhostRecovery do
   2. NickServ NOTICE received → send WHOIS on original nick, transition
      to `:awaiting_whois`.
   3. WHOIS 401 (no such nick) for the queried nick → original is gone,
-     so `/nick` back + IDENTIFY, transition to `:succeeded`.
+     so `/nick` back, transition to `:succeeded`. No IDENTIFY here: the
+     host holds the secret from the drifted 001 and sends it on the ECHO
+     of this `NICK` (`Session.Server`'s `maybe_identify_on_reclaimed_nick/2`),
+     so it goes out once, after the server has confirmed the rename — the
+     same order `Grappa.Session.RecoverIdentity`'s reclaim leg keeps (#623).
   4. WHOIS 311 (still there) for the queried nick → bail, transition
      to `:failed`.
   5. `:timeout` in any non-terminal phase → `:failed`.
@@ -110,11 +114,11 @@ defmodule Grappa.Session.GhostRecovery do
   # (a stray WHOIS reply for another target) falls through to `{:cont, s, []}`,
   # preserving the "ignore unrelated" behaviour the guards used to give.
   def step(
-        %__MODULE__{phase: :awaiting_whois, orig_nick: orig, password: pwd} = s,
+        %__MODULE__{phase: :awaiting_whois, orig_nick: orig} = s,
         %Message{command: {:numeric, 401}, params: [_, queried | _]}
       ) do
     if nick_match?(queried, orig) do
-      {:stop, %{s | phase: :succeeded}, ["NICK #{orig}\r\n", "PRIVMSG NickServ :IDENTIFY #{pwd}\r\n"]}
+      {:stop, %{s | phase: :succeeded}, ["NICK #{orig}\r\n"]}
     else
       {:cont, s, []}
     end

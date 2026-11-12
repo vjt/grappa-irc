@@ -4001,7 +4001,7 @@ defmodule Grappa.Session.Server do
   # Task 18 — visitor 433 with cached NickServ password starts ghost
   # recovery. AuthFSM's `:nickserv_identify`-specific 432/433 :cont
   # clause keeps the connection alive long enough for this handler to
-  # drive the underscore-NICK + GHOST + WHOIS + IDENTIFY flow. The
+  # drive the underscore-NICK + GHOST + WHOIS + NICK-back flow. The
   # `pending_password` discriminator is stricter than the subject —
   # mode-1 sessions and anon visitors both have nil here so they fall
   # through to the catch-all and AuthFSM's :nick_rejected stop (mode-1)
@@ -5455,10 +5455,10 @@ defmodule Grappa.Session.Server do
   # issue 2392 — a GhostRecovery in flight is the same rule, not an exception.
   # A drifted welcome HOLDS the secret whether or not a sequence is armed: at
   # the 001 for `<nick>_` the built-in would name the fallback nick, the very
-  # account this rule keeps the secret away from. On `:succeeded` the slot is
-  # dropped unsent (the FSM sends its own IDENTIFY after its `NICK` back, and
-  # the echo must not send a second one); on `:failed` / `:ghost_timeout` it
-  # stays, so a later reclaim onto the configured nick still identifies.
+  # account this rule keeps the secret away from. GhostRecovery sends no
+  # IDENTIFY of its own: on `:succeeded` its `NICK` back is a reclaim like any
+  # other, and the echo releases the slot. On `:failed` / `:ghost_timeout` the
+  # slot stays, so a later reclaim onto the configured nick still identifies.
   @spec maybe_builtin_identify(t(), String.t() | nil, boolean(), String.t()) :: t()
   defp maybe_builtin_identify(state, secret, false, welcomed_nick)
        when is_binary(secret) and secret != "" do
@@ -5897,10 +5897,7 @@ defmodule Grappa.Session.Server do
       # just undid.
       :succeeded ->
         :ok = cancel_and_drain(state.ghost_timer, :ghost_timeout)
-        # issue 2392 — the FSM sends its own IDENTIFY in the same batch as the
-        # `NICK` back, on the configured nick. The held built-in is dropped
-        # unsent here, or the NICK echo would send it a second time.
-        {:noreply, state |> Map.put(:deferred_identify_secret, nil) |> clear_ghost()}
+        {:noreply, clear_ghost(state)}
 
       :failed ->
         :ok = cancel_and_drain(state.ghost_timer, :ghost_timeout)
@@ -6032,11 +6029,13 @@ defmodule Grappa.Session.Server do
   # ...})`, so they reach the wire through the #1394 door, which runs
   # NSInterceptor over each one and stages `pending_auth` on capture. This is
   # what keeps the +r MODE rendezvous (Task 15) firing for the `IDENTIFY`
-  # GhostRecovery emits on `:succeeded` — same one-feature-one-code-path
-  # discipline as the #189 built-in IDENTIFY at 001 (routed through the same
-  # choke point by `run_perform_and_identify/2`). A dead socket mid-recovery
-  # is survivable: the next reconnect retries GHOST + IDENTIFY from scratch,
-  # and the staging that already happened is discarded on terminate/2.
+  # RecoverIdentity emits — same one-feature-one-code-path discipline as the
+  # #189 built-in IDENTIFY at 001 (routed through the same choke point by
+  # `run_perform_and_identify/2`), which is also the identify a GhostRecovery
+  # ends in: held at the drifted 001, released by the `NICK` echo. A dead
+  # socket mid-recovery is survivable: the next reconnect retries GHOST +
+  # IDENTIFY from scratch, and the staging that already happened is discarded
+  # on terminate/2.
   # #1390 slice 6 — the sub-machines' `lines` travel on the ONE effect grammar
   # now. This is an adapter, not a second interpreter: it maps them onto
   # `{:reply, _, _}` and hands the list to `apply_effects/2`, which owns the
