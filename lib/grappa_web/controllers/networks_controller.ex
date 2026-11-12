@@ -54,7 +54,7 @@ defmodule GrappaWeb.NetworksController do
   alias Grappa.Avatars
   alias Grappa.IRC.Identifier
   alias Grappa.{Networks, ServerSettings, Session, Uploads, UserSettings}
-  alias Grappa.Networks.{Credential, Credentials, SessionPlan}
+  alias Grappa.Networks.{Credential, Credentials, SessionPlan, Wire}
   alias Grappa.Visitors.Visitor
   alias GrappaWeb.{NetworkSpawn, Subject}
 
@@ -513,10 +513,9 @@ defmodule GrappaWeb.NetworksController do
 
   # #1044 — the wire shape: set-ness only. The secret is NEVER serialised,
   # the same write-only posture `$oper_pass` has on the perform surface.
-  @spec server_pass_wire(Credential.t()) :: %{server_pass_set: boolean()}
-  defp server_pass_wire(%Credential{} = credential) do
-    %{server_pass_set: Credential.upstream_server_pass(credential) != nil}
-  end
+  # #2606 — the admin door answers the same shape, so its owner is
+  # `Networks.Wire.server_pass_json/1` and this is the one call site.
+  defp server_pass_wire(%Credential{} = credential), do: Wire.server_pass_json(credential)
 
   # Only `:connected` and `:parked` are user-settable. `:failed` is
   # server-set only (k-line / permanent SASL — S1.4 lenient triggers);

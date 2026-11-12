@@ -494,6 +494,23 @@ defmodule Grappa.AdminEvents.WireTest do
       assert event.session_action == :spawned
     end
 
+    # #2606 — the two credential outcomes that touch no session at all: an
+    # admin wrote or wiped another user's upstream PASS.
+    test ":server_pass_set carries the action, never a value" do
+      event =
+        Wire.credential_updated("u-uuid", "alice", 7, "azzurra", :server_pass_set, "a", "vjt")
+
+      assert event.kind == :credential_updated
+      assert event.session_action == :server_pass_set
+    end
+
+    test ":server_pass_cleared carries the action, never a value" do
+      event =
+        Wire.credential_updated("u-uuid", "alice", 7, "azzurra", :server_pass_cleared, "a", "vjt")
+
+      assert event.session_action == :server_pass_cleared
+    end
+
     test "rejects unknown session_action" do
       assert_raise FunctionClauseError, fn ->
         Wire.credential_updated("u-uuid", "alice", 7, "azzurra", :restarted, "a", "vjt")

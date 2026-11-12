@@ -277,6 +277,19 @@ defmodule Grappa.Networks.Wire do
   @type available_network_row :: %{slug: String.t()}
 
   @typedoc """
+  #2606 — the write-only set-ness answer for the server `PASS` slot.
+
+  ONE shape, two doors: the user-facing `GET`/`PUT
+  `/networks/:network_id/server_pass` (#1044) and the admin
+  `GET`/`PUT /admin/credentials/:user_id/:network_id/server_pass` (#2606)
+  both answer it, so it is defined once here rather than copied into each
+  controller. The boolean says whether the slot holds a secret; the secret
+  itself is never serialised — the same posture `$oper_pass` has on the
+  perform surface.
+  """
+  @type server_pass_json :: %{server_pass_set: boolean()}
+
+  @typedoc """
   UX-4 bucket B / #211 phase 6: home envelope nested under
   `MeJSON.show/1`'s `:home_data` key. Populated for BOTH subjects now
   (ruling A — the user + visitor home pages are the SAME data-driven
@@ -440,6 +453,19 @@ defmodule Grappa.Networks.Wire do
   end
 
   def avatar_url(%Credential{avatar_upload_id: nil}), do: nil
+
+  @doc """
+  #2606 — the `server_pass_json` answer: set-ness only, never the value.
+
+  `Credential.upstream_server_pass/1` resolves the slot the credential's
+  `auth_method` would actually spend, so the boolean answers the question
+  the UI asks ("is a PASS stored for this binding?") rather than "does the
+  dedicated column happen to be filled".
+  """
+  @spec server_pass_json(Credential.t()) :: server_pass_json()
+  def server_pass_json(%Credential{} = credential) do
+    %{server_pass_set: Credential.upstream_server_pass(credential) != nil}
+  end
 
   @doc """
   Renders a `Networks.Network` + the credential's nick + T32

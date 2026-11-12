@@ -55,7 +55,7 @@ defmodule GrappaWeb.Admin.CredentialsController do
 
   alias Grappa.{Accounts, AdminEvents, LiveIntrospection, Networks, Operator}
   alias Grappa.AdminEvents.Wire, as: AdminEventsWire
-  alias Grappa.Networks.{Credential, Credentials}
+  alias Grappa.Networks.{Credential, Credentials, Wire}
   alias Grappa.Networks.Credentials.AdminWire
   alias GrappaWeb.Admin.{AuthPlug, SubjectLabels}
   alias GrappaWeb.Validation
@@ -223,6 +223,104 @@ defmodule GrappaWeb.Admin.CredentialsController do
       conn |> put_status(:no_content) |> text("")
     end
   end
+
+  @doc """
+  #2606 — GET the server `PASS` set-ness for an operator-edited binding.
+
+  The operator-console twin of `GET /networks/:network_id/server_pass`: that
+  one resolves the network against the CALLER's own subject, so an admin
+  editing someone else's credential gets a uniform 404 there and had no
+  supported way to read (or write) this slot at all.
+
+  Returns `{server_pass_set}` and never the value — write-only, the same
+  posture `$oper_pass` has on the perform surface. `404 not_found` on an
+  unknown user / network / binding; `400 bad_request` on malformed URL params.
+  """
+  @spec server_pass(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :not_found | :bad_request}
+  def server_pass(conn, %{"user_id" => raw_user_id, "network_id" => raw_network_id}) do
+    with {:ok, user_id} <- parse_uuid(raw_user_id),
+         {:ok, network_id} <- parse_int(raw_network_id),
+         {:ok, credential} <- Credentials.get_credential_by_ids(user_id, network_id) do
+      json(conn, server_pass_wire(credential))
+    end
+  end
+
+  @doc """
+  #2606 — PUT the server `PASS` on an operator-edited binding.
+
+  Body: `{server_pass}` — `""` clears, omitting the key keeps the stored one
+  (leave-blank-to-keep), exactly like the user-facing sibling. The secret is
+  spent during registration, so no live session is bounced: the next
+  (re)connect picks it up.
+
+  A dedicated verb rather than a key on `PATCH /admin/credentials/...`:
+  #2107 kept `server_pass` off that whitelist on purpose, and the way back
+  from a stomped slot is a second door to type it, not a wider first one.
+
+  Returns `200` with `{server_pass_set}`; `422 validation_failed` on a value
+  that is not a single wire token (spaces / CR / LF / NUL); `404 not_found`
+  on an unknown binding; `400 bad_request` on malformed URL params.
+
+  An actual write emits `:credential_updated` with `session_action:
+  :server_pass_set | :server_pass_cleared` — the value never rides the event.
+  A body that omits the key keeps the stored one and emits nothing, because
+  nothing changed; a body carrying `null` is the same no-op (Ecto's `cast/3`
+  ignores a nil param), so it emits nothing either.
+  """
+  @spec update_server_pass(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :not_found | :bad_request | Ecto.Changeset.t()}
+  def update_server_pass(conn, %{"user_id" => raw_user_id, "network_id" => raw_network_id} = params) do
+    with {:ok, user_id} <- parse_uuid(raw_user_id),
+         {:ok, network_id} <- parse_int(raw_network_id),
+         {:ok, user} <- fetch_user(user_id),
+         {:ok, network} <- fetch_network(network_id),
+         {:ok, credential} <- Credentials.get_credential_by_ids(user_id, network_id),
+         {:ok, updated} <-
+           Credentials.update_server_pass(credential, Map.take(params, ["server_pass"])) do
+      :ok =
+        emit_server_pass_updated(
+          user,
+          network,
+          Credential.upstream_server_pass(credential),
+          Credential.upstream_server_pass(updated),
+          conn
+        )
+
+      json(conn, server_pass_wire(updated))
+    end
+  end
+
+  # #2606 — the audit trail this verb owed: `update/2` emits on every edit and
+  # `create`/`delete` emit too, so an admin writing or wiping another user's
+  # upstream PASS was the one mutation that left no trace. The action says
+  # set/cleared; the secret itself never reaches the event.
+  #
+  # The action comes from the BEFORE/AFTER transition, never from the request
+  # body. The body is not a reliable witness: `{"server_pass": null}` is a
+  # 200 with the row untouched (Ecto's `cast/3` ignores a nil param), and a
+  # body-only reading would have logged `:server_pass_set` for a write that
+  # never happened — a false audit entry is worse than a missing one.
+  defp emit_server_pass_updated(user, network, before, after_value, conn) do
+    case {before, after_value} do
+      # Set-ness did not move (both empty, or the same secret retyped).
+      {nil, nil} -> :ok
+      {value, value} -> :ok
+      # Empty -> set.
+      {nil, _} -> emit_credential_updated(user, network, :server_pass_set, conn)
+      # Set -> empty.
+      {_, nil} -> emit_credential_updated(user, network, :server_pass_cleared, conn)
+      # Set -> a DIFFERENT secret: a rotation. The slot still ends up set, so
+      # the action is the same one; without this clause the case has no arm
+      # for it and the write raises after the row has already been saved.
+      {_, _} -> emit_credential_updated(user, network, :server_pass_set, conn)
+    end
+  end
+
+  # #2606 — set-ness only. The secret is NEVER serialised. ONE owner for the
+  # shape: the user-facing door renders the same map through the same
+  # function, so a future change to the answer cannot drift between them.
+  defp server_pass_wire(%Credential{} = credential), do: Wire.server_pass_json(credential)
 
   defp emit_credential_bound(user, network, cred, conn) do
     {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)

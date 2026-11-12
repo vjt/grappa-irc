@@ -4031,6 +4031,47 @@ export async function adminUnbindCredential(
   if (!res.ok) throw await readError(res);
 }
 
+// #2606 — the server `PASS` slot on an operator-edited binding. Write-only
+// end to end: the wire carries set-ness only, never the secret, the same
+// posture `$oper_pass` has on the perform surface. The operator console needs
+// its own door because `GET/PUT /networks/:network_id/server_pass` resolves
+// the network against the CALLER's subject, so an admin editing someone
+// else's credential gets a uniform 404 there.
+export type AdminServerPassState = { server_pass_set: boolean };
+
+function adminServerPassUrl(userId: string, networkId: number): string {
+  return `/admin/credentials/${encodeURIComponent(userId)}/${encodeURIComponent(
+    String(networkId),
+  )}/server_pass`;
+}
+
+export async function adminGetServerPass(
+  token: string,
+  userId: string,
+  networkId: number,
+): Promise<AdminServerPassState> {
+  const res = await fetch(adminServerPassUrl(userId, networkId), { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminServerPassState;
+}
+
+// `serverPass: ""` CLEARS the slot; omitting the call keeps it. Persists only:
+// the secret is spent at registration, so no live session is bounced.
+export async function adminPutServerPass(
+  token: string,
+  userId: string,
+  networkId: number,
+  serverPass: string,
+): Promise<AdminServerPassState> {
+  const res = await fetch(adminServerPassUrl(userId, networkId), {
+    method: "PUT",
+    headers: buildHeaders(token),
+    body: JSON.stringify({ server_pass: serverPass }),
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as AdminServerPassState;
+}
+
 // Session-sharing — mint endpoint. #1306 — serves a visitor AND a user
 // subject; the one 403 left is #363's incognito visitor. Returns the
 // signed token + ISO8601 expires_at for the share-link modal countdown.
