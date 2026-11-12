@@ -45,7 +45,6 @@ if Mix.env() in [:dev, :test] do
     @welcome_timeout_ms 5_000
     @autojoin_timeout_ms 5_000
     @autojoin_poll_interval_ms 50
-    @seed_gap_ms 100
 
     @typedoc """
     Wall-clock of each span bringing a session up, in milliseconds. The
@@ -74,19 +73,33 @@ if Mix.env() in [:dev, :test] do
 
     @doc """
     Inserts `count` synthetic `:privmsg` rows from `sender` into
-    `(user_id, network_id, channel)`, monotonically spaced
-    #{@seed_gap_ms}ms apart and ending at "now".
+    `(user_id, network_id, channel)`, monotonically spaced `gap_ms`
+    apart and ending at "now".
+
+    The spacing is the caller's (#2311). 100ms makes the ~20s corpus
+    every scroll spec is calibrated against, which yields exactly ONE
+    day separator; a spec about the day boundary asks for a gap wide
+    enough to cross midnight. The newest row lands at "now" whatever
+    the gap, so nothing else about the seed moves.
 
     Does NOT truncate first — callers that need a truncate own that
     decision (`SubjectReset` truncates because the channel already
     holds a prior spec's rows; `SubjectProvision` does not because the
     subject was created a millisecond ago and cannot have any).
     """
-    @spec seed_channel(Ecto.UUID.t(), integer(), String.t(), non_neg_integer(), String.t()) :: :ok
-    def seed_channel(user_id, network_id, channel, count, sender)
+    @spec seed_channel(
+            Ecto.UUID.t(),
+            integer(),
+            String.t(),
+            non_neg_integer(),
+            String.t(),
+            pos_integer()
+          ) :: :ok
+    def seed_channel(user_id, network_id, channel, count, sender, gap_ms)
         when is_binary(user_id) and is_integer(network_id) and is_binary(channel) and
-               is_integer(count) and count >= 0 and is_binary(sender) do
-      base_time = System.system_time(:millisecond) - count * @seed_gap_ms
+               is_integer(count) and count >= 0 and is_binary(sender) and is_integer(gap_ms) and
+               gap_ms > 0 do
+      base_time = System.system_time(:millisecond) - count * gap_ms
 
       Enum.each(1..count//1, fn i ->
         {:ok, _} =
@@ -94,7 +107,7 @@ if Mix.env() in [:dev, :test] do
             user_id: user_id,
             network_id: network_id,
             channel: channel,
-            server_time: base_time + i * @seed_gap_ms,
+            server_time: base_time + i * gap_ms,
             kind: :privmsg,
             sender: sender,
             body: "seed line ##{i}",

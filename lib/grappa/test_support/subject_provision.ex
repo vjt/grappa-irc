@@ -68,7 +68,8 @@ if Mix.env() in [:dev, :test] do
     @type channel_seed :: %{
             required(:name) => String.t(),
             required(:seed_count) => non_neg_integer(),
-            required(:seed_sender) => String.t()
+            required(:seed_sender) => String.t(),
+            required(:seed_gap_ms) => pos_integer()
           }
 
     @type params :: %{
@@ -199,8 +200,8 @@ if Mix.env() in [:dev, :test] do
 
     defp seed_all(_, _, []), do: :ok
 
-    defp seed_all(user, cred, [%{name: name, seed_count: count, seed_sender: sender} | rest]) do
-      :ok = SubjectSession.seed_channel(user.id, cred.network_id, name, count, sender)
+    defp seed_all(user, cred, [%{name: name, seed_count: count, seed_sender: sender, seed_gap_ms: gap} | rest]) do
+      :ok = SubjectSession.seed_channel(user.id, cred.network_id, name, count, sender, gap)
       seed_all(user, cred, rest)
     end
 

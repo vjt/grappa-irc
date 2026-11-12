@@ -5,7 +5,9 @@ defmodule Grappa.TestSupport.SubjectProvisionTest do
 
   The happy path ends in a live upstream IRC session and is covered by
   the e2e suite, which has one. What is covered HERE is everything that
-  can be asserted without an upstream, and in particular the property
+  can be asserted without an upstream — plus the seed spacing, against
+  the in-process `Grappa.IRCServer` fake, because seeded rows only
+  survive a provision that commits — and in particular the property
   that makes this verb safe to call 660 times a run: **a provision that
   fails leaves no user row behind**. A half-provisioned subject would
   sit in `/admin/users` and `/admin/sessions` for the rest of the run
@@ -20,7 +22,7 @@ defmodule Grappa.TestSupport.SubjectProvisionTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, Networks, ReadCursor, Repo, ScrollbackHelpers}
+  alias Grappa.{Accounts, IRCServer, Networks, ReadCursor, Repo, ScrollbackHelpers}
   alias Grappa.TestSupport.SubjectProvision
 
   defp params(name, slug, overrides) do
@@ -31,7 +33,7 @@ defmodule Grappa.TestSupport.SubjectProvisionTest do
         network_slug: slug,
         nick: name,
         autojoin_channels: ["#bofh"],
-        seed: [%{name: "#bofh", seed_count: 3, seed_sender: "seed-bot"}]
+        seed: [%{name: "#bofh", seed_count: 3, seed_sender: "seed-bot", seed_gap_ms: 100}]
       },
       overrides
     )
@@ -73,6 +75,25 @@ defmodule Grappa.TestSupport.SubjectProvisionTest do
 
       assert slug == network.slug
       assert Accounts.get_user_by_name(name) == nil
+    end
+
+    test "seeds each channel at the seed_gap_ms the caller asked for (#2311)" do
+      # The one success path here, against the in-process fake: the rows are
+      # only observable once the provision COMMITS, because a failed settle
+      # rolls the user back and the FK cascade takes the rows with it. No
+      # autojoin, so "settled" is the 001 alone.
+      name = unique_name()
+      {_, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", name))
+      {network, _} = network_with_server(port: port, slug: "prov-#{System.unique_integer([:positive])}")
+      seed = [%{name: "#bofh", seed_count: 3, seed_sender: "seed-bot", seed_gap_ms: 250}]
+
+      assert {:ok, %{user: user}} =
+               SubjectProvision.provision!(params(name, network.slug, %{autojoin_channels: [], seed: seed}))
+
+      times = ScrollbackHelpers.server_times(user.id, network.id, "#bofh")
+      assert times |> Enum.chunk_every(2, 1, :discard) |> Enum.map(fn [a, b] -> b - a end) == [250, 250]
+
+      assert :ok = SubjectProvision.teardown!(name)
     end
   end
 

@@ -112,6 +112,18 @@ defmodule Grappa.TestSupport.SubjectResetTest do
       assert phases.total_ms >= phases.drain_ms
     end
 
+    test "re-seeds a baseline channel at the calibrated 100ms spacing", %{user: user, network: network} do
+      # The reset wire carries no spacing (#2311 made it the provisioning
+      # verb's caller's, not this verb's): the specs that re-seed through
+      # `resetSubject(baselineSeed)` are calibrated against the compose-time
+      # seeder's 100ms, and that is what they must keep getting.
+      baseline = %{network.slug => [%{name: "#bofh", seed_count: 3, seed_sender: "seed-bot"}]}
+      assert {:ok, _} = SubjectReset.reset!(user.name, %{baseline_seed: baseline})
+
+      times = ScrollbackHelpers.server_times(user.id, network.id, "#bofh")
+      assert times |> Enum.chunk_every(2, 1, :discard) |> Enum.map(fn [a, b] -> b - a end) == [100, 100]
+    end
+
     test "returns {:error, :user_not_found} for unknown user_name" do
       assert {:error, :user_not_found} =
                SubjectReset.reset!(

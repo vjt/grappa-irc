@@ -6518,6 +6518,75 @@ keyboard comes up (it fires a resize). Unmeasured on a device.
   user study.
 - A real iPhone or Android device: the e2e projects are WebKit and Chromium
   with device descriptors, not the devices.
+<!-- entry #2311 -->
+
+---
+
+## 2026-11-11 — #2311: the date pill reads its separators' boxes; the observer is only a trigger
+
+This reverses a decision #2304 recorded (`docs/design_notes/2026-09.md`,
+"The pill watches the SEPARATORS, and only them"). #2304 made the
+`IntersectionObserver` THE mechanism: the entry carries rects the browser has
+already computed, a pane nobody scrolls costs nothing, and reading rects from
+a scroll handler was rejected outright. The pill then never changed date
+across a midnight in a real browser, and the reason is in what an entry is.
+
+### An entry reports a TRANSITION, and a fast scroll has none
+
+The observer is rooted on a band at the top of the pane. A wheel notch, a
+trackpad swipe or any jump larger than the band moves a separator from one
+side of the band to the other in one frame with the intersection ratio never
+leaving zero: no transition, no entry. The place cached from the last entry
+keeps saying `above` for a separator that has left the screen, and the pill
+names a day that has already scrolled away — and stays on it. Measured in CI
+on both arms of the new spec (`issue2311-date-pill-day-change.spec.ts`): with
+the spec and without the fix (`c37294cab`) it failed at step (2) on its 30 s
+timeout (integration run 42601910531, shard 2); with the fix (`d1006e338`) it
+passed in 2.1 s (run 42609980555, shard 2). One run per arm.
+
+### The decision now
+
+- Every place is read from the separator's BOX (`placeOfRect` in
+  `lib/dayPill.ts`, against the pane's own top edge), never cached from an
+  entry.
+- The pass is coalesced to one per animation frame and scheduled from
+  `onScroll`, from a separator's mount (`observeDaySeparator`; the `below`
+  seed is now a placeholder until the first pass), and from every observer
+  firing and rebuild.
+- The observer stays, as a TRIGGER for the re-layouts that are neither a
+  scroll nor a mount. The state map is unchanged: one entry per separator
+  ELEMENT, deleted on cleanup.
+
+### What it costs, and what is still open
+
+- A forced layout per FRAME while scrolling, not per scroll event; that is
+  the cost #2304 refused, accepted because the observer cannot give the right
+  answer at any cost. `onScroll` already reads `scrollHeight` /
+  `clientHeight` on every event. Cheap on a clean layout is INFERRED, not
+  measured.
+- One box per separator per pass, which is one per distinct day among the
+  loaded rows — NOT a small constant: the scroll-up prepend applies no ring
+  cap, so a quiet channel scrolled far back can hold as many separators as
+  rows.
+- A re-layout that is neither a scroll nor a mount, and that carries a
+  separator across the whole band in one frame, is still missed until the
+  next pass: the observer keeps the transition semantics there. INFERRED from
+  the same mechanism; no case was built for it.
+- #2304 cited #782 / #1041 as the reason scroll-time rect reads are
+  unaffordable. Neither is about layout cost (#782 is the rail WHOIS refresh
+  control, #1041 the left-edge swipe), so that citation is dropped rather
+  than carried forward.
+
+### The corpus the spec needs
+
+The e2e seed is 200 rows 100 ms apart, ~20 s wide: exactly one day separator,
+nothing to cross. `POST /admin/test/subject` therefore takes a per-channel
+`seed_gap_ms`, and it is REQUIRED like every other field of that verb, for
+the moduledoc's own reason: a provisioning verb that silently substitutes a
+seed property hands the caller a subject it did not ask for. The Playwright
+fixture owns the calibrated `SEED_GAP_MS = 100` beside `SEED_COUNT`, and a
+spec widens it with `test.use({ specSeed: { seedGapMs } })`. The legacy reset
+verb's wire carries no spacing, so `SubjectReset` keeps the 100 ms itself.
 <!-- entry #2388 -->
 
 ---
