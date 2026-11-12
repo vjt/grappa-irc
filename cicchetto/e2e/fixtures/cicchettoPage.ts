@@ -1380,6 +1380,24 @@ export async function closeSettings(page: Page): Promise<void> {
   await expect(drawer).not.toBeInViewport({ timeout: 5_000 });
 }
 
+// #1766 — turn the mobile window bar off from Display settings, the way an
+// operator does. Four specs carried this body before issue 2641 made it five,
+// three verbatim and issue 2511's with the bar-gone assertion folded in (it
+// now sits at that spec's call site); one door, for the same reason
+// openSettingsSection is one.
+//
+// The toggle must start CHECKED: the bar ships shown, so an already-unchecked
+// toggle means the caller is running against a build whose default is
+// inverted. What the bar going off has to LOOK like is the caller's to assert
+// — on a Split View pane issue 2161 keeps it in flow regardless.
+export async function hideWindowBar(page: Page): Promise<void> {
+  await openSettingsSection(page, "display");
+  const toggle = page.getByTestId("show-bottom-bar-toggle");
+  await expect(toggle).toBeChecked();
+  await toggle.uncheck();
+  await closeSettings(page);
+}
+
 // Mobile members-drawer close primitive.
 //
 // `.shell-drawer-backdrop` is `position: fixed; inset: 0` (full

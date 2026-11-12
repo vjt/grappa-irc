@@ -6701,3 +6701,91 @@ there is no numeric for it (the only password-mismatch numeric the codebase
 knows, `464` ERR_PASSWDMISMATCH, is the OPER one, documented on
 `IRC.Client.send_oper/3`). So the only honest bound on a wrong password is
 the ceiling itself.
+<!-- entry #2641 -->
+
+---
+
+## 2026-11-12 — issue 2641: the pinned band clears the corner floats, not one of its bars
+
+**Symptom (iPhone PWA, server window, after an instance restart).** The
+far-behind bar ran under both corner floats: the left `#` door (window bar
+off, #1766) covered the start of `N unread — jump back`, so the count could
+not be read, and the ☰ (`.shell-chrome`, z 41, #985) covered the whole ×, so
+the bar could not be dismissed by tap.
+
+**Why it was missed.** Issue 2486 put the far-behind bar and the peer's
+encrypted-chat banner in one pinned band (`.scrollback-pinned`) and, in the
+same change, taught the banner to clear the floats: a `.shell-main:has(...)`
+pair that pads the side a float sits on by `--chrome-tap-min` plus the
+`--pane-chrome-inset-*` tokens, for as long as that float is mounted. The
+pair was written against `.e2e-request-banner`, so the band's other child
+kept the full width. The issue's "the banner has the same exposure" line
+was already false when it was filed (the pair is on 874d804dd); only the bar
+was exposed.
+
+**Decision: the clearance belongs to the band.** The pair now targets
+`.scrollback-pinned > :is(.e2e-request-banner, .scrollback-far-behind)`, with
+the same tokens and no new number. The issue offered a second cure, pushing
+the band below the toggle row; 2486 had already chosen the inset for this
+band, and one band gets one answer. Where nothing floats (a phone's channel
+window, whose TopicBar hosts the ☰ in flow, and every desktop window) the
+`:has()` does not match and the bar keeps its symmetric padding.
+
+**A list, not `> *`.** The first cut was `.scrollback-pinned > *`, so a third
+pinned bar would have inherited the clearance by construction. Measured:
+biome's `noDescendingSpecificity` pairs a trailing `> *` with every later
+`> *` in the theme, and that cut took `bun run check` from 61 warnings to 65
+for one rule; the list leaves it at 61. The price is written in the rule's
+comment: a third bar pinned in the band has to join the list.
+
+**Evidence.** `issue2641-far-behind-clears-the-float.spec.ts`, four arms: a
+far-behind server window on the two touch projects with the window bar on and
+off, a channel window on the same two, and a desktop server window. The label
+is held to issue 2486's oracle: no box of its text may meet a float's box.
+The × must win `elementFromPoint` at its centre, keep `--tap-min`, and
+dismiss on a tap. Each variant below ran on both touch projects, and after
+each run the served dist was read to prove the variant had reached the
+bundle:
+
+- **Cure reverted**, 4 failed / 3 passed. With the window bar on, the × lost
+  the hit test at its centre (its box at x 342–386 on webkit-iphone-15 and
+  361–405 on chromium-pixel-touch, under the ☰ 2486 measured at 331–379 /
+  350–398). With it off, the label's two text boxes (the count at x 7–27.2,
+  the rest running to x 154.7) met the `#` door at x 14–62, y 7–55. The
+  channel and desktop arms passed, as they must. Dist `index-eTe0AMUW.css`,
+  carrying only the banner pair.
+- **Leading rule deleted**, 2 failed / 5 passed. Only the bar-off arm
+  reddened, on the label. Dist `index-yVao83ca.css`, carrying only the ☰
+  half.
+- **Trailing rule deleted**, 4 failed / 3 passed. Both server arms reddened,
+  on the ×. On the bar-off arm the label passed, because the leading rule
+  still clears the door. Dist `index-Bjt65laq.css`, carrying only the door
+  half.
+- **Cure in place**, 7 of 7, dist `index-BkE9SHSK.css` with both halves. The
+  first cut of the spec also ran green, 23 of 23, together with the 2486,
+  #1766 and issue 2161 specs.
+
+So each half of the pair turns an arm red on its own assertion. Only the
+trailing half has an arm the other cannot touch, the bar-on one; the bar-off
+arm reddens under either deletion.
+
+**The first label check, and why it was replaced.** The spec first probed
+the hit test at both ends of each text box. On the cure-reverted parent
+those probes met the door only at x 26 and x 28, either side of the seam
+between the count's text node and the rest of the label. They found the
+label's leading end (x 8) clear: the first glyph stays visible, as in the
+report (`2… ad — jump back`). A label rendered as one text node would have
+put both probes outside the door and passed on the broken layout. That is
+computed from the measured boxes, not run. The review of PR 2660 caught it,
+and the same PR replaced the probe with the box oracle.
+
+**Also in the change.** The four specs that turned the window bar off from
+Display settings carried the same body (issue 2511's also asserted the bar
+gone, which now happens at its call site); it is `hideWindowBar()` in
+`cicchettoPage.ts` now, and 2486's `box`/`meet`/`onTop` live in
+`fixtures/cornerFloats.ts`, since both specs hold the same rule.
+
+**Not covered.** No wallpaper arm: the cure is geometry, not stacking, and
+2486's wallpaper arm holds the same pair with the pane as a stacking
+context. Playwright's device descriptors are not the reporter's iPhone; the
+geometry is measured on webkit-iphone-15 and chromium-pixel-touch only.
