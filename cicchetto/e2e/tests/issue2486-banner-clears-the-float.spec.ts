@@ -36,14 +36,9 @@
 // with no subject-shaped branch. The registered seed suffices.
 
 import { randomBytes } from "node:crypto";
-import type { Locator, Page } from "@playwright/test";
-import {
-  closeSettings,
-  loginAs,
-  openSettingsSection,
-  selectChannel,
-  sidebarWindow,
-} from "../fixtures/cicchettoPage";
+import type { Page } from "@playwright/test";
+import { hideWindowBar, loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
+import { box, meet, onTop } from "../fixtures/cornerFloats";
 import {
   createThemeWithBuiltinBackground,
   listBuiltinBackgrounds,
@@ -58,27 +53,6 @@ test.setTimeout(120_000);
 
 const ARRIVAL = 30_000;
 
-type Box = { x: number; y: number; width: number; height: number };
-
-async function box(locator: Locator): Promise<Box> {
-  const b = await locator.boundingBox();
-  if (!b) throw new Error("issue 2486 — a measured element has no bounding box");
-  return b;
-}
-
-function meet(a: Box, b: Box): boolean {
-  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
-}
-
-/** True iff `locator` is the topmost element at its own centre. */
-async function onTop(locator: Locator): Promise<boolean> {
-  return locator.evaluate((el) => {
-    const r = el.getBoundingClientRect();
-    const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
-    return top === el || el.contains(top);
-  });
-}
-
 // A wallpapered theme for `user`, active BEFORE the browser boots: the class
 // it engages (`theme-has-bg`) is read off the `GET /me/theme` the shell
 // fetches at start-up (as in issue1051-card-close-above-float.spec.ts).
@@ -92,16 +66,6 @@ async function activateWallpaperTheme(user: SeededUser): Promise<void> {
     0.3,
   );
   await setActiveTheme(user.token, theme.id, null);
-}
-
-// Turns the window bar off from Display settings. Done once the query is
-// open: the bar is how the spec reaches a window, as it is for #1766's.
-async function hideWindowBar(page: Page): Promise<void> {
-  await openSettingsSection(page, "display");
-  const toggle = page.getByTestId("show-bottom-bar-toggle");
-  await expect(toggle).toBeChecked();
-  await toggle.uncheck();
-  await closeSettings(page);
 }
 
 /**
@@ -129,6 +93,8 @@ async function assertBannerClearsTheFloats(page: Page, leftDoor: boolean): Promi
     const banner = page.getByTestId("e2e-request-banner");
     await expect(banner).toHaveAttribute("data-state", "incoming", { timeout: ARRIVAL });
     if (leftDoor) {
+      // Done once the query is open: the bar is how the spec reaches a
+      // window, as it is for #1766's.
       await hideWindowBar(page);
       await expect(page.locator(".bottom-bar")).toHaveCount(0);
       await expect(banner).toHaveAttribute("data-state", "incoming");
