@@ -1,4 +1,7 @@
 import { type Component, createMemo, createSignal, For, Show } from "solid-js";
+import { aliases } from "./lib/aliasList";
+import { atKey } from "./lib/byKey";
+import { aliasCaption, captionForCommand } from "./lib/commandCaptions";
 import { getCommandMenuEnabled, getCommandMenuEntries } from "./lib/commandMenu";
 import { rankCommands } from "./lib/commandUsage";
 import type { CommandCycle } from "./lib/compose";
@@ -68,24 +71,34 @@ const CommandMenu: Component<Props> = (props) => {
       {(v) => (
         <div class="command-menu" role="listbox" aria-label="commands" data-testid="command-menu">
           <For each={v().entries}>
-            {(verb, i) => (
-              <button
-                type="button"
-                class="command-menu-entry"
-                role="option"
-                aria-selected={i() === v().active}
-                // The keyboard's way through the entries is Tab IN the
-                // composer (the ring above); the entries are for a pointer.
-                tabIndex={-1}
-                // #59 — keep the composer focused, or the phone's keyboard
-                // closes under the tap. The cancel rides `mousedown`, the
-                // focus-shift carrier, NEVER `pointerdown` (lib/keepKeyboard).
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => props.onPick(verb)}
-              >
-                /{verb}
-              </button>
-            )}
+            {(verb, i) => {
+              // A builtin caption, or the alias's expansion when the verb is
+              // a user alias (an alias shadowing a builtin keeps the builtin
+              // caption: the entry IS that command until it is unaliased).
+              const expansion = atKey(aliases(), verb);
+              const caption =
+                captionForCommand(verb) ??
+                (expansion === undefined ? null : aliasCaption(expansion));
+              return (
+                <button
+                  type="button"
+                  class="command-menu-entry"
+                  role="option"
+                  aria-selected={i() === v().active}
+                  // The keyboard's way through the entries is Tab IN the
+                  // composer (the ring above); the entries are for a pointer.
+                  tabIndex={-1}
+                  // #59 — keep the composer focused, or the phone's keyboard
+                  // closes under the tap. The cancel rides `mousedown`, the
+                  // focus-shift carrier, NEVER `pointerdown` (lib/keepKeyboard).
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => props.onPick(verb)}
+                >
+                  <span class="command-menu-verb">/{verb}</span>
+                  {caption !== null && <span class="command-menu-caption">{caption}</span>}
+                </button>
+              );
+            }}
           </For>
         </div>
       )}

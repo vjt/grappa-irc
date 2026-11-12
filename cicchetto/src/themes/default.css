@@ -6106,7 +6106,8 @@ html.is-ios27-band .shell {
   z-index: 45;
   display: flex;
   flex-direction: column;
-  min-width: 10rem;
+  /* Wide enough for a caption to sit on one line on desktop. */
+  min-width: 16rem;
   max-width: calc(100% - 1rem);
   background: var(--bg-alt);
   border: 1px solid var(--border);
@@ -6125,7 +6126,20 @@ html.is-ios27-band .shell {
   font-size: var(--font-size);
   text-align: left;
   cursor: pointer;
+  /* The verb on top, its caption below it. */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.command-menu-verb {
   white-space: nowrap;
+}
+
+.command-menu-caption {
+  color: var(--muted);
+  font-size: 0.85em;
+  white-space: normal;
 }
 
 .command-menu-entry:hover,
