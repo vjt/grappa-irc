@@ -68,6 +68,7 @@ import {
 } from "./commands/session";
 import { topicClearCommand, topicSetCommand, topicShowCommand } from "./commands/topic";
 import {
+  clearCommand,
   cycleCommand,
   equeryCommand,
   joinCommand,
@@ -975,6 +976,13 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         }
         case "np": {
           result = await npCommand(cmd, ctx);
+          break;
+        }
+        // issue 2428 — wipe the submitting window's scrollback, behind a
+        // confirm that names the row count. The handler resolves the target
+        // from `ctx.submittedFrom`; nothing about the window is decided here.
+        case "clear": {
+          result = await clearCommand(cmd, ctx);
           break;
         }
         case "notice": {

@@ -803,6 +803,12 @@ defmodule GrappaWeb.Router do
     get "/archive", ArchiveController, :index
     delete "/archive/:target", ArchiveController, :delete
 
+    # issue 2428 — how many rows `/clear` would drop for ONE window, so the
+    # confirm can name the number before the operator commits. A different
+    # verb and a different segment count from the DELETE above, so neither
+    # shadows the other.
+    get "/archive/:target/count", ArchiveController, :count
+
     post "/nick", NickController, :create
 
     # #247 — /notify presence watch list. GET combines the DB list with
