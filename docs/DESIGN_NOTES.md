@@ -6740,22 +6740,48 @@ comment: a third bar pinned in the band has to join the list.
 
 **Evidence.** `issue2641-far-behind-clears-the-float.spec.ts`, four arms: a
 far-behind server window on the two touch projects with the window bar on and
-off, a channel window on the same two, and a desktop server window.
-Red on the parent of the cure, 4 failed / 3 passed: with the window bar on,
-the × lost the hit test at its centre on both touch projects (its box at
-x 342–386 on webkit-iphone-15 and 361–405 on chromium-pixel-touch, under the
-☰ 2486 measured at 331–379 / 350–398); with it off, the label lost it at
-x 26 and 28 on both, under the `#` door; the channel and desktop arms
-passed, as they must. That each half of the pair owns one of the two red
-arms is INFERRED, not measured with a one-half mutant: the first arm mounts
-no door, so only the trailing half can act there, and the second reddened at
-the label's LEADING end, which the trailing half does not move. Green with the
-cure: 23 of 23, run together with the 2486, #1766 and issue 2161 specs. The
-served dist was read after each run: the parent shipped the banner-only pair
-(`index-eTe0AMUW.css`), the cure the two-bar pair (`index-BkE9SHSK.css`).
+off, a channel window on the same two, and a desktop server window. The label
+is held to issue 2486's oracle: no box of its text may meet a float's box.
+The × must win `elementFromPoint` at its centre, keep `--tap-min`, and
+dismiss on a tap. Each variant below ran on both touch projects, and after
+each run the served dist was read to prove the variant had reached the
+bundle:
+
+- **Cure reverted**, 4 failed / 3 passed. With the window bar on, the × lost
+  the hit test at its centre (its box at x 342–386 on webkit-iphone-15 and
+  361–405 on chromium-pixel-touch, under the ☰ 2486 measured at 331–379 /
+  350–398). With it off, the label's two text boxes (the count at x 7–27.2,
+  the rest running to x 154.7) met the `#` door at x 14–62, y 7–55. The
+  channel and desktop arms passed, as they must. Dist `index-eTe0AMUW.css`,
+  carrying only the banner pair.
+- **Leading rule deleted**, 2 failed / 5 passed. Only the bar-off arm
+  reddened, on the label. Dist `index-yVao83ca.css`, carrying only the ☰
+  half.
+- **Trailing rule deleted**, 4 failed / 3 passed. Both server arms reddened,
+  on the ×. On the bar-off arm the label passed, because the leading rule
+  still clears the door. Dist `index-Bjt65laq.css`, carrying only the door
+  half.
+- **Cure in place**, 7 of 7, dist `index-BkE9SHSK.css` with both halves. The
+  first cut of the spec also ran green, 23 of 23, together with the 2486,
+  #1766 and issue 2161 specs.
+
+So each half of the pair turns an arm red on its own assertion. Only the
+trailing half has an arm the other cannot touch: the bar-off arm reddens
+under either deletion.
+
+**The first label check, and why it was replaced.** The spec first probed
+the hit test at both ends of each text box. On the cure-reverted parent
+those probes met the door only at x 26 and x 28, either side of the seam
+between the count's text node and the rest of the label. They found the
+label's leading end (x 8) clear: the first glyph stays visible, as in the
+report (`2… ad — jump back`). A label rendered as one text node would have
+put both probes outside the door and passed on the broken layout. That is
+computed from the measured boxes, not run. The review of PR 2660 caught it,
+and the same PR replaced the probe with the box oracle.
 
 **Also in the change.** The four specs that turned the window bar off from
-Display settings carried the same body; it is `hideWindowBar()` in
+Display settings carried the same body (issue 2511's also asserted the bar
+gone, which now happens at its call site); it is `hideWindowBar()` in
 `cicchettoPage.ts` now, and 2486's `box`/`meet`/`onTop` live in
 `fixtures/cornerFloats.ts`, since both specs hold the same rule.
 
