@@ -43,7 +43,7 @@ vi.mock("../lib/ignoreList", () => ({
 }));
 
 import IgnoresSettings from "../IgnoresSettings";
-import { ApiError } from "../lib/api";
+import { ApiError } from "../lib/apiError";
 
 beforeEach(() => {
   vi.clearAllMocks();

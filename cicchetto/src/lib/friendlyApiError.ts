@@ -1,4 +1,5 @@
-import { ApiError, assertNever } from "./api";
+import { assertNever } from "./api";
+import { ApiError } from "./apiError";
 import { formatBytes } from "./formatBytes";
 import { ERROR_TOKENS_REST_ERROR_TOKEN, type ErrorTokensRestErrorToken } from "./wireTypes";
 

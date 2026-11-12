@@ -99,22 +99,11 @@ vi.mock("../lib/home", () => ({
   patchHomeNetwork: vi.fn(),
 }));
 
-vi.mock("../lib/api", () => {
-  // UX-5 BR: minimal ApiError stub for failure-path tests. Matches the
-  // shape `friendlyApiError` consumes (`status` + `code` + Error
-  // prototype chain). In-factory because `vi.mock` hoists above
-  // top-level declarations; a module-local class would be undefined
-  // at hoist time.
-  class ApiError extends Error {
-    status: number;
-    code: string;
-    constructor(status: number, code: string) {
-      super(`${status} ${code}`);
-      this.name = "ApiError";
-      this.status = status;
-      this.code = code;
-    }
-  }
+vi.mock("../lib/api", async () => {
+  // #2409 — the REAL class, not a lookalike: HomePane narrows with
+  // `err instanceof ApiError` against the class it imports from
+  // `lib/apiError.ts`, and a stub defined here would never match it.
+  const { ApiError } = await import("../lib/apiError");
   return {
     patchNetwork: (t: string, slug: string, body: unknown) => patchNetworkMock(t, slug, body),
     addNetwork: (t: string, slug: string) => addNetworkMock(t, slug),

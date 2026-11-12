@@ -1,5 +1,5 @@
 import { type Component, createSignal, ErrorBoundary, type JSX, onMount } from "solid-js";
-import { ApiError } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { AuthProxyRedirectError, requestReauth } from "./lib/authProxy";
 import { requestBundleRefreshNow } from "./lib/bundleRefreshNotice";
 import { isOffline } from "./lib/connectivity";

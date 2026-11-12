@@ -10,7 +10,11 @@ const listMessages = vi.fn();
 const listMessagesAfter = vi.fn();
 const countMessagesAfter = vi.fn();
 
-vi.mock("../lib/api", () => ({
+// #2409 — the real `ApiError` class must survive the mock: `scrollback.ts`
+// narrows with `instanceof` and a factory that omits the export makes the
+// import undefined (see the same note in `scrollback.test.ts`).
+vi.mock("../lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/api")>()),
   listMessages: (...a: unknown[]) => listMessages(...a),
   listMessagesAfter: (...a: unknown[]) => listMessagesAfter(...a),
   countMessagesAfter: (...a: unknown[]) => countMessagesAfter(...a),

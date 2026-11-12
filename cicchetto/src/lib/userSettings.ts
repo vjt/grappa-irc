@@ -14,7 +14,8 @@
 // when the master toggle would silently mute the user — render
 // inline.
 
-import { ApiError, readError } from "./api";
+import { readError } from "./api";
+import { ApiError } from "./apiError";
 import { type BanMaskForm, isBanMaskForm } from "./banMask";
 import type { ByKey } from "./byKey";
 import type { DateFormatKey } from "./dateFormat";

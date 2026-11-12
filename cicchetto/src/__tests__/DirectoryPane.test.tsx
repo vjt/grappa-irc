@@ -89,21 +89,10 @@ vi.mock("../lib/channelDirectory", () => ({
 }));
 
 vi.mock("../lib/api", async () => {
-  // Minimal ApiError stub matching the shape friendlyApiError consumes
-  // (status + code + Error prototype). In-factory because vi.mock hoists
-  // above top-level declarations.
-  class ApiError extends Error {
-    status: number;
-    code: string;
-    info: Record<string, unknown>;
-    constructor(status: number, code: string) {
-      super(`${status} ${code}`);
-      this.name = "ApiError";
-      this.status = status;
-      this.code = code;
-      this.info = {};
-    }
-  }
+  // #2409 — the REAL class, not a lookalike: DirectoryPane narrows with
+  // `err instanceof ApiError` against the class it imports from
+  // `lib/apiError.ts`, and a stub defined here would never match it.
+  const { ApiError } = await import("../lib/apiError");
   return {
     postJoin: (t: string, slug: string, name: string, key: string | null) =>
       postJoinMock(t, slug, name, key),

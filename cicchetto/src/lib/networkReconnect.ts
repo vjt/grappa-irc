@@ -1,5 +1,6 @@
 import { type Accessor, createSignal } from "solid-js";
-import { ApiError, patchNetwork } from "./api";
+import { patchNetwork } from "./api";
+import { ApiError } from "./apiError";
 import { token } from "./auth";
 import { friendlyApiError } from "./friendlyApiError";
 

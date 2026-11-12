@@ -41,7 +41,11 @@ import { channelKey } from "../lib/channelKey";
 // every existing cap test still green, because they all drive
 // `appendToScrollback` directly.
 
-vi.mock("../lib/api", () => ({
+// #2409 — the real `ApiError` class must survive the mock: `scrollback.ts`
+// narrows with `instanceof` and a factory that omits the export makes the
+// import undefined (see the same note in `scrollback.test.ts`).
+vi.mock("../lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/api")>()),
   listMessages: vi.fn(),
   listMessagesAfter: vi.fn(),
   countMessagesAfter: vi.fn(),

@@ -1,4 +1,5 @@
-import { ApiError, patchNetwork } from "../api";
+import { patchNetwork } from "../api";
+import { ApiError } from "../apiError";
 import { bounceNetwork } from "../reconnect";
 import type { CommandHandler } from "./context";
 
