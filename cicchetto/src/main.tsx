@@ -50,6 +50,7 @@ import { recordSwRegError, recordSwRegistered } from "./lib/swRegistration";
 import { applyTheme } from "./lib/theme";
 import { installSmartScrollPin, installViewportHeightTracker } from "./lib/viewportHeight";
 import { createVisibilityHeartbeat } from "./lib/visibilityHeartbeat";
+import { probeDictation } from "./lib/voiceDictation";
 import Shell from "./Shell";
 import "./themes/default.css";
 
@@ -203,6 +204,18 @@ installKeyboardPreserve();
 // focuses the compose bar and routes the payload (text or image) through the
 // same shared router the textarea's own onPaste uses. See lib/globalPaste.
 installGlobalPaste();
+
+// #2611 — arm the dictation question at BOOT, not when a compose box mounts.
+// Measured on the failing e2e trace (run 43109271955, shard 2): the compose
+// box is mounted BY the click that opens a channel — `before` that click the
+// DOM has no compose box at all (`$home` has no scrollback, so no ComposeBox,
+// `lib/windowKinds.ts` KIND_HAS_SCROLLBACK) — and the probe armed inside the
+// same click registers its listeners after that click's `pointerdown` has
+// already been dispatched. The first gesture was therefore never seen, the
+// question was never asked, and the microphone never appeared. Arming here
+// makes the click that opens the window the gesture that asks it, which is
+// what "the first pointerdown or keydown anywhere" was always meant to be.
+probeDictation();
 
 // Push notifications cluster B0 (2026-05-14) — capture
 // `beforeinstallprompt` early. Chrome fires this event ONCE, very

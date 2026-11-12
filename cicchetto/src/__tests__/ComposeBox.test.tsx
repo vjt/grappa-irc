@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { channelKey } from "../lib/channelKey";
 import { fireTouch, fireTouchAt } from "./helpers/touchEvents";
 
 // #904 — the send queue lives in the store, keyed on the window, and
@@ -14,6 +15,9 @@ vi.mock("../lib/compose", () => ({
   getDraft: vi.fn(() => ""),
   setDraft: vi.fn(),
   submit: vi.fn(),
+  // issue 2611 — a dictated segment goes through the store's own dispatch,
+  // never through the buffer.
+  sendText: vi.fn(),
   recallPrev: vi.fn(),
   recallNext: vi.fn(),
   tabComplete: vi.fn(),
@@ -131,6 +135,40 @@ vi.mock("../lib/networks", () => ({
   }),
 }));
 
+// issue 2611 — the dictation boundary. The mic's availability is a browser
+// answer, so it is driven from here; the session itself is pinned against the
+// real state machine in voiceDictation.test.ts. Default: not available, which
+// is also what jsdom gives every pre-existing case (no SpeechRecognition).
+const [mockDictationAvailable, setMockDictationAvailable] = createSignal<boolean | null>(false);
+const [mockDictating, setMockDictating] = createSignal(false);
+const mockCheckDictation = vi.fn(async () => mockDictationAvailable() === true);
+// The real `startDictation` asks the engine before it starts; the mock does
+// the same, so a press's whole chain is observable from here.
+const mockStartDictation = vi.fn(async (_send: unknown) => {
+  await mockCheckDictation();
+});
+const mockStopDictation = vi.fn();
+const mockProbeDictation = vi.fn();
+// The press pays for a downloadable model (`ensureDictationModel`); the mock
+// says the model is there unless a case says otherwise.
+const mockEnsureModel = vi.fn(async () => mockDictationAvailable() === true);
+
+vi.mock("../lib/voiceDictation", () => ({
+  dictationAvailable: () => mockDictationAvailable(),
+  dictationState: () =>
+    mockDictating()
+      ? { phase: "listening", startedAt: 0, nextSendAt: 0, interim: "" }
+      : { phase: "idle" },
+  checkDictation: () => mockCheckDictation(),
+  ensureDictationModel: () => mockEnsureModel(),
+  probeDictation: () => mockProbeDictation(),
+  startDictation: (send: (text: string) => void) => mockStartDictation(send),
+  stopDictation: (...args: unknown[]) => mockStopDictation(...args),
+  DICTATION_PREFIX: "🔊 ",
+  SEGMENT_MS: 15_000,
+  SESSION_MS: 60_000,
+}));
+
 import ComposeBox from "../ComposeBox";
 // issue 2356 — the REAL diag ring and its flag: the gesture lines are the
 // thing under test, so neither is mocked.
@@ -177,6 +215,8 @@ beforeEach(() => {
   setMockQueueFull(false);
   mockFramePreview = null;
   mockFrameBudgetBase = 393;
+  setMockDictationAvailable(false);
+  setMockDictating(false);
   setToken(null);
 });
 
@@ -2566,5 +2606,373 @@ describe("ComposeBox — the `/` menu and a refusing composer (issue 2584)", () 
     setMockQueueFull(true);
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
     expect(menuEntries()).toEqual([]);
+  });
+});
+
+// issue 2611 — vjt's ruling on the issue (2026-11-11) rejected the second
+// button: the microphone TAKES THE SEND BUTTON'S PLACE while the box is
+// empty, and it exists only where on-device recognition is usable. These pin
+// that shape — and the two things the ruling is easy to get wrong about: the
+// send button is not gone, it is the empty box that is not a send, and the
+// listening control is stop-and-send, with a glyph that says so.
+describe("ComposeBox — the microphone takes the send slot on an empty box", () => {
+  const sendButton = () => screen.queryByRole("button", { name: /send message/i });
+  const mic = () => screen.queryByTestId("compose-mic");
+
+  const setMockDictation = (available: boolean | null): void => {
+    setMockDictationAvailable(available);
+  };
+
+  afterEach(() => {
+    setMockDictationAvailable(false);
+    setMockDictating(false);
+    // The draft and the pump are driven per-case here (a live draft is the
+    // point of the last two): put them back, or a red leaves `getDraft`
+    // answering the case's own value and turns the next ones red too.
+    vi.mocked(compose_.getDraft).mockReturnValue("");
+    vi.mocked(compose_.setDraft).mockReset();
+    vi.mocked(compose_.submit).mockReset();
+  });
+
+  it("no microphone, and the send button, when the engine cannot dictate on device", () => {
+    setMockDictation(false);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    expect(mic()).toBeNull();
+    expect(sendButton()).not.toBeNull();
+  });
+
+  // An unanswered engine is not a yes: until `available()` has answered, the
+  // empty box keeps its send button.
+  it("no microphone while the engine has not answered yet", () => {
+    setMockDictation(null);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    expect(mic()).toBeNull();
+    expect(sendButton()).not.toBeNull();
+  });
+
+  // The regression that took a whole e2e shard down: mounting a compose box
+  // asked the engine (`available()`/`install()`) inside the render/mount path,
+  // and in headless Chromium that crashed the renderer. The mount only ARMS
+  // the question now; the first gesture asks it (voiceDictation.test.ts).
+  it("mounting only arms the question, and never asks it inline", () => {
+    setMockDictation(null);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    expect(mockCheckDictation).not.toHaveBeenCalled();
+    expect(mockProbeDictation).toHaveBeenCalledTimes(1);
+  });
+
+  it("on an EMPTY box with dictation usable, the microphone is the only control", () => {
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    expect(mic()).not.toBeNull();
+    expect(sendButton()).toBeNull();
+    expect(mic()?.getAttribute("aria-label")).toBe("dictate");
+    expect(mic()?.querySelector("[data-testid='compose-mic-glyph']")).not.toBeNull();
+  });
+
+  it("with text in the box the send button is back, unchanged and named", async () => {
+    // The slot reads the draft through `getDraft`, which the default mock
+    // answers with a constant: a constant is not reactive, so the `Show` would
+    // never re-evaluate and this case would pin nothing. A live draft, as the
+    // store is in production.
+    const [draft, setDraft] = createSignal("");
+    vi.mocked(compose_.getDraft).mockImplementation(() => draft());
+    vi.mocked(compose_.setDraft).mockImplementation((_key: string, text: string) => setDraft(text));
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    fireEvent.input(screen.getByLabelText("compose message"), { target: { value: "hi" } });
+
+    await waitFor(() => expect(sendButton()).not.toBeNull());
+    expect(sendButton()?.getAttribute("aria-label")).toBe("send message");
+    expect(sendButton()?.querySelector("[data-testid='compose-send-glyph']")).not.toBeNull();
+    expect(mic()).toBeNull();
+  });
+
+  it("a press on the microphone starts dictation and sends nothing", async () => {
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    fireEvent.click(mic() as HTMLElement);
+
+    // The press now pays for the model first (`ensureDictationModel`), so the
+    // session starts a microtask later, not inside the handler.
+    await waitFor(() => expect(mockStartDictation).toHaveBeenCalledTimes(1));
+    expect(compose_.submit).not.toHaveBeenCalled();
+  });
+
+  it("the send button sends and starts no dictation", async () => {
+    const [draft, setDraft] = createSignal("");
+    vi.mocked(compose_.getDraft).mockImplementation(() => draft());
+    vi.mocked(compose_.setDraft).mockImplementation((_key: string, text: string) => setDraft(text));
+    vi.mocked(compose_.submit).mockResolvedValue({ ok: true });
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    fireEvent.input(screen.getByLabelText("compose message"), { target: { value: "hi" } });
+    await waitFor(() => expect(sendButton()).not.toBeNull());
+
+    // The #925 contract, which is what a real tap is: the send rides
+    // `pointerup`, and jsdom's all-zero rect would read as "released outside".
+    const button = sendButton() as HTMLElement;
+    Object.defineProperty(button, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 300, right: 344, top: 500, bottom: 544, width: 44, height: 44 }),
+    });
+    const at = (type: string): MouseEvent => {
+      const e = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        clientX: 322,
+        clientY: 522,
+      });
+      Object.defineProperty(e, "pointerId", { value: 1 });
+      return e;
+    };
+    button.dispatchEvent(at("pointerdown"));
+    button.dispatchEvent(at("pointerup"));
+
+    // Both halves: the name says it sends, and the tap is the microphone's
+    // slot — so the test must show it is the send that happened.
+    expect(compose_.submit).toHaveBeenCalledTimes(1);
+    expect(mockStartDictation).not.toHaveBeenCalled();
+  });
+
+  // The review's other MAJOR: a dictated segment used to be APPENDED to the
+  // draft and the whole thing submitted — a half-typed line went out
+  // unfinished, and a half-typed COMMAND ran with the dictated words as its
+  // arguments. The segment is its own message, and the draft is untouched.
+  it("a dictated segment is its own message and leaves the draft alone", async () => {
+    const [draft, setDraft] = createSignal("");
+    vi.mocked(compose_.getDraft).mockImplementation(() => draft());
+    vi.mocked(compose_.setDraft).mockImplementation((_key: string, text: string) => setDraft(text));
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    // The press STARTS the session, so it has to land while `dictating()` is
+    // still false: a press on a running session is the stop.
+    fireEvent.click(mic() as HTMLElement);
+    // The press pays for the model first, so the session starts a microtask
+    // later; the handler it hands us is what a segment arrives on.
+    await waitFor(() => expect(mockStartDictation).toHaveBeenCalledTimes(1));
+    const send = (mockStartDictation.mock.calls.at(-1) as unknown as [(t: string) => void])[0];
+    setMockDictating(true);
+    fireEvent.input(screen.getByLabelText("compose message"), { target: { value: "/part" } });
+
+    send("🔊 ciao a tutti");
+
+    expect(compose_.sendText).toHaveBeenCalledWith(
+      channelKey("freenode", "#a"),
+      "freenode",
+      "#a",
+      "🔊 ciao a tutti",
+    );
+    expect(compose_.getDraft(channelKey("freenode", "#a"))).toBe("/part");
+    expect(compose_.submit).not.toHaveBeenCalled();
+  });
+
+  // The review's BLOCKER: the compose box is ONE component whose props follow
+  // the selection, so a window switch does not remount it. A session started
+  // in a private query went on recording, and every segment was sent to
+  // whatever window the operator opened next.
+  it("a window switch mid-dictation stops the session, and its words go nowhere", async () => {
+    setMockDictation(true);
+    const [channel, setChannel] = createSignal("#a");
+    render(() => <ComposeBox networkSlug="freenode" channelName={channel()} />);
+
+    // Start first (a press while `dictating()` is true is the stop), then let
+    // the session be running: the switch is what the effect has to catch.
+    fireEvent.click(mic() as HTMLElement);
+    // The press pays for the model first: the session starts a microtask later.
+    await waitFor(() => expect(mockStartDictation).toHaveBeenCalledTimes(1));
+    const send = (mockStartDictation.mock.calls.at(-1) as unknown as [(t: string) => void])[0];
+    setMockDictating(true);
+
+    setChannel("#b");
+    await waitFor(() => expect(mockStopDictation).toHaveBeenCalledTimes(1));
+
+    // A segment the engine had already handed over reaches nobody.
+    send("🔊 parole private");
+    expect(compose_.sendText).not.toHaveBeenCalled();
+  });
+
+  // vjt's ruling (c): while dictating the control is stop-and-send, and it is
+  // not the same glyph — the same microphone in red still reads as "start".
+  it("while listening the control is stop-and-send, with its own glyph", () => {
+    setMockDictation(true);
+    setMockDictating(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    const control = mic();
+    expect(control?.getAttribute("aria-label")).toBe("stop dictating and send");
+    expect(control?.getAttribute("aria-pressed")).toBe("true");
+    expect(control?.querySelector("[data-testid='compose-mic-stop-glyph']")).not.toBeNull();
+    expect(control?.querySelector("[data-testid='compose-mic-glyph']")).toBeNull();
+
+    fireEvent.click(control as HTMLElement);
+    expect(mockStopDictation).toHaveBeenCalledTimes(1);
+    expect(mockStartDictation).not.toHaveBeenCalled();
+  });
+
+  // The delta-2 review's MAJOR B: ruling (c) held only on an empty box. While
+  // listening, typing one character made the slot swap the stop control for
+  // the send button, and the only ways back were to send the line or delete it.
+  it("while listening, typing keeps the stop control", () => {
+    const [draft, setDraft] = createSignal("");
+    vi.mocked(compose_.getDraft).mockImplementation(() => draft());
+    vi.mocked(compose_.setDraft).mockImplementation((_key: string, text: string) => setDraft(text));
+    setMockDictation(true);
+    setMockDictating(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    fireEvent.input(screen.getByLabelText("compose message"), { target: { value: "x" } });
+
+    expect(draft()).toBe("x");
+    expect(mic()?.getAttribute("aria-label")).toBe("stop dictating and send");
+    expect(sendButton()).toBeNull();
+  });
+
+  // The delta-2 review's MAJOR D: the send button leaves the DOM inside its own
+  // activation — the send empties the draft synchronously, the slot swaps to
+  // the microphone before the handler returns, and the compat `mousedown` and
+  // `click` a real tap still owes land on the microphone. #1059's invariant is
+  // what that breaks: the focus-keep cancel must still run, and the click that
+  // belongs to the send must not start a dictation nobody asked for.
+  it("after a send that empties the box, the compat mousedown and click land on the microphone and do nothing", () => {
+    const [draft, setDraft] = createSignal("hi");
+    vi.mocked(compose_.getDraft).mockImplementation(() => draft());
+    vi.mocked(compose_.submit).mockImplementation(async () => {
+      // The production pump takes the text out at the head of `submit`, before
+      // its first await: an async body runs synchronously up to that await.
+      setDraft("");
+      return { ok: true };
+    });
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const send = screen.getByRole("button", { name: /send message/i });
+    Object.defineProperty(send, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 300, right: 344, top: 500, bottom: 544, width: 44, height: 44 }),
+    });
+    const at = (type: string): MouseEvent => {
+      const e = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        clientX: 322,
+        clientY: 522,
+      });
+      Object.defineProperty(e, "pointerId", { value: 1 });
+      return e;
+    };
+
+    send.dispatchEvent(at("pointerdown"));
+    send.dispatchEvent(at("pointerup"));
+
+    // The send went out and the slot swapped under the finger…
+    expect(compose_.submit).toHaveBeenCalledTimes(1);
+    expect(sendButton()).toBeNull();
+    const control = mic();
+    expect(control).not.toBeNull();
+
+    // …and the events a real tap still owes are harmless on the new control.
+    const md = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    control?.dispatchEvent(md);
+    expect(md.defaultPrevented).toBe(true);
+
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 });
+    control?.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(mockStartDictation).not.toHaveBeenCalled();
+  });
+
+  // The delta-3 review's MINOR: the microphone's pointer path was a hand-rolled
+  // copy of `createPointerSend`, and NOTHING exercised it — every case above
+  // presses with `fireEvent.click`, whose `detail` is 0, so they all take the
+  // keyboard branch. A tap is how the feature is used on a phone.
+  const tapOn = (el: HTMLElement, opts: { id?: number; upInside?: boolean } = {}): void => {
+    const rect = { left: 300, right: 344, top: 500, bottom: 544, width: 44, height: 44 };
+    Object.defineProperty(el, "getBoundingClientRect", { configurable: true, value: () => rect });
+    const at = (type: string, x: number): MouseEvent => {
+      const e = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: 522 });
+      Object.defineProperty(e, "pointerId", { value: opts.id ?? 1 });
+      return e;
+    };
+    el.dispatchEvent(at("pointerdown", 322));
+    el.dispatchEvent(at("pointerup", opts.upInside === false ? 900 : 322));
+  };
+
+  it("a TAP on the microphone starts dictation once, and the compat click adds nothing", async () => {
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const control = mic() as HTMLElement;
+
+    tapOn(control);
+    // The press pays for the model first: the session starts a microtask later.
+    await waitFor(() => expect(mockStartDictation).toHaveBeenCalledTimes(1));
+
+    // The pointer-generated click the browser sends after the tap: it belongs
+    // to the press `pointerup` already answered.
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 });
+    control.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(mockStartDictation).toHaveBeenCalledTimes(1);
+  });
+
+  it("a tap that comes up OUTSIDE the microphone does nothing", () => {
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    tapOn(mic() as HTMLElement, { upInside: false });
+
+    expect(mockStartDictation).not.toHaveBeenCalled();
+  });
+
+  it("a pointerup that belongs to another pointer does nothing", () => {
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    tapOn(mic() as HTMLElement, { id: 2 });
+
+    expect(mockStartDictation).not.toHaveBeenCalled();
+  });
+
+  // The delta-3 review's D-SPIN: with dictation available the microphone took
+  // the slot on an empty box, so the #241 spinner could never show — the one
+  // piece of feedback that a line is on its way was unreachable exactly while
+  // the operator was waiting for it.
+  it("an in-flight send keeps the send button, and its spinner, on an empty box", () => {
+    setMockDictation(true);
+    setMockSending(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    expect(sendButton()).not.toBeNull();
+    expect(sendButton()?.querySelector("[data-testid='compose-send-spinner']")).not.toBeNull();
+    expect(mic()).toBeNull();
+  });
+
+  // The delta-3 review's D-FOCUS: a keyboard activation (Enter/Space on the
+  // `type="submit"` button) submits the form, the send empties the draft, the
+  // slot swaps, and the focused button goes with it — `activeElement` lands on
+  // `<body>` and the next keystroke goes nowhere.
+  it("a keyboard send hands the caret back to the field the slot took the button from", async () => {
+    const [draft, setDraft] = createSignal("hi");
+    vi.mocked(compose_.getDraft).mockImplementation(() => draft());
+    vi.mocked(compose_.submit).mockImplementation(async () => {
+      setDraft("");
+      return { ok: true };
+    });
+    setMockDictation(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+
+    const send = sendButton() as HTMLElement;
+    send.focus();
+    expect(document.activeElement).toBe(send);
+
+    // Enter/Space on a submit button: the form's default action is the send.
+    fireEvent.submit(send.closest("form") as HTMLFormElement);
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText("compose message")),
+    );
   });
 });

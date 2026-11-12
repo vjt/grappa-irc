@@ -6701,3 +6701,94 @@ there is no numeric for it (the only password-mismatch numeric the codebase
 knows, `464` ERR_PASSWDMISMATCH, is the OPER one, documented on
 `IRC.Client.send_oper/3`). So the only honest bound on a wrong password is
 the ceiling itself.
+<!-- entry #2611 -->
+
+---
+
+## 2026-11-11 — issue 2611: dictation in the compose box, on device or not at all
+
+**On device, and nothing else.** `SpeechRecognition` without
+`processLocally` sends the audio to the vendor — on Chrome, to Google — so a
+browser that cannot recognize locally gets no microphone at all. No WASM
+fallback: vjt's ruling on the issue.
+
+**The rulings, as they stand.** (a) On an EMPTY box the microphone takes the
+send button's place: there is nothing to send, so the one control there is the
+microphone. (b) It is offered only where on-device recognition is actually
+usable — `available()` has to answer before the button is drawn, because a
+microphone that appears on the cheap API check and vanishes on the first tap
+is worse than none. (c) While a session runs the control is stop-and-send,
+with a glyph that says so: the same microphone in red still reads "start".
+
+### The question is asked from the operator's first gesture
+
+Asking `available()` (and `install()`, which downloads the browser's model)
+when a compose box merely MOUNTED was measured taking the renderer down in CI:
+a channel window mounting the box died about 0.2 s later, "Target crashed",
+then the whole shard — 75 of 75 integration failures on the head, and 74 of
+them 78–266 ms after a tap. Scheduling it from a `setTimeout(0)` did not stop
+it. The mount now only ARMS the question; the first `pointerdown`/`keydown`
+anywhere asks it, once per page, inside that gesture — which is where
+`install()` belongs anyway. Until the answer lands the compose box keeps its
+send button.
+
+**But the call is the defect, not the moment.** Moving the question to the
+first gesture did not save the page: on `81bbdfe58` (run 43092659314) all four
+e2e shards hung on their first gesture — every spec's first tap — and were
+cancelled at the 60-minute job timeout (74/63, 18/54, 95/103, 35/64
+pass/fail). The same head with `available()` suppressed under
+`navigator.webdriver` (`68d1b411b`, run 43102121774) ran 3/4 shards green and
+the fourth finished 286 passed / 2 failed, the two reds being the dictation
+specs that suppression itself disables. So a driven browser is never asked:
+`checkDictation` answers `false` without touching the engine, and no
+microphone is exactly what ruling (b) wants there. A real operator's browser
+is not driven and asks as before. The feature spec lifts the gate with a fake
+engine to run the flow end to end; the blocker spec pins the refusal — the
+page survives the gesture that used to kill it, and the native engine was
+never called.
+
+### The slot swaps under the finger, so the cancel moved with it
+
+A send empties the draft synchronously (`takeDraft` runs before the pump's
+first `await`), so on a box where dictation is available the slot swaps to the
+microphone INSIDE the send button's own activation. #1059's invariant — the
+send button must remain a mouse-event target across its own activation, where
+the #59 keyboard-preserve cancel lives — cannot hold for an element that is
+gone. The cancel therefore lives on the microphone too, and the microphone is
+pointer-activated like the send button: a compat `click` that lands on it
+because the slot swapped under a finger that pressed Send is swallowed by
+`detail > 0`, so it never starts a dictation nobody asked for. While a session
+runs the slot stays the stop control whatever is typed, or the only way back
+to it would be to send the line or delete it.
+
+### A dictated segment is its own message
+
+It never touches the draft: appending it sent a half-typed line unfinished,
+and a half-typed COMMAND would have run with the dictated words as its
+arguments. The session is pinned to the window it started in — a switch stops
+it rather than sending private words to whatever window is open next — and
+stopping keeps the handlers attached until the engine finalises, so the
+utterance in flight goes out. A second stop during that 2 s grace does
+nothing: it used to overwrite the timer guarding the ending, and the leaked
+one later ended whatever session was running then.
+
+### The gesture asks one cheap question; the press pays for the model
+
+The first gesture asks `available()` and nothing else. `install()` — the model
+DOWNLOAD — waits for the press on the microphone, because a download triggered
+by an unrelated first tap is the same defect the mount's `available()` was, one
+call later: every page load, every test, a model nobody asked for. A browser
+that answers `downloadable` is still offered the button; a press that cannot
+get the model takes the button away rather than leaving one that answers
+nothing.
+
+### Two things the slot must not take away
+
+A send IN FLIGHT keeps the send button, spinner and all: on an empty box the
+microphone would otherwise take the slot and hide #241's only feedback exactly
+while the operator is waiting for it. And a KEYBOARD activation (Enter/Space on
+the `type="submit"` button) leaves the focus on a button the send itself
+removes — `activeElement` lands on `<body>` and the next keystroke goes
+nowhere — so the caret is handed back to the field once the send resolves. A
+pointer send never needs it: `mousedown` cancels the focus shift (#59), so the
+button was never focused.

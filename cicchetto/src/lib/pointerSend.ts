@@ -38,6 +38,18 @@ export type PointerSendOptions = {
    * would silently pick one for the next surface that grows a send button.
    */
   activateOnBareClick: boolean;
+  /**
+   * Whether a pointer-generated click (`detail > 0`) is ALWAYS somebody
+   * else's, even when no `pointerup` of ours carried it.
+   *
+   * `false` for a button that owns its slot for the whole activation. `true`
+   * for the composer's microphone, which the slot can swap IN under a finger
+   * mid-activation: the compat click that follows a send belongs to the send
+   * button that was there, and it must neither start a dictation nor reach the
+   * form. Every `detail > 0` click is swallowed, ours or not — ours was already
+   * answered by its own `pointerup`.
+   */
+  swallowEveryPointerClick?: boolean;
 };
 
 export type PointerSendHandlers = {
@@ -75,8 +87,9 @@ export function createPointerSend(opts: PointerSendOptions): PointerSendHandlers
     onClick: (e) => {
       // The pointer-generated click is the duplicate of the send `pointerup`
       // already carried: swallow it (preventDefault too, in case a form is
-      // listening).
-      if (sentFromPointer && e.detail > 0) {
+      // listening). `swallowEveryPointerClick` widens that to a click no
+      // pointerup of ours carried — the one a slot swap sent here.
+      if (e.detail > 0 && (sentFromPointer || opts.swallowEveryPointerClick === true)) {
         e.preventDefault();
         sentFromPointer = false;
         return;

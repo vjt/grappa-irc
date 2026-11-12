@@ -1560,6 +1560,20 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     return { prefix: c.prefix, idx: c.idx };
   };
 
+  /**
+   * issue 2611 — send ONE line that did not come from the composer buffer: a
+   * dictated segment. It goes through the same dispatch a submitted draft does
+   * (slash parsing, the encrypted door, the pump), and it NEVER touches the
+   * buffer — the operator's half-typed line stays exactly where it is, and a
+   * dictation can neither complete it nor run it as a command.
+   */
+  const sendText = async (
+    key: ChannelKey,
+    networkSlug: string,
+    submittedFrom: string,
+    text: string,
+  ): Promise<DispatchOutcome> => dispatchDraft(key, networkSlug, submittedFrom, text);
+
   return {
     composeByChannel,
     commandCycle,
@@ -1570,6 +1584,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     recordSentLine,
     historyLines,
     submit,
+    sendText,
     tabComplete,
     isDraining,
     isSending,
@@ -1586,6 +1601,7 @@ export const recallNext = exports_.recallNext;
 export const recordSentLine = exports_.recordSentLine;
 export const historyLines = exports_.historyLines;
 export const submit = exports_.submit;
+export const sendText = exports_.sendText;
 export const tabComplete = exports_.tabComplete;
 export const isDraining = exports_.isDraining;
 export const isSending = exports_.isSending;
