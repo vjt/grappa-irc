@@ -415,19 +415,25 @@ seed_rpm_aarch64() {
 # sha256sums.sh would not check them. Optional sits between: `found` lists
 # them, the completeness audit never asks for them.
 
+# What the cic job's artifact holds: the files release_cic_dist.sh pack REALLY
+# writes, from a minimal built dist. Seeded by the producer, not by a third
+# spelling of its names here, so a rename on either side reddens this file
+# instead of leaving the matcher silently attaching nothing.
 seed_cic() {
-    mkdir -p "$ASSETS/cicchetto-dist"
-    : > "$ASSETS/cicchetto-dist/cicchetto-dist-0.8.0.tar.gz"
-    : > "$ASSETS/cicchetto-dist/cicchetto-dist-0.8.0.sha256"
+    local dist="$BATS_TEST_TMPDIR/cic-dist"
+    mkdir -p "$dist"
+    printf '<!doctype html>\n' > "$dist/index.html"
+    "$REPO_SRC/infra/packaging/release_cic_dist.sh" pack "$dist" "$ASSETS/cicchetto-dist" 0.8.0 > /dev/null
 }
 
 @test "found: the attested cicchetto dist is attached when it built (issue 2642)" {
     seed_complete
     seed_cic
+    produced="$(find "$ASSETS/cicchetto-dist" -type f | sort)"
+    [ "$(wc -l <<<"$produced")" -eq 2 ]
     run "$SCRIPT" found "$ASSETS"
     [ "$status" -eq 0 ]
-    grep -qx "$ASSETS/cicchetto-dist/cicchetto-dist-0.8.0.tar.gz" <<<"$output"
-    grep -qx "$ASSETS/cicchetto-dist/cicchetto-dist-0.8.0.sha256" <<<"$output"
+    [ "$(grep '/cicchetto-dist/' <<<"$output")" = "$produced" ]
 }
 
 @test "found: the cicchetto kinds match by NAME, not every tarball or checksum file (issue 2642)" {
