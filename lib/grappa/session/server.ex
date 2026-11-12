@@ -5664,10 +5664,11 @@ defmodule Grappa.Session.Server do
   # `:set_passwd`/`:reset_passwd`, which commit on-send.
   #
   # `origin` is not decoration: the two callers fail in different incidents —
-  # a dropped ghost-recovery line means an IDENTIFY never went out, a dropped
-  # reply means an answer to a stranger was lost — and one message for both
-  # would erase which. It rides as Logger metadata rather than as prose so the
-  # message itself stays one greppable string.
+  # a dropped ghost-recovery line means a GHOST, a WHOIS or one of its two
+  # NICKs never went out, a dropped reply means an answer to a stranger was
+  # lost — and one message for both would erase which. It rides as Logger
+  # metadata rather than as prose so the message itself stays one greppable
+  # string.
   #
   # Fire-and-forget on send failure (REV-E H11): a dead socket must not
   # MatchError the Session, which a strict `:ok =` bind used to do on both
@@ -7475,7 +7476,8 @@ defmodule Grappa.Session.Server do
   # than calling the sender directly — it was the one free-form path that
   # reached the wire without the NickServ sniff — and warned that #1390 was
   # about to move the GhostRecovery/RecoverIdentity lines onto this grammar,
-  # whose lines DO carry `GHOST <nick> <pwd>` and `IDENTIFY <pwd>`. Slice 6
+  # whose lines DO carry a secret (GhostRecovery's `GHOST <nick> <pwd>`,
+  # RecoverIdentity's `IDENTIFY <nick> <pwd>`, `RECOVER` and `RELEASE`). Slice 6
   # made that move: it is safe only because #1394 landed first, and the hole
   # would have opened here with no test turning red in the other order.
   #
