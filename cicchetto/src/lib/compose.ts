@@ -5,6 +5,7 @@ import { token } from "./auth";
 import { casemappingForSlug, chantypesForSlug } from "./casemapping";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { getCommandMenuEnabled, getCommandMenuEntries } from "./commandMenu";
+import { clearCommand } from "./commands/clear";
 import type { CommandContext, DispatchOutcome, SubmitResult } from "./commands/context";
 import { fanOutCommand } from "./commands/fanout";
 import { watchlistCommand } from "./commands/highlight";
@@ -1330,6 +1331,13 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         }
         case "open-credits": {
           result = await openCreditsCommand(cmd, ctx);
+          break;
+        }
+        // issue 2428 — /clear: count, confirm, DELETE. The window is the
+        // active one, resolved in the handler; the live rows clear on the
+        // archive_purged broadcast the DELETE emits, not here.
+        case "clear": {
+          result = await clearCommand(cmd, ctx);
           break;
         }
         case "beep": {

@@ -43,6 +43,12 @@ vi.mock("../lib/api", () => {
     postNick: vi.fn(),
     postJoin: vi.fn(),
     postPart: vi.fn(),
+    // issue 2428 — /clear: the count behind the confirm modal, and the
+    // DELETE it confirms. The count's factory default is the net's
+    // fixture too (freenode/#a, 3 messages) — per-test overrides use
+    // mockResolvedValueOnce so the default survives into the net.
+    getArchiveCount: vi.fn().mockResolvedValue({ target: "#a", kind: "channel", count: 3 }),
+    deleteArchiveEntry: vi.fn().mockResolvedValue(undefined),
     // #132 — bare /whois in a channel window resolves the operator's own
     // nick via this helper. Boundary stub; the resolver's own logic is
     // pinned in api.test.ts.
@@ -252,6 +258,10 @@ vi.mock("../lib/selection", () => ({
 
 vi.mock("../lib/scrollback", () => ({
   sendMessage: vi.fn(),
+  // issue 2428 — /clear performs NO local purge: the live window clears
+  // on the :archive_purged broadcast, so the stub exists for the test
+  // that pins the absence.
+  purgeScrollback: vi.fn(),
 }));
 
 // #591/#719 — a CTCP query registers a pending correlation entry (PING in the
@@ -6140,6 +6150,290 @@ describe("compose /ame + /amsg confirmation above ten channels (#431)", () => {
   });
 });
 
+// issue 2428 — /clear: count the current window, ask with the count in
+// the question, DELETE on confirm. The live rows clear on the
+// :archive_purged broadcast the DELETE emits (userTopic's arm — tested
+// there, including the $server target); this describe pins the flow up
+// to the DELETE, and the absence of any local purge here.
+describe("compose /clear (issue 2428)", () => {
+  const k = channelKey("freenode", "#a");
+
+  // The selection mock answers freenode/#a/channel by default; a test
+  // that moves it restores it, or the net's /clear row — and every
+  // describe after this one — would read a stale window.
+  const setSelection = async (
+    sel: {
+      networkSlug: string;
+      channelName: string;
+      kind: "channel" | "query" | "server" | "encrypted";
+    } | null,
+  ): Promise<() => void> => {
+    const selection = await import("../lib/selection");
+    vi.mocked(selection.selectedChannel).mockReturnValue(sel);
+    return () => {
+      vi.mocked(selection.selectedChannel).mockReturnValue({
+        networkSlug: "freenode",
+        channelName: "#a",
+        kind: "channel",
+      });
+    };
+  };
+
+  it("counts the current channel, states the count in the modal, and DELETEs on confirm", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const sb = await import("../lib/scrollback");
+    const dialog = await import("../lib/confirmDialog");
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "/clear");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(api.getArchiveCount).toHaveBeenCalledWith("tok", "freenode", "#a");
+    expect(api.deleteArchiveEntry).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: "/clear: 3 messages in #a — confirm to delete" });
+    const req = dialog.confirmRequest();
+    expect(req).not.toBeNull();
+    expect(req?.title).toBe("Clear history");
+    expect(req?.body).toBe("Delete 3 messages from #a? This cannot be undone.");
+    expect(req?.confirmLabel).toBe("Delete");
+    expect(req?.defaultButton).toBe("cancel");
+
+    dialog.acceptConfirm();
+    await vi.waitFor(() =>
+      expect(api.deleteArchiveEntry).toHaveBeenCalledWith("tok", "freenode", "#a"),
+    );
+    // No local purge: the live window clears on the :archive_purged
+    // broadcast the DELETE emits (userTopic's arm). A purge here would
+    // duplicate that path and mask a broadcast regression.
+    expect(sb.purgeScrollback).not.toHaveBeenCalled();
+  });
+
+  it("dismissing the question deletes nothing at all", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const dialog = await import("../lib/confirmDialog");
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "/clear");
+    await compose.submit(k, "freenode", "#a");
+    expect(dialog.confirmRequest()).not.toBeNull();
+    dialog.dismissConfirm();
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(api.deleteArchiveEntry).not.toHaveBeenCalled();
+  });
+
+  it("a window with no messages answers inline and never asks", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.getArchiveCount).mockResolvedValueOnce({
+      target: "#a",
+      kind: "channel",
+      count: 0,
+    });
+    const dialog = await import("../lib/confirmDialog");
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "/clear");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toEqual({ ok: "/clear: #a has no messages to delete" });
+    expect(dialog.confirmRequest()).toBeNull();
+    expect(api.deleteArchiveEntry).not.toHaveBeenCalled();
+  });
+
+  it("one message reads singular", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.getArchiveCount).mockResolvedValueOnce({
+      target: "#a",
+      kind: "channel",
+      count: 1,
+    });
+    const dialog = await import("../lib/confirmDialog");
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "/clear");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toEqual({ ok: "/clear: 1 message in #a — confirm to delete" });
+    expect(dialog.confirmRequest()?.body).toBe("Delete 1 message from #a? This cannot be undone.");
+  });
+
+  it("thousands group, AdminNetworksTab-style", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    vi.mocked(api.getArchiveCount).mockResolvedValueOnce({
+      target: "#a",
+      kind: "channel",
+      count: 1234,
+    });
+    const dialog = await import("../lib/confirmDialog");
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "/clear");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toEqual({ ok: "/clear: 1,234 messages in #a — confirm to delete" });
+    expect(dialog.confirmRequest()?.body).toBe(
+      "Delete 1,234 messages from #a? This cannot be undone.",
+    );
+  });
+
+  it("a query window counts and deletes the peer nick", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const restore = await setSelection({
+      networkSlug: "freenode",
+      channelName: "alice",
+      kind: "query",
+    });
+    try {
+      const api = await import("../lib/api");
+      vi.mocked(api.getArchiveCount).mockResolvedValueOnce({
+        target: "alice",
+        kind: "query",
+        count: 42,
+      });
+      const dialog = await import("../lib/confirmDialog");
+      const compose = await import("../lib/compose");
+
+      const qk = channelKey("freenode", "alice");
+      compose.setDraft(qk, "/clear");
+      const result = await compose.submit(qk, "freenode", "alice");
+
+      expect(api.getArchiveCount).toHaveBeenCalledWith("tok", "freenode", "alice");
+      expect(result).toEqual({ ok: "/clear: 42 messages in alice — confirm to delete" });
+      expect(dialog.confirmRequest()?.body).toBe(
+        "Delete 42 messages from alice? This cannot be undone.",
+      );
+
+      dialog.acceptConfirm();
+      await vi.waitFor(() =>
+        expect(api.deleteArchiveEntry).toHaveBeenCalledWith("tok", "freenode", "alice"),
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("the $server tab counts and deletes $server", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const restore = await setSelection({
+      networkSlug: "freenode",
+      channelName: SERVER_WINDOW_NAME,
+      kind: "server",
+    });
+    try {
+      const api = await import("../lib/api");
+      vi.mocked(api.getArchiveCount).mockResolvedValueOnce({
+        target: "$server",
+        kind: "server",
+        count: 9876,
+      });
+      const dialog = await import("../lib/confirmDialog");
+      const compose = await import("../lib/compose");
+
+      const sk = channelKey("freenode", SERVER_WINDOW_NAME);
+      compose.setDraft(sk, "/clear");
+      const result = await compose.submit(sk, "freenode", SERVER_WINDOW_NAME);
+
+      expect(api.getArchiveCount).toHaveBeenCalledWith("tok", "freenode", "$server");
+      expect(result).toEqual({
+        ok: "/clear: 9,876 messages in the server window on freenode — confirm to delete",
+      });
+      expect(dialog.confirmRequest()?.body).toBe(
+        "Delete 9,876 messages from the server window on freenode? This cannot be undone.",
+      );
+
+      dialog.acceptConfirm();
+      await vi.waitFor(() =>
+        expect(api.deleteArchiveEntry).toHaveBeenCalledWith("tok", "freenode", "$server"),
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("an encrypted chat is refused before any fetch", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const restore = await setSelection({
+      networkSlug: "freenode",
+      channelName: "$e2e:alice",
+      kind: "encrypted",
+    });
+    try {
+      const api = await import("../lib/api");
+      const dialog = await import("../lib/confirmDialog");
+      const compose = await import("../lib/compose");
+
+      const ek = channelKey("freenode", "$e2e:alice");
+      compose.setDraft(ek, "/clear");
+      const result = await compose.submit(ek, "freenode", "$e2e:alice");
+
+      expect(result).toEqual({
+        error:
+          "/clear is not available in an encrypted chat — its history lives on this device, not on the server",
+      });
+      expect(api.getArchiveCount).not.toHaveBeenCalled();
+      expect(dialog.confirmRequest()).toBeNull();
+      expect(compose.getDraft(ek)).toBe("/clear");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a server below protocol 64 is refused with a named error", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const { setServerProtocol } = await import("../lib/serverProtocol");
+    setServerProtocol(63);
+    const api = await import("../lib/api");
+    const dialog = await import("../lib/confirmDialog");
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "/clear");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toEqual({
+      error: "/clear needs a server speaking wire protocol 64 or newer — this one speaks 63",
+    });
+    expect(api.getArchiveCount).not.toHaveBeenCalled();
+    expect(dialog.confirmRequest()).toBeNull();
+  });
+
+  it("no focused window is an error, not a guess", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const restore = await setSelection(null);
+    try {
+      const api = await import("../lib/api");
+      const compose = await import("../lib/compose");
+
+      compose.setDraft(k, "/clear");
+      const result = await compose.submit(k, "freenode", "#a");
+
+      expect(result).toEqual({ error: "/clear: no window is focused" });
+      expect(api.getArchiveCount).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it("an argument is a parser error and fetches nothing", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "/clear #a");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toEqual({
+      error: "/clear takes no arguments — it clears the current window",
+    });
+    expect(api.getArchiveCount).not.toHaveBeenCalled();
+    expect(compose.getDraft(k)).toBe("/clear #a");
+  });
+});
+
 // #1396 — the characterization net for the 59-arm `dispatchDraft` switch.
 //
 // Bucket G proposes moving that switch out of `compose.ts`. A pure move has
@@ -6167,6 +6461,7 @@ const DISPATCH_CASE_LABELS = [
   "ban",
   "banlist",
   "beep",
+  "clear",
   "connect",
   "ctcp",
   "cycle",
@@ -6323,6 +6618,10 @@ const DISPATCH_DRAFTS: ReadonlyArray<{ kind: SlashCommand["kind"]; draft: string
   // so a row using either would pin the same arm while leaving the alias
   // resolution itself outside the net (that half lives in slashCommands.test).
   { kind: "beep", draft: "/beep chime" },
+  // issue 2428 — bare /clear: the row pins the count fetch + the confirm
+  // open. The DELETE itself is the modal's detached onConfirm, fired by the
+  // /clear describe above (acceptConfirm), not by this table.
+  { kind: "clear", draft: "/clear" },
   { kind: "service-modal", draft: "/ns" },
   { kind: "error", draft: "/nosuchverb" },
 ];
@@ -6426,12 +6725,12 @@ describe("#1396 — dispatch characterization over every arm", () => {
       misparsed,
     }).toMatchInlineSnapshot(`
       {
-        "arms": 65,
+        "arms": 66,
         "armsWithNoDraft": [],
         "draftsNamingNoArm": [],
         "duplicated": [],
         "misparsed": [],
-        "rows": 65,
+        "rows": 66,
       }
     `);
   });
@@ -6564,6 +6863,17 @@ describe("#1396 — dispatch characterization over every arm", () => {
           ],
           "result": {
             "ok": "beep: chime",
+          },
+        },
+        "clear": {
+          "effects": [
+            "aliasList.aliases()",
+            "api.getArchiveCount("tok", "freenode", "#a")",
+            "networks.networkIdBySlug("freenode")",
+            "selection.selectedChannel()",
+          ],
+          "result": {
+            "ok": "/clear: 3 messages in #a — confirm to delete",
           },
         },
         "connect": {
@@ -7255,7 +7565,7 @@ describe("#1396 — dispatch characterization over every arm", () => {
           "aliasList.aliases()",
           "networks.networkIdBySlug("freenode")",
         ],
-        "arms": 65,
+        "arms": 66,
         "indistinguishablePairs": [
           [
             "ame",

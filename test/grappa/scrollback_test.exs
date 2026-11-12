@@ -2746,6 +2746,28 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
+  # Issue 2428 — the three-way classifier the /clear dispatch runs on.
+  # target_kind/1 above deliberately stays two-way; this is the arm
+  # that names the server tab.
+  describe "window_kind/1 (issue 2428)" do
+    test "returns :server for $server" do
+      assert Scrollback.window_kind("$server") == :server
+    end
+
+    test "returns :server for a mixed-case $server spelling (fold-then-match)" do
+      assert Scrollback.window_kind("$SERVER") == :server
+      assert Scrollback.window_kind("$Server") == :server
+    end
+
+    test "defers to target_kind/1 for everything else" do
+      assert Scrollback.window_kind("#sniffo") == :channel
+      assert Scrollback.window_kind("&local") == :channel
+      assert Scrollback.window_kind("!safe") == :channel
+      assert Scrollback.window_kind("+modeless") == :channel
+      assert Scrollback.window_kind("vjt") == :query
+    end
+  end
+
   describe "persist_event/1 with visitor_id" do
     test "persists with visitor_id, no user_id" do
       visitor = visitor_fixture()
@@ -3521,6 +3543,209 @@ defmodule Grappa.ScrollbackTest do
 
       assert {:ok, 0} = Scrollback.delete_for_channel({:user, vjt.id}, net.id, "#room")
       assert [_] = Repo.all(Message)
+    end
+  end
+
+  # Issue 2428 — the /clear count: the number the confirm modal states.
+  # The load-bearing property is PARITY with the deletes: the count
+  # must be exactly what the matching delete removes, per kind. Each
+  # parity test counts, deletes, and counts again — a count that
+  # disagrees with its delete is a modal that lies.
+  describe "count_for_target/3 (issue 2428)" do
+    test "channel arm counts the channel's rows only", %{user: user, network: net} do
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 10, %{channel: "#room", dm_with: nil}))
+
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 20, %{channel: "#room", dm_with: nil}))
+
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 30, %{channel: "#other", dm_with: nil}))
+
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "#room") == 2
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "#other") == 1
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "#ghost") == 0
+    end
+
+    test "query arm counts both DM directions via the folded-COALESCE match",
+         %{user: user, network: net} do
+      # Outbound vjt → peer (channel = peer, dm_with = peer)
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 100, %{channel: "peer", sender: "vjt", dm_with: "peer"}))
+
+      # Inbound peer → vjt (channel = vjt, dm_with = peer)
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 110, %{channel: "vjt", sender: "peer", dm_with: "peer"}))
+
+      # Unrelated DM — must not count
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 120, %{channel: "other", sender: "vjt", dm_with: "other"}))
+
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "peer") == 2
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "PEER") == 2
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "other") == 1
+    end
+
+    test "server arm counts the $server rows only", %{user: user, network: net} do
+      {:ok, _} =
+        Scrollback.persist_event(
+          sample(user, net, 50, %{channel: "$server", sender: "irc.example", kind: :notice, body: "MOTD", dm_with: nil})
+        )
+
+      {:ok, _} =
+        Scrollback.persist_event(
+          sample(user, net, 60, %{
+            channel: "$server",
+            sender: "irc.example",
+            kind: :notice,
+            body: "welcome",
+            dm_with: nil
+          })
+        )
+
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 70, %{channel: "#room", dm_with: nil}))
+
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "$server") == 2
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "$SERVER") == 2
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "#room") == 1
+    end
+
+    test "count == delete return, then 0 — channel", %{user: user, network: net} do
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 10, %{channel: "#room", dm_with: nil}))
+
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 20, %{channel: "#room", dm_with: nil}))
+
+      subject = {:user, user.id}
+      assert Scrollback.count_for_target(subject, net.id, "#room") == 2
+      assert {:ok, 2} = Scrollback.delete_for_channel(subject, net.id, "#room")
+      assert Scrollback.count_for_target(subject, net.id, "#room") == 0
+    end
+
+    test "count == delete return, then 0 — query", %{user: user, network: net} do
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 100, %{channel: "peer", sender: "vjt", dm_with: "peer"}))
+
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 110, %{channel: "vjt", sender: "peer", dm_with: "peer"}))
+
+      subject = {:user, user.id}
+      assert Scrollback.count_for_target(subject, net.id, "peer") == 2
+      assert {:ok, 2} = Scrollback.delete_for_dm(subject, net.id, "peer")
+      assert Scrollback.count_for_target(subject, net.id, "peer") == 0
+    end
+
+    test "count == delete return, then 0 — server", %{user: user, network: net} do
+      {:ok, _} =
+        Scrollback.persist_event(
+          sample(user, net, 50, %{channel: "$server", sender: "irc.example", kind: :notice, body: "MOTD", dm_with: nil})
+        )
+
+      {:ok, _} =
+        Scrollback.persist_event(
+          sample(user, net, 60, %{
+            channel: "$server",
+            sender: "irc.example",
+            kind: :notice,
+            body: "welcome",
+            dm_with: nil
+          })
+        )
+
+      subject = {:user, user.id}
+      assert Scrollback.count_for_target(subject, net.id, "$server") == 2
+      assert {:ok, 2} = Scrollback.delete_for_server(subject, net.id)
+      assert Scrollback.count_for_target(subject, net.id, "$server") == 0
+    end
+
+    test "isolated by subject and network", %{user: user, network: net} do
+      {:ok, alice} =
+        Accounts.create_user(%{name: "alice-#{uniq()}", password: "correct horse battery"})
+
+      {:ok, other_net} = Networks.find_or_create_network(%{slug: "other-#{uniq()}"})
+
+      {:ok, _} =
+        Scrollback.persist_event(sample(alice, net, 10, %{channel: "#room", dm_with: nil}))
+
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, other_net, 10, %{channel: "#room", dm_with: nil}))
+
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "#room") == 0
+    end
+  end
+
+  # Issue 2428 — the $server delete: rows live in `messages` at
+  # channel = "$server", dm_with = nil, so the arm is a pure channel
+  # filter on the literal — not a new store, and not the DM fold.
+  describe "delete_for_server/2 (issue 2428)" do
+    test "drops $server rows only", %{user: user, network: net} do
+      {:ok, _} =
+        Scrollback.persist_event(
+          sample(user, net, 50, %{channel: "$server", sender: "irc.example", kind: :notice, body: "MOTD", dm_with: nil})
+        )
+
+      {:ok, _} =
+        Scrollback.persist_event(
+          sample(user, net, 60, %{
+            channel: "$server",
+            sender: "irc.example",
+            kind: :notice,
+            body: "welcome",
+            dm_with: nil
+          })
+        )
+
+      {:ok, survive_chan} =
+        Scrollback.persist_event(sample(user, net, 70, %{channel: "#room", dm_with: nil}))
+
+      {:ok, survive_dm} =
+        Scrollback.persist_event(sample(user, net, 80, %{channel: "peer", sender: "vjt", dm_with: "peer"}))
+
+      assert {:ok, 2} = Scrollback.delete_for_server({:user, user.id}, net.id)
+
+      remaining_ids = Message |> Repo.all() |> Enum.map(& &1.id) |> Enum.sort()
+      assert remaining_ids == Enum.sort([survive_chan.id, survive_dm.id])
+    end
+
+    test "idempotent — returns {:ok, 0} on empty matches", %{user: user, network: net} do
+      assert {:ok, 0} = Scrollback.delete_for_server({:user, user.id}, net.id)
+      assert {:ok, 0} = Scrollback.delete_for_server({:user, user.id}, net.id)
+    end
+
+    test "isolated by subject — alice's $server rows survive a vjt delete",
+         %{user: vjt, network: net} do
+      {:ok, alice} =
+        Accounts.create_user(%{name: "alice-#{uniq()}", password: "correct horse battery"})
+
+      {:ok, alice_row} =
+        Scrollback.persist_event(
+          sample(alice, net, 50, %{channel: "$server", sender: "irc.example", kind: :notice, body: "MOTD", dm_with: nil})
+        )
+
+      assert {:ok, 0} = Scrollback.delete_for_server({:user, vjt.id}, net.id)
+      assert [%Message{id: alice_id}] = Repo.all(Message)
+      assert alice_id == alice_row.id
+    end
+
+    test "isolated by network — $server rows on other_net survive", %{user: user, network: net} do
+      {:ok, other_net} = Networks.find_or_create_network(%{slug: "other-#{uniq()}"})
+
+      {:ok, other_row} =
+        Scrollback.persist_event(
+          sample(user, other_net, 50, %{
+            channel: "$server",
+            sender: "irc.example",
+            kind: :notice,
+            body: "MOTD",
+            dm_with: nil
+          })
+        )
+
+      assert {:ok, 0} = Scrollback.delete_for_server({:user, user.id}, net.id)
+      assert [%Message{id: other_id}] = Repo.all(Message)
+      assert other_id == other_row.id
     end
   end
 

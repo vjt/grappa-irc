@@ -1639,7 +1639,40 @@ defmodule Grappa.Protocol do
   # @min_protocol_version stays at 1: an older client ignores an unknown
   # `channel` field and shows the message as a DM from its sender —
   # degraded, not broken.
-  @protocol_version 63
+  #
+  # ---------------------------------------------------------------------------
+  # 64 — `/clear` count door + `$server` delete (issue 2428)
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `GET /networks/:network_id/archive/:target/count` answers
+  # `{"target", "kind", "count"}` — the row count the `/clear` confirm
+  # modal states before it DELETEs that window. `kind` is the three-way
+  # `Scrollback.window_kind/1` (`"channel" | "query" | "server"`); the
+  # listing's entry type stays two-way, the server tab is countable
+  # though never archived. The count is `Scrollback.count_for_target/3`,
+  # the same predicate the matching delete removes.
+  #
+  # CHANGED: `DELETE /networks/:network_id/archive/:target` accepts
+  # `$server` now — `Scrollback.delete_for_server/2`, a pure
+  # `channel == "$server"` filter. The old "no rows are ever stored at
+  # exactly `channel = \"$server\"`" reading was stale; the rows land
+  # there, and the delete is real rather than a soft no-op.
+  #
+  # Bumped on the #1393d rule: a client that shows the modal's count
+  # cannot get it from a server predating the door, and the door is a
+  # new wire shape (`ScrollbackWireArchiveCount` in the generated
+  # types). The pin refused the digest while the number stood still.
+  #
+  # ⚠️ COLLISION: PR 2626 (issue 2449, common channels) ALSO bumped to
+  # 64 on its branch. Whoever merges second renumbers to 65 — the
+  # number is claimed twice until then, and a merge that takes both
+  # without renumbering ships two wire changes under one version.
+  #
+  # @min_protocol_version stays at 1: an older client never calls the
+  # new door and its DELETEs are unchanged — a pre-64 server's DELETE
+  # against `$server` removed the rows through the DM fold anyway, so
+  # v64 changes the arm from incidental to named, not the outcome.
+  @protocol_version 64
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1680,7 +1713,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 63
+  @spec version() :: 64
   def version, do: @protocol_version
 
   @doc """
