@@ -406,3 +406,60 @@ seed_rpm_aarch64() {
     run "$SCRIPT" frobnicate "$ASSETS"
     [ "$status" -ne 0 ]
 }
+
+# ── issue 2642: the attested cicchetto bundle is an OPTIONAL kind ───────────
+#
+# release.yml's `cic` job runs on a tag push only, so its two assets are absent
+# from every repair dispatch. As expected kinds they would mark each repaired
+# release partial; as nothing at all, publish would not attach them and
+# sha256sums.sh would not check them. Optional sits between: `found` lists
+# them, the completeness audit never asks for them.
+
+# What the cic job's artifact holds: the files release_cic_dist.sh pack REALLY
+# writes, from a minimal built dist. Seeded by the producer, not by a third
+# spelling of its names here, so a rename on either side reddens this file
+# instead of leaving the matcher silently attaching nothing.
+seed_cic() {
+    local dist="$BATS_TEST_TMPDIR/cic-dist"
+    mkdir -p "$dist"
+    printf '<!doctype html>\n' > "$dist/index.html"
+    "$REPO_SRC/infra/packaging/release_cic_dist.sh" pack "$dist" "$ASSETS/cicchetto-dist" 0.8.0 > /dev/null
+}
+
+@test "found: the attested cicchetto dist is attached when it built (issue 2642)" {
+    seed_complete
+    seed_cic
+    produced="$(find "$ASSETS/cicchetto-dist" -type f | sort)"
+    [ "$(wc -l <<<"$produced")" -eq 2 ]
+    run "$SCRIPT" found "$ASSETS"
+    [ "$status" -eq 0 ]
+    [ "$(grep '/cicchetto-dist/' <<<"$output")" = "$produced" ]
+}
+
+@test "found: the cicchetto kinds match by NAME, not every tarball or checksum file (issue 2642)" {
+    seed_complete
+    mkdir -p "$ASSETS/stray"
+    : > "$ASSETS/stray/something-else.tar.gz"
+    : > "$ASSETS/stray/something-else.sha256"
+    run "$SCRIPT" found "$ASSETS"
+    [ "$status" -eq 0 ]
+    refute grep -q 'something-else' <<<"$output"
+}
+
+@test "missing: a release without the cicchetto dist is still complete — a repair never builds it (issue 2642)" {
+    seed_complete
+    run "$SCRIPT" missing "$ASSETS"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    run "$SCRIPT" notice "$ASSETS"
+    [ -z "$output" ]
+    run "$SCRIPT" publishable "$ASSETS" absent
+    [ "$status" -eq 0 ]
+
+    # …and the dist does not stand in for a package: a set that lost a real
+    # package is still partial with the dist present.
+    seed_cic
+    rm "$ASSETS/grappa-arch/grappa-0.8.0-1-x86_64.pkg.tar.zst"
+    run "$SCRIPT" missing "$ASSETS"
+    [ "$output" = 'Arch package, bouncer (.pkg.tar.zst)' ]
+}
