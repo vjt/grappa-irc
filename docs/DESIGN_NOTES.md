@@ -6826,7 +6826,15 @@ moving layer is frozen under reduced motion. On the previous stylesheet the
 first three are red and the fourth green; six one-site mutants of the cure
 each turn exactly one of them red. It observes no paint: whether the
 compositor actually takes the layers over is the measurement's question,
-not this test's.
+not this test's. `issue2647-login-backdrop-compositor-drift.spec.ts` asks
+the engine instead, on `webkit-iphone-15` and `chromium-pixel-touch`:
+`document.getAnimations()` on the backdrop subtree finds exactly three
+animations whose resolved keyframes carry only `transform`, and under
+reduced motion none, with the three layers present at `transform: none`,
+until lifting the preference on the same page starts all three. That is
+what the source test cannot see (a losing selector, a theme override); it
+still sees no paint, and no CPU threshold is asserted, since on a shared
+runner one is either too loose or flaky.
 
 **Out of scope: the boot splash scanlines (`crt-scan`).** They animate
 `background-position` too, from `0 0` to `0 100%` over a 4px tile, so the
