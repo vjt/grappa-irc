@@ -5145,7 +5145,7 @@ string logic — no docker, no network, no mix — so it runs under bats
 (`test/infra/release_assets_test.bats`).
 
 **`publishable <dir> <absent|present>` — the narrowing #1591 applied.**
-`publish` declares `needs: [deb, arch, rpm]` but runs on
+`publish` declares `needs: [deb, arch, rpm, cic]` but runs on
 `if: !cancelled()`, so a red package leg still reached `gh release
 create`. That is #504/#573's deliberate choice and it is right *for a
 release that already exists*: attaching what built is the only way to
