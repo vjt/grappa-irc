@@ -6789,3 +6789,48 @@ gone, which now happens at its call site); it is `hideWindowBar()` in
 2486's wallpaper arm holds the same pair with the pane as a stacking
 context. Playwright's device descriptors are not the reporter's iPhone; the
 geometry is measured on webkit-iphone-15 and chromium-pixel-touch only.
+<!-- entry #2647 -->
+
+---
+
+## 2026-11-21 — issue 2647: the login backdrop drifts with transform, never background-position
+
+**Symptom.** The login backdrop's three drift layers (`.login-matrix`, far /
+mid / near) animated `background-position`. That property is painted, not
+composited, so every frame repainted each layer on the renderer's main
+thread. The same backdrop on the grappa.chat home page put a Chrome renderer
+at 300% CPU for a visitor on Linux; grappa-www e40ce13 cured it there, and
+the issue measured 94% main-thread busy for the login CSS in isolation
+(headless Chromium, not the real page, not a device).
+
+**Decision: the e40ce13 recipe, with the static layers on the element.**
+Each drift layer is a box one tile taller than the viewport, starting one
+tile above it and sliding down by exactly one tile (`transform:
+translateY(<tile>)`), so the loop stays seamless and the compositor moves a
+layer painted once. A moving layer carries everything painted on it, so the
+glow behind the card and the mid layer's vertical column texture moved onto
+the element, which no longer animates. That leaves three boxes to slide and
+two pseudo-elements, hence one child in `Login.tsx` (`.login-matrix-mid`).
+grappa-www kept the column texture on its moving mid box, where a vertical
+stripe is invariant under a vertical slide; the issue asked for it not to
+move, and the element is the box that does not. Tiles and durations are
+unchanged, and the reduced-motion block freezes the three layers that now
+move. `will-change: transform` is kept as in the measured recipe.
+
+**Coverage.** `loginMatrixCss.test.ts` reads the stylesheet source (jsdom
+ingests none of the theme) and holds the shape the cure depends on across
+the whole backdrop rather than its three declarations: every keyframe set
+the backdrop runs animates only `transform`/`opacity`, each layer's travel,
+tile and overhang agree, the glow sits on a box nothing moves, and every
+moving layer is frozen under reduced motion. On the previous stylesheet the
+first three are red and the fourth green; six one-site mutants of the cure
+each turn exactly one of them red. It observes no paint: whether the
+compositor actually takes the layers over is the measurement's question,
+not this test's.
+
+**Out of scope: the boot splash scanlines (`crt-scan`).** They animate
+`background-position` too, from `0 0` to `0 100%` over a 4px tile, so the
+travel is the viewport height minus 4px and the speed changes with the
+viewport. There is no fixed tile to translate and no speed to keep without
+choosing one, which makes it a design call, not the mechanical port this
+issue is. The splash is short-lived; nothing about its cost is measured.
