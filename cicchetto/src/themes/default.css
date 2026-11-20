@@ -5557,22 +5557,43 @@ html.is-ios27-band .shell {
   font-weight: bold;
 }
 
-/* issue 2486 — on a phone the pinned band runs under the floated ☰
-   (`.shell-chrome`, z 41, #985) in the pane's top-right corner, and under
-   the left `#` door in the top-left one while the window bar is off
-   (#1766). Measured before this rule (webkit-iphone-15, 393 wide: ☰ at
-   x 331–379, y 7–55; chromium-pixel-touch, 412 wide: x 350–398): Accept and
-   Reject wrap below the text and were never covered, but the first line of
-   the text ran under the ☰. So the banner pads the side a float sits on by
-   the float's box and its inset on both sides, for as long as that float
-   is mounted: `:has()` reads the mount, so a window with no float (a
-   channel's TopicBar hosts its ☰ in flow, a desktop never floats one) keeps
-   the full width. Pinned by `issue2486-banner-clears-the-float.spec.ts`. */
-.shell-main:has(> .shell-chrome .shell-chrome-rail-opener) .e2e-request-banner {
+/* issue 2486, issue 2641 — on a phone the pinned band runs under the
+   floated ☰ (`.shell-chrome`, z 41, #985) in the pane's top-right corner, and
+   under the left `#` door in the top-left one while the window bar is off
+   (#1766). So every bar in the band pads the side a float sits on by the
+   float's box and its inset on both sides, for as long as that float is
+   mounted: `:has()` reads the mount, so a window with no float (a channel's
+   TopicBar hosts its ☰ in flow, a desktop never floats one) keeps the full
+   width.
+
+   The BAND's rule, not one bar's. Issue 2486 wrote it for the encrypted-chat
+   banner alone (measured then on webkit-iphone-15, 393 wide: ☰ at x 331–379,
+   y 7–55; chromium-pixel-touch, 412 wide: x 350–398 — the banner's first
+   line of text ran under the ☰), and the far-behind bar, the band's other
+   bar, kept running full width under both floats: the `#` door hid the start
+   of "N unread — jump back", so the count could not be read, and the ☰ sat
+   over the whole ×, so the bar could not be dismissed by tap (issue 2641).
+   Inset rather than pushed below the floats, the other cure issue 2641
+   offered: 2486 had already chosen the inset for this band, and one band
+   gets one answer.
+
+   A list of the two bars, not `.scrollback-pinned > *`, which was the first
+   cut: biome's noDescendingSpecificity pairs a `> *` with every later `> *`
+   in this sheet, and that cut added four warnings for one rule. So a THIRD
+   bar pinned in the band has to join this list. It stays where 2486 put it,
+   below both bars' own rules.
+
+   Pinned by `issue2486-banner-clears-the-float.spec.ts` and
+   `issue2641-far-behind-clears-the-float.spec.ts`. */
+.shell-main:has(> .shell-chrome .shell-chrome-rail-opener)
+  .scrollback-pinned
+  > :is(.e2e-request-banner, .scrollback-far-behind) {
   padding-right: calc(var(--chrome-tap-min) + 2 * var(--pane-chrome-inset-inline));
 }
 
-.shell-main:has(> .shell-chrome .topic-bar-windows-opener) .e2e-request-banner {
+.shell-main:has(> .shell-chrome .topic-bar-windows-opener)
+  .scrollback-pinned
+  > :is(.e2e-request-banner, .scrollback-far-behind) {
   padding-left: calc(
     var(--pane-chrome-inset-inline-start) +
     var(--chrome-tap-min) +

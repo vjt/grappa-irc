@@ -49,12 +49,7 @@
 // Not `@webkit`-only despite the iPadOS provenance — nothing here reads
 // `html.is-ios` or `navigator.standalone`, which is the line issue 1878 drew.
 
-import {
-  closeSettings,
-  loginAs,
-  openSettingsSection,
-  selectChannel,
-} from "../fixtures/cicchettoPage";
+import { hideWindowBar, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
@@ -75,16 +70,6 @@ const PHONE = { width: 393, height: 659 };
 
 test.setTimeout(90_000);
 
-async function hideTheBar(page: Parameters<typeof loginAs>[0]): Promise<void> {
-  await openSettingsSection(page, "display");
-  const toggle = page.getByTestId("show-bottom-bar-toggle");
-  // Checked by DEFAULT: the bar ships shown. An already-unchecked toggle here
-  // would mean the rest of this runs against a build whose default is inverted.
-  await expect(toggle).toBeChecked();
-  await toggle.uncheck();
-  await closeSettings(page);
-}
-
 test.describe("issue 2161 — loading straight into a narrow pane", () => {
   test.use({ viewport: SPLIT_VIEW });
 
@@ -96,7 +81,7 @@ test.describe("issue 2161 — loading straight into a narrow pane", () => {
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
     await expect(page.locator(BOTTOM_BAR)).toBeVisible({ timeout: 10_000 });
 
-    await hideTheBar(page);
+    await hideWindowBar(page);
 
     // The preference genuinely went to false. Asserted BEFORE the bar, because
     // an uncheck that did not take makes everything below vacuous — the bar
@@ -142,7 +127,7 @@ test("@webkit @touch mobile: the threshold discriminates, and it does so live", 
   await loginAs(page, specUser());
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 
-  await hideTheBar(page);
+  await hideWindowBar(page);
 
   // 🔴 The negative control, at the narrowest viewport this suite can drive.
   // (The MEASURED upper bound is issue 2301's 384, nine pixels below — no
