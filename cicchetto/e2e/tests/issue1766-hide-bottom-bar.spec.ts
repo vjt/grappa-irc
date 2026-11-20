@@ -38,7 +38,7 @@
 // chromium run would assert the absence of something that was never there.
 
 import {
-  closeSettings,
+  hideWindowBar,
   loginAs,
   openSettingsSection,
   selectChannel,
@@ -59,16 +59,6 @@ const LOCAL_MIRROR_KEYS = ["cicchetto.showBottomBar", "cic.displayPrefs.unsynced
 
 test.setTimeout(90_000);
 
-async function hideTheBar(page: Parameters<typeof loginAs>[0]): Promise<void> {
-  await openSettingsSection(page, "display");
-  const toggle = page.getByTestId("show-bottom-bar-toggle");
-  // Checked by DEFAULT: the bar ships shown. If this is already unchecked the
-  // rest of the test would pass against a build whose default is inverted.
-  await expect(toggle).toBeChecked();
-  await toggle.uncheck();
-  await closeSettings(page);
-}
-
 test("@webkit @touch mobile: turning the bar off removes it and leaves a working door", async ({
   page,
 }) => {
@@ -81,7 +71,7 @@ test("@webkit @touch mobile: turning the bar off removes it and leaves a working
   await expect(page.locator(BOTTOM_BAR)).toBeVisible({ timeout: 10_000 });
   await expect(page.getByLabel(WINDOWS_OPENER)).toHaveCount(0);
 
-  await hideTheBar(page);
+  await hideWindowBar(page);
 
   // 1. The bar is GONE from the page, not merely hidden: the gate is a mount
   //    gate, because a CSS-hidden BottomBar would keep running #327's
@@ -120,7 +110,7 @@ test("@webkit @touch mobile: the preference is remembered by the ACCOUNT, not th
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
   await expect(page.locator(BOTTOM_BAR)).toBeVisible({ timeout: 10_000 });
 
-  await hideTheBar(page);
+  await hideWindowBar(page);
   await expect(page.locator(BOTTOM_BAR)).toHaveCount(0, { timeout: 10_000 });
 
   // Wipe the LOCAL half only — the bearer stays, so this is the same account
@@ -238,7 +228,7 @@ test("@webkit @touch mobile: the two doors are a `#` and a ☰ at one ink size, 
   if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
   await loginAs(page, specUser());
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
-  await hideTheBar(page);
+  await hideWindowBar(page);
 
   const left = page.locator(".topic-bar .topic-bar-windows-opener");
   const right = page.locator(".topic-bar .topic-bar-hamburger");

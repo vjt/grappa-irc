@@ -35,10 +35,9 @@
 import type { Page } from "@playwright/test";
 import {
   closeMembersDrawer,
-  closeSettings,
   composeSend,
+  hideWindowBar,
   openMembersDrawer,
-  openSettingsSection,
   selectChannel,
 } from "../fixtures/cicchettoPage";
 import {
@@ -65,17 +64,6 @@ const test = botTest;
 // The mail, the registration, the bot's start, VERIFIED, the pin's load, the
 // first message and the order, each at its bound, with room to spare.
 test.setTimeout(480_000);
-
-// Turns the window bar off from Display settings, so the `#` door joins the
-// top bar (#1766). Done once the encrypted window is open.
-async function hideWindowBar(page: Page): Promise<void> {
-  await openSettingsSection(page, "display");
-  const toggle = page.getByTestId("show-bottom-bar-toggle");
-  await expect(toggle).toBeChecked();
-  await toggle.uncheck();
-  await closeSettings(page);
-  await expect(page.locator(".bottom-bar")).toHaveCount(0);
-}
 
 type Box = { top: number; bottom: number; left: number; right: number; height: number };
 
@@ -198,7 +186,9 @@ test("@webkit @touch on a phone, the encrypted top bar keeps its four buttons on
 
   // The encrypted window, with the window bar off: all four buttons in the bar.
   await selectChannel(page, NETWORK_SLUG, e2eWindow(bot.nick), { awaitWsReady: false });
+  // The window bar goes off, so the `#` door joins the top bar (#1766).
   await hideWindowBar(page);
+  await expect(page.locator(".bottom-bar")).toHaveCount(0);
   const pane = page.getByTestId("e2e-pane");
   await expect(pane).toBeVisible();
   await expect(pane.locator("header").getByTestId("e2e-check-chip")).toHaveAttribute(
