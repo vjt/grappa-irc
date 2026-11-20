@@ -262,14 +262,22 @@ cic_gates_tag_on_version() {
 
 # The upload collects the directory pack wrote, and finding nothing there is
 # red. upload-artifact's own default is a warning: the step stays green, no
-# artifact exists, and the release ships without the bundle.
+# artifact exists, and the release ships without the bundle. Both keys are
+# looked for in the upload STEP, from the `- ` that opens it to the next one:
+# the same lines anywhere else in the job are read by an action that ignores
+# them. The step, not the lines after `uses:`, because YAML does not order a
+# step's keys and `with:` may come first.
 cic_uploads_what_pack_wrote() {
-    local job out
+    local job out step
     job="$(job_of "$1" cic)"
     out="$(sed -nE 's#^.*release_cic_dist\.sh pack [^ ]+ ([^ ]+) .*$#\1#p' <<<"$job")"
-    [ -n "$out" ] &&
-        grep -qxF "          path: ${out}/*" <<<"$job" &&
-        grep -qxF '          if-no-files-found: error' <<<"$job"
+    step="$(awk '/^      - / { if (hit) exit; step = "" }
+        { step = step $0 "\n" }
+        /^(      - |        )uses: actions\/upload-artifact@/ { hit = 1 }
+        END { if (hit) printf "%s", step }' <<<"$job")"
+    [ -n "$out" ] && [ -n "$step" ] &&
+        grep -qxF "          path: ${out}/*" <<<"$step" &&
+        grep -qxF '          if-no-files-found: error' <<<"$step"
 }
 
 # `!cancelled()` is what keeps a skipped or red cic from skipping publish.
@@ -430,6 +438,18 @@ EOF
 
     # An empty upload let through as a warning.
     sed 's/^          if-no-files-found: error$/          if-no-files-found: warn/' "$live" > "$v"
+    refute cic_uploads_what_pack_wrote "$v"
+
+    # The same two keys moved into the attest step, which reads neither: the
+    # job still carries both lines, and the upload falls back to its `warn`
+    # default (the key) or to no path at all (the path).
+    awk '/^          if-no-files-found: error$/ { next } { print }
+         /^          subject-checksums:/ { print "          if-no-files-found: error" }' "$live" > "$v"
+    grep -qxF '          if-no-files-found: error' "$v"
+    refute cic_uploads_what_pack_wrote "$v"
+    awk '/^          path: cic-release\/\*$/ { next } { print }
+         /^          subject-checksums:/ { print "          path: cic-release/*" }' "$live" > "$v"
+    grep -qxF '          path: cic-release/*' "$v"
     refute cic_uploads_what_pack_wrote "$v"
 
     # publish without the guard that outlives a skipped cic.
