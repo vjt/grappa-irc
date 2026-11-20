@@ -5669,10 +5669,13 @@ defmodule Grappa.Session.Server do
   # the three producers lost a line, and each loss is a different incident: a
   # dropped ghost-recovery line means a GHOST, a WHOIS or one of its two NICKs
   # never went out, a dropped recover-identity line means a NICK, an IDENTIFY,
-  # a RECOVER or a RELEASE never went out, and a dropped reply means an answer
-  # to a stranger was lost. One message for all three would erase which. It
-  # rides as Logger metadata rather than as prose so the message itself stays
-  # one greppable string.
+  # a RECOVER or a RELEASE never went out, and a dropped `:event_router_reply`
+  # line means either a CTCP answer to a stranger (VERSION, PING, USERINFO,
+  # AVATAR) or, with `show_peer_profiles` on, our OWN USERINFO/AVATAR query
+  # to a peer never went out — the atom says "reply", but the two queries
+  # EventRouter sends on a peer's JOIN or a NAMES fold ride it too. One message
+  # for all three would erase which. It rides as Logger metadata rather than
+  # as prose so the message itself stays one greppable string.
   #
   # Fire-and-forget on send failure (REV-E H11): a dead socket must not
   # MatchError the Session, which a strict `:ok =` bind used to do on both
@@ -7497,9 +7500,13 @@ defmodule Grappa.Session.Server do
   #
   # REV-E (H11) still holds through the door: a dead socket does not stop the
   # paired `:persist` effect from running on the next recursion, so the
-  # user-visible scrollback row lands either way. The pair is emitted by the
-  # `:auto_reply` arm above as `[{:reply, _, _}, {:persist, _, _}]` in ONE
-  # list — not by EventRouter, which declares the effect but produces none.
+  # user-visible scrollback row lands either way. The pair arrives as
+  # `[{:reply, _, _}, {:persist, _, _}]` in ONE list from two producers: the
+  # `:auto_reply` arm above, for the VERSION and PING answers, and EventRouter
+  # itself, whose `ctcp_userinfo_reply/3` and `ctcp_avatar_reply/3` emit that
+  # pair with `:event_router_reply` directly. EventRouter's two peer-profile
+  # queries (`take_userinfo_query_token/4`, `take_avatar_query_token/4`) are a
+  # bare `{:reply, _, _}` with no paired row, so REV-E has nothing to keep.
   defp apply_effects([{:reply, line, origin} | rest], state) do
     apply_effects(rest, send_outbound(state, line, origin))
   end
