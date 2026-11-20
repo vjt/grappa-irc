@@ -5261,9 +5261,11 @@ all five still:
 - **The width of the baked sha.** `credits.sh` also bakes the commit sha. A
   bare `git rev-parse --short` sizes it from the clone's packed object count:
   on one and the same commit, git 2.54 printed 9 hex at 262143 objects and 10
-  at 262144. `credits.sh` asks for `--short=9`, the width a full clone of this
-  repository gets today, so how much history a clone holds no longer reaches
-  the bundle.
+  at 262144. `credits.sh` cuts the first nine hex off HEAD's full name, the
+  width a full clone of this repository gets today, so what a clone holds no
+  longer reaches the bundle. `--short=9` would not do it: git documents it as
+  a minimum ("at least length characters") and lengthens it when another
+  object in the clone shares the prefix.
 
 Not measured: a build on the GitHub runner itself. The first tag push after
 this landed is the first run of the job and of the attest step.

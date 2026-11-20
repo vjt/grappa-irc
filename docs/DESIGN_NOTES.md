@@ -6860,9 +6860,12 @@ commands. The measurements, and the five inputs that do change the bytes:
 
 The fifth surfaced in review: `credits.sh` baked `git rev-parse --short`,
 whose width git sizes from the clone's packed object count (9 hex at 262143
-objects, 10 at 262144, measured on one commit). It now asks for `--short=9`,
-today's width, so the size of the building clone no longer reaches the
-credit roll.
+objects, 10 at 262144, measured on one commit). It now cuts the first nine
+hex off HEAD's full name, today's width, so what the building clone holds no
+longer reaches the credit roll. `--short=9` was the first cure and review
+caught it: git documents the number as a minimum and lengthens the name when
+another object in the clone shares the prefix. The test plants such a name in
+its sandbox, where `--short=9` prints ten hex.
 
 ### Not covered
 

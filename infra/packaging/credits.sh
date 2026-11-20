@@ -67,11 +67,15 @@ if [ -e "${REPO_ROOT}/.git" ]; then
 	# reason: a missing git binary, an unborn HEAD or a refused checkout
 	# (git's "dubious ownership") must yield a smaller payload, never a
 	# broken build.
-	# A FIXED width (issue 2642): a bare `--short` is sized from the clone's
-	# object count (9 hex today, 10 from 2^18 objects, measured), and this
-	# value is baked into the bundle, whose bytes the release attests and
-	# anyone may rebuild. Nine is today's auto width, so today's bytes stay.
-	sha="$(git -C "${REPO_ROOT}" rev-parse --short=9 HEAD 2>/dev/null || true)"
+	# A FIXED width (issue 2642): the first nine hex of HEAD's full name, cut
+	# here because git's abbreviation depends on the clone. A bare `--short`
+	# is sized from the object count (9 hex today, 10 from 2^18 objects,
+	# measured), and even `--short=9` is only a minimum, lengthened when
+	# another object shares the prefix. This value is baked into the bundle,
+	# whose bytes the release attests and anyone may rebuild. Nine is today's
+	# auto width, so today's bytes stay. `--verify`, because a bare
+	# `rev-parse HEAD` that cannot resolve prints the word HEAD on stdout.
+	sha="$(git -C "${REPO_ROOT}" rev-parse --verify HEAD 2>/dev/null | cut -c1-9 || true)"
 	date="$(git -C "${REPO_ROOT}" log -1 --format=%cI 2>/dev/null || true)"
 	# 🔴 A SHALLOW clone is the one case where a probe can answer CONFIDENTLY
 	# WRONG rather than emptily, so it is the one case that gets a gate
