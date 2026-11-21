@@ -12,7 +12,9 @@
 //
 // So the URL is owned HERE, by the lifetime that actually matters: it lives
 // exactly as long as one of the two surfaces names it, and not one tick longer.
-// The card only REGISTERS what it minted; it never revokes.
+// The card only REGISTERS what it handed to a surface. A URL minted after the
+// card went away is never handed to one and never registered here: the card
+// revokes that one itself, on the spot (`FileTrailer`).
 //
 // One store for both surfaces, not one per surface: a URL belongs to whichever
 // surface names it, and moving between them (the same file opened again while
@@ -31,10 +33,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   };
 
   // Reactive on both surfaces: whenever either one moves off a URL (viewer
-  // closed or replaced, player stopped or re-tuned), every minted URL nobody
-  // names any more goes. A URL minted for a surface that never came up — the
-  // card unmounted between the mint and the hand-over — is collected by the
-  // same pass on the next change, and by `revokeAll` on sign-out.
+  // closed or replaced, player stopped or re-tuned), every registered URL
+  // nobody names any more goes; on sign-out `revokeAll` takes the rest.
   createEffect(() => {
     const inUse = new Set<string>();
     const viewer = mediaViewerState();
