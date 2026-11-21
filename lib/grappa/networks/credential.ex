@@ -209,7 +209,7 @@ defmodule Grappa.Networks.Credential do
   @typedoc """
   What a live session does after a self-KICK on this network: nothing, or
   one JOIN after the delay. The session-side twin is
-  `Grappa.Session.KickRejoin.config/0`, duplicated on purpose (`Session`
+  `t:Grappa.Session.KickRejoin.config/0`, duplicated on purpose (`Session`
   must not alias `Networks`).
   """
   @type kick_rejoin :: :off | {:on, kick_rejoin_delay()}
