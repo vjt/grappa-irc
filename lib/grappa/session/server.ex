@@ -7274,7 +7274,7 @@ defmodule Grappa.Session.Server do
   #      `broadcast_window_state/2`) carrying `by` + `reason` so cic can
   #      render the kick reason banner without parsing the scrollback
   #      row. The :persist :kick row alongside is the audit trail.
-  defp apply_effects([{:kicked, channel, by, reason} | rest], state) do
+  defp apply_effects([{:kicked, channel, by, reason, _key} | rest], state) do
     broadcast_window_state(
       state,
       SessionWire.kicked(state.network_slug, channel, by, reason)
