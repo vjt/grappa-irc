@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { batch, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../lib/api";
+import { ApiError, type MeResponse } from "../lib/api";
 import { activeAudio, closeAudio, playAudio } from "../lib/audioPlayer";
 import { channelKey } from "../lib/channelKey";
 import { setDraft } from "../lib/compose";
@@ -97,6 +97,13 @@ const loadMore = vi.hoisted(() => vi.fn(async () => undefined));
 const loadNewer = vi.hoisted(() => vi.fn(async () => undefined));
 const refreshScrollback = vi.hoisted(() => vi.fn(async () => undefined));
 const openEncryptedFile = vi.hoisted(() => vi.fn());
+// Who is signed in, as `networks.user()` answers it. Hoisted: the networks
+// mock is read while modules load, before a module-level signal exists.
+const signedIn = vi.hoisted(() => ({ me: null as MeResponse | null }));
+const setMe = (me: MeResponse | null): void => {
+  signedIn.me = me;
+};
+
 const panel = vi.hoisted(() => ({
   onClose: null as null | (() => void),
   mounted: 0,
@@ -182,6 +189,9 @@ vi.mock("../lib/networks", async (importOriginal) => {
   return {
     ...(await importOriginal<typeof import("../lib/networks")>()),
     networks: () => [azzurra],
+    // Who is signed in: null (no own nick, so no line is a mention) unless a
+    // test signs someone in with `setMe`.
+    user: () => signedIn.me,
     networkBySlug: (slug: string) => (slug === "azzurra" ? azzurra : undefined),
     networkIdBySlug: () => 7,
   };
@@ -251,6 +261,7 @@ beforeEach(() => {
   setSas(null);
   setElsewhere(null);
   setWireView(null);
+  setMe(null);
   setArrivals({});
   dismissConfirm();
   // The compose store is the app's one (issue 2512): each test starts on an
@@ -2792,6 +2803,39 @@ describe("an encrypted attachment's card (issue 2517)", () => {
 
     expect(lines()).toHaveLength(1);
     expect(lines()[0]?.textContent).toContain(fileCard(attachment));
+  });
+
+  // A reply quotes what the line says, and an attachment's line says 📎: the
+  // card is the peer's text, and a quote puts what it holds in the body of a
+  // new message.
+  it("is quoted by a reply as 📎, not as its card", () => {
+    setRows([withFile]);
+    renderPane();
+    expect(composer().value).toBe("");
+
+    lines()[0]
+      ?.querySelector(".scrollback-body")
+      ?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    // The menu acts on a fresh press only (issue 1956).
+    pressAndClick(screen.getByRole("button", { name: "Reply" }));
+
+    expect(composer().value).toContain("📎");
+    expect(composer().value).not.toContain(attachment.name);
+  });
+
+  // The name is the peer's choice, not something they said to the operator.
+  it("never marks its line as a mention, even when its name holds the operator's nick", () => {
+    setMe({ kind: "user", id: "u1", name: "alice", is_admin: false, inserted_at: "" });
+    setRows([
+      { ...withFile, file: { ...attachment, name: "photo for alice and bob.jpg" } },
+      { ...plain, body: "ciao alice" },
+    ]);
+    renderPane();
+    const [file, text] = lines();
+
+    // The control: a message that names the operator IS a mention here.
+    expect(text?.classList.contains("scrollback-mention")).toBe(true);
+    expect(file?.classList.contains("scrollback-mention")).toBe(false);
   });
 
   const openTheImage = async (): Promise<void> => {
