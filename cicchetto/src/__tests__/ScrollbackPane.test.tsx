@@ -1,5 +1,5 @@
 import { render, screen, waitFor, within } from "@solidjs/testing-library";
-import { batch, createSignal } from "solid-js";
+import { batch, createSignal, Match, Switch } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage, WhoisBundle } from "../lib/api";
 import { activeAudio, closeAudio } from "../lib/audioPlayer";
@@ -3518,6 +3518,68 @@ describe("ScrollbackPane", () => {
         list.dispatchEvent(new Event("scroll"));
         await new Promise((r) => setTimeout(r, 700));
         expect(dismissFarBehindSpy).not.toHaveBeenCalled();
+      });
+    });
+
+    // issue 2613 — the windows that do NOT share the pane: an encrypted query
+    // (its own keyed Match in Shell), `$home`, mentions, the directory. A switch
+    // to one of them unmounts the pane instead of changing its key, so the leave
+    // is written from `onCleanup`, and there the reactive props already name the
+    // window being OPENED. Shell's Switch is reproduced here because that is
+    // what makes the props move before the dispose: the selection is one
+    // signal read by both the Match and the pane's props.
+    describe("a switch that unmounts the pane marks the window it LEAVES read (issue 2613)", () => {
+      // `#b` carries its own ids, so a write naming one channel with the
+      // other's row is told apart from the right one.
+      const fixtureB = fixture.map((m) => ({ ...m, id: m.id + 10, channel: "#b" }));
+
+      // Opens `shown[0]`, walks the pane through the rest of `shown` (switches
+      // that keep it mounted), then leaves for `arriving`, which unmounts it.
+      // Only the writes of that last switch are kept.
+      const leaveFor = async (shown: string[], arriving: string) => {
+        const [sel, setSel] = createSignal({ name: shown[0] ?? "", sharesPane: true });
+        setScrollback({ "freenode #a": fixture, "freenode #b": fixtureB });
+        render(() => (
+          <Switch>
+            <Match when={sel().sharesPane}>
+              <ScrollbackPane networkSlug="freenode" channelName={sel().name} kind="channel" />
+            </Match>
+            <Match when={!sel().sharesPane}>
+              <div data-testid="other-pane" />
+            </Match>
+          </Switch>
+        ));
+        // jsdom leaves scrollTo undefined; the key-change smooth-scroll
+        // interrupt calls it on every switch that keeps the pane.
+        (screen.getByTestId("scrollback") as HTMLDivElement).scrollTo = vi.fn();
+        for (const name of shown.slice(1)) {
+          setSel({ name, sharesPane: true });
+          await Promise.resolve();
+        }
+        mockSetCursorIfAdvances.mockClear();
+        setSel({ name: arriving, sharesPane: false });
+        await Promise.resolve();
+      };
+
+      it("leaving a channel for an encrypted query writes the channel's cursor", async () => {
+        // Before the cure the one write named `$e2e:bob`, which `setReadCursor`
+        // drops as a virtual window: the channel kept the cursor of its last
+        // settle, and coming back latched the divider there.
+        await leaveFor(["#a"], "$e2e:bob");
+        expect(mockSetCursorIfAdvances.mock.calls).toEqual([["freenode", "#a", 3]]);
+      });
+
+      it("leaving a channel for $home writes the channel's cursor", async () => {
+        await leaveFor(["#a"], "$home");
+        expect(mockSetCursorIfAdvances.mock.calls).toEqual([["freenode", "#a", 3]]);
+      });
+
+      it("after a switch that kept the pane, the leave names the window switched TO", async () => {
+        // The pane remembers the window it shows; a channel-to-channel switch
+        // must move that memory, or every later settle writes the new
+        // window's rows under the first one's name.
+        await leaveFor(["#a", "#b"], "$home");
+        expect(mockSetCursorIfAdvances.mock.calls).toEqual([["freenode", "#b", 13]]);
       });
     });
 
