@@ -595,12 +595,12 @@ body {
    listed vertical scroller; a census pair whose inner is not a strip and
    that has no carve-out; a census pair whose inner is a strip that no
    layout turns vertical; y containment on a nested strip; a per-rule
-   `contain` or `auto`; a `none` on a listed surface (it would take the
-   bounce away: unlist the surface instead); a shared rule moved inside an
-   at-rule; and the third rule moved above the first. The first two lists
-   stay single compounds: a descendant selector at this position precedes
-   the base rule of the same element and draws biome noDescendingSpecificity
-   warnings. */
+   `contain` other than the strip y restore above, or `auto`; a `none` on
+   a listed surface (it would take the bounce away: unlist the surface
+   instead); a shared rule moved inside an at-rule; and the third rule
+   moved above the first. The first two lists stay single compounds: a
+   descendant selector at this position precedes the base rule of the same
+   element and draws biome noDescendingSpecificity warnings. */
 .login-scroll,
 .shell-sidebar,
 .rail-actions-menu,
