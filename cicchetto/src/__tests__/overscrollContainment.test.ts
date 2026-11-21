@@ -211,7 +211,11 @@ type Shared = { both: string[]; xOnly: string[] };
  * (b)). A function, not the test body, so synthetic rules reach the strip arm
  * the sheet no longer exercises (see the strip-restore test).
  */
-function coverageOffenders(checked: Rule[], { both, xOnly }: Shared, nestedInners: string[]) {
+function coverageOffenders(
+  checked: Rule[],
+  { both, xOnly }: Shared,
+  nestedInners: string[],
+): string[] {
   const offenders: string[] = [];
   for (const rule of checked) {
     const axes = computedScrollAxes(rule.body);
@@ -258,7 +262,7 @@ function coverageOffenders(checked: Rule[], { both, xOnly }: Shared, nestedInner
  * (ruling (2)): take the surface out of the list instead, so the exception is
  * visible where the rule is.
  */
-function ownContainmentOffenders(checked: Rule[], { both, xOnly }: Shared) {
+function ownContainmentOffenders(checked: Rule[], { both, xOnly }: Shared): string[] {
   const offenders: string[] = [];
   for (const rule of checked) {
     const flat = rule.body.trim().replace(/\s+/g, " ").replace(/;$/, "");
