@@ -1374,6 +1374,38 @@ defmodule Grappa.Scrollback do
 
   def target_kind(name) when is_binary(name), do: :query
 
+  @typedoc """
+  The window a target names: `:channel` for a sigil-led name, `:query`
+  for a peer nick, `:server` for the synthetic `$server` pseudo-channel.
+
+  Issue 2428 — the third arm `target_kind/1` cannot express: it
+  classifies `$server` as `:query` (no sigil), and its doc explicitly
+  leaves the special-casing to callers. `/clear` needs the distinction
+  at the dispatch site — the server tab's rows are deleted by a pure
+  `channel == "$server"` filter (`delete_for_server/2`), not by the DM
+  fold — so the three-way classifier lives here, next to the two-way
+  one, and the controller + `count_for_target/3` dispatch on it.
+  """
+  @type window_kind :: :channel | :query | :server
+
+  @doc """
+  Issue 2428 — three-way window classifier for a target string.
+
+  `"$server"` (matched AFTER the canonical fold, so `"$SERVER"` counts
+  too) → `:server`; everything else defers to `target_kind/1`. The
+  fold-then-match order matters: the fold is what the write path
+  stores (`Message.canonicalize_channel/1`), so a mixed-case spelling
+  of the pseudo-channel resolves to the same window the rows were
+  keyed under.
+  """
+  @spec window_kind(String.t()) :: window_kind()
+  def window_kind(target) when is_binary(target) do
+    case Identifier.canonical_target(target) do
+      "$server" -> :server
+      canonical -> target_kind(canonical)
+    end
+  end
+
   @doc """
   Adds the channel-vs-DM dispatch `WHERE` clause to a `Message`-bound
   query (a query already-bound to `Message` so the implicit `[m]`
@@ -1719,6 +1751,103 @@ defmodule Grappa.Scrollback do
          end) do
       {:ok, {count, _}} -> {:ok, count}
       {:error, :db_unavailable} = err -> err
+    end
+  end
+
+  @doc """
+  Issue 2428 — deletes all scrollback rows for the `$server` window in
+  a `(subject, network_id)` pair. Pure `channel == "$server"` filter,
+  the same shape as `delete_for_channel/3` — because that is where the
+  rows live: the `$server` tab is NOT a separate store. `EventRouter`
+  persists MOTD / server notices / `:mode`-on-self rows with
+  `channel = "$server"` and `dm_with = nil` (`dm_peer/4` returns `nil`
+  for `$server` targets), so the rows sit in `messages` alongside every
+  other window's, keyed by the literal pseudo-channel name. The
+  controller doc used to claim no rows are ever stored at exactly
+  `channel = "$server"`; that was stale — the seed in
+  `ArchiveControllerTest` persists a `$server` `:notice` row, and
+  `list_archive/3` has to explicitly reject the `$server` key, which
+  only matters because the scan finds it.
+
+  A dedicated function rather than routing through
+  `delete_for_channel/3` with the literal: the dispatch in
+  `ArchiveController.delete/2` is total over `window_kind/1`, and a
+  `:server` arm that silently meant "channel" would let a future
+  sigil-rule change move the server tab's delete under a classifier
+  that never mentions it. The DM fold (`delete_for_dm/3`) would match
+  the same rows incidentally — `COALESCE(dm_with, channel)` is the
+  channel for these rows — but relying on the DM predicate for a
+  window that can never carry DM rows is the wrong invariant to pin.
+
+  Two-arity on purpose: the window IS the literal, there is no target
+  to pass — a three-arity twin would take a string it must then ignore
+  or re-validate.
+
+  Returns `{:ok, count}` always — `count` is `0` on empty matches.
+  Caller (`ArchiveController.delete/2`) broadcasts `:archive_purged`
+  with the `$server` target so cic invalidates the live server tab too
+  (UX-7-B), exactly like the channel/query arms.
+  """
+  @spec delete_for_server(subject(), integer()) ::
+          {:ok, non_neg_integer()} | {:error, :db_unavailable}
+  def delete_for_server(subject, network_id) when is_integer(network_id) do
+    # #1374 P-S8 — same web-reachable 503 door as `delete_for_channel/3`
+    # + `delete_for_dm/3`.
+    case BusyRetry.run(fn ->
+           {:ok,
+            Message
+            |> Subject.subject_where(subject)
+            |> where([m], m.network_id == ^network_id)
+            |> where([m], m.channel == ^"$server")
+            |> Repo.delete_all()}
+         end) do
+      {:ok, {count, _}} -> {:ok, count}
+      {:error, :db_unavailable} = err -> err
+    end
+  end
+
+  @doc """
+  Issue 2428 — how many scrollback rows the window `target` holds for
+  `(subject, network_id)`, seeded/active or not: `/clear` runs on the
+  CURRENT window, which may not be in the archive listing, so the count
+  cannot come from `list_archive/3` (which also excludes `$server`
+  outright).
+
+  The number is the one the confirm modal states, so it MUST be the
+  number the matching delete removes: the three arms use the SAME
+  predicate as `delete_for_channel/3`, `delete_for_dm/3` and
+  `delete_for_server/2` respectively — pure `channel ==` for `:channel`
+  and `:server`, the folded-COALESCE `where_dm_peer/2` for `:query`.
+  No presence exclusion (`hide_presence` is a read-time render filter;
+  `/clear` deletes hidden rows too) and no `own_nick` narrowing beyond
+  what `where_dm_peer/2` already encodes for the delete. If any arm's
+  predicate moves, the delete's must move with it; the parity is pinned
+  by the `count_for_target/3` tests asserting `count == delete return`
+  per kind.
+
+  An aggregate over the partition, not a paged read — same cost class
+  as the archive listing, which is why the controller meters it with
+  the same archive-read token (`ArchiveController.count/2`).
+  """
+  @spec count_for_target(subject(), integer(), String.t()) :: non_neg_integer()
+  def count_for_target(subject, network_id, target)
+      when is_integer(network_id) and is_binary(target) do
+    canonical = Identifier.canonical_target(target)
+
+    base =
+      Message
+      |> Subject.subject_where(subject)
+      |> where([m], m.network_id == ^network_id)
+
+    case window_kind(canonical) do
+      :channel ->
+        base |> where([m], m.channel == ^canonical) |> Repo.aggregate(:count)
+
+      :query ->
+        base |> where_dm_peer(canonical) |> Repo.aggregate(:count)
+
+      :server ->
+        base |> where([m], m.channel == ^"$server") |> Repo.aggregate(:count)
     end
   end
 

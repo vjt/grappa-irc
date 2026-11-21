@@ -30,6 +30,7 @@ import {
   narrowAdminVhostGrantResponse,
   narrowAdminVhostResponse,
   narrowAdminVisitorsResponse,
+  narrowArchiveCountResponse,
   narrowArchiveResponse,
   narrowChannelListResponse,
   narrowCredentialResponse,
@@ -3306,6 +3307,33 @@ export async function deleteArchiveEntry(
     },
   );
   if (!res.ok) throw await readError(res);
+}
+
+// issue 2428 — mirror of `GrappaWeb.ArchiveController.count/2`.
+// GET /networks/:slug/archive/:target/count → 200
+// `{"target": "<target>", "kind": "channel" | "query" | "server", "count": <int>}`.
+// The count is what the /clear confirm modal states before anything is
+// deleted; the kind is the server's classification of the target (the
+// `$server` tab is a kind of its own — the archive listing never carries
+// it, so the count door is the only place it is named). Same
+// narrow/validate pattern as `listArchive`/`deleteArchiveEntry` above.
+export type ArchiveCount = {
+  target: string;
+  kind: "channel" | "query" | "server";
+  count: number;
+};
+
+export async function getArchiveCount(
+  token: string,
+  networkSlug: string,
+  target: string,
+): Promise<ArchiveCount> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/archive/${encodeURIComponent(target)}/count`,
+    { headers: buildHeaders(token) },
+  );
+  if (!res.ok) throw await readError(res);
+  return narrowArchiveCountResponse(await res.json());
 }
 
 // Mirror of `GrappaWeb.NickController.create/2`. Sends `NICK <new>`

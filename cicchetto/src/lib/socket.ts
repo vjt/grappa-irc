@@ -452,7 +452,13 @@ let _socket: Socket | null = null;
 // every such E2E push and inbox page as malformed. The server still emits
 // the key on every message; only the client's requirement moved.
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 63;
+//
+// 64 (issue 2428) — `GET …/archive/:target/count`, the count behind the
+// /clear confirm modal. The count door is the only new wire this bundle
+// speaks at 64; the DELETE it confirms already existed. The server half
+// owns the door and the `$server` delete behind it.
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 64;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

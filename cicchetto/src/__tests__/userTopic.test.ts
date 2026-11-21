@@ -2483,6 +2483,22 @@ describe("userTopic", () => {
       expect(sb.purgeScrollback).toHaveBeenCalledWith(channelKey("azzurra", "alice"));
     });
 
+    it("issue 2428 — works for the $server tab too (the /clear headline window)", async () => {
+      // The server window's rows are keyed channelKey(slug, "$server")
+      // (subscribe.ts), so the broadcast target "$server" purges the live
+      // server pane exactly like a channel or DM target purges its own.
+      const sb = await import("../lib/scrollback");
+      const { channelKey } = await import("../lib/channelKey");
+
+      channelMock.fireEvent({
+        kind: "archive_purged",
+        network_slug: "azzurra",
+        target: "$server",
+      });
+
+      expect(sb.purgeScrollback).toHaveBeenCalledWith(channelKey("azzurra", "$server"));
+    });
+
     it("drops archive_purged payload missing `target` (narrowing rejects)", async () => {
       const sb = await import("../lib/scrollback");
 

@@ -112,6 +112,13 @@ import {
 // same UI deep-link shape as the bare watch-family verbs (no network, no
 // wire). Shadowable by a user alias.
 
+// issue 2428 — `/clear` → {kind: "clear"}: wipe the current window's
+// history (channel, DM, or the $server tab), behind a confirm modal that
+// states the message count. The parser carries nothing — the window is the
+// one the line was typed in, resolved in compose.ts — and an argument is
+// an error, the bare-verb posture: there is no target to spell, so a
+// trailing token is a typo, not an address.
+
 export type SlashCommand =
   | { kind: "empty" }
   | { kind: "privmsg"; body: string }
@@ -269,6 +276,12 @@ export type SlashCommand =
   // It carries nothing — the modal is a module-singleton signal and the verb
   // takes no arguments; trailing text is ignored, the no-arg family's posture.
   | { kind: "open-credits" }
+  // issue 2428 — `/clear` wipes the current window's history, behind a
+  // confirm modal stating the message count. It carries nothing: the window
+  // is the one the line was typed in (resolved in compose.ts), the count
+  // comes from the archive count door, and the modal is the #195 confirm
+  // store. It takes NO arguments — an argument is an error, not a target.
+  | { kind: "clear" }
   // #385 — user-defined command aliases. `/alias <name> <expansion>` defines
   // one, `/unalias <name>` removes one. The define carries the parsed name +
   // expansion; compose.ts round-trips them through the aliasList store.
@@ -1066,6 +1079,14 @@ const DISPATCH = keysOf<Handler>({
   // user alias like every verb but /alias + /unalias (Gabriele's ruling on
   // the issue: nothing argues it must join the deny list).
   credits: (_verb, _rest) => ({ kind: "open-credits" }),
+
+  // issue 2428 — /clear: bare verb, no args. An argument is an error, not
+  // a target — the verb always means the window it was typed in, and a
+  // trailing token can only be a typo for one.
+  clear: (verb, rest) => {
+    if (rest !== "") return err(verb, `/${verb} takes no arguments — it clears the current window`);
+    return { kind: "clear" };
+  },
 
   // Issue #20 — services shortcuts. Each one rewrites to a {kind: "msg"}
   // command targeting the canonical ServiceNick. Empty body → error (no
