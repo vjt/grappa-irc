@@ -7426,6 +7426,16 @@ rule inside an at-rule, and the carve-out rule above the both-axis one (an
 entry ties on specificity with the one it undoes). 19
 mutants each failed the case they target, 11 of them from the independent
 review's list of false greens in the first cut; reverted, the suite passes.
+The review's two surviving mutants now fail: removing `textarea` from the
+list fails the UA-scroller test, and moving `.adm-table-wrap` into the
+both-axis list fails the strip test, each alone. For the carve-out, a
+well-formed pair (`:where(.registration-wizard-body) textarea`) stays green.
+Each of these fails: a bare entry, an outer that is not a scroller, an
+outer that scrolls only on x, an inner that is not a scroller, a plain
+descendant without `:where()`, the rule moved above the both-axis one, a
+per-rule `auto` on a nested or a non-nested scroller, and a well-formed
+pair that carves out the peek. The first three, run with a subject other
+than the peek, fail the carve-out test alone.
 The same review made `themeCss.selectorList` split at bracket depth 0 for
 every test that uses it.
 
