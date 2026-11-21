@@ -199,6 +199,86 @@ const scrollsVertically = (compound: string): boolean =>
       selectorList(selectors).some((entry) => covers([subjectOf(entry)], compound)),
   );
 
+type Rule = { selectors: string; body: string };
+type Shared = { both: string[]; xOnly: string[] };
+
+/**
+ * The coverage verdict over `checked`: every scroll rule whose subject the
+ * shared rules do not cover. `nestedInners` are the census's inners (ruling
+ * (b)). A function, not the test body, so synthetic rules reach the strip arm
+ * the sheet no longer exercises (see the strip-restore test).
+ */
+function coverageOffenders(checked: Rule[], { both, xOnly }: Shared, nestedInners: string[]) {
+  const offenders: string[] = [];
+  for (const rule of checked) {
+    const axes = computedScrollAxes(rule.body);
+    const own = byAxis(rule.body, "overscroll-behavior");
+    // A deliberate `none` on every axis it scrolls (the directory list, #1445)
+    // is stronger than `contain` and needs nothing from the shared rule.
+    // Every COMPUTED axis: a y-only `none` leaves the `auto` x open.
+    if ([...axes].every((axis) => own[axis] === "none")) continue;
+    for (const axis of axes) {
+      if (own[axis] === "auto") offenders.push(`${rule.selectors}: opts ${axis} out with auto`);
+    }
+    for (const entry of selectorList(rule.selectors)) {
+      const subject = subjectOf(entry);
+      if (covers(both, subject)) continue;
+      if (covers(xOnly, subject)) {
+        // A strip that DECLARES a vertical scroll in some layout must contain
+        // that axis where it does, unless the census found that layout
+        // nesting it in a vertical scroller: ruling (b), the desktop
+        // `.adm-nav` rail inside `.admin-pane`. Its computed `auto` y
+        // elsewhere is the hand-off the strip list exists for.
+        const owesYRestore =
+          declaredScrollAxes(rule.body).has("y") &&
+          own.y !== "contain" &&
+          !covers(nestedInners, subject);
+        if (owesYRestore) {
+          offenders.push(`${entry}: listed as a horizontal strip but scrolls y here, uncontained`);
+        }
+        continue;
+      }
+      offenders.push(`${entry}: scrolls (${[...axes].join("")}) with no containment`);
+    }
+  }
+  return offenders;
+}
+
+/**
+ * The per-rule verdict over `checked`: every `overscroll-behavior` declared
+ * beside the shared rules. What stays legal is `none` on a surface the shared
+ * rules do NOT list (it also refuses the element's own bounce — the root, the
+ * directory list), and the restore a horizontal strip needs where a layout
+ * turns it into a vertical scroller that is NOT nested (none on the sheet
+ * today: the desktop `.adm-nav` rail is nested, see NESTED_CENSUS). `none` on
+ * a LISTED surface would take away the bounce the shared rule promises
+ * (ruling (2)): take the surface out of the list instead, so the exception is
+ * visible where the rule is.
+ */
+function ownContainmentOffenders(checked: Rule[], { both, xOnly }: Shared) {
+  const offenders: string[] = [];
+  for (const rule of checked) {
+    const flat = rule.body.trim().replace(/\s+/g, " ").replace(/;$/, "");
+    if (/^overscroll-behavior(-x: contain|: contain|: auto)$/.test(flat)) continue;
+    for (const [prop, raw] of declarations(rule.body)) {
+      if (!prop.startsWith("overscroll-behavior")) continue;
+      const value = raw.toLowerCase();
+      const listed = selectorList(rule.selectors).some((entry) =>
+        covers([...both, ...xOnly], subjectOf(entry)),
+      );
+      if (value.split(/\s+/).every((part) => part === "none") && !listed) continue;
+      const isStripRestore =
+        prop === "overscroll-behavior-y" &&
+        value === "contain" &&
+        declaredScrollAxes(rule.body).has("y") &&
+        selectorList(rule.selectors).every((entry) => covers(xOnly, subjectOf(entry)));
+      if (isStripRestore) continue;
+      offenders.push(`${rule.selectors} { ${prop}: ${value} }`);
+    }
+  }
+  return offenders;
+}
+
 describe("issue 2671 — every scroll surface contains its overscroll, declared once", () => {
   it("the shared rules exist and list single compound selectors, never `*`", () => {
     const { both, xOnly } = overscrollContainment();
@@ -220,42 +300,8 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
   });
 
   it("every rule that makes something scroll is covered by a shared rule", () => {
-    const { both, xOnly } = overscrollContainment();
-    const offenders: string[] = [];
-    for (const rule of scrollRules) {
-      const axes = computedScrollAxes(rule.body);
-      const own = byAxis(rule.body, "overscroll-behavior");
-      // A deliberate `none` on every axis it scrolls (the directory list, #1445)
-      // is stronger than `contain` and needs nothing from the shared rule.
-      // Every COMPUTED axis: a y-only `none` leaves the `auto` x open.
-      if ([...axes].every((axis) => own[axis] === "none")) continue;
-      for (const axis of axes) {
-        if (own[axis] === "auto") offenders.push(`${rule.selectors}: opts ${axis} out with auto`);
-      }
-      for (const entry of selectorList(rule.selectors)) {
-        const subject = subjectOf(entry);
-        if (covers(both, subject)) continue;
-        if (covers(xOnly, subject)) {
-          // A strip that DECLARES a vertical scroll in some layout must contain
-          // that axis where it does, unless the census found that layout
-          // nesting it in a vertical scroller: ruling (b), the desktop
-          // `.adm-nav` rail inside `.admin-pane`. Its computed `auto` y
-          // elsewhere is the hand-off the strip list exists for.
-          const nestedThere = covers(
-            NESTED_CENSUS.map(([, inner]) => inner),
-            subject,
-          );
-          if (declaredScrollAxes(rule.body).has("y") && own.y !== "contain" && !nestedThere) {
-            offenders.push(
-              `${entry}: listed as a horizontal strip but scrolls y here, uncontained`,
-            );
-          }
-          continue;
-        }
-        offenders.push(`${entry}: scrolls (${[...axes].join("")}) with no containment`);
-      }
-    }
-    expect(offenders).toEqual([]);
+    const inners = NESTED_CENSUS.map(([, inner]) => inner);
+    expect(coverageOffenders(scrollRules, overscrollContainment(), inners)).toEqual([]);
   });
 
   it("every shared entry names something that scrolls", () => {
@@ -345,35 +391,30 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
 
   it("no rule declares containment of its own beside the shared rules", () => {
     // The whole point of the ruling: no per-rule `contain` creeping back. What
-    // stays legal is `none` on a surface the shared rules do NOT list (it also
-    // refuses the element's own bounce — the root, the directory list), and the
-    // restore a horizontal strip needs where a layout turns it into a vertical
-    // scroller that is NOT nested (none today: the desktop `.adm-nav` rail is
-    // nested, see NESTED_CENSUS). `none` on a LISTED surface would take away the bounce
-    // the shared rule promises (ruling (2)): take the surface out of the list
-    // instead, so the exception is visible where the rule is.
-    const { both, xOnly } = overscrollContainment();
-    const offenders: string[] = [];
-    for (const rule of rules) {
-      const flat = rule.body.trim().replace(/\s+/g, " ").replace(/;$/, "");
-      if (/^overscroll-behavior(-x: contain|: contain|: auto)$/.test(flat)) continue;
-      for (const [prop, raw] of declarations(rule.body)) {
-        if (!prop.startsWith("overscroll-behavior")) continue;
-        const value = raw.toLowerCase();
-        const listed = selectorList(rule.selectors).some((entry) =>
-          covers([...both, ...xOnly], subjectOf(entry)),
-        );
-        if (value.split(/\s+/).every((part) => part === "none") && !listed) continue;
-        const isStripRestore =
-          prop === "overscroll-behavior-y" &&
-          value === "contain" &&
-          declaredScrollAxes(rule.body).has("y") &&
-          selectorList(rule.selectors).every((entry) => covers(xOnly, subjectOf(entry)));
-        if (isStripRestore) continue;
-        offenders.push(`${rule.selectors} { ${prop}: ${value} }`);
-      }
-    }
-    expect(offenders).toEqual([]);
+    // stays legal is listed on ownContainmentOffenders.
+    expect(ownContainmentOffenders(rules, overscrollContainment())).toEqual([]);
+  });
+
+  it("a strip a layout turns vertical restores y there, unless the census nests it", () => {
+    // Since issue 2671 C5 the sheet carries no such strip (the desktop
+    // `.adm-nav` rail is nested), so the two sheet tests above meet neither
+    // arm: without these rules, deleting the coverage verdict's demand or the
+    // per-rule verdict's allowance would stay green. One synthetic strip,
+    // listed in the x-only list and turned vertical by a layout.
+    const shared = { both: [".pane"], xOnly: [".rail-strip"] };
+    const vertical = { selectors: ".rail-strip", body: "overflow-x: visible; overflow-y: auto;" };
+    const restored = { ...vertical, body: `${vertical.body} overscroll-behavior-y: contain;` };
+    expect(coverageOffenders([vertical], shared, [])).toEqual([
+      ".rail-strip: listed as a horizontal strip but scrolls y here, uncontained",
+    ]);
+    expect(coverageOffenders([restored], shared, [])).toEqual([]);
+    expect(coverageOffenders([vertical], shared, [".rail-strip"])).toEqual([]);
+    expect(ownContainmentOffenders([restored], shared)).toEqual([]);
+    // The allowance is a strip's only: the same restore on a scroller of the
+    // both-axis list is a per-rule containment.
+    expect(ownContainmentOffenders([{ ...restored, selectors: ".pane" }], shared)).toEqual([
+      ".pane { overscroll-behavior-y: contain }",
+    ]);
   });
 
   it("the document root keeps refusing its own bounce (iOS-1)", () => {
