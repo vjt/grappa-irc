@@ -8059,10 +8059,12 @@ defmodule Grappa.Session.Server do
     autojoin ++ queued
   end
 
-  # The one JOIN verb a caller with a reply to give goes through: the
-  # `{:send_join, _, _}` call door and the issue 2657 kick rejoin. Same
-  # in-flight tracking, same `window_pending` broadcast, same `:no_socket`
-  # queue, whoever asked.
+  # The one JOIN verb both the `{:send_join, _, _}` call door and the issue
+  # 2657 kick rejoin go through. Same in-flight tracking, same
+  # `window_pending` broadcast, same `:no_socket` queue, whoever asked. So
+  # its log lines name the JOIN and never the door: the kick rejoin drops
+  # the reply, and a line saying "send_join call" would file a failed
+  # automatic rejoin under a /join nobody typed.
   #
   # Code-review CRIT-1 (bucket C): post-irc/S2 `Client.send_join`
   # returns `{:error, :invalid_line}` for malformed channels. The
@@ -8090,7 +8092,7 @@ defmodule Grappa.Session.Server do
         {:ok, state}
 
       {:error, :invalid_line} = err ->
-        Logger.warning("send_join call rejected: invalid channel name",
+        Logger.warning("JOIN rejected: invalid channel name",
           channel: inspect(channels)
         )
 
@@ -8123,7 +8125,7 @@ defmodule Grappa.Session.Server do
         # strict-TLS line. No queue-depth key: one global Logger metadata atom
         # for one line is heavier than the fact, and `channel` already says
         # which JOIN this is.
-        Logger.info("send_join queued until the transport is up",
+        Logger.info("JOIN queued until the transport is up",
           channel: inspect(channels)
         )
 
@@ -8141,7 +8143,7 @@ defmodule Grappa.Session.Server do
       # nothing is recorded and the caller reads the same `:timeout` (504) a
       # stuck session would give it.
       {:error, :timeout} = err ->
-        Logger.warning("send_join call timed out on the Client — delivery unknown",
+        Logger.warning("JOIN timed out on the Client — delivery unknown",
           channel: inspect(channels)
         )
 
@@ -8155,7 +8157,7 @@ defmodule Grappa.Session.Server do
       # FallbackController emits the existing 400 `not_connected` body instead
       # of a CaseClauseError 500ing the cic /join.
       {:error, reason} ->
-        Logger.warning("send_join call rejected: transport unavailable",
+        Logger.warning("JOIN rejected: transport unavailable",
           channel: inspect(channels),
           reason: inspect(reason)
         )

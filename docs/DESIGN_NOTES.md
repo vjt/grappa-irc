@@ -7578,7 +7578,10 @@ The JOIN goes through `join_channels/3`, the body of the `{:send_join, _, _}`
 call moved out unchanged, so a rejoin opens the window `:pending`,
 broadcasts `window_pending`, and lands `:joined` through the existing echo
 arm. That arm already clears the kicked metadata, which is all the issue's
-"clear that state when the JOIN lands" required.
+"clear that state when the JOIN lands" required. Its four log lines say
+`JOIN …` and not `send_join call …`: the kick rejoin drops the reply, so a
+failed automatic attempt is recorded only by those lines, and they must not
+name a door it never used.
 
 ### The guard: 3 kicks in 10 minutes
 
