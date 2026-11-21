@@ -221,6 +221,11 @@ defmodule Grappa.Session.Server do
   # client, 447 UnrealIRCd `+N`. See `keep_nick_refusal/2`.
   @keep_nick_refusals [432, 433, 435, 437, 438, 447, 484]
 
+  # The same closed set as a type, built FROM the attribute so the two cannot
+  # drift: `432 | 433 | … | 484`, the stop reasons a refusal can carry.
+  @type keep_nick_refusal_code ::
+          unquote(@keep_nick_refusals |> Enum.reverse() |> Enum.reduce(&{:|, [], [&1, &2]}))
+
   # #581 — overall deadline for the recover-identity sequence (IDENTIFY →
   # +r → NICK → RECOVER/RELEASE → settle → NICK). Larger than the ghost
   # budget: it spans an IDENTIFY round-trip, the +r MODE echo, a NICK, an
@@ -6169,7 +6174,7 @@ defmodule Grappa.Session.Server do
   # it. A `/nick <other>` on a session that already converged finds none and
   # logs nothing (log honesty). Nothing records the stop: with the tick gone,
   # nothing asks again until the next 001 or the switch going off and on.
-  @spec stop_keep_nick(t(), :user_renamed | {:refused, 400..499}) :: t()
+  @spec stop_keep_nick(t(), :user_renamed | {:refused, keep_nick_refusal_code()}) :: t()
   defp stop_keep_nick(state, reason) do
     if Map.get(state, :keep_nick_timer) != nil,
       do: Logger.info("keepnick stopped", to: keep_nick_target(state), reason: inspect(reason))
@@ -6237,7 +6242,7 @@ defmodule Grappa.Session.Server do
   # already took for its fallback row, inherited here rather than decided
   # anew. Anonymous sender: grappa is speaking, nobody on the wire said it
   # (`persist_link_failure/2`'s posture).
-  @spec persist_keep_nick_stop(t(), 400..499) :: t()
+  @spec persist_keep_nick_stop(t(), keep_nick_refusal_code()) :: t()
   defp persist_keep_nick_stop(state, code) do
     target = keep_nick_target(state)
 
