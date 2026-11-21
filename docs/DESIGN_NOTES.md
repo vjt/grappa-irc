@@ -7303,36 +7303,35 @@ not measured here.
 vjt, on v1.6.5 from the phone: with the `$server` peek open and its body
 scrolled to the bottom, dragging up inside the card moved the whole shell.
 `.server-peek-body` had `overflow-y: auto` and no `overscroll-behavior`. It
-was not alone: of the 42 rules in `default.css` that make something scroll,
-15 had no `overscroll-behavior` in their own block. The other 27 each
-carried one as a line next to their `overflow`: 25 a both-axis `contain`,
-the attachment strip a `-x: contain`, the directory list a `none`. vjt's ruling (relayed in
+was not alone: of the 42 rules in `default.css` that make something scroll, 15
+had no `overscroll-behavior` in their own block. The other 27 each carried one
+as a line next to their `overflow`: 25 a both-axis `contain`, the attachment
+strip a `-x: contain`, the directory list a `none`. vjt's ruling (relayed in
 the issue): no more per-rule patches, one mechanism for every scroll surface,
-and the card must bounce natively at its edge while the shell stays still.
-The root's `overscroll-behavior: none` (iOS-1) stays.
+and the card must bounce natively at its edge while the shell stays still. The
+root's `overscroll-behavior: none` (iOS-1) stays.
 
 **Mechanism.** Three shared rules right after `html, body`. The first lists
-every scroller by its subject selector (37 entries, `textarea` included,
-since the UA computes its overflow as `auto`) and declares
+every scroller by its subject selector (37 entries, `textarea` included, since
+the UA computes its overflow as `auto`) and declares
 `overscroll-behavior: contain`. The second lists the three horizontal strips
 that sit inside a vertical scroller (`.adm-nav` as the mobile tab row,
 `.adm-table-wrap`, `.confirm-modal-attachment-source`) and declares only
 `overscroll-behavior-x: contain`, leaving their vertical axis to the scroller
-they sit in, as it was before. The desktop `.adm-nav`, where the strip
-becomes a vertical rail, restores `overscroll-behavior-y: contain` in its own
-block. The third hands containment back to two nested scrollers (see the
-ruling below). Every per-rule declaration went: 32 `contain` and the one
-`-x` became 3 (the two containing rules and the `.adm-nav` restore), plus
-the two `none`
+they sit in, as it was before. The desktop `.adm-nav`, where the strip becomes
+a vertical rail, restores `overscroll-behavior-y: contain` in its own block.
+The third hands containment back to two nested scrollers (see the ruling
+below). Every per-rule declaration went: 32 `contain` and the one `-x` became
+3 (the two containing rules and the `.adm-nav` restore), plus the two `none`
 that were already there and stay on purpose (the root, `.directory-list`
 #1445). 29 of the 33 moved into a list along with their scroller. 4 were
 dropped and not moved. Three sat on boxes that are not scroll containers
 (`.image-upload-modal`, `.confirm-modal`, the mobile `.shell-members`), so
-they did nothing. The fourth, `.links-modal-body`, is `overflow: hidden`,
-so it IS a scroll container: its computed value goes from `contain` to
-`auto`. That is harmless here, for three reasons. Its SVG cancels the wheel
-itself (`onWheel` → `preventDefault`). `touch-action: none` leaves touch
-nothing to pan. And WebKit gives a hidden box no scroll view.
+they did nothing. The fourth, `.links-modal-body`, is `overflow: hidden`, so
+it IS a scroll container: its computed value goes from `contain` to `auto`.
+That is harmless here, for three reasons. Its SVG cancels the wheel itself
+(`onWheel` → `preventDefault`). `touch-action: none` leaves touch nothing to
+pan. And WebKit gives a hidden box no scroll view.
 
 **Dead rules deleted, not listed.** The first cut listed
 `.settings-diag-log`, which nothing renders: the diagnostic fieldset that
@@ -7345,23 +7344,22 @@ finds no source (the positive control, `adm-badge--${`, hits
 of being contained.
 
 **The line between the two lists is the declared axis.** A strip is a rule
-that declares a scroll on x and leaves y `visible`, whether it says so or
-not. Its `auto` y comes only from the visible→auto conversion, and the
-vertical scroller around it (the admin panel, the attachments list) wants
-that axis, so a strip contains x alone. The guard reads the y value, not
-whether y is declared: the first fix recognised a strip by its silence on
-y, and the second review showed that an explicit `overflow-y: visible`,
-which computes exactly like a missing one, then let a strip into the
-both-axis list green.
-Every other scroller contains both axes, whether or not it can scroll at the
-moment. I checked the components that render the eight x-scrolling boxes,
-and none of them holds a vertical scroller, so the both-axis shape that 25
-rules already shipped costs nothing there. The first cut wrote the line as
-"never contain an axis a box cannot scroll while a scroller around it wants
-that axis". The lists never applied that test: a contained vertical scroller
-whose content fits cannot scroll either, and the scroller around it wants
-the axis. The independent review caught the mismatch, and it is what the
-ruling below decides.
+that declares a scroll on x and leaves y `visible`, whether it says so or not.
+Its `auto` y comes only from the visible→auto conversion, and the vertical
+scroller around it (the admin panel, the attachments list) wants that axis, so
+a strip contains x alone. The guard reads the y value, not whether y is
+declared: the first fix recognised a strip by its silence on y, and the second
+review showed that an explicit `overflow-y: visible`, which computes exactly
+like a missing one, then let a strip into the both-axis list green. Every
+other scroller contains both axes, whether or not it can scroll at the moment.
+I checked the components that render the eight x-scrolling boxes, and none of
+them holds a vertical scroller, so the both-axis shape that 25 rules already
+shipped costs nothing there. The first cut wrote the line as "never contain an
+axis a box cannot scroll while a scroller around it wants that axis". The
+lists never applied that test: a contained vertical scroller whose content
+fits cannot scroll either, and the scroller around it wants the axis. The
+independent review caught the mismatch, and it is what the ruling below
+decides.
 
 **Nested scrollers: vjt's ruling (b).** vjt, 2026-11-21 10:15 Rome,
 verbatim «certo b». It was relayed by the orchestrator from the peer
@@ -7421,36 +7419,33 @@ subject compound (`.members-pane` covers
 axis it scrolls. "Scrolls" is read the way the cascade computes it:
 `overflow-block`/`-inline`, any case, `overlay`, and a `var()` (counted as
 scrolling, since it cannot be resolved). A `visible` axis next to a
-non-`visible` one counts as `auto`. Selectors are split at bracket depth
-0, so neither `:has(> .x)` nor `:not(.a, .b)` passes for `.x` or `.a`. A
+non-`visible` one counts as `auto`. Selectors are split at bracket depth 0, so
+neither `:has(> .x)` nor `:not(.a, .b)` passes for `.x` or `.a`. A
 pseudo-element is never covered by its host. More things are red: an entry
 that no longer names a scroller, a UA scroller (`textarea`) missing from the
 both-axis list, a strip in the both-axis list (strips are derived by the
 declared-axis rule above, not listed by hand), a carve-out that is not
 `:where(<outer>) <inner>` with both halves listed vertical scrollers, any
-`contain` or `auto` outside the shared rules, a `none` on a listed surface
-(it would take the bounce away, so unlist the surface instead), a shared
-rule inside an at-rule, and the carve-out rule above the both-axis one (an
-entry ties on specificity with the one it undoes). 19
-mutants each failed the case they target, 11 of them from the independent
-review's list of false greens in the first cut; reverted, the suite passes.
-The review's two surviving mutants now fail. Removing `textarea` from the
-list fails two tests: the UA-scroller test, and the carve-out test, whose
-`:where(.settings-drawer) textarea` names an inner half that is no longer
-listed. Moving `.adm-table-wrap` into the both-axis list fails the strip
-test alone. The same move with an
-explicit `overflow-y: visible` on the strip's rule fails the strip test as
-well; it passed while a strip was recognised by its silence on y. For the
-carve-out, a
+`contain` or `auto` outside the shared rules, a `none` on a listed surface (it
+would take the bounce away, so unlist the surface instead), a shared rule
+inside an at-rule, and the carve-out rule above the both-axis one (an entry
+ties on specificity with the one it undoes). 19 mutants each failed the case
+they target, 11 of them from the independent review's list of false greens in
+the first cut; reverted, the suite passes. The review's two surviving mutants
+now fail. Removing `textarea` from the list fails two tests: the UA-scroller
+test, and the carve-out test, whose `:where(.settings-drawer) textarea` names
+an inner half that is no longer listed. Moving `.adm-table-wrap` into the
+both-axis list fails the strip test alone. The same move with an explicit
+`overflow-y: visible` on the strip's rule fails the strip test as well; it
+passed while a strip was recognised by its silence on y. For the carve-out, a
 well-formed pair (`:where(.registration-wizard-body) textarea`) stays green.
-Each of these fails: a bare entry, an outer that is not a scroller, an
-outer that scrolls only on x, an inner that is not a scroller, a plain
-descendant without `:where()`, the rule moved above the both-axis one, a
-per-rule `auto` on a nested or a non-nested scroller, and a well-formed
-pair that carves out the peek. The first three, run with a subject other
-than the peek, fail the carve-out test alone.
-The same review made `themeCss.selectorList` split at bracket depth 0 for
-every test that uses it.
+Each of these fails: a bare entry, an outer that is not a scroller, an outer
+that scrolls only on x, an inner that is not a scroller, a plain descendant
+without `:where()`, the rule moved above the both-axis one, a per-rule `auto`
+on a nested or a non-nested scroller, and a well-formed pair that carves out
+the peek. The first three, run with a subject other than the peek, fail the
+carve-out test alone. The same review made `themeCss.selectorList` split at
+bracket depth 0 for every test that uses it.
 
 **Why `contain` gives the bounce.** In the spec `contain` stops scroll
 chaining and keeps the element's own overscroll affordance, while `none`
@@ -7458,22 +7453,22 @@ refuses both. WebKit does the same on iOS:
 `ScrollingTreeScrollingNodeDelegateIOS::updateScrollViewForOverscrollBehavior`
 sets `bounces = (behavior != None)` and
 `transfersScrollingToParent = (behavior == Auto)`. I read that on WebKit main
-(74196cb9, file last touched a40d9ec4) on 2026-11-21. Main is not the
-WebKit that ships on vjt's phone, and none of this was measured on a device.
+(74196cb9, file last touched a40d9ec4) on 2026-11-21. Main is not the WebKit
+that ships on vjt's phone, and none of this was measured on a device.
 
 **Rejected: a universal `* { overscroll-behavior: contain }`.** It reads as
 the most systemic option and it breaks the wheel on Chromium. The property
 only acts on scroll containers, but `overflow: hidden` makes one, and this
-sheet has 71 non-scrolling `overflow` declarations, many of them clipped
-rows inside scrollers. On Chromium main,
-`NeedsScrollAndScrollTranslation` gives a scroll node to any scroll container
-whose `CanPropagateScroll()` is false, i.e. one whose overscroll-behavior is
-not `auto`. cc's `InputHandler::FindNodeToLatch` skips a non-user-scrollable
-node only while it allows chaining. So under `*`, a clipped row latches the
-scroll and cuts the chain, and a wheel over it scrolls nothing. Read in
-source, not measured in a browser. The same latch is why the horizontal
-strips keep a vertical `auto`: with both axes contained, a vertical wheel
-over an admin table would stop at `.adm-table-wrap`.
+sheet has 71 non-scrolling `overflow` declarations, many of them clipped rows
+inside scrollers. On Chromium main, `NeedsScrollAndScrollTranslation` gives a
+scroll node to any scroll container whose `CanPropagateScroll()` is false,
+i.e. one whose overscroll-behavior is not `auto`. cc's
+`InputHandler::FindNodeToLatch` skips a non-user-scrollable node only while it
+allows chaining. So under `*`, a clipped row latches the scroll and cuts the
+chain, and a wheel over it scrolls nothing. Read in source, not measured in a
+browser. The same latch is why the horizontal strips keep a vertical `auto`:
+with both axes contained, a vertical wheel over an admin table would stop at
+`.adm-table-wrap`.
 
 **Rejected: a class every scroller carries.** A class puts the scroll axis
 on the element, but here the axis depends on the layout: `.adm-nav` is a
@@ -7493,16 +7488,16 @@ together take it to 29. These are warnings, so rc stays 0. The carve-out
 rule's entries are not single compounds; `:where()` is what keeps them out
 of that count (the ruling paragraph above).
 
-**Census** (all of `cicchetto/src`; the issue's 70/33/2 counted
-`default.css` prose too). 42 scrolling `overflow` declarations (41 rules: 33
-on y, 4 on x, 4 on both; 43 and 42 before the dead rules went), 71
-non-scrolling ones, and 0 overflow or overscroll
-declarations in product TS/TSX. `overscroll-behavior` went from 35
-declarations to 6: the two containing rules, the `.adm-nav` restore, the
-carve-out rule and the two `none`. The census script carries a positive control (synthetic
-CSS with known counts, including the two-value `overflow` shorthand) and a
-negative one (prose, `text-overflow`, `overflow-wrap`, `overflow: hidden`,
-`getComputedStyle` reads) and refuses to run if either fails.
+**Census** (all of `cicchetto/src`; the issue's 70/33/2 counted `default.css`
+prose too). 42 scrolling `overflow` declarations (41 rules: 33 on y, 4 on x, 4
+on both; 43 and 42 before the dead rules went), 71 non-scrolling ones, and 0
+overflow or overscroll declarations in product TS/TSX. `overscroll-behavior`
+went from 35 declarations to 6: the two containing rules, the `.adm-nav`
+restore, the carve-out rule and the two `none`. The census script carries a
+positive control (synthetic CSS with known counts, including the two-value
+`overflow` shorthand) and a negative one (prose, `text-overflow`,
+`overflow-wrap`, `overflow: hidden`, `getComputedStyle` reads) and refuses to
+run if either fails.
 
 **Ask 3 (WHOIS / WHOWAS / LUSERS).** None of the three cards declares an
 overflow of its own. Their scroller is `.scrollback-overlay`, the card layer,
