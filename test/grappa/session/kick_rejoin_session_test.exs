@@ -5,7 +5,9 @@ defmodule Grappa.Session.KickRejoinSessionTest do
 
   Every session here is put into `#a` by a FORCED join: the fake sends the
   self-JOIN echo without the session ever asking. So every `JOIN #a` line
-  on the wire below is a kick rejoin, and counting them counts rejoins.
+  on the wire below is a kick rejoin, unless the test sends a `/join`
+  itself through `Session.send_join/4` — two tests do, and the lines they
+  count include that manual one.
 
   **Time is shrunk, not skipped.** `config/test.exs` makes one second of
   kick-rejoin delay last 100 ms, so a credential's 10 s delay is 1 s here
