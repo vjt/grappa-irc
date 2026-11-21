@@ -122,11 +122,13 @@ test("@webkit @touch issue 2647 — the backdrop's drift animates nothing but tr
     })
     .toBe(3);
 
+  // The poll above is the wait; this read is the census, and it pins the
+  // count on its own so it cannot pass on a set that shrank after the poll.
   const { animations } = await readBackdrop(page);
   expect(
-    animations,
+    animations.map((animation) => animation.properties),
     "a backdrop layer animates a property the compositor cannot take over",
-  ).toEqual(animations.map((animation) => ({ ...animation, properties: ["transform"] })));
+  ).toEqual([["transform"], ["transform"], ["transform"]]);
 });
 
 test("@webkit @touch issue 2647 — reduced motion stops all three layers where they rest", async ({
