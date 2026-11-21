@@ -364,10 +364,9 @@ const Trailer: Component<{ row: Message | undefined; pinned: string | undefined 
 
 /**
  * issue 2517 — the attachment in the line's trailer slot: its card, and its
- * one action, the click that fetches the ciphertext, checks its digest,
- * decrypts it and opens or saves it. Nothing is fetched until this button is
- * pressed, because a fetch tells grappa this address and the time the file
- * was opened.
+ * one action, the click that fetches the ciphertext, decrypts it and opens
+ * or saves it. Nothing is fetched until this button is pressed, because a
+ * fetch tells grappa this address and the time the file was opened.
  *
  * The card is drawn HERE, as text, and not in the line's body: the name and
  * the type are the peer's word, and the body is prose to the scrollback (links,

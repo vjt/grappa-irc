@@ -14,7 +14,6 @@ const seal = vi.hoisted(() => ({
     ciphertext: bytes,
     key: "k".repeat(43),
     iv: "i".repeat(16),
-    sha256: "s".repeat(43),
   })),
 }));
 
@@ -136,6 +135,19 @@ describe("sendEncryptedAttachment (issue 2517)", () => {
 
     expect(outcome).toMatchObject({ ok: false, error: expect.stringContaining("too large") });
     expect(upload.fn).not.toHaveBeenCalled();
+  });
+
+  // The inner carries no digest of the ciphertext (DESIGN_NOTES #2517a): the
+  // GCM tag already authenticates it under a key only the Olm message
+  // carries. The KEYS are compared, so a field that comes back is caught even
+  // when nothing reads it.
+  it("sends an inner with exactly the attachment's fields, and no digest", async () => {
+    const outcome = await sendEncryptedAttachment(request(fileOf("a.pdf", "application/pdf", 4)));
+
+    expect(outcome).toEqual({ ok: true });
+    expect(Object.keys(sentInner()).sort()).toEqual(
+      ["category", "expires_at", "iv", "key", "mime", "name", "size", "t", "url"].sort(),
+    );
   });
 
   // N2 — the inner named the ORIGINAL type, so a .mov transcoded to mp4 was

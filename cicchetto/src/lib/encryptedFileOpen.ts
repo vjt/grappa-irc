@@ -1,14 +1,14 @@
-// issue 2517 — fetching, checking and opening an encrypted attachment, on
-// the click and never before: a fetch tells grappa this address and the time
-// the file was opened, so the card sits there until the user asks for it.
+// issue 2517 — fetching and opening an encrypted attachment, on the click and
+// never before: a fetch tells grappa this address and the time the file was
+// opened, so the card sits there until the user asks for it.
 //
-// The order is the point. The ciphertext's SHA-256 is checked BEFORE it is
-// decrypted (a tampered blob is refused, not decrypted into something), and
-// what may be rendered inline is an ALLOWLIST, not the peer's `mime`: a peer
-// who says `image/svg+xml` or `text/html` gets a download, never a document
-// in this origin. Everything else is offered as `application/octet-stream`.
+// A tampered blob is refused, not decrypted into something: GCM fails the open
+// on a single changed byte (`openBytes`). And what may be rendered inline is an
+// ALLOWLIST, not the peer's `mime`: a peer who says `image/svg+xml` or
+// `text/html` gets a download, never a document in this origin. Everything
+// else is offered as `application/octet-stream`.
 
-import { openBytes, sha256Base64 } from "./e2e/fileCrypto";
+import { openBytes } from "./e2e/fileCrypto";
 import type { FileInner } from "./e2e/fileInner";
 
 /** What the click produced: bytes to render, bytes to save, or why neither. */
@@ -35,7 +35,7 @@ export function inlineKindOf(mime: string): "image" | "video" | "audio" | null {
 }
 
 /**
- * Fetches `file`'s ciphertext, checks its digest, opens it with the key the
+ * Fetches `file`'s ciphertext, opens it with the key the
  * message carried, and answers the blob to render or to save. Never throws:
  * every failure is a sentence for the card.
  *
@@ -69,9 +69,6 @@ export async function openEncryptedFile(
   }
   if (isAborted()) return { ok: false, error: "cancelled" };
 
-  if ((await sha256Base64(ciphertext)) !== file.sha256) {
-    return { ok: false, error: "the file does not match the digest in the message" };
-  }
   const plaintext = await openBytes(ciphertext, file.key, file.iv);
   if (plaintext === null) return { ok: false, error: "the file could not be decrypted" };
   if (isAborted()) return { ok: false, error: "cancelled" };

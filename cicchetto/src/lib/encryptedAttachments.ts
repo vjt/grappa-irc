@@ -121,7 +121,6 @@ async function prepareAndSendEncrypted(req: AttachmentRequest): Promise<Attachme
     url: answer.url,
     key: sealed.key,
     iv: sealed.iv,
-    sha256: sealed.sha256,
     name: stripped.file.name,
     // The type of the file that GOES, not of the one that came in: a video's
     // transcode answers `video/mp4`, and the inner used to keep the original

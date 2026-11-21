@@ -13,9 +13,8 @@ import type { UploadCategory } from "../uploadCategory";
 import { unbase64 } from "./wire";
 
 /**
- * The attachment an encrypted message carries. `sha256` is over the
- * CIPHERTEXT, which is what a fetch returns; `size` is the plaintext's,
- * and the ciphertext is `size + 16` (the GCM tag).
+ * The attachment an encrypted message carries. `size` is the plaintext's,
+ * and the ciphertext a fetch returns is `size + 16` (the GCM tag).
  */
 export type FileInner = {
   t: "file";
@@ -24,8 +23,6 @@ export type FileInner = {
   key: string;
   /** 12 bytes, standard base64. */
   iv: string;
-  /** 32 bytes, standard base64. */
-  sha256: string;
   name: string;
   mime: string;
   size: number;
@@ -47,7 +44,6 @@ export type FileRefusal =
   | "bad-url"
   | "bad-key"
   | "bad-iv"
-  | "bad-sha256"
   | "bad-name"
   | "bad-mime"
   | "bad-size"
@@ -78,11 +74,10 @@ const MIME = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$
 export function parseFileInner(inner: Record<string, unknown>): FileInner | FileRefusal {
   if (typeof inner !== "object" || inner === null) return "not-a-file";
   if (inner.t !== "file") return "not-a-file";
-  const { url, key, iv, sha256, name, mime, size, category, expires_at } = inner;
+  const { url, key, iv, name, mime, size, category, expires_at } = inner;
   if (typeof url !== "string") return "bad-url";
   if (typeof key !== "string" || byteLength(key) !== 32) return "bad-key";
   if (typeof iv !== "string" || byteLength(iv) !== 12) return "bad-iv";
-  if (typeof sha256 !== "string" || byteLength(sha256) !== 32) return "bad-sha256";
   if (typeof name !== "string" || name === "") return "bad-name";
   if (typeof mime !== "string" || !MIME.test(mime)) return "bad-mime";
   if (typeof size !== "number" || !Number.isInteger(size) || size < 0) return "bad-size";
@@ -93,7 +88,6 @@ export function parseFileInner(inner: Record<string, unknown>): FileInner | File
     url,
     key,
     iv,
-    sha256,
     name,
     mime,
     size,

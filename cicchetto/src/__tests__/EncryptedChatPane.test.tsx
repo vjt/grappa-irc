@@ -2714,7 +2714,6 @@ describe("an encrypted attachment's card (issue 2517)", () => {
     url: `${location.origin}/uploads/${SLUG}`,
     key: b64(32),
     iv: b64(12),
-    sha256: b64(32),
     name: "holiday.jpg",
     mime: "image/jpeg",
     size: 1234,
