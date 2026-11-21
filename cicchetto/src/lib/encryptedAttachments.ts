@@ -104,16 +104,22 @@ async function prepareAndSendEncrypted(req: AttachmentRequest): Promise<Attachme
   if (req.signal.aborted) return { ok: false, error: "Upload cancelled." };
 
   req.onPhase("uploading", 0, sealed.ciphertext.length);
+  // The last progress seen, for the failure sentence: a stream cut halfway
+  // says how much went, in the same words as the plain door.
+  let lastProgress: UploadProgress | null = null;
   let answer: EncryptedUploadAnswer;
   try {
     answer = await uploadEncryptedCiphertext(
       new Blob([sealed.ciphertext.buffer as ArrayBuffer], { type: "application/octet-stream" }),
       req.ttl,
-      (p: UploadProgress) => req.onPhase("uploading", p.loaded, p.total),
+      (p: UploadProgress) => {
+        lastProgress = p;
+        req.onPhase("uploading", p.loaded, p.total);
+      },
       req.signal,
     );
   } catch (err) {
-    return { ok: false, error: friendlyErrorMessage(err as UploadError, null) };
+    return { ok: false, error: friendlyErrorMessage(err as UploadError, lastProgress) };
   }
 
   const inner: FileInner = {
