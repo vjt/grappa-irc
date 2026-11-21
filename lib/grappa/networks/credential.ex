@@ -129,6 +129,13 @@ defmodule Grappa.Networks.Credential do
   # not a straight M/F carryover from the original 2000s CTCP convention.
   @genders [:male, :female, :nonbinary]
 
+  # Issue 2657 — the delays (seconds) the kick rejoin may wait before its one
+  # JOIN: a closed set, not a free integer (vjt's ruling, decision 2). `0` is
+  # the takeover defense; `10` is the column default, ZNC's `kickrejoin`
+  # default. `Grappa.Session.KickRejoin.delay_seconds/0` restates the set on
+  # the session side, which cannot alias this module.
+  @kick_rejoin_delays [0, 10, 30, 60]
+
   # Each free-text profile field (age/location/languages/custom) gets
   # interpolated into an outbound CTCP USERINFO NOTICE reply, so it's
   # capped well under IRC's 512-byte line limit even with all four
@@ -188,9 +195,24 @@ defmodule Grappa.Networks.Credential do
   @spec genders() :: [gender(), ...]
   def genders, do: @genders
 
+  @doc """
+  Returns the closed set of valid `:kick_rejoin_delay_seconds` values.
+  Mirror of `genders/0` — tests iterate the set instead of restating it.
+  """
+  @spec kick_rejoin_delays() :: [kick_rejoin_delay(), ...]
+  def kick_rejoin_delays, do: @kick_rejoin_delays
+
   @type auth_method :: AuthFSM.auth_method()
   @type connection_state :: :connected | :failing | :parked | :failed
   @type gender :: :male | :female | :nonbinary
+  @type kick_rejoin_delay :: 0 | 10 | 30 | 60
+  @typedoc """
+  What a live session does after a self-KICK on this network: nothing, or
+  one JOIN after the delay. The session-side twin is
+  `Grappa.Session.KickRejoin.config/0`, duplicated on purpose (`Session`
+  must not alias `Networks`).
+  """
+  @type kick_rejoin :: :off | {:on, kick_rejoin_delay()}
   @type profile :: %{
           age: String.t() | nil,
           gender: gender() | nil,
@@ -234,6 +256,8 @@ defmodule Grappa.Networks.Credential do
           profile_location: String.t() | nil,
           profile_languages: String.t() | nil,
           profile_custom: String.t() | nil,
+          kick_rejoin: boolean(),
+          kick_rejoin_delay_seconds: kick_rejoin_delay(),
           avatar_upload_id: Ecto.UUID.t() | nil,
           avatar_upload: Upload.t() | Ecto.Association.NotLoaded.t() | nil,
           inserted_at: DateTime.t() | nil,
@@ -374,6 +398,16 @@ defmodule Grappa.Networks.Credential do
     field :profile_location, :string
     field :profile_languages, :string
     field :profile_custom, :string
+
+    # Issue 2657 — opt-in rejoin after a self-KICK, per (subject, network)
+    # binding and OFF by default (#2044: a kick means leave, unless the
+    # subject asked otherwise for this network). Two columns rather than one
+    # nullable delay, so the delay survives being switched off and on.
+    # Written only by `kick_rejoin_changeset/2`. The schema defaults restate
+    # the migration's, so a struct that never touched the DB agrees with a
+    # row that did.
+    field :kick_rejoin, :boolean, default: false
+    field :kick_rejoin_delay_seconds, :integer, default: 10
 
     # M3a — the per-(subject, network) avatar: a `belongs_to` onto a
     # PERMANENT `Grappa.Uploads.Upload` row (`expires_at: nil`, so the
@@ -979,6 +1013,32 @@ defmodule Grappa.Networks.Credential do
       custom: cred.profile_custom
     }
   end
+
+  @doc """
+  Issue 2657 — the kick-rejoin opt-in and its delay, per `(subject,
+  network)`. Both fields are required: the columns are NOT NULL, and an
+  explicit `nil` is a client error to report here rather than a constraint
+  failure at the database. The delay must be one of
+  `kick_rejoin_delays/0`.
+  """
+  @spec kick_rejoin_changeset(t(), map()) :: Ecto.Changeset.t()
+  def kick_rejoin_changeset(%__MODULE__{} = credential, attrs) when is_map(attrs) do
+    credential
+    |> cast(attrs, [:kick_rejoin, :kick_rejoin_delay_seconds])
+    |> validate_required([:kick_rejoin, :kick_rejoin_delay_seconds])
+    |> validate_inclusion(:kick_rejoin_delay_seconds, @kick_rejoin_delays)
+  end
+
+  @doc """
+  Issue 2657 — the kick-rejoin opt-in as the session reads it, the single
+  source both `Credentials.update_kick_rejoin/2` (the live-session bridge
+  payload) and `Grappa.Networks.SessionPlan.base_plan/6` (the boot
+  snapshot) read, so a live edit and a restart hand the session the same
+  shape.
+  """
+  @spec kick_rejoin_snapshot(t()) :: kick_rejoin()
+  def kick_rejoin_snapshot(%__MODULE__{kick_rejoin: true, kick_rejoin_delay_seconds: delay}), do: {:on, delay}
+  def kick_rejoin_snapshot(%__MODULE__{kick_rejoin: false}), do: :off
 
   defp validate_autojoin_channels(field, list) when is_list(list) do
     Enum.flat_map(list, fn name ->

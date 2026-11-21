@@ -8,6 +8,7 @@ defmodule Grappa.Session.KickRejoinTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
+  alias Grappa.Networks.Credential
   alias Grappa.Session.KickRejoin
 
   @limit KickRejoin.kick_limit()
@@ -24,6 +25,15 @@ defmodule Grappa.Session.KickRejoinTest do
   test "the guard stops at the third kick within ten minutes" do
     assert KickRejoin.kick_limit() == 3
     assert KickRejoin.window_ms() == 600_000
+  end
+
+  # The one constraint the ruling derives rather than chooses: with a window
+  # shorter than this, the longest delay lets the kicks age out of the
+  # window before the count reaches the limit, and the guard never fires.
+  test "the window outlasts the rejoins the longest delay allows" do
+    longest_delay_ms = Enum.max(Credential.kick_rejoin_delays()) * 1000
+
+    assert @window >= (@limit - 1) * longest_delay_ms
   end
 
   test "the kicks below the limit rejoin and the kick reaching it stays out" do

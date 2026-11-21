@@ -127,6 +127,7 @@ defmodule Grappa.Session.Server do
     GhostRecovery,
     IdentityState,
     ISupport,
+    KickRejoin,
     LinksAccum,
     ListModeAccum,
     ListModes,
@@ -465,6 +466,9 @@ defmodule Grappa.Session.Server do
           # (unlike away, this isn't user-only). Omitted opt boots an
           # all-nil profile (`empty_profile/0`).
           optional(:restored_profile) => profile(),
+          # Issue 2657 — the kick-rejoin opt-in snapshot, BOTH subjects. An
+          # omitted opt boots `:off`, the column default.
+          optional(:restored_kick_rejoin) => KickRejoin.config(),
           # M3a — the credential's own avatar, absolute URL (already
           # `nil`-safe: `Grappa.Networks.Wire.avatar_url/1` returns `nil`
           # when unset). Same both-subjects, omitted-boots-nil shape as
