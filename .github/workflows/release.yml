@@ -18,13 +18,15 @@ name: release
 #              container (Elixir 1.20 / OTP 29 — the toolchain delta R2
 #              could only prove on a like-for-like image, never a full
 #              makepkg → pacman -U). Regenerates .SRCINFO + updpkgsums.
-#   * rpm    — nfpm binary package (x86_64), built by infra/packaging/build.sh
-#              inside a PINNED Fedora container using Fedora's OWN Elixir/OTP
-#              (never setup-beam — its Ubuntu-built ERTS would reproduce the
-#              exact glibc mismatch this job exists to avoid), then INSTALLED
-#              (dnf) so %post's openssl secrets + packaged migrate run for
-#              real. The Fedora-built ERTS is why the .rpm cannot be a flag on
-#              the deb job — see #438 + the packaging README.
+#   * rpm    — nfpm binary package (x86_64 + aarch64), built by
+#              infra/packaging/build.sh inside a PINNED Fedora container with
+#              the .tool-versions OTP/Elixir BUILT FROM SOURCE in that container
+#              and cached per arch (issue 2669) — never setup-beam, whose
+#              Ubuntu-built ERTS would reproduce the exact glibc mismatch this
+#              job exists to avoid — then INSTALLED (dnf) so %post's openssl
+#              secrets + packaged migrate run for real. The Fedora-built ERTS is
+#              why the .rpm cannot be a flag on the deb job — see #438 + the
+#              packaging README.
 #   * docker — TWO images, each multi-arch (linux/amd64 + linux/arm64 via
 #              buildx + QEMU) and each PUSHED as :<tag> + :latest with OCI
 #              source/version/revision labels: the self-contained RELEASE
@@ -72,11 +74,13 @@ name: release
 #
 # The .rpm ships from the `rpm` job. It needs a Fedora-built ERTS (glibc +
 # libssl are distro-specific, so a Debian release is not a valid RHEL
-# payload). It is built on the OLDEST Fedora that carries Elixir 1.19 —
-# glibc is backward-compatible, so building against the oldest floor gives
-# the widest validity — and is declared FEDORA-FAMILY ONLY: RHEL/Rocky/Alma
-# (older glibc) are out of scope (#438). See DESIGN_NOTES R1/R2 + the
-# packaging README.
+# payload). It is built on a PINNED Fedora — by the rule in the rpm job, the
+# oldest still-supported one, since glibc is backward-compatible and the
+# oldest floor gives the widest validity — and is declared FEDORA-FAMILY ONLY:
+# RHEL/Rocky/Alma (older glibc) are out of scope (#438). The OTP and Elixir it
+# builds with are NOT Fedora's: they are the .tool-versions pair, compiled in
+# the container (issue 2669 — grappa needs OTP 27 or later, and no stable
+# Fedora ships it). See DESIGN_NOTES R1/R2 + the packaging README.
 #
 # This workflow runs on a `v*` tag push (the real release — every job PUBLISHES)
 # OR via manual workflow_dispatch, which has THREE mutually-exclusive modes:
@@ -107,15 +111,19 @@ name: release
 #     proves the build (arm64 QEMU + ABI-lockstep assertion + cic + mix release)
 #     and publishes NOTHING. deb/arch/rpm/cic/publish are skipped. Run it with:
 #       gh workflow run release.yml --ref <branch> -f docker_validation=true
-#   * DEB DRY-RUN (`deb_validation=true`, #1714): the same idea for the package
-#     job — a ZERO-PUBLICATION validation of the deb job ITSELF, from the
-#     DISPATCHED ref, so its proofs can be exercised BEFORE a release leans on
-#     them. It exists because #1714 put the distribution-hop arms in that job,
-#     AHEAD of the uploads: unprovable, the first thing to discover a broken arm
-#     would be a blocked release cut. No tag is involved (`RELEASE_TAG` resolves
-#     to the dispatched ref, the two tag-comparing steps opt out) and
-#     arch/rpm/docker/cic/publish are skipped — `deb` still uploads its
-#     artifact, so it is the `publish` exclusion, not an empty artifact set,
+#   * PACKAGE DRY-RUN (`deb_validation=true`, #1714; the rpm job joined it in
+#     issue 2669): the same idea for the binary package jobs — a
+#     ZERO-PUBLICATION validation of the deb AND rpm jobs THEMSELVES, from the
+#     DISPATCHED ref, so their proofs can be exercised BEFORE a release leans
+#     on them. It exists because #1714 put the distribution-hop arms in the deb
+#     job, AHEAD of the uploads: unprovable, the first thing to discover a
+#     broken arm would be a blocked release cut. Issue 2669 is that blocked cut
+#     for the rpm job (v1.6.5 tagged, no release), so the rpm job runs here
+#     too. The input keeps its #1714 name so the documented command still
+#     works. No tag is involved (`RELEASE_TAG` resolves to the dispatched ref,
+#     the two tag-comparing steps of each job opt out) and
+#     arch/docker/cic/publish are skipped — `deb` and `rpm` still upload their
+#     artifacts, so it is the `publish` exclusion, not an empty artifact set,
 #     that keeps branch-built packages off a real release. Run it with:
 #       gh workflow run release.yml --ref <branch> -f deb_validation=true
 #
@@ -144,7 +152,7 @@ on:
         type: boolean
         default: false
       deb_validation:
-        description: "Zero-publication validation of the .deb job: build + install the package from the DISPATCHED ref (branch) and run its proofs, including the #1714 distribution-hop arms. No tag involved, NOTHING published. Skips arch/rpm/docker/cic/publish."
+        description: "Zero-publication validation of the .deb AND .rpm jobs: build + install both packages from the DISPATCHED ref (branch) and run their proofs, including the #1714 distribution-hop arms and the rpm job's source-built OTP (issue 2669). No tag involved, NOTHING published. Skips arch/docker/cic/publish."
         required: false
         type: boolean
         default: false
@@ -638,8 +646,8 @@ jobs:
   arch:
     name: build + prove Arch pkg (x86_64)
     # See the deb job: skipped on either dry-run dispatch — the docker-image one
-    # and, since #1714, the deb one (which proves the deb job alone and must
-    # publish nothing).
+    # and, since #1714, the package one (which proves the deb and rpm jobs and
+    # must publish nothing).
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.docker_validation && !inputs.deb_validation) }}
     runs-on: ubuntu-latest
     container: archlinux:latest
@@ -859,9 +867,12 @@ jobs:
 
   rpm:
     name: build + prove .rpm (${{ matrix.arch }})
-    # See the deb job: skipped on either dry-run dispatch — the docker-image one
-    # and, since #1714, the deb one.
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.docker_validation && !inputs.deb_validation) }}
+    # The deb job's condition, word for word: runs on a tag push, on a repair
+    # dispatch and on a deb_validation (package dry-run) dispatch, skipped ONLY
+    # on a docker-image dry-run. Until issue 2669 the package dry-run skipped
+    # this job too, which left the rpm build provable only by cutting a tag —
+    # and v1.6.5 is the tag that found it broken.
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.docker_validation) }}
     # Two legs, same reasoning as the deb job — see its block for why the
     # runner was the only thing missing and why `fail-fast: false` is
     # load-bearing (issue 2129).
@@ -888,39 +899,45 @@ jobs:
     runs-on: ${{ matrix.runner }}
     # Pinned Fedora MAJOR (not :latest): a release artifact's glibc floor must
     # not move under us (#438 open-q2). The rule: the OLDEST still-supported
-    # Fedora that carries Elixir 1.19 — glibc is backward-compatible, so
-    # building against the oldest floor maximises the range of hosts the .rpm
-    # runs on. Fedora 43 ships Elixir 1.19.5 (== our .tool-versions pin) on
-    # Erlang/OTP 26; grappa runs on OTP 26 (hot_reload.ex documents 26+; #89's
-    # :public_key.cacerts_get/0 is OTP 25+). Bump this when 43 goes EOL.
+    # Fedora — glibc is backward-compatible, so building against the oldest
+    # floor maximises the range of hosts the .rpm runs on. Bump this when 43
+    # goes EOL.
+    #
+    # Fedora's own erlang/elixir no longer enter into the choice (issue 2669).
+    # The floor is OTP 27: quic 2.x (pulled in by hackney 4.11, issue 2649)
+    # declares `minimum_otp_vsn` 27 and rebar3 refuses to compile it below
+    # that. Fedora 43 and 44 both ship erlang 26.2.5.21; only rawhide has 27.
+    # So this job builds the OTP + Elixir that .tool-versions pins — the pair
+    # the deb job's setup-beam installs — from source, inside this container,
+    # against Fedora's glibc and OpenSSL. See the steps after the checkout.
     container: fedora:43
     env:
       # Release tag from either trigger (see the deb job). The .rpm builds IN
       # the CI checkout (has .git on the clean tag), so — like the .deb, unlike
       # the tarball-built arch pkg — it reports the bare X.Y.Z via #391's
-      # clean-tag path.
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      # clean-tag path. On a deb_validation dispatch there is no tag and this
+      # resolves to the dispatched branch, exactly as in the deb job.
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && !inputs.deb_validation && inputs.tag || github.ref_name }}
+      DEB_VALIDATION: ${{ github.event_name == 'workflow_dispatch' && inputs.deb_validation }}
+      # Where the source-built OTP + Elixir live, and what the cache saves.
+      BEAM_PREFIX: /opt/grappa-beam
     steps:
       - name: Install the Fedora build + proof toolchain
         run: |
-          # Fedora's OWN Elixir + full Erlang/OTP — deliberately NOT setup-beam.
-          # The point of a per-distro job is that the bundled ERTS links THIS
-          # distro's glibc/libssl; setup-beam's Ubuntu-built OTP would bundle
-          # the wrong libc and reproduce the exact bug that deferred the .rpm.
-          #
-          # `erlang` is Fedora's full-OTP metapackage. `mix release` assembles
-          # grappa's whole transitive OTP app tree (public_key/ssl/inets/
-          # runtime_tools) at BUILD time, and — exactly like Arch (#527) —
-          # Fedora SPLITS OTP into per-app subpackages, so leaning on `elixir`'s
-          # dep chain alone can miss them → "(Mix.Error) the application ...
-          # could not be found". Pull the meta; do NOT enumerate subpackages
-          # (fragile, drifts as deps add OTP apps).
+          # No erlang and no elixir here: Fedora's are OTP 26, below grappa's
+          # floor (issue 2669). The OTP + Elixir are built from source after
+          # the checkout, and their extra build deps are installed there, on a
+          # cache miss only. Still deliberately NOT setup-beam: the point of a
+          # per-distro job is that the bundled ERTS links THIS distro's
+          # glibc/libssl; setup-beam's Ubuntu-built OTP would bundle the wrong
+          # libc and reproduce the exact bug that deferred the .rpm.
           #
           # git BEFORE checkout: actions/checkout needs it for a real clone
           # (with .git), which #391's clean-tag version derivation reads;
           # without git it falls back to a .git-less tarball and the version
-          # proof fails. gcc/make + *-devel + pkgconf: shottino's ./configure
-          # and the exqlite NIF compile. tar/gzip/unzip: build.sh's pinned-nfpm
+          # proof fails. gcc/make + *-devel + pkgconf: shottino's ./configure,
+          # the exqlite NIF compile and (on a cache miss) the OTP build.
+          # tar/gzip/unzip: build.sh's pinned-nfpm
           # download + setup-bun. sqlite/openssl/util-linux: the %post
           # (gen-secrets openssl, runuser drop) + the migrate-count proof.
           # curl is deliberately NOT listed: build.sh downloads nfpm with it,
@@ -929,7 +946,6 @@ jobs:
           # pinned fedora:43 base) — so we rely on that pinned base binary.
           # install_weak_deps=False keeps optional recommends off the CI box.
           dnf install -y --setopt=install_weak_deps=False \
-            elixir erlang \
             git gcc make pkgconf-pkg-config ncurses-devel openssl-devel cargo \
             tar gzip unzip findutils sqlite openssl util-linux
 
@@ -970,13 +986,81 @@ jobs:
 
       - name: Verify the tag matches the VERSION file
         run: |
-          tag="${RELEASE_TAG#v}"
           srcv="$(infra/packaging/version.sh)"
+          # A deb_validation dispatch builds a BRANCH: no tag to match (the
+          # deb job's step opts out the same way, for the same reason).
+          if [ "$DEB_VALIDATION" = "true" ]; then
+            echo "deb_validation dispatch: no tag involved; version from VERSION ($srcv)"
+            exit 0
+          fi
+          tag="${RELEASE_TAG#v}"
           echo "tag=$tag VERSION=$srcv"
           if [ "$tag" != "$srcv" ]; then
             echo "::error::tag v$tag does not match the VERSION file ($srcv) — bump VERSION before cutting the tag"
             exit 1
           fi
+
+      # ── The OTP + Elixir the package bundles, built here (issue 2669) ─────
+      #
+      # infra/packaging/toolchain_from_source.sh builds the .tool-versions pair
+      # into BEAM_PREFIX. Like the deb job's floor proof (#2553) it is taken
+      # from the DISPATCHED ref, not the checked-out tree: a repair builds an
+      # existing tag, and v1.6.5 — the tag this exists to repair — predates the
+      # script. The PINS still come from the checked-out tree's .tool-versions,
+      # which is the file the deb job's setup-beam reads on the same tag, so
+      # the two packages of one release are built with one OTP and one Elixir.
+      #
+      # The build takes minutes, so it is cached per arch. The key is the
+      # container's OS, the arch, and a hash of the pins and of the recipe: a
+      # change to any of them builds afresh, nothing else does. Saved right
+      # after the build rather than at the end of the job, so a later proof
+      # failing does not throw the build away. GitHub's documented scoping: a
+      # run reads its own ref's caches and the default branch's, so a tag push
+      # hits a build saved by a run on main (the repair dispatch is one) and
+      # misses — building from source, slower but the same result — when there
+      # is none.
+      - name: Fetch the OTP + Elixir recipe and derive its cache key
+        id: beam
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          git show "${GITHUB_SHA}:infra/packaging/toolchain_from_source.sh" > "$RUNNER_TEMP/toolchain_from_source.sh"
+          chmod +x "$RUNNER_TEMP/toolchain_from_source.sh"
+          . /etc/os-release
+          pins="$(sha256sum .tool-versions | cut -c1-16)"
+          recipe="$(sha256sum "$RUNNER_TEMP/toolchain_from_source.sh" | cut -c1-16)"
+          key="beam-${ID}${VERSION_ID}-${ARCH}-pins-${pins}-recipe-${recipe}"
+          echo "pins: $(tr '\n' ' ' < .tool-versions)"
+          echo "cache key: $key"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the OTP + Elixir build
+        id: beam-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.BEAM_PREFIX }}
+          key: ${{ steps.beam.outputs.key }}
+
+      # gcc-c++ for the JIT, perl for the OTP build scripts; gawk + diffutils
+      # for configure, in case the base image lacks them.
+      - name: Build the OTP + Elixir from source (cache miss)
+        if: ${{ steps.beam-cache.outputs.cache-hit != 'true' }}
+        run: |
+          dnf install -y --setopt=install_weak_deps=False gcc-c++ perl gawk diffutils
+          "$RUNNER_TEMP/toolchain_from_source.sh" "$BEAM_PREFIX"
+
+      - name: Save the OTP + Elixir build
+        if: ${{ steps.beam-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.BEAM_PREFIX }}
+          key: ${{ steps.beam.outputs.key }}
+
+      - name: Put the OTP + Elixir on PATH
+        run: |
+          echo "$BEAM_PREFIX/bin" >> "$GITHUB_PATH"
+          # Run both, so a cache hit shows what it restored and that it starts.
+          echo "OTP $(cat "$BEAM_PREFIX"/lib/erlang/releases/*/OTP_VERSION), Elixir $(PATH="$BEAM_PREFIX/bin:$PATH" elixir -e 'IO.puts(System.version())')"
 
       - name: Build the .rpm (Fedora ERTS via GRAPPA_PKG_FORMAT=rpm)
         run: GRAPPA_PKG_FORMAT=rpm infra/packaging/build.sh
@@ -999,7 +1083,11 @@ jobs:
             exit 1
           fi
 
+      # Skipped on a deb_validation dispatch, as in the deb job and for the
+      # same reason: a branch is not a clean tag, so #391 correctly reports the
+      # unreleased X.Y.Z-<sha>. The package-stamp proof below keeps running.
       - name: Prove the artifact reports the bare tag version
+        if: ${{ env.DEB_VALIDATION != 'true' }}
         run: |
           want="${RELEASE_TAG#v}"
           # Sentinel-prefix the printed version so a stray stdout line from the
@@ -1134,9 +1222,9 @@ jobs:
     # A repair dispatch with an EMPTY tag input is not a repair: it falls through
     # to no job at all, rather than silently republishing main as some tag.
     # #1714 adds one exclusion to the repair arm: a deb-validation dispatch
-    # proves the deb job alone and must not build images nobody asked for. The
-    # docker_validation arm is untouched — asking for both dry-runs at once is
-    # contradictory but harmless, since neither publishes anything.
+    # proves the package jobs alone and must not build images nobody asked
+    # for. The docker_validation arm is untouched — asking for both dry-runs at
+    # once is contradictory but harmless, since neither publishes anything.
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.docker_validation) || (github.event_name == 'workflow_dispatch' && !inputs.docker_validation && !inputs.deb_validation && inputs.tag != '') }}
     runs-on: ubuntu-latest
     # Job-level permissions REPLACE the workflow default (contents: write) for
@@ -1513,9 +1601,9 @@ jobs:
     # nothing is worse than not having one, and a repair is precisely the run
     # you least want to take on trust: it publishes a mixed tree.
     # #1714 adds one exclusion to the repair arm: a deb-validation dispatch
-    # proves the deb job alone and must not build images nobody asked for. The
-    # docker_validation arm is untouched — asking for both dry-runs at once is
-    # contradictory but harmless, since neither publishes anything.
+    # proves the package jobs alone and must not build images nobody asked
+    # for. The docker_validation arm is untouched — asking for both dry-runs at
+    # once is contradictory but harmless, since neither publishes anything.
     #
     # ── RELEASE-ONLY IS DELIBERATE, and this is the statement of why (#2018) ──
     #
@@ -1821,8 +1909,8 @@ jobs:
     # 🔴 And, since #1714, on a deb-validation dispatch — where the exclusion is
     # not about empty artifacts but about REACH: that path builds a BRANCH, and
     # publishing would attach branch-built assets to a real release. `deb` DOES
-    # run there and does upload its artifact, so the "nothing downloaded" guard
-    # would not have caught it. This condition is the only thing standing
+    # run there and does upload its artifact (and, since issue 2669, so does
+    # `rpm`), so the "nothing downloaded" guard would not have caught it. This condition is the only thing standing
     # between a validation run and a published release.
     if: ${{ !cancelled() && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.docker_validation && !inputs.deb_validation)) }}
     runs-on: ubuntu-latest

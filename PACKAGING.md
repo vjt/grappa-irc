@@ -311,8 +311,10 @@ installed.
 
 **An upgrade that changes the toolchain is applied by restart.** The
 release in `/usr/lib/grappa/` carries its own ERTS and OTP and Elixir
-applications, and the rpm and Arch packages are built with their builder's
-Erlang and Elixir, so two consecutive versions can bundle different ones.
+applications, and the Arch package is built with its builder's Erlang and
+Elixir, so two consecutive versions can bundle different ones. The `.deb`
+and `.rpm` bundle the pair `.tool-versions` pins, which changes only when
+this repository bumps it — and that bump is a toolchain change too.
 `apply-upgrade.sh` compares the running node's ERTS with the new release's
 before it contacts the node at all, and restarts when it moved. When only
 an application moved, `POST /admin/reload` refuses with
@@ -380,7 +382,7 @@ names the platforms it runs on:
 | Format | Architectures | Built on | Supported on |
 | ------ | ------------- | -------- | ------------ |
 | `.deb` | amd64, arm64 | the `ubuntu-24.04` and `ubuntu-24.04-arm` runners (pinned) | Ubuntu 24.04 and Debian 13 (trixie). Before uploading them, CI installs both packages on each and starts the bouncer (`infra/packaging/deb_floor_proof.sh` for Debian 13). Debian 12 and Ubuntu 22.04 are not supported. |
-| `.rpm` | x86_64, aarch64 | a `fedora:43` container with Fedora's own Erlang and Elixir | the Fedora family. RHEL, Rocky and Alma are out of scope. |
+| `.rpm` | x86_64, aarch64 | a `fedora:43` container, with the Erlang and Elixir that `.tool-versions` pins compiled inside it | the Fedora family. RHEL, Rocky and Alma are out of scope. |
 | Arch | x86_64 | an `archlinux:latest` container | Arch Linux. Arch has no official ARM port, so there is no aarch64 package. |
 
 Runtime libraries: OpenSSL 3, ncurses 6, libstdc++, libgcc and the CA

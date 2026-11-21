@@ -213,17 +213,18 @@ any truer.
 tag, so left alone these arms would first execute during a release — and
 they sit AHEAD of the uploads, so a broken one blocks that release. The
 `deb_validation` dispatch is the door out of that: a zero-publication dry
-run of the deb job itself, from a branch.
+run of the deb job itself, from a branch — and, since issue 2669, of the
+rpm job as well (the input kept its name).
 
 ```
 gh workflow run release.yml --ref <branch> -f deb_validation=true
 ```
 
-No tag is involved (`RELEASE_TAG` resolves to the dispatched ref and the
-two tag-comparing steps opt out) and `arch` / `rpm` / `docker` / `smoke` /
-`publish` all skip. The `publish` exclusion is the load-bearing one: `deb`
-DOES run and DOES upload its artifact there, so without it a branch-built
-package would be attached to a real release. Sibling of the older
+No tag is involved (`RELEASE_TAG` resolves to the dispatched ref and each
+job's two tag-comparing steps opt out) and `arch` / `docker` / `smoke` /
+`cic` / `publish` all skip. The `publish` exclusion is the load-bearing one:
+`deb` and `rpm` DO run and DO upload their artifacts there, so without it a
+branch-built package would be attached to a real release. Sibling of the older
 `docker_validation`, same posture.
 
 **One limit stands.** GitHub offers no FreeBSD runner — every `runs-on:`
@@ -5021,8 +5022,10 @@ release bundles ERTS + crypto NIFs linked against the BUILD host's
 glibc/libssl — and so, separately packaged but built on the same host for
 the same reason, does `shottino`. A Debian-built payload is
 therefore a valid `.deb` and NOT a valid `.rpm`. Build each format on its
-own distro: `release.yml`'s `rpm` job runs in a `fedora:43` container with
-its own Fedora ERTS, the `deb` job on the Ubuntu runner. The Arch recipe
+own distro: `release.yml`'s `rpm` job runs in a `fedora:43` container and
+compiles its ERTS there (from the `.tool-versions` OTP since issue 2669 —
+Fedora's own erlang is OTP 26, below grappa's floor), the `deb` job on the
+Ubuntu runner. The Arch recipe
 sidesteps the constraint completely by being a source package (below).
 
 **`./configure` leaves the tree clean (#2587).** It writes

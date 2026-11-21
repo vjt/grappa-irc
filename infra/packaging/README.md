@@ -213,26 +213,36 @@ hard constraint is the **payload**, not the packager: the release bundles
 its own ERTS + the crypto/exqlite NIFs, all linked against the *build
 host's* glibc/libssl. A Debian-built payload is a valid `.deb` and an
 `.rpm` that installs cleanly and then dies at boot on Fedora. So the
-`.rpm` **must** be built inside a Fedora userland with Fedora's own
-Elixir/OTP:
+`.rpm` **must** be built inside a Fedora userland, with an OTP compiled
+there. Fedora's own `erlang` cannot be that OTP: grappa needs OTP 27 or
+later (issue 2669) and Fedora 43 and 44 both ship 26.
+`toolchain_from_source.sh` builds the pair `.tool-versions` pins, in the
+container, into a prefix:
 
 ```sh
 docker run --rm -v "$PWD:/src" -w /src fedora:43 bash -c '
   dnf install -y --setopt=install_weak_deps=False \
-    elixir erlang git gcc make pkgconf-pkg-config ncurses-devel \
+    git gcc gcc-c++ make perl gawk diffutils pkgconf-pkg-config ncurses-devel \
     openssl-devel cargo tar gzip unzip findutils sqlite openssl util-linux &&
+  infra/packaging/toolchain_from_source.sh /opt/grappa-beam &&
+  export PATH="/opt/grappa-beam/bin:$PATH" &&
   curl -fsSL https://bun.sh/install | bash && export PATH="$HOME/.bun/bin:$PATH" &&
   GRAPPA_PKG_FORMAT=rpm infra/packaging/build.sh'
 ```
 
-The `.rpm` lands in `./dist/`.
+The `.rpm` lands in `./dist/`. The OTP build takes minutes and is redone on
+every run of this throwaway container; CI caches it per arch.
 
-- **Fedora's own toolchain, never setup-beam.** `erlang` is Fedora's
-  full-OTP metapackage. Like Arch (#527), Fedora splits OTP into per-app
-  subpackages, and `mix release` needs the whole transitive app tree
-  (`public_key`/`ssl`/`inets`/`runtime_tools`) at build time — so pull the
-  meta, don't rely on `elixir`'s dep chain and don't enumerate subpackages
-  (that list drifts as deps add OTP apps).
+- **The `.tool-versions` OTP/Elixir, built in Fedora — never setup-beam,
+  and no longer Fedora's packages (issue 2669).** setup-beam's OTP is built
+  on Ubuntu, so its ERTS would carry Ubuntu's glibc into an `.rpm`. Fedora's
+  `erlang` was the toolchain until 1.6.5, when quic 2.x (via hackney 4.11,
+  issue 2649) raised the floor to OTP 27. Building from source also ends the
+  per-app subpackage problem that `erlang` (the full-OTP metapackage) was
+  pulled in to avoid: the source build installs every OTP application but
+  the GUI and Java ones, with the flags `infra/linux/install_toolchain.sh`
+  uses. The OTP tarball is checked against the `SHA256.txt` of its GitHub
+  release; the Elixir source archive has no published checksum.
 - **Per-format deps live in `nfpm.yaml` under `overrides.{deb,rpm}`** —
   one config, no duplicate file. The RPM names are the Fedora/RHEL twins of
   the Debian SONAME deps (`openssl-libs`, `ncurses-libs` — one package for
@@ -246,13 +256,14 @@ The `.rpm` lands in `./dist/`.
   and does nothing).
 - **Fedora-family only.** A Fedora-built ERTS is NOT automatically valid
   on RHEL/Rocky/Alma (older glibc). The CI `rpm` job pins the *oldest
-  still-supported* Fedora carrying Elixir 1.19 (glibc is
+  still-supported* Fedora (glibc is
   backward-compatible, so the oldest floor = widest validity), and
   RHEL-family is explicitly out of scope. Widening that is a future matrix
   entry (a manylinux-style oldest-glibc build), not a one-line bump.
 
 In CI the tag-driven release workflow's `rpm` job does exactly the above
-in a pinned `fedora:43` container, `dnf install`s the built `.rpm` (so
+in a pinned `fedora:43` container (caching the OTP/Elixir build per arch),
+`dnf install`s the built `.rpm` (so
 `%post`'s openssl secrets + packaged migrate run for real), asserts the
 migration count + the bare `X.Y.Z` + that shottino links Fedora's libs,
 then uploads `dist/*.rpm` to the Release.
@@ -404,7 +415,8 @@ bolted on here.
 
 - **`.rpm`** — **shipped (#438)**, see **Building the `.rpm`** above. nfpm
   renders it from the same config; the bundled ERTS is glibc/libssl-specific,
-  so it is built inside a Fedora container with Fedora's own Elixir/OTP.
+  so it is built inside a Fedora container, with the `.tool-versions`
+  Elixir/OTP compiled there (Fedora's own was dropped in issue 2669).
   Fedora-family only (a Fedora ERTS is not a valid RHEL/Rocky/Alma payload).
 - **Arch `PKGBUILD` + AUR recipe** — **shipped (R2)**, see
   [`aur/`](aur/README.md). A source package (`makepkg` builds on the target),

@@ -244,8 +244,9 @@ is genuinely CI-only.
   in-tree).
 - **`.rpm` (#438)** — **shipped.** nfpm renders it from the same substrate,
   but the bundled ERTS is glibc/libssl-specific, so it is built inside a
-  pinned Fedora container with Fedora's own Elixir/OTP (the `rpm` job in
-  `release.yml`). Fedora-family only — a Fedora ERTS is not a valid
+  pinned Fedora container, with the `.tool-versions` Elixir/OTP compiled
+  there (the `rpm` job in `release.yml`; Fedora's own was dropped in issue
+  2669). Fedora-family only — a Fedora ERTS is not a valid
   RHEL/Rocky/Alma payload. See [`../README.md`](../README.md) "Building the
   `.rpm`".
 - **`grappa create-user` subcommand** — see [`../README.md`](../README.md)
