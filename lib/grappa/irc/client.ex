@@ -107,7 +107,7 @@ defmodule Grappa.IRC.Client do
   `:ssl_closed`) stops the Client with `:tcp_closed` / `:ssl_closed`
   reason, which propagates the link signal upward. AuthFSM stop
   reasons (`{:sasl_failed, 904 | 905}`, `:sasl_unavailable`,
-  `{:nick_rejected, 432 | 433, nick}`) propagate the same way. The
+  `{:nick_rejected, 432 | 433 | 437, nick}`) propagate the same way. The
   Session is then restarted by its `DynamicSupervisor` (transient
   policy on abnormal exit), spawning a fresh Client — the reconnect is
   paced by `Grappa.Session.Backoff` (per-(subject, network) exponential
