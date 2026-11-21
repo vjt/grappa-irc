@@ -54,13 +54,18 @@ const type = (textarea: HTMLTextAreaElement, value: string) =>
 
 const entries = (root: ParentNode) =>
   Array.from(root.querySelectorAll("[data-testid=command-menu] [role=option]")).map(
-    (el) => el.textContent,
+    (el) => el.querySelector(".command-menu-verb")?.textContent,
   );
 
 const selected = (root: ParentNode) =>
   Array.from(root.querySelectorAll("[data-testid=command-menu] [role=option]"))
     .filter((el) => el.getAttribute("aria-selected") === "true")
-    .map((el) => el.textContent);
+    .map((el) => el.querySelector(".command-menu-verb")?.textContent);
+
+const captions = (root: ParentNode) =>
+  Array.from(
+    root.querySelectorAll("[data-testid=command-menu] [role=option] .command-menu-caption"),
+  ).map((el) => el.textContent);
 
 describe("ComposeBox — the `/` command menu (issue 2584)", () => {
   beforeEach(() => {
@@ -203,7 +208,7 @@ describe("ComposeBox — the `/` command menu (issue 2584)", () => {
     textarea.focus();
     type(textarea, "/wh");
     const option = Array.from(container.querySelectorAll("[role=option]")).find(
-      (el) => el.textContent === "/whois",
+      (el) => el.querySelector(".command-menu-verb")?.textContent === "/whois",
     );
     if (option === undefined) throw new Error("no /whois entry");
 
@@ -239,6 +244,34 @@ describe("ComposeBox — the `/` command menu (issue 2584)", () => {
       "/part",
       "/nick",
     ]);
+  });
+
+  it("every entry shows a caption under the verb", () => {
+    const { container, textarea } = mount();
+    type(textarea, "/");
+
+    expect(entries(container)).toEqual(["/join", "/msg", "/me", "/query", "/whois"]);
+    expect(captions(container)).toEqual([
+      "Joins a channel",
+      "Sends a private message",
+      "Sends an action message",
+      "Opens a private chat",
+      "Shows information about a nick",
+    ]);
+  });
+
+  it("an alias entry shows what it expands to", async () => {
+    setToken("tok");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ aliases: { foo: "whois $1" } }), { status: 200 }),
+    );
+    await refreshAliases();
+    const { container, textarea } = mount();
+
+    type(textarea, "/f");
+
+    expect(entries(container)).toEqual(["/foo"]);
+    expect(captions(container)).toEqual(["Alias for whois $1"]);
   });
 
   it("puts the most used first, from the counts the server holds", async () => {
