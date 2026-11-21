@@ -94,11 +94,12 @@ test.describe("#487 context menu viewport clamp", () => {
     // #1192 added the CTCP group between WHOIS and Query, so the nick menu is
     // nine rows; issue 2346 replaced the one Ban row with Ban nick / Ban host
     // / Kickban (disabled without @, never hidden), so it was eleven, and
-    // issue 2430 added "Encrypted query" above Query: twelve. Kept as
-    // an exact count, not a `>=`: this number is the precondition that the
-    // menu really is tall enough to overflow, and a loosened assertion would
-    // stop noticing if the menu ever shrank.
-    expect(g.itemCount).toBe(12);
+    // issue 2430 added "Encrypted query" above Query: twelve, and issue 2483
+    // the Ignore/Unignore row: thirteen. Kept as an exact count, not a `>=`:
+    // this number is the precondition that the menu really is tall enough to
+    // overflow, and a loosened assertion would stop noticing if the menu ever
+    // shrank.
+    expect(g.itemCount).toBe(13);
     expect(g.height).toBeGreaterThan(0);
     expect(vp.height - 4 + g.height).toBeGreaterThan(g.innerHeight);
     expect(vp.width - 4 + g.width).toBeGreaterThan(g.innerWidth);
@@ -123,7 +124,11 @@ test.describe("#487 context menu viewport clamp", () => {
   });
 
   test.describe("short viewport (keyboard-up analogue)", () => {
-    test.use({ viewport: { width: 800, height: 300 } });
+    // 400, not 300: issue 2483's Ignore row took the nick menu to thirteen
+    // rows (~318px), so at 300 the menu no longer fits and the #588 scroll
+    // fallback — not the flip — is what engages. The extreme case below
+    // covers that path; this one must stay a flip.
+    test.use({ viewport: { width: 800, height: 400 } });
 
     test("near-bottom right-click flips the menu up into view", async ({ page }) => {
       await seedChannel(page);
