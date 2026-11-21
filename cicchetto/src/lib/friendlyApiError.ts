@@ -205,8 +205,10 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       //   naming our nick. Here nobody is using the nick: it is reserved
       //   (IRCnet nick delay, a solanum nick-delay hold);
       // - a visitor `/nick` rename colliding with another visitor row.
-      // The copy is actionable for all three: pick another nick.
-      return "That nickname is already in use on this network. Pick another one.";
+      // The copy must be TRUE for all three, so it says "isn't available",
+      // never "in use": nobody holds a 437 nick (issue 2679, vjt's option
+      // b). And it is actionable for all three: pick another nick.
+      return "That nickname isn't available on this network. Pick another one.";
     case "forbidden":
       return "Your account isn't allowed to perform that action.";
     case "not_found":
