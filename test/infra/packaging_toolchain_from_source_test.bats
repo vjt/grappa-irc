@@ -243,8 +243,8 @@ show_run() {
 # The rpm job never runs on a pull request (release.yml fires on a tag and on
 # workflow_dispatch), so this is its PR-time half, read off the workflow text:
 # the job runs whenever the deb job does, installs no distro erlang or elixir,
-# and builds the pinned pair from the recipe of the DISPATCHED ref before
-# build.sh runs.
+# builds the pinned pair from the recipe of the DISPATCHED ref before build.sh
+# runs, and stops at the PATH step when what it restored is not that pair.
 
 WORKFLOW="$BATS_TEST_DIRNAME/../../.github/workflows/release.yml"
 
@@ -258,6 +258,18 @@ job_if() {
     awk -v key="  $1:" '$0 == key { on = 1; next }
          on && /^  [a-z][a-z0-9_-]*:$/ { exit }
          on && /^    if: / { print }' "$WORKFLOW"
+}
+
+# The `run: |` body of one rpm-job step, de-indented to column 0. Blank lines
+# inside the body are kept; the body ends at the first line indented less.
+rpm_step_run() {
+    rpm_job | awk -v name="      - name: $1" '
+        $0 == name { s = 1; next }
+        s && !r && /^      - / { exit }
+        s && $0 == "        run: |" { r = 1; next }
+        r && /^          / { print substr($0, 11); next }
+        r && /^[[:space:]]*$/ { print ""; next }
+        r { exit }'
 }
 
 # Every package a `dnf install` in the rpm job names, one per line: comments
@@ -315,4 +327,66 @@ rpm_dnf_packages() {
         printf 'out of order: fetch line %s, run line %s, build.sh line %s\n' "$fetch" "$run" "$build" >&2
         return 1
     }
+}
+
+# The PATH step, run for real under the `sh -e` the container gives it, from a
+# checkout holding the fake pins, against a prefix laid out as a build leaves
+# it. On a cache hit this step is the only check of what was restored.
+path_step() {
+    local body
+    body="$(rpm_step_run 'Put the OTP + Elixir on PATH')"
+    [ -n "$body" ] || { printf 'no run: body found for the PATH step — the scan is broken\n' >&2; return 1; }
+    printf '%s\n' "$body" > "$BATS_TEST_TMPDIR/path_step.sh"
+}
+
+# A restored prefix: releases/98/OTP_VERSION reading OTP, and an elixir that
+# prints ELIXIR.
+restored_prefix() {
+    rm -rf "$PREFIX"
+    mkdir -p "$PREFIX/lib/erlang/releases/98" "$PREFIX/bin"
+    printf '%s\n' "$1" > "$PREFIX/lib/erlang/releases/98/OTP_VERSION"
+    printf '#!/bin/sh\necho %s\n' "$2" > "$PREFIX/bin/elixir"
+    chmod +x "$PREFIX/bin/elixir"
+}
+
+run_path_step() {
+    cd "$REPO"
+    export BEAM_PREFIX="$PREFIX" GITHUB_PATH="$BATS_TEST_TMPDIR/github_path"
+    run sh -e "$BATS_TEST_TMPDIR/path_step.sh"
+}
+
+@test "the PATH step puts a restored prefix holding the pinned pair on PATH" {
+    path_step
+    restored_prefix 98.7 6.5.4
+
+    run_path_step
+    [ "$status" -eq 0 ] || { show_run; return 1; }
+    grep -qxF "$PREFIX/bin" "$BATS_TEST_TMPDIR/github_path"
+}
+
+@test "the PATH step stops the job when the restored elixir does not start" {
+    path_step
+    restored_prefix 98.7 6.5.4
+    printf '#!/bin/sh\nexit 1\n' > "$PREFIX/bin/elixir"
+
+    run_path_step
+    [ "$status" -ne 0 ] || { show_run; return 1; }
+}
+
+@test "the PATH step stops the job when the restored OTP is not the pin" {
+    path_step
+    restored_prefix 98.6 6.5.4
+
+    run_path_step
+    [ "$status" -ne 0 ] || { show_run; return 1; }
+    grep -qF "'98.6'" <<<"$output"
+}
+
+@test "the PATH step stops the job when the restored Elixir is not the pin" {
+    path_step
+    restored_prefix 98.7 6.5.3
+
+    run_path_step
+    [ "$status" -ne 0 ] || { show_run; return 1; }
+    grep -qF "'6.5.3'" <<<"$output"
 }

@@ -1058,9 +1058,21 @@ jobs:
 
       - name: Put the OTP + Elixir on PATH
         run: |
+          # Read both back and hold them to the pins: the version check the
+          # recipe makes after a build, so a cache hit stops HERE when what it
+          # restored does not start or is not the pinned pair, rather than
+          # somewhere in build.sh. One assignment per read, because the step
+          # runs under `sh -e` and a failing $(...) inside echo's argument
+          # does not trip -e, while an assignment does.
+          otp_pin="$(awk '$1 == "erlang" { print $2 }' .tool-versions)"
+          elixir_pin="$(awk '$1 == "elixir" { print $2 }' .tool-versions)"
+          elixir_pin="${elixir_pin%-otp-*}"
+          otp="$(cat "$BEAM_PREFIX"/lib/erlang/releases/*/OTP_VERSION)"
+          elixir="$(PATH="$BEAM_PREFIX/bin:$PATH" elixir -e 'IO.puts(System.version())')"
+          echo "OTP $otp (pin $otp_pin), Elixir $elixir (pin $elixir_pin)"
+          [ "$otp" = "$otp_pin" ] || { echo "::error::the OTP in $BEAM_PREFIX reports '$otp', .tool-versions pins '$otp_pin'"; exit 1; }
+          [ "$elixir" = "$elixir_pin" ] || { echo "::error::the Elixir in $BEAM_PREFIX reports '$elixir', .tool-versions pins '$elixir_pin'"; exit 1; }
           echo "$BEAM_PREFIX/bin" >> "$GITHUB_PATH"
-          # Run both, so a cache hit shows what it restored and that it starts.
-          echo "OTP $(cat "$BEAM_PREFIX"/lib/erlang/releases/*/OTP_VERSION), Elixir $(PATH="$BEAM_PREFIX/bin:$PATH" elixir -e 'IO.puts(System.version())')"
 
       - name: Build the .rpm (Fedora ERTS via GRAPPA_PKG_FORMAT=rpm)
         run: GRAPPA_PKG_FORMAT=rpm infra/packaging/build.sh
