@@ -785,17 +785,21 @@ defmodule Grappa.Visitors.Login do
   end
 
   # #40: a fresh-login / anon visitor who picks a nick already taken on the
-  # upstream gets a 433 ERR_NICKNAMEINUSE during registration. AuthFSM has
-  # no recovery path for a passwordless session, so it stops the Client with
-  # `{:nick_rejected, 433, _}`; Session.Server wraps the linked-exit as
-  # `{:client_exit, _}` before propagating, which is the monitored DOWN
-  # reason seen here. Surface it as `:nick_in_use` so the user gets the
-  # actionable "pick another nick" copy instead of the generic
-  # `:upstream_unreachable` / `:welcome_timeout`. 432 ERR_ERRONEUSNICKNAME is
-  # deliberately NOT mapped — `validate_nick/1` already gates nick shape, so
-  # a 432 means upstream-specific rules differ and the generic surface is
-  # honest about "we couldn't tell you what's wrong with it."
-  defp classify_down({:client_exit, {:nick_rejected, 433, _}}), do: :nick_in_use
+  # upstream gets a 433 ERR_NICKNAMEINUSE during registration. AuthFSM walks
+  # its bounded fallback ladder (#676) and, once every candidate is refused,
+  # stops the Client with `{:nick_rejected, 433, _}`; Session.Server wraps the
+  # linked-exit as `{:client_exit, _}` before propagating, which is the
+  # monitored DOWN reason seen here. Surface it as `:nick_in_use` so the user
+  # gets the actionable "pick another nick" copy instead of the generic
+  # `:upstream_unreachable` / `:welcome_timeout`. Issue 2673: a ladder spent
+  # on 437 ERR_UNAVAILRESOURCE (IRCnet nick delay, a solanum nick-delay hold)
+  # is the same dead end — the server answered every NICK, so
+  # `:upstream_unreachable` would be false, and another nick is still the way
+  # out. 432 ERR_ERRONEUSNICKNAME is deliberately NOT mapped —
+  # `validate_nick/1` already gates nick shape, so a 432 means
+  # upstream-specific rules differ and the generic surface is honest about
+  # "we couldn't tell you what's wrong with it."
+  defp classify_down({:client_exit, {:nick_rejected, code, _}}) when code in [433, 437], do: :nick_in_use
   defp classify_down(_), do: :upstream_unreachable
 
   defp tear_down(visitor_id, network_id, monitor_ref, reason) do

@@ -7617,14 +7617,34 @@ configured nick back.
 **Out of scope, untouched.** RecoverIdentity keeps its own 433/437 handling.
 Under ruling #623, a 437 there is a services hold, retried until a deadline.
 Whether a numeric is terminal depends on the (numeric, state) pair, and this
-change touches only the registration state. `Visitors.Login.classify_down/1`
-still maps only `{:nick_rejected, 433, _}` to `:nick_in_use`, so a visitor
-whose ladder runs out on 437 gets `:upstream_unreachable`. That is left as it
-was.
+change touches only the registration state.
 
-**Not measured.** No IRCnet or solanum server was exercised, and the ircd
-semantics above are the issue's, not checked against either source. The
-behaviour is proven against `Grappa.IRCServer` only. Whether IRCnet truncates
-the nick before its nick-delay check, and so echoes the truncated spelling,
-has not been checked against its source or a capture. How long a server lets
-a hung registration sit was never measured.
+**A visitor's spent 437 ladder reads as `:nick_in_use`.**
+`Visitors.Login.classify_down/1` maps `{:nick_rejected, 433 | 437, _}` to
+`:nick_in_use`. The first cut mapped only 433, so a visitor whose ladder ran
+out on 437 got `:upstream_unreachable`: HTTP 502 and cic's "Couldn't reach the
+upstream IRC server. Check the network is up." That was false, because the
+server had answered every NICK, and it hid the one way out, which is picking
+another nick (found in review, measured on `Login.login/2`). 432 stays
+unmapped for the reason `classify_down` gives: it is a shape rejection, not an
+availability one. No wire change: `nick_in_use` was already in the error enum.
+On prod this cannot happen, because bahamut sends no registration 437 (next
+paragraph).
+
+**What the ircd sources say.** Read in review at pinned blobs, without
+exercising a live server. IRCnet `ircd/s_user.c` (blob `91dac39c`), in
+`m_nick`, cuts a local client's NICK to `LOCALNICKLEN` at :871
+(`strncpyzt(nick, parv[1], allowednicklen + 1)`), BEFORE its collision and
+nick-delay check, and the 437 at :1070 echoes that truncated `nick` as
+`[*, nick]`. That makes the truncation arm load-bearing: without it, a nick
+already at the limit stalls on the `_` rung, which the server cuts straight
+back to the delayed nick. solanum `modules/core/m_nick.c` (blob `3f279c69`),
+in `mr_nick`, truncates with `rb_strlcpy` and answers a hit in its nick-delay
+table `nd_dict` with 437 `[*, nick]`. bahamut `src/m_nick.c` (blob
+`1b4f9431`) sends 437 only inside `IsRegisteredUser(sptr)` and names a
+channel, so on prod the new arm cannot fire before 001.
+
+**Not measured.** No IRCnet or solanum server was exercised: the behaviour is
+proven against `Grappa.IRCServer` and read from the sources above, not
+captured from a wire. How long a server lets a hung registration sit was never
+measured.
