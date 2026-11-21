@@ -126,6 +126,29 @@ describe("sendEncryptedAttachment (issue 2517)", () => {
     expect(transcode.fn).toHaveBeenCalled();
   });
 
+  // A video in an encrypted window is ALWAYS the transcode's output: nobody
+  // strips it after this, so the original coming back is a refusal. That rule
+  // lives in `encryptedVideoOutcome`, so the REAL one answers here, and the
+  // test pins that this path asks it.
+  it("never sends a video the transcode handed back as it was", async () => {
+    const actual =
+      await vi.importActual<typeof import("../lib/metadataStrip")>("../lib/metadataStrip");
+    strip.video.mockImplementation(
+      actual.encryptedVideoOutcome as (o: File, r: unknown) => unknown,
+    );
+    const original = fileOf("a.mp4", "video/mp4", 500);
+    transcode.fn.mockResolvedValue({ ok: original });
+
+    const outcome = await sendEncryptedAttachment(request(original));
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("the original came back as it was"),
+    });
+    expect(upload.fn).not.toHaveBeenCalled();
+    expect(sendFile.fn).not.toHaveBeenCalled();
+  });
+
   it("still refuses a video whose transcoded output is over the cap", async () => {
     transcode.fn.mockResolvedValue({ ok: fileOf("a.mp4", "video/mp4", 1_001) });
 
