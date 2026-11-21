@@ -53,15 +53,17 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v62 -> v63 (`channel` optional): the `channel` key of
- * `e2e_message` moved from required-but-nullable to optional, so a server
- * predating v63 that sends no such key stays readable. No change to anything
- * shottino reads; a terminal that wants channel E2E would need the
- * group-session client half, which is a follow-up.
+ * Last read, v63 -> v64 (issue 2656, keepnick): `keep_nick` on the
+ * credential payload and on both `GET /networks` row shapes, the
+ * `keep_nick_changed` user-topic event, and a `keep_nick` Meta key on the
+ * `$server` row a stopped keepnick writes. Additive and unread here: the
+ * parsers ignore unknown keys and event kinds, and the stop row's body is
+ * already readable text. A terminal that wants a keepnick switch would add
+ * a `PATCH /networks/:id/keep_nick` command; nothing requires it.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 63
+#define WIRE_PROTOCOL_VERSION 64
 
 #include <stdbool.h>
 #include <stddef.h>

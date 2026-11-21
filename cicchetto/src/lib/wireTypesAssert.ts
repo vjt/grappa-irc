@@ -320,6 +320,10 @@ export type _Assert_CredentialJson = Assert<
       location: string | null;
       languages: string | null;
       custom: string | null;
+      // issue 2656 — the per-network keepnick switch. OPTIONAL although
+      // every server from protocol 64 emits it: a server predating the
+      // switch omits it, and absent reads as off.
+      keep_nick?: boolean;
       avatar_url: string | null;
       inserted_at: string;
       updated_at: string;

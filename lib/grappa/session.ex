@@ -408,7 +408,11 @@ defmodule Grappa.Session do
           # `$nickserv_pass` has no key of its own since #124 — it expands from
           # the credential password, threaded as `:password`.
           optional(:perform_list) => String.t() | nil,
-          optional(:oper_pass) => String.t() | nil
+          optional(:oper_pass) => String.t() | nil,
+          # issue 2656 — the keepnick switch, set by `SessionPlan.base_plan/6`
+          # for BOTH subjects. Kept in sync with the `Grappa.Session.Server`
+          # twin; omitted means off.
+          optional(:keep_nick) => boolean()
         }
 
   @doc """

@@ -1506,6 +1506,57 @@ server means.
 
 Check `protocol_version >= 62`.
 
+### 4n. Keepnick — keep asking for the configured nick (issue 2656, v64)
+
+A per-`(subject, network)` switch, off unless the subject turns it on.
+While it is on and the session wears a nick other than the configured one
+(somebody held it at connect, so registration fell back to `nick_`), the
+server keeps asking for the configured nick back on a fixed cadence until
+it gets it. Off, the server asks once, twelve seconds after the welcome,
+exactly as before.
+
+| route | answer |
+|---|---|
+| `PATCH /networks/:network_id/keep_nick` with `{"keep_nick": true \| false}` | 200 with the updated credential |
+
+400 when the body has no `keep_nick` key (silence is not "off"); 422 when
+the value is not a boolean, `null` included; 404 when the caller holds no
+attached credential on the network. Both subject kinds may call it.
+
+The value is on the credential payload every `/networks/:network_id/*`
+write answers with and on every `GET /networks` row, user and visitor, as
+`keep_nick`. A write is announced on the user topic, so your other devices
+can follow it:
+
+```json
+{"kind": "keep_nick_changed", "network_id": 7, "network_slug": "libera", "keep_nick": true}
+```
+
+Unlike `network_attached` / `network_detached`, this event carries the
+value: the switch is the whole state, there is nothing to re-read.
+
+The refusals of the server's own tries are not shown — a `433` for the
+configured nick while somebody holds it would otherwise land in `$server`
+every cycle. When the ircd refuses a try for a reason waiting cannot change
+(a ban or `+m` on a channel you are in, a `+d` channel, an erroneous or
+restricted nick), the refusal's own numeric row lands in `$server` as it
+always did, keepnick stops for this connection, and one more `$server` row
+says so: `kind: "server_event"`, anonymous sender, a plain-text body for a
+client that does not know the key, and
+
+```json
+{"keep_nick": {"outcome": "stopped", "target": "vjt", "numeric": 437}}
+```
+
+in its `meta`. Keepnick also stops, with no row, when you `/nick` to a
+different nick yourself, or when something that is not you (services)
+renames you off the configured nick. The next connection starts over.
+
+A server below v64 has none of this: the key is absent (read it as off),
+the route answers 404 and no event is sent.
+
+Check `protocol_version >= 64`.
+
 ---
 
 ## 5. Wire format
@@ -2248,6 +2299,7 @@ forever.
 | `isupport_changed` | user | the network's 005 capability set (§5c, §5) |
 | `join_failed` | user | the window reached `:failed`, with reason + numeric |
 | `joined` | user | the window reached `:joined` |
+| `keep_nick_changed` | user | the subject turned keepnick on or off for a network; carries the value (§4n, v64) |
 | `kicked` | user | the window reached `:kicked`, with `by` + reason |
 | `links_bundle` | requester | `/LINKS` answer |
 | `lusers_bundle` | user | `/LUSERS` answer — **fans out to every connection**, because the server also emits it unsolicited at connect (§4) |

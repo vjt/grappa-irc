@@ -146,6 +146,14 @@ const MIRRORS: readonly Mirror[] = [
     production: SERVER_WINDOW_NAME,
     origin: "SERVER_WINDOW_NAME (src/lib/windowKinds.ts)",
   },
+  // issue 2656 — the keepnick spec counts refusal and stop rows in the server
+  // window over REST, so `$server` is the storage key under test, as in 2641.
+  {
+    file: "e2e/tests/issue2656-keepnick.spec.ts",
+    name: "SERVER_WINDOW",
+    production: SERVER_WINDOW_NAME,
+    origin: "SERVER_WINDOW_NAME (src/lib/windowKinds.ts)",
+  },
 
   {
     file: "e2e/tests/issue1105-reply-quote-caret-visible.spec.ts",

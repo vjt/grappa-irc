@@ -244,6 +244,39 @@ defmodule GrappaWeb.NetworksController do
   end
 
   @doc """
+  `PATCH /networks/:network_id/keep_nick` — issue 2656: turns keepnick on or
+  off for this `(subject, network)`, for BOTH subjects. While on, a session
+  wearing a nick other than the configured one keeps asking for it back.
+  Like `/profile` it never bounces the live session: the switch reaches it
+  over the settings bridge — see `Credentials.update_credential_keep_nick/2`.
+
+  Body: `{keep_nick}` — required, a boolean. 200 with the updated
+  credential; 400 when the key is missing (silence is not "off"); 422 when
+  the value is not a boolean; 404 if the caller holds no credential on the
+  network; 401 without a Bearer.
+  """
+  @spec keep_nick(Plug.Conn.t(), map()) ::
+          Plug.Conn.t()
+          | {:error, :bad_request | :not_found | Ecto.Changeset.t()}
+  def keep_nick(conn, params) do
+    subject = conn.assigns.current_subject
+    network = conn.assigns.network
+
+    with {:ok, attrs} <- parse_keep_nick(params),
+         {:ok, credential} <- fetch_credential(subject, network),
+         {:ok, updated_cred} <- Credentials.update_credential_keep_nick(credential, attrs) do
+      render(conn, :update, credential: updated_cred)
+    end
+  end
+
+  # The key is REQUIRED: an absent one is a malformed request, never an
+  # implicit "off". Its value goes to the changeset unjudged, which is where
+  # a non-boolean becomes a 422.
+  @spec parse_keep_nick(map()) :: {:ok, map()} | {:error, :bad_request}
+  defp parse_keep_nick(%{"keep_nick" => value}), do: {:ok, %{keep_nick: value}}
+  defp parse_keep_nick(_), do: {:error, :bad_request}
+
+  @doc """
   `PUT /networks/:network_id/avatar` — M3a: uploads (or replaces) the
   credential's own avatar, per `(subject, network)` for BOTH subjects.
   Sibling of `/profile` in every respect that matters: it never bounces

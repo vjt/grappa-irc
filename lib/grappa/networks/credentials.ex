@@ -740,6 +740,49 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
+  issue 2656 — turns keepnick on or off for a `(subject, network)`
+  credential. Backs `PATCH /networks/:network_id/keep_nick` for BOTH
+  subjects; takes the already-resolved `%Credential{}` (ownership asserted
+  by the caller, same contract as `update_credential_profile/2`).
+
+  No reconnect, like the profile: the switch drives a timer inside the
+  live `Session.Server`, so a successful write tells the session on the
+  subject's settings-bridge topic (`{:credential_keep_nick_changed,
+  network_id, boolean}`, filtered on `network_id` by the receiver) and
+  tells the subject's other devices on the user topic (`keep_nick_changed`).
+  Two audiences, two shapes, one write — the `Grappa.UserSettings` posture.
+  """
+  @spec update_credential_keep_nick(Credential.t(), map()) ::
+          {:ok, Credential.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def update_credential_keep_nick(%Credential{} = credential, attrs) when is_map(attrs) do
+    case credential |> Credential.keep_nick_changeset(attrs) |> Repo.update() do
+      {:ok, updated} ->
+        updated = Repo.preload(updated, [:network, :avatar_upload])
+        :ok = broadcast_keep_nick_change(updated)
+        {:ok, updated}
+
+      {:error, _} = err ->
+        err
+    end
+  rescue
+    Ecto.StaleEntryError -> {:error, :not_found}
+  end
+
+  @spec broadcast_keep_nick_change(Credential.t()) :: :ok
+  defp broadcast_keep_nick_change(%Credential{network_id: network_id, keep_nick: on?} = cred) do
+    label = subject_label_for(cred)
+
+    :ok =
+      Phoenix.PubSub.broadcast(
+        Grappa.PubSub,
+        Topic.user_settings(label),
+        {:credential_keep_nick_changed, network_id, on?}
+      )
+
+    :ok = Grappa.PubSub.broadcast_event(Topic.user(label), Grappa.Networks.Wire.keep_nick_changed_event(cred))
+  end
+
+  @doc """
   M3a — sets (or replaces) `credential`'s own avatar: uploads `bytes`
   (declared MIME `mime`) as a PERMANENT `Grappa.Uploads` row
   (`expires_at: nil` — unlike an ordinary ephemeral scrollback-image
