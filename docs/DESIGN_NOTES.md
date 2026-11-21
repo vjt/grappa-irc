@@ -6821,20 +6821,42 @@ move. `will-change: transform` is kept as in the measured recipe.
 ingests none of the theme) and holds the shape the cure depends on across
 the whole backdrop rather than its three declarations: every keyframe set
 the backdrop runs animates only `transform`/`opacity`, each layer's travel,
-tile and overhang agree, the glow sits on a box nothing moves, and every
-moving layer is frozen under reduced motion. On the previous stylesheet the
-first three are red and the fourth green; six one-site mutants of the cure
-each turn exactly one of them red. It observes no paint: whether the
-compositor actually takes the layers over is the measurement's question,
-not this test's. `issue2647-login-backdrop-compositor-drift.spec.ts` asks
-the engine instead, on `webkit-iphone-15` and `chromium-pixel-touch`:
+tile and overhang agree and its bottom edge sits on the backdrop's, the glow
+sits on a box nothing moves, and every moving layer is frozen under reduced
+motion. On the previous stylesheet the first three are red and the fourth
+green. One-site mutants of the cure (`background-position` beside the
+transform, a tile resized without its travel, an overhang shorter than it, a
+bottom edge lifted or dropped, the glow moved onto a moving layer or
+removed, the mid layer left out of the reduced-motion list) each turn
+exactly one of them red. It observes no paint.
+`issue2647-login-backdrop-compositor-drift.spec.ts` asks the engine
+instead, on `webkit-iphone-15` and `chromium-pixel-touch`:
 `document.getAnimations()` on the backdrop subtree finds exactly three
 animations whose resolved keyframes carry only `transform`, and under
 reduced motion none, with the three layers present at `transform: none`,
 until lifting the preference on the same page starts all three. That is
 what the source test cannot see (a losing selector, a theme override); it
 still sees no paint, and no CPU threshold is asserted, since on a shared
-runner one is either too loose or flaky.
+runner one is either too loose or flaky. Its first run (integration run
+44835667684, at `2bcdf0c9d`, before review tightened arm 1 to pin the count
+on the same read as the census) was green on both projects; it has never
+run against the previous stylesheet.
+
+**Measured once, off the gate, by a fleet peer, not the author.** The
+issue's acceptance conditions were taken on a bench and posted on PR 2667
+(issuecomment-7052967908): the previous stylesheet (`f505609e0`) against
+`610d9f962`, whose backdrop rules and markup are the ones described here.
+Main-thread busy during the drift fell from 94.1% / 92.7% (28 / 26 style
+recalcs in 5 s) to 0.0% / 0.1% (0 recalcs, 0 layouts). Under reduced
+motion the still frame stays within 2/255 per channel of the previous one,
+on a frame that is not blank. `getAnimations()` on the backdrop subtree
+reports `backgroundPositionX/Y` on all three animations before and only
+`transform` after, so the predicate the e2e asserts separates the two.
+The peer's limits: the real `default.css` on an isolated page, not the
+login page nor a device; headless Chromium, so software compositing, and
+no WebKit; two runs per variant, one bench, not a suite; the
+`getAnimations()` check was the peer's own code, not the spec above. The
+author reproduced none of it.
 
 **Out of scope: the boot splash scanlines (`crt-scan`).** They animate
 `background-position` too, from `0 0` to `0 100%` over a 4px tile, so the
