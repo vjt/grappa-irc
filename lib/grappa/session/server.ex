@@ -606,6 +606,17 @@ defmodule Grappa.Session.Server do
           # key) does not crash — same defensive contract as
           # in_flight_joins (event_router.ex:1323).
           awaiting_invite: MapSet.t(String.t()),
+          # Issue 2657 — the credential's kick-rejoin opt-in
+          # (`KickRejoin.config/0`), booted from the plan's
+          # `:restored_kick_rejoin` and re-tuned live by
+          # `{:credential_kick_rejoin_changed, network_id, _}`. Read again when
+          # a rejoin's delay ends, so switching it off inside the delay cancels.
+          kick_rejoin: KickRejoin.config(),
+          # Issue 2657 — the self-KICK stamps the kick-loop guard counts, per
+          # folded channel (`KickRejoin.kicks/0`), recorded on every self-KICK
+          # whether or not the opt-in is on. Memory only: a crash forgets the
+          # count, and the respawn rejoins through the #2317 plan regardless.
+          kicks: KickRejoin.kicks(),
           auth_method: AuthFSM.auth_method(),
           autojoin: [String.t()],
           # #347 — deferred-autojoin fallback window (config default
@@ -1268,6 +1279,10 @@ defmodule Grappa.Session.Server do
       e2e_key_answers: E2eKeyAnswers.new(),
       in_flight_joins: %{},
       awaiting_invite: MapSet.new(),
+      # Issue 2657 — an omitted opt boots `:off`, the column default (a plan
+      # always carries it; a hand-built test plan may not).
+      kick_rejoin: Map.get(opts, :restored_kick_rejoin, :off),
+      kicks: %{},
       # UX-4 bucket A — canonicalise the autojoin list at boot so the
       # 001 RPL_WELCOME loop sends `JOIN #chan` (canonical) regardless
       # of whether the operator typed `#Chan` in a mix task pre-
@@ -3582,6 +3597,35 @@ defmodule Grappa.Session.Server do
 
   def handle_info({:credential_avatar_changed, network_id, avatar_url}, %{network_id: network_id} = state) do
     {:noreply, %{state | avatar_url: avatar_url}}
+  end
+
+  # Issue 2657 — same shape as `:credential_profile_changed` above: a live
+  # edit via `Credentials.update_kick_rejoin/2` broadcasts on the
+  # subject-scoped `user_settings` bridge, the `network_id` guard keeps
+  # network A's setting off network B's session, and `state.kick_rejoin`
+  # updates in place for the next kick — and for a rejoin whose delay is
+  # still running, which re-reads it when it ends.
+  def handle_info({:credential_kick_rejoin_changed, network_id, _}, %{network_id: other} = state)
+      when network_id != other do
+    {:noreply, state}
+  end
+
+  def handle_info({:credential_kick_rejoin_changed, network_id, config}, %{network_id: network_id} = state) do
+    {:noreply, %{state | kick_rejoin: config}}
+  end
+
+  # Issue 2657 — a kick rejoin's delay is over. The JOIN goes through the
+  # same `join_channels/3` as a `/join`, so it opens the window `:pending`,
+  # broadcasts `window_pending`, and lands `:joined` or `:failed` through the
+  # arms every JOIN uses. One JOIN per kick, never retried: a refused JOIN
+  # is reported by `:join_failed` and cannot cause another kick.
+  def handle_info({:kick_rejoin, channel, key, kicked_at_ms}, state) do
+    if kick_rejoin_due?(state, channel, kicked_at_ms) do
+      {_, state} = join_channels(state, [channel], key)
+      {:noreply, state}
+    else
+      {:noreply, state}
+    end
   end
 
   # M3b — a peer avatar fetch (`Grappa.Avatars.fetch_and_cache/3`) landed
@@ -7181,7 +7225,9 @@ defmodule Grappa.Session.Server do
   #      `broadcast_window_state/2`) carrying `by` + `reason` so cic can
   #      render the kick reason banner without parsing the scrollback
   #      row. The :persist :kick row alongside is the audit trail.
-  defp apply_effects([{:kicked, channel, by, reason, _key} | rest], state) do
+  #   3. Issue 2657 — the kick is counted for the loop guard and, when the
+  #      credential opted in, one rejoin is armed (`arm_kick_rejoin/3`).
+  defp apply_effects([{:kicked, channel, by, reason, key} | rest], state) do
     broadcast_window_state(
       state,
       SessionWire.kicked(state.network_slug, channel, by, reason)
@@ -7201,7 +7247,7 @@ defmodule Grappa.Session.Server do
       | window_state: WindowState.set_kicked(state.window_state, channel, by, reason)
     }
 
-    apply_effects(rest, state)
+    apply_effects(rest, arm_kick_rejoin(state, channel, key))
   end
 
   # C2 — WHOIS bundle complete (318 RPL_ENDOFWHOIS). Broadcast the
@@ -8116,6 +8162,51 @@ defmodule Grappa.Session.Server do
 
         {{:error, :not_connected}, state}
     end
+  end
+
+  # Issue 2657 — a self-KICK just set `channel` `:kicked`. Count it for the
+  # loop guard (always, opt-in or not, so switching the opt-in on during a
+  # loop does not start the count over), then arm the one rejoin this kick
+  # may have. No timer ref is kept: `handle_info({:kick_rejoin, _, _, _})`
+  # re-checks everything it depends on when the delay ends, so nothing ever
+  # needs cancelling. `channel` is already the network-folded key —
+  # `EventRouter` canonicalises the KICK's channel param at ingress, and the
+  # window state above is keyed on the same value.
+  @spec arm_kick_rejoin(t(), String.t(), String.t() | nil) :: t()
+  defp arm_kick_rejoin(state, channel, key) do
+    now_ms = System.monotonic_time(:millisecond)
+    {verdict, kicks} = KickRejoin.record_kick(state.kicks, channel, now_ms)
+
+    case {state.kick_rejoin, verdict} do
+      {:off, _} ->
+        :ok
+
+      {{:on, _}, :stay_out} ->
+        Logger.info(
+          "kick rejoin: #{length(Map.fetch!(kicks, channel))} self-KICKs within " <>
+            "#{div(KickRejoin.window_ms(), 1000)} s reach the limit of #{KickRejoin.kick_limit()} — not rejoining",
+          channel: channel
+        )
+
+      {{:on, delay_seconds}, :rejoin} ->
+        _ = Process.send_after(self(), {:kick_rejoin, channel, key, now_ms}, KickRejoin.delay_ms(delay_seconds))
+        :ok
+    end
+
+    %{state | kicks: kicks}
+  end
+
+  # Issue 2657 — the rejoin fires only if, now that the delay is over, the
+  # opt-in is still on, the window is still `:kicked` (a manual `/join`
+  # moved it to `:pending`, a × to nothing, a JOIN echo to `:joined`), and
+  # this timer belongs to the channel's LATEST kick (kick → manual join →
+  # kick inside the delay must not have the first timer cut the second
+  # kick's delay short). Every input is state the session already keeps.
+  @spec kick_rejoin_due?(t(), String.t(), integer()) :: boolean()
+  defp kick_rejoin_due?(state, channel, kicked_at_ms) do
+    state.kick_rejoin != :off and
+      WindowState.state_of(state.window_state, channel) == :kicked and
+      KickRejoin.latest_kick?(state.kicks, channel, kicked_at_ms)
   end
 
   # issue 2114 — remember a JOIN the transport refused, newest-first. Deduped
