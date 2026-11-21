@@ -12117,6 +12117,27 @@ defmodule Grappa.Session.ServerTest do
              "a cut target must converge, not ask for the uncut nick for ever"
     end
 
+    # Written for the review of PR 2688 (F3). Every refusal test above uses a
+    # nick shorter than any NICKLEN, so the cut and the configured nick were
+    # the same string there, and the swallow compare could read either one.
+    test "11b. a 433 naming the NICKLEN-cut target is swallowed, and the next tick asks again" do
+      {server, port} = IRCServer.start_server(nicklen_held_handler(9))
+      {user, network, bound} = setup_user_and_network(port, %{nick: "keepnicklong"})
+      {:ok, credential} = Credentials.update_credential_keep_nick(bound, %{keep_nick: true})
+      ctx = start_kn_session(server, user, network, credential, %{}, "keepnick_")
+
+      IRCServer.feed(server, ":irc.test.org 005 keepnick_ NICKLEN=9 :are supported by this server\r\n")
+      :ok = flush(server, "kn-11b-a")
+
+      # Two tries for the cut nick: the second exists only if the first 433
+      # re-armed the chain instead of ending it.
+      assert await_sent_line_count(server, &(&1 == "NICK keepnickl\r\n"), 2, 1_000) == :ok
+      :ok = flush(server, "kn-11b-b")
+
+      assert kn_numeric_rows(ctx, 433) == [], "a refused try of OURS must not reach $server"
+      assert kn_stop_rows(ctx) == []
+    end
+
     test "12a. a second 001 in the same process runs ONE chain, not two" do
       ctx =
         keep_nick_session(
@@ -12228,6 +12249,26 @@ defmodule Grappa.Session.ServerTest do
         want == refused -> {:reply, ":irc.test.org 433 #{cur} #{want} :Nickname is already in use\r\n", counted}
         true -> {:reply, ":#{cur}!u@h NICK :#{want}\r\n", Map.put(counted, :cur, want)}
       end
+    end
+
+    # Refuses every post-registration NICK with a 433 naming the nick cut to
+    # `nicklen`: bahamut truncates the requested nick before it looks for a
+    # collision, so the cut nick is the one its 433 names.
+    defp nicklen_held_handler(nicklen) do
+      fn
+        state, "NICK " <> rest -> nicklen_held(state, String.trim_trailing(rest, "\r\n"), nicklen)
+        state, _ -> {:reply, nil, state}
+      end
+    end
+
+    defp nicklen_held(state, asked, nicklen) do
+      cut = binary_part(asked, 0, min(nicklen, byte_size(asked)))
+      seen = Map.get(state, :nicks, 0)
+      counted = Map.put(state, :nicks, seen + 1)
+
+      if seen == 0,
+        do: {:reply, nil, counted},
+        else: {:reply, ":irc.test.org 433 keepnick_ #{cut} :Nickname is already in use\r\n", counted}
     end
 
     # Echoes every post-registration NICK cut to `nicklen` — what bahamut's
