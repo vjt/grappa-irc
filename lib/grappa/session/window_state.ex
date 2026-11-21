@@ -224,7 +224,7 @@ defmodule Grappa.Session.WindowState do
   @doc """
   Marks `channel` as `:kicked` and records the kicker (`by`) +
   optional `reason` (KICK without trailing comment carries `nil`).
-  Called by `apply_effects([{:kicked, _, _, _} | _], _)` on an
+  Called by `apply_effects([{:kicked, _, _, _, _} | _], _)` on an
   own-target KICK.
 
   The window stays in the active sidebar (greyed) so the operator

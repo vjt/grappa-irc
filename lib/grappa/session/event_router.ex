@@ -302,7 +302,12 @@ defmodule Grappa.Session.EventRouter do
           | {:joined, String.t()}
           | {:join_failed, channel :: String.t(), reason :: String.t(), numeric :: pos_integer()}
           | {:parted, String.t()}
-          | {:kicked, channel :: String.t(), by :: String.t(), reason :: String.t() | nil}
+          # Issue 2657 — `key` is the channel's +k key as the pre-KICK
+          # `channel_modes` held it (the 324 / `MODE +k` value), or nil. The
+          # KICK itself wipes that cache, so the effect is the only place the
+          # kick rejoin can still read it from. Memory only, never persisted
+          # (#113).
+          | {:kicked, channel :: String.t(), by :: String.t(), reason :: String.t() | nil, key :: String.t() | nil}
           # #1088 — every effect whose reply is an ANSWER to a client command
           # carries the requesting connection as its last element. The router
           # lifts it out of the `*_pending` accumulator it just drained; `nil`
@@ -1246,6 +1251,10 @@ defmodule Grappa.Session.EventRouter do
         _ -> nil
       end
 
+    # Issue 2657 — read BEFORE `kick_state_update/3`, which drops the
+    # channel's mode entry on a self-KICK.
+    key = channel_key(state, channel)
+
     {members, topics, channel_modes, userhost_cache, peer_profile_cache} =
       kick_state_update(state, channel, target)
 
@@ -1281,10 +1290,11 @@ defmodule Grappa.Session.EventRouter do
     # so Session.Server's apply_effects arm can flip
     # window_states[channel] = :kicked AND broadcast on the per-channel
     # topic. Other-target KICK is a scrollback row only — the operator
-    # is still in the channel, no window-state transition.
+    # is still in the channel, no window-state transition. Issue 2657 adds
+    # the channel key, for the kick rejoin's JOIN.
     effects =
       if nick_eq?(target, state.nick) do
-        [eff, {:kicked, channel, sender, reason}]
+        [eff, {:kicked, channel, sender, reason, key}]
       else
         [eff]
       end
@@ -3133,6 +3143,20 @@ defmodule Grappa.Session.EventRouter do
            %{String.t() => channel_mode_entry()}, userhost_cache(), peer_profile_cache()}
   defp kick_state_update(state, channel, target) do
     apply_kick_effect(kick_classification(state, channel, target), state, channel, target)
+  end
+
+  # Issue 2657 — the channel's current +k key from the mode cache: the 324
+  # snapshot every self-JOIN asks for (#216), kept current by `MODE +k`/`-k`
+  # deltas. The three ircds put the key in the 324 only for a member, which
+  # we are until the KICK lands.
+  @spec channel_key(state(), String.t()) :: String.t() | nil
+  defp channel_key(state, channel) do
+    chan_key = normalize_channel(channel, casemapping(state))
+
+    case Map.get(Map.get(state, :channel_modes, %{}), chan_key) do
+      %{params: params} -> Map.get(params, "k")
+      nil -> nil
+    end
   end
 
   @spec kick_classification(state(), String.t(), String.t()) :: :self | :other | :absent

@@ -152,7 +152,7 @@ defmodule Grappa.Session do
 
   alias Grappa.{E2eInbox, E2eKeys, E2eRequests}
   alias Grappa.IRC.{AuthFSM, CTCP, E2e, Identifier, Ignore}
-  alias Grappa.Session.{Deps, E2ePacer, FloodAllowance, ISupport, Server, Wire}
+  alias Grappa.Session.{Deps, E2ePacer, FloodAllowance, ISupport, KickRejoin, Server, Wire}
 
   require Logger
 
@@ -391,6 +391,9 @@ defmodule Grappa.Session do
           # KVIrc-style CTCP USERINFO profile — BOTH subjects (unlike away).
           # Kept in sync with the `Grappa.Session.Server.init_opts/0` twin.
           optional(:restored_profile) => Server.profile(),
+          # Issue 2657 — the kick-rejoin opt-in, BOTH subjects. Kept in sync
+          # with the `Grappa.Session.Server.init_opts/0` twin.
+          optional(:restored_kick_rejoin) => KickRejoin.config(),
           # M3a — the credential's own avatar, absolute URL or nil. Same
           # both-subjects, kept-in-sync-with-the-Server-twin shape as
           # `:restored_profile` above.

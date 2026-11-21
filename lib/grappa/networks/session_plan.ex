@@ -380,6 +380,11 @@ defmodule Grappa.Networks.SessionPlan do
       # is a boot-time snapshot only, not a persister closure like
       # `away_persister`.
       restored_profile: Credential.profile_snapshot(cred),
+      # Issue 2657 — the kick-rejoin opt-in, same boot-time-snapshot posture
+      # as `:restored_profile`: shared by BOTH subjects, re-read on every
+      # (re)start through `refresh_plan`, and updated live over the same
+      # `user_settings` bridge (`Credentials.update_kick_rejoin/2`).
+      restored_kick_rejoin: Credential.kick_rejoin_snapshot(cred),
       # M3a — same boot-time-snapshot posture as `:restored_profile`
       # above; a live edit updates `state.avatar_url` in place via the
       # same `user_settings` bridge topic
