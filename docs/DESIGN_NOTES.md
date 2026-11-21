@@ -7519,3 +7519,168 @@ chaining is the issue's hypothesis, and nobody has reproduced it on a
 device. Playwright's webkit does not reproduce iOS scroll physics. Whether
 the bounce shows inside the card and the shell stays still is vjt's device
 check, and it is still open.
+<!-- entry #2657 -->
+
+---
+
+## 2026-11-21 — #2657: an opt-in rejoin after a self-KICK, per network, off by default (S1: the behaviour)
+
+### It reverses #2044's refusal, narrowly
+
+#2044 recorded vjt refusing autorejoin ("a kick is somebody telling you to
+leave"). Issue 2657 brings it back as an explicit opt-in, per network and
+off by default, for the case that motivated it: an IRCnet channel where
+losing it to a takeover is the real risk. vjt ruled "all ok" on all ten
+decisions of the design (issue comment, 2026-11-21); this entry records
+what S1 built on them. #2044's buttons are not built, so until they land
+the opted-out experience after a kick is a manual `/join`.
+
+S1 is the server behaviour only, and it is dark: no door writes the
+setting yet (S2 adds `PATCH /networks/:network_id/kick_rejoin`, the wire
+fields and the `kick_rejoin_changed` event; S3 the cic card), so every
+credential reads the column default, off.
+
+### Where the setting lives
+
+Two columns on `network_credentials`: `kick_rejoin` (boolean, default
+false) and `kick_rejoin_delay_seconds` (integer, default 10, ZNC's
+`kickrejoin` default). The credential is the `(subject, network)` binding,
+so the setting is per network as ruled (an account-wide toggle would switch
+it on for Azzurra too, where #2044's position holds), it is
+subject-polymorphic, so visitors get it through `SessionPlan.base_plan/6`
+with no branch, and it follows the binding's life (unbind deletes it,
+detach hides it). Two columns rather than one nullable delay, so the delay
+survives switching the opt-in off and on. The delay is a closed set,
+`{0, 10, 30, 60}`, enforced by `Credential.kick_rejoin_changeset/2`; `0` is
+the takeover defense.
+
+The session does not see the columns. It sees
+`Credential.kick_rejoin_snapshot/1`, `:off | {:on, delay_seconds}`, booted
+from the plan's `:restored_kick_rejoin` and replaced live by
+`{:credential_kick_rejoin_changed, network_id, snapshot}` on the
+`user_settings` bridge, sent by `Credentials.update_kick_rejoin/2` — the
+profile's pattern, filtered on `network_id` the same way. `:off` carries no
+delay because the session has no use for one while it is off.
+
+### One JOIN per kick, so there is no stop list
+
+The model is ZNC's: one JOIN after the delay, never retried. A refused JOIN
+does not put us back in the channel, so it cannot cause another kick, and
+the issue's stop conditions (474, 473, 475, 471) need no code: the refusal
+goes through the `:join_failed` arm every JOIN uses, which marks the window
+`:failed` and persists the ircd's text once in the channel window. A list of
+"terminal" numerics would be dead code. One existing verb does fire on the
+way, as accepted (decision 4): a 473/475 on an AUTOJOIN channel triggers
+the #116 ChanServ self-INVITE, once per session and channel, so a subject
+with ChanServ access gets back in through a lockdown.
+
+The JOIN goes through `join_channels/3`, the body of the `{:send_join, _, _}`
+call moved out unchanged, so a rejoin opens the window `:pending`,
+broadcasts `window_pending`, and lands `:joined` through the existing echo
+arm. That arm already clears the kicked metadata, which is all the issue's
+"clear that state when the JOIN lands" required.
+
+### The guard: 3 kicks in 10 minutes
+
+The only loop this feature can cause is kick → rejoin → kick.
+`Grappa.Session.KickRejoin` records every self-KICK per folded channel and
+answers `:stay_out` for the kick that brings the count inside the last 10
+minutes to 3, so at most 2 automatic rejoins (decision 3). The window must
+satisfy `W ≥ (N−1)·(max_delay + RTT)`, or a long delay lets the kicks age
+out before the count reaches N; with a 60 s maximum the floor is about two
+minutes, and a test pins the inequality against
+`Credential.kick_rejoin_delays/0`. N and W themselves are a product choice,
+not a measurement.
+
+Kicks are recorded whether or not the opt-in is on, so switching it on in
+the middle of a loop does not hand the loop fresh rejoins. The stamps are
+memory only: a crash forgets them, which costs nothing, because the
+respawn rejoins the channel through the #2317 plan regardless of this
+setting. A tripped guard logs what it observed (the count, the window, the
+limit) at `info` and leaves the window kicked; there is no user-facing
+report in v1 (decision 5).
+
+### The key stays in memory (#113)
+
+A rejoin of a `+k` channel without its key earns a 475. grappa never
+persists keys (#113, WONTFIX), but while we are a member it holds the
+current one: the 324 every self-JOIN asks for (#216) and later `MODE +k`
+deltas keep it in `channel_modes`. The self-KICK clause of `EventRouter`
+drops that entry before `Session.Server` sees the kick, so the key is read
+in the same clause, before the wipe, and rides the effect:
+`{:kicked, channel, by, reason, key}`. From there it lives in the timer's
+message for at most the delay. vjt confirmed this does not cross #113,
+which is about persistence (decision 7). Known gap: a kick that lands
+before the 324 has nothing to carry, and the keyless rejoin of a `+k`
+channel fails with 475.
+
+### Nothing is cancelled by reference
+
+No timer ref is stored. When the delay ends the session re-checks three
+facts it already keeps: the opt-in is still on (switching it off inside the
+delay cancels), the window is still `:kicked` (a manual `/join` makes it
+`:pending`, closing it makes it nothing, an echo makes it `:joined`), and
+the timer belongs to the channel's latest kick (kick → manual join → kick
+inside the delay must not let the first timer cut the second kick's delay
+short).
+
+### Hot or cold: COLD, measured
+
+`Deploy.Preflight.classify/5` itself ran on the branch diff (15 paths,
+`e18b21bd8..` the S1 head), substrate `:jail`, with its two git callbacks
+replaced by reads of the base and branch copies:
+`{:cold, [config: ["config/test.exs"]]}`, and the same verdict on `:docker`
+and `:linux`. Two causes, each COLD on its own, and the verdict names only
+the first because `with_state_shape/3` runs only when the path classes come
+up clean:
+
+- `config/test.exs` (the shrunk test second, below) is class 7, every
+  `config/*.exs`, a false positive the class accepts by design: test config
+  never reaches a release.
+- `lib/grappa/session/server.ex` changes its state block: the `@type t` map
+  gains `kick_rejoin` and `kicks`. With `config/test.exs` taken out of the
+  path list the verdict is `{:cold, [state_shape:
+  ["lib/grappa/session/server.ex"]]}`; with `server.ex` taken out too it is
+  `{:hot, []}`. `classify_state_shape/2` on `server.ex` against itself
+  answers `:hot`, so the comparison is not COLD by construction.
+
+The rest is HOT: `window_state.ex`, the other long-lived file touched
+(a `@doc` line), compares `:hot`, and the migration classifies `:hot`, two
+`add`s with defaults, an expand. Because the restart is guaranteed, the
+two new keys are read as `state.kick_rejoin` / `state.kicks` with no
+`Map.get` shim: no pre-S1 state survives into the new code.
+
+That last point contradicts two comments in `server.ex`, flagged here and
+not changed in S1: the ones above `queued_joins/1` and
+`identify_expected?/1` say `Deploy.Preflight` cannot see a change to the
+session's state because it is a plain map with no `defstruct`. The
+Preflight's `collect_state_blocks/1` reads the `@type t` map type as well
+as `defstruct`, and the measurement above is that read refusing this
+slice. The shims those comments justify are harmless; the reason they give
+is not the current one.
+
+### Where S1 departs from the design
+
+- The design's test 8 (a rejoin firing while the transport is down, queued
+  through the issue 2114 `:no_socket` branch) is not built, because the
+  state cannot be reached: the `{:EXIT, client, _}` clause stops
+  `Session.Server`, so the pending timer dies with the process, and the
+  respawn rejoins through the #2317 plan. `join_channels/3` keeps the
+  branch, since the `/join` door still needs it.
+- The session config is the tagged `:off | {:on, delay}` rather than a map
+  with an `enabled` flag, for the reason above.
+- The tests watch the real delay at a shrunk second: `config/test.exs` sets
+  `:kick_rejoin_second_ms` to 100, so a 10 s delay lasts 1 s and the
+  seconds-to-milliseconds conversion stays under test. No opts seam and no
+  state key were added for it.
+
+### Not measured
+
+Nothing ran against a real ircd: the session tests use the in-process
+`Grappa.IRCServer` fake, and the e2e cases against the bahamut testnet come
+with S2, which adds the door they need. IRCnet (ircd 2.11), where the
+request comes from, is not testable here at all. The claim that IRCnet
+k-lines kick/rejoin loops is the issue's; the design found no automatic
+k-line in `ircd/channel.c` and nothing here measured one either way. That
+the three ircds put the key in the 324 for a member comes from reading
+their source, not from the wire.
