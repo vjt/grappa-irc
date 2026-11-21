@@ -144,16 +144,44 @@ const BANNED_IN_NAME = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}/\\]/
  */
 const BLANKS = /[\s\u2800]+/gu;
 
-/** The longest name this client shows or saves. */
+/** The longest name this client shows or saves, in code points. */
 export const FILENAME_MAX = 120;
 
 /**
+ * The longest tail after the last dot that a cut keeps as the extension, in
+ * code points. Past it the tail is more name, and the name is cut like one
+ * with no extension at all.
+ */
+const EXTENSION_MAX = 16;
+
+/**
  * `name` as it may be shown and saved: `BANNED_IN_NAME` taken out, blanks
- * collapsed, and cut to `FILENAME_MAX`. Empty when nothing printable is left,
- * and the caller says so rather than inventing a name.
+ * collapsed, and cut to `FILENAME_MAX` with its extension kept. Empty when
+ * nothing printable is left, and the caller says so rather than inventing a
+ * name.
  */
 export function sanitizeFileName(name: string): string {
   const kept = [...name].filter((char) => !BANNED_IN_NAME.test(char));
-  const cleaned = kept.join("").replace(BLANKS, " ").trim();
-  return [...cleaned].slice(0, FILENAME_MAX).join("").trim();
+  return cutToLength(kept.join("").replace(BLANKS, " ").trim()).trim();
+}
+
+/**
+ * `name` cut to `FILENAME_MAX`, and when it has an extension, the STEM is what
+ * gets shorter. A download is saved under this name as
+ * `application/octet-stream`, so an extension cut off is given back by
+ * nothing: the file would land with no type at all.
+ */
+function cutToLength(name: string): string {
+  const chars = [...name];
+  if (chars.length <= FILENAME_MAX) return name;
+  const dot = chars.lastIndexOf(".");
+  const extension = dot > 0 ? chars.slice(dot) : [];
+  const isExtension =
+    extension.length > 1 && extension.length <= EXTENSION_MAX + 1 && !extension.includes(" ");
+  if (!isExtension) return chars.slice(0, FILENAME_MAX).join("");
+  const stem = chars
+    .slice(0, FILENAME_MAX - extension.length)
+    .join("")
+    .trimEnd();
+  return stem + extension.join("");
 }
