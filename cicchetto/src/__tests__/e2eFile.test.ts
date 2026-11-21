@@ -177,7 +177,8 @@ describe("sanitizeFileName (issue 2517)", () => {
   });
 
   // Taking too much out is a bug as well: a name in any script, with the marks
-  // its script writes (and a macOS name in decomposed form), is kept as written.
+  // its script writes (and a macOS name in decomposed form), keeps every code
+  // point.
   it.each([
     "שָׁלוֹם.pdf",
     "مَرْحَبًا.pdf",
@@ -191,6 +192,48 @@ describe("sanitizeFileName (issue 2517)", () => {
     "🎉.png",
   ])("keeps the name %s as it was written", (name) => {
     expect(sanitizeFileName(name)).toBe(name);
+  });
+
+  // U+200C and U+200D stay only between two visible characters the name
+  // keeps; U+FE0E and U+FE0F stay only right after a base; a run of either
+  // collapses to one; at an edge, or anywhere else, they go. Compared
+  // as code points, since every one of them draws as nothing.
+  const points = (text: string): string[] =>
+    [...text].map((char) => (char.codePointAt(0) as number).toString(16));
+
+  it.each([
+    ["the ZWNJ inside a Persian word", "می\u200Cخواهم.pdf"],
+    ["the ZWJs of an emoji family sequence", "👨\u200D👩\u200D👧.png"],
+    ["the emoji selector of ❤️", "❤\uFE0F.png"],
+    ["a ZWJ after a kept selector", "❤\uFE0F\u200D🔥.png"],
+  ])("keeps %s", (_what, name) => {
+    expect(points(sanitizeFileName(name))).toEqual(points(name));
+  });
+
+  it.each([
+    ["a joiner between two blanks", "a \u200D b.pdf", "a b.pdf"],
+    ["a joiner at the start", "\u200Cabc.pdf", "abc.pdf"],
+    ["a joiner at the end", "abc\u200D", "abc"],
+    // Of a run of joiners, the one that stays is the last: it touches the
+    // character after it, and the others touch another joiner.
+    ["all but the last of a run of joiners", "a\u200C\u200C\u200Db.pdf", "a\u200Db.pdf"],
+    ["a selector at the start", "\uFE0Fx.png", "x.png"],
+    ["a selector after a blank", "a \uFE0F.png", "a .png"],
+    // Of a run of selectors, the first: it touches the base.
+    ["all but the first of a run of selectors", "❤\uFE0F\uFE0E.png", "❤\uFE0F.png"],
+    // The joiner sat between two letters; the cut leaves it at the end of the stem.
+    [
+      "a joiner the cut leaves at the end of the stem",
+      `${"a".repeat(115)}\u200D${"b".repeat(10)}.pdf`,
+      `${"a".repeat(115)}.pdf`,
+    ],
+    [
+      "a joiner the cut leaves at the end of a name with no extension",
+      `${"a".repeat(119)}\u200D${"b".repeat(10)}`,
+      "a".repeat(119),
+    ],
+  ])("takes out %s", (_what, name, expected) => {
+    expect(points(sanitizeFileName(name))).toEqual(points(expected));
   });
 });
 
