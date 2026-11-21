@@ -555,9 +555,9 @@ body {
    the wheel stops at (Chromium source, not measured).
 
    The lists choose by DECLARED axis, not by whether a box can scroll at the
-   moment. The first contains both axes (the shape 25 of the 42 scroll rules
-   already carried in their own block) for every scroller that is not a
-   strip, textarea included: the UA scrolls it without the sheet saying so.
+   moment. The first contains both axes (the shape most scroll rules already
+   carried in their own block) for every scroller that is not a strip,
+   textarea included: the UA scrolls it without the sheet saying so.
    The second holds the horizontal strips, rules that declare a scroll on x
    and leave y `visible`, said or not, so their `auto` y comes only from the
    visible→auto conversion while the vertical scroller they sit in wants that
