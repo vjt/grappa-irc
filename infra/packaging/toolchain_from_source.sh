@@ -65,10 +65,9 @@ awk -v f="$tarball" '$2 == f' "$work/SHA256.txt" > "$work/otp.sha256"
 tar -xzf "$work/$tarball" -C "$work"
 (
 	cd "$work/otp_src_${otp}"
-	# Leave out the GUI and the Java bits, keep every OTP application: the same
-	# flags as infra/linux/install_toolchain.sh, for the reason in
-	# docs/OPERATIONS.md § "The toolchain pin is the repo's pin, never the
-	# distro's".
+	# Build every OTP application but the GUI and Java ones: the same flags as
+	# infra/linux/install_toolchain.sh, for the reason in docs/OPERATIONS.md
+	# § "The toolchain pin is the repo's pin, never the distro's".
 	./configure --prefix="$prefix" \
 		--without-wx --without-javac --without-debugger --without-observer
 	make -j"$(nproc)"

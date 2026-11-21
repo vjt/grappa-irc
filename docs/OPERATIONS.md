@@ -4502,7 +4502,8 @@ governs every substrate that builds Grappa from source:
   enumerated list drifts the moment a dep changes. Never "slim" that
   back to bare `elixir`.
 
-The corollary on a source build: **strip the GUI, not the apps.**
+The corollary on a source build: **build every OTP application but the GUI
+and Java ones.**
 `install_toolchain.sh` passes `KERL_CONFIGURE_OPTIONS` that skip
 wx/observer's X11/GTK chain and the debugger/javac interop — none of it
 is used (the observer tooling here is `observer_cli`, not OTP's
