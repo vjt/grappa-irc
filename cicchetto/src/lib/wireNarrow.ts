@@ -35,6 +35,7 @@ import {
   S_NetworksServersAdminWireT,
   S_NetworksWireChannelJson,
   S_NetworksWireCredentialJson,
+  S_ScrollbackWireArchiveWireCount,
   S_ScrollbackWireArchiveWireIndex,
   S_ScrollbackWireT,
   S_SessionLogWireListResult,
@@ -75,6 +76,7 @@ import type {
   NetworksServersAdminWireT,
   NetworksWireChannelJson,
   NetworksWireCredentialJson,
+  ScrollbackWireArchiveWireCount,
   ScrollbackWireArchiveWireIndex,
   ScrollbackWireT,
   SessionISupportCasemapping,
@@ -1073,6 +1075,11 @@ export function narrowAdminFeaturedChannelsResponse(
 /** `GET /networks/:slug/archive`. */
 export function narrowArchiveResponse(raw: unknown): ScrollbackWireArchiveWireIndex {
   return narrowRest(S_ScrollbackWireArchiveWireIndex, raw, "archive index");
+}
+
+/** issue 2428 — `GET /networks/:slug/archive/:target/count`. */
+export function narrowArchiveTargetCount(raw: unknown): ScrollbackWireArchiveWireCount {
+  return narrowRest(S_ScrollbackWireArchiveWireCount, raw, "archive target count");
 }
 
 /** `GET /networks/:slug/channels`. */

@@ -4080,4 +4080,86 @@ defmodule Grappa.ScrollbackTest do
       assert [] = Scrollback.list_archive({:user, user.id}, net.id, MapSet.new(["debugserv"]))
     end
   end
+
+  # issue 2428 — the count `/clear`'s confirm names. The point of these tests
+  # is the PREDICATE, not the arithmetic: the count has to agree with the
+  # delete it announces, which is why it is not built on the read path's
+  # `channel_or_dm_where/3`.
+  describe "count_for_target/3 (issue 2428)" do
+    test "counts a channel's rows, and the count is exactly what the delete takes",
+         %{user: user, network: net} do
+      {:ok, _} = Scrollback.persist_event(sample(user, net, 10, %{channel: "#room", dm_with: nil}))
+      {:ok, _} = Scrollback.persist_event(sample(user, net, 11, %{channel: "#room", dm_with: nil}))
+      {:ok, _} = Scrollback.persist_event(sample(user, net, 12, %{channel: "#other", dm_with: nil}))
+
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "#room") == 2
+      assert {:ok, 2} = Scrollback.delete_for_channel({:user, user.id}, net.id, "#room")
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "#room") == 0
+      # The sibling window is untouched by either verb.
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "#other") == 1
+    end
+
+    test "counts both directions of a DM, and the orphan-channel arm",
+         %{user: user, network: net} do
+      # Outbound: `channel = peer`.
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 10, %{channel: "Peer", sender: "vjt-grappa", dm_with: "Peer"}))
+
+      # Inbound: `channel = own nick, dm_with = peer`.
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 11, %{channel: "vjt-grappa", sender: "Peer", dm_with: "Peer"}))
+
+      # Orphan (a 401 NOTICE filed at `channel = nick`, `dm_with = nil`) —
+      # the row `delete_for_dm/3`'s UX-3 Z arm exists to reach.
+      {:ok, _} =
+        Scrollback.persist_event(
+          sample(user, net, 12, %{
+            channel: "Peer",
+            sender: "server.example.org",
+            kind: :notice,
+            body: "No such nick/channel",
+            dm_with: nil
+          })
+        )
+
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "peer") == 3
+      assert {:ok, 3} = Scrollback.delete_for_dm({:user, user.id}, net.id, "peer")
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "peer") == 0
+    end
+
+    # `$server` carries no sigil, so `target_kind/1` calls it `:query`; the
+    # carve-out is `window_kind/1`'s. Without it this count would run the DM
+    # peer predicate and answer 0 for the very window an oper wants to clear.
+    test "counts the $server window, which target_kind/1 calls a query",
+         %{user: user, network: net} do
+      assert Scrollback.target_kind("$server") == :query
+      assert Scrollback.window_kind("$server") == :server
+
+      {:ok, _} =
+        Scrollback.persist_event(
+          sample(user, net, 10, %{
+            channel: "$server",
+            sender: "irc.example",
+            kind: :notice,
+            body: "MOTD",
+            dm_with: nil
+          })
+        )
+
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "$server") == 1
+    end
+
+    test "an unknown target counts 0", %{user: user, network: net} do
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "#ghost") == 0
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "ghostnick") == 0
+      assert Scrollback.count_for_target({:user, user.id}, net.id, "$server") == 0
+    end
+
+    test "another subject's rows are not counted", %{user: user, network: net} do
+      other = user_fixture(name: "other-#{System.unique_integer([:positive])}")
+      {:ok, _} = Scrollback.persist_event(sample(user, net, 10, %{channel: "#room", dm_with: nil}))
+
+      assert Scrollback.count_for_target({:user, other.id}, net.id, "#room") == 0
+    end
+  end
 end

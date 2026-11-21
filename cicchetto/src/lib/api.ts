@@ -31,6 +31,7 @@ import {
   narrowAdminVhostResponse,
   narrowAdminVisitorsResponse,
   narrowArchiveResponse,
+  narrowArchiveTargetCount,
   narrowChannelListResponse,
   narrowCredentialResponse,
   narrowDirectoryPageResponse,
@@ -3306,6 +3307,28 @@ export async function deleteArchiveEntry(
     },
   );
   if (!res.ok) throw await readError(res);
+}
+
+// issue 2428 — mirror of `GrappaWeb.ArchiveController.count/2`.
+// GET /networks/:slug/archive/:target/count → `{count: n}`, how many
+// scrollback rows the DELETE above would drop for that window. Read once,
+// when the `/clear` confirm opens, so the modal can name what it removes
+// instead of asking the operator to trust a number it never fetched.
+//
+// The count is the DELETE's own (`Scrollback.count_for_target/3` uses the
+// delete's predicate, not the read path's), so "N messages" is a promise
+// about this window's rows and not an estimate.
+export async function getArchiveTargetCount(
+  token: string,
+  networkSlug: string,
+  target: string,
+): Promise<number> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/archive/${encodeURIComponent(target)}/count`,
+    { headers: buildHeaders(token) },
+  );
+  if (!res.ok) throw await readError(res);
+  return narrowArchiveTargetCount(await res.json()).count;
 }
 
 // Mirror of `GrappaWeb.NickController.create/2`. Sends `NICK <new>`

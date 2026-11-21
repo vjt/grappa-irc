@@ -137,13 +137,24 @@ defmodule GrappaWeb.ArchiveController do
 
   @doc """
   `DELETE /networks/:network_id/archive/:target` — drops scrollback for
-  one archive entry. Dispatch by sigil:
+  one window. Dispatch by `Scrollback.window_kind/1`:
 
     * channel-shaped target (`#`, `&`, `!`, `+` prefix) →
       `Scrollback.delete_for_channel/3` (pure channel = ^name filter).
+    * `$server` → the same `delete_for_channel/3`. The pseudo-channel
+      carries no sigil, so `target_kind/1` calls it `:query`; the carve-out
+      is `window_kind/1`'s, and it is the reason this door is reachable for
+      the NETWORK TAB at all (issue 2428 — an oper's server-notice window
+      grows without bound and this is the one surface that can empty it).
     * query-shaped target (peer nick) → `Scrollback.delete_for_dm/3`
       (`dm_with = ^peer` case-insensitive, symmetric across inbound
       + outbound rows).
+
+  ACTIVE windows are deletable. The active keyset (`build_active_keyset/3`)
+  bounds what the LISTING offers; it is deliberately not a precondition
+  here, because `/clear` acts on the window the operator is sitting in —
+  a joined channel or an open query — which by construction is exactly what
+  the listing hides.
 
   Returns 204 with no body. Broadcasts `archive_purged` on
   `Topic.user(subject_label)` after a successful delete so any
@@ -154,16 +165,7 @@ defmodule GrappaWeb.ArchiveController do
   the PART arm uses the lighter envelope without scrollback purge).
 
   Validation is at-the-boundary per CLAUDE.md: invalid target name
-  (not channel-shaped, not nick-shaped, not `$server`) → 400. Note
-  the `$server` pseudo-channel cannot be deleted via this surface
-  even when its name passes `validate_target_name/1` — it's filtered
-  out of `list_archive/3`'s output, so the operator cannot select
-  it from the UI in the first place; a hand-crafted DELETE against
-  `$server` collapses to a no-op `delete_for_channel/3` call (the
-  pseudo-channel has no rows ever stored at exactly `channel =
-  "$server"` modulo system messages, which are scoped per-channel
-  via the existing rules — leaving it as a soft no-op rather than a
-  separate 404 keeps the path simple).
+  (not channel-shaped, not nick-shaped, not `$server`) → 400.
   """
   @spec delete(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request}
   def delete(conn, %{"target" => target}) when is_binary(target) do
@@ -208,14 +210,52 @@ defmodule GrappaWeb.ArchiveController do
   @spec delete_for_target(String.t(), Grappa.Subject.t(), pos_integer()) ::
           {:ok, non_neg_integer()} | {:error, :db_unavailable}
   defp delete_for_target(canonical_target, session_subject, network_id) do
-    case Scrollback.target_kind(canonical_target) do
-      :channel ->
+    case Scrollback.window_kind(canonical_target) do
+      kind when kind in [:channel, :server] ->
         Scrollback.delete_for_channel(session_subject, network_id, canonical_target)
 
       :query ->
         Scrollback.delete_for_dm(session_subject, network_id, canonical_target)
     end
   end
+
+  @doc """
+  `GET /networks/:network_id/archive/:target/count` — how many rows the
+  DELETE above would drop for that window, as `%{count: n}`.
+
+  The confirm modal names the number before the operator commits (issue
+  2428), the same way the admin network delete names its row count (issue
+  2320, `GET /admin/networks/:id/message_count`). Asked once, when the
+  confirm opens — never on a render, and never on the archive listing,
+  whose whole cost argument (#1626) is that it does not count rows.
+
+  NOT metered with the archive read token. That bucket bounds the listing
+  because the listing is an aggregate over the partition; this is an
+  indexed `COUNT` for ONE window, the same cost class as the gap probe
+  (`GET …/messages/count`), which is unmetered for the same reason.
+
+  A target with no rows answers `{"count": 0}` rather than a 404: an empty
+  window is a legitimate answer to "how many", and the caller decides what
+  to do with a zero (cic refuses to open the confirm at all).
+  """
+  @spec count(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request}
+  def count(conn, %{"target" => target}) when is_binary(target) do
+    session_subject = Subject.to_session(conn.assigns.current_subject)
+    network = conn.assigns.network
+
+    with :ok <- validate_target_name(target) do
+      canonical_target =
+        Grappa.IRC.Identifier.canonical_target(
+          target,
+          Session.casemapping(session_subject, network.id)
+        )
+
+      count = Scrollback.count_for_target(session_subject, network.id, canonical_target)
+      render(conn, :count, count: count)
+    end
+  end
+
+  def count(_, _), do: {:error, :bad_request}
 
   # Active keyset = currently-joined channels (live Session state) +
   # currently-open query windows (persisted, subject-scoped per V1's

@@ -1100,6 +1100,10 @@ export type ScrollbackWireArchiveWireIndex = {
   archive: ScrollbackWireArchiveWireEntry[];
 };
 
+export type ScrollbackWireArchiveWireCount = {
+  count: number;
+};
+
 export type ScrollbackWireArchiveChangedPayload = {
   kind: "archive_changed";
   network_slug: string;

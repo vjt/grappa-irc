@@ -1019,6 +1019,9 @@ export const S_ScrollbackWireArchivePurgedPayload = {
   o: { kind: { l: "archive_purged" }, network_slug: "s", target: "s" },
 } as const;
 
+// Grappa.Scrollback.Wire.archive_wire_count/0
+export const S_ScrollbackWireArchiveWireCount = { o: { count: "i" } } as const;
+
 // Grappa.Scrollback.Wire.archive_wire_entry/0
 export const S_ScrollbackWireArchiveWireEntry = {
   o: { target: "s", kind: { e: ["channel", "query"] }, last_activity: "i" },

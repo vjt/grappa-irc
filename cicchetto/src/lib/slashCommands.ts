@@ -291,6 +291,13 @@ export type SlashCommand =
   // pure cannot see any of them. compose.ts resolves the state and decides
   // between a wire frame and a local refusal.
   | { kind: "np" }
+  // issue 2428 — `/clear`: wipe the scrollback of the window it was typed
+  // in, behind a confirm that names the row count. It carries NOTHING, and
+  // that is the shape rather than an omission: the target is the submitting
+  // window (`ctx.submittedFrom`, resolved by the handler), the count is a
+  // server read, and the confirm is a modal store — none of which a pure
+  // parser can see. Trailing text is ignored, the no-arg family's posture.
+  | { kind: "clear" }
   | { kind: "error"; verb: string; message: string };
 
 function err(verb: string, message: string): SlashCommand {
@@ -570,6 +577,13 @@ const DISPATCH = keysOf<Handler>({
   // there is nothing a second token could mean, so refusing one would buy the
   // operator a scolding instead of the line they asked for.
   np: (_verb, _rest) => ({ kind: "np" }),
+
+  // issue 2428 — `/clear`. Registered here like any other verb so it inherits
+  // the `//clear` literal escape and #427 alias shadowing for free. No
+  // arguments to parse: the window comes from the submission context and the
+  // row count from the server, so there is nothing a second token could mean
+  // — trailing text is ignored, the no-arg family's posture (/info, /np).
+  clear: (_verb, _rest) => ({ kind: "clear" }),
 
   join: (verb, rest, chantypes) => {
     // UX-4 bucket F: `/join #chan` OR `/join #chan key` (+k channel

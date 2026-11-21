@@ -1,16 +1,25 @@
-import { ownNickForNetwork, postJoin, postPart } from "../api";
+import {
+  deleteArchiveEntry,
+  getArchiveTargetCount,
+  ownNickForNetwork,
+  postJoin,
+  postPart,
+} from "../api";
 import { casemappingForSlug } from "../casemapping";
 import { setQuery } from "../channelDirectory";
-import { canonicalChannel } from "../channelKey";
+import { canonicalChannel, decodeChannelKey } from "../channelKey";
 import { isChannelName } from "../chantypes";
+import { requestConfirm } from "../confirmDialog";
 import { openEncryptedWindow } from "../encryptedWindow";
+import { friendlyError } from "../friendlyError";
 import { networkBySlug, networkIdBySlug, user } from "../networks";
 import { nickEquals } from "../nickEquals";
+import { runOpsVerb } from "../opsMenu";
 import { canonicalQueryNick, openQueryWindowState } from "../queryWindows";
 import { selectedChannel, setSelectedChannel } from "../selection";
 import { isServicesSender } from "../servicesSender";
 import { closeQueryWindow } from "../windowClose";
-import { LIST_WINDOW_NAME } from "../windowKinds";
+import { encryptedWindowPeer, isVirtualWindowName, LIST_WINDOW_NAME } from "../windowKinds";
 import type { CommandHandler } from "./context";
 
 /**
@@ -216,5 +225,96 @@ export const equeryCommand: CommandHandler<"equery"> = async (cmd, ctx) => {
     return { error: "/equery: that is your own nick" };
   }
   await openEncryptedWindow(ctx.networkSlug, cmd.target);
+  return { ok: true };
+};
+
+/**
+ * issue 2428 — `/clear`: wipe the scrollback of the window it was typed in,
+ * behind a confirm that names how many rows go.
+ *
+ * The use case that filed the issue is an IRC OPERATOR's network tab, which
+ * collects server notices without bound and had no way to shed them; the verb
+ * is deliberately not limited to it. Any window with server-side scrollback
+ * can be cleared — a channel, a query, `$server`.
+ *
+ * ## Server-side, and why that is the right side
+ *
+ * `DELETE /networks/:slug/archive/:target` drops the `messages` rows for the
+ * window, for the subject, on every device. A client-side hide would fix the
+ * oper's tab in the tab that ran the command and leave the rows to come back
+ * on the next reconnect or the next tab — which is not a fix for "grows
+ * without bound". The channel is NOT parted: this is local history, and the
+ * copy says so.
+ *
+ * ## The count comes from the server, and it is the DELETE's own
+ *
+ * The confirm names a number, so the number has to be the one that actually
+ * goes (`getArchiveTargetCount`, whose server side counts with the delete's
+ * predicate). Counting what this client has LOADED would undercount every
+ * window with un-fetched history — the exact windows an oper wants to clear.
+ * A window with zero rows never opens a confirm at all: there is nothing to
+ * confirm.
+ *
+ * ## What this verb refuses, and why it says so instead of doing nothing
+ *
+ *  * ENCRYPTED windows (`$e2e:<nick>`): their history is the device's own,
+ *    never in `messages`, so the DELETE would be a no-op that reported
+ *    success. Refused by name.
+ *  * Virtual windows (`$home`, `$admin`, `$list`, the mentions window): no
+ *    server-side channel exists to clear. The guard is
+ *    `isVirtualWindowName/1`, which already knows every one of them.
+ *
+ * Failure AFTER the confirm has nowhere inline to land — the composer is gone
+ * by the time the DELETE settles — so it rides the app's one detached-failure
+ * surface (`runOpsVerb`), the same door the nick menu's verbs use.
+ */
+export const clearCommand: CommandHandler<"clear"> = async (_cmd, ctx) => {
+  const target = ctx.submittedFrom;
+  // The submitting window's NAME, from the key rather than from
+  // `submittedFrom`: for an encrypted query those disagree by design
+  // (`submittedFrom` is the peer's nick, the key is `$e2e:<nick>`), and it is
+  // the key that says which window this is.
+  const windowName = decodeChannelKey(ctx.key)?.name ?? target;
+
+  if (encryptedWindowPeer(windowName) !== null) {
+    return {
+      error:
+        "/clear: an encrypted window's history is this device's, not the server's — there is nothing here to clear",
+    };
+  }
+  if (isVirtualWindowName(windowName)) {
+    return { error: `/clear: ${windowName} has no scrollback to clear` };
+  }
+
+  let count: number;
+  try {
+    count = await getArchiveTargetCount(ctx.token, ctx.networkSlug, target);
+  } catch (e: unknown) {
+    return { error: `/clear: ${friendlyError(e)}` };
+  }
+  if (count === 0) return { error: `/clear: ${target} has no scrollback` };
+
+  const messages = count === 1 ? "1 message" : `${count} messages`;
+  const survives =
+    windowName === "$server"
+      ? "New server output keeps arriving in this window."
+      : windowName.startsWith("#") || windowName.startsWith("&")
+        ? "The channel stays joined."
+        : "The window stays open.";
+
+  requestConfirm({
+    title: "Clear window",
+    body: `Delete ${messages} from ${target}? They are removed from the server for every device you are signed in on. ${survives}`,
+    confirmLabel: "Delete",
+    onConfirm: () => {
+      runOpsVerb("Clear", deleteArchiveEntry(ctx.token, ctx.networkSlug, target));
+    },
+    alternative: null,
+    attachments: null,
+    choice: null,
+    toggle: null,
+    // #195 — Cancel is the safe default on every destructive dialog.
+    defaultButton: "cancel",
+  });
   return { ok: true };
 };

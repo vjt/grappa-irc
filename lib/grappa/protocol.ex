@@ -1639,7 +1639,31 @@ defmodule Grappa.Protocol do
   # @min_protocol_version stays at 1: an older client ignores an unknown
   # `channel` field and shows the message as a DM from its sender —
   # degraded, not broken.
-  @protocol_version 63
+  #
+  # ---------------------------------------------------------------------------
+  # 64 — issue 2428: `GET /networks/:id/archive/:target/count`
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: one route and its shape, `%{count: n}`
+  # (`Grappa.Scrollback.Wire.archive_wire_count`), the number of scrollback
+  # rows `/clear` would drop for ONE window. It is what the confirm modal
+  # names before the operator commits — the same question issue 2320 asked
+  # of the admin network delete, which is why v33 bumped for the same reason.
+  #
+  # 🔴 `mix grappa.wire_pin --check` DID force this one (unlike v16's, v18's
+  # and v33's silent carriers): the shape is a typespec in
+  # `lib/grappa/scrollback/wire.ex`, which is a `*wire.ex` module and
+  # therefore inside the digested glob. Measured before the bump: the pin
+  # answered `:pin_stale` with the number standing still. The bump is still
+  # by hand — the pin says a shape moved, never which number to claim.
+  #
+  # Checked for a collision before claiming 64: origin/main carries 63.
+  #
+  # @min_protocol_version stays at 1. A bundle predating v64 never calls the
+  # route; a v64 bundle asking it of an older server gets a 404 and cic
+  # refuses the `/clear` with the error instead of opening a confirm that
+  # cannot name what it deletes.
+  @protocol_version 64
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1680,7 +1704,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 63
+  @spec version() :: 64
   def version, do: @protocol_version
 
   @doc """

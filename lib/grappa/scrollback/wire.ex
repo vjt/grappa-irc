@@ -114,6 +114,19 @@ defmodule Grappa.Scrollback.Wire do
   """
   @type archive_wire_index :: %{archive: [archive_wire_entry()]}
 
+  @typedoc """
+  Wire shape of the per-target row count (issue 2428) —
+  `GET /networks/:network_id/archive/:target/count`, answered by
+  `GrappaWeb.ArchiveJSON.count/1`.
+
+  A NAMED key and not a bare number: the admin twin this one follows
+  (`GrappaWeb.AdminJSON`'s `message_count`, issue 2320) answered
+  `%{message_count: n}` for the same reason, and an object leaves room for
+  the next term (a byte estimate, a date range) without a shape change that
+  would break every reader of a bare scalar.
+  """
+  @type archive_wire_count :: %{count: non_neg_integer()}
+
   @doc """
   Renders a `Grappa.Scrollback.Message` row to its public JSON wire
   shape. The `:network` association MUST be preloaded — pattern match
@@ -223,6 +236,15 @@ defmodule Grappa.Scrollback.Wire do
   def archive_index(entries) when is_list(entries) do
     %{archive: Enum.map(entries, &archive_entry/1)}
   end
+
+  @doc """
+  Wraps `Scrollback.count_for_target/3`'s number as the REST envelope
+  `%{count: n}` (issue 2428). The controller delegates here for the same
+  reason `archive_index/1` exists: the wire shape is declared once, in this
+  module, and `mix grappa.gen_wire_types` reads it from the typespec above.
+  """
+  @spec archive_count(non_neg_integer()) :: archive_wire_count()
+  def archive_count(count) when is_integer(count) and count >= 0, do: %{count: count}
 
   @typedoc """
   UX-1 (2026-05-17) — `archive_changed` push payload broadcast on

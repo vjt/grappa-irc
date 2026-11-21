@@ -2288,6 +2288,32 @@ describe("parseSlash — /np (#1698)", () => {
   });
 });
 
+// issue 2428 — /clear: wipe the submitting window's scrollback. No
+// arguments, no wire: the target comes from the submission context and the
+// row count from the server, so the parser carries nothing.
+describe("parseSlash — /clear (issue 2428)", () => {
+  it("takes no arguments", () => {
+    expect(parsePlain("/clear")).toEqual({ kind: "clear" });
+  });
+
+  it("ignores trailing tokens rather than erroring on them", () => {
+    // The no-arg family's posture: there is nothing a second token could mean.
+    expect(parsePlain("/clear please")).toEqual({ kind: "clear" });
+    expect(parsePlain("/CLEAR")).toEqual({ kind: "clear" });
+  });
+
+  it("stays a plain privmsg behind the literal-slash escape", () => {
+    expect(parsePlain("//clear")).toEqual({ kind: "privmsg", body: "/clear" });
+  });
+
+  it("can be shadowed by a user alias, like every builtin but /alias", () => {
+    expect(parseSlash("/clear", keysOf({ clear: "me bye" }), DEFAULT_CHANTYPES)).toEqual({
+      kind: "me",
+      body: "bye",
+    });
+  });
+});
+
 // issue 2584 — what "the verb" of a line is, asked by the parser, by the
 // command counter (which posts the verb AS TYPED, before any alias expands)
 // and nowhere else: one rule, so the count and the dispatch cannot disagree.
