@@ -145,7 +145,6 @@ export function splitAtDepthZero(text: string, isSeparator: (ch: string) => bool
  * are ASCII case-insensitive, so they come back lower-cased; a trailing
  * `!important` is dropped, since it does not change which value is declared.
  * Values keep their case: a custom property inside `var()` is case-sensitive.
- * The splitter this module's readers share.
  */
 export function declarations(body: string): [string, string][] {
   const out: [string, string][] = [];
