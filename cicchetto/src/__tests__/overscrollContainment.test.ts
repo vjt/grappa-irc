@@ -432,8 +432,9 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
       ".pane { overscroll-behavior-y: contain }",
     ]);
     // ...and only where a layout turns the strip vertical: on a strip that
-    // never scrolls y, a y restore would latch a vertical wheel at the strip,
-    // the latch the x-only list exists to prevent (the shared rule's comment).
+    // declares no y scroll, a y restore would latch a vertical wheel at the
+    // strip, the latch the x-only list exists to prevent (the shared rule's
+    // comment).
     const flat = {
       selectors: ".rail-strip",
       body: "overflow-x: auto; overscroll-behavior-y: contain;",
