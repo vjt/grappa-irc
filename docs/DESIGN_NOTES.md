@@ -6905,9 +6905,10 @@ five advisories, but it still requires `idna ~> 7.1.0`, and idna's fix is
 8.0.0. The first hackney that takes idna 8 is 4.11.0, so that is the
 target. It drags four packages it requires along: certifi 2.18.0, h2 0.17.0,
 quic 2.7.0 and webtransport 0.5.8. bandit drags two: hpax 1.1.0 and
-thousand_island 1.6.0. Six carried, twelve flagged, eighteen lines in the
-lock. The resolver also offered telemetry 1.4.3; pinning it at 1.4.2
-resolved just as well, so it stays where it was.
+thousand_island 1.6.0. Twelve of the fourteen flagged packages moved
+(cloak and cloak_ecto have no fixed release to move to), six were carried,
+eighteen lines in the lock. The resolver also offered telemetry 1.4.3;
+pinning it at 1.4.2 resolved just as well, so it stays where it was.
 
 ### Two majors, and what they change here
 
@@ -6916,16 +6917,63 @@ semver treats as breaking too. All four are reached only through hackney,
 which grappa ships and never calls: since #2401 `Grappa.Push.Sender` takes
 `ExNudge.Encryption` and `ExNudge.VAPID` and posts through
 `Grappa.Net.PinnedHttp`, and nothing in `lib/`, `config/` or `test/` names
-any of the four packages. What they change in our code is therefore that
-the application starts them at boot, which the test suite does. jose is
-the opposite case: `ExNudge.VAPID.sign_jwt/2` calls it on every push
-delivery, so that bump reaches a live path.
+any of the four packages. What they change for us happens at boot. The
+application starts them, which the test suite does, and quic 2.7.0's
+`quic_app:start/2` now calls `quic_redact:install_log_filter/0` before
+starting its supervisor; 1.8.0's `start/2` was `quic_sup:start_link()`
+alone. That filter is a VM-global PRIMARY logger filter. The review read
+it in a prod release booted in embedded mode:
+`:logger.get_primary_config().filters` is `[:quic_redact,
+:logger_translator, :logger_process_level]`, so it runs first, ahead of
+Elixir's translator, on every log event, and walks every
+`{gen_server, terminate}`, `{gen_statem, terminate}`, `{proc_lib, crash}`
+and `{supervisor, _}` report grappa emits. On a synthetic `gen_server`
+terminate report from a non-quic process, its state a 100k-entry map, the
+output equalled the input and one pass took 18–40 ms; the positive
+control, a quic stack frame, came out with its arguments replaced by its
+arity. So grappa's crash reports keep their content and each one pays one
+extra full walk. That cost was measured by calling `log_filter/2`
+directly in one container, not on a real crash going through Logger, and
+is not a production number. hackney 4.11's `hackney_sup` also creates one
+more ETS table at init (`hackney_h3:init_table/0`).
 
-One behaviour change does reach a live path, and it was designed for:
-plug 1.20.4 now charges multipart part headers and framing against the
-parser's `:length`. `GrappaWeb.MultipartLimits.upload_length/0` is the
-largest per-file cap plus 8 MiB set aside for exactly that framing (issue
-2529), so the margin goes from slack to load-bearing. Nothing grew past it.
+### What reaches a live path
+
+Two of the bumps sit on the path every push delivery takes, and a third on
+the upload path.
+
+mint 1.10.0 → 1.10.2 carries each one: `Grappa.Net.PinnedHttp` calls
+`Mint.HTTP.connect/4` and `Mint.HTTP.request/5` directly, with
+`protocols: [:http1]`, and these two releases rewrite HTTP/1 response
+parsing. Chunk extensions are now validated instead of skipped up to the
+CRLF, and an HTTP/1.0 response that carries `Transfer-Encoding` now closes
+the connection. A push service that answers with a malformed chunk line
+now gets an error where it used to be parsed. Exercised: the review drove
+`PinnedHttp` (Mint 1.10.2) against Bandit 1.14.1, `GET /healthz` → 200, in
+the booted release, and `wire_format_test` is green. No real vendor (FCM,
+APNs, autopush) has been seen to send such a line; the claim is only that
+it would now be refused.
+
+jose 1.11.12 → 1.11.13 is on the same path, since
+`ExNudge.VAPID.sign_jwt/2` calls it on every delivery, but the changed
+code is not: its diff touches EC `verify/4` (strict R||S length) and
+`jose_server`'s boot self-checks, not the ES256 signing that `sign_jwt/2`
+takes. The package reaches a live path; its change does not.
+
+plug 1.20.4 is the upload one, and it was designed for. It charges
+multipart part headers and framing against the parser's `:length`. That was already
+true in part: 1.20.3 charged each part header's name and value
+(`headers_size/1`), so the margin was load-bearing before this bump, and
+what grew is the charge. `GrappaWeb.MultipartLimits.upload_length/0` is the
+largest per-file cap plus 8 MiB (8,388,608 bytes) set aside for exactly
+that framing (issue 2529). The review measured it on plug 1.20.4 with
+cic's real upload body (a `file` part with filename and content type, an
+`expire` part, a 38-byte boundary as Chrome sends): 385 bytes charged,
+which is plug's own formula (36 per part, 56 per header, plus name and
+value). 1.20.3's formula gives 145 for the same body, derived from its
+source and not run. At full scale a 512 MiB file is accepted against
+`upload_length/0`, a file of `upload_length − 385` bytes is accepted, and
+one byte more raises `Plug.Parsers.RequestTooLargeError`.
 
 ### What hex.audit still says, and issue 149
 
@@ -6957,9 +7005,12 @@ packages, so a green deps.audit says nothing about what hex.audit sees.
 
 ### Not covered
 
-No `mix release` was assembled, so the release boot with the new
-applications is covered by the test suite's application start, not by a
-release. Bandit's HTTP/2 and WebSocket fixes are exercised only as far as
-the existing suite reaches. The cloak reachability argument rests on a
-search of `config/` and `lib/`, not on a test that would fail if a CTR
-cipher appeared. This ships COLD: `mix.lock` changed.
+The release boot rests on the review's run: a `MIX_ENV=prod` release
+assembled and booted in embedded mode in the Linux dev container, every new
+version in `lib/` and started, cowboy and cowlib (test-only) absent.
+Neither the FreeBSD jail nor the alpine image `Dockerfile.release` builds
+has booted it, and quic's build on FreeBSD was read, not run. Bandit's
+HTTP/2 and WebSocket fixes are exercised only as far as the existing suite
+reaches, plus the one HTTP/1 `GET /healthz` above. The cloak reachability
+argument rests on a search of `config/` and `lib/`, not on a test that
+would fail if a CTR cipher appeared. This ships COLD: `mix.lock` changed.
