@@ -879,6 +879,7 @@ export const S_NetworksWireConnectionStateEvent = {
 // Grappa.Networks.Wire.credential_json/0
 export const S_NetworksWireCredentialJson = {
   o: {
+    keep_nick: "b",
     network: "s",
     nick: "s",
     ident: { u: ["s", "z"] },
@@ -899,6 +900,7 @@ export const S_NetworksWireCredentialJson = {
     inserted_at: "s",
     updated_at: "s",
   },
+  q: ["keep_nick"],
 } as const;
 
 // Grappa.Networks.Wire.home_data/0
@@ -907,6 +909,11 @@ export const S_NetworksWireHomeData = {
     networks: { a: S_NetworksWireHomeNetworkRow },
     available_networks: { a: S_NetworksWireAvailableNetworkRow },
   },
+} as const;
+
+// Grappa.Networks.Wire.keep_nick_changed_event/0
+export const S_NetworksWireKeepNickChangedEvent = {
+  o: { kind: { l: "keep_nick_changed" }, network_id: "i", network_slug: "s", keep_nick: "b" },
 } as const;
 
 // Grappa.Networks.Wire.network_attached_event/0
@@ -922,6 +929,7 @@ export const S_NetworksWireNetworkDetachedEvent = {
 // Grappa.Networks.Wire.network_with_nick_json/0
 export const S_NetworksWireNetworkWithNickJson = {
   o: {
+    keep_nick: "b",
     kind: { l: "user" },
     id: "i",
     slug: "s",
@@ -942,11 +950,13 @@ export const S_NetworksWireNetworkWithNickJson = {
     inserted_at: "s",
     updated_at: "s",
   },
+  q: ["keep_nick"],
 } as const;
 
 // Grappa.Networks.Wire.visitor_network_with_nick_json/0
 export const S_NetworksWireVisitorNetworkWithNickJson = {
   o: {
+    keep_nick: "b",
     kind: { l: "visitor" },
     id: "i",
     slug: "s",
@@ -967,6 +977,7 @@ export const S_NetworksWireVisitorNetworkWithNickJson = {
     inserted_at: "s",
     updated_at: "s",
   },
+  q: ["keep_nick"],
 } as const;
 
 // Grappa.Notify.Wire.entry/0
