@@ -50,7 +50,7 @@ vi.mock("../lib/e2e/pairing", async (orig) => ({
   openChannel: pairingHolder.openChannel,
 }));
 
-import { ApiError } from "../lib/api";
+import { ApiError } from "../lib/apiError";
 import type { JoinerState } from "../lib/e2e/pairingSession";
 
 const { default: PairJoin } = await import("../PairJoin");

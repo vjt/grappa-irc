@@ -1,6 +1,6 @@
 import { useNavigate } from "@solidjs/router";
 import { type Component, createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { ApiError } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { token } from "./lib/auth";
 import { joinPairing, openChannel, type PairingChannel } from "./lib/e2e/pairing";
 import { pairingDeps } from "./lib/e2e/pairingDeps";

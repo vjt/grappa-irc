@@ -32,7 +32,8 @@
 // time, so a client broken by a rotation already holds exactly the key it
 // subscribed with, which is what makes it heal on its first ensure seam.
 
-import { ApiError, readError } from "./api";
+import { readError } from "./api";
+import { ApiError } from "./apiError";
 import { formatDurationSince } from "./duration";
 import { isIos, isStandalonePwa } from "./platform";
 import { deviceDisplayName, parseUserAgent } from "./userAgent";

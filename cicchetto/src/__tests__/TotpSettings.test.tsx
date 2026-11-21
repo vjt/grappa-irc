@@ -34,7 +34,7 @@ vi.mock("../lib/passkeys", () => ({
   passkeysAvailable: () => true,
 }));
 
-import { ApiError } from "../lib/api";
+import { ApiError } from "../lib/apiError";
 import TotpSettings from "../TotpSettings";
 
 const ENROLLMENT = {

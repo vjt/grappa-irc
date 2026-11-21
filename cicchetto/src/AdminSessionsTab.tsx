@@ -31,7 +31,6 @@ import {
   type AdminSession,
   type AdminSessionLogEntry,
   type AdminVisitor,
-  ApiError,
   adminDeleteVisitor,
   adminDisconnectSession,
   adminListCredentials,
@@ -42,6 +41,7 @@ import {
   adminReconnectSession,
   adminTerminateSession,
 } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { token } from "./lib/auth";
 import { isAdminNarrow } from "./lib/theme";
 

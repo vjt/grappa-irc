@@ -45,7 +45,7 @@ vi.mock("../lib/passkeys", () => ({
   passkeysAvailable: passkeys.passkeysAvailable,
 }));
 
-import { ApiError } from "../lib/api";
+import { ApiError } from "../lib/apiError";
 import PasskeySettings from "../PasskeySettings";
 
 describe("PasskeySettings", () => {

@@ -30,7 +30,7 @@ const offerHolder = vi.hoisted(() => ({ offeringFromHere: vi.fn() }));
 vi.mock("../lib/e2e/pairingOffer", () => ({ offeringFromHere: offerHolder.offeringFromHere }));
 
 import AddDeviceOffer from "../AddDeviceOffer";
-import { ApiError } from "../lib/api";
+import { ApiError } from "../lib/apiError";
 
 const rendezvous = {
   id: ID,

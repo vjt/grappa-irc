@@ -13,7 +13,8 @@ import AdminField from "./admin/AdminField";
 import { AdminLoading } from "./admin/AdminStatus";
 import AdminToolbar from "./admin/AdminToolbar";
 import { useRefreshSlot } from "./admin/refreshSlot";
-import { type AdminSettingsView, ApiError, adminGetSettings, adminPutSettings } from "./lib/api";
+import { type AdminSettingsView, adminGetSettings, adminPutSettings } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { token } from "./lib/auth";
 import { AUTO_AWAY_PRESETS, formatAutoAwaySeconds } from "./lib/autoAwayLadder";
 

@@ -1,6 +1,6 @@
 import { useNavigate } from "@solidjs/router";
 import { type Component, createSignal, onCleanup, onMount, Show } from "solid-js";
-import { ApiError } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import * as auth from "./lib/auth";
 import { type CaptchaProvider, mountCaptchaWidget } from "./lib/captcha";
 import { CONNECTING_MESSAGES } from "./lib/connectingMessages";

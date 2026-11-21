@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ApiError, ChannelPushError } from "../lib/api";
+import { ChannelPushError } from "../lib/api";
+import { ApiError } from "../lib/apiError";
 import { friendlyError } from "../lib/friendlyError";
 
 // #74 — `friendlyError` is the single dispatcher that maps a thrown error

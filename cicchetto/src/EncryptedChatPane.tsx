@@ -24,7 +24,8 @@ import {
   VerifyKeyButton,
 } from "./EncryptedRail";
 import InlineConfirmButton from "./InlineConfirmButton";
-import { ApiError, type ScrollbackMessage } from "./lib/api";
+import type { ScrollbackMessage } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { channelKey } from "./lib/channelKey";
 import { requestConfirm } from "./lib/confirmDialog";
 import { isCtcpAction, stripCtcpAction } from "./lib/ctcpAction";

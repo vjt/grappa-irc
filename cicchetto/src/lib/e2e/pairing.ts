@@ -12,7 +12,8 @@
 // through grappa: the open carries the key, grappa offers the rendezvous, and
 // its banner hands `/pair` the code (lib/e2e/pairingOffer).
 
-import { ApiError, buildHeaders, readError } from "../api";
+import { buildHeaders, readError } from "../api";
+import { ApiError } from "../apiError";
 import {
   narrowPairingMessageResponse,
   narrowPairingMessagesResponse,

@@ -9,13 +9,13 @@ import {
   type AdminCredentialUpdate,
   type AdminNetwork,
   type AdminUser,
-  ApiError,
   adminBindCredential,
   adminListCredentials,
   adminListNetworks,
   adminUnbindCredential,
   adminUpdateCredential,
 } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { token } from "./lib/auth";
 import { operatorApiError } from "./lib/friendlyApiError";
 import type { IRCAuthFSMAuthMethod } from "./lib/wireTypes";

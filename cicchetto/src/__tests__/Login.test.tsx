@@ -2,7 +2,7 @@ import { Route, Router } from "@solidjs/router";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Login from "../Login";
-import { ApiError } from "../lib/api";
+import { ApiError } from "../lib/apiError";
 
 // `auth.login` is the boundary the form drives — mock it instead of the
 // raw HTTP layer so the form test stays focused on form behavior, not

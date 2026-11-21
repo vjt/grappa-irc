@@ -1,5 +1,6 @@
 import { type Component, createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
-import { ApiError, type DirectoryEntry, postJoin } from "./lib/api";
+import { type DirectoryEntry, postJoin } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { token } from "./lib/auth";
 import {
   directoryError,

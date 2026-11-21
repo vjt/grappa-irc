@@ -1,4 +1,5 @@
-import { ApiError, ChannelPushError } from "./api";
+import { ChannelPushError } from "./api";
+import { ApiError } from "./apiError";
 import { friendlyApiError } from "./friendlyApiError";
 import { friendlyChannelError, SEND_THROTTLED_COPY } from "./friendlyChannelError";
 

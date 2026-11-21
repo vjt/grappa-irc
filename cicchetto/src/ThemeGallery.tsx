@@ -11,7 +11,7 @@ import {
   Switch,
   untrack,
 } from "solid-js";
-import { ApiError } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { token } from "./lib/auth";
 import { requestConfirm } from "./lib/confirmDialog";
 import {

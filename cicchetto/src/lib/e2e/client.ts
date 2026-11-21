@@ -45,7 +45,7 @@
 // caller to sync the identity and drain again. A drain that meets the same
 // copy again drops it as the engine reported it: it never stops twice.
 
-import { ApiError } from "../api";
+import { ApiError } from "../apiError";
 import type { E2eKeysWireDevice } from "../wireTypes";
 import type { AccountStore } from "./accountStore";
 import { type ByNick, noNicks, setNick } from "./byNick";

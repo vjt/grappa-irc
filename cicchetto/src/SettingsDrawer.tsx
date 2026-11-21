@@ -14,7 +14,8 @@ import DeleteAccountModal from "./DeleteAccountModal";
 import IgnoresSettings from "./IgnoresSettings";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { windowCandidates } from "./lib/activeWindows";
-import { ApiError, displayNick, type Network, visitorNetworkNick } from "./lib/api";
+import { displayNick, type Network, visitorNetworkNick } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { getSubject, token } from "./lib/auth";
 import {
   autoAwayDebounceValue,

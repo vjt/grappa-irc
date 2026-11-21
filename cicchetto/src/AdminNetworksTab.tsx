@@ -14,7 +14,6 @@ import {
   type AdminNetwork,
   type AdminNetworkSettingsPatch,
   type AdminServer,
-  ApiError,
   adminAddFeaturedChannel,
   adminAddServer,
   adminCreateNetwork,
@@ -31,6 +30,7 @@ import {
   adminUpdateFeaturedChannel,
   adminUpdateServer,
 } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { token } from "./lib/auth";
 import { isAdminNarrow } from "./lib/theme";
 import {

@@ -12,7 +12,13 @@ import { channelKey } from "../lib/channelKey";
 // without any WS coupling — the WS path is exercised by
 // `subscribe.test.ts` separately.
 
-vi.mock("../lib/api", () => ({
+// #2409 — `scrollback.ts` narrows a failed fetch with `err instanceof ApiError`
+// to tell a 400 (a verdict on the target, latched) from a transient failure.
+// The class must therefore be the REAL one: a stubbed stand-in would make the
+// latch branch untestable here, and a factory that omits the export entirely
+// makes the import undefined and every test in this file throw.
+vi.mock("../lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/api")>()),
   listNetworks: vi.fn(),
   listChannels: vi.fn(),
   listMessages: vi.fn(),

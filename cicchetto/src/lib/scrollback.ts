@@ -9,6 +9,7 @@ import {
   type MessageRelay,
   type ScrollbackMessage,
 } from "./api";
+import { ApiError } from "./apiError";
 import { getSubject, token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { sendLog, subjectKey } from "./e2e/orders";
@@ -449,6 +450,54 @@ export type PrependCommitSeam = () => (() => void) | undefined;
 
 const exports = identityScopedStore((onIdentityChange) => {
   const loadedChannels = new Set<ChannelKey>();
+  // #2409 — keys the scrollback REST surface REFUSED. A 400 from
+  // `/messages` (or its `/count` probe) is a verdict about the TARGET, not a
+  // transient failure: the same request will be refused again, byte for byte.
+  // Retrying it is how a client-generated bad request becomes a user-facing
+  // ban — the edge's `http-400` fail2ban jail matched 20 such GETs over 33
+  // minutes and blocked the operator's whole IP (same failure class as #160).
+  //
+  // The latch is per key and forward-only within an identity: once a target
+  // is refused, every paging verb (`loadInitialScrollback`, `refreshScrollback`,
+  // `loadMore`, `loadNewer`, the gap probe, `jumpToUnread`, `jumpToMessage`)
+  // READS this set on the way in and short-circuits for it. It is NOT
+  // keyed on the channel name alone: a 400 is evidence about a request, and a
+  // window that a later server build accepts will be picked up by the next
+  // cold load after an identity transition, which clears this set.
+  //
+  // Deliberately ONLY 400. 401 is the identity's business (`identityMoved`
+  // owns it), 404 can mean a network that is not bound yet, 429 is a rate
+  // limit that genuinely clears — latching any of those would turn a transient
+  // condition into a permanently dead window.
+  //
+  // ⚠️ A 400 does NOT distinguish "this target is refused" from "this
+  // request is malformed". `MessagesController.index` answers the same
+  // `400 bad_request` for a refused name (`Validation.validate_target_name`)
+  // and for a bad query — `parse_direction`, `parse_limit`, the mutually
+  // exclusive cursor keys. So a param bug in ONE verb (say a bad `before`
+  // from `loadMore`) latches the whole key, the reconnect refresh included.
+  // The trade is accepted knowingly: the client cannot tell the two apart,
+  // and the alternative is the loop that got an operator's IP banned. The
+  // cure for a param bug is a fix here, not a narrower latch.
+  const rejectedTargets = new Set<ChannelKey>();
+  // #788 — the identity check lives HERE rather than at each call site: a
+  // catch that lands after a bearer rotation must not write into the NEW
+  // identity's set. `loadInitialScrollback` used to be the only caller that
+  // remembered; centralising it means a new verb cannot forget.
+  // #2409 — the one place a 400 is remembered, and the one place it is logged.
+  // The log belongs HERE rather than in each catch: two of the seven call sites
+  // (`fetchOlderPage`, the `loadNewer` catch) had no console line at all, so a
+  // bad `before` from `loadMore` latched the whole window — the reconnect
+  // refresh included — leaving no trace. Once per key, on the FIRST refusal:
+  // the latch is forward-only within an identity, so every later verb it
+  // short-circuits never reaches the wire and has nothing to say.
+  const noteFetchFailure = (t: string, key: ChannelKey, err: unknown): void => {
+    if (identityMoved(t)) return;
+    if (!(err instanceof ApiError && err.status === 400)) return;
+    if (rejectedTargets.has(key)) return;
+    rejectedTargets.add(key);
+    console.warn("[scrollback] target refused, window latched", key, err);
+  };
   // issue 2333 — the cold load currently running per key, so `jumpToMessage`
   // can wait it out instead of racing it. Entries delete themselves when the
   // load settles; nothing to clear on an identity change.
@@ -662,6 +711,7 @@ const exports = identityScopedStore((onIdentityChange) => {
   // merge paths; `jumpToUnread` REPLACES the key's rows, so a second concurrent
   // jump would discard whatever landed between the two writes.)
   onIdentityChange(() => loadedChannels.clear());
+  onIdentityChange(() => rejectedTargets.clear());
   onIdentityChange(() => setLoadMoreInFlight(new Set()));
   onIdentityChange(() => loadMoreExhausted.clear());
   onIdentityChange(() => loadNewerInFlight.clear());
@@ -935,9 +985,19 @@ const exports = identityScopedStore((onIdentityChange) => {
     name: string,
     anchor: number,
   ): Promise<GapProbe | null> => {
+    // #2409 — the probe is a scrollback GET like any other, so it reads the
+    // latch itself rather than trusting its callers to have done it. It is
+    // reached through the guarded verbs AND through the two jumps, and a
+    // guard that lives only at the call sites is a guard the next verb
+    // forgets.
+    if (rejectedTargets.has(channelKey(slug, name))) return null;
     try {
       return await countMessagesAfter(t, slug, name, anchor);
     } catch (err) {
+      // #2409 — the probe is a scrollback GET too, and a 400 here is the same
+      // verdict as one from `/messages`: latch it so the caller's siblings do
+      // not go on to spend two more refused requests.
+      noteFetchFailure(t, channelKey(slug, name), err);
       console.warn("[scrollback] gap probe failed — keeping the anchored resume", slug, name, err);
       return null;
     }
@@ -1139,6 +1199,10 @@ const exports = identityScopedStore((onIdentityChange) => {
     const t = token();
     if (!t) return false;
     const key = channelKey(slug, name);
+    // #2409 — the bar that offers this jump is a gesture, not a loop, but
+    // every tap is one more refused GET for a latched target. Read the latch
+    // on the way in, the way the paging verbs do.
+    if (rejectedTargets.has(key)) return false;
     const far = farBehindByChannel()[key];
     if (!far) return false;
     if (jumpInFlight.has(key)) return false;
@@ -1182,6 +1246,8 @@ const exports = identityScopedStore((onIdentityChange) => {
       clearFarBehind(key);
       return true;
     } catch (err) {
+      // #2409 — a 400 here is the same refusal the paging verbs latch.
+      noteFetchFailure(t, key, err);
       console.error("[scrollback] jumpToUnread failed", slug, name, err);
       return false;
     } finally {
@@ -1229,7 +1295,13 @@ const exports = identityScopedStore((onIdentityChange) => {
     const key = channelKey(slug, name);
     await initialLoadInFlight.get(key);
     if (identityMoved(t)) return false;
+    // #2409 — a latched target is refused whatever the anchor: a tap on a
+    // mention row would otherwise put the same refused GET back on the wire.
+    // Read AFTER the local hit below: a row already in the pane needs no
+    // network at all, and refusing that jump would send the mention tap to the
+    // marker or the tail instead of to the mention.
     if ((scrollbackByChannel()[key] ?? []).some((m) => m.id === id)) return true;
+    if (rejectedTargets.has(key)) return false;
     if (jumpInFlight.has(key)) return false;
     jumpInFlight.add(key);
     try {
@@ -1264,6 +1336,8 @@ const exports = identityScopedStore((onIdentityChange) => {
       });
       return true;
     } catch (err) {
+      // #2409 — a 400 here is the same refusal the paging verbs latch.
+      noteFetchFailure(t, key, err);
       console.error("[scrollback] jumpToMessage failed", slug, name, err);
       return false;
     } finally {
@@ -1306,6 +1380,9 @@ const exports = identityScopedStore((onIdentityChange) => {
     if (!t) return;
     const key = channelKey(slug, name);
     if (loadedChannels.has(key)) return;
+    // #2409 — the server already refused this target. Re-selecting the window
+    // must not put the same refused GET back on the wire.
+    if (rejectedTargets.has(key)) return;
     loadedChannels.add(key);
     // issue 2333 — published so `jumpToMessage` can wait for it (see there).
     let settleInitialLoad: () => void = () => {};
@@ -1429,9 +1506,14 @@ const exports = identityScopedStore((onIdentityChange) => {
           }
         }
       }
-    } catch {
+    } catch (err) {
       // First-load failure leaves the empty seed in place; the pane
       // shows "no messages yet". A retry mechanism is Phase 5+.
+      //
+      // #2409 — unless the failure was a 400, which is not a failure to retry
+      // but a refusal to remember: latch the key BEFORE releasing the load-once
+      // gate, so the release cannot re-arm the next selection into the same
+      // refused request.
       //
       // #788 — the reject path is the likelier arrival for a bearer revoked
       // in flight (`api.ts` throws the 401), and this gate is identity-scoped
@@ -1440,6 +1522,10 @@ const exports = identityScopedStore((onIdentityChange) => {
       // that deliberately does NOT fire `refreshScrollback` (#159), and so
       // skips one live-delivery catch-up while re-paying for a cold load.
       if (identityMoved(t)) return;
+      // A latched cold load is PERMANENT for this identity: the pane will say
+      // "no messages yet" for the rest of it. `noteFetchFailure` says why, once
+      // per key, for every verb that can latch.
+      noteFetchFailure(t, key, err);
       loadedChannels.delete(key);
     } finally {
       initialLoadInFlight.delete(key);
@@ -1464,7 +1550,11 @@ const exports = identityScopedStore((onIdentityChange) => {
   ): Promise<ScrollbackMessage[] | null> => {
     try {
       return await listMessages(t, slug, name, before);
-    } catch {
+    } catch (err) {
+      // #2409 — a 400 is a refusal, not a flake: remember it so scroll-to-top
+      // stops asking. Every other failure keeps the old "retry on the next
+      // scroll" behaviour.
+      noteFetchFailure(t, channelKey(slug, name), err);
       return null;
     }
   };
@@ -1484,6 +1574,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     //   2. In-flight guard second: a parallel scroll-burst converges
     //      onto a single REST request; the second call returns void
     //      while the first is still pending.
+    if (rejectedTargets.has(key)) return;
     if (loadMoreExhausted.has(key)) return;
     if (loadMoreInFlight().has(key)) return;
     const current = scrollbackByChannel()[key];
@@ -1568,6 +1659,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     const t = token();
     if (!t) return;
     const key = channelKey(slug, name);
+    if (rejectedTargets.has(key)) return;
     if (loadNewerExhausted.has(key)) return;
     if (loadNewerInFlight.has(key)) return;
     const current = scrollbackByChannel()[key];
@@ -1598,9 +1690,14 @@ const exports = identityScopedStore((onIdentityChange) => {
           return { ...prev, [key]: { ...current, through: top } };
         });
       }
-    } catch {
+    } catch (err) {
       // Transient error — do NOT latch. The user can retry by scrolling;
       // the in-flight guard releases via the `finally` below.
+      //
+      // #2409 — a 400 is the one non-transient case: it is the server
+      // refusing the target, so "retry by scrolling" would be a retry of the
+      // same refusal.
+      noteFetchFailure(t, key, err);
     } finally {
       if (!identityMoved(t)) loadNewerInFlight.delete(key);
     }
@@ -1823,6 +1920,10 @@ const exports = identityScopedStore((onIdentityChange) => {
     const t = token();
     if (!t) return;
     const key = channelKey(slug, name);
+    // #2409 — a target the server refused is not refreshed. Every join-ok and
+    // every reconnect sweep calls this verb, so without the latch a single
+    // refused name turns each reconnect into another 400.
+    if (rejectedTargets.has(key)) return;
     if (refreshInFlight.has(key)) {
       // #1593 — queue, never drop. See the `refreshQueued` declaration.
       refreshQueued.add(key);
@@ -1890,6 +1991,13 @@ const exports = identityScopedStore((onIdentityChange) => {
       // Transient error — leave the cursor alone so the next reconnect
       // retries. Log to console for operator diagnosis; Phase 5
       // telemetry hook will replace this.
+      //
+      // #2409 — "the next reconnect retries" is exactly the loop when the
+      // error is a 400: the server is not going to change its mind about the
+      // target. Latch it. A first 400 leaves TWO records, the latch line from
+      // `noteFetchFailure` above and the failure line below; a later 400 on
+      // the same key leaves only the second.
+      noteFetchFailure(t, key, err);
       console.error("[scrollback] refreshScrollback failed", slug, name, err);
     } finally {
       if (!identityMoved(t)) {

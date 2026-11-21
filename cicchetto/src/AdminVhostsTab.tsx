@@ -9,7 +9,6 @@ import InlineConfirmButton from "./InlineConfirmButton";
 import {
   type AdminVhost,
   type AdminVhostGrant,
-  ApiError,
   adminCreateVhost,
   adminDeleteVhost,
   adminGrantVhost,
@@ -17,6 +16,7 @@ import {
   adminPatchVhost,
   adminRevokeVhostGrant,
 } from "./lib/api";
+import { ApiError } from "./lib/apiError";
 import { token } from "./lib/auth";
 import SubjectAutocomplete, { formatSubjectLabel } from "./SubjectAutocomplete";
 
