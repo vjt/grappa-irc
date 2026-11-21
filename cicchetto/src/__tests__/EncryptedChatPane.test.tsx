@@ -2783,15 +2783,22 @@ describe("an encrypted attachment's card (issue 2517)", () => {
     expect(lines()[0]?.querySelector("bdi")?.textContent).toBe("שלום.jpg");
   });
 
-  // issue 2513 — the ciphertext view shows what crossed IRC, and the card's
-  // fields crossed it sealed.
-  it("draws no card in the ciphertext view", () => {
+  // issue 2513 — the ciphertext view shows what crossed IRC, never the
+  // plaintext, and the card's fields crossed it sealed. The open button's
+  // title names the file, so the whole trailer goes, and the line's MARKUP is
+  // read, attributes included, not its text alone.
+  it("draws neither the card nor the open button in the ciphertext view", () => {
     setRows([withFile]);
-    setWireView("azzurra/bob");
     renderPane();
+    const open = (): Element | null | undefined =>
+      lines()[0]?.querySelector("[data-testid=e2e-file-open]");
+    expect(open()?.getAttribute("title")).toBe("download holiday.jpg");
+
+    setWireView("azzurra/bob");
 
     expect(lines()).toHaveLength(1);
-    expect(lines()[0]?.textContent).not.toContain("holiday.jpg");
+    expect(open()).toBeNull();
+    expect(lines()[0]?.outerHTML).not.toContain("holiday.jpg");
   });
 
   it("is found by its name, as the card reads it", () => {

@@ -249,7 +249,11 @@ function ciphertextOf(row: Message): string {
  */
 const FILE_MARK = "📎";
 
-/** issue 2517 — the attachment a line draws as a card: none in the ciphertext view, which shows what crossed IRC. */
+/**
+ * issue 2517 — the attachment a line draws as a card, with its open button:
+ * none in the ciphertext view, which shows what crossed IRC and never the
+ * plaintext (issue 2513) — the button's title names the file too.
+ */
 function cardOf(row: Message | undefined, ciphertext: boolean): FileInner | undefined {
   if (ciphertext || (row?.kind !== "in" && row?.kind !== "out")) return undefined;
   return row.file;
@@ -380,8 +384,6 @@ const FileTrailer: Component<{ row: Message | undefined; ciphertext: boolean }> 
   // The open in flight, so unmounting the card takes the fetch with it and a
   // late answer cannot mint a URL for a component that no longer exists.
   let inflight: AbortController | null = null;
-  const file = (): FileInner | undefined =>
-    props.row?.kind === "in" || props.row?.kind === "out" ? props.row.file : undefined;
 
   // 🔴 THE CARD DOES NOT OWN THE DECRYPTED URL. The media viewer and the docked
   // player outlive it: every change to the chat's rows rebuilds the message
@@ -443,27 +445,21 @@ const FileTrailer: Component<{ row: Message | undefined; ciphertext: boolean }> 
   };
 
   return (
-    <Show when={file()}>
-      {(target) => (
+    <Show when={cardOf(props.row, props.ciphertext)}>
+      {(card) => (
         <>
-          <Show when={cardOf(props.row, props.ciphertext)}>
-            {(card) => (
-              <>
-                {" "}
-                <span class="e2e-file-card" data-testid="e2e-file-card">
-                  <bdi>{card().name}</bdi>
-                  {fileDetails(card())}
-                </span>
-              </>
-            )}
-          </Show>{" "}
+          {" "}
+          <span class="e2e-file-card" data-testid="e2e-file-card">
+            <bdi>{card().name}</bdi>
+            {fileDetails(card())}
+          </span>{" "}
           <button
             type="button"
             class="e2e-file-open"
             data-testid="e2e-file-open"
             disabled={busy()}
-            title={`download ${target().name}`}
-            onClick={() => void open(target())}
+            title={`download ${card().name}`}
+            onClick={() => void open(card())}
           >
             {busy() ? "opening…" : "⬇ open"}
           </button>
