@@ -427,41 +427,41 @@ defmodule Grappa.MixProject do
         "cmd mix format --check-formatted",
         "cmd mix credo --strict",
         "cmd mix deps.audit",
-        # hex.audit is advisory-only (non-fatal). FOUR advisories sit under
-        # this derogation today (OSV, 2026-08-06), not the two it was written
-        # for — it was never re-read as new ones landed:
+        # hex.audit is advisory-only (non-fatal). TWO advisories sit under
+        # this derogation since issue 2649 (2026-11-21, Hex 2.5.1 against
+        # that day's feed), and neither is the one it was written for:
         #
-        #   cowlib 2.18.0
-        #     CVE-2026-43966  response splitting via non-VCHAR bytes in
-        #                     cow_http_struct_hd:escape_string/2 (CWE-113,
-        #                     SI:L) — NO fixed release
-        #     CVE-2026-43969  request-cookie injection in cow_cookie:cookie/1
-        #                     (CWE-93, AV:L) — NO fixed release
-        #     CVE-2026-59248  unbounded HPACK/QPACK prefixed-integer decode,
-        #                     memory-exhaustion DoS (CWE-770, AV:N VA:H)
-        #                     — FIXED in cowlib 2.19.0, not taken (#149)
-        #   cowboy 2.17.0
-        #     CVE-2026-65624  max_headers bypass via duplicate header names,
-        #                     memory exhaustion (CWE-770, AV:N VA:L)
-        #                     — FIXED in cowboy 2.18.0, not taken (#149)
+        #   cloak 1.1.4
+        #     CVE-2026-95105  Cloak.Ciphers.AES.CTR (and the deprecated CTR
+        #                     cipher) stores no MAC, so a writer to the
+        #                     ciphertext can bit-flip the plaintext
+        #                     — NO fixed release, 1.1.4 is the latest
+        #   cloak_ecto 1.3.0
+        #     CVE-2026-94206  Cloak.Ecto.PBKDF2 runs `:size` rounds instead
+        #                     of `:iterations`
+        #                     — NO fixed release, 1.3.0 is the latest
         #
-        # WHY THE DEROGATION HOLDS, and it is not the severities: cowboy and
-        # cowlib enter the tree ONLY through `bypass` (`only: :test`, via
-        # plug_cowboy). Production serves on Bandit, and a prod release built
-        # at MIX_ENV=prod contains neither — so none of the four is reachable
-        # by a deployed grappa. The pre-existing note claimed both unfixable
-        # advisories were cow_cookie COMPOSITION issues; 43966 is a response-
-        # header path, so "we never compose request cookies" never covered it.
-        # Reachability does.
+        # WHY THE DEROGATION HOLDS, and it is not the severities: both paths
+        # need configuration grappa does not have. `Grappa.Vault` names
+        # Cloak.Ciphers.AES.GCM alone in config/dev.exs, test.exs and
+        # runtime.exs, and the only Cloak Ecto type in lib/ is
+        # Cloak.Ecto.Binary (`Grappa.EncryptedBinary`). The argument is
+        # weaker than the one it replaces: cloak IS a runtime dependency, so
+        # the vulnerable code ships; what keeps it unreached is config.
         #
-        # WHAT MAKES IT FALL: (a) cowlib shipping a release that fixes 43966 +
-        # 43969 — every version >= 2.9.0 is affected today, 2.19.0 included,
-        # so no bump can close them and hex.audit has no per-advisory ignore
-        # to express the N/A; (b) cowboy/cowlib becoming reachable at runtime
-        # (a non-test dep, or a move off Bandit), which voids the whole
-        # argument regardless of what is fixed. Either one, and the `|| true`
-        # goes — that is #149. deps.audit above stays the hard CVE gate, and
-        # this mirrors `continue-on-error` on the CI step.
+        # WHAT MAKES IT FALL: a vault cipher entry naming a CTR cipher, or a
+        # `use Cloak.Ecto.PBKDF2` field, voids the argument; a cloak /
+        # cloak_ecto release that fixes the two removes the need for it.
+        #
+        # cowboy/cowlib, the subject of #149, carry nothing any more: cowboy
+        # 2.21.0 + cowlib 2.22.0 fix all five of their advisories,
+        # CVE-2026-43966 and CVE-2026-43969 included. #149's own "no
+        # per-advisory ignore" premise is gone too: Hex 2.5.1 reads
+        # `hex: [ignore_advisories: [...]]` from project/0 (measured on
+        # issue 2649: both IDs ignored, rc 0; one ignored, rc 1). Whether
+        # to use it and drop the `|| true` is a ruling, not taken here.
+        # deps.audit above stays the hard CVE gate, and this mirrors
+        # `continue-on-error` on the CI step.
         "cmd sh -c 'mix hex.audit || true'",
         "cmd mix sobelow --config --exit Medium",
         # #621 — doctor shells out to MIX_ENV=test, like the test step below

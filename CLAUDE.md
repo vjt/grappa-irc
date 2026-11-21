@@ -1124,12 +1124,14 @@ is due. Don't just look at todo.md.
   Every Phoenix app gets it.
 - **`mix deps.audit` is the hard CI gate.** CVE-flagged deps fail the
   build immediately. **`mix hex.audit` is advisory-only** since #147 and
-  must not be read as a gate: cowboy/cowlib carry advisories with no
-  fixed release at any version, and hex.audit has no per-advisory ignore
-  to express that they are unreachable (both enter ONLY via `bypass`,
-  `only: :test`; prod serves on Bandit and ships neither). The full
-  advisory list, the reachability argument, and what would restore the
-  gate live on the `ci.check` alias in `mix.exs` — see #149.
+  must not be read as a gate. Since issue 2649 what it still flags is
+  cloak / cloak_ecto: two advisories with no fixed release, reachable only
+  through a vault cipher or an Ecto type grappa does not configure.
+  cowboy/cowlib, the original reason, are clean, and Hex ≥ 2.5.1 can
+  ignore single advisories, so restoring the gate is now a ruling and not
+  a missing feature. The advisory list, the reachability argument, and
+  what would restore the gate live on the `ci.check` alias in `mix.exs` —
+  see #149.
 
 ## Docs map
 

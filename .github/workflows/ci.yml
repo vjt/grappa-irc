@@ -103,21 +103,12 @@ jobs:
         run: mix sobelow --config --exit Medium
 
       - name: Hex audit (CVE check)
-        # Advisory-only (non-blocking). FOUR advisories sit under this
-        # derogation today, not the two it was written for: cowlib 2.18.0
-        # carries CVE-2026-43966 (response splitting in
-        # cow_http_struct_hd:escape_string/2) and CVE-2026-43969
-        # (cow_cookie:cookie/1 injection), neither of which has a fixed
-        # release at ANY version, plus CVE-2026-59248 (HPACK/QPACK
-        # memory-exhaustion DoS, AV:N VA:H, fixed in 2.19.0); cowboy 2.17.0
-        # carries CVE-2026-65624 (max_headers bypass, fixed in 2.18.0).
-        # It holds because cowboy/cowlib enter ONLY via `bypass`
-        # (`only: :test`) — prod serves on Bandit and ships neither — NOT
-        # because of the severities, and NOT because of the cookie-composition
-        # argument, which never covered 43966. hex.audit has no per-advisory
-        # ignore, so it cannot express that. `mix deps.audit` below remains the
-        # HARD, blocking CVE gate. Full reasoning + what makes this fall: the
-        # `ci.check` alias in mix.exs, and #149.
+        # Advisory-only (non-blocking), mirroring the `|| true` in the
+        # `ci.check` alias. Which advisories it excuses, why, and what would
+        # make it a gate again are written in ONE place, that alias's comment
+        # in mix.exs (#149): this step used to restate the list, and the copy
+        # went stale with the original. `mix deps.audit` below remains the
+        # HARD, blocking CVE gate.
         continue-on-error: true
         run: mix hex.audit
 

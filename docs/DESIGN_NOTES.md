@@ -6877,3 +6877,89 @@ with node 24, differs in 10 of 80 files. Linux systemd runs an unfrozen
 `bun install`. The Docker Compose deploy runs the same pinned image and the
 same two commands as the release job and may well give the same files, but
 nobody has compared them. All of it belongs to the deploy slice.
+<!-- entry #2649 -->
+
+---
+
+## 2026-11-21 — issue 2649: the hex advisories are bumped to their lowest fix; cloak and cloak_ecto have none
+
+`mix hex.audit` went red on main without `mix.lock` moving: the advisory
+feed moved. vjt's ruling, relayed in the issue: bump anyway. The issue
+listed 12 packages; by the time the bump ran the feed had added `idna` and
+`plug`, so 14 were flagged.
+
+### Lowest fix, not latest
+
+Each flagged package moved to the lowest release its OSV record names as
+fixed (`api.osv.dev/v1/vulns/<id>`, `affected[].ranges`), not to the newest
+one: bandit 1.14.1 (1.15.0 exists), cowboy 2.21.0, cowlib 2.22.0, decimal
+3.1.2, ecto 3.14.3, jose 1.11.13, mint 1.10.2, plug 1.20.4, plug_crypto
+2.2.1, ssl_verify_fun 1.1.8. `mix deps.update` has no way to say "this
+version", so the targets were pinned with `==` in `mix.exs` for the length
+of the update and the file was then restored byte for byte. The lock holds
+under the original requirements: a `deps.get` with `mix.lock` mounted
+read-only exits 0 and leaves it identical.
+
+hackney is the exception that proves the method. 4.9.0 clears hackney's own
+five advisories, but it still requires `idna ~> 7.1.0`, and idna's fix is
+8.0.0. The first hackney that takes idna 8 is 4.11.0, so that is the
+target. It drags four packages it requires along: certifi 2.18.0, h2 0.17.0,
+quic 2.7.0 and webtransport 0.5.8. bandit drags two: hpax 1.1.0 and
+thousand_island 1.6.0. Six carried, twelve flagged, eighteen lines in the
+lock. The resolver also offered telemetry 1.4.3; pinning it at 1.4.2
+resolved just as well, so it stays where it was.
+
+### Two majors, and what they change here
+
+idna 7 → 8 and quic 1 → 2. h2 and webtransport move inside 0.x, which
+semver treats as breaking too. All four are reached only through hackney,
+which grappa ships and never calls: since #2401 `Grappa.Push.Sender` takes
+`ExNudge.Encryption` and `ExNudge.VAPID` and posts through
+`Grappa.Net.PinnedHttp`, and nothing in `lib/`, `config/` or `test/` names
+any of the four packages. What they change in our code is therefore that
+the application starts them at boot, which the test suite does. jose is
+the opposite case: `ExNudge.VAPID.sign_jwt/2` calls it on every push
+delivery, so that bump reaches a live path.
+
+One behaviour change does reach a live path, and it was designed for:
+plug 1.20.4 now charges multipart part headers and framing against the
+parser's `:length`. `GrappaWeb.MultipartLimits.upload_length/0` is the
+largest per-file cap plus 8 MiB set aside for exactly that framing (issue
+2529), so the margin goes from slack to load-bearing. Nothing grew past it.
+
+### What hex.audit still says, and issue 149
+
+After the bump it flags two advisories and nothing else, and neither has a
+fixed release at any version: cloak 1.1.4 (CVE-2026-95105, the CTR ciphers
+store no MAC) and cloak_ecto 1.3.0 (CVE-2026-94206, `Cloak.Ecto.PBKDF2`
+runs `:size` rounds instead of `:iterations`). Both need configuration
+grappa does not have: the vault names `Cloak.Ciphers.AES.GCM` alone in all
+three envs, and the only Cloak Ecto type in `lib/` is `Cloak.Ecto.Binary`.
+That argument is weaker than the cowboy one it replaces, because cloak is a
+runtime dependency and the vulnerable code ships. What keeps it unreached is
+the configuration, not its absence from the release.
+
+Issue 149 asked to restore hex.audit as a hard gate once cowlib shipped a
+fix. Its first step is now possible: cowlib 2.22.0 fixes CVE-2026-43966 and
+CVE-2026-43969, and cowboy 2.21.0 + cowlib 2.22.0 leave the pair with no
+advisory at all. Its next two steps (drop `continue-on-error` and the
+`|| true`) would turn CI red on cloak. The premise that blocked any other
+route is gone as well: Hex 2.5.1, the version in the dev container,
+reads `hex: [ignore_advisories: [...]]` from `project/0`, and CI installs
+the newest Hex. Measured with the two IDs: both ignored exits 0, one
+ignored exits 1. Whether to list them and make the step blocking is a
+ruling. This slice leaves the derogation in place and makes its text true
+again; `mix.exs` is where that text lives, and the CI step now points there
+instead of keeping a copy.
+
+`mix deps.audit` exited 0 before and after. It saw none of the fourteen
+packages, so a green deps.audit says nothing about what hex.audit sees.
+
+### Not covered
+
+No `mix release` was assembled, so the release boot with the new
+applications is covered by the test suite's application start, not by a
+release. Bandit's HTTP/2 and WebSocket fixes are exercised only as far as
+the existing suite reaches. The cloak reachability argument rests on a
+search of `config/` and `lib/`, not on a test that would fail if a CTR
+cipher appeared. This ships COLD: `mix.lock` changed.
