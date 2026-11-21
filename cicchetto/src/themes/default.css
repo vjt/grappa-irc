@@ -563,7 +563,9 @@ body {
    visible→auto conversion while the vertical scroller they sit in wants that
    axis. They contain x alone, or a vertical wheel over an admin table would
    stop at the table (the same latch). A layout that turns a strip vertical
-   restores `overscroll-behavior-y` there (the desktop `.adm-nav`).
+   restores `overscroll-behavior-y` there, unless that layout also nests the
+   strip in a vertical scroller: then ruling (b) leaves its y uncontained, as
+   on the desktop `.adm-nav` rail inside `.admin-pane`.
 
    The third hands containment back to a vertical scroller nested in another
    listed one. vjt's ruling for issue 2671: its scroll chains to the outer
@@ -585,7 +587,9 @@ body {
    __tests__/overscrollContainment.test.ts holds it. A rule that makes
    something scroll without being covered here fails it. So do an entry that
    no longer scrolls, a strip in the first list, a pair that is not two listed
-   vertical scrollers, a per-rule `contain` or `auto`, a `none` on a listed
+   vertical scrollers, a nested scroller missing from the test's census or a
+   carve-out the census does not list, y containment on a nested strip, a
+   per-rule `contain` or `auto`, a `none` on a listed
    surface (it would take the bounce away: unlist the surface instead), a
    shared rule moved inside an at-rule, and the third rule moved above the
    first. The first two lists stay single compounds: a descendant selector at
@@ -7555,10 +7559,11 @@ html.is-ios27-band .shell {
     align-items: stretch;
     overflow-x: visible;
     overflow-y: auto;
-    /* issue 2671 — the shared rule lists `.adm-nav` as a horizontal strip (the
-       mobile tab row) and contains only its x axis; here it is a vertical
-       rail, so the axis it scrolls on is contained here. */
-    overscroll-behavior-y: contain;
+    /* issue 2671 C5 — here the strip turns into a vertical rail INSIDE
+       `.admin-pane`, itself a vertical scroller, so ruling (b) leaves its y
+       uncontained (the orchestrator's reading of the ruling, not vjt's
+       words): a drag past its end chains to `.admin-pane`, which is
+       contained. Its x keeps the strip list's containment. */
     border-bottom: 0;
     border-right: 1px solid var(--adm-line);
     margin: 0;
