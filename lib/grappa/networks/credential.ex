@@ -132,8 +132,7 @@ defmodule Grappa.Networks.Credential do
   # Issue 2657 — the delays (seconds) the kick rejoin may wait before its one
   # JOIN: a closed set, not a free integer (vjt's ruling, decision 2). `0` is
   # the takeover defense; `10` is the column default, ZNC's `kickrejoin`
-  # default. `Grappa.Session.KickRejoin.delay_seconds/0` restates the set on
-  # the session side, which cannot alias this module.
+  # default.
   @kick_rejoin_delays [0, 10, 30, 60]
 
   # Each free-text profile field (age/location/languages/custom) gets
@@ -208,9 +207,9 @@ defmodule Grappa.Networks.Credential do
   @type kick_rejoin_delay :: 0 | 10 | 30 | 60
   @typedoc """
   What a live session does after a self-KICK on this network: nothing, or
-  one JOIN after the delay. The session-side twin is
-  `t:Grappa.Session.KickRejoin.config/0`, duplicated on purpose (`Session`
-  must not alias `Networks`).
+  one JOIN after the delay. The delay column survives being switched off;
+  the session does not need it while it is off, so `:off` carries none.
+  `t:Grappa.Session.KickRejoin.config/0` is this type, by name.
   """
   @type kick_rejoin :: :off | {:on, kick_rejoin_delay()}
   @type profile :: %{

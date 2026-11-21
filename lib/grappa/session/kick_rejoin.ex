@@ -32,6 +32,8 @@ defmodule Grappa.Session.KickRejoin do
   rejoins the channel anyway through the #2317 rejoin plan.
   """
 
+  alias Grappa.Networks.Credential
+
   @kick_limit 3
   @window_ms :timer.minutes(10)
 
@@ -41,19 +43,12 @@ defmodule Grappa.Session.KickRejoin do
   @second_ms Application.compile_env(:grappa, [:session, :kick_rejoin_second_ms], 1000)
 
   @typedoc """
-  The delays a credential may carry, in seconds — the closed set of
-  `Grappa.Networks.Credential.kick_rejoin_delays/0`, restated here because
-  `Grappa.Session` must not alias `Grappa.Networks` (the same reason
-  `Session.Server.profile/0` duplicates the credential's profile shape).
+  What the session does after a self-KICK: nothing, or one JOIN after the
+  delay. It is the credential's own type, named here and not restated: a
+  typespec names a module without calling it, so it is no Boundary edge, and
+  the closed set of delays stays written once, in `Credential`.
   """
-  @type delay_seconds :: 0 | 10 | 30 | 60
-
-  @typedoc """
-  What the session does after a self-KICK: nothing, or one JOIN after
-  `delay_seconds`. The credential's delay column survives being switched
-  off; the session does not need it while it is off, so `:off` carries none.
-  """
-  @type config :: :off | {:on, delay_seconds()}
+  @type config :: Credential.kick_rejoin()
 
   @typedoc """
   Self-KICK stamps (monotonic ms) per folded channel, newest first, holding
@@ -70,7 +65,7 @@ defmodule Grappa.Session.KickRejoin do
   def window_ms, do: @window_ms
 
   @doc "The timer delay, in milliseconds, of a configured rejoin delay."
-  @spec delay_ms(delay_seconds()) :: non_neg_integer()
+  @spec delay_ms(Credential.kick_rejoin_delay()) :: non_neg_integer()
   def delay_ms(delay_seconds) when is_integer(delay_seconds) and delay_seconds >= 0,
     do: delay_seconds * @second_ms
 
