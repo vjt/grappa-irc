@@ -469,7 +469,7 @@ export type AdminEventsWireCredentialUpdatedEvent = {
   user_name: string;
   network_id: number;
   network_slug: string;
-  session_action: "left_alone" | "spawned" | "stopped";
+  session_action: "left_alone" | "spawned" | "stopped" | "server_pass_set" | "server_pass_cleared";
   actor_user_id: string;
   actor_user_name: string;
   at: string;
@@ -988,6 +988,10 @@ export type NetworksWireHomeNetworkRow = {
 
 export type NetworksWireAvailableNetworkRow = {
   slug: string;
+};
+
+export type NetworksWireServerPassJson = {
+  server_pass_set: boolean;
 };
 
 export type NetworksWireHomeData = {

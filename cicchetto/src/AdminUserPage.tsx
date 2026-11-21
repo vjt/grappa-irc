@@ -11,8 +11,10 @@ import {
   type AdminUser,
   ApiError,
   adminBindCredential,
+  adminGetServerPass,
   adminListCredentials,
   adminListNetworks,
+  adminPutServerPass,
   adminUnbindCredential,
   adminUpdateCredential,
 } from "./lib/api";
@@ -134,6 +136,11 @@ type NetworkForm = {
   sasl_user: string;
   auth_method: string;
   password: string;
+  // #2606 — the server `PASS`, a DIFFERENT secret from `password` with a
+  // different destination, and therefore its own field. Write-only like the
+  // other one: blank means "leave it alone", anything typed means "replace".
+  // Never part of `patchOf` — it goes out through its own endpoint.
+  server_pass: string;
 };
 
 const EMPTY_FORM: NetworkForm = {
@@ -142,6 +149,7 @@ const EMPTY_FORM: NetworkForm = {
   sasl_user: "",
   auth_method: "none",
   password: "",
+  server_pass: "",
 };
 
 /** What the last write did to the live session, for one network. */
@@ -161,6 +169,7 @@ function formOf(c: AdminCredential): NetworkForm {
     sasl_user: c.sasl_user ?? "",
     auth_method: c.auth_method,
     password: "",
+    server_pass: "",
   };
 }
 
@@ -199,6 +208,12 @@ const AdminUserPage: Component<Props> = (props) => {
   // Keyed by network id, which is the section. A write reports on the
   // section it touched and says nothing about any other.
   const [outcomes, setOutcomes] = createSignal<Record<number, SessionOutcome>>({});
+
+  // #2606 — whether the server `PASS` slot is filled, per network. The list
+  // endpoint does not carry it (the secret is write-only), so it is read from
+  // the slot's own GET. Absent means "not read yet": the status line stays
+  // blank rather than claiming "not set" about a slot nobody looked at.
+  const [serverPassSet, setServerPassSet] = createSignal<Record<number, boolean>>({});
 
   /** This user's networks. The list endpoint returns everyone's. */
   const mine = createMemo<AdminCredential[]>(() =>
@@ -240,11 +255,41 @@ const AdminUserPage: Component<Props> = (props) => {
   const savable = (networkId: number): boolean => {
     if (submitting() !== null) return false;
     if (formFor(networkId).nick.trim() === "") return false;
+    // #2606 — a typed server PASS is a change of its own: it goes out through
+    // its own endpoint, so it never shows up in the PATCH below.
+    if (formFor(networkId).server_pass !== "") return true;
     const patch = pending(networkId);
     // Unbound: Save IS the bind, and a nick is all it needs. Bound: only
     // when something actually changed, because an empty PATCH would ask
     // the server to decide whether to stop a session over nothing.
     return patch === null || Object.keys(patch).length > 0;
+  };
+
+  // #2606 — set-ness for the server `PASS` slot. Only the credentials that
+  // can spend the secret are asked (a `sasl`/`none` row has no PASS to set),
+  // and a failed read leaves the entry absent so the status line says
+  // nothing rather than guessing.
+  const readServerPass = async (t: string, creds: AdminCredential[]): Promise<void> => {
+    const targets = creds.filter(
+      (c) => c.user_id === props.user.id && c.auth_method === "server_pass",
+    );
+    const states: Record<number, boolean> = {};
+    await Promise.all(
+      targets.map(async (c) => {
+        try {
+          states[c.network_id] = (
+            await adminGetServerPass(t, props.user.id, c.network_id)
+          ).server_pass_set;
+        } catch (e) {
+          // The entry stays absent and the status line says nothing — that is
+          // the honest UI for "we could not read it". But silence alone hides
+          // a systematic failure (say a 403 after an `is_admin` flip) behind a
+          // hint that simply never appears, so the reason goes to the console.
+          console.warn(`admin: server PASS set-ness unreadable for network ${c.network_id}`, e);
+        }
+      }),
+    );
+    setServerPassSet(states);
   };
 
   const refresh = async (): Promise<void> => {
@@ -256,6 +301,7 @@ const AdminUserPage: Component<Props> = (props) => {
       const [creds, nets] = await Promise.all([adminListCredentials(t), adminListNetworks(t)]);
       setCredentials(creds);
       setNetworks(nets);
+      await readServerPass(t, creds);
     } catch (e) {
       setError(e instanceof ApiError ? e.code : "fetch_failed");
     } finally {
@@ -302,6 +348,24 @@ const AdminUserPage: Component<Props> = (props) => {
     setSubmitting(id);
     setError(null);
     try {
+      // #2606 — a typed server PASS is a change of its own and rides its own
+      // endpoint below; when it is the ONLY thing the operator touched there
+      // is no credential edit to send, and an empty PATCH would ask the
+      // server to decide whether to stop a session over nothing.
+      const patch = existing === undefined ? null : patchOf(existing, f);
+      // #2606 — ORDER MATTERS on a BOUND row. The admin PATCH restarts a live
+      // session when `auth_method` changes (#2474): the restart re-reads its
+      // plan from the DB in `init/1`, so a PASS that lands AFTER the PATCH is
+      // one registration too late and the server refuses it (plus a Backoff
+      // bump) before the next restart picks the secret up. The slot already
+      // exists on a bound row, so the PUT can and must go first. Only an
+      // UNBOUND row needs bind-then-PUT, because there is no row to write to
+      // before the bind.
+      const passFirst = existing !== undefined && f.server_pass !== "";
+      if (passFirst) {
+        const state = await adminPutServerPass(t, props.user.id, id, f.server_pass);
+        setServerPassSet({ ...serverPassSet(), [id]: state.server_pass_set });
+      }
       const saved =
         existing === undefined
           ? await adminBindCredential(t, {
@@ -313,8 +377,16 @@ const AdminUserPage: Component<Props> = (props) => {
               sasl_user: f.sasl_user === "" ? undefined : f.sasl_user,
               realname: f.realname === "" ? undefined : f.realname,
             })
-          : await adminUpdateCredential(t, props.user.id, id, patchOf(existing, f));
+          : patch !== null && Object.keys(patch).length > 0
+            ? await adminUpdateCredential(t, props.user.id, id, patch)
+            : existing;
       recordOutcome(id, saved);
+      // #2606 — on an unbound row the bind above created the slot, so the PUT
+      // follows it. Blank leaves the stored one alone, like the password field.
+      if (!passFirst && f.server_pass !== "") {
+        const state = await adminPutServerPass(t, props.user.id, id, f.server_pass);
+        setServerPassSet({ ...serverPassSet(), [id]: state.server_pass_set });
+      }
       // Drop the draft rather than rewriting it: the section then reads
       // the server's own answer, and the typed password leaves with it.
       clearForm(id);
@@ -325,6 +397,23 @@ const AdminUserPage: Component<Props> = (props) => {
       setError(`${net.slug}: ${operatorApiError(err, "request_failed")}`);
     } finally {
       setSubmitting(null);
+    }
+  };
+
+  // #2606 — the CLEAR verb of the server PASS. Its own control rather than a
+  // blank input, because blank already means "leave the stored one alone"
+  // (the same convention the password field uses): one box cannot say both.
+  const onClearServerPass = async (net: AdminNetwork): Promise<void> => {
+    const t = token();
+    if (t === null) return;
+    const id = net.id;
+    setError(null);
+    try {
+      const state = await adminPutServerPass(t, props.user.id, id, "");
+      setServerPassSet({ ...serverPassSet(), [id]: state.server_pass_set });
+      setForm(id, { server_pass: "" });
+    } catch (err) {
+      setError(`${net.slug}: ${operatorApiError(err, "request_failed")}`);
     }
   };
 
@@ -591,7 +680,7 @@ const AdminUserPage: Component<Props> = (props) => {
                               </select>
                             </AdminField>
                             <AdminField
-                              label="password"
+                              label="nickserv password"
                               for={`admin-user-network-password-${net.id}`}
                               hint={
                                 credOf(net.id) === undefined
@@ -611,6 +700,46 @@ const AdminUserPage: Component<Props> = (props) => {
                                 data-testid={`admin-user-network-password-${net.id}`}
                               />
                             </AdminField>
+                            {/* #2606 — the server PASS is a DIFFERENT secret
+                                with a DIFFERENT destination (the PASS line
+                                sent before registration), so it gets its own
+                                write-only box and never shares the one above.
+                                Only on the method that spends it: on `sasl` /
+                                `none` the slot has no reader. */}
+                            <Show when={formFor(net.id).auth_method === "server_pass"}>
+                              <AdminField
+                                label="server password"
+                                for={`admin-user-network-server-pass-${net.id}`}
+                                hint={
+                                  serverPassSet()[net.id] === undefined
+                                    ? undefined
+                                    : serverPassSet()[net.id]
+                                      ? "stored: set — blank leaves it alone"
+                                      : "stored: not set"
+                                }
+                              >
+                                <input
+                                  id={`admin-user-network-server-pass-${net.id}`}
+                                  type="password"
+                                  value={formFor(net.id).server_pass}
+                                  onInput={(e) =>
+                                    setForm(net.id, {
+                                      server_pass: (e.currentTarget as HTMLInputElement).value,
+                                    })
+                                  }
+                                  data-testid={`admin-user-network-server-pass-${net.id}`}
+                                />
+                                <button
+                                  type="button"
+                                  class="adm-btn"
+                                  disabled={credOf(net.id) === undefined}
+                                  onClick={() => void onClearServerPass(net)}
+                                  data-testid={`admin-user-network-server-pass-clear-${net.id}`}
+                                >
+                                  clear
+                                </button>
+                              </AdminField>
+                            </Show>
                           </div>
                         </fieldset>
                         <div class="adm-form-grid-actions">

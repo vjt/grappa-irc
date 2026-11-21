@@ -182,7 +182,9 @@ export const S_AdminEventsWireCredentialUpdatedEvent = {
     user_name: "s",
     network_id: "i",
     network_slug: "s",
-    session_action: { e: ["left_alone", "spawned", "stopped"] },
+    session_action: {
+      e: ["left_alone", "spawned", "stopped", "server_pass_set", "server_pass_cleared"],
+    },
     actor_user_id: "s",
     actor_user_name: "s",
     at: "s",
@@ -943,6 +945,9 @@ export const S_NetworksWireNetworkWithNickJson = {
     updated_at: "s",
   },
 } as const;
+
+// Grappa.Networks.Wire.server_pass_json/0
+export const S_NetworksWireServerPassJson = { o: { server_pass_set: "b" } } as const;
 
 // Grappa.Networks.Wire.visitor_network_with_nick_json/0
 export const S_NetworksWireVisitorNetworkWithNickJson = {

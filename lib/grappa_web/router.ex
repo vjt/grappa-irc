@@ -220,6 +220,12 @@ defmodule GrappaWeb.Router do
     # Admin-panel bucket 3 (2026-05-31): credential bind / unbind via REST.
     post "/credentials", CredentialsController, :create
     delete "/credentials/:user_id/:network_id", CredentialsController, :delete
+    # #2606 — the server `PASS` slot, its own pair of verbs for the same
+    # reason `PUT /admin/users/:id/password` is split from `PATCH /users/:id`:
+    # a write-only secret gets its own door, never a key on the generic
+    # whitelist (#2107). GET reports set-ness only, never the value.
+    get "/credentials/:user_id/:network_id/server_pass", CredentialsController, :server_pass
+    put "/credentials/:user_id/:network_id/server_pass", CredentialsController, :update_server_pass
 
     # UX-6-B1 (2026-05-20): admin server-settings + uploads registry.
     # Settings cover the embedded image uploader (active_host pick +

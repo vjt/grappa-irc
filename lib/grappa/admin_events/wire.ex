@@ -383,13 +383,26 @@ defmodule Grappa.AdminEvents.Wire do
           at: String.t()
         }
 
+  @typedoc """
+  `session_action` names what the edit did to the binding's live session.
+  `:left_alone | :spawned | :stopped` are the session outcomes of a PATCH.
+
+  #2606 adds two CREDENTIAL outcomes that touch no session at all:
+  `:server_pass_set` / `:server_pass_cleared`, emitted by the dedicated
+  `PUT /admin/credentials/:user_id/:network_id/server_pass`. The secret is
+  spent at registration, so nothing is bounced — but an admin writing or
+  wiping another user's upstream PASS is exactly the mutation an audit trail
+  exists for, and until #2606 it left no event behind. The VALUE is never
+  carried: the action alone says whether the slot went from empty to set, or
+  from set to empty.
+  """
   @type credential_updated_event :: %{
           kind: :credential_updated,
           user_id: String.t(),
           user_name: String.t(),
           network_id: integer(),
           network_slug: String.t(),
-          session_action: :left_alone | :spawned | :stopped,
+          session_action: :left_alone | :spawned | :stopped | :server_pass_set | :server_pass_cleared,
           actor_user_id: String.t(),
           actor_user_name: String.t(),
           at: String.t()
@@ -1196,7 +1209,7 @@ defmodule Grappa.AdminEvents.Wire do
           String.t(),
           integer(),
           String.t(),
-          :left_alone | :spawned | :stopped,
+          :left_alone | :spawned | :stopped | :server_pass_set | :server_pass_cleared,
           String.t(),
           String.t()
         ) :: credential_updated_event()
@@ -1211,7 +1224,13 @@ defmodule Grappa.AdminEvents.Wire do
       )
       when is_binary(user_id) and is_binary(user_name) and is_integer(network_id) and
              is_binary(network_slug) and network_slug != "" and
-             session_action in [:left_alone, :spawned, :stopped] do
+             session_action in [
+               :left_alone,
+               :spawned,
+               :stopped,
+               :server_pass_set,
+               :server_pass_cleared
+             ] do
     :ok = validate_admin_actor(actor_user_id, actor_user_name)
 
     %{
