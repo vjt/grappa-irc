@@ -228,9 +228,12 @@ export const setReadCursor = async (
   // $admin resolve to an unknown network slug) or 400s ($list is not a
   // valid target name). In production nginx feeds those 4xx to fail2ban's
   // http-4xx jail → an idling user is escalated into the `recidive` pf
-  // block, cut off web AND IRC. The leak site is ScrollbackPane.onCleanup
-  // reading reactive props already advanced to the virtual selection;
-  // guarding at THIS boundary — the module that owns the POST, like the
+  // block, cut off web AND IRC. The leak site was ScrollbackPane.onCleanup
+  // reading reactive props already advanced to the virtual selection; since
+  // issue 2613 it names the window it was showing instead, because dropping
+  // that write here left the window being left with its old cursor. The
+  // guard stays as the boundary for whatever caller comes next. Guarding at
+  // THIS boundary — the module that owns the POST, like the
   // messageId contract below — makes every settle/blur/leave/unmount caller
   // inherit it. Skip BOTH the optimistic local advance and the POST: a
   // synthetic window has no cursor to advance. ($server is a REAL
