@@ -302,17 +302,6 @@ defmodule Grappa.Session.Server do
   @type restored_away :: {String.t(), DateTime.t()} | nil
 
   @typedoc """
-  issue 2656 — why keepnick stopped asking for the configured nick in this
-  registration. `{:refused, code}`: the ircd answered one of OUR tries
-  about this session's standing (a channel ban or `+m`, an erroneous or
-  restricted nick), which waiting cannot change. `:user_renamed`: the
-  operator chose another nick through the `/nick` door.
-  """
-  @type keep_nick_stop ::
-          {:refused, 432 | 433 | 435 | 437 | 438 | 447 | 484}
-          | :user_renamed
-
-  @typedoc """
   The KVIrc-style CTCP USERINFO profile (age/gender/location/languages/
   custom), threaded into `init/1` via `SessionPlan.base_plan/6`'s
   `:restored_profile` opt and updated live on a
@@ -1021,19 +1010,19 @@ defmodule Grappa.Session.Server do
           # issue 2656 — keepnick. `keep_nick` is the credential's switch
           # (boot value from the plan, retuned live by
           # `{:credential_keep_nick_changed, _, _}`); `keep_nick_interval_ms` the
-          # re-arm cadence. The other three are per-REGISTRATION and reset at
+          # re-arm cadence. The other two are per-REGISTRATION and cancelled at
           # every 001: the tick ref (unlike the #2253 one-shot, a re-arming
-          # tick must be cancellable, or a re-welcome or a live toggle would
-          # start a second chain at double cadence), whether one of OUR tries
-          # is awaiting its answer (so a refusal is attributed to keepnick and
-          # not to the operator's own `/nick`), and why keepnick gave up, if it
-          # did. "Trying" itself is DERIVED from the live nick, never stored.
-          # Read via `Map.get` (#229). See `keep_nick_tick/1`.
+          # tick must be cancellable, or a re-welcome would start a second
+          # chain at double cadence) — a pending ref IS a running chain, and a
+          # stop is its cancel — and whether one of OUR tries is awaiting its
+          # answer (so a refusal is attributed to keepnick and not to the
+          # operator's own `/nick`). "Trying" itself is DERIVED from the live
+          # nick, never stored. Read via `Map.get` (#229). See
+          # `keep_nick_tick/1`.
           keep_nick: boolean(),
           keep_nick_interval_ms: pos_integer(),
           keep_nick_timer: reference() | nil,
           keep_nick_in_flight?: boolean(),
-          keep_nick_stopped: keep_nick_stop() | nil,
           # #543 INC-6 — the derived `::cb` source alias this session owns for
           # its upstream lifetime, or `nil` when the source is not a managed
           # alias (mode 1, a reservation, an admin `server_source` pin, or no
@@ -1496,12 +1485,11 @@ defmodule Grappa.Session.Server do
       nick_reclaim_ms: Map.get(opts, :nick_reclaim_ms, @nick_reclaim_ms),
       # issue 2656 keepnick — the switch from the plan (off when omitted), the
       # cadence (config default, opts-overridable for tests), and the
-      # per-registration trio, idle until a drifted 001 arms the chain.
+      # per-registration pair, idle until a drifted 001 arms the chain.
       keep_nick: Map.get(opts, :keep_nick, false),
       keep_nick_interval_ms: Map.get(opts, :keep_nick_interval_ms, @keep_nick_interval_ms),
       keep_nick_timer: nil,
       keep_nick_in_flight?: false,
-      keep_nick_stopped: nil,
       # #215 — spawn stamp; `connected_at` fills on `:irc_connected`.
       started_at: DateTime.utc_now(),
       connected_at: nil,
@@ -5956,12 +5944,13 @@ defmodule Grappa.Session.Server do
   # issue 2656 — keepnick makes the return value the state: with the switch on
   # the same delay arms keepnick's CANCELLABLE chain instead of the one-shot
   # (see `arm_keep_nick_tick/2`), and every 001 — drifted or not — first
-  # resets keepnick's per-registration facts, because a fresh registration is
-  # the fresh world the paragraph above describes. With the switch off the
-  # one-shot path below is byte-for-byte what #2253 shipped: no ref kept.
+  # cancels the chain of the registration before it, because a fresh
+  # registration is the fresh world the paragraph above describes. With the
+  # switch off the one-shot path below is byte-for-byte what #2253 shipped: no
+  # ref kept.
   @spec maybe_arm_nick_reclaim(t(), String.t()) :: t()
   defp maybe_arm_nick_reclaim(state, welcomed_nick) do
-    state = reset_keep_nick(state)
+    state = cancel_keep_nick(state)
     delay = Map.get(state, :nick_reclaim_ms, @nick_reclaim_ms)
 
     cond do
@@ -6089,24 +6078,28 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  # One tick. Five arms, and each says what it OBSERVED:
+  # One tick. Four arms, and each says what it OBSERVED:
   #
-  #   * converged or stopped — the chain ends: no send, no re-arm, no line
-  #     (convergence already has its own `:nick_change` row in `$server`);
+  #   * converged — the chain ends: no send, no re-arm, no line (convergence
+  #     already has its own `:nick_change` row in `$server`);
   #   * an identity sequence owns the nick — skip and LOG, like #2253;
   #   * an away rename is outstanding — pause without sending. Winning the
   #     nick now would be undone by `restore_away_nick/1`, which sends us back
   #     to the nick the away rename left (`vjt_`), losing the primary we just
   #     took. After the restore the next tick asks again;
   #   * otherwise — ask. Only a send the socket took marks a try in flight.
+  #
+  # There is no "switched off or stopped" arm, and that is not an omission:
+  # a tick can only fire inside a running chain. Turning the switch off and
+  # every stop go through `cancel_keep_nick/1`, which cancels the pending tick
+  # AND drains one already fired; the review of PR 2688 measured the arm that
+  # used to sit here unreachable (deleting it changed no outcome) and found it
+  # masking a missing cancel on the switch-off path.
   @spec keep_nick_tick(t()) :: t()
   defp keep_nick_tick(state) do
     target = keep_nick_target(state)
 
     cond do
-      not keep_nick?(state) or Map.get(state, :keep_nick_stopped) != nil ->
-        state
-
       fold_key(state, state.nick) == fold_key(state, target) ->
         state
 
@@ -6141,10 +6134,11 @@ defmodule Grappa.Session.Server do
     do: arm_keep_nick_tick(state, Map.get(state, :keep_nick_interval_ms, @keep_nick_interval_ms))
 
   # Every keepnick tick goes through here, and every caller arrives with no
-  # tick pending: the 001 and a live toggle reset first (`reset_keep_nick/1`
-  # cancels), and the tick re-arms from inside its own fire, whose ref the
-  # handler has already cleared. That is what keeps it ONE chain; a second
-  # cancel here would be dead, and mutation measured that it was.
+  # tick pending: the 001 cancels first; a live toggle arms only when the
+  # switch was off, and turning it off cancelled; the tick re-arms from inside
+  # its own fire, whose ref the handler has already cleared. That is what
+  # keeps it ONE chain; a second cancel here would be dead, and mutation
+  # measured that it was.
   @spec arm_keep_nick_tick(t(), non_neg_integer()) :: t()
   defp arm_keep_nick_tick(state, delay),
     do: Map.put(state, :keep_nick_timer, Process.send_after(self(), :keep_nick_tick, delay))
@@ -6155,19 +6149,19 @@ defmodule Grappa.Session.Server do
     state |> Map.put(:keep_nick_timer, nil) |> Map.put(:keep_nick_in_flight?, false)
   end
 
-  @spec reset_keep_nick(t()) :: t()
-  defp reset_keep_nick(state), do: state |> cancel_keep_nick() |> Map.put(:keep_nick_stopped, nil)
-
-  # Records why keepnick gave up and ends the chain. The first reason wins: a
-  # later one describes a session that had already stopped asking.
-  @spec stop_keep_nick(t(), keep_nick_stop()) :: t()
+  # A stop ends the chain for this registration: the cancel, and one line
+  # saying so. The line is written only when there WAS a chain to stop, which
+  # is a pending tick — every arm that keeps asking re-arms in the same tick,
+  # the one that sends included, so a try in flight always has a tick behind
+  # it. A `/nick <other>` on a session that already converged finds none and
+  # logs nothing (log honesty). Nothing records the stop: with the tick gone,
+  # nothing asks again until the next 001 or the switch going off and on.
+  @spec stop_keep_nick(t(), :user_renamed | {:refused, 400..499}) :: t()
   defp stop_keep_nick(state, reason) do
-    if Map.get(state, :keep_nick_stopped) == nil do
-      Logger.info("keepnick stopped", to: keep_nick_target(state), reason: inspect(reason))
-      state |> cancel_keep_nick() |> Map.put(:keep_nick_stopped, reason)
-    else
-      state
-    end
+    if Map.get(state, :keep_nick_timer) != nil,
+      do: Logger.info("keepnick stopped", to: keep_nick_target(state), reason: inspect(reason))
+
+    cancel_keep_nick(state)
   end
 
   # The terminality table, for a NICK-family refusal that arrived while one of
@@ -6202,10 +6196,10 @@ defmodule Grappa.Session.Server do
   # A refusal of one of our tries: swallow it, or route it exactly as it
   # always routed (the operator reads it in `$server`) and then stop with one
   # structured line saying so. Either way the try is answered. A try in
-  # flight implies the switch is on and keepnick has not stopped: only
-  # `keep_nick_tick/1` raises the flag, under exactly those two conditions,
-  # and every door that turns the switch off or stops keepnick lowers it
-  # (`cancel_keep_nick/1`). So the stop below always describes a live chain.
+  # flight implies a running chain: only `keep_nick_tick/1` raises the flag,
+  # re-arming in the same breath, and every door that turns the switch off or
+  # stops keepnick lowers it (`cancel_keep_nick/1`). So the stop below always
+  # describes a live chain.
   @spec handle_keep_nick_refusal(Message.t(), t()) :: {:noreply, t()}
   defp handle_keep_nick_refusal(%Message{command: {:numeric, code}} = msg, state) do
     state = Map.put(state, :keep_nick_in_flight?, false)
@@ -6249,14 +6243,14 @@ defmodule Grappa.Session.Server do
   # The `/nick` door (#1894's rule: the DOOR tells the operator's rename from
   # ours, never the string). `/nick <target>` is "try now" and stops nothing;
   # any other nick is a choice made more recently than ours, and keepnick
-  # stops for this registration rather than overrule it. Only meaningful
-  # while the switch is on and a registration exists.
+  # stops for this registration rather than overrule it. No "switch on, and
+  # registered" guard: a chain runs only then, and a stop with no chain
+  # running is the no-op `stop_keep_nick/2` describes.
   @spec keep_nick_on_user_nick(t(), String.t()) :: t()
   defp keep_nick_on_user_nick(state, new_nick) do
-    if keep_nick?(state) and Map.get(state, :registered_at) != nil and
-         fold_key(state, new_nick) != fold_key(state, keep_nick_target(state)),
-       do: stop_keep_nick(state, :user_renamed),
-       else: state
+    if fold_key(state, new_nick) == fold_key(state, keep_nick_target(state)),
+      do: state,
+      else: stop_keep_nick(state, :user_renamed)
   end
 
   # A self-NICK echo that lands us ON the target, by any route (our try,
@@ -6269,11 +6263,13 @@ defmodule Grappa.Session.Server do
   # ended when we landed on it and nothing re-arms it within the
   # registration, so a services rename is never fought (ZNC's "do not fight
   # nickserv" holds by construction). Mutation measured it: a stop rule here
-  # changed no test outcome, because nothing was left running to stop.
+  # changed no test outcome, because nothing was left running to stop. No
+  # switch guard either: with the switch off there is no chain, and the
+  # cancel is a no-op.
   @spec keep_nick_on_own_nick(Message.t(), t(), t()) :: t()
   defp keep_nick_on_own_nick(%Message{command: :nick}, %{nick: prev}, %{nick: next} = state)
        when prev != next do
-    if keep_nick?(state) and fold_key(state, next) == fold_key(state, keep_nick_target(state)),
+    if fold_key(state, next) == fold_key(state, keep_nick_target(state)),
       do: cancel_keep_nick(state),
       else: state
   end
@@ -6281,10 +6277,12 @@ defmodule Grappa.Session.Server do
   defp keep_nick_on_own_nick(_, _, state), do: state
 
   # A live toggle from `Credentials.update_credential_keep_nick/2`. Off cancels
-  # the chain. On clears an earlier stop — turning it on IS asking again — and,
-  # if the session is registered, starts the chain now rather than at the next
-  # 001; before 001 the welcome arms it. The same value twice is a no-op, so a
-  # repeated write cannot restart a running chain.
+  # the chain. On — turning it on IS asking again, so it is also how a stopped
+  # keepnick resumes — starts the chain now if the session is registered,
+  # rather than at the next 001; before 001 the welcome arms it. There is
+  # nothing to cancel on the way in: the switch was off, and off cancelled.
+  # The same value twice is a no-op, so a repeated write cannot start a second
+  # chain beside a running one.
   @spec apply_keep_nick_toggle(t(), boolean()) :: t()
   defp apply_keep_nick_toggle(state, enabled) do
     cond do
@@ -6295,10 +6293,10 @@ defmodule Grappa.Session.Server do
         state |> cancel_keep_nick() |> Map.put(:keep_nick, false)
 
       Map.get(state, :registered_at) != nil ->
-        state |> Map.put(:keep_nick, true) |> reset_keep_nick() |> arm_keep_nick_tick(0)
+        state |> Map.put(:keep_nick, true) |> arm_keep_nick_tick(0)
 
       true ->
-        state |> Map.put(:keep_nick, true) |> reset_keep_nick()
+        Map.put(state, :keep_nick, true)
     end
   end
 

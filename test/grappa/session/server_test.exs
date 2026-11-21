@@ -11790,6 +11790,19 @@ defmodule Grappa.Session.ServerTest do
 
     defp kn_live_nick(ctx), do: SessionStateHelpers.nick(SessionStateHelpers.fetch(ctx.pid))
 
+    # The keepnick lines are `info`, below the test env's `:warning` bar. This
+    # module is `async: false`, so lowering the bar for Session.Server alone,
+    # for the length of `fun`, leaks into no other test.
+    defp kn_capture_info(fun) do
+      Logger.put_module_level(Grappa.Session.Server, :info)
+
+      try do
+        capture_log(fun)
+      after
+        Logger.delete_module_level(Grappa.Session.Server)
+      end
+    end
+
     test "1. a 433 for the target is swallowed, and the next tick asks again" do
       holder = :atomics.new(1, [])
       ctx = keep_nick_session(held_nick_handler(holder), %{}, %{}, @kn_fallback)
@@ -11887,8 +11900,12 @@ defmodule Grappa.Session.ServerTest do
       assert await_sent_line_count(ctx.server, &kn_try?/1, 2, 1_000) == :ok
       :ok = flush(ctx.server, "kn-6")
 
-      assert :ok = Session.send_nick({:user, ctx.user.id}, ctx.network.id, "grappa-other")
+      log =
+        kn_capture_info(fn -> assert :ok = Session.send_nick({:user, ctx.user.id}, ctx.network.id, "grappa-other") end)
+
       assert await_nick(ctx.pid, "grappa-other", 1_000) == "grappa-other"
+      # Test 6b's positive control: a chain was running, so the stop says so.
+      assert log =~ "keepnick stopped"
 
       # The nick is now FREE: a chain still running would take it.
       free_holder(holder)
@@ -11896,6 +11913,24 @@ defmodule Grappa.Session.ServerTest do
       assert await_sent_line_count(ctx.server, &kn_try?/1, 3, 1_200) == {:error, {:timeout, 2}}
       assert kn_live_nick(ctx) == "grappa-other"
       assert kn_stop_rows(ctx) == [], "the operator's own choice is not a refusal to announce"
+    end
+
+    # Written for the review of PR 2688 (F2): the stop line used to be written
+    # whenever the switch was on, so a `/nick <other>` on a session that had
+    # already converged logged a stop that never happened. Log honesty: the
+    # line says what it observed, and here there was no chain to stop.
+    test "6b. /nick <other> after convergence stops nothing, so it logs no stop" do
+      holder = :atomics.new(1, [])
+      free_holder(holder)
+      ctx = keep_nick_session(held_nick_handler(holder), %{}, %{}, @kn_fallback)
+
+      assert await_nick(ctx.pid, @kn_target, 1_000) == @kn_target
+
+      log =
+        kn_capture_info(fn -> assert :ok = Session.send_nick({:user, ctx.user.id}, ctx.network.id, "grappa-other") end)
+
+      assert await_nick(ctx.pid, "grappa-other", 1_000) == "grappa-other"
+      refute log =~ "keepnick stopped"
     end
 
     test "7. an away rename pauses keepnick, and the primary is not lost on return" do
@@ -12182,20 +12217,27 @@ defmodule Grappa.Session.ServerTest do
       assert kn_numeric_rows(ctx, 433) == []
     end
 
-    # Written AFTER the mutation run (issue 2656), which found the per-001
-    # reset's "clear the stop" half uncovered.
-    test "12c. a stop holds for one registration: a re-welcome asks again" do
+    # A stop is for one registration, never a switch-off. Asserted as TWO tries
+    # after the re-welcome, because one would not tell a chain from #2253's
+    # one-shot: a stop that turned the switch off leaves the 001 arming the
+    # one-shot, which asks exactly once — and the same line. (Rewritten for
+    # the review of PR 2688: its first form waited for ONE try at a 60 s
+    # cadence, which that one-shot satisfies.)
+    test "12c. a stop holds for one registration: a re-welcome starts the chain again" do
       holder = :atomics.new(1, [])
-      ctx = keep_nick_session(held_nick_handler(holder), %{}, %{keep_nick_interval_ms: 60_000}, @kn_fallback)
+      ctx = keep_nick_session(held_nick_handler(holder), %{}, %{keep_nick_interval_ms: 200}, @kn_fallback)
 
       assert await_sent_line_count(ctx.server, &kn_try?/1, 2, 1_000) == :ok
       assert :ok = Session.send_nick({:user, ctx.user.id}, ctx.network.id, "grappa-other")
       assert await_nick(ctx.pid, "grappa-other", 1_000) == "grappa-other"
+      :ok = flush(ctx.server, "kn-12c")
+      stopped_at = Enum.count(IRCServer.sent_lines(ctx.server), &kn_try?/1)
 
-      # Re-welcomed, still off the target. With a 60s cadence the only try
-      # that can arrive in the window is the new registration's first one.
+      # Premise: the stop held.
+      assert await_sent_line_count(ctx.server, &kn_try?/1, stopped_at + 1, 500) == {:error, {:timeout, stopped_at}}
+
       IRCServer.feed(ctx.server, ":irc.test.org 001 grappa-other :Welcome\r\n")
-      assert await_sent_line_count(ctx.server, &kn_try?/1, 3, 1_000) == :ok
+      assert await_sent_line_count(ctx.server, &kn_try?/1, stopped_at + 2, 1_500) == :ok
     end
 
     test "13. regression: with the switch off, #2253 is unchanged — one try, its refusal routed, no re-arm" do
