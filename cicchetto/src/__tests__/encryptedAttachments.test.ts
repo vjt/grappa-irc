@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileInner } from "../lib/e2e/fileInner";
+import { friendlyErrorMessage } from "../lib/uploadFailureMessage";
+import type { UploadProgress } from "../lib/uploadHost";
 
 // issue 2517 — `sendEncryptedAttachment`, the encrypted door's order and its
 // answers. Until this file it had no test of its own: the compose path was
@@ -239,6 +241,24 @@ describe("sendEncryptedAttachment (issue 2517)", () => {
     const outcome = await sendEncryptedAttachment(request(fileOf("a.pdf", "application/pdf", 10)));
 
     expect(outcome).toEqual({ ok: false, error: "Upload rejected (413) — try a different file." });
+  });
+
+  // Same failure, same words as the plain door: an upload cut mid-stream says
+  // how much went, which needs the last progress the upload reported.
+  it("says how much went when the upload is cut mid-stream", async () => {
+    const cut: UploadProgress = { loaded: 3 * 1024 * 1024, total: 8 * 1024 * 1024 };
+    upload.fn.mockImplementationOnce((async (...args: unknown[]) => {
+      (args[2] as (p: UploadProgress) => void)(cut);
+      throw { kind: "network" };
+    }) as never);
+
+    const outcome = await sendEncryptedAttachment(request(fileOf("a.pdf", "application/pdf", 10)));
+
+    expect(outcome).toEqual({
+      ok: false,
+      error: friendlyErrorMessage({ kind: "network" }, cut),
+    });
+    expect(friendlyErrorMessage({ kind: "network" }, cut)).toContain("3 of 8 MB sent");
   });
 
   // NIT — the shared copy lost the encrypted door's own 401 line when the two
