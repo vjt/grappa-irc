@@ -128,40 +128,36 @@ export function onGrappaOrigin(url: string, origin: string): boolean {
 }
 
 /**
- * The code points a filename must not keep: separators and control
- * characters, and the bidi overrides that let `invoice<RLO>gpj.exe` read as
- * `invoice.jpg` when the name is shown or saved.
+ * What a filename must not keep: the path separators, and every code point
+ * Unicode draws as nothing or uses to steer the layout rather than to write
+ * text, named by property so the set is Unicode's and not a list kept here —
+ * the controls (Cc, C0 and C1), the format characters (Cf: the bidi marks,
+ * embeddings, overrides and isolates, the zero-width characters, the BOM, the
+ * interlinear annotation marks, the TAG block), the rest of
+ * Default_Ignorable_Code_Point (the Hangul fillers, the variation selectors),
+ * and a lone surrogate (Cs), which is no text at all. A name is then shown
+ * and saved as what it visibly says. Letters and combining marks of every
+ * script stay: they are how names are written.
  */
-const bannedInName = (cp: number): boolean =>
-  cp <= 0x1f ||
-  // C1: the other control block. `cp <= 0x1f` misses 0x80–0x9f, which some
-  // terminals and editors still read as controls.
-  (cp >= 0x7f && cp <= 0x9f) ||
-  cp === 0x2f ||
-  cp === 0x5c ||
-  // Zero-width and invisible separators: a name made of them shows nothing
-  // and saves as something else.
-  (cp >= 0x200b && cp <= 0x200f) ||
-  (cp >= 0x202a && cp <= 0x202e) ||
-  (cp >= 0x2060 && cp <= 0x2069) ||
-  cp === 0xfeff ||
-  // The TAG block: an entire second message can ride in a filename.
-  (cp >= 0xe0000 && cp <= 0xe007f);
+const BANNED_IN_NAME = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}/\\]/u;
+
+/**
+ * A run of blanks, collapsed to one space. The Braille blank (U+2800) draws as
+ * a space and Unicode files it as a symbol, so `\s` alone would let a run of
+ * them push the end of a name out of sight.
+ */
+const BLANKS = /[\s\u2800]+/gu;
 
 /** The longest name this client shows or saves. */
 export const FILENAME_MAX = 120;
 
 /**
- * `name` as it may be shown and saved: path separators, control characters
- * and bidi overrides taken out, whitespace collapsed, and cut to
- * `FILENAME_MAX`. Empty when nothing printable is left, and the caller says
- * so rather than inventing a name.
+ * `name` as it may be shown and saved: `BANNED_IN_NAME` taken out, blanks
+ * collapsed, and cut to `FILENAME_MAX`. Empty when nothing printable is left,
+ * and the caller says so rather than inventing a name.
  */
 export function sanitizeFileName(name: string): string {
-  const kept = [...name].filter((char) => {
-    const cp = char.codePointAt(0);
-    return cp === undefined || !bannedInName(cp);
-  });
-  const cleaned = kept.join("").replace(/\s+/g, " ").trim();
+  const kept = [...name].filter((char) => !BANNED_IN_NAME.test(char));
+  const cleaned = kept.join("").replace(BLANKS, " ").trim();
   return [...cleaned].slice(0, FILENAME_MAX).join("").trim();
 }

@@ -130,6 +130,37 @@ describe("sanitizeFileName (issue 2517)", () => {
     expect(sanitizeFileName("x".repeat(500))).toHaveLength(120);
     expect(sanitizeFileName("‮⁦\u0007")).toBe("");
   });
+
+  // A name is shown and saved as what it visibly says: whatever Unicode draws
+  // as nothing, or uses to steer the layout rather than to write text, goes.
+  it("takes out every code point that draws as nothing or steers the layout", () => {
+    expect(sanitizeFileName("a\u061Cb")).toBe("ab");
+    expect(sanitizeFileName(`invoice.jpg${"\u3164".repeat(20)}.exe`)).toBe("invoice.jpg.exe");
+    expect(sanitizeFileName("a\uFFF9b\uFFFAc\uFFFBd")).toBe("abcd");
+    expect(sanitizeFileName("a\u00ADb\u180Ec")).toBe("abc");
+    expect(sanitizeFileName("a\uD800b")).toBe("ab");
+  });
+
+  it("collapses a run of Braille blanks like any other run of blanks", () => {
+    expect(sanitizeFileName(`invoice.jpg${"\u2800".repeat(20)}.exe`)).toBe("invoice.jpg .exe");
+  });
+
+  // Taking too much out is a bug as well: a name in any script, with the marks
+  // its script writes (and a macOS name in decomposed form), is kept as written.
+  it.each([
+    "שָׁלוֹם.pdf",
+    "مَرْحَبًا.pdf",
+    "사진.jpg",
+    "写真.png",
+    "फ़ाइल.txt",
+    "ไฟล์.txt",
+    "cafe\u0301.jpg",
+    "Ελληνικά.doc",
+    "файл.txt",
+    "🎉.png",
+  ])("keeps the name %s as it was written", (name) => {
+    expect(sanitizeFileName(name)).toBe(name);
+  });
 });
 
 describe("inlineKindOf (issue 2517)", () => {
