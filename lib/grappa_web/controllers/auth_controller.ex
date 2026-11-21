@@ -786,9 +786,12 @@ defmodule GrappaWeb.AuthController do
   defp visitor_error_response(_, _, _, :upstream_unreachable),
     do: {:error, :upstream_unreachable}
 
-  # #40: 433 ERR_NICKNAMEINUSE during registration. Surfaced as the
-  # 409 nick_in_use envelope (FallbackController) so cic renders
-  # "pick another nick" instead of the generic handshake-failed copy.
+  # #40: the registration nick ladder (#676) ran out. Two numerics end it
+  # there: 433 ERR_NICKNAMEINUSE, and since issue 2673 a 437
+  # ERR_UNAVAILRESOURCE naming our nick (a nick reserved but held by nobody).
+  # `Visitors.Login.classify_down/1` maps both to `:nick_in_use`, surfaced as
+  # the 409 nick_in_use envelope (FallbackController) so cic renders "pick
+  # another nick" instead of the generic handshake-failed copy.
   defp visitor_error_response(_, _, _, :nick_in_use),
     do: {:error, :nick_in_use}
 

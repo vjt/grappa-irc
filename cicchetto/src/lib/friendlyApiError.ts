@@ -198,10 +198,14 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // failure, not a cooldown.
       return "Couldn't reach the upstream IRC server. Check the network is up.";
     case "nick_in_use":
-      // #40 — 433 ERR_NICKNAMEINUSE during login registration (the chosen
-      // nick is already on the upstream) OR a visitor `/nick` rename
-      // colliding with another visitor row. Both surface the same 409
-      // envelope; the copy is actionable: pick another nick.
+      // Three sources surface this same 409 envelope:
+      // - #40: the login registration nick ladder spent on 433
+      //   ERR_NICKNAMEINUSE (the chosen nick is already on the upstream);
+      // - issue 2673: the same ladder spent on a 437 ERR_UNAVAILRESOURCE
+      //   naming our nick. Here nobody is using the nick: it is reserved
+      //   (IRCnet nick delay, a solanum nick-delay hold);
+      // - a visitor `/nick` rename colliding with another visitor row.
+      // The copy is actionable for all three: pick another nick.
       return "That nickname is already in use on this network. Pick another one.";
     case "forbidden":
       return "Your account isn't allowed to perform that action.";
