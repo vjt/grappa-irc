@@ -204,6 +204,23 @@ defmodule Grappa.Session.Server do
   # `@connection_stable_ms` / `@autojoin_defer_ms`; production inherits this.
   @nick_reclaim_ms 12_000
 
+  # issue 2656 — how often keepnick asks again for the configured nick while
+  # the credential opts in. 30s is ZNC keepnick's own cadence (`CTimer(pMod,
+  # 30, 0, …)`), read at the source; it is NOT measured on our networks. The
+  # FIRST try is still `@nick_reclaim_ms` past 001 — that delay is an
+  # ordering against the ghost window, and keepnick inherits it unchanged.
+  # Opts-overridable (`:keep_nick_interval_ms`) as a test seam.
+  @keep_nick_interval_ms 30_000
+
+  # issue 2656 — the NICK-family refusals keepnick reads while one of its own
+  # tries is in flight. 433/437 are swallowed when they name the target nick
+  # (somebody holds it, or a nick delay); every other answer here is about
+  # THIS session's standing and ends the attempt: 432 erroneous / Q:line /
+  # RESV, 435 banned on a channel, 437 naming a CHANNEL (bahamut: banned or
+  # moderated), 438 a `+d` channel or nick-flood, 484 IRCnet's restricted
+  # client, 447 UnrealIRCd `+N`. See `keep_nick_refusal/2`.
+  @keep_nick_refusals [432, 433, 435, 437, 438, 447, 484]
+
   # #581 — overall deadline for the recover-identity sequence (IDENTIFY →
   # +r → NICK → RECOVER/RELEASE → settle → NICK). Larger than the ghost
   # budget: it spans an IDENTIFY round-trip, the +r MODE echo, a NICK, an
@@ -283,6 +300,17 @@ defmodule Grappa.Session.Server do
   `AwayState.restore_explicit/2`); `nil` boots `:present`.
   """
   @type restored_away :: {String.t(), DateTime.t()} | nil
+
+  @typedoc """
+  issue 2656 — why keepnick stopped asking for the configured nick in this
+  registration. `{:refused, code}`: the ircd answered one of OUR tries
+  about this session's standing (a channel ban or `+m`, an erroneous or
+  restricted nick), which waiting cannot change. `:user_renamed`: the
+  operator chose another nick through the `/nick` door.
+  """
+  @type keep_nick_stop ::
+          {:refused, 432 | 433 | 435 | 437 | 438 | 447 | 484}
+          | :user_renamed
 
   @typedoc """
   The KVIrc-style CTCP USERINFO profile (age/gender/location/languages/
@@ -486,6 +514,9 @@ defmodule Grappa.Session.Server do
           # issue 2253 bounded nick-reclaim delay — test seam. Production
           # omits it and inherits `@nick_reclaim_ms`.
           optional(:nick_reclaim_ms) => pos_integer(),
+          # issue 2656 keepnick re-arm cadence — test seam. Production omits it
+          # and inherits `@keep_nick_interval_ms`.
+          optional(:keep_nick_interval_ms) => pos_integer(),
           # GH #189 — on-connect perform list + its `$oper_pass` secret,
           # decrypted plaintext from the credential (nil when unset). Run at 001
           # before the built-in identify and before autojoin. The `$nickserv_pass`
@@ -493,7 +524,10 @@ defmodule Grappa.Session.Server do
           # credential password (`pending_password`) — there is no second secret
           # to thread any more.
           optional(:perform_list) => String.t() | nil,
-          optional(:oper_pass) => String.t() | nil
+          optional(:oper_pass) => String.t() | nil,
+          # issue 2656 — the credential's keepnick switch (omitted = off).
+          # Kept in sync with the `Grappa.Session.start_opts/0` twin.
+          optional(:keep_nick) => boolean()
         }
 
   @type t :: %{
@@ -984,6 +1018,22 @@ defmodule Grappa.Session.Server do
           # when the nick already converged. See `@nick_reclaim_ms` and
           # `reclaim_configured_nick/1`.
           nick_reclaim_ms: pos_integer(),
+          # issue 2656 — keepnick. `keep_nick` is the credential's switch
+          # (boot value from the plan, retuned live by
+          # `{:credential_keep_nick_changed, _, _}`); `keep_nick_interval_ms` the
+          # re-arm cadence. The other three are per-REGISTRATION and reset at
+          # every 001: the tick ref (unlike the #2253 one-shot, a re-arming
+          # tick must be cancellable, or a re-welcome or a live toggle would
+          # start a second chain at double cadence), whether one of OUR tries
+          # is awaiting its answer (so a refusal is attributed to keepnick and
+          # not to the operator's own `/nick`), and why keepnick gave up, if it
+          # did. "Trying" itself is DERIVED from the live nick, never stored.
+          # Read via `Map.get` (#229). See `keep_nick_tick/1`.
+          keep_nick: boolean(),
+          keep_nick_interval_ms: pos_integer(),
+          keep_nick_timer: reference() | nil,
+          keep_nick_in_flight?: boolean(),
+          keep_nick_stopped: keep_nick_stop() | nil,
           # #543 INC-6 — the derived `::cb` source alias this session owns for
           # its upstream lifetime, or `nil` when the source is not a managed
           # alias (mode 1, a reservation, an admin `server_source` pin, or no
@@ -1444,6 +1494,14 @@ defmodule Grappa.Session.Server do
       # issue 2253 bounded nick reclaim — config default, opts-overridable for
       # tests. No timer ref: the tick is a one-shot that reads the live nick.
       nick_reclaim_ms: Map.get(opts, :nick_reclaim_ms, @nick_reclaim_ms),
+      # issue 2656 keepnick — the switch from the plan (off when omitted), the
+      # cadence (config default, opts-overridable for tests), and the
+      # per-registration trio, idle until a drifted 001 arms the chain.
+      keep_nick: Map.get(opts, :keep_nick, false),
+      keep_nick_interval_ms: Map.get(opts, :keep_nick_interval_ms, @keep_nick_interval_ms),
+      keep_nick_timer: nil,
+      keep_nick_in_flight?: false,
+      keep_nick_stopped: nil,
       # #215 — spawn stamp; `connected_at` fills on `:irc_connected`.
       started_at: DateTime.utc_now(),
       connected_at: nil,
@@ -2200,8 +2258,10 @@ defmodule Grappa.Session.Server do
   # ever reached from `Session.send_nick/3` — so nothing here has to guess
   # from the string, which would misread a subject who manually types the
   # very nick we were going to restore them to.
+  # issue 2656 — the same door is what tells keepnick the operator chose a
+  # nick (`keep_nick_on_user_nick/2`), for the reason #1894 gives above.
   def handle_call({:send_nick, new_nick}, _, state) when is_binary(new_nick) do
-    state = Map.put(state, :away_nick_restore, nil)
+    state = state |> Map.put(:away_nick_restore, nil) |> keep_nick_on_user_nick(new_nick)
 
     case Client.send_nick(state.client, new_nick) do
       :ok -> {:reply, :ok, state}
@@ -3659,6 +3719,19 @@ defmodule Grappa.Session.Server do
     {:noreply, %{state | profile: fields}}
   end
 
+  # issue 2656 — the keepnick switch, same bridge and same `network_id`
+  # filter as the profile above. No reconnect: the switch drives a timer in
+  # this process (`apply_keep_nick_toggle/2`).
+  def handle_info({:credential_keep_nick_changed, network_id, _}, %{network_id: other} = state)
+      when network_id != other do
+    {:noreply, state}
+  end
+
+  def handle_info({:credential_keep_nick_changed, network_id, enabled}, %{network_id: network_id} = state)
+      when is_boolean(enabled) do
+    {:noreply, apply_keep_nick_toggle(state, enabled)}
+  end
+
   # M3a — same shape as `:credential_profile_changed` above: a live edit
   # via `PUT`/`DELETE /networks/:id/avatar` broadcasts on the same
   # subject-scoped `user_settings` bridge topic, and `state.avatar_url`
@@ -3835,6 +3908,19 @@ defmodule Grappa.Session.Server do
       |> maybe_resend_away()
       |> maybe_autojoin_or_defer()
       |> maybe_fire_notify()
+      # issue 2253 — the "nick reconciled" log line below used to be the
+      # WHOLE response to a registration that landed on the wrong nick: it
+      # recorded the drift and the session then wore `<nick>_` until the next
+      # reconnect. Nine prod sessions did exactly that for hours. Arm the
+      # bounded reclaim here, against `configured_nick/1` and NOT
+      # `state.nick`: the log compares a display-honest "did the server rename
+      # us", while the reclaim asks the different question "are we wearing the
+      # nick we were configured with", which is still wrong after a rename the
+      # session itself performed.
+      #
+      # issue 2656 — with keepnick on, the same arm starts the re-arming
+      # chain instead, and every 001 resets keepnick's per-registration facts.
+      |> maybe_arm_nick_reclaim(welcomed_nick)
 
     if welcomed_nick != state.nick do
       Logger.info("nick reconciled at registration",
@@ -3842,16 +3928,6 @@ defmodule Grappa.Session.Server do
         to: welcomed_nick
       )
     end
-
-    # issue 2253 — the log line above used to be the WHOLE response to a
-    # registration that landed on the wrong nick: it recorded the drift and the
-    # session then wore `<nick>_` until the next reconnect. Nine prod sessions
-    # did exactly that for hours. Arm the bounded reclaim here, against
-    # `configured_nick/1` and NOT `state.nick`: the comparison above is a
-    # display-honest "did the server rename us", while the reclaim asks the
-    # different question "are we wearing the nick we were configured with",
-    # which is still wrong after a rename the session itself performed.
-    :ok = maybe_arm_nick_reclaim(state, welcomed_nick)
 
     # #100 sustained-reconnect reset gate: 001 RPL_WELCOME proves upstream
     # accepted us, but a welcome-then-drop flap that reset the Backoff
@@ -4025,6 +4101,20 @@ defmodule Grappa.Session.Server do
     {:noreply, %{state | ghost_recovery: next, ghost_timer: timer}}
   end
 
+  # issue 2656 — a NICK-family refusal while one of keepnick's OWN tries is in
+  # flight. After the two clauses above on purpose: an armed RecoverIdentity
+  # owns 433/437 outright (#581), and keepnick never sends while one is armed,
+  # so nothing of ours can be in flight there. With no try in flight this
+  # clause does not match and the numeric routes as it always did — the
+  # operator's own `/nick` refusal included. See `keep_nick_refusal/2`.
+  def handle_info(
+        {:irc, %Message{command: {:numeric, code}} = msg},
+        %{keep_nick_in_flight?: true} = state
+      )
+      when code in @keep_nick_refusals do
+    handle_keep_nick_refusal(msg, state)
+  end
+
   # NickServ NOTICE while ghost recovery is armed — feed into the FSM.
   # GhostRecovery's own clauses guard against non-NickServ sources and
   # off-phase notices, so any benign NOTICE that doesn't belong to the
@@ -4059,8 +4149,21 @@ defmodule Grappa.Session.Server do
   # `maybe_arm_nick_reclaim/2`; a single tick, no armed-guard clause and no
   # sibling `nil` clause, because the decision lives entirely in the LIVE nick
   # the handler reads rather than in a field this could be out of step with.
+  #
+  # issue 2656 — the one-shot is superseded while keepnick is on. It can only
+  # be pending then if the switch was turned on AFTER the 001 that armed it,
+  # and the toggle armed keepnick's own chain: firing both would ask twice,
+  # and the one-shot's refusal would not be attributed to keepnick.
   def handle_info(:nick_reclaim, state) do
-    {:noreply, reclaim_configured_nick(state)}
+    if keep_nick?(state),
+      do: {:noreply, state},
+      else: {:noreply, reclaim_configured_nick(state)}
+  end
+
+  # issue 2656 — keepnick's re-arming tick. The ref is cleared first because
+  # it has fired; `keep_nick_tick/1` decides whether to arm the next one.
+  def handle_info(:keep_nick_tick, state) do
+    {:noreply, state |> Map.put(:keep_nick_timer, nil) |> keep_nick_tick()}
   end
 
   # issue 2089 — one of these is armed per held DCC offer and nothing
@@ -5849,14 +5952,28 @@ defmodule Grappa.Session.Server do
   # KeyError on its next 001. The fallback is the module default, which is the
   # production value, so a hot-reloaded session gets the real behaviour rather
   # than a degraded one.
-  @spec maybe_arm_nick_reclaim(t(), String.t()) :: :ok
+  #
+  # issue 2656 — keepnick makes the return value the state: with the switch on
+  # the same delay arms keepnick's CANCELLABLE chain instead of the one-shot
+  # (see `arm_keep_nick_tick/2`), and every 001 — drifted or not — first
+  # resets keepnick's per-registration facts, because a fresh registration is
+  # the fresh world the paragraph above describes. With the switch off the
+  # one-shot path below is byte-for-byte what #2253 shipped: no ref kept.
+  @spec maybe_arm_nick_reclaim(t(), String.t()) :: t()
   defp maybe_arm_nick_reclaim(state, welcomed_nick) do
-    if fold_key(state, welcomed_nick) == fold_key(state, configured_nick(state)) do
-      :ok
-    else
-      delay = Map.get(state, :nick_reclaim_ms, @nick_reclaim_ms)
-      _ = Process.send_after(self(), :nick_reclaim, delay)
-      :ok
+    state = reset_keep_nick(state)
+    delay = Map.get(state, :nick_reclaim_ms, @nick_reclaim_ms)
+
+    cond do
+      fold_key(state, welcomed_nick) == fold_key(state, configured_nick(state)) ->
+        state
+
+      keep_nick?(state) ->
+        arm_keep_nick_tick(state, delay)
+
+      true ->
+        _ = Process.send_after(self(), :nick_reclaim, delay)
+        state
     end
   end
 
@@ -5924,6 +6041,265 @@ defmodule Grappa.Session.Server do
   defp identity_sequence_armed?(state) do
     match?(%GhostRecovery{}, Map.get(state, :ghost_recovery)) or
       match?(%RecoverIdentity{}, Map.get(state, :recover_identity))
+  end
+
+  # ---------------------------------------------------------------------------
+  # issue 2656 — keepnick: the #2253 reclaim, re-armed while the credential
+  # opts in
+  # ---------------------------------------------------------------------------
+  #
+  # Not a new machine. The #2253 tick already answers "are we wearing the nick
+  # we were configured with?" off the LIVE nick; keepnick asks the same
+  # question every `@keep_nick_interval_ms` instead of once, until the answer
+  # is yes or a stop condition says asking again is pointless or unwanted.
+  # What #2253 did not need and this does:
+  #
+  #   * a cancellable tick (`keep_nick_timer`), because a re-arming chain
+  #     started twice runs twice;
+  #   * attribution (`keep_nick_in_flight?`): a refusal that answers one of
+  #     OUR tries is ours to read, one that answers the operator's `/nick` is
+  #     theirs and routes as it always did;
+  #   * a terminality table per (numeric, state) — `keep_nick_refusal/2`, the
+  #     "say which of the two you are looking at" that #2253's decision-log
+  #     entry demands of any arm that feeds 433/435/437 to a state machine.
+  #
+  # Coexistence with GhostRecovery is vjt's option A (issue 2656, relayed):
+  # keepnick is allowed on every credential and neither sends nor swallows
+  # while `identity_sequence_armed?/1` holds; its first try is the #2253 try,
+  # after the ghost window by ordering. Where services work, the nick is ours
+  # before keepnick looks; where they do not (a ghost that will not die,
+  # services down, a network with none, like IRCnet), keepnick keeps knocking.
+
+  @spec keep_nick?(t()) :: boolean()
+  defp keep_nick?(state), do: Map.get(state, :keep_nick, false) == true
+
+  # The nick keepnick asks for: the configured one, cut to the advertised
+  # NICKLEN (nil before 005 — no cut, as in `away_nick_target/1`). The cut is
+  # what lets a REPEATED try converge: the ircd truncates an over-long NICK
+  # (bahamut `strncpyzt(nick, parv[1], NICKLEN+1)`), so the live nick would
+  # never fold-equal the uncut one and the chain would ask for ever. Nicks are
+  # ASCII by `Identifier.valid_nick?/1`, so bytes are characters here.
+  @spec keep_nick_target(t()) :: String.t()
+  defp keep_nick_target(state) do
+    want = configured_nick(state)
+
+    case ISupport.nicklen(Map.get(state, :isupport, ISupport.default())) do
+      cap when is_integer(cap) and byte_size(want) > cap -> binary_part(want, 0, cap)
+      _ -> want
+    end
+  end
+
+  # One tick. Five arms, and each says what it OBSERVED:
+  #
+  #   * converged or stopped — the chain ends: no send, no re-arm, no line
+  #     (convergence already has its own `:nick_change` row in `$server`);
+  #   * an identity sequence owns the nick — skip and LOG, like #2253;
+  #   * an away rename is outstanding — pause without sending. Winning the
+  #     nick now would be undone by `restore_away_nick/1`, which sends us back
+  #     to the nick the away rename left (`vjt_`), losing the primary we just
+  #     took. After the restore the next tick asks again;
+  #   * otherwise — ask. Only a send the socket took marks a try in flight.
+  @spec keep_nick_tick(t()) :: t()
+  defp keep_nick_tick(state) do
+    target = keep_nick_target(state)
+
+    cond do
+      not keep_nick?(state) or Map.get(state, :keep_nick_stopped) != nil ->
+        state
+
+      fold_key(state, state.nick) == fold_key(state, target) ->
+        state
+
+      identity_sequence_armed?(state) ->
+        Logger.info("keepnick try skipped — an identity sequence owns the nick", from: state.nick, to: target)
+        rearm_keep_nick(state)
+
+      Map.get(state, :away_nick_restore) != nil ->
+        Logger.debug("keepnick try paused — an away rename is outstanding", from: state.nick, to: target)
+        rearm_keep_nick(state)
+
+      true ->
+        state |> send_keep_nick_try(target) |> rearm_keep_nick()
+    end
+  end
+
+  @spec send_keep_nick_try(t(), String.t()) :: t()
+  defp send_keep_nick_try(state, target) do
+    case Client.send_nick(state.client, target) do
+      :ok ->
+        Logger.debug("keepnick try", from: state.nick, to: target)
+        Map.put(state, :keep_nick_in_flight?, true)
+
+      {:error, _} = err ->
+        maybe_log_send_failure("keep_nick", err)
+        state
+    end
+  end
+
+  @spec rearm_keep_nick(t()) :: t()
+  defp rearm_keep_nick(state),
+    do: arm_keep_nick_tick(state, Map.get(state, :keep_nick_interval_ms, @keep_nick_interval_ms))
+
+  # Every keepnick tick goes through here, and every caller arrives with no
+  # tick pending: the 001 and a live toggle reset first (`reset_keep_nick/1`
+  # cancels), and the tick re-arms from inside its own fire, whose ref the
+  # handler has already cleared. That is what keeps it ONE chain; a second
+  # cancel here would be dead, and mutation measured that it was.
+  @spec arm_keep_nick_tick(t(), non_neg_integer()) :: t()
+  defp arm_keep_nick_tick(state, delay),
+    do: Map.put(state, :keep_nick_timer, Process.send_after(self(), :keep_nick_tick, delay))
+
+  @spec cancel_keep_nick(t()) :: t()
+  defp cancel_keep_nick(state) do
+    :ok = cancel_and_drain(Map.get(state, :keep_nick_timer), :keep_nick_tick)
+    state |> Map.put(:keep_nick_timer, nil) |> Map.put(:keep_nick_in_flight?, false)
+  end
+
+  @spec reset_keep_nick(t()) :: t()
+  defp reset_keep_nick(state), do: state |> cancel_keep_nick() |> Map.put(:keep_nick_stopped, nil)
+
+  # Records why keepnick gave up and ends the chain. The first reason wins: a
+  # later one describes a session that had already stopped asking.
+  @spec stop_keep_nick(t(), keep_nick_stop()) :: t()
+  defp stop_keep_nick(state, reason) do
+    if Map.get(state, :keep_nick_stopped) == nil do
+      Logger.info("keepnick stopped", to: keep_nick_target(state), reason: inspect(reason))
+      state |> cancel_keep_nick() |> Map.put(:keep_nick_stopped, reason)
+    else
+      state
+    end
+  end
+
+  # The terminality table, for a NICK-family refusal that arrived while one of
+  # our tries was in flight. ONE rule, structural and the same on every ircd
+  # we bind: only a refusal ABOUT THE TARGET NICK is swallowed, and only
+  # 433/437 can be about it in the way that waiting changes —
+  #
+  #   433 [own, target, _]  somebody holds it (bahamut, solanum, IRCnet);
+  #   437 [own, target, _]  a nick delay (solanum `nd_dict`, IRCnet history).
+  #
+  # Everything else is about THIS session and is shown and ends the attempt:
+  # bahamut's 437 carries a CHANNEL in `params[1]` (banned or moderated there,
+  # its only emitter), 435 a channel ban, 432 an erroneous / Q:lined / RESV'd
+  # nick, 438 a `+d` channel or nick-flood, 484 IRCnet's restricted client,
+  # 447 UnrealIRCd's `+N`. Asking again cannot change any of them, and hiding
+  # them would hide why the nick does not come back — #2253's lesson.
+  #
+  # Both ircds check collision (433) BEFORE the ban/moderation checks, so the
+  # channel refusal arrives only on the try where the nick has become free:
+  # that is when it is worth telling the operator, and it is the try this arm
+  # sees.
+  @spec keep_nick_refusal(t(), Message.t()) :: :swallow | :route
+  defp keep_nick_refusal(state, %Message{command: {:numeric, code}, params: [_, about | _]})
+       when code in [433, 437] do
+    if fold_key(state, about) == fold_key(state, keep_nick_target(state)),
+      do: :swallow,
+      else: :route
+  end
+
+  defp keep_nick_refusal(_, _), do: :route
+
+  # A refusal of one of our tries: swallow it, or route it exactly as it
+  # always routed (the operator reads it in `$server`) and then stop with one
+  # structured line saying so. Either way the try is answered. A try in
+  # flight implies the switch is on and keepnick has not stopped: only
+  # `keep_nick_tick/1` raises the flag, under exactly those two conditions,
+  # and every door that turns the switch off or stops keepnick lowers it
+  # (`cancel_keep_nick/1`). So the stop below always describes a live chain.
+  @spec handle_keep_nick_refusal(Message.t(), t()) :: {:noreply, t()}
+  defp handle_keep_nick_refusal(%Message{command: {:numeric, code}} = msg, state) do
+    state = Map.put(state, :keep_nick_in_flight?, false)
+
+    case keep_nick_refusal(state, msg) do
+      :swallow ->
+        {:noreply, state}
+
+      :route ->
+        {:noreply, routed} = route_numeric(msg, state)
+        {:noreply, routed |> stop_keep_nick({:refused, code}) |> persist_keep_nick_stop(code)}
+    end
+  end
+
+  # The "tell the user once" line (ruling point 4): `:server_event` on
+  # `$server`, structured in `meta.keep_nick` for a client to render, with a
+  # plain body for a client that does not know the key — the exception #676
+  # already took for its fallback row, inherited here rather than decided
+  # anew. Anonymous sender: grappa is speaking, nobody on the wire said it
+  # (`persist_link_failure/2`'s posture).
+  @spec persist_keep_nick_stop(t(), 400..499) :: t()
+  defp persist_keep_nick_stop(state, code) do
+    target = keep_nick_target(state)
+
+    attrs =
+      Session.put_subject_id(
+        %{
+          network_id: state.network_id,
+          channel: "$server",
+          server_time: System.system_time(:millisecond),
+          sender: Message.anonymous_sender(),
+          body: "stopped trying to get nick #{target} back: the server refused it (#{code})",
+          meta: %{keep_nick: %{outcome: "stopped", target: target, numeric: code}}
+        },
+        state.subject
+      )
+
+    apply_effects([{:persist, :server_event, attrs}], state)
+  end
+
+  # The `/nick` door (#1894's rule: the DOOR tells the operator's rename from
+  # ours, never the string). `/nick <target>` is "try now" and stops nothing;
+  # any other nick is a choice made more recently than ours, and keepnick
+  # stops for this registration rather than overrule it. Only meaningful
+  # while the switch is on and a registration exists.
+  @spec keep_nick_on_user_nick(t(), String.t()) :: t()
+  defp keep_nick_on_user_nick(state, new_nick) do
+    if keep_nick?(state) and Map.get(state, :registered_at) != nil and
+         fold_key(state, new_nick) != fold_key(state, keep_nick_target(state)),
+       do: stop_keep_nick(state, :user_renamed),
+       else: state
+  end
+
+  # A self-NICK echo that lands us ON the target, by any route (our try,
+  # services, the operator): the chain ends here, and the try it answers is
+  # no longer in flight, so a refusal of some LATER rename (an away rename to
+  # a taken nick) routes as the operator's and is not read as keepnick's.
+  # The `:nick` command only: the 001 reconcile moves `state.nick` too.
+  #
+  # Being renamed back OFF the target needs no rule of its own. The chain
+  # ended when we landed on it and nothing re-arms it within the
+  # registration, so a services rename is never fought (ZNC's "do not fight
+  # nickserv" holds by construction). Mutation measured it: a stop rule here
+  # changed no test outcome, because nothing was left running to stop.
+  @spec keep_nick_on_own_nick(Message.t(), t(), t()) :: t()
+  defp keep_nick_on_own_nick(%Message{command: :nick}, %{nick: prev}, %{nick: next} = state)
+       when prev != next do
+    if keep_nick?(state) and fold_key(state, next) == fold_key(state, keep_nick_target(state)),
+      do: cancel_keep_nick(state),
+      else: state
+  end
+
+  defp keep_nick_on_own_nick(_, _, state), do: state
+
+  # A live toggle from `Credentials.update_credential_keep_nick/2`. Off cancels
+  # the chain. On clears an earlier stop — turning it on IS asking again — and,
+  # if the session is registered, starts the chain now rather than at the next
+  # 001; before 001 the welcome arms it. The same value twice is a no-op, so a
+  # repeated write cannot restart a running chain.
+  @spec apply_keep_nick_toggle(t(), boolean()) :: t()
+  defp apply_keep_nick_toggle(state, enabled) do
+    cond do
+      keep_nick?(state) == enabled ->
+        state
+
+      not enabled ->
+        state |> cancel_keep_nick() |> Map.put(:keep_nick, false)
+
+      Map.get(state, :registered_at) != nil ->
+        state |> Map.put(:keep_nick, true) |> reset_keep_nick() |> arm_keep_nick_tick(0)
+
+      true ->
+        state |> Map.put(:keep_nick, true) |> reset_keep_nick()
+    end
   end
 
   # #676 h14 — release the advisory EventRouter parked at 001.
@@ -6413,7 +6789,10 @@ defmodule Grappa.Session.Server do
     # issue 2380 — and send the identify a drifted welcome held, AFTER the
     # recover step so an armed recover is seen and owns the IDENTIFY.
     recovered = maybe_advance_recover_on_nick(state, next_state)
-    {:noreply, maybe_identify_on_reclaimed_nick(state, recovered)}
+    identified = maybe_identify_on_reclaimed_nick(state, recovered)
+    # issue 2656 — last, so keepnick reads the echo after the recover FSM and
+    # the held identify have had theirs.
+    {:noreply, keep_nick_on_own_nick(msg, state, identified)}
   end
 
   # CP24 bucket E web/S8: keep `seeded_channels` consistent with
