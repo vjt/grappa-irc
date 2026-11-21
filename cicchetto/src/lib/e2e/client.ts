@@ -387,6 +387,8 @@ function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): Ch
         // Only text is shown. A CHAL is answered in the drain (`answer`),
         // never shown; an ACK means nothing here (cic challenges no one).
         // The row names the master that wrote it, the key the user pins.
+        // A `received` comes from a drain, which always has the inbox row to
+        // file it under: no arm here asks whether `inbox` is null.
         // issue 2517 — an attachment is a message too: the engine checked its
         // shape and put the checked `FileInner` on the event, and its `url`
         // must be this grappa's own upload path, or the peer could make this
@@ -409,13 +411,11 @@ function changesFor(events: E2eEvent[], at: number, inbox: FromInbox | null): Ch
               },
             });
           } else {
-            // The only refusal left here: a `received` comes from a drain,
-            // which always has the inbox row to file it under.
             console.warn(`[e2e] dropped a file from ${e.nick}: not this grappa's upload`);
           }
           break;
         }
-        if (e.inner.t === "text" && typeof e.inner.body === "string" && inbox !== null) {
+        if (e.inner.t === "text" && typeof e.inner.body === "string") {
           changes.push({
             op: "add",
             nick: e.nick,
