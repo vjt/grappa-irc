@@ -971,9 +971,11 @@ defmodule Grappa.Networks.Credential do
 
   @doc """
   issue 2656 — the narrow changeset for the keepnick switch, casting
-  ONLY `:keep_nick`. Required, so a body naming the key with `null`
-  is refused rather than read as "off"; the boolean cast refuses
-  anything that is not one.
+  ONLY `:keep_nick`. Required, so a `null` is refused rather than read
+  as "off". The boolean cast alone is NOT a boolean check: Ecto takes
+  `"true"`/`"1"` and `"false"`/`"0"` too, so the REST door
+  (`NetworksController.keep_nick/2`) refuses anything that is not a
+  literal boolean before it reaches here.
   """
   @spec keep_nick_changeset(t(), map()) :: Ecto.Changeset.t()
   def keep_nick_changeset(%__MODULE__{} = credential, attrs) when is_map(attrs) do

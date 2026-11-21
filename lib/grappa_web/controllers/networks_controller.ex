@@ -257,7 +257,7 @@ defmodule GrappaWeb.NetworksController do
   """
   @spec keep_nick(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
-          | {:error, :bad_request | :not_found | Ecto.Changeset.t()}
+          | {:error, :bad_request | :not_found | {:invalid_setting, String.t()} | Ecto.Changeset.t()}
   def keep_nick(conn, params) do
     subject = conn.assigns.current_subject
     network = conn.assigns.network
@@ -269,11 +269,15 @@ defmodule GrappaWeb.NetworksController do
     end
   end
 
-  # The key is REQUIRED: an absent one is a malformed request, never an
-  # implicit "off". Its value goes to the changeset unjudged, which is where
-  # a non-boolean becomes a 422.
-  @spec parse_keep_nick(map()) :: {:ok, map()} | {:error, :bad_request}
-  defp parse_keep_nick(%{"keep_nick" => value}), do: {:ok, %{keep_nick: value}}
+  # The key is REQUIRED: an absent one is a malformed request (400), never an
+  # implicit "off". Its value must be a LITERAL boolean, judged here as
+  # `DccAutoAcceptController.update/2` judges its switch: Ecto's boolean cast
+  # would take "true"/"1" and "false"/"0", so handing the value on unjudged
+  # let a string flip the switch. A present non-boolean is well-formed but
+  # unusable: 422, through the existing `{:invalid_setting, field}` token.
+  @spec parse_keep_nick(map()) :: {:ok, map()} | {:error, :bad_request | {:invalid_setting, String.t()}}
+  defp parse_keep_nick(%{"keep_nick" => value}) when is_boolean(value), do: {:ok, %{keep_nick: value}}
+  defp parse_keep_nick(%{"keep_nick" => _}), do: {:error, {:invalid_setting, "keep_nick"}}
   defp parse_keep_nick(_), do: {:error, :bad_request}
 
   @doc """

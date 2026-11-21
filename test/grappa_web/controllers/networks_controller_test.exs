@@ -1144,14 +1144,28 @@ defmodule GrappaWeb.NetworksControllerTest do
       assert cred.keep_nick == true, "a refused request must not have written anything"
     end
 
-    for {label, value} <- [{"a string", "maybe"}, {"null", nil}, {"a number", 1}] do
+    # `before` is the stored value the refused request must leave in place,
+    # chosen opposite to what a coercion would write — Ecto's boolean cast
+    # takes "true"/"1" and "false"/"0" — so a coerced write is visible here
+    # and not only in the status.
+    for {label, value, before} <- [
+          {"a string", "maybe", false},
+          {"null", nil, false},
+          {"a number", 1, false},
+          {~s(the string "true"), "true", false},
+          {~s(the string "1"), "1", false},
+          {~s(the string "false"), "false", true},
+          {~s(the string "0"), "0", true}
+        ] do
       test "#{label} for keep_nick is 422", %{conn: conn} do
         %{user: vjt, session: session, slug: slug, network: network} = keep_nick_user_setup("bad")
+        before = unquote(before)
+        if before, do: conn |> patch_keep_nick(session, slug, %{keep_nick: true}) |> json_response(200)
 
         assert conn |> patch_keep_nick(session, slug, %{keep_nick: unquote(value)}) |> json_response(422)
 
         {:ok, cred} = Credentials.get_credential(vjt, network)
-        assert cred.keep_nick == false
+        assert cred.keep_nick == before
       end
     end
 
