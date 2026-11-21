@@ -7664,15 +7664,17 @@ pair loses its containment, and the OUTER keeps it unless it is itself nested
 in a vertical scroller. Auditing every scroller contained before issue 2671 is
 our reading of the scope of «anche loro», not vjt's words.
 
-**What moved.** One selector. `.admin-tab-panel` joins the carve-out rule as
+**What moved.** Two selectors. `.admin-tab-panel` joins the carve-out rule as
 `:where(.admin-pane) .admin-tab-panel`, so its computed
 `overscroll-behavior` goes from `contain` to `auto` on both axes wherever it
 sits in `.admin-pane`, which is everywhere `AdminPane.tsx` renders it. Its
 vertical scroll chains to `.admin-pane`, which stays contained. Its
 horizontal scroll does too: `.admin-pane` declares only `overflow-y: auto`,
 so its x computes `auto` through the visible→auto conversion, and the shared
-rule contains both axes. No per-rule `overscroll-behavior` was added. The
-`default.css` comment that stated the exemption now states the rule.
+rule contains both axes. The second is the desktop `.adm-nav` rail, found
+during the census though it is outside its population (below). No per-rule
+`overscroll-behavior` was added. The `default.css` comment that stated the
+exemption now states the rule.
 
 **Census method.** The population is every scroll container whose own rule
 carried an `overscroll-behavior` before d5c875a1b (PR 2672), read off
@@ -7728,43 +7730,66 @@ discarded as a dead regex rather than read as a result.
 | `.confirm-modal-attachment-source` | nested, but a horizontal strip | `.confirm-modal-attachments` | `ConfirmModal.tsx`: a `pre` in an `li` of the list; see below |
 | `.directory-list` (`none`, #1445) | no | — | `DirectoryPane.tsx`: child of `.directory-pane` (`overflow: hidden`) |
 
-**Left as it was, and why.** `.confirm-modal-attachment-source` is nested in
-`.confirm-modal-attachments`, but it is a horizontal strip, not a vertical
-scroller. Ruling (b) is worded for a vertical scroller inside a vertical one;
-the strip already contains x alone, and its y already chains to the list.
-The two strips issue 2671 newly contained under the same ruling (`.adm-nav`
-on a phone, `.adm-table-wrap`, both inside the admin pane) kept their x
-containment too, so moving this one alone would split the strips into two
-patterns. If the ruling is meant to reach the x axis of a nested strip, it
-reaches all three, and that needs saying. `.directory-list` keeps its `none`
+**Nested strips keep their x.** `.confirm-modal-attachment-source` is nested
+in `.confirm-modal-attachments`, but it is a horizontal strip, not a vertical
+scroller, and it keeps its x containment, as do the two strips issue 2671
+newly contained (`.adm-nav` on a phone, `.adm-table-wrap`, both inside the
+admin pane). No code changed for them. That is our reading of the scope of
+ruling (b), not vjt's words: the ruling says a vertical scroller inside a
+vertical scroller, and a horizontal strip sits outside its letter. Its y
+already chains to the scroller around it. `.directory-list` keeps its `none`
 (#1445): it is not nested, and the shared rules do not list it.
 
-**Found outside the census: the desktop `.adm-nav` rail.** It was not
-contained before issue 2671, so it is not in the table, but above 900px it is
-a vertical scroller (`overflow-y: auto`) inside `.admin-pane`, and the strip
-restore in its desktop block (`overscroll-behavior-y: contain`) contains it.
-Ruling (b) would hand it back. It is not touched here: the guard REQUIRES
-that restore (a listed strip that scrolls y in some layout must contain y
-there), so moving it means changing a rule of the guard, which is a decision
-for review and not a line in this slice. It stays open.
+**Applied outside the census: the desktop `.adm-nav` rail.** It was not
+contained before issue 2671, so it is not in the table. But above 900px it
+is a vertical scroller (`overflow-y: auto`) in the second row of
+`.admin-pane`'s grid, and the strip restore in its desktop block
+(`overscroll-behavior-y: contain`) contained it. The orchestrator's reading
+of ruling (b), not vjt's words: it is a vertical scroller nested in another
+one, so it takes no containment on y in that layout. The restore went. Its y
+is `auto` above 900px only, and its x keeps the strip list's `contain`: a
+carve-out would have dropped both axes, which is why it has none. The guard
+demanded the restore (a listed strip that scrolls y in some layout had to
+contain y there). That rule came from PR 2672 and contradicted the ruling,
+so the guard changed and the ruling did not: the demand now skips a strip the
+census found nested.
 
-**What the guard sees.** `overscrollContainment.test.ts` passes on the new
-pair: it is well-formed and both halves are listed vertical scrollers.
-Putting `contain` back through the containing list
-(`.admin-pane .admin-tab-panel`, which would beat the carve-out on
-specificity) fails two tests, and a per-rule `contain` in the
-`.admin-tab-panel` block fails one. Dropping the new carve-out stays GREEN,
-and so does dropping the mirror pair: the guard checks that a pair is
-well-formed, never which pairs the census found, so the C5 decision itself is
-not held by any test. A pin of the exact pair list kills both (measured on a
-scratch copy, then discarded); whether to add it is open. It would record the
-census, not observe nesting: a new nested scroller in a component would still
-pass.
+**What the guard sees.** `overscrollContainment.test.ts` used to check that a
+carve-out is well-formed, never which ones exist: on the first cut of this
+change, dropping the new carve-out stayed GREEN, and so did dropping the
+mirror pair. The census is now recorded in the test as `NESTED_CENSUS`, four
+`[outer, inner]` pairs. A test requires the carve-outs to be exactly the
+pairs whose inner is not a strip, and requires that no rule contain y on a
+nested strip. The coverage test's demand for a y restore skips a strip the
+census lists. Each mutant below failed and was reverted, with the file's
+sha256 checked:
+- dropping the `.admin-tab-panel` carve-out, or the mirror's, fails the
+  census test;
+- putting `overscroll-behavior-y: contain` back in the desktop `.adm-nav`
+  block fails the census test;
+- removing the guard's exception for nested strips fails the coverage test,
+  and so does dropping `.adm-nav` from the census;
+- `.admin-pane .admin-tab-panel` added to the containing list (it would beat
+  the carve-out on specificity) fails two tests;
+- a per-rule `contain` in the `.admin-tab-panel` block fails one.
+The census records a reading and does not observe nesting: a new nested
+scroller in a component still passes until somebody redoes the census. The
+per-rule test's allowance for a strip's y restore stays even though nothing
+uses it today. Without it, the next strip that turns vertical outside a
+scroller could not satisfy the coverage test's demand.
 
 **Not measured.** Nothing here ran in a browser or on a device. The census is
 a reading of the components and the sheet, and no e2e asserts the computed
-`overscroll-behavior` of `.admin-tab-panel` (the seven specs that read one
-look at other surfaces, none of which moved). Whether the admin panel's
-drag now chains to `.admin-pane` and the shell stays still on iOS is
-inferred from WebKit's source as described in the issue 2671 entry, not
-measured.
+`overscroll-behavior` of `.admin-tab-panel` or `.adm-nav` (the seven specs
+that read one look at other surfaces, none of which moved). Whether a drag in
+the admin panel or the desktop rail now chains to `.admin-pane` and the shell
+stays still on iOS is inferred from WebKit's source as described in the
+issue 2671 entry, not measured. There is a caveat, and it is the same
+question that kept `.server-peek-body` contained. Read from the sheet,
+`.admin-pane` rarely overflows: on a phone the tab panel takes the rest of
+the column (`flex: 1; min-height: 0`), and above 900px the rail and the
+panel fill a `1fr` grid row. On Chromium a contained scroll container stops
+the chain whether or not it overflows (the latch reading in the issue 2671
+entry). Whether iOS stops it at a box that does not overflow is INFERRED; if
+it does not, the drag would skip `.admin-pane` and reach the shell. vjt's
+device check is what answers that.
