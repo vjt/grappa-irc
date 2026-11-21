@@ -3521,11 +3521,11 @@ describe("ScrollbackPane", () => {
       });
     });
 
-    // issue 2613 — the windows that do NOT share the pane: an encrypted query
-    // (its own keyed Match in Shell), `$home`, mentions, the directory. A switch
-    // to one of them unmounts the pane instead of changing its key, so the leave
-    // is written from `onCleanup`, and there the reactive props already name the
-    // window being OPENED. Shell's Switch is reproduced here because that is
+    // issue 2613 — the pane unmounts for any window whose kind
+    // `kindHasScrollback` rejects: Shell draws that window in its own Match, so
+    // a switch to it unmounts the pane instead of changing its key. The leave
+    // is then written from `onCleanup`, and there the reactive props already
+    // name the window being OPENED. Shell's Switch is reproduced here because that is
     // what makes the props move before the dispose: the selection is one
     // signal read by both the Match and the pane's props.
     describe("a switch that unmounts the pane marks the window it LEAVES read (issue 2613)", () => {
