@@ -618,29 +618,31 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   }
 
   // An own send reads the chat, as a send reads any window: what is above it
-  // was seen by whoever wrote below it.
-  async function sendEncrypted(slug: string, nick: string, body: string): Promise<void> {
+  // was seen by whoever wrote below it. A text and an attachment take this
+  // one door, and leave the same rows.
+  async function sendOwn(
+    slug: string,
+    nick: string,
+    send: (client: E2eClient, ctx: E2eContext) => Promise<Report>,
+  ): Promise<void> {
     const windowKey = channelKey(slug, encryptedWindowName(nick));
     setEncryptedSendSubmitted(windowKey);
-    const report = await run(slug, (client, ctx) => client.send(ctx, nick, body));
+    const report = await run(slug, send);
     await afterReport(slug, report);
     await readEncryptedChat(slug, nick);
     setLastEncryptedSend(windowKey);
   }
 
+  const sendEncrypted = (slug: string, nick: string, body: string): Promise<void> =>
+    sendOwn(slug, nick, (client, ctx) => client.send(ctx, nick, body));
+
   /**
    * Sends the attachment `file` to `nick` (issue 2517): the ciphertext is
    * already on grappa, and this message carries its key, its URL and its
-   * metadata. The same door as a text, and the same rows.
+   * metadata.
    */
-  async function sendEncryptedFile(slug: string, nick: string, file: FileInner): Promise<void> {
-    const windowKey = channelKey(slug, encryptedWindowName(nick));
-    setEncryptedSendSubmitted(windowKey);
-    const report = await run(slug, (client, ctx) => client.sendFile(ctx, nick, file));
-    await afterReport(slug, report);
-    await readEncryptedChat(slug, nick);
-    setLastEncryptedSend(windowKey);
-  }
+  const sendEncryptedFile = (slug: string, nick: string, file: FileInner): Promise<void> =>
+    sendOwn(slug, nick, (client, ctx) => client.sendFile(ctx, nick, file));
 
   /** Asks `nick` for its keys again: the user's answer to a message none of its devices could read (issue 2491). */
   async function rekeyEncrypted(slug: string, nick: string): Promise<void> {
