@@ -16,10 +16,12 @@ import {
 // the whole shell moved. Fifteen scroll rules had the same gap; containment
 // was a per-rule line that every new scroller had to remember.
 //
-// The mechanism is a pair of SHARED rules near the top of default.css, listing
-// scrollers by their subject selector. THIS file is what makes it systemic: a
-// rule that makes something scroll and is not covered by the shared rules is
-// RED here, so the next scroller cannot land without containment.
+// The mechanism is three SHARED rules near the top of default.css: two list
+// scrollers by their subject selector and contain them, the third hands
+// containment back to a vertical scroller nested in a contained one (vjt's
+// ruling (b)). THIS file is what makes it systemic: a rule that makes
+// something scroll and is not covered by the shared rules is RED here, so the
+// next scroller cannot land without containment.
 //
 // WHAT THIS PROVES: the stylesheet's declarations — which rules scroll, and
 // which of them the shared rules cover. Source-level, like every themeCss gate.
@@ -32,7 +34,8 @@ import {
 //     device check.
 //   * that the selector actually matches the element the TSX renders: a class
 //     renamed in the component but not in the sheet leaves both rules naming a
-//     ghost, and this file green.
+//     ghost, and this file green. Likewise for nesting: a carve-out pair is
+//     checked against the sheet, never against which component renders which.
 //   * scrollers the sheet does not declare: an element made scrollable from JS
 //     (none today) or by the UA. `textarea` is the one UA scroller listed, by
 //     hand; see UA_SCROLLERS.
@@ -166,6 +169,15 @@ const isStripRule = (body: string): boolean =>
 const rules = allRules();
 const scrollRules = rules.filter(({ body }) => declaredScrollAxes(body).size > 0);
 
+/** Whether `compound` is a vertical scroller: a UA one, or the subject of a rule declaring y. */
+const scrollsVertically = (compound: string): boolean =>
+  UA_SCROLLERS.some((ua) => covers([ua], compound)) ||
+  scrollRules.some(
+    ({ selectors, body }) =>
+      declaredScrollAxes(body).has("y") &&
+      selectorList(selectors).some((entry) => covers([subjectOf(entry)], compound)),
+  );
+
 describe("issue 2671 — every scroll surface contains its overscroll, declared once", () => {
   it("the shared rules exist and list single compound selectors, never `*`", () => {
     const { both, xOnly } = overscrollContainment();
@@ -254,6 +266,24 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
     expect(offenders).toEqual([]);
   });
 
+  it("a carve-out hands containment back only to a vertical scroller nested in a listed one", () => {
+    // vjt's ruling (b): a vertical scroller inside another vertical scroller
+    // takes no containment; its scroll chains to the outer one, which is
+    // contained, so the shell stays still anyway. An entry is
+    // `:where(<outer>) <inner>`, so CSS applies it only where the nesting is
+    // real. Both halves must be vertical scrollers in the both-axis list: the
+    // inner one is what the entry undoes, the outer one is what stops the chain.
+    const { both, nested } = overscrollContainment();
+    expect(nested.length).toBeGreaterThan(0);
+    const offenders = nested.filter((entry) => {
+      const pair = /^:where\(([^()\s]+)\) ([^()\s]+)$/.exec(entry);
+      return !pair
+        ?.slice(1)
+        .every((compound) => covers(both, compound) && scrollsVertically(compound));
+    });
+    expect(offenders).toEqual([]);
+  });
+
   it("no rule declares containment of its own beside the shared rules", () => {
     // The whole point of the ruling: no per-rule `contain` creeping back. What
     // stays legal is `none` on a surface the shared rules do NOT list (it also
@@ -266,8 +296,7 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
     const offenders: string[] = [];
     for (const rule of rules) {
       const flat = rule.body.trim().replace(/\s+/g, " ").replace(/;$/, "");
-      if (flat === "overscroll-behavior: contain" || flat === "overscroll-behavior-x: contain")
-        continue;
+      if (/^overscroll-behavior(-x: contain|: contain|: auto)$/.test(flat)) continue;
       for (const [prop, raw] of declarations(rule.body)) {
         if (!prop.startsWith("overscroll-behavior")) continue;
         const value = raw.toLowerCase();
@@ -301,8 +330,12 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
     // scroller of the whole top-pinned card family — WHOIS / WHOWAS / LUSERS
     // declare no overflow of their own, so a card that outgrows the pane
     // scrolls HERE, and before 2671 this was uncontained too.
-    const { both } = overscrollContainment();
+    const { both, nested } = overscrollContainment();
     expect(covers(both, ".server-peek-body")).toBe(true);
     expect(covers(both, ".scrollback-overlay")).toBe(true);
+    // The peek is nested in the overlay but is NOT carved out: the ruling did
+    // not cover it, and the overlay rarely overflows (see the shared rule's
+    // comment). Carving it out takes a ruling of its own.
+    expect(covers(nested.map(subjectOf), ".server-peek-body")).toBe(false);
   });
 });

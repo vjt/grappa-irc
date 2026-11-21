@@ -7311,7 +7311,7 @@ the issue): no more per-rule patches, one mechanism for every scroll surface,
 and the card must bounce natively at its edge while the shell stays still.
 The root's `overscroll-behavior: none` (iOS-1) stays.
 
-**Mechanism.** Two shared rules right after `html, body`. The first lists
+**Mechanism.** Three shared rules right after `html, body`. The first lists
 every scroller by its subject selector (37 entries, `textarea` included,
 since the UA computes its overflow as `auto`) and declares
 `overscroll-behavior: contain`. The second lists the three horizontal strips
@@ -7320,8 +7320,10 @@ that sit inside a vertical scroller (`.adm-nav` as the mobile tab row,
 `overscroll-behavior-x: contain`, leaving their vertical axis to the scroller
 they sit in, as it was before. The desktop `.adm-nav`, where the strip
 becomes a vertical rail, restores `overscroll-behavior-y: contain` in its own
-block. Every per-rule declaration went: 32 `contain` and the one `-x` became
-3 (the two shared rules and the `.adm-nav` restore), plus the two `none`
+block. The third hands containment back to two nested scrollers (see the
+ruling below). Every per-rule declaration went: 32 `contain` and the one
+`-x` became 3 (the two containing rules and the `.adm-nav` restore), plus
+the two `none`
 that were already there and stay on purpose (the root, `.directory-list`
 #1445). 29 of the 33 moved into a list along with their scroller. 4 were
 dropped and not moved. Three sat on boxes that are not scroll containers
@@ -7342,14 +7344,67 @@ finds no source (the positive control, `adm-badge--${`, hits
 `AdminBadge.tsx` through the same pathspec), so the six rules went instead
 of being contained.
 
-**The line between the two lists.** Never contain an axis a box cannot
-scroll while a scroller around it wants that axis. A strip's vertical axis
-has such a scroller: the admin panel, the attachments list. A vertical
-scroller's horizontal axis has none. I checked the components that render
-the eight x-scrolling boxes, and none of them holds a vertical scroller. So
-the both-axis shape that 25 rules already shipped costs nothing there. A
-textarea does scroll vertically, so it is contained like every other
-vertical scroller, and when it fits it takes the same latch they all do.
+**The line between the two lists is the declared axis.** A strip is a rule
+that declares a scroll on x and says nothing about y: no `overflow-y`, no
+`overflow-block`, no `overflow` shorthand. Its `auto` y comes only from the
+visible→auto conversion, and the vertical scroller around it (the admin
+panel, the attachments list) wants that axis, so a strip contains x alone.
+Every other scroller contains both axes, whether or not it can scroll at the
+moment. I checked the components that render the eight x-scrolling boxes,
+and none of them holds a vertical scroller, so the both-axis shape that 25
+rules already shipped costs nothing there. The first cut wrote the line as
+"never contain an axis a box cannot scroll while a scroller around it wants
+that axis". The lists never applied that test: a contained vertical scroller
+whose content fits cannot scroll either, and the scroller around it wants
+the axis. The independent review caught the mismatch, and it is what the
+ruling below decides.
+
+**Nested scrollers: vjt's ruling (b).** vjt, 2026-11-21 10:15 Rome,
+verbatim «certo b». It was relayed by the orchestrator from the peer
+vjt-claude-60, and I did not see it first-hand. A vertical scroller nested
+in another vertical scroller takes no containment: its scroll chains to the
+outer one, which is contained, so the shell stays still anyway. The third
+shared rule declares `overscroll-behavior: auto`, and each of its entries is
+`:where(<outer>) <inner>`. A descendant selector applies only where the
+nesting is real: the perform textarea regains containment if it is ever
+rendered outside the drawer. `:where()` gives the outer compound no
+specificity, so an entry ties with the both-axis entry it undoes and wins by
+coming after it. That also keeps biome quiet: with the two pairs written as
+plain descendants the `noDescendingSpecificity` count goes from 26 to 28,
+and with `:where()` it stays at 26 (biome 2.5.15, measured on the sheet).
+The census covered every surface this issue newly contains, reading the
+components and the containing-block chain, not only the DOM: `position:
+fixed`, a portal, or an absolute box whose positioned ancestor sits outside
+the scroller does not chain to it. Three are nested:
+- the perform textarea (`PerformSettings.tsx`, inside `.settings-drawer`),
+  carved out as `:where(.settings-drawer) textarea`. Today it is the only
+  textarea the drawer renders;
+- `.registration-wizard-mirror` (`NoticeMirror`, both mounts inside
+  `.registration-wizard-body`), carved out;
+- `.server-peek-body`, inside `.scrollback-overlay`. It **stays contained**:
+  it is the surface this issue is about, and the ruling was given on a list
+  of three surfaces that did not include it. A ruling is not extended to a
+  case it was not shown, so it goes to vjt as a separate question. The
+  reason it matters: the overlay is a scroll container that rarely
+  overflows (the peek is at most 40vh of a pane-tall layer). On Chromium the
+  latch reading above stops the chain at it anyway. Whether iOS stops the
+  chain at an overflow box that does not overflow is INFERRED, not measured.
+  If WebKit builds no scroll view there, the hand-off would skip the overlay
+  and bring the reported drag back.
+
+Not nested: `.scrollback-overlay` (absolute; its containing block
+`.scrollback-pane` does not scroll), `.e2e-sas-modal` (absolute in
+`.e2e-body`, a sibling of the content), `.context-menu` (portal + fixed),
+`.boot-failure` (fixed), `.credits-viewport` (absolute in an
+`overflow: clip` modal), the compose, service and topic textareas, and the
+desktop `.shell-sidebar` / `.members-pane` / `.rail-query-context` (their
+column `.shell-members` is `overflow-y: visible`). Two scrollers that were
+already contained before this issue are nested and keep their containment,
+since the ruling covered the newly contained ones only: `.admin-tab-panel`
+inside `.admin-pane`, and `.delete-account-modal`, which is rendered inside
+the settings drawer without a portal. There, `.settings-drawer.open`'s
+`transform` makes the drawer the containing block of the modal's fixed
+backdrop.
 
 **What enforces it.** `cicchetto/src/__tests__/overscrollContainment.test.ts`.
 A rule that makes something scroll is red unless a shared rule covers its
@@ -7360,10 +7415,15 @@ axis it scrolls. "Scrolls" is read the way the cascade computes it:
 scrolling, since it cannot be resolved). A `visible` axis next to a
 non-`visible` one counts as `auto`. Selectors are split at bracket depth
 0, so neither `:has(> .x)` nor `:not(.a, .b)` passes for `.x` or `.a`. A
-pseudo-element is never covered by its host. Four more things are red: an
-entry that no longer names a scroller, any `contain` outside the shared
-rules, a `none` on a listed surface (it would take the bounce away, so
-unlist the surface instead), and a shared rule inside an at-rule. 19
+pseudo-element is never covered by its host. More things are red: an entry
+that no longer names a scroller, a UA scroller (`textarea`) missing from the
+both-axis list, a strip in the both-axis list (strips are derived by the
+declared-axis rule above, not listed by hand), a carve-out that is not
+`:where(<outer>) <inner>` with both halves listed vertical scrollers, any
+`contain` or `auto` outside the shared rules, a `none` on a listed surface
+(it would take the bounce away, so unlist the surface instead), a shared
+rule inside an at-rule, and the carve-out rule above the both-axis one (an
+entry ties on specificity with the one it undoes). 19
 mutants each failed the case they target, 11 of them from the independent
 review's list of false greens in the first cut; reverted, the suite passes.
 The same review made `themeCss.selectorList` split at bracket depth 0 for
@@ -7406,14 +7466,17 @@ warnings, 26 of them `noDescendingSpecificity`, and main shows the same two
 counts. One `.shell-mobile .shell-members .members-pane` entry takes the
 `noDescendingSpecificity` count from 26 to 28, and the three mobile
 descendant forms (`.shell-sidebar`, `.members-pane`, `.rail-query-context`)
-together take it to 29. These are warnings, so rc stays 0.
+together take it to 29. These are warnings, so rc stays 0. The carve-out
+rule's entries are not single compounds; `:where()` is what keeps them out
+of that count (the ruling paragraph above).
 
 **Census** (all of `cicchetto/src`; the issue's 70/33/2 counted
 `default.css` prose too). 42 scrolling `overflow` declarations (41 rules: 33
 on y, 4 on x, 4 on both; 43 and 42 before the dead rules went), 71
 non-scrolling ones, and 0 overflow or overscroll
 declarations in product TS/TSX. `overscroll-behavior` went from 35
-declarations to 5. The census script carries a positive control (synthetic
+declarations to 6: the two containing rules, the `.adm-nav` restore, the
+carve-out rule and the two `none`. The census script carries a positive control (synthetic
 CSS with known counts, including the two-value `overflow` shorthand) and a
 negative one (prose, `text-overflow`, `overflow-wrap`, `overflow: hidden`,
 `getComputedStyle` reads) and refuses to run if either fails.
@@ -7426,14 +7489,12 @@ scroll container, so the property would do nothing there, and the Shell's
 touch guard (`installShellTouchGuard`) already cancels a drag that nothing
 under the finger can scroll.
 
-**Consequences, accepted.** Every newly listed scroller now behaves the way
-the 26 already did. On Chromium, a contained scroller whose content fits
-latches the wheel instead of passing it to the scroller around it
-(`.settings-diag-log` inside the settings drawer, the perform textarea).
-On iOS, a nested contained scroller bounces at its edge instead of handing
-the drag to its parent. Containment cannot see two kinds of scroller: one
-made scrollable from JS (there are none today) and a UA scroller other than
-`textarea`.
+**Blind spots.** Containment cannot see two kinds of scroller: one made
+scrollable from JS (there are none today) and a UA scroller other than
+`textarea`. The guard cannot see nesting either: a carve-out pair is checked
+against the sheet, never against which component renders which, so the
+census above is a reading of the components, not something the test
+enforces.
 
 **Not measured.** Whether the drag that moved the shell was really scroll
 chaining is the issue's hypothesis, and nobody has reproduced it on a

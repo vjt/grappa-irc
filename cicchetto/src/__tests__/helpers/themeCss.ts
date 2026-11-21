@@ -65,36 +65,45 @@ export function allRules(): { selectors: string; body: string; depth: number }[]
 }
 
 /**
- * issue 2671 — the sheet's shared overscroll containment: the entries of the
- * ONE rule whose whole body is `overscroll-behavior: contain` (`both`, every
- * scroller), and of the ONE whose whole body is `overscroll-behavior-x:
- * contain` (`xOnly`, the horizontal strips that leave their vertical axis to
- * the scroller they sit in). Identified by body, not by position, so moving
- * the rules does not break the readers. Throws when either rule is missing,
- * duplicated, or inside an at-rule: every assertion about containment would
- * otherwise pass against an empty list, or against a rule that only applies
- * under some `@media`.
+ * issue 2671 — the sheet's shared overscroll containment, as the entries of
+ * three rules identified by their WHOLE body, not by position: `both`
+ * (`overscroll-behavior: contain`, every scroller), `xOnly`
+ * (`overscroll-behavior-x: contain`, the horizontal strips that leave their
+ * vertical axis to the scroller they sit in) and `nested`
+ * (`overscroll-behavior: auto`, the `:where(<outer>) <inner>` pairs that hand
+ * containment back to a scroller nested in a contained one). Throws when a
+ * rule is missing, duplicated or inside an at-rule, since every assertion
+ * would otherwise pass against an empty list or a rule only some `@media`
+ * applies; and when `nested` comes before `both`, since its entries tie on
+ * specificity with the ones they undo and win by source order alone.
  */
-export function overscrollContainment(): { both: string[]; xOnly: string[] } {
-  const entriesOf = (declaration: string): string[] => {
-    const owners = allRules().filter(
-      ({ body }) => body.trim().replace(/\s+/g, " ").replace(/;$/, "") === declaration,
+export function overscrollContainment(): { both: string[]; xOnly: string[]; nested: string[] } {
+  const rules = allRules();
+  const ownerOf = (declaration: string): number => {
+    const owners = rules.flatMap(({ body }, at) =>
+      body.trim().replace(/\s+/g, " ").replace(/;$/, "") === declaration ? [at] : [],
     );
-    const owner = owners[0];
-    if (owners.length !== 1 || owner === undefined) {
+    const at = owners[0];
+    if (owners.length !== 1 || at === undefined) {
       throw new Error(`expected ONE rule declaring only "${declaration}", found ${owners.length}`);
     }
-    if (owner.depth !== 0) {
+    if (rules[at]?.depth !== 0) {
       throw new Error(
         `the rule declaring "${declaration}" must be top level, not inside an at-rule`,
       );
     }
-    return selectorList(owner.selectors);
+    return at;
   };
-  return {
-    both: entriesOf("overscroll-behavior: contain"),
-    xOnly: entriesOf("overscroll-behavior-x: contain"),
-  };
+  const both = ownerOf("overscroll-behavior: contain");
+  const xOnly = ownerOf("overscroll-behavior-x: contain");
+  const nested = ownerOf("overscroll-behavior: auto");
+  if (nested < both) {
+    throw new Error(
+      'the rule declaring "overscroll-behavior: auto" must come after the one declaring "overscroll-behavior: contain"',
+    );
+  }
+  const entries = (at: number): string[] => selectorList(rules[at]?.selectors ?? "");
+  return { both: entries(both), xOnly: entries(xOnly), nested: entries(nested) };
 }
 
 /**

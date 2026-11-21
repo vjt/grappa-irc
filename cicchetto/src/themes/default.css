@@ -554,24 +554,42 @@ body {
    not skip: under `*` every clipped row inside a scroller would become a wall
    the wheel stops at (Chromium source, not measured).
 
-   The first list contains both axes, the shape 25 of the 42 scroll rules
-   already carried in their own block. The second holds the horizontal strips
-   that sit inside a vertical scroller: they contain their own axis and leave
-   the vertical one to the scroller they sit in, or a vertical wheel over an
-   admin table would stop at the table (the same latch). The line between the
-   two: never contain an axis a box cannot scroll while a scroller around it
-   wants that axis. A strip's vertical axis has one; a vertical scroller's
-   horizontal axis has none here. A textarea does scroll vertically, so it is
-   contained like every other vertical scroller. A layout that turns a strip
-   vertical restores `overscroll-behavior-y` there (the desktop `.adm-nav`).
+   The lists choose by DECLARED axis, not by whether a box can scroll at the
+   moment. The first contains both axes (the shape 25 of the 42 scroll rules
+   already carried in their own block) for every scroller that is not a
+   strip, textarea included: the UA scrolls it without the sheet saying so.
+   The second holds the horizontal strips, rules that declare a scroll on x
+   and say nothing about y, so their `auto` y comes only from the visible→auto
+   conversion while the vertical scroller they sit in wants that axis. They
+   contain x alone, or a vertical wheel over an admin table would stop at the
+   table (the same latch). A layout that turns a strip vertical restores
+   `overscroll-behavior-y` there (the desktop `.adm-nav`).
+
+   The third hands containment back to a vertical scroller nested in another
+   listed one. vjt's ruling for issue 2671: its scroll chains to the outer
+   scroller, which is contained, so the shell stays still anyway. Each entry
+   names the pair as `:where(<outer>) <inner>`, so it applies only where the
+   nesting is real. `:where()` gives the outer no specificity: the entry ties
+   with the one it undoes and wins by coming after it, and it draws no biome
+   noDescendingSpecificity warning, where a plain descendant would. Two pairs
+   today, the perform textarea and the NickServ mirror. One nested scroller
+   stays contained on purpose: `.server-peek-body`, the surface issue 2671 is
+   about. Its outer scroller, `.scrollback-overlay`, rarely overflows (the
+   peek is at most 40vh of a pane-tall layer). Whether iOS still stops the
+   chain at an overflow box that does not overflow is INFERRED, not measured,
+   so the card keeps its own wall. Scrollers that were contained before
+   issue 2671 keep it whether nested or not (`.admin-tab-panel`,
+   `.delete-account-modal`).
 
    __tests__/overscrollContainment.test.ts holds it. A rule that makes
-   something scroll without being covered here fails it, and so do an entry
-   that no longer scrolls, a per-rule `contain`, a `none` on a listed surface
-   (it would take the bounce away: unlist the surface instead) and either rule
-   moved inside an at-rule. Entries stay single compounds, up here: a
-   descendant selector at this position precedes the base rule of the same
-   element and draws biome noDescendingSpecificity warnings. */
+   something scroll without being covered here fails it. So do an entry that
+   no longer scrolls, a strip in the first list, a pair that is not two listed
+   vertical scrollers, a per-rule `contain` or `auto`, a `none` on a listed
+   surface (it would take the bounce away: unlist the surface instead), a
+   shared rule moved inside an at-rule, and the third rule moved above the
+   first. The first two lists stay single compounds: a descendant selector at
+   this position precedes the base rule of the same element and draws biome
+   noDescendingSpecificity warnings. */
 .login-scroll,
 .shell-sidebar,
 .rail-actions-menu,
@@ -616,6 +634,11 @@ textarea {
 .adm-table-wrap,
 .confirm-modal-attachment-source {
   overscroll-behavior-x: contain;
+}
+
+:where(.settings-drawer) textarea,
+:where(.registration-wizard-body) .registration-wizard-mirror {
+  overscroll-behavior: auto;
 }
 
 /* #497 / #508 / #963 — global form-control treatment (DENYLIST). The app had
