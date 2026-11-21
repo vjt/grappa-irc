@@ -87,9 +87,9 @@ defmodule Grappa.Networks.KickRejoinTest do
     end
 
     test "switching it off keeps the delay in the row and tells the session :off" do
-      {user, network, cred} = user_with_credential(6667, %{})
+      {user, network, bound} = user_with_credential(6667, %{})
       network_id = network.id
-      {:ok, cred} = Credentials.update_kick_rejoin(cred, %{kick_rejoin: true, kick_rejoin_delay_seconds: 60})
+      {:ok, cred} = Credentials.update_kick_rejoin(bound, %{kick_rejoin: true, kick_rejoin_delay_seconds: 60})
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user_settings(user.name))
 
       assert {:ok, _} = Credentials.update_kick_rejoin(cred, %{kick_rejoin: false})

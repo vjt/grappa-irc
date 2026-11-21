@@ -4296,13 +4296,13 @@ defmodule Grappa.Session.EventRouterTest do
     test "self-target KICK carries the key a 324 RPL_CHANNELMODEIS reported" do
       state = base_state(%{nick: "vjt", members: %{"#grappa" => %{"vjt" => [], "alice" => ["@"]}}})
 
-      {:cont, state, _} =
+      {:cont, keyed, _} =
         EventRouter.route(msg({:numeric, 324}, ["vjt", "#grappa", "+ntk", "fromthe324"], {:server, "irc.test"}), state)
 
       m = msg(:kick, ["#grappa", "vjt", "out"], {:nick, "alice", "u", "h"})
 
       assert {:cont, _, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", "out", "fromthe324"}]} =
-               EventRouter.route(m, state)
+               EventRouter.route(m, keyed)
     end
 
     test "self-target KICK on a channel with modes but no key carries nil" do

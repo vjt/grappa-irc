@@ -40,12 +40,12 @@ defmodule Grappa.Session.KickRejoinSessionTest do
   # `:untouched` leaves the credential as bound (the column defaults).
   defp session_in_channel(setting) do
     {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-    {user, network, cred} = user_with_credential(port, %{autojoin_channels: []})
+    {user, network, bound} = user_with_credential(port, %{autojoin_channels: []})
 
     cred =
       case setting do
-        :untouched -> cred
-        {enabled, delay} -> kick_rejoin(cred, enabled, delay)
+        :untouched -> bound
+        {enabled, delay} -> kick_rejoin(bound, enabled, delay)
       end
 
     :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
