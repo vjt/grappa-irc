@@ -228,18 +228,6 @@ function ciphertextOf(row: Message): string {
   return row.kind === "out" && row.state !== "sent" ? UNSENT : NO_CIPHERTEXT;
 }
 
-// issue 2498 — a message as the scrollback's line. Ours is named by our nick,
-// the peer's by theirs, as in any query. A message that cannot be read here is
-// the line the scrollback draws for a peer's messages that cannot be read
-// (issue 2430's `e2e_undeliverable`), one of them: the same words, one place.
-// issue 2512 — `id` is the line's number in the window (`seq`), not the row's
-// own id, which is a string: the pane orders, marks and reads lines by id.
-// issue 2513 — in the ciphertext view the body is the payloads instead, on the
-// same line; a message that could not be read is then its sender's line too.
-// issue 2536 — a `/me` rides inside the message as a CTCP ACTION
-// (lib/compose.ts), so a body in that envelope is the scrollback's action
-// line, which unwraps it, ours or the peer's. Not in the ciphertext view:
-// there the line is the payloads it crossed IRC as, and they are no action.
 /**
  * issue 2517 — what an attachment's line body says. The card itself (name,
  * size, type, expiry) is drawn beside it by `FileTrailer`, as text: the name
@@ -276,6 +264,18 @@ function saidBy(row: Message, msg: ScrollbackMessage, ciphertext: boolean): stri
   return card === undefined ? body : `${body} ${fileCard(card)}`;
 }
 
+// issue 2498 — a message as the scrollback's line. Ours is named by our nick,
+// the peer's by theirs, as in any query. A message that cannot be read here is
+// the line the scrollback draws for a peer's messages that cannot be read
+// (issue 2430's `e2e_undeliverable`), one of them: the same words, one place.
+// issue 2512 — `id` is the line's number in the window (`seq`), not the row's
+// own id, which is a string: the pane orders, marks and reads lines by id.
+// issue 2513 — in the ciphertext view the body is the payloads instead, on the
+// same line; a message that could not be read is then its sender's line too.
+// issue 2536 — a `/me` rides inside the message as a CTCP ACTION
+// (lib/compose.ts), so a body in that envelope is the scrollback's action
+// line, which unwraps it, ours or the peer's. Not in the ciphertext view:
+// there the line is the payloads it crossed IRC as, and they are no action.
 function lineOf(
   row: Message,
   seq: number,
