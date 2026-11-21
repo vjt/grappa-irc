@@ -176,9 +176,11 @@ describe("sanitizeFileName (issue 2517)", () => {
     expect(sanitizeFileName(`invoice.jpg${"\u2800".repeat(20)}.exe`)).toBe("invoice.jpg .exe");
   });
 
-  // Taking too much out is a bug as well: a name in any script, with the marks
-  // its script writes (and a macOS name in decomposed form), keeps every code
-  // point.
+  // Taking too much out is a bug as well: each name below, in its script with
+  // the marks that script writes (and a macOS name in decomposed form), keeps
+  // every code point. Not every mark a script writes stays: the
+  // Default_Ignorable ones (the ideographic and Mongolian variation selectors,
+  // U+034F COMBINING GRAPHEME JOINER, ...) go with `BANNED_IN_NAME`, see there.
   it.each([
     "שָׁלוֹם.pdf",
     "مَرْحَبًا.pdf",
