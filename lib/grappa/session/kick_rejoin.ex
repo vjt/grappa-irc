@@ -46,7 +46,7 @@ defmodule Grappa.Session.KickRejoin do
   What the session does after a self-KICK: nothing, or one JOIN after the
   delay. It is the credential's own type, named here and not restated: a
   typespec names a module without calling it, so it is no Boundary edge, and
-  the closed set of delays stays written once, in `Credential`.
+  the closed set of delays is owned by `Credential`.
   """
   @type config :: Credential.kick_rejoin()
 
