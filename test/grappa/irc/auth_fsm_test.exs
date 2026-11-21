@@ -922,6 +922,25 @@ defmodule Grappa.IRC.AuthFSMTest do
     end
   end
 
+  # issue 2673 — the FSM half of the 437 arm. The wire half (channel targets,
+  # truncation, after 001, `:nickserv_identify`, the spent ladder) lives in
+  # `Grappa.IRC.ClientTest`.
+  describe "step/2 — 437 ERR_UNAVAILRESOURCE naming our nick (issue 2673)" do
+    # "Is this our nick" is a KEY compare, so it folds through
+    # `Identifier.canonical_target/1` (#121/#537): an echo that differs only in
+    # case is still us. Neither IRCnet nor solanum echoes in another case (both
+    # echo the server's copy of our bytes), so this pins the invariant, not an
+    # observed wire shape.
+    test "an echo differing only in case still walks the ladder" do
+      state = new!(%{})
+      msg = %Message{command: {:numeric, 437}, params: ["*", "VJT", "Nick/channel is temporarily unavailable"]}
+
+      assert {:cont, next, sends} = AuthFSM.step(state, msg)
+      assert next.nick == "vjt_"
+      assert send_lines(sends) == ["NICK vjt_"]
+    end
+  end
+
   describe "step/2 — Bahamut/Azzurra: 001 before any CAP reply" do
     test "auth_method :auto + 001 from :awaiting_cap_ls -> :registered (no stall)" do
       {state, _} = AuthFSM.initial_handshake(new!(%{auth_method: :auto, password: "swordfish"}))
