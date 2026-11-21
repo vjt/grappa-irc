@@ -156,6 +156,21 @@ function covers(shared: string[], subject: string): boolean {
 const UA_SCROLLERS = ["textarea"];
 
 /**
+ * issue 2671 C5 — the nested vertical scrollers the census found, as
+ * `[outer, inner]`, read off the components and their containing-block chains
+ * (DESIGN_NOTES: the issue 2671 entry and its C5 follow-up). The sheet cannot
+ * say which component renders which, so the reading is recorded here, and the
+ * carve-outs must match it exactly: dropping one, or adding one nobody traced,
+ * is red. It records the census and does not observe nesting: a new nested
+ * scroller in a component still passes until the census is redone.
+ */
+const NESTED_CENSUS: [outer: string, inner: string][] = [
+  [".settings-drawer", "textarea"],
+  [".registration-wizard-body", ".registration-wizard-mirror"],
+  [".admin-pane", ".admin-tab-panel"],
+];
+
+/**
  * A horizontal strip: a rule that declares a scroll on x and leaves y
  * `visible`, whether it says so or not, so its y is `auto` only through the
  * visible→auto conversion, and the vertical scroller it sits in still wants
@@ -292,6 +307,15 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
         .every((compound) => covers(both, compound) && scrollsVertically(compound));
     });
     expect(offenders).toEqual([]);
+  });
+
+  it("the carve-outs are exactly the nested scrollers the census found", () => {
+    // The test above checks that a carve-out is well-formed, never which ones
+    // exist: without this, dropping a pair the census found stays green.
+    const { nested } = overscrollContainment();
+    expect([...nested].sort()).toEqual(
+      NESTED_CENSUS.map(([outer, inner]) => `:where(${outer}) ${inner}`).sort(),
+    );
   });
 
   it("no rule declares containment of its own beside the shared rules", () => {
