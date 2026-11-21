@@ -91,6 +91,7 @@ import type {
   NetworksWireCredentialJson,
   NetworksWireHomeData,
   NetworksWireHomeNetworkRow,
+  NetworksWireKeepNickChangedEvent,
   NetworksWireNetworkWithNickJson,
   NetworksWireVisitorNetworkWithNickJson,
   NotifyWireEntry,
@@ -1296,6 +1297,10 @@ export type WireUserEvent =
       network_id: number;
       network_slug: string;
     }
+  // issue 2656 — the subject turned keepnick on or off for a network, from
+  // this device or another. Generated shape verbatim; the dispatch arm reads
+  // it and acts on nothing until S3 renders the switch.
+  | NetworksWireKeepNickChangedEvent
   | ({ kind: "whois_bundle" } & WhoisBundle)
   // M3b — the peer-avatar fetch is a detached task, so it can finish after
   // the `whois_bundle` it belongs to has already been pushed. This arm is

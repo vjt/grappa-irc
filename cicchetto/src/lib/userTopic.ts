@@ -93,6 +93,7 @@ import {
   S_E2eRequestsWireE2eRequestGonePayload,
   S_E2eRequestsWireE2eRequestPayload,
   S_NetworksWireConnectionStateEvent,
+  S_NetworksWireKeepNickChangedEvent,
   S_NetworksWireNetworkAttachedEvent,
   S_NetworksWireNetworkDetachedEvent,
   S_NotifyWireNotifyListPayload,
@@ -404,6 +405,10 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
     case "network_attached":
       // issue 2219 — the arm IS its schema, like its twin above.
       return validate(S_NetworksWireNetworkAttachedEvent, r);
+    case "keep_nick_changed":
+      // issue 2656 — the arm IS its schema: the switch's value, and the
+      // network it belongs to. All four fields required, as the server sends.
+      return validate(S_NetworksWireKeepNickChangedEvent, r);
     case "whois_bundle": {
       // C2 — every numeric-derived field is nullable; only network +
       // target are required. is_operator + channels also tolerate
@@ -1228,6 +1233,16 @@ moduleRoot(() => {
           // — never move.
           refetchUser();
           refetchNetworks();
+          return;
+
+        case "keep_nick_changed":
+          // issue 2656 — read and deliberately acted on by nothing, until S3.
+          // No pane renders the keepnick switch yet: S3 brings the toggle,
+          // the rail state and the stop-row render, and this arm is where it
+          // will land. The arm exists so the frame is READ: an unread kind
+          // goes to `noteWireDrop`, and every toggle would latch the sticky
+          // "could not read an update" banner on each cic the subject has
+          // open — the device that flipped the switch included.
           return;
 
         case "window_pending":

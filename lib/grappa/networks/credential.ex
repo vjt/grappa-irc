@@ -257,6 +257,7 @@ defmodule Grappa.Networks.Credential do
           profile_custom: String.t() | nil,
           kick_rejoin: boolean(),
           kick_rejoin_delay_seconds: kick_rejoin_delay(),
+          keep_nick: boolean(),
           avatar_upload_id: Ecto.UUID.t() | nil,
           avatar_upload: Upload.t() | Ecto.Association.NotLoaded.t() | nil,
           inserted_at: DateTime.t() | nil,
@@ -407,6 +408,13 @@ defmodule Grappa.Networks.Credential do
     # row that did.
     field :kick_rejoin, :boolean, default: false
     field :kick_rejoin_delay_seconds, :integer, default: 10
+
+    # issue 2656 — keepnick: while the session wears a nick other than the
+    # configured one, keep asking for it back (`Session.Server`'s re-arming
+    # reclaim). Opt-in per network, off by default, and a column rather
+    # than session state because it must survive a reconnect. Written only
+    # through `keep_nick_changeset/2`.
+    field :keep_nick, :boolean, default: false
 
     # M3a — the per-(subject, network) avatar: a `belongs_to` onto a
     # PERMANENT `Grappa.Uploads.Upload` row (`expires_at: nil`, so the
@@ -992,6 +1000,21 @@ defmodule Grappa.Networks.Credential do
     else
       []
     end
+  end
+
+  @doc """
+  issue 2656 — the narrow changeset for the keepnick switch, casting
+  ONLY `:keep_nick`. Required, so a `null` is refused rather than read
+  as "off". The boolean cast alone is NOT a boolean check: Ecto takes
+  `"true"`/`"1"` and `"false"`/`"0"` too, so the REST door
+  (`NetworksController.keep_nick/2`) refuses anything that is not a
+  literal boolean before it reaches here.
+  """
+  @spec keep_nick_changeset(t(), map()) :: Ecto.Changeset.t()
+  def keep_nick_changeset(%__MODULE__{} = credential, attrs) when is_map(attrs) do
+    credential
+    |> cast(attrs, [:keep_nick])
+    |> validate_required([:keep_nick])
   end
 
   @doc """

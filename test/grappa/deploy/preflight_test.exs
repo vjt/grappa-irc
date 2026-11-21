@@ -1250,6 +1250,10 @@ defmodule Grappa.Deploy.PreflightTest do
     # is one `alter table ... add` of two NOT NULL columns with constant
     # defaults, the `add_tls_verify_*` shape, so it deploys HOT. Added because
     # this test failed on it.)
+    # (issue 2656's `20261121180931_add_keep_nick_to_network_credentials` is
+    # one `alter table ... add` with a constant default, the `add_tls_verify_*`
+    # shape, so the MIGRATION deploys HOT. Added because this test failed on
+    # it. The slice as a whole is still COLD: `Session.Server`'s state grows.)
     @migrations_glob "priv/repo/migrations/*.exs"
     @expected_hot ~w(
       20260425000000_init
@@ -1298,6 +1302,7 @@ defmodule Grappa.Deploy.PreflightTest do
       20261105045827_add_last_seen_at_to_e2e_devices
       20261108075522_add_channel_to_e2e_inbox
       20261121092255_add_kick_rejoin_to_network_credentials
+      20261121180931_add_keep_nick_to_network_credentials
     )
 
     test "every migration on disk classifies, and the HOT set is exactly the pinned one" do

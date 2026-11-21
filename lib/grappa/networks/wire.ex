@@ -30,6 +30,15 @@ defmodule Grappa.Networks.Wire do
   alias Grappa.Wire.Time, as: WireTime
 
   @type credential_json :: %{
+          # issue 2656 — the keepnick switch, so the per-network settings
+          # editor seeds itself from the same payloads it already reads.
+          # OPTIONAL in the type although every builder here emits it: a
+          # client that REQUIRED it would throw away every credential and
+          # network row from a server predating protocol 64 (the v63
+          # `channel` precedent in `Grappa.Protocol`). Absent means a server
+          # with no keepnick, which a client reads as off. (The `=>` entry
+          # leads: keyword entries must come last.)
+          optional(:keep_nick) => boolean(),
           network: String.t(),
           nick: String.t(),
           ident: String.t() | nil,
@@ -122,6 +131,10 @@ defmodule Grappa.Networks.Wire do
   shape and cic can't derive anything.
   """
   @type network_with_nick_json :: %{
+          # issue 2656 — the keepnick switch; see `credential_json` for why
+          # it is optional. (The `=>` entry leads: keyword entries must come
+          # last.)
+          optional(:keep_nick) => boolean(),
           kind: :user,
           id: integer(),
           slug: String.t(),
@@ -181,6 +194,10 @@ defmodule Grappa.Networks.Wire do
   (no live divergence — they're set once at USER registration).
   """
   @type visitor_network_with_nick_json :: %{
+          # issue 2656 — the keepnick switch; see `credential_json` for why
+          # it is optional. (The `=>` entry leads: keyword entries must come
+          # last.)
+          optional(:keep_nick) => boolean(),
           kind: :visitor,
           id: integer(),
           slug: String.t(),
@@ -333,6 +350,20 @@ defmodule Grappa.Networks.Wire do
         }
 
   @typedoc """
+  issue 2656 — wire payload for `kind: "keep_nick_changed"`, broadcast on
+  `Topic.user(subject_label)` when `PATCH /networks/:network_id/keep_nick`
+  writes the switch, so the subject's other devices show the value the
+  account now holds. Carries the value itself, unlike the attach/detach
+  pair: the switch is the whole state, there is nothing to re-read.
+  """
+  @type keep_nick_changed_event :: %{
+          kind: :keep_nick_changed,
+          network_id: integer(),
+          network_slug: String.t(),
+          keep_nick: boolean()
+        }
+
+  @typedoc """
   Wire payload for `kind: "connection_state_changed"` broadcast on
   `Topic.user(user_name)`. Cic's `userTopic.ts` consumes this to refresh
   the per-network connection-state badge + the HomePane row in-place
@@ -401,16 +432,18 @@ defmodule Grappa.Networks.Wire do
       connection_state: c.connection_state,
       connection_state_reason: c.connection_state_reason,
       connection_state_changed_at: WireTime.iso8601_or_nil(c.connection_state_changed_at),
-      # KVIrc-style CTCP USERINFO profile — additive, snake_case, no
-      # `protocol_version` bump needed (CLAUDE.md's additive-only wire
-      # contract). Un-prefixed on the wire (the `profile_` prefix is a
-      # storage-column concern); `PATCH /networks/:id/profile` accepts
-      # the same un-prefixed keys back.
+      # KVIrc-style CTCP USERINFO profile — additive and snake_case.
+      # Un-prefixed on the wire (the `profile_` prefix is a storage-column
+      # concern); `PATCH /networks/:id/profile` accepts the same
+      # un-prefixed keys back. (This comment used to add "no
+      # `protocol_version` bump needed"; the #1393d ruling retired that —
+      # every wire-shape change bumps.)
       age: c.profile_age,
       gender: c.profile_gender,
       location: c.profile_location,
       languages: c.profile_languages,
       custom: c.profile_custom,
+      keep_nick: c.keep_nick,
       avatar_url: avatar_url(c),
       inserted_at: DateTime.to_iso8601(c.inserted_at),
       updated_at: DateTime.to_iso8601(c.updated_at)
@@ -480,6 +513,7 @@ defmodule Grappa.Networks.Wire do
       location: cred.profile_location,
       languages: cred.profile_languages,
       custom: cred.profile_custom,
+      keep_nick: cred.keep_nick,
       avatar_url: avatar_url(cred),
       inserted_at: DateTime.to_iso8601(n.inserted_at),
       updated_at: DateTime.to_iso8601(n.updated_at)
@@ -530,6 +564,7 @@ defmodule Grappa.Networks.Wire do
       location: cred.profile_location,
       languages: cred.profile_languages,
       custom: cred.profile_custom,
+      keep_nick: cred.keep_nick,
       avatar_url: avatar_url(cred),
       inserted_at: DateTime.to_iso8601(n.inserted_at),
       updated_at: DateTime.to_iso8601(n.updated_at)
@@ -612,6 +647,15 @@ defmodule Grappa.Networks.Wire do
   @spec network_attached_event(Credential.t()) :: network_attached_event()
   def network_attached_event(%Credential{network: %Network{slug: slug}} = c) do
     %{kind: :network_attached, network_id: c.network_id, network_slug: slug}
+  end
+
+  @doc """
+  issue 2656 — builds the `keep_nick_changed` payload. `:network` MUST be
+  preloaded (same convention as every builder in this module).
+  """
+  @spec keep_nick_changed_event(Credential.t()) :: keep_nick_changed_event()
+  def keep_nick_changed_event(%Credential{network: %Network{slug: slug}} = c) do
+    %{kind: :keep_nick_changed, network_id: c.network_id, network_slug: slug, keep_nick: c.keep_nick}
   end
 
   @doc """

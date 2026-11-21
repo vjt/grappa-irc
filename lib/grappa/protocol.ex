@@ -1639,7 +1639,34 @@ defmodule Grappa.Protocol do
   # @min_protocol_version stays at 1: an older client ignores an unknown
   # `channel` field and shows the message as a DM from its sender —
   # degraded, not broken.
-  @protocol_version 63
+  #
+  # ---------------------------------------------------------------------------
+  # 64 — issue 2656 (S1): keepnick, opt-in per network
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `keep_nick` (boolean) on the credential payload
+  # (`Networks.Wire.credential_to_json/1`, which every `/networks/:id/*`
+  # write answers with) and on both `GET /networks` row shapes, user and
+  # visitor; the `keep_nick_changed` event on the user topic
+  # (`{network_id, network_slug, keep_nick}`), sent when `PATCH
+  # /networks/:network_id/keep_nick` writes the switch; and the Meta key
+  # `keep_nick` on the `:server_event` row a stopped keepnick writes on
+  # `$server` (`%{outcome: "stopped", target, numeric}`). The key is
+  # OPTIONAL in the three payload types although the server always emits
+  # it: cic narrows these payloads at runtime, and a client that REQUIRED it
+  # would throw away every credential and network row from a server
+  # predating 64 — the v63 `channel` lesson, applied up front. Bumped on the
+  # #1393d rule: a client that shows the switch cannot read it from a
+  # server predating the field, nor set it through a door that answers 404
+  # there.
+  #
+  # Checked for a collision before claiming 64: origin/main carries 63.
+  # Open PRs 2626, 2627 and 2644 also claim 64 and 2620 claims 65; whoever
+  # lands first keeps the number and the others rebase.
+  #
+  # @min_protocol_version stays at 1: an older client ignores the unknown
+  # field, event and Meta key, and never calls the new door.
+  @protocol_version 64
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1680,7 +1707,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 63
+  @spec version() :: 64
   def version, do: @protocol_version
 
   @doc """

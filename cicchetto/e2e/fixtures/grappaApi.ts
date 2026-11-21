@@ -1526,6 +1526,43 @@ export async function setDccAutoAccept(
 }
 
 /**
+ * issue 2656 — turns keepnick on or off for `token`'s subject on `networkSlug`
+ * through `PATCH /networks/:slug/keep_nick`, then reads it back off the
+ * `GET /networks` row and throws on disagreement, for the reason
+ * `setDccAutoAccept` gives: a later assertion rests on this write, and a
+ * silently dropped one would make it pass or fail for a reason that has
+ * nothing to do with the feature. Setup and teardown only; S1 has no UI.
+ */
+export async function setKeepNick(
+  token: string,
+  networkSlug: string,
+  enabled: boolean,
+): Promise<void> {
+  const headers = {
+    authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+  };
+
+  const written = await fetch(
+    `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/keep_nick`,
+    { method: "PATCH", headers, body: JSON.stringify({ keep_nick: enabled }) },
+  );
+  if (!written.ok) {
+    throw new Error(`setKeepNick(${enabled}): PATCH → ${written.status} ${await written.text()}`);
+  }
+
+  const read = await fetch(`${GRAPPA_BASE_URL}/networks`, { headers });
+  if (!read.ok) {
+    throw new Error(`setKeepNick(${enabled}): GET /networks → ${read.status} ${await read.text()}`);
+  }
+  const rows = (await read.json()) as Array<{ slug: string; keep_nick?: boolean }>;
+  const row = rows.find((r) => r.slug === networkSlug);
+  if (row?.keep_nick !== enabled) {
+    throw new Error(`setKeepNick(${enabled}): read back ${JSON.stringify(row)}`);
+  }
+}
+
+/**
  * Writes (or clears) the remembered QUIT/PART message for `token`'s subject —
  * issue 2150. `null` and `""` both CLEAR the key; the server collapses them,
  * so a spec restoring the seed state can pass either.

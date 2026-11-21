@@ -11705,6 +11705,698 @@ defmodule Grappa.Session.ServerTest do
   end
 
   # ---------------------------------------------------------------------------
+  # issue 2656 — keepnick: the #2253 reclaim, re-armed while the credential
+  # opts in
+  # ---------------------------------------------------------------------------
+  #
+  # Every answer below comes from the fake server REACTING to what the session
+  # sent, never from the test feeding it — the #2253 lesson recorded above: a
+  # hand-fed echo turns the assertion into a statement about `EventRouter`.
+  # Tries are COUNTED (`await_sent_line_count/4`), because the registration
+  # NICK is the same line as every try.
+  describe "issue 2656 — keepnick re-arms the reclaim while the credential opts in" do
+    @kn_target "grappa-test"
+    @kn_fallback "grappa-test_"
+
+    defp kn_try?(line), do: line == "NICK #{@kn_target}\r\n"
+
+    # An ircd that knows who holds the target. While `holder` reads 0, a try
+    # for the target earns `refusal.(current_nick)`; once it reads 1, the
+    # rename echo. Every other post-registration NICK is echoed. The first
+    # NICK is the registration one — the test drives 001 itself.
+    defp holder_handler(holder, refusal) do
+      fn
+        state, "NICK " <> rest -> holder_nick(state, String.trim_trailing(rest, "\r\n"), holder, refusal)
+        state, _ -> {:reply, nil, state}
+      end
+    end
+
+    defp holder_nick(state, want, holder, refusal) do
+      cur = Map.get(state, :cur, @kn_fallback)
+      seen = Map.get(state, :nicks, 0)
+      counted = Map.put(state, :nicks, seen + 1)
+
+      cond do
+        seen == 0 -> {:reply, nil, counted}
+        want == @kn_target and :atomics.get(holder, 1) == 0 -> {:reply, refusal.(cur), counted}
+        true -> {:reply, ":#{cur}!u@h NICK :#{want}\r\n", Map.put(counted, :cur, want)}
+      end
+    end
+
+    defp kn_433(cur), do: ":irc.test.org 433 #{cur} #{@kn_target} :Nickname is already in use\r\n"
+
+    defp held_nick_handler(holder), do: holder_handler(holder, &kn_433/1)
+
+    defp free_holder(holder), do: :atomics.put(holder, 1, 1)
+
+    # A credential bound with `cred_attrs`, keepnick switched ON through the
+    # real door, the plan resolved by the real `SessionPlan` (so a plan that
+    # dropped the switch fails here), then welcomed under `welcomed`.
+    defp keep_nick_session(handler, cred_attrs, plan_overrides, welcomed) do
+      {server, port} = IRCServer.start_server(handler)
+      {user, network, bound} = setup_user_and_network(port, cred_attrs)
+      {:ok, credential} = Credentials.update_credential_keep_nick(bound, %{keep_nick: true})
+      start_kn_session(server, user, network, credential, plan_overrides, welcomed)
+    end
+
+    defp start_kn_session(server, user, network, credential, plan_overrides, welcomed) do
+      {:ok, base_plan} = SessionPlan.resolve(credential)
+
+      plan =
+        base_plan
+        |> Map.merge(%{nick_reclaim_ms: 100, keep_nick_interval_ms: 150})
+        |> Map.merge(plan_overrides)
+
+      {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+      on_exit(fn -> Session.stop_session({:user, user.id}, network.id) end)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+      IRCServer.feed(server, ":irc.test.org 001 #{welcomed} :Welcome\r\n")
+      # The umode query, not the JOIN: an identify-gated credential (test 10)
+      # defers its autojoin, but every welcome sends this.
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "MODE #{welcomed}\r\n"), 1_000)
+
+      %{server: server, pid: pid, user: user, network: network, credential: credential}
+    end
+
+    defp kn_server_rows(ctx),
+      do: Scrollback.fetch({:user, ctx.user.id}, ctx.network.id, "$server", nil, 50, nil, false)
+
+    defp kn_numeric_rows(ctx, code),
+      do: Enum.filter(kn_server_rows(ctx), &(Map.get(&1.meta || %{}, :numeric) == code))
+
+    defp kn_stop_rows(ctx),
+      do: Enum.filter(kn_server_rows(ctx), &is_map_key(&1.meta || %{}, :keep_nick))
+
+    defp kn_live_nick(ctx), do: SessionStateHelpers.nick(SessionStateHelpers.fetch(ctx.pid))
+
+    # The keepnick lines are `info`, below the test env's `:warning` bar. This
+    # module is `async: false`, so lowering the bar for Session.Server alone,
+    # for the length of `fun`, leaks into no other test.
+    defp kn_capture_info(fun) do
+      Logger.put_module_level(Grappa.Session.Server, :info)
+
+      try do
+        capture_log(fun)
+      after
+        Logger.delete_module_level(Grappa.Session.Server)
+      end
+    end
+
+    test "1. a 433 for the target is swallowed, and the next tick asks again" do
+      holder = :atomics.new(1, [])
+      ctx = keep_nick_session(held_nick_handler(holder), %{}, %{}, @kn_fallback)
+
+      # Registration + TWO tries: the second exists only if the first 433
+      # re-armed the chain instead of ending it.
+      assert await_sent_line_count(ctx.server, &kn_try?/1, 3, 2_000) == :ok
+      :ok = flush(ctx.server, "kn-1")
+
+      assert kn_live_nick(ctx) == @kn_fallback
+      # Test 13 below is the positive control: same server, switch off, and
+      # the same 433 lands here.
+      assert kn_numeric_rows(ctx, 433) == [], "a refused try of OURS must not reach $server"
+      assert kn_stop_rows(ctx) == []
+    end
+
+    test "2. a 437 for the target (a nick delay, solanum/IRCnet) is swallowed too" do
+      holder = :atomics.new(1, [])
+
+      refusal = fn cur ->
+        ":irc.test.org 437 #{cur} #{@kn_target} :Nick/channel is temporarily unavailable\r\n"
+      end
+
+      ctx = keep_nick_session(holder_handler(holder, refusal), %{}, %{}, @kn_fallback)
+
+      assert await_sent_line_count(ctx.server, &kn_try?/1, 3, 2_000) == :ok
+      :ok = flush(ctx.server, "kn-2")
+
+      assert kn_numeric_rows(ctx, 437) == []
+      assert kn_stop_rows(ctx) == []
+    end
+
+    # 3 and 4 — a refusal about THIS session's standing is shown, said once,
+    # and ends the chain. One test per shape, so a member that regressed is
+    # named rather than hidden behind the first failure.
+    for {label, code, middle, trailing} <- [
+          {"3. a 437 naming a CHANNEL (bahamut: banned or moderated)", 437, "#{@kn_fallback} #sniffo",
+           "Cannot change nickname while banned or moderated on channel"},
+          {"4a. a 435 (banned on a channel)", 435, "#{@kn_fallback} #{@kn_target} #sniffo",
+           "Cannot change nickname while banned on channel"},
+          {"4b. a 432 (erroneous / Q:lined / RESV'd)", 432, "#{@kn_fallback} #{@kn_target}", "Erroneous Nickname"},
+          {"4c. a 438 (bahamut +d channel)", 438, "#{@kn_fallback} #{@kn_target}",
+           "Cannot change nickname while on +d channel (#sniffo)"},
+          {"4d. a 484 (IRCnet restricted client)", 484, "#{@kn_fallback}", "Your connection is restricted!"},
+          {"4e. a 447 (UnrealIRCd +N)", 447, "#{@kn_fallback}", "Can not change nickname while on #sniffo (+N)"}
+        ] do
+      test "#{label} is shown, said once, and ends the chain" do
+        code = unquote(code)
+        trailing = unquote(trailing)
+        refusal = fn _ -> ":irc.test.org #{code} #{unquote(middle)} :#{trailing}\r\n" end
+        holder = :atomics.new(1, [])
+        ctx = keep_nick_session(holder_handler(holder, refusal), %{}, %{}, @kn_fallback)
+
+        assert await_sent_line_count(ctx.server, &kn_try?/1, 2, 1_000) == :ok
+
+        # Four intervals: a chain that kept asking would have spent them.
+        assert await_sent_line_count(ctx.server, &kn_try?/1, 3, 600) == {:error, {:timeout, 2}}
+        :ok = flush(ctx.server, "kn-stop-#{code}")
+
+        assert Enum.any?(kn_server_rows(ctx), &(&1.body == trailing)),
+               "the refusal must still route to $server — the operator reads why"
+
+        assert [%{kind: :server_event, body: body, meta: %{keep_nick: facts}}] = kn_stop_rows(ctx)
+        assert facts == %{"outcome" => "stopped", "target" => @kn_target, "numeric" => code}
+        assert body =~ @kn_target
+      end
+    end
+
+    test "5. /nick <target> by the operator is answered to THEM, and stops nothing" do
+      holder = :atomics.new(1, [])
+      ctx = keep_nick_session(held_nick_handler(holder), %{}, %{keep_nick_interval_ms: 400}, @kn_fallback)
+
+      assert await_sent_line_count(ctx.server, &kn_try?/1, 2, 1_000) == :ok
+      :ok = flush(ctx.server, "kn-5a")
+      assert kn_numeric_rows(ctx, 433) == []
+
+      assert :ok = Session.send_nick({:user, ctx.user.id}, ctx.network.id, @kn_target)
+      assert await_sent_line_count(ctx.server, &kn_try?/1, 3, 1_000) == :ok
+      :ok = flush(ctx.server, "kn-5b")
+
+      assert [_] = kn_numeric_rows(ctx, 433), "the operator's own refusal must reach them"
+
+      # Still asking: a fourth line arrives at the next interval, and its 433
+      # is swallowed like every other try of ours.
+      assert await_sent_line_count(ctx.server, &kn_try?/1, 4, 1_500) == :ok
+      :ok = flush(ctx.server, "kn-5c")
+      assert [_] = kn_numeric_rows(ctx, 433)
+      assert kn_stop_rows(ctx) == []
+    end
+
+    test "6. /nick <other> by the operator stops keepnick" do
+      holder = :atomics.new(1, [])
+      ctx = keep_nick_session(held_nick_handler(holder), %{}, %{keep_nick_interval_ms: 300}, @kn_fallback)
+
+      assert await_sent_line_count(ctx.server, &kn_try?/1, 2, 1_000) == :ok
+      :ok = flush(ctx.server, "kn-6")
+
+      log =
+        kn_capture_info(fn -> assert :ok = Session.send_nick({:user, ctx.user.id}, ctx.network.id, "grappa-other") end)
+
+      assert await_nick(ctx.pid, "grappa-other", 1_000) == "grappa-other"
+      # Test 6b's positive control: a chain was running, so the stop says so.
+      assert log =~ "keepnick stopped"
+
+      # The nick is now FREE: a chain still running would take it.
+      free_holder(holder)
+
+      assert await_sent_line_count(ctx.server, &kn_try?/1, 3, 1_200) == {:error, {:timeout, 2}}
+      assert kn_live_nick(ctx) == "grappa-other"
+      assert kn_stop_rows(ctx) == [], "the operator's own choice is not a refusal to announce"
+    end
+
+    # Written for the review of PR 2688 (F2): the stop line used to be written
+    # whenever the switch was on, so a `/nick <other>` on a session that had
+    # already converged logged a stop that never happened. Log honesty: the
+    # line says what it observed, and here there was no chain to stop.
+    test "6b. /nick <other> after convergence stops nothing, so it logs no stop" do
+      holder = :atomics.new(1, [])
+      free_holder(holder)
+      ctx = keep_nick_session(held_nick_handler(holder), %{}, %{}, @kn_fallback)
+
+      assert await_nick(ctx.pid, @kn_target, 1_000) == @kn_target
+
+      log =
+        kn_capture_info(fn -> assert :ok = Session.send_nick({:user, ctx.user.id}, ctx.network.id, "grappa-other") end)
+
+      assert await_nick(ctx.pid, "grappa-other", 1_000) == "grappa-other"
+      refute log =~ "keepnick stopped"
+    end
+
+    test "7. an away rename pauses keepnick, and the primary is not lost on return" do
+      holder = :atomics.new(1, [])
+      {server, port} = IRCServer.start_server(held_nick_handler(holder))
+      {user, network, bound} = setup_user_and_network(port)
+      {:ok, credential} = Credentials.update_credential_keep_nick(bound, %{keep_nick: true})
+
+      {:ok, _} =
+        Grappa.UserSettings.put_away_nick_suffix({:user, user.id}, "-away", Grappa.Subject.label({:user, user.name}))
+
+      ctx = start_kn_session(server, user, network, credential, %{keep_nick_interval_ms: 200}, @kn_fallback)
+
+      assert await_sent_line_count(server, &kn_try?/1, 2, 1_000) == :ok
+
+      :ok = Session.set_auto_away({:user, user.id}, network.id)
+      assert await_nick(ctx.pid, "#{@kn_fallback}-away", 1_000) == "#{@kn_fallback}-away"
+      :ok = flush(server, "kn-7a")
+      paused_at = Enum.count(IRCServer.sent_lines(server), &kn_try?/1)
+
+      # Free now. Winning it during the away would be undone by the restore,
+      # which sends us back to the nick the away rename left.
+      free_holder(holder)
+
+      assert await_sent_line_count(server, &kn_try?/1, paused_at + 1, 800) ==
+               {:error, {:timeout, paused_at}},
+             "an outstanding away rename must pause the tries, not race them"
+
+      :ok = Session.unset_auto_away({:user, user.id}, network.id)
+
+      assert await_nick(ctx.pid, @kn_target, 2_000) == @kn_target
+      :ok = flush(server, "kn-7b")
+
+      # One restore, and it went out BEFORE the winning try: nothing sends us
+      # back to the fallback after the primary is ours.
+      lines = IRCServer.sent_lines(server)
+      assert Enum.count(lines, &(&1 == "NICK #{@kn_fallback}\r\n")) == 1
+      restore_at = line_index(lines, "NICK #{@kn_fallback}\r\n")
+      last_try_at = length(lines) - 1 - Enum.find_index(Enum.reverse(lines), &kn_try?/1)
+      assert restore_at < last_try_at
+      assert kn_live_nick(ctx) == @kn_target
+    end
+
+    test "8a. an armed RecoverIdentity owns the nick: no keepnick try, and its 433 goes to the FSM" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+
+      {network, _} =
+        network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
+
+      visitor = visitor_with_credential_fixture(nick: @recover_nick, network_slug: network.slug)
+
+      {:ok, cred} =
+        Credentials.upsert_visitor_credential(visitor.id, network.id, %{
+          nick: @recover_nick,
+          sasl_user: @recover_nick,
+          auth_method: :nickserv_identify,
+          password: "s3cret"
+        })
+
+      {:ok, _} = Credentials.update_credential_keep_nick(cred, %{keep_nick: true})
+      {:ok, base_plan} = VisitorSessionPlan.resolve(visitor, network)
+      plan = Map.merge(base_plan, %{nick_reclaim_ms: 300, keep_nick_interval_ms: 100})
+      subject = {:visitor, visitor.id}
+      {:ok, _} = Session.start_session(subject, network.id, plan)
+      on_exit(fn -> Session.stop_session(subject, network.id) end)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+      IRCServer.feed(server, ":irc.test.org 001 #{@recover_nick}_ :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "MODE #{@recover_nick}_\r\n"), 1_000)
+
+      assert :ok = Session.recover_identity(subject, network.id)
+
+      {:ok, _} =
+        IRCServer.wait_for_line(server, &(&1 == "PRIVMSG NickServ :IDENTIFY #{@recover_nick} s3cret\r\n"), 1_000)
+
+      want = &(&1 == "NICK #{@recover_nick}\r\n")
+      # The registration NICK and RecoverIdentity's own.
+      assert await_sent_line_count(server, want, 2, 1_000) == :ok
+
+      # keepnick's first tick is at 300ms and then every 100: six chances.
+      assert await_sent_line_count(server, want, 3, 900) == {:error, {:timeout, 2}},
+             "keepnick must not send while an identity sequence owns the nick"
+
+      IRCServer.feed(server, ":irc.test.org 433 #{@recover_nick}_ #{@recover_nick} :Nickname is already in use\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &(&1 == "PRIVMSG NickServ :RECOVER #{@recover_nick} s3cret\r\n"), 1_000)
+    end
+
+    test "8b. a GhostRecovery in flight owns the nick: keepnick skips, then resumes" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+
+      {user, network, bound} =
+        setup_user_and_network(port, %{auth_method: :nickserv_identify, password: "s3cr3t-ghost"})
+
+      {:ok, credential} = Credentials.update_credential_keep_nick(bound, %{keep_nick: true})
+      {:ok, base_plan} = SessionPlan.resolve(credential)
+      plan = Map.merge(base_plan, %{nick_reclaim_ms: 100, keep_nick_interval_ms: 100})
+      {:ok, _} = Session.start_session({:user, user.id}, network.id, plan)
+      on_exit(fn -> Session.stop_session({:user, user.id}, network.id) end)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      # A REGISTRATION 433 with a NickServ secret arms GhostRecovery.
+      IRCServer.feed(server, ":irc.test.org 433 * #{@kn_target} :Nickname is already in use\r\n")
+
+      {:ok, _} =
+        IRCServer.wait_for_line(server, &(&1 == "PRIVMSG NickServ :GHOST #{@kn_target} s3cr3t-ghost\r\n"), 1_000)
+
+      IRCServer.feed(server, ":irc.test.org 001 #{@kn_fallback} :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "MODE #{@kn_fallback}\r\n"), 1_000)
+
+      # Only the registration NICK, through five keepnick ticks.
+      assert await_sent_line_count(server, &kn_try?/1, 2, 600) == {:error, {:timeout, 1}},
+             "keepnick must not send while GhostRecovery owns the nick"
+
+      IRCServer.feed(
+        server,
+        ":NickServ!services@services.azzurra.org NOTICE #{@kn_fallback} :#{@kn_target} has been ghosted.\r\n"
+      )
+
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "WHOIS #{@kn_target}\r\n"), 1_000)
+      IRCServer.feed(server, ":irc.test.org 401 #{@kn_fallback} #{@kn_target} :No such nick\r\n")
+
+      # GhostRecovery's own NICK back (2), then — no echo from this server, so
+      # still drifted — keepnick's next tick (3): skipped, not stopped.
+      assert await_sent_line_count(server, &kn_try?/1, 3, 1_000) == :ok
+    end
+
+    # Written for the review of PR 2688 (F5). The identity guard stops a NEW
+    # try; it did not lower one already in flight. So a try sent just before
+    # the visitor pressed recover left the flag up, and a 438 answering the
+    # SEQUENCE's own NICK — a numeric issue 2683 says the FSM is never fed —
+    # was read as a refusal of keepnick's try: routed, stopped, and a stop row
+    # blaming keepnick's nick.
+    test "8c. recover pressed while a keepnick try is in flight: a 438 for the sequence's NICK stops nothing" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+
+      {network, _} =
+        network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
+
+      visitor = visitor_with_credential_fixture(nick: @recover_nick, network_slug: network.slug)
+
+      {:ok, cred} =
+        Credentials.upsert_visitor_credential(visitor.id, network.id, %{
+          nick: @recover_nick,
+          sasl_user: @recover_nick,
+          auth_method: :nickserv_identify,
+          password: "s3cret"
+        })
+
+      {:ok, _} = Credentials.update_credential_keep_nick(cred, %{keep_nick: true})
+      {:ok, base_plan} = VisitorSessionPlan.resolve(visitor, network)
+      plan = Map.merge(base_plan, %{nick_reclaim_ms: 100, keep_nick_interval_ms: 400})
+      subject = {:visitor, visitor.id}
+      {:ok, pid} = Session.start_session(subject, network.id, plan)
+      on_exit(fn -> Session.stop_session(subject, network.id) end)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+      IRCServer.feed(server, ":irc.test.org 001 #{@recover_nick}_ :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "MODE #{@recover_nick}_\r\n"), 1_000)
+
+      want = &(&1 == "NICK #{@recover_nick}\r\n")
+      # The registration NICK and keepnick's first try, which this server
+      # never answers: the try is in flight when recover is pressed.
+      assert await_sent_line_count(server, want, 2, 1_000) == :ok
+
+      assert :ok = Session.recover_identity(subject, network.id)
+      # RecoverIdentity's own NICK.
+      assert await_sent_line_count(server, want, 3, 1_000) == :ok
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 438 #{@recover_nick}_ #{@recover_nick} :Nick change too fast. Please wait 30 seconds.\r\n"
+      )
+
+      :ok = flush(server, "kn-8c")
+      rows = Scrollback.fetch(subject, network.id, "$server", nil, 50, nil, false)
+
+      assert Enum.any?(rows, &(Map.get(&1.meta || %{}, :numeric) == 438)),
+             "the 438 still routes to $server, as it always did"
+
+      assert Enum.filter(rows, &is_map_key(&1.meta || %{}, :keep_nick)) == [],
+             "keepnick sent nothing this 438 answers, so it announces no stop"
+
+      # The sequence ends (its deadline, driven as the #581 tests drive it),
+      # and keepnick — not stopped — asks again at its next tick.
+      send(pid, :recover_timeout)
+      assert await_sent_line_count(server, want, 4, 1_500) == :ok
+    end
+
+    # The chain ends when we land on the target, and nothing re-arms it within
+    # the registration — that alone is what keeps keepnick from fighting a
+    # services rename. A dedicated stop rule for this case was tried and
+    # measured dead: removing it changed no outcome here.
+    test "9. renamed OFF the target by someone who is not us, keepnick does not take it back" do
+      holder = :atomics.new(1, [])
+      free_holder(holder)
+      ctx = keep_nick_session(held_nick_handler(holder), %{}, %{}, @kn_fallback)
+
+      assert await_nick(ctx.pid, @kn_target, 1_000) == @kn_target
+
+      IRCServer.feed(ctx.server, ":#{@kn_target}!u@h NICK :Guest12345\r\n")
+      assert await_nick(ctx.pid, "Guest12345", 1_000) == "Guest12345"
+
+      # The target is free and the chain would win it back at once.
+      assert await_sent_line_count(ctx.server, &kn_try?/1, 3, 600) == {:error, {:timeout, 2}},
+             "a services rename must end keepnick, not start a fight"
+
+      assert kn_live_nick(ctx) == "Guest12345"
+    end
+
+    test "10. convergence ends the chain, and the held IDENTIFY leaves on the echo" do
+      holder = :atomics.new(1, [])
+
+      ctx =
+        keep_nick_session(
+          held_nick_handler(holder),
+          %{auth_method: :nickserv_identify, password: "s3cr3t-identify"},
+          %{autojoin_defer_ms: 60_000},
+          @kn_fallback
+        )
+
+      identify = "PRIVMSG NickServ :IDENTIFY s3cr3t-identify\r\n"
+      assert await_sent_line_count(ctx.server, &kn_try?/1, 2, 1_000) == :ok
+      :ok = flush(ctx.server, "kn-10a")
+      refute Enum.any?(IRCServer.sent_lines(ctx.server), &(&1 == identify))
+
+      free_holder(holder)
+      assert await_nick(ctx.pid, @kn_target, 1_000) == @kn_target
+      {:ok, _} = IRCServer.wait_for_line(ctx.server, &(&1 == identify), 1_000)
+
+      lines = IRCServer.sent_lines(ctx.server)
+      assert Enum.count(lines, &(&1 == identify)) == 1
+      won_with = Enum.count(lines, &kn_try?/1)
+
+      assert await_sent_line_count(ctx.server, &kn_try?/1, won_with + 1, 600) ==
+               {:error, {:timeout, won_with}},
+             "a converged chain must not re-arm"
+    end
+
+    # Written AFTER the mutation run (issue 2656), which found the convergence
+    # arm uncovered: with no test reading what follows a convergence, dropping
+    # it changed nothing. What it does is lower the in-flight flag, so a
+    # refusal of a LATER rename is not read as keepnick's.
+    test "10b. after convergence an away rename's refusal routes as before, and announces no stop" do
+      away = "#{@kn_target}-away"
+      {server, port} = IRCServer.start_server(refuse_one_handler(away))
+      {user, network, bound} = setup_user_and_network(port)
+      {:ok, credential} = Credentials.update_credential_keep_nick(bound, %{keep_nick: true})
+
+      {:ok, _} =
+        Grappa.UserSettings.put_away_nick_suffix({:user, user.id}, "-away", Grappa.Subject.label({:user, user.name}))
+
+      ctx = start_kn_session(server, user, network, credential, %{}, @kn_fallback)
+
+      # Nobody holds the target here: keepnick's first try converges.
+      assert await_nick(ctx.pid, @kn_target, 1_000) == @kn_target
+
+      :ok = Session.set_auto_away({:user, user.id}, network.id)
+      assert await_sent_line_count(server, &(&1 == "NICK #{away}\r\n"), 1, 1_000) == :ok
+      :ok = flush(server, "kn-10b")
+
+      assert [_] = kn_numeric_rows(ctx, 433), "the away rename's refusal routes to $server, as #1894 has it"
+      assert kn_stop_rows(ctx) == [], "a converged keepnick has no try in flight to stop"
+      assert kn_live_nick(ctx) == @kn_target
+    end
+
+    test "11. a configured nick longer than NICKLEN is asked for cut, and converges" do
+      {server, port} = IRCServer.start_server(nicklen_echo_handler(9))
+      {user, network, bound} = setup_user_and_network(port, %{nick: "keepnicklong"})
+      {:ok, credential} = Credentials.update_credential_keep_nick(bound, %{keep_nick: true})
+      _ = start_kn_session(server, user, network, credential, %{}, "keepnick_")
+
+      IRCServer.feed(server, ":irc.test.org 005 keepnick_ NICKLEN=9 :are supported by this server\r\n")
+      :ok = flush(server, "kn-11a")
+
+      assert await_sent_line_count(server, &(&1 == "NICK keepnickl\r\n"), 1, 1_000) == :ok
+      :ok = flush(server, "kn-11b")
+
+      assert await_sent_line_count(server, &String.starts_with?(&1, "NICK "), 3, 600) == {:error, {:timeout, 2}},
+             "a cut target must converge, not ask for the uncut nick for ever"
+    end
+
+    # Written for the review of PR 2688 (F3). Every refusal test above uses a
+    # nick shorter than any NICKLEN, so the cut and the configured nick were
+    # the same string there, and the swallow compare could read either one.
+    test "11b. a 433 naming the NICKLEN-cut target is swallowed, and the next tick asks again" do
+      {server, port} = IRCServer.start_server(nicklen_held_handler(9))
+      {user, network, bound} = setup_user_and_network(port, %{nick: "keepnicklong"})
+      {:ok, credential} = Credentials.update_credential_keep_nick(bound, %{keep_nick: true})
+      ctx = start_kn_session(server, user, network, credential, %{}, "keepnick_")
+
+      IRCServer.feed(server, ":irc.test.org 005 keepnick_ NICKLEN=9 :are supported by this server\r\n")
+      :ok = flush(server, "kn-11b-a")
+
+      # Two tries for the cut nick: the second exists only if the first 433
+      # re-armed the chain instead of ending it.
+      assert await_sent_line_count(server, &(&1 == "NICK keepnickl\r\n"), 2, 1_000) == :ok
+      :ok = flush(server, "kn-11b-b")
+
+      assert kn_numeric_rows(ctx, 433) == [], "a refused try of OURS must not reach $server"
+      assert kn_stop_rows(ctx) == []
+    end
+
+    test "12a. a second 001 in the same process runs ONE chain, not two" do
+      ctx =
+        keep_nick_session(
+          IRCServer.passthrough_handler(),
+          %{},
+          %{nick_reclaim_ms: 150, keep_nick_interval_ms: 60_000},
+          @kn_fallback
+        )
+
+      IRCServer.feed(ctx.server, ":irc.test.org 001 #{@kn_fallback} :Welcome\r\n")
+
+      # Premise: the re-welcome really landed (it re-fires the autojoin).
+      assert await_sent_line_count(ctx.server, &(&1 == "JOIN #sniffo\r\n"), 2, 1_000) == :ok
+
+      assert await_sent_line_count(ctx.server, &kn_try?/1, 3, 700) == {:error, {:timeout, 2}},
+             "two welcomes must not leave two chains"
+    end
+
+    test "12b. turning keepnick on twice runs ONE chain, and supersedes the pending one-shot" do
+      holder = :atomics.new(1, [])
+      {server, port} = IRCServer.start_server(held_nick_handler(holder))
+      {user, network, credential} = setup_user_and_network(port)
+
+      ctx =
+        start_kn_session(
+          server,
+          user,
+          network,
+          credential,
+          %{nick_reclaim_ms: 300, keep_nick_interval_ms: 60_000},
+          @kn_fallback
+        )
+
+      {:ok, on} = Credentials.update_credential_keep_nick(credential, %{keep_nick: true})
+      {:ok, _} = Credentials.update_credential_keep_nick(on, %{keep_nick: true})
+
+      assert await_sent_line_count(server, &kn_try?/1, 2, 1_000) == :ok
+
+      # The #2253 one-shot armed at that flag-off 001 is due at 300ms.
+      assert await_sent_line_count(server, &kn_try?/1, 3, 800) == {:error, {:timeout, 2}}
+      :ok = flush(server, "kn-12b")
+      assert kn_numeric_rows(ctx, 433) == []
+    end
+
+    # A stop is for one registration, never a switch-off. Asserted as TWO tries
+    # after the re-welcome, because one would not tell a chain from #2253's
+    # one-shot: a stop that turned the switch off leaves the 001 arming the
+    # one-shot, which asks exactly once — and the same line. (Rewritten for
+    # the review of PR 2688: its first form waited for ONE try at a 60 s
+    # cadence, which that one-shot satisfies.)
+    test "12c. a stop holds for one registration: a re-welcome starts the chain again" do
+      holder = :atomics.new(1, [])
+      ctx = keep_nick_session(held_nick_handler(holder), %{}, %{keep_nick_interval_ms: 200}, @kn_fallback)
+
+      assert await_sent_line_count(ctx.server, &kn_try?/1, 2, 1_000) == :ok
+      assert :ok = Session.send_nick({:user, ctx.user.id}, ctx.network.id, "grappa-other")
+      assert await_nick(ctx.pid, "grappa-other", 1_000) == "grappa-other"
+      :ok = flush(ctx.server, "kn-12c")
+      stopped_at = Enum.count(IRCServer.sent_lines(ctx.server), &kn_try?/1)
+
+      # Premise: the stop held.
+      assert await_sent_line_count(ctx.server, &kn_try?/1, stopped_at + 1, 500) == {:error, {:timeout, stopped_at}}
+
+      IRCServer.feed(ctx.server, ":irc.test.org 001 grappa-other :Welcome\r\n")
+      assert await_sent_line_count(ctx.server, &kn_try?/1, stopped_at + 2, 1_500) == :ok
+    end
+
+    test "13. regression: with the switch off, #2253 is unchanged — one try, its refusal routed, no re-arm" do
+      holder = :atomics.new(1, [])
+      {server, port} = IRCServer.start_server(held_nick_handler(holder))
+      {user, network, credential} = setup_user_and_network(port)
+      refute credential.keep_nick, "the column must default to off"
+
+      ctx = start_kn_session(server, user, network, credential, %{}, @kn_fallback)
+
+      assert await_sent_line_count(server, &kn_try?/1, 2, 1_000) == :ok
+      assert await_sent_line_count(server, &kn_try?/1, 3, 600) == {:error, {:timeout, 2}}
+      :ok = flush(server, "kn-13")
+
+      assert [_] = kn_numeric_rows(ctx, 433), "with the switch off the refusal routes, as #2253 ruled"
+      assert kn_stop_rows(ctx) == []
+    end
+
+    test "14. a live toggle starts keepnick on a drifted session, and stops it" do
+      holder = :atomics.new(1, [])
+      {server, port} = IRCServer.start_server(held_nick_handler(holder))
+      {user, network, credential} = setup_user_and_network(port)
+      _ = start_kn_session(server, user, network, credential, %{nick_reclaim_ms: 60_000}, @kn_fallback)
+
+      {:ok, on} = Credentials.update_credential_keep_nick(credential, %{keep_nick: true})
+      assert await_sent_line_count(server, &kn_try?/1, 3, 1_000) == :ok
+
+      {:ok, _} = Credentials.update_credential_keep_nick(on, %{keep_nick: false})
+      :ok = flush(server, "kn-14")
+      stopped_at = Enum.count(IRCServer.sent_lines(server), &kn_try?/1)
+
+      assert await_sent_line_count(server, &kn_try?/1, stopped_at + 1, 600) ==
+               {:error, {:timeout, stopped_at}}
+    end
+
+    # Echoes every post-registration NICK except `refused`, which earns 433.
+    defp refuse_one_handler(refused) do
+      fn
+        state, "NICK " <> rest -> refuse_one(state, String.trim_trailing(rest, "\r\n"), refused)
+        state, _ -> {:reply, nil, state}
+      end
+    end
+
+    defp refuse_one(state, want, refused) do
+      cur = Map.get(state, :cur, @kn_fallback)
+      seen = Map.get(state, :nicks, 0)
+      counted = Map.put(state, :nicks, seen + 1)
+
+      cond do
+        seen == 0 -> {:reply, nil, counted}
+        want == refused -> {:reply, ":irc.test.org 433 #{cur} #{want} :Nickname is already in use\r\n", counted}
+        true -> {:reply, ":#{cur}!u@h NICK :#{want}\r\n", Map.put(counted, :cur, want)}
+      end
+    end
+
+    # Refuses every post-registration NICK with a 433 naming the nick cut to
+    # `nicklen`: bahamut truncates the requested nick before it looks for a
+    # collision, so the cut nick is the one its 433 names.
+    defp nicklen_held_handler(nicklen) do
+      fn
+        state, "NICK " <> rest -> nicklen_held(state, String.trim_trailing(rest, "\r\n"), nicklen)
+        state, _ -> {:reply, nil, state}
+      end
+    end
+
+    defp nicklen_held(state, asked, nicklen) do
+      cut = binary_part(asked, 0, min(nicklen, byte_size(asked)))
+      seen = Map.get(state, :nicks, 0)
+      counted = Map.put(state, :nicks, seen + 1)
+
+      if seen == 0,
+        do: {:reply, nil, counted},
+        else: {:reply, ":irc.test.org 433 keepnick_ #{cut} :Nickname is already in use\r\n", counted}
+    end
+
+    # Echoes every post-registration NICK cut to `nicklen` — what bahamut's
+    # `strncpyzt(nick, parv[1], NICKLEN+1)` does to an over-long one.
+    defp nicklen_echo_handler(nicklen) do
+      fn
+        state, "NICK " <> rest -> nicklen_echo(state, String.trim_trailing(rest, "\r\n"), nicklen)
+        state, _ -> {:reply, nil, state}
+      end
+    end
+
+    defp nicklen_echo(state, asked, nicklen) do
+      want = binary_part(asked, 0, min(nicklen, byte_size(asked)))
+      cur = Map.get(state, :cur, "keepnick_")
+      seen = Map.get(state, :nicks, 0)
+      counted = Map.put(state, :nicks, seen + 1)
+
+      if seen == 0,
+        do: {:reply, nil, counted},
+        else: {:reply, ":#{cur}!u@h NICK :#{want}\r\n", Map.put(counted, :cur, want)}
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # S2.4 — WHOIS-userhost cache (ban-mask derivation)
   # ---------------------------------------------------------------------------
   #
