@@ -577,9 +577,9 @@ body {
    about. Its outer scroller, `.scrollback-overlay`, rarely overflows (the
    peek is at most 40vh of a pane-tall layer). Whether iOS still stops the
    chain at an overflow box that does not overflow is INFERRED, not measured,
-   so the card keeps its own wall. Scrollers that were contained before
-   issue 2671 keep it whether nested or not (`.admin-tab-panel`,
-   `.delete-account-modal`).
+   so the card keeps its own wall. A scroller that was contained before
+   issue 2671 keeps it even when nested (`.admin-tab-panel` inside
+   `.admin-pane`).
 
    __tests__/overscrollContainment.test.ts holds it. A rule that makes
    something scroll without being covered here fails it. So do an entry that

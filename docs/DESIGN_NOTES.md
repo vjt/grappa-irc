@@ -7402,13 +7402,17 @@ Not nested: `.scrollback-overlay` (absolute; its containing block
 `.boot-failure` (fixed), `.credits-viewport` (absolute in an
 `overflow: clip` modal), the compose, service and topic textareas, and the
 desktop `.shell-sidebar` / `.members-pane` / `.rail-query-context` (their
-column `.shell-members` is `overflow-y: visible`). Two scrollers that were
-already contained before this issue are nested and keep their containment,
-since the ruling covered the newly contained ones only: `.admin-tab-panel`
-inside `.admin-pane`, and `.delete-account-modal`, which is rendered inside
-the settings drawer without a portal. There, `.settings-drawer.open`'s
-`transform` makes the drawer the containing block of the modal's fixed
-backdrop.
+column `.shell-members` is `overflow-y: visible`). A scroller that was
+already contained before this issue keeps its containment even when
+nested, since the ruling covered the newly contained ones only. The one
+verified nested pair is `.admin-tab-panel` inside `.admin-pane`. The
+scrollers contained before this issue were not all checked for nesting,
+so that is not a complete count. `.delete-account-modal` is not nested:
+`SettingsDrawer.tsx` mounts it after `</aside>`, a sibling of the drawer,
+with no portal, and its `.modal-backdrop` is `position: fixed`. The first
+fix said it was rendered inside the drawer, with the drawer's `transform`
+as its containing block; the second review read the markup and found it
+outside.
 
 **What enforces it.** `cicchetto/src/__tests__/overscrollContainment.test.ts`.
 A rule that makes something scroll is red unless a shared rule covers its
