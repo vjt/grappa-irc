@@ -52,9 +52,10 @@ describe("#1040 expanded home rail geometry", () => {
   });
 
   it("keeps the scroll owner and its touch contract intact", () => {
-    // The base rule already carries `overflow-y: auto` + `overscroll-behavior:
-    // contain` + `touch-action: pan-y`, and the `.rail-actions-menu *`
-    // descendant carve-out (#913) that makes iOS actually honour the pan. The
+    // The base rule already carries `overflow-y: auto` + `touch-action:
+    // pan-y` (and the shared containment rule lists it, issue 2671), and the
+    // `.rail-actions-menu *` descendant carve-out (#913) that makes iOS
+    // actually honour the pan. The
     // expanded rule must NOT re-declare the scroll away — reusing the proven
     // machinery is the whole reason the menu, not the container, stays the
     // scroller.

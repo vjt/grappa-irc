@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ruleBody, themeCss } from "./helpers/themeCss";
+import { overscrollContainment, ruleBody, themeCss } from "./helpers/themeCss";
 
 // #1697 — the rail radio's chrome, from the CSS side.
 //
@@ -106,7 +106,8 @@ describe("#1697 — the picker inherits the pane band instead of cloning it", ()
     // the scroll onto an inner list must not drop either half.
     const list = ruleBody(".rail-radio-picker-list");
     expect(list).toMatch(/overflow-y:\s*auto/);
-    expect(list).toMatch(/overscroll-behavior:\s*contain/);
+    // issue 2671 — containment comes from the shared rule, not this one.
+    expect(overscrollContainment().both).toContain(".rail-radio-picker-list");
     expect(ruleBody(".rail-radio-picker *")).toMatch(/touch-action:\s*pan-y/);
   });
 });
