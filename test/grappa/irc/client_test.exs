@@ -57,6 +57,14 @@ defmodule Grappa.IRC.ClientTest do
 
   defp nick_lines(lines), do: Enum.filter(lines, &String.starts_with?(&1, "NICK "))
 
+  # The spent-ladder stop names the nick we last actually TRIED, not the one we
+  # started from: `Client.log_stop_reason/2` hands it to the operator. The fake
+  # records each line in the callback that answers it, so by the time the
+  # stop's EXIT arrives the final NICK is already in `sent_lines`.
+  defp assert_stop_names_last_nick(server, last_tried) do
+    assert server |> IRCServer.sent_lines() |> nick_lines() |> List.last() == "NICK #{last_tried}\r\n"
+  end
+
   # Every 437 reply below is this one handler: a nick under delay draws the
   # 437, and the first ladder rung is welcomed.
   defp delayed_nick_handler(state, line) do
@@ -1914,13 +1922,13 @@ defmodule Grappa.IRC.ClientTest do
         end
       end
 
-      {_, port} = IRCServer.start_server(always_clash)
+      {server, port} = IRCServer.start_server(always_clash)
       Process.flag(:trap_exit, true)
 
       {:ok, client} = start_collision_client(port)
 
       assert_receive {:EXIT, ^client, {:nick_rejected, 433, last_tried}}, 2_000
-      assert String.starts_with?(last_tried, "grappa-test")
+      assert_stop_names_last_nick(server, last_tried)
     end
   end
 
@@ -2009,13 +2017,13 @@ defmodule Grappa.IRC.ClientTest do
           else: {:reply, nil, state}
       end
 
-      {_, port} = IRCServer.start_server(always_delayed)
+      {server, port} = IRCServer.start_server(always_delayed)
       Process.flag(:trap_exit, true)
 
       {:ok, client} = start_collision_client(port)
 
       assert_receive {:EXIT, ^client, {:nick_rejected, 437, last_tried}}, 2_000
-      assert String.starts_with?(last_tried, "grappa-test")
+      assert_stop_names_last_nick(server, last_tried)
     end
   end
 
