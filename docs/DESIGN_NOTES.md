@@ -7840,16 +7840,21 @@ both format strings sits on the entry there, not here.
 * **The cross-flavour check was done in source, not taken from the issue.**
   Same meaning on bahamut (9465028) and solanum (92afd03), neither carries a
   destination (bahamut's channel is inside the trailing, so the scan never
-  sees it), and IRCnet's ircd reserves 438 with a `NULL` format, so it cannot
-  emit it. It is not a JOIN failure, so the #1345 correlation gate never sees
-  it either.
+  sees it), and IRCnet's ircd (ircnet/ircd e6d60c4) reserves 438 with a `NULL`
+  format, so it cannot emit it. It is not a JOIN failure, so the #1345
+  correlation gate never sees it either.
 * **The test params follow the format strings; nothing was traced off a live
-  session.** Unlike 435 (issue 2252, measured on Azzurra), no 438 has been
-  observed on prod. The test mirror of `@active_numerics` gains 438 too: the
+  session.** Unlike 435 (issue 2252, measured on Azzurra), prod was not
+  queried for 438. The test mirror of `@active_numerics` gains 438 too: the
   channel-prefix property draws from `400..499` minus that mirror, so leaving
   it out would let the property draw 438 and fail for a reason unrelated to
   the channel branch.
-* **Nothing else waits on 438.** The only other place nick-failure numerics
-  are consumed is `AuthFSM`'s registration path, and neither ircd emits 438
-  before registration: bahamut gates it on `IsRegisteredUser`, solanum emits it
-  from `change_local_nick`, which an unregistered client never reaches.
+* **Nothing else waits on 438.** No code outside `NumericRouter` matches it.
+  The other consumers of nick-failure numerics all match other codes:
+  `AuthFSM` takes 432 and 433 during registration (and, since issue 2673, a
+  437 naming our nick), and after registration `Session.Server` takes only 433
+  and 437 — the `handle_info/2` clause that feeds an in-flight
+  `RecoverIdentity` (`{:nick_error, 433 | 437}`) and the 433 clause that starts
+  `GhostRecovery`. Neither ircd emits 438 before registration either: bahamut
+  gates it on `IsRegisteredUser`, solanum emits it from `change_local_nick`,
+  which an unregistered client never reaches.
