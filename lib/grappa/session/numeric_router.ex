@@ -40,7 +40,7 @@ defmodule Grappa.Session.NumericRouter do
 
   3. **Active deny list** (`@active_numerics`): numerics whose params look
      nick-shaped but the "nick" is not a routing destination — it's the
-     rejected nick (433/432), the unknown command name (421), the
+     rejected nick (433/432/438), the unknown command name (421), the
      offending command's argument list (461), an ack (437), or a whole
      server-directed REPORT family whose middles are data, type labels or
      table headers (`@stats_numerics` #184/#911, `@trace_numerics` #908,
@@ -504,6 +504,33 @@ defmodule Grappa.Session.NumericRouter do
                          435,
                          # 437 ERR_UNAVAILRESOURCE — nick temporarily unavailable
                          437,
+                         # issue 2674 — 438, a /nick refused on both bound
+                         # ircds under two names, and the nick it carries is
+                         # the one ASKED FOR, never a peer. bahamut
+                         # ERR_NONICKCHANGE (`include/numeric.h:335`), you
+                         # sit in a +d channel: `[own_nick, wanted_nick,
+                         # "… +d channel (#chan)"]` (`src/s_err.c:493`, fed
+                         # at `src/m_nick.c:538`); the channel is inside the
+                         # trailing, so the scan never sees it. solanum
+                         # ERR_NICKTOOFAST (`include/numeric.h:248`), the
+                         # anti-flood refusal: `[own_nick, own_nick,
+                         # wanted_nick, text]` (`include/messages.h:167`, fed
+                         # at `modules/core/m_nick.c:646`). Read at bahamut
+                         # 9465028 and solanum 92afd03. Same meaning on both,
+                         # so no cross-flavour collision; IRCnet's ircd
+                         # reserves 438 and has no format for it
+                         # (`common/numeric_def.h:169`, `ircd/s_err.c:480`).
+                         #
+                         # Pre-fix the scan skipped the own nick and resolved
+                         # both shapes to `{:query, wanted_nick}`. #640's
+                         # gate in `Session.Server` sends that to `$server`
+                         # unless a query window for the wanted nick is open,
+                         # so the refusal landed in a conversation only when
+                         # one named after the wanted nick was open: the self
+                         # window left at your old nick is one, and that old
+                         # nick is the one a keepnick retry (issue 2656)
+                         # asks for.
+                         438,
                          # 461 ERR_NEEDMOREPARAMS — command missing required params
                          461,
                          # #247 — presence-watch list-full errors. EventRouter's

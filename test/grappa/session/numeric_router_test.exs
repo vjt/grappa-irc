@@ -89,7 +89,9 @@ defmodule Grappa.Session.NumericRouterTest do
   # of them whose params carry a CHANNEL, so it is the only one the param
   # scan could file in a channel window; the property below pins its
   # membership, the wire-shape test pins what it used to route to.
-  @active_numerics [4, 42, 263, 410, 421, 432, 433, 435, 437, 461, 472, 512, 734] ++
+  # issue 2674 — 438 joined them too: the nick it carries is the one the
+  # /nick asked for, which the scan took for a query peer.
+  @active_numerics [4, 42, 263, 410, 421, 432, 433, 435, 437, 438, 461, 472, 512, 734] ++
                      (Enum.to_list(211..250) -- [221]) ++
                      Enum.to_list(200..210) ++
                      [261, 262] ++
@@ -410,6 +412,33 @@ defmodule Grappa.Session.NumericRouterTest do
       # one, so pre-fix this resolved to `{:channel, "#sniffo"}` and filed
       # a NICK failure in a channel the user was not typing in.
       m = msg(435, ["vjt_", "vjt", "#sniffo", "Cannot change to a banned nickname"])
+      assert {:server, nil} = NumericRouter.route(m, state(own_nick: "vjt_"))
+    end
+
+    # issue 2674 — 438 is a /nick refusal on both bound ircds, under two
+    # names and two param shapes, and in both the nick at the scan's first
+    # non-own slot is the nick ASKED FOR, never a peer. Pre-fix both shapes
+    # resolved to `{:query, "vjt"}`. `Session.Server`'s #640 gate turns that
+    # back into `$server` unless a query window for "vjt" is already open, so
+    # the visible defect is a refusal filed in an open conversation named
+    # after the nick you wanted, e.g. the self window left at your old nick.
+    # The params below follow the format strings, they were not traced off a
+    # live session.
+    test "438 bahamut ERR_NONICKCHANGE: the nick asked for is NOT a query destination (issue 2674)" do
+      # bahamut `src/s_err.c:493` `":%s 438 %s %s :Cannot change nickname
+      # while on a +d channel (%s)"`, fed `sptr->name, nick, chname` at
+      # `src/m_nick.c:538`. The channel sits inside the trailing, so the
+      # scan never sees it: only the requested nick is a candidate.
+      m = msg(438, ["vjt_", "vjt", "Cannot change nickname while on a +d channel (#sniffo)"])
+      assert {:server, nil} = NumericRouter.route(m, state(own_nick: "vjt_"))
+    end
+
+    test "438 solanum ERR_NICKTOOFAST: the nick asked for is NOT a query destination (issue 2674)" do
+      # solanum `include/messages.h:167` `":%s 438 %s %s %s :Nick change too
+      # fast. Please wait %d seconds."`, fed `source_p->name, source_p->name,
+      # nick` at `modules/core/m_nick.c:646`. The scan skips the doubled own
+      # nick and takes the requested one.
+      m = msg(438, ["vjt_", "vjt_", "vjt", "Nick change too fast. Please wait 30 seconds."])
       assert {:server, nil} = NumericRouter.route(m, state(own_nick: "vjt_"))
     end
 
