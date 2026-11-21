@@ -103,18 +103,41 @@ init_repo() {
     [[ "$output" == *'"contributors":[{"name":"Ada Lovelace","nick":null,"commits":3},{"name":"Grace Hopper","nick":null,"commits":1}]'* ]]
 }
 
-@test "the sha and the date are the ones HEAD actually carries" {
+@test "the sha and the date are the ones HEAD actually carries, the sha its first nine hex (issue 2642)" {
     init_repo
     commit_as "Ada Lovelace" "ada@example.invalid" "one"
 
-    local sha date
-    sha="$(git -C "$REPO" rev-parse --short HEAD)"
+    local full date auto dir colliding abbrev
+    full="$(git -C "$REPO" rev-parse HEAD)"
     date="$(git -C "$REPO" log -1 --format=%cI)"
+
+    # A bare `--short` is sized from the clone's object count: 7 hex in this
+    # sandbox, 9 in today's full clone, 10 from 2^18 objects on. The sha is
+    # baked into the bundle, so that width would make the attested bytes
+    # depend on how much history the building clone holds. Pre-state: this
+    # repo is one where the auto width is NOT nine, or the case proves nothing.
+    auto="$(git -C "$REPO" rev-parse --short HEAD)"
+    [ "${#auto}" -ne 9 ]
+
+    # `--short=9` does not fix the width either: it is a minimum ("at least
+    # length characters", man git-rev-parse), lengthened whenever another
+    # object in the clone shares HEAD's nine-hex prefix. A real 36-bit
+    # collision is out of reach, so plant its NAME: git disambiguates by the
+    # names in the object directory without reading the files, so HEAD's own
+    # loose object copied under a name that shares its first nine hex is, to
+    # `--short`, a second object with that prefix. Pre-state: git's own
+    # nine-hex abbreviation of HEAD is longer than nine in this repo.
+    dir="$REPO/.git/objects/${full:0:2}"
+    colliding="${full:2:7}$(printf "%0$((${#full} - 9))d" 0)"
+    [ "$colliding" != "${full:2}" ]
+    cp "$dir/${full:2}" "$dir/$colliding"
+    abbrev="$(git -C "$REPO" rev-parse --short=9 HEAD)"
+    [ "${#abbrev}" -gt 9 ]
 
     run "$SANDBOX_SCRIPT"
 
     [ "$status" -eq 0 ]
-    [[ "$output" == "{\"sha\":\"$sha\",\"date\":\"$date\","* ]]
+    [[ "$output" == "{\"sha\":\"${full:0:9}\",\"date\":\"$date\","* ]]
 }
 
 @test "a merge commit credits nobody — the roll counts authored work" {
@@ -161,6 +184,20 @@ init_repo() {
 
 @test "no git is an honest empty payload, not a failure (AUR tarball, Dockerfile.release)" {
     # No `git init` at all: the shape both RELEASE substrates present.
+    run "$SANDBOX_SCRIPT"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = '{"sha":null,"date":null,"contributors":[]}' ]
+}
+
+@test "an unborn HEAD is an honest empty payload, not the word HEAD as the sha (issue 2642)" {
+    # A repo with no commit yet: every probe fails, so the payload degrades
+    # exactly as with no git at all. The sha probe cuts nine characters off
+    # git's answer, and a bare `git rev-parse HEAD` that cannot resolve still
+    # prints its argument, the word `HEAD`, on stdout before it fails, so the
+    # cut would bake `"sha":"HEAD"`. `--verify` prints nothing when it fails.
+    init_repo
+
     run "$SANDBOX_SCRIPT"
 
     [ "$status" -eq 0 ]

@@ -6789,6 +6789,148 @@ gone, which now happens at its call site); it is `hideWindowBar()` in
 2486's wallpaper arm holds the same pair with the pane as a stacking
 context. Playwright's device descriptors are not the reporter's iPhone; the
 geometry is measured on webkit-iphone-15 and chromium-pixel-touch only.
+<!-- entry #2642 -->
+
+---
+
+## 2026-11-12 — #2642: every tag attests the cicchetto bundle; the attestation comes from a tag push only
+
+A browser runs the JavaScript its grappa serves, the end-to-end encryption
+code included, and nothing let anyone check what that was. `release.yml` now
+has a `cic` job that builds the bundle once per tag, signs a build-provenance
+attestation over it, and hands publish a tarball and a per-file manifest
+(`cicchetto-dist-<V>.tar.gz` / `.sha256`). This is the first slice of issue
+2642. Serving the attested bytes in production, and checking a live server
+against the manifest, are later slices.
+
+### What is attested: every file, not only the tarball
+
+The subjects are every file of the dist plus the two assets, in one
+attestation (`subject-checksums`). With only the tarball attested, checking a
+served file would take three steps: download the manifest, verify the
+manifest, look the file up in it. With every file a subject,
+`gh attestation verify <file>` works on any one file by itself, including a
+copy fetched from a running grappa once that grappa serves these exact bytes;
+no install path deploys them yet (Not covered, below). The cost is 82
+subjects today, against the action's limit of 1024.
+
+### Tag push only
+
+An attestation names the ref and commit of the run that made it. A repair
+dispatch runs on the dispatched branch and checks out the tag's tree, so its
+statement would name a source that does not produce the bytes. A
+`docker_validation` / `deb_validation` dispatch would put a public, permanent
+Sigstore entry on a branch build, and those modes exist to publish nothing.
+Neither may exist, so the job's `if:` admits `push` alone. The cost is that
+no dry run reaches the attest step: the first tag after this lands is its
+first execution. A transient failure is repaired by re-running the tag's own
+run, which keeps the tag's ref; a defect in the job takes a new tag. And
+because nothing else in the run is as irrevocable, the job runs the same
+tag-against-`VERSION` gate as deb/arch/rpm/docker before it builds: a tag cut
+without the bump must not get a statement for the previous version's assets
+while every sibling refuses the run.
+
+### Optional, not expected
+
+`release_assets.sh` gained `optional_kinds`: `found` lists them (publish
+attaches them, `sha256sums.sh` checks them), the completeness audit does not.
+An expected kind fails both ways. A repair skips the job, so every repaired
+release would be marked partial for assets it was never meant to rebuild. And
+a red `cic` leg would stop `publish` from creating the release, holding back
+packages that have nothing to do with it. The price: a release can ship
+without the bundle, and only the red job says so. That holds because the
+upload sets `if-no-files-found: error`; the action's default is a warning,
+which would have made a missing bundle a green job. A deploy that needs the
+bundle will notice. What keeps a skipped or red `cic` from skipping publish
+is publish's `!cancelled()`: since `cic` sits in its `needs`, that guard
+carries the promise, so it is pinned now beside the edge it defuses.
+
+### The toolchain is `scripts/bun.sh`, not `setup-bun`
+
+The packaging jobs install bun with `oven-sh/setup-bun` and no version. That
+resolves to the latest release: the v1.6.4 `.deb` job's log reads
+`bun install v1.4.4`, while `scripts/bun.sh` and `Dockerfile.release` pin
+1.3.14. The runner also has `node`, which runs vite through its shebang.
+Measured, same bun and same lock: vite under `node` changed 6 of 80 files
+against vite under bun. So the attested build runs in the digest-pinned image
+the dev scripts use, and anyone with docker reproduces it with the same two
+commands. The measurements, and the five inputs that do change the bytes:
+`docs/OPERATIONS.md` § "`release_cic_dist.sh` — the attested cicchetto bundle
+(issue 2642)".
+
+The fifth surfaced in review: `credits.sh` baked `git rev-parse --short`,
+whose width git sizes from the clone's packed object count (9 hex at 262143
+objects, 10 at 262144, measured on one commit). It now cuts the first nine
+hex off HEAD's full name, today's width, so what the building clone holds no
+longer reaches the credit roll. `--short=9` was the first cure and review
+caught it: git documents the number as a minimum and lengthens the name when
+another object in the clone shares the prefix. The test plants such a name in
+its sandbox, where `--short=9` prints ten hex.
+
+### Not covered
+
+What any install path puts in front of a browser. The packages, the container
+image and all three from-source deploys build their own copy of the client,
+and none is checked against the manifest. The jail builds with `npm` against
+no committed lockfile; an `npm install` of the same tree, simulated on Linux
+with node 24, differs in 10 of 80 files. Linux systemd runs an unfrozen
+`bun install`. The Docker Compose deploy runs the same pinned image and the
+same two commands as the release job and may well give the same files, but
+nobody has compared them. All of it belongs to the deploy slice.
+<!-- entry #2392 -->
+
+---
+
+## 2026-11-09 — issue 2392: a drifted welcome holds the secret even with GhostRecovery armed
+
+Spun off from #2380. On a drifted registration — the server welcomes us as
+`<nick>_` because the ghost still holds `<nick>` — GhostRecovery sent the
+NickServ secret three times: in the `GHOST` verb, in the 001 built-in
+`IDENTIFY` for `<nick>_`, and after its `NICK` back. The second is the defect:
+the verb names no nick, so services check it against the nick in use, and at
+the 001 that is the fallback — a different account, possibly someone else's.
+It survived #2380 because `maybe_builtin_identify/4` held the secret only when
+NO identity sequence was armed; an armed GhostRecovery took the else branch and
+sent it.
+
+**The rule is #2380's, without the exception.** A drifted welcome always holds
+the secret in `deferred_identify_secret`, and the one thing that sends it is
+the server's echo of a `NICK` onto the configured nick
+(`maybe_identify_on_reclaimed_nick/2`), whichever path sent that `NICK`.
+That includes an echo that lands while GhostRecovery still waits on its
+WHOIS (the operator's own `/nick`, read by the server first). Only an armed
+RecoverIdentity, which sends its own IDENTIFY, drops the held one unsent.
+
+- `:succeeded` — GhostRecovery emits `NICK <orig>` alone and no `IDENTIFY` of
+  its own. Its echo releases the held one, exactly as on the #2253 reclaim, so
+  IDENTIFY is sent once, after the server has confirmed the rename: the order
+  RecoverIdentity's reclaim leg has kept since #623, because services set `+r`
+  only for an IDENTIFY on the nick in use. Until the echo the slot stays held,
+  so a `NICK` back that never lands ends like `:failed`.
+- `:failed` / `:ghost_timeout` — the slot SURVIVES. The #2253 reclaim (or the
+  operator's own `/nick`) can still bring the configured nick back, and the
+  NICK echo releases the held identify through `maybe_identify_on_reclaimed_nick/2`.
+  Dropping it on failure would leave the session unidentified with the secret
+  thrown away; a recovery that never brings the nick back leaves it held, the
+  bounded side.
+- `GHOST` still carries the secret in the verb — that is the verb's argument,
+  not an identify for a nick.
+
+A perform list that consumes `$nickserv_pass` holds nothing, so a recovered
+nick gets no IDENTIFY from grappa: the same as the plain reclaim path, and a
+change from the FSM's old unconditional one.
+
+Issue 2388's entry lists GhostRecovery among the IDENTIFY senders that stage
+the pending-auth slot through `capture_outbound_ns_secret/2`. That IDENTIFY is
+now the held built-in, sent through `send_perform_line/2`, which is the same
+door: the `GHOST` at the 433 stages the slot first, and the echo's IDENTIFY
+restages it, latest-wins, with the same secret.
+
+Same rule #2371 applies to REGISTER: the secret only counts on the configured
+nick. Tests: success = no IDENTIFY while the `NICK` back is unconfirmed, then
+exactly one once it is echoed, after the last `NICK <nick>`; timeout then
+reclaim = exactly one, released by the reclaim echo; an echo while the ghost
+waits on its WHOIS = exactly one, and the 311 that follows adds none.
 <!-- entry #2647 -->
 
 ---
