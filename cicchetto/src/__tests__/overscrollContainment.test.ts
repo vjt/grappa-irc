@@ -412,7 +412,7 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
     // `.adm-nav` rail is nested), so the two sheet tests above meet neither
     // arm: without these rules, deleting the coverage verdict's demand or the
     // per-rule verdict's allowance would stay green. One synthetic strip,
-    // listed in the x-only list and turned vertical by a layout.
+    // listed in the x-only list, turned vertical by a layout or left flat.
     const shared = { both: [".pane"], xOnly: [".rail-strip"] };
     const vertical = { selectors: ".rail-strip", body: "overflow-x: visible; overflow-y: auto;" };
     const restored = { ...vertical, body: `${vertical.body} overscroll-behavior-y: contain;` };
@@ -426,6 +426,16 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
     // both-axis list is a per-rule containment.
     expect(ownContainmentOffenders([{ ...restored, selectors: ".pane" }], shared)).toEqual([
       ".pane { overscroll-behavior-y: contain }",
+    ]);
+    // ...and only where a layout turns the strip vertical: on a strip that
+    // never scrolls y, a y restore would latch a vertical wheel at the strip,
+    // the latch the x-only list exists to prevent (the shared rule's comment).
+    const flat = {
+      selectors: ".rail-strip",
+      body: "overflow-x: auto; overscroll-behavior-y: contain;",
+    };
+    expect(ownContainmentOffenders([flat], shared)).toEqual([
+      ".rail-strip { overscroll-behavior-y: contain }",
     ]);
   });
 
