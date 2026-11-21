@@ -7648,3 +7648,123 @@ channel, so on prod the new arm cannot fire before 001.
 proven against `Grappa.IRCServer` and read from the sources above, not
 captured from a wire. How long a server lets a hung registration sit was never
 measured.
+<!-- entry #2671c5 -->
+
+---
+
+## 2026-11-21 — issue 2671 (C5): ruling (b) reaches the scrollers contained before issue 2671
+
+**The ruling.** vjt, 2026-11-21 13:28 Rome, verbatim «anche loro». It was
+relayed by the orchestrator from the peer vjt-claude-60, and I did not see it
+first-hand. It answers the exemption the issue 2671 entry above recorded: "a
+scroller that was already contained before this issue keeps its containment
+even when nested". Those scrollers follow ruling (b) too. The reading,
+confirmed by the orchestrator and the peer: the INNER scroller of a nested
+pair loses its containment, and the OUTER keeps it unless it is itself nested
+in a vertical scroller. Auditing every scroller contained before issue 2671 is
+our reading of the scope of «anche loro», not vjt's words.
+
+**What moved.** One selector. `.admin-tab-panel` joins the carve-out rule as
+`:where(.admin-pane) .admin-tab-panel`, so its computed
+`overscroll-behavior` goes from `contain` to `auto` on both axes wherever it
+sits in `.admin-pane`, which is everywhere `AdminPane.tsx` renders it. Its
+vertical scroll chains to `.admin-pane`, which stays contained. Its
+horizontal scroll does too: `.admin-pane` declares only `overflow-y: auto`,
+so its x computes `auto` through the visible→auto conversion, and the shared
+rule contains both axes. No per-rule `overscroll-behavior` was added. The
+`default.css` comment that stated the exemption now states the rule.
+
+**Census method.** The population is every scroll container whose own rule
+carried an `overscroll-behavior` before d5c875a1b (PR 2672), read off
+`d5c875a1b^:cicchetto/src/themes/default.css`: the 25 scroll rules with a
+both-axis `contain` (26 selectors), the attachment strip's `-x: contain`, the
+directory list's `none`, and three rules that contained a scroller without
+declaring its overflow (the compose textarea and the mobile `.shell-sidebar`
+and `.rail-query-context`). Four more rules carried `contain` but sat on
+boxes that are not scrollers (`.image-upload-modal`, `.confirm-modal`, the
+mobile `.shell-members`, the `overflow: hidden` `.links-modal-body`); PR 2672
+dropped them and they are not in the table. The method is the one the
+issue 2671 entry used: the component that renders the element, then the
+containing-block chain up to the first vertical scroller. A `position: fixed`
+box (every modal backdrop below) and an absolute box whose positioned
+ancestor is not a scroller break the chain. A box with `overflow: hidden`
+does not count as an outer scroller: no gesture scrolls it, and ruling (b)
+is about a scroll that chains to a scroller. Every class was traced to its
+`class=` attributes by a script over `cicchetto/src/**/*.tsx` without the
+tests, with comments stripped. The positive control, `.admin-tab-panel`,
+came back with its nine panels in `AdminPane.tsx`. A first grep for the same
+attributes answered zero for every class, the control included, so it was
+discarded as a dead regex rather than read as a result.
+
+| selector | nested? | outer scroller | evidence |
+|---|---|---|---|
+| `.login-scroll` | no | — | `Login.tsx`: child of `main.login` (`overflow: hidden`); a route, outside `.shell` |
+| `.rail-actions-menu` | no | — | `RailActions.tsx`: absolute against `.rail-actions` (relative), a child of `.shell-members` (`overflow-y: visible`) in both layouts |
+| `.rail-radio-picker-list` | no | — | `RailRadio.tsx`: inside `.rail-radio-picker` (absolute, `inset: 0`); `.rail-radio` is not positioned, so the block is `.shell-members` |
+| `.scrollback` | no | — | `ScrollbackPane.tsx`: child of `.scrollback-pane`, a sibling of `.scrollback-overlay`, not inside it; the pane sits in `.shell-main` or `EncryptedChatPane`'s `.e2e-body-content` |
+| `.mentions-list` | no | — | `MentionsWindow.tsx`: child of `.mentions-window` (`overflow: hidden`) in `.shell-main` |
+| `.settings-drawer` | no | — | `SettingsDrawer.tsx`: the `aside`, `position: fixed`, mounted in `.shell` |
+| `.delete-account-modal` | no | — | `SettingsDrawer.tsx` mounts `DeleteAccountModal` after the `aside`; `.modal-backdrop` is fixed |
+| `.confirm-modal-attachments` | no | — | `ConfirmModal.tsx`: inside `.confirm-modal` (no overflow) in a fixed `.modal-backdrop`, mounted in `Shell.tsx` |
+| `.admin-pane` | no (outer) | — | `Shell.tsx` mounts `AdminPane` in `.shell-main` (no overflow), both layouts |
+| `.admin-tab-panel` | **yes** | `.admin-pane` | `AdminPane.tsx`: nine static `div.admin-tab-panel` children of `section.admin-pane`, mobile flex and desktop grid alike |
+| `.shell-mobile .shell-sidebar` | no | — | `Shell.tsx` mobile branch: a fixed drawer in `.shell-mobile` |
+| `.shell-mobile .shell-members .members-pane` | no | — | `MembersPane.tsx` root, in `.shell-members` (fixed, `overflow-y: visible`) |
+| `.shell-mobile .shell-members .rail-query-context` | no | — | `RailContext.tsx` root, a sibling of `MembersPane` in `.shell-members` |
+| `.bottom-bar` | no | — | `Shell.tsx` mobile branch, a direct child of `.shell-mobile`; its y is `hidden`, so it is not a vertical scroller either |
+| `.archive-modal` | no | — | `ArchiveModal.tsx`: inside `.archive-modal-backdrop` (fixed) |
+| `.names-modal-body`, `.who-modal-body` | no | — | `NamesModal.tsx`, `WhoModal.tsx`: inside `.names-modal` / `.who-modal` (`overflow: hidden`) in a fixed backdrop |
+| `.mode-modal-body` | no | — | `ModeModal.tsx`, `UmodeModal.tsx`: inside `.mode-modal` (`overflow: hidden`) |
+| `.theme-editor-modal` | no | — | `ThemeEditor.tsx`: inside `.theme-editor-backdrop` (fixed) |
+| `.server-reply-modal-body` | no | — | `ServerReplyModal.tsx`: inside `.server-reply-modal` (`overflow: hidden`) |
+| `.service-modal-body` | no | — | `ServiceModal.tsx`: inside `.service-modal` (`overflow: hidden`); the prompt textarea is in the footer, a sibling of the body |
+| `.registration-wizard-body` | no (outer of the mirror pair) | — | `RegistrationWizardModal.tsx`: inside `.registration-wizard` (`overflow: hidden`) |
+| `.recover-modal-body` | no | — | `RecoverModal.tsx`: inside `.recover-modal` (`overflow: hidden`) |
+| `.banlist-modal-body` | no | — | `BanlistModal.tsx`: inside `.banlist-modal` (`overflow: hidden`) |
+| `.home-pane` | no | — | `Shell.tsx` mounts `HomePane` in `.shell-main` |
+| `.media-viewer-zoom-scroller`, `.media-viewer-text` | no | — | `MediaViewerModal.tsx`: inside `.media-viewer-body` (`overflow: hidden`) in `.media-viewer-modal` (fixed) |
+| `.share-modal` | no | — | `ShareSessionModal.tsx`: inside a fixed `.modal-backdrop` |
+| `.compose-box textarea` | no | — | `ComposeBox.tsx`: a direct child of `form.compose-box` (flex), in `.shell-main` or `.e2e-compose` (`display: contents`) |
+| `.confirm-modal-attachment-source` | nested, but a horizontal strip | `.confirm-modal-attachments` | `ConfirmModal.tsx`: a `pre` in an `li` of the list; see below |
+| `.directory-list` (`none`, #1445) | no | — | `DirectoryPane.tsx`: child of `.directory-pane` (`overflow: hidden`) |
+
+**Left as it was, and why.** `.confirm-modal-attachment-source` is nested in
+`.confirm-modal-attachments`, but it is a horizontal strip, not a vertical
+scroller. Ruling (b) is worded for a vertical scroller inside a vertical one;
+the strip already contains x alone, and its y already chains to the list.
+The two strips issue 2671 newly contained under the same ruling (`.adm-nav`
+on a phone, `.adm-table-wrap`, both inside the admin pane) kept their x
+containment too, so moving this one alone would split the strips into two
+patterns. If the ruling is meant to reach the x axis of a nested strip, it
+reaches all three, and that needs saying. `.directory-list` keeps its `none`
+(#1445): it is not nested, and the shared rules do not list it.
+
+**Found outside the census: the desktop `.adm-nav` rail.** It was not
+contained before issue 2671, so it is not in the table, but above 900px it is
+a vertical scroller (`overflow-y: auto`) inside `.admin-pane`, and the strip
+restore in its desktop block (`overscroll-behavior-y: contain`) contains it.
+Ruling (b) would hand it back. It is not touched here: the guard REQUIRES
+that restore (a listed strip that scrolls y in some layout must contain y
+there), so moving it means changing a rule of the guard, which is a decision
+for review and not a line in this slice. It stays open.
+
+**What the guard sees.** `overscrollContainment.test.ts` passes on the new
+pair: it is well-formed and both halves are listed vertical scrollers.
+Putting `contain` back through the containing list
+(`.admin-pane .admin-tab-panel`, which would beat the carve-out on
+specificity) fails two tests, and a per-rule `contain` in the
+`.admin-tab-panel` block fails one. Dropping the new carve-out stays GREEN,
+and so does dropping the mirror pair: the guard checks that a pair is
+well-formed, never which pairs the census found, so the C5 decision itself is
+not held by any test. A pin of the exact pair list kills both (measured on a
+scratch copy, then discarded); whether to add it is open. It would record the
+census, not observe nesting: a new nested scroller in a component would still
+pass.
+
+**Not measured.** Nothing here ran in a browser or on a device. The census is
+a reading of the components and the sheet, and no e2e asserts the computed
+`overscroll-behavior` of `.admin-tab-panel` (the seven specs that read one
+look at other surfaces, none of which moved). Whether the admin panel's
+drag now chains to `.admin-pane` and the shell stays still on iOS is
+inferred from WebKit's source as described in the issue 2671 entry, not
+measured.
