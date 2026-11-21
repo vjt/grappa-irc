@@ -200,6 +200,14 @@ describe("friendlyApiError", () => {
     const err = new ApiError(503, "network_unreachable", {});
     expect(friendlyApiError(err)).toBe("We can't reach the network right now.");
   });
+
+  it("nick_in_use copy never claims the nick is in use", () => {
+    // Issue 2679 — a spent 437 ladder also lands on nick_in_use, and a 437
+    // nick is reserved, held by nobody. The matrix row above only proves the
+    // ruled phrase is present; this proves the false claim is absent, so a
+    // copy edit that keeps the phrase and adds "in use" back goes red.
+    expect(friendlyApiError(new ApiError(409, "nick_in_use", {}))).not.toMatch(/in use/i);
+  });
 });
 
 // #943 — the admin consoles render the raw wire token by policy, so they
