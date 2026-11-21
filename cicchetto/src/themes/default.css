@@ -582,7 +582,10 @@ body {
    about. Its outer scroller, `.scrollback-overlay`, rarely overflows (the
    peek is at most 40vh of a pane-tall layer). Whether iOS still stops the
    chain at an overflow box that does not overflow is INFERRED, not measured,
-   so the card keeps its own wall.
+   so the card keeps its own wall. `.admin-pane` rarely overflows either (its
+   tab panel takes the rest of the column, or the rest of a `1fr` grid row),
+   yet the admin pair is carved out: it stands on vjt's later ruling above,
+   and it waits on the same device check as `.server-peek-body`.
 
    __tests__/overscrollContainment.test.ts holds it. A rule that makes
    something scroll without being covered here fails it. So do an entry that
