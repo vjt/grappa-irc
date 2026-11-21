@@ -32,6 +32,41 @@ defmodule Grappa.IRC.ClientTest do
     ":server 433 * #{nick} :Nickname is already in use\r\n"
   end
 
+  # issue 2673 — the 437 ERR_UNAVAILRESOURCE that IRCnet (nick delay) and
+  # solanum (services hold) answer to a reserved nick at registration. It
+  # echoes the nick we sent, for the same reason `nick_in_use/1` does.
+  defp nick_unavailable(nick_line) do
+    nick = nick_line |> String.trim() |> String.trim_leading("NICK ")
+    ":server 437 * #{nick} :Nick/channel is temporarily unavailable\r\n"
+  end
+
+  # issue 2673 — the wire after `line`, with a DURABLE barrier, for asserting
+  # that the client did NOT answer it. Server lines are processed in order and
+  # each one reaches `dispatch_to` BEFORE its FSM step, so the sentinel's
+  # `{:irc, _}` proves the step for `line` has run and written whatever it was
+  # going to write. The PONG then queues behind those bytes on the same
+  # socket, so once the fake holds it, `sent_lines` holds the answer too.
+  defp wire_after(server, client, line) do
+    IRCServer.feed(server, line)
+    IRCServer.feed(server, ":server NOTICE * :wire-barrier\r\n")
+    assert_receive {:irc, %Message{command: :notice, params: ["*", "wire-barrier"]}}, 1_000
+    :ok = Client.send_pong(client, "wire-barrier")
+    {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :wire-barrier\r\n"), 1_000)
+    IRCServer.sent_lines(server)
+  end
+
+  defp nick_lines(lines), do: Enum.filter(lines, &String.starts_with?(&1, "NICK "))
+
+  # Every 437 reply below is this one handler: a nick under delay draws the
+  # 437, and the first ladder rung is welcomed.
+  defp delayed_nick_handler(state, line) do
+    cond do
+      line == "NICK grappa-test_\r\n" -> {:reply, ":server 001 grappa-test_ :Welcome\r\n", state}
+      String.starts_with?(line, "NICK ") -> {:reply, nick_unavailable(line), state}
+      true -> {:reply, nil, state}
+    end
+  end
+
   # #676 — the passwordless (`:none`) shape the nick-collision ladder
   # covers. Shared by both 433 tests so they differ only in what the fake
   # upstream does, not in how the client is built.
@@ -1885,6 +1920,101 @@ defmodule Grappa.IRC.ClientTest do
       {:ok, client} = start_collision_client(port)
 
       assert_receive {:EXIT, ^client, {:nick_rejected, 433, last_tried}}, 2_000
+      assert String.starts_with?(last_tried, "grappa-test")
+    end
+  end
+
+  # issue 2673 — before this, a 437 at registration drew no NICK at all and
+  # the handshake hung until the server closed it.
+  describe "437 ERR_UNAVAILRESOURCE during registration" do
+    test "437 naming our nick sends the next ladder NICK and registers" do
+      {server, port} = IRCServer.start_server(&delayed_nick_handler/2)
+
+      {:ok, client} = start_collision_client(port)
+
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK grappa-test_\r\n"), 1_000)
+      assert_receive {:irc, %Message{command: {:numeric, 1}}}, 1_000
+
+      assert %{fsm: %{phase: :registered, nick: "grappa-test_"}} = :sys.get_state(client)
+    end
+
+    test "437 naming something other than our nick sends no NICK" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+
+      {:ok, client} = start_collision_client(port)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      lines = wire_after(server, client, ":server 437 * #grappa :Nick/channel is temporarily unavailable\r\n")
+
+      assert nick_lines(lines) == ["NICK grappa-test\r\n"]
+    end
+
+    test "437 naming our nick after 001 sends no NICK" do
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
+
+      {:ok, client} = start_collision_client(port)
+      assert_receive {:irc, %Message{command: {:numeric, 1}}}, 1_000
+
+      lines =
+        wire_after(server, client, ":server 437 grappa-test grappa-test :Nick/channel is temporarily unavailable\r\n")
+
+      assert nick_lines(lines) == ["NICK grappa-test\r\n"]
+    end
+
+    # A server that truncated our NICK to its NICKLEN echoes the SHORTENED
+    # spelling, and that is still us: the same echo `learned_nick_cap/2`
+    # reads the cap from, so the next rung is clamped to it.
+    test "437 echoing a truncation of our nick walks the ladder under the learned cap" do
+      truncating = fn state, line ->
+        if line == "NICK grappa-test\r\n",
+          do: {:reply, ":server 437 * grappa-te :Nick/channel is temporarily unavailable\r\n", state},
+          else: {:reply, nil, state}
+      end
+
+      {server, port} = IRCServer.start_server(truncating)
+
+      {:ok, _} = start_collision_client(port)
+
+      assert {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK grappa-t_\r\n"), 1_000)
+    end
+
+    # `:nickserv_identify` keeps its 433 for the host's GhostRecovery, which
+    # only ever starts on a 433. Nothing on the host takes a registration 437,
+    # so it walks the ladder here like in every other mode.
+    test "437 naming our nick walks the ladder under :nickserv_identify too" do
+      {server, port} = IRCServer.start_server(&delayed_nick_handler/2)
+
+      {:ok, _} =
+        Client.start_link(%{
+          host: "127.0.0.1",
+          port: port,
+          tls: false,
+          dispatch_to: self(),
+          logger_metadata: [],
+          nick: "grappa-test",
+          ident: "grappa-test",
+          realname: "grappa-test",
+          sasl_user: "grappa-test",
+          password: "swordfish",
+          auth_method: :nickserv_identify
+        })
+
+      assert {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK grappa-test_\r\n"), 1_000)
+    end
+
+    test "437 on every candidate exhausts the ladder and stops {:nick_rejected, 437, _}" do
+      always_delayed = fn state, line ->
+        if String.starts_with?(line, "NICK "),
+          do: {:reply, nick_unavailable(line), state},
+          else: {:reply, nil, state}
+      end
+
+      {_, port} = IRCServer.start_server(always_delayed)
+      Process.flag(:trap_exit, true)
+
+      {:ok, client} = start_collision_client(port)
+
+      assert_receive {:EXIT, ^client, {:nick_rejected, 437, last_tried}}, 2_000
       assert String.starts_with?(last_tried, "grappa-test")
     end
   end

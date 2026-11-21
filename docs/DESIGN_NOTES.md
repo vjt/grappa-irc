@@ -7572,3 +7572,59 @@ wrong:
   stays inside it; the search reads the card along with the body. Checking the
   two fields against what the scrollback counts as a link was the alternative,
   and it would trail every rule the scrollback adds.
+<!-- entry #2673 -->
+
+---
+
+## 2026-11-21 — issue 2673: a registration 437 that names our nick walks the 433 ladder
+
+**What changed.** During registration, `AuthFSM` now handles a 437 the way it
+handles a 433, but only when the 437's second param is our nick. "Our nick"
+means the nick in flight, compared folded, or a server's truncation of it. In
+that case the next ladder candidate goes out as `NICK`. Once the ladder is
+spent, the FSM stops with `{:nick_rejected, 437, nick}`, which is the same
+bound a 433 has. After 001 nothing changes: the `:registered` guard still
+absorbs every numeric.
+
+**Why.** On d5c875a1b, neither `auth_fsm.ex` nor `client.ex` had a 437 arm.
+A grep finds 0 hits for 437 in both, against 21 and 2 hits for 433. Per the
+issue, a 437 at registration on IRCnet and solanum is ERR_UNAVAILRESOURCE:
+the nick is reserved (IRCnet's nick delay, or a services hold on solanum),
+but nobody is using it. The FSM sent no further NICK, so the handshake sat
+there until the server dropped it, and keepnick (issue 2656) never got a
+session to start from. This was found by reading the code, not by
+reproducing it: IRCnet is not on the testnet.
+
+**Why the params[1] check.** 437 is also a channel numeric. On bahamut it is
+ERR_BANNICKCHANGE, which names a channel (see `Grappa.IRC.JoinFailure`), and
+RFC 2812 also returns ERR_UNAVAILRESOURCE for a channel blocked by channel
+delay. A client that has joined nothing cannot receive either, but the arm
+acts only when the target is our nick, so a channel-shaped 437 still falls
+through to the catch-all. A truncation counts as our nick, using the same
+`truncation_of?/2` that #676 uses. An ircd that cuts the NICK to its NICKLEN
+echoes the shortened spelling, and `learned_nick_cap/2` reads the cap from
+that same echo. Requiring exact equality would leave exactly that case
+hanging.
+
+**`:nickserv_identify` walks the ladder too.** That mode keeps its 433 because
+the host's GhostRecovery starts from it. GhostRecovery starts on a 433 and on
+nothing else: `Session.Server`'s ghost clause matches numeric 433 alone. So a
+registration 437 has no other taker, and a `:cont` there would bring the hang
+back. A fallback nick in this mode is already handled after 001: the drifted
+welcome holds the IDENTIFY (issue 2380), and the #2253 reclaim brings the
+configured nick back.
+
+**Out of scope, untouched.** RecoverIdentity keeps its own 433/437 handling.
+Under ruling #623, a 437 there is a services hold, retried until a deadline.
+Whether a numeric is terminal depends on the (numeric, state) pair, and this
+change touches only the registration state. `Visitors.Login.classify_down/1`
+still maps only `{:nick_rejected, 433, _}` to `:nick_in_use`, so a visitor
+whose ladder runs out on 437 gets `:upstream_unreachable`. That is left as it
+was.
+
+**Not measured.** No IRCnet or solanum server was exercised, and the ircd
+semantics above are the issue's, not checked against either source. The
+behaviour is proven against `Grappa.IRCServer` only. Whether IRCnet truncates
+the nick before its nick-delay check, and so echoes the truncated spelling,
+has not been checked against its source or a capture. How long a server lets
+a hung registration sit was never measured.

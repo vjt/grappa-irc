@@ -73,7 +73,8 @@ defmodule Grappa.IRC.AuthFSM do
       {:sasl_failed, 904 | 905}      -- upstream rejected SASL credentials
       :sasl_unavailable              -- :sasl mandatory but server did not
                                         advertise / NAK'd it
-      {:nick_rejected, 432 | 433, n} -- upstream rejected NICK during register
+      {:nick_rejected, 432 | 433 | 437, n} -- upstream rejected NICK during
+                                            register
 
   ## Nick-collision fallback (#676)
 
@@ -85,10 +86,15 @@ defmodule Grappa.IRC.AuthFSM do
   authority (`Grappa.Session.EventRouter` reconciles it, and tells the
   user when it differs from what they asked for).
 
-  Two carve-outs: `:nickserv_identify` keeps its silent `:cont` (the host
-  drives GHOST / recover-identity off that numeric), and 432 still stops
-  outright — an erroneous nick is a SHAPE rejection, so a suffixed retry
-  would re-send the same bad shape.
+  A 437 that names our nick (IRCnet nick delay, a solanum services hold)
+  walks the same ladder and stops with `{:nick_rejected, 437, _}` (issue
+  2673). A 437 naming anything else is ignored: the numeric also names
+  channels.
+
+  Two carve-outs: `:nickserv_identify` keeps its silent `:cont` on a 433
+  (the host drives GHOST / recover-identity off it, and off no 437), and
+  432 still stops outright — an erroneous nick is a SHAPE rejection, so a
+  suffixed retry would re-send the same bad shape.
 
   Caller is responsible for Logger emission on stop reasons; the FSM
   itself emits no side effect beyond the returned `[iodata]` frames.
@@ -164,7 +170,7 @@ defmodule Grappa.IRC.AuthFSM do
   @type stop_reason ::
           {:sasl_failed, 904 | 905}
           | :sasl_unavailable
-          | {:nick_rejected, 432 | 433, String.t()}
+          | {:nick_rejected, 432 | 433 | 437, String.t()}
 
   @type t :: %__MODULE__{
           nick: String.t(),
@@ -583,7 +589,7 @@ defmodule Grappa.IRC.AuthFSM do
     {:cont, state, []}
   end
 
-  # #676 — 433 ERR_NICKNAMEINUSE with ladder left: retry under the next
+  # #676 — 433 ERR_NICKNAMEINUSE: while the ladder lasts, retry under the next
   # candidate instead of dead-ending the login. A visitor whose nick is
   # taken upstream used to get no session at all (FSM stop → `:nick_in_use`
   # → HTTP 409) and had to go hunt for the nick field in settings; now they
@@ -597,25 +603,30 @@ defmodule Grappa.IRC.AuthFSM do
   # ladder NICK here would race the GHOST sequence off its own nick.
   # 432 is deliberately NOT laddered — an erroneous nick is a SHAPE
   # rejection, and retrying `<badnick>_` re-sends the same bad shape.
-  def step(
-        %__MODULE__{nick_suffixes: [suffix | rest]} = state,
-        %Message{command: {:numeric, 433}, params: params}
-      ) do
-    cap = learned_nick_cap(state, params)
-    candidate = Identifier.collision_fallback(state.orig_nick, suffix, cap)
+  def step(state, %Message{command: {:numeric, 433}, params: params}),
+    do: walk_nick_ladder(state, 433, params)
 
-    {:cont, %{state | nick: candidate, nick_suffixes: rest, nick_cap: cap}, ["NICK #{candidate}\r\n"]}
+  # issue 2673 — 437 ERR_UNAVAILRESOURCE naming OUR nick: IRCnet's nick
+  # delay or a solanum services hold, a nick reserved but held by nobody.
+  # Without this arm no further NICK went out and registration hung until
+  # the server dropped it. 437 also names CHANNELS (bahamut's
+  # ERR_BANNICKCHANGE, RFC 2812's channel delay), so only our own nick
+  # walks the ladder. It walks it in `:nickserv_identify` too: that mode's
+  # carve-out exists because GhostRecovery starts on a 433, and nothing on
+  # the host starts on a 437.
+  def step(state, %Message{command: {:numeric, 437}, params: [_, echoed | _] = params}) do
+    if own_nick_echo?(state, echoed),
+      do: walk_nick_ladder(state, 437, params),
+      else: {:cont, state, []}
   end
 
-  # 432 ERR_ERRONEUSNICKNAME / 433 ERR_NICKNAMEINUSE during registration.
-  # Without an explicit handler the FSM would sit in `:pre_register` /
-  # `:awaiting_cap_*` forever; surface as a structured stop reason so
-  # the supervised Session restart fails again identically (correct —
-  # the credential nick is wrong, an operator must intervene).
-  def step(state, %Message{command: {:numeric, code}})
-      when code in [432, 433] do
-    {:stop, {:nick_rejected, code, state.nick}, state, []}
-  end
+  # 432 ERR_ERRONEUSNICKNAME during registration. Without an explicit
+  # handler the FSM would sit in `:pre_register` / `:awaiting_cap_*`
+  # forever; surface as a structured stop reason so the supervised Session
+  # restart fails again identically (correct — the credential nick is
+  # wrong, an operator must intervene).
+  def step(state, %Message{command: {:numeric, 432}}),
+    do: {:stop, {:nick_rejected, 432, state.nick}, state, []}
 
   # 001 RPL_WELCOME unconditionally promotes to `:registered`. No
   # `CAP END` is emitted here even when arriving from `:awaiting_cap_ls`:
@@ -636,7 +647,27 @@ defmodule Grappa.IRC.AuthFSM do
 
   def step(state, _), do: {:cont, state, []}
 
-  # #676 — the upstream NICKLEN, learned from the 433 echo.
+  # #676 — the bounded ladder 433 and our-nick 437 share. With a rung left,
+  # re-send NICK under the next candidate; once the ladder is spent, stop
+  # naming the numeric that ended it and the nick we last actually tried.
+  defp walk_nick_ladder(%__MODULE__{nick_suffixes: [suffix | rest]} = state, _, params) do
+    cap = learned_nick_cap(state, params)
+    candidate = Identifier.collision_fallback(state.orig_nick, suffix, cap)
+
+    {:cont, %{state | nick: candidate, nick_suffixes: rest, nick_cap: cap}, ["NICK #{candidate}\r\n"]}
+  end
+
+  defp walk_nick_ladder(state, code, _), do: {:stop, {:nick_rejected, code, state.nick}, state, []}
+
+  # issue 2673 — is a numeric's nick param the nick we have in flight? A
+  # server that cut our NICK to its NICKLEN echoes the shortened spelling,
+  # which is still us — the same echo `learned_nick_cap/2` reads the cap from.
+  defp own_nick_echo?(%__MODULE__{nick: sent}, echoed) do
+    Identifier.canonical_target(echoed) == Identifier.canonical_target(sent) or
+      truncation_of?(echoed, sent)
+  end
+
+  # #676 — the upstream NICKLEN, learned from the 433 (or our-nick 437) echo.
   #
   # 005 RPL_ISUPPORT (where NICKLEN lives) only arrives AFTER 001, so at
   # 433 time the advertised cap is genuinely unknowable — the issue's
