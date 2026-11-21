@@ -7791,10 +7791,11 @@ review measured the gap this closes: with the restore gone from the sheet,
 both deletions stayed GREEN, while deleting the allowance at `d5c875a1b` was
 RED. A test that called the two predicates directly would not have closed it:
 it never executes the call sites, and deleting a call site is the mutant.
-A second synthetic strip, one that never scrolls y, holds the allowance to
-strips a layout turns vertical: a y restore on a flat strip would latch a
-vertical wheel at the strip. The delta review measured that clause unpinned
-(`declaredScrollAxes(rule.body).has("y")` deleted: GREEN) until it was added.
+A second synthetic rule on the same strip, one that declares no y scroll,
+holds the allowance to strips a layout turns vertical: a y restore on a flat
+strip would latch a vertical wheel at the strip. The delta review measured
+that clause unpinned (`declaredScrollAxes(rule.body).has("y")` deleted:
+GREEN) until that rule was added.
 
 **Not measured.** Nothing here ran in a browser or on a device. The census is
 a reading of the components and the sheet, and no e2e asserts the computed
