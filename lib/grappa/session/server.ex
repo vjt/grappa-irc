@@ -4512,98 +4512,7 @@ defmodule Grappa.Session.Server do
   # consumed here (removed from state) so the map stays bounded.
   # `last_command_window` is NOT updated here — it's a command-send-
   # time snapshot, not a numeric-arrival-time one.
-  def handle_info({:irc, %Message{command: {:numeric, _}} = msg}, state) do
-    state = maybe_release_autojoin_on_401(state, msg)
-    router_state = build_router_state(state)
-
-    case NumericRouter.route(msg, router_state) do
-      :delegated ->
-        # Delegated: existing handlers own this numeric via EventRouter.
-        delegate(msg, state)
-
-      routing ->
-        # Consume label if matched (keeps labels_pending bounded). S10 —
-        # drop the sibling stamp in lockstep so the two maps never diverge.
-        # `labels_pending_at` is a NEW field: read via Map.get / written via
-        # Map.put (NOT map-update syntax) so a HOT reload of a pre-S10 process
-        # — whose state map lacks the key — doesn't KeyError on the next
-        # routed numeric. Same defensive contract as awaiting_invite /
-        # in_flight_joins.
-        label = Message.tag(msg, "label")
-        prev_labels_at = Map.get(state, :labels_pending_at, %{})
-
-        {labels_pending, labels_pending_at} =
-          if label do
-            {Map.delete(state.labels_pending, label), Map.delete(prev_labels_at, label)}
-          else
-            {state.labels_pending, prev_labels_at}
-          end
-
-        state_with_labels =
-          state
-          |> Map.put(:labels_pending, labels_pending)
-          |> Map.put(:labels_pending_at, labels_pending_at)
-
-        numeric_code = numeric_code(msg)
-        trailing = List.last(msg.params)
-        sender = Message.sender_nick(msg)
-
-        # issue 2497 — read BEFORE the #640 gate below: the nick is absent
-        # whether its row lands in the open query or on $server.
-        :ok = maybe_no_such_nick(state, numeric_code, routing)
-
-        # #640 — resolve a {:query, target} decision against actual window
-        # existence: a numeric lands in an EXISTING conversation or on $server,
-        # it never MINTS a query window (see resolve_numeric_query_window/2).
-        routing = resolve_numeric_query_window(routing, state)
-
-        # Persist the numeric as a `:notice` row in the routed window —
-        # iff the trailing param is a string (defensive: malformed numerics
-        # with no trailing text are dropped silently rather than crashing
-        # the changeset on body=nil for body-required kind :notice).
-        persist_state =
-          if is_binary(trailing) do
-            channel = routing_to_channel(routing)
-            severity = NumericRouter.severity(numeric_code)
-            # #424 — `body` is only the TRAILING param, but many numerics carry
-            # their payload in the MIDDLE params (STATS: `213 <nick> C <host>
-            # <*> <server> <port> <class>` → without this, only the trailing
-            # class letter reaches the DB and host/server/port are lost). Keep
-            # the full param list in `raw_params`, mirroring EventRouter's
-            # `persist_raw_event/3`, so cic can render the whole reply. Fixes
-            # the CLASS (every middle-param numeric), not just the STATS example.
-            meta = %{numeric: numeric_code, severity: severity, raw_params: msg.params}
-
-            attrs =
-              Session.put_subject_id(
-                %{
-                  network_id: state.network_id,
-                  channel: channel,
-                  server_time: System.system_time(:millisecond),
-                  sender: sender,
-                  body: trailing,
-                  meta: meta
-                },
-                state.subject
-              )
-
-            apply_effects([{:persist, :notice, attrs}], state_with_labels)
-          else
-            state_with_labels
-          end
-
-        # Also delegate so EventRouter can update state (e.g. 305/306
-        # away_confirmed). EventRouter's catch-all returns `[]` for
-        # numerics we haven't given dedicated handlers, so this is a
-        # no-op for most numerics; the state mutations it owns (e.g.
-        # AWAY confirmation) still flow.
-        {:cont, next_state, effects} = EventRouter.route(msg, persist_state)
-        final_state = effects |> apply_effects(next_state) |> prune_seeded_channels()
-        maybe_broadcast_channels_changed(state, final_state, departed_channels(effects, state))
-        on_own_nick_change(state, final_state)
-        {:noreply, final_state}
-    end
-  end
+  def handle_info({:irc, %Message{command: {:numeric, _}} = msg}, state), do: route_numeric(msg, state)
 
   def handle_info({:irc, %Message{} = msg}, state), do: delegate(msg, state)
 
@@ -6386,6 +6295,105 @@ defmodule Grappa.Session.Server do
   defp routing_to_channel({:channel, c}) when is_binary(c), do: c
   defp routing_to_channel({:query, n}) when is_binary(n), do: n
   defp routing_to_channel({:server, nil}), do: "$server"
+
+  # The body of the generic numeric `handle_info/2` clause (the CP13 comment
+  # above it describes it), named so the keepnick refusal path (issue 2656)
+  # routes a refusal it does not swallow through the very same door rather
+  # than a copy of it.
+  @spec route_numeric(Message.t(), t()) :: {:noreply, t()}
+  defp route_numeric(msg, state) do
+    state = maybe_release_autojoin_on_401(state, msg)
+    router_state = build_router_state(state)
+
+    case NumericRouter.route(msg, router_state) do
+      :delegated ->
+        # Delegated: existing handlers own this numeric via EventRouter.
+        delegate(msg, state)
+
+      routing ->
+        # Consume label if matched (keeps labels_pending bounded). S10 —
+        # drop the sibling stamp in lockstep so the two maps never diverge.
+        # `labels_pending_at` is a NEW field: read via Map.get / written via
+        # Map.put (NOT map-update syntax) so a HOT reload of a pre-S10 process
+        # — whose state map lacks the key — doesn't KeyError on the next
+        # routed numeric. Same defensive contract as awaiting_invite /
+        # in_flight_joins.
+        label = Message.tag(msg, "label")
+        prev_labels_at = Map.get(state, :labels_pending_at, %{})
+
+        {labels_pending, labels_pending_at} =
+          if label do
+            {Map.delete(state.labels_pending, label), Map.delete(prev_labels_at, label)}
+          else
+            {state.labels_pending, prev_labels_at}
+          end
+
+        state_with_labels =
+          state
+          |> Map.put(:labels_pending, labels_pending)
+          |> Map.put(:labels_pending_at, labels_pending_at)
+
+        numeric_code = numeric_code(msg)
+        trailing = List.last(msg.params)
+        sender = Message.sender_nick(msg)
+
+        # issue 2497 — read BEFORE the #640 gate below: the nick is absent
+        # whether its row lands in the open query or on $server.
+        :ok = maybe_no_such_nick(state, numeric_code, routing)
+
+        # #640 — resolve a {:query, target} decision against actual window
+        # existence: a numeric lands in an EXISTING conversation or on $server,
+        # it never MINTS a query window (see resolve_numeric_query_window/2).
+        routing = resolve_numeric_query_window(routing, state)
+
+        # Persist the numeric as a `:notice` row in the routed window —
+        # iff the trailing param is a string (defensive: malformed numerics
+        # with no trailing text are dropped silently rather than crashing
+        # the changeset on body=nil for body-required kind :notice).
+        persist_state =
+          if is_binary(trailing) do
+            channel = routing_to_channel(routing)
+            severity = NumericRouter.severity(numeric_code)
+            # #424 — `body` is only the TRAILING param, but many numerics carry
+            # their payload in the MIDDLE params (STATS: `213 <nick> C <host>
+            # <*> <server> <port> <class>` → without this, only the trailing
+            # class letter reaches the DB and host/server/port are lost). Keep
+            # the full param list in `raw_params`, mirroring EventRouter's
+            # `persist_raw_event/3`, so cic can render the whole reply. Fixes
+            # the CLASS (every middle-param numeric), not just the STATS example.
+            meta = %{numeric: numeric_code, severity: severity, raw_params: msg.params}
+
+            attrs =
+              Session.put_subject_id(
+                %{
+                  network_id: state.network_id,
+                  channel: channel,
+                  server_time: System.system_time(:millisecond),
+                  sender: sender,
+                  body: trailing,
+                  meta: meta
+                },
+                state.subject
+              )
+
+            apply_effects([{:persist, :notice, attrs}], state_with_labels)
+          else
+            state_with_labels
+          end
+
+        # Also delegate so EventRouter can update state (e.g. 305/306
+        # away_confirmed). EventRouter's catch-all returns `[]` for
+        # numerics we haven't given dedicated handlers, so this is a
+        # no-op for most numerics; the state mutations it owns (e.g.
+        # AWAY confirmation) still flow.
+        {:cont, next_state, effects} = EventRouter.route(msg, persist_state)
+        final_state = effects |> apply_effects(next_state) |> prune_seeded_channels()
+        maybe_broadcast_channels_changed(state, final_state, departed_channels(effects, state))
+        on_own_nick_change(state, final_state)
+        {:noreply, final_state}
+    end
+  end
+
   #
   # Channels-list mutation (self-JOIN / self-PART / self-KICK changes the
   # `state.members` keyset) fires a fan-out broadcast on the per-user
