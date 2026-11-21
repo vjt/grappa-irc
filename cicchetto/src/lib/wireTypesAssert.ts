@@ -125,6 +125,7 @@ import type {
   NetworksCredentialAuthMethod,
   NetworksCredentialGender,
   NetworksWireConnectionStateEvent,
+  NetworksWireKeepNickChangedEvent,
   NetworksWireNetworkAttachedEvent,
   NetworksWireNetworkDetachedEvent,
   NotifyWireNotifyListPayload,
@@ -401,6 +402,10 @@ type CrossModuleArm = {
   // a named counterpart pins the shape.
   network_detached: NetworksWireNetworkDetachedEvent;
   network_attached: NetworksWireNetworkAttachedEvent;
+  // issue 2656 — the keepnick switch, from this device or another. A
+  // `Grappa.Networks.Wire` payload like the two above, so only a named
+  // counterpart pins the shape.
+  keep_nick_changed: NetworksWireKeepNickChangedEvent;
   // issue 2430 X1 — the pairing relay's two pushes. `Grappa.E2ePairing.Wire`
   // payloads, out of the Session walk's reach like the two above.
   e2e_pairing_message: E2ePairingWireE2ePairingMessagePayload;
