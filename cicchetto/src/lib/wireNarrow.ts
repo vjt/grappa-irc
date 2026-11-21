@@ -40,6 +40,7 @@ import {
   S_SessionLogWireListResult,
   S_SessionLogWireSessionsResult,
   S_SessionLogWireT,
+  S_SessionWireCommonChannelsIndexPayload,
   S_SessionWireE2eCopiedPayload,
   S_SessionWireE2eInboxPayload,
   S_SessionWireE2eSentPayload,
@@ -81,6 +82,7 @@ import type {
   SessionLogWireListResult,
   SessionLogWireSessionsResult,
   SessionLogWireT,
+  SessionWireCommonChannelsIndexPayload,
   SessionWireE2eCopiedPayload,
   SessionWireE2eInboxPayload,
   SessionWireE2eSentPayload,
@@ -1090,6 +1092,20 @@ export function narrowChannelListResponse(raw: unknown): NetworksWireChannelJson
  */
 export function narrowMembersIndexResponse(raw: unknown): SessionWireMembersIndexPayload {
   return narrowRest(S_SessionWireMembersIndexPayload, raw, "members index");
+}
+
+/**
+ * `GET /networks/:slug/common-channels?nick=<nick>` (issue 2449).
+ *
+ * The REST twin of the live derivation in `commonChannels.ts`: the
+ * server reads the same `Session.Server.state.members` map the
+ * `members_seeded` event renders, so this narrower reuses the
+ * GENERATED schema rather than a second hand-written mirror.
+ */
+export function narrowCommonChannelsIndexResponse(
+  raw: unknown,
+): SessionWireCommonChannelsIndexPayload {
+  return narrowRest(S_SessionWireCommonChannelsIndexPayload, raw, "common channels index");
 }
 
 /** `GET /networks/:slug/channels/:name/messages`, both the `before` and `after` pages. */

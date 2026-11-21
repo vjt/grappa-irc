@@ -302,11 +302,18 @@ vi.mock("../lib/readCursor", () => ({
 // `mockPostJoin` returns a resolved promise so the chained
 // setSelectedChannel still runs.
 const mockPostJoin = vi.fn().mockResolvedValue(undefined);
+// Issue 2449 — the common-channels fetch behind the query banner.
+// Resolves [] by default: an existing query test that never opts into
+// the banner sees the honest empty state, not a hanging fetch.
+const mockListCommonChannels = vi.fn(
+  (_token: string, _slug: string, _peer: string): Promise<string[]> => Promise.resolve([]),
+);
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return {
     ...actual,
     postJoin: (...args: unknown[]) => mockPostJoin(...args),
+    listCommonChannels: (...args: [string, string, string]) => mockListCommonChannels(...args),
   };
 });
 vi.mock("../lib/auth", () => ({
@@ -338,6 +345,11 @@ import { seedTopic } from "../lib/channelTopic";
 // #1914 — the REAL `/topic` answer store, for the same reason: the pane is
 // its only reader, and what these tests assert IS that it reads it.
 import { appendCommandOutput } from "../lib/commandOutput";
+// Issue 2449 — the REAL common-channels store (not mocked): the banner
+// reads the merged view, so what these tests seed here IS the input the
+// derivation reads. `channelKey` is mocked above to `${slug} ${name}`,
+// so the keys below match what the banner's derivation builds.
+import { clearCommonChannels } from "../lib/commonChannels";
 // issue 2486 — the REAL requests mirror: the card row is derived from it.
 import { dropE2eRequest, putE2eRequest } from "../lib/e2eRequests";
 // #1302 — the REAL ISUPPORT store (not mocked): the badge derives its level
@@ -369,6 +381,7 @@ import {
 import { requestScrollToBottom } from "../lib/scrollToBottomCommand";
 import { appendTopicShow } from "../lib/topicShow";
 import { dismissWhoisCard, setWhoisBundle } from "../lib/whoisCard";
+import { setJoined, setParted } from "../lib/windowState";
 import type { E2eRequestsWireRequest } from "../lib/wireTypes";
 import SourcedPane, {
   formatTime,
@@ -3201,6 +3214,121 @@ describe("ScrollbackPane", () => {
       // from. The CSS half is pinned in sharedButtonRules.test.ts; a rule
       // nothing wears is the #734 failure mode inverted.
       expect(sender?.classList.contains("scrollback-inline-button")).toBe(true);
+    });
+  });
+
+  // Issue 2449 — common-channels banner in query windows. This
+  // branch's banner renders a "shared channels…" loading row from
+  // mount (it does not wait for the fetch), shows the live derivation
+  // once the snapshot lands, and hides only on fetch failure — so the
+  // in-flight and empty assertions below read the loading / empty copy,
+  // not absence. Each test uses its own peer nick: the fetched snapshot
+  // lives in the REAL commonChannels store, and a snapshot for one peer
+  // must not leak into the next test.
+  describe("common channels banner (issue 2449)", () => {
+    const peers: string[] = [];
+    const channels: string[] = [];
+
+    afterEach(() => {
+      for (const peer of peers) clearCommonChannels("freenode", peer);
+      peers.length = 0;
+      for (const ch of channels) setParted(channelKey("freenode", ch));
+      channels.length = 0;
+      mockMembersByChannel.mockReturnValue({});
+      mockListCommonChannels.mockImplementation(
+        (_token: string, _slug: string, _peer: string): Promise<string[]> => Promise.resolve([]),
+      );
+    });
+
+    const openQuery = (peer: string) => {
+      peers.push(peer);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName={peer} kind="query" />);
+    };
+
+    const joinWith = (channel: string, nicks: string[]) => {
+      channels.push(channel);
+      setJoined(channelKey("freenode", channel));
+      mockMembersByChannel.mockReturnValue({
+        [`freenode ${channel}`]: nicks.map((nick) => ({ nick, modes: [] })),
+      });
+    };
+
+    it("renders the shared channels once the fetch lands", async () => {
+      mockListCommonChannels.mockResolvedValue(["#grappa"]);
+      joinWith("#grappa", ["alice", "vjt"]);
+      openQuery("alice");
+
+      // The banner is present from mount (loading row), so wait on the
+      // CONTENT, not the testid — the testid alone proves nothing here.
+      const banner = await waitFor(() => {
+        const el = screen.getByTestId("common-channels-banner");
+        expect(el.textContent).toContain("#grappa");
+        return el;
+      });
+      expect(banner.textContent).toContain("Also in");
+      expect(mockListCommonChannels).toHaveBeenCalledWith(expect.any(String), "freenode", "alice");
+    });
+
+    it("renders the honest empty state when nothing is shared", async () => {
+      mockListCommonChannels.mockResolvedValue([]);
+      openQuery("bob");
+
+      await waitFor(() => {
+        const el = screen.getByTestId("common-channels-banner");
+        expect(el.textContent).toContain("No channels in common");
+      });
+    });
+
+    it("renders the loading state while the fetch is still in flight", async () => {
+      mockListCommonChannels.mockReturnValue(new Promise<string[]>(() => {}));
+      openQuery("carol");
+
+      // Let the mount effect fire the fetch, then assert the banner
+      // shows the loading row — not the empty state — for a fetch that
+      // has not answered.
+      await waitFor(() => {
+        expect(mockListCommonChannels).toHaveBeenCalled();
+      });
+      const banner = screen.getByTestId("common-channels-banner");
+      expect(banner.textContent).toContain("shared channels…");
+    });
+
+    it("does not render in a channel window", async () => {
+      mockListCommonChannels.mockResolvedValue(["#grappa"]);
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+
+      await waitFor(() => {
+        expect(mockListCommonChannels).not.toHaveBeenCalled();
+      });
+      expect(screen.queryByTestId("common-channels-banner")).toBeNull();
+    });
+
+    it("shows a locally derived channel the fetch missed", async () => {
+      // The fetch was taken before the peer joined #sbiffo; the seeded
+      // local list is live, so the row follows it, not the snapshot.
+      mockListCommonChannels.mockResolvedValue([]);
+      joinWith("#sbiffo", ["dave"]);
+      openQuery("dave");
+
+      await waitFor(() => {
+        const el = screen.getByTestId("common-channels-banner");
+        expect(el.textContent).toContain("#sbiffo");
+      });
+    });
+
+    it("shows an unseeded channel from the fetched snapshot", async () => {
+      // #grappa joined but its member list never seeded (cold start):
+      // the local derivation has nothing to say, so the fetch's verdict
+      // stands.
+      mockListCommonChannels.mockResolvedValue(["#grappa"]);
+      channels.push("#grappa");
+      setJoined(channelKey("freenode", "#grappa"));
+      openQuery("erin");
+
+      await waitFor(() => {
+        const el = screen.getByTestId("common-channels-banner");
+        expect(el.textContent).toContain("#grappa");
+      });
     });
   });
 

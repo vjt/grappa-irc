@@ -1137,6 +1137,9 @@ export const S_SessionWireChannelsChangedPayload = {
   o: { kind: { l: "channels_changed" } },
 } as const;
 
+// Grappa.Session.Wire.common_channels_index_payload/0
+export const S_SessionWireCommonChannelsIndexPayload = { o: { channels: { a: "s" } } } as const;
+
 // Grappa.Session.Wire.connection_progress_payload/0
 export const S_SessionWireConnectionProgressPayload = {
   o: {
