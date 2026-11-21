@@ -403,6 +403,17 @@ function overCapRecourse(
     : ` Turn on "${VIDEO_PROCESSING_LABEL}" in Settings to compress it first.`;
 }
 
+/**
+ * issue 2517 — the host that receives the bytes of a file dropped on
+ * `channelName`. An encrypted window's are sealed and sent to the embedded
+ * host whatever the admin picked (`dispatchEncrypted`); every other window's
+ * go to the active one. The gates that speak about the destination (the type
+ * gate, the privacy notice, the confirm's TTL) all ask this.
+ */
+function receivingHost(channelName: string): UploadHost {
+  return encryptedWindowPeer(channelName) !== null ? embeddedHost : activeHost();
+}
+
 // Single category-dispatched pipeline (uploads cluster Task 5):
 // categoryOf → host accept gate → transform hook → per-category cap →
 // upload → emoji-prefixed PRIVMSG. async so the Task 6 video transcode
@@ -416,12 +427,10 @@ async function dispatchUpload(
   ttlSeconds: number | null,
   videoProcessing: boolean | null,
 ): Promise<void> {
-  // issue 2517 — an encrypted window's bytes ALWAYS land on the embedded host
-  // (`dispatchEncrypted` uploads there whatever the admin picked), so the type
-  // gate below must ask the host that will actually receive them. Asking
-  // `activeHost()` refused a type the embedded host accepts — and passed one
-  // it does not — for a file that never goes near the active host.
-  const host = encryptedWindowPeer(channelName) !== null ? embeddedHost : activeHost();
+  // issue 2517 — the type gate below asks the host that will actually receive
+  // the bytes. Asking `activeHost()` refused a type the embedded host accepts
+  // — and passed one it does not — for a file that never goes near it.
+  const host = receivingHost(channelName);
 
   // #49 root fix: lastAttempt is the user's LATEST selection, recorded
   // before any gate can reject — retry always retries what the error
@@ -973,10 +982,9 @@ export function triggerUploads(
   // declines "don't show this again" is asked once for the drop, not once per
   // file in it, which matches the Send confirm's own granularity.
   // issue 2517 — the notice states WHERE the bytes go and for how long, so it
-  // names the host that will receive them: an encrypted window's file is
-  // sealed and sent to the embedded host, never to the admin's active one.
-  // Asking `activeHost()` here described a destination the file does not use.
-  const host = encryptedWindowPeer(channelName) !== null ? embeddedHost : activeHost();
+  // names the host that will receive them. Asking `activeHost()` here
+  // described a destination an encrypted window's file does not use.
+  const host = receivingHost(channelName);
   const acked = localStorage.getItem(privacyKey(host));
   if (acked === null || acked === "") {
     pendingTrigger = proceed;
@@ -1001,7 +1009,7 @@ export function triggerUploads(
     // where a durable preference should be changed by accident.
     // Same rule as the notice above: the TTL this dialog seeds from is the
     // one the file will be uploaded under, so it comes from the receiving host.
-    const confirmHost = encryptedWindowPeer(channelName) !== null ? embeddedHost : activeHost();
+    const confirmHost = receivingHost(channelName);
     const [batchTtlSeconds, setBatchTtlSeconds] = createSignal<number | null>(
       effectiveTtlSeconds(confirmHost),
     );
