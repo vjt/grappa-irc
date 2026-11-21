@@ -223,6 +223,13 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
     expect(stale).toEqual([]);
   });
 
+  it("the UA scrollers the sheet cannot see are listed in the shared rule", () => {
+    // No rule declares a textarea's overflow, so the coverage check above
+    // never meets one: the entry is the only thing containing it.
+    const { both } = overscrollContainment();
+    for (const ua of UA_SCROLLERS) expect(covers(both, ua)).toBe(true);
+  });
+
   it("no rule declares containment of its own beside the shared rules", () => {
     // The whole point of the ruling: no per-rule `contain` creeping back. What
     // stays legal is `none` on a surface the shared rules do NOT list (it also
