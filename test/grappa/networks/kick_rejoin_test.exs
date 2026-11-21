@@ -109,6 +109,19 @@ defmodule Grappa.Networks.KickRejoinTest do
       refute_receive {:credential_kick_rejoin_changed, _, _}, 50
     end
 
+    # A concurrent unbind deletes the row under the struct the caller still
+    # holds, so the UPDATE matches nothing.
+    test "a credential unbound in the meantime is :not_found and tells nobody" do
+      {user, network, cred} = user_with_credential(6667, %{})
+      :ok = Credentials.unbind_credential(user, network)
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user_settings(user.name))
+
+      assert {:error, :not_found} =
+               Credentials.update_kick_rejoin(cred, %{kick_rejoin: true, kick_rejoin_delay_seconds: 0})
+
+      refute_receive {:credential_kick_rejoin_changed, _, _}, 50
+    end
+
     test "a visitor credential's change reaches the visitor's bridge" do
       {visitor, network} = visitor_with_network(6667)
       network_id = network.id
