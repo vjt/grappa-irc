@@ -2886,6 +2886,33 @@ describe("an encrypted attachment's card (issue 2517)", () => {
     closeAudio();
   });
 
+  // The card went away between the mint and the hand-over: nobody would ever
+  // name that URL, so nobody would revoke it. The card revokes it on the spot
+  // and opens nothing.
+  it("revokes a URL minted after its card went away, and opens nothing", async () => {
+    let settle: (outcome: unknown) => void = () => {};
+    openEncryptedFile.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+    );
+    setRows([withFile]);
+    renderPane();
+    fireEvent.click(screen.getByTestId("e2e-file-open"));
+    const signal = openEncryptedFile.mock.calls[0]?.[1] as AbortSignal;
+    expect(signal.aborted).toBe(false);
+
+    // ONE more message rebuilds every row: the card that started the open goes.
+    setRows([withFile, plain]);
+    await waitFor(() => expect(lines()).toHaveLength(2));
+    expect(signal.aborted).toBe(true);
+    settle({ ok: true, kind: "inline", url: "blob:late", media: "image" });
+
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith("blob:late"));
+    expect(mediaViewerState()).toBeNull();
+  });
+
   // The player half of the MAJOR's cure, unpinned until now: a row rebuild
   // unmounts the card, and the docked player keeps naming the decrypted URL.
   // A registry that only counted the viewer collected it there.
