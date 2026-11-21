@@ -146,7 +146,6 @@ test.describe("issue 2656 — keepnick", () => {
     // not the live toggle E1 covers.
     await setKeepNick(token, NETWORK_SLUG, true);
     const squatter = await IrcPeer.connect({ nick: requested });
-    let freedAt = 0;
     try {
       const t0 = await registerDrifted(token, requested);
 
@@ -160,7 +159,6 @@ test.describe("issue 2656 — keepnick", () => {
       ).toEqual([]);
 
       await squatter.disconnect("issue 2656 E2: nick freed");
-      freedAt = Date.now();
 
       // Taken at the NEXT try. With the switch off the only try was already
       // spent, so this convergence is the re-arm itself.
@@ -170,7 +168,7 @@ test.describe("issue 2656 — keepnick", () => {
         (await serverRowsSince(token, t0)).filter((r) => keepNickStop(r) !== undefined),
       ).toEqual([]);
     } finally {
-      if (freedAt === 0) await squatter.disconnect("issue 2656 E2 done").catch(() => {});
+      await squatter.disconnect("issue 2656 E2 done").catch(() => {});
     }
   });
 
@@ -181,7 +179,6 @@ test.describe("issue 2656 — keepnick", () => {
 
     await patchNetworkConnectionState(token, NETWORK_SLUG, { connection_state: "parked" });
     const squatter = await IrcPeer.connect({ nick: requested });
-    let freedAt = 0;
     try {
       const t0 = await registerDrifted(token, requested);
 
@@ -207,7 +204,6 @@ test.describe("issue 2656 — keepnick", () => {
       // (swallowed). The next try is a full interval later.
       await setKeepNick(token, NETWORK_SLUG, true);
       await squatter.disconnect("issue 2656 E4: nick freed");
-      freedAt = Date.now();
 
       await expect
         .poll(
@@ -239,7 +235,7 @@ test.describe("issue 2656 — keepnick", () => {
       expect((await serverRowsSince(token, t0)).filter((r) => numeric(r) === 437)).toHaveLength(1);
       expect(await liveNick()).not.toBe(requested);
     } finally {
-      if (freedAt === 0) await squatter.disconnect("issue 2656 E4 done").catch(() => {});
+      await squatter.disconnect("issue 2656 E4 done").catch(() => {});
     }
   });
 });
