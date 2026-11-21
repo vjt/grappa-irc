@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   allRules,
+  declarations,
   overscrollContainment,
   selectorList,
   splitAtDepthZero,
@@ -38,46 +39,33 @@ import {
 
 type Axis = "x" | "y";
 
-/**
- * `prop: value` pairs of a rule body, in source order. CSS property names and
- * keywords are ASCII case-insensitive, so both come back lower-cased.
- */
-function declarations(body: string): [string, string][] {
-  const out: [string, string][] = [];
-  for (const raw of body.split(";")) {
-    const colon = raw.indexOf(":");
-    if (colon < 0) continue;
-    const value = raw
-      .slice(colon + 1)
-      .trim()
-      .replace(/\s*!important$/i, "");
-    out.push([raw.slice(0, colon).trim().toLowerCase(), value.toLowerCase()]);
-  }
-  return out;
-}
-
 // `overlay` is the legacy alias of `auto`. A `var()` cannot be resolved here,
 // so it counts as scrolling: the rule then has to be covered, never waved past.
 const scrolls = (value: string | undefined): boolean =>
   value !== undefined && (/^(auto|scroll|overlay)$/.test(value) || value.includes("var("));
 
-/** What a body's `overflow*` declarations set per axis. Last write wins. */
-function overflowByAxis(body: string): Partial<Record<Axis, string>> {
+/**
+ * What a body's `<prefix>` declarations set per axis, lower-cased (CSS
+ * keywords are ASCII case-insensitive): the shorthand is `<x> <y>`, `-x` /
+ * `-inline` set x, `-y` / `-block` set y. Last write wins. `overflow` and
+ * `overscroll-behavior` share that shape.
+ */
+function byAxis(body: string, prefix: string): Partial<Record<Axis, string>> {
   const value: Partial<Record<Axis, string>> = {};
   for (const [prop, raw] of declarations(body)) {
-    const parts = raw.split(/\s+/);
-    if (prop === "overflow") {
+    const parts = raw.toLowerCase().split(/\s+/);
+    if (prop === prefix) {
       value.x = parts[0];
       value.y = parts[1] ?? parts[0];
-    } else if (prop === "overflow-x" || prop === "overflow-inline") value.x = parts[0];
-    else if (prop === "overflow-y" || prop === "overflow-block") value.y = parts[0];
+    } else if (prop === `${prefix}-x` || prop === `${prefix}-inline`) value.x = parts[0];
+    else if (prop === `${prefix}-y` || prop === `${prefix}-block`) value.y = parts[0];
   }
   return value;
 }
 
 /** The axes a body DECLARES scrolling. A rule with any is a scroll rule. */
 function declaredScrollAxes(body: string): Set<Axis> {
-  const value = overflowByAxis(body);
+  const value = byAxis(body, "overflow");
   return new Set((["x", "y"] as const).filter((axis) => scrolls(value[axis])));
 }
 
@@ -88,30 +76,13 @@ function declaredScrollAxes(body: string): Set<Axis> {
  * vertical axis, and the axis a y-only `none` would forget.
  */
 function computedScrollAxes(body: string): Set<Axis> {
-  const value = overflowByAxis(body);
+  const value = byAxis(body, "overflow");
   const axes = declaredScrollAxes(body);
   const isVisible = (v: string | undefined) => v === undefined || v === "visible";
   const opensOther = (v: string | undefined) => !isVisible(v) && v !== "clip";
   if (isVisible(value.x) && opensOther(value.y)) axes.add("x");
   if (isVisible(value.y) && opensOther(value.x)) axes.add("y");
   return axes;
-}
-
-/** The `overscroll-behavior` a body declares per axis (shorthand is `<x> <y>`). Last write wins. */
-function overscrollByAxis(body: string): Partial<Record<Axis, string>> {
-  const value: Partial<Record<Axis, string>> = {};
-  for (const [prop, raw] of declarations(body)) {
-    const parts = raw.split(/\s+/);
-    if (prop === "overscroll-behavior") {
-      value.x = parts[0];
-      value.y = parts[1] ?? parts[0];
-    } else if (prop === "overscroll-behavior-x" || prop === "overscroll-behavior-inline") {
-      value.x = parts[0];
-    } else if (prop === "overscroll-behavior-y" || prop === "overscroll-behavior-block") {
-      value.y = parts[0];
-    }
-  }
-  return value;
 }
 
 /**
@@ -209,7 +180,7 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
     const offenders: string[] = [];
     for (const rule of scrollRules) {
       const axes = computedScrollAxes(rule.body);
-      const own = overscrollByAxis(rule.body);
+      const own = byAxis(rule.body, "overscroll-behavior");
       // A deliberate `none` on every axis it scrolls (the directory list, #1445)
       // is stronger than `contain` and needs nothing from the shared rule.
       // Every COMPUTED axis: a y-only `none` leaves the `auto` x open.
@@ -266,8 +237,9 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
       const flat = rule.body.trim().replace(/\s+/g, " ").replace(/;$/, "");
       if (flat === "overscroll-behavior: contain" || flat === "overscroll-behavior-x: contain")
         continue;
-      for (const [prop, value] of declarations(rule.body)) {
+      for (const [prop, raw] of declarations(rule.body)) {
         if (!prop.startsWith("overscroll-behavior")) continue;
+        const value = raw.toLowerCase();
         const listed = selectorList(rule.selectors).some((entry) =>
           covers([...both, ...xOnly], subjectOf(entry)),
         );
@@ -290,7 +262,7 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
       return list.includes("html") && list.includes("body");
     });
     expect(root.length).toBeGreaterThan(0);
-    expect(root.some(({ body }) => overscrollByAxis(body).y === "none")).toBe(true);
+    expect(root.some(({ body }) => byAxis(body, "overscroll-behavior").y === "none")).toBe(true);
   });
 
   it("the $server peek body and the card overlay are contained (the reported surface)", () => {

@@ -131,9 +131,25 @@ export function splitAtDepthZero(text: string, isSeparator: (ch: string) => bool
   return parts;
 }
 
-/** A CSS value split on top-level whitespace. */
-function splitTopLevel(value: string): string[] {
-  return splitAtDepthZero(value, (ch) => /\s/.test(ch));
+/**
+ * The `property: value` pairs of a rule body, in source order. Property names
+ * are ASCII case-insensitive, so they come back lower-cased; a trailing
+ * `!important` is dropped, since it does not change which value is declared.
+ * Values keep their case: a custom property inside `var()` is case-sensitive.
+ * The one splitter for every reader that asks what a body declares.
+ */
+export function declarations(body: string): [string, string][] {
+  const out: [string, string][] = [];
+  for (const raw of body.split(";")) {
+    const colon = raw.indexOf(":");
+    if (colon < 0) continue;
+    const value = raw
+      .slice(colon + 1)
+      .trim()
+      .replace(/\s*!important$/i, "");
+    out.push([raw.slice(0, colon).trim().toLowerCase(), value]);
+  }
+  return out;
 }
 
 /**
@@ -143,7 +159,7 @@ function splitTopLevel(value: string): string[] {
  * a `padding: 0.25rem 1rem` is caught and a `padding-block: 0.25rem` is not.
  */
 function horizontalComponents(property: string, value: string): string[] {
-  const parts = splitTopLevel(value);
+  const parts = splitAtDepthZero(value, (ch) => /\s/.test(ch));
   const [p0, p1, p2, p3] = parts;
   if (property === "margin" || property === "padding") {
     if (parts.length === 1) return p0 === undefined ? [] : [p0];
@@ -174,17 +190,9 @@ function horizontalComponents(property: string, value: string): string[] {
  * `padding: 0.4rem 0` wrong.
  */
 export function horizontalInsets(body: string): { property: string; component: string }[] {
-  const out: { property: string; component: string }[] = [];
-  for (const raw of body.split(";")) {
-    const colon = raw.indexOf(":");
-    if (colon === -1) continue;
-    const property = raw.slice(0, colon).trim();
-    const value = raw.slice(colon + 1).trim();
-    for (const component of horizontalComponents(property, value)) {
-      out.push({ property, component });
-    }
-  }
-  return out;
+  return declarations(body).flatMap(([property, value]) =>
+    horizontalComponents(property, value).map((component) => ({ property, component })),
+  );
 }
 
 /**
