@@ -7011,3 +7011,140 @@ travel is the viewport height minus 4px and the speed changes with the
 viewport. There is no fixed tile to translate and no speed to keep without
 choosing one, which makes it a design call, not the mechanical port this
 issue is. The splash is short-lived; nothing about its cost is measured.
+<!-- entry #2649 -->
+
+---
+
+## 2026-11-21 — issue 2649: the hex advisories are bumped to their lowest fix; cloak and cloak_ecto have none
+
+`mix hex.audit` went red on main without `mix.lock` moving: the advisory
+feed moved. vjt's ruling, relayed in the issue: bump anyway. The issue
+listed 12 packages; by the time the bump ran the feed had added `idna` and
+`plug`, so 14 were flagged.
+
+### Lowest fix, not latest
+
+Each flagged package moved to the lowest release its OSV record names as
+fixed (`api.osv.dev/v1/vulns/<id>`, `affected[].ranges`), not to the newest
+one: bandit 1.14.1 (1.15.0 exists), cowboy 2.21.0, cowlib 2.22.0, decimal
+3.1.2, ecto 3.14.3, jose 1.11.13, mint 1.10.2, plug 1.20.4, plug_crypto
+2.2.1, ssl_verify_fun 1.1.8. `mix deps.update` has no way to say "this
+version", so the targets were pinned with `==` in `mix.exs` for the length
+of the update and the file was then restored byte for byte. The lock holds
+under the original requirements: a `deps.get` with `mix.lock` mounted
+read-only exits 0 and leaves it identical.
+
+hackney is the exception that proves the method. 4.9.0 clears hackney's own
+five advisories, but it still requires `idna ~> 7.1.0`, and idna's fix is
+8.0.0. The first hackney that takes idna 8 is 4.11.0, so that is the
+target. It drags four packages it requires along: certifi 2.18.0, h2 0.17.0,
+quic 2.7.0 and webtransport 0.5.8. bandit drags two: hpax 1.1.0 and
+thousand_island 1.6.0. Twelve of the fourteen flagged packages moved
+(cloak and cloak_ecto have no fixed release to move to), six were carried,
+eighteen lines in the lock. The resolver also offered telemetry 1.4.3;
+pinning it at 1.4.2 resolved just as well, so it stays where it was.
+
+### Two majors, and what they change here
+
+idna 7 → 8 and quic 1 → 2. h2 and webtransport move inside 0.x, which
+semver treats as breaking too. All four are reached only through hackney,
+which grappa ships and never calls: since #2401 `Grappa.Push.Sender` takes
+`ExNudge.Encryption` and `ExNudge.VAPID` and posts through
+`Grappa.Net.PinnedHttp`, and nothing in `lib/`, `config/` or `test/` names
+any of the four packages. What they change for us happens at boot. The
+application starts them, which the test suite does, and quic 2.7.0's
+`quic_app:start/2` now calls `quic_redact:install_log_filter/0` before
+starting its supervisor; 1.8.0's `start/2` was `quic_sup:start_link()`
+alone. That filter is a VM-global PRIMARY logger filter. The review read
+it in a prod release booted in embedded mode:
+`:logger.get_primary_config().filters` is `[:quic_redact,
+:logger_translator, :logger_process_level]`, so it runs first, ahead of
+Elixir's translator, on every log event, and walks every
+`{gen_server, terminate}`, `{gen_statem, terminate}`, `{proc_lib, crash}`
+and `{supervisor, _}` report grappa emits. On a synthetic `gen_server`
+terminate report from a non-quic process, its state a 100k-entry map, the
+output equalled the input and one pass took 18–40 ms; the positive
+control, a quic stack frame, came out with its arguments replaced by its
+arity. So grappa's crash reports keep their content and each one pays one
+extra full walk. That cost was measured by calling `log_filter/2`
+directly in one container, not on a real crash going through Logger, and
+is not a production number. hackney 4.11's `hackney_sup` also creates one
+more ETS table at init (`hackney_h3:init_table/0`).
+
+### What reaches a live path
+
+Two of the bumps sit on the path every push delivery takes, and a third on
+the upload path.
+
+mint 1.10.0 → 1.10.2 carries each one: `Grappa.Net.PinnedHttp` calls
+`Mint.HTTP.connect/4` and `Mint.HTTP.request/5` directly, with
+`protocols: [:http1]`, and these two releases rewrite HTTP/1 response
+parsing. Chunk extensions are now validated instead of skipped up to the
+CRLF, and an HTTP/1.0 response that carries `Transfer-Encoding` now closes
+the connection. A push service that answers with a malformed chunk line
+now gets an error where it used to be parsed. Exercised: the review drove
+`PinnedHttp` (Mint 1.10.2) against Bandit 1.14.1, `GET /healthz` → 200, in
+the booted release, and `wire_format_test` is green. No real vendor (FCM,
+APNs, autopush) has been seen to send such a line; the claim is only that
+it would now be refused.
+
+jose 1.11.12 → 1.11.13 is on the same path, since
+`ExNudge.VAPID.sign_jwt/2` calls it on every delivery, but the changed
+code is not: its diff touches EC `verify/4` (strict R||S length) and
+`jose_server`'s boot self-checks, not the ES256 signing that `sign_jwt/2`
+takes. The package reaches a live path; its change does not.
+
+plug 1.20.4 is the upload one, and it was designed for. It charges
+multipart part headers and framing against the parser's `:length`. That was already
+true in part: 1.20.3 charged each part header's name and value
+(`headers_size/1`), so the margin was load-bearing before this bump, and
+what grew is the charge. `GrappaWeb.MultipartLimits.upload_length/0` is the
+largest per-file cap plus 8 MiB (8,388,608 bytes) set aside for exactly
+that framing (issue 2529). The review measured it on plug 1.20.4 with
+cic's real upload body (a `file` part with filename and content type, an
+`expire` part, a 38-byte boundary as Chrome sends): 385 bytes charged,
+which is plug's own formula (36 per part, 56 per header, plus name and
+value). 1.20.3's formula gives 145 for the same body, derived from its
+source and not run. At full scale a 512 MiB file is accepted against
+`upload_length/0`, a file of `upload_length − 385` bytes is accepted, and
+one byte more raises `Plug.Parsers.RequestTooLargeError`.
+
+### What hex.audit still says, and issue 149
+
+After the bump it flags two advisories and nothing else, and neither has a
+fixed release at any version: cloak 1.1.4 (CVE-2026-95105, the CTR ciphers
+store no MAC) and cloak_ecto 1.3.0 (CVE-2026-94206, `Cloak.Ecto.PBKDF2`
+runs `:size` rounds instead of `:iterations`). Both need configuration
+grappa does not have: the vault names `Cloak.Ciphers.AES.GCM` alone in all
+three envs, and the only Cloak Ecto type in `lib/` is `Cloak.Ecto.Binary`.
+That argument is weaker than the cowboy one it replaces, because cloak is a
+runtime dependency and the vulnerable code ships. What keeps it unreached is
+the configuration, not its absence from the release.
+
+Issue 149 asked to restore hex.audit as a hard gate once cowlib shipped a
+fix. Its first step is now possible: cowlib 2.22.0 fixes CVE-2026-43966 and
+CVE-2026-43969, and cowboy 2.21.0 + cowlib 2.22.0 leave the pair with no
+advisory at all. Its next two steps (drop `continue-on-error` and the
+`|| true`) would turn CI red on cloak. The premise that blocked any other
+route is gone as well: Hex 2.5.1, the version in the dev container,
+reads `hex: [ignore_advisories: [...]]` from `project/0`, and CI installs
+the newest Hex. Measured with the two IDs: both ignored exits 0, one
+ignored exits 1. Whether to list them and make the step blocking is a
+ruling. This slice leaves the derogation in place and makes its text true
+again; `mix.exs` is where that text lives, and the CI step now points there
+instead of keeping a copy.
+
+`mix deps.audit` exited 0 before and after. It saw none of the fourteen
+packages, so a green deps.audit says nothing about what hex.audit sees.
+
+### Not covered
+
+The release boot rests on the review's run: a `MIX_ENV=prod` release
+assembled and booted in embedded mode in the Linux dev container, every new
+version in `lib/` and started, cowboy and cowlib (test-only) absent.
+Neither the FreeBSD jail nor the alpine image `Dockerfile.release` builds
+has booted it, and quic's build on FreeBSD was read, not run. Bandit's
+HTTP/2 and WebSocket fixes are exercised only as far as the existing suite
+reaches, plus the one HTTP/1 `GET /healthz` above. The cloak reachability
+argument rests on a search of `config/` and `lib/`, not on a test that
+would fail if a CTR cipher appeared. This ships COLD: `mix.lock` changed.
