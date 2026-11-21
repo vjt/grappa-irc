@@ -571,7 +571,7 @@ defmodule Grappa.IRC.AuthFSM do
 
   # 432/433 during :nickserv_identify mode — keep the connection alive
   # so `Grappa.Session.Server` can drive `Grappa.Session.GhostRecovery`'s
-  # mangled-NICK + GHOST + WHOIS + IDENTIFY recovery flow. The host owns
+  # mangled-NICK + GHOST + WHOIS + NICK-back recovery flow. The host owns
   # the wire emission; AuthFSM's role is reduced to "stay alive long
   # enough for the host to recover." Mode-1 (sasl / server_pass / none /
   # auto) retains the operator-must-fix `:nick_rejected` stop below.
