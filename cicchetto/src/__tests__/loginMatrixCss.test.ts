@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { allRules, mediaGatedBlocks, selectorList, themeCss } from "./helpers/themeCss";
+import {
+  allRules,
+  isZeroInset,
+  mediaGatedBlocks,
+  selectorList,
+  themeCss,
+} from "./helpers/themeCss";
 
 // issue 2647 — the login backdrop's three drift layers animated
 // `background-position`. That property is painted, not composited: every frame
@@ -27,6 +33,20 @@ function declared(body: string, property: string): string | undefined {
     const colon = raw.indexOf(":");
     if (colon === -1) continue;
     if (raw.slice(0, colon).trim() === property) found = raw.slice(colon + 1).trim();
+  }
+  return found;
+}
+
+/**
+ * The value of `property` on `selector`, across every backdrop rule whose
+ * selector list names it: a layer's own rule and the rule it shares with the
+ * other layers. Every candidate names the SAME selector, so specificity ties
+ * and source order decides, as here.
+ */
+function cascaded(selector: string, property: string): string | undefined {
+  let found: string | undefined;
+  for (const rule of backdropRules()) {
+    if (rule.selectors.includes(selector)) found = declared(rule.body, property) ?? found;
   }
   return found;
 }
@@ -95,15 +115,15 @@ describe("the login backdrop drifts on the compositor (issue 2647)", () => {
   });
 
   it("moves every layer exactly one tile, from one tile above, so the loop is seamless", () => {
-    // The three numbers must agree. A tile resized without its travel jumps
-    // once per loop; an overhang shorter than the travel uncovers a strip of
-    // bare background at the top as the layer slides down.
+    // The numbers must agree. A tile resized without its travel jumps once per
+    // loop; an overhang shorter than the travel uncovers a strip of bare
+    // background at the top as the layer slides down; a bottom edge above the
+    // backdrop's leaves one at the bottom at the start of every loop.
     for (const layer of driftLayers()) {
       // The height of the FIRST background layer: the stripes the tile repeats.
       const tile = px(
         declared(layer.body, "background-size")?.split(",")[0]?.trim().split(/\s+/).at(-1),
       );
-      const top = px(declared(layer.body, "top"));
       const travel = frames(layer.keyframes)
         .filter((frame) => frame.selector === "to")
         .map((frame) => /translateY\(([^)]*)\)/.exec(declared(frame.body, "transform") ?? "")?.[1])
@@ -111,7 +131,12 @@ describe("the login backdrop drifts on the compositor (issue 2647)", () => {
       const where = `${layer.selectors.join(", ")} (${layer.keyframes})`;
       expect(tile, `${where}: tile height`).toBeGreaterThan(0);
       expect(travel, `${where}: travel`).toBe(tile);
-      expect(top, `${where}: overhang`).toBe(-(tile ?? 0));
+      for (const selector of layer.selectors) {
+        expect(px(cascaded(selector, "top")), `${selector}: overhang`).toBe(-(tile ?? 0));
+        expect(cascaded(selector, "bottom"), `${selector}: bottom edge`).toSatisfy(
+          (bottom: string | undefined) => bottom !== undefined && isZeroInset(bottom),
+        );
+      }
     }
   });
 
