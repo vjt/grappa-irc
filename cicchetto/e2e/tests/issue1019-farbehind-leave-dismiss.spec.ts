@@ -56,12 +56,13 @@
 // asserting against a stubbed browser API inside a real browser — the one
 // place a stub buys nothing.
 //
-// Also NOT covered, for a product reason rather than a harness one:
-// `channel → home / mentions / admin` unmounts the pane and lands in
-// `onCleanup`, where `props` already read the ARRIVING virtual selection, so
-// the leaving window cannot be named. That switch leaves the far-behind state
-// STANDING (the safe side — the region stays recoverable) and the PR says so
-// at the call site. This spec therefore leaves for the SERVER window, which
+// Also NOT covered, for a product reason rather than a harness one: the pane
+// unmounts for any window whose kind `kindHasScrollback` rejects, so a switch
+// to one lands in `onCleanup` and not in the key arm that dismisses. That
+// switch leaves the far-behind state STANDING (the safe side — the region
+// stays recoverable) and the call site says so. Since issue 2613 the reason is
+// no longer that the leaving window cannot be named: `shownKey` names it.
+// This spec therefore leaves for the SERVER window, which
 // shares the `kindHasScrollback` Match with channels and so keeps the pane
 // mounted and fires the key arm — the same gesture
 // `cursor-forward-only.spec.ts` uses to drive the leave writer, and one that

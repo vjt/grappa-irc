@@ -7858,3 +7858,44 @@ both format strings sits on the entry there, not here.
   `GhostRecovery`. Neither ircd emits 438 before registration either: bahamut
   gates it on `IsRegisteredUser`, solanum emits it from `change_local_nick`,
   which an unregistered client never reaches.
+<!-- entry #2613 -->
+
+---
+
+## 2026-11-21 — issue 2613: a switch that unmounts the scrollback pane marks the window it LEAVES read
+
+Coming back to a channel from an encrypted query reopened it at the old
+divider, far up. The cause is measured in chromium. The pane unmounts for any
+window whose kind `kindHasScrollback` rejects: Shell draws that window in its
+own `<Match>`, so a switch to it unmounts `ScrollbackPane` instead of changing
+its key. The leave is then written by the pane's `onCleanup`, which named the
+window from `props`. At the dispose tick those already name the ARRIVING window
+(in the probe below, `$home` or `$e2e:<nick>`), while the rows
+on screen are still the leaving one's. `setReadCursor`'s #160 virtual-window
+guard drops the write, so the channel keeps its old cursor.
+
+* **Measured, not argued.** An e2e probe (scratch, not committed) landed the
+  operator on a divider 118 rows up and left without input, so the leave write
+  was the only writer that could move the cursor. On uncured code, leaving via
+  `$server` (the pane stays mounted, the key arm writes) moved the cursor to
+  the last row seen. Leaving via `$home` or the encrypted query sent no POST,
+  and the return reopened on the same divider. With the cure, all three exits
+  wrote the last row seen and the return opened 28 rows lower. When the
+  operator reads at the tail, read-at-the-tail (#887) already writes the cursor
+  before the leave, so that case never showed the defect.
+* **The cure names the window the pane shows, not the one `props` name.** A
+  plain `shownKey`, seeded at init and moved as the first statement of the
+  `on(key)` arm, feeds `settleCursorToVisibleTail` for every caller. `key()`
+  was no alternative: it reads the same `props`. For the live callers (timers
+  and events, all after a switch has settled) `shownKey` equals `key()`.
+* **The #160 guard stays.** It is still the boundary for any caller that names
+  a virtual window. Its comment no longer names this site as the leak.
+* **#1019 is unchanged here, on purpose.** Leaving a far-behind window for a
+  window that unmounts the pane still does not dismiss it. The settle is a
+  no-op there (the frozen cursor), so the region stays recoverable. The old
+  reason, "the leaving window cannot be named", no longer holds. Whether these
+  switches should dismiss too, per vjt's Q1 ruling on #1019, is a separate
+  issue.
+* **Not claimed:** that this explains the exact 40-minute instance in the
+  report, or why the device's read-at-the-tail did not settle the cursor first.
+  Neither was measured on an iPhone.
