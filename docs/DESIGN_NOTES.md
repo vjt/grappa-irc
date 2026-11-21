@@ -7148,3 +7148,149 @@ HTTP/2 and WebSocket fixes are exercised only as far as the existing suite
 reaches, plus the one HTTP/1 `GET /healthz` above. The cloak reachability
 argument rests on a search of `config/` and `lib/`, not on a test that
 would fail if a CTR cipher appeared. This ships COLD: `mix.lock` changed.
+<!-- entry #2669 -->
+
+---
+
+## 2026-11-21 — issue 2669: the .rpm builds its own OTP, because grappa's floor is now OTP 27
+
+v1.6.5 is tagged and running in prod, and has no GitHub release. Both
+`.rpm` legs of release run 44861457988 died compiling `:quic` with
+`OTP release 27 or later is required. Version in use: 26.2.5.21`, and
+`publish` refused the partial release, as #1591 says it must. The cause is
+the 2649 bump: hackney 4.11.0 pulls quic 2.7.0, whose `rebar.config`
+declares `{minimum_otp_vsn, "27"}` (1.8.0 declared `"26"`; both read off
+the hex packages). The rpm job built in `fedora:43` with Fedora's own
+`erlang`, and no stable Fedora ships OTP 27: 43 and 44 carry 26.2.5.21,
+only rawhide (fc46) has 27.3.4. That last fact is the measurement of the
+peer who filed the issue (mdapi, 2026-11-21), not repeated here.
+
+### The ruling
+
+Relayed from vjt by the peer vjt-claude-60, not seen first-hand. (a) The
+rpm job stays on the pinned `fedora:43`, for its glibc and OpenSSL, and
+builds the OTP and Elixir the deb job pins from source inside the
+container, cached per arch; Fedora's `elixir` goes. (b) No pinning
+hackney or quic below the floor: that undoes the 2649 security bump.
+(c) The partial-release guard in `publish` stays.
+
+### What changed
+
+- `infra/packaging/toolchain_from_source.sh` builds the `.tool-versions`
+  pair into a prefix. The OTP tarball comes from its GitHub release and is
+  checked against that release's `SHA256.txt` before anything is unpacked;
+  a mismatch or a missing line stops the run. That catches a bad download,
+  not a compromised release, since both files come from the same place.
+  Elixir comes from the tag's source archive, for which no checksum is
+  published. OTP is configured with the flags
+  `infra/linux/install_toolchain.sh` already passes, which build every
+  OTP application but the GUI and Java ones. After the build the script
+  reads back `OTP_VERSION`, starts `ssl` and runs `System.version/0`, and
+  stops if any of them disagrees with the pin.
+- The rpm job takes the script from the DISPATCHED ref
+  (`git show "${GITHUB_SHA}:…"`, the pattern of the #2553 floor proof),
+  because the repair it exists for builds v1.6.5, a tag that predates the
+  script. The pins come from the checked-out tree, which is the
+  `.tool-versions` the deb job's setup-beam reads on the same tag, so the
+  two binary packages of one release carry one OTP and one Elixir.
+- The build is cached per arch. The key is the container's OS, the arch
+  and hashes of `.tool-versions` and of the script, and the cache is saved
+  right after the build, so a proof failing later in the job does not
+  throw the build away. GitHub scopes caches by ref: a run reads its own
+  ref's and main's, and a tag run saves under its tag, where no later tag
+  looks. So after a change to the pins or to the recipe, every tag builds
+  from source (slower, same result) until a run on main saves the new
+  key. The repair dispatch on main is such a run. On a hit, the step that
+  puts the prefix on PATH reads both versions back and stops the job
+  unless they are the pins; it does not start `ssl` again.
+- The `deb_validation` dispatch now runs the rpm job too. Until now the
+  rpm build could be exercised only by cutting a tag, and v1.6.5 is the tag
+  that found it broken. This widens the existing mode instead of adding a
+  fourth because the publishing jobs then stay as they are: every one of
+  them already excludes `deb_validation`. The input keeps its name so the
+  documented command still works, and the rpm job's two tag-comparing
+  steps opt out the way the deb job's do.
+- The floor is 27 for source builds as well. The `release.yml` comment
+  "grappa runs on OTP 26" was the only statement of a minimum OTP outside
+  this log, and it is gone. The 2026-07 #438 entry that says the same
+  stays as written: it was true then.
+
+### Measured
+
+- The floor statements: a scan of the 2902 tracked text files for an
+  OTP/Erlang mention beside floor wording, or for a version below 27
+  (positive control 7 of 7 phrasings, negative control 0 of 5). Outside
+  the decision log it hits `release.yml`, then "the OTP 26+ cached code
+  path" (`hot_reload.ex`, its test, OPERATIONS) and "`cacerts_get/0` is
+  OTP 25+" (`irc/client.ex`). The last two describe behaviour that holds
+  from that release on, still true at 27, and stay.
+- The gates: each job's `if:` evaluated under five triggers, on this
+  `release.yml` and on main's. The only difference is the rpm job running
+  on a `deb_validation` dispatch, with or without a `tag` input; `arch`,
+  `docker`, `smoke`, `cic`, `publish` and `apt-repo` stay skipped there.
+- Release run 44865771090, a `deb_validation` dispatch of this branch at
+  08e12579c. Both rpm legs logged `Cache not found`, built OTP 28.5 and
+  Elixir 1.19.5 from source (`OTP 28, jit emulator, ssl started`; 2 m 26 s
+  on aarch64, 3 m 06 s on x86_64), saved
+  `beam-fedora43-<arch>-pins-315ba72dc9910fb1-recipe-f7d712b43e2fced7`,
+  and succeeded through every rpm proof a `deb_validation` dispatch runs
+  (the bare-tag version proof is skipped there by design). Both deb legs
+  succeeded too, and the six other jobs were skipped. That is the cache
+  MISS path, on both arches.
+- `test/infra/packaging_toolchain_from_source_test.bats`, 14 cases. Seven
+  run the script on a fake pin (98.7 / 6.5.4), with `curl` and `tar`
+  stubbed on PATH, both logging in order. Three stop at a `configure` that
+  records its arguments and exits 42: a good tarball reaches it with the
+  prefix and the four flags, and a mismatched or unlisted one is neither
+  unpacked (no `tar` call) nor configured. Four go past it, into a
+  `make install` that writes an `OTP_VERSION` and stand-ins for `erl` and
+  `elixir`: the pinned pair runs to the end, unpacked only after both OTP
+  downloads, and a wrong OTP, a wrong Elixir or an installed `erl` that
+  exits non-zero stops the run. Seven read
+  or run the rpm job, which no pull request runs: its `if:` is the deb
+  job's and does not skip `deb_validation`; no distro `erlang`/`elixir`
+  in its `dnf install`s; the recipe fetched from `GITHUB_SHA` and run
+  before `build.sh`; and the PATH step, run under `sh -e` from its own
+  text, puts the pinned pair on PATH and stops on an `elixir` that does
+  not start or on a version other than a pin.
+- 24 mutants, each turning red the case it targets. Of the script: no
+  checksum, no missing-line guard, a hard-coded OTP version, a hard-coded
+  OTP URL, no configure flags, either readback removed, the unpack moved
+  ahead of the checksum (two placements), the unpack bypassing PATH, the
+  `erl` run removed, the `erl` exit swallowed (`|| true`), an early exit
+  before Elixir. Of `release.yml`:
+  Fedora's `elixir erlang` back, an `erlang-*` subpackage, the recipe
+  copied from the checked-out tag, the recipe never run, a `build.sh`
+  ahead of it, the rpm `if:` excluding `deb_validation`, both `if:`s
+  excluding it, the PATH step's earlier echo form, either pin comparison
+  removed, PATH never extended. The `elixir`-does-not-start case is held
+  twice over, by the assignment under `-e` and by the comparison, so only
+  the earlier echo form turns it red. That the real `erl` fails when
+  `ssl` does not start, and the `System.version/0` call, need the real
+  binaries: the suite cannot hold them, and they rest on the run above.
+
+### Not covered
+
+Two `deb_validation` dispatches of this branch at 27dc49288 ran the
+cache both ways, under one key per arch,
+`beam-fedora43-<arch>-pins-315ba72dc9910fb1-recipe-3791836ca538d295`.
+Run 44870309289 missed, built and saved it (rpm jobs 136743124234 on
+x86_64, 136743124196 on aarch64). Run 44870914476 restored it (rpm jobs
+136745012837 on x86_64, 136745013241 on aarch64): the build step and its
+miss-only `dnf install` never ran, the PATH step printed `OTP 28.5 (pin
+28.5), Elixir 1.19.5 (pin 1.19.5)`, and `build.sh` passed, as did every
+rpm proof a `deb_validation` dispatch runs (the bare-tag version proof
+is skipped there by design). Both runs succeeded, deb legs included,
+with every publishing job skipped. A recipe change moving the key ran on
+the way: 27dc49288 edited a comment in the recipe, and 44870309289
+missed rather than restore 44865771090's `…recipe-f7d712b43e2fced7`,
+still cached under this branch. What has not run: a key moved by a
+change to `.tool-versions`, and any restore outside this branch's scope.
+The repair on main misses and saves under main, and a tag run reading
+main's save, the path every later tag takes, has not happened. Nor has
+the bare-tag version proof run with the source-built OTP: every dispatch
+above skipped it, and the v1.6.5 repair dispatch is its first run.
+Nobody has built or booted grappa on OTP 27 either: 27 is the floor
+because quic refuses anything lower, and every build runs 28 (deb, rpm)
+or 29 (Arch). The cache scoping above is GitHub's documented behaviour,
+not measured here.
