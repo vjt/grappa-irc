@@ -25,9 +25,11 @@
 // Fix: mirror `.shell-members` — `touch-action: pan-y` on each affected
 // selector, with `overscroll-behavior: contain` beside it at the time.
 // Since issue 2671 that containment is declared once, in the shared
-// rules at the top of default.css, and since its C5 follow-up
-// `.admin-tab-panel` takes none: it is nested in `.admin-pane`, which
-// stays contained.
+// rules at the top of default.css. Two of the six take none today:
+// `.image-upload-modal` never scrolled, so PR 2672 dropped its
+// containment outright, and `.admin-tab-panel` has been carved out
+// since the C5 follow-up: it is nested in `.admin-pane`, which stays
+// contained.
 //
 // This spec asserts the CSS contract via getComputedStyle. We don't
 // try to drive a touchmove gesture from Playwright (webkit's touch
