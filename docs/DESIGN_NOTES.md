@@ -7865,11 +7865,12 @@ both format strings sits on the entry there, not here.
 ## 2026-11-21 — issue 2613: a switch that unmounts the scrollback pane marks the window it LEAVES read
 
 Coming back to a channel from an encrypted query reopened it at the old
-divider, far up. The cause is measured in chromium. Shell draws `$home`, mentions, admin and the
-encrypted query in their own `<Match>`, so switching to one of them unmounts
-`ScrollbackPane` instead of changing its key. The leave is then written by the
-pane's `onCleanup`, which named the window from `props`. At the dispose tick
-those already name the ARRIVING window (`$home`, `$e2e:<nick>`), while the rows
+divider, far up. The cause is measured in chromium. The pane unmounts for any
+window whose kind `kindHasScrollback` rejects: Shell draws that window in its
+own `<Match>`, so a switch to it unmounts `ScrollbackPane` instead of changing
+its key. The leave is then written by the pane's `onCleanup`, which named the
+window from `props`. At the dispose tick those already name the ARRIVING window
+(in the probe below, `$home` or `$e2e:<nick>`), while the rows
 on screen are still the leaving one's. `setReadCursor`'s #160 virtual-window
 guard drops the write, so the channel keeps its old cursor.
 

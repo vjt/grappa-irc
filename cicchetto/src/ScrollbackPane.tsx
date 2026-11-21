@@ -1533,9 +1533,9 @@ const ScrollbackPane: Component<Props> = (props) => {
   // here once so a future guard cannot land in four of the five.
   //
   // issue 2613 — the row comes from the DOM, so the window must be the one the
-  // DOM still shows, and that is NOT always `props`. When a switch unmounts
-  // this pane ($home, mentions, an encrypted query), the cleanup runs with
-  // `props` already naming the ARRIVING window while the rows on screen are
+  // DOM still shows, and that is NOT always `props`. The pane unmounts for any
+  // window whose kind `kindHasScrollback` rejects, and on such a switch the
+  // cleanup runs with `props` already naming the ARRIVING window while the rows on screen are
   // still the leaving one's: the write went out under the arriving name, the
   // #160 virtual-window guard in `setReadCursor` dropped it, and the window
   // being left kept its old cursor — measured in the browser, the return then
@@ -2559,11 +2559,11 @@ const ScrollbackPane: Component<Props> = (props) => {
     });
   };
 
-  // BUGHUNT-2: unmount-time cursor write. ScrollbackPane unmounts when the
-  // selection moves to a window it does not draw — $home, mentions, admin, an
-  // encrypted query: a different `<Match>` in Shell.tsx. The `on(key, …)`
-  // effect below only fires for switches that keep the pane (channel↔channel,
-  // query↔channel, $server); the unmount path bypasses it.
+  // BUGHUNT-2: unmount-time cursor write. The pane unmounts for any window
+  // whose kind `kindHasScrollback` rejects: Shell.tsx draws that window in a
+  // different `<Match>`. The `on(key, …)` effect below only fires for switches
+  // between windows whose kind it accepts, which keep the pane; the unmount
+  // path bypasses it.
   //
   // onCleanup runs BEFORE Solid removes the listRef DOM, so the rows and
   // scrollTop are still the leaving window's. `props` are not: at the dispose
@@ -3276,8 +3276,9 @@ const ScrollbackPane: Component<Props> = (props) => {
   // the store-tail only when no snapshot exists (pure auto-follow, never
   // scrolled — still at the bottom, so the tail is correct).
   // `setCursorIfAdvances` is forward-only, so a scrolled-up snapshot below
-  // the cursor is dropped, never rewinding. Switches that unmount the pane
-  // ($home, mentions, an encrypted query) are covered by `onCleanup`.
+  // the cursor is dropped, never rewinding. Switches that unmount the pane are
+  // covered by `onCleanup`: the pane unmounts for any window whose kind
+  // `kindHasScrollback` rejects.
   createEffect(
     on(key, (newKey, prevKey) => {
       // issue 2613 — first, before any early return: from here on the pane
@@ -3598,8 +3599,9 @@ const ScrollbackPane: Component<Props> = (props) => {
   // can never rewind.
   //
   // Debounced, and the timer is cleared+re-armed on EVERY re-run BEFORE the
-  // guards, because the fire callback reads `props` at fire time — a schedule
-  // left over from the previous window must never write the switched-to one
+  // guards, because the fire callback names the window the pane shows at fire
+  // time (`shownKey`, which a switch moves) — a schedule left over from the
+  // previous window must never write the switched-to one
   // (same hazard, same shape, as the #239 presence arm below). `key()` is read
   // for exactly that reason: a channel switch must re-arm, not inherit.
   //
