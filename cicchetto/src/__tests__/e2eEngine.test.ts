@@ -6503,6 +6503,21 @@ describe("S1 sibling copies — receive", () => {
     );
   });
 
+  // A copy whose attachment is malformed IS a copy: it is dropped under the
+  // peer path's own name, `file-malformed`, with the refused field in
+  // `detail`, never as "not a copy".
+  it("a copy whose file is malformed is dropped as file-malformed, naming the field", () => {
+    const alice = ownAccount("alice", 2);
+    const [a, b] = alice.devices as [OwnDevice, OwnDevice];
+    const inner = { t: "copy", peer: "bob", body: "📎", file: fileInner({ key: "short" }) };
+    expect(takesCopy(alice, a, b, asPkmsg(copyWritten(b.account, alice.master, a, inner)))).toEqual(
+      {
+        events: [{ kind: "dropped", nick: "alice", reason: "file-malformed", detail: "bad-key" }],
+        outbound: [],
+      },
+    );
+  });
+
   it("a pre-key copy whose fb binds another pair of devices is dropped: no session, no sibling", () => {
     const alice = ownAccount("alice", 3);
     const [a, b, c] = alice.devices as [OwnDevice, OwnDevice, OwnDevice];

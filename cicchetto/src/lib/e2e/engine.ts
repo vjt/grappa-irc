@@ -1574,8 +1574,10 @@ export class Engine {
    * The copy in a body our sibling `device` encrypted to us, handed on as
    * `copied`: its inner message (`inner`, which checks that a pre-key body's
    * `fb` binds the sibling to this device) must be `{t:"copy", peer, body}`,
-   * with a non-empty `peer` and a string `body`. Anything else is reported,
-   * and the answer is false.
+   * with a non-empty `peer` and a string `body`, and a `file`, when it carries
+   * one, must be well formed. Anything else is reported — a malformed `file`
+   * as `file-malformed` with the refused field, like the peer's — and the
+   * answer is false.
    */
   private readCopy(device: string, plaintext: Uint8Array, preKey: boolean, res: Result): boolean {
     const inner = this.inner(this.ownNick, plaintext, preKey ? device : null, res);
@@ -1592,8 +1594,13 @@ export class Engine {
       inner.msg.file === undefined || inner.msg.file === null
         ? undefined
         : parseFileInner(inner.msg.file as Record<string, unknown>);
-    if (file !== undefined && typeof file === "string") {
-      res.events.push({ kind: "dropped", nick: this.ownNick, reason: "sibling-not-a-copy" });
+    if (typeof file === "string") {
+      res.events.push({
+        kind: "dropped",
+        nick: this.ownNick,
+        reason: "file-malformed",
+        detail: file,
+      });
       return false;
     }
     res.events.push(
