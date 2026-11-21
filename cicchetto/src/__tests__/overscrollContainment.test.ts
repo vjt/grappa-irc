@@ -167,6 +167,9 @@ const UA_SCROLLERS = ["textarea"];
  * An inner that is a listed horizontal strip is nested only in the layout that
  * turns it vertical (the desktop `.adm-nav` rail). It gets no carve-out, which
  * would drop its x as well: it keeps the strip list's x and contains no y.
+ * With no carve-out to match, such a pair is held more loosely: its outer must
+ * be a listed vertical scroller and its inner must turn vertical in some
+ * layout, but a made-up pair that meets both still passes.
  */
 const NESTED_CENSUS: [outer: string, inner: string][] = [
   [".settings-drawer", "textarea"],
@@ -369,9 +372,18 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
   it("the nested scrollers the census found, and only those, give up containment", () => {
     // The test above checks that a carve-out is well-formed, never which ones
     // exist: without this, dropping a pair the census found stays green. A
-    // nested strip gives up only y, so no rule may contain y on it.
-    const { nested, xOnly } = overscrollContainment();
+    // nested strip gives up only y, so no rule may contain y on it. Every
+    // pair's outer must be a listed vertical scroller, and a strip pair's inner
+    // must turn vertical somewhere: nothing else reads a strip pair, so a typo
+    // or a made-up strip pair stayed green (fleet review of PR 2678).
+    const { both, nested, xOnly } = overscrollContainment();
     const isStrip = ([, inner]: [string, string]): boolean => covers(xOnly, inner);
+    const untraced = NESTED_CENSUS.filter(
+      (pair) =>
+        !(covers(both, pair[0]) && scrollsVertically(pair[0])) ||
+        (isStrip(pair) && !scrollsVertically(pair[1])),
+    );
+    expect(untraced).toEqual([]);
     expect([...nested].sort()).toEqual(
       NESTED_CENSUS.filter((pair) => !isStrip(pair))
         .map(([outer, inner]) => `:where(${outer}) ${inner}`)
