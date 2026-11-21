@@ -766,7 +766,6 @@ const fileInner = (over: Record<string, unknown> = {}): Record<string, unknown> 
   url: `/uploads/${SLUG}`,
   key: base64Unpadded(new Uint8Array(32)),
   iv: base64Unpadded(new Uint8Array(12)),
-  sha256: base64Unpadded(new Uint8Array(32)),
   name: "holiday.jpg",
   mime: "image/jpeg",
   size: 1234,

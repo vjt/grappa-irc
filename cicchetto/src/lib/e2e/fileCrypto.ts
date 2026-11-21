@@ -1,6 +1,6 @@
 // issue 2517 — the cryptography of an end-to-end encrypted attachment: one
-// AES-256-GCM key and one IV per file, the digest over the CIPHERTEXT, and
-// the base64 spellings `wire.ts` already uses for everything on the wire.
+// AES-256-GCM key and one IV per file, in the base64 spellings `wire.ts`
+// already uses for everything on the wire.
 //
 // WebCrypto does the work (`crypto.subtle`), so the key never leaves the
 // page and nothing here is hand-rolled: the GCM tag is the default 128 bits,
@@ -17,8 +17,6 @@ export type SealedBytes = {
   key: string;
   /** 12 bytes, standard base64. */
   iv: string;
-  /** SHA-256 of `ciphertext`, standard base64. */
-  sha256: string;
 };
 
 const IV_BYTES = 12;
@@ -35,12 +33,10 @@ export async function sealBytes(plaintext: Uint8Array<ArrayBuffer>): Promise<Sea
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
   const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
   const raw = await crypto.subtle.exportKey("raw", key);
-  const ciphertext = new Uint8Array(sealed);
   return {
-    ciphertext,
+    ciphertext: new Uint8Array(sealed),
     key: base64Unpadded(new Uint8Array(raw)),
     iv: base64Unpadded(iv),
-    sha256: await sha256Base64(ciphertext),
   };
 }
 
@@ -71,9 +67,4 @@ export async function openBytes(
   } catch {
     return null;
   }
-}
-
-/** SHA-256 of `bytes`, standard base64: the digest the inner carries. */
-export async function sha256Base64(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
-  return base64Unpadded(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
 }

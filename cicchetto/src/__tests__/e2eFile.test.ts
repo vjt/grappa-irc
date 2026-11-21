@@ -1,10 +1,9 @@
 // issue 2517 — an encrypted attachment's crypto, its inner, and the click
 // that opens one: the ciphertext is exactly the plaintext plus the GCM tag,
-// a wrong key or a changed byte opens nothing, the digest is over the
-// ciphertext, and nothing a peer says makes this client fetch another host
-// or render a document in its own origin.
+// a wrong key or a changed byte opens nothing, and nothing a peer says makes
+// this client fetch another host or render a document in its own origin.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openBytes, sealBytes, sha256Base64 } from "../lib/e2e/fileCrypto";
+import { openBytes, sealBytes } from "../lib/e2e/fileCrypto";
 import {
   type FileInner,
   onGrappaOrigin,
@@ -23,7 +22,6 @@ const fileInner = (over: Partial<FileInner> = {}): FileInner => ({
   url: `${location.origin}/uploads/${SLUG}`,
   key: b64(32),
   iv: b64(12),
-  sha256: b64(32),
   name: "holiday.jpg",
   mime: "image/jpeg",
   size: 123,
@@ -38,7 +36,6 @@ describe("sealBytes / openBytes (issue 2517)", () => {
     const sealed = await sealBytes(plaintext);
 
     expect(sealed.ciphertext.length).toBe(1000 + 16);
-    expect(sealed.sha256).toBe(await sha256Base64(sealed.ciphertext));
     expect(await openBytes(sealed.ciphertext, sealed.key, sealed.iv)).toEqual(plaintext);
   });
 
@@ -68,13 +65,29 @@ describe("parseFileInner (issue 2517)", () => {
     expect(parseFileInner(fileInner())).toEqual(fileInner());
   });
 
+  // The inner carries no digest of the ciphertext (DESIGN_NOTES #2517a): the
+  // GCM tag, under a key only the Olm message carries, already authenticates
+  // every byte, so a digest beside it would refuse nothing GCM lets through.
+  // `toEqual` ignores a key the other side lacks, so the KEYS are compared:
+  // an inner that comes back demanding a digest refuses the first case, and
+  // one that keeps carrying it fails the second.
+  it("needs no digest, and does not keep one an older peer still sends", () => {
+    const expected = Object.keys(fileInner()).sort();
+    expect(expected).not.toContain("sha256");
+
+    const plain = parseFileInner(fileInner());
+    expect(typeof plain === "object" && Object.keys(plain).sort()).toEqual(expected);
+
+    const older = parseFileInner({ ...fileInner(), sha256: b64(32) });
+    expect(typeof older === "object" && Object.keys(older).sort()).toEqual(expected);
+  });
+
   it("refuses every field that is not what the wire says it is", () => {
     const cases: Array<[Partial<FileInner>, string]> = [
       [{ key: b64(31) }, "bad-key"],
       [{ key: b64(33) }, "bad-key"],
       [{ key: "not base64!" }, "bad-key"],
       [{ iv: b64(16) }, "bad-iv"],
-      [{ sha256: b64(20) }, "bad-sha256"],
       [{ name: "" }, "bad-name"],
       [{ mime: "" }, "bad-mime"],
       // The mime is the PEER's word and it is shown on the card: a value
@@ -188,38 +201,21 @@ describe("openEncryptedFile (issue 2517)", () => {
     );
   };
 
-  // The ORDER is the claim in the name, and the outcome alone does not pin it:
-  // with GCM a decrypt-then-compare lands on the same refusal. So both halves
-  // are recorded on one clock, and the digest has to come first — and the
-  // decrypt must not run at all.
-  it("checks the digest before it decrypts, and renders nothing on a mismatch", async () => {
+  // A changed byte is refused at the open, through GCM alone, and nothing is
+  // minted for it: no blob URL, no save.
+  it("refuses a file one byte away from what was sealed, and renders nothing", async () => {
     const sealed = await sealBytes(bytes(32));
-    served(sealed.ciphertext);
-    const calls: string[] = [];
-    const realDigest = crypto.subtle.digest.bind(crypto.subtle);
-    const realDecrypt = crypto.subtle.decrypt.bind(crypto.subtle);
-    vi.spyOn(crypto.subtle, "digest").mockImplementation(((
-      ...args: Parameters<typeof realDigest>
-    ) => {
-      calls.push("digest");
-      return realDigest(...args);
-    }) as typeof crypto.subtle.digest);
-    vi.spyOn(crypto.subtle, "decrypt").mockImplementation(((
-      ...args: Parameters<typeof realDecrypt>
-    ) => {
-      calls.push("decrypt");
-      return realDecrypt(...args);
-    }) as typeof crypto.subtle.decrypt);
+    const tampered = new Uint8Array(sealed.ciphertext);
+    tampered[5] = (tampered[5] as number) ^ 0x01;
+    served(tampered);
+    const created = vi.spyOn(URL, "createObjectURL");
 
     const outcome = await openEncryptedFile(
-      fileInner({ key: sealed.key, iv: sealed.iv, sha256: b64(32), size: 32 }),
+      fileInner({ key: sealed.key, iv: sealed.iv, size: 32 }),
     );
 
-    expect(outcome).toEqual({
-      ok: false,
-      error: "the file does not match the digest in the message",
-    });
-    expect(calls).toEqual(["digest"]);
+    expect(outcome).toEqual({ ok: false, error: "the file could not be decrypted" });
+    expect(created).not.toHaveBeenCalled();
   });
 
   it("refuses a file its key does not open", async () => {
@@ -227,11 +223,10 @@ describe("openEncryptedFile (issue 2517)", () => {
     const other = await sealBytes(bytes(32));
     served(sealed.ciphertext);
 
-    expect(
-      await openEncryptedFile(
-        fileInner({ key: other.key, iv: other.iv, sha256: sealed.sha256, size: 32 }),
-      ),
-    ).toEqual({ ok: false, error: "the file could not be decrypted" });
+    expect(await openEncryptedFile(fileInner({ key: other.key, iv: other.iv, size: 32 }))).toEqual({
+      ok: false,
+      error: "the file could not be decrypted",
+    });
   });
 
   it("says expired when the server no longer holds it", async () => {
@@ -247,16 +242,13 @@ describe("openEncryptedFile (issue 2517)", () => {
     served(sealed.ciphertext);
     const created = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:one");
 
-    const image = await openEncryptedFile(
-      fileInner({ key: sealed.key, iv: sealed.iv, sha256: sealed.sha256, size: 16 }),
-    );
+    const image = await openEncryptedFile(fileInner({ key: sealed.key, iv: sealed.iv, size: 16 }));
     expect(image).toEqual({ ok: true, kind: "inline", url: "blob:one", media: "image" });
 
     const html = await openEncryptedFile(
       fileInner({
         key: sealed.key,
         iv: sealed.iv,
-        sha256: sealed.sha256,
         size: 16,
         mime: "text/html",
       }),
