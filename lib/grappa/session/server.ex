@@ -7453,7 +7453,7 @@ defmodule Grappa.Session.Server do
   # `RequestBudget` both meter the SUBJECT's own sends at the web edge.
   #
   # Allowed ⇒ expand back into the two ordinary effects, so the line still
-  # leaves through the one `{:reply, _}` door and the row through the one
+  # leaves through the one `{:reply, _, _}` door and the row through the one
   # `{:persist, _, _}` door. Denied ⇒ drop BOTH: the pair travels together
   # precisely so the scrollback can never claim an answer that never went
   # out. Not logged per drop — a log line per dropped query would restore
