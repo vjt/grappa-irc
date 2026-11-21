@@ -7236,45 +7236,56 @@ hackney or quic below the floor: that undoes the 2649 security bump.
   and succeeded through every rpm proof after the build. Both deb legs
   succeeded too, and the six other jobs were skipped. That is the cache
   MISS path, on both arches.
-- `test/infra/packaging_toolchain_from_source_test.bats`, 13 cases. Six
+- `test/infra/packaging_toolchain_from_source_test.bats`, 14 cases. Seven
   run the script on a fake pin (98.7 / 6.5.4), with `curl` and `tar`
   stubbed on PATH, both logging in order. Three stop at a `configure` that
   records its arguments and exits 42: a good tarball reaches it with the
   prefix and the four flags, and a mismatched or unlisted one is neither
-  unpacked (no `tar` call) nor configured. Three go past it, into a
+  unpacked (no `tar` call) nor configured. Four go past it, into a
   `make install` that writes an `OTP_VERSION` and stand-ins for `erl` and
   `elixir`: the pinned pair runs to the end, unpacked only after both OTP
-  downloads, and a wrong OTP or a wrong Elixir stops the run. Seven read
+  downloads, and a wrong OTP, a wrong Elixir or an installed `erl` that
+  exits non-zero stops the run. Seven read
   or run the rpm job, which no pull request runs: its `if:` is the deb
   job's and does not skip `deb_validation`; no distro `erlang`/`elixir`
   in its `dnf install`s; the recipe fetched from `GITHUB_SHA` and run
   before `build.sh`; and the PATH step, run under `sh -e` from its own
   text, puts the pinned pair on PATH and stops on an `elixir` that does
   not start or on a version other than a pin.
-- 23 mutants, each turning red the case it targets. Of the script: no
+- 24 mutants, each turning red the case it targets. Of the script: no
   checksum, no missing-line guard, a hard-coded OTP version, a hard-coded
   OTP URL, no configure flags, either readback removed, the unpack moved
   ahead of the checksum (two placements), the unpack bypassing PATH, the
-  `erl` run removed, an early exit before Elixir. Of `release.yml`:
+  `erl` run removed, the `erl` exit swallowed (`|| true`), an early exit
+  before Elixir. Of `release.yml`:
   Fedora's `elixir erlang` back, an `erlang-*` subpackage, the recipe
   copied from the checked-out tag, the recipe never run, a `build.sh`
   ahead of it, the rpm `if:` excluding `deb_validation`, both `if:`s
   excluding it, the PATH step's earlier echo form, either pin comparison
   removed, PATH never extended. The `elixir`-does-not-start case is held
   twice over, by the assignment under `-e` and by the comparison, so only
-  the earlier echo form turns it red. The `ssl` start and the
-  `System.version/0` call need the real binaries: the suite cannot hold
-  them, and they rest on the run above.
+  the earlier echo form turns it red. That the real `erl` fails when
+  `ssl` does not start, and the `System.version/0` call, need the real
+  binaries: the suite cannot hold them, and they rest on the run above.
 
 ### Not covered
 
-The cache HIT path has not run: a restore, then `build.sh` in a job that
-never installed the miss-only build deps (`gcc-c++`, `perl`, `gawk`,
-`diffutils` and their closure). Run 44865771090 saved under this branch,
-so the repair on main misses again and saves under main, and the next
-tag push is the first run that restores, unless a second dispatch of
-this branch runs before the merge. The recipe and `.tool-versions` are
-unchanged since that run, so such a dispatch computes the same key.
+Two `deb_validation` dispatches of this branch at 27dc49288 ran the
+cache both ways, under one key per arch,
+`beam-fedora43-<arch>-pins-315ba72dc9910fb1-recipe-3791836ca538d295`.
+Run 44870309289 missed, built and saved it (rpm jobs 136743124234 on
+x86_64, 136743124196 on aarch64). Run 44870914476 restored it (rpm jobs
+136745012837 on x86_64, 136745013241 on aarch64): the build step and its
+miss-only `dnf install` never ran, the PATH step printed `OTP 28.5 (pin
+28.5), Elixir 1.19.5 (pin 1.19.5)`, and `build.sh` and every rpm proof
+passed. Both runs succeeded, deb legs included, with every publishing
+job skipped. A recipe change moving the key ran on the way: the review's
+last commit edited a comment in the recipe, and 44870309289 missed
+rather than restore 44865771090's `…recipe-f7d712b43e2fced7`, still
+cached under this branch. What has not run: a key moved by a change to
+`.tool-versions`, and any restore outside this branch's scope. The
+repair on main misses and saves under main, and a tag run reading
+main's save, the path every later tag takes, has not happened.
 Nobody has built or booted grappa on OTP 27 either: 27 is the floor
 because quic refuses anything lower, and every build runs 28 (deb, rpm)
 or 29 (Arch). The cache scoping above is GitHub's documented behaviour,
