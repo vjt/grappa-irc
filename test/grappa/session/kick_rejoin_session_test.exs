@@ -196,6 +196,26 @@ defmodule Grappa.Session.KickRejoinSessionTest do
       assert window_state(pid) == :kicked
     end
 
+    # The guard counts kicks whether or not the opt-in is on, so switching
+    # it on in the middle of a kick loop does not hand the loop fresh
+    # rejoins. The positive control is the test below: the same switch
+    # with no kicks before it does rejoin.
+    test "kicks taken while opted out still count toward the guard" do
+      %{server: server, cred: cred, pid: pid} = session_in_channel(:untouched)
+
+      for _ <- 1..(KickRejoin.kick_limit() - 1) do
+        :ok = kick(server)
+        :ok = force_join(server)
+      end
+
+      _ = kick_rejoin(cred, true, 0)
+      :ok = kick(server)
+
+      :ok = refute_rejoin_attempt(@never_ms)
+      assert join_lines(server) == []
+      assert window_state(pid) == :kicked
+    end
+
     test "switching it on mid-session takes effect at the next kick" do
       %{server: server, cred: cred} = session_in_channel(:untouched)
 
