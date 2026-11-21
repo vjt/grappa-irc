@@ -7762,11 +7762,12 @@ mirror pair. The census is now recorded in the test as `NESTED_CENSUS`, four
 pairs whose inner is not a strip, and requires that no rule contain y on a
 nested strip. It also requires every pair's outer to be a listed vertical
 scroller, and a strip pair's inner to turn vertical in some layout. Without
-that, nothing read a strip pair: the fleet review measured an outer renamed to
-`.no-such-pane` GREEN, and so was a made-up `[".home-pane", ".adm-table-wrap"]`.
-A made-up strip pair that meets both conditions still passes. The coverage
-test's demand for a y restore skips a strip the census lists. Each mutant below failed and was reverted, with the file's
-sha256 checked:
+that, nothing read a strip pair: the fleet review measured an outer renamed
+to `.no-such-pane` GREEN, and so was a made-up
+`[".home-pane", ".adm-table-wrap"]`. A made-up strip pair that meets both
+conditions still passes. The coverage test's demand for a y restore skips a
+strip the census lists. Each mutant below failed and was reverted, with the
+file's sha256 checked:
 - dropping the `.admin-tab-panel` carve-out, or the mirror's, fails the
   census test;
 - putting `overscroll-behavior-y: contain` back in the desktop `.adm-nav`
