@@ -240,9 +240,36 @@ function ciphertextOf(row: Message): string {
 // (lib/compose.ts), so a body in that envelope is the scrollback's action
 // line, which unwraps it, ours or the peer's. Not in the ciphertext view:
 // there the line is the payloads it crossed IRC as, and they are no action.
-/** issue 2517 — an attachment as its line reads: what it is, how big, and when it goes. */
+/**
+ * issue 2517 — what an attachment's line body says. The card itself (name,
+ * size, type, expiry) is drawn beside it by `FileTrailer`, as text: the name
+ * and the type are the peer's word, and a body is prose to the scrollback,
+ * which turns what reads as an address into a link and a `#word` into a
+ * channel to join.
+ */
+const FILE_MARK = "📎";
+
+/** issue 2517 — the attachment a line draws as a card: none in the ciphertext view, which shows what crossed IRC. */
+function cardOf(row: Message | undefined, ciphertext: boolean): FileInner | undefined {
+  if (ciphertext || (row?.kind !== "in" && row?.kind !== "out")) return undefined;
+  return row.file;
+}
+
+/** issue 2517 — everything an attachment's card says after its name: how big, what type, and when it goes. */
+const fileDetails = (file: FileInner): string =>
+  ` · ${formatBytes(file.size)} · ${file.mime} · expires ${formatDateTime(Date.parse(file.expires_at))}`;
+
+/** issue 2517 — an attachment as its card reads. */
 export function fileCard(file: FileInner): string {
-  return `📎 ${file.name} · ${formatBytes(file.size)} · ${file.mime} · expires ${formatDateTime(Date.parse(file.expires_at))}`;
+  return `${file.name}${fileDetails(file)}`;
+}
+
+// What a line says, as the search reads it: its body, and an attachment's card
+// beside it.
+function saidBy(row: Message, msg: ScrollbackMessage, ciphertext: boolean): string {
+  const card = cardOf(row, ciphertext);
+  const body = msg.body ?? "";
+  return card === undefined ? body : `${body} ${fileCard(card)}`;
 }
 
 function lineOf(
@@ -259,11 +286,11 @@ function lineOf(
     case "in":
     case "out": {
       // issue 2517 — an attachment reads as a card: the name, the size, the
-      // type and when it goes. Nothing is fetched to draw it, and the
-      // download is the trailer's button (see `FileTrailer`).
-      if (row.file !== undefined && !ciphertext) {
+      // type and when it goes. Nothing is fetched to draw it; the card and the
+      // download button are the trailer's (see `FileTrailer`).
+      if (cardOf(row, ciphertext) !== undefined) {
         const sender = row.kind === "in" ? row.nick : ownNick;
-        return { ...line, kind: "privmsg", sender, body: fileCard(row.file) };
+        return { ...line, kind: "privmsg", sender, body: FILE_MARK };
       }
       const kind = !ciphertext && isCtcpAction(row.body) ? "action" : "privmsg";
       const sender = row.kind === "in" ? row.nick : ownNick;
@@ -336,12 +363,19 @@ const Trailer: Component<{ row: Message | undefined; pinned: string | undefined 
 );
 
 /**
- * issue 2517 — the attachment's one action, in the line's trailer slot: the
- * click that fetches the ciphertext, checks its digest, decrypts it and opens
- * or saves it. Nothing is fetched until this button is pressed, because a
- * fetch tells grappa this address and the time the file was opened.
+ * issue 2517 — the attachment in the line's trailer slot: its card, and its
+ * one action, the click that fetches the ciphertext, checks its digest,
+ * decrypts it and opens or saves it. Nothing is fetched until this button is
+ * pressed, because a fetch tells grappa this address and the time the file
+ * was opened.
+ *
+ * The card is drawn HERE, as text, and not in the line's body: the name and
+ * the type are the peer's word, and the body is prose to the scrollback (links,
+ * `#channel` joins, emphasis, mIRC formatting). The name sits in a `<bdi>` of
+ * its own, so whatever direction its script runs in, it cannot reorder the
+ * size, type and expiry beside it.
  */
-const FileTrailer: Component<{ row: Message | undefined }> = (props) => {
+const FileTrailer: Component<{ row: Message | undefined; ciphertext: boolean }> = (props) => {
   const [busy, setBusy] = createSignal(false);
   const [failure, setFailure] = createSignal<string | null>(null);
   // The open in flight, so unmounting the card takes the fetch with it and a
@@ -413,7 +447,17 @@ const FileTrailer: Component<{ row: Message | undefined }> = (props) => {
     <Show when={file()}>
       {(target) => (
         <>
-          {" "}
+          <Show when={cardOf(props.row, props.ciphertext)}>
+            {(card) => (
+              <>
+                {" "}
+                <span class="e2e-file-card" data-testid="e2e-file-card">
+                  <bdi>{card().name}</bdi>
+                  {fileDetails(card())}
+                </span>
+              </>
+            )}
+          </Show>{" "}
           <button
             type="button"
             class="e2e-file-open"
@@ -871,10 +915,10 @@ const EncryptedChatPane: Component<Props> = (props) => {
     const ciphertext = encryptedWireView(props.networkSlug, props.nick);
     return rows()
       .filter(isMessage)
-      .map((row) => ({
-        row,
-        msg: lineOf(row, seqOf(row.id), props.networkSlug, windowName(), own, ciphertext),
-      }));
+      .map((row) => {
+        const msg = lineOf(row, seqOf(row.id), props.networkSlug, windowName(), own, ciphertext);
+        return { row, msg, said: saidBy(row, msg, ciphertext) };
+      });
   });
   const rowBySeq = createMemo(
     () => new Map((lines() ?? []).map((line) => [line.msg.id, line.row])),
@@ -884,7 +928,8 @@ const EncryptedChatPane: Component<Props> = (props) => {
   // issue 2513 — what they hold as shown: in the ciphertext view the payloads,
   // where a message that cannot be read is a message too, never the plaintext.
   // issue 2536 — and what a line says: an action is a message, and its
-  // envelope is framing, not text.
+  // envelope is framing, not text. issue 2517 — and an attachment's card,
+  // which is drawn beside its body rather than in it (`saidBy`).
   const needle = () => (searching() ? query().trim().toLowerCase() : "");
   const searchable = () =>
     (lines() ?? []).filter(({ msg }) => msg.kind === "privmsg" || msg.kind === "action");
@@ -892,7 +937,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
     const all = lines();
     const n = needle();
     if (all === undefined || n === "") return all;
-    return searchable().filter(({ msg }) => stripCtcpAction(msg.body).toLowerCase().includes(n));
+    return searchable().filter(({ said }) => stripCtcpAction(said).toLowerCase().includes(n));
   });
   const shownMessages = createMemo(() => shown()?.map((line) => line.msg));
 
@@ -965,7 +1010,10 @@ const EncryptedChatPane: Component<Props> = (props) => {
       marker: <Lock />,
       trailer: (
         <>
-          <FileTrailer row={rowBySeq().get(msg.id)} />
+          <FileTrailer
+            row={rowBySeq().get(msg.id)}
+            ciphertext={encryptedWireView(props.networkSlug, props.nick)}
+          />
           <Trailer row={rowBySeq().get(msg.id)} pinned={peerTrust()?.master} />
         </>
       ),

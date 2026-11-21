@@ -7527,7 +7527,7 @@ check, and it is still open.
 
 Slice 3 wires #2517a's door and #2517b's strip into the compose box: a file
 dropped in an encrypted window is stripped, sealed on this device, uploaded as
-ciphertext, and sent as a `t: "file"` inner inside the Olm message. Four
+ciphertext, and sent as a `t: "file"` inner inside the Olm message. Five
 decisions this slice made, each of them a place where the obvious wiring is
 wrong:
 
@@ -7564,3 +7564,11 @@ wrong:
   player stopped or re-tuned), and on sign-out with everything else. The card
   still takes its own FETCH down when it unmounts, and a URL minted after that
   abort is revoked on the spot rather than left for nobody.
+* **The card is text BESIDE the body, not the body.** The name and the type
+  are the peer's word, and a line's body is prose to the scrollback (#2498's one
+  renderer): links, `#channel` joins, emphasis and mIRC formatting run over it.
+  So the line's body says 📎 and `FileTrailer` draws the card in the trailer
+  slot as text, the name in a `<bdi>` of its own so its script's direction
+  stays inside it; the search reads the card along with the body. Checking the
+  two fields against what the scrollback counts as a link was the alternative,
+  and it would trail every rule the scrollback adds.

@@ -211,6 +211,7 @@ vi.mock("../lib/scrollback", async (importOriginal) => ({
 const {
   default: EncryptedChatPane,
   ELSEWHERE_WHY,
+  fileCard,
   heldDevicesLine,
   NO_CIPHERTEXT,
   UNSENT,
@@ -2744,6 +2745,53 @@ describe("an encrypted attachment's card (issue 2517)", () => {
   afterEach(() => {
     closeMediaViewer();
     vi.restoreAllMocks();
+  });
+
+  // The name and the type are the peer's word, and the card draws them as
+  // text: nothing in them becomes a link to follow or a channel to join,
+  // whatever the scrollback's link rules come to match.
+  it("draws the peer's name and type as text: nothing on the card is a link or a channel", () => {
+    setRows([
+      {
+        ...withFile,
+        file: { ...attachment, name: "www.example.org #grappa", mime: "example.org/x" },
+      },
+    ]);
+    renderPane();
+    const [row] = lines();
+
+    expect(row?.textContent).toContain("www.example.org #grappa");
+    expect(row?.textContent).toContain("example.org/x");
+    expect(row?.querySelectorAll("a")).toHaveLength(0);
+    expect(row?.querySelectorAll(".channel-clickable")).toHaveLength(0);
+  });
+
+  it("keeps the name in an isolate of its own, so its direction cannot reorder the rest of the card", () => {
+    setRows([{ ...withFile, file: { ...attachment, name: "שלום.jpg" } }]);
+    renderPane();
+
+    expect(lines()[0]?.querySelector("bdi")?.textContent).toBe("שלום.jpg");
+  });
+
+  // issue 2513 — the ciphertext view shows what crossed IRC, and the card's
+  // fields crossed it sealed.
+  it("draws no card in the ciphertext view", () => {
+    setRows([withFile]);
+    setWireView("azzurra/bob");
+    renderPane();
+
+    expect(lines()).toHaveLength(1);
+    expect(lines()[0]?.textContent).not.toContain("holiday.jpg");
+  });
+
+  it("is found by its name, as the card reads it", () => {
+    setRows([withFile, plain]);
+    renderPane();
+    fireEvent.click(screen.getByTestId("e2e-search-toggle"));
+    fireEvent.input(screen.getByTestId("e2e-search-input"), { target: { value: "HOLIDAY" } });
+
+    expect(lines()).toHaveLength(1);
+    expect(lines()[0]?.textContent).toContain(fileCard(attachment));
   });
 
   const openTheImage = async (): Promise<void> => {

@@ -58,8 +58,10 @@ export type FileRefusal =
  * A media type as RFC 6838 writes it: `type/subtype`, both from the token
  * alphabet, neither empty. Deliberately strict — this field is the PEER's
  * word and it is shown on the card, so anything outside the token set (bidi
- * overrides, C0/C1 controls, mIRC formatting bytes, a `//` or a `:` that
- * could read as a link) is refused rather than rendered.
+ * overrides, C0/C1 controls, mIRC formatting bytes) is refused rather than
+ * rendered. What a well-formed type READS as is not this check's to judge:
+ * the card draws it, like the name, as text and never as a link
+ * (`EncryptedChatPane`'s card).
  */
 const MIME = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$/i;
 
