@@ -1308,6 +1308,94 @@ if (quoteHandler) {
 // are the other half, commandUsage.ts).
 export const BUILTIN_VERBS: readonly string[] = keyEntries(DISPATCH).map(([verb]) => verb);
 
+// issue 2616 — one muted line under each verb in the `/` menu: what the
+// command does, in the user's words. UI prose, never protocol: nothing on the
+// wire reads it, and it sits next to DISPATCH so a verb added there is one
+// line away from being described.
+//
+// A verb with no entry is NOT dropped from the menu — a forgotten line must
+// not hide a command — it just shows no caption (`builtinDescription` says
+// null). User aliases are described by their expansion, in commandUsage.ts.
+export const COMMAND_DESCRIPTIONS: ByKey<string> = keysOf<string>({
+  me: "an action, in the third person: /me waves",
+  ame: "that action, to every open channel at once",
+  amsg: "a message to every open channel at once",
+  ctcp: "a raw CTCP request: /ctcp nick VERSION",
+  ping: "time a round trip to someone, in seconds",
+  np: "what is playing now, from the radio dock",
+  join: "enter a channel: /join #chan [key]",
+  j: "enter a channel: /join #chan [key]",
+  part: "leave a channel, with an optional reason",
+  cycle: "leave and rejoin the channel you are on",
+  topic: "show, set or delete the channel topic",
+  nick: "change your nick",
+  msg: "a private message to one person",
+  notice: "a notice: a message that must not be answered",
+  query: "open a private window without saying anything",
+  q: "open a private window without saying anything",
+  equery: "open an encrypted private window",
+  quit: "disconnect from this network, with an optional reason",
+  disconnect: "drop the connection to a network, keeping the session",
+  reconnect: "bounce a network: park it, then bring it back",
+  connect: "bring a parked network back up",
+  away: "set yourself away; bare /away comes back",
+  op: "give channel operator to someone",
+  deop: "take channel operator away",
+  voice: "give voice in a moderated channel",
+  devoice: "take voice away",
+  kick: "throw someone out of the channel",
+  kb: "kick and ban in one line",
+  kickban: "kick and ban in one line",
+  kill: "disconnect a user from the server (operators only)",
+  ban: "ban a mask from the channel",
+  unban: "lift a ban",
+  banlist: "the channel's ban list",
+  invite: "invite someone to the channel",
+  umode: "your own user modes; bare /umode opens the editor",
+  mode: "channel or user modes; bare /mode shows the channel's",
+  who: "who is on a channel or behind a mask",
+  names: "the nicks on a channel",
+  n: "the nicks on a channel",
+  list: "the channels on the network, with their topics",
+  links: "the servers this one is linked to",
+  recover: "take back a nick the services parked",
+  lusers: "how many users the network has",
+  info: "what server software this network runs",
+  version: "the server's version string",
+  motd: "the message of the day",
+  admin: "who runs this server",
+  stats: "server statistics, by letter",
+  rehash: "make the server reload its configuration (operators)",
+  whois: "who is on the other end: user, host, real name",
+  w: "who is on the other end: user, host, real name",
+  whowas: "someone who has left: their last known user@host",
+  ignore: "stop hearing from a mask",
+  unignore: "hear from them again",
+  notify: "watch a nick and be told when it appears",
+  watch: "watch a nick and be told when it appears",
+  beep: "the sound played when someone highlights you",
+  hilight: "a keyword that highlights the line it appears in",
+  highlight: "a keyword that highlights the line it appears in",
+  dehilight: "remove a highlight keyword",
+  credits: "the end titles",
+  cs: "talk to ChanServ, the channel service",
+  ns: "talk to NickServ, the nick service",
+  ms: "talk to MemoServ, the memo service",
+  os: "talk to OperServ, the operator service",
+  hs: "talk to HelpServ, the help service",
+  rs: "talk to RootServ, the root service",
+  alias: "define a shortcut of your own: /alias k kick $1 $2-",
+  unalias: "remove a shortcut you defined",
+  quote: "send a raw IRC line upstream, unparsed",
+  raw: "send a raw IRC line upstream, unparsed",
+  oper: "become an IRC operator on this server",
+});
+
+/** The `/` menu's caption for a builtin verb; null when it has none. */
+export function builtinDescription(verb: string): string | null {
+  return atKey(COMMAND_DESCRIPTIONS, verb) ?? null;
+}
+
 /**
  * The verb of a command line AS TYPED (case kept, before any alias expands)
  * and what follows it, or `null` for a line that is not a command: empty, plain

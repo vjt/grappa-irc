@@ -32,8 +32,15 @@ const CHANNEL = AUTOJOIN_CHANNELS[0];
 
 const menu = (page: Page) => page.getByTestId("command-menu");
 const entries = (page: Page) => menu(page).getByRole("option");
+// issue 2616 — each row is now the verb PLUS a muted caption, so a row's own
+// text (and its accessible name) is "/whoiswho is on the other end…". These
+// assertions are about WHICH verbs the menu offers and in what order, so they
+// read the verb span; the caption has its own spec.
+const verbs = (page: Page) => menu(page).locator(".command-menu-verb");
 const entry = (page: Page, label: string) =>
-  menu(page).getByRole("option", { name: label, exact: true });
+  menu(page)
+    .getByRole("option")
+    .filter({ has: page.locator(".command-menu-verb", { hasText: new RegExp(`^${label}$`) }) });
 
 // What a fresh account is offered with the default five entries (vjt's
 // ruling, Q2 — lib/commandUsage.ts DEFAULT_COMMAND_ORDER).
@@ -54,10 +61,10 @@ test("issue 2584 — `/` offers the default commands; typing filters, Tab walks 
   await expect(menu(page)).toHaveCount(0);
 
   await ta.fill("/");
-  await expect(entries(page)).toHaveText(DEFAULT_FIVE);
+  await expect(verbs(page)).toHaveText(DEFAULT_FIVE);
 
   await ta.fill("/wh");
-  await expect(entries(page)).toHaveText(["/whois", "/who", "/whowas"]);
+  await expect(verbs(page)).toHaveText(["/whois", "/who", "/whowas"]);
   await expect(menu(page).locator('[aria-selected="true"]')).toHaveCount(0);
 
   // Tab walks the entries the menu shows, in its order, and the menu marks
@@ -78,7 +85,7 @@ test("issue 2584 — `/` offers the default commands; typing filters, Tab walks 
   // …until the draft changes. Also the positive control for the line above:
   // the page was alive and still able to show the menu.
   await ta.fill("/wh");
-  await expect(entries(page)).toHaveText(["/whois", "/who", "/whowas"]);
+  await expect(verbs(page)).toHaveText(["/whois", "/who", "/whowas"]);
 
   // A pointer pick: the command and its space, and the focus stays in the box.
   await entry(page, "/whowas").click();
@@ -96,14 +103,14 @@ test("issue 2584 — the menu settings are this device's: fewer entries, then of
 
   // The pre-state, in this very page: on, five entries.
   await ta.fill("/");
-  await expect(entries(page)).toHaveText(DEFAULT_FIVE);
+  await expect(verbs(page)).toHaveText(DEFAULT_FIVE);
   await ta.fill("");
 
   await openSettingsSection(page, "display");
   await page.getByTestId("command-menu-entries-select").selectOption("3");
   await closeSettings(page);
   await ta.fill("/");
-  await expect(entries(page)).toHaveText(["/join", "/msg", "/me"]);
+  await expect(verbs(page)).toHaveText(["/join", "/msg", "/me"]);
   await ta.fill("");
 
   await openSettingsSection(page, "display");
@@ -150,7 +157,7 @@ test("issue 2584 — the most used commands come first, on every device of the a
 
   // The device that sent is current at once: the POST answers the whole map.
   await ta.fill("/");
-  await expect(entries(page)).toHaveText(counted);
+  await expect(verbs(page)).toHaveText(counted);
   await ta.fill("");
 
   // A second device of the same account, with its own (empty) localStorage:
@@ -178,7 +185,7 @@ test("@webkit @touch issue 2584 — a tap on an entry puts the command in the bo
   const ta = composeTextarea(page);
   await ta.tap();
   await ta.fill("/wh");
-  await expect(entries(page)).toHaveText(["/whois", "/who", "/whowas"]);
+  await expect(verbs(page)).toHaveText(["/whois", "/who", "/whowas"]);
 
   // #59 — the entry cancels its mousedown, so the composer keeps the focus
   // (on a phone: the keyboard stays up for the arguments).

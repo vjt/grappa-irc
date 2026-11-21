@@ -15,12 +15,13 @@ import {
   commandCounts,
   countCommand,
   DEFAULT_COMMAND_ORDER,
+  describeCommand,
   rankCommands,
   rankVerbs,
   refreshCommandCounts,
 } from "../lib/commandUsage";
 import { __resetServerProtocolForTests, setServerProtocol } from "../lib/serverProtocol";
-import { BUILTIN_VERBS } from "../lib/slashCommands";
+import { BUILTIN_VERBS, builtinDescription } from "../lib/slashCommands";
 
 const TOKEN = "command-usage-tok";
 
@@ -108,6 +109,29 @@ describe("rankCommands (issue 2584)", () => {
     expect(all).toContain("wii");
     expect(all.filter((v) => v === "join")).toEqual(["join"]);
     expect(all).toHaveLength(BUILTIN_VERBS.length + 1);
+  });
+});
+
+describe("describeCommand (issue 2616)", () => {
+  afterEach(() => {
+    mockAliases = noKeys();
+  });
+
+  it("every builtin verb carries a caption", () => {
+    for (const verb of BUILTIN_VERBS) {
+      expect(builtinDescription(verb)).not.toBeNull();
+    }
+  });
+
+  it("an alias answers with its expansion, and it wins over the builtin it shadows", () => {
+    mockAliases = keysOf({ zz: "whois $1", join: "whois $1" });
+    expect(describeCommand("zz")).toBe("whois $1");
+    // #427 — the alias shadows /join, so the expansion is what /join does now.
+    expect(describeCommand("join")).toBe("whois $1");
+  });
+
+  it("a verb nobody described answers null, so the row shows the verb alone", () => {
+    expect(describeCommand("nonesuch")).toBeNull();
   });
 });
 

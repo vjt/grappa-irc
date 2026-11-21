@@ -33,7 +33,7 @@ import { token } from "./auth";
 import { atKey, keyEntries, noKeys } from "./byKey";
 import { identityScopedStore } from "./identityScopedStore";
 import { serverProtocol } from "./serverProtocol";
-import { BUILTIN_VERBS } from "./slashCommands";
+import { BUILTIN_VERBS, builtinDescription } from "./slashCommands";
 import { type CommandCounts, getCommandCounts, postCommandCount } from "./userSettings";
 
 // The first protocol whose server keeps command counts (issue 2584).
@@ -126,3 +126,12 @@ export const rankCommands = (prefix: string, limit: number): string[] =>
     ...BUILTIN_VERBS,
     ...keyEntries(aliases()).map(([name]) => name),
   ]);
+
+/**
+ * issue 2616 — the muted caption under `verb` in the `/` menu. An alias
+ * answers with its expansion, and it answers FIRST: #427 lets it shadow a
+ * builtin, so when both exist the expansion is what the verb does now. No
+ * description at all → null, and the row shows the verb alone.
+ */
+export const describeCommand = (verb: string): string | null =>
+  atKey(aliases(), verb) ?? builtinDescription(verb);
