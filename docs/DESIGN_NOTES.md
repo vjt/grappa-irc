@@ -7812,3 +7812,44 @@ the chain whether or not it overflows (the latch reading in the issue 2671
 entry). Whether iOS stops it at a box that does not overflow is INFERRED; if
 it does not, the drag would skip `.admin-pane` and reach the shell. vjt's
 device check is what answers that.
+<!-- entry #2674 -->
+
+---
+
+## 2026-11-21 — issue 2674: 438 joins the nick-failure deny list, and what it actually misrouted
+
+438 is a `/nick` refusal on both bound ircds, under two names: bahamut
+`ERR_NONICKCHANGE` (you sit in a `+d` channel, `[own, wanted, "… (#chan)"]`)
+and solanum `ERR_NICKTOOFAST` (anti-flood, `[own, own, wanted, text]`). It was
+in neither class table, so `scan_params/2` skipped the own-nick echo and took
+the wanted nick for a query peer: `{:query, wanted}` on both shapes. It is now
+in `@active_numerics` beside 432/433/435/437, and the file:line evidence for
+both format strings sits on the entry there, not here.
+
+* **The issue's symptom was wrong, and the defect is narrower than it read.**
+  The issue said the refusal "opens a query". It cannot: `Session.Server`'s
+  #640 gate (`resolve_numeric_query_window/2`) never mints a window from a
+  numeric's query decision, it sends it to `$server` unless a window for that
+  nick is already open. So a 438 reached `$server` in the common case, and was
+  filed in a conversation only when one named after the wanted nick was open.
+  The self window left at an old nick is one such window (CLAUDE.md, issue
+  1365: it stays at the nick it was opened under), and an old nick is what a
+  keepnick retry asks for. That is why this lands before issue 2656 S1, and
+  it is LATENT in the same sense #910's 321 was: real the moment that window
+  exists, invisible otherwise.
+* **The cross-flavour check was done in source, not taken from the issue.**
+  Same meaning on bahamut (9465028) and solanum (92afd03), neither carries a
+  destination (bahamut's channel is inside the trailing, so the scan never
+  sees it), and IRCnet's ircd reserves 438 with a `NULL` format, so it cannot
+  emit it. It is not a JOIN failure, so the #1345 correlation gate never sees
+  it either.
+* **The test params follow the format strings; nothing was traced off a live
+  session.** Unlike 435 (issue 2252, measured on Azzurra), no 438 has been
+  observed on prod. The test mirror of `@active_numerics` gains 438 too: the
+  channel-prefix property draws from `400..499` minus that mirror, so leaving
+  it out would let the property draw 438 and fail for a reason unrelated to
+  the channel branch.
+* **Nothing else waits on 438.** The only other place nick-failure numerics
+  are consumed is `AuthFSM`'s registration path, and neither ircd emits 438
+  before registration: bahamut gates it on `IsRegisteredUser`, solanum emits it
+  from `change_local_nick`, which an unregistered client never reaches.
