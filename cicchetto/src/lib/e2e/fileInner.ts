@@ -133,16 +133,38 @@ export function onGrappaOrigin(url: string, origin: string): boolean {
  * Default_Ignorable_Code_Point (the Hangul fillers, the variation selectors),
  * and a lone surrogate (Cs), which is no text at all. A name is then shown
  * and saved as what it visibly says. Letters and combining marks of every
- * script stay: they are how names are written.
+ * script stay: they are how names are written. So do the four code points of
+ * `JOINERS` and `VARIATION_SELECTORS`, under their own rule.
  */
 const BANNED_IN_NAME = /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}/\\]/u;
 
 /**
- * A run of blanks, collapsed to one space. The Braille blank (U+2800) draws as
- * a space and Unicode files it as a symbol, so `\s` alone would let a run of
- * them push the end of a name out of sight.
+ * Four code points that `BANNED_IN_NAME` covers and that are part of how some
+ * names are written, so they come back, but only where they do that work:
+ *
+ * - U+200C ZERO WIDTH NON-JOINER and U+200D ZERO WIDTH JOINER stay only
+ *   between two visible characters the name keeps (the ZWNJ inside a Persian
+ *   word, the ZWJ inside an emoji sequence);
+ * - U+FE0E and U+FE0F, the text and emoji variation selectors, stay only
+ *   right after a base (the U+FE0F of ❤️);
+ * - a run of either kind collapses to one;
+ * - at an edge of the name, or anywhere else, they go.
+ *
+ * A variation selector that stays is part of its base, so the joiner after
+ * the ❤️ of ❤️‍🔥 is between two visible characters.
  */
-const BLANKS = /[\s\u2800]+/gu;
+const JOINERS: ReadonlySet<string> = new Set(["\u200C", "\u200D"]);
+const VARIATION_SELECTORS: ReadonlySet<string> = new Set(["\uFE0E", "\uFE0F"]);
+
+/**
+ * A blank. The Braille blank (U+2800) draws as a space and Unicode files it as
+ * a symbol, so `\s` alone would let a run of them push the end of a name out
+ * of sight.
+ */
+const BLANK = /[\s\u2800]/u;
+
+/** A run of blanks, collapsed to one space. */
+const BLANKS = new RegExp(`${BLANK.source}+`, "gu");
 
 /** The longest name this client shows or saves, in code points. */
 export const FILENAME_MAX = 120;
@@ -155,14 +177,48 @@ export const FILENAME_MAX = 120;
 const EXTENSION_MAX = 16;
 
 /**
- * `name` as it may be shown and saved: `BANNED_IN_NAME` taken out, blanks
- * collapsed, and cut to `FILENAME_MAX` with its extension kept. Empty when
- * nothing printable is left, and the caller says so rather than inventing a
- * name.
+ * `name` as it may be shown and saved: `BANNED_IN_NAME` taken out (the four
+ * joiners and selectors only where they do no work), blanks collapsed, and
+ * cut to `FILENAME_MAX` with its extension kept. Empty when nothing printable
+ * is left, and the caller says so rather than inventing a name.
  */
 export function sanitizeFileName(name: string): string {
-  const kept = [...name].filter((char) => !BANNED_IN_NAME.test(char));
-  return cutToLength(kept.join("").replace(BLANKS, " ").trim()).trim();
+  const kept = [...name].filter(
+    (char) => JOINERS.has(char) || VARIATION_SELECTORS.has(char) || !BANNED_IN_NAME.test(char),
+  );
+  return cutToLength(keepInContext(kept).join("").replace(BLANKS, " ").trim()).trim();
+}
+
+/** Whether `char` draws as something: neither a blank nor one of the four. */
+function isVisible(char: string): boolean {
+  return !JOINERS.has(char) && !VARIATION_SELECTORS.has(char) && !BLANK.test(char);
+}
+
+/**
+ * `chars` with `JOINERS` and `VARIATION_SELECTORS` kept only in the context
+ * their rule names. A run collapses by the same tests: of a run of joiners
+ * only the last one touches the character after it, and of a run of
+ * selectors only the first one touches its base.
+ */
+function keepInContext(chars: readonly string[]): string[] {
+  const kept: string[] = [];
+  chars.forEach((char, at) => {
+    const before = kept[kept.length - 1];
+    if (VARIATION_SELECTORS.has(char)) {
+      if (before !== undefined && isVisible(before)) kept.push(char);
+    } else if (JOINERS.has(char)) {
+      const after = chars[at + 1];
+      const between =
+        before !== undefined &&
+        (isVisible(before) || VARIATION_SELECTORS.has(before)) &&
+        after !== undefined &&
+        isVisible(after);
+      if (between) kept.push(char);
+    } else {
+      kept.push(char);
+    }
+  });
+  return kept;
 }
 
 /**
@@ -178,9 +234,9 @@ function cutToLength(name: string): string {
   const extension = dot > 0 ? chars.slice(dot) : [];
   const isExtension =
     extension.length > 1 && extension.length <= EXTENSION_MAX + 1 && !extension.includes(" ");
-  if (!isExtension) return chars.slice(0, FILENAME_MAX).join("");
-  const stem = chars
-    .slice(0, FILENAME_MAX - extension.length)
+  // The cut can end a piece on a joiner, which is then at an edge.
+  if (!isExtension) return keepInContext(chars.slice(0, FILENAME_MAX)).join("");
+  const stem = keepInContext(chars.slice(0, FILENAME_MAX - extension.length))
     .join("")
     .trimEnd();
   return stem + extension.join("");
