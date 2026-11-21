@@ -163,11 +163,16 @@ const UA_SCROLLERS = ["textarea"];
  * carve-outs must match it exactly: dropping one, or adding one nobody traced,
  * is red. It records the census and does not observe nesting: a new nested
  * scroller in a component still passes until the census is redone.
+ *
+ * An inner that is a listed horizontal strip is nested only in the layout that
+ * turns it vertical (the desktop `.adm-nav` rail). It gets no carve-out, which
+ * would drop its x as well: it keeps the strip list's x and contains no y.
  */
 const NESTED_CENSUS: [outer: string, inner: string][] = [
   [".settings-drawer", "textarea"],
   [".registration-wizard-body", ".registration-wizard-mirror"],
   [".admin-pane", ".admin-tab-panel"],
+  [".admin-pane", ".adm-nav"],
 ];
 
 /**
@@ -231,10 +236,16 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
         const subject = subjectOf(entry);
         if (covers(both, subject)) continue;
         if (covers(xOnly, subject)) {
-          // A strip that DECLARES a vertical scroll in some layout (the desktop
-          // `.adm-nav` rail) must contain that axis where it does. Its computed
-          // `auto` y elsewhere is the hand-off the strip list exists for.
-          if (declaredScrollAxes(rule.body).has("y") && own.y !== "contain") {
+          // A strip that DECLARES a vertical scroll in some layout must contain
+          // that axis where it does, unless the census found that layout
+          // nesting it in a vertical scroller: ruling (b), the desktop
+          // `.adm-nav` rail inside `.admin-pane`. Its computed `auto` y
+          // elsewhere is the hand-off the strip list exists for.
+          const nestedThere = covers(
+            NESTED_CENSUS.map(([, inner]) => inner),
+            subject,
+          );
+          if (declaredScrollAxes(rule.body).has("y") && own.y !== "contain" && !nestedThere) {
             offenders.push(
               `${entry}: listed as a horizontal strip but scrolls y here, uncontained`,
             );
@@ -309,21 +320,36 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
     expect(offenders).toEqual([]);
   });
 
-  it("the carve-outs are exactly the nested scrollers the census found", () => {
+  it("the nested scrollers the census found, and only those, give up containment", () => {
     // The test above checks that a carve-out is well-formed, never which ones
-    // exist: without this, dropping a pair the census found stays green.
-    const { nested } = overscrollContainment();
+    // exist: without this, dropping a pair the census found stays green. A
+    // nested strip gives up only y, so no rule may contain y on it.
+    const { nested, xOnly } = overscrollContainment();
+    const isStrip = ([, inner]: [string, string]): boolean => covers(xOnly, inner);
     expect([...nested].sort()).toEqual(
-      NESTED_CENSUS.map(([outer, inner]) => `:where(${outer}) ${inner}`).sort(),
+      NESTED_CENSUS.filter((pair) => !isStrip(pair))
+        .map(([outer, inner]) => `:where(${outer}) ${inner}`)
+        .sort(),
     );
+    const containsY = NESTED_CENSUS.filter(isStrip).flatMap(([, inner]) =>
+      rules
+        .filter(
+          ({ selectors, body }) =>
+            selectorList(selectors).some((entry) => covers([inner], subjectOf(entry))) &&
+            !["auto", undefined].includes(byAxis(body, "overscroll-behavior").y),
+        )
+        .map(({ selectors }) => `${selectors}: contains y on a nested strip`),
+    );
+    expect(containsY).toEqual([]);
   });
 
   it("no rule declares containment of its own beside the shared rules", () => {
     // The whole point of the ruling: no per-rule `contain` creeping back. What
     // stays legal is `none` on a surface the shared rules do NOT list (it also
     // refuses the element's own bounce — the root, the directory list), and the
-    // ONE restore a horizontal strip needs where a layout turns it into a
-    // vertical scroller. `none` on a LISTED surface would take away the bounce
+    // restore a horizontal strip needs where a layout turns it into a vertical
+    // scroller that is NOT nested (none today: the desktop `.adm-nav` rail is
+    // nested, see NESTED_CENSUS). `none` on a LISTED surface would take away the bounce
     // the shared rule promises (ruling (2)): take the surface out of the list
     // instead, so the exception is visible where the rule is.
     const { both, xOnly } = overscrollContainment();
