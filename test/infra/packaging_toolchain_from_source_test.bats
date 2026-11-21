@@ -10,8 +10,10 @@
 # configure + make of OTP) runs in CI only. So do the two checks that need the
 # real binaries: the `ssl` start inside `erl -eval`, and the System.version/0
 # call that a bare `--short-version` would answer without a compiled module.
-# Here `erl` and `elixir` are stand-ins: `erl` only records that it ran, and
-# `elixir` prints the version its fixture names.
+# Here `erl` and `elixir` are stand-ins: `erl` records that it ran and exits
+# with the code its fixture names, and `elixir` prints the version its fixture
+# names. So the suite holds that the script stops when the installed erl exits
+# non-zero, but not that the real erl does exit non-zero when ssl fails.
 #
 # `curl` and `tar` are PATH stubs that log every call, in order, to one file:
 # curl serves fixtures by file name, tar execs the real one. The default
@@ -44,7 +46,7 @@ setup() {
     # real tar, so only the script's own calls reach the log.
     REAL_TAR="$(command -v tar)"
 
-    otp_tarball 42 98.7
+    otp_tarball 42 98.7 0
 
     FAKE="$BATS_TEST_TMPDIR/fake"
     mkdir -p "$FAKE"
@@ -78,9 +80,9 @@ EOF
 # The OTP source tree, served as otp_src_98.7.tar.gz. Its configure records its
 # argv and its --prefix, then exits CONFIGURE_EXIT; its `make install` writes
 # REPORTED as releases/98/OTP_VERSION, where a real install puts it, and the
-# `erl` stand-in.
+# `erl` stand-in, which logs its call and exits ERL_EXIT.
 otp_tarball() {
-    local configure_exit="$1" reported="$2"
+    local configure_exit="$1" reported="$2" erl_exit="$3"
     local src="$BATS_TEST_TMPDIR/build/otp_src_98.7"
     rm -rf "$src"
     mkdir -p "$src"
@@ -95,6 +97,7 @@ EOF
     cat > "$src/erl" <<EOF
 #!/bin/sh
 printf 'erl %s\n' "\$*" >> "$CALLS"
+exit $erl_exit
 EOF
     cat > "$src/install.sh" <<EOF
 #!/bin/sh
@@ -191,7 +194,7 @@ show_run() {
 }
 
 @test "a build that reports the pinned pair runs to the end, unpacking the OTP tarball only after both its downloads" {
-    otp_tarball 0 98.7
+    otp_tarball 0 98.7 0
     elixir_archive 6.5.4
     publish_sums "$(genuine_sum)"
 
@@ -217,7 +220,7 @@ show_run() {
 }
 
 @test "an install whose OTP_VERSION is not the pin stops the run before Elixir is fetched" {
-    otp_tarball 0 98.6
+    otp_tarball 0 98.6 0
     publish_sums "$(genuine_sum)"
 
     cd "$REPO"
@@ -228,7 +231,7 @@ show_run() {
 }
 
 @test "an Elixir that reports a version other than the pin stops the run" {
-    otp_tarball 0 98.7
+    otp_tarball 0 98.7 0
     elixir_archive 6.5.3
     publish_sums "$(genuine_sum)"
 
@@ -236,6 +239,21 @@ show_run() {
     run "$SCRIPT" "$PREFIX"
     [ "$status" -eq 1 ] || { show_run; return 1; }
     grep -qF "built Elixir reports '6.5.3', expected '6.5.4'" <<<"$output"
+}
+
+@test "an installed erl that fails stops the run before Elixir is fetched" {
+    # The real erl failing its `ssl` start is CI's to see (see the header);
+    # what holds here is that the script does not go on past a failing erl.
+    otp_tarball 0 98.7 3
+    elixir_archive 6.5.4
+    publish_sums "$(genuine_sum)"
+
+    cd "$REPO"
+    run "$SCRIPT" "$PREFIX"
+    [ "$status" -ne 0 ] || { show_run; return 1; }
+    # It stopped AT erl, not earlier: the stand-in was reached.
+    grep -q '^erl -noshell -eval ' "$CALLS"
+    refute grep -q 'elixir-lang' "$CALLS"
 }
 
 # ── release.yml wiring ──────────────────────────────────────────────────────
