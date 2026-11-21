@@ -403,7 +403,6 @@ const FileTrailer: Component<{ row: Message | undefined; ciphertext: boolean }> 
     if (busy()) return;
     setBusy(true);
     setFailure(null);
-    inflight?.abort();
     const controller = new AbortController();
     inflight = controller;
     try {
