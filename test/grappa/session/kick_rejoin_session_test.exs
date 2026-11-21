@@ -226,6 +226,22 @@ defmodule Grappa.Session.KickRejoinSessionTest do
       assert await_join_lines(server, 1) == ["JOIN #a\r\n"]
     end
 
+    # The settings bridge is per subject, not per network: every session of
+    # the subject hears every one of its credentials change, and only its
+    # own network's change may land. The positive control is the test
+    # above: the same switch, on this session's own credential.
+    test "switching it on for another network leaves this session kicked" do
+      %{server: server, user: user, pid: pid} = session_in_channel(:untouched)
+      other = credential_fixture(user, network_fixture(), %{autojoin_channels: []})
+
+      _ = kick_rejoin(other, true, 0)
+      :ok = kick(server)
+
+      :ok = refute_rejoin_attempt(@never_ms)
+      assert join_lines(server) == []
+      assert window_state(pid) == :kicked
+    end
+
     test "a visitor's opted-in credential rejoins the same way" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port, nick: "vkick")
