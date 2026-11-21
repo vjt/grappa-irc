@@ -144,6 +144,24 @@ describe("sanitizeFileName (issue 2517)", () => {
     expect(sanitizeFileName("‮⁦\u0007")).toBe("");
   });
 
+  // A download is saved under this name, typed `application/octet-stream`, so
+  // nothing gives back an extension the cut took: the stem gets shorter.
+  it("cuts a long name in its stem and keeps the extension", () => {
+    expect(sanitizeFileName(`${"a".repeat(130)}.pdf`)).toBe(`${"a".repeat(116)}.pdf`);
+    expect(sanitizeFileName(`${"写".repeat(200)}.tar.gz`)).toBe(`${"写".repeat(117)}.gz`);
+    // A blank the cut leaves at the end of the stem goes with it.
+    expect(sanitizeFileName(`${"a".repeat(115)} ${"b".repeat(20)}.pdf`)).toBe(
+      `${"a".repeat(115)}.pdf`,
+    );
+  });
+
+  it("cuts a tail past the extension length, or with a blank in it, as more name", () => {
+    const longTail = `a.${"b".repeat(200)}`;
+    expect(sanitizeFileName(longTail)).toBe(longTail.slice(0, 120));
+    const blankTail = `${"a".repeat(130)}.not an extension`;
+    expect(sanitizeFileName(blankTail)).toBe("a".repeat(120));
+  });
+
   // A name is shown and saved as what it visibly says: whatever Unicode draws
   // as nothing, or uses to steer the layout rather than to write text, goes.
   it("takes out every code point that draws as nothing or steers the layout", () => {
