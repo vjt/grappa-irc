@@ -184,10 +184,11 @@ defmodule Grappa.Session.EventRouterPropertyTest do
         {:parted, channel} ->
           assert is_binary(channel)
 
-        {:kicked, channel, by, reason} ->
+        {:kicked, channel, by, reason, key} ->
           assert is_binary(channel)
           assert is_binary(by)
           assert is_binary(reason) or is_nil(reason)
+          assert is_binary(key) or is_nil(key)
 
         {:whois_bundle, target, accum, _} ->
           assert is_binary(target)

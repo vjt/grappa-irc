@@ -4209,13 +4209,14 @@ defmodule Grappa.Session.EventRouterTest do
 
   describe "route/2 — :kicked effect emission (CP15 B3)" do
     # B3: server-side window-state event. Self-target KICK (target ==
-    # state.nick) MUST emit {:kicked, channel, by, reason} alongside the
-    # existing :persist :kick row so Session.Server's apply_effects arm
+    # state.nick) MUST emit {:kicked, channel, by, reason, key} alongside
+    # the existing :persist :kick row so Session.Server's apply_effects arm
     # can flip window_states[channel] = :kicked + broadcast. Other-target
     # KICK must NOT emit it. `by` is the sender nick; `reason` is the
-    # trailing param or nil when absent.
+    # trailing param or nil when absent; `key` (issue 2657) is the +k key
+    # the mode cache held before the KICK wiped it, or nil.
 
-    test "self-target KICK with reason emits {:kicked, channel, by, reason}" do
+    test "self-target KICK with reason emits {:kicked, channel, by, reason, nil}" do
       state =
         base_state(%{
           nick: "vjt",
@@ -4224,11 +4225,11 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:kick, ["#grappa", "vjt", "behave"], {:nick, "alice", "u", "h"})
 
-      assert {:cont, _, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", "behave"}]} =
+      assert {:cont, _, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", "behave", nil}]} =
                EventRouter.route(m, state)
     end
 
-    test "self-target KICK with no reason emits {:kicked, channel, by, nil}" do
+    test "self-target KICK with no reason emits {:kicked, channel, by, nil, nil}" do
       state =
         base_state(%{
           nick: "vjt",
@@ -4237,7 +4238,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:kick, ["#grappa", "vjt"], {:nick, "alice", "u", "h"})
 
-      assert {:cont, _, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", nil}]} =
+      assert {:cont, _, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", nil, nil}]} =
                EventRouter.route(m, state)
     end
 
@@ -4253,7 +4254,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg(:kick, ["#grappa", "vjt", "out"], {:nick, "alice", "u", "h"})
 
-      assert {:cont, _, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", "out"}]} =
+      assert {:cont, _, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", "out", nil}]} =
                EventRouter.route(m, state)
     end
 
@@ -4267,7 +4268,55 @@ defmodule Grappa.Session.EventRouterTest do
       m = msg(:kick, ["#grappa", "bob", "go away"], {:nick, "alice", "u", "h"})
 
       assert {:cont, _, effects} = EventRouter.route(m, state)
-      refute Enum.any?(effects, &match?({:kicked, _, _, _}, &1))
+      refute Enum.any?(effects, &match?({:kicked, _, _, _, _}, &1))
+    end
+
+    # Issue 2657 — the key rides the effect because the same clause wipes
+    # the mode cache it lives in. Read after the wipe, it would be nil
+    # every time and every kick rejoin of a +k channel would earn a 475.
+    test "self-target KICK carries the +k key the mode cache held" do
+      state =
+        base_state(%{
+          nick: "vjt",
+          members: %{"#grappa" => %{"vjt" => [], "alice" => ["@"]}},
+          channel_modes: %{"#grappa" => %{modes: ["k", "n"], params: %{"k" => "sekrit"}}}
+        })
+
+      m = msg(:kick, ["#grappa", "vjt", "out"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, new_state, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", "out", "sekrit"}]} =
+               EventRouter.route(m, state)
+
+      refute Map.has_key?(new_state.channel_modes, "#grappa")
+    end
+
+    # The cache entry the key comes from is the 324 every self-JOIN asks
+    # for: route the numeric, then the KICK, and the key that comes out is
+    # the one the 324 put in.
+    test "self-target KICK carries the key a 324 RPL_CHANNELMODEIS reported" do
+      state = base_state(%{nick: "vjt", members: %{"#grappa" => %{"vjt" => [], "alice" => ["@"]}}})
+
+      {:cont, keyed, _} =
+        EventRouter.route(msg({:numeric, 324}, ["vjt", "#grappa", "+ntk", "fromthe324"], {:server, "irc.test"}), state)
+
+      m = msg(:kick, ["#grappa", "vjt", "out"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, _, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", "out", "fromthe324"}]} =
+               EventRouter.route(m, keyed)
+    end
+
+    test "self-target KICK on a channel with modes but no key carries nil" do
+      state =
+        base_state(%{
+          nick: "vjt",
+          members: %{"#grappa" => %{"vjt" => [], "alice" => ["@"]}},
+          channel_modes: %{"#grappa" => %{modes: ["l", "n"], params: %{"l" => "42"}}}
+        })
+
+      m = msg(:kick, ["#grappa", "vjt", "out"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, _, [{:persist, :kick, _}, {:kicked, "#grappa", "alice", "out", nil}]} =
+               EventRouter.route(m, state)
     end
   end
 

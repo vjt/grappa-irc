@@ -266,6 +266,12 @@ config :grappa, :session_backoff,
   base_ms: 5,
   cap_ms: 100
 
+# Issue 2657 — one second of kick-rejoin delay lasts 100 ms here, so a test
+# can watch the 10 s delay being honoured (and cancelled inside it) in 1 s.
+# The credential still stores seconds from the closed set; only the length
+# of a second shrinks, so the seconds-to-ms conversion stays under test.
+config :grappa, :session, kick_rejoin_second_ms: 100
+
 # #340 / #523 — shrink the shared busy-retry budget + backoff so the
 # `BusyRetry` + `Scrollback.with_pool_retry/1` resilience tests (which raise a
 # transient DB error repeatedly) ride out several attempts and degrade in

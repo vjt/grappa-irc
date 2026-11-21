@@ -127,6 +127,7 @@ defmodule Grappa.Session.Server do
     GhostRecovery,
     IdentityState,
     ISupport,
+    KickRejoin,
     LinksAccum,
     ListModeAccum,
     ListModes,
@@ -465,6 +466,9 @@ defmodule Grappa.Session.Server do
           # (unlike away, this isn't user-only). Omitted opt boots an
           # all-nil profile (`empty_profile/0`).
           optional(:restored_profile) => profile(),
+          # Issue 2657 — the kick-rejoin opt-in snapshot, BOTH subjects. An
+          # omitted opt boots `:off`, the column default.
+          optional(:restored_kick_rejoin) => KickRejoin.config(),
           # M3a — the credential's own avatar, absolute URL (already
           # `nil`-safe: `Grappa.Networks.Wire.avatar_url/1` returns `nil`
           # when unset). Same both-subjects, omitted-boots-nil shape as
@@ -602,6 +606,17 @@ defmodule Grappa.Session.Server do
           # key) does not crash — same defensive contract as
           # in_flight_joins (event_router.ex:1323).
           awaiting_invite: MapSet.t(String.t()),
+          # Issue 2657 — the credential's kick-rejoin opt-in
+          # (`KickRejoin.config/0`), booted from the plan's
+          # `:restored_kick_rejoin` and re-tuned live by
+          # `{:credential_kick_rejoin_changed, network_id, _}`. Read again when
+          # a rejoin's delay ends, so switching it off inside the delay cancels.
+          kick_rejoin: KickRejoin.config(),
+          # Issue 2657 — the self-KICK stamps the kick-loop guard counts, per
+          # folded channel (`KickRejoin.kicks/0`), recorded on every self-KICK
+          # whether or not the opt-in is on. Memory only: a crash forgets the
+          # count, and the respawn rejoins through the #2317 plan regardless.
+          kicks: KickRejoin.kicks(),
           auth_method: AuthFSM.auth_method(),
           autojoin: [String.t()],
           # #347 — deferred-autojoin fallback window (config default
@@ -1264,6 +1279,10 @@ defmodule Grappa.Session.Server do
       e2e_key_answers: E2eKeyAnswers.new(),
       in_flight_joins: %{},
       awaiting_invite: MapSet.new(),
+      # Issue 2657 — an omitted opt boots `:off`, the column default (a plan
+      # always carries it; a hand-built test plan may not).
+      kick_rejoin: Map.get(opts, :restored_kick_rejoin, :off),
+      kicks: %{},
       # UX-4 bucket A — canonicalise the autojoin list at boot so the
       # 001 RPL_WELCOME loop sends `JOIN #chan` (canonical) regardless
       # of whether the operator typed `#Chan` in a mix task pre-
@@ -3137,16 +3156,6 @@ defmodule Grappa.Session.Server do
   @impl GenServer
   def handle_call({:send_join, channels, key}, _, state)
       when is_list(channels) and (is_nil(key) or is_binary(key)) do
-    # Code-review CRIT-1 (bucket C): post-irc/S2 `Client.send_join`
-    # returns `{:error, :invalid_line}` for malformed channels. The
-    # `Session.send_join/4` facade gates `valid_channel?` per element
-    # before the call (CRIT-1 fix), so reaching this clause with a
-    # malformed channel requires a caller bypassing the facade. Defensive
-    # `{:error, :invalid_line}` arm mirrors the autojoin loop pattern
-    # at handle_info({:irc, %Message{command: {:numeric, 1}}}, …) so
-    # a future bypass-caller logs + drops instead of MatchError-crashing
-    # the Session.
-    #
     # PHASE-1 (post-cr-review cluster): converted from cast to call so
     # the `window_pending` broadcast inside `record_in_flight_join/2`
     # fires BEFORE the REST controller returns 202. Pre-conversion the
@@ -3156,93 +3165,10 @@ defmodule Grappa.Session.Server do
     # rationale. Reply `:ok` AFTER `record_in_flight_join` so the
     # caller's wall clock includes the broadcast.
     #
-    # UX-4 bucket F: `key` is the optional +k channel key (nil for
-    # keyless channels). Client.send_join/3 emits the wire frame in
-    # the keyed or keyless shape based on key.
-    #
     # #382: `channels` is the canonical-folded list from
     # `Session.send_join/4` (a single channel is a list-of-one).
-    # `Client.send_join/3`'s list clause frames ONE multi-target JOIN
-    # line; on `:ok` we `record_in_flight_join/2` PER channel so EACH
-    # window flips to `:pending` and broadcasts `window_pending`.
-    case Client.send_join(state.client, channels, key) do
-      :ok ->
-        state = Enum.reduce(channels, state, &record_in_flight_join(&2, &1))
-        {:reply, :ok, state}
-
-      {:error, :invalid_line} = err ->
-        Logger.warning("send_join call rejected: invalid channel name",
-          channel: inspect(channels)
-        )
-
-        {:reply, err, state}
-
-      # issue 2114 — THE TRANSPORT IS NOT THERE YET. `:no_socket` is the one
-      # transport error this process will outlive: it means `state.client` is
-      # nil (or its socket is), which for a Registry-registered session is the
-      # reconnect ladder itself — `handle_continue({:start_client, _})` defers
-      # the Client spawn by `Backoff.wait_ms/2`, so the session answers every
-      # REST verb through the whole delay with nothing to write on. The prod
-      # journal caught ten JOINs in that window, 1 ms after
-      # `event=backoff delay_ms=3975` and five seconds before
-      # `event=connected`; the door logged all ten and forgot all ten, so the
-      # channels never came back and no error said so.
-      #
-      # So keep them: queue, and let `fire_join_plan/1` put them on the wire at
-      # the SAME seam the autojoin set rides (001, or the #347 +r defer). Not a
-      # retry timer and not a flush at `:irc_connected` — the first duplicates
-      # the backoff ladder, and the second fires before registration, where an
-      # ircd ignores a JOIN. `record_in_flight_join/2` opens the window
-      # `:pending` exactly as the accepted path does, and the reply is `:ok`
-      # (202), because "queued, not yet joined" is what `:pending` already
-      # means and a 400 would now be false.
-      {:error, :no_socket} ->
-        # `info`, not `warning`: this is now a handled, expected state of the
-        # reconnect ladder, and prod runs at `:info` so the operator still sees
-        # it. Promoting it would inflate a level whose value is that it means
-        # something went wrong — the same argument #1677 makes for its
-        # strict-TLS line. No queue-depth key: one global Logger metadata atom
-        # for one line is heavier than the fact, and `channel` already says
-        # which JOIN this is.
-        Logger.info("send_join queued until the transport is up",
-          channel: inspect(channels)
-        )
-
-        state =
-          Enum.reduce(channels, state, fn channel, acc ->
-            acc |> queue_join(channel, key) |> record_in_flight_join(channel)
-          end)
-
-        {:reply, :ok, state}
-
-      # issue 2370 — the Client did not answer in time. Neither branch around
-      # this one fits: the JOIN is not refused (the frame waits in the
-      # Client's mailbox and may still go out, and its echo opens the window
-      # as any JOIN echo does), and the link is not known to be down. So
-      # nothing is recorded and the caller reads the same `:timeout` (504) a
-      # stuck session would give it.
-      {:error, :timeout} = err ->
-        Logger.warning("send_join call timed out on the Client — delivery unknown",
-          channel: inspect(channels)
-        )
-
-        {:reply, err, state}
-
-      # Any OTHER transport failure (`:closed`, an `:inet.posix()`): the socket
-      # WAS there and the write failed, so the Client is on its way down and
-      # this process with it — an in-memory queue would die before it flushed,
-      # and replying `:ok` would be the silent drop issue 2114 is about, told
-      # to the caller as success. Surface `{:error, :not_connected}` so
-      # FallbackController emits the existing 400 `not_connected` body instead
-      # of a CaseClauseError 500ing the cic /join.
-      {:error, reason} ->
-        Logger.warning("send_join call rejected: transport unavailable",
-          channel: inspect(channels),
-          reason: inspect(reason)
-        )
-
-        {:reply, {:error, :not_connected}, state}
-    end
+    {reply, state} = join_channels(state, channels, key)
+    {:reply, reply, state}
   end
 
   # #976 — the operator DECLINED an inbound invite. Purely local: IRC has no
@@ -3671,6 +3597,35 @@ defmodule Grappa.Session.Server do
 
   def handle_info({:credential_avatar_changed, network_id, avatar_url}, %{network_id: network_id} = state) do
     {:noreply, %{state | avatar_url: avatar_url}}
+  end
+
+  # Issue 2657 — same shape as `:credential_profile_changed` above: a live
+  # edit via `Credentials.update_kick_rejoin/2` broadcasts on the
+  # subject-scoped `user_settings` bridge, the `network_id` guard keeps
+  # network A's setting off network B's session, and `state.kick_rejoin`
+  # updates in place for the next kick — and for a rejoin whose delay is
+  # still running, which re-reads it when it ends.
+  def handle_info({:credential_kick_rejoin_changed, network_id, _}, %{network_id: other} = state)
+      when network_id != other do
+    {:noreply, state}
+  end
+
+  def handle_info({:credential_kick_rejoin_changed, network_id, config}, %{network_id: network_id} = state) do
+    {:noreply, %{state | kick_rejoin: config}}
+  end
+
+  # Issue 2657 — a kick rejoin's delay is over. The JOIN goes through the
+  # same `join_channels/3` as a `/join`, so it opens the window `:pending`,
+  # broadcasts `window_pending`, and lands `:joined` or `:failed` through the
+  # arms every JOIN uses. One JOIN per kick, never retried: a refused JOIN
+  # is reported by `:join_failed` and cannot cause another kick.
+  def handle_info({:kick_rejoin, channel, key, kicked_at_ms}, state) do
+    if kick_rejoin_due?(state, channel, kicked_at_ms) do
+      {_, state} = join_channels(state, [channel], key)
+      {:noreply, state}
+    else
+      {:noreply, state}
+    end
   end
 
   # M3b — a peer avatar fetch (`Grappa.Avatars.fetch_and_cache/3`) landed
@@ -7270,7 +7225,9 @@ defmodule Grappa.Session.Server do
   #      `broadcast_window_state/2`) carrying `by` + `reason` so cic can
   #      render the kick reason banner without parsing the scrollback
   #      row. The :persist :kick row alongside is the audit trail.
-  defp apply_effects([{:kicked, channel, by, reason} | rest], state) do
+  #   3. Issue 2657 — the kick is counted for the loop guard and, when the
+  #      credential opted in, one rejoin is armed (`arm_kick_rejoin/3`).
+  defp apply_effects([{:kicked, channel, by, reason, key} | rest], state) do
     broadcast_window_state(
       state,
       SessionWire.kicked(state.network_slug, channel, by, reason)
@@ -7290,7 +7247,7 @@ defmodule Grappa.Session.Server do
       | window_state: WindowState.set_kicked(state.window_state, channel, by, reason)
     }
 
-    apply_effects(rest, state)
+    apply_effects(rest, arm_kick_rejoin(state, channel, key))
   end
 
   # C2 — WHOIS bundle complete (318 RPL_ENDOFWHOIS). Broadcast the
@@ -8100,6 +8057,158 @@ defmodule Grappa.Session.Server do
       |> Enum.map(&{&1, nil})
 
     autojoin ++ queued
+  end
+
+  # The one JOIN verb both the `{:send_join, _, _}` call door and the issue
+  # 2657 kick rejoin go through. Same in-flight tracking, same
+  # `window_pending` broadcast, same `:no_socket` queue, whoever asked. So
+  # its log lines name the JOIN and never the door: the kick rejoin drops
+  # the reply, and a line saying "send_join call" would file a failed
+  # automatic rejoin under a /join nobody typed.
+  #
+  # Code-review CRIT-1 (bucket C): post-irc/S2 `Client.send_join`
+  # returns `{:error, :invalid_line}` for malformed channels. The
+  # `Session.send_join/4` facade gates `valid_channel?` per element
+  # before the call (CRIT-1 fix), so reaching this clause with a
+  # malformed channel requires a caller bypassing the facade. Defensive
+  # `{:error, :invalid_line}` arm mirrors the autojoin loop pattern
+  # at handle_info({:irc, %Message{command: {:numeric, 1}}}, …) so
+  # a future bypass-caller logs + drops instead of MatchError-crashing
+  # the Session.
+  #
+  # UX-4 bucket F: `key` is the optional +k channel key (nil for
+  # keyless channels). Client.send_join/3 emits the wire frame in
+  # the keyed or keyless shape based on key.
+  #
+  # #382: `Client.send_join/3`'s list clause frames ONE multi-target JOIN
+  # line; on `:ok` we `record_in_flight_join/2` PER channel so EACH
+  # window flips to `:pending` and broadcasts `window_pending`.
+  @spec join_channels(t(), [String.t()], String.t() | nil) ::
+          {:ok | {:error, :invalid_line | :timeout | :not_connected}, t()}
+  defp join_channels(state, channels, key) do
+    case Client.send_join(state.client, channels, key) do
+      :ok ->
+        state = Enum.reduce(channels, state, &record_in_flight_join(&2, &1))
+        {:ok, state}
+
+      {:error, :invalid_line} = err ->
+        Logger.warning("JOIN rejected: invalid channel name",
+          channel: inspect(channels)
+        )
+
+        {err, state}
+
+      # issue 2114 — THE TRANSPORT IS NOT THERE YET. `:no_socket` is the one
+      # transport error this process will outlive: it means `state.client` is
+      # nil (or its socket is), which for a Registry-registered session is the
+      # reconnect ladder itself — `handle_continue({:start_client, _})` defers
+      # the Client spawn by `Backoff.wait_ms/2`, so the session answers every
+      # REST verb through the whole delay with nothing to write on. The prod
+      # journal caught ten JOINs in that window, 1 ms after
+      # `event=backoff delay_ms=3975` and five seconds before
+      # `event=connected`; the door logged all ten and forgot all ten, so the
+      # channels never came back and no error said so.
+      #
+      # So keep them: queue, and let `fire_join_plan/1` put them on the wire at
+      # the SAME seam the autojoin set rides (001, or the #347 +r defer). Not a
+      # retry timer and not a flush at `:irc_connected` — the first duplicates
+      # the backoff ladder, and the second fires before registration, where an
+      # ircd ignores a JOIN. `record_in_flight_join/2` opens the window
+      # `:pending` exactly as the accepted path does, and the reply is `:ok`
+      # (202), because "queued, not yet joined" is what `:pending` already
+      # means and a 400 would now be false.
+      {:error, :no_socket} ->
+        # `info`, not `warning`: this is now a handled, expected state of the
+        # reconnect ladder, and prod runs at `:info` so the operator still sees
+        # it. Promoting it would inflate a level whose value is that it means
+        # something went wrong — the same argument #1677 makes for its
+        # strict-TLS line. No queue-depth key: one global Logger metadata atom
+        # for one line is heavier than the fact, and `channel` already says
+        # which JOIN this is.
+        Logger.info("JOIN queued until the transport is up",
+          channel: inspect(channels)
+        )
+
+        state =
+          Enum.reduce(channels, state, fn channel, acc ->
+            acc |> queue_join(channel, key) |> record_in_flight_join(channel)
+          end)
+
+        {:ok, state}
+
+      # issue 2370 — the Client did not answer in time. Neither branch around
+      # this one fits: the JOIN is not refused (the frame waits in the
+      # Client's mailbox and may still go out, and its echo opens the window
+      # as any JOIN echo does), and the link is not known to be down. So
+      # nothing is recorded and the caller reads the same `:timeout` (504) a
+      # stuck session would give it.
+      {:error, :timeout} = err ->
+        Logger.warning("JOIN timed out on the Client — delivery unknown",
+          channel: inspect(channels)
+        )
+
+        {err, state}
+
+      # Any OTHER transport failure (`:closed`, an `:inet.posix()`): the socket
+      # WAS there and the write failed, so the Client is on its way down and
+      # this process with it — an in-memory queue would die before it flushed,
+      # and replying `:ok` would be the silent drop issue 2114 is about, told
+      # to the caller as success. Surface `{:error, :not_connected}` so
+      # FallbackController emits the existing 400 `not_connected` body instead
+      # of a CaseClauseError 500ing the cic /join.
+      {:error, reason} ->
+        Logger.warning("JOIN rejected: transport unavailable",
+          channel: inspect(channels),
+          reason: inspect(reason)
+        )
+
+        {{:error, :not_connected}, state}
+    end
+  end
+
+  # Issue 2657 — a self-KICK just set `channel` `:kicked`. Count it for the
+  # loop guard (always, opt-in or not, so switching the opt-in on during a
+  # loop does not start the count over), then arm the one rejoin this kick
+  # may have. No timer ref is kept: `handle_info({:kick_rejoin, _, _, _})`
+  # re-checks everything it depends on when the delay ends, so nothing ever
+  # needs cancelling. `channel` is already the network-folded key —
+  # `EventRouter` canonicalises the KICK's channel param at ingress, and the
+  # window state above is keyed on the same value.
+  @spec arm_kick_rejoin(t(), String.t(), String.t() | nil) :: t()
+  defp arm_kick_rejoin(state, channel, key) do
+    now_ms = System.monotonic_time(:millisecond)
+    {verdict, kicks} = KickRejoin.record_kick(state.kicks, channel, now_ms)
+
+    case {state.kick_rejoin, verdict} do
+      {:off, _} ->
+        :ok
+
+      {{:on, _}, :stay_out} ->
+        Logger.info(
+          "kick rejoin: #{length(Map.fetch!(kicks, channel))} self-KICKs within " <>
+            "#{div(KickRejoin.window_ms(), 1000)} s reach the limit of #{KickRejoin.kick_limit()} — not rejoining",
+          channel: channel
+        )
+
+      {{:on, delay_seconds}, :rejoin} ->
+        _ = Process.send_after(self(), {:kick_rejoin, channel, key, now_ms}, KickRejoin.delay_ms(delay_seconds))
+        :ok
+    end
+
+    %{state | kicks: kicks}
+  end
+
+  # Issue 2657 — the rejoin fires only if, now that the delay is over, the
+  # opt-in is still on, the window is still `:kicked` (a manual `/join`
+  # moved it to `:pending`, a × to nothing, a JOIN echo to `:joined`), and
+  # this timer belongs to the channel's LATEST kick (kick → manual join →
+  # kick inside the delay must not have the first timer cut the second
+  # kick's delay short). Every input is state the session already keeps.
+  @spec kick_rejoin_due?(t(), String.t(), integer()) :: boolean()
+  defp kick_rejoin_due?(state, channel, kicked_at_ms) do
+    state.kick_rejoin != :off and
+      WindowState.state_of(state.window_state, channel) == :kicked and
+      KickRejoin.latest_kick?(state.kicks, channel, kicked_at_ms)
   end
 
   # issue 2114 — remember a JOIN the transport refused, newest-first. Deduped
