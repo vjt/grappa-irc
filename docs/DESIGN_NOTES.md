@@ -7900,12 +7900,23 @@ test 1's positive control.
 #2253 kept no timer reference on purpose: a one-shot that reads the live
 nick has nothing to cancel. A tick that re-arms is different. A second 001
 or a live toggle would otherwise start a second chain and double the
-cadence. So keepnick stores its ref (`keep_nick_timer`) and cancels before
-it arms. The cancel lives in ONE place, `reset_keep_nick/1`, which the 001
-and a live toggle both go through before arming; the tick re-arms from
-inside its own fire. A second cancel inside the arm itself was measured
-dead by mutation (it and the reset each masked the other), so it went. The
-flag-off one-shot keeps #2253's shape. While the switch
+cadence. So keepnick stores its ref (`keep_nick_timer`), and a pending ref
+IS the running chain. The 001 cancels before it arms; a live toggle arms
+only from off, and turning it off cancelled; the tick re-arms from inside
+its own fire. A second cancel inside the arm itself was measured dead by
+mutation (it and the per-001 cancel each masked the other), so it went.
+
+The review of PR 2688 found the same pair a second time (F2): an "off or
+stopped" arm at the top of the tick and the switch-off cancel masked each
+other. The arm was unreachable while the cancel stood, and removing either
+one alone changed no test outcome. The arm went, and with it the
+`keep_nick_stopped` field and its reason type, which nothing read. A stop is
+now the cancel plus one log line, and the line is written only when a tick
+was pending, so a `/nick <other>` on a session that already converged logs
+nothing. The switch-off cancel is now the only thing ending a chain on
+switch-off, and test 14 goes red without it.
+
+The flag-off one-shot keeps #2253's shape. While the switch
 is on, the one-shot is a no-op: it can only still be pending if the switch
 went on after the 001 that armed it, and the toggle then armed keepnick's
 own chain. Firing both would ask twice, and the one-shot's refusal would
@@ -7921,8 +7932,8 @@ machine: say which of the two you are looking at, and keep the terminality
 inside your own arm. Keepnick reads a NICK-family refusal only while one of
 its OWN tries is in flight (`keep_nick_in_flight?`). The tick raises that
 flag on a send the socket accepted; the first attributed refusal, a
-convergence echo, a stop or a switch-off lowers it. The operator's `/nick`
-never raises it.
+convergence echo, a stop, a switch-off or RecoverIdentity arming lowers it.
+The operator's `/nick` never raises it.
 
 | Numeric (params) | Keepnick try in flight | Outcome |
 |---|---|---|
@@ -7932,7 +7943,27 @@ never raises it.
 | 435, 438, 432, 484, 447 | yes | routed + stop + one `$server` row (channel ban; `+d` / nick-flood; erroneous / Q:line / RESV; IRCnet restricted client; UnrealIRCd `+N`) |
 | 433/437 for anything else | yes | routed + stop |
 | any | no | not touched: routes as it always did, the operator's own `/nick` refusal included |
-| 433/437 | RecoverIdentity armed | not touched: the #581 clause comes first, and keepnick sent nothing (guard) |
+| any | RecoverIdentity armed | not touched: arming the sequence lowers the flag, so 433/437 reach the #581 clause (the answer to a try sent just before it included) and a 438/435 answering the sequence's own NICK routes as it always did; the guard sends no new try |
+
+The last row used to say "keepnick sent nothing (guard)". The guard stops a
+NEW try; it did not lower one already in flight, so a 438 answering
+RecoverIdentity's own NICK (issue 2683 B1: the FSM is never fed those) was
+read as a refusal of keepnick's try and stopped it with a row naming the
+wrong NICK. The review of PR 2688 found it (F5); test 8c pins the fix.
+GhostRecovery needs no twin: it arms only on a registration 433, and
+`pending_password` is cleared at 001 before keepnick's chain arms.
+
+**What attribution cannot tell, on bahamut.** The flag says that a try of
+ours is awaiting its answer. It cannot say that a given numeric IS that
+answer. Read in bahamut's source at `94650287`: `m_nick.c` sends 431, 432,
+433, 435, 437 and 438, and neither 447 nor 484. 447 is ERR_RESTRICTED,
+sent by `check_restricted_user` from `/admin`, `/links`, channel code and
+`m_message`; 484 is ERR_NOUNKNOWNLISTS, sent by `m_list`. The table names
+them by UnrealIRCd's and IRCnet's meanings, which are the ircds where they
+do answer a NICK. On bahamut (all of prod) one of them can only reach this
+arm as the reply to another verb — a `/list`, an `/admin` — that lands
+inside a try's round trip, and it then stops keepnick for the registration,
+visibly: its own row and the stop row. The ruled table does not change.
 
 The discriminator is structural and needs no text: on bahamut `params[1]` of
 a 437 is a CHANNEL, on solanum/IRCnet it is the requested nick. Both ircds
@@ -7960,10 +7991,10 @@ A stop rule that fires without a numeric writes no row:
 * **Away**: a pause, not a stop. Winning the nick during an away would be
   undone by `restore_away_nick/1`, which sends us back to the nick the away
   rename started from (`vjt_`). After the restore, the next tick asks again.
-* **Switch off live**: the chain is cancelled. **Switch on live** clears an
-  earlier stop (turning it on IS asking again) and, if the session is
-  registered, tries at once. The same value twice is a no-op, so a repeated
-  write cannot restart a running chain.
+* **Switch off live**: the chain is cancelled. **Switch on live** (from off)
+  is asking again, so it is also how a stopped keepnick resumes; if the
+  session is registered it tries at once. The same value twice is a no-op,
+  so a repeated write cannot start a second chain beside a running one.
 
 The stop row is a `:server_event` on `$server` with an anonymous sender,
 `meta.keep_nick = %{outcome: "stopped", target, numeric}`, and a plain body
@@ -7983,7 +8014,7 @@ and network row from a server predating 64. That is the break the v63
 front. The stale "no `protocol_version` bump needed" comment in
 `credential_to_json/1` is corrected in passing (#1393d retired it).
 
-### Where this slice differs from the design (`/tmp/w1-2656-design.md`, 9df6f748)
+### Where this slice differs from the design (`.orchestrate/artifacts/2656/w1-2656-design.md`, 9df6f748)
 
 * The context function is `Credentials.update_credential_keep_nick/2`, named
   like its siblings `update_credential_profile/2` and `…_identity/2`, not
