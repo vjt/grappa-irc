@@ -267,6 +267,15 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
     expect(offenders).toEqual([]);
   });
 
+  it("a strip is told by its y value: an explicit `visible` is one, `hidden` is not", () => {
+    // The sheet carries no strip that spells its y out, so the test above
+    // cannot pin this arm of isStripRule: without these bodies, dropping
+    // "visible" from it would stay green and let an `x: auto; y: visible`
+    // strip back into the both-axis list.
+    expect(isStripRule("white-space: pre; overflow-x: auto; overflow-y: visible;")).toBe(true);
+    expect(isStripRule("white-space: pre; overflow-x: auto; overflow-y: hidden;")).toBe(false);
+  });
+
   it("a carve-out hands containment back only to a vertical scroller nested in a listed one", () => {
     // vjt's ruling (b): a vertical scroller inside another vertical scroller
     // takes no containment; its scroll chains to the outer one, which is
