@@ -12059,6 +12059,68 @@ defmodule Grappa.Session.ServerTest do
       assert await_sent_line_count(server, &kn_try?/1, 3, 1_000) == :ok
     end
 
+    # Written for the review of PR 2688 (F5). The identity guard stops a NEW
+    # try; it did not lower one already in flight. So a try sent just before
+    # the visitor pressed recover left the flag up, and a 438 answering the
+    # SEQUENCE's own NICK — a numeric issue 2683 says the FSM is never fed —
+    # was read as a refusal of keepnick's try: routed, stopped, and a stop row
+    # blaming keepnick's nick.
+    test "8c. recover pressed while a keepnick try is in flight: a 438 for the sequence's NICK stops nothing" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+
+      {network, _} =
+        network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
+
+      visitor = visitor_with_credential_fixture(nick: @recover_nick, network_slug: network.slug)
+
+      {:ok, cred} =
+        Credentials.upsert_visitor_credential(visitor.id, network.id, %{
+          nick: @recover_nick,
+          sasl_user: @recover_nick,
+          auth_method: :nickserv_identify,
+          password: "s3cret"
+        })
+
+      {:ok, _} = Credentials.update_credential_keep_nick(cred, %{keep_nick: true})
+      {:ok, base_plan} = VisitorSessionPlan.resolve(visitor, network)
+      plan = Map.merge(base_plan, %{nick_reclaim_ms: 100, keep_nick_interval_ms: 400})
+      subject = {:visitor, visitor.id}
+      {:ok, pid} = Session.start_session(subject, network.id, plan)
+      on_exit(fn -> Session.stop_session(subject, network.id) end)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+      IRCServer.feed(server, ":irc.test.org 001 #{@recover_nick}_ :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "MODE #{@recover_nick}_\r\n"), 1_000)
+
+      want = &(&1 == "NICK #{@recover_nick}\r\n")
+      # The registration NICK and keepnick's first try, which this server
+      # never answers: the try is in flight when recover is pressed.
+      assert await_sent_line_count(server, want, 2, 1_000) == :ok
+
+      assert :ok = Session.recover_identity(subject, network.id)
+      # RecoverIdentity's own NICK.
+      assert await_sent_line_count(server, want, 3, 1_000) == :ok
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 438 #{@recover_nick}_ #{@recover_nick} :Nick change too fast. Please wait 30 seconds.\r\n"
+      )
+
+      :ok = flush(server, "kn-8c")
+      rows = Scrollback.fetch(subject, network.id, "$server", nil, 50, nil, false)
+
+      assert Enum.any?(rows, &(Map.get(&1.meta || %{}, :numeric) == 438)),
+             "the 438 still routes to $server, as it always did"
+
+      assert Enum.filter(rows, &is_map_key(&1.meta || %{}, :keep_nick)) == [],
+             "keepnick sent nothing this 438 answers, so it announces no stop"
+
+      # The sequence ends (its deadline, driven as the #581 tests drive it),
+      # and keepnick — not stopped — asks again at its next tick.
+      send(pid, :recover_timeout)
+      assert await_sent_line_count(server, want, 4, 1_500) == :ok
+    end
+
     # The chain ends when we land on the target, and nothing re-arms it within
     # the registration — that alone is what keeps keepnick from fighting a
     # services rename. A dedicated stop rule for this case was tried and

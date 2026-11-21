@@ -2541,6 +2541,16 @@ defmodule Grappa.Session.Server do
             |> broadcast_recover_events(:idle, next)
 
           timer = Process.send_after(self(), :recover_timeout, @recover_timeout_ms)
+
+          # issue 2656 — a keepnick try sent just before this is no longer
+          # keepnick's to read. From here the #581 clause owns 433/437, and a
+          # 438/435 answering the sequence's OWN NICK must not be taken for a
+          # refusal of keepnick's try (route + stop + a stop row blaming the
+          # wrong NICK). The tick's identity guard sends no new try while the
+          # sequence runs. GhostRecovery needs no twin of this: it arms only
+          # on a REGISTRATION 433 (`pending_password` is cleared at 001,
+          # before keepnick's chain arms), so no try of ours can be in flight.
+          state = Map.put(state, :keep_nick_in_flight?, false)
           {:reply, :ok, %{state | recover_identity: next, recover_timer: timer}}
 
         {:error, :nothing_to_recover} ->
@@ -4091,10 +4101,12 @@ defmodule Grappa.Session.Server do
 
   # issue 2656 — a NICK-family refusal while one of keepnick's OWN tries is in
   # flight. After the two clauses above on purpose: an armed RecoverIdentity
-  # owns 433/437 outright (#581), and keepnick never sends while one is armed,
-  # so nothing of ours can be in flight there. With no try in flight this
-  # clause does not match and the numeric routes as it always did — the
-  # operator's own `/nick` refusal included. See `keep_nick_refusal/2`.
+  # owns 433/437 outright (#581). Nothing of ours is in flight while one is
+  # armed: arming it lowers the flag (`handle_call(:recover_identity, …)`), so
+  # the answer to a try sent just before reaches the FSM, and the tick sends
+  # no new one. With no try in flight this clause does not match and the
+  # numeric routes as it always did — the operator's own `/nick` refusal
+  # included. See `keep_nick_refusal/2`.
   def handle_info(
         {:irc, %Message{command: {:numeric, code}} = msg},
         %{keep_nick_in_flight?: true} = state
@@ -6054,8 +6066,9 @@ defmodule Grappa.Session.Server do
   #
   # Coexistence with GhostRecovery is vjt's option A (issue 2656, relayed):
   # keepnick is allowed on every credential and neither sends nor swallows
-  # while `identity_sequence_armed?/1` holds; its first try is the #2253 try,
-  # after the ghost window by ordering. Where services work, the nick is ours
+  # while `identity_sequence_armed?/1` holds (arming RecoverIdentity also
+  # lowers a try in flight); its first try is the #2253 try, after the ghost
+  # window by ordering. Where services work, the nick is ours
   # before keepnick looks; where they do not (a ghost that will not die,
   # services down, a network with none, like IRCnet), keepnick keeps knocking.
 
@@ -6177,7 +6190,11 @@ defmodule Grappa.Session.Server do
   # its only emitter), 435 a channel ban, 432 an erroneous / Q:lined / RESV'd
   # nick, 438 a `+d` channel or nick-flood, 484 IRCnet's restricted client,
   # 447 UnrealIRCd's `+N`. Asking again cannot change any of them, and hiding
-  # them would hide why the nick does not come back — #2253's lesson.
+  # them would hide why the nick does not come back — #2253's lesson. On
+  # bahamut, 447 and 484 never answer a NICK (`m_nick.c` sends neither; 447 is
+  # ERR_RESTRICTED from `/admin`, `/links` and channel code, 484
+  # ERR_NOUNKNOWNLISTS from `m_list`), so there one can only arrive as the
+  # reply to another verb, caught inside a try's round trip.
   #
   # Both ircds check collision (433) BEFORE the ban/moderation checks, so the
   # channel refusal arrives only on the try where the nick has become free:
@@ -6198,8 +6215,8 @@ defmodule Grappa.Session.Server do
   # structured line saying so. Either way the try is answered. A try in
   # flight implies a running chain: only `keep_nick_tick/1` raises the flag,
   # re-arming in the same breath, and every door that turns the switch off or
-  # stops keepnick lowers it (`cancel_keep_nick/1`). So the stop below always
-  # describes a live chain.
+  # stops keepnick lowers it (`cancel_keep_nick/1`), as does an identity
+  # sequence arming. So the stop below always describes a live chain.
   @spec handle_keep_nick_refusal(Message.t(), t()) :: {:noreply, t()}
   defp handle_keep_nick_refusal(%Message{command: {:numeric, code}} = msg, state) do
     state = Map.put(state, :keep_nick_in_flight?, false)
