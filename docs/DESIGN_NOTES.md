@@ -7225,11 +7225,17 @@ hackney or quic below the floor: that undoes the 2649 security bump.
   `release.yml` and on main's. The only difference is the rpm job running
   on a `deb_validation` dispatch, with or without a `tag` input; `arch`,
   `docker`, `smoke`, `cic`, `publish` and `apt-repo` stay skipped there.
-- `test/infra/packaging_toolchain_from_source_test.bats`, 3 cases, on a
-  fake pin (98.7 / 6.5.4) with a stub `curl` and a real tarball whose
-  `configure` records its arguments and exits 42. Four mutants each turn
-  a case red: no checksum, no missing-line guard, a hard-coded OTP
-  version, no configure flags.
+- `test/infra/packaging_toolchain_from_source_test.bats`. Three cases run
+  the script on a fake pin (98.7 / 6.5.4) with a stub `curl` and a real
+  tarball whose `configure` records its arguments and exits 42; four
+  mutants of the script each turn one red (no checksum, no missing-line
+  guard, a hard-coded OTP version, no configure flags). Two cases read the
+  rpm job, which no pull request runs: no distro `erlang`/`elixir` in its
+  `dnf install`s, and the recipe fetched from `GITHUB_SHA` and run before
+  `build.sh`. Five mutants of `release.yml` each turn one of those red
+  (Fedora's `elixir erlang` back, an `erlang-*` subpackage, the recipe
+  copied from the checked-out tag, the recipe never run, a `build.sh`
+  ahead of it).
 
 ### Not covered
 

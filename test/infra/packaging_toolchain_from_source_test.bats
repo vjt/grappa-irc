@@ -110,3 +110,56 @@ genuine_sum() {
     grep -q 'does not list otp_src_98.7.tar.gz' <<<"$output"
     refute test -e "$CONFIGURE_LOG"
 }
+
+# ── release.yml wiring ──────────────────────────────────────────────────────
+#
+# The rpm job never runs on a pull request (release.yml fires on a tag and on
+# workflow_dispatch), so this is its PR-time half, read off the workflow text:
+# the job installs no distro erlang or elixir, and builds the pinned pair from
+# the recipe of the DISPATCHED ref before build.sh runs.
+
+WORKFLOW="$BATS_TEST_DIRNAME/../../.github/workflows/release.yml"
+
+rpm_job() {
+    awk '/^  rpm:$/ { f = 1; next } f && /^  [a-z]/ { exit } f' "$WORKFLOW"
+}
+
+# Every package a `dnf install` in the rpm job names, one per line: comments
+# dropped, backslash continuations joined, flags and the verb removed.
+rpm_dnf_packages() {
+    rpm_job | sed 's/#.*$//' \
+        | awk '{ if (sub(/\\[[:space:]]*$/, "")) { buf = buf $0 " "; next } print buf $0; buf = "" }' \
+        | grep -E '^[[:space:]]*dnf install' \
+        | tr -s ' \t' '\n' | awk 'NF && !/^-/ && $0 != "dnf" && $0 != "install"'
+}
+
+@test "the rpm job installs no distro erlang or elixir — its OTP is the pinned one, built in the job" {
+    local pkgs
+    pkgs="$(rpm_dnf_packages)"
+
+    # The scan reads both dnf lines, or it proves nothing: the first carries
+    # git, the cache-miss one carries the OTP build deps.
+    grep -qx git <<<"$pkgs"
+    grep -qx gcc-c++ <<<"$pkgs"
+    grep -qx perl <<<"$pkgs"
+
+    refute grep -qE '^(erlang|elixir)(-.*)?$' <<<"$pkgs"
+}
+
+@test "the rpm job builds the pair from the DISPATCHED ref's recipe, before build.sh" {
+    local job fetch run build
+    job="$(rpm_job)"
+
+    # From the dispatched ref: a repair builds a tag that predates the script.
+    fetch="$(grep -nF 'git show "${GITHUB_SHA}:infra/packaging/toolchain_from_source.sh"' <<<"$job" | cut -d: -f1)"
+    run="$(grep -nF '"$RUNNER_TEMP/toolchain_from_source.sh" "$BEAM_PREFIX"' <<<"$job" | cut -d: -f1)"
+    build="$(grep -n 'infra/packaging/build.sh$' <<<"$job" | head -n1 | cut -d: -f1)"
+
+    [ -n "$fetch" ] || { printf 'the rpm job does not take the recipe from GITHUB_SHA\n' >&2; return 1; }
+    [ -n "$run" ] || { printf 'the rpm job never runs the recipe it fetched\n' >&2; return 1; }
+    [ -n "$build" ] || { printf 'no build.sh step found in the rpm job — the scan is broken\n' >&2; return 1; }
+    [ "$fetch" -lt "$run" ] && [ "$run" -lt "$build" ] || {
+        printf 'out of order: fetch line %s, run line %s, build.sh line %s\n' "$fetch" "$run" "$build" >&2
+        return 1
+    }
+}
