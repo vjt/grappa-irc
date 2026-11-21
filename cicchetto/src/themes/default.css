@@ -537,6 +537,110 @@ body {
   overscroll-behavior: none;
 }
 
+/* issue 2671 — every scroll surface keeps its overscroll to itself, and that
+   is declared HERE, once, instead of as one more line beside every
+   `overflow-y: auto` (vjt's ruling). `contain` stops a scroll that reaches the
+   edge from chaining to an ancestor — the shell, which moved under a drag past
+   the end of the `$server` peek — and keeps the element's own bounce, where
+   `none` (the root above, the directory list) refuses both. On iOS, WebKit
+   makes `contain` a scroll view that still bounces and does not hand off to
+   its parent (ScrollingTreeScrollingNodeDelegateIOS::
+   updateScrollViewForOverscrollBehavior): read in WebKit's source, NOT
+   measured on a device.
+
+   Listed by subject selector, NOT `*`. The property only acts on scroll
+   containers, but `overflow: hidden` makes one, and Blink gives any scroll
+   container that refuses to chain a compositor scroll node its latch walk does
+   not skip: under `*` every clipped row inside a scroller would become a wall
+   the wheel stops at (Chromium source, not measured).
+
+   The lists choose by DECLARED axis, not by whether a box can scroll at the
+   moment. The first contains both axes (the shape most scroll rules already
+   carried in their own block) for every scroller that is not a strip,
+   textarea included: the UA scrolls it without the sheet saying so.
+   The second holds the horizontal strips, rules that declare a scroll on x
+   and leave y `visible`, said or not, so their `auto` y comes only from the
+   visible→auto conversion while the vertical scroller they sit in wants that
+   axis. They contain x alone, or a vertical wheel over an admin table would
+   stop at the table (the same latch). A layout that turns a strip vertical
+   restores `overscroll-behavior-y` there (the desktop `.adm-nav`).
+
+   The third hands containment back to a vertical scroller nested in another
+   listed one. vjt's ruling for issue 2671: its scroll chains to the outer
+   scroller, which is contained, so the shell stays still anyway. Each entry
+   names the pair as `:where(<outer>) <inner>`, so it applies only where the
+   nesting is real. `:where()` gives the outer no specificity: the entry ties
+   with the one it undoes and wins by coming after it, and it draws no biome
+   noDescendingSpecificity warning, where a plain descendant would. Two pairs
+   today, the perform textarea and the NickServ mirror. One nested scroller
+   stays contained on purpose: `.server-peek-body`, the surface issue 2671 is
+   about. Its outer scroller, `.scrollback-overlay`, rarely overflows (the
+   peek is at most 40vh of a pane-tall layer). Whether iOS still stops the
+   chain at an overflow box that does not overflow is INFERRED, not measured,
+   so the card keeps its own wall. A scroller that was contained before
+   issue 2671 keeps it even when nested (`.admin-tab-panel` inside
+   `.admin-pane`).
+
+   __tests__/overscrollContainment.test.ts holds it. A rule that makes
+   something scroll without being covered here fails it. So do an entry that
+   no longer scrolls, a strip in the first list, a pair that is not two listed
+   vertical scrollers, a per-rule `contain` or `auto`, a `none` on a listed
+   surface (it would take the bounce away: unlist the surface instead), a
+   shared rule moved inside an at-rule, and the third rule moved above the
+   first. The first two lists stay single compounds: a descendant selector at
+   this position precedes the base rule of the same element and draws biome
+   noDescendingSpecificity warnings. */
+.login-scroll,
+.shell-sidebar,
+.rail-actions-menu,
+.rail-radio-picker-list,
+.scrollback-overlay,
+.scrollback,
+.mentions-list,
+.e2e-sas-modal,
+.members-pane,
+.settings-drawer,
+.delete-account-modal,
+.confirm-modal-attachments,
+.admin-pane,
+.admin-tab-panel,
+.context-menu,
+.bottom-bar,
+.archive-modal,
+.names-modal-body,
+.who-modal-body,
+.mode-modal-body,
+.theme-editor-modal,
+.server-reply-modal-body,
+.service-modal-body,
+.registration-wizard-body,
+.registration-wizard-mirror,
+.recover-modal-body,
+.rail-query-context,
+.server-peek-body,
+.banlist-modal-body,
+.boot-failure,
+.home-pane,
+.media-viewer-zoom-scroller,
+.media-viewer-text,
+.share-modal,
+.credits-viewport,
+.credits-viewport-ended,
+textarea {
+  overscroll-behavior: contain;
+}
+
+.adm-nav,
+.adm-table-wrap,
+.confirm-modal-attachment-source {
+  overscroll-behavior-x: contain;
+}
+
+:where(.settings-drawer) textarea,
+:where(.registration-wizard-body) .registration-wizard-mirror {
+  overscroll-behavior: auto;
+}
+
 /* #497 / #508 / #963 — global form-control treatment (DENYLIST). The app had
    NO base <input>/<textarea> rule, so UNCLASSED fields (the identity editor's
    nick/realname/ident) fell back to tiny UA defaults, and every modal re-styled
@@ -1038,19 +1142,16 @@ html.overlay-open #root > div {
    UNREACHABLE — no wheel/touch gesture could reach them. This wrapper owns
    the scroll so the whole card is reachable, while `.login` keeps clipping
    so the matrix stays pinned and the DOCUMENT never overflows (the iOS
-   drag-chrome guard). `overscroll-behavior: contain` stops a scroll at the
-   card edge from chaining to <html> (which is overflow:hidden anyway). The
-   card is centered with `margin: auto` on the child (see .login-form /
-   .login-connecting), NOT `justify-content: center` — centered flex clips
-   the TOP of an overflowing child, which would re-hide the fields we are
-   trying to make reachable. */
+   drag-chrome guard). The card is centered with `margin: auto` on the child
+   (see .login-form / .login-connecting), NOT `justify-content: center` —
+   centered flex clips the TOP of an overflowing child, which would re-hide
+   the fields we are trying to make reachable. */
 .login-scroll {
   position: relative;
   z-index: 1;
   height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
-  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2714,10 +2815,10 @@ html.resize-dragging * {
    displacing it (zero permanent vertical cost). A VERTICAL column of the same
    full-width labelled rows #473 established (`.rail-actions .rail-action` still
    matches them as descendants). `max-height` + `overflow-y: auto` keep it
-   inside a short viewport (e.g. mobile keyboard up); `overscroll-behavior:
-   contain` stops the scroll chaining to the list behind. z-index sits at the
-   context-menu layer so it clears the rail chrome; the fixed backdrop below is
-   one step under it.
+   inside a short viewport (e.g. mobile keyboard up); the shared containment
+   rule (issue 2671) stops the scroll chaining to the list behind. z-index
+   sits at the context-menu layer so it clears the rail chrome; the fixed
+   backdrop below is one step under it.
    #588 — `var(--viewport-height)` is the WHOLE viewport, but a menu opening
    upward only has the space ABOVE the launcher; capping at the viewport let
    the overflowing rows grow off the top of the screen with no scroll. So it
@@ -2756,7 +2857,6 @@ html.resize-dragging * {
     )
   );
   overflow-y: auto;
-  overscroll-behavior: contain;
   touch-action: pan-y;
 }
 
@@ -2795,9 +2895,9 @@ html.resize-dragging * {
    unreachable, the exact failure #500 fixed at the other end. `flex-shrink: 1`
    + `min-height: 0` bounds it to the rail and lets the child scroll; the child
    is the scroller because the base `.rail-actions-menu` already carries
-   `overflow-y: auto` + `overscroll-behavior: contain` + the `pan-y` descendant
-   carve-out (#913) that makes iOS honour the pan. Reuse it, don't re-derive it
-   one level up. */
+   `overflow-y: auto` + the `pan-y` descendant carve-out (#913) that makes iOS
+   honour the pan, and the shared containment rule (issue 2671) lists it.
+   Reuse it, don't re-derive it one level up. */
 .rail-actions.expanded {
   margin-top: 0;
   border-top: none;
@@ -3043,9 +3143,6 @@ html.resize-dragging * {
    `.shell-members`'s own `min-height: 0` (#500) already bounds that to the
    grid track. z-index one step above the actions menu so the two cannot
    argue if both are ever up.
-   `overscroll-behavior: contain` stops the scroll chaining into the nick list
-   behind it, as its sibling menu does — it moved to the inner list below with
-   the scroll it qualifies.
 
    #1697 — the scroll moved OFF this box onto `.rail-radio-picker-list`, and
    the padding with it. The panel now hosts the shared `.topic-bar` band
@@ -3092,7 +3189,6 @@ html.resize-dragging * {
      fixed here is the claim, which said the opposite of the measurement. */
   padding: 0.5rem 0;
   overflow-y: auto;
-  overscroll-behavior: contain;
 }
 
 /* #913's descendant carve-out, for the same reason it exists on
@@ -4092,11 +4188,6 @@ button.topic-bar-windows-opener {
   font-family: var(--font-mono);
   font-size: var(--font-size);
   line-height: var(--line-height);
-  /* UX-3 UNDEC R2: kill scroll-chain to the document root via
-     `overscroll-behavior: contain`. iOS bubbles `pan-y` to chrome
-     animation when overscroll is not contained, even with `pan-y`
-     enabled. */
-  overscroll-behavior: contain;
   /* #285 reopen — fail-open default. JS-measured `.scrollback-locked`
      locks to `none` below only when the content definitively fits a
      trustworthy clientHeight; a bad/pre-settle read can never latch the
@@ -4873,7 +4964,6 @@ html.is-ios27-band .shell {
   flex: 1 1 auto;
   overflow-y: auto;
   overflow-x: hidden;
-  overscroll-behavior: contain;
 }
 
 /* issue 2430 — the encrypted query pane (EncryptedChatPane.tsx), on the
@@ -5988,17 +6078,16 @@ html.is-ios27-band .shell {
      (This line used to say a fast flick preventDefaults "before iOS commits
      the pan". Since the #123 rework the claim keys off the scroll edge, not
      speed, and arrives after the slop, which is how issue 2465 got through.)
-     `overscroll-behavior: contain` stops a scroll past the draft's own
-     limit from chaining to the shell / chrome (same guard as .scrollback /
-     the UX-5 BO pan-y surfaces). Tap + focus + caret are pointer events,
-     unaffected. issue 2465 — the device risk this comment used to accept
-     (a SHORT draft that fits lets `pan-y` fall through on a vertical drag)
-     bit: with the keyboard up it panned the whole shell. `pan-y` STAYS, a
-     long draft needs it; what closes the hole is the Shell's touch guard
-     (`installShellTouchGuard`), which cancels a move the textarea cannot
-     scroll from the very first one, before ComposeBox's claim. */
+     The shared containment rule (issue 2671, `textarea` there) stops a
+     scroll past the draft's own limit from chaining to the shell / chrome.
+     Tap + focus + caret are pointer events, unaffected. issue 2465 — the
+     device risk this comment used to accept (a SHORT draft that fits lets
+     `pan-y` fall through on a vertical drag) bit: with the keyboard up it
+     panned the whole shell. `pan-y` STAYS, a long draft needs it; what
+     closes the hole is the Shell's touch guard (`installShellTouchGuard`),
+     which cancels a move the textarea cannot scroll from the very first
+     one, before ComposeBox's claim. */
   touch-action: pan-y;
-  overscroll-behavior: contain;
 }
 
 .compose-box textarea:focus {
@@ -6347,12 +6436,12 @@ html.is-ios27-band .shell {
   font-size: var(--font-size);
   /* UX-5 BO (2026-05-19): same inherited-`touch-action: none` trap as
      `.settings-drawer` (see comment there). The modal has no own
-     `overflow-y` today (short content fits in viewport), so the pair
-     is currently defensive — the day someone grows the modal past
+     `overflow-y` today (short content fits in viewport), so this is
+     currently defensive — the day someone grows the modal past
      viewport AND adds `overflow-y: auto`, the gesture-routing is
-     already in place. Mirror `.shell-members.open`. */
+     already in place, and issue 2671's guard turns red until the modal
+     joins the shared containment rule. Mirror `.shell-members.open`. */
   touch-action: pan-y;
-  overscroll-behavior: contain;
 }
 
 .image-upload-modal h2 {
@@ -6409,9 +6498,9 @@ html.is-ios27-band .shell {
      internally (min-height:0 defeats the flex-item min-content floor that would
      otherwise let it grow past the rail and shove the launcher off-screen).
      The mobile override (~:4211) restates these alongside its pan-y gesture
-     carve-out + `overscroll-behavior: contain`; the values are identical, so
-     the base rule is the single desktop+mobile source and the mobile block only
-     adds the touch contract. */
+     carve-out; the values are identical, so the base rule is the single
+     desktop+mobile source and the mobile block only adds the touch
+     contract. */
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -6623,7 +6712,6 @@ html.is-ios27-band .shell {
      `installScrollPin` snap-yanks `window.scrollTo(0, 0)` producing
      the visible flicker. Mirror `.shell-members.open` (~:2210). */
   touch-action: pan-y;
-  overscroll-behavior: contain;
 }
 
 .settings-drawer.open {
@@ -6719,46 +6807,6 @@ html.is-ios27-band .shell {
   font-size: var(--font-size);
   cursor: pointer;
   margin-top: auto;
-}
-
-/* UX-6 bucket D diagnostic readout (post-revert 2026-05-21). Two-column
-   grid: label + value. Compact font, dim labels, accent on values so
-   the eye locks on the numbers vjt needs to read aloud. Will be
-   removed alongside the diagnostic block in SettingsDrawer.tsx once
-   D is fixed for real. */
-.settings-diag-grid {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.25rem 0.75rem;
-  font-size: 0.85rem;
-}
-
-.settings-diag-grid > span {
-  color: var(--muted);
-}
-
-.settings-diag-grid > code {
-  color: var(--accent);
-  font-family: var(--font-mono);
-}
-
-.settings-diag-log {
-  margin: 0.5rem 0 0;
-  padding: 0 0 0 1.25rem;
-  font-size: 0.75rem;
-  max-height: 12rem;
-  overflow-y: auto;
-}
-
-.settings-diag-log li {
-  padding: 0.1rem 0;
-}
-
-.settings-diag-elems {
-  margin: 0.5rem 0 0;
-  font-size: 0.7rem;
-  word-break: break-all;
-  color: var(--accent);
 }
 
 /* #735 — base <button> treatment for the whole settings drawer, the twin of
@@ -6945,7 +6993,6 @@ html.is-ios27-band .shell {
   gap: 0.75rem;
   overflow-y: auto;
   touch-action: pan-y;
-  overscroll-behavior: contain;
 }
 
 .delete-account-header {
@@ -7031,7 +7078,6 @@ html.is-ios27-band .shell {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  overscroll-behavior: contain;
 }
 
 .confirm-modal-title {
@@ -7139,8 +7185,8 @@ html.is-ios27-band .shell {
 /* 1883 — the file list on an upload confirm. Capped and scrollable: a gallery
    multi-select can be a dozen files, and a dialog that grows past the viewport
    pushes its own Cancel button off screen — on a phone that turns the guard
-   into a trap. `overscroll-behavior` keeps a flick inside the list from
-   scrolling the pane underneath. */
+   into a trap. The shared containment rule (issue 2671) keeps a flick inside
+   the list from scrolling the pane underneath. */
 .confirm-modal-attachments {
   margin: 0;
   padding: 0;
@@ -7150,7 +7196,6 @@ html.is-ios27-band .shell {
   gap: 0.5rem;
   max-height: 40vh;
   overflow-y: auto;
-  overscroll-behavior: contain;
 }
 
 /* #1964 — a column, because a sound or a text preview is taller than the
@@ -7227,7 +7272,6 @@ html.is-ios27-band .shell {
   color: var(--fg);
   white-space: pre;
   overflow-x: auto;
-  overscroll-behavior-x: contain;
 }
 
 .confirm-modal-attachment-text {
@@ -7295,7 +7339,6 @@ html.is-ios27-band .shell {
      INTERSECTION). Allowing pan-x here lets the operator swipe wide
      admin tables sideways to read all columns. */
   touch-action: pan-x pan-y;
-  overscroll-behavior: contain;
 }
 
 /* #1073 — the band is `.topic-bar` now (`PaneTopBar`), so everything the old
@@ -7510,6 +7553,10 @@ html.is-ios27-band .shell {
     align-items: stretch;
     overflow-x: visible;
     overflow-y: auto;
+    /* issue 2671 — the shared rule lists `.adm-nav` as a horizontal strip (the
+       mobile tab row) and contains only its x axis; here it is a vertical
+       rail, so the axis it scrolls on is contained here. */
+    overscroll-behavior-y: contain;
     border-bottom: 0;
     border-right: 1px solid var(--adm-line);
     margin: 0;
@@ -7570,7 +7617,6 @@ html.is-ios27-band .shell {
      widened to `pan-x pan-y` so the cross-ancestor INTERSECTION
      permits horizontal pan. */
   touch-action: pan-x pan-y;
-  overscroll-behavior: contain;
 }
 
 .admin-visitors-tab {
@@ -10231,7 +10277,6 @@ html.is-ios27-band .shell {
     z-index: 90;
     transform: translateX(-100%);
     transition: transform 200ms ease-out;
-    overscroll-behavior: contain;
   }
 
   /* UX-6 bucket A v2 — `touch-action` is NOT inherited (CSS UI L4). The drawer
@@ -10328,7 +10373,6 @@ html.is-ios27-band .shell {
        `pan-y` here so members list scrolls inside the drawer but
        horizontal drag (back-swipe gesture) doesn't reveal chrome. */
     touch-action: pan-y;
-    overscroll-behavior: contain;
     /* UX-5 bucket BM (2026-05-20) / #473 — flex column so the bottom
        `.rail-actions` launcher row (was BM's `.mobile-panel-actions`
        footer) pushes to the bottom of the drawer while the inner
@@ -10389,7 +10433,8 @@ html.is-ios27-band .shell {
      rejected the pan, escalated to document, `installScrollPin`
      snap-yanked `window.scrollTo(0, 0)` — operator-visible flicker +
      body-leak. Mirror `.settings-drawer` (~:1417) / `.archive-modal`
-     (~:2524): pair lives on the scroller.
+     (~:2524): `touch-action` lives on the scroller (since issue 2671 its
+     containment comes from the shared rule, which lists the scroller).
 
      UX-6 bucket A v2 (2026-05-20) — touch-action is NOT inherited (CSS
      UI L4). Setting `pan-y` on `.members-pane` alone left descendants
@@ -10420,7 +10465,6 @@ html.is-ios27-band .shell {
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
-    overscroll-behavior: contain;
   }
 
   /* #473 — the mobile-only `.mobile-panel-actions` launcher footer was
@@ -10506,11 +10550,6 @@ html.is-ios27-band .shell {
   overflow-y: hidden;
   /* touch-momentum scrolling on iOS (non-standard but widely supported) */
   -webkit-overflow-scrolling: touch;
-  /* UX-3 UNDEC R2: same scroll-chain kill as `.scrollback`. Horizontal
-     drag past the left/right edge of the bottom bar propagates to the
-     document root and iOS rubber-bands the chrome. `contain` stops
-     the chain at this element. */
-  overscroll-behavior: contain;
   /* UX-3 UNDEC R3: re-enable horizontal pan inside shell-mobile's
      `touch-action: none` blanket — bottom bar scrolls horizontally
      when tabs overflow. Vertical drag falls through to `none` (no
@@ -10797,7 +10836,6 @@ html.is-ios27-band .shell {
   /* UX-5 BO (2026-05-19): same inherited-`touch-action: none` trap as
      `.settings-drawer` (see comment there). Mirror `.shell-members.open`. */
   touch-action: pan-y;
-  overscroll-behavior: contain;
 }
 
 .archive-modal-header {
@@ -10989,7 +11027,6 @@ html.is-ios27-band .shell {
   /* Same inherited-`touch-action: none` trap guard as .archive-modal /
      .settings-drawer — this is the registered overlay-lock scroller. */
   touch-action: pan-y;
-  overscroll-behavior: contain;
 }
 
 .names-modal-section {
@@ -11272,7 +11309,6 @@ html.is-ios27-band .shell {
      the browser must NOT hijack them. This is the registered overlay-lock
      scroller selector, but nothing scrolls inside — the canvas fills it. */
   touch-action: none;
-  overscroll-behavior: contain;
   /* Subtle depth: a faint radial vignette so the mesh reads as "in space". */
   background: radial-gradient(circle at 50% 45%, var(--bg-alt) 0%, var(--bg) 70%);
 }
@@ -11552,7 +11588,6 @@ html.is-ios27-band .shell {
   flex-direction: column;
   gap: 0.5rem;
   touch-action: pan-y;
-  overscroll-behavior: contain;
 }
 
 /* #975 — the "cic has no 324 for this channel" state, shown INSTEAD of the
@@ -12151,7 +12186,6 @@ html.is-ios27-band .shell {
   flex-direction: column;
   overflow-y: auto;
   touch-action: pan-y;
-  overscroll-behavior: contain;
 }
 
 .theme-editor-header {
@@ -12567,7 +12601,6 @@ html.is-ios27-band .shell {
   overflow-y: auto;
   padding: 0.5rem 1rem 0.75rem;
   touch-action: pan-y;
-  overscroll-behavior: contain;
 }
 
 .server-reply-modal-line {
@@ -12666,7 +12699,6 @@ html.is-ios27-band .shell {
   overflow-y: auto;
   padding: 0.5rem 1rem 0.75rem;
   touch-action: pan-y;
-  overscroll-behavior: contain;
   /* A newly-opened console with no reply yet still needs vertical room so the
    * modal doesn't collapse to header+prompt only. */
   min-height: 6rem;
@@ -12824,7 +12856,6 @@ html.is-ios27-band .shell {
   overflow-y: auto;
   padding: 0.5rem 1rem 0.75rem;
   touch-action: pan-y;
-  overscroll-behavior: contain;
   min-height: 6rem;
   display: flex;
   flex-direction: column;
@@ -12995,7 +13026,6 @@ html.is-ios27-band .shell {
   overflow-y: auto;
   padding: 0.5rem 1rem 0.75rem;
   touch-action: pan-y;
-  overscroll-behavior: contain;
   min-height: 6rem;
   display: flex;
   flex-direction: column;
@@ -13392,10 +13422,6 @@ html.is-ios27-band .shell {
   .shell-mobile .shell-members .rail-query-context,
   .shell-mobile .shell-members .rail-query-context * {
     touch-action: pan-y;
-  }
-
-  .shell-mobile .shell-members .rail-query-context {
-    overscroll-behavior: contain;
   }
 }
 
@@ -13802,7 +13828,6 @@ html.is-ios27-band .shell {
   flex-direction: column;
   gap: 0.5rem;
   touch-action: pan-y;
-  overscroll-behavior: contain;
 }
 
 .banlist-modal-error {
@@ -14508,7 +14533,6 @@ html.is-ios27-band .shell {
      rows + [Reconnect] chips from BR + onboarding copy); without
      `pan-y` it doesn't scroll. */
   touch-action: pan-y;
-  overscroll-behavior: contain;
 }
 
 .home-pane-title {
@@ -15720,9 +15744,9 @@ button.home-pane-network-title:hover .home-pane-network-slug {
   touch-action: pan-x pan-y;
 }
 
-/* The scroller that replaced the synthesized pan (#1805). overscroll-behavior
-   keeps a drag past either end off the page behind the modal, the same posture
-   .media-viewer-text takes. position: relative makes it the containing block
+/* The scroller that replaced the synthesized pan (#1805). The shared
+   containment rule (issue 2671) keeps a drag past either end off the page
+   behind the modal. position: relative makes it the containing block
    for the sizer below. max-width so a zoomed image never widens the modal
    instead of scrolling inside it — and, since issue 2208 made this a flex
    ITEM, it is also what caps the automatic minimum size, which is what still
@@ -15754,7 +15778,6 @@ button.home-pane-network-title:hover .home-pane-network-slug {
 .media-viewer-zoom-scroller {
   position: relative;
   overflow: auto;
-  overscroll-behavior: contain;
   touch-action: pan-x pan-y;
   max-width: 100%;
   flex-grow: 1;
@@ -15833,9 +15856,6 @@ audio.media-viewer-media {
   display: flex;
   align-items: flex-start;
   overflow: auto;
-  /* A drag past either end belongs to this pane, not to the page behind the
-     modal (and not to iOS's pull-to-refresh). */
-  overscroll-behavior: contain;
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
@@ -16367,7 +16387,6 @@ audio.media-viewer-media {
   align-items: center;
   gap: 0.6rem;
   overflow-y: auto;
-  overscroll-behavior: contain;
   touch-action: pan-y;
   padding: 0 1.25rem 1.25rem;
   font-family: var(--font-mono);

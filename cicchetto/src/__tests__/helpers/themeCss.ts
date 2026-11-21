@@ -36,46 +36,102 @@ export function focusRules(): { selectors: string; body: string }[] {
 }
 
 /**
- * Every rule in the sheet as `{ selectors, body }`, comments stripped.
+ * Every rule in the sheet as `{ selectors, body, depth }`, comments stripped.
  * INNERMOST blocks only, the same way `focusRules` reads them: the `[^{}]`
  * classes cannot span a brace, so an `@media` prelude is never returned as a
- * selector and a rule nested inside one still is.
+ * selector and a rule nested inside one still is. `depth` says how many
+ * at-rule blocks enclose it (0 = top level), counted from the braces between
+ * one rule and the next, which are exactly the at-rule openers and closers.
  *
  * Selector lists come back WHOLE (`a,\n b`) rather than split, because a
  * caller asking "is this rule allowed to declare X?" has to reason about the
  * list — a rule is only as scoped as its LOOSEST selector. Split with
  * `selectorList` when the per-entry answer is what matters (#1802).
  */
-export function allRules(): { selectors: string; body: string }[] {
+export function allRules(): { selectors: string; body: string; depth: number }[] {
   const stripped = themeCss.replace(/\/\*[\s\S]*?\*\//g, "");
-  const out: { selectors: string; body: string }[] = [];
+  const out: { selectors: string; body: string; depth: number }[] = [];
+  let depth = 0;
+  let scanned = 0;
   for (const match of stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    out.push({ selectors: (match[1] ?? "").trim(), body: match[2] ?? "" });
+    for (const ch of stripped.slice(scanned, match.index)) {
+      if (ch === "{") depth += 1;
+      else if (ch === "}") depth -= 1;
+    }
+    scanned = match.index + match[0].length;
+    out.push({ selectors: (match[1] ?? "").trim(), body: match[2] ?? "", depth });
   }
   return out;
 }
 
-/** The entries of a comma-separated selector list, whitespace-collapsed. */
+/**
+ * issue 2671 — the sheet's shared overscroll containment, as the entries of
+ * three rules identified by their WHOLE body, not by position: `both`
+ * (`overscroll-behavior: contain`, every scroller), `xOnly`
+ * (`overscroll-behavior-x: contain`, the horizontal strips that leave their
+ * vertical axis to the scroller they sit in) and `nested`
+ * (`overscroll-behavior: auto`, the `:where(<outer>) <inner>` pairs that hand
+ * containment back to a scroller nested in a contained one). Throws when a
+ * rule is missing, duplicated or inside an at-rule, since every assertion
+ * would otherwise pass against an empty list or a rule only some `@media`
+ * applies; and when `nested` comes before `both`, since its entries tie on
+ * specificity with the ones they undo and win by source order alone.
+ */
+export function overscrollContainment(): { both: string[]; xOnly: string[]; nested: string[] } {
+  const rules = allRules();
+  const ownerOf = (declaration: string): number => {
+    const owners = rules.flatMap(({ body }, at) =>
+      body.trim().replace(/\s+/g, " ").replace(/;$/, "") === declaration ? [at] : [],
+    );
+    const at = owners[0];
+    if (owners.length !== 1 || at === undefined) {
+      throw new Error(`expected ONE rule declaring only "${declaration}", found ${owners.length}`);
+    }
+    if (rules[at]?.depth !== 0) {
+      throw new Error(
+        `the rule declaring "${declaration}" must be top level, not inside an at-rule`,
+      );
+    }
+    return at;
+  };
+  const both = ownerOf("overscroll-behavior: contain");
+  const xOnly = ownerOf("overscroll-behavior-x: contain");
+  const nested = ownerOf("overscroll-behavior: auto");
+  if (nested < both) {
+    throw new Error(
+      'the rule declaring "overscroll-behavior: auto" must come after the one declaring "overscroll-behavior: contain"',
+    );
+  }
+  const entries = (at: number): string[] => selectorList(rules[at]?.selectors ?? "");
+  return { both: entries(both), xOnly: entries(xOnly), nested: entries(nested) };
+}
+
+/**
+ * The entries of a comma-separated selector list, whitespace-collapsed. Split
+ * at bracket depth 0, so `.a:is(.b, .c), .d` is TWO entries, not three
+ * (issue 2671: the naive split read `:not(.x, .y)` as a list).
+ */
 export function selectorList(selectors: string): string[] {
-  return selectors
-    .split(",")
+  return splitAtDepthZero(selectors, (ch) => ch === ",")
     .map((one) => one.trim().replace(/\s+/g, " "))
     .filter((one) => one.length > 0);
 }
 
 /**
- * Split a CSS value on top-level whitespace. `calc(-1 * var(--rail-inset))` is
- * ONE value with two spaces inside it, so a naive `split(/\s+/)` would read it
- * as three and take the wrong one as the horizontal component.
+ * Split `text` wherever `isSeparator` holds OUTSIDE any `( )` or `[ ]`; the
+ * separators are dropped, and so are empty pieces. One scanner for every
+ * "top level" question the sheet's readers ask: a value's whitespace
+ * (`calc(-1 * var(--rail-inset))` is ONE value), a selector list's commas,
+ * a selector's combinators.
  */
-function splitTopLevel(value: string): string[] {
+export function splitAtDepthZero(text: string, isSeparator: (ch: string) => boolean): string[] {
   const parts: string[] = [];
   let depth = 0;
   let current = "";
-  for (const ch of value) {
-    if (ch === "(") depth += 1;
-    else if (ch === ")") depth -= 1;
-    if (depth === 0 && /\s/.test(ch)) {
+  for (const ch of text) {
+    if (ch === "(" || ch === "[") depth += 1;
+    else if (ch === ")" || ch === "]") depth -= 1;
+    if (depth === 0 && isSeparator(ch)) {
       if (current !== "") parts.push(current);
       current = "";
     } else current += ch;
@@ -85,13 +141,33 @@ function splitTopLevel(value: string): string[] {
 }
 
 /**
+ * The `property: value` pairs of a rule body, in source order. Property names
+ * are ASCII case-insensitive, so they come back lower-cased; a trailing
+ * `!important` is dropped, since it does not change which value is declared.
+ * Values keep their case: a custom property inside `var()` is case-sensitive.
+ */
+export function declarations(body: string): [string, string][] {
+  const out: [string, string][] = [];
+  for (const raw of body.split(";")) {
+    const colon = raw.indexOf(":");
+    if (colon < 0) continue;
+    const value = raw
+      .slice(colon + 1)
+      .trim()
+      .replace(/\s*!important$/i, "");
+    out.push([raw.slice(0, colon).trim().toLowerCase(), value]);
+  }
+  return out;
+}
+
+/**
  * The HORIZONTAL components a single declaration contributes, or `[]` when it
  * contributes none. Shorthands are expanded by arity the way the cascade does
  * it (1 → all, 2 → `block inline`, 3 → `top inline bottom`, 4 → clockwise), so
  * a `padding: 0.25rem 1rem` is caught and a `padding-block: 0.25rem` is not.
  */
 function horizontalComponents(property: string, value: string): string[] {
-  const parts = splitTopLevel(value);
+  const parts = splitAtDepthZero(value, (ch) => /\s/.test(ch));
   const [p0, p1, p2, p3] = parts;
   if (property === "margin" || property === "padding") {
     if (parts.length === 1) return p0 === undefined ? [] : [p0];
@@ -122,17 +198,9 @@ function horizontalComponents(property: string, value: string): string[] {
  * `padding: 0.4rem 0` wrong.
  */
 export function horizontalInsets(body: string): { property: string; component: string }[] {
-  const out: { property: string; component: string }[] = [];
-  for (const raw of body.split(";")) {
-    const colon = raw.indexOf(":");
-    if (colon === -1) continue;
-    const property = raw.slice(0, colon).trim();
-    const value = raw.slice(colon + 1).trim();
-    for (const component of horizontalComponents(property, value)) {
-      out.push({ property, component });
-    }
-  }
-  return out;
+  return declarations(body).flatMap(([property, value]) =>
+    horizontalComponents(property, value).map((component) => ({ property, component })),
+  );
 }
 
 /**

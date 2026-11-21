@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DRAGGING_CLASS } from "../lib/mediaViewerGesture";
-import { ruleBody } from "./helpers/themeCss";
+import { overscrollContainment, ruleBody } from "./helpers/themeCss";
 
 // #1438 — the stylesheet half of swipe-to-dismiss, asserted at SOURCE level
 // (the ipadSafeArea/railExpandedHome precedent): jsdom applies no stylesheet,
@@ -49,7 +49,8 @@ describe("media viewer — text source stylesheet contract (#1764)", () => {
   });
 
   it("keeps the pane's overscroll to itself so a drag past the end is not the page's", () => {
-    expect(ruleBody(".media-viewer-text")).toMatch(/overscroll-behavior:\s*contain/);
+    // issue 2671 — declared by the shared containment rule, not per surface.
+    expect(overscrollContainment().both).toContain(".media-viewer-text");
   });
 
   it("makes the pane the scroller — the base body is overflow:hidden", () => {
@@ -126,7 +127,8 @@ describe("media viewer — native pan stylesheet contract (#1805)", () => {
   });
 
   it("keeps the scroller's overscroll to itself so a drag past the end is not the page's", () => {
-    expect(ruleBody(".media-viewer-zoom-scroller")).toMatch(/overscroll-behavior:\s*contain/);
+    // issue 2671 — declared by the shared containment rule, not per surface.
+    expect(overscrollContainment().both).toContain(".media-viewer-zoom-scroller");
   });
 
   it("makes the scroller the containing block the sizer is positioned against", () => {
