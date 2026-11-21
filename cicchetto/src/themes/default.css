@@ -1061,61 +1061,36 @@ html.overlay-open #root > div {
    2026-07-12: "emphasize the EXISTING matrix aesthetic"). Still pure CSS: no
    canvas / RAF loop (cheap, no teardown, e2e-stable) — the invariant the
    original single-gradient version was chosen for is preserved. Depth comes
-   from THREE drift layers at different speeds (parallax: far/mid/near via the
-   element + ::before + ::after) plus a static accent glow bloom behind the
-   card. Sits behind the card via z-index; the card + connecting view are
-   position:relative to stack above it. Reduced-motion freezes ALL three
-   drifts (see the media query below). pointer-events + inheritance: the base
-   element sets pointer-events:none and the pseudo-elements inherit it, so the
-   whole backdrop is transparent to wheel/touch (login scroll gesture is
-   unaffected). */
+   from THREE drift layers at different speeds (parallax: far/mid/near via
+   ::before, the .login-matrix-mid child and ::after) over the static layers
+   on the element itself: the accent glow bloom behind the card and the mid
+   layer's faint vertical "rain column" texture. Sits behind the card via
+   z-index; the card + connecting view are position:relative to stack above
+   it. Reduced-motion freezes ALL three drifts (see the media query below).
+   pointer-events + inheritance: the base element sets pointer-events:none
+   and the layers inherit it, so the whole backdrop is transparent to
+   wheel/touch (login scroll gesture is unaffected).
+
+   Issue 2647: the drift is a transform, never background-position. Each
+   layer is one tile taller than the viewport, starts one tile above it and
+   slides down by exactly one tile, so the loop is seamless and the compositor
+   moves a layer painted once. Animating background-position (what this used
+   to do) repaints every layer on the main thread on every frame; the same
+   backdrop on the grappa.chat home page put a Chrome renderer at 300% CPU
+   (grappa-www e40ce13, the recipe followed here). Anything painted on a
+   moving layer moves with it, which is why the static layers stay on the
+   element. */
 .login-matrix {
   position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
   overflow: hidden;
-  background-image: /* FAR drift layer — slow, sparse, dim (depth: farthest back). */
-    repeating-linear-gradient(
-      0deg,
-      color-mix(in srgb, var(--accent) 9%, transparent) 0px,
-      color-mix(in srgb, var(--accent) 9%, transparent) 2px,
-      transparent 2px,
-      transparent 16px
-    ),
-    /* Static accent glow bloom behind the card — the "glow" half of the
-       vjt pick. Not animated (its background-position is held in the far
-       keyframes). */
+  background-image:
     radial-gradient(
       65% 55% at 50% 42%,
       color-mix(in srgb, var(--accent) 14%, transparent),
       transparent 72%
-    );
-  background-size:
-    100% 340px,
-    100% 100%;
-  background-repeat: repeat, no-repeat;
-  opacity: 0.6;
-  animation: login-matrix-fall-far 11s linear infinite;
-}
-
-.login-matrix::before,
-.login-matrix::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-}
-
-/* MID drift layer — medium speed + density, plus the faint vertical
-   "rain column" texture (the 90deg gradient the original carried). */
-.login-matrix::before {
-  background-image:
-    repeating-linear-gradient(
-      0deg,
-      color-mix(in srgb, var(--accent) 13%, transparent) 0px,
-      color-mix(in srgb, var(--accent) 13%, transparent) 2px,
-      transparent 2px,
-      transparent 11px
     ),
     repeating-linear-gradient(
       90deg,
@@ -1124,14 +1099,56 @@ html.overlay-open #root > div {
       transparent 1px,
       transparent 14px
     );
-  background-size:
-    100% 240px,
-    100% 100%;
+  background-repeat: no-repeat;
+  opacity: 0.6;
+}
+
+.login-matrix::before,
+.login-matrix::after {
+  content: "";
+}
+
+.login-matrix::before,
+.login-matrix-mid,
+.login-matrix::after {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  will-change: transform;
+}
+
+/* FAR drift layer — slow, sparse, dim (depth: farthest back). */
+.login-matrix::before {
+  top: -340px;
+  background-image: repeating-linear-gradient(
+    0deg,
+    color-mix(in srgb, var(--accent) 9%, transparent) 0px,
+    color-mix(in srgb, var(--accent) 9%, transparent) 2px,
+    transparent 2px,
+    transparent 16px
+  );
+  background-size: 100% 340px;
+  animation: login-matrix-fall-far 11s linear infinite;
+}
+
+/* MID drift layer — medium speed + density. */
+.login-matrix-mid {
+  top: -240px;
+  background-image: repeating-linear-gradient(
+    0deg,
+    color-mix(in srgb, var(--accent) 13%, transparent) 0px,
+    color-mix(in srgb, var(--accent) 13%, transparent) 2px,
+    transparent 2px,
+    transparent 11px
+  );
+  background-size: 100% 240px;
   animation: login-matrix-fall-mid 7s linear infinite;
 }
 
 /* NEAR drift layer — fast, dense, brightest (depth: closest / foreground). */
 .login-matrix::after {
+  top: -170px;
   background-image: repeating-linear-gradient(
     0deg,
     color-mix(in srgb, var(--accent) 20%, transparent) 0px,
@@ -1146,37 +1163,20 @@ html.overlay-open #root > div {
 /* Each layer travels exactly one tile height per loop → seamless. Distinct
    durations over distinct tile sizes give the parallax depth. */
 @keyframes login-matrix-fall-far {
-  from {
-    background-position:
-      0 0,
-      0 0;
-  }
   to {
-    background-position:
-      0 340px,
-      0 0;
+    transform: translateY(340px);
   }
 }
 
 @keyframes login-matrix-fall-mid {
-  from {
-    background-position:
-      0 0,
-      0 0;
-  }
   to {
-    background-position:
-      0 240px,
-      0 0;
+    transform: translateY(240px);
   }
 }
 
 @keyframes login-matrix-fall-near {
-  from {
-    background-position: 0 0;
-  }
   to {
-    background-position: 0 170px;
+    transform: translateY(170px);
   }
 }
 
@@ -1408,8 +1408,8 @@ html.overlay-open #root > div {
    The static glow bloom + frozen grids remain (a still "matrix" backdrop);
    the spinner stays as a static ring (still a clear "busy" affordance). */
 @media (prefers-reduced-motion: reduce) {
-  .login-matrix,
   .login-matrix::before,
+  .login-matrix-mid,
   .login-matrix::after,
   .login-spinner,
   .compose-send-spinner,

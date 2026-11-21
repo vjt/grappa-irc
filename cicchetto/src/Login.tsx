@@ -393,8 +393,12 @@ const Login: Component = () => {
           media, so the IRC-text-only invariant is untouched. Sits OUTSIDE
           `.login-scroll` so it stays pinned to the viewport while the card
           scrolls (the Advanced disclosure can grow taller than a short
-          viewport — see `.login-scroll` in default.css). */}
-      <div class="login-matrix" aria-hidden="true" />
+          viewport — see `.login-scroll` in default.css). The child is the
+          mid drift layer: each drift layer needs a box of its own to slide
+          (issue 2647), and the element itself holds the static glow. */}
+      <div class="login-matrix" aria-hidden="true">
+        <div class="login-matrix-mid" />
+      </div>
 
       {/* Scroll container: keeps the whole card (esp. Connect + the Advanced
           fields) reachable when it overflows a short viewport. */}
