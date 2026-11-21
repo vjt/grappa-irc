@@ -7391,11 +7391,12 @@ scroller.
 **Placement, and why entries stay single compounds.** A descendant selector
 at the top of the sheet precedes the base rule of the same element and
 raises biome `noDescendingSpecificity` warnings. Measured on `biome lint` of
-`default.css` alone: this branch shows 28 warnings, 26 of them
-`noDescendingSpecificity`, and main shows the same two counts. One
-`.shell-mobile .shell-members .members-pane` entry takes the
-`noDescendingSpecificity` count from 26 to 32. These are warnings, so rc
-stays 0.
+`default.css` alone (biome 2.5.15, the gate's binary): this branch shows 28
+warnings, 26 of them `noDescendingSpecificity`, and main shows the same two
+counts. One `.shell-mobile .shell-members .members-pane` entry takes the
+`noDescendingSpecificity` count from 26 to 28, and the three mobile
+descendant forms (`.shell-sidebar`, `.members-pane`, `.rail-query-context`)
+together take it to 29. These are warnings, so rc stays 0.
 
 **Census** (all of `cicchetto/src`; the issue's 70/33/2 counted
 `default.css` prose too). 43 scrolling `overflow` declarations (34 rules on

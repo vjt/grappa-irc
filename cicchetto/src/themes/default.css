@@ -571,8 +571,7 @@ body {
    (it would take the bounce away: unlist the surface instead) and either rule
    moved inside an at-rule. Entries stay single compounds, up here: a
    descendant selector at this position precedes the base rule of the same
-   element and draws biome noDescendingSpecificity warnings (one
-   `.shell-mobile .shell-members .members-pane` entry: +6). */
+   element and draws biome noDescendingSpecificity warnings. */
 .login-scroll,
 .shell-sidebar,
 .rail-actions-menu,
@@ -6062,10 +6061,10 @@ html.is-ios27-band .shell {
      Tap + focus + caret are pointer events, unaffected. issue 2465 — the
      device risk this comment used to accept (a SHORT draft that fits lets
      `pan-y` fall through on a vertical drag) bit: with the keyboard up it
-     panned the whole shell. `pan-y` STAYS, a
-     long draft needs it; what closes the hole is the Shell's touch guard
-     (`installShellTouchGuard`), which cancels a move the textarea cannot
-     scroll from the very first one, before ComposeBox's claim. */
+     panned the whole shell. `pan-y` STAYS, a long draft needs it; what
+     closes the hole is the Shell's touch guard (`installShellTouchGuard`),
+     which cancels a move the textarea cannot scroll from the very first
+     one, before ComposeBox's claim. */
   touch-action: pan-y;
 }
 
@@ -6477,9 +6476,9 @@ html.is-ios27-band .shell {
      internally (min-height:0 defeats the flex-item min-content floor that would
      otherwise let it grow past the rail and shove the launcher off-screen).
      The mobile override (~:4211) restates these alongside its pan-y gesture
-     carve-out; the values are identical, so
-     the base rule is the single desktop+mobile source and the mobile block only
-     adds the touch contract. */
+     carve-out; the values are identical, so the base rule is the single
+     desktop+mobile source and the mobile block only adds the touch
+     contract. */
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
