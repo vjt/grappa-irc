@@ -7345,10 +7345,14 @@ finds no source (the positive control, `adm-badge--${`, hits
 of being contained.
 
 **The line between the two lists is the declared axis.** A strip is a rule
-that declares a scroll on x and says nothing about y: no `overflow-y`, no
-`overflow-block`, no `overflow` shorthand. Its `auto` y comes only from the
-visible→auto conversion, and the vertical scroller around it (the admin
-panel, the attachments list) wants that axis, so a strip contains x alone.
+that declares a scroll on x and leaves y `visible`, whether it says so or
+not. Its `auto` y comes only from the visible→auto conversion, and the
+vertical scroller around it (the admin panel, the attachments list) wants
+that axis, so a strip contains x alone. The guard reads the y value, not
+whether y is declared: the first fix recognised a strip by its silence on
+y, and the second review showed that an explicit `overflow-y: visible`,
+which computes exactly like a missing one, then let a strip into the
+both-axis list green.
 Every other scroller contains both axes, whether or not it can scroll at the
 moment. I checked the components that render the eight x-scrolling boxes,
 and none of them holds a vertical scroller, so the both-axis shape that 25
@@ -7428,7 +7432,10 @@ mutants each failed the case they target, 11 of them from the independent
 review's list of false greens in the first cut; reverted, the suite passes.
 The review's two surviving mutants now fail: removing `textarea` from the
 list fails the UA-scroller test, and moving `.adm-table-wrap` into the
-both-axis list fails the strip test, each alone. For the carve-out, a
+both-axis list fails the strip test, each alone. The same move with an
+explicit `overflow-y: visible` on the strip's rule fails the strip test as
+well; it passed while a strip was recognised by its silence on y. For the
+carve-out, a
 well-formed pair (`:where(.registration-wizard-body) textarea`) stays green.
 Each of these fails: a bare entry, an outer that is not a scroller, an
 outer that scrolls only on x, an inner that is not a scroller, a plain

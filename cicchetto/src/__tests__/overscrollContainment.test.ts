@@ -156,15 +156,16 @@ function covers(shared: string[], subject: string): boolean {
 const UA_SCROLLERS = ["textarea"];
 
 /**
- * A horizontal strip: a rule that declares a scroll on x and says nothing at
- * all about y (no `overflow-y` / `overflow-block`, no `overflow` shorthand),
- * so its y is `auto` only through the visible→auto conversion, and the
- * vertical scroller it sits in still wants that axis. `.bottom-bar` is not
- * one: it declares `overflow-y: hidden`.
+ * A horizontal strip: a rule that declares a scroll on x and leaves y
+ * `visible`, whether it says so or not, so its y is `auto` only through the
+ * visible→auto conversion, and the vertical scroller it sits in still wants
+ * that axis. The test reads the y VALUE: an explicit `overflow-y: visible`
+ * computes exactly like a missing one. `.bottom-bar` is not one: its y is
+ * `hidden`.
  */
 const isStripRule = (body: string): boolean =>
   [...declaredScrollAxes(body)].join("") === "x" &&
-  !declarations(body).some(([prop]) => /^overflow(-y|-block)?$/.test(prop));
+  [undefined, "visible"].includes(byAxis(body, "overflow").y);
 
 const rules = allRules();
 const scrollRules = rules.filter(({ body }) => declaredScrollAxes(body).size > 0);
