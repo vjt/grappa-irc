@@ -7434,9 +7434,11 @@ rule inside an at-rule, and the carve-out rule above the both-axis one (an
 entry ties on specificity with the one it undoes). 19
 mutants each failed the case they target, 11 of them from the independent
 review's list of false greens in the first cut; reverted, the suite passes.
-The review's two surviving mutants now fail: removing `textarea` from the
-list fails the UA-scroller test, and moving `.adm-table-wrap` into the
-both-axis list fails the strip test, each alone. The same move with an
+The review's two surviving mutants now fail. Removing `textarea` from the
+list fails two tests: the UA-scroller test, and the carve-out test, whose
+`:where(.settings-drawer) textarea` names an inner half that is no longer
+listed. Moving `.adm-table-wrap` into the both-axis list fails the strip
+test alone. The same move with an
 explicit `overflow-y: visible` on the strip's rule fails the strip test as
 well; it passed while a strip was recognised by its silence on y. For the
 carve-out, a
