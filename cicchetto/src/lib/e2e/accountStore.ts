@@ -21,6 +21,7 @@
 // and lost by the other would be published and never decryptable).
 
 import { type E2eState, newState } from "./engine";
+import { newGroupSessionsState } from "./groupSessions";
 import type { Olm } from "./olm";
 import type { Account } from "./vodozemac/vodozemac_binding";
 import type { SignedList } from "./wire";
@@ -152,6 +153,13 @@ export function accountStore(olm: Olm, vault: Vault, lock: Lock): AccountStore {
       const record = parseRecord(await open(key, slot, sealed));
       // A field the state gained since the record was sealed starts empty.
       const state = { ...newState(), ...record.state };
+      // A group store sealed before the v4 epoch shape (v:1, one session
+      // per sender) or before the holders-per-did shape (v:2, folded
+      // nicks as holders) does not open under it: the epochs it holds
+      // name keys this shape cannot read, or holders this shape reads as
+      // dids, so the store starts empty and the next gkey or send mints
+      // a fresh epoch.
+      if (state.groups?.v !== 3) state.groups = newGroupSessionsState();
       const account = olm.Account.from_pickle(record.account);
       try {
         const master = record.master === null ? null : olm.Account.from_pickle(record.master);

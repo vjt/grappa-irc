@@ -72,6 +72,20 @@ export function hasNoTopic(text: string | null | undefined): boolean {
   return text === null || text === undefined || text === "";
 }
 
+/**
+ * Channel E2E (wire v4, CLIENT_PROTOCOL §4f) — the tag a channel's topic
+ * carries when the channel is encrypted: `[e2e:1 key-from=<nick>]`, the
+ * nick of the member who holds the epoch key. The glue reads it off the
+ * topic to decide whether a join, part, or roster seed touches the E2E
+ * record at all: a channel whose topic carries no tag is cleartext, and
+ * its membership traffic never opens the sealed record. The nick is
+ * returned as spelled; null when the topic carries no well-formed tag.
+ */
+export function parseE2eTopicTag(topic: string): string | null {
+  const match = /\[e2e:1 key-from=([^\]\s]+)\]/.exec(topic);
+  return match?.[1] ?? null;
+}
+
 const exports_ = identityScopedStore((onIdentityChange) => {
   const [topicByChannel, setTopicByChannel] = createSignal<Record<ChannelKey, TopicEntry>>({});
   const [modesByChannel, setModesByChannel] = createSignal<Record<ChannelKey, ModesEntry>>({});

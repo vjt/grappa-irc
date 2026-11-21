@@ -58,6 +58,30 @@ describe("members.seedMembers", () => {
   });
 });
 
+describe("members.onMembersSeeded", () => {
+  it("fires on seedMembers with the seeded roster, and not on seedFromTest", async () => {
+    const members = await import("../lib/members");
+    const key = channelKey("freenode", "#grappa");
+    const seen: [string, string[]][] = [];
+    const unsubscribe = members.onMembersSeeded((k, nicks) => seen.push([k, nicks]));
+
+    members.seedMembers(key, [
+      { nick: "vjt", modes: ["@"] },
+      { nick: "alice", modes: [] },
+    ]);
+    expect(seen).toEqual([[key, ["vjt", "alice"]]]);
+
+    // The test seam injects state without the bootstrap path: no seed
+    // event, so the audit does not run on it.
+    members.seedFromTest(key, [{ nick: "stale", modes: [] }]);
+    expect(seen).toHaveLength(1);
+
+    unsubscribe();
+    members.seedMembers(key, [{ nick: "vjt", modes: [] }]);
+    expect(seen).toHaveLength(1);
+  });
+});
+
 describe("members.applyPresenceEvent", () => {
   it(":join inserts the sender (modes: []) at the end", async () => {
     const members = await import("../lib/members");

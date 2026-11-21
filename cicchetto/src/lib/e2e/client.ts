@@ -46,9 +46,29 @@
 // copy again drops it as the engine reported it: it never stops twice.
 
 import { ApiError } from "../api";
+import { serverProtocol } from "../serverProtocol";
 import type { E2eKeysWireDevice } from "../wireTypes";
 import type { AccountStore } from "./accountStore";
 import { type ByNick, noNicks, setNick } from "./byNick";
+import {
+  auditEpochRotation,
+  type ChannelE2eDeps,
+  type ChannelE2eEvent,
+  type ChannelE2eResult,
+  channelsWithEpoch,
+  distributeKey,
+  emitChannelE2eEvents,
+  flushPendingSends,
+  GKEY_TAG,
+  onMemberJoined,
+  onMemberLeft,
+  receiveChannel,
+  receiveGkey,
+  requestKey,
+  rotateDue,
+  sendChannel,
+  syncChannelEpochHeld,
+} from "./channelE2e";
 import type {
   ChatChange,
   ChatStore,
@@ -67,6 +87,13 @@ import {
   type PinOutcome,
   type Result,
 } from "./engine";
+import {
+  dropPendingSends,
+  expireHeldRows,
+  holdRow,
+  takeHeldRows,
+  takeHeldRowsWithEpoch,
+} from "./groupSessions";
 import type { Olm } from "./olm";
 import {
   type Challenge,
@@ -84,7 +111,8 @@ import {
   type SasView,
   Verifier,
 } from "./sas";
-import { fold, type ReceiveVerb, type SendVerb } from "./wire";
+import type { Account } from "./vodozemac/vodozemac_binding";
+import { decodePayload, fold, parseGkeyInner, type ReceiveVerb, type SendVerb } from "./wire";
 
 /** One whole message grappa holds for this device (the `e2e_message` wire shape, minus its envelope). */
 export type InboxMessage = {
@@ -97,6 +125,8 @@ export type InboxMessage = {
   payload: string;
   /** A copy of a message one of this subject's other devices sent, not one a peer wrote. */
   own: boolean;
+  /** The folded channel the message was sent to (v63), or null for a DM. Absent on a server predating v63. */
+  channel?: string | null;
 };
 
 /** grappa's E2E doors for one device of a subject on one network. */
@@ -189,6 +219,29 @@ export type E2eContext = {
   door: (did: string) => Door;
   /** Whether this cic sent the line `chal` from `challenger` names, there, in the `SENT_WINDOW_MS` before `at` (`SendLog.confirms`). */
   orders: (chal: Challenge, challenger: string, at: number) => OrderVerdict;
+  /**
+   * The roster of a channel, as the caller holds it, or undefined when the
+   * caller has none: the channel E2E steps use it for the gkey staleness
+   * check and the periodic-rotation election (they skip when it is
+   * missing; the audit is what enforces them).
+   */
+  channelMembers?: (channel: string) => string[] | undefined;
+  /**
+   * The nick the topic of `channel` names as the holder of its epoch key
+   * (`[e2e:1 key-from=<nick>]`), or null when the channel's topic carries
+   * no such tag: what marks a channel as encrypted. Absent when the
+   * caller holds no topics: the seed operation then treats every channel
+   * as unadvertised, and stays silent.
+   */
+  topicTagFor?: (channel: string) => string | null;
+  /**
+   * The network slug this context is on, when the caller knows it: the
+   * channel E2E steps stamp their events with it, so the rows store can
+   * scope by it and the held-epoch registry can key by it. Absent in
+   * the harness contexts, which hold no network — the steps then raise
+   * unstamped events.
+   */
+  slug?: string;
 };
 
 /**
@@ -207,6 +260,16 @@ export type Report = {
   waiting: boolean;
   unknownDevice: boolean;
   listBehind: boolean;
+  /**
+   * Channel E2E events this operation produced (decrypted channel
+   * messages, undecryptable ones, keys received or sent, rotations).
+   * Present only when non-empty, so a Report with nothing of the sort
+   * keeps its old shape. The channel window has no DM row to show them
+   * in yet (see `channelE2e.ts`): they are also fanned out to the live
+   * listeners there, and the caller that owns the channel UI reads them
+   * here.
+   */
+  channelE2e?: ChannelE2eEvent[];
 };
 
 /** Who a nick is pinned to, as the user sees it: the master, and how many of its devices are trusted. */
@@ -250,6 +313,65 @@ export type E2eClient = {
   verify(ctx: E2eContext, nick: string, step: SasStep): Promise<Report>;
   /** grappa dropped `msgid` after accepting it (`e2e_send_dropped`): its row turns failed. */
   dropped(ctx: E2eContext, msgid: string, reason: SendDropped): Promise<Report>;
+  /**
+   * Sends `body` to `channel`, encrypted under the channel's epoch
+   * (`channelE2e.sendChannel`): when no epoch is held the row waits in
+   * queue for the key — it never mints an epoch of its own, and never
+   * goes out in the clear. The channel message itself takes no DM row.
+   */
+  sendChannel(ctx: E2eContext, channel: string, body: string, members: string[]): Promise<Report>;
+  /**
+   * Mints the first epoch for `channel` and distributes its key pairwise
+   * to `members` (`channelE2e.distributeKey`), then sends the rows queued
+   * for its key. The explicit creation the channel UI offers (the config
+   * screen's create/rotate button): a send never mints one on its own.
+   * No-op for the key when an epoch is already held — the queued rows
+   * still flush.
+   */
+  createChannelEpoch(ctx: E2eContext, channel: string, members: string[]): Promise<Report>;
+  /**
+   * Drops the rows queued for `channel`'s key (`groupSessions`): the
+   * user's answer when a queued row should not wait any longer — the
+   * mechanism the UI uses when the user chooses cleartext for a row, or
+   * cancels it. Each dropped row surfaces as `channel_dropped`
+   * (`send-cancelled`): never silently lost.
+   */
+  cancelPendingChannelSends(ctx: E2eContext, channel: string): Promise<Report>;
+  /**
+   * Broadcasts a key request for `channel` on the channel itself
+   * (`channelE2e.requestKey`): the ask a newcomer makes when it holds no
+   * epoch. The channel UI calls this when it offers an encrypted channel
+   * the device has no key for; until then nothing asks here.
+   */
+  requestChannelKey(ctx: E2eContext, channel: string): Promise<Report>;
+  /**
+   * The audit for `channel` against the roster `members`
+   * (`channelE2e.auditEpochRotation`): rotates the epoch when a holder
+   * left while every cic was closed. Runs on cic open (`members.ts`
+   * `onMembersSeeded`) and before every channel send.
+   */
+  auditChannelEpoch(ctx: E2eContext, channel: string, members: string[]): Promise<Report>;
+  /**
+   * The roster seed for `channel` (`members.ts` `onMembersSeeded`): the
+   * audit against `members` and, when no epoch is held, the key request —
+   * in one operation, so the sealed record opens once. Silent on a
+   * channel whose topic carries no tag (`ctx.topicTagFor`): a cleartext
+   * channel's seed never opens the record at all.
+   */
+  seedChannel(ctx: E2eContext, channel: string, members: string[]): Promise<Report>;
+  /**
+   * A membership delta on `channel`: `joined` the nick that joined (or
+   * null), `left` the nick that left, was kicked, or quit (or null),
+   * `members` the roster after the change. Drives the key distribution
+   * on a join and the mandatory rotation on a leave (`channelE2e`).
+   */
+  channelMembersChanged(
+    ctx: E2eContext,
+    channel: string,
+    joined: string | null,
+    left: string | null,
+    members: string[],
+  ): Promise<Report>;
   /**
    * Deletes the chat with `nick` (`ChatStore.remove`) and what the engine
    * still holds of it in the clear (`Engine.forget`); answers the chat it
@@ -537,6 +659,25 @@ function copyFrom(engine: Engine, m: InboxMessage): Result {
   return { events: [], outbound: [] };
 }
 
+// The gkey inner a body carries, or undefined when it is not one: a
+// copy's body is opaque text to the drain, and only a gkey inner is
+// imported as a key — anything else keeps its sent row.
+function gkeyInnerOf(body: string): Record<string, unknown> | undefined {
+  let decoded: Record<string, unknown>;
+  try {
+    decoded = decodePayload(body);
+  } catch {
+    return undefined;
+  }
+  if (decoded.t !== "gkey") return undefined;
+  try {
+    parseGkeyInner(decoded);
+  } catch {
+    return undefined;
+  }
+  return decoded;
+}
+
 // A key of our sibling `did` from grappa's claim door: its KEYS text, or
 // null when grappa refused it (logged, never claimed again for those copies:
 // the engine drops what waited for it).
@@ -556,6 +697,109 @@ export function e2eClient(
   now: () => number,
   host: SasHost,
 ): E2eClient {
+  // The channel E2E step's dependencies over an engine: this device's
+  // did, the DM door for a gkey — through the engine, tagged `GKEY_TAG`,
+  // so it writes no chat row (`chatStore`: an `out` alone never creates
+  // a chat, and no row with that tag exists to move) — and the signing
+  // and verification over the account and the pinned device keys: a
+  // channel message is signed with this device's Ed25519 key and verified
+  // against the sender's pinned device key for the did grappa attests
+  // (`fromDid`). The roster comes from the context when the caller holds
+  // one (`encryptedChats.ts` reads it off the members store), and its
+  // dids from the engine's pinned device lists.
+  function channelDeps(ctx: E2eContext, engine: Engine, account: Account): ChannelE2eDeps {
+    return {
+      ownNick: ctx.ownNick,
+      ownDid: engine.deviceId(),
+      network: ctx.slug,
+      now,
+      sign: (text) => account.sign(text),
+      verify: (nick, did, text, sig) => {
+        const pinned = engine.pinned(nick);
+        if (pinned === undefined) return false;
+        const key = engine.trustedDid(pinned.master, did);
+        if (key === undefined) return false;
+        return olm.verify_ed25519(key, text, sig);
+      },
+      rosterFor: ctx.channelMembers,
+      keyFromFor: (channel) => ctx.topicTagFor?.(channel) ?? undefined,
+      didsFor: (nick) =>
+        fold(nick) === fold(ctx.ownNick) ? engine.ownDids() : engine.deviceDids(nick),
+      sendDm: (nick, inner) => engine.send(nick, inner, GKEY_TAG, null, null).outbound,
+    };
+  }
+
+  /**
+   * Whether the server speaks channel E2E (protocol 63): below it the
+   * send door refuses a channel target, so no channel line is attempted.
+   * Null — the join reply has not landed yet — is not evidence of too
+   * old, and proceeds: a refusal then surfaces through the reconciliation
+   * below.
+   */
+  function channelProtocolOk(): boolean {
+    const version = serverProtocol();
+    return version === null || version >= 63;
+  }
+
+  /** A send the door refused: the outbound, and why. What `flush` answers for the caller to reconcile. */
+  type RefusedOutbound = { out: Outbound; reason: DoorRefusal };
+
+  /**
+   * What a channel step's events become once the send door answered: a
+   * gkey DM the door refused loses its optimistic `channel_key_sent` and
+   * gains a `channel_key_failed` (a key the members never got is not a
+   * key sent), and a channel `:msg` the door refused gains a
+   * `channel_dropped` of reason `send-refused` — a rejected message is
+   * never silently lost. `channelOutbound` is the step's own outbound
+   * (matched by identity); anything else the door refused is not this
+   * step's to report.
+   */
+  function reconcileChannelSends(
+    events: ChannelE2eEvent[],
+    channelOutbound: Outbound[],
+    refused: RefusedOutbound[],
+  ): ChannelE2eEvent[] {
+    if (refused.length === 0) return events;
+    const out = [...events];
+    for (const { out: refusedOut, reason } of refused) {
+      if (!channelOutbound.includes(refusedOut)) continue;
+      if (refusedOut.tag === GKEY_TAG) {
+        let sid: string | undefined;
+        try {
+          sid = (decodePayload(refusedOut.payload) as { sid?: unknown }).sid as string;
+        } catch {
+          sid = undefined;
+        }
+        const idx = out.findIndex(
+          (e) =>
+            e.kind === "channel_key_sent" &&
+            e.to === refusedOut.target &&
+            (sid === undefined || e.sid === sid),
+        );
+        if (idx >= 0) {
+          const [sent] = out.splice(idx, 1);
+          if (sent !== undefined && sent.kind === "channel_key_sent") {
+            out.push({
+              kind: "channel_key_failed",
+              channel: sent.channel,
+              to: sent.to,
+              sid: sent.sid,
+              reason,
+            });
+          }
+        }
+      } else {
+        out.push({
+          kind: "channel_dropped",
+          channel: refusedOut.target,
+          reason: "send-refused",
+          detail: reason,
+        });
+      }
+    }
+    return out;
+  }
+
   // Step 4 for `outbound`: what the send door answered, as chat changes, and
   // whether it refused a payload as from a device it does not list. A
   // refused payload is forgotten (`discard`); its message is lost only once
@@ -563,22 +807,37 @@ export function e2eClient(
   // Then each text grappa took a payload of for the first time is copied to
   // our siblings (`copyOut`), once: its row is not sent yet (a re-send after
   // a NACK, or a payload for a device whose keys came later, finds it sent).
-  // An account whose list names this device alone has none: nothing of the
-  // copy step runs, no row read, no listing, no store.
+  // A channel step's `copies` ride along the same way: a gkey DM grappa
+  // took is copied to our siblings, so a rotation reaches our other
+  // devices — but only one grappa actually took: a refused gkey's copy is
+  // dropped with it, and the step reports the refusal instead. All gkey
+  // DMs share the one tag, so what was taken is tracked by peer, not by
+  // tag. An account whose list names this device alone has none: nothing of
+  // the copy step runs, no row read, no listing, no store.
+  //
+  // Every refusal is answered, not only the tagged ones: an untagged
+  // payload (a channel `:msg`, which has no DM row) the door refused is
+  // still a rejected message, and the caller reconciles it into an event
+  // instead of leaving it in the console alone.
   async function flush(
     ctx: E2eContext,
     engine: Engine,
     persist: () => Promise<void>,
     door: Door,
     outbound: Outbound[],
-  ): Promise<{ changes: ChatChange[]; unknownDevice: boolean }> {
+    copies: ChannelE2eResult["copies"] = [],
+  ): Promise<{ changes: ChatChange[]; unknownDevice: boolean; refused: RefusedOutbound[] }> {
     const changes: ChatChange[] = [];
     // Tag → nick, of the texts grappa took a payload of.
     const taken = new Map<string, string>();
+    // Folded peers of the gkey DMs grappa took.
+    const takenGkey = new Set<string>();
+    const refused: RefusedOutbound[] = [];
     let unknownDevice = false;
     for (const out of outbound) {
       const answer = await door.send(out);
       if ("refused" in answer && answer.refused === "unknown-device") unknownDevice = true;
+      if ("refused" in answer) refused.push({ out, reason: answer.refused });
       if (out.ref === undefined || out.tag === undefined) {
         if ("refused" in answer) {
           console.warn(`[e2e] grappa refused a ${out.verb} to ${out.target}: ${answer.refused}`);
@@ -587,6 +846,7 @@ export function e2eClient(
       }
       if (!("refused" in answer)) {
         engine.sent(out.ref, answer.msgid);
+        if (out.tag === GKEY_TAG) takenGkey.add(fold(out.target));
         if (out.tag !== LIST_TAG && !rowless(out.tag)) {
           changes.push({
             op: "out",
@@ -627,9 +887,15 @@ export function e2eClient(
       const row = (await chats.rows(ctx.slot, nick)).find((r) => r.id === tag);
       if (row?.kind === "out" && row.state !== "sent") texts.push({ nick, body: row.body });
     }
+    // Only a gkey grappa took reaches the siblings, and only where there
+    // are siblings to reach: an account alone on its list copies nothing.
+    const copiesTaken: ChannelE2eResult["copies"] = engine.alone()
+      ? []
+      : copies.filter((c) => takenGkey.has(fold(c.peer)));
     return {
-      changes: [...changes, ...(await copyOut(engine, persist, door, texts))],
+      changes: [...changes, ...(await copyOut(engine, persist, door, texts, copiesTaken))],
       unknownDevice,
+      refused,
     };
   }
 
@@ -663,15 +929,24 @@ export function e2eClient(
   // copy or a claim grappa refuses is logged, never tried again: no NACK
   // ever names a copy, so a lost one is lost. Answers what its events change
   // in the chats.
+  //
+  // A channel step's `copies` ride the same door: a gkey DM the step sent
+  // to a member is copied to our siblings as the exact inner, so a device
+  // that never saw the DM still learns the epoch — the other end of the
+  // drain's copied-gkey branch.
   async function copyOut(
     engine: Engine,
     persist: () => Promise<void>,
     door: Door,
     texts: Taken[],
+    copies: ChannelE2eResult["copies"] = [],
   ): Promise<ChatChange[]> {
-    if (texts.length === 0) return [];
+    if (texts.length === 0 && copies.length === 0) return [];
     const listed = await listSiblings(engine, door);
-    const copied: CopyResult[] = texts.map(({ nick, body }) => engine.copy(nick, body));
+    const copied: CopyResult[] = [
+      ...texts.map(({ nick, body }) => engine.copy(nick, body)),
+      ...copies.map(({ peer, body }) => engine.copy(peer, body)),
+    ];
     for (const e of copied.flatMap((r) => r.events)) {
       if (e.kind === "sibling_keys_needed") {
         copied.push(engine.siblingKeys(e.did, await claim(door, e.did)));
@@ -688,7 +963,8 @@ export function e2eClient(
   }
 
   // An operation on the slot's identity, which must exist already: its
-  // engine and verifier, and this device's doors.
+  // engine and verifier, and this device's doors. The account rides along
+  // for the channel steps, which sign with it.
   function withEngine<T>(
     ctx: E2eContext,
     fn: (
@@ -697,6 +973,7 @@ export function e2eClient(
       verifier: Verifier,
       door: Door,
       state: E2eState,
+      account: Account,
     ) => Promise<T>,
   ): Promise<T> {
     return accounts.withAccount(ctx.slot, async ({ account, own, state, created, persist }) => {
@@ -705,7 +982,7 @@ export function e2eClient(
       if (own === null) throw new IdentityElsewhereError(`no E2E identity in ${ctx.slot}`);
       const engine = new Engine(olm, account, own, state, ctx.ownNick, ctx.frameBudgetBase, now);
       const verifier = new Verifier(olm, engine, state, host, now);
-      return fn(engine, persist, verifier, ctx.door(own.did), state);
+      return fn(engine, persist, verifier, ctx.door(own.did), state, account);
     });
   }
 
@@ -773,7 +1050,11 @@ export function e2eClient(
   }
 
   // Steps 2–4 for what an operation made: `changes` and what the verifier
-  // made, then `outbound` and the verifier's payloads.
+  // made, then `outbound` and the verifier's payloads. The refusals the
+  // door answered ride along beside the report, for the caller to
+  // reconcile (a channel step reports a refused gkey or channel message
+  // as an event, not a log line) — never inside it: a Report's shape is
+  // its callers' contract, and an extra key breaks their exact matches.
   async function finish(
     ctx: E2eContext,
     engine: Engine,
@@ -782,19 +1063,23 @@ export function e2eClient(
     door: Door,
     changes: ChatChange[],
     outbound: Outbound[],
-  ): Promise<Report> {
+    copies: ChannelE2eResult["copies"] = [],
+  ): Promise<{ report: Report; refused: RefusedOutbound[] }> {
     const sas = sasOutput(verifier);
     const touched = new Set(sas.chats);
     for (const key of await chats.apply(ctx.slot, [...sas.changes, ...changes])) touched.add(key);
     await persist();
-    const sent = await flush(ctx, engine, persist, door, [...outbound, ...sas.outbound]);
+    const sent = await flush(ctx, engine, persist, door, [...outbound, ...sas.outbound], copies);
     for (const key of await chats.apply(ctx.slot, sent.changes)) touched.add(key);
     return {
-      chats: [...touched],
-      pkmsgs: 0,
-      waiting: engine.waitsOnTheClock(),
-      unknownDevice: sent.unknownDevice,
-      listBehind: false,
+      report: {
+        chats: [...touched],
+        pkmsgs: 0,
+        waiting: engine.waitsOnTheClock(),
+        unknownDevice: sent.unknownDevice,
+        listBehind: false,
+      },
+      refused: sent.refused,
     };
   }
 
@@ -802,7 +1087,7 @@ export function e2eClient(
   const step = (ctx: E2eContext, act: (engine: Engine) => Result): Promise<Report> =>
     withEngine(ctx, async (engine, persist, verifier, door) => {
       const res = act(engine);
-      return finish(
+      const { report } = await finish(
         ctx,
         engine,
         verifier,
@@ -811,24 +1096,133 @@ export function e2eClient(
         changesFor(res.events, now(), null),
         res.outbound,
       );
+      return report;
     });
 
   return {
     drain: (ctx) =>
-      withEngine(ctx, async (engine, persist, verifier, door, state) => {
+      withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
         const touched = new Set<string>();
         let pkmsgs = 0;
         let unknownDevice = false;
         let behind = false;
         let after = 0;
+        const channelEvents: ChannelE2eEvent[] = [];
+        // The channel step's dependencies: this device signs with the
+        // account, and verifies a channel message against the sender's
+        // pinned device key for the did grappa attests.
+        const deps = channelDeps(ctx, engine, account);
+        // A no-session row, held for retry instead of surfaced — the key
+        // may still arrive, and the stash, sealed in the store, is now
+        // the only copy. Only the rows the hold drops past its cap
+        // surface, as undecryptable; a row with no sid to hold under
+        // surfaces as it came.
+        const holdNoSession = (
+          events: ChannelE2eEvent[],
+          channel: string,
+          from: string,
+          fromDid: string,
+          payload: string,
+          sid: string | null,
+        ): void => {
+          if (sid === null) {
+            events.push({
+              kind: "channel_undecryptable",
+              channel,
+              from,
+              sid: null,
+              reason: "no-session",
+            });
+            return;
+          }
+          for (const dropped of holdRow(state.groups, {
+            channel,
+            sid,
+            from,
+            fromDid,
+            payload,
+            receivedAt: now(),
+          })) {
+            events.push({
+              kind: "channel_undecryptable",
+              channel: dropped.channel,
+              from: dropped.from,
+              sid: dropped.sid,
+              reason: "no-session",
+            });
+          }
+        };
         for (;;) {
           const page = await door.inbox(after);
           const last = page.at(-1);
           if (last === undefined) break;
           const changes: ChatChange[] = [];
           const outbound: Outbound[] = [];
+          // This page's channel events and the outbound they made, for
+          // the reconciliation after the flush below: a gkey DM or a
+          // channel `:msg` the door refused is reported, never lost.
+          const pageChannelEvents: ChannelE2eEvent[] = [];
+          const pageChannelOutbound: Outbound[] = [];
+          const pageChannelCopies: ChannelE2eResult["copies"] = [];
           for (const m of page) {
             if (m.id <= state.inbox) continue;
+            const channel = m.channel ?? null;
+            if (channel !== null) {
+              // A channel `:msg` (v63): decrypted under the epoch and
+              // verified against the sender's pinned device key, or
+              // surfaced as undecryptable — never dropped silently, and
+              // acknowledged like a DM's, readable or not. Our own
+              // channel messages are skipped by the receiver (the send
+              // path showed them). A step that throws must not kill the
+              // drain: the row surfaces as undecryptable instead, the
+              // watermark still advances, and the ACK follows as usual —
+              // one bad row never wedges the inbox behind it.
+              let received: ChannelE2eResult;
+              try {
+                received = await receiveChannel(
+                  deps,
+                  state.groups,
+                  channel,
+                  m.from,
+                  m.fromDid,
+                  m.payload,
+                );
+              } catch (err) {
+                console.debug(
+                  "[e2e] a channel row threw while reading; surfacing it as undecryptable",
+                  err,
+                );
+                received = {
+                  events: [
+                    {
+                      kind: "channel_undecryptable",
+                      channel,
+                      from: m.from,
+                      sid: null,
+                      reason: "decryption-failed",
+                    },
+                  ],
+                  outbound: [],
+                  copies: [],
+                };
+              }
+              // A row with no session yet is held for retry, not surfaced:
+              // the key may still arrive, and the stash — sealed in the
+              // store — is now the only copy. The watermark still advances
+              // and the row is ACKed as usual.
+              for (const e of received.events) {
+                if (e.kind === "channel_undecryptable" && e.reason === "no-session") {
+                  holdNoSession(pageChannelEvents, channel, m.from, m.fromDid, m.payload, e.sid);
+                } else {
+                  pageChannelEvents.push(e);
+                }
+              }
+              pageChannelOutbound.push(...received.outbound);
+              pageChannelCopies.push(...received.copies);
+              outbound.push(...received.outbound);
+              state.inbox = m.id;
+              continue;
+            }
             const res = m.own
               ? copyFrom(engine, m)
               : engine.receive(m.from, m.verb, m.msgid, m.fromDid, m.payload);
@@ -855,7 +1249,25 @@ export function e2eClient(
             // trust again all the same (issue 2486, keys asked before any
             // message).
             if (m.verb === "keys") touched.add(fold(m.from));
-            changes.push(...changesFor(res.events, now(), fromInbox(m)));
+            // A copy from a sibling that carries a gkey: the sibling
+            // rotated (or answered a key request) and passed the key on —
+            // import it here instead of showing it as a sent row in the
+            // peer's chat. The copy came through the sibling session, so
+            // it is authenticated like a gkey DM from a roster member.
+            const kept: E2eEvent[] = [];
+            for (const e of res.events) {
+              if (e.kind === "copied" && m.own) {
+                const gkey = gkeyInnerOf(e.body);
+                if (gkey !== undefined) {
+                  pageChannelEvents.push(
+                    ...receiveGkey(deps, state.groups, gkey, ctx.ownNick, m.fromDid),
+                  );
+                  continue;
+                }
+              }
+              kept.push(e);
+            }
+            changes.push(...changesFor(kept, now(), fromInbox(m)));
             outbound.push(...res.outbound);
             for (const [i, e] of res.events.entries()) {
               if (e.kind !== "received") continue;
@@ -866,9 +1278,96 @@ export function e2eClient(
                 if (check !== null) changes.push(check);
                 changes.push(...changesFor(acked.events, now(), null));
                 outbound.push(...acked.outbound);
+              } else if (e.inner.t === "gkey") {
+                // A member's epoch key, inside the pairwise DM: import
+                // it into the group store. No row: key material is never
+                // shown, and a bad key is reported, never thrown.
+                pageChannelEvents.push(
+                  ...receiveGkey(deps, state.groups, e.inner, e.nick, m.fromDid),
+                );
               }
             }
             state.inbox = m.id;
+          }
+          // A key that arrived on this page retries the rows held under
+          // it: each re-run reads under the new epoch, and a re-run that
+          // imports another epoch retries the rows held under that one
+          // too — the walk reads the events as they grow. A re-run still
+          // without a session is held again, never dropped.
+          const retriedKeys = new Set<string>();
+          for (let i = 0; i < pageChannelEvents.length; i++) {
+            const e = pageChannelEvents[i];
+            if (e === undefined || e.kind !== "channel_key_received") continue;
+            const key = `${fold(e.channel)}\u0000${e.sid}`;
+            if (retriedKeys.has(key)) continue;
+            retriedKeys.add(key);
+            for (const row of takeHeldRows(state.groups, e.channel, e.sid)) {
+              // A step that throws must not kill the drain: the row
+              // surfaces as undecryptable instead, the watermark still
+              // advances, and the ACK follows as usual.
+              let re: ChannelE2eResult;
+              try {
+                re = await receiveChannel(
+                  deps,
+                  state.groups,
+                  row.channel,
+                  row.from,
+                  row.fromDid,
+                  row.payload,
+                );
+              } catch (err) {
+                console.debug(
+                  "[e2e] a held channel row threw while reading; surfacing it as undecryptable",
+                  err,
+                );
+                re = {
+                  events: [
+                    {
+                      kind: "channel_undecryptable",
+                      channel: row.channel,
+                      from: row.from,
+                      sid: null,
+                      reason: "decryption-failed",
+                    },
+                  ],
+                  outbound: [],
+                  copies: [],
+                };
+              }
+              for (const reEvent of re.events) {
+                if (reEvent.kind === "channel_undecryptable" && reEvent.reason === "no-session") {
+                  holdNoSession(
+                    pageChannelEvents,
+                    row.channel,
+                    row.from,
+                    row.fromDid,
+                    row.payload,
+                    reEvent.sid,
+                  );
+                } else {
+                  pageChannelEvents.push(reEvent);
+                }
+              }
+            }
+          }
+          // Rows queued for a key go out when the key arrives: a key that
+          // landed on this page — a gkey DM, a copied gkey, a rotation the
+          // reader followed, or the first epoch this device minted to
+          // answer a key request — flushes what waited under it, in order.
+          // The flush is idempotent: the take removes the rows, so a later
+          // page finds none. A refusal surfaces through the reconciliation
+          // below, never silently lost.
+          const flushedChannels = new Set<string>();
+          for (const e of pageChannelEvents) {
+            if (e.kind === "channel_key_received" || e.kind === "channel_rotated") {
+              flushedChannels.add(fold(e.channel));
+            }
+          }
+          for (const channel of flushedChannels) {
+            const flushed = await flushPendingSends(deps, state.groups, channel);
+            pageChannelOutbound.push(...flushed.outbound);
+            pageChannelCopies.push(...flushed.copies);
+            outbound.push(...flushed.outbound);
           }
           const sas = sasOutput(verifier);
           changes.push(...sas.changes);
@@ -876,8 +1375,11 @@ export function e2eClient(
           for (const key of sas.chats) touched.add(key);
           for (const key of await chats.apply(ctx.slot, changes)) touched.add(key);
           await persist();
-          const sent = await flush(ctx, engine, persist, door, outbound);
+          const sent = await flush(ctx, engine, persist, door, outbound, pageChannelCopies);
           unknownDevice ||= sent.unknownDevice;
+          channelEvents.push(
+            ...reconcileChannelSends(pageChannelEvents, pageChannelOutbound, sent.refused),
+          );
           await persist();
           for (const key of await chats.apply(ctx.slot, sent.changes)) touched.add(key);
           // Up to the watermark: all of the page, or what came before a stop.
@@ -886,8 +1388,80 @@ export function e2eClient(
           if (behind) break;
           after = last.id;
         }
+        // Rows held for a key that arrived outside this drain — a
+        // roster seed's audit retry, a key request answered while the
+        // drain was idle — are retried now that their epoch is held,
+        // instead of waiting for a later key event or their TTL. A
+        // re-run that imports another epoch retries the rows held
+        // under that one too; a re-run still without a session is
+        // held again, never dropped.
+        for (let round = 0; round < 8; round++) {
+          const ready = takeHeldRowsWithEpoch(state.groups);
+          if (ready.length === 0) break;
+          let imported = false;
+          for (const row of ready) {
+            let re: ChannelE2eResult;
+            try {
+              re = await receiveChannel(
+                deps,
+                state.groups,
+                row.channel,
+                row.from,
+                row.fromDid,
+                row.payload,
+              );
+            } catch (err) {
+              console.debug(
+                "[e2e] a held channel row threw while reading; surfacing it as undecryptable",
+                err,
+              );
+              re = {
+                events: [
+                  {
+                    kind: "channel_undecryptable",
+                    channel: row.channel,
+                    from: row.from,
+                    sid: null,
+                    reason: "decryption-failed",
+                  },
+                ],
+                outbound: [],
+                copies: [],
+              };
+            }
+            for (const reEvent of re.events) {
+              if (reEvent.kind === "channel_key_received") imported = true;
+              if (reEvent.kind === "channel_undecryptable" && reEvent.reason === "no-session") {
+                holdNoSession(
+                  channelEvents,
+                  row.channel,
+                  row.from,
+                  row.fromDid,
+                  row.payload,
+                  reEvent.sid,
+                );
+              } else {
+                channelEvents.push(reEvent);
+              }
+            }
+          }
+          if (!imported) break;
+        }
+        // Held rows that waited too long for a key that never came surface
+        // as undecryptable now — bounded, never silently lost. This runs
+        // after the page loop, so a key that arrived in this same drain
+        // already had its chance to retry them.
+        for (const expired of expireHeldRows(state.groups, now())) {
+          channelEvents.push({
+            kind: "channel_undecryptable",
+            channel: expired.channel,
+            from: expired.from,
+            sid: expired.sid,
+            reason: "no-session",
+          });
+        }
         const ticked = engine.tick();
-        const end = await finish(
+        const { report: end } = await finish(
           ctx,
           engine,
           verifier,
@@ -897,12 +1471,14 @@ export function e2eClient(
           ticked.outbound,
         );
         for (const key of end.chats) touched.add(key);
+        emitChannelE2eEvents(channelEvents);
         return {
           chats: [...touched],
           pkmsgs,
           waiting: end.waiting,
           unknownDevice: unknownDevice || end.unknownDevice,
           listBehind: behind,
+          ...(channelEvents.length > 0 ? { channelE2e: channelEvents } : {}),
         };
       }),
 
@@ -933,19 +1509,354 @@ export function e2eClient(
         };
       }),
 
+    sendChannel: (ctx, channel, body, members) => {
+      // A server below 63 refuses a channel target: no channel line is
+      // attempted, and the drop is reported (never silently lost).
+      if (!channelProtocolOk()) {
+        const report: Report = {
+          chats: [],
+          pkmsgs: 0,
+          waiting: false,
+          unknownDevice: false,
+          listBehind: false,
+          channelE2e: [{ kind: "channel_dropped", channel, reason: "protocol-too-old" }],
+        };
+        return Promise.resolve(report);
+      }
+      return withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
+        const res = await sendChannel(
+          channelDeps(ctx, engine, account),
+          state.groups,
+          channel,
+          body,
+          members,
+        );
+        const { report, refused } = await finish(
+          ctx,
+          engine,
+          verifier,
+          persist,
+          door,
+          [],
+          res.outbound,
+          res.copies,
+        );
+        const events = reconcileChannelSends(res.events, res.outbound, refused);
+        // The held-epoch registry learns the epoch this operation left
+        // behind, even when the step emitted nothing for it: a quiet
+        // send under an epoch held since the last reload still marks
+        // the cleartext that follows.
+        syncChannelEpochHeld(state.groups, channel, ctx.slug);
+        emitChannelE2eEvents(events);
+        return {
+          ...report,
+          ...(events.length > 0 ? { channelE2e: events } : {}),
+        };
+      });
+    },
+
+    createChannelEpoch: (ctx, channel, members) => {
+      // A server below 63 refuses a channel target: no epoch is minted,
+      // and the drop is reported (never silently lost).
+      if (!channelProtocolOk()) {
+        const report: Report = {
+          chats: [],
+          pkmsgs: 0,
+          waiting: false,
+          unknownDevice: false,
+          listBehind: false,
+          channelE2e: [{ kind: "channel_dropped", channel, reason: "protocol-too-old" }],
+        };
+        return Promise.resolve(report);
+      }
+      return withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
+        const deps = channelDeps(ctx, engine, account);
+        const res: ChannelE2eResult = { events: [], outbound: [], copies: [] };
+        const minted = distributeKey(deps, state.groups, channel, members);
+        res.events.push(...minted.events);
+        res.outbound.push(...minted.outbound);
+        res.copies.push(...minted.copies);
+        // What waited for the key goes out under the epoch just minted.
+        const flushed = await flushPendingSends(deps, state.groups, channel);
+        res.outbound.push(...flushed.outbound);
+        res.copies.push(...flushed.copies);
+        const { report, refused } = await finish(
+          ctx,
+          engine,
+          verifier,
+          persist,
+          door,
+          [],
+          res.outbound,
+          res.copies,
+        );
+        const events = reconcileChannelSends(res.events, res.outbound, refused);
+        emitChannelE2eEvents(events);
+        return {
+          ...report,
+          ...(events.length > 0 ? { channelE2e: events } : {}),
+        };
+      });
+    },
+
+    cancelPendingChannelSends: (ctx, channel) => {
+      return withEngine(ctx, async (engine, persist, verifier, door, state) => {
+        const events: ChannelE2eEvent[] = [];
+        for (const dropped of dropPendingSends(state.groups, channel)) {
+          events.push({
+            kind: "channel_dropped",
+            channel,
+            reason: "send-cancelled",
+            detail: dropped.body,
+          });
+        }
+        const { report } = await finish(ctx, engine, verifier, persist, door, [], [], []);
+        emitChannelE2eEvents(events);
+        return {
+          ...report,
+          ...(events.length > 0 ? { channelE2e: events } : {}),
+        };
+      });
+    },
+
+    requestChannelKey: (ctx, channel) => {
+      // Below 63 there is no epoch to ask for: the drop is reported.
+      if (!channelProtocolOk()) {
+        const report: Report = {
+          chats: [],
+          pkmsgs: 0,
+          waiting: false,
+          unknownDevice: false,
+          listBehind: false,
+          channelE2e: [{ kind: "channel_dropped", channel, reason: "protocol-too-old" }],
+        };
+        return Promise.resolve(report);
+      }
+      return withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
+        const res = requestKey(channelDeps(ctx, engine, account), state.groups, channel);
+        const { report, refused } = await finish(
+          ctx,
+          engine,
+          verifier,
+          persist,
+          door,
+          [],
+          res.outbound,
+          res.copies,
+        );
+        const events = reconcileChannelSends(res.events, res.outbound, refused);
+        emitChannelE2eEvents(events);
+        return {
+          ...report,
+          ...(events.length > 0 ? { channelE2e: events } : {}),
+        };
+      });
+    },
+
+    // An audit never runs against another audit of the same account: it
+    // runs under `withEngine`, which reads and writes the account record
+    // under the account's exclusive Web Lock (`accountStore`: one lock per
+    // slot, held by `navigator.locks`, so the same lock serialises audits
+    // in this tab and in every other tab of the origin alike). Two devices
+    // can still race — each holds its own lock — but they cannot bifurcate
+    // the epoch: a device that learns the new epoch from a copy of the
+    // rotation does not mint its own (the drain's copied-gkey branch).
+    auditChannelEpoch: (ctx, channel, members) =>
+      withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
+        const deps = channelDeps(ctx, engine, account);
+        const res = await auditEpochRotation(deps, state.groups, channel, members);
+        // A rotation the audit minted leaves a new epoch: what waited for
+        // the key goes out under it.
+        const flushed = await flushPendingSends(deps, state.groups, channel);
+        res.outbound.push(...flushed.outbound);
+        res.copies.push(...flushed.copies);
+        const { report, refused } = await finish(
+          ctx,
+          engine,
+          verifier,
+          persist,
+          door,
+          [],
+          res.outbound,
+          res.copies,
+        );
+        const events = reconcileChannelSends(res.events, res.outbound, refused);
+        syncChannelEpochHeld(state.groups, channel, ctx.slug);
+        emitChannelE2eEvents(events);
+        return {
+          ...report,
+          ...(events.length > 0 ? { channelE2e: events } : {}),
+        };
+      }),
+
+    seedChannel: (ctx, channel, members) => {
+      // A channel whose topic carries no tag is cleartext: the seed opens
+      // nothing at all — no audit, no ask, and the sealed record is never
+      // even loaded. The check runs before the lock, so the operation
+      // costs nothing there.
+      if ((ctx.topicTagFor?.(channel) ?? null) === null) {
+        return Promise.resolve({
+          chats: [],
+          pkmsgs: 0,
+          waiting: false,
+          unknownDevice: false,
+          listBehind: false,
+        });
+      }
+      return withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
+        const deps = channelDeps(ctx, engine, account);
+        const res: ChannelE2eResult = { events: [], outbound: [], copies: [] };
+        // The seed is the only signal of our own leave when the PART was
+        // missed: the roster names everyone but us, so the epoch held
+        // before the leave is dead. Drop it, and the ask below requests
+        // the key again. A later seed that names us — or a live join —
+        // re-asks from no epoch.
+        if (!members.some((m) => fold(m) === fold(ctx.ownNick))) {
+          const dropped = await onMemberLeft(deps, state.groups, channel, ctx.ownNick, members);
+          res.events.push(...dropped.events);
+          res.outbound.push(...dropped.outbound);
+          res.copies.push(...dropped.copies);
+        }
+        const audited = await auditEpochRotation(deps, state.groups, channel, members);
+        res.events.push(...audited.events);
+        res.outbound.push(...audited.outbound);
+        res.copies.push(...audited.copies);
+        // The ask a newcomer makes when it holds no epoch: it no-ops when
+        // one is held, so this only fires when the seed found none — the
+        // recovery for a leave/rejoin missed while the cic was closed.
+        const asked = requestKey(deps, state.groups, channel);
+        res.events.push(...asked.events);
+        res.outbound.push(...asked.outbound);
+        res.copies.push(...asked.copies);
+        // A rotation the audit minted leaves a new epoch: what waited for
+        // the key goes out under it.
+        const flushed = await flushPendingSends(deps, state.groups, channel);
+        res.outbound.push(...flushed.outbound);
+        res.copies.push(...flushed.copies);
+        const { report, refused } = await finish(
+          ctx,
+          engine,
+          verifier,
+          persist,
+          door,
+          [],
+          res.outbound,
+          res.copies,
+        );
+        const events = reconcileChannelSends(res.events, res.outbound, refused);
+        syncChannelEpochHeld(state.groups, channel, ctx.slug);
+        emitChannelE2eEvents(events);
+        return {
+          ...report,
+          ...(events.length > 0 ? { channelE2e: events } : {}),
+        };
+      });
+    },
+
+    channelMembersChanged: (ctx, channel, joined, left, members) =>
+      withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
+        const deps = channelDeps(ctx, engine, account);
+        const res: ChannelE2eResult = { events: [], outbound: [], copies: [] };
+        if (joined !== null) {
+          const r = await onMemberJoined(deps, state.groups, channel, joined, members);
+          res.events.push(...r.events);
+          res.outbound.push(...r.outbound);
+          res.copies.push(...r.copies);
+          if (fold(joined) === fold(ctx.ownNick)) {
+            // Our own join: the epoch held before the leave is dead (the
+            // join dropped it, if there was one), and a newcomer with no
+            // epoch asks for the key — the recovery for a leave/rejoin
+            // missed while the cic was closed. It no-ops when an epoch is
+            // held, so a join that kept one asks nothing.
+            const asked = requestKey(deps, state.groups, channel);
+            res.events.push(...asked.events);
+            res.outbound.push(...asked.outbound);
+            res.copies.push(...asked.copies);
+          }
+        }
+        if (left !== null) {
+          // Our own leave is hygiene — the epoch is dropped — and runs
+          // whatever the server speaks. A rotation for someone else's
+          // leave only runs where the server carries channel messages
+          // (63): below it there is no epoch to rotate.
+          if (fold(left) === fold(ctx.ownNick) || channelProtocolOk()) {
+            const r = await onMemberLeft(deps, state.groups, channel, left, members);
+            res.events.push(...r.events);
+            res.outbound.push(...r.outbound);
+            res.copies.push(...r.copies);
+            // A rotation the leave minted leaves a new epoch: what waited
+            // for the key goes out under it.
+            const flushed = await flushPendingSends(deps, state.groups, channel);
+            res.outbound.push(...flushed.outbound);
+            res.copies.push(...flushed.copies);
+          }
+        }
+        const { report, refused } = await finish(
+          ctx,
+          engine,
+          verifier,
+          persist,
+          door,
+          [],
+          res.outbound,
+          res.copies,
+        );
+        const events = reconcileChannelSends(res.events, res.outbound, refused);
+        syncChannelEpochHeld(state.groups, channel, ctx.slug);
+        emitChannelE2eEvents(events);
+        return {
+          ...report,
+          ...(events.length > 0 ? { channelE2e: events } : {}),
+        };
+      }),
+
     tick: (ctx) =>
-      withEngine(ctx, async (engine, persist, verifier, door) => {
+      withEngine(ctx, async (engine, persist, verifier, door, state, account) => {
         const ticked = engine.tick();
         verifier.tick(await host.alive());
-        return finish(
+        // Periodic rotation: the epochs due a new day are rotated, the
+        // new key distributed pairwise to the holders. Below protocol 63
+        // there is no epoch to rotate.
+        const rotated = channelProtocolOk()
+          ? await rotateDue(
+              channelDeps(ctx, engine, account),
+              state.groups,
+              channelsWithEpoch(state.groups),
+            )
+          : { events: [], outbound: [], copies: [] };
+        // A rotation the tick minted leaves new epochs: what waited for a
+        // key goes out under them.
+        const flushedOutbound: Outbound[] = [];
+        const flushedCopies: ChannelE2eResult["copies"] = [];
+        for (const channel of channelsWithEpoch(state.groups)) {
+          const flushed = await flushPendingSends(
+            channelDeps(ctx, engine, account),
+            state.groups,
+            channel,
+          );
+          flushedOutbound.push(...flushed.outbound);
+          flushedCopies.push(...flushed.copies);
+        }
+        const { report, refused } = await finish(
           ctx,
           engine,
           verifier,
           persist,
           door,
           changesFor(ticked.events, now(), null),
-          ticked.outbound,
+          [...ticked.outbound, ...rotated.outbound, ...flushedOutbound],
+          [...rotated.copies, ...flushedCopies],
         );
+        const events = reconcileChannelSends(
+          rotated.events,
+          [...rotated.outbound, ...flushedOutbound],
+          refused,
+        );
+        emitChannelE2eEvents(events);
+        return {
+          ...report,
+          ...(events.length > 0 ? { channelE2e: events } : {}),
+        };
       }),
 
     rekey: (ctx, nick) => step(ctx, (engine) => engine.rekey(nick)),
@@ -983,7 +1894,7 @@ export function e2eClient(
           nick,
           ed25519: peer.master,
         };
-        const report = await finish(
+        const { report } = await finish(
           ctx,
           engine,
           verifier,
@@ -998,7 +1909,8 @@ export function e2eClient(
     verify: (ctx, nick, step) =>
       withEngine(ctx, async (engine, persist, verifier, door) => {
         await verifier.step(nick, step);
-        return finish(ctx, engine, verifier, persist, door, [], []);
+        const { report } = await finish(ctx, engine, verifier, persist, door, [], []);
+        return report;
       }),
 
     deleteChat: (ctx, nick) =>
@@ -1033,7 +1945,8 @@ export function e2eClient(
             wire: null,
           });
         }
-        return finish(ctx, engine, verifier, persist, door, changes, []);
+        const { report } = await finish(ctx, engine, verifier, persist, door, changes, []);
+        return report;
       }),
 
     identity: (ctx, nicks) =>
