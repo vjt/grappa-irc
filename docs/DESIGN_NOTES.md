@@ -7312,7 +7312,7 @@ and the card must bounce natively at its edge while the shell stays still.
 The root's `overscroll-behavior: none` (iOS-1) stays.
 
 **Mechanism.** Two shared rules right after `html, body`. The first lists
-every scroller by its subject selector (38 entries, `textarea` included,
+every scroller by its subject selector (37 entries, `textarea` included,
 since the UA computes its overflow as `auto`) and declares
 `overscroll-behavior: contain`. The second lists the three horizontal strips
 that sit inside a vertical scroller (`.adm-nav` as the mobile tab row,
@@ -7331,6 +7331,16 @@ so it IS a scroll container: its computed value goes from `contain` to
 `auto`. That is harmless here, for three reasons. Its SVG cancels the wheel
 itself (`onWheel` → `preventDefault`). `touch-action: none` leaves touch
 nothing to pan. And WebKit gives a hidden box no scroll view.
+
+**Dead rules deleted, not listed.** The first cut listed
+`.settings-diag-log`, which nothing renders: the diagnostic fieldset that
+used it left `SettingsDrawer.tsx` when 7fc7322ef rehoused the Debug tab on
+the admin cards, and its own comment said the rules would go with it. The
+codebase review of 2026-08-15 had already found the `.settings-diag-*`
+family matching nothing. `git grep settings-diag` outside `default.css`
+finds no source (the positive control, `adm-badge--${`, hits
+`AdminBadge.tsx` through the same pathspec), so the six rules went instead
+of being contained.
 
 **The line between the two lists.** Never contain an axis a box cannot
 scroll while a scroller around it wants that axis. A strip's vertical axis
@@ -7399,8 +7409,9 @@ descendant forms (`.shell-sidebar`, `.members-pane`, `.rail-query-context`)
 together take it to 29. These are warnings, so rc stays 0.
 
 **Census** (all of `cicchetto/src`; the issue's 70/33/2 counted
-`default.css` prose too). 43 scrolling `overflow` declarations (34 rules on
-y, 4 on x, 4 on both), 71 non-scrolling ones, and 0 overflow or overscroll
+`default.css` prose too). 42 scrolling `overflow` declarations (41 rules: 33
+on y, 4 on x, 4 on both; 43 and 42 before the dead rules went), 71
+non-scrolling ones, and 0 overflow or overscroll
 declarations in product TS/TSX. `overscroll-behavior` went from 35
 declarations to 5. The census script carries a positive control (synthetic
 CSS with known counts, including the two-value `overflow` shorthand) and a
