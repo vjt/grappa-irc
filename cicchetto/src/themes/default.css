@@ -571,15 +571,16 @@ body {
    names the pair as `:where(<outer>) <inner>`, so it applies only where the
    nesting is real. `:where()` gives the outer no specificity: the entry ties
    with the one it undoes and wins by coming after it, and it draws no biome
-   noDescendingSpecificity warning, where a plain descendant would. Two pairs
-   today, the perform textarea and the NickServ mirror. One nested scroller
+   noDescendingSpecificity warning, where a plain descendant would. The rule
+   covers every nested vertical scroller, the ones that were contained before
+   issue 2671 too (vjt's later ruling, relayed, not seen first-hand; see
+   DESIGN_NOTES). Three pairs today: the perform textarea, the NickServ
+   mirror, and the admin tab panel inside `.admin-pane`. One nested scroller
    stays contained on purpose: `.server-peek-body`, the surface issue 2671 is
    about. Its outer scroller, `.scrollback-overlay`, rarely overflows (the
    peek is at most 40vh of a pane-tall layer). Whether iOS still stops the
    chain at an overflow box that does not overflow is INFERRED, not measured,
-   so the card keeps its own wall. A scroller that was contained before
-   issue 2671 keeps it even when nested (`.admin-tab-panel` inside
-   `.admin-pane`).
+   so the card keeps its own wall.
 
    __tests__/overscrollContainment.test.ts holds it. A rule that makes
    something scroll without being covered here fails it. So do an entry that
@@ -637,7 +638,8 @@ textarea {
 }
 
 :where(.settings-drawer) textarea,
-:where(.registration-wizard-body) .registration-wizard-mirror {
+:where(.registration-wizard-body) .registration-wizard-mirror,
+:where(.admin-pane) .admin-tab-panel {
   overscroll-behavior: auto;
 }
 
