@@ -82,6 +82,13 @@ defmodule Grappa.Visitors.LoginTest do
     ":irc.test.org 433 * #{nick} :Nickname is already in use\r\n"
   end
 
+  # issue 2673 — the 437 ERR_UNAVAILRESOURCE IRCnet (nick delay) and solanum
+  # answer to a reserved nick at registration, echoing it like `nick_in_use/1`.
+  defp nick_unavailable(nick_line) do
+    nick = nick_line |> String.trim() |> String.trim_leading("NICK ")
+    ":irc.test.org 437 * #{nick} :Nick/channel is temporarily unavailable\r\n"
+  end
+
   describe "validation gates (independent of network state)" do
     test "malformed nick → {:error, :malformed_nick}" do
       assert {:error, :malformed_nick} = Login.login(login_input(%{nick: "9bad"}), [])
@@ -381,6 +388,26 @@ defmodule Grappa.Visitors.LoginTest do
       end
 
       {_, port} = IRCServer.start_server(always_clash)
+      {network, _} = setup_visitor_network(port)
+
+      assert {:error, :nick_in_use} = Login.login(login_input(), [])
+      assert Visitors.resolve_identity_by_nick("vjt", network.id) == nil
+    end
+
+    # issue 2673 — a ladder spent on 437 is the same dead end for the user: the
+    # server answered every NICK, so `:upstream_unreachable` ("couldn't reach
+    # the upstream IRC server") would be false, and picking another nick is the
+    # one thing they can do about it.
+    test "437 on every candidate → {:error, :nick_in_use}, anon row purged" do
+      always_delayed = fn state, line ->
+        if String.starts_with?(line, "NICK ") do
+          {:reply, nick_unavailable(line), state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {_, port} = IRCServer.start_server(always_delayed)
       {network, _} = setup_visitor_network(port)
 
       assert {:error, :nick_in_use} = Login.login(login_input(), [])
