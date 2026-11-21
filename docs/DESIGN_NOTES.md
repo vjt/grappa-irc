@@ -7233,7 +7233,8 @@ hackney or quic below the floor: that undoes the 2649 security bump.
   Elixir 1.19.5 from source (`OTP 28, jit emulator, ssl started`; 2 m 26 s
   on aarch64, 3 m 06 s on x86_64), saved
   `beam-fedora43-<arch>-pins-315ba72dc9910fb1-recipe-f7d712b43e2fced7`,
-  and succeeded through every rpm proof after the build. Both deb legs
+  and succeeded through every rpm proof a `deb_validation` dispatch runs
+  (the bare-tag version proof is skipped there by design). Both deb legs
   succeeded too, and the six other jobs were skipped. That is the cache
   MISS path, on both arches.
 - `test/infra/packaging_toolchain_from_source_test.bats`, 14 cases. Seven
@@ -7277,15 +7278,18 @@ Run 44870309289 missed, built and saved it (rpm jobs 136743124234 on
 x86_64, 136743124196 on aarch64). Run 44870914476 restored it (rpm jobs
 136745012837 on x86_64, 136745013241 on aarch64): the build step and its
 miss-only `dnf install` never ran, the PATH step printed `OTP 28.5 (pin
-28.5), Elixir 1.19.5 (pin 1.19.5)`, and `build.sh` and every rpm proof
-passed. Both runs succeeded, deb legs included, with every publishing
-job skipped. A recipe change moving the key ran on the way: the review's
-last commit edited a comment in the recipe, and 44870309289 missed
-rather than restore 44865771090's `…recipe-f7d712b43e2fced7`, still
-cached under this branch. What has not run: a key moved by a change to
-`.tool-versions`, and any restore outside this branch's scope. The
-repair on main misses and saves under main, and a tag run reading
-main's save, the path every later tag takes, has not happened.
+28.5), Elixir 1.19.5 (pin 1.19.5)`, and `build.sh` passed, as did every
+rpm proof a `deb_validation` dispatch runs (the bare-tag version proof
+is skipped there by design). Both runs succeeded, deb legs included,
+with every publishing job skipped. A recipe change moving the key ran on
+the way: 27dc49288 edited a comment in the recipe, and 44870309289
+missed rather than restore 44865771090's `…recipe-f7d712b43e2fced7`,
+still cached under this branch. What has not run: a key moved by a
+change to `.tool-versions`, and any restore outside this branch's scope.
+The repair on main misses and saves under main, and a tag run reading
+main's save, the path every later tag takes, has not happened. Nor has
+the bare-tag version proof run with the source-built OTP: every dispatch
+above skipped it, and the v1.6.5 repair dispatch is its first run.
 Nobody has built or booted grappa on OTP 27 either: 27 is the floor
 because quic refuses anything lower, and every build runs 28 (deb, rpm)
 or 29 (Arch). The cache scoping above is GitHub's documented behaviour,
