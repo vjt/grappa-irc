@@ -6984,10 +6984,15 @@ runner one is either too loose or flaky. Its first run (integration run
 on the same read as the census) was green on both projects; it has never
 run against the previous stylesheet.
 
-**Measured once, off the gate, by a fleet peer, not the author.** The
-issue's acceptance conditions were taken on a bench and posted on PR 2667
-(issuecomment-7052967908): the previous stylesheet (`f505609e0`) against
-`610d9f962`, whose backdrop rules and markup are the ones described here.
+**Measured once, off the gate, by a fleet peer, not the author.** Two of
+the issue's checks were taken on a bench and posted on PR 2667
+(issuecomment-7052967908): main-thread busy, on an isolated page rather
+than the login page the acceptance names, and the reduced-motion still
+frame, a check the issue makes apart from its acceptance. Neither half of
+the acceptance was taken: no measurement ran on the login page, and nobody
+checked that the parallax looks unchanged. The bench compared the previous
+stylesheet (`f505609e0`) with `610d9f962`, whose backdrop rules and markup
+are the ones described here.
 Main-thread busy during the drift fell from 94.1% / 92.7% (28 / 26 style
 recalcs in 5 s) to 0.0% / 0.1% (0 recalcs, 0 layouts). Under reduced
 motion the still frame stays within 2/255 per channel of the previous one,
