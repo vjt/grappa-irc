@@ -223,8 +223,8 @@ defmodule Grappa.Session.Server do
 
   # The same closed set as a type, built FROM the attribute so the two cannot
   # drift: `432 | 433 | … | 484`, the stop reasons a refusal can carry.
-  @type keep_nick_refusal_code ::
-          unquote(@keep_nick_refusals |> Enum.reverse() |> Enum.reduce(&{:|, [], [&1, &2]}))
+  @typep keep_nick_refusal_code ::
+           unquote(@keep_nick_refusals |> Enum.reverse() |> Enum.reduce(&{:|, [], [&1, &2]}))
 
   # #581 — overall deadline for the recover-identity sequence (IDENTIFY →
   # +r → NICK → RECOVER/RELEASE → settle → NICK). Larger than the ghost
