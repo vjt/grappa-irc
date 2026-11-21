@@ -7773,10 +7773,19 @@ sha256 checked:
   the carve-out on specificity) fails two tests;
 - a per-rule `contain` in the `.admin-tab-panel` block fails one.
 The census records a reading and does not observe nesting: a new nested
-scroller in a component still passes until somebody redoes the census. The
-per-rule test's allowance for a strip's y restore stays even though nothing
-uses it today. Without it, the next strip that turns vertical outside a
-scroller could not satisfy the coverage test's demand.
+scroller in a component still passes until somebody redoes the census.
+
+The coverage test's demand for a strip's y restore and the per-rule test's
+allowance for it stay, though the sheet no longer carries a strip either one
+applies to. Without the allowance, the next strip that turns vertical outside
+a scroller could not satisfy the demand. Synthetic rule bodies hold them now,
+the way the file already holds `isStripRule`. The two checks became functions
+(`coverageOffenders`, `ownContainmentOffenders`), run on the sheet and on one
+made-up strip, so deleting either arm fails the strip-restore test. The fleet
+review measured the gap this closes: with the restore gone from the sheet,
+both deletions stayed GREEN, while deleting the allowance at `d5c875a1b` was
+RED. A test that called the two predicates directly would not have closed it:
+it never executes the call sites, and deleting a call site is the mutant.
 
 **Not measured.** Nothing here ran in a browser or on a device. The census is
 a reading of the components and the sheet, and no e2e asserts the computed
