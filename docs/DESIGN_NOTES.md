@@ -7294,3 +7294,137 @@ Nobody has built or booted grappa on OTP 27 either: 27 is the floor
 because quic refuses anything lower, and every build runs 28 (deb, rpm)
 or 29 (Arch). The cache scoping above is GitHub's documented behaviour,
 not measured here.
+<!-- entry #2671 -->
+
+---
+
+## 2026-11-21 — issue 2671: overscroll containment is declared once, by subject selector, and a guard keeps it complete
+
+vjt, on v1.6.5 from the phone: with the `$server` peek open and its body
+scrolled to the bottom, dragging up inside the card moved the whole shell.
+`.server-peek-body` had `overflow-y: auto` and no `overscroll-behavior`. It
+was not alone: of the 42 rules in `default.css` that make something scroll,
+15 had no `overscroll-behavior` in their own block. The other 27 each
+carried one as a line next to their `overflow`: 25 a both-axis `contain`,
+the attachment strip a `-x: contain`, the directory list a `none`. vjt's ruling (relayed in
+the issue): no more per-rule patches, one mechanism for every scroll surface,
+and the card must bounce natively at its edge while the shell stays still.
+The root's `overscroll-behavior: none` (iOS-1) stays.
+
+**Mechanism.** Two shared rules right after `html, body`. The first lists
+every scroller by its subject selector (38 entries, `textarea` included,
+since the UA computes its overflow as `auto`) and declares
+`overscroll-behavior: contain`. The second lists the three horizontal strips
+that sit inside a vertical scroller (`.adm-nav` as the mobile tab row,
+`.adm-table-wrap`, `.confirm-modal-attachment-source`) and declares only
+`overscroll-behavior-x: contain`, leaving their vertical axis to the scroller
+they sit in, as it was before. The desktop `.adm-nav`, where the strip
+becomes a vertical rail, restores `overscroll-behavior-y: contain` in its own
+block. Every per-rule declaration went: 32 `contain` and the one `-x` became
+3 (the two shared rules and the `.adm-nav` restore), plus the two `none`
+that were already there and stay on purpose (the root, `.directory-list`
+#1445). 29 of the 33 moved into a list along with their scroller. 4 were
+dropped and not moved. Three sat on boxes that are not scroll containers
+(`.image-upload-modal`, `.confirm-modal`, the mobile `.shell-members`), so
+they did nothing. The fourth, `.links-modal-body`, is `overflow: hidden`,
+so it IS a scroll container: its computed value goes from `contain` to
+`auto`. That is harmless here, for three reasons. Its SVG cancels the wheel
+itself (`onWheel` → `preventDefault`). `touch-action: none` leaves touch
+nothing to pan. And WebKit gives a hidden box no scroll view.
+
+**The line between the two lists.** Never contain an axis a box cannot
+scroll while a scroller around it wants that axis. A strip's vertical axis
+has such a scroller: the admin panel, the attachments list. A vertical
+scroller's horizontal axis has none. I checked the components that render
+the eight x-scrolling boxes, and none of them holds a vertical scroller. So
+the both-axis shape that 25 rules already shipped costs nothing there. A
+textarea does scroll vertically, so it is contained like every other
+vertical scroller, and when it fits it takes the same latch they all do.
+
+**What enforces it.** `cicchetto/src/__tests__/overscrollContainment.test.ts`.
+A rule that makes something scroll is red unless a shared rule covers its
+subject compound (`.members-pane` covers
+`.shell-mobile .shell-members .members-pane`) or it declares `none` on every
+axis it scrolls. "Scrolls" is read the way the cascade computes it:
+`overflow-block`/`-inline`, any case, `overlay`, and a `var()` (counted as
+scrolling, since it cannot be resolved). A `visible` axis next to a
+non-`visible` one counts as `auto`. Selectors are split at bracket depth
+0, so neither `:has(> .x)` nor `:not(.a, .b)` passes for `.x` or `.a`. A
+pseudo-element is never covered by its host. Four more things are red: an
+entry that no longer names a scroller, any `contain` outside the shared
+rules, a `none` on a listed surface (it would take the bounce away, so
+unlist the surface instead), and a shared rule inside an at-rule. 19
+mutants each failed the case they target, 11 of them from the independent
+review's list of false greens in the first cut; reverted, the suite passes.
+The same review made `themeCss.selectorList` split at bracket depth 0 for
+every test that uses it.
+
+**Why `contain` gives the bounce.** In the spec `contain` stops scroll
+chaining and keeps the element's own overscroll affordance, while `none`
+refuses both. WebKit does the same on iOS:
+`ScrollingTreeScrollingNodeDelegateIOS::updateScrollViewForOverscrollBehavior`
+sets `bounces = (behavior != None)` and
+`transfersScrollingToParent = (behavior == Auto)`. I read that on WebKit main
+(74196cb9, file last touched a40d9ec4) on 2026-11-21. Main is not the
+WebKit that ships on vjt's phone, and none of this was measured on a device.
+
+**Rejected: a universal `* { overscroll-behavior: contain }`.** It reads as
+the most systemic option and it breaks the wheel on Chromium. The property
+only acts on scroll containers, but `overflow: hidden` makes one, and this
+sheet has 71 non-scrolling `overflow` declarations, many of them clipped
+rows inside scrollers. On Chromium main,
+`NeedsScrollAndScrollTranslation` gives a scroll node to any scroll container
+whose `CanPropagateScroll()` is false, i.e. one whose overscroll-behavior is
+not `auto`. cc's `InputHandler::FindNodeToLatch` skips a non-user-scrollable
+node only while it allows chaining. So under `*`, a clipped row latches the
+scroll and cuts the chain, and a wheel over it scrolls nothing. Read in
+source, not measured in a browser. The same latch is why the horizontal
+strips keep a vertical `auto`: with both axes contained, a vertical wheel
+over an admin table would stop at `.adm-table-wrap`.
+
+**Rejected: a class every scroller carries.** A class puts the scroll axis
+on the element, but here the axis depends on the layout: `.adm-nav` is a
+horizontal strip on a phone and a vertical rail on desktop, and it is the
+same element. It would also mean editing every component that renders a
+scroller.
+
+**Placement, and why entries stay single compounds.** A descendant selector
+at the top of the sheet precedes the base rule of the same element and
+raises biome `noDescendingSpecificity` warnings. Measured on `biome lint` of
+`default.css` alone: this branch shows 28 warnings, 26 of them
+`noDescendingSpecificity`, and main shows the same two counts. One
+`.shell-mobile .shell-members .members-pane` entry takes the
+`noDescendingSpecificity` count from 26 to 32. These are warnings, so rc
+stays 0.
+
+**Census** (all of `cicchetto/src`; the issue's 70/33/2 counted
+`default.css` prose too). 43 scrolling `overflow` declarations (34 rules on
+y, 4 on x, 4 on both), 71 non-scrolling ones, and 0 overflow or overscroll
+declarations in product TS/TSX. `overscroll-behavior` went from 35
+declarations to 5. The census script carries a positive control (synthetic
+CSS with known counts, including the two-value `overflow` shorthand) and a
+negative one (prose, `text-overflow`, `overflow-wrap`, `overflow: hidden`,
+`getComputedStyle` reads) and refuses to run if either fails.
+
+**Ask 3 (WHOIS / WHOWAS / LUSERS).** None of the three cards declares an
+overflow of its own. Their scroller is `.scrollback-overlay`, the card layer,
+which was one of the uncontained 15 and is now listed. When the peek body
+does not overflow, nothing needs adding to `.server-peek`. It is not a
+scroll container, so the property would do nothing there, and the Shell's
+touch guard (`installShellTouchGuard`) already cancels a drag that nothing
+under the finger can scroll.
+
+**Consequences, accepted.** Every newly listed scroller now behaves the way
+the 26 already did. On Chromium, a contained scroller whose content fits
+latches the wheel instead of passing it to the scroller around it
+(`.settings-diag-log` inside the settings drawer, the perform textarea).
+On iOS, a nested contained scroller bounces at its edge instead of handing
+the drag to its parent. Containment cannot see two kinds of scroller: one
+made scrollable from JS (there are none today) and a UA scroller other than
+`textarea`.
+
+**Not measured.** Whether the drag that moved the shell was really scroll
+chaining is the issue's hypothesis, and nobody has reproduced it on a
+device. Playwright's webkit does not reproduce iOS scroll physics. Whether
+the bounce shows inside the card and the shell stays still is vjt's device
+check, and it is still open.
