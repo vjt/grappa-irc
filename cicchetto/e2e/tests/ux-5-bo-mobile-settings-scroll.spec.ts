@@ -1,9 +1,9 @@
 // UX-5 bucket BO — mobile scroll-leak: surfaces inside `.shell-mobile`
 // must opt back in to vertical pan or iOS escalates the gesture.
 //
-// Pre-bucket: `.settings-drawer`, `.archive-modal`, `.image-upload-modal`,
-// `.home-pane`, `.admin-pane`, `.admin-tab-panel` are all DOM
-// descendants of `.shell.shell-mobile`. UX-3 PENT set
+// Pre-bucket: `.settings-drawer`, `.archive-modal`, `.image-upload-modal`
+// (the privacy modal), `.home-pane`, `.admin-pane`, `.admin-tab-panel`
+// are all DOM descendants of `.shell.shell-mobile`. UX-3 PENT set
 // `touch-action: none` on `.shell-mobile` to block iOS Safari's
 // URL-bar reveal gesture. touch-action inherits, so every descendant
 // inherits the pan-blanket. Touch pans inside any of those surfaces
@@ -17,13 +17,17 @@
 // victims: `.home-pane` (default mount, tall on iPhone),
 // `.admin-pane` + `.admin-tab-panel` (admin tabs).
 //
-// Working reference: `.shell-members` (members drawer, also a `.shell-
-// mobile` descendant) explicitly re-asserts `touch-action: pan-y` +
-// `overscroll-behavior: contain` (default.css:2225-2226). The six
-// surfaces here simply missed the UX-3 PENT carve-out pass.
+// Working reference: the mobile `.shell-members` rule in default.css
+// (members drawer, also a `.shell-mobile` descendant) explicitly
+// re-asserts `touch-action: pan-y`. The six surfaces here simply missed
+// the UX-3 PENT carve-out pass.
 //
-// Fix: mirror `.shell-members` — `touch-action: pan-y` +
-// `overscroll-behavior: contain` on each affected selector.
+// Fix: mirror `.shell-members` — `touch-action: pan-y` on each affected
+// selector, with `overscroll-behavior: contain` beside it at the time.
+// Since issue 2671 that containment is declared once, in the shared
+// rules at the top of default.css, and since its C5 follow-up
+// `.admin-tab-panel` takes none: it is nested in `.admin-pane`, which
+// stays contained.
 //
 // This spec asserts the CSS contract via getComputedStyle. We don't
 // try to drive a touchmove gesture from Playwright (webkit's touch
@@ -35,10 +39,12 @@
 //
 // Coverage matrix:
 //   - SettingsDrawer + ArchiveModal + HomePane: assert via computed
-//     style. PrivacyModal + AdminPane / AdminTabPanel inherit the
-//     same fix but aren't asserted here — Privacy is short
+//     style. PrivacyModal + AdminPane / AdminTabPanel carry the
+//     touch-action half but aren't asserted here — Privacy is short
 //     ephemeral content; admin requires admin-user setup +
 //     navigation (deferred to m-z journey spec if it ever flakes).
+//     AdminTabPanel no longer gets `overscroll-behavior: contain`
+//     (issue 2671 C5): a `contain` assertion on it would be wrong.
 //
 // Parity matrix per `feedback_e2e_user_class_parity_matrix`: subject-
 // shape-agnostic CSS contract — registered vjt suffices.
