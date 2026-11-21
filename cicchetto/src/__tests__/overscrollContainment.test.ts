@@ -152,6 +152,17 @@ function covers(shared: string[], subject: string): boolean {
 // by issue2465's e2e), so every textarea scrolls without the sheet saying so.
 const UA_SCROLLERS = ["textarea"];
 
+/**
+ * A horizontal strip: a rule that declares a scroll on x and says nothing at
+ * all about y (no `overflow-y` / `overflow-block`, no `overflow` shorthand),
+ * so its y is `auto` only through the visible→auto conversion, and the
+ * vertical scroller it sits in still wants that axis. `.bottom-bar` is not
+ * one: it declares `overflow-y: hidden`.
+ */
+const isStripRule = (body: string): boolean =>
+  [...declaredScrollAxes(body)].join("") === "x" &&
+  !declarations(body).some(([prop]) => /^overflow(-y|-block)?$/.test(prop));
+
 const rules = allRules();
 const scrollRules = rules.filter(({ body }) => declaredScrollAxes(body).size > 0);
 
@@ -228,6 +239,19 @@ describe("issue 2671 — every scroll surface contains its overscroll, declared 
     // never meets one: the entry is the only thing containing it.
     const { both } = overscrollContainment();
     for (const ua of UA_SCROLLERS) expect(covers(both, ua)).toBe(true);
+  });
+
+  it("a horizontal strip leaves its vertical axis to the scroller it sits in", () => {
+    // Containing a strip's y would latch a vertical wheel over an admin table
+    // at the table (the latch the shared rule's comment describes), so a strip
+    // belongs to the x-only list and never to the both-axis one.
+    const { both, xOnly } = overscrollContainment();
+    const strips = scrollRules.filter(({ body }) => isStripRule(body));
+    expect(strips.length).toBeGreaterThan(0);
+    const offenders = strips
+      .flatMap(({ selectors }) => selectorList(selectors).map(subjectOf))
+      .filter((subject) => covers(both, subject) || !covers(xOnly, subject));
+    expect(offenders).toEqual([]);
   });
 
   it("no rule declares containment of its own beside the shared rules", () => {
