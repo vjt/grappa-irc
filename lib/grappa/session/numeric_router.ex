@@ -518,8 +518,9 @@ defmodule Grappa.Session.NumericRouter do
                          # at `modules/core/m_nick.c:646`). Read at bahamut
                          # 9465028 and solanum 92afd03. Same meaning on both,
                          # so no cross-flavour collision; IRCnet's ircd
-                         # reserves 438 and has no format for it
-                         # (`common/numeric_def.h:169`, `ircd/s_err.c:480`).
+                         # (ircnet/ircd, read at e6d60c4) reserves 438 and
+                         # has no format for it (`common/numeric_def.h:169`,
+                         # `ircd/s_err.c:480`).
                          #
                          # Pre-fix the scan skipped the own nick and resolved
                          # both shapes to `{:query, wanted_nick}`. #640's
