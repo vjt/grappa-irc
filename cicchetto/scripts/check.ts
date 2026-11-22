@@ -48,6 +48,13 @@ const STAGES: readonly Stage[] = [
   // Cheap (a `src/` walk) and it fails on the file that lands in the wrong
   // place, not months later when someone notices two tests for one module.
   { name: "test location (one home for cic unit tests)", argv: ["bun", "scripts/test-location.ts"] },
+  // Issue 2694 — a ratchet, not a convention: every production `.json()`
+  // read that no `narrow*` call validates is a type the server never
+  // promised, and the count is pinned per file. It may only go DOWN, and only
+  // by lowering the pin in the same commit; a new unvalidated read is red the
+  // day it lands rather than the day a server rename makes cic read
+  // `undefined`.
+  { name: "rest reads (unvalidated .json() ratchet, issue 2694)", argv: ["bun", "scripts/rest-reads.ts"] },
   { name: "biome (src + e2e)", argv: ["biome", "check", "--max-diagnostics=none"] },
   { name: "tsc (src)", argv: ["tsc", "--noEmit"] },
   { name: "tsc (e2e)", argv: ["tsc", "--noEmit", "-p", "e2e/tsconfig.json"] },

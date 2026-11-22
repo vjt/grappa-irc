@@ -8676,3 +8676,51 @@ also stayed green in the suites that do not read its row.
    shottino ignores them), the `sas.cancel` reason cut (UTF-16 units against
    UTF-8 bytes), and the order-challenge target and slug compare. Each one is
    a corpus row once someone rules which side is right.
+<!-- entry #2694a -->
+
+---
+
+## 2026-11-23 — #2694a: a ratchet on REST bodies cic reads without a schema
+
+**Decision.** `cicchetto/scripts/rest-reads.ts`, a new `bun run check` stage
+(and its unit test), counts every production `.json()` read that is not the
+direct argument of a `narrow*` call, and holds each file's count EXACTLY at a
+pin. It is the first slice of issue 2694 (arch review X3): it freezes the
+number before the server and generator work starts, so nothing grows while
+that work is in flight.
+
+**Why the predicate is the wide one (64, not 63).** The architecture review
+counted 63 `(await res.json()) as T` casts. Measured on `9d52a9e45`, a 64th
+read carries the same lie without the word `as`: `getPasskeyStatus` returns
+`await res.json()` from a function typed `Promise<PasskeyStatus>`, so an `any`
+becomes a type by being returned. A gate keyed on `.json()) as` cannot see that
+spelling, nor the bare `res.json() as Promise<T>` one, nor a cast broken onto
+the next line. So the gate keys on what is VALIDATED (the read is the direct
+argument of `narrowRest(S_…, …)` or a `narrow*` helper built on it) and counts
+everything else. Each of the four spellings is a known-answer control the CLI
+runs before any verdict (exit 3, no numbers, when one fails), and the unit
+test repeats them.
+
+**Why exact both ways.** A rise is the defect the gate exists for. A fall that
+nobody records lets the pin go stale, and a stale pin is room: the next
+unvalidated read lands inside it, green. So a cured read is red until the
+pin comes down in the same commit, a file cured to zero must leave the pin,
+and a file the pin does not name is pinned at 0.
+
+**Exclusions are named, with their reason, and exact too.** Two `.json()`
+reads are not grappa REST bodies: `src/lib/nowPlaying.ts` (a third-party
+now-playing feed, validated by `parseNowPlayingFeed`) and
+`src/service-worker.ts` (a Web Push payload, read into `unknown`). Each
+exclusion names its count. A second read in either file counts against the
+pin, so an exclusion is not room, and an exclusion that stops matching is red,
+so it cannot linger.
+
+**What it does not see, deliberately.** It cannot tell a schema from a cast
+that names the right type: `narrow*` is recognised by name. It reads text, not
+the type checker, so a `narrow*` call whose first argument itself contains
+parentheses, or a read wrapped in extra parentheses inside the call, counts as
+unvalidated. That errs RED, and no such shape exists in `src/` today. It also
+says nothing about the server half of X3: the 34 inline `json(conn, %{…})`
+renders sit outside both the wire pin and the codegen, which is why the
+ratchet's floor cannot reach zero until issue 2694's open question on them is
+answered.
