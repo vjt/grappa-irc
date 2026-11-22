@@ -8881,3 +8881,74 @@ schemas and REQUIRES them. `min_protocol_version` stays at 1.
 Deploy: server HOT (no dependency, config, migration or state-shape change;
 types and specs only) plus the cic bundle (generated artefacts, two importers
 renamed, `CLIENT_PROTOCOL_VERSION`).
+<!-- entry #2693 -->
+
+---
+
+## 2026-11-22 — #2693: message kinds and window states are classified once, and the build checks it (S1: server)
+
+Before this, a new member of either closed set picked up a default on every
+axis without anyone choosing it. A message kind is classified on four axes:
+body required, content projection, presence-suppressed, pausable. Each axis
+was a hand list beside `@kinds`, so a new kind was silently none of them. A
+window state was classified by a fallthrough in each consumer: `to_wire/3`'s
+`_ ->`, `rejected_windows/2`'s `in [:failed, :kicked]`, and
+`Server.apply_invited/3`'s `in [:joined, :pending]`. So a new state was left
+out of the snapshot, not rejected, and invite-admissible.
+
+### What changed
+
+* **One table per set.** `Grappa.Scrollback.Message` has `@kind_class`:
+  one row per kind, with `content` (`:notify | :unread | false`),
+  `body_required`, `suppressed` and `pausable`.
+  `Grappa.Session.WindowState` has `@window_state_class`: one row per state,
+  with `snapshot` (`:joined | :join_failed | :kicked | nil`), `rejected` and
+  `blocks_invite`. The per-axis lists are derived from the table, and the
+  hand lists are deleted. `WindowState.invite_blocked?/2` is the new door
+  that `apply_invited/3` asks.
+* **The build checks the table.** Module-body asserts (the
+  `Grappa.Session.Deps` `@member_rationale` idiom) raise at compile time in
+  four cases:
+  * the table does not classify exactly the closed set, in its order;
+  * a row's axis set or value domain is wrong;
+  * a row breaks one of today's relations: suppressed ∩ content = ∅,
+    pausable ⊆ suppressed, a rejected state has a snapshot (because
+    `rejected_windows/2` is built on `to_wire/3`).
+
+  notify ⊆ content needs no assert: it holds by construction, since one
+  field carries both projections. Measured on the PR, each predicted before
+  the run: six mutants (a kind or a state with no row, two rows swapped,
+  three relation breaks), each red with its own assert's message.
+* **`@type kind` and `@type window_state` are DERIVED** from the closed set
+  with a right-nested `unquote` fold, which keeps the order. This was a
+  defect, not a tidy-up, and it was measured on the base:
+  `mix grappa.gen_wire_types` emits the wire's `SCROLLBACK_MESSAGE_KIND`
+  from the TYPE (`Code.Typespec.fetch_types/1`), not from `@kinds`. With
+  `:whisper` added to `@kinds` alone, the build compiled, dialyzer passed
+  and the codegen answered "in sync". The only test that went red was the
+  `kind_enum` CHECK test, and only by accident. Deriving the type keeps the
+  generated array byte-identical: the live wire_pin digest is the same on
+  the base and on the slice (`sha256:c16939a0…`), `gen_wire_types --check`
+  is in sync, and there is no protocol bump.
+* **The subset `@spec`s are derived too** (`content_kinds/0`,
+  `notify_kinds/0`, `suppressed_presence_kinds/0`,
+  `pausable_presence_kinds/0`). The same MS1 run showed dialyzer saying
+  nothing about a list-returning function whose elements outgrow its spec
+  (the flags carry `:underspecs`, not `:overspecs`). A hand-typed subset
+  spec would therefore lie silently after the next reclassification.
+* The `dm_with` changeset error is now built from the eligible set. It said
+  ":privmsg or :action", while `:notice` has been eligible since CP23.
+
+### Considered, not taken
+
+* **Deriving `@kinds` from the table's keys.** That makes "a kind with no
+  row" impossible rather than a build error, and it is a few lines shorter.
+  `@kinds` stays the visible closed set (it is the `Ecto.Enum` values and
+  the wire order), and the order assert is what keeps the table aligned to
+  it. Either shape is total.
+
+### Not in this slice
+
+* cic's hand mirrors (S2), shottino's unpinned `MESSAGE_KIND_NAMES` (S3),
+  and the `kind_enum` CHECK (S4, which waits for vjt's ruling). The
+  cross-language parity half of `presence_filter_test.exs` stays as it is.
