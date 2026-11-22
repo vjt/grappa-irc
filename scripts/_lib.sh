@@ -88,6 +88,10 @@ if [ "$SRC_ROOT" != "$REPO_ROOT" ]; then
         # while #1393d was being built: --update wrote it into the main
         # checkout and the suite went green against a pin from no branch.
         -v "$SRC_ROOT/priv/wire:/app/priv/wire"
+        # priv/ratchet/ — the issue 2690 ratchet record. RW: `mix
+        # grappa.ratchet --update` writes it. Its own directory for the same
+        # reason as priv/wire/ just above.
+        -v "$SRC_ROOT/priv/ratchet:/app/priv/ratchet"
         -v "$SRC_ROOT/infra:/app/infra:ro"
         -v "$SRC_ROOT/cicchetto/src:/app/cicchetto/src:$cic_mode"
         -v "$SRC_ROOT/mix.exs:/app/mix.exs:ro"
