@@ -602,6 +602,33 @@ Two things a reader will otherwise trip on:
   while this was being built, complete with a green test suite reading
   main's copy.
 
+### `mix grappa.ratchet` + `scripts/ratchet-gate.sh` — the growth ratchet (issue 2690)
+
+`Grappa.Session.Server` and the `Grappa.Session` boundary kept growing with
+nothing to stop the next domain landing there. Whether they get a ceiling or
+a split is issue 2133; this ratchet makes growth deliberate in the meantime.
+
+```sh
+scripts/mix.sh --env=dev grappa.ratchet --check    # the gate; in check.sh + CI
+scripts/mix.sh --env=dev grappa.ratchet --update   # rewrite the record from the build
+scripts/ratchet-gate.sh [base-ref]                 # host side; in check.sh + CI
+```
+
+`priv/ratchet/ratchet.pin` records Session.Server's `@type t` key count,
+its `handle_call/3` and `handle_info/2` clause counts and every `lib/`
+boundary's `deps:` count. All of them are read off the BUILD, not the
+source text. `--check` is red on any difference, in either direction.
+
+To grow one on purpose, in ONE commit: run `--update`, and add a line to
+`docs/DESIGN_NOTES.md` that names each risen key in backticks
+(`` `deps:Grappa.Session` ``) and says why. `ratchet-gate.sh` checks that
+pairing commit by commit. Lowering a value, a new key and the commit that
+seeded the record need no line.
+
+`priv/ratchet/` has its own worktree bind-mount for the reason `priv/wire/`
+does. The task prints NO VERDICT, and exits 1, when its built-in
+known-answer fixture does not count as expected.
+
 ### `GRAPPA_CACHE_ID` — opt-in per-worker build caches (#1263)
 
 The shared cache above is why two people (or two agents) on one host
