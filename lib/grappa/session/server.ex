@@ -8042,22 +8042,19 @@ defmodule Grappa.Session.Server do
 
   # An inbound INVITE we did not ask for, applied to the window model.
   #
-  # `:joined` (already in the room) and `:pending` (a JOIN in flight) must
-  # NOT be flipped to a greyed `:invited` tab. A `:failed` / `:kicked` /
-  # absent window DOES flip — an INVITE there is newly actionable (the invite
-  # bypasses +i/+k upstream, so the prior failure is moot). A repeat INVITE
-  # while already `:invited` re-affirms the state (idempotent value +
-  # broadcast); harmless. The persist row still lands in the skipped cases —
-  # an invite-while-joined / invite-while-joining is a legitimate in-channel
-  # event.
+  # Which windows it may flip is the state table's `blocks_invite` axis
+  # (`WindowState.invite_blocked?/2`, issue 2693): `:joined` and `:pending`
+  # stay as they are, every other state and an absent window flip to
+  # `:invited`. A repeat INVITE while already `:invited` re-affirms the state
+  # (idempotent value + broadcast); harmless. The persist row still lands in
+  # the skipped cases — an invite-while-joined / invite-while-joining is a
+  # legitimate in-channel event.
   @spec apply_invited(t(), String.t(), String.t()) :: t()
   defp apply_invited(state, channel, inviter) do
-    case WindowState.state_of(state.window_state, channel) do
-      joined_or_pending when joined_or_pending in [:joined, :pending] ->
-        state
-
-      _ ->
-        admit_invited(state, channel, inviter)
+    if WindowState.invite_blocked?(state.window_state, channel) do
+      state
+    else
+      admit_invited(state, channel, inviter)
     end
   end
 

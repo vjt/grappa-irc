@@ -739,7 +739,7 @@ defmodule Grappa.ScrollbackTest do
       }
 
       assert {:error, %Ecto.Changeset{} = cs} = Scrollback.persist_event(attrs)
-      assert "may only be set on :privmsg or :action rows" in errors_on(cs).dm_with
+      assert "may only be set on :privmsg, :notice, :action rows" in errors_on(cs).dm_with
     end
 
     test "rejects non-nil :dm_with on a non-DM kind (:topic)", %{user: user, network: net} do
@@ -756,7 +756,7 @@ defmodule Grappa.ScrollbackTest do
       }
 
       assert {:error, %Ecto.Changeset{} = cs} = Scrollback.persist_event(attrs)
-      assert "may only be set on :privmsg or :action rows" in errors_on(cs).dm_with
+      assert "may only be set on :privmsg, :notice, :action rows" in errors_on(cs).dm_with
     end
 
     test "accepts :dm_with = nil on any non-DM kind (no false positive)",

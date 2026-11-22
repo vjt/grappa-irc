@@ -226,7 +226,7 @@ defmodule Grappa.Scrollback.MessageTest do
       attrs = Map.merge(@valid_attrs, %{kind: :server_event, dm_with: "alice"})
       cs = Message.changeset(%Message{}, attrs)
       refute cs.valid?, "expected :server_event + dm_with to be rejected"
-      assert {"may only be set on :privmsg or :action rows", _} = cs.errors[:dm_with]
+      assert {"may only be set on :privmsg, :notice, :action rows", _} = cs.errors[:dm_with]
     end
 
     # issue 2430 — an E2E line is never stored, whichever door tried. The

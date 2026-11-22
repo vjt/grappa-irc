@@ -98,6 +98,23 @@ defmodule Grappa.Session.WindowStateTest do
     end
   end
 
+  describe "invite_blocked?/2 — which windows an INVITE leaves alone (issue 2693)" do
+    test "a joined window and a JOIN in flight are blocked" do
+      assert WindowState.invite_blocked?(WindowState.set_joined(WindowState.new(), "#grappa"), "#grappa")
+      assert WindowState.invite_blocked?(WindowState.set_pending(WindowState.new(), "#grappa"), "#grappa")
+    end
+
+    test "invited, failed, kicked and untracked windows are not blocked" do
+      # `:parked` has no mutator yet (T32), so it is unreachable from here.
+      new = WindowState.new()
+
+      refute WindowState.invite_blocked?(WindowState.set_invited(new, "#grappa", "alice"), "#grappa")
+      refute WindowState.invite_blocked?(WindowState.set_failed(new, "#grappa", "Cannot join", 474), "#grappa")
+      refute WindowState.invite_blocked?(WindowState.set_kicked(new, "#grappa", "alice", nil), "#grappa")
+      refute WindowState.invite_blocked?(new, "#grappa")
+    end
+  end
+
   describe "set_invited/3" do
     test "marks the channel as :invited without touching failure / kicked maps (#78)" do
       ws = WindowState.set_invited(WindowState.new(), "#grappa", "inviter")

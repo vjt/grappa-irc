@@ -128,112 +128,106 @@ defmodule Grappa.Scrollback.Message do
     :server_event
   ]
 
-  # #1500 — `:notice` is NOT here. A NOTICE with an empty trailing is legal
-  # (RFC 1459 §2.3.1: `:` followed by nothing is a valid, empty last param),
-  # and the empty body is itself the diagnosable event. Requiring a body
-  # dropped the row AND error-logged the drop on every arrival.
+  # issue 2693 — every kind is classified HERE, once, on every axis a consumer
+  # reads, and the BUILD fails on a kind left out or a relation broken (the
+  # asserts below). Before, each axis was its own hand list beside `@kinds`,
+  # so a new kind was silently NOT content, NOT body-required, NOT suppressed
+  # and NOT pausable — defaults nobody chose. The per-axis lists further down
+  # are DERIVED from this table and keep `@kinds`' order, the order the cic and
+  # shottino mirrors compare against.
   #
-  # #1505 — `:topic` left too, and it is the SAME defect, not a widening.
-  # `TOPIC #chan :` is how an operator CLEARS a topic; it is also the exact
-  # line `IRC.Client.send_topic_clear/2` writes for our own `/topic -delete`,
-  # so the drop ate our own echo. #1500 measured the server relaxation as free
-  # and held it back for one reason only — the renderer had no honest arm and
-  # would have printed `* alice changed topic:`, a label and a colon. That arm
-  # now exists (`ScrollbackPane.tsx`'s `case "topic"` → "cleared the topic",
-  # gated by `hasNoTopic`), so the two halves land together as that issue
-  # required.
-  #
-  # `:privmsg` and `:action` stay: an empty one of those has no reported
-  # arrival and no decided semantics, and widening past the measured case is
-  # how a rule stops meaning anything.
-  @body_required_kinds [:privmsg, :action]
+  # * `content` — the S17 / #395 unread projection. `:notify` counts as unread
+  #   AND badges/pushes (`:privmsg`, and `:action`, CTCP /me). `:unread` counts
+  #   but never badges: `:notice`, whose dominant shape is services chatter
+  #   (vjt's #395 decision). `false` is presence/control, in neither. One field
+  #   holds both projections, so notify ⊆ content holds by construction — two
+  #   hand lists disagreeing was the #395 defect (`content_kinds/0`,
+  #   `notify_kinds/0`).
+  # * `body_required` — the changeset demands a body. Only `:privmsg` and
+  #   `:action`: an empty one of those has no reported arrival and no decided
+  #   semantics. `:notice` (#1500) and `:topic` (#1505) may carry the EMPTY
+  #   trailing the wire sent (RFC 1459 §2.3.1); `TOPIC #chan :` is how a topic
+  #   is CLEARED, our own `/topic -delete` echo included
+  #   (`IRC.Client.send_topic_clear/2`; cic renders it in `ScrollbackPane.tsx`'s
+  #   `case "topic"`). Requiring a body there dropped the row and error-logged
+  #   the drop on every arrival. `:server_event`'s body is the verb-name
+  #   fallback (B6.11), not user text.
+  # * `suppressed` — the #458 presence noise the history fetch omits on a
+  #   denoised channel; never content (asserted), so hiding presence can never
+  #   drop a real message. `:mode` is in since #1262, and its structural rows
+  #   are exempted per ROW by issue 2176 — see `suppressed_presence_kinds/0`,
+  #   `structural_meta_key/0`, DESIGN_NOTES 2026-08-13 and the issue-2176 entry.
+  # * `pausable` — the #1769 presence a paused socket may never receive. Its
+  #   own column and not derived from `suppressed`, so a kind joining the
+  #   suppressed set is weighed here on purpose; always ⊆ suppressed (asserted).
+  #   See `pausable_presence_kinds/0`.
+  @kind_class [
+    privmsg: %{content: :notify, body_required: true, suppressed: false, pausable: false},
+    notice: %{content: :unread, body_required: false, suppressed: false, pausable: false},
+    action: %{content: :notify, body_required: true, suppressed: false, pausable: false},
+    join: %{content: false, body_required: false, suppressed: true, pausable: true},
+    part: %{content: false, body_required: false, suppressed: true, pausable: true},
+    quit: %{content: false, body_required: false, suppressed: true, pausable: true},
+    nick_change: %{content: false, body_required: false, suppressed: true, pausable: false},
+    mode: %{content: false, body_required: false, suppressed: true, pausable: false},
+    topic: %{content: false, body_required: false, suppressed: false, pausable: false},
+    kick: %{content: false, body_required: false, suppressed: false, pausable: false},
+    server_event: %{content: false, body_required: false, suppressed: false, pausable: false}
+  ]
 
-  # S17 (2026-07-08 review) / #395 — the human-content kinds and their
-  # unread PROJECTION, declared ONCE. Each content kind maps to whether it
-  # is notify-worthy (badge/push eligible):
-  #
-  #   * `:notify` — a real person's message: `:privmsg` and `:action`
-  #     (CTCP /me, semantically a PRIVMSG). Counts as unread AND is
-  #     badge/push eligible.
-  #   * `:unread` — content that counts as unread but NEVER badges/pushes.
-  #     Only `:notice`: services chatter (NickServ/ChanServ/bots) is the
-  #     dominant NOTICE shape; badging it would be spam. This is vjt's #395
-  #     decision — unchanged behaviour, but now an explicit, single-sourced
-  #     rule instead of an accident of two divergent kind lists.
-  #
-  # BOTH projections (`content_kinds/0`, `notify_kinds/0`) derive from THIS
-  # one list, so the notify-worthy set is a SUBSET of the unread-content set
-  # BY CONSTRUCTION — not because two hand-maintained lists happen to agree.
-  # That accident was the #395 defect: `Grappa.Push.Triggers` carried a
-  # divergent `[:privmsg, :action]` literal for its kind gate while the
-  # unread path derived from `content_kinds/0` (which includes `:notice`).
-  # A kind absent here (`:join`, `:part`, `:quit`, `:nick_change`, `:mode`,
-  # `:topic`, `:kick`, `:server_event`) is presence/control → NEITHER
-  # projection. This is the SINGLE SOURCE consumed by `Grappa.Scrollback`,
-  # `Grappa.Mentions`, `Grappa.Push.Triggers`, `Grappa.Session.EventRouter`,
-  # this module's `@dm_with_eligible_kinds`, and the `dm_peer/4` guard.
-  # Mirrors the cic `CONTENT_KINDS` / `NOTIFY_KINDS` sets
-  # (`cicchetto/src/lib/api.ts`, `cicchetto/src/lib/pushTriggers.ts`).
-  @content_kind_projection [privmsg: :notify, notice: :unread, action: :notify]
+  # issue 2693 — totality and today's set relations, checked by the BUILD.
+  # ORDER is part of the first check: `@kinds`' order is the generated
+  # `SCROLLBACK_MESSAGE_KIND` order and shottino's `MESSAGE_KIND_NAMES` index
+  # order, so the table may not quietly reorder it.
+  if Keyword.keys(@kind_class) != @kinds do
+    raise "Grappa.Scrollback.Message: @kind_class must classify exactly @kinds, " <>
+            "in the same order — expected #{inspect(@kinds)}, got #{inspect(Keyword.keys(@kind_class))}"
+  end
 
-  # The full unread-content subset of `@kinds`. Order is preserved from the
-  # projection so it stays `[:privmsg, :notice, :action]` (the cic
-  # `CONTENT_KINDS` mirror order, api.ts).
+  @kind_axes [:body_required, :content, :pausable, :suppressed]
+
+  for {kind, class} <- @kind_class do
+    violation =
+      cond do
+        Enum.sort(Map.keys(class)) != @kind_axes ->
+          "must carry exactly the axes #{inspect(@kind_axes)}, got #{inspect(Enum.sort(Map.keys(class)))}"
+
+        class.content not in [:notify, :unread, false] ->
+          "has content #{inspect(class.content)}; the closed set is :notify | :unread | false"
+
+        not (is_boolean(class.body_required) and is_boolean(class.suppressed) and is_boolean(class.pausable)) ->
+          "has a non-boolean body_required / suppressed / pausable"
+
+        class.content != false and class.suppressed ->
+          "is content AND suppressed — hiding presence would drop a real message"
+
+        class.pausable and not class.suppressed ->
+          "is pausable but not suppressed — pausable must be a subset of suppressed"
+
+        true ->
+          nil
+      end
+
+    if violation, do: raise("Grappa.Scrollback.Message @kind_class: #{inspect(kind)} #{violation}")
+  end
+
+  # The per-axis projections of `@kind_class`. Each keeps `@kinds`' order.
+  @body_required_kinds for {kind, %{body_required: true}} <- @kind_class, do: kind
+
+  # The content kinds with their unread projection — the server twin of cic's
+  # `CONTENT_KIND_PROJECTION` (`cicchetto/src/lib/api.ts`).
+  @content_kind_projection for {kind, %{content: content}} <- @kind_class, content != false, do: {kind, content}
+
+  # The unread-content kinds, in the cic `CONTENT_KINDS` mirror order (api.ts).
   @content_kinds for {kind, _} <- @content_kind_projection, do: kind
 
-  # The notify-worthy subset — the kinds that raise a badge/push. Derived by
-  # selecting the `:notify` rows of the projection, so it can NEVER contain a
-  # kind that is absent from `@content_kinds`: badge-worthy ⊆ unread by
-  # construction (#395).
+  # The notify-worthy kinds, the ones that raise a badge/push. Selected from the
+  # projection, so badge-worthy ⊆ unread holds by construction (#395).
   @notify_kinds for {kind, :notify} <- @content_kind_projection, do: kind
 
-  # #458 — the presence-noise subset the scrollback fetch omits when a channel
-  # is hiding presence. `:topic`, `:kick` and `:server_event` stay OUT: they are
-  # control rows, not churn, and a denoised channel still shows them.
-  #
-  # #1262 (2026-08-13) — `:mode` is IN. It was carved out by #458 on the rule
-  # "the broad presence/control kinds carry operator-relevant signal and MUST
-  # stay visible"; vjt withdrew that rule.
-  #
-  # issue 2176 (2026-09-14) — and the cost #1262 wrote down came due. While
-  # `:mode` was wholly in this set a denoised channel folded the STRUCTURAL
-  # transitions (`+b` / `+k` / `+l` / `+m` / `+i`) along with the status-prefix
-  # churn the issue was aimed at, so an operator could not see a ban being set
-  # while a colleague on the same version with the channel on `show` could.
-  # The kind STAYS here — a `+o` is still churn — and the split is the
-  # per-ROW exemption below: `structural_meta_key/0`, written at persist time
-  # by the ONE classifier that already holds the network's PREFIX table
-  # (`Grappa.Session.ISupport.structural_mode_token?/2`). A row carrying the
-  # tag is exempt from suppression on BOTH sides; a row without it — a
-  # prefix-mode row, or any row written before the tag existed — keeps
-  # today's behaviour exactly. Own-nick mode rows (#154(b)) are untagged and
-  # untouched: they land on the synthetic `$server` window, which has no
-  # member count, so `PresenceFilter.hidden?/2` resolves it to SHOW.
-  # See DESIGN_NOTES 2026-08-13 and the issue-2176 entry.
-  #
-  # Mirrors cic's SUPPRESSED_PRESENCE_KINDS (cicchetto/src/lib/presenceFilter.ts),
-  # SAME ORDER, so the server history filter and the client live-tail
-  # render-filter agree exactly on which kinds are noise — and unlike the size
-  # threshold, that agreement IS gated: `presence_filter_test.exs` parses the cic
-  # literal and fails on drift. Disjoint from @content_kinds BY the test
-  # invariant (presence noise is never human content), so hiding presence can
-  # never drop a real message.
-  @suppressed_presence_kinds [:join, :part, :quit, :nick_change, :mode]
+  @suppressed_presence_kinds for {kind, %{suppressed: true}} <- @kind_class, do: kind
 
-  # #1769 — the subset a socket that ASKED for the #1680 presence pause may be
-  # denied outright. A strict subset of @suppressed_presence_kinds and NOT
-  # derived from it, because the two answer different questions: that one is
-  # "is this presence?" (what the history fetch omits), this one is "is this
-  # presence we can afford never to receive?". A kind landing in the
-  # suppressed set must be considered HERE on purpose rather than inherited
-  # silently — `nick_change` feeds the members map AND the paused socket's
-  # own-nick cache (`GrappaChannel.track_own_nick/2`; the #372/#373 client
-  # identity migration it was carved out for went with issue 1365), and
-  # `mode` feeds channel-mode state, so both stay deliverable even to a
-  # paused window. Mirrors cic's PAUSABLE_PRESENCE_KINDS
-  # (cicchetto/src/lib/presencePause.ts), same order; the subset relation and
-  # the cross-language agreement are both gated by `presence_filter_test.exs`.
-  @pausable_presence_kinds [:join, :part, :quit]
+  @pausable_presence_kinds for {kind, %{pausable: true}} <- @kind_class, do: kind
 
   # issue 2176 — the per-ROW exemption from `@suppressed_presence_kinds`. See
   # `structural_meta_key/0`.
@@ -265,6 +259,16 @@ defmodule Grappa.Scrollback.Message do
   # was the one already reordered vs the others).
   @dm_with_eligible_kinds @content_kinds
 
+  # The `validate_dm_with_for_kind/1` error names the eligible kinds from the
+  # set itself. Its hand-written ":privmsg or :action" went stale the day
+  # `:notice` became eligible (CP23) and stayed stale.
+  @dm_with_error "may only be set on " <> Enum.map_join(@dm_with_eligible_kinds, ", ", &inspect/1) <> " rows"
+
+  # issue 2693 — folds an atom list into the typespec union `a | b | …`,
+  # right-nested so the union keeps the list's order. The typespecs below are
+  # built from the lists with it instead of restating their atoms by hand.
+  atom_union = fn atoms -> atoms |> Enum.reverse() |> Enum.reduce(&{:|, [], [&1, &2]}) end
+
   @doc """
   Returns the closed-set list of valid `:kind` values. Exposed so
   tests can drive coverage assertions over the full enum (e.g.
@@ -276,20 +280,20 @@ defmodule Grappa.Scrollback.Message do
   def kinds, do: @kinds
 
   @doc """
-  Returns the human-content subset of `kinds/0` — `[:privmsg,
-  :notice, :action]`. S17 SINGLE SOURCE: every consumer that filters
+  Returns the human-content subset of `kinds/0` — `#{inspect(@content_kinds)}`.
+  S17 SINGLE SOURCE: every consumer that filters
   scrollback to "real message content" (notification counts, mention
   aggregation, DM-peer eligibility, the unread messages-vs-events
   split) derives from this at compile time instead of restating the
-  three atoms. Adding a content kind is one edit to
-  `@content_kind_projection`.
+  three atoms. Adding a content kind is one edit, to its `@kind_class`
+  row.
   """
-  @spec content_kinds() :: [:privmsg | :notice | :action, ...]
+  @spec content_kinds() :: [unquote(atom_union.(@content_kinds)), ...]
   def content_kinds, do: @content_kinds
 
   @doc """
-  Returns the notify-worthy subset of `content_kinds/0` — `[:privmsg,
-  :action]`. #395 SINGLE SOURCE: the kinds that raise a badge/push.
+  Returns the notify-worthy subset of `content_kinds/0` — `#{inspect(@notify_kinds)}`.
+  #395 SINGLE SOURCE: the kinds that raise a badge/push.
   `Grappa.Push.Triggers`' kind gate reads THIS instead of a local
   `[:privmsg, :action]` literal, so the badge/push set can never silently
   drift from — or exceed — the unread-content set (`:notice` counts as
@@ -298,12 +302,12 @@ defmodule Grappa.Scrollback.Message do
   content_kinds/0 == []` holds by construction. Mirrors the cic
   `NOTIFY_KINDS` set (`cicchetto/src/lib/pushTriggers.ts`).
   """
-  @spec notify_kinds() :: [:privmsg | :action, ...]
+  @spec notify_kinds() :: [unquote(atom_union.(@notify_kinds)), ...]
   def notify_kinds, do: @notify_kinds
 
   @doc """
   Returns the presence-noise subset of `kinds/0` —
-  `[:join, :part, :quit, :nick_change, :mode]`. #458 SINGLE SOURCE: the
+  `#{inspect(@suppressed_presence_kinds)}`. #458 SINGLE SOURCE: the
   scrollback fetch omits exactly these kinds when a channel is hiding presence
   (`Grappa.PresenceFilter.hidden?/2` resolves the per-channel decision).
   `:topic`, `:kick` and `:server_event` are deliberately absent — they are
@@ -321,12 +325,12 @@ defmodule Grappa.Scrollback.Message do
   order, so the server history filter and the client live-tail render-filter
   suppress the same rows — enforced by `presence_filter_test.exs`.
   """
-  @spec suppressed_presence_kinds() :: [:join | :part | :quit | :nick_change | :mode, ...]
+  @spec suppressed_presence_kinds() :: [unquote(atom_union.(@suppressed_presence_kinds)), ...]
   def suppressed_presence_kinds, do: @suppressed_presence_kinds
 
   @doc """
   Returns the droppable subset of `suppressed_presence_kinds/0` —
-  `[:join, :part, :quit]`. #1769 SINGLE SOURCE: the kinds
+  `#{inspect(@pausable_presence_kinds)}`. #1769 SINGLE SOURCE: the kinds
   `GrappaWeb.GrappaChannel` refuses to push to a socket that joined a
   per-channel topic with `presence: false`, the server half of #1680's
   pause.
@@ -346,7 +350,7 @@ defmodule Grappa.Scrollback.Message do
   (`cicchetto/src/lib/presencePause.ts`), same order; `presence_filter_test.exs`
   gates both the subset relation and the cross-language agreement.
   """
-  @spec pausable_presence_kinds() :: [:join | :part | :quit, ...]
+  @spec pausable_presence_kinds() :: [unquote(atom_union.(@pausable_presence_kinds)), ...]
   def pausable_presence_kinds, do: @pausable_presence_kinds
 
   @doc """
@@ -390,18 +394,13 @@ defmodule Grappa.Scrollback.Message do
   # system enforces does not need a test, and keeping one would suggest the
   # hazard still exists.
 
-  @type kind ::
-          :privmsg
-          | :notice
-          | :action
-          | :join
-          | :part
-          | :quit
-          | :nick_change
-          | :mode
-          | :topic
-          | :kick
-          | :server_event
+  # issue 2693 — DERIVED from `@kinds`, never restated. `mix
+  # grappa.gen_wire_types` emits the wire's `SCROLLBACK_MESSAGE_KIND` from THIS
+  # type, not from `@kinds`, so a hand copy let a kind reach the DB enum and
+  # never the wire (measured: `:whisper` in `@kinds` alone left the codegen "in
+  # sync"). The union keeps `@kinds`' order, which is the generated array's
+  # order and shottino's `MESSAGE_KIND_NAMES` index order.
+  @type kind :: unquote(atom_union.(@kinds))
 
   @type t :: %__MODULE__{
           id: integer() | nil,
@@ -575,10 +574,10 @@ defmodule Grappa.Scrollback.Message do
   end
 
   # M8 fix 2026-05-08: enforce per-kind discipline on `:dm_with`.
-  # Only :privmsg and :action persist DM peer info; every other kind
-  # is channel-scoped and `dm_with` MUST be nil. Without this guard,
-  # a caller bug (passing a stray dm_with on a :join, :mode, :topic,
-  # :nick_change, etc.) silently corrupts the active/archive
+  # Only the content kinds (`@dm_with_eligible_kinds`) persist DM peer
+  # info; every other kind is channel-scoped and `dm_with` MUST be nil.
+  # Without this guard, a caller bug (passing a stray dm_with on a :join,
+  # :mode, :topic, :nick_change, etc.) silently corrupts the active/archive
   # derivation in `Scrollback.list_archive/3` (which uses
   # `COALESCE(dm_with, channel)` to derive the per-window key).
   # Reuses `add_error/3` rather than a custom validator macro so the
@@ -593,7 +592,7 @@ defmodule Grappa.Scrollback.Message do
         changeset
 
       {_, _} ->
-        add_error(changeset, :dm_with, "may only be set on :privmsg or :action rows")
+        add_error(changeset, :dm_with, @dm_with_error)
     end
   end
 
