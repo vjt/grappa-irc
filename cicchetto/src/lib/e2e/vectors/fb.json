@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {
+      "why": "E1 to E2",
+      "from": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+      "to": "7l01yXGoarYtEU3nwHF01/CIo8/r8U0lJ01TnULT9IY",
+      "fb": "Rf23quZfNQGC3F4H6p4ZKw"
+    },
+    {
+      "why": "E2 to E1: the binding is not symmetric",
+      "from": "7l01yXGoarYtEU3nwHF01/CIo8/r8U0lJ01TnULT9IY",
+      "to": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+      "fb": "uitrgaXwYBvIfv1QB+/bgQ"
+    }
+  ]
+}

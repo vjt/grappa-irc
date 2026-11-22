@@ -164,16 +164,12 @@ defmodule Grappa.IRC.E2eTest do
   end
 
   describe "did?/1 and addressed?/3" do
+    # The fixed spellings (the standard alphabet, nonzero trailing bits,
+    # `*`) are corpus rows every implementation reads: Grappa.E2eVectorsTest.
     test "a did is the unpadded, canonical base64url of 8 bytes, nothing else" do
       assert 8 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false) |> E2e.did?()
-      assert E2e.did?("_Uw_z3-OAsk")
       assert {:ok, _} = E2e.parse("\x01E2E MSG q83vEjRWeJA 1/1 _Uw_z3-OAsk #{@bob} {}\x01")
-      # The same 8 bytes in the standard alphabet are not a did.
-      refute E2e.did?("/Uw/z3+OAsk")
       refute 8 |> :crypto.strong_rand_bytes() |> Base.url_encode64() |> E2e.did?()
-      # Nonzero trailing bits: the same bytes, a second spelling.
-      refute E2e.did?("If4x36FUomF")
-      refute E2e.did?("*")
       refute E2e.did?(nil)
     end
 

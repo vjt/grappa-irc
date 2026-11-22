@@ -14,7 +14,7 @@
 
 import type { E2eKeysWireStatus } from "../wireTypes";
 import type { Account } from "./vodozemac/vodozemac_binding";
-import { type IdBlock, idSigText, OTK_SIG_PREFIX } from "./wire";
+import { type IdBlock, idSigText, otkSigText } from "./wire";
 
 /**
  * How many one-time keys grappa holds for one device
@@ -45,7 +45,7 @@ export function idBlock(device: Account, master: string): IdBlock {
 
 /** `key` with the signature of `device` over `irc-e2e:v1:otk:` + the key (S2). */
 export function signedKey(device: Account, key: string): SignedKey {
-  return { key, sig: device.sign(`${OTK_SIG_PREFIX}${key}`) };
+  return { key, sig: device.sign(otkSigText(key)) };
 }
 
 /**

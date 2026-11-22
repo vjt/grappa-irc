@@ -1,0 +1,131 @@
+{
+  "msgid": "q83vEjRWeJA",
+  "cases": [
+    {
+      "why": "a MSG head did to did leaves 334 bytes of a 384-byte line",
+      "verb": "msg",
+      "from": "If4x36FUomE",
+      "to": "_Uw_z3-OAsk",
+      "budget": 384,
+      "payload_size": 334,
+      "lines": 1
+    },
+    {
+      "why": "one byte more takes a second line",
+      "verb": "msg",
+      "from": "If4x36FUomE",
+      "to": "_Uw_z3-OAsk",
+      "budget": 384,
+      "payload_size": 335,
+      "lines": 2
+    },
+    {
+      "why": "9 lines of 334",
+      "verb": "msg",
+      "from": "If4x36FUomE",
+      "to": "_Uw_z3-OAsk",
+      "budget": 384,
+      "payload_size": 3006,
+      "lines": 9
+    },
+    {
+      "why": "one byte past 9 lines: the 10/10 head is wider",
+      "verb": "msg",
+      "from": "If4x36FUomE",
+      "to": "_Uw_z3-OAsk",
+      "budget": 384,
+      "payload_size": 3007,
+      "lines": 10
+    },
+    {
+      "why": "10 lines of 332",
+      "verb": "msg",
+      "from": "If4x36FUomE",
+      "to": "_Uw_z3-OAsk",
+      "budget": 384,
+      "payload_size": 3320,
+      "lines": 10
+    },
+    {
+      "why": "one byte past 10 lines of 332",
+      "verb": "msg",
+      "from": "If4x36FUomE",
+      "to": "_Uw_z3-OAsk",
+      "budget": 384,
+      "payload_size": 3321,
+      "lines": 11
+    },
+    {
+      "why": "the 64-line edge: 64 lines of 332",
+      "verb": "msg",
+      "from": "If4x36FUomE",
+      "to": "_Uw_z3-OAsk",
+      "budget": 384,
+      "payload_size": 21248,
+      "lines": 64
+    },
+    {
+      "why": "one byte past the 64-line edge is refused",
+      "verb": "msg",
+      "from": "If4x36FUomE",
+      "to": "_Uw_z3-OAsk",
+      "budget": 384,
+      "payload_size": 21249,
+      "lines": null
+    },
+    {
+      "why": "the * addresses are 20 bytes narrower than two dids",
+      "verb": "msg",
+      "from": "*",
+      "to": "*",
+      "budget": 384,
+      "payload_size": 354,
+      "lines": 1
+    },
+    {
+      "why": "one byte past one * to * line",
+      "verb": "msg",
+      "from": "*",
+      "to": "*",
+      "budget": 384,
+      "payload_size": 355,
+      "lines": 2
+    },
+    {
+      "why": "a PKMSG head is 2 bytes wider than a MSG head",
+      "verb": "pkmsg",
+      "from": "If4x36FUomE",
+      "to": "_Uw_z3-OAsk",
+      "budget": 384,
+      "payload_size": 332,
+      "lines": 1
+    },
+    {
+      "why": "one byte past one PKMSG line",
+      "verb": "pkmsg",
+      "from": "If4x36FUomE",
+      "to": "_Uw_z3-OAsk",
+      "budget": 384,
+      "payload_size": 333,
+      "lines": 2
+    },
+    {
+      "why": "a KEYREQ of the 7 bytes of {\"v\":2} is one line",
+      "verb": "keyreq",
+      "from": "If4x36FUomE",
+      "to": "*",
+      "budget": 384,
+      "payload_size": 7,
+      "lines": 1
+    },
+    {
+      "why": "a budget that cannot hold the head is refused",
+      "verb": "msg",
+      "from": "If4x36FUomE",
+      "to": "_Uw_z3-OAsk",
+      "budget": 50,
+      "payload_size": 1,
+      "lines": null
+    }
+  ]
+}

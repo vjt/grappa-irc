@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "kind": "id",
+      "curve25519": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+      "master": "7l01yXGoarYtEU3nwHF01/CIo8/r8U0lJ01TnULT9IY",
+      "text": "irc-e2e:v2:id:11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo:7l01yXGoarYtEU3nwHF01/CIo8/r8U0lJ01TnULT9IY"
+    },
+    {
+      "kind": "list",
+      "ver": 7,
+      "devices": [
+        "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+        "7l01yXGoarYtEU3nwHF01/CIo8/r8U0lJ01TnULT9IY"
+      ],
+      "text": "irc-e2e:v2:list:7:11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo,7l01yXGoarYtEU3nwHF01/CIo8/r8U0lJ01TnULT9IY"
+    },
+    {
+      "kind": "list",
+      "ver": 2147483647,
+      "devices": ["7l01yXGoarYtEU3nwHF01/CIo8/r8U0lJ01TnULT9IY"],
+      "text": "irc-e2e:v2:list:2147483647:7l01yXGoarYtEU3nwHF01/CIo8/r8U0lJ01TnULT9IY"
+    },
+    {
+      "kind": "cert",
+      "ver": 2,
+      "ed25519": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+      "text": "irc-e2e:v2:dev:2:11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+    },
+    {
+      "kind": "otk",
+      "key": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+      "text": "irc-e2e:v1:otk:11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+    }
+  ]
+}

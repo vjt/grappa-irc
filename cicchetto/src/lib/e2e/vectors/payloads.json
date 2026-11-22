@@ -1,0 +1,368 @@
+{
+  "cases": [
+    {
+      "why": "not a JSON object: [1]",
+      "verb": "nack",
+      "text": "[1]",
+      "accept": false,
+      "undecodable": true
+    },
+    {
+      "why": "not a JSON object: null",
+      "verb": "nack",
+      "text": "null",
+      "accept": false,
+      "undecodable": true
+    },
+    {
+      "why": "not a JSON object: 1",
+      "verb": "nack",
+      "text": "1",
+      "accept": false,
+      "undecodable": true
+    },
+    {
+      "why": "not a JSON object: \"s\"",
+      "verb": "nack",
+      "text": "\"s\"",
+      "accept": false,
+      "undecodable": true
+    },
+    {
+      "why": "not a JSON object: {",
+      "verb": "nack",
+      "text": "{",
+      "accept": false,
+      "undecodable": true
+    },
+    {
+      "why": "not a JSON object: {\"v\":NaN}",
+      "verb": "nack",
+      "text": "{\"v\":NaN}",
+      "accept": false,
+      "undecodable": true
+    },
+    {
+      "why": "not a JSON object: {\"v\":Infinity}",
+      "verb": "nack",
+      "text": "{\"v\":Infinity}",
+      "accept": false,
+      "undecodable": true
+    },
+    {
+      "why": "not a JSON object: (empty)",
+      "verb": "nack",
+      "text": "",
+      "accept": false,
+      "undecodable": true
+    },
+    {
+      "why": "not a JSON object: x",
+      "verb": "nack",
+      "text": "x",
+      "accept": false,
+      "undecodable": true
+    },
+    {
+      "why": "a NACK",
+      "verb": "nack",
+      "text": "{\"v\":2,\"ref\":\"R\"}",
+      "accept": true,
+      "undecodable": false
+    },
+    {
+      "why": "v 2.0 is 2, and an unknown field is ignored",
+      "verb": "nack",
+      "text": "{\"v\":2.0,\"ref\":\"R\",\"extra\":[1]}",
+      "accept": true,
+      "undecodable": false
+    },
+    {
+      "why": "another version",
+      "verb": "nack",
+      "text": "{\"v\":1,\"ref\":\"R\"}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "no version",
+      "verb": "nack",
+      "text": "{\"ref\":\"R\"}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "no ref",
+      "verb": "nack",
+      "text": "{\"v\":2}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a version that is a string",
+      "verb": "nack",
+      "text": "{\"v\":\"2\",\"ref\":\"R\"}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a MSG",
+      "verb": "msg",
+      "text": "{\"v\":2,\"ck\":\"K\",\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
+      "accept": true,
+      "undecodable": false
+    },
+    {
+      "why": "a MSG with no ck",
+      "verb": "msg",
+      "text": "{\"v\":2,\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a MSG with two bodies keyed by dids",
+      "verb": "msg",
+      "text": "{\"v\":2,\"ck\":\"K\",\"bodies\":{\"If4x36FUomE\":\"B\",\"_Uw_z3_OAsk\":\"B2\"}}",
+      "accept": true,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG certificate ver 1",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":1},\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
+      "accept": true,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG certificate ver 1.0",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":1.0},\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
+      "accept": true,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG certificate ver 2147483647",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":2147483647},\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
+      "accept": true,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG certificate ver 0",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":0},\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG certificate ver 2147483648",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":2147483648},\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG certificate ver -1",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":-1},\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG certificate ver 1.5",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":1.5},\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG certificate ver true",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":true},\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG certificate ver \"2\"",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":\"2\"},\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG certificate ver null",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":null},\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG certificate with no ver",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\"},\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG with no bodies",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":1},\"bodies\":{}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a MSG with no bodies",
+      "verb": "msg",
+      "text": "{\"v\":2,\"ck\":\"K\",\"bodies\":{}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG with 5 bodies",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":1},\"bodies\":{\"aaaaaaaaaaa\":\"B\",\"bbbbbbbbbbb\":\"B\",\"ccccccccccc\":\"B\",\"ddddddddddd\":\"B\",\"eeeeeeeeeee\":\"B\"}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a MSG with 5 bodies",
+      "verb": "msg",
+      "text": "{\"v\":2,\"ck\":\"K\",\"bodies\":{\"aaaaaaaaaaa\":\"B\",\"bbbbbbbbbbb\":\"B\",\"ccccccccccc\":\"B\",\"ddddddddddd\":\"B\",\"eeeeeeeeeee\":\"B\"}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG with a body key that is no did",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":1},\"bodies\":{\"a/aaaaaaaaa\":\"B\"}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a MSG with a body key that is no did",
+      "verb": "msg",
+      "text": "{\"v\":2,\"ck\":\"K\",\"bodies\":{\"a/aaaaaaaaa\":\"B\"}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG with a body that is not a string",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":1},\"bodies\":{\"aaaaaaaaaaa\":1}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a MSG with a body that is not a string",
+      "verb": "msg",
+      "text": "{\"v\":2,\"ck\":\"K\",\"bodies\":{\"aaaaaaaaaaa\":1}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG with bodies that are an array",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":1},\"bodies\":[]}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a MSG with bodies that are an array",
+      "verb": "msg",
+      "text": "{\"v\":2,\"ck\":\"K\",\"bodies\":[]}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a PKMSG with bodies that are a string",
+      "verb": "pkmsg",
+      "text": "{\"v\":2,\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"master\":{\"ed25519\":\"M\",\"cert\":\"C\",\"ver\":1},\"bodies\":\"B\"}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a MSG with bodies that are a string",
+      "verb": "msg",
+      "text": "{\"v\":2,\"ck\":\"K\",\"bodies\":\"B\"}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a KEYS with one device",
+      "verb": "keys",
+      "text": "{\"v\":2,\"master\":{\"ed25519\":\"M\",\"list\":{\"ver\":1,\"devices\":[\"E\"]},\"sig\":\"S\"},\"devices\":[{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"otk\":{\"key\":\"O\",\"fallback\":true,\"sig\":\"S2\"}}]}",
+      "accept": true,
+      "undecodable": false
+    },
+    {
+      "why": "a KEYS whose fallback is not literally true",
+      "verb": "keys",
+      "text": "{\"v\":2,\"master\":{\"ed25519\":\"M\",\"list\":{\"ver\":1,\"devices\":[\"E\"]},\"sig\":\"S\"},\"devices\":[{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"otk\":{\"key\":\"O\",\"fallback\":1,\"sig\":\"S2\"}}]}",
+      "accept": true,
+      "undecodable": false
+    },
+    {
+      "why": "a KEYS with 5 devices",
+      "verb": "keys",
+      "text": "{\"v\":2,\"master\":{\"ed25519\":\"M\",\"list\":{\"ver\":1,\"devices\":[\"E\"]},\"sig\":\"S\"},\"devices\":[{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"otk\":{\"key\":\"O\",\"fallback\":true,\"sig\":\"S2\"}},{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"otk\":{\"key\":\"O\",\"fallback\":true,\"sig\":\"S2\"}},{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"otk\":{\"key\":\"O\",\"fallback\":true,\"sig\":\"S2\"}},{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"otk\":{\"key\":\"O\",\"fallback\":true,\"sig\":\"S2\"}},{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"otk\":{\"key\":\"O\",\"fallback\":true,\"sig\":\"S2\"}}]}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a KEYS with no master",
+      "verb": "keys",
+      "text": "{\"v\":2,\"devices\":[{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"otk\":{\"key\":\"O\",\"fallback\":true,\"sig\":\"S2\"}}]}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a KEYS with no devices",
+      "verb": "keys",
+      "text": "{\"v\":2,\"master\":{\"ed25519\":\"M\",\"list\":{\"ver\":1,\"devices\":[\"E\"]},\"sig\":\"S\"}}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a KEYS with no version",
+      "verb": "keys",
+      "text": "{\"master\":{\"ed25519\":\"M\",\"list\":{\"ver\":1,\"devices\":[\"E\"]},\"sig\":\"S\"},\"devices\":[{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"otk\":{\"key\":\"O\",\"fallback\":true,\"sig\":\"S2\"}}]}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a KEYS of another version",
+      "verb": "keys",
+      "text": "{\"v\":1,\"master\":{\"ed25519\":\"M\",\"list\":{\"ver\":1,\"devices\":[\"E\"]},\"sig\":\"S\"},\"devices\":[{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"otk\":{\"key\":\"O\",\"fallback\":true,\"sig\":\"S2\"}}]}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a KEYS with one entry missing its otk",
+      "verb": "keys",
+      "text": "{\"v\":2,\"master\":{\"ed25519\":\"M\",\"list\":{\"ver\":1,\"devices\":[\"E\"]},\"sig\":\"S\"},\"devices\":[{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"otk\":{\"key\":\"O\",\"fallback\":true,\"sig\":\"S2\"}},{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"}}]}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a KEYS whose list ver is not a number",
+      "verb": "keys",
+      "text": "{\"v\":2,\"master\":{\"ed25519\":\"M\",\"list\":{\"ver\":true,\"devices\":[\"E\"]},\"sig\":\"S\"},\"devices\":[{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"otk\":{\"key\":\"O\",\"fallback\":true,\"sig\":\"S2\"}}]}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a KEYS whose list devices are not strings",
+      "verb": "keys",
+      "text": "{\"v\":2,\"master\":{\"ed25519\":\"M\",\"list\":{\"ver\":1,\"devices\":[1]},\"sig\":\"S\"},\"devices\":[{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"otk\":{\"key\":\"O\",\"fallback\":true,\"sig\":\"S2\"}}]}",
+      "accept": false,
+      "undecodable": false
+    },
+    {
+      "why": "a KEYS whose list has no devices",
+      "verb": "keys",
+      "text": "{\"v\":2,\"master\":{\"ed25519\":\"M\",\"list\":{\"ver\":1},\"sig\":\"S\"},\"devices\":[{\"id\":{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"},\"otk\":{\"key\":\"O\",\"fallback\":true,\"sig\":\"S2\"}}]}",
+      "accept": false,
+      "undecodable": false
+    }
+  ]
+}
