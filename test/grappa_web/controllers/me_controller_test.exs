@@ -436,6 +436,9 @@ defmodule GrappaWeb.MeControllerTest do
           body: "anchor"
         })
 
+      # The own-nick (self) window is a query window like any other (GH #948),
+      # and its cursor lives beside it (issue 2201).
+      {:ok, _} = Grappa.QueryWindows.open({:user, user.id}, network.id, own_nick, user.name)
       {:ok, _} = Grappa.ReadCursor.set({:user, user.id}, network.id, own_nick, anchor.id)
 
       # Inbound DM from a peer — stored at `channel = own_nick, dm_with =

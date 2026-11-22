@@ -161,6 +161,23 @@ defmodule GrappaWeb.ReadCursorControllerTest do
 
       assert json_response(conn, 422) == %{"error" => "invalid_message"}
     end
+
+    # issue 2201 — a DM cursor only exists beside its query window. The status
+    # is deliberately NOT one of the codes the production host's fail2ban jails
+    # count (400, 403, 404): an old bundle sends this POST after closing a
+    # focused query, and a ban for closing windows is the #160 outage again.
+    test "returns 422 no_query_window for a DM the subject holds no window for, and stores nothing",
+         %{conn: conn, user: user, network: network} do
+      msg = insert_message(user, network, "bob")
+
+      conn =
+        post(conn, "/networks/#{network.slug}/channels/bob/read-cursor", %{
+          "message_id" => msg.id
+        })
+
+      assert json_response(conn, 422) == %{"error" => "no_query_window"}
+      assert ReadCursor.get({:user, user.id}, network.id, "bob") == nil
+    end
   end
 
   describe "POST /read-cursor — auth + scoping" do

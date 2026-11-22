@@ -1887,6 +1887,23 @@ from either server, so keeping the filter does no harm. One difference
 remains: when every mention was muted, a new server sends no bundle,
 while an old one sends a bundle that the filter empties.
 
+### 5l. A DM read cursor needs its query window (issue 2201, v65)
+
+A DM window's read cursor lives and dies with the window. `close_query_window`
+deletes both in one transaction, and `POST …/channels/<nick>/read-cursor` for
+a nick you hold **no** query window for answers **`422 no_query_window`** and
+stores nothing. "DM" means a key that is not a channel and not `$server`;
+channel and `$server` cursors need no window. The match is case-insensitive
+like every nick key.
+
+Do not POST a cursor for a query you have just closed. The `query_windows_list`
+broadcast that follows the close is your signal that the window, and its
+cursor, are gone. An inbound message reopens the window by itself, and it
+comes back with no read position.
+
+A server below v65 accepts that write and puts the deleted cursor back. Check
+`protocol_version >= 65` before you rely on the 422.
+
 ## 6. Rate limiting & flood protection (#630)
 
 grappa applies a **coarse per-subject inbound budget** across BOTH doors —

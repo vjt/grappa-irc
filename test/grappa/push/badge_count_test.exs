@@ -14,7 +14,7 @@ defmodule Grappa.Push.BadgeCountTest do
   """
   use Grappa.DataCase, async: true
 
-  alias Grappa.{AuthFixtures, ReadCursor, ScrollbackHelpers, UserSettings}
+  alias Grappa.{AuthFixtures, QueryWindows, ReadCursor, ScrollbackHelpers, UserSettings}
   alias Grappa.Push.BadgeCount
 
   # ---------------------------------------------------------------------------
@@ -81,6 +81,13 @@ defmodule Grappa.Push.BadgeCountTest do
     :ok
   end
 
+  # A DM cursor lives beside its query window (issue 2201): open the window
+  # the inbound DM would have opened (#422), then seed the cursor in it.
+  defp set_dm_cursor(ctx, nick, message_id) do
+    {:ok, _} = QueryWindows.open(ctx.subject, ctx.network.id, nick, ctx.user.name)
+    set_cursor(ctx.subject, ctx.network, nick, message_id)
+  end
+
   defp set_prefs(subject, overrides) do
     prefs = Map.merge(UserSettings.default_notification_prefs(), Map.new(overrides))
     {:ok, _} = UserSettings.put_notification_prefs(subject, prefs)
@@ -117,7 +124,7 @@ defmodule Grappa.Push.BadgeCountTest do
     insert(ctx, "vjt", st: 2, sender: "alice", dm_with: "alice", body: "ping")
     insert(ctx, "vjt", st: 3, sender: "alice", dm_with: "alice", body: "still there?")
 
-    set_cursor(ctx.subject, ctx.network, "alice", dm1.id)
+    set_dm_cursor(ctx, "alice", dm1.id)
 
     assert BadgeCount.count(ctx.subject) == 2
   end
@@ -131,8 +138,8 @@ defmodule Grappa.Push.BadgeCountTest do
     b1 = insert(ctx, "vjt", st: 3, sender: "bob", dm_with: "bob", body: "hi")
     insert(ctx, "vjt", st: 4, sender: "bob", dm_with: "bob", body: "yo")
 
-    set_cursor(ctx.subject, ctx.network, "alice", a1.id)
-    set_cursor(ctx.subject, ctx.network, "bob", b1.id)
+    set_dm_cursor(ctx, "alice", a1.id)
+    set_dm_cursor(ctx, "bob", b1.id)
 
     # alice window: 1 unread + whitelisted. bob window: 1 unread, NOT
     # whitelisted → 0.
@@ -145,7 +152,7 @@ defmodule Grappa.Push.BadgeCountTest do
 
     d1 = insert(ctx, "vjt", st: 1, sender: "alice", dm_with: "alice", body: "1")
     insert(ctx, "vjt", st: 2, sender: "alice", dm_with: "alice", body: "2")
-    set_cursor(ctx.subject, ctx.network, "alice", d1.id)
+    set_dm_cursor(ctx, "alice", d1.id)
 
     assert BadgeCount.count(ctx.subject) == 0
   end
@@ -161,7 +168,7 @@ defmodule Grappa.Push.BadgeCountTest do
 
     anchor = insert(ctx, "peer", st: 1, sender: "vjt", dm_with: "peer", body: "hi")
     insert(ctx, "peer", st: 2, sender: "vjt", dm_with: "peer", body: "oncall reminder")
-    set_cursor(ctx.subject, ctx.network, "peer", anchor.id)
+    set_dm_cursor(ctx, "peer", anchor.id)
 
     assert BadgeCount.count(ctx.subject) == 0
   end

@@ -18,7 +18,7 @@ defmodule Grappa.WindowCountsTest do
   """
   use Grappa.DataCase, async: true
 
-  alias Grappa.{AuthFixtures, ReadCursor, ScrollbackHelpers, WindowCounts}
+  alias Grappa.{AuthFixtures, QueryWindows, ReadCursor, ScrollbackHelpers, WindowCounts}
 
   defp uniq, do: System.unique_integer([:positive])
 
@@ -51,6 +51,14 @@ defmodule Grappa.WindowCountsTest do
   defp cursor(subject, network_id, channel, message_id) do
     {:ok, _} = ReadCursor.set(subject, network_id, channel, message_id)
     :ok
+  end
+
+  # A DM window's cursor lives beside its query window (issue 2201) — open the
+  # window first, as the DM (or the operator's `/msg`, for the self window)
+  # would have.
+  defp dm_cursor(user, subject, network_id, nick, message_id) do
+    {:ok, _} = QueryWindows.open(subject, network_id, nick, user.name)
+    cursor(subject, network_id, nick, message_id)
   end
 
   # Inserts one row, returns the persisted `%Message{}`.
@@ -509,7 +517,7 @@ defmodule Grappa.WindowCountsTest do
       # net_a DM peer window: inbound (channel=own, dm_with=peer) + outbound.
       di = ins(subject, net_a.id, own, st: 5, sender: "peer", body: "vjt yo", dm_with: "peer")
       ins(subject, net_a.id, "peer", st: 6, sender: own, body: "re", dm_with: "peer")
-      cursor(subject, net_a.id, "peer", di.id)
+      dm_cursor(user, subject, net_a.id, "peer", di.id)
 
       # net_b #ops: anchor + 1 content, distinct network in the same call.
       b = ins(subject, net_b.id, "#ops", st: 1, body: "anchor-b")
@@ -599,7 +607,7 @@ defmodule Grappa.WindowCountsTest do
       own = "vjt"
 
       anchor = ins(subject, net.id, own, st: 1, sender: own, body: "self anchor", dm_with: own)
-      cursor(subject, net.id, own, anchor.id)
+      dm_cursor(user, subject, net.id, own, anchor.id)
       # A legacy inbound row (pre-CP14-B3) / server notice routed to the own
       # window: channel=own, dm_with NULL. The old narrowing excluded it.
       ins(subject, net.id, own, st: 2, sender: "someone", body: "legacy line", dm_with: nil)
@@ -623,7 +631,7 @@ defmodule Grappa.WindowCountsTest do
       own = "vjt"
 
       anchor = ins(subject, net.id, own, st: 1, sender: own, body: "anchor", dm_with: own)
-      cursor(subject, net.id, own, anchor.id)
+      dm_cursor(user, subject, net.id, own, anchor.id)
       # Self-message whose dm_with is stored at a differing (ASCII-equivalent)
       # casing — display-preserved, so the fold is required to match.
       ins(subject, net.id, own, st: 2, sender: own, body: "cased self", dm_with: "VJT")
