@@ -537,3 +537,39 @@ describe("members.sortMembers rank comes from the network's PREFIX (issue 1999)"
     expect(sortMembers(input, []).map((m) => m.nick)).toEqual(["a", "b"]);
   });
 });
+
+// issue 2692 — the store MembersPane renders, fed the way subscribe.ts feeds
+// it: a persisted `:mode` row off the channel topic. `modeApply.test.ts`
+// pins the walker in isolation; this pins that the wrong grade REACHES the
+// rendered roster and stays there until the next `members_seeded`.
+describe("members.applyPresenceEvent — MODE args follow CHANMODES (issue 2692)", () => {
+  it("+bov <mask> alice bob grades alice op and bob voice, not alice voice", async () => {
+    const members = await import("../lib/members");
+    const key = channelKey("azzurra", "#grappa");
+
+    members.seedFromTest(key, [
+      { nick: "alice", modes: [] },
+      { nick: "bob", modes: [] },
+    ]);
+
+    members.applyPresenceEvent(
+      key,
+      {
+        id: 2692,
+        network: "azzurra",
+        channel: "#grappa",
+        server_time: 0,
+        kind: "mode",
+        sender: "op",
+        body: null,
+        meta: { modes: "+bov", args: ["*!*@h", "alice", "bob"], structural: true },
+      },
+      "ascii",
+    );
+
+    expect(members.membersByChannel()[key]).toEqual([
+      { nick: "alice", modes: ["@"] },
+      { nick: "bob", modes: ["+"] },
+    ]);
+  });
+});

@@ -3420,6 +3420,85 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.members["#italia"]["alice"] == ["~"]
     end
 
+    # issue 2692 — the server half of the vectors in
+    # `cicchetto/src/__tests__/modeApply.test.ts` ("issue 2692"). These pin what
+    # the server derives from the same bytes; cic's walker gets every one of
+    # them wrong today. Both 005 strings are recalled, not captured off a live
+    # server: what the vectors rely on is `b` type A everywhere, `q`/`a`
+    # membership on Unreal, and `q` type A on solanum.
+    @unreal_005 ["s", "PREFIX=(qaohv)~&@%+", "CHANMODES=beI,fkL,lFH,cdimnprstzCDGKMNOPQRSTVZ"]
+    @solanum_005 ["s", "PREFIX=(ov)@+", "CHANMODES=eIbq,k,flj,CFLMPQRSTcgimnprstuz"]
+
+    test "issue 2692 — (a) +bo <mask> alice ops alice: the mask is b's argument" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => []}}})
+
+      m = msg(:mode, ["#italia", "+bo", "*!*@h", "alice"], {:nick, "op", "u", "h"})
+
+      assert {:cont, new_state, _} = EventRouter.route(m, state)
+      assert new_state.members["#italia"] == %{"alice" => ["@"]}
+    end
+
+    test "issue 2692 — (a) +bov <mask> alice bob grades each nick by its own letter" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => [], "bob" => []}}})
+
+      m = msg(:mode, ["#italia", "+bov", "*!*@h", "alice", "bob"], {:nick, "op", "u", "h"})
+
+      assert {:cont, new_state, _} = EventRouter.route(m, state)
+      assert new_state.members["#italia"] == %{"alice" => ["@"], "bob" => ["+"]}
+    end
+
+    test "issue 2692 — (b) +a bob on PREFIX=(qaohv) gives bob the admin sigil" do
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"bob" => []}},
+          isupport: ISupport.merge_isupport(@unreal_005, ISupport.default())
+        })
+
+      m = msg(:mode, ["#italia", "+a", "bob"], {:nick, "ChanServ", "u", "h"})
+
+      assert {:cont, new_state, _} = EventRouter.route(m, state)
+      assert new_state.members["#italia"] == %{"bob" => ["&"]}
+    end
+
+    test "issue 2692 — (b) -q founder on PREFIX=(qaohv) takes the founder sigil away" do
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"founder" => ["~"]}},
+          isupport: ISupport.merge_isupport(@unreal_005, ISupport.default())
+        })
+
+      m = msg(:mode, ["#italia", "-q", "founder"], {:nick, "ChanServ", "u", "h"})
+
+      assert {:cont, new_state, _} = EventRouter.route(m, state)
+      assert new_state.members["#italia"] == %{"founder" => []}
+    end
+
+    test "issue 2692 — (b) +qo founder alice on PREFIX=(qaohv) ops alice, not the founder" do
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"founder" => [], "alice" => []}},
+          isupport: ISupport.merge_isupport(@unreal_005, ISupport.default())
+        })
+
+      m = msg(:mode, ["#italia", "+qo", "founder", "alice"], {:nick, "ChanServ", "u", "h"})
+
+      assert {:cont, new_state, _} = EventRouter.route(m, state)
+      assert new_state.members["#italia"] == %{"founder" => ["~"], "alice" => ["@"]}
+    end
+
+    test "issue 2692 — (c) +qo <mask> alice on solanum ops alice: q is a quiet list there" do
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"alice" => []}},
+          isupport: ISupport.merge_isupport(@solanum_005, ISupport.default())
+        })
+
+      m = msg(:mode, ["#italia", "+qo", "*!*@h", "alice"], {:nick, "op", "u", "h"})
+
+      assert {:cont, new_state, _} = EventRouter.route(m, state)
+      assert new_state.members["#italia"] == %{"alice" => ["@"]}
+    end
+
     test "channel-mode param arity comes from state.isupport CHANMODES (type-C -l consumes no arg)" do
       # #216: `-l` (type C) takes NO argument; a following param mode's
       # arg must not be swallowed. With ISUPPORT-driven classification the
