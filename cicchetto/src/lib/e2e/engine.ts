@@ -635,6 +635,19 @@ export class Engine {
   }
 
   /**
+   * The Ed25519 key of our other device `did`, if our master's list still
+   * names it: the key a channel line of ours from that device is verified
+   * against (`trustedDid` is the peer twin). Undefined for a device our
+   * list does not name, and for this device, which is not its own sibling.
+   */
+  siblingDidKey(did: string): string | undefined {
+    for (const [ed25519, sibling] of Object.entries(this.state.siblings)) {
+      if (sibling.did === did && this.ourListNames(ed25519)) return ed25519;
+    }
+    return undefined;
+  }
+
+  /**
    * The device `ed25519` bound under `master` if that master vouches for it
    * now (rule 4: listed, or certified past the stored list, and not revoked).
    * A SAS verifies a master only through such a device (W "SAS").

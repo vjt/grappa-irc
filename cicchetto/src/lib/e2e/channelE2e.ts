@@ -146,6 +146,12 @@ import {
 /** The tag of a gkey DM's `Engine.send`: its rows never exist (`chatStore` no-ops an `out` alone). */
 export const GKEY_TAG = "gkey";
 
+/**
+ * What a channel step raised. A line's events — read, ours, or one that
+ * could not be read — carry `at`: when the line reached this device, ms
+ * since epoch (when it was read, or held for its key; ours, when it went
+ * out). The wire carries no time, so this is the device's clock.
+ */
 export type ChannelE2eEvent = (
   | {
       kind: "channel_received";
@@ -154,12 +160,16 @@ export type ChannelE2eEvent = (
       sid: string;
       counter: number;
       body: string;
+      at: number;
     }
+  /** A line of ours: sent from this device, or read from our other device's copy. */
+  | { kind: "channel_sent"; channel: string; from: string; body: string; at: number }
   | {
       kind: "channel_undecryptable";
       channel: string;
       from: string;
       sid: string | null;
+      at: number;
       reason:
         | "bad-payload"
         | "channel-mismatch"
@@ -839,34 +849,51 @@ export async function flushPendingSends(
   res.outbound.push(...audited.outbound);
   res.copies.push(...audited.copies);
   if (epochFor(groups, channel) === undefined) return withNetwork(deps, res);
-  res.outbound.push(...(await encryptQueued(deps, groups, channel)));
+  await encryptQueued(deps, groups, channel, res);
   return withNetwork(deps, res);
 }
 
 /**
  * The rows queued for `channel`, taken from the queue and encrypted under
- * its current epoch, in the order they were queued, as channel `:msg`s.
- * The caller has audited the epoch for a send and holds one: this only
- * encrypts.
+ * its current epoch, in the order they were queued, as channel `:msg`s,
+ * into `res`. The caller has audited the epoch for a send and holds one:
+ * this only encrypts.
  */
 async function encryptQueued(
   deps: ChannelE2eDeps,
   groups: GroupSessionsState,
   channel: string,
-): Promise<Outbound[]> {
-  const lines: Outbound[] = [];
+  res: ChannelE2eResult,
+): Promise<void> {
   for (const pending of takePendingSends(groups, channel)) {
-    const encrypted = await encryptChannel(groups, channel, pending.body, deps.sign);
-    lines.push({
-      target: channel,
-      verb: "msg",
-      from: deps.ownDid,
-      to: "*",
-      payload: encrypted.payload,
-      priority: "text",
-    });
+    await encryptLine(deps, groups, channel, pending.body, res);
   }
-  return lines;
+}
+
+/**
+ * One line of ours, encrypted under `channel`'s epoch into `res`: the
+ * channel `:msg`, and the `channel_sent` that is our own row of it — the
+ * server never echoes a channel line back to the device that sent it.
+ * The row is optimistic, like a `channel_key_sent`: a door that refuses
+ * the `:msg` adds a `channel_dropped` beside it (`client.ts`).
+ */
+async function encryptLine(
+  deps: ChannelE2eDeps,
+  groups: GroupSessionsState,
+  channel: string,
+  body: string,
+  res: ChannelE2eResult,
+): Promise<void> {
+  const encrypted = await encryptChannel(groups, channel, body, deps.sign);
+  res.outbound.push({
+    target: channel,
+    verb: "msg",
+    from: deps.ownDid,
+    to: "*",
+    payload: encrypted.payload,
+    priority: "text",
+  });
+  res.events.push({ kind: "channel_sent", channel, from: deps.ownNick, body, at: deps.now() });
 }
 
 /**
@@ -914,16 +941,8 @@ export async function sendChannel(
   // What waited goes first, in order, under the epoch the audit above
   // checked against `members`: this send is that audit, so the queue is
   // not audited again against another roster.
-  res.outbound.push(...(await encryptQueued(deps, groups, channel)));
-  const encrypted = await encryptChannel(groups, channel, body, deps.sign);
-  res.outbound.push({
-    target: channel,
-    verb: "msg",
-    from: deps.ownDid,
-    to: "*",
-    payload: encrypted.payload,
-    priority: "text",
-  });
+  await encryptQueued(deps, groups, channel, res);
+  await encryptLine(deps, groups, channel, body, res);
   return withNetwork(deps, res);
 }
 
@@ -931,8 +950,10 @@ export async function sendChannel(
  * A channel `:msg` from `from`'s device `fromDid` on `channel`, as grappa
  * delivered it: a key request is answered with the epoch key, a message
  * is decrypted, a rotation inside it is consumed, or it surfaces as
- * undecryptable. Our own messages are skipped (the send path showed
- * them). Never throws on wire input.
+ * undecryptable. `receivedAt` is when the line reached this device: the
+ * `at` of the line it raises. A line of ours from our other device is
+ * read as ours (`channel_sent`); only this device's own line, echoed
+ * back, is skipped — the send path showed it. Never throws on wire input.
  */
 export async function receiveChannel(
   deps: ChannelE2eDeps,
@@ -941,8 +962,10 @@ export async function receiveChannel(
   from: string,
   fromDid: string,
   payloadText: string,
+  receivedAt: number,
 ): Promise<ChannelE2eResult> {
-  if (foldOf(from) === foldOf(deps.ownNick)) return emptyResult();
+  const ours = foldOf(from) === foldOf(deps.ownNick);
+  if (ours && fromDid === deps.ownDid) return emptyResult();
   let decoded: Record<string, unknown>;
   try {
     decoded = decodePayload(payloadText);
@@ -953,6 +976,7 @@ export async function receiveChannel(
           kind: "channel_undecryptable",
           channel,
           from,
+          at: receivedAt,
           sid: null,
           reason: "bad-payload",
         },
@@ -971,6 +995,7 @@ export async function receiveChannel(
               kind: "channel_undecryptable",
               channel,
               from,
+              at: receivedAt,
               sid: null,
               reason: "channel-mismatch",
             },
@@ -987,6 +1012,7 @@ export async function receiveChannel(
             kind: "channel_undecryptable",
             channel,
             from,
+            at: receivedAt,
             sid: null,
             reason: "bad-payload",
           },
@@ -1013,6 +1039,7 @@ export async function receiveChannel(
           kind: "channel_undecryptable",
           channel,
           from,
+          at: receivedAt,
           sid: decrypted.sid,
           reason: decrypted.reason,
         },
@@ -1056,14 +1083,17 @@ export async function receiveChannel(
   }
   return withNetwork(deps, {
     events: [
-      {
-        kind: "channel_received",
-        channel,
-        from,
-        sid: decrypted.sid,
-        counter: decrypted.counter,
-        body: decrypted.body,
-      },
+      ours
+        ? { kind: "channel_sent", channel, from, body: decrypted.body, at: receivedAt }
+        : {
+            kind: "channel_received",
+            channel,
+            from,
+            at: receivedAt,
+            sid: decrypted.sid,
+            counter: decrypted.counter,
+            body: decrypted.body,
+          },
     ],
     outbound: [],
     copies: [],

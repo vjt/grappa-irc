@@ -11,10 +11,25 @@
 // The protocol version is the module signal (`serverProtocol.ts`): 63
 // unless a test sets it lower.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { epochFor, GROUP_ROTATION_INTERVAL_MS, HELD_ROW_TTL_MS } from "../lib/e2e/groupSessions";
+import {
+  epochFor,
+  GROUP_ROTATION_INTERVAL_MS,
+  HELD_ROW_TTL_MS,
+  hasPendingSends,
+  MAX_HELD_ROWS,
+} from "../lib/e2e/groupSessions";
 import { decodePayload, encodePayload } from "../lib/e2e/wire";
 import { __resetServerProtocolForTests, setServerProtocol } from "../lib/serverProtocol";
-import { chat, inboxOf, latestGrappa, ownOf, pair, rowsOf, SLOT } from "./helpers/e2eClients";
+import {
+  chat,
+  inboxOf,
+  latestGrappa,
+  ownOf,
+  pair,
+  rowsOf,
+  type Side,
+  SLOT,
+} from "./helpers/e2eClients";
 import { routeApi } from "./helpers/e2eGrappa";
 import { olm } from "./helpers/olm";
 
@@ -64,6 +79,15 @@ function rosterFor(members: string[]): (channel: string) => string[] | undefined
   return (channel) => roster.get(channel);
 }
 
+/** Our own line, as a send reports it: the row the server never echoes back. */
+const ownLine = (from: string, body: string, at: number) => ({
+  kind: "channel_sent",
+  channel: CHANNEL,
+  from,
+  body,
+  at,
+});
+
 describe("e2eClient channel", () => {
   it("sends to the channel under a new epoch, and the member drains it and reads it", async () => {
     const { w, a, b } = await pair();
@@ -94,6 +118,7 @@ describe("e2eClient channel", () => {
     expect(minted.channelE2e).toEqual([
       expect.objectContaining({ kind: "channel_rotated", reason: "created" }),
       expect.objectContaining({ kind: "channel_key_sent", to: "Bob" }),
+      ownLine("alice", "ciao a tutti", w.now),
     ]);
     // The key goes pairwise first, then the one channel message.
     const after = w.grappa.sends.slice(before);
@@ -144,6 +169,7 @@ describe("e2eClient channel", () => {
     const keyed = await a.client.drain(a.ctx);
     expect(keyed.channelE2e).toEqual([
       expect.objectContaining({ kind: "channel_key_received", from: "Bob" }),
+      ownLine("alice", "ciao a tutti", w.now),
     ]);
     const read = await b.client.drain(b.ctx);
     expect(read.channelE2e).toEqual([
@@ -347,8 +373,8 @@ describe("e2eClient channel", () => {
     );
     const sent = await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
     // The epoch exists locally even though the key never reached Bob:
-    // the row goes out under it, and the send reports nothing.
-    expect(sent.channelE2e).toBeUndefined();
+    // the row goes out under it, and the send reports only our own line.
+    expect(sent.channelE2e).toEqual([ownLine("alice", "ciao a tutti", w.now)]);
   });
 
   it("below protocol 63 no channel line is attempted", async () => {
@@ -460,6 +486,7 @@ describe("e2eClient channel", () => {
         channel: CHANNEL,
         from: "alice",
         sid: expect.any(String),
+        at: w.now,
         reason: "bad-signature",
       },
     ]);
@@ -603,6 +630,7 @@ describe("e2eClient channel", () => {
     expect(sent.channelE2e).toEqual([
       expect.objectContaining({ kind: "channel_rotated", oldSid, reason: "member-left" }),
       expect.objectContaining({ kind: "channel_key_sent", to: "alice", sid: newSid }),
+      ownLine("Bob", "after carol left", w.now),
     ]);
     // The new key goes pairwise to Alice first, then the row under the new epoch.
     const after = w.grappa.sends.filter((s) => s.target === CHANNEL);
@@ -731,17 +759,19 @@ describe("channel rotation reaches our other device", () => {
       expect.objectContaining({ kind: "channel_key_sent", to: "Bob" }),
     ]);
     const sent = await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
-    expect(sent.channelE2e).toBeUndefined();
+    expect(sent.channelE2e).toEqual([ownLine("alice", "ciao a tutti", w.now)]);
     const epochSid = await a.accounts.withAccount(
       SLOT,
       async ({ state }) => epochFor(state.groups, CHANNEL)?.sid,
     );
 
     // The second device drains: the copy imports the epoch, and no sent
-    // row appears in Bob's chat for a key.
+    // row appears in Bob's chat for a key, and it reads the line
+    // our first device sent as ours.
     const read = await a2.client.drain(a2.ctx);
     expect(read.channelE2e).toEqual([
       expect.objectContaining({ kind: "channel_key_received", from: "alice" }),
+      ownLine("alice", "ciao a tutti", w.now),
     ]);
     const bobRows = await rowsOf(a2, "Bob");
     expect(
@@ -753,7 +783,7 @@ describe("channel rotation reaches our other device", () => {
     // The second device sends under the imported epoch: no second
     // rotation, and the line goes out under the same epoch id.
     const second = await a2.client.sendChannel(a2.ctx, CHANNEL, "secondo", ["alice", "Bob"]);
-    expect(second.channelE2e).toBeUndefined();
+    expect(second.channelE2e).toEqual([ownLine("alice", "secondo", w.now)]);
     const a2Sid = await a2.accounts.withAccount(
       SLOT,
       async ({ state }) => epochFor(state.groups, CHANNEL)?.sid,
@@ -761,6 +791,13 @@ describe("channel rotation reaches our other device", () => {
     expect(a2Sid).toBe(epochSid);
     const last = w.grappa.sends.filter((s) => s.target === CHANNEL).at(-1);
     expect(decodePayload(last?.payload ?? "").sid).toBe(epochSid);
+
+    // Our first device reads that line as ours; the second device's own
+    // echo of it is skipped, as the send already reported it.
+    const firstReads = await a.client.drain(a.ctx);
+    expect(firstReads.channelE2e).toEqual([ownLine("alice", "secondo", w.now)]);
+    const echo = await a2.client.drain(a2.ctx);
+    expect(echo.channelE2e).toBeUndefined();
   });
 });
 
@@ -780,7 +817,7 @@ describe("a channel row that arrives before its key", () => {
       expect.objectContaining({ kind: "channel_key_sent", to: "Bob" }),
     ]);
     const sent = await a.client.sendChannel(a.ctx, CHANNEL, "ciao a tutti", ["alice", "Bob"]);
-    expect(sent.channelE2e).toBeUndefined();
+    expect(sent.channelE2e).toEqual([ownLine("alice", "ciao a tutti", w.now)]);
     const epochSid = await a.accounts.withAccount(
       SLOT,
       async ({ state }) => epochFor(state.groups, CHANNEL)?.sid,
@@ -806,6 +843,9 @@ describe("a channel row that arrives before its key", () => {
     b.ctx.door = realDoor;
     // Held, not lost and not surfaced: no event, no epoch yet.
     expect(first.channelE2e).toBeUndefined();
+    // The row reached this device now; its key comes a minute later.
+    const heldAt = w.now;
+    w.now += 60_000;
     expect(await b.accounts.withAccount(SLOT, async ({ state }) => state.groups.held)).toEqual([
       expect.objectContaining({ channel: CHANNEL, sid: epochSid, from: "alice" }),
     ]);
@@ -830,6 +870,7 @@ describe("a channel row that arrives before its key", () => {
         from: "alice",
         counter: 0,
         body: "ciao a tutti",
+        at: heldAt,
       }),
     ]);
     expect(await b.accounts.withAccount(SLOT, async ({ state }) => state.groups.held)).toEqual([]);
@@ -872,6 +913,7 @@ describe("a channel row that arrives before its key", () => {
     const first = await b.client.drain(b.ctx);
     b.ctx.door = realDoor;
     expect(first.channelE2e).toBeUndefined();
+    const heldAt = w.now;
     expect(await b.accounts.withAccount(SLOT, async ({ state }) => state.groups.held)).toHaveLength(
       1,
     );
@@ -886,8 +928,165 @@ describe("a channel row that arrives before its key", () => {
         from: "alice",
         sid: epochSid,
         reason: "no-session",
+        at: heldAt,
       }),
     ]);
     expect(await b.accounts.withAccount(SLOT, async ({ state }) => state.groups.held)).toEqual([]);
+  });
+
+  it("a row the hold drops past its cap surfaces with the time it arrived", async () => {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    w.grappa.joinChannel(CHANNEL, a.nick);
+    w.grappa.joinChannel(CHANNEL, b.nick);
+    const roster = rosterFor(["alice", "Bob"]);
+    a.ctx.channelMembers = roster;
+    b.ctx.channelMembers = roster;
+    // Bob never asked: the key he is sent is dropped, and every line is held.
+    await a.client.createChannelEpoch(a.ctx, CHANNEL, ["alice", "Bob"]);
+    await a.client.sendChannel(a.ctx, CHANNEL, "la prima", ["alice", "Bob"]);
+    await b.client.drain(b.ctx);
+    const firstAt = w.now;
+    w.now += 60_000;
+    for (let i = 0; i < MAX_HELD_ROWS; i++) {
+      await a.client.sendChannel(a.ctx, CHANNEL, `riga ${i}`, ["alice", "Bob"]);
+    }
+    const full = await b.client.drain(b.ctx);
+    expect(full.channelE2e).toEqual([
+      expect.objectContaining({
+        kind: "channel_undecryptable",
+        from: "alice",
+        reason: "no-session",
+        at: firstAt,
+      }),
+    ]);
+    expect(await b.accounts.withAccount(SLOT, async ({ state }) => state.groups.held.length)).toBe(
+      MAX_HELD_ROWS,
+    );
+  });
+
+  it("a row held again keeps the time it first arrived, and its wait counts from there", async () => {
+    const { w, a, b } = await pair();
+    const c = await w.join("carol");
+    await chat(a, b);
+    await chat(a, c);
+    await chat(b, c);
+    // Whoever stays with the lower did rotates when the third leaves: the
+    // fake grappa assigns the dids, so order the sides by them.
+    const dids = new Map<Side, string>();
+    for (const side of [a, b, c]) dids.set(side, (await ownOf(side)).did);
+    const [rotator, reader, leaver] = [a, b, c].sort((x, y) =>
+      (dids.get(x) ?? "") < (dids.get(y) ?? "") ? -1 : 1,
+    );
+    if (rotator === undefined || reader === undefined || leaver === undefined) {
+      throw new Error("three sides");
+    }
+    const all = [rotator.nick, reader.nick, leaver.nick];
+    for (const side of [a, b, c]) {
+      w.grappa.joinChannel(CHANNEL, side.nick);
+      side.ctx.channelMembers = rosterFor(all);
+    }
+
+    // The reader never asked: the first key it is sent is dropped, and the
+    // line under it is held.
+    await rotator.client.createChannelEpoch(rotator.ctx, CHANNEL, all);
+    await rotator.client.sendChannel(rotator.ctx, CHANNEL, "prima", all);
+    await reader.client.drain(reader.ctx);
+    const heldAt = w.now;
+    const held = () => reader.accounts.withAccount(SLOT, async ({ state }) => state.groups.held);
+    expect(await held()).toEqual([
+      expect.objectContaining({ from: rotator.nick, receivedAt: heldAt }),
+    ]);
+
+    // A minute later the reader asks, and gets the key; then the leave
+    // rotates, and the next key lands on the same page. The line's epoch
+    // is gone by the time it is retried: it is held again.
+    w.now += 60_000;
+    await reader.client.requestChannelKey(reader.ctx, CHANNEL);
+    await rotator.client.drain(rotator.ctx);
+    const stayed = [rotator.nick, reader.nick];
+    rotator.ctx.channelMembers = rosterFor(stayed);
+    reader.ctx.channelMembers = rosterFor(stayed);
+    await rotator.client.channelMembersChanged(rotator.ctx, CHANNEL, null, leaver.nick, stayed);
+    const keyed = await reader.client.drain(reader.ctx);
+    expect(keyed.channelE2e).toEqual([
+      expect.objectContaining({ kind: "channel_key_received", from: rotator.nick }),
+      expect.objectContaining({ kind: "channel_key_received", from: rotator.nick }),
+    ]);
+    expect(await held()).toEqual([
+      expect.objectContaining({ from: rotator.nick, receivedAt: heldAt }),
+    ]);
+
+    // Its wait counts from when it first arrived, not from the retry.
+    w.now = heldAt + HELD_ROW_TTL_MS + 1;
+    const expired = await reader.client.drain(reader.ctx);
+    expect(expired.channelE2e).toEqual([
+      expect.objectContaining({
+        kind: "channel_undecryptable",
+        from: rotator.nick,
+        reason: "no-session",
+        at: heldAt,
+      }),
+    ]);
+  });
+});
+
+// A line queued while this cic did not know the channel's roster: the
+// key arrived through the drain, but a flush is a send, audited against
+// the roster, so the line waited. The next step that has the roster
+// sends it, and reports it as our own line.
+describe("a line queued while the roster was unknown", () => {
+  async function queuedUnderAKey() {
+    const { w, a, b } = await pair();
+    await chat(a, b);
+    w.grappa.joinChannel(CHANNEL, a.nick);
+    w.grappa.joinChannel(CHANNEL, b.nick);
+    const roster = rosterFor(["alice", "Bob"]);
+    b.ctx.channelMembers = roster;
+    a.ctx.channelMembers = () => undefined;
+    await a.client.sendChannel(a.ctx, CHANNEL, "in coda", ["alice", "Bob"]);
+    await b.client.drain(b.ctx);
+    await b.client.createChannelEpoch(b.ctx, CHANNEL, ["alice", "Bob"]);
+    const keyed = await a.client.drain(a.ctx);
+    expect(keyed.channelE2e).toEqual([
+      expect.objectContaining({ kind: "channel_key_received", from: "Bob" }),
+    ]);
+    const queued = () =>
+      a.accounts.withAccount(SLOT, async ({ state }) => hasPendingSends(state.groups, CHANNEL));
+    expect(await queued()).toBe(true);
+    a.ctx.channelMembers = roster;
+    return { w, a, queued };
+  }
+
+  it("an audit sends it", async () => {
+    const { w, a, queued } = await queuedUnderAKey();
+    const res = await a.client.auditChannelEpoch(a.ctx, CHANNEL, ["alice", "Bob"]);
+    expect(res.channelE2e).toEqual([ownLine("alice", "in coda", w.now)]);
+    expect(await queued()).toBe(false);
+  });
+
+  it("a roster seed sends it", async () => {
+    const { w, a, queued } = await queuedUnderAKey();
+    a.ctx.topicTagFor = (channel) => (channel === CHANNEL ? "Bob" : null);
+    const res = await a.client.seedChannel(a.ctx, CHANNEL, ["alice", "Bob"]);
+    expect(res.channelE2e).toEqual([ownLine("alice", "in coda", w.now)]);
+    expect(await queued()).toBe(false);
+  });
+
+  it("a member's leave sends it", async () => {
+    const { w, a, queued } = await queuedUnderAKey();
+    const res = await a.client.channelMembersChanged(a.ctx, CHANNEL, null, "carol", [
+      "alice",
+      "Bob",
+    ]);
+    expect(res.channelE2e).toEqual([ownLine("alice", "in coda", w.now)]);
+    expect(await queued()).toBe(false);
+  });
+
+  it("the clock's tick sends it", async () => {
+    const { w, a, queued } = await queuedUnderAKey();
+    const res = await a.client.tick(a.ctx);
+    expect(res.channelE2e).toEqual([ownLine("alice", "in coda", w.now)]);
+    expect(await queued()).toBe(false);
   });
 });

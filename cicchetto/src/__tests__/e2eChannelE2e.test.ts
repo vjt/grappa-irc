@@ -170,6 +170,7 @@ async function shareEpoch(s: ReturnType<typeof sides>, members: string[]) {
     "alice",
     didFor("alice"),
     payload,
+    s.bob.deps.now(),
   );
   expect(read).toEqual({
     events: [expect.objectContaining({ kind: "channel_received", body: "before" })],
@@ -691,7 +692,15 @@ describe("onMemberLeft", () => {
     const after = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "after", ["alice", "bob"]);
     const payload = channelMsg(after)?.payload ?? "";
     expect(
-      await receiveChannel(s.bob.deps, s.bob.groups, CHAN, "alice", didFor("alice"), payload),
+      await receiveChannel(
+        s.bob.deps,
+        s.bob.groups,
+        CHAN,
+        "alice",
+        didFor("alice"),
+        payload,
+        s.bob.deps.now(),
+      ),
     ).toEqual({
       events: [expect.objectContaining({ kind: "channel_received", body: "after" })],
       outbound: [],
@@ -1002,6 +1011,7 @@ describe("sendChannel", () => {
       "alice",
       didFor("alice"),
       again.outbound[0]?.payload ?? "",
+      s.bob.deps.now(),
     );
     expect(first.events).toEqual([
       expect.objectContaining({ kind: "channel_received", body: "hello all" }),
@@ -1013,6 +1023,7 @@ describe("sendChannel", () => {
       "alice",
       didFor("alice"),
       again.outbound[1]?.payload ?? "",
+      s.bob.deps.now(),
     );
     expect(second.events).toEqual([
       expect.objectContaining({ kind: "channel_received", body: "again" }),
@@ -1057,6 +1068,7 @@ describe("receiveChannel", () => {
       "alice",
       didFor("alice"),
       payload,
+      s.bob.deps.now(),
     );
     expect(res.outbound).toEqual([]);
     expect(res.events).toEqual([
@@ -1064,6 +1076,7 @@ describe("receiveChannel", () => {
         kind: "channel_received",
         channel: CHAN,
         from: "alice",
+        at: s.bob.deps.now(),
         sid: epochFor(s.bob.groups, CHAN)?.sid,
         counter: 1,
         body: "hi bob",
@@ -1079,7 +1092,15 @@ describe("receiveChannel", () => {
     const sent = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "once", ["alice", "bob"]);
     const payload = channelMsg(sent)?.payload ?? "";
     expect(
-      await receiveChannel(s.bob.deps, s.bob.groups, CHAN, "alice", didFor("alice"), payload),
+      await receiveChannel(
+        s.bob.deps,
+        s.bob.groups,
+        CHAN,
+        "alice",
+        didFor("alice"),
+        payload,
+        s.bob.deps.now(),
+      ),
     ).toEqual({
       events: [expect.objectContaining({ kind: "channel_received", body: "once" })],
       outbound: [],
@@ -1092,12 +1113,14 @@ describe("receiveChannel", () => {
       "alice",
       didFor("alice"),
       payload,
+      s.bob.deps.now(),
     );
     expect(again.events).toEqual([
       {
         kind: "channel_undecryptable",
         channel: CHAN,
         from: "alice",
+        at: s.bob.deps.now(),
         sid: epochFor(s.bob.groups, CHAN)?.sid,
         reason: "replay",
       },
@@ -1124,12 +1147,14 @@ describe("receiveChannel", () => {
       "alice",
       didFor("alice"),
       tampered,
+      s.bob.deps.now(),
     );
     expect(res.events).toEqual([
       {
         kind: "channel_undecryptable",
         channel: CHAN,
         from: "alice",
+        at: s.bob.deps.now(),
         sid: epochFor(s.bob.groups, CHAN)?.sid,
         reason: "bad-signature",
       },
@@ -1144,13 +1169,22 @@ describe("receiveChannel", () => {
     const payload = channelMsg(sent)?.payload ?? "";
     // Bob holds no session: no-session.
     expect(
-      await receiveChannel(s.bob.deps, s.bob.groups, CHAN, "alice", didFor("alice"), payload),
+      await receiveChannel(
+        s.bob.deps,
+        s.bob.groups,
+        CHAN,
+        "alice",
+        didFor("alice"),
+        payload,
+        s.bob.deps.now(),
+      ),
     ).toEqual({
       events: [
         {
           kind: "channel_undecryptable",
           channel: CHAN,
           from: "alice",
+          at: s.bob.deps.now(),
           sid: expect.any(String),
           reason: "no-session",
         },
@@ -1160,13 +1194,22 @@ describe("receiveChannel", () => {
     });
     // Garbage: bad-payload.
     expect(
-      await receiveChannel(s.bob.deps, s.bob.groups, CHAN, "alice", didFor("alice"), "garbage"),
+      await receiveChannel(
+        s.bob.deps,
+        s.bob.groups,
+        CHAN,
+        "alice",
+        didFor("alice"),
+        "garbage",
+        s.bob.deps.now(),
+      ),
     ).toEqual({
       events: [
         {
           kind: "channel_undecryptable",
           channel: CHAN,
           from: "alice",
+          at: s.bob.deps.now(),
           sid: null,
           reason: "bad-payload",
         },
@@ -1202,10 +1245,26 @@ describe("receiveChannel", () => {
     const sent = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob"]);
     const payload = channelMsg(sent)?.payload ?? "";
     expect(
-      await receiveChannel(s.alice.deps, s.alice.groups, CHAN, "alice", didFor("alice"), payload),
+      await receiveChannel(
+        s.alice.deps,
+        s.alice.groups,
+        CHAN,
+        "alice",
+        didFor("alice"),
+        payload,
+        s.alice.deps.now(),
+      ),
     ).toEqual({ events: [], outbound: [], copies: [] });
     expect(
-      await receiveChannel(s.alice.deps, s.alice.groups, CHAN, "ALICE", didFor("alice"), payload),
+      await receiveChannel(
+        s.alice.deps,
+        s.alice.groups,
+        CHAN,
+        "ALICE",
+        didFor("alice"),
+        payload,
+        s.alice.deps.now(),
+      ),
     ).toEqual({ events: [], outbound: [], copies: [] });
   });
 
@@ -1228,6 +1287,7 @@ describe("receiveChannel", () => {
       "dave",
       didFor("dave"),
       keyreq,
+      s.alice.deps.now(),
     );
     expect(answered.events).toEqual([
       { kind: "channel_key_sent", channel: CHAN, to: "dave", sid },
@@ -1245,12 +1305,14 @@ describe("receiveChannel", () => {
       didFor("dave"),
       // A keyreq envelope for #other, delivered on #grappa.
       encodePayload({ v: 4, t: "keyreq", ch: "#other" }),
+      s.alice.deps.now(),
     );
     expect(foreign.events).toEqual([
       {
         kind: "channel_undecryptable",
         channel: CHAN,
         from: "dave",
+        at: s.alice.deps.now(),
         sid: null,
         reason: "channel-mismatch",
       },
@@ -1458,7 +1520,15 @@ describe("receiveGkey", () => {
     clock.t = NOW + DAY;
     const rotation = await rotateDue(alice.deps, alice.groups, [CHAN]);
     const payload = rotation.outbound.find((o) => o.target === CHAN)?.payload ?? "";
-    await receiveChannel(bob.deps, bob.groups, CHAN, "alice", didFor("alice"), payload);
+    await receiveChannel(
+      bob.deps,
+      bob.groups,
+      CHAN,
+      "alice",
+      didFor("alice"),
+      payload,
+      bob.deps.now(),
+    );
     const rotated = epochFor(alice.groups, CHAN)?.sid;
     expect(epochFor(bob.groups, CHAN)?.sid).toBe(rotated);
     // The key Bob hands out now, as every answer and re-distribution sends it.
@@ -1642,8 +1712,17 @@ describe("flushPendingSends", () => {
   /** What Alice reads of a flush's channel line. */
   async function aliceReads(s: ReturnType<typeof sides>, res: { outbound: Outbound[] }) {
     const payload = channelMsg(res)?.payload ?? "";
-    return (await receiveChannel(s.alice.deps, s.alice.groups, CHAN, "bob", didFor("bob"), payload))
-      .events;
+    return (
+      await receiveChannel(
+        s.alice.deps,
+        s.alice.groups,
+        CHAN,
+        "bob",
+        didFor("bob"),
+        payload,
+        s.alice.deps.now(),
+      )
+    ).events;
   }
 
   it("a flush is a send: an epoch a departed holder still holds rotates before the queued line goes out", async () => {
@@ -1692,7 +1771,17 @@ describe("flushPendingSends", () => {
     expect(decodePayload(line).sid).not.toBe(heldBefore);
     // Carol holds no key for the epoch the line went out under.
     expect(
-      (await receiveChannel(carol.deps, carol.groups, CHAN, "dave", didFor("dave"), line)).events,
+      (
+        await receiveChannel(
+          carol.deps,
+          carol.groups,
+          CHAN,
+          "dave",
+          didFor("dave"),
+          line,
+          carol.deps.now(),
+        )
+      ).events,
     ).toEqual([expect.objectContaining({ kind: "channel_undecryptable", reason: "no-session" })]);
   });
 
@@ -1760,7 +1849,15 @@ describe("rotateDue", () => {
     // Bob reads the rotation message, then a message under the new epoch.
     const rotationMsg = res.outbound[0]?.payload ?? "";
     expect(
-      await receiveChannel(s.bob.deps, s.bob.groups, CHAN, "alice", didFor("alice"), rotationMsg),
+      await receiveChannel(
+        s.bob.deps,
+        s.bob.groups,
+        CHAN,
+        "alice",
+        didFor("alice"),
+        rotationMsg,
+        s.bob.deps.now(),
+      ),
     ).toEqual({
       events: [
         {
@@ -1777,7 +1874,15 @@ describe("rotateDue", () => {
     const next = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "day two", ["alice", "bob"]);
     const nextPayload = channelMsg(next)?.payload ?? "";
     expect(
-      await receiveChannel(s.bob.deps, s.bob.groups, CHAN, "alice", didFor("alice"), nextPayload),
+      await receiveChannel(
+        s.bob.deps,
+        s.bob.groups,
+        CHAN,
+        "alice",
+        didFor("alice"),
+        nextPayload,
+        s.bob.deps.now(),
+      ),
     ).toEqual({
       events: [expect.objectContaining({ kind: "channel_received", body: "day two" })],
       outbound: [],

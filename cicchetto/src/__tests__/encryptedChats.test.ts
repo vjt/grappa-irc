@@ -1477,6 +1477,24 @@ describe("encrypted chats, channel presence", () => {
     );
   }
 
+  // issue 2512 — a channel send takes the one own-send door, for the
+  // channel's own window: told at Enter, and again once the line went.
+  it("a channel send tells the channel's window at Enter, and again once it went", async () => {
+    const { dispose, key } = await established();
+    try {
+      await chats.sendEncrypted(net.slug, "Bob", "in privato");
+      const dm = channelKey(net.slug, encryptedWindowName("Bob"));
+      expect(chats.lastEncryptedSend()).toBe(dm);
+      const sending = chats.sendChannelEncrypted(net.slug, CHANNEL, "di nuovo", ["alice", "Bob"]);
+      expect(chats.encryptedSendSubmitted()).toBe(key);
+      expect(chats.lastEncryptedSend()).toBe(dm);
+      await sending;
+      expect(chats.lastEncryptedSend()).toBe(key);
+    } finally {
+      dispose();
+    }
+  });
+
   it("a join on an encrypted channel sends nothing, a leave rotates it", async () => {
     const { dispose, key } = await established();
     try {

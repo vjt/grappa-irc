@@ -74,11 +74,12 @@ function rosterFor(members: string[]): (channel: string) => string[] | undefined
 const heldOf = (side: Side) =>
   side.accounts.withAccount(SLOT, async ({ state }) => state.groups.held);
 
-const undecryptable = (from: string) => ({
+const undecryptable = (from: string, at: number) => ({
   kind: "channel_undecryptable",
   channel: CHANNEL,
   from,
   sid: null,
+  at,
   reason: "decryption-failed",
 });
 
@@ -190,7 +191,7 @@ describe("a channel row whose read throws", () => {
     const read = await b.client.drain(b.ctx);
     expect(read.channelE2e).toEqual([
       expect.objectContaining({ kind: "channel_key_received", from: "alice" }),
-      undecryptable("alice"),
+      undecryptable("alice", w.now),
     ]);
     expect(errors).toHaveBeenCalledWith(expect.any(String), seam.boom);
     expect(await inboxOf(w, b)).toEqual([]);
@@ -209,7 +210,7 @@ describe("a channel row whose read throws", () => {
     const read = await b.client.drain(b.ctx);
     expect(read.channelE2e).toEqual([
       expect.objectContaining({ kind: "channel_key_received", from: "alice" }),
-      undecryptable("alice"),
+      undecryptable("alice", w.now),
     ]);
     expect(errors).toHaveBeenCalledWith(expect.any(String), seam.boom);
     expect(await inboxOf(w, b)).toEqual([]);
@@ -238,7 +239,7 @@ describe("a channel row whose read throws", () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const read = await other.client.drain(other.ctx);
-    expect(read.channelE2e).toEqual([undecryptable(rotator.nick)]);
+    expect(read.channelE2e).toEqual([undecryptable(rotator.nick, w.now)]);
     expect(errors).toHaveBeenCalledWith(expect.any(String), seam.boom);
     expect(await inboxOf(w, other)).toEqual([]);
     expect(await heldOf(other)).toEqual([]);

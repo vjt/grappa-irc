@@ -726,19 +726,32 @@ function copyFrom(engine: Engine, m: InboxMessage): Result {
   return { events: [], outbound: [] };
 }
 
+/** A channel row as the drain reads it: a held row, or a live one with `receivedAt` now. */
+type ChannelRow = Omit<HeldRow, "sid">;
+
 // One channel row read under the epoch store, wherever the drain reads
-// one: the live row, or a held one retried once its epoch is held. A read
-// that throws must not kill the drain: the row surfaces as undecryptable
-// instead, the watermark still advances, and the ACK follows as usual —
-// one bad row never wedges the inbox behind it. `receiveChannel` never
-// throws on wire input, so a throw is a defect, logged as an error.
+// one: the live row, or a held one retried once its epoch is held — read
+// with the time it first reached this device, not the time its key did.
+// A read that throws must not kill the drain: the row surfaces as
+// undecryptable instead, the watermark still advances, and the ACK
+// follows as usual — one bad row never wedges the inbox behind it.
+// `receiveChannel` never throws on wire input, so a throw is a defect,
+// logged as an error.
 async function readChannelRow(
   deps: ChannelE2eDeps,
   groups: GroupSessionsState,
-  row: Pick<HeldRow, "channel" | "from" | "fromDid" | "payload">,
+  row: ChannelRow,
 ): Promise<ChannelE2eResult> {
   try {
-    return await receiveChannel(deps, groups, row.channel, row.from, row.fromDid, row.payload);
+    return await receiveChannel(
+      deps,
+      groups,
+      row.channel,
+      row.from,
+      row.fromDid,
+      row.payload,
+      row.receivedAt,
+    );
   } catch (err) {
     console.error(
       `[e2e] a channel row from ${row.from} on ${row.channel} threw while reading; surfacing it as undecryptable`,
@@ -751,6 +764,7 @@ async function readChannelRow(
           channel: row.channel,
           from: row.from,
           sid: null,
+          at: row.receivedAt,
           reason: "decryption-failed",
         },
       ],
@@ -815,10 +829,16 @@ export function e2eClient(
       network: ctx.slug,
       now,
       sign: (text) => account.sign(text),
+      // Our own nick is never a pinned peer: a line of ours from our other
+      // device is verified against the key our list binds to that device.
       verify: (nick, did, text, sig) => {
-        const pinned = engine.pinned(nick);
-        if (pinned === undefined) return false;
-        const key = engine.trustedDid(pinned.master, did);
+        let key: string | undefined;
+        if (fold(nick) === fold(ctx.ownNick)) {
+          key = engine.siblingDidKey(did);
+        } else {
+          const pinned = engine.pinned(nick);
+          key = pinned === undefined ? undefined : engine.trustedDid(pinned.master, did);
+        }
         if (key === undefined) return false;
         return olm.verify_ed25519(key, text, sig);
       },
@@ -1249,38 +1269,31 @@ export function e2eClient(
         // may still arrive, and the stash, sealed in the store, is now
         // the only copy. Only the rows the hold drops past its cap
         // surface, as undecryptable; a row with no sid to hold under
-        // surfaces as it came.
+        // surfaces as it came. A row held again keeps the time it first
+        // arrived: that is its time, and its wait counts from there.
         const holdNoSession = (
           events: ChannelE2eEvent[],
-          channel: string,
-          from: string,
-          fromDid: string,
-          payload: string,
+          row: ChannelRow,
           sid: string | null,
         ): void => {
           if (sid === null) {
             events.push({
               kind: "channel_undecryptable",
-              channel,
-              from,
+              channel: row.channel,
+              from: row.from,
               sid: null,
+              at: row.receivedAt,
               reason: "no-session",
             });
             return;
           }
-          for (const dropped of holdRow(state.groups, {
-            channel,
-            sid,
-            from,
-            fromDid,
-            payload,
-            receivedAt: now(),
-          })) {
+          for (const dropped of holdRow(state.groups, { ...row, sid })) {
             events.push({
               kind: "channel_undecryptable",
               channel: dropped.channel,
               from: dropped.from,
               sid: dropped.sid,
+              at: dropped.receivedAt,
               reason: "no-session",
             });
           }
@@ -1304,22 +1317,24 @@ export function e2eClient(
               // A channel `:msg` (v63): decrypted under the epoch and
               // verified against the sender's pinned device key, or
               // surfaced as undecryptable — never dropped silently, and
-              // acknowledged like a DM's, readable or not. Our own
-              // channel messages are skipped by the receiver (the send
-              // path showed them).
-              const received = await readChannelRow(deps, state.groups, {
+              // acknowledged like a DM's, readable or not. This device's
+              // own line, echoed back, is skipped by the receiver (the
+              // send path showed it).
+              const row: ChannelRow = {
                 channel,
                 from: m.from,
                 fromDid: m.fromDid,
                 payload: m.payload,
-              });
+                receivedAt: now(),
+              };
+              const received = await readChannelRow(deps, state.groups, row);
               // A row with no session yet is held for retry, not surfaced:
               // the key may still arrive, and the stash — sealed in the
               // store — is now the only copy. The watermark still advances
               // and the row is ACKed as usual.
               for (const e of received.events) {
                 if (e.kind === "channel_undecryptable" && e.reason === "no-session") {
-                  holdNoSession(pageChannelEvents, channel, m.from, m.fromDid, m.payload, e.sid);
+                  holdNoSession(pageChannelEvents, row, e.sid);
                 } else {
                   pageChannelEvents.push(e);
                 }
@@ -1412,14 +1427,7 @@ export function e2eClient(
               const re = await readChannelRow(deps, state.groups, row);
               for (const reEvent of re.events) {
                 if (reEvent.kind === "channel_undecryptable" && reEvent.reason === "no-session") {
-                  holdNoSession(
-                    pageChannelEvents,
-                    row.channel,
-                    row.from,
-                    row.fromDid,
-                    row.payload,
-                    reEvent.sid,
-                  );
+                  holdNoSession(pageChannelEvents, row, reEvent.sid);
                 } else {
                   pageChannelEvents.push(reEvent);
                 }
@@ -1441,6 +1449,7 @@ export function e2eClient(
           }
           for (const channel of flushedChannels) {
             const flushed = await flushPendingSends(deps, state.groups, channel);
+            pageChannelEvents.push(...flushed.events);
             pageChannelOutbound.push(...flushed.outbound);
             pageChannelCopies.push(...flushed.copies);
             outbound.push(...flushed.outbound);
@@ -1480,14 +1489,7 @@ export function e2eClient(
             for (const reEvent of re.events) {
               if (reEvent.kind === "channel_key_received") imported = true;
               if (reEvent.kind === "channel_undecryptable" && reEvent.reason === "no-session") {
-                holdNoSession(
-                  channelEvents,
-                  row.channel,
-                  row.from,
-                  row.fromDid,
-                  row.payload,
-                  reEvent.sid,
-                );
+                holdNoSession(channelEvents, row, reEvent.sid);
               } else {
                 channelEvents.push(reEvent);
               }
@@ -1505,6 +1507,7 @@ export function e2eClient(
             channel: expired.channel,
             from: expired.from,
             sid: expired.sid,
+            at: expired.receivedAt,
             reason: "no-session",
           });
         }
@@ -1622,6 +1625,7 @@ export function e2eClient(
         res.copies.push(...minted.copies);
         // What waited for the key goes out under the epoch just minted.
         const flushed = await flushPendingSends(deps, state.groups, channel);
+        res.events.push(...flushed.events);
         res.outbound.push(...flushed.outbound);
         res.copies.push(...flushed.copies);
         const { report, refused } = await finish(
@@ -1712,6 +1716,7 @@ export function e2eClient(
         // A rotation the audit minted leaves a new epoch: what waited for
         // the key goes out under it.
         const flushed = await flushPendingSends(deps, state.groups, channel);
+        res.events.push(...flushed.events);
         res.outbound.push(...flushed.outbound);
         res.copies.push(...flushed.copies);
         const { report, refused } = await finish(
@@ -1775,6 +1780,7 @@ export function e2eClient(
         // A rotation the audit minted leaves a new epoch: what waited for
         // the key goes out under it.
         const flushed = await flushPendingSends(deps, state.groups, channel);
+        res.events.push(...flushed.events);
         res.outbound.push(...flushed.outbound);
         res.copies.push(...flushed.copies);
         const { report, refused } = await finish(
@@ -1831,6 +1837,7 @@ export function e2eClient(
             // A rotation the leave minted leaves a new epoch: what waited
             // for the key goes out under it.
             const flushed = await flushPendingSends(deps, state.groups, channel);
+            res.events.push(...flushed.events);
             res.outbound.push(...flushed.outbound);
             res.copies.push(...flushed.copies);
           }
@@ -1870,6 +1877,7 @@ export function e2eClient(
           : { events: [], outbound: [], copies: [] };
         // A rotation the tick minted leaves new epochs: what waited for a
         // key goes out under them.
+        const flushedEvents: ChannelE2eEvent[] = [];
         const flushedOutbound: Outbound[] = [];
         const flushedCopies: ChannelE2eResult["copies"] = [];
         for (const channel of channelsWithEpoch(state.groups)) {
@@ -1878,6 +1886,7 @@ export function e2eClient(
             state.groups,
             channel,
           );
+          flushedEvents.push(...flushed.events);
           flushedOutbound.push(...flushed.outbound);
           flushedCopies.push(...flushed.copies);
         }
@@ -1892,7 +1901,7 @@ export function e2eClient(
           [...rotated.copies, ...flushedCopies],
         );
         const events = reconcileChannelSends(
-          rotated.events,
+          [...rotated.events, ...flushedEvents],
           [...rotated.outbound, ...flushedOutbound],
           refused,
         );

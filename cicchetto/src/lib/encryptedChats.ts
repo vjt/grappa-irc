@@ -646,24 +646,36 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     await changed(slug, [fold(nick)]);
   }
 
-  // An own send reads the chat, as a send reads any window: what is above it
-  // was seen by whoever wrote below it. A text and an attachment take this
-  // one door, and leave the same rows.
+  // The one door of every own send, to a chat or to a channel: the window it
+  // went from is told at Enter and again once it went (issue 2512), and a
+  // send to a chat reads the chat, as a send reads any window — what is
+  // above it was seen by whoever wrote below it. `readAfter` is null for a
+  // channel, whose read state is grappa's cursor, not the chat store's.
   async function sendOwn(
     slug: string,
-    nick: string,
+    windowKey: ChannelKey,
     send: (client: E2eClient, ctx: E2eContext) => Promise<Report>,
+    readAfter: (() => Promise<void>) | null,
   ): Promise<void> {
-    const windowKey = channelKey(slug, encryptedWindowName(nick));
     setEncryptedSendSubmitted(windowKey);
     const report = await run(slug, send);
     await afterReport(slug, report);
-    await readEncryptedChat(slug, nick);
+    if (readAfter !== null) await readAfter();
     setLastEncryptedSend(windowKey);
   }
 
+  // A text and an attachment to `nick` leave the same rows.
+  const sendToChat = (
+    slug: string,
+    nick: string,
+    send: (client: E2eClient, ctx: E2eContext) => Promise<Report>,
+  ): Promise<void> =>
+    sendOwn(slug, channelKey(slug, encryptedWindowName(nick)), send, () =>
+      readEncryptedChat(slug, nick),
+    );
+
   const sendEncrypted = (slug: string, nick: string, body: string): Promise<void> =>
-    sendOwn(slug, nick, (client, ctx) => client.send(ctx, nick, body));
+    sendToChat(slug, nick, (client, ctx) => client.send(ctx, nick, body));
 
   /**
    * Sends the attachment `file` to `nick` (issue 2517): the ciphertext is
@@ -671,7 +683,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
    * metadata.
    */
   const sendEncryptedFile = (slug: string, nick: string, file: FileInner): Promise<void> =>
-    sendOwn(slug, nick, (client, ctx) => client.sendFile(ctx, nick, file));
+    sendToChat(slug, nick, (client, ctx) => client.sendFile(ctx, nick, file));
 
   /** Asks `nick` for its keys again: the user's answer to a message none of its devices could read (issue 2491). */
   async function rekeyEncrypted(slug: string, nick: string): Promise<void> {
@@ -698,21 +710,22 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   /**
    * Sends `body` to `channel`, encrypted under the channel's epoch
    * (wire v4): the key is distributed pairwise first when the epoch is
-   * new. `members` is the roster the channel window holds. The channel
-   * UI calls this once it offers an encrypted channel mode; until then
-   * nothing sends here.
+   * new. `members` is the roster the channel window holds. It takes the
+   * one own-send door, for the channel's own window (`channelKey(slug,
+   * channel)`), the one compose sent it from.
    */
-  async function sendChannelEncrypted(
+  const sendChannelEncrypted = (
     slug: string,
     channel: string,
     body: string,
     members: string[],
-  ): Promise<void> {
-    const report = await run(slug, (client, ctx) =>
-      client.sendChannel(ctx, channel, body, members),
+  ): Promise<void> =>
+    sendOwn(
+      slug,
+      channelKey(slug, channel),
+      (client, ctx) => client.sendChannel(ctx, channel, body, members),
+      null,
     );
-    await afterReport(slug, report);
-  }
 
   /**
    * Broadcasts a key request for `channel` on the channel itself

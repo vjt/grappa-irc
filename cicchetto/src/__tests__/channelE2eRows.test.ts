@@ -6,6 +6,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { channelKey } from "../lib/channelKey";
 
+// When every line here reached the device: the store keeps the time it is
+// given, and the tests that order by it set their own.
+const AT = 1_700_000_000_000;
+
 vi.mock("../lib/api", () => ({
   setOn401Handler: vi.fn(),
   isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
@@ -42,6 +46,7 @@ describe("channelE2eRows", () => {
       emitChannelE2eEvents([
         {
           kind: "channel_received",
+          at: AT,
           channel: "#grappa",
           network: "azzurra",
           from: "alice",
@@ -51,6 +56,7 @@ describe("channelE2eRows", () => {
         },
         {
           kind: "channel_received",
+          at: AT,
           channel: "#grappa",
           network: "azzurra",
           from: "bob",
@@ -60,6 +66,7 @@ describe("channelE2eRows", () => {
         },
         {
           kind: "channel_received",
+          at: AT,
           channel: "#grappa",
           network: "azzurra",
           from: "alice",
@@ -71,6 +78,7 @@ describe("channelE2eRows", () => {
       expect(channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([
         {
           id: 1,
+          at: AT,
           kind: "received",
           channel: "#grappa",
           from: "alice",
@@ -80,6 +88,7 @@ describe("channelE2eRows", () => {
         },
         {
           id: 2,
+          at: AT,
           kind: "received",
           channel: "#grappa",
           from: "bob",
@@ -89,6 +98,7 @@ describe("channelE2eRows", () => {
         },
         {
           id: 3,
+          at: AT,
           kind: "received",
           channel: "#grappa",
           from: "alice",
@@ -109,6 +119,7 @@ describe("channelE2eRows", () => {
       emitChannelE2eEvents([
         {
           kind: "channel_received",
+          at: AT,
           channel: "#grappa",
           network: "azzurra",
           from: "alice",
@@ -118,6 +129,7 @@ describe("channelE2eRows", () => {
         },
         {
           kind: "channel_undecryptable",
+          at: AT,
           channel: "#grappa",
           network: "azzurra",
           from: "bob",
@@ -126,6 +138,7 @@ describe("channelE2eRows", () => {
         },
         {
           kind: "channel_undecryptable",
+          at: AT,
           channel: "#grappa",
           network: "azzurra",
           from: "carol",
@@ -136,6 +149,7 @@ describe("channelE2eRows", () => {
       expect(channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([
         {
           id: 1,
+          at: AT,
           kind: "received",
           channel: "#grappa",
           from: "alice",
@@ -145,6 +159,7 @@ describe("channelE2eRows", () => {
         },
         {
           id: 2,
+          at: AT,
           kind: "undecryptable",
           channel: "#grappa",
           from: "bob",
@@ -153,6 +168,7 @@ describe("channelE2eRows", () => {
         },
         {
           id: 3,
+          at: AT,
           kind: "undecryptable",
           channel: "#grappa",
           from: "carol",
@@ -178,6 +194,7 @@ describe("channelE2eRows", () => {
         sid: "s1",
         counter: i,
         body: `row ${i}`,
+        at: AT + i,
       }));
       emitChannelE2eEvents(events);
       const rows = channelE2eRows(channelKey("azzurra", "#grappa"));
@@ -224,6 +241,7 @@ describe("channelE2eRows", () => {
       emitChannelE2eEvents([
         {
           kind: "channel_received",
+          at: AT,
           channel: "#grappa",
           network: "azzurra",
           from: "alice",
@@ -233,6 +251,7 @@ describe("channelE2eRows", () => {
         },
         {
           kind: "channel_received",
+          at: AT,
           channel: "#sbiffo",
           network: "azzurra",
           from: "bob",
@@ -242,6 +261,7 @@ describe("channelE2eRows", () => {
         },
         {
           kind: "channel_received",
+          at: AT,
           channel: "#grappa",
           network: "azzurra",
           from: "alice",
@@ -269,6 +289,7 @@ describe("channelE2eRows", () => {
       emitChannelE2eEvents([
         {
           kind: "channel_received",
+          at: AT,
           channel: "#grappa",
           network: "azzurra",
           from: "alice",
@@ -278,6 +299,7 @@ describe("channelE2eRows", () => {
         },
         {
           kind: "channel_received",
+          at: AT,
           channel: "#grappa",
           network: "freenode",
           from: "bob",
@@ -287,6 +309,7 @@ describe("channelE2eRows", () => {
         },
         {
           kind: "channel_received",
+          at: AT,
           channel: "#grappa",
           network: "azzurra",
           from: "alice",
@@ -322,6 +345,7 @@ describe("channelE2eRows", () => {
       emitChannelE2eEvents([
         {
           kind: "channel_received",
+          at: AT,
           channel: "#grappa",
           from: "alice",
           sid: "s1",
@@ -330,6 +354,7 @@ describe("channelE2eRows", () => {
         },
         {
           kind: "channel_received",
+          at: AT,
           channel: "#grappa",
           network: "azzurra",
           from: "bob",
@@ -375,10 +400,11 @@ describe("channelE2eRows", () => {
       noteCleartextChannelMessage("azzurra", "#grappa", {
         kind: "privmsg",
         sender: "bob",
+        server_time: AT,
         body: "in the clear",
       });
       expect(channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([
-        { id: 1, kind: "cleartext", channel: "#grappa", from: "bob", body: "in the clear" },
+        { id: 1, at: AT, kind: "cleartext", channel: "#grappa", from: "bob", body: "in the clear" },
       ]);
     } finally {
       unsubscribe();
@@ -398,6 +424,7 @@ describe("channelE2eRows", () => {
       noteCleartextChannelMessage("azzurra", "#grappa", {
         kind: "privmsg",
         sender: "bob",
+        server_time: AT,
         body: "in the clear",
       });
       expect(channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([]);
@@ -427,6 +454,7 @@ describe("channelE2eRows", () => {
       noteCleartextChannelMessage("azzurra", "#grappa", {
         kind: "privmsg",
         sender: "bob",
+        server_time: AT,
         body: "in the clear",
       });
       expect(channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([]);
@@ -462,16 +490,19 @@ describe("channelE2eRows", () => {
       noteCleartextChannelMessage("azzurra", "#grappa", {
         kind: "privmsg",
         sender: "bob",
+        server_time: AT,
         body: JSON.stringify({ v: 4, t: "msg", ch: "#grappa", sid: "s1", body: "x", sig: "y" }),
       });
       noteCleartextChannelMessage("azzurra", "#grappa", {
         kind: "join",
         sender: "bob",
+        server_time: AT,
         body: "bob joined",
       });
       noteCleartextChannelMessage("azzurra", "#grappa", {
         kind: "privmsg",
         sender: "bob",
+        server_time: AT,
         body: null,
       });
       expect(channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([]);
@@ -487,6 +518,7 @@ describe("channelE2eRows", () => {
       first.emitChannelE2eEvents([
         {
           kind: "channel_received",
+          at: AT,
           channel: "#grappa",
           network: "azzurra",
           from: "alice",
@@ -512,6 +544,7 @@ describe("channelE2eRows", () => {
       second.emitChannelE2eEvents([
         {
           kind: "channel_received",
+          at: AT,
           channel: "#grappa",
           network: "azzurra",
           from: "bob",
@@ -526,5 +559,48 @@ describe("channelE2eRows", () => {
     } finally {
       unsubscribe2();
     }
+  });
+  it("keeps our own line as an own row with its time, across a reload; a stored row with no time is dropped", async () => {
+    const first = await fresh();
+    const unsubscribe = first.subscribeChannelE2eRows();
+    try {
+      first.emitChannelE2eEvents([
+        {
+          kind: "channel_sent",
+          channel: "#grappa",
+          network: "azzurra",
+          from: "alice",
+          body: "mia",
+          at: AT + 5,
+        },
+      ]);
+    } finally {
+      unsubscribe();
+    }
+    const own = {
+      id: 1,
+      at: AT + 5,
+      kind: "own",
+      channel: "#grappa",
+      from: "alice",
+      body: "mia",
+    };
+    expect(first.channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([own]);
+    vi.resetModules();
+    const second = await fresh();
+    expect(second.channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([own]);
+
+    // The durable copy as the store wrote it, with the time taken off its
+    // row: the reload drops the row instead of believing it.
+    const storageKey = localStorage.key(0) ?? "";
+    const stored = JSON.parse(localStorage.getItem(storageKey) ?? "{}") as Record<
+      string,
+      Record<string, unknown>[]
+    >;
+    for (const rows of Object.values(stored)) for (const row of rows) delete row.at;
+    localStorage.setItem(storageKey, JSON.stringify(stored));
+    vi.resetModules();
+    const third = await fresh();
+    expect(third.channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([]);
   });
 });

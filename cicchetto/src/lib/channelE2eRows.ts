@@ -7,9 +7,11 @@
 // has read it, so a decrypted line that lands nowhere is gone for good.
 // This store is the landing place. It is NOT scrollback: a decrypted line
 // has no server id to order by, so each row carries an arrival-order
-// synthetic id — a per-channel sequence — and the render decision stays
-// open. No UI reads this yet; the store only keeps the rows, bounded,
-// for the branch that renders them.
+// synthetic id — a per-channel sequence — and its time, `at` (ms since
+// epoch): when the line reached this device, or for a cleartext row its
+// scrollback `server_time`. The render decision stays open. No UI reads
+// this yet; the store only keeps the rows, bounded, for the branch that
+// renders them.
 //
 // Rows are scoped by network: the bucket is the channel key
 // (`slug #channel`), so two networks' same-named channels never share
@@ -20,8 +22,9 @@
 // durable copy is best-effort (a full or unavailable store never breaks
 // the row) and is cleared with the memory rows on identity change.
 //
-// Only `channel_received` and `channel_undecryptable` become rows. Key,
-// rotation, and drop events are not rows: they are about the epoch, not
+// Only `channel_received`, `channel_sent` (our own line) and
+// `channel_undecryptable` become rows. Key, rotation, and drop events are
+// not rows: they are about the epoch, not
 // about a line the channel showed.
 
 import { createSignal } from "solid-js";
@@ -43,6 +46,7 @@ const ROWS_STORAGE_KEY = "cicchetto.channelE2eRows.v1";
 export type ChannelE2eRow =
   | {
       id: number;
+      at: number;
       kind: "received";
       channel: string;
       from: string;
@@ -52,6 +56,7 @@ export type ChannelE2eRow =
     }
   | {
       id: number;
+      at: number;
       kind: "undecryptable";
       channel: string;
       from: string;
@@ -60,7 +65,17 @@ export type ChannelE2eRow =
     }
   | {
       id: number;
+      at: number;
       kind: "cleartext";
+      channel: string;
+      from: string;
+      body: string;
+    }
+  /** A line of ours: sent from this device, or read from our other device's copy. */
+  | {
+      id: number;
+      at: number;
+      kind: "own";
       channel: string;
       from: string;
       body: string;
@@ -70,7 +85,12 @@ export type ChannelE2eRow =
 function isStoredRow(row: unknown): row is ChannelE2eRow {
   if (typeof row !== "object" || row === null) return false;
   const r = row as Record<string, unknown>;
-  if (typeof r.id !== "number" || typeof r.channel !== "string" || typeof r.from !== "string") {
+  if (
+    typeof r.id !== "number" ||
+    typeof r.at !== "number" ||
+    typeof r.channel !== "string" ||
+    typeof r.from !== "string"
+  ) {
     return false;
   }
   if (r.kind === "received") {
@@ -79,7 +99,7 @@ function isStoredRow(row: unknown): row is ChannelE2eRow {
   if (r.kind === "undecryptable") {
     return (r.sid === null || typeof r.sid === "string") && typeof r.reason === "string";
   }
-  if (r.kind === "cleartext") {
+  if (r.kind === "cleartext" || r.kind === "own") {
     return typeof r.body === "string";
   }
   return false;
@@ -178,11 +198,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   };
 
   const append = (event: ChannelE2eEvent): void => {
-    if (event.kind !== "channel_received" && event.kind !== "channel_undecryptable") return;
-    const key = rowKey(event);
     if (event.kind === "channel_received") {
-      storeRow(key, event.channel, (id) => ({
+      storeRow(rowKey(event), event.channel, (id) => ({
         id,
+        at: event.at,
         kind: "received",
         channel: event.channel,
         from: event.from,
@@ -190,9 +209,19 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         counter: event.counter,
         body: event.body,
       }));
-    } else {
-      storeRow(key, event.channel, (id) => ({
+    } else if (event.kind === "channel_sent") {
+      storeRow(rowKey(event), event.channel, (id) => ({
         id,
+        at: event.at,
+        kind: "own",
+        channel: event.channel,
+        from: event.from,
+        body: event.body,
+      }));
+    } else if (event.kind === "channel_undecryptable") {
+      storeRow(rowKey(event), event.channel, (id) => ({
+        id,
+        at: event.at,
         kind: "undecryptable",
         channel: event.channel,
         from: event.from,
@@ -215,7 +244,12 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const noteCleartext = (
     slug: string,
     channel: string,
-    message: { kind: ScrollbackMessageKind; sender: string; body: string | null },
+    message: {
+      kind: ScrollbackMessageKind;
+      sender: string;
+      body: string | null;
+      server_time: number;
+    },
   ): void => {
     if (!isContentKind(message.kind)) return;
     const body = message.body;
@@ -232,6 +266,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     }
     storeRow(channelKey(slug, channel), channel, (id) => ({
       id,
+      at: message.server_time,
       kind: "cleartext",
       channel,
       from: message.sender,
