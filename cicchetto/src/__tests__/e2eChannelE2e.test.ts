@@ -1382,13 +1382,11 @@ describe("receiveChannel", () => {
   });
 });
 
-// A holder who left still holds the epoch until it rotates, so she can
-// still mint a successor and send it as a grotate under the epoch she
-// holds. Whether a reader takes that epoch or not, our next line must not
-// go out under a key she minted: the send audits the epoch first, and her
-// did is among its holders.
-describe("a grotate from a holder who left", () => {
-  /** Carol, gone from the roster, mints a successor and sends it as a grotate. */
+// Whatever epoch the sender holds when it sends, our next line must not
+// go out under one a holder who left still has: the send audits the epoch
+// first, and that holder's did is among its holders.
+describe("our next line after a holder left, whatever epoch we hold", () => {
+  /** Carol leaves the roster; the readers end up on an epoch she holds. */
   async function carolLeavesAndRotates(
     carol: ReturnType<typeof makeSide>,
     leave: () => void,
