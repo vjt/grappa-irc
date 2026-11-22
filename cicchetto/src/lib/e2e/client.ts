@@ -92,6 +92,8 @@ import { type FileInner, onGrappaOrigin, sanitizeFileName } from "./fileInner";
 import {
   dropPendingSends,
   expireHeldRows,
+  type GroupSessionsState,
+  type HeldRow,
   holdRow,
   takeHeldRows,
   takeHeldRowsWithEpoch,
@@ -724,6 +726,40 @@ function copyFrom(engine: Engine, m: InboxMessage): Result {
   return { events: [], outbound: [] };
 }
 
+// One channel row read under the epoch store, wherever the drain reads
+// one: the live row, or a held one retried once its epoch is held. A read
+// that throws must not kill the drain: the row surfaces as undecryptable
+// instead, the watermark still advances, and the ACK follows as usual —
+// one bad row never wedges the inbox behind it. `receiveChannel` never
+// throws on wire input, so a throw is a defect, logged as an error.
+async function readChannelRow(
+  deps: ChannelE2eDeps,
+  groups: GroupSessionsState,
+  row: Pick<HeldRow, "channel" | "from" | "fromDid" | "payload">,
+): Promise<ChannelE2eResult> {
+  try {
+    return await receiveChannel(deps, groups, row.channel, row.from, row.fromDid, row.payload);
+  } catch (err) {
+    console.error(
+      `[e2e] a channel row from ${row.from} on ${row.channel} threw while reading; surfacing it as undecryptable`,
+      err,
+    );
+    return {
+      events: [
+        {
+          kind: "channel_undecryptable",
+          channel: row.channel,
+          from: row.from,
+          sid: null,
+          reason: "decryption-failed",
+        },
+      ],
+      outbound: [],
+      copies: [],
+    };
+  }
+}
+
 // The gkey inner a body carries, or undefined when it is not one: a
 // copy's body is opaque text to the drain, and only a gkey inner is
 // imported as a key — anything else keeps its sent row.
@@ -1270,39 +1306,13 @@ export function e2eClient(
               // surfaced as undecryptable — never dropped silently, and
               // acknowledged like a DM's, readable or not. Our own
               // channel messages are skipped by the receiver (the send
-              // path showed them). A step that throws must not kill the
-              // drain: the row surfaces as undecryptable instead, the
-              // watermark still advances, and the ACK follows as usual —
-              // one bad row never wedges the inbox behind it.
-              let received: ChannelE2eResult;
-              try {
-                received = await receiveChannel(
-                  deps,
-                  state.groups,
-                  channel,
-                  m.from,
-                  m.fromDid,
-                  m.payload,
-                );
-              } catch (err) {
-                console.debug(
-                  "[e2e] a channel row threw while reading; surfacing it as undecryptable",
-                  err,
-                );
-                received = {
-                  events: [
-                    {
-                      kind: "channel_undecryptable",
-                      channel,
-                      from: m.from,
-                      sid: null,
-                      reason: "decryption-failed",
-                    },
-                  ],
-                  outbound: [],
-                  copies: [],
-                };
-              }
+              // path showed them).
+              const received = await readChannelRow(deps, state.groups, {
+                channel,
+                from: m.from,
+                fromDid: m.fromDid,
+                payload: m.payload,
+              });
               // A row with no session yet is held for retry, not surfaced:
               // the key may still arrive, and the stash — sealed in the
               // store — is now the only copy. The watermark still advances
@@ -1399,38 +1409,7 @@ export function e2eClient(
             if (retriedKeys.has(key)) continue;
             retriedKeys.add(key);
             for (const row of takeHeldRows(state.groups, e.channel, e.sid)) {
-              // A step that throws must not kill the drain: the row
-              // surfaces as undecryptable instead, the watermark still
-              // advances, and the ACK follows as usual.
-              let re: ChannelE2eResult;
-              try {
-                re = await receiveChannel(
-                  deps,
-                  state.groups,
-                  row.channel,
-                  row.from,
-                  row.fromDid,
-                  row.payload,
-                );
-              } catch (err) {
-                console.debug(
-                  "[e2e] a held channel row threw while reading; surfacing it as undecryptable",
-                  err,
-                );
-                re = {
-                  events: [
-                    {
-                      kind: "channel_undecryptable",
-                      channel: row.channel,
-                      from: row.from,
-                      sid: null,
-                      reason: "decryption-failed",
-                    },
-                  ],
-                  outbound: [],
-                  copies: [],
-                };
-              }
+              const re = await readChannelRow(deps, state.groups, row);
               for (const reEvent of re.events) {
                 if (reEvent.kind === "channel_undecryptable" && reEvent.reason === "no-session") {
                   holdNoSession(
@@ -1497,35 +1476,7 @@ export function e2eClient(
           if (ready.length === 0) break;
           let imported = false;
           for (const row of ready) {
-            let re: ChannelE2eResult;
-            try {
-              re = await receiveChannel(
-                deps,
-                state.groups,
-                row.channel,
-                row.from,
-                row.fromDid,
-                row.payload,
-              );
-            } catch (err) {
-              console.debug(
-                "[e2e] a held channel row threw while reading; surfacing it as undecryptable",
-                err,
-              );
-              re = {
-                events: [
-                  {
-                    kind: "channel_undecryptable",
-                    channel: row.channel,
-                    from: row.from,
-                    sid: null,
-                    reason: "decryption-failed",
-                  },
-                ],
-                outbound: [],
-                copies: [],
-              };
-            }
+            const re = await readChannelRow(deps, state.groups, row);
             for (const reEvent of re.events) {
               if (reEvent.kind === "channel_key_received") imported = true;
               if (reEvent.kind === "channel_undecryptable" && reEvent.reason === "no-session") {
