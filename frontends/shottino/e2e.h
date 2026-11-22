@@ -12,8 +12,9 @@
  * door. The application (later slices) adds the doors around it.
  *
  * Interop is the contract. Every field name, signed string and check
- * order follows the cicchetto CODE, which is what interoperates today
- * (docs/plans/shottino-e2e-spec.md §16). Where this port differs, the
+ * order follows docs/E2E_PROTOCOL.md, the protocol as the code on main
+ * speaks it, and the vectors it pins (cicchetto/src/lib/e2e/vectors/,
+ * read by tests/test_e2e.c). Where this port differs, the
  * comment at the definition says why. All crypto goes through vodozemac
  * (e2e/vodozemac-c): nothing here is hand-rolled.
  *
@@ -1201,7 +1202,7 @@ bool e2e_sas_view_of(const e2e_ctx *c, e2e_sas_host *h, const char *nick, e2e_sa
  * which). `out` is the caller's to free. */
 bool e2e_own_revoked(const e2e_record *r, const char *ed25519, e2e_own *out, bool *unlisted);
 
-/* ── Order challenges (orders.ts, client.ts answer; docs/plans §10) ──────
+/* ── Order challenges (orders.ts, client.ts answer; E2E_PROTOCOL.md §5) ─
  *
  * A bot that takes orders from a pinned peer does not trust a plaintext
  * line on its own: inside the Olm session it sends the peer a CHAL naming

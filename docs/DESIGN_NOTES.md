@@ -8592,3 +8592,87 @@ Elixir 1.19.
 
 Also fixed: `Grappa.Session`'s moduledoc said its deps list could omit
 `Accounts`, which it has declared since issue 2597.
+<!-- entry #2691 -->
+
+---
+
+## 2026-11-22 — #2691: the E2E protocol gets a committed spec, and one conformance corpus every implementation reads
+
+From the 2026-11-21 architecture review, X2. The relay and the crypto existed
+once; everything between them was kept by hand in cicchetto and shottino, and
+partly on the server. The interop spec lived in issue 2430's comments and in a
+gitignored plan that no longer exists on the worker host, and parity was held
+by vectors pasted into nine test files in three languages.
+
+**`docs/E2E_PROTOCOL.md` is the endpoint half; `CLIENT_PROTOCOL.md` §4f/§4g
+stays the relay half.** Each points at the other and neither restates the
+other. Like `CLIENT_PROTOCOL.md`, it anchors on function names, not line
+numbers, and **the code wins** where the two disagree. It describes main, not
+the comments: the certificate signs the list version (`irc-e2e:v2:dev:N:E`),
+which revision 2 did not have. Encrypted channel messages are out of its
+scope. `wire.ts` and `e2e.h` cite it, and so do the six shottino section
+comments that cited the plan's section numbers. `CLIENT_PROTOCOL.md` said a
+master vouches for "up to **4** devices" and, 26 lines later, that "three is
+the most an identity holds"; it now says 3. The 4 is the wire's bound, and
+that sentence is still there.
+
+**The corpus is `cicchetto/src/lib/e2e/vectors/*.json`, read by
+`Grappa.E2eVectorsTest`, `e2eVectors.test.ts` and shottino's `test_e2e.c`.**
+Each suite runs its OWN production code against the same rows: the did
+(derivation, keys that are not keys, and each spelling's shape and canonical
+answer), `fb`, the four signed texts, the line count of `E2e.fragment/5`
+(including the 64-line edge), payload accept/refuse/undecodable per verb, the
+identifier fold, and the limits. A suite reads only the subjects it
+implements: grappa never parses a payload nor computes `fb`. **A row one
+implementation fails is a divergence to fix in that implementation, never a
+row to delete.**
+
+- **Location, against the issue's `priv/e2e/vectors/`.** Measured:
+  `scripts/bun.sh` mounts only `cicchetto/`, so vitest cannot reach `priv/`
+  locally, and a worktree mounts only `priv/repo` and `priv/wire` into the mix
+  oneshot. The mix oneshot already mounts `cicchetto/src`, and shottino reaches
+  any repo path. `shouldNotifyTruthTable.json` sits in `cicchetto/src/lib/` for
+  the same reason. Moving every shared fixture to one neutral directory is X8's
+  slice; a second location for this corpus alone would have started two
+  patterns.
+- **The did has two checks, and the corpus states both.** grappa's
+  `E2e.did?/1` accepts only the canonical spelling of 8 bytes, because a frame
+  address must be. An endpoint checks the shape where it meets a did it did
+  not derive, which is a key of `bodies`. `If4x36FUomF` (nonzero trailing bits)
+  is `shape: true, canonical: false`, on purpose.
+- **The pasted copies went in the same commits**: `device_list_test.exs` and
+  `limits_parity_test.exs` entirely, and the vector rows of `e2eWire.test.ts`,
+  `device_test.exs`, `e2e_test.exs` and `test_e2e.c`. What stays is what a
+  table cannot say: what an accepted payload reads as, random keys,
+  sign-then-verify, and the refusals only a C parser owes.
+- **`limits.json` replaces the source scraper.** `limits_parity_test.exs`
+  regex-matched two `export const` lines, server against cic only, and left
+  shottino's copies unpinned. Each suite now compares its own constants with
+  data, one assertion per limit. That is item 5 of the issue, in the corpus's
+  shape and without another scraper over `e2e.h`.
+- **`otkSigText` is new in `wire.ts`.** cic built the one-time key's signed
+  text inline at two sites. The corpus has to test a production function, and
+  shottino already had `e2e_otk_sig_text`.
+- **`read_repo_file` moves to shottino's `tests/test.h`.** `test_commands.c`
+  and `test_e2e.c` now share one copy. A missing corpus FAILS; it never skips.
+
+**Proof.** Every reader went red on mutated vectors, with the count predicted
+before each run. Eighteen mutants over seven files gave ExUnit 7 + 4, vitest
+11 + 5 and shottino 11 + 5 failures, each exactly as predicted. Every mutant
+also stayed green in the suites that do not read its row.
+
+### Follow-up slices, not built here
+
+1. **The frame arithmetic moves to the server** (the issue's item 3). A
+   per-verb budget published beside `frame_budget_base` (or server-side
+   regrouping) would let `linesNeeded` and `e2e_lines_needed` go. That is a
+   wire change and a protocol bump. Until then the corpus pins the
+   arithmetic on all three sides.
+2. **The payloads grappa writes get one owner** (item 4): KEYS, NACK, ACCEPT
+   and REFUSE are `Jason.encode!` at five sites in two modules. Named `@type`s
+   for the KEYS blocks in `E2eKeys.Wire` would let cic alias generated types.
+3. **The divergences between the clients that the inventory found** and this
+   slice does not change: `t:file` and a copy's `file` (cic implements them,
+   shottino ignores them), the `sas.cancel` reason cut (UTF-16 units against
+   UTF-8 bytes), and the order-challenge target and slug compare. Each one is
+   a corpus row once someone rules which side is right.

@@ -1137,6 +1137,10 @@ is due. Don't just look at todo.md.
   scripts, deploy, runtime data, monitoring).
 - **`docs/TESTING.md`**: how-to-run-tests runbook (every gate, e2e
   triage, gotchas).
+- **`docs/E2E_PROTOCOL.md`**: the end-to-end encrypted query protocol,
+  endpoint half (payloads, Olm bodies, checks, SAS, pairing); the relay
+  half is `docs/CLIENT_PROTOCOL.md` §4f/§4g. Its vectors are
+  `cicchetto/src/lib/e2e/vectors/`, read by ExUnit, vitest and shottino.
 - **`docs/DESIGN_NOTES.md`**: chronological decision log — the CURRENT
   month plus the undated preamble. Closed months are archived verbatim
   in **`docs/design_notes/YYYY-MM.md`** (#1537) and indexed from the

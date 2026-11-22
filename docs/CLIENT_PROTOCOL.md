@@ -653,6 +653,8 @@ endpoints (cicchetto, or a bot using the shared Python package) run Olm via
 vodozemac; on IRC the traffic is CTCP inside PRIVMSG to the peer's nick,
 `\x01E2E <verb> <msgid> <i>/<n> <from> <to> <chunk>\x01`, in the format agreed
 on issue 2430 (wire v2, comments 6346236542, 6346384093 and 6346686730).
+What an endpoint puts in a payload and in an Olm body, and how it checks
+what arrives, is the other half: `docs/E2E_PROTOCOL.md` (issue 2691).
 **You never see those lines.** grappa parses them, reassembles the
 fragments, and hands you one event per whole message and device:
 
@@ -684,7 +686,7 @@ message was sent to, or `null` for a direct message (see *Channel
 messages* below): show the message in that channel, not in a query. A server predating v63 omits the key entirely — read that as a DM.
 
 **One identity, several devices (v49).** A subject holds one E2E identity
-per network: a master Ed25519 key, and up to **4** devices it vouches for.
+per network: a master Ed25519 key, and up to **3** devices it vouches for.
 Each device registers its id block, and the master puts the signed list of
 the devices it vouches for. grappa routes only to LISTED devices and sends
 only from them:
