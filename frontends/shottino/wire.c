@@ -148,6 +148,7 @@ static const struct {
     {"connection_state_changed", WIRE_CONNECTION_STATE_CHANGED},
     {"network_attached", WIRE_NETWORK_ATTACHED},
     {"network_detached", WIRE_NETWORK_DETACHED},
+    {"keep_nick_changed", WIRE_KEEP_NICK_CHANGED},
     {"web_session_severed", WIRE_WEB_SESSION_SEVERED},
     {"window_invite_declined", WIRE_WINDOW_INVITE_DECLINED},
     {"dcc_offer", WIRE_DCC_OFFER},
@@ -707,6 +708,12 @@ bool wire_narrow(const json_value *p, struct wire_event *ev) {
     case WIRE_NETWORK_DETACHED:
         if (!json_long_req(p, "network_id", &e.u.network_link.network_id)) return false;
         if (!json_str_req(p, "network_slug", &e.u.network_link.network_slug)) return false;
+        break;
+
+    case WIRE_KEEP_NICK_CHANGED:
+        if (!json_long_req(p, "network_id", &e.u.keep_nick.network_id)) return false;
+        if (!json_str_req(p, "network_slug", &e.u.keep_nick.network_slug)) return false;
+        if (!json_bool_req(p, "keep_nick", &e.u.keep_nick.keep_nick)) return false;
         break;
 
     case WIRE_CONNECTION_STATE_CHANGED: {

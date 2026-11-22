@@ -56,10 +56,13 @@
  * Last read, v63 -> v64 (issue 2656, keepnick): `keep_nick` on the
  * credential payload and on both `GET /networks` row shapes, the
  * `keep_nick_changed` user-topic event, and a `keep_nick` Meta key on the
- * `$server` row a stopped keepnick writes. Additive and unread here: the
- * parsers ignore unknown keys and event kinds, and the stop row's body is
- * already readable text. A terminal that wants a keepnick switch would add
- * a `PATCH /networks/:id/keep_nick` command; nothing requires it.
+ * `$server` row a stopped keepnick writes. The two keys are unread here:
+ * the parsers ignore unknown keys, and the stop row's body is already
+ * readable text. The event is narrowed and then dropped, as the settings
+ * echoes are, because cicchetto narrows it and the kind-parity test in
+ * test_commands holds this client to every kind cicchetto narrows. A
+ * terminal that wants a keepnick switch would add a
+ * `PATCH /networks/:id/keep_nick` command; nothing requires it.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
@@ -189,6 +192,7 @@ typedef enum {
     WIRE_CONNECTION_STATE_CHANGED,
     WIRE_NETWORK_ATTACHED,
     WIRE_NETWORK_DETACHED,
+    WIRE_KEEP_NICK_CHANGED,
     WIRE_WEB_SESSION_SEVERED,
     WIRE_WINDOW_INVITE_DECLINED,
     WIRE_DCC_OFFER,
@@ -583,6 +587,16 @@ struct wire_event {
             long network_id;
             const char *network_slug;
         } network_link;
+
+        /* keep_nick_changed (issue 2656, v64): the keepnick switch of one
+         * network, flipped from some client and echoed to the others. The
+         * bouncer runs keepnick and this client keeps no copy of the switch,
+         * so it is narrowed to be KNOWN and then deliberately dropped. */
+        struct {
+            long network_id;
+            const char *network_slug;
+            bool keep_nick;
+        } keep_nick;
 
         struct {
             const char *network;
