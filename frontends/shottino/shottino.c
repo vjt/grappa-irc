@@ -1173,7 +1173,7 @@ struct ircd {
 };
 
 
-/* ── E2E: one slot per network (docs/plans §8.1, CLIENT_PROTOCOL §4f) ──
+/* ── E2E: one slot per network (E2E_PROTOCOL.md §3, CLIENT_PROTOCOL §4f) ──
  *
  * A network's encrypted-query identity, as this device holds it. Two
  * halves with two owners, and the split is the whole locking story:
@@ -1381,7 +1381,7 @@ static void e2e_on_set(e2e_strv *on, const char *nick, bool set) {
  * requests (v53) gate on their own numbers where they are used. */
 #define E2E_MIN_PROTOCOL 49
 
-/* ── E2E pairing: this device as the JOINER (docs/plans §8.2, CLIENT_PROTOCOL §4g)
+/* ── E2E pairing: this device as the JOINER (E2E_PROTOCOL.md §9, CLIENT_PROTOCOL §4g)
  *
  * Another device of the account that holds an identity's master (cic's
  * "add a device") opens a rendezvous and grappa OFFERS it to every device
@@ -15281,7 +15281,7 @@ static bool dequeue_job(struct app *app, struct job *job) {
     return true;
 }
 
-/* ── E2E: the identity on each network (docs/plans §8.1, §7) ───────────
+/* ── E2E: the identity on each network (E2E_PROTOCOL.md §3, §7) ────────
  *
  * The doors around e2e.c's pure decisions. Everything below runs on the
  * JOB WORKER (JOB_E2E_SYNC, JOB_E2E_INIT): it owns every slot's store and
@@ -17146,7 +17146,7 @@ static void e2e_slots_free(struct app *app) {
     app->e2e_count = 0;
 }
 
-/* ── E2E: receiving (docs/plans §3.3, §5, §6.8, §6.10, §11.2, §12.2) ──────
+/* ── E2E: receiving (E2E_PROTOCOL.md §5, §6) ──────────────────────────────
  *
  * JOB_E2E_DRAIN reads this device's inbox on a network, on the JOB
  * WORKER (it owns the slot: see struct e2e_slot). Rung by an e2e_message
@@ -18102,7 +18102,7 @@ static void e2e_drain_all(struct app *app) {
     for (size_t i = 0; i < n; i++) e2e_drain_enqueue(app, slugs[i]);
 }
 
-/* ── E2E: sending (docs/plans §6, §5.7, §3.8, §13) ──────────────────────
+/* ── E2E: sending (E2E_PROTOCOL.md §4, §5) ──────────────────────────────
  *
  * An encrypted query is the NORMAL query window in encrypted mode: the
  * record's `encrypted`, mirrored in the slot's `on` for the UI thread.
@@ -19069,7 +19069,7 @@ static void e2e_revoke(struct app *app, struct e2e_slot *s, const char *did) {
     log_line(app, "/e2e revoke %s: the device list changed meanwhile: try again", did);
 }
 
-/* ── E2E: consent requests (docs/plans §11.1, #2486; e2eRequests.ts) ────
+/* ── E2E: consent requests (E2E_PROTOCOL.md §4, #2486; e2eRequests.ts) ──
  *
  * Asking a peer to start an encrypted chat, and the answer. grappa holds
  * the asking — one request per peer and network, whoever asked — so
