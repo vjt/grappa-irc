@@ -648,6 +648,39 @@ describe("members.applyPresenceEvent — :mode applies meta.member_modes (issue 
     expect(members.membersByChannel()[key]).toEqual([{ nick: "alice", modes: [] }]);
   });
 
+  // `meta` is validated nowhere upstream (the schema types it as a record of
+  // anything), so the narrowing in `memberModesOf` is the only guard on the
+  // value. A value that is not a string array is dropped, not applied: a
+  // string would spread into characters, a number would throw inside the
+  // signal updater. The well-formed sibling in the SAME row still applies,
+  // which is what tells "dropped the bad entries" from "ignored the row".
+  it("a member_modes value that is not a string array is dropped; its well-formed sibling applies", async () => {
+    const members = await import("../lib/members");
+    members.seedFromTest(key, [
+      { nick: "alice", modes: [] },
+      { nick: "bob", modes: ["+"] },
+      { nick: "carol", modes: ["%"] },
+      { nick: "dave", modes: [] },
+    ]);
+
+    members.applyPresenceEvent(
+      key,
+      modeRow({
+        modes: "+oooo",
+        args: ["alice", "bob", "carol", "dave"],
+        member_modes: { alice: "@", bob: 7, carol: ["@", 3], dave: ["@"] },
+      }),
+      "ascii",
+    );
+
+    expect(members.membersByChannel()[key]).toEqual([
+      { nick: "alice", modes: [] },
+      { nick: "bob", modes: ["+"] },
+      { nick: "carol", modes: ["%"] },
+      { nick: "dave", modes: ["@"] },
+    ]);
+  });
+
   // No fallback walker: a row without the key (a channel-only mode, or a row
   // from a server predating protocol 66) changes nothing. Walking the letters
   // here would bring back exactly the second parser this issue deletes.

@@ -21,12 +21,15 @@
 //      inside the 353 instead, a different code path, and prove nothing.
 //
 // ⚠️ NOT RUN when written: the e2e stack was not granted to this slice. The
-// RED-before-cure is a PREDICTION from the walker's code, not a measurement.
-// One premise it depends on and nobody has checked against bahamut: that the
-// echo keeps the requested letter ORDER (`+bo`, not `+ob`). `mode()` waits for
-// an echo whose raw modes are exactly `+bo`, so a reordering ircd fails that
-// wait loudly instead of turning this into a green that the old walker would
-// also have passed.
+// RED-before-cure is still a PREDICTION from the walker's code, not a
+// measurement: the spec has only ever run against the cure.
+// The premise it depends on — that bahamut's echo keeps the requested letter
+// ORDER (`+bo`, not `+ob`) — WAS measured afterwards by CI: this spec passed
+// on the merge of 9e419738f into 59bc1ce44 (job 137163255071, "cicchetto +
+// grappa + azzurra-testnet (shard 2/4)", log line 6874). `mode()` waits for
+// an echo whose raw modes are exactly `+bo` and fails on a timeout, so a
+// reordering ircd fails that wait loudly instead of turning this into a
+// green that the old walker would also have passed.
 //
 // Platform note: the grade is a members-pane text node fed by a WS frame —
 // no touch, viewport or engine dependency, so desktop chromium IS the
