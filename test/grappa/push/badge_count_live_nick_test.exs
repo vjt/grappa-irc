@@ -25,7 +25,7 @@ defmodule Grappa.Push.BadgeCountLiveNickTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{IRCServer, Networks, ReadCursor, Scrollback, ScrollbackHelpers, Session}
+  alias Grappa.{Accounts, IRCServer, Networks, QueryWindows, ReadCursor, Scrollback, ScrollbackHelpers, Session}
   alias Grappa.Push.BadgeCount
 
   # The configured (credential) nick and the post-rename LIVE nick. The
@@ -204,7 +204,12 @@ defmodule Grappa.Push.BadgeCountLiveNickTest do
       )
 
       # The cursor lives on the PEER window — that is the window key of an
-      # inbound DM, and it is exactly what the self-rename does NOT move.
+      # inbound DM, and it is exactly what the self-rename does NOT move. The
+      # window is open, as the inbound DM would have left it (#422): a DM
+      # cursor lives beside its query window (issue 2201).
+      {:user, user_id} = subject
+      label = Accounts.get_user!(user_id).name
+      {:ok, _} = QueryWindows.open(subject, network.id, @peer, label)
       set_cursor(subject, network, @peer, anchor.id)
 
       :ok = force_self_rename(server)

@@ -60,7 +60,10 @@ defmodule Grappa.ReadCursor do
     * `Grappa.Visitors` — `Visitor` association (FK reference only).
     * `Grappa.Scrollback` — `Message` association (FK reference only)
       + `Message.t()` typespec; existence validation queries the
-      `messages` table by id.
+      `messages` table by id; `dm_eligible?/1` decides which keys are DM
+      windows.
+    * `Grappa.QueryWindows.Window` — `for_target/3`, the "does this DM
+      window exist" question `set/4` asks (issue 2201).
     * `Grappa.PubSub` — `Topic.channel/3` for the `read_cursor_set`
       cross-device broadcast.
     * `Grappa.Subject` — the subject discriminator itself: `t/0`,
@@ -88,6 +91,11 @@ defmodule Grappa.ReadCursor do
       # avoided — `Session → ReadCursor → Networks → Session` — cannot form
       # through the leaf: it depends on `Grappa.IRC` and nothing else.
       Grappa.Networks.Network,
+      # issue 2201 — `set/4` refuses a DM cursor whose query window does not
+      # exist. The schema leaf, not the context: `QueryWindows` depends on
+      # this module (`close/4` → `delete_for_dm/3`), so naming it would close
+      # a cycle.
+      Grappa.QueryWindows.Window,
       Grappa.Subject,
       Grappa.Visitors.Visitor
     ],
@@ -98,8 +106,9 @@ defmodule Grappa.ReadCursor do
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
+  alias Grappa.QueryWindows.Window
   alias Grappa.ReadCursor.{Cursor, Wire}
-  alias Grappa.{Repo, Subject}
+  alias Grappa.{Repo, Scrollback, Subject}
   alias Grappa.Scrollback.Message
 
   # Identifier.nick_fold/1 is a query macro (ASCII fold fragment) used to
@@ -171,20 +180,34 @@ defmodule Grappa.ReadCursor do
     * `message_id` MUST exist in `messages` AND belong to the same
       `(subject, network_id, channel)` triple — otherwise returns
       `{:error, :invalid_message}`.
+    * **A DM cursor exists only beside its query window (issue 2201).**
+      For a key `Grappa.Scrollback.dm_eligible?/1` accepts — the SAME
+      predicate the session uses to auto-open a query window (#422), so
+      "this key needs a window" and "this key gets a window" cannot drift —
+      the subject must hold a `query_windows` row for it (folded match),
+      otherwise `{:error, :no_query_window}` and nothing is written.
+      `QueryWindows.close/4` deletes the cursor with the window, and every
+      writer that reached this function after the close used to INSERT it
+      straight back: a cursor no window shows and the operator cannot
+      clear. The check and the write share one `BEGIN IMMEDIATE`
+      transaction, so a close cannot commit between them. Channel keys and
+      `$server` need no window and take the plain path.
     * Subject XOR enforced by changeset.
 
   Returns `{:ok, %Cursor{}}` on insert / advance / clamped no-op; the
   returned struct always reflects the post-call state (on a stale lower
   POST that is the current, higher cursor). `{:error, _}` on validation
-  failure (`:invalid_message` for FK / iso violation,
-  `Ecto.Changeset.t()` for changeset-level errors).
+  failure (`:invalid_message` for FK / iso violation, `:no_query_window`
+  for a DM key without its window, `Ecto.Changeset.t()` for
+  changeset-level errors).
 
   No broadcast is performed here — `broadcast_set/4` is a separate
   step the caller invokes after a successful set, so tests + bulk
   paths can decide whether a fan-out is appropriate.
   """
   @spec set(subject(), integer(), String.t(), integer()) ::
-          {:ok, Cursor.t()} | {:error, :invalid_message | :db_unavailable | Ecto.Changeset.t()}
+          {:ok, Cursor.t()}
+          | {:error, :invalid_message | :no_query_window | :db_unavailable | Ecto.Changeset.t()}
   def set(subject, network_id, channel, message_id)
       when is_integer(network_id) and is_binary(channel) and channel != "" and
              is_integer(message_id) and message_id > 0 do
@@ -197,10 +220,19 @@ defmodule Grappa.ReadCursor do
     # DM window accumulated one cursor row PER CASING, each stale forever.
     channel = Identifier.canonical_target(channel)
 
-    if message_belongs?(subject, network_id, channel, message_id) do
-      do_set(subject, network_id, channel, message_id)
-    else
-      {:error, :invalid_message}
+    cond do
+      not message_belongs?(subject, network_id, channel, message_id) ->
+        {:error, :invalid_message}
+
+      # issue 2201 — see the doc.
+      Scrollback.dm_eligible?(channel) ->
+        set_dm(subject, network_id, channel, message_id)
+
+      # #523 — ride out a transient SQLITE_BUSY on the cursor write; sustained
+      # saturation degrades to `{:error, :db_unavailable}` → a clean 503 at
+      # `ReadCursorController` instead of a 500 raise.
+      true ->
+        Repo.BusyRetry.run(fn -> do_set(subject, network_id, channel, message_id) end)
     end
   end
 
@@ -746,13 +778,36 @@ defmodule Grappa.ReadCursor do
       when is_integer(current) and message_id <= current ->
         {:ok, cursor}
 
+      # No retry in here: the callers wrap it, OUTSIDE the transaction on
+      # the DM path (a retry nested inside would sleep holding the open
+      # transaction's connection).
       existing ->
-        # #523 — ride out a transient SQLITE_BUSY on the cursor write; sustained
-        # saturation degrades to `{:error, :db_unavailable}` → a clean 503 at
-        # `ReadCursorController` instead of a 500 raise.
-        Repo.BusyRetry.run(fn ->
-          upsert_cursor(existing, subject, network_id, channel, message_id)
-        end)
+        upsert_cursor(existing, subject, network_id, channel, message_id)
+    end
+  end
+
+  # issue 2201 — a DM key's write. Retry OUTSIDE, transaction INSIDE: the same
+  # composition as `QueryWindows.close/4`, which this races.
+  @spec set_dm(subject(), integer(), String.t(), integer()) ::
+          {:ok, Cursor.t()} | {:error, :no_query_window | :db_unavailable | Ecto.Changeset.t()}
+  defp set_dm(subject, network_id, channel, message_id) do
+    Repo.BusyRetry.run(fn ->
+      Repo.immediate_transaction(fn -> set_beside_window(subject, network_id, channel, message_id) end)
+    end)
+  end
+
+  # Runs inside `set_dm/4`'s `BEGIN IMMEDIATE`, so the window cannot be closed
+  # between the question and the write. A changeset failure rolls back like the
+  # refusal does, and both reach the caller as `{:error, _}`.
+  @spec set_beside_window(subject(), integer(), String.t(), integer()) :: Cursor.t() | no_return()
+  defp set_beside_window(subject, network_id, channel, message_id) do
+    if Repo.exists?(Window.for_target(subject, network_id, channel)) do
+      case do_set(subject, network_id, channel, message_id) do
+        {:ok, cursor} -> cursor
+        {:error, changeset} -> Repo.rollback(changeset)
+      end
+    else
+      Repo.rollback(:no_query_window)
     end
   end
 
@@ -818,7 +873,7 @@ defmodule Grappa.ReadCursor do
     Message
     |> Subject.subject_where(subject)
     |> where([m], m.id == ^message_id and m.network_id == ^network_id)
-    |> Grappa.Scrollback.channel_or_dm_where(channel, nil)
+    |> Scrollback.channel_or_dm_where(channel, nil)
     |> Repo.exists?()
   end
 end

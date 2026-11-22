@@ -27,7 +27,7 @@ defmodule Grappa.ReadCursorTest do
   import Grappa.AuthFixtures, only: [user_fixture: 0, network_fixture: 0]
 
   alias Grappa.PubSub.Topic
-  alias Grappa.{ReadCursor, Repo, ScrollbackHelpers, Visitors}
+  alias Grappa.{QueryWindows, ReadCursor, Repo, ScrollbackHelpers, Visitors}
   alias Grappa.ReadCursor.Cursor
   alias Grappa.Scrollback.Message
 
@@ -143,7 +143,9 @@ defmodule Grappa.ReadCursorTest do
       # The client sends the peer window key at two different casings — the
       # #532 prod evidence (`NickTemporaneo` then `nicktemporaneo`). Both
       # must land on ONE cursor row (the read path already resolves the
-      # window case-insensitively via canonical_target/1).
+      # window case-insensitively via canonical_target/1). The window is
+      # open — a DM cursor needs one (issue 2201).
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "NickTemp", user.name)
       {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "NickTemp", m1.id)
       {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "nicktemp", m2.id)
 
@@ -159,6 +161,7 @@ defmodule Grappa.ReadCursorTest do
       user = user_fixture()
       net = network_fixture()
       msg = insert_message(%{user_id: user.id}, net.id, "NickTemp", 1)
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "NickTemp", user.name)
 
       {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "NickTemp", msg.id)
 
@@ -388,6 +391,9 @@ defmodule Grappa.ReadCursorTest do
           body: "hi"
         })
 
+      # The window the inbound DM opens (#422) — a DM cursor needs it (issue 2201).
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, peer, user.name)
+
       assert {:ok, cursor} = ReadCursor.set({:user, user.id}, net.id, peer, msg.id)
       assert cursor.last_read_message_id == msg.id
       # Cursor row stores the peer (the operator-facing window
@@ -415,6 +421,9 @@ defmodule Grappa.ReadCursorTest do
           sender: "vjt-grappa",
           body: "yo"
         })
+
+      # The window the outbound DM was sent from (issue 2201: a DM cursor needs it).
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, peer, user.name)
 
       assert {:ok, cursor} = ReadCursor.set({:user, user.id}, net.id, peer, msg.id)
       assert cursor.last_read_message_id == msg.id
@@ -458,6 +467,74 @@ defmodule Grappa.ReadCursorTest do
 
       assert {:error, :invalid_message} =
                ReadCursor.set({:user, user.id}, net.id, peer_b, msg.id)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # set/4 — a DM cursor exists only beside its query window (issue 2201)
+  # ---------------------------------------------------------------------------
+
+  describe "set/4 — a DM cursor needs its query window (issue 2201)" do
+    test "refuses a DM target the subject holds no query window for, and writes nothing" do
+      user = user_fixture()
+      net = network_fixture()
+      msg = insert_message(%{user_id: user.id}, net.id, "bob", 1)
+
+      assert {:error, :no_query_window} =
+               ReadCursor.set({:user, user.id}, net.id, "bob", msg.id)
+
+      assert ReadCursor.get({:user, user.id}, net.id, "bob") == nil
+    end
+
+    test "refuses the write that lands after the window's close — the one that re-created the row" do
+      user = user_fixture()
+      net = network_fixture()
+      m1 = insert_message(%{user_id: user.id}, net.id, "bob", 1)
+      m2 = insert_message(%{user_id: user.id}, net.id, "bob", 2)
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "bob", user.name)
+      {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "bob", m1.id)
+
+      :ok = QueryWindows.close({:user, user.id}, net.id, "bob", user.name)
+
+      assert {:error, :no_query_window} =
+               ReadCursor.set({:user, user.id}, net.id, "bob", m2.id)
+
+      assert ReadCursor.get({:user, user.id}, net.id, "bob") == nil
+    end
+
+    test "the window match folds: a window opened as 'Bob' admits a write keyed 'BOB'" do
+      user = user_fixture()
+      net = network_fixture()
+      msg = insert_message(%{user_id: user.id}, net.id, "bob", 1)
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "Bob", user.name)
+
+      assert {:ok, %Cursor{channel: "bob", last_read_message_id: id}} =
+               ReadCursor.set({:user, user.id}, net.id, "BOB", msg.id)
+
+      assert id == msg.id
+    end
+
+    test "another subject's window does not admit the write" do
+      user = user_fixture()
+      other = user_fixture()
+      net = network_fixture()
+      msg = insert_message(%{user_id: user.id}, net.id, "bob", 1)
+      {:ok, _} = QueryWindows.open({:user, other.id}, net.id, "bob", other.name)
+
+      assert {:error, :no_query_window} =
+               ReadCursor.set({:user, user.id}, net.id, "bob", msg.id)
+    end
+
+    test "a visitor's own window admits the write" do
+      net = network_fixture()
+      visitor = visitor_fixture(net.slug)
+      msg = insert_message(%{visitor_id: visitor.id}, net.id, "bob", 1)
+      {:ok, _} = QueryWindows.open({:visitor, visitor.id}, net.id, "bob", "visitor:" <> visitor.id)
+
+      assert {:ok, %Cursor{visitor_id: visitor_id}} =
+               ReadCursor.set({:visitor, visitor.id}, net.id, "bob", msg.id)
+
+      assert visitor_id == visitor.id
     end
   end
 
@@ -748,6 +825,7 @@ defmodule Grappa.ReadCursorTest do
       # net_a DM peer: inbound (channel=own, dm_with=peer) + outbound.
       di = dm_row(attrs, net_a.id, "vjt", "peer", 5, "in")
       dm_row(attrs, net_a.id, "peer", "peer", 6, "out")
+      {:ok, _} = QueryWindows.open(subject, net_a.id, "peer", user.name)
       {:ok, _} = ReadCursor.set(subject, net_a.id, "peer", di.id)
 
       # net_b #ops: anchor + 1 content.
@@ -933,6 +1011,7 @@ defmodule Grappa.ReadCursorTest do
       # DEFINITION, so the #396 cold-load twin must strip it exactly as
       # count_after_split/6 does (one rule, both count doors).
       a = dm_row(attrs, net.id, "vjt", "peer", 1, "anchor")
+      {:ok, _} = QueryWindows.open(subject, net.id, "peer", user.name)
       {:ok, _} = ReadCursor.set(subject, net.id, "peer", a.id)
 
       # Own outbound (channel = peer ⟹ sender = own_nick) — must NOT count.
@@ -1015,6 +1094,8 @@ defmodule Grappa.ReadCursorTest do
           })
         )
 
+      # The self window is a query window like any other (GH #948).
+      {:ok, _} = QueryWindows.open(subject, net.id, "vjt", user.name)
       {:ok, _} = ReadCursor.set(subject, net.id, "vjt", a.id)
 
       {:ok, _} =
