@@ -93,6 +93,16 @@ jobs:
         # gates identically.
         run: mix grappa.wire_pin --check
 
+      - name: Ratchet (Session.Server state + clauses, boundary deps; issue 2690)
+        # Fails when a counted quantity moved off priv/ratchet/ratchet.pin.
+        # The counts are read off the build (the compiled typespec, the
+        # debug_info definitions, the persisted Boundary attribute), never off
+        # source text, and the task first runs a fixture whose answers are
+        # known: it prints NO VERDICT when the counting itself is broken.
+        # Offline like the wire pin above. Under MIX_ENV=test it records the
+        # same set as check.sh's dev run: only boundaries declared in lib/.
+        run: mix grappa.ratchet --check
+
       - name: Format check
         run: mix format --check-formatted
 
@@ -172,6 +182,14 @@ jobs:
         # the diff it would be dead exactly where the debt accumulates, which
         # is how 495 August entries stayed inline for six weeks.
         run: scripts/design-notes-gate.sh
+
+      - name: Ratchet raises paired with a DESIGN_NOTES line (issue 2690)
+        # The git half of `mix grappa.ratchet --check`: a commit that RAISES a
+        # value in priv/ratchet/ratchet.pin must add a docs/DESIGN_NOTES.md
+        # line naming the key in backticks, in the SAME commit. Lowering, a
+        # new key and the seed commit are exempt. Needs the fetch-depth: 0
+        # above, like the gate before it.
+        run: scripts/ratchet-gate.sh
 
       - name: POSIX-parse the sh-dialect scripts (#503, derived by #1377)
         # A DIFFERENT property from the lint above, with a different tool:
