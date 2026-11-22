@@ -191,7 +191,7 @@ describe("members.applyPresenceEvent", () => {
     expect(members.membersByChannel()[key]).toEqual([{ nick: "vjt", modes: ["@"] }]);
   });
 
-  it(":mode applies the mode string via modeApply", async () => {
+  it(":mode applies meta.member_modes — the modes the server derived", async () => {
     const members = await import("../lib/members");
     const key = channelKey("freenode", "#grappa");
 
@@ -210,7 +210,7 @@ describe("members.applyPresenceEvent", () => {
         kind: "mode",
         sender: "vjt",
         body: null,
-        meta: { modes: "+ov", args: ["alice", "bob"] },
+        meta: { modes: "+ov", args: ["alice", "bob"], member_modes: { alice: ["@"], bob: ["+"] } },
       },
       "ascii",
     );
@@ -538,15 +538,26 @@ describe("members.sortMembers rank comes from the network's PREFIX (issue 1999)"
   });
 });
 
-// issue 2692 — the store MembersPane renders, fed the way subscribe.ts feeds
-// it: a persisted `:mode` row off the channel topic. `modeApply.test.ts`
-// pins the walker in isolation; this pins that the wrong grade REACHES the
-// rendered roster and stays there until the next `members_seeded`.
-describe("members.applyPresenceEvent — MODE args follow CHANMODES (issue 2692)", () => {
-  it("+bov <mask> alice bob grades alice op and bob voice, not alice voice", async () => {
-    const members = await import("../lib/members");
-    const key = channelKey("azzurra", "#grappa");
+// issue 2692 — the server writes what a MODE did to the roster onto the row
+// (`meta.member_modes`, nick → ABSOLUTE modes) and this store applies it. cic
+// no longer walks `modes`/`args`: its walker had a hardcoded (ohv) table and
+// no CHANMODES, so it graded the wrong member on `+bo <mask> alice` and never
+// applied `+q`/`+a`. These rows are fed the way subscribe.ts feeds them.
+describe("members.applyPresenceEvent — :mode applies meta.member_modes (issue 2692)", () => {
+  const key = channelKey("azzurra", "#grappa");
+  const modeRow = (meta: Record<string, unknown>) => ({
+    id: 2692,
+    network: "azzurra",
+    channel: "#grappa",
+    server_time: 0,
+    kind: "mode" as const,
+    sender: "op",
+    body: null,
+    meta,
+  });
 
+  it("+bov <mask> alice bob grades alice op and bob voice — from the key, not the letters", async () => {
+    const members = await import("../lib/members");
     members.seedFromTest(key, [
       { nick: "alice", modes: [] },
       { nick: "bob", modes: [] },
@@ -554,16 +565,12 @@ describe("members.applyPresenceEvent — MODE args follow CHANMODES (issue 2692)
 
     members.applyPresenceEvent(
       key,
-      {
-        id: 2692,
-        network: "azzurra",
-        channel: "#grappa",
-        server_time: 0,
-        kind: "mode",
-        sender: "op",
-        body: null,
-        meta: { modes: "+bov", args: ["*!*@h", "alice", "bob"], structural: true },
-      },
+      modeRow({
+        modes: "+bov",
+        args: ["*!*@h", "alice", "bob"],
+        structural: true,
+        member_modes: { alice: ["@"], bob: ["+"] },
+      }),
       "ascii",
     );
 
@@ -571,5 +578,85 @@ describe("members.applyPresenceEvent — MODE args follow CHANMODES (issue 2692)
       { nick: "alice", modes: ["@"] },
       { nick: "bob", modes: ["+"] },
     ]);
+  });
+
+  it("a founder sigil the network advertises lands as the server stated it", async () => {
+    const members = await import("../lib/members");
+    members.seedFromTest(key, [
+      { nick: "founder", modes: [] },
+      { nick: "alice", modes: [] },
+    ]);
+
+    members.applyPresenceEvent(
+      key,
+      modeRow({
+        modes: "+qo",
+        args: ["founder", "alice"],
+        member_modes: { founder: ["~"], alice: ["@"] },
+      }),
+      "ascii",
+    );
+
+    expect(members.membersByChannel()[key]).toEqual([
+      { nick: "founder", modes: ["~"] },
+      { nick: "alice", modes: ["@"] },
+    ]);
+  });
+
+  it("the value REPLACES the member's modes — a removal states what is left", async () => {
+    const members = await import("../lib/members");
+    members.seedFromTest(key, [{ nick: "alice", modes: ["@", "+"] }]);
+
+    members.applyPresenceEvent(
+      key,
+      modeRow({ modes: "-o", args: ["alice"], member_modes: { alice: ["+"] } }),
+      "ascii",
+    );
+
+    expect(members.membersByChannel()[key]).toEqual([{ nick: "alice", modes: ["+"] }]);
+  });
+
+  it("matches the nick case-insensitively and keeps the entry's other fields", async () => {
+    const members = await import("../lib/members");
+    members.seedFromTest(key, [
+      { nick: "alice", modes: [], gender: "female" },
+      { nick: "bob", modes: ["+"] },
+    ]);
+
+    members.applyPresenceEvent(
+      key,
+      modeRow({ modes: "+o", args: ["ALICE"], member_modes: { ALICE: ["@"] } }),
+      "ascii",
+    );
+
+    expect(members.membersByChannel()[key]).toEqual([
+      { nick: "alice", modes: ["@"], gender: "female" },
+      { nick: "bob", modes: ["+"] },
+    ]);
+  });
+
+  it("a nick the roster does not hold adds nobody", async () => {
+    const members = await import("../lib/members");
+    members.seedFromTest(key, [{ nick: "alice", modes: [] }]);
+
+    members.applyPresenceEvent(
+      key,
+      modeRow({ modes: "+o", args: ["ghost"], member_modes: { ghost: ["@"] } }),
+      "ascii",
+    );
+
+    expect(members.membersByChannel()[key]).toEqual([{ nick: "alice", modes: [] }]);
+  });
+
+  // No fallback walker: a row without the key (a channel-only mode, or a row
+  // from a server predating protocol 66) changes nothing. Walking the letters
+  // here would bring back exactly the second parser this issue deletes.
+  it("a :mode row WITHOUT member_modes leaves the roster alone, whatever its letters say", async () => {
+    const members = await import("../lib/members");
+    members.seedFromTest(key, [{ nick: "alice", modes: [] }]);
+
+    members.applyPresenceEvent(key, modeRow({ modes: "+o", args: ["alice"] }), "ascii");
+
+    expect(members.membersByChannel()[key]).toEqual([{ nick: "alice", modes: [] }]);
   });
 });

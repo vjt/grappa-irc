@@ -2175,3 +2175,62 @@ describe("capScrollbackRing — structural contiguity invariant (#1538)", () => 
     expect(capped.unreadHeld).toBe(bound + 51);
   });
 });
+
+// issue 2692 — `meta.member_modes` is ABSOLUTE: applying an OLD row after a
+// newer roster puts back the grades as they were then. So the key may only be
+// applied from rows that arrive live on the channel topic (subscribe.ts →
+// routeMessage → members.applyPresenceEvent), never from a page cic FETCHED —
+// the history pages, the forward page, and the reconnect gap-fill
+// (`refreshScrollback`), which can all carry mode rows older than the roster's
+// last `members_seeded`. This pins that none of the four fetch verbs reaches
+// the members store.
+describe("issue 2692 — a fetched page never touches the members roster", () => {
+  const key = channelKey("freenode", "#grappa");
+  // A mode row from BEFORE the roster's last seed: it opped alice, who has
+  // since been deopped. Applying it would regress her to op.
+  const staleOp = (id: number): ScrollbackMessage => ({
+    id,
+    network: "freenode",
+    channel: "#grappa",
+    server_time: id * 10,
+    kind: "mode",
+    sender: "op",
+    body: null,
+    meta: { modes: "+o", args: ["alice"], member_modes: { alice: ["@"] } },
+  });
+
+  it("the stale row is EFFECTIVE through the live door — the control the page cases need", async () => {
+    const members = await import("../lib/members");
+    members.seedFromTest(key, [{ nick: "alice", modes: [] }]);
+
+    members.applyPresenceEvent(key, staleOp(1), "ascii");
+
+    expect(members.membersByChannel()[key]).toEqual([{ nick: "alice", modes: ["@"] }]);
+  });
+
+  it("loadInitialScrollback, loadMore, refreshScrollback and loadNewer leave alice as seeded", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const members = await import("../lib/members");
+    const scrollback = await import("../lib/scrollback");
+    members.seedFromTest(key, [{ nick: "alice", modes: [] }]);
+
+    vi.mocked(api.listMessages).mockResolvedValueOnce([staleOp(50)]);
+    await scrollback.loadInitialScrollback("freenode", "#grappa");
+
+    vi.mocked(api.listMessages).mockResolvedValueOnce([staleOp(40)]);
+    await scrollback.loadMore("freenode", "#grappa", noSeam);
+
+    mockGetResumeCursor.mockReturnValue(50);
+    vi.mocked(api.listMessagesAfter).mockResolvedValueOnce([staleOp(60)]);
+    await scrollback.refreshScrollback("freenode", "#grappa");
+
+    vi.mocked(api.listMessagesAfter).mockResolvedValueOnce([staleOp(70)]);
+    await scrollback.loadNewer("freenode", "#grappa");
+
+    // Every page landed — so the roster below was NOT left alone for want of
+    // rows reaching the store they did reach.
+    expect(scrollback.scrollbackByChannel()[key]?.map((m) => m.id)).toEqual([40, 50, 60, 70]);
+    expect(members.membersByChannel()[key]).toEqual([{ nick: "alice", modes: [] }]);
+  });
+});
