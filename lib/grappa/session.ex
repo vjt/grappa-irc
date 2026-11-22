@@ -64,8 +64,10 @@ defmodule Grappa.Session do
   cannot tell the two doors apart. And `Boundary` is
   structurally blind to this class: a closure built in `Networks` or
   `Visitors` and invoked here carries no module reference for a
-  compile-time checker to see, which is why the deps list below can
-  omit `Repo` / `Networks` / `Accounts` while those reads happen.
+  compile-time checker to see, which is why the deps list below omits
+  `Repo` and `Networks` while those reads happen. `Accounts` IS declared,
+  since issue 2597, because `Session.Server` also calls
+  `Accounts.last_known_ip/1` directly (see its comment in the list).
   """
 
   # `Server` is exported for the test path only — `server_test.exs`
