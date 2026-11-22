@@ -12,9 +12,14 @@ defmodule Mix.Tasks.Grappa.Ratchet do
   ## What is counted, and how
 
   Every quantity is read off the BUILD, never off the source text. The review
-  that asked for this gate disagreed with itself on the state-key count
-  (94 by a regex over the `@type t` block, 96 by reading `Server.t()`), and a
-  text count of a multi-line map type is exactly where that happens.
+  that asked for this gate printed two state-key counts, 94 (a regex over the
+  `@type t` block) and 96 (reading `Server.t()`); the compiler says 101 at
+  `9b66302df`. Where 94 and 96 came from is not known. What is measured is
+  that the block itself moved under the review: 95 keys at `cee2b8f0c` and
+  `8d90e1242`, 97 at `494b9f2a3`, 101 from the issue 2656 merges
+  (`cdf03e167`) on. That is a fact about the tree, not the explanation. A
+  count off the build does not depend on which tree a reader had or how they
+  counted it.
 
     * `state_keys:Grappa.Session.Server`: the fields of the `@type t` map,
       from the compiled typespec (`Code.Typespec.fetch_types/1`). A `t` that
