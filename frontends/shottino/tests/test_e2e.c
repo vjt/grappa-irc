@@ -253,6 +253,25 @@ TEST(corpus_fold) {
     json_free(doc);
 }
 
+/* The limits shottino applies without asking grappa: one CHECK each. */
+static void limit_is(const json_doc *doc, const char *key, long have) {
+    long want = -1;
+    bool ok = doc && json_long_req(json_root(doc), key, &want) && have == want;
+    if (!ok) fprintf(stderr, "  corpus limit %s: corpus %ld, e2e.h %ld\n", key, want, have);
+    CHECK(ok);
+}
+
+TEST(corpus_limits) {
+    json_doc *doc = vectors("limits");
+    CHECK(doc != NULL);
+    limit_is(doc, "wire_version", E2E_WIRE_VERSION);
+    limit_is(doc, "max_devices", E2E_MAX_DEVICES);
+    limit_is(doc, "device_cap", E2E_DEVICE_CAP);
+    limit_is(doc, "max_fragments", E2E_MAX_FRAGMENTS);
+    limit_is(doc, "max_hosted_one_time_keys", E2E_MAX_HOSTED_ONE_TIME_KEYS);
+    json_free(doc);
+}
+
 /* ── vectors this port adds ── */
 
 TEST(a_fresh_key_always_gives_a_did) {
@@ -3268,6 +3287,7 @@ int main(void) {
     RUN(corpus_lines_needed);
     RUN(corpus_payloads);
     RUN(corpus_fold);
+    RUN(corpus_limits);
     RUN(a_fresh_key_always_gives_a_did);
     RUN(a_certificate_verifies_for_its_version_only);
     RUN(base64_both_spellings_and_refusals);

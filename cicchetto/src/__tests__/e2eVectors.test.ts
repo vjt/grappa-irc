@@ -8,14 +8,17 @@
 // check, which only grappa makes (a frame address); cic's check of a did is
 // its shape, applied where cic meets one: a key of `bodies`.
 import { describe, expect, it } from "vitest";
+import { MAX_HOSTED_ONE_TIME_KEYS } from "../lib/e2e/keyBundle";
 import didVectors from "../lib/e2e/vectors/did.json";
 import fbVectors from "../lib/e2e/vectors/fb.json";
 import foldVectors from "../lib/e2e/vectors/fold.json";
+import limits from "../lib/e2e/vectors/limits.json";
 import linesVectors from "../lib/e2e/vectors/lines_needed.json";
 import payloadVectors from "../lib/e2e/vectors/payloads.json";
 import signedVectors from "../lib/e2e/vectors/signed_strings.json";
 import {
   certSigText,
+  DEVICE_CAP,
   decodePayload,
   did,
   fb,
@@ -23,6 +26,8 @@ import {
   idSigText,
   linesNeeded,
   listSigText,
+  MAX_DEVICES,
+  MAX_FRAGMENTS,
   otkSigText,
   PayloadError,
   parseKeys,
@@ -30,6 +35,7 @@ import {
   parseNack,
   parsePkmsg,
   type SendVerb,
+  WIRE_VERSION,
 } from "../lib/e2e/wire";
 import { olm } from "./helpers/olm";
 
@@ -142,6 +148,20 @@ describe("the E2E conformance corpus", () => {
       const decoded = decodePayload(c.text);
       if (c.accept) expect(() => parsers[c.verb](decoded)).not.toThrow();
       else expect(() => parsers[c.verb](decoded)).toThrow(PayloadError);
+    });
+  }
+
+  // grappa owns the device cap and the hosted one-time keys; the wire owns
+  // the rest. cic applies every one of them without asking grappa first.
+  for (const [key, value] of [
+    ["wire_version", WIRE_VERSION],
+    ["max_devices", MAX_DEVICES],
+    ["device_cap", DEVICE_CAP],
+    ["max_fragments", MAX_FRAGMENTS],
+    ["max_hosted_one_time_keys", MAX_HOSTED_ONE_TIME_KEYS],
+  ] as const) {
+    it(`limits — ${key}`, () => {
+      expect(value).toBe(limits[key]);
     });
   }
 

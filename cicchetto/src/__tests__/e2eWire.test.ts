@@ -24,7 +24,6 @@ import {
   parsePkmsg,
   unbase64,
   validMasterList,
-  WIRE_VERSION,
 } from "../lib/e2e/wire";
 import { olm } from "./helpers/olm";
 
@@ -70,16 +69,11 @@ describe("the signed strings", () => {
     master.free();
   });
 
-  it("is protocol 2 with at most 4 devices", () => {
-    expect(WIRE_VERSION).toBe(2);
-    expect(MAX_DEVICES).toBe(4);
-  });
-
   // issue 2576: the cap is what an identity holds, the wire bound what a
   // receiver takes (a list of 4 an older client signed still reads); a cap
-  // above the bound would sign lists no peer accepts.
-  it("caps an identity at 3 devices, within the wire's bound", () => {
-    expect(DEVICE_CAP).toBe(3);
+  // above the bound would sign lists no peer accepts. The two values are
+  // the corpus's (limits.json); this is the relation between them.
+  it("caps an identity within the wire's bound", () => {
     expect(DEVICE_CAP).toBeLessThanOrEqual(MAX_DEVICES);
   });
 });

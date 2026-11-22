@@ -12,7 +12,9 @@ defmodule Grappa.E2eVectorsTest do
   The server reads the files whose subject it implements: the did
   (derivation, and the canonical check a frame address passes), the list
   text (the one signature grappa verifies), the line arithmetic of
-  `Grappa.IRC.E2e.fragment/5`, and the identifier fold. It never parses a
+  `Grappa.IRC.E2e.fragment/5`, the identifier fold, and the limits it
+  owns and the clients apply without asking (the device cap, the hosted
+  one-time keys, the line and byte caps of a message). It never parses a
   payload and never computes `fb`, so it does not read `payloads.json` or
   `fb.json`.
 
@@ -21,12 +23,13 @@ defmodule Grappa.E2eVectorsTest do
   """
   use ExUnit.Case, async: true
 
+  alias Grappa.E2eKeys
   alias Grappa.E2eKeys.{Device, DeviceList}
   alias Grappa.IRC.{E2e, Identifier}
 
   @dir Path.expand("../../cicchetto/src/lib/e2e/vectors", __DIR__)
 
-  for name <- ~w(did signed_strings lines_needed fold) do
+  for name <- ~w(did signed_strings lines_needed fold limits) do
     @external_resource Path.join(@dir, name <> ".json")
   end
 
@@ -36,6 +39,7 @@ defmodule Grappa.E2eVectorsTest do
   @signed read.("signed_strings")["cases"]
   @lines read.("lines_needed")
   @fold read.("fold")["cases"]
+  @limits read.("limits")
 
   # Explicit string→atom map, literal atoms: `String.to_existing_atom/1`
   # races module load order when this file runs alone.
@@ -95,6 +99,18 @@ defmodule Grappa.E2eVectorsTest do
           assert {:ok, lines} = E2e.fragment(verb, msgid, {c["from"], c["to"]}, payload, c["budget"])
           assert length(lines) == n
       end
+    end
+  end
+
+  # The limits grappa owns, which the clients apply without asking it.
+  for {key, {mod, fun}} <- [
+        {"device_cap", {DeviceList, :max_devices}},
+        {"max_hosted_one_time_keys", {E2eKeys, :max_one_time_keys}},
+        {"max_fragments", {E2e, :max_fragments}},
+        {"max_payload_bytes", {E2e, :max_payload_bytes}}
+      ] do
+    test "limits — #{key} is #{inspect(mod)}.#{fun}/0" do
+      assert apply(unquote(mod), unquote(fun), []) == Map.fetch!(@limits, unquote(key))
     end
   end
 
