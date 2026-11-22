@@ -284,6 +284,31 @@ static inline void test_capture_stderr_end(char *out, size_t out_sz) {
     unlink(test_capture_path);
 }
 
+/* Read a file from the repo, from either working directory the suites
+ * run in. NULL when it is not there. Caller frees. Shared: test_commands.c
+ * pins closed sets to the server's sources with it, and test_e2e.c reads
+ * the E2E conformance corpus (issue 2691). */
+static inline char *read_repo_file(const char *rel) {
+    const char *prefixes[] = {"../../", "../../../"};
+    for (size_t i = 0; i < 2; i++) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s%s", prefixes[i], rel);
+        FILE *f = fopen(path, "rb");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long n = ftell(f);
+        rewind(f);
+        char *buf = n > 0 ? malloc((size_t)n + 1) : NULL;
+        if (buf) {
+            size_t got = fread(buf, 1, (size_t)n, f);
+            buf[got] = 0;
+        }
+        fclose(f);
+        if (buf) return buf;
+    }
+    return NULL;
+}
+
 static int test_report(void) {
     if (test_failures) {
         fprintf(stderr, "\n%d/%d checks FAILED\n", test_failures, test_checks);

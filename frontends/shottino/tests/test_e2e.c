@@ -1,9 +1,9 @@
 /* test_e2e.c — the E2E core: cicchetto's wire and engine, in C.
  *
- * Vectors first: the did and fb vectors and the line arithmetic are the
- * ones cicchetto's own suite pins (src/__tests__/e2eWire.test.ts), so
- * these are cross-language evidence, not this port agreeing with itself.
- * Then the shapes a receiver must refuse, the store, and engines talking
+ * Vectors first: the conformance corpus grappa and cicchetto read too
+ * (cicchetto/src/lib/e2e/vectors/, issue 2691), so these are
+ * cross-language evidence, not this port agreeing with itself.
+ * Then what an accepted payload reads as, the store, and engines talking
  * to each other through a fake grappa built from the very bodies a device
  * uploads (register, list, key bundle): KEYREQ → KEYS → PKMSG → MSG, the
  * replay, the tamper and its NACK and re-key, the key alarm, two devices
@@ -52,21 +52,211 @@ static char *xfmt(const char *fmt, ...) {
     return p;
 }
 
-/* ── vectors ── */
+/* ── the conformance corpus (issue 2691) ──
+ *
+ * cicchetto/src/lib/e2e/vectors/ is read by three suites: this one,
+ * cicchetto's e2eVectors.test.ts and grappa's E2eVectorsTest, each running
+ * its OWN code against the same rows. A protocol change one side misses is
+ * red on that side, instead of failing closed in the field. The protocol is
+ * docs/E2E_PROTOCOL.md. A missing or unreadable file FAILS: a shottino-only
+ * checkout cannot run this, and must say so rather than pass silently. */
 
-TEST(did_vectors) {
+static json_doc *vectors(const char *name) {
+    char rel[128];
+    snprintf(rel, sizeof(rel), "cicchetto/src/lib/e2e/vectors/%s.json", name);
+    char *text = read_repo_file(rel);
+    if (!text) {
+        fprintf(stderr, "  %s not found — run from the repo checkout\n", rel);
+        return NULL;
+    }
+    char err[128];
+    json_doc *doc = json_parse(text, strlen(text), err, sizeof(err));
+    if (!doc) fprintf(stderr, "  %s: %s\n", rel, err);
+    free(text);
+    return doc;
+}
+
+/* The array `key` of the corpus root, with at least `min` rows. */
+static const json_value *rows(const json_doc *doc, const char *key, size_t min) {
+    const json_value *arr = doc ? json_get(json_root(doc), key) : NULL;
+    if (!arr || json_type_of(arr) != JSON_ARRAY || json_len(arr) < min) return NULL;
+    return arr;
+}
+
+static const char *field(const json_value *row, const char *key) {
+    const char *s = NULL;
+    return json_str_req(row, key, &s) ? s : NULL;
+}
+
+static bool flag(const json_value *row, const char *key) {
+    bool b = false;
+    return json_bool_req(row, key, &b) && b;
+}
+
+/* A row missing a field it needs is a broken corpus: red, never a crash. */
+#define NEED(...)                                                                                  \
+    if (!(__VA_ARGS__)) {                                                                          \
+        FAIL("corpus row lacks a field: " #__VA_ARGS__);                                           \
+        continue;                                                                                  \
+    }
+
+/* A failure names the row's `why`: a bare CHECK in a loop says only the line. */
+static void note(const json_value *row, bool ok) {
+    if (!ok) fprintf(stderr, "  corpus row: %s\n", field(row, "why") ? field(row, "why") : "?");
+}
+
+TEST(corpus_did) {
+    json_doc *doc = vectors("did");
+    const json_value *derive = rows(doc, "derive", 2), *not_keys = rows(doc, "not_keys", 1),
+                     *spellings = rows(doc, "spellings", 5);
+    CHECK(derive && not_keys && spellings);
     char did[E2E_DID_LEN + 1];
-    CHECK(e2e_did(E1, did));
-    CHECK_STR(did, "If4x36FUomE");
-    CHECK(e2e_did(E2, did));
-    CHECK_STR(did, "_Uw_z3-OAsk");
-    CHECK(e2e_did_valid("_Uw_z3-OAsk"));
-    /* The standard-alphabet spelling of the second is no did. */
-    CHECK(!e2e_did_valid("/Uw/z3+OAsk"));
-    CHECK(!e2e_did_valid("If4x36FUom"));
-    CHECK(!e2e_did_valid("If4x36FUomEE"));
-    CHECK(!e2e_did("not a key", did));
-    /* A fresh key always gives 11 url-safe characters. */
+    for (size_t i = 0; derive && i < json_len(derive); i++) {
+        const json_value *r = json_at(derive, i);
+        const char *key = field(r, "ed25519"), *want = field(r, "did");
+        NEED(key && want);
+        bool ok = e2e_did(key, did) && strcmp(did, want) == 0;
+        note(r, ok);
+        CHECK(ok);
+    }
+    for (size_t i = 0; not_keys && i < json_len(not_keys); i++) {
+        const json_value *r = json_at(not_keys, i);
+        const char *key = field(r, "ed25519");
+        NEED(key);
+        bool ok = !e2e_did(key, did);
+        note(r, ok);
+        CHECK(ok);
+    }
+    /* shottino checks a did's shape, as cicchetto does; the canonical
+     * spelling is grappa's check of a frame address. */
+    for (size_t i = 0; spellings && i < json_len(spellings); i++) {
+        const json_value *r = json_at(spellings, i);
+        const char *spelling = field(r, "did");
+        NEED(spelling);
+        bool ok = e2e_did_valid(spelling) == flag(r, "shape");
+        note(r, ok);
+        CHECK(ok);
+    }
+    json_free(doc);
+}
+
+TEST(corpus_fb) {
+    json_doc *doc = vectors("fb");
+    const json_value *cases = rows(doc, "cases", 2);
+    CHECK(cases != NULL);
+    char fb[E2E_FB_LEN + 1];
+    for (size_t i = 0; cases && i < json_len(cases); i++) {
+        const json_value *r = json_at(cases, i);
+        const char *from = field(r, "from"), *to = field(r, "to"), *want = field(r, "fb");
+        NEED(from && to && want);
+        e2e_fb(from, to, fb);
+        bool ok = strcmp(fb, want) == 0;
+        note(r, ok);
+        CHECK(ok);
+    }
+    json_free(doc);
+}
+
+/* The text this port builds for a row; NULL for a row it cannot read,
+ * which the caller's CHECK_STR then reports as red. */
+static char *signed_text(const json_value *r) {
+    const char *kind = field(r, "kind"), *a = NULL, *b = NULL;
+    long ver = 0;
+    if (!kind) return NULL;
+    if (strcmp(kind, "id") == 0 && (a = field(r, "curve25519")) && (b = field(r, "master")))
+        return e2e_id_sig_text(a, b);
+    if (strcmp(kind, "otk") == 0 && (a = field(r, "key"))) return e2e_otk_sig_text(a);
+    if (!json_long_req(r, "ver", &ver)) return NULL;
+    if (strcmp(kind, "cert") == 0 && (a = field(r, "ed25519"))) return e2e_cert_sig_text(ver, a);
+    if (strcmp(kind, "list") == 0) {
+        const json_value *devices = json_get(r, "devices");
+        size_t n = devices ? json_len(devices) : 0;
+        const char *keys[E2E_MAX_DEVICES];
+        if (n < 1 || n > E2E_MAX_DEVICES) return NULL;
+        for (size_t i = 0; i < n; i++)
+            if (!(keys[i] = json_string(json_at(devices, i)))) return NULL;
+        return e2e_list_sig_text(ver, keys, n);
+    }
+    return NULL;
+}
+
+TEST(corpus_signed_strings) {
+    json_doc *doc = vectors("signed_strings");
+    const json_value *cases = rows(doc, "cases", 4);
+    CHECK(cases != NULL);
+    for (size_t i = 0; cases && i < json_len(cases); i++) {
+        const json_value *r = json_at(cases, i);
+        char *text = signed_text(r);
+        CHECK_STR(text, field(r, "text"));
+        free(text);
+    }
+    json_free(doc);
+}
+
+TEST(corpus_lines_needed) {
+    json_doc *doc = vectors("lines_needed");
+    const json_value *cases = rows(doc, "cases", 10);
+    CHECK(cases != NULL);
+    for (size_t i = 0; cases && i < json_len(cases); i++) {
+        const json_value *r = json_at(cases, i);
+        long budget = 0, size = 0, want = E2E_TOO_MANY_LINES;
+        const json_value *lines = json_get(r, "lines");
+        const char *verb = field(r, "verb"), *from = field(r, "from"), *to = field(r, "to");
+        NEED(verb && from && to && lines && json_long_req(r, "budget", &budget) &&
+             json_long_req(r, "payload_size", &size) && size >= 0);
+        /* `null` lines is grappa's refusal: past 64 lines, or no room at all. */
+        NEED(json_is_null(lines) || json_long(lines, &want));
+        char *payload = malloc((size_t)size + 1);
+        if (!payload) abort();
+        memset(payload, 'A', (size_t)size);
+        payload[size] = 0;
+        long got = e2e_lines_needed(e2e_verb_parse(verb), payload, budget, from, to);
+        free(payload);
+        note(r, got == want);
+        CHECK_LONG(got, want);
+    }
+    json_free(doc);
+}
+
+TEST(corpus_payloads) {
+    json_doc *doc = vectors("payloads");
+    const json_value *cases = rows(doc, "cases", 30);
+    CHECK(cases != NULL);
+    for (size_t i = 0; cases && i < json_len(cases); i++) {
+        const json_value *r = json_at(cases, i);
+        const char *verb = field(r, "verb"), *text = field(r, "text");
+        NEED(verb && text);
+        e2e_payload p;
+        bool undecodable = false;
+        bool accepted =
+            e2e_payload_parse(e2e_verb_parse(verb), text, &p, &undecodable, NULL, 0);
+        if (accepted) e2e_payload_free(&p);
+        bool ok = accepted == flag(r, "accept") && undecodable == flag(r, "undecodable");
+        note(r, ok);
+        CHECK(ok);
+    }
+    json_free(doc);
+}
+
+TEST(corpus_fold) {
+    json_doc *doc = vectors("fold");
+    const json_value *cases = rows(doc, "cases", 5);
+    CHECK(cases != NULL);
+    for (size_t i = 0; cases && i < json_len(cases); i++) {
+        const json_value *r = json_at(cases, i);
+        const char *in = field(r, "in");
+        NEED(in && field(r, "out"));
+        char *folded = e2e_fold(in);
+        CHECK_STR(folded, field(r, "out"));
+        free(folded);
+    }
+    json_free(doc);
+}
+
+/* ── vectors this port adds ── */
+
+TEST(a_fresh_key_always_gives_a_did) {
+    char did[E2E_DID_LEN + 1];
     for (int i = 0; i < 10; i++) {
         vz_account *a = vz_account_new();
         char *e = vz(vz_account_ed25519_key(a));
@@ -76,39 +266,9 @@ TEST(did_vectors) {
     }
 }
 
-TEST(fb_vectors_are_cicchettos) {
-    char fb[E2E_FB_LEN + 1];
-    e2e_fb(E1, E2, fb);
-    CHECK_STR(fb, "Rf23quZfNQGC3F4H6p4ZKw");
-    e2e_fb(E2, E1, fb);
-    CHECK_STR(fb, "uitrgaXwYBvIfv1QB+/bgQ");
-}
-
-TEST(signed_strings) {
-    char *s = e2e_id_sig_text(E1, E2);
-    char *want = xfmt("irc-e2e:v2:id:%s:%s", E1, E2);
-    CHECK_STR(s, want);
-    free(s);
-    free(want);
-    const char *two[] = {E1, E2};
-    s = e2e_list_sig_text(7, two, 2);
-    want = xfmt("irc-e2e:v2:list:7:%s,%s", E1, E2);
-    CHECK_STR(s, want);
-    free(s);
-    free(want);
-    s = e2e_cert_sig_text(2, E1);
-    want = xfmt("irc-e2e:v2:dev:2:%s", E1);
-    CHECK_STR(s, want);
-    free(s);
-    free(want);
-    s = e2e_otk_sig_text(E1);
-    want = xfmt("irc-e2e:v1:otk:%s", E1);
-    CHECK_STR(s, want);
-    free(s);
-    free(want);
-
-    /* A certificate signed over the literal text verifies under the
-     * master, and not for another version. */
+/* A certificate signed over the literal text verifies under the master,
+ * and not for another version. */
+TEST(a_certificate_verifies_for_its_version_only) {
     vz_account *m = vz_account_new(), *d = vz_account_new();
     char *mk = vz(vz_account_ed25519_key(m)), *dk = vz(vz_account_ed25519_key(d));
     char *cert = e2e_sign_cert(m, 2, dk);
@@ -149,49 +309,19 @@ TEST(base64_both_spellings_and_refusals) {
     free(u);
 }
 
-TEST(valid_ver_and_fold) {
+TEST(valid_ver_and_nick_eq) {
     CHECK(e2e_valid_ver(1));
     CHECK(e2e_valid_ver(2147483647.0));
     CHECK(!e2e_valid_ver(0));
     CHECK(!e2e_valid_ver(2147483648.0));
     CHECK(!e2e_valid_ver(-1));
     CHECK(!e2e_valid_ver(1.5));
-    char *f = e2e_fold("NiCk[]\\~");
-    CHECK_STR(f, "nick[]\\~"); /* ASCII A-Z only */
-    free(f);
     CHECK(e2e_nick_eq("VJT", "vjt"));
     CHECK(!e2e_nick_eq("foo[", "foo{"));
 }
 
-/* The numbers are grappa's, as e2eWire.test.ts pins them: a 384-byte line
- * budget, an MSG did -> did head of 50 bytes up to 9/9 and 52 from 10/10. */
-static long lines(e2e_verb verb, size_t size, const char *from, const char *to) {
-    char *payload = malloc(size + 1);
-    memset(payload, 'A', size);
-    payload[size] = 0;
-    long n = e2e_lines_needed(verb, payload, 384, from, to);
-    free(payload);
-    return n;
-}
-
-TEST(lines_needed_matches_grappa) {
-    const long budget = 384;
-    const char *A = "If4x36FUomE", *B = "_Uw_z3-OAsk";
-    CHECK_LONG(lines(E2E_VERB_MSG, 334, A, B), 1);
-    CHECK_LONG(lines(E2E_VERB_MSG, 335, A, B), 2);
-    CHECK_LONG(lines(E2E_VERB_MSG, 9 * 334, A, B), 9);
-    CHECK_LONG(lines(E2E_VERB_MSG, 9 * 334 + 1, A, B), 10);
-    CHECK_LONG(lines(E2E_VERB_MSG, 10 * 332, A, B), 10);
-    CHECK_LONG(lines(E2E_VERB_MSG, 10 * 332 + 1, A, B), 11);
-    CHECK_LONG(lines(E2E_VERB_MSG, 64 * 332, A, B), 64);
-    CHECK_LONG(lines(E2E_VERB_MSG, 64 * 332 + 1, A, B), E2E_TOO_MANY_LINES);
-    CHECK_LONG(lines(E2E_VERB_MSG, 354, "*", "*"), 1);
-    CHECK_LONG(lines(E2E_VERB_MSG, 355, "*", "*"), 2);
-    CHECK_LONG(lines(E2E_VERB_PKMSG, 332, A, B), 1);
-    CHECK_LONG(lines(E2E_VERB_PKMSG, 333, A, B), 2);
-    CHECK_LONG(e2e_lines_needed(E2E_VERB_KEYREQ, "{\"v\":2}", budget, A, "*"), 1);
-    CHECK_LONG(e2e_lines_needed(E2E_VERB_MSG, "A", 50, A, B), E2E_TOO_MANY_LINES);
-    /* frame_budget_base less the target, unknown and non-positive alike -1. */
+/* frame_budget_base less the target, unknown and non-positive alike -1. */
+TEST(line_budget_is_frame_budget_base_less_the_target) {
     CHECK_LONG(e2e_line_budget(394, "vjt-claude"), 384);
     CHECK_LONG(e2e_line_budget(-1, "x"), -1);
     CHECK_LONG(e2e_line_budget(3, "abc"), -1);
@@ -207,23 +337,13 @@ static bool parses(e2e_verb verb, const char *text, bool *undecodable) {
     return ok;
 }
 
-TEST(payload_refuses_what_is_no_object) {
-    const char *texts[] = {"[1]", "null", "1", "\"s\"", "{", "{\"v\":NaN}", "{\"v\":Infinity}",
-                           "", "x", "{\"v\":2,\"ref\":\"a\",\"ref\":\"b\"}"};
-    for (size_t i = 0; i < sizeof(texts) / sizeof(texts[0]); i++) {
-        bool undecodable = false;
-        CHECK(!parses(E2E_VERB_NACK, texts[i], &undecodable));
-        CHECK(undecodable);
-    }
-    bool u;
-    CHECK(parses(E2E_VERB_NACK, "{\"v\":2,\"ref\":\"R\"}", &u));
-    CHECK(parses(E2E_VERB_NACK, "{\"v\":2.0,\"ref\":\"R\",\"extra\":[1]}", &u));
-    CHECK(!parses(E2E_VERB_NACK, "{\"v\":1,\"ref\":\"R\"}", &u) && !u);
-    CHECK(!parses(E2E_VERB_NACK, "{\"ref\":\"R\"}", &u) && !u);
-    CHECK(!parses(E2E_VERB_NACK, "{\"v\":2}", &u) && !u);
-    CHECK(!parses(E2E_VERB_NACK, "{\"v\":\"2\",\"ref\":\"R\"}", &u));
-    CHECK(!parses(E2E_VERB_MSG, "{\"v\":2,\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}", &u));
-    CHECK(parses(E2E_VERB_MSG, "{\"v\":2,\"ck\":\"K\",\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}", &u));
+/* What only a C parser owes: the rows every port shares are the corpus's
+ * (corpus_payloads). A duplicated key is refused whole here, and a key
+ * holding \u0000 is undecodable. */
+TEST(payload_refuses_duplicate_keys_and_nul_in_keys) {
+    bool u = false;
+    CHECK(!parses(E2E_VERB_NACK, "{\"v\":2,\"ref\":\"a\",\"ref\":\"b\"}", &u));
+    CHECK(u);
     /* A key with \u0000 in it reads as its prefix through strcmp, and as
      * the whole key through JSON.parse: a did "aaaaaaaaaaa\0junk" passed
      * e2e_did_valid here and names no device in cicchetto. Undecodable. */
@@ -238,9 +358,9 @@ TEST(payload_refuses_what_is_no_object) {
 
 #define ID "{\"curve25519\":\"K\",\"ed25519\":\"E\",\"sig\":\"S\"}"
 
-TEST(pkmsg_ver_is_a_lists_ver) {
+/* The refusals are corpus rows; here, what an accepted one reads as. */
+TEST(pkmsg_ver_reads_as_a_lists_ver) {
     const char *good[] = {"1", "1.0", "2147483647"};
-    const char *bad[] = {"0", "2147483648", "-1", "1.5", "true", "\"2\"", "null"};
     for (size_t i = 0; i < 3; i++) {
         char *t = xfmt("{\"v\":2,\"id\":" ID ",\"master\":{\"ed25519\":\"M\",\"cert\":\"C\","
                        "\"ver\":%s},\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
@@ -254,37 +374,9 @@ TEST(pkmsg_ver_is_a_lists_ver) {
         e2e_payload_free(&p);
         free(t);
     }
-    for (size_t i = 0; i < 7; i++) {
-        char *t = xfmt("{\"v\":2,\"id\":" ID ",\"master\":{\"ed25519\":\"M\",\"cert\":\"C\","
-                       "\"ver\":%s},\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
-                       bad[i]);
-        bool u;
-        CHECK(!parses(E2E_VERB_PKMSG, t, &u));
-        free(t);
-    }
-    bool u;
-    CHECK(!parses(E2E_VERB_PKMSG,
-                  "{\"v\":2,\"id\":" ID ",\"master\":{\"ed25519\":\"M\",\"cert\":\"C\"},"
-                  "\"bodies\":{\"aaaaaaaaaaa\":\"B\"}}",
-                  &u));
 }
 
-TEST(bodies_are_one_to_four_dids_of_strings) {
-    const char *bad[] = {"{}",
-                         ("{\"aaaaaaaaaaa\":\"B\",\"bbbbbbbbbbb\":\"B\",\"ccccccccccc\":\"B\","
-                          "\"ddddddddddd\":\"B\",\"eeeeeeeeeee\":\"B\"}"),
-                         "{\"a/aaaaaaaaa\":\"B\"}", "{\"aaaaaaaaaaa\":1}", "[]", "\"B\""};
-    for (size_t i = 0; i < 6; i++) {
-        char *pk = xfmt("{\"v\":2,\"id\":" ID ",\"master\":{\"ed25519\":\"M\",\"cert\":\"C\","
-                        "\"ver\":1},\"bodies\":%s}",
-                        bad[i]);
-        char *m = xfmt("{\"v\":2,\"ck\":\"K\",\"bodies\":%s}", bad[i]);
-        bool u;
-        CHECK(!parses(E2E_VERB_PKMSG, pk, &u));
-        CHECK(!parses(E2E_VERB_MSG, m, &u));
-        free(pk);
-        free(m);
-    }
+TEST(bodies_read_by_did) {
     e2e_payload p;
     bool u;
     CHECK(e2e_payload_parse(E2E_VERB_MSG,
@@ -299,7 +391,8 @@ TEST(bodies_are_one_to_four_dids_of_strings) {
 #define LIST "{\"ed25519\":\"M\",\"list\":{\"ver\":1,\"devices\":[\"E\"]},\"sig\":\"S\"}"
 #define ENTRY "{\"id\":" ID ",\"otk\":{\"key\":\"O\",\"fallback\":true,\"sig\":\"S2\"}}"
 
-TEST(keys_shape) {
+/* The refusals are corpus rows; here, what an accepted KEYS reads as. */
+TEST(keys_reads_its_entries) {
     e2e_payload p;
     bool u;
     CHECK(e2e_payload_parse(E2E_VERB_KEYS, "{\"v\":2,\"master\":" LIST ",\"devices\":[" ENTRY "]}",
@@ -315,24 +408,6 @@ TEST(keys_shape) {
                             &p, &u, NULL, 0));
     CHECK(!p.entries[0].otk_fallback);
     e2e_payload_free(&p);
-    CHECK(!parses(E2E_VERB_KEYS,
-                  "{\"v\":2,\"master\":" LIST ",\"devices\":[" ENTRY "," ENTRY "," ENTRY "," ENTRY
-                  "," ENTRY "]}",
-                  &u));
-    CHECK(!parses(E2E_VERB_KEYS, "{\"v\":2,\"devices\":[" ENTRY "]}", &u));
-    CHECK(!parses(E2E_VERB_KEYS, "{\"v\":2,\"master\":" LIST "}", &u));
-    CHECK(!parses(E2E_VERB_KEYS, "{\"v\":1,\"master\":" LIST ",\"devices\":[" ENTRY "]}", &u));
-    /* One bad entry refuses the whole. */
-    CHECK(!parses(E2E_VERB_KEYS,
-                  "{\"v\":2,\"master\":" LIST ",\"devices\":[" ENTRY ",{\"id\":" ID "}]}", &u));
-    CHECK(!parses(E2E_VERB_KEYS,
-                  "{\"v\":2,\"master\":{\"ed25519\":\"M\",\"list\":{\"ver\":true,\"devices\":["
-                  "\"E\"]},\"sig\":\"S\"},\"devices\":[]}",
-                  &u));
-    CHECK(!parses(E2E_VERB_KEYS,
-                  "{\"v\":2,\"master\":{\"ed25519\":\"M\",\"list\":{\"ver\":1,\"devices\":[1]},"
-                  "\"sig\":\"S\"},\"devices\":[]}",
-                  &u));
 }
 
 static int cmp_str(const void *a, const void *b) {
@@ -3187,16 +3262,21 @@ TEST(send_log_forgets_a_failed_send_and_never_the_echo) {
 }
 
 int main(void) {
-    RUN(did_vectors);
-    RUN(fb_vectors_are_cicchettos);
-    RUN(signed_strings);
+    RUN(corpus_did);
+    RUN(corpus_fb);
+    RUN(corpus_signed_strings);
+    RUN(corpus_lines_needed);
+    RUN(corpus_payloads);
+    RUN(corpus_fold);
+    RUN(a_fresh_key_always_gives_a_did);
+    RUN(a_certificate_verifies_for_its_version_only);
     RUN(base64_both_spellings_and_refusals);
-    RUN(valid_ver_and_fold);
-    RUN(lines_needed_matches_grappa);
-    RUN(payload_refuses_what_is_no_object);
-    RUN(pkmsg_ver_is_a_lists_ver);
-    RUN(bodies_are_one_to_four_dids_of_strings);
-    RUN(keys_shape);
+    RUN(valid_ver_and_nick_eq);
+    RUN(line_budget_is_frame_budget_base_less_the_target);
+    RUN(payload_refuses_duplicate_keys_and_nul_in_keys);
+    RUN(pkmsg_ver_reads_as_a_lists_ver);
+    RUN(bodies_read_by_did);
+    RUN(keys_reads_its_entries);
     RUN(valid_master_list_rules);
     RUN(inner_types_strict);
     RUN(consent_and_small_payloads);

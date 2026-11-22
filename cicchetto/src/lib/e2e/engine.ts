@@ -77,7 +77,7 @@ import {
   MAX_FRAGMENTS,
   type MasterList,
   type MessageVerb,
-  OTK_SIG_PREFIX,
+  otkSigText,
   PayloadError,
   type PkmsgPayload,
   parseKeys,
@@ -2710,7 +2710,7 @@ export class Engine {
 
   /** Whether the device of a KEYS entry signed the entry's one-time key (S2). */
   private otkSigned({ id, otk }: KeysEntry): boolean {
-    return this.sigOk(id.ed25519, `${OTK_SIG_PREFIX}${otk.key}`, otk.sig);
+    return this.sigOk(id.ed25519, otkSigText(otk.key), otk.sig);
   }
 
   /**

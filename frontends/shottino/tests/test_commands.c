@@ -260,29 +260,6 @@ TEST(a_protocol_gap_names_its_direction) {
     CHECK(strstr(line, "OLDER") != NULL);
 }
 
-/* Read a file from the repo, from either working directory the suites
- * run in. NULL when it is not there. Caller frees. */
-static char *read_repo_file(const char *rel) {
-    const char *prefixes[] = {"../../", "../../../"};
-    for (size_t i = 0; i < 2; i++) {
-        char path[512];
-        snprintf(path, sizeof(path), "%s%s", prefixes[i], rel);
-        FILE *f = fopen(path, "rb");
-        if (!f) continue;
-        fseek(f, 0, SEEK_END);
-        long n = ftell(f);
-        rewind(f);
-        char *buf = n > 0 ? malloc((size_t)n + 1) : NULL;
-        if (buf) {
-            size_t got = fread(buf, 1, (size_t)n, f);
-            buf[got] = 0;
-        }
-        fclose(f);
-        if (buf) return buf;
-    }
-    return NULL;
-}
-
 /* The CLOSED SETS shottino mirrors are the server's, in the server's
  * order — pinned to the Elixir that declares them.
  *

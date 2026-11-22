@@ -1,6 +1,7 @@
 // issue 2430 — wire v2: the payloads of the E2E verbs and the encodings
-// around them (spec: issue 2430 comments 6346236542, 6346686730 rev 2, and
-// 6348464388 for the base64url did).
+// around them. The spec is docs/E2E_PROTOCOL.md (issue 2691); the vectors
+// every implementation is held to are in ./vectors/, which grappa's ExUnit
+// and shottino's test_e2e.c read too.
 //
 // A payload is a JSON object sent as its compact text (`JSON.stringify`, no
 // spaces): grappa cuts that text into
@@ -164,6 +165,11 @@ export function listSigText(ver: number, devices: string[]): string {
  */
 export function certSigText(ver: number, ed25519: string): string {
   return `${CERT_PREFIX}${ver}:${ed25519}`;
+}
+
+/** The text a device signs for one of its one-time keys (S2, unchanged from v1): the prefix, then the key. */
+export function otkSigText(key: string): string {
+  return `${OTK_SIG_PREFIX}${key}`;
 }
 
 /**

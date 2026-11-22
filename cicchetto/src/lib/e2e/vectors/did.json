@@ -1,0 +1,68 @@
+{
+  "derive": [
+    {
+      "why": "RFC 8032 section 7.1 TEST 1 public key",
+      "ed25519": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+      "did": "If4x36FUomE"
+    },
+    {
+      "why": "sha256(\"irc-e2e did vector 70\"): needs both - and _",
+      "ed25519": "7l01yXGoarYtEU3nwHF01/CIo8/r8U0lJ01TnULT9IY",
+      "did": "_Uw_z3-OAsk"
+    }
+  ],
+  "not_keys": [
+    {
+      "why": "not base64 at all",
+      "ed25519": "not a key"
+    },
+    {
+      "why": "42 characters: 31 bytes",
+      "ed25519": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHUR"
+    }
+  ],
+  "spellings": [
+    {
+      "why": "the first derived did",
+      "did": "If4x36FUomE",
+      "shape": true,
+      "canonical": true
+    },
+    {
+      "why": "the second derived did",
+      "did": "_Uw_z3-OAsk",
+      "shape": true,
+      "canonical": true
+    },
+    {
+      "why": "the second did in the standard alphabet",
+      "did": "/Uw/z3+OAsk",
+      "shape": false,
+      "canonical": false
+    },
+    {
+      "why": "10 characters",
+      "did": "If4x36FUom",
+      "shape": false,
+      "canonical": false
+    },
+    {
+      "why": "12 characters",
+      "did": "If4x36FUomEE",
+      "shape": false,
+      "canonical": false
+    },
+    {
+      "why": "the same 8 bytes with nonzero trailing bits",
+      "did": "If4x36FUomF",
+      "shape": true,
+      "canonical": false
+    },
+    {
+      "why": "the broadcast address is no did",
+      "did": "*",
+      "shape": false,
+      "canonical": false
+    }
+  ]
+}
