@@ -29,6 +29,7 @@ import {
 } from "../lib/e2e/channelE2e";
 import type { Outbound } from "../lib/e2e/engine";
 import {
+  buildPeriodicRotation,
   createEpoch,
   epochFor,
   type GroupSessionsState,
@@ -1377,6 +1378,130 @@ describe("receiveChannel", () => {
         sid: null,
         reason: "channel-mismatch",
       },
+    ]);
+  });
+});
+
+// A holder who left still holds the epoch until it rotates, so she can
+// still mint a successor and send it as a grotate under the epoch she
+// holds. Whether a reader takes that epoch or not, our next line must not
+// go out under a key she minted: the send audits the epoch first, and her
+// did is among its holders.
+describe("a grotate from a holder who left", () => {
+  /** Carol, gone from the roster, mints a successor and sends it as a grotate. */
+  async function carolLeavesAndRotates(
+    carol: ReturnType<typeof makeSide>,
+    leave: () => void,
+    clock: Clock,
+  ) {
+    await sendChannel(carol.deps, carol.groups, CHAN, "bye", ["alice", "bob", "carol"]);
+    leave();
+    const grotate = await buildPeriodicRotation(carol.groups, CHAN, carol.deps.sign, clock.t);
+    if (grotate === null) throw new Error("carol built no grotate");
+    return grotate;
+  }
+
+  /** What Carol reads of `line`: nothing, if it went out under an epoch she does not hold. */
+  async function carolReads(carol: ReturnType<typeof makeSide>, line: string) {
+    return (
+      await receiveChannel(
+        carol.deps,
+        carol.groups,
+        CHAN,
+        "alice",
+        didFor("alice"),
+        line,
+        carol.deps.now(),
+      )
+    ).events;
+  }
+
+  it("never carries our next line: the send rotates away from her epoch first", async () => {
+    const clock = { t: NOW };
+    let members = ["alice", "bob", "carol"];
+    const roster = () => members;
+    const alice = makeSide("alice", clock, roster);
+    const bob = makeSide("bob", clock, roster);
+    const carol = makeSide("carol", clock, roster);
+    distributeKey(alice.deps, alice.groups, CHAN, members);
+    for (const holder of [bob, carol]) {
+      requestKey(holder.deps, holder.groups, CHAN);
+      const gkey = alice.dm.sent.find((d) => d.nick === holder.deps.ownNick)?.inner;
+      if (gkey === undefined) throw new Error(`alice sent ${holder.deps.ownNick} no gkey`);
+      receiveGkey(holder.deps, holder.groups, gkey, "alice", didFor("alice"));
+    }
+    const grotate = await carolLeavesAndRotates(carol, () => (members = ["alice", "bob"]), clock);
+    for (const reader of [alice, bob]) {
+      await receiveChannel(
+        reader.deps,
+        reader.groups,
+        CHAN,
+        "carol",
+        didFor("carol"),
+        grotate.payload,
+        reader.deps.now(),
+      );
+    }
+    alice.dm.sent.length = 0;
+
+    const sent = await sendChannel(alice.deps, alice.groups, CHAN, "carol has gone", members);
+
+    expect(sent.events).toContainEqual(
+      expect.objectContaining({ kind: "channel_rotated", reason: "member-left" }),
+    );
+    const line = channelMsg(sent)?.payload ?? "";
+    expect(decodePayload(line).sid).not.toBe(grotate.newSid);
+    expect(await carolReads(carol, line)).toEqual([
+      expect.objectContaining({ kind: "channel_undecryptable", reason: "no-session" }),
+    ]);
+    // Bob, who stayed, got the new key and reads the line.
+    const toBob = alice.dm.sent.find((d) => d.nick === "bob")?.inner;
+    if (toBob === undefined) throw new Error("alice sent bob no new key");
+    receiveGkey(bob.deps, bob.groups, toBob, "alice", didFor("alice"));
+    expect(
+      (await receiveChannel(bob.deps, bob.groups, CHAN, "alice", didFor("alice"), line, NOW))
+        .events,
+    ).toEqual([expect.objectContaining({ kind: "channel_received", body: "carol has gone" })]);
+  });
+
+  it("never carries our next line even when we never counted her among the holders", async () => {
+    const clock = { t: NOW };
+    let members = ["alice", "bob"];
+    const roster = () => members;
+    const alice = makeSide("alice", clock, roster);
+    const bob = makeSide("bob", clock, roster);
+    const carol = makeSide("carol", clock, roster);
+    distributeKey(alice.deps, alice.groups, CHAN, members);
+    requestKey(bob.deps, bob.groups, CHAN);
+    const gkey = alice.dm.sent.find((d) => d.nick === "bob")?.inner;
+    if (gkey === undefined) throw new Error("alice sent bob no gkey");
+    receiveGkey(bob.deps, bob.groups, gkey, "alice", didFor("alice"));
+    // Carol joins and Bob, not Alice, answers her: Alice's holder set
+    // never learns that Carol holds the epoch.
+    members = ["alice", "bob", "carol"];
+    requestKey(carol.deps, carol.groups, CHAN);
+    onKeyreq(bob.deps, bob.groups, CHAN, "carol", didFor("carol"));
+    const answer = bob.dm.sent.filter((d) => d.nick === "carol").at(-1)?.inner;
+    if (answer === undefined) throw new Error("bob answered carol with no gkey");
+    receiveGkey(carol.deps, carol.groups, answer, "bob", didFor("bob"));
+    expect(epochFor(alice.groups, CHAN)?.holders).not.toContain(didFor("carol"));
+    const grotate = await carolLeavesAndRotates(carol, () => (members = ["alice", "bob"]), clock);
+    await receiveChannel(
+      alice.deps,
+      alice.groups,
+      CHAN,
+      "carol",
+      didFor("carol"),
+      grotate.payload,
+      alice.deps.now(),
+    );
+
+    const sent = await sendChannel(alice.deps, alice.groups, CHAN, "carol has gone", members);
+
+    const line = channelMsg(sent)?.payload ?? "";
+    expect(decodePayload(line).sid).not.toBe(grotate.newSid);
+    expect(await carolReads(carol, line)).toEqual([
+      expect.objectContaining({ kind: "channel_undecryptable", reason: "no-session" }),
     ]);
   });
 });
