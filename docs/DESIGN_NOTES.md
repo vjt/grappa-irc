@@ -8254,3 +8254,138 @@ The 30 s cadence on our networks; IRCnet's nick-delay duration; whether and
 when Azzurra services SVSNICK an unidentified holder of a registered nick;
 the in-tree `/quote NICK …` bypass of the `/nick` door, which keepnick
 cannot see as the operator's choice (a known limit, as in the design).
+<!-- entry #2201c -->
+
+---
+
+## 2026-11-22 — #2201: a DM read cursor exists only beside its query window
+
+PR 2206 (2026-09-17) made `QueryWindows.close/4` delete the sibling read
+cursor in the same transaction as the window. Orphans kept arriving anyway.
+The orchestrator's read-only count on prod (2026-11-22 ~01:57Z, the predicate
+of `20260915070005`) found **109**, every one inserted after that migration
+ran (2026-09-27): 1 on 2026-09-29 and **108 inside 0.6 s on 2026-11-03
+12:25:13Z**, one user, 7 networks, none updated since. The fix is a peer
+decision on the fleet (vjt-claude-60), not a vjt ruling.
+
+### The writer that re-creates the row
+
+`ReadCursor.set/4` had no notion of a window. After a close, any POST for the
+peer found no row and INSERTed one. One such POST is built into cic, measured
+in a throwaway vitest on `3a247669d` (issue comment 7072549237): closing a
+FOCUSED query broadcasts `query_windows_list`; the close-watcher moves the
+selection; the pane leaving the window offers its visible tail to
+`setCursorIfAdvances`; the POST lands **after** the delete by construction. It
+fires only when that tail is past cic's local cursor. That is at most one row
+per close and cannot produce the 108-row burst.
+
+### The bulk writer: not identified
+
+The only server code that inserts `read_cursors` is `ReadCursor.set/4`. Two
+doors reach it: `POST …/read-cursor`, and the own-send advance (issue 2407,
+which opens the query window before it replies, so it cannot orphan).
+`force_set/4` sits behind a route compiled only in dev and test. Every cic
+writer at `24f745040` (origin/main at the burst) and at `231aa81b5` (1.6.0,
+tagged that morning) writes one window per trigger: the pane's exit, settle
+and hidden-run writes, `dismissFarBehind`, and the RC2 baseline in
+`loadInitialScrollback`, which runs only for the window being selected.
+Nothing walks the archive, the networks or the notify list, and `git log -S`
+finds no writer added or removed between 2026-09-15 and the burst. shottino
+writes on focus only, and `tools/grappa-post.py` cannot produce that rate.
+
+The orchestrator's prod probe (2026-11-22, read-only, aggregates only) adds
+three facts and closes one road:
+
+* **The access logs cannot name the client.** The irc.* logs on m42 rotate and
+  start on 2026-11-21; 2026-11-03 is gone.
+* **The burst was not DM-only.** 150 `read_cursors` rows were inserted or
+  updated in 12:25:13–15Z: the 108 DM orphans and **42 channel cursors**. That
+  is ~150 windows in two seconds, channels and DMs together: a client writing
+  the cursor of every window it knew (a sync, a catch-up, a "mark all read"),
+  not a close.
+* **77 of the 108 `last_read_message_id`s are messages of that peer's DM.**
+  The other 31 are not, either because they belong to another conversation or
+  because the message was deleted since; the probe does not tell the two
+  apart. Two things narrow it without settling it: the column is `ON DELETE
+  SET NULL`, so a deleted message reads NULL rather than a foreign id; and
+  `set/4` checked every id with `message_belongs?/4` when it wrote it, so a
+  foreign id would mean the probe's "messages of that DM" is narrower than
+  that predicate. Whether each cursor sat at its DM's tail at the time, and
+  how old the messages were, were not measured (the correlated query on
+  `messages` was too slow on prod).
+
+Whether the guard below would have refused the burst depends on a fact nobody
+measured: whether those 108 windows existed at 12:25:13Z. If they did not, it
+refuses every one. If they did, the cursors were valid then and the windows
+went later by a path that left the cursor behind. In prod code the only window
+delete is `close/4`, which takes the cursor with it (and network deletion
+cascades both), and the rows were never updated after the burst, which fits
+the first reading better. That is an inference, not a measurement.
+
+### The shape
+
+* **Server first: `ReadCursor.set/4` refuses a DM key the subject holds no
+  query window for** (`{:error, :no_query_window}`). This covers every writer,
+  including old bundles and whatever produced the burst. "DM" is
+  `Scrollback.dm_eligible?/1`, the predicate the session already uses to
+  auto-open a query window (#422), so "this key needs a window" and "this key
+  gets one" cannot drift. On every key the write boundary admits, it agrees
+  with the `$`-prefix exclusion of the two cleanup migrations: `$server` is the
+  only `$` name `validate_target_name/1` lets through. Channel and `$server`
+  cursors take the old path untouched.
+* **The check and the write share one `BEGIN IMMEDIATE`**, wrapped in
+  `BusyRetry` outside (the `close/4` composition). Without it, a close
+  committing between the question and the INSERT would leave exactly the
+  orphan this exists to stop. The price is that a DM write which turns out to
+  be a monotonic no-op still takes the write lock, for a two-statement read.
+* **The status is `422 no_query_window`**, the same family as
+  `invalid_message`. It is on purpose NOT 400, 403 or 404, the statuses the
+  host's fail2ban jails count (`docs/OPERATIONS.md`): an old bundle sends this
+  POST right after the user closes a focused query, and an IP ban for closing
+  windows would be the #160 outage again. An old cic treats any non-2xx here
+  as one `console.warn`, with no retry and no UI, and its optimistic local
+  advance means the same id is never offered again. That is why
+  `min_protocol_version` stays at 1. The token joins the closed `ErrorTokens`
+  set: protocol **65**, regenerated wire artefacts, and a `friendlyApiError`
+  arm that no screen shows today but the exhaustive union requires.
+* **`QueryWindows.Window` becomes its own leaf boundary** (#1398/#1399):
+  `ReadCursor` needs the schema, and naming the context would close a cycle,
+  because `close/4` already calls `ReadCursor.delete_for_dm/3`. The window
+  lookup was written out three times in `QueryWindows` (open?, close, the
+  post-conflict re-select). It is now `Window.for_target/3`, and the fourth
+  caller uses that.
+* **cic stops sending the doomed POST.** `queryWindowGone/2` (queryWindows.ts)
+  draws a DM line client-side (not a channel by this network's CHANTYPES,
+  not a `$` name) against the live query list, folded per CASEMAPPING. It is
+  NOT the server's rule: `Scrollback.dm_eligible?/1` uses the fixed sigil set
+  `# & ! +` rather than CHANTYPES, and carves out the literal `$server` only.
+  The two agree on every name a DM can carry: a nick cannot start with a
+  channel sigil, and `$server` is the only `$` name the read-cursor door
+  admits (`GrappaWeb.Validation.validate_target_name/1`). They differ on a
+  channel whose sigil the network's CHANTYPES omits (`&foo` where CHANTYPES
+  is `#`): cic counts it as a DM and skips a POST the server would take.
+  Two doors consult it:
+  `setCursorIfAdvances` (every pane settle) and `dismissFarBehind`, which the
+  exit uses instead for a far-behind window and which still drops the
+  far-behind flag. `queryWindowOpen/2` replaces the four inline copies of
+  "is this query open".
+* **A second cleanup migration** (`*_delete_dm_read_cursors_without_a_window`)
+  uses the `20260915070005` predicate verbatim, copied rather than shared
+  because a migration is a frozen record. The existing migration test now runs
+  against both files.
+
+### Accepted
+
+* A DM cursor write can still reach the server before the window does, and
+  get `422 no_query_window`. The pane settles cannot: the guard skips them
+  until the window is in cic's query list. The write that can is the RC2
+  baseline in `loadInitialScrollback` (a DM with history opened with no
+  cursor, the normal state of a DM reopened from the Archive), which no
+  window guard fronts. `setReadCursor` rolls its optimistic local advance
+  back on that 422 only, compare-and-swap (only while the local cursor still
+  holds the id it wrote), so the next settle after the window is listed
+  writes. It sends nothing itself, so there is no retry loop. Every other
+  refusal keeps the advance (issue 2052). The open is milliseconds, and the
+  baseline comes after a page fetch.
+* `force_set/4` (dev/test only) is not guarded: it plants arbitrary states
+  for e2e, and whether the window exists is the scenario's business.
