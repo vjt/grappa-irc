@@ -9564,10 +9564,15 @@ static void handle_wire_event(struct app *app, const char *topic_network,
     case WIRE_AUTO_AWAY_DEBOUNCE_CHANGED:
     case WIRE_AUTO_AWAY_REASON_CHANGED:
     case WIRE_QUIT_PART_REASON_CHANGED:
+    /* issue 2656: the keepnick switch of one network. Same class as the
+     * three above — the bouncer runs keepnick, this client keeps no copy
+     * of the switch — and cicchetto's own arm is a no-op too until its
+     * S3 card. */
+    case WIRE_KEEP_NICK_CHANGED:
         /* A setting this subject changed from another client. shottino
-         * keeps none of the three locally — the bouncer applies them —
-         * so there is nothing to mirror; narrowed for the same reason
-         * as the avatar above. */
+         * keeps none of these locally — the bouncer applies them — so
+         * there is nothing to mirror; narrowed for the same reason as
+         * the avatar above. */
         break;
 
     case WIRE_DCC_OFFER:
