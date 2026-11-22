@@ -8575,6 +8575,9 @@ Elixir 1.19.
   the other reads as a rise.
 * A renamed boundary is one key gone and one new key, and a key the merge base
   does not carry needs no line here.
+* A swap reads as no change at all, because every count stays the same: one
+  dep replaced by another, a state key renamed or replaced, a clause replaced
+  by a different one. The ratchet counts how much, never what.
 * A re-created record is judged against the merge base, even when an earlier
   commit on the branch already paired the same raise. That earlier line does
   not carry over: the re-creating commit needs its own.

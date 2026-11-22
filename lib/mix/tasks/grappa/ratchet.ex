@@ -82,6 +82,9 @@ defmodule Mix.Tasks.Grappa.Ratchet do
     * A renamed boundary reads as one key gone and one new. A key the merge
       base does not carry needs no DESIGN_NOTES line, so a rename passes the
       pairing check.
+    * A swap leaves every count unchanged and reads as no change at all: one
+      dep replaced by another, a state key renamed or replaced, a clause
+      replaced by a different one. The ratchet sees how much, never what.
     * This gate is not a ceiling: any number can be recorded. The ceiling is
       issue 2133's.
 
