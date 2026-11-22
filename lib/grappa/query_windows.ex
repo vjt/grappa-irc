@@ -78,31 +78,39 @@ defmodule Grappa.QueryWindows do
 
   ## Boundary
 
-  `Grappa.QueryWindows` is a standalone context. Its only deps are:
+  `Grappa.QueryWindows` is a standalone context. Its deps are the ones its
+  `use Boundary` declares:
     * `Grappa.Repo` — persistence.
-    * `Grappa.IRC` — `Identifier.nick_fold/1` (ASCII DM-target key).
+    * `Grappa.IRC` — `Identifier.canonical_target/1` (the in-memory DM-target
+      fold) and `Identifier.nick_fold_sql/1` (the upsert's conflict target).
+      The query-side `nick_fold/1` is called by `Window.for_target/3` now.
+    * `Grappa.QueryWindows.Window` — the schema, its changeset and
+      `for_target/3`, a leaf boundary of its own since issue 2201 (below).
     * `Grappa.ReadCursor` — `delete_for_dm/3`, the window's sibling row
       (issue 2201): a closed window must not leave a cursor behind.
     * `Grappa.Subject` — XOR FK helper.
-    * `Grappa.Accounts` (via `User` association — FK reference only).
     * `Grappa.PubSub` — `Topic.user/1` for the `query_windows_list` broadcast.
 
-  Plus one struct-only **dirty xref** (schema ref, not a real dep — see
-  the `use Boundary` note): `Grappa.Networks.Network`, a `belongs_to` FK
-  association.
+  `Grappa.Accounts`, `Grappa.Networks.Network` and `Grappa.Visitors.Visitor`
+  are NOT declared, and no waiver covers them: `Window` reaches them by
+  `belongs_to` and typespecs, and the FK pre-check passes them as plain
+  arguments, none of which is a reference the checker resolves (the
+  `use Boundary` note).
 
-  The `Window` schema module is internal; callers receive `%Window{}`
-  structs by type but MUST NOT alias or import the schema module
-  directly.
+  `Window` is its own leaf boundary since issue 2201, so that
+  `Grappa.ReadCursor` can ask whether a DM window exists without depending on
+  this context, which depends on it. Callers outside the two of them receive
+  `%Window{}` structs by type and go through this module.
   """
 
   use Boundary,
     top_level?: true,
-    # Neither `Grappa.Accounts` nor `Networks.Network` is declared, and there
-    # is no waiver for either — same call as `Grappa.Notify`. `Window` reaches
-    # both by `belongs_to` and typespecs, and the FK pre-check at
-    # `check_exists/4` passes the module as a plain argument; measured, none of
-    # those shapes is a reference the checker resolves (#1399, #1398). The old
+    # Neither `Grappa.Accounts`, `Networks.Network` nor `Visitors.Visitor` is
+    # declared, and there is no waiver for any of them — same call as
+    # `Grappa.Notify`. `Window` reaches them by `belongs_to` and typespecs, and
+    # the FK pre-check at `check_exists/4` passes the module as a plain
+    # argument; measured, none of those shapes is a reference the checker
+    # resolves (#1399, #1398; `Visitor` re-measured for issue 2201). The old
     # cycle the waiver avoided, `Session → QueryWindows → Networks → Session`,
     # cannot form through a leaf that depends only on `Grappa.IRC`.
     deps: [
@@ -112,11 +120,13 @@ defmodule Grappa.QueryWindows do
       # same transaction. A real edge, and an acyclic one: `Grappa.ReadCursor`
       # deps `Repo`/`Scrollback`/`Subject` and never reaches back here.
       Grappa.ReadCursor,
+      # issue 2201 — the schema is its own leaf boundary now (see its
+      # moduledoc): `ReadCursor.set/4` asks it whether a DM window exists.
+      Grappa.QueryWindows.Window,
       Grappa.Repo,
-      Grappa.Subject,
-      Grappa.Visitors.Visitor
+      Grappa.Subject
     ],
-    exports: [Window, Wire]
+    exports: [Wire]
 
   import Ecto.Query
 
@@ -132,9 +142,6 @@ defmodule Grappa.QueryWindows do
     Subject,
     Visitors.Visitor
   }
-
-  # Identifier.nick_fold/1 is a query macro (ASCII fold fragment).
-  require Identifier
 
   # ---------------------------------------------------------------------------
   # Public API
@@ -244,10 +251,8 @@ defmodule Grappa.QueryWindows do
       Repo.BusyRetry.run(fn ->
         Repo.immediate_transaction(fn ->
           {count, _} =
-            Window
-            |> Subject.subject_where(subject)
-            |> where([w], w.network_id == ^network_id)
-            |> where([w], Identifier.nick_fold(w.target_nick) == ^folded)
+            subject
+            |> Window.for_target(network_id, folded)
             |> Repo.delete_all()
 
           ReadCursor.delete_for_dm(subject, network_id, target_nick)
@@ -306,12 +311,8 @@ defmodule Grappa.QueryWindows do
   @spec open?(Subject.t(), integer(), String.t()) :: boolean()
   def open?({_, _} = subject, network_id, target_nick)
       when is_integer(network_id) and is_binary(target_nick) do
-    folded = Identifier.canonical_target(target_nick)
-
-    Window
-    |> Subject.subject_where(subject)
-    |> where([w], w.network_id == ^network_id)
-    |> where([w], Identifier.nick_fold(w.target_nick) == ^folded)
+    subject
+    |> Window.for_target(network_id, Identifier.canonical_target(target_nick))
     |> Repo.exists?()
   end
 
@@ -421,13 +422,7 @@ defmodule Grappa.QueryWindows do
   @spec fetch_existing(Subject.t(), integer(), String.t()) ::
           {:ok, Window.t()} | {:error, Ecto.Changeset.t()}
   defp fetch_existing(subject, network_id, target_nick) do
-    folded = Identifier.canonical_target(target_nick)
-
-    query =
-      Window
-      |> Subject.subject_where(subject)
-      |> where([w], w.network_id == ^network_id)
-      |> where([w], Identifier.nick_fold(w.target_nick) == ^folded)
+    query = Window.for_target(subject, network_id, Identifier.canonical_target(target_nick))
 
     case Repo.one(query) do
       %Window{} = window ->
