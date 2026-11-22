@@ -132,6 +132,44 @@ scratch() {
     git commit -qm seed
     run scripts/ratchet-gate.sh main
     [ "$status" -eq 0 ]
+    [[ "$output" == *"(no record there)"* ]]
+}
+
+@test "a pin deleted, then re-created higher, is judged against the base: the raise is RED" {
+    scratch
+    git rm -q priv/ratchet/ratchet.pin
+    git commit -qm 'drop the record'
+    pin "deps:Grappa.Session 29" "deps:Grappa.Accounts 3" "state_keys:Grappa.Session.Server 101"
+    git add -A
+    git commit -qm 'recreate the record higher'
+    run scripts/ratchet-gate.sh main
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"UNPAIRED"*"recreate the record higher"*"deps:Grappa.Session"*"28 -> 29"* ]]
+    [[ "$output" == *"; 1 raise(s)"* ]]
+}
+
+@test "a key dropped, then re-added higher, is judged against the base: the raise is RED" {
+    scratch
+    pin "deps:Grappa.Accounts 3" "state_keys:Grappa.Session.Server 101"
+    git commit -qam 'drop the Session key'
+    pin "deps:Grappa.Session 29" "deps:Grappa.Accounts 3" "state_keys:Grappa.Session.Server 101"
+    git commit -qam 're-add it higher'
+    run scripts/ratchet-gate.sh main
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"UNPAIRED"*"re-add it higher"*"deps:Grappa.Session"*"28 -> 29"* ]]
+}
+
+@test "a re-created pin whose raise is paired in its own commit is GREEN" {
+    scratch
+    git rm -q priv/ratchet/ratchet.pin
+    git commit -qm 'drop the record'
+    pin "deps:Grappa.Session 29" "deps:Grappa.Accounts 3" "state_keys:Grappa.Session.Server 101"
+    note 'Session now needs `deps:Grappa.Session` for Foo.'
+    git add -A
+    git commit -qm 'recreate the record higher, explained'
+    run scripts/ratchet-gate.sh main
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"; 1 raise(s)"* ]]
 }
 
 @test "a branch that never touches the pin passes and says what it saw" {
@@ -141,6 +179,7 @@ scratch() {
     run scripts/ratchet-gate.sh main
     [ "$status" -eq 0 ]
     [[ "$output" == *"1 commit"* ]]
+    [[ "$output" == *"(the record there)"* ]]
     [[ "$output" == *"0 raise"* ]]
 }
 

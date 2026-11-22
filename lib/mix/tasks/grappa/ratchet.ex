@@ -74,8 +74,9 @@ defmodule Mix.Tasks.Grappa.Ratchet do
       is built (the PR head in CI, the local head in `scripts/check.sh`),
       not at every commit. The pairing of a raise with its DESIGN_NOTES line
       IS checked per commit.
-    * A renamed boundary reads as one key gone and one new. A new key needs
-      no DESIGN_NOTES line, so a rename passes the pairing check.
+    * A renamed boundary reads as one key gone and one new. A key the merge
+      base does not carry needs no DESIGN_NOTES line, so a rename passes the
+      pairing check.
     * This gate is not a ceiling: any number can be recorded. The ceiling is
       issue 2133's.
 

@@ -8531,7 +8531,11 @@ grappa.ratchet --check` (check.sh + CI) is red on any difference:
 requires each commit that raises a recorded value to add a line here naming
 the key **in backticks**. The backticks stop a line about
 `deps:Grappa.Accounts.User` from pairing a raise of `deps:Grappa.Accounts`.
-The seed commit, a new key and a lowered value are exempt.
+"Before" is the parent commit's value, or the merge base's when the parent
+lacks the key, so deleting the record (or one line of it) and re-creating it
+higher is a raise like any other. A key the base does not carry either (a new
+boundary, every key of the commit that seeds the record) and a lowered value
+are exempt.
 
 The split between the two follows `mix grappa.wire_pin` and
 `scripts/design-notes-gate.sh`. The task stays offline. The half that needs
@@ -8560,8 +8564,11 @@ Elixir 1.19.
   built, not at every commit. The pairing with this log IS checked per commit.
 * `handle_call` and `handle_info` are two keys, so a clause moved from one to
   the other reads as a rise.
-* A renamed boundary is one key gone and one new key, and a new key needs no
-  line here.
+* A renamed boundary is one key gone and one new key, and a key the merge base
+  does not carry needs no line here.
+* A re-created record is judged against the merge base, even when an earlier
+  commit on the branch already paired the same raise. That earlier line does
+  not carry over: the re-creating commit needs its own.
 * Every boundary's `deps:` count is gated, as issue 2690 asks, not only
   Session's. Adding a dep anywhere now costs a line here. That is the friction
   the review asked for. How often it will bite has not been measured.

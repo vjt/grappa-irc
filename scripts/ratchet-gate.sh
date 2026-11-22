@@ -19,9 +19,14 @@
 # Backticks are required, not decoration: they are what keeps
 # `deps:Grappa.Accounts.User` from pairing a raise of `deps:Grappa.Accounts`.
 #
-# Exempt, on purpose: the commit that creates the pin (there is no "before"),
-# a key that is NEW in a commit (a new boundary has nothing to grow from) and
-# a value that falls. The mix task already refuses a record left above the
+# "Before" is the parent commit's value. When the parent does not carry the
+# key — the pin, or only that line, was removed earlier on the branch — it is
+# the MERGE BASE's value instead, so deleting the record and re-creating it
+# higher is a raise like any other (cross review of PR 2701, F1).
+#
+# Exempt, on purpose: a key the base does not carry either (a new boundary,
+# or every key of the commit that seeds the pin: there is no "before") and a
+# value that falls. The mix task already refuses a record left above the
 # build, so lowering needs no prose.
 #
 # WHY A SEPARATE SCRIPT AND NOT PART OF THE MIX TASK
@@ -54,28 +59,43 @@ git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null ||
 base="$(git merge-base "$BASE_REF" HEAD)" ||
 	die "no merge base between '$BASE_REF' and HEAD"
 
-# Keys present on both sides whose value went UP: "key old new" per line.
-rises() {
-	awk '
-		/^#/ || NF == 0 { next }
-		NR == FNR { old[$1] = $3; next }
-		($1 in old) && ($3 + 0 > old[$1] + 0) { print $1, old[$1], $3 }
-	' "$1" "$2"
-}
-
 commits=0
 raises=0
 unpaired=0
+base_pin="$(mktemp)"
 before="$(mktemp)"
 after="$(mktemp)"
-trap 'rm -f "$before" "$after"' EXIT
+trap 'rm -f "$base_pin" "$before" "$after"' EXIT
+
+if git cat-file -e "$base:$PIN" 2>/dev/null; then
+	git show "$base:$PIN" >"$base_pin"
+	base_seen="the record there"
+else
+	base_seen="no record there"
+fi
+
+# Keys whose value went UP: "key old new" per line. "old" is the parent's
+# value, or the base's when the parent lacks the key; a key neither carries
+# is new.
+rises() {
+	awk '
+		/^#/ || NF == 0 { next }
+		FILENAME == ARGV[1] { base[$1] = $3; next }
+		FILENAME == ARGV[2] { old[$1] = $3; next }
+		{ if ($1 in old) o = old[$1]; else if ($1 in base) o = base[$1]; else next }
+		$3 + 0 > o + 0 { print $1, o, $3 }
+	' "$base_pin" "$1" "$2"
+}
 
 while read -r c; do
 	[ -n "$c" ] || continue
 	commits=$((commits + 1))
-	git cat-file -e "$c:$PIN" 2>/dev/null || continue
-	git cat-file -e "$c^:$PIN" 2>/dev/null || continue # the seed: no before
-	git show "$c^:$PIN" >"$before"
+	git cat-file -e "$c:$PIN" 2>/dev/null || continue # removed here: nothing grew
+	if git cat-file -e "$c^:$PIN" 2>/dev/null; then
+		git show "$c^:$PIN" >"$before"
+	else
+		: >"$before" # seeded or re-created here: every key falls back to the base
+	fi
 	git show "$c:$PIN" >"$after"
 	risen="$(rises "$before" "$after")"
 	[ -n "$risen" ] || continue
@@ -90,8 +110,8 @@ while read -r c; do
 	done <<<"$risen"
 done <<<"$(git rev-list --reverse --no-merges "$base..HEAD")"
 
-printf 'ratchet-gate: %d commit(s) since merge base %s; %d raise(s) of a recorded value; %d without a DESIGN_NOTES line naming the key.\n' \
-	"$commits" "$(git rev-parse --short "$base")" "$raises" "$unpaired"
+printf 'ratchet-gate: %d commit(s) since merge base %s (%s); %d raise(s) of a recorded value; %d without a DESIGN_NOTES line naming the key.\n' \
+	"$commits" "$(git rev-parse --short "$base")" "$base_seen" "$raises" "$unpaired"
 
 if [ "$unpaired" -gt 0 ]; then
 	printf '\nEach raise above needs, in ITS OWN commit, a line added to %s that names\n' "$NOTES"

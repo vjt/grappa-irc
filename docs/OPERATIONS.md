@@ -622,8 +622,10 @@ source text. `--check` is red on any difference, in either direction.
 To grow one on purpose, in ONE commit: run `--update`, and add a line to
 `docs/DESIGN_NOTES.md` that names each risen key in backticks
 (`` `deps:Grappa.Session` ``) and says why. `ratchet-gate.sh` checks that
-pairing commit by commit. Lowering a value, a new key and the commit that
-seeded the record need no line.
+pairing commit by commit, against the parent's value or, when the parent
+lacks the key, the merge base's: a record deleted and re-created higher is a
+raise. Lowering a value and a key the base does not carry (a new boundary,
+the commit that seeded the record) need no line.
 
 `priv/ratchet/` has its own worktree bind-mount for the reason `priv/wire/`
 does. The task prints NO VERDICT, and exits 1, when its built-in
