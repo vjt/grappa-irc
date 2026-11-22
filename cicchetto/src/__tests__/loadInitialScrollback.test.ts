@@ -83,6 +83,14 @@ vi.mock("../lib/readCursor", async () => {
   };
 });
 
+// issue 2201 — `dismissFarBehind` asks whether a query window is gone, which
+// resolves the slug to a network id. None is known unless a case says so.
+let networkBySlugMock: (slug: string) => { id: number; slug: string } | undefined = () => undefined;
+vi.mock("../lib/networks", async () => {
+  const actual = await vi.importActual<typeof import("../lib/networks")>("../lib/networks");
+  return { ...actual, networkBySlug: (slug: string) => networkBySlugMock(slug) as never };
+});
+
 // Build a realistic server-shaped row. The server returns DESC, so the
 // page's max id is the tail regardless of position — the impl must not
 // assume page[0].
@@ -186,6 +194,7 @@ describe("#693 far-behind resume", () => {
     countMessagesAfterSpy.mockReset();
     countMessagesAfterSpy.mockResolvedValue(probe(0));
     mockTokenValue = "test-bearer";
+    networkBySlugMock = () => undefined;
   });
 
   it("cold load with a gap LARGER than a page lands on the server tail", async () => {
@@ -527,6 +536,32 @@ describe("#693 far-behind resume", () => {
     // Advances to the newest LOADED row — the forward-only cursor contract
     // still holds; nothing invents an id the pane never showed.
     expect(setReadCursorSpy).toHaveBeenCalledWith("test-bearer", "net", "#dismiss", 3100);
+    expect(farBehindByChannel()[key]).toBeUndefined();
+  });
+
+  // issue 2201 — the pane's exit routes a far-behind window here, not through
+  // `setCursorIfAdvances`. When the window is a query the user just closed,
+  // the server has deleted its cursor and refuses to write it back.
+  it("dismissing a far-behind query the server no longer holds drops the flag and POSTs nothing", async () => {
+    const { loadInitialScrollback, dismissFarBehind, farBehindByChannel } = await import(
+      "../lib/scrollback"
+    );
+    const { applyJoinReply } = await import("../lib/readCursor");
+    const { setQueryWindowsByNetwork } = await import("../lib/queryWindows");
+    const { channelKey } = await import("../lib/channelKey");
+    networkBySlugMock = (slug) => (slug === "net" ? { id: 42, slug } : undefined);
+    const key = channelKey("net", "bob");
+    applyJoinReply("net", "bob", 100);
+    countMessagesAfterSpy.mockResolvedValue(probe(3000));
+    listMessagesSpy.mockResolvedValue([row(3100), row(3099)]);
+    await loadInitialScrollback("net", "bob");
+    expect(farBehindByChannel()[key]).toBeDefined();
+    setQueryWindowsByNetwork({ 42: [] });
+    setReadCursorSpy.mockClear();
+
+    dismissFarBehind("net", "bob");
+
+    expect(setReadCursorSpy).not.toHaveBeenCalled();
     expect(farBehindByChannel()[key]).toBeUndefined();
   });
 });

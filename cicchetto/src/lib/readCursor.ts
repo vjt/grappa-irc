@@ -26,13 +26,17 @@
 // own-msg-unread bugs (see its inline comment). The POST's
 // `read_cursor_set` WS broadcast then re-affirms the id for this device
 // and is the ONLY path that lands a peer's set (or a backward move),
-// via the arm in subscribe.ts.
+// via the arm in subscribe.ts. ONE bounded exception (issue 2201):
+// `setReadCursor` undoes its OWN optimistic advance when the server refused
+// that write with `422 no_query_window`, and only while the advance is still
+// in place — see `rollBack`.
 //
 // Identity-scoped reset: `clearReadCursors()` empties the signal map
 // on logout / token rotation, mirroring scrollback.ts / selection.ts /
 // members.ts.
 
 import { createEffect, createSignal, on } from "solid-js";
+import { readError } from "./api";
 import { token } from "./auth";
 import { canonicalChannel } from "./channelKey";
 import { moduleRoot } from "./moduleRoot";
@@ -77,9 +81,9 @@ const [cursors, setCursors] = moduleRoot(() => createSignal<Record<string, numbe
 // `applyJoinReply`. Both mean the same thing — "adopt this id only if it is
 // ahead of what we hold" — and the module's contract above names exactly ONE
 // path that may move a cursor backward (`applyReadCursorSet`, the
-// authoritative WS echo). Returning `prev` UNCHANGED on a no-op is
-// load-bearing, not tidiness: a rebuilt-but-equal object wakes every cursor
-// consumer for nothing.
+// authoritative WS echo), plus its one bounded exception, `rollBack` below.
+// Returning `prev` UNCHANGED on a no-op is load-bearing, not tidiness: a
+// rebuilt-but-equal object wakes every cursor consumer for nothing.
 const advanceOnly = (
   prev: Record<string, number>,
   key: string,
@@ -88,6 +92,21 @@ const advanceOnly = (
   const cur = prev[key];
   if (cur !== undefined && next <= cur) return prev;
   return { ...prev, [key]: next };
+};
+
+// issue 2201 — the contract's one bounded exception to "only the WS echo moves
+// a cursor backward": it undoes THIS device's own optimistic advance, after the
+// server refused that write with `422 no_query_window`, and only while the
+// cursor still holds the id it wrote — a value moved since is someone else's.
+const rollBack = (
+  prev: Record<string, number>,
+  key: string,
+  wrote: number,
+  before: number | undefined,
+): Record<string, number> => {
+  if (prev[key] !== wrote) return prev;
+  const { [key]: _undone, ...rest } = prev;
+  return before === undefined ? rest : { ...rest, [key]: before };
 };
 
 /**
@@ -153,7 +172,9 @@ export const applyMeEnvelope = (envelope: Record<string, Record<string, number>>
  * **Forward-only** (issue 2052). It used to land the reply's id
  * unconditionally, which made this a second door that moves a cursor
  * BACKWARD — contradicting this module's own contract, which names
- * `applyReadCursorSet` as the only one. The visible cost was a badge that
+ * `applyReadCursorSet` as the only one (the issue 2201 `rollBack` is the
+ * contract's one bounded exception, and it undoes only this device's own
+ * refused write). The visible cost was a badge that
  * came back after every resume: `setReadCursor` leaves the local cursor
  * optimistically ahead when its POST fails (deliberately — see the
  * no-revert argument at that call site), which is exactly what a stretch
@@ -207,7 +228,9 @@ export const applyReadCursorSet = (
  * before the POST (see the inline comment), so the originating device
  * reflects its own write synchronously. The server's `read_cursor_set`
  * WS broadcast re-affirms the same id (and is the ONLY path that lands a
- * peer's set, or a backward move) via the arm in subscribe.ts.
+ * peer's set, or a backward move) via the arm in subscribe.ts. The one
+ * bounded exception (issue 2201): a `422 no_query_window` refusal rolls this
+ * write's own advance back, only while that advance is still in place.
  *
  * Returns `void`: the response payload is read only when needed for
  * tests; production code learns its OWN write optimistically and peer
@@ -265,7 +288,9 @@ export const setReadCursor = async (
   // Forward-only so an in-flight stale POST can't clobber a peer's more-
   // recent advance already landed via the (unconditional, last-write-wins)
   // applyReadCursorSet echo — only that authoritative WS path moves the
-  // cursor backward. On SUCCESS the echo for this write re-affirms the
+  // cursor backward, bar the bounded 2201 rollback below (this write's own
+  // advance, refused as `no_query_window`, while it is still in place). On
+  // SUCCESS the echo for this write re-affirms the
   // same id (no-op set) and the server (last-write-wins) adopts exactly
   // the optimistic value.
   //
@@ -285,6 +310,19 @@ export const setReadCursor = async (
   // message_belongs? guard is unreachable from here — every posted id is
   // a row cic rendered or sent in this channel.)
   //
+  // issue 2201 — the ONE refusal that IS rolled back: `422 no_query_window`,
+  // a DM key whose query window the server does not hold (yet). It wrote
+  // nothing, and the advance left in place would drop every later settle at
+  // the same tail (`setCursorIfAdvances`: `candidateId <= current`), so the
+  // server would hold no cursor for that DM until a newer row is read. The
+  // write exposed to it is the RC2 baseline in `loadInitialScrollback`, which
+  // no window guard fronts: a DM with history opened with no cursor, before
+  // the window's commit reaches the server. The roll-back is the
+  // compare-and-swap the paragraph above declines in general: it puts the
+  // previous value back only while the local cursor still holds THIS write's
+  // id, so a forward advance that landed meanwhile (a WS echo, another tab)
+  // stands. It sends nothing itself — the next settle is what writes.
+  //
   // The in-pane divider reads the FROZEN markerCursorId, never this live
   // signal, so the freeze contract is untouched. The lone exception is
   // the cold-latch effect (ScrollbackPane), which picks up the FIRST
@@ -292,6 +330,7 @@ export const setReadCursor = async (
   // now be an optimistic one during the narrow cold-load-before-hydration
   // window; pre-existing race shape, see that effect's comment.
   const optimisticKey = cacheKey(networkSlug, channel);
+  const before = cursors()[optimisticKey];
   setCursors((prev) => advanceOnly(prev, optimisticKey, messageId));
   const url = `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channel)}/read-cursor`;
   const res = await fetch(url, {
@@ -304,6 +343,9 @@ export const setReadCursor = async (
   });
   if (!res.ok) {
     console.warn(`[readCursor] set failed`, networkSlug, channel, messageId, res.status);
+    if (res.status === 422 && (await readError(res)).code === "no_query_window") {
+      setCursors((prev) => rollBack(prev, optimisticKey, messageId, before));
+    }
   }
 };
 

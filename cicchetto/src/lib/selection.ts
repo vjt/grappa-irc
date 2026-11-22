@@ -10,7 +10,7 @@ import { evictFromMru, pickLiveMru, recordFocus } from "./mru";
 import { channelsBySlug, networkBySlug, networks, user } from "./networks";
 import { nickEquals } from "./nickEquals";
 import { presenceRowVisible } from "./presenceFilter";
-import { queryWindowsByNetwork } from "./queryWindows";
+import { queryWindowGone, queryWindowOpen, queryWindowsByNetwork } from "./queryWindows";
 import { getReadCursor, readCursors, setReadCursor } from "./readCursor";
 import { readingAtTailKey } from "./readingAtTail";
 import {
@@ -242,12 +242,7 @@ const exports = identityScopedStore((onIdentityChange) => {
       const chans = cbs[slug] ?? [];
       if (chans.some((c) => c.name === name)) return true;
       const net = networkBySlug(slug);
-      if (net) {
-        const qs = qwbn[net.id] ?? [];
-        const casemapping = casemappingForNetwork(net.id);
-        if (qs.some((q) => nickEquals(q.targetNick, name, casemapping))) return true;
-      }
-      return false;
+      return net !== undefined && queryWindowOpen(net.id, name);
     };
 
     const next = pickLiveMru(excludeKey, isLiveKey);
@@ -328,12 +323,7 @@ const exports = identityScopedStore((onIdentityChange) => {
         if (chans.some((c) => c.name === sel.channelName)) return true;
         if (windowIsPresent(channelKey(sel.networkSlug, sel.channelName))) return true;
         const net = networkBySlug(sel.networkSlug);
-        if (net) {
-          const qs = queryWindowsByNetwork()[net.id] ?? [];
-          const casemapping = casemappingForNetwork(net.id);
-          if (qs.some((q) => nickEquals(q.targetNick, sel.channelName, casemapping))) return true;
-        }
-        return false;
+        return net !== undefined && queryWindowOpen(net.id, sel.channelName);
       }
       case "encrypted":
         return encryptedWindowOpen(sel);
@@ -696,6 +686,12 @@ const exports = identityScopedStore((onIdentityChange) => {
     candidateId: number,
   ): void => {
     if (farBehindByChannel()[channelKey(networkSlug, channelName)]) return;
+    // issue 2201 — a query the server no longer holds has no cursor: closing
+    // it deleted the row, and the server answers `422 no_query_window` rather
+    // than write it back. The write this stops is the exit settle — the close's
+    // `query_windows_list` moves the selection, and the pane leaving the window
+    // offers its visible tail here — but no writer has a cursor to move there.
+    if (queryWindowGone(networkSlug, channelName)) return;
     const current = getReadCursor(networkSlug, channelName);
     if (current !== null && candidateId <= current) return;
     const bearer = untrack(token);
@@ -977,7 +973,6 @@ const exports = identityScopedStore((onIdentityChange) => {
     if (sel.kind !== "channel" && sel.kind !== "query" && sel.kind !== "encrypted") return;
 
     const cbs = channelsBySlug() ?? {};
-    const qwbn = queryWindowsByNetwork();
     const selKey = channelKey(sel.networkSlug, sel.channelName);
 
     const stillLive = (() => {
@@ -1001,10 +996,7 @@ const exports = identityScopedStore((onIdentityChange) => {
         return windowIsPresent(selKey);
       }
       const net = networkBySlug(sel.networkSlug);
-      if (!net) return false;
-      const queries = qwbn[net.id] ?? [];
-      const casemapping = casemappingForNetwork(net.id);
-      return queries.some((q) => nickEquals(q.targetNick, sel.channelName, casemapping));
+      return net !== undefined && queryWindowOpen(net.id, sel.channelName);
     })();
 
     const wasLive = lastSeenLive.get(selKey) ?? false;

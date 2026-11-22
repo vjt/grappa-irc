@@ -57,6 +57,15 @@ vi.mock("../lib/readCursor", async () => {
   };
 });
 
+// issue 2201 — the query-window guard resolves the slug to a network id. No
+// network is known by default (the real store is empty here too), which keeps
+// every case above the 2201 block on the plain path.
+let networkBySlugMock: (slug: string) => { id: number; slug: string } | undefined = () => undefined;
+vi.mock("../lib/networks", async () => {
+  const actual = await vi.importActual<typeof import("../lib/networks")>("../lib/networks");
+  return { ...actual, networkBySlug: (slug: string) => networkBySlugMock(slug) as never };
+});
+
 // #693 — the far-behind freeze reads this map through selection.ts. Keep the
 // rest of scrollback live; the spec drives the one signal it needs.
 let farBehindMap: Record<string, { missed: number; resumeFrom: number }> = {};
@@ -72,6 +81,9 @@ describe("setCursorIfAdvances", () => {
     setReadCursorSpy.mockClear();
     mockTokenValue = null;
     farBehindMap = {};
+    networkBySlugMock = () => undefined;
+    const { setQueryWindowsByNetwork } = await import("../lib/queryWindows");
+    setQueryWindowsByNetwork({});
   });
 
   it("does NOT POST while the window is far behind (#693)", async () => {
@@ -156,5 +168,51 @@ describe("setCursorIfAdvances", () => {
     setCursorIfAdvances("net", "#chan", 150);
 
     expect(setReadCursorSpy).not.toHaveBeenCalled();
+  });
+
+  // issue 2201 — closing a query deletes its read cursor on the server, and
+  // the pane leaving the closed window offers its tail to this door. The
+  // server refuses that write (`422 no_query_window`); cic must not send it.
+  describe("a query the server no longer holds (issue 2201)", () => {
+    const openedAt = "2026-11-22T00:00:00Z";
+
+    beforeEach(() => {
+      networkBySlugMock = (slug) => (slug === "freenode" ? { id: 42, slug } : undefined);
+    });
+
+    it("does NOT POST for a DM with no query window", async () => {
+      const { setCursorIfAdvances } = await import("../lib/selection");
+      const { setQueryWindowsByNetwork } = await import("../lib/queryWindows");
+      mockTokenValue = "test-bearer";
+      setQueryWindowsByNetwork({ 42: [] });
+
+      setCursorIfAdvances("freenode", "bob", 3);
+
+      expect(setReadCursorSpy).not.toHaveBeenCalled();
+    });
+
+    it("POSTs for a DM whose window is open, matched case-insensitively", async () => {
+      const { setCursorIfAdvances } = await import("../lib/selection");
+      const { setQueryWindowsByNetwork } = await import("../lib/queryWindows");
+      mockTokenValue = "test-bearer";
+      setQueryWindowsByNetwork({ 42: [{ targetNick: "Bob", openedAt }] });
+
+      setCursorIfAdvances("freenode", "bob", 3);
+
+      expect(setReadCursorSpy).toHaveBeenCalledWith("test-bearer", "freenode", "bob", 3);
+    });
+
+    it("a channel and $server need no query window", async () => {
+      const { setCursorIfAdvances } = await import("../lib/selection");
+      const { setQueryWindowsByNetwork } = await import("../lib/queryWindows");
+      mockTokenValue = "test-bearer";
+      setQueryWindowsByNetwork({ 42: [] });
+
+      setCursorIfAdvances("freenode", "#chan", 3);
+      setCursorIfAdvances("freenode", "$server", 4);
+
+      expect(setReadCursorSpy).toHaveBeenCalledWith("test-bearer", "freenode", "#chan", 3);
+      expect(setReadCursorSpy).toHaveBeenCalledWith("test-bearer", "freenode", "$server", 4);
+    });
   });
 });

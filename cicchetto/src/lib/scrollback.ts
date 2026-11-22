@@ -16,6 +16,7 @@ import { identityMoved } from "./identityMoved";
 import { identityScopedStore } from "./identityScopedStore";
 import { membersByChannel } from "./members";
 import { presenceRowVisible } from "./presenceFilter";
+import { queryWindowGone } from "./queryWindows";
 import { getReadCursor, setReadCursor } from "./readCursor";
 import { getResumeCursor, recordSeen } from "./reconnectBackfill";
 import { countsAsUnreadEvent, countsAsUnreadMessage, type UnreadMeasurement } from "./unreadCount";
@@ -1297,6 +1298,10 @@ const exports = identityScopedStore((onIdentityChange) => {
     const newest = rows[rows.length - 1];
     clearFarBehind(key);
     if (!newest) return null;
+    // issue 2201 — the pane's exit routes a far-behind window here instead of
+    // through `setCursorIfAdvances`, so this POST needs the same refusal that
+    // door makes: a query the server no longer holds has no cursor.
+    if (queryWindowGone(slug, name)) return null;
     void setReadCursor(t, slug, name, newest.id);
     return newest.id;
   };

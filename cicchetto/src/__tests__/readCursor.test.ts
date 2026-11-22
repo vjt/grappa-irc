@@ -338,6 +338,82 @@ describe("readCursor", () => {
     });
   });
 
+  // issue 2201 — the one refusal the optimistic advance is rolled back on.
+  // A DM cursor write that reaches the server before the query window does
+  // (the RC2 baseline POST in `loadInitialScrollback`, which no window guard
+  // fronts) is answered `422 no_query_window` and wrote nothing. Leaving the
+  // local cursor ahead there would drop every later settle at the same tail
+  // (`setCursorIfAdvances`: `candidateId <= current`), so the server would
+  // hold no cursor for that DM until a newer row is read. Rolled back, the
+  // next settle writes.
+  describe("a 422 no_query_window rolls the optimistic advance back (issue 2201)", () => {
+    const noWindow = () =>
+      new Response(JSON.stringify({ error: "no_query_window" }), { status: 422 });
+
+    it("puts back the cursor held before the write, so the same id is offered again", async () => {
+      const { setReadCursor, getReadCursor, applyJoinReply, clearReadCursors } = await import(
+        "../lib/readCursor"
+      );
+      clearReadCursors();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      applyJoinReply("freenode", "alice", 100);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(noWindow()));
+
+      await setReadCursor("tok", "freenode", "alice", 150);
+
+      expect(getReadCursor("freenode", "alice")).toBe(100);
+    });
+
+    it("leaves no cursor when there was none before the write", async () => {
+      const { setReadCursor, getReadCursor, clearReadCursors } = await import("../lib/readCursor");
+      clearReadCursors();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(noWindow()));
+
+      await setReadCursor("tok", "freenode", "alice", 42);
+
+      expect(getReadCursor("freenode", "alice")).toBeNull();
+    });
+
+    it("does not undo a forward advance that landed while the POST was in flight", async () => {
+      const { setReadCursor, getReadCursor, applyReadCursorSet, clearReadCursors } = await import(
+        "../lib/readCursor"
+      );
+      clearReadCursors();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      let answer: (r: Response) => void = () => {};
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockReturnValue(new Promise<Response>((resolve) => (answer = resolve))),
+      );
+
+      const p = setReadCursor("tok", "freenode", "alice", 150);
+      applyReadCursorSet("freenode", "alice", 200);
+      answer(noWindow());
+      await p;
+
+      expect(getReadCursor("freenode", "alice")).toBe(200);
+    });
+
+    it("keeps the advance on any other refusal (issue 2052 stands)", async () => {
+      const { setReadCursor, getReadCursor, clearReadCursors } = await import("../lib/readCursor");
+      clearReadCursors();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.stubGlobal(
+        "fetch",
+        vi
+          .fn()
+          .mockResolvedValue(
+            new Response(JSON.stringify({ error: "message_not_in_channel" }), { status: 422 }),
+          ),
+      );
+
+      await setReadCursor("tok", "freenode", "alice", 150);
+
+      expect(getReadCursor("freenode", "alice")).toBe(150);
+    });
+  });
+
   it("clearReadCursors removes every entry from the signal map", async () => {
     const { clearReadCursors, applyMeEnvelope, getReadCursor } = await import("../lib/readCursor");
     applyMeEnvelope({ freenode: { "#grappa": 100, "#cicchetto": 200 } });
