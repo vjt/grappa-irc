@@ -6060,6 +6060,22 @@ describe("S1 sibling copies — send", () => {
     expect(a.state.copyq).toEqual({});
   });
 
+  it("siblingDidKey answers the key of a sibling our list names, and nothing once our list drops it", () => {
+    const alice = ownAccount("alice", 3);
+    const [a, b, c] = alice.devices as [OwnDevice, OwnDevice, OwnDevice];
+    const engine = () => engineFor(alice, a);
+    engine().setSiblings([b, c].map((x) => deviceBlock(x.account, keyOf(alice.master))));
+    expect(engine().siblingDidKey(b.own.did)).toBe(keyOf(b.account));
+    // This device is not its own sibling.
+    expect(engine().siblingDidKey(a.own.did)).toBeUndefined();
+
+    // Our master's list moves on without b; nothing pruned the sibling yet.
+    a.own.list = signedList(alice.master, 2, [a.account, c.account]);
+    expect(Object.keys(a.state.siblings)).toContain(keyOf(b.account));
+    expect(engine().siblingDidKey(b.own.did)).toBeUndefined();
+    expect(engine().siblingDidKey(c.own.did)).toBe(keyOf(c.account));
+  });
+
   it("siblingKeys opens nothing to a sibling our own list dropped, on a KEYS whose older list still names it", () => {
     const alice = ownAccount("alice", 3);
     const [a, b, c] = alice.devices as [OwnDevice, OwnDevice, OwnDevice];

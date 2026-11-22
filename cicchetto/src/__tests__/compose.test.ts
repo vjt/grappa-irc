@@ -238,7 +238,17 @@ vi.mock("../lib/encryptedChats", async () => {
     equals: false,
   });
   deleteChat.fire = setDeleted;
-  return { sendEncrypted: vi.fn(async () => undefined), encryptedChatDeleted };
+  // compose.ts also reads the encrypted-channel seam: a channel is
+  // encrypted only when its topic tag says so, so the default here is
+  // false — every pre-existing fixture stays on the cleartext path —
+  // and the encrypted send is a stub, exercised in encryptedChats' own
+  // tests.
+  return {
+    sendEncrypted: vi.fn(async () => undefined),
+    sendChannelEncrypted: vi.fn(async () => undefined),
+    channelEncrypted: vi.fn(() => false),
+    encryptedChatDeleted,
+  };
 });
 
 // Mock selection.ts — compose.ts reads selectedChannel for channel-context verbs.
@@ -7483,6 +7493,58 @@ describe("compose submit — an unreadable list query is reported, not fired (is
 
     expect(socket.pushChannelMode).toHaveBeenCalledWith(1, "#a", "m", []);
     expect(result).toEqual({ ok: true });
+  });
+});
+
+// A row said in an encrypted channel goes out with the roster the channel
+// window holds — and with none when the members store holds no list for
+// it: a roster nobody knows is not an empty one, and the channel send
+// keeps the row waiting instead of auditing the epoch against nobody.
+describe("compose in an encrypted channel", () => {
+  it("sends with no roster when the members store holds no list for the channel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const encrypted = await import("../lib/encryptedChats");
+    const members = await import("../lib/members");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#sekrit");
+    vi.mocked(encrypted.channelEncrypted).mockReturnValue(true);
+    vi.mocked(members.membersByChannel).mockReturnValue({});
+    try {
+      compose.setDraft(k, "ciao a tutti");
+      expect(await compose.submit(k, "freenode", "#sekrit")).toEqual({ ok: true });
+
+      expect(vi.mocked(encrypted.sendChannelEncrypted).mock.calls).toEqual([
+        ["freenode", "#sekrit", "ciao a tutti", undefined],
+      ]);
+    } finally {
+      vi.mocked(encrypted.channelEncrypted).mockReturnValue(false);
+    }
+  });
+
+  it("sends with the nicks of the list the members store holds for the channel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const encrypted = await import("../lib/encryptedChats");
+    const members = await import("../lib/members");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#sekrit");
+    vi.mocked(encrypted.channelEncrypted).mockReturnValue(true);
+    vi.mocked(members.membersByChannel).mockReturnValue({
+      [k]: [
+        { nick: "alice", modes: [] },
+        { nick: "Bob", modes: ["@"] },
+      ],
+    });
+    try {
+      compose.setDraft(k, "ciao a tutti");
+      expect(await compose.submit(k, "freenode", "#sekrit")).toEqual({ ok: true });
+
+      expect(vi.mocked(encrypted.sendChannelEncrypted).mock.calls).toEqual([
+        ["freenode", "#sekrit", "ciao a tutti", ["alice", "Bob"]],
+      ]);
+    } finally {
+      vi.mocked(encrypted.channelEncrypted).mockReturnValue(false);
+      vi.mocked(members.membersByChannel).mockReturnValue({});
+    }
   });
 });
 
