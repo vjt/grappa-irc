@@ -8466,9 +8466,16 @@ reverse it.
 ### Not measured
 
 How often a param-taking channel mode precedes a membership mode in real
-traffic; the e2e spec (`issue2692-mode-bo-members-grade.spec.ts`) was
-written but not run, so its red-before-cure and whether bahamut echoes
-`+bo` in the requested order are predictions; the cost of the per-MODE
-member-map diff (O(members of the channel)); the ordering argument above,
-which is read from Phoenix's fastlane and local-send semantics, not observed
-on a socket.
+traffic; the e2e spec's red-before-cure (it has only ever run against the
+cure); the cost of the per-MODE member-map diff (O(members of the channel));
+the ordering argument above, which is read from Phoenix's fastlane and
+local-send semantics, not observed on a socket.
+
+Measured afterwards by CI, not by this slice: the e2e spec
+(`issue2692-mode-bo-members-grade.spec.ts`) passed on the merge of
+`9e419738f` into `59bc1ce44` (job 137163255071, "cicchetto + grappa +
+azzurra-testnet (shard 2/4)", log line 6874, shard 292 passed).
+`IrcPeer.mode()` resolves only on an echo whose `raw_modes` is exactly
+`+bo` (`channelModeEcho`, `e2e/fixtures/ircClient.ts`) and fails on a
+timeout, so that green also measures that bahamut echoed `+bo` in the
+requested order.
