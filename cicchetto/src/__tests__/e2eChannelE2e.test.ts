@@ -28,7 +28,13 @@ import {
   sendChannel,
 } from "../lib/e2e/channelE2e";
 import type { Outbound } from "../lib/e2e/engine";
-import { epochFor, type GroupSessionsState, newGroupSessionsState } from "../lib/e2e/groupSessions";
+import {
+  createEpoch,
+  epochFor,
+  type GroupSessionsState,
+  gkeyInner,
+  newGroupSessionsState,
+} from "../lib/e2e/groupSessions";
 import {
   decodePayload,
   encodePayload,
@@ -1341,6 +1347,102 @@ describe("receiveGkey", () => {
     requestKey(s.bob.deps, s.bob.groups, CHAN);
     expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
       { kind: "channel_key_received", channel: CHAN, from: "alice", sid: gkey.sid },
+    ]);
+  });
+
+  it("drops a gkey whose holders do not include its sender, and keeps the epoch held", () => {
+    const clock = { t: NOW };
+    const members = ["alice", "bob", "dave"];
+    const alice = makeSide("alice", clock, () => members);
+    const bob = makeSide("bob", clock, () => members);
+    distributeKey(alice.deps, alice.groups, CHAN, members);
+    requestKey(bob.deps, bob.groups, CHAN);
+    const first = alice.dm.sent.find((s) => s.nick === "bob")?.inner ?? {};
+    receiveGkey(bob.deps, bob.groups, first, "alice", didFor("alice"));
+    const held = epochFor(bob.groups, CHAN)?.sid;
+    // The next epoch in sequence, from a member on the roster who does not
+    // list itself among the holders of the epoch it hands out.
+    const other = newGroupSessionsState();
+    createEpoch(other, CHAN, [didFor("alice"), didFor("bob")], clock.t, {
+      seq: 1,
+      minter: didFor("alice"),
+    });
+    const successor = gkeyInner(other, CHAN) as unknown as Record<string, unknown>;
+    expect(receiveGkey(bob.deps, bob.groups, successor, "dave", didFor("dave"))).toEqual([
+      {
+        kind: "channel_dropped",
+        channel: CHAN,
+        reason: "sender-not-holder",
+        detail: expect.any(String),
+      },
+    ]);
+    expect(epochFor(bob.groups, CHAN)?.sid).toBe(held);
+  });
+
+  it("drops a gkey whose minter is not one of its holders, and keeps the epoch held", () => {
+    const clock = { t: NOW };
+    const members = ["alice", "bob", "dave"];
+    const alice = makeSide("alice", clock, () => members);
+    const bob = makeSide("bob", clock, () => members);
+    distributeKey(alice.deps, alice.groups, CHAN, members);
+    requestKey(bob.deps, bob.groups, CHAN);
+    const first = alice.dm.sent.find((s) => s.nick === "bob")?.inner ?? {};
+    receiveGkey(bob.deps, bob.groups, first, "alice", didFor("alice"));
+    const held = epochFor(bob.groups, CHAN)?.sid;
+    // The sender is a holder, but the minter it names holds nothing here.
+    const other = newGroupSessionsState();
+    createEpoch(other, CHAN, [didFor("alice"), didFor("bob"), didFor("dave")], clock.t, {
+      seq: 1,
+      minter: "did-0",
+    });
+    const successor = gkeyInner(other, CHAN) as unknown as Record<string, unknown>;
+    expect(receiveGkey(bob.deps, bob.groups, successor, "dave", didFor("dave"))).toEqual([
+      {
+        kind: "channel_dropped",
+        channel: CHAN,
+        reason: "minter-not-holder",
+        detail: expect.any(String),
+      },
+    ]);
+    expect(epochFor(bob.groups, CHAN)?.sid).toBe(held);
+  });
+
+  it("the key a device hands out after a rotation from a member it had not counted is taken by a holder that missed the rotation", async () => {
+    const clock = { t: NOW };
+    const members = ["alice", "bob", "carol", "dave"];
+    const alice = makeSide("alice", clock, () => members);
+    const bob = makeSide("bob", clock, () => members);
+    const carol = makeSide("carol", clock, () => members);
+    createEpoch(alice.groups, CHAN, [didFor("alice"), didFor("bob"), didFor("dave")], clock.t, {
+      minter: didFor("alice"),
+    });
+    const first = gkeyInner(alice.groups, CHAN) as unknown as Record<string, unknown>;
+    // Carol takes the epoch from Alice; Bob takes it from Dave, whose holder
+    // set has not learned Alice.
+    requestKey(carol.deps, carol.groups, CHAN);
+    receiveGkey(carol.deps, carol.groups, first, "alice", didFor("alice"));
+    const { minter: _minter, ...fromDave } = first;
+    requestKey(bob.deps, bob.groups, CHAN);
+    receiveGkey(
+      bob.deps,
+      bob.groups,
+      { ...fromDave, holders: [didFor("bob"), didFor("dave")] },
+      "dave",
+      didFor("dave"),
+    );
+    // Alice, the first holder in her own view, rotates the day-old epoch;
+    // Bob reads the rotation, Carol misses it.
+    await sendChannel(alice.deps, alice.groups, CHAN, "hi", members);
+    clock.t = NOW + DAY;
+    const rotation = await rotateDue(alice.deps, alice.groups, [CHAN]);
+    const payload = rotation.outbound.find((o) => o.target === CHAN)?.payload ?? "";
+    await receiveChannel(bob.deps, bob.groups, CHAN, "alice", didFor("alice"), payload);
+    const rotated = epochFor(alice.groups, CHAN)?.sid;
+    expect(epochFor(bob.groups, CHAN)?.sid).toBe(rotated);
+    // The key Bob hands out now, as every answer and re-distribution sends it.
+    const handedOut = gkeyInner(bob.groups, CHAN) as unknown as Record<string, unknown>;
+    expect(receiveGkey(carol.deps, carol.groups, handedOut, "bob", didFor("bob"))).toEqual([
+      { kind: "channel_key_received", channel: CHAN, from: "bob", sid: rotated },
     ]);
   });
 

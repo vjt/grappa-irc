@@ -1016,14 +1016,22 @@ export async function receiveChannel(
   }
   if (decrypted.kind === "rotated") {
     // The grotate carried the new epoch under the old one's key, and this
-    // device decrypted it: it holds the new epoch too, so its did joins
-    // the holder set, and the nick mapping learns it.
+    // device decrypted it: it holds the new epoch too, and so does the
+    // device that minted it and sent the grotate, which this device's
+    // holder set may not have counted yet. Both dids join the holder set,
+    // and the nick mapping learns them: the epoch's minter is one of its
+    // holders, as every gkey handed out of it must say.
     const held = epochFor(groups, channel);
     if (held !== undefined && held.sid === decrypted.newSid) {
-      if (!held.holders.includes(deps.ownDid)) held.holders.push(deps.ownDid);
       const byNick = holderNicksOf(held);
-      const known = atNick(byNick, deps.ownNick) ?? [];
-      setNick(byNick, deps.ownNick, [...new Set([...known, deps.ownDid])]);
+      for (const [nick, did] of [
+        [deps.ownNick, deps.ownDid],
+        [from, fromDid],
+      ] as const) {
+        if (!held.holders.includes(did)) held.holders.push(did);
+        const known = atNick(byNick, nick) ?? [];
+        setNick(byNick, nick, [...new Set([...known, did])]);
+      }
       held.holderNicks = byNick;
     }
     return withNetwork(deps, {
@@ -1061,13 +1069,15 @@ export async function receiveChannel(
  * be one of the sender's devices, falling back to the nick while the
  * sender's list is unknown — and a first epoch is imported only after
  * this device asked for the key — a key nobody asked for never arms the
- * channel. A re-sent key merges its holder set into the held epoch; a
- * key for an epoch whose holders name a did no longer in the roster is
- * stale and is dropped, never stored; a key whose seq is not a first
- * epoch at 0, a successor at exactly the held seq + 1, or a same-seq
- * rival that wins the minter tie-break is superseded and is dropped,
- * never stored; a key that is not an epoch key is dropped, never
- * stored. The importer's own did joins the holder set: it holds the
+ * channel. A key whose holders leave out its sender's device, or name a
+ * minter outside them, is dropped, never stored, roster or not: those
+ * checks read the key alone. A re-sent key merges its holder set into
+ * the held epoch; a key for an epoch whose holders name a did no longer
+ * in the roster is stale and is dropped, never stored; a key whose seq
+ * is not a first epoch at 0, a successor at exactly the held seq + 1, or
+ * a same-seq rival that wins the minter tie-break is superseded and is
+ * dropped, never stored; a key that is not an epoch key is dropped,
+ * never stored. The importer's own did joins the holder set: it holds the
  * key now. `held: true` means the gkey was NOT judged: an epoch is held
  * but no roster is, so the sender and staleness checks would run
  * provisionally — the caller holds it for retry instead. Never throws
@@ -1089,6 +1099,36 @@ function attemptGkey(
           channel: gkey.ch,
           reason: "sender-not-in-roster",
           detail: "the sender's device is not on the roster",
+        },
+      ],
+      held: false,
+    };
+  }
+  if (!gkey.holders.includes(fromDid)) {
+    // Whoever hands out an epoch holds it: a holder set that leaves its
+    // sender out hides that device from every audit of the epoch.
+    return {
+      events: [
+        {
+          kind: "channel_dropped",
+          channel: gkey.ch,
+          reason: "sender-not-holder",
+          detail: "the sender's device is not among the key's holders",
+        },
+      ],
+      held: false,
+    };
+  }
+  if (gkey.minter !== undefined && !gkey.holders.includes(gkey.minter)) {
+    // The minter decides a same-seq tie-break: one outside the holders
+    // names a device nobody can audit, and would win that tie-break for it.
+    return {
+      events: [
+        {
+          kind: "channel_dropped",
+          channel: gkey.ch,
+          reason: "minter-not-holder",
+          detail: "the key's minter is not among its holders",
         },
       ],
       held: false,
