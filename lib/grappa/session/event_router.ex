@@ -143,6 +143,14 @@ defmodule Grappa.Session.EventRouter do
         }
 
   @typedoc """
+  issue 2692 — what one channel MODE did to the roster: nick (the members
+  map's own spelling) → that member's ABSOLUTE mode list after the line.
+  Written onto the `:mode` row's meta as `member_modes`; empty means the line
+  changed nobody.
+  """
+  @type member_modes :: %{String.t() => [String.t()]}
+
+  @typedoc """
   #400 — injected open-query-window predicate `(subject, network_id, nick)
   -> bool`. Read from `state.deps.query_window_open?` (#1390 bundled the
   host's ten injected callbacks into one `Grappa.Session.Deps` struct; before
@@ -1177,7 +1185,7 @@ defmodule Grappa.Session.EventRouter do
       # signs + mode letters is a malformed LINE, and neither reader may draw
       # a conclusion from it. The raw `:persist` row below is emitted either
       # way — the reject withholds derived STATE, never the transcript.
-      {members, channel_modes, mode_effects} =
+      {members, member_modes, channel_modes, mode_effects} =
         apply_channel_mode_token(state, target, modes, args)
 
       {state, eff} =
@@ -1187,7 +1195,7 @@ defmodule Grappa.Session.EventRouter do
           target,
           sender,
           nil,
-          channel_mode_meta(state, modes, args)
+          channel_mode_meta(state, modes, args, member_modes)
         )
 
       {:cont, state, [eff | mode_effects]}
@@ -4719,27 +4727,44 @@ defmodule Grappa.Session.EventRouter do
   # `PresenceFilter.hidden?/2` already resolves it to SHOW — tagging it would
   # change nothing there except to override an operator who explicitly pinned
   # that window to `hide`, which is not what this issue asked for.
-  @spec channel_mode_meta(state(), String.t(), [String.t()]) :: map()
-  defp channel_mode_meta(state, modes, args) do
+  #
+  # issue 2692 — `member_modes` rides the same row: the ABSOLUTE mode list of
+  # every member this line changed, as the walker below derived it. cic applies
+  # it to its roster instead of walking the mode letters again — a second walk
+  # in a second language, which had already drifted (it never learned the
+  # network's PREFIX or CHANMODES). Same "presence IS the test" rule as the tag
+  # above: a line that changed nobody carries no key, and neither does any row
+  # persisted before the key existed.
+  @spec channel_mode_meta(state(), String.t(), [String.t()], member_modes()) :: map()
+  defp channel_mode_meta(state, modes, args, member_modes) do
     isupport = Map.get(state, :isupport, ISupport.default())
-    meta = %{modes: modes, args: args}
 
-    if ISupport.structural_mode_token?(isupport, modes),
-      do: Map.put(meta, Grappa.Scrollback.Message.structural_meta_key(), true),
-      else: meta
+    structural =
+      if ISupport.structural_mode_token?(isupport, modes),
+        do: %{Grappa.Scrollback.Message.structural_meta_key() => true},
+        else: %{}
+
+    roster = if member_modes == %{}, do: %{}, else: %{member_modes: member_modes}
+
+    Map.merge(%{modes: modes, args: args}, Map.merge(structural, roster))
   end
 
   # The gated channel-MODE application: on a valid token both readers run and
   # the cache delta is emitted; on a rejected one the roster, the cache and
-  # the effect list are all left exactly as they were.
+  # the effect list are all left exactly as they were — and so nobody's modes
+  # changed, which is what the empty `member_modes` says.
   @spec apply_channel_mode_token(state(), String.t(), String.t(), [String.t()]) ::
-          {members(), %{String.t() => channel_mode_entry()}, [effect()]}
+          {members(), member_modes(), %{String.t() => channel_mode_entry()}, [effect()]}
   defp apply_channel_mode_token(state, target, modes, args) do
     channel_modes = Map.get(state, :channel_modes, %{})
 
     if valid_mode_token?(modes) do
       isupport = Map.get(state, :isupport, ISupport.default())
       members = apply_mode_string(state.members, target, modes, args, isupport)
+
+      member_modes =
+        changed_member_modes(Map.get(state.members, target, %{}), Map.get(members, target, %{}))
+
       chan_key = normalize_channel(target, casemapping(state))
       existing_entry = Map.get(channel_modes, chan_key, empty_mode_entry())
       new_entry = apply_channel_mode_string(existing_entry, modes, args, isupport)
@@ -4751,10 +4776,22 @@ defmodule Grappa.Session.EventRouter do
           []
         end
 
-      {members, Map.put(channel_modes, chan_key, new_entry), effects}
+      {members, member_modes, Map.put(channel_modes, chan_key, new_entry), effects}
     else
-      {state.members, channel_modes, []}
+      {state.members, %{}, channel_modes, []}
     end
+  end
+
+  # issue 2692 — the roster delta as a DIFF of the one channel's member map,
+  # before vs after the walk: no second walker, no new state. MODE never adds
+  # or removes a member, so the after-map's keys are the whole population; a
+  # target that is not a member was a no-op in the walk and so is absent here.
+  # A list that only changed order (`-o+o` on `["+", "@"]`) reads as changed;
+  # the value is absolute, so restating it costs nothing.
+  @spec changed_member_modes(%{String.t() => [String.t()]}, %{String.t() => [String.t()]}) ::
+          member_modes()
+  defp changed_member_modes(prev, next) do
+    for {nick, modes} <- next, Map.get(prev, nick) != modes, into: %{}, do: {nick, modes}
   end
 
   # walk_channel_modes: same sticky-sign recursive pattern as walk_modes/5,

@@ -55,6 +55,19 @@ defmodule Grappa.Scrollback.MetaTest do
       assert {:ok, %{"statusmsg" => "@"}} = Meta.dump(%{statusmsg: "@"})
     end
 
+    # issue 2692 — the router writes each changed member's absolute modes onto
+    # the `:mode` row. An allowlist that does not know the key rejects the
+    # whole cast, the row never persists, and cic never learns of the grade:
+    # the same failure shape as the two cases above. The inner keys are NICKS
+    # and must come back as strings — the atom table is not for peer input.
+    test "a mode row's member_modes survives cast, load and dump, nicks staying strings" do
+      member_modes = %{"alice" => ["@"], "bob" => []}
+
+      assert {:ok, %{member_modes: ^member_modes}} = Meta.cast(%{member_modes: member_modes})
+      assert {:ok, %{member_modes: ^member_modes}} = Meta.load(%{"member_modes" => member_modes})
+      assert {:ok, %{"member_modes" => ^member_modes}} = Meta.dump(%{member_modes: member_modes})
+    end
+
     test "string-keyed map: known keys atomized" do
       assert {:ok, %{target: "alice"}} = Meta.cast(%{"target" => "alice"})
 

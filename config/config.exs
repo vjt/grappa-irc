@@ -526,6 +526,11 @@ config :logger, :console,
     # satisfy the known_keys↔metadata sync test even though no Logger call
     # carries it today.
     :keep_nick,
+    # issue 2692 — the absolute modes of every member a `:mode` row changed
+    # (nick → [sigil]), which cic applies to its roster. In the allowlist to
+    # satisfy the known_keys↔metadata sync test even though no Logger call
+    # carries it today.
+    :member_modes,
     # Auth context (Phase 2): bearer-token session lifecycle. `session_ref`
     # is a non-reversible SHA-256 handle of the session-id (S9: the raw id
     # IS the bearer token, so it must NEVER hit the log stream) — it rides

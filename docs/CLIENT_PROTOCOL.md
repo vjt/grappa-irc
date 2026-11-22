@@ -1904,6 +1904,45 @@ comes back with no read position.
 A server below v65 accepts that write and puts the deleted cursor back. Check
 `protocol_version >= 65` before you rely on the 422.
 
+### 5m. What a `:mode` row did to the member list (issue 2692, v66)
+
+A channel `:mode` row carries `meta.member_modes` when the line changed
+any member's status prefixes: each changed nick mapped to that member's
+**whole** mode list after the line, as the server derived it from the
+network's own `PREFIX` and `CHANMODES`.
+
+```json
+{"modes": "+bo", "args": ["*!*@spam.example", "alice"], "member_modes": {"alice": ["@"]}}
+```
+
+| field | value |
+|---|---|
+| `meta.member_modes` | object, nick → array of sigils, on a `:mode` row that changed a member |
+
+Apply it to the member list you hold for the row's channel: replace each
+named member's `modes` with the array, matching the nick
+case-insensitively, and leave every other field and every other member
+alone. Do not walk `modes`/`args` yourself — which letter takes an
+argument and which letter is a prefix differs per network (`q` is a
+founder prefix on one network and a ban-like list on another), and a
+walk that gets one letter wrong grades the wrong person.
+
+The values are absolute, so applying a row twice is harmless. Applying an
+OLD row after a newer member list is not: it puts back the grades as they
+were then. Apply the key only from rows that arrive live on the channel
+topic, and never from a scrollback page you fetched (history, or the
+catch-up after a reconnect); a fresh member list comes from
+`members_seeded`.
+
+The key is **absent** when the line changed nobody — a channel-only mode,
+a grant the member already held, a target that is not in the channel, a
+malformed token — and on every row written before v66. Absence never
+means "this member has no modes".
+
+Check `protocol_version >= 66`. A server below it never sends the key, so
+a client that relies on it learns no grade from a MODE there until the
+next `members_seeded`.
+
 ## 6. Rate limiting & flood protection (#630)
 
 grappa applies a **coarse per-subject inbound budget** across BOTH doors —
