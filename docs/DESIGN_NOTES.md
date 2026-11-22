@@ -8389,3 +8389,86 @@ the first reading better. That is an inference, not a measurement.
   baseline comes after a page fetch.
 * `force_set/4` (dev/test only) is not guarded: it plants arbitrary states
   for e2e, and whether the window exists is the scenario's business.
+<!-- entry #2692 -->
+
+---
+
+## 2026-11-22 — #2692: the server tells cic what a MODE did to the roster; cic stops walking mode letters
+
+Arch review DUP-A2. cic kept its channel roster current between snapshots
+(`members_seeded`) by walking each `:mode` row's `modes`/`args` itself
+(`lib/modeApply.ts`), with a hardcoded `(ohv)` table and no CHANMODES. Two
+measured consequences, both pinned server-side in `event_router_test.exs`:
+on `+bo <mask> alice` the `b` consumed no argument, the `o` took the mask,
+and alice stayed plain; on a network advertising `PREFIX=(qaohv)` the `q`/`a`
+grades never applied, and `+qo founder alice` opped the founder. A third
+vector the issue did not name: `q` is a membership mode on Unreal and a
+quiet LIST on solanum, so no single client table is right on both. The wrong
+grade lasted until the next reseed, which on a tab whose socket stays up may
+never come. #216 had moved the server walker to the per-network ISUPPORT
+tables and left the client copy behind — the drift the "one IRC parser, on
+the server" invariant exists to prevent.
+
+**Decision (direction A2):** the server writes the RESULT onto the row it
+already persists. `EventRouter.apply_channel_mode_token/4` diffs the
+channel's member map before vs after the walk and `channel_mode_meta/4` puts
+the changed members under the Meta key `member_modes` — nick (the members
+map's own spelling) → that member's ABSOLUTE mode list. cic's
+`members.applyPresenceEvent` applies it (merge by `nickEquals`, other entry
+fields kept) and `modeApply.ts` is deleted with its test. Precedent: issue
+2176's `structural` tag, classified at write time "so neither side parses
+mode letters". No new event, effect or broadcast: the row already travels on
+the per-channel topic, and the REST `messages` door carries the same fact.
+The direction is the orchestrator's decision, accepted by the peer
+(vjt-claude-60) on 2026-11-22 — relayed, NOT a ruling of vjt's, and he may
+reverse it.
+
+* **Absolute, not toggles**, so a client that applies a row twice ends where
+  the server is. Absent when the line changed nobody — a channel-only mode, a
+  re-grant, a non-member target, a token #878 rejects — and on every row
+  persisted before the key, the same "presence IS the test" rule as
+  `structural`. A list that only changed order reads as changed; the value is
+  absolute, so restating it is harmless.
+* **The price of absolute (the peer's condition):** a row applied LATE, after
+  a newer roster, puts back the grades as they were. So the key is applied
+  only from rows that arrive live on the channel topic. Census of the callers
+  of `applyPresenceEvent`: one, `subscribe.ts` `routeMessage`, reached from
+  the per-channel `message` arm (live) and from the DM listener, whose arms
+  pass only `privmsg`/`action`/`notice`, so a mode row cannot get there. No
+  fetch verb reaches it: `loadInitialScrollback`, `loadMore`, `loadNewer` and
+  the reconnect gap-fill `refreshScrollback` only merge into the scrollback
+  store; `scrollback.ts` reads the members store and never writes it.
+  Pinned in `scrollback.test.ts` with a page of stale `member_modes` rows
+  through all four, beside a control showing the same row DOES op through
+  the live door. Ordering against the live reseeds, read not measured: the
+  366 `members_seeded` and the persisted row are both broadcast by
+  `Session.Server` onto the same topic, in order; the after_join cold push
+  answers a `Session.list_members` call, and on the fastlane path a row
+  broadcast before that reply is already in the transport's mailbox before
+  the push. With the presence pause on (fastlane dropped, rows through
+  `handle_out`) rows queued behind after_join would arrive after the
+  snapshot — but they arrive in order, so they replay to the same state, and
+  the pause is OFF (`PRESENCE_PAUSE_ENABLED = false`).
+* **No fallback walker** for a new bundle on a server predating protocol 66:
+  a MODE then changes nothing in the roster until the next reseed. Two
+  patterns is the drift this removes.
+* **Scope is MODE only.** join/part/quit/kick/nick need no grammar beyond
+  casemapping, which cic already has. The raw-key target match in
+  `update_member_mode/4` (`+o ALICE` against `alice`) stays the known gap
+  CLAUDE.md names; cic now inherits the server's answer, which at least keeps
+  it consistent with `members_seeded`.
+* Wire: protocol 65 → 66 (65 is taken by PR 2699, issue 2201; open PR 2620
+  also claimed 65 and renumbers past 66 if it lands after this).
+  CLIENT_PROTOCOL §5m. shottino reads nothing new:
+  it already refused to parse mode letters and refetches its roster on a mode
+  row.
+
+### Not measured
+
+How often a param-taking channel mode precedes a membership mode in real
+traffic; the e2e spec (`issue2692-mode-bo-members-grade.spec.ts`) was
+written but not run, so its red-before-cure and whether bahamut echoes
+`+bo` in the requested order are predictions; the cost of the per-MODE
+member-map diff (O(members of the channel)); the ordering argument above,
+which is read from Phoenix's fastlane and local-send semantics, not observed
+on a socket.
