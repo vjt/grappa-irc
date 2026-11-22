@@ -8513,8 +8513,13 @@ The review printed two state-key counts: 94 (a regex over the `@type t`
 block) and 96 (TYP). On this tree the compiler says 101. So does an
 independent line count of the block with its comment lines removed: 101 key
 lines, none of them holding two keys. Where 94 and 96 came from is not known,
-and this entry does not explain them away. That disagreement is the reason the
-count goes through the compiler.
+and this entry does not explain them away. What is measured is that the block
+itself moved under the review: 95 keys at `cee2b8f0c` and `8d90e1242`, 97 at
+`494b9f2a3`, 101 from the issue 2656 merges (`cdf03e167`) on. Those come from a
+brace-balanced count of the block's top-level keys that gives 101 on
+`9b66302df`, agreeing with the compiler, and they match the cross review's
+numbers. They are a fact about the tree, not the cause. That disagreement is
+the reason the count goes through the compiler.
 
 ### Where the values live, and the two witnesses
 
