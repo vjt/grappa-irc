@@ -39,7 +39,7 @@ defmodule GrappaWeb.ReadCursorAdvance do
   """
   @spec advance(Subject.t(), Network.t(), String.t(), pos_integer()) ::
           {:ok, ReadCursor.Cursor.t()}
-          | {:error, :invalid_message | :db_unavailable | Ecto.Changeset.t()}
+          | {:error, :invalid_message | :no_query_window | :db_unavailable | Ecto.Changeset.t()}
   def advance(current_subject, %Network{} = network, channel, message_id) do
     subject = Subject.to_session(current_subject)
 

@@ -2037,6 +2037,7 @@ export const ERROR_TOKENS_REST_ERROR_TOKEN = [
   "stale_code_path",
   "stale_toolchain",
   "invalid_message",
+  "no_query_window",
   "anon_collision",
   "nick_in_use",
   "cannot_disconnect_self",

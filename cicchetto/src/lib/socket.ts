@@ -459,7 +459,14 @@ let _socket: Socket | null = null;
 // event, and a `keep_nick` Meta key on the `$server` stop row. No cicchetto
 // change in this slice — the switch, the rail state and the stop-row render
 // are slice S3. `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 64;
+//
+// 65 (issue 2201) — the REST error token `no_query_window` (422): a DM read
+// cursor for a query window the subject no longer holds. cicchetto stops
+// sending that POST (`queryWindowGone`), and maps the token in
+// `friendlyApiError` for the exhaustive union; a server below 65 accepts the
+// write instead of refusing it, which costs this client nothing.
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 65;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

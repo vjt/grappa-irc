@@ -79,6 +79,7 @@ defmodule GrappaWeb.FallbackController do
            | :timeout
            | :internal
            | :invalid_message
+           | :no_query_window
            | :nick_in_use
            | :cannot_disconnect_self
            | :source_not_local
@@ -940,6 +941,19 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:unprocessable_entity)
     |> json(%{error: "invalid_message"})
+  end
+
+  # issue 2201 — `Grappa.ReadCursor.set/4` refuses a DM cursor whose query
+  # window the subject does not hold: the window was closed (and its cursor
+  # deleted with it) or never opened. Same 422 family as `invalid_message` —
+  # well-formed, semantically refused — and on purpose NOT 400/403/404, the
+  # statuses the production host's fail2ban jails count: an old bundle sends
+  # exactly this POST right after the user closes a focused query, and an IP
+  # ban for closing windows is the #160 outage again.
+  def call(conn, {:error, :no_query_window}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "no_query_window"})
   end
 
   # 409 anon_collision: tuple shape mirrors `{:network_circuit_open,

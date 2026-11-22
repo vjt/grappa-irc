@@ -53,20 +53,19 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v63 -> v64 (issue 2656, keepnick): `keep_nick` on the
- * credential payload and on both `GET /networks` row shapes, the
- * `keep_nick_changed` user-topic event, and a `keep_nick` Meta key on the
- * `$server` row a stopped keepnick writes. The two keys are unread here:
- * the parsers ignore unknown keys, and the stop row's body is already
- * readable text. The event is narrowed and then dropped, as the settings
- * echoes are, because cicchetto narrows it and the kind-parity test in
- * test_commands holds this client to every kind cicchetto narrows. A
- * terminal that wants a keepnick switch would add a
- * `PATCH /networks/:id/keep_nick` command; nothing requires it.
+ * Last read, v64 -> v65 (issue 2201): the REST error token
+ * `no_query_window` (422), answered by `POST …/read-cursor` for a DM nick
+ * the subject holds no query window for — the server refuses the write
+ * instead of re-creating the cursor the window's close deleted. This
+ * client publishes a cursor only for the window it focuses, so it meets
+ * the token only when the query was closed elsewhere and the focus landed
+ * on the stale local window first; `push_read_cursor` then logs one
+ * "read-cursor failed HTTP 422" line, which is what the event is. Nothing
+ * to parse, no command to add.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 64
+#define WIRE_PROTOCOL_VERSION 65
 
 #include <stdbool.h>
 #include <stddef.h>

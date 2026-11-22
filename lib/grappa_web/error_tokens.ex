@@ -190,6 +190,9 @@ defmodule GrappaWeb.ErrorTokens do
           # node does not run.
           | :stale_toolchain
           | :invalid_message
+          # issue 2201 — a DM read cursor for a query window the subject does
+          # not hold (closed, or never opened). 422, like `invalid_message`.
+          | :no_query_window
           | :anon_collision
           | :nick_in_use
           | :cannot_disconnect_self

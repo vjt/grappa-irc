@@ -94,6 +94,9 @@ const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknow
   // 422 — ReadCursor.set referenced a message outside (subject, network,
   // channel) scope.
   { code: "invalid_message", matches: /read position|this conversation/i },
+  // 422 — issue 2201: a DM read cursor for a query window the subject no
+  // longer holds.
+  { code: "no_query_window", matches: /read position.*closed/i },
   // 409 — visitor accretion of a network the identity already holds.
   { code: "already_attached", matches: /already connected/i },
   // 429 — visitor hit the 50-total owned-theme cap (distinct from the
