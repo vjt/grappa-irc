@@ -466,7 +466,14 @@ let _socket: Socket | null = null;
 // `friendlyApiError` for the exhaustive union; a server below 65 accepts the
 // write instead of refusing it, which costs this client nothing.
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 65;
+//
+// 66 (issue 2692) — `member_modes` on a channel `:mode` row: the absolute
+// modes of every member the line changed. The members store applies it
+// (`members.ts`) and the client-side mode-letter walker is gone, so a MODE
+// from a server predating v66 leaves the roster as it was until the next
+// `members_seeded` — accepted, no fallback. 65 is taken (issue 2201).
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 66;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

@@ -122,7 +122,24 @@ defmodule Grappa.Scrollback.Meta do
                                                                   form, presence IS the test, and
                                                                   absence means "fold", which is exactly
                                                                   today's behaviour for old rows.)
-      :kick                         →  %{target: String.t()}     (body carries reason)
+                                    OR + %{member_modes: %{String.t() => [String.t()]}}
+                                                                 (issue 2692: nick → the ABSOLUTE mode
+                                                                  list of every member the line changed,
+                                                                  as the server's walker derived it from
+                                                                  the network's PREFIX and CHANMODES
+                                                                  (`EventRouter.channel_mode_meta/4`).
+                                                                  cic applies it to its roster instead of
+                                                                  re-walking the mode letters. Absolute,
+                                                                  never a toggle, so applying a row twice
+                                                                  converges. Keyed by the members map's
+                                                                  own spelling of the nick; the inner keys
+                                                                  stay STRINGS on load (nicks are peer
+                                                                  input, never atoms). ABSENT when the
+                                                                  line changed nobody — a channel-only
+                                                                  mode, a re-grant, a non-member target,
+                                                                  a token #878 rejected — and on every row
+                                                                  written before the key existed.)
+      :kick                        →  %{target: String.t()}     (body carries reason)
       :server_event (link failure)  →  %{link_failure: %{reason: String.t()}}
                                                                  (#1675: an upstream connect attempt that
                                                                   never reached registration — refused,
@@ -274,10 +291,11 @@ defmodule Grappa.Scrollback.Meta do
             | :e2e_device
             | :structural
             | :keep_nick
+            | :member_modes
           ) => term()
         }
 
-  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target raw_verb raw_sender raw_params sender_user sender_host sender_prefix sender_kind ctcp_verb ctcp_args ctcp_target notice_target statusmsg nick_fallback link_failure e2e_undeliverable e2e_device structural keep_nick]a
+  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target raw_verb raw_sender raw_params sender_user sender_host sender_prefix sender_kind ctcp_verb ctcp_args ctcp_target notice_target statusmsg nick_fallback link_failure e2e_undeliverable e2e_device structural keep_nick member_modes]a
 
   @doc """
   The atom-key allowlist. Exposed so the test suite can assert that
@@ -314,7 +332,8 @@ defmodule Grappa.Scrollback.Meta do
           | :e2e_undeliverable
           | :e2e_device
           | :structural
-          | :keep_nick,
+          | :keep_nick
+          | :member_modes,
           ...
         ]
   def known_keys, do: @known_keys

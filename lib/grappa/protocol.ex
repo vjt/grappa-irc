@@ -1687,7 +1687,29 @@ defmodule Grappa.Protocol do
   # non-2xx on this POST as a logged no-op (`readCursor.ts` `setReadCursor`:
   # one `console.warn`, no retry, no UI), so the new token reaches it as
   # exactly that.
-  @protocol_version 65
+  #
+  # ---------------------------------------------------------------------------
+  # 66 — issue 2692: the server tells cic what a MODE did to the roster
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: the Meta key `member_modes` on a channel `:mode` row — nick → that
+  # member's ABSOLUTE mode list after the line, for every member it changed
+  # (`EventRouter.channel_mode_meta/4`). Absent when the line changed nobody.
+  # cic used to re-derive the roster by walking the mode letters with a
+  # hardcoded `(ohv)` table and no CHANMODES, so `+bo <mask> alice` opped
+  # nobody and `+q`/`+a` never applied; it now applies this key and its walker
+  # is deleted. Bumped on the #1393d rule: that client cannot learn a grade
+  # from a server predating the key — a MODE then changes nothing in its
+  # roster until the next `members_seeded`. No fallback walker for that
+  # pairing, by decision: two patterns is the drift this removes.
+  #
+  # 65 is taken: origin/main carries it (PR 2699, issue 2201), so this takes
+  # 66. Open PR 2620 also claimed 65; if it lands after this, it renumbers
+  # past 66.
+  #
+  # @min_protocol_version stays at 1: an older bundle never reads the key and
+  # keeps walking the letters, exactly as before.
+  @protocol_version 66
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1728,7 +1750,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 65
+  @spec version() :: 66
   def version, do: @protocol_version
 
   @doc """

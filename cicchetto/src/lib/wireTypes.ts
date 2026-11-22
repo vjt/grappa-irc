@@ -105,6 +105,7 @@ export const SCROLLBACK_META_TKEY = [
   "e2e_device",
   "structural",
   "keep_nick",
+  "member_modes",
 ] as const;
 export type ScrollbackMetaTKey = (typeof SCROLLBACK_META_TKEY)[number];
 

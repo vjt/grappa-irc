@@ -3153,7 +3153,7 @@ defmodule Grappa.Session.EventRouterTest do
                EventRouter.route(m, state)
 
       assert new_state.members["#italia"]["alice"] == ["@"]
-      assert attrs.meta == %{modes: "+o", args: ["alice"]}
+      assert attrs.meta == %{modes: "+o", args: ["alice"], member_modes: %{"alice" => ["@"]}}
       assert attrs.body == nil
       assert attrs.sender == "ChanServ"
     end
@@ -3240,7 +3240,7 @@ defmodule Grappa.Session.EventRouterTest do
                EventRouter.route(m, state)
 
       assert new_state.members["#italia"]["carol"] == ["%"]
-      assert attrs.meta == %{modes: "+h", args: ["carol"]}
+      assert attrs.meta == %{modes: "+h", args: ["carol"], member_modes: %{"carol" => ["%"]}}
     end
 
     test "MODE -h removes % from target nick's mode list (bucket J — halfop)" do
@@ -3268,7 +3268,12 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.members["#italia"]["a"] == ["@"]
       assert new_state.members["#italia"]["b"] == ["%"]
       assert new_state.members["#italia"]["c"] == ["+"]
-      assert attrs.meta == %{modes: "+ohv", args: ["a", "b", "c"]}
+
+      assert attrs.meta == %{
+               modes: "+ohv",
+               args: ["a", "b", "c"],
+               member_modes: %{"a" => ["@"], "b" => ["%"], "c" => ["+"]}
+             }
     end
 
     test "MODE +ovo applies sequentially across args" do
@@ -3285,7 +3290,12 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.members["#italia"]["a"] == ["@"]
       assert new_state.members["#italia"]["b"] == ["+"]
       assert new_state.members["#italia"]["c"] == ["@"]
-      assert attrs.meta == %{modes: "+ovo", args: ["a", "b", "c"]}
+
+      assert attrs.meta == %{
+               modes: "+ovo",
+               args: ["a", "b", "c"],
+               member_modes: %{"a" => ["@"], "b" => ["+"], "c" => ["@"]}
+             }
     end
 
     test "MODE +b emits :persist, mutates no member and does NOT enter the channel mode set" do
@@ -3420,12 +3430,13 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.members["#italia"]["alice"] == ["~"]
     end
 
-    # issue 2692 — the server half of the vectors in
-    # `cicchetto/src/__tests__/modeApply.test.ts` ("issue 2692"). These pin what
-    # the server derives from the same bytes; cic's walker gets every one of
-    # them wrong today. Both 005 strings are recalled, not captured off a live
-    # server: what the vectors rely on is `b` type A everywhere, `q`/`a`
-    # membership on Unreal, and `q` type A on solanum.
+    # issue 2692 — the MODE vectors cic's former client-side walker got wrong
+    # (`+bo <mask> alice`, the PREFIX-rich `+q`/`+a`, solanum's quiet-list
+    # `q`). That walker is deleted: cic now applies the `member_modes` this
+    # walker derives (the tests after these), so the vectors live here only.
+    # Both 005 strings are recalled, not captured off a live server: what the
+    # vectors rely on is `b` type A everywhere, `q`/`a` membership on Unreal,
+    # and `q` type A on solanum.
     @unreal_005 ["s", "PREFIX=(qaohv)~&@%+", "CHANMODES=beI,fkL,lFH,cdimnprstzCDGKMNOPQRSTVZ"]
     @solanum_005 ["s", "PREFIX=(ov)@+", "CHANMODES=eIbq,k,flj,CFLMPQRSTcgimnprstuz"]
 
@@ -3497,6 +3508,99 @@ defmodule Grappa.Session.EventRouterTest do
 
       assert {:cont, new_state, _} = EventRouter.route(m, state)
       assert new_state.members["#italia"] == %{"alice" => ["@"]}
+    end
+
+    # issue 2692 — the cure: the row carries what the walker above derived, so
+    # cic applies it instead of walking the mode letters a second time. The
+    # value is each changed member's ABSOLUTE mode list, never a toggle: a
+    # client that applies the row twice must end where the server is.
+    test "issue 2692 — +bo <mask> alice writes alice's absolute modes into the row, bob untouched" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => [], "bob" => []}}})
+
+      m = msg(:mode, ["#italia", "+bo", "*!*@h", "alice"], {:nick, "op", "u", "h"})
+
+      assert {:cont, _, [{:persist, :mode, attrs} | _]} = EventRouter.route(m, state)
+      assert attrs.meta.member_modes == %{"alice" => ["@"]}
+    end
+
+    test "issue 2692 — the member_modes value is absolute: +o on a voiced alice states both sigils" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => ["+"]}}})
+
+      m = msg(:mode, ["#italia", "+o", "alice"], {:nick, "op", "u", "h"})
+
+      assert {:cont, _, [{:persist, :mode, attrs} | _]} = EventRouter.route(m, state)
+      assert MapSet.new(attrs.meta.member_modes["alice"]) == MapSet.new(["@", "+"])
+    end
+
+    test "issue 2692 — a removal states what is LEFT: -o on @+ alice writes [\"+\"]" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => ["@", "+"]}}})
+
+      m = msg(:mode, ["#italia", "-o", "alice"], {:nick, "op", "u", "h"})
+
+      assert {:cont, _, [{:persist, :mode, attrs} | _]} = EventRouter.route(m, state)
+      assert attrs.meta.member_modes == %{"alice" => ["+"]}
+    end
+
+    test "issue 2692 — member_modes follows the network's PREFIX: +qo founder alice on Unreal" do
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"founder" => [], "alice" => []}},
+          isupport: ISupport.merge_isupport(@unreal_005, ISupport.default())
+        })
+
+      m = msg(:mode, ["#italia", "+qo", "founder", "alice"], {:nick, "ChanServ", "u", "h"})
+
+      assert {:cont, _, [{:persist, :mode, attrs} | _]} = EventRouter.route(m, state)
+      assert attrs.meta.member_modes == %{"founder" => ["~"], "alice" => ["@"]}
+    end
+
+    test "issue 2692 — the key is the roster's own spelling of the nick" do
+      state = base_state(%{members: %{"#italia" => %{"Alice" => []}}})
+
+      m = msg(:mode, ["#italia", "+v", "Alice"], {:nick, "op", "u", "h"})
+
+      assert {:cont, _, [{:persist, :mode, attrs} | _]} = EventRouter.route(m, state)
+      assert attrs.meta.member_modes == %{"Alice" => ["+"]}
+    end
+
+    # Absent, never empty: a row that changed nobody carries no key, the way
+    # `structural` has no `false` form — and every row written before the key
+    # existed has to read the same way.
+    test "issue 2692 — a channel-only MODE carries no member_modes key" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => []}}})
+
+      m = msg(:mode, ["#italia", "+b", "*!*@h"], {:nick, "op", "u", "h"})
+
+      assert {:cont, _, [{:persist, :mode, attrs} | _]} = EventRouter.route(m, state)
+      refute Map.has_key?(attrs.meta, :member_modes)
+    end
+
+    test "issue 2692 — re-granting a sigil the member already holds carries no key" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => ["@"]}}})
+
+      m = msg(:mode, ["#italia", "+o", "alice"], {:nick, "op", "u", "h"})
+
+      assert {:cont, _, [{:persist, :mode, attrs} | _]} = EventRouter.route(m, state)
+      refute Map.has_key?(attrs.meta, :member_modes)
+    end
+
+    test "issue 2692 — a target that is not a member produces no entry" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => []}}})
+
+      m = msg(:mode, ["#italia", "+o", "ghost"], {:nick, "op", "u", "h"})
+
+      assert {:cont, _, [{:persist, :mode, attrs} | _]} = EventRouter.route(m, state)
+      refute Map.has_key?(attrs.meta, :member_modes)
+    end
+
+    test "issue 2692 — a token rejected by #878 changes nobody, so it carries no key" do
+      state = base_state(%{members: %{"#italia" => %{"alice" => []}}})
+
+      m = msg(:mode, ["#italia", "+o!x", "alice"], {:nick, "op", "u", "h"})
+
+      assert {:cont, _, effects} = EventRouter.route(m, state)
+      assert {:persist, :mode, attrs} = Enum.find(effects, &match?({:persist, :mode, _}, &1))
+      refute Map.has_key?(attrs.meta, :member_modes)
     end
 
     test "channel-mode param arity comes from state.isupport CHANMODES (type-C -l consumes no arg)" do
