@@ -1268,25 +1268,10 @@ export function e2eClient(
         // A no-session row, held for retry instead of surfaced — the key
         // may still arrive, and the stash, sealed in the store, is now
         // the only copy. Only the rows the hold drops past its cap
-        // surface, as undecryptable; a row with no sid to hold under
-        // surfaces as it came. A row held again keeps the time it first
+        // surface, as undecryptable. A no-session line always names the
+        // epoch it waits under. A row held again keeps the time it first
         // arrived: that is its time, and its wait counts from there.
-        const holdNoSession = (
-          events: ChannelE2eEvent[],
-          row: ChannelRow,
-          sid: string | null,
-        ): void => {
-          if (sid === null) {
-            events.push({
-              kind: "channel_undecryptable",
-              channel: row.channel,
-              from: row.from,
-              sid: null,
-              at: row.receivedAt,
-              reason: "no-session",
-            });
-            return;
-          }
+        const holdNoSession = (events: ChannelE2eEvent[], row: ChannelRow, sid: string): void => {
           for (const dropped of holdRow(state.groups, { ...row, sid })) {
             events.push({
               kind: "channel_undecryptable",

@@ -143,7 +143,7 @@ describe("channelE2eRows", () => {
           network: "azzurra",
           from: "carol",
           sid: null,
-          reason: "no-session",
+          reason: "bad-payload",
         },
       ]);
       expect(channelE2eRows(channelKey("azzurra", "#grappa"))).toEqual([
@@ -173,7 +173,7 @@ describe("channelE2eRows", () => {
           channel: "#grappa",
           from: "carol",
           sid: null,
-          reason: "no-session",
+          reason: "bad-payload",
         },
       ]);
     } finally {

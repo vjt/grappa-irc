@@ -105,6 +105,7 @@ import type { Outbound } from "./engine";
 import {
   buildPeriodicRotation,
   type ChannelSigner,
+  type ChannelUnreadable,
   type ChannelVerifier,
   createEpoch,
   decryptChannel,
@@ -164,21 +165,12 @@ export type ChannelE2eEvent = (
     }
   /** A line of ours: sent from this device, or read from our other device's copy. */
   | { kind: "channel_sent"; channel: string; from: string; body: string; at: number }
-  | {
+  | ({
       kind: "channel_undecryptable";
       channel: string;
       from: string;
-      sid: string | null;
       at: number;
-      reason:
-        | "bad-payload"
-        | "channel-mismatch"
-        | "no-session"
-        | "bad-signature"
-        | "replay"
-        | "decryption-failed"
-        | "bad-inner";
-    }
+    } & ChannelUnreadable)
   | { kind: "channel_key_received"; channel: string; from: string; sid: string }
   | { kind: "channel_key_sent"; channel: string; to: string; sid: string }
   | { kind: "channel_key_failed"; channel: string; to: string; sid: string; reason: string }
@@ -1033,17 +1025,9 @@ export async function receiveChannel(
     deps.now(),
   );
   if (!decrypted.ok) {
+    const { ok: _omit, ...unreadable } = decrypted;
     return withNetwork(deps, {
-      events: [
-        {
-          kind: "channel_undecryptable",
-          channel,
-          from,
-          at: receivedAt,
-          sid: decrypted.sid,
-          reason: decrypted.reason,
-        },
-      ],
+      events: [{ kind: "channel_undecryptable", channel, from, at: receivedAt, ...unreadable }],
       outbound: [],
       copies: [],
     });

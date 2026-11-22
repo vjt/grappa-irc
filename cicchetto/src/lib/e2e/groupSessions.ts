@@ -875,21 +875,30 @@ function noteCounter(epoch: StoredEpoch, did: string, counter: number): void {
   epoch.seen[did] = replay;
 }
 
-export type ChannelDecrypt =
-  | { ok: true; kind: "text"; sid: string; counter: number; body: string }
-  | { ok: true; kind: "rotated"; sid: string; counter: number; newSid: string }
+/**
+ * Why a channel line could not be read, and the epoch it named. A line
+ * with no session always named one: the epoch this device does not
+ * hold, the one a held row waits under. The other reasons may name
+ * none — a line too broken to name an epoch, a key request, a read
+ * that threw.
+ */
+export type ChannelUnreadable =
+  | { reason: "no-session"; sid: string }
   | {
-      ok: false;
       reason:
         | "bad-payload"
         | "channel-mismatch"
-        | "no-session"
         | "bad-signature"
         | "replay"
         | "decryption-failed"
         | "bad-inner";
       sid: string | null;
     };
+
+export type ChannelDecrypt =
+  | { ok: true; kind: "text"; sid: string; counter: number; body: string }
+  | { ok: true; kind: "rotated"; sid: string; counter: number; newSid: string }
+  | ({ ok: false } & ChannelUnreadable);
 
 /**
  * Decrypts a channel `:msg` payload from `sender`'s device `senderDid` on
