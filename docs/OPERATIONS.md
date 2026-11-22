@@ -625,7 +625,8 @@ To grow one on purpose, in ONE commit: run `--update`, and add a line to
 pairing commit by commit, against the parent's value or, when the parent
 lacks the key, the merge base's: a record deleted and re-created higher is a
 raise. Lowering a value and a key the base does not carry (a new boundary,
-the commit that seeded the record) need no line.
+the commit that seeded the record) need no line. CI's push run passes the
+push's `before` SHA as the base, so it judges the commits that push added.
 
 `priv/ratchet/` has its own worktree bind-mount for the reason `priv/wire/`
 does. The task prints NO VERDICT, and exits 1, when its built-in

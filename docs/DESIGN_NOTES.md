@@ -8539,8 +8539,12 @@ are exempt.
 
 The split between the two follows `mix grappa.wire_pin` and
 `scripts/design-notes-gate.sh`. The task stays offline. The half that needs
-history is a script that takes a base ref, and it fails when the base does
-not resolve.
+history is a script that takes a base ref. On a pull request that is
+`origin/main`, so it judges the PR's commits. On a push to main `origin/main`
+is the pushed tip and would judge nothing, so CI passes the push event's
+`before` SHA and the run judges exactly the commits that push added. A base it
+cannot reach (one that does not resolve, an empty argument, the all-zeros SHA
+of a push that creates a ref) fails the gate.
 
 ### The known-answer control
 
@@ -8569,6 +8573,8 @@ Elixir 1.19.
 * A re-created record is judged against the merge base, even when an earlier
   commit on the branch already paired the same raise. That earlier line does
   not carry over: the re-creating commit needs its own.
+* A push run that the workflow's concurrency block cancels for a newer push
+  judges nothing, and the newer run's `before` starts after those commits.
 * Every boundary's `deps:` count is gated, as issue 2690 asks, not only
   Session's. Adding a dep anywhere now costs a line here. That is the friction
   the review asked for. How often it will bite has not been measured.
