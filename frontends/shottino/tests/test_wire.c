@@ -1130,8 +1130,9 @@ TEST(network_attached_and_detached) {
 
 /* keepnick switched on or off from some client (issue 2656, v64). Every
  * field is required, as cicchetto's generated schema has it, and a
- * `keep_nick` that is not a JSON boolean drops the event: the server door
- * itself refuses `"true"` (F4 of PR 2688). */
+ * `keep_nick` that is not a JSON boolean drops the event:
+ * `Networks.Wire.keep_nick_changed_event/1` types it `boolean()` and
+ * cicchetto's generated schema has `keep_nick: "b"`. */
 TEST(keep_nick_changed) {
     struct wire_event ev;
     bool ok;
@@ -1155,7 +1156,22 @@ TEST(keep_nick_changed) {
                &ev, &ok);
     CHECK(!ok);
     json_free(d);
+    /* Any of the three missing drops the event whole, and a null
+     * `keep_nick` is not a default: it drops too. */
     d = narrow("{\"kind\":\"keep_nick_changed\",\"network_id\":7,\"keep_nick\":true}", &ev, &ok);
+    CHECK(!ok);
+    json_free(d);
+    d = narrow("{\"kind\":\"keep_nick_changed\",\"network_slug\":\"azzurra\",\"keep_nick\":true}",
+               &ev, &ok);
+    CHECK(!ok);
+    json_free(d);
+    d = narrow("{\"kind\":\"keep_nick_changed\",\"network_id\":7,\"network_slug\":\"azzurra\"}",
+               &ev, &ok);
+    CHECK(!ok);
+    json_free(d);
+    d = narrow("{\"kind\":\"keep_nick_changed\",\"network_id\":7,"
+               "\"network_slug\":\"azzurra\",\"keep_nick\":null}",
+               &ev, &ok);
     CHECK(!ok);
     json_free(d);
 }
