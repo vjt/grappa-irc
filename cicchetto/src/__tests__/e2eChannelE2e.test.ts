@@ -858,6 +858,28 @@ describe("auditEpochRotation", () => {
     });
   });
 
+  it("rotates when a holder's nick is now worn by devices this cic knows, none of them that holder", async () => {
+    const clock = { t: NOW };
+    const s = sides(clock);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob", "carol"]);
+    await sendChannel(s.alice.deps, s.alice.groups, CHAN, "hi", ["alice", "bob", "carol"]);
+    const oldSid = epochFor(s.alice.groups, CHAN)?.sid;
+    // Carol's device left; whoever wears "carol" now has a device list this
+    // cic knows, and Carol's did is not on it. The nick mapping still names
+    // Carol's did under "carol", and must not vouch for it.
+    const known = s.alice.deps.didsFor;
+    s.alice.deps.didsFor = (nick) => (fold(nick) === "carol" ? ["did-carol-new"] : known(nick));
+    const res = auditEpochRotation(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob", "carol"]);
+    expect(res.events).toContainEqual({
+      kind: "channel_rotated",
+      channel: CHAN,
+      oldSid,
+      newSid: expect.any(String),
+      reason: "member-left",
+    });
+    expect(epochFor(s.alice.groups, CHAN)?.holders).not.toContain(didFor("carol"));
+  });
+
   it("a rename whose new nick's list has not landed yet rotates once, fail closed", async () => {
     const clock = { t: NOW };
     const s = sides(clock);

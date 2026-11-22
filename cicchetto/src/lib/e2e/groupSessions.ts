@@ -195,7 +195,31 @@ export type RosterDids = {
   nicks: string[];
   /** The dids the roster resolves to, as this cic knows them. */
   dids: string[];
+  /**
+   * The roster's nicks whose device list this cic does not know. Only
+   * these may have a holder vouched for by an epoch's nick mapping: a
+   * nick whose list is known answers in dids, and a holder missing from
+   * that list is not that nick's device, whoever wears the nick now.
+   */
+  unlisted: string[];
 };
+
+/**
+ * Whether a holder did is still on `roster`: a roster device list names
+ * it, or the epoch's nick mapping `holderNicks` attributes it to a roster
+ * nick whose device list this cic does not know yet — the mapping speaks
+ * only for a member whose dids have not landed. The one rule
+ * `holdersStale`, `remainingHolders` and the roster-filtered merge share.
+ */
+function holderOnRoster(
+  roster: RosterDids,
+  holderNicks: ByNick<string[]>,
+): (holder: string) => boolean {
+  const present = new Set(roster.dids);
+  return (holder) =>
+    present.has(holder) ||
+    roster.unlisted.some((nick) => (atNick(holderNicks, nick) ?? []).includes(holder));
+}
 
 /**
  * A channel row that arrived before its epoch key: held for retry, not
@@ -305,9 +329,10 @@ export function rotationDue(state: GroupSessionsState, channel: string, now: num
  * Whether `channel`'s epoch holder set names a did no longer in the
  * roster: the audit input (§4f). A holder did counts as still a member
  * when a roster device list names it, or when the epoch's nick mapping
- * attributes it to a nick still on the roster — the mapping is what
- * settles a member this cic has not chatted with, whose dids its engine
- * does not know yet. Otherwise the epoch is stale: the did belongs to
+ * attributes it to a nick still on the roster whose device list this
+ * cic does not know (`holderOnRoster`) — the mapping is what settles a
+ * member this cic has not chatted with, whose dids its engine does not
+ * know yet. Otherwise the epoch is stale: the did belongs to
  * nobody in the channel, or to a member the key was sent to whose dids
  * never landed and who is no longer on the roster — either way the epoch
  * rotates (fail closed: a missed departure is a leak, a spurious
@@ -323,15 +348,7 @@ export function holdersStale(
 ): boolean {
   const rosterNicks = new Set(roster.nicks.map((n) => fold(n)));
   if (sentTo.some((nick) => !rosterNicks.has(fold(nick)))) return true;
-  const present = new Set(roster.dids);
-  for (const holder of holders) {
-    if (present.has(holder)) continue;
-    const attributed = roster.nicks.some((nick) =>
-      (atNick(holderNicks, nick) ?? []).includes(holder),
-    );
-    if (!attributed) return true;
-  }
-  return false;
+  return !holders.every(holderOnRoster(roster, holderNicks));
 }
 
 /** Whether `channel`'s stored epoch is stale against `roster` (`holdersStale`). */
@@ -348,8 +365,9 @@ export function epochHoldersStale(
 /**
  * The holder dids still in the roster: the audit's rotator election
  * input (§4f, (d)). A holder did counts as still a member by the same
- * rule as `holdersStale` — a roster device list names it, or the epoch's
- * nick mapping attributes it to a nick still on the roster — so every
+ * rule as `holdersStale` (`holderOnRoster`) — a roster device list names
+ * it, or the epoch's nick mapping attributes it to a nick still on the
+ * roster whose device list this cic does not know — so every
  * holder that holds the same epoch elects the same rotator. The first
  * of them in sorted order is the designated rotator; when none remain,
  * nobody rotates (the epoch is stale but there is no holder left to
@@ -361,11 +379,7 @@ export function remainingHolders(
   holderNicks: ByNick<string[]>,
   roster: RosterDids,
 ): string[] {
-  const present = new Set(roster.dids);
-  return holders.filter((holder) => {
-    if (present.has(holder)) return true;
-    return roster.nicks.some((nick) => (atNick(holderNicks, nick) ?? []).includes(holder));
-  });
+  return holders.filter(holderOnRoster(roster, holderNicks));
 }
 
 /** `channel`'s stored epoch's holder dids still in `roster` (`remainingHolders`). */
@@ -677,8 +691,9 @@ export function dropChannel(state: GroupSessionsState, channel: string): void {
  * rotator knows too. The merge unions the holder dids, the nick
  * mapping per nick, and the sent-to nicks. When `roster` is given the
  * merge is filtered by it: a did counts only when the roster names it,
- * or the merged mapping attributes it to a nick still on the roster,
- * and a sent-to nick counts only while on the roster — so a stale
+ * or the merged mapping attributes it to a nick still on the roster
+ * whose device list this cic does not know (`holderOnRoster`), and a
+ * sent-to nick counts only while on the roster — so a stale
  * re-send cannot resurrect a departed did, and the mapping keeps only
  * the nicks still on the roster. Without a roster the merge is
  * unfiltered: the audit filters once the roster is in.
@@ -697,11 +712,7 @@ function mergeEpochHolders(held: StoredEpoch, gkey: GkeyInner, roster?: RosterDi
     for (const [nick, dids] of nickEntries(mergedNicks)) {
       if (rosterNicks.has(fold(nick))) setNick(pruned, nick, dids);
     }
-    const present = new Set(roster.dids);
-    holders = holders.filter((holder) => {
-      if (present.has(holder)) return true;
-      return roster.nicks.some((nick) => (atNick(pruned, nick) ?? []).includes(holder));
-    });
+    holders = holders.filter(holderOnRoster(roster, pruned));
     sentTo = sentTo.filter((nick) => rosterNicks.has(fold(nick)));
     held.holderNicks = pruned;
   } else {

@@ -329,9 +329,16 @@ function resolveMembers(
   return { dids, byNick, unknown };
 }
 
-/** The roster `members` as the audit sees it: its nicks and the dids they resolve to. */
+/**
+ * The roster `members` as the audit sees it: its nicks, the dids they
+ * resolve to, and the nicks whose device list this cic does not know.
+ */
 function resolveRoster(deps: ChannelE2eDeps, members: string[]): RosterDids {
-  return { nicks: [...members], dids: didsOf(deps, members) };
+  return {
+    nicks: [...members],
+    dids: didsOf(deps, members),
+    unlisted: members.filter((member) => deps.didsFor(member) === undefined),
+  };
 }
 
 /**

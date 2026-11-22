@@ -626,6 +626,7 @@ describe("importEpoch", () => {
     const roster: RosterDids = {
       nicks: ["alice", "bob"],
       dids: [didFor(RING, "alice"), didFor(RING, "bob")],
+      unlisted: [],
     };
     expect(importEpoch(bobGroups, CHAN, resent, ALICE_DID, NOW, roster)).toBe("already-held");
     expect(epochFor(bobGroups, CHAN)?.holders).toEqual([
@@ -930,11 +931,17 @@ describe("pending sends", () => {
 });
 
 describe("holders and key requests", () => {
-  const roster = (nicks: string[], dids: string[]): RosterDids => ({ nicks, dids });
+  const roster = (nicks: string[], dids: string[], unlisted: string[]): RosterDids => ({
+    nicks,
+    dids,
+    unlisted,
+  });
 
   it("spots a holder who left, and is quiet when all holders are present", () => {
     const groups = newGroupSessionsState();
-    expect(epochHoldersStale(groups, CHAN, roster(["alice"], [didFor(RING, "alice")]))).toBe(false);
+    expect(epochHoldersStale(groups, CHAN, roster(["alice"], [didFor(RING, "alice")], []))).toBe(
+      false,
+    );
     createEpoch(
       groups,
       CHAN,
@@ -952,7 +959,7 @@ describe("holders and key requests", () => {
       epochHoldersStale(
         groups,
         CHAN,
-        roster(["alice", "bob"], [didFor(RING, "alice"), didFor(RING, "bob")]),
+        roster(["alice", "bob"], [didFor(RING, "alice"), didFor(RING, "bob")], []),
       ),
     ).toBe(true);
     expect(
@@ -962,6 +969,7 @@ describe("holders and key requests", () => {
         roster(
           ["alice", "bob", "carol"],
           [didFor(RING, "alice"), didFor(RING, "bob"), didFor(RING, "carol")],
+          [],
         ),
       ),
     ).toBe(false);
@@ -972,7 +980,7 @@ describe("holders and key requests", () => {
       epochRemainingHolders(
         groups,
         CHAN,
-        roster(["alice", "bob"], [didFor(RING, "alice"), didFor(RING, "bob")]),
+        roster(["alice", "bob"], [didFor(RING, "alice"), didFor(RING, "bob")], []),
       ),
     ).toEqual([didFor(RING, "alice"), didFor(RING, "bob")]);
     // A holder this cic never chatted with is settled by the mapping,
@@ -981,7 +989,7 @@ describe("holders and key requests", () => {
       epochRemainingHolders(
         groups,
         CHAN,
-        roster(["alice", "bob", "carol"], [didFor(RING, "alice")]),
+        roster(["alice", "bob", "carol"], [didFor(RING, "alice")], ["bob", "carol"]),
       ),
     ).toEqual([didFor(RING, "alice"), didFor(RING, "bob"), didFor(RING, "carol")]);
     // No epoch, no holders.
@@ -989,7 +997,7 @@ describe("holders and key requests", () => {
       epochRemainingHolders(
         newGroupSessionsState(),
         CHAN,
-        roster(["alice"], [didFor(RING, "alice")]),
+        roster(["alice"], [didFor(RING, "alice")], []),
       ),
     ).toEqual([]);
     // The holder set is per did: the roster in dids still matches in any order.
@@ -1000,6 +1008,7 @@ describe("holders and key requests", () => {
         roster(
           ["carol", "alice", "bob"],
           [didFor(RING, "carol"), didFor(RING, "alice"), didFor(RING, "bob")],
+          [],
         ),
       ),
     ).toBe(false);
@@ -1027,7 +1036,7 @@ describe("holders and key requests", () => {
       epochHoldersStale(
         groups,
         CHAN,
-        roster(["alice", "bob", "carol"], [didFor(RING, "alice"), didFor(RING, "bob")]),
+        roster(["alice", "bob", "carol"], [didFor(RING, "alice"), didFor(RING, "bob")], ["carol"]),
       ),
     ).toBe(false);
   });
@@ -1045,14 +1054,14 @@ describe("holders and key requests", () => {
       epochHoldersStale(
         groups,
         CHAN,
-        roster(["alice", "bob", "carol"], [didFor(RING, "alice"), didFor(RING, "bob")]),
+        roster(["alice", "bob", "carol"], [didFor(RING, "alice"), didFor(RING, "bob")], ["carol"]),
       ),
     ).toBe(false);
     expect(
       epochHoldersStale(
         groups,
         CHAN,
-        roster(["alice", "bob"], [didFor(RING, "alice"), didFor(RING, "bob")]),
+        roster(["alice", "bob"], [didFor(RING, "alice"), didFor(RING, "bob")], []),
       ),
     ).toBe(true);
   });
@@ -1071,8 +1080,61 @@ describe("holders and key requests", () => {
     // Once the list lands, the did check settles it (see the channel
     // step test "a rename rotates nothing").
     expect(
-      epochHoldersStale(groups, CHAN, roster(["alice", "robert"], [didFor(RING, "alice")])),
+      epochHoldersStale(
+        groups,
+        CHAN,
+        roster(["alice", "robert"], [didFor(RING, "alice")], ["robert"]),
+      ),
     ).toBe(true);
+  });
+
+  it("a holder's old nick vouches for it only while that nick's device list is unknown", () => {
+    const old = "did-carol-old";
+    const groups = newGroupSessionsState();
+    createEpoch(groups, CHAN, [didFor(RING, "alice"), old], NOW, {
+      holderNicks: nicksFrom([
+        ["alice", [didFor(RING, "alice")]],
+        ["carol", [old]],
+      ]),
+    });
+    // Carol's list has not landed: the mapping settles the device it names.
+    const unlisted = roster(["alice", "carol"], [didFor(RING, "alice")], ["carol"]);
+    expect(epochHoldersStale(groups, CHAN, unlisted)).toBe(false);
+    expect(epochRemainingHolders(groups, CHAN, unlisted)).toEqual([didFor(RING, "alice"), old]);
+    // Carol's list is known and that device is not on it: whoever wears the
+    // nick now, the holder the mapping named is gone, and no longer elected.
+    const listed = roster(["alice", "carol"], [didFor(RING, "alice"), didFor(RING, "carol")], []);
+    expect(epochHoldersStale(groups, CHAN, listed)).toBe(true);
+    expect(epochRemainingHolders(groups, CHAN, listed)).toEqual([didFor(RING, "alice")]);
+  });
+
+  it("a re-sent key cannot keep a holder whose nick's known device list leaves it out", async () => {
+    const old = "did-carol-old";
+    const aliceGroups = newGroupSessionsState();
+    const bobGroups = newGroupSessionsState();
+    createEpoch(aliceGroups, CHAN, [didFor(RING, "alice"), didFor(RING, "bob")], NOW);
+    await encryptChannel(aliceGroups, CHAN, "epoch one", signAlice);
+    const first = aliceGkey(aliceGroups);
+    expect(importEpoch(bobGroups, CHAN, first, ALICE_DID, NOW)).toBe("imported");
+    const resent: GkeyInner = {
+      ...first,
+      holders: [didFor(RING, "alice"), didFor(RING, "bob"), old],
+      holderNicks: nicksFrom([
+        ["alice", [didFor(RING, "alice")]],
+        ["bob", [didFor(RING, "bob")]],
+        ["carol", [old]],
+      ]),
+    };
+    const listed = roster(
+      ["alice", "bob", "carol"],
+      [didFor(RING, "alice"), didFor(RING, "bob"), didFor(RING, "carol")],
+      [],
+    );
+    expect(importEpoch(bobGroups, CHAN, resent, ALICE_DID, NOW, listed)).toBe("already-held");
+    expect(epochFor(bobGroups, CHAN)?.holders).toEqual([
+      didFor(RING, "alice"),
+      didFor(RING, "bob"),
+    ]);
   });
 
   it("answers a key request once per asker per minute", () => {
@@ -1131,12 +1193,12 @@ describe("holders and key requests", () => {
       epochHoldersStale(
         groups,
         CHAN,
-        roster(["alice", "bob", "__proto__"], [didFor(RING, "alice")]),
+        roster(["alice", "bob", "__proto__"], [didFor(RING, "alice")], ["bob", "__proto__"]),
       ),
     ).toBe(false);
-    expect(epochHoldersStale(groups, CHAN, roster(["alice", "bob"], [didFor(RING, "alice")]))).toBe(
-      true,
-    );
+    expect(
+      epochHoldersStale(groups, CHAN, roster(["alice", "bob"], [didFor(RING, "alice")], ["bob"])),
+    ).toBe(true);
     // A sealed round-trip keeps the entries as own properties, and
     // nothing leaked onto the prototype.
     const opened = JSON.parse(JSON.stringify(groups)) as GroupSessionsState;
