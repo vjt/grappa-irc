@@ -327,6 +327,7 @@ const HAND_SWITCH_ARMS = [
   "isupport_changed",
   "join_failed",
   "joined",
+  "keep_nick_changed",
   "kicked",
   "links_bundle",
   "lusers_bundle",
@@ -774,11 +775,11 @@ describe("#1393 — user-topic boundary census", () => {
       censusedNotInSwitch: [...censused].filter((k) => !handSwitch.has(k)),
     }).toMatchInlineSnapshot(`
       {
-        "censused": 60,
+        "censused": 61,
         "censusedNotInSwitch": [
           "whois_avatar_ready",
         ],
-        "handArms": 59,
+        "handArms": 60,
         "inSwitchNotCensused": [],
       }
     `);
@@ -805,9 +806,9 @@ describe("#1393 — user-topic boundary census", () => {
       divergent,
     }).toMatchInlineSnapshot(`
       {
-        "armsAtParity": 52,
-        "armsCensused": 61,
-        "armsWithSchema": 60,
+        "armsAtParity": 53,
+        "armsCensused": 62,
+        "armsWithSchema": 61,
         "brokenOracles": [],
         "divergent": [
           {
@@ -943,10 +944,10 @@ describe("#1393 — user-topic boundary census", () => {
       divergent,
     }).toMatchInlineSnapshot(`
       {
-        "armsAtValueParity": 60,
-        "comparablePairs": 60,
+        "armsAtValueParity": 61,
+        "comparablePairs": 61,
         "divergent": [],
-        "pairs": 61,
+        "pairs": 62,
         "skippedOneSideRejected": 1,
       }
     `);

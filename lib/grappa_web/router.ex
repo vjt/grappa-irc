@@ -678,6 +678,13 @@ defmodule GrappaWeb.Router do
     # ResolveNetwork pipeline (ownership) + no proxy change.
     patch "/profile", NetworksController, :profile
 
+    # issue 2656 — the per-network keepnick switch, for BOTH subjects. Its
+    # own resource rather than a key on `/profile` or on `PATCH /`: that
+    # one is the `connection_state` transition, and this is neither a
+    # profile field nor a state change. Same ResolveNetwork pipeline, so
+    # ownership is asserted the same way.
+    patch "/keep_nick", NetworksController, :keep_nick
+
     # M3a — own avatar removal; the upload (`PUT /avatar`) is in the scope
     # below, with its multipart pipeline (issue 2529).
     delete "/avatar", NetworksController, :delete_avatar

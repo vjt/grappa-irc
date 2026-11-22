@@ -104,6 +104,7 @@ export const SCROLLBACK_META_TKEY = [
   "e2e_undeliverable",
   "e2e_device",
   "structural",
+  "keep_nick",
 ] as const;
 export type ScrollbackMetaTKey = (typeof SCROLLBACK_META_TKEY)[number];
 
@@ -898,6 +899,7 @@ export type NetworksServersAdminWireIndexPayload = {
 // === Grappa.Networks.Wire ===
 
 export type NetworksWireCredentialJson = {
+  keep_nick?: boolean;
   network: string;
   nick: string;
   ident: string | null;
@@ -928,6 +930,7 @@ export type NetworksWireConnectionInfo = {
 };
 
 export type NetworksWireNetworkWithNickJson = {
+  keep_nick?: boolean;
   kind: "user";
   id: number;
   slug: string;
@@ -950,6 +953,7 @@ export type NetworksWireNetworkWithNickJson = {
 };
 
 export type NetworksWireVisitorNetworkWithNickJson = {
+  keep_nick?: boolean;
   kind: "visitor";
   id: number;
   slug: string;
@@ -1007,6 +1011,13 @@ export type NetworksWireNetworkAttachedEvent = {
   network_slug: string;
 };
 
+export type NetworksWireKeepNickChangedEvent = {
+  kind: "keep_nick_changed";
+  network_id: number;
+  network_slug: string;
+  keep_nick: boolean;
+};
+
 export type NetworksWireConnectionStateEvent = {
   kind: "connection_state_changed";
   user_id: string | null;
@@ -1024,6 +1035,7 @@ export type WireNetworksEvent =
   | NetworksWireVisitorNetworkWithNickJson
   | NetworksWireNetworkDetachedEvent
   | NetworksWireNetworkAttachedEvent
+  | NetworksWireKeepNickChangedEvent
   | NetworksWireConnectionStateEvent;
 
 // === Grappa.Notify.Wire ===

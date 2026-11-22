@@ -452,7 +452,14 @@ let _socket: Socket | null = null;
 // every such E2E push and inbox page as malformed. The server still emits
 // the key on every message; only the client's requirement moved.
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 63;
+//
+// 64 (issue 2656, keepnick S1) — `keep_nick` on the credential payload and
+// on both `GET /networks` row shapes (optional in the generated schema, so
+// a server predating v64 stays readable), the `keep_nick_changed` user-topic
+// event, and a `keep_nick` Meta key on the `$server` stop row. No cicchetto
+// change in this slice — the switch, the rail state and the stop-row render
+// are slice S3. `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 64;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

@@ -740,6 +740,92 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
+  Issue 2657 — the per-network kick-rejoin opt-in (`kick_rejoin`) and its
+  delay (`kick_rejoin_delay_seconds`) on a `(subject, network)` credential,
+  for BOTH subjects. Takes the already-resolved `%Credential{}` (ownership
+  asserted by the caller, same contract as `update_credential_profile/2`)
+  and routes through the narrow `Credential.kick_rejoin_changeset/2`.
+
+  Like a profile edit it does not bounce the upstream connection: the
+  setting is about kicks still to come, so a successful write folds the new
+  `Credential.kick_rejoin_snapshot/1` into any live `Session.Server` of this
+  subject over the `Topic.user_settings/1` bridge, and the session's
+  `{:credential_kick_rejoin_changed, network_id, _}` clause filters on
+  `network_id` itself. Switching it off inside a pending delay cancels that
+  rejoin, because the session re-reads the setting when the delay ends.
+
+  A delay outside `Credential.kick_rejoin_delays/0`, or a `nil` in either
+  field, is a changeset error; a concurrent unbind is `{:error, :not_found}`.
+  """
+  @spec update_kick_rejoin(Credential.t(), map()) ::
+          {:ok, Credential.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def update_kick_rejoin(%Credential{} = credential, attrs) when is_map(attrs) do
+    case credential |> Credential.kick_rejoin_changeset(attrs) |> Repo.update() do
+      {:ok, updated} ->
+        :ok = broadcast_kick_rejoin_change(updated)
+        {:ok, updated}
+
+      {:error, _} = err ->
+        err
+    end
+  rescue
+    Ecto.StaleEntryError -> {:error, :not_found}
+  end
+
+  @spec broadcast_kick_rejoin_change(Credential.t()) :: :ok
+  defp broadcast_kick_rejoin_change(%Credential{network_id: network_id} = cred) do
+    :ok =
+      Phoenix.PubSub.broadcast(
+        Grappa.PubSub,
+        Topic.user_settings(subject_label_for(cred)),
+        {:credential_kick_rejoin_changed, network_id, Credential.kick_rejoin_snapshot(cred)}
+      )
+  end
+
+  @doc """
+  issue 2656 — turns keepnick on or off for a `(subject, network)`
+  credential. Backs `PATCH /networks/:network_id/keep_nick` for BOTH
+  subjects; takes the already-resolved `%Credential{}` (ownership asserted
+  by the caller, same contract as `update_credential_profile/2`).
+
+  No reconnect, like the profile: the switch drives a timer inside the
+  live `Session.Server`, so a successful write tells the session on the
+  subject's settings-bridge topic (`{:credential_keep_nick_changed,
+  network_id, boolean}`, filtered on `network_id` by the receiver) and
+  tells the subject's other devices on the user topic (`keep_nick_changed`).
+  Two audiences, two shapes, one write — the `Grappa.UserSettings` posture.
+  """
+  @spec update_credential_keep_nick(Credential.t(), map()) ::
+          {:ok, Credential.t()} | {:error, :not_found | Ecto.Changeset.t()}
+  def update_credential_keep_nick(%Credential{} = credential, attrs) when is_map(attrs) do
+    case credential |> Credential.keep_nick_changeset(attrs) |> Repo.update() do
+      {:ok, updated} ->
+        updated = Repo.preload(updated, [:network, :avatar_upload])
+        :ok = broadcast_keep_nick_change(updated)
+        {:ok, updated}
+
+      {:error, _} = err ->
+        err
+    end
+  rescue
+    Ecto.StaleEntryError -> {:error, :not_found}
+  end
+
+  @spec broadcast_keep_nick_change(Credential.t()) :: :ok
+  defp broadcast_keep_nick_change(%Credential{network_id: network_id, keep_nick: on?} = cred) do
+    label = subject_label_for(cred)
+
+    :ok =
+      Phoenix.PubSub.broadcast(
+        Grappa.PubSub,
+        Topic.user_settings(label),
+        {:credential_keep_nick_changed, network_id, on?}
+      )
+
+    :ok = Grappa.PubSub.broadcast_event(Topic.user(label), Grappa.Networks.Wire.keep_nick_changed_event(cred))
+  end
+
+  @doc """
   M3a — sets (or replaces) `credential`'s own avatar: uploads `bytes`
   (declared MIME `mime`) as a PERMANENT `Grappa.Uploads` row
   (`expires_at: nil` — unlike an ordinary ephemeral scrollback-image

@@ -3224,4 +3224,49 @@ describe("narrowUserEvent — #1393d strict arms", () => {
       });
     });
   });
+
+  // issue 2656 — keepnick's own event, sent on every toggle. Nothing in cic
+  // renders the switch before S3, so the arm acts on nothing; but it must
+  // READ the frame, or each toggle latches the sticky wire-drop banner on
+  // every cic the subject has open (review of PR 2688, F1).
+  describe("keep_nick_changed", () => {
+    const changed = (over: Record<string, unknown> = {}) => ({
+      kind: "keep_nick_changed",
+      network_id: 1,
+      network_slug: "libera",
+      keep_nick: true,
+      ...over,
+    });
+
+    it("is read, not dropped: the frame never reaches the wire-drop latch", async () => {
+      const wireDrop = await import("../lib/wireDrop");
+      channelMock.fireEvent(changed());
+      channelMock.fireEvent(changed({ keep_nick: false }));
+      expect(wireDrop.droppedKind()).toBeNull();
+
+      // Positive control on the same latch: a frame this cic cannot read
+      // does reach it.
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      channelMock.fireEvent(changed({ keep_nick: "yes" }));
+      warn.mockRestore();
+      expect(wireDrop.droppedKind()).toBe("keep_nick_changed");
+    });
+
+    it("drops a payload naming no network or carrying no boolean", async () => {
+      const { narrowUserEvent } = await import("../lib/userTopic");
+      const { network_slug: _drop, ...without } = changed();
+      expect(narrowUserEvent(without)).toBeNull();
+      expect(narrowUserEvent(changed({ keep_nick: "true" }))).toBeNull();
+    });
+
+    it("accepts the well-formed payload verbatim", async () => {
+      const { narrowUserEvent } = await import("../lib/userTopic");
+      expect(narrowUserEvent(changed())).toMatchObject({
+        kind: "keep_nick_changed",
+        network_id: 1,
+        network_slug: "libera",
+        keep_nick: true,
+      });
+    });
+  });
 });

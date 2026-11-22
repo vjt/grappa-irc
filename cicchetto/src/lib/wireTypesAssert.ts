@@ -125,6 +125,7 @@ import type {
   NetworksCredentialAuthMethod,
   NetworksCredentialGender,
   NetworksWireConnectionStateEvent,
+  NetworksWireKeepNickChangedEvent,
   NetworksWireNetworkAttachedEvent,
   NetworksWireNetworkDetachedEvent,
   NotifyWireNotifyListPayload,
@@ -320,6 +321,10 @@ export type _Assert_CredentialJson = Assert<
       location: string | null;
       languages: string | null;
       custom: string | null;
+      // issue 2656 — the per-network keepnick switch. OPTIONAL although
+      // every server from protocol 64 emits it: a server predating the
+      // switch omits it, and absent reads as off.
+      keep_nick?: boolean;
       avatar_url: string | null;
       inserted_at: string;
       updated_at: string;
@@ -397,6 +402,10 @@ type CrossModuleArm = {
   // a named counterpart pins the shape.
   network_detached: NetworksWireNetworkDetachedEvent;
   network_attached: NetworksWireNetworkAttachedEvent;
+  // issue 2656 — the keepnick switch, from this device or another. A
+  // `Grappa.Networks.Wire` payload like the two above, so only a named
+  // counterpart pins the shape.
+  keep_nick_changed: NetworksWireKeepNickChangedEvent;
   // issue 2430 X1 — the pairing relay's two pushes. `Grappa.E2ePairing.Wire`
   // payloads, out of the Session walk's reach like the two above.
   e2e_pairing_message: E2ePairingWireE2ePairingMessagePayload;

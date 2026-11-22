@@ -234,7 +234,9 @@ defmodule GrappaWeb.FallbackController do
   # UX-6-B1: admin attempted `PUT /admin/settings` with an
   # out-of-shape value (non-positive cap, unknown active_host
   # string). Carries the offending field path for cic to highlight
-  # in the AdminSettingsTab form.
+  # in the AdminSettingsTab form. Issue 2656: also the keepnick
+  # switch (`PATCH /networks/:network_id/keep_nick`) given a value
+  # that is present but not a literal boolean.
   def call(conn, {:error, {:invalid_setting, field}}) when is_binary(field) do
     conn
     |> put_status(:unprocessable_entity)

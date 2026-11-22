@@ -1128,6 +1128,54 @@ TEST(network_attached_and_detached) {
     json_free(d);
 }
 
+/* keepnick switched on or off from some client (issue 2656, v64). Every
+ * field is required, as cicchetto's generated schema has it, and a
+ * `keep_nick` that is not a JSON boolean drops the event:
+ * `Networks.Wire.keep_nick_changed_event/1` types it `boolean()` and
+ * cicchetto's generated schema has `keep_nick: "b"`. */
+TEST(keep_nick_changed) {
+    struct wire_event ev;
+    bool ok;
+    json_doc *d = narrow("{\"kind\":\"keep_nick_changed\",\"network_id\":7,"
+                         "\"network_slug\":\"azzurra\",\"keep_nick\":true}",
+                         &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.kind == WIRE_KEEP_NICK_CHANGED);
+    CHECK_LONG(ev.u.keep_nick.network_id, 7);
+    CHECK_STR(ev.u.keep_nick.network_slug, "azzurra");
+    CHECK(ev.u.keep_nick.keep_nick);
+    json_free(d);
+    d = narrow("{\"kind\":\"keep_nick_changed\",\"network_id\":7,"
+               "\"network_slug\":\"azzurra\",\"keep_nick\":false}",
+               &ev, &ok);
+    CHECK(ok);
+    CHECK(!ev.u.keep_nick.keep_nick);
+    json_free(d);
+    d = narrow("{\"kind\":\"keep_nick_changed\",\"network_id\":7,"
+               "\"network_slug\":\"azzurra\",\"keep_nick\":\"true\"}",
+               &ev, &ok);
+    CHECK(!ok);
+    json_free(d);
+    /* Any of the three missing drops the event whole, and a null
+     * `keep_nick` is not a default: it drops too. */
+    d = narrow("{\"kind\":\"keep_nick_changed\",\"network_id\":7,\"keep_nick\":true}", &ev, &ok);
+    CHECK(!ok);
+    json_free(d);
+    d = narrow("{\"kind\":\"keep_nick_changed\",\"network_slug\":\"azzurra\",\"keep_nick\":true}",
+               &ev, &ok);
+    CHECK(!ok);
+    json_free(d);
+    d = narrow("{\"kind\":\"keep_nick_changed\",\"network_id\":7,\"network_slug\":\"azzurra\"}",
+               &ev, &ok);
+    CHECK(!ok);
+    json_free(d);
+    d = narrow("{\"kind\":\"keep_nick_changed\",\"network_id\":7,"
+               "\"network_slug\":\"azzurra\",\"keep_nick\":null}",
+               &ev, &ok);
+    CHECK(!ok);
+    json_free(d);
+}
+
 /* The flood ladder severed this bearer (§6): a code and nothing else,
  * and the socket is about to close. The operator refused an invite
  * (§9): the window it named is the banner to drop. */
@@ -1738,6 +1786,7 @@ int main(void) {
     RUN(pair_doors);
     RUN(pair_bodies);
     RUN(network_attached_and_detached);
+    RUN(keep_nick_changed);
     RUN(severed_and_invite_declined);
     RUN(dcc_offer_and_its_resolution);
     RUN(a_failing_link_is_a_state_and_not_a_dropped_event);

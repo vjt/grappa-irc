@@ -521,6 +521,11 @@ config :logger, :console,
     # satisfy the known_keys↔metadata sync test even though no Logger call
     # carries it today.
     :structural,
+    # issue 2656 — the keepnick stop facts carried structured on the
+    # `$server` row (the human spelling is the body). In the allowlist to
+    # satisfy the known_keys↔metadata sync test even though no Logger call
+    # carries it today.
+    :keep_nick,
     # Auth context (Phase 2): bearer-token session lifecycle. `session_ref`
     # is a non-reversible SHA-256 handle of the session-id (S9: the raw id
     # IS the bearer token, so it must NEVER hit the log stream) — it rides

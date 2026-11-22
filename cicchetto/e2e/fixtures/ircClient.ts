@@ -15,6 +15,7 @@
 // peer leaks out of the runner between tests.
 
 import { Client, type IrcEventMap, type IrcEventName } from "irc-framework";
+import { disconnectOnce } from "./peerClose";
 import { awaitPrivmsg } from "./privmsgWait";
 import { awaitWhoisAway, awaitWhoisNumeric } from "./whoisWait";
 
@@ -91,9 +92,14 @@ export class IrcPeer {
   // manually for every post-rename verb.
   public nick: string;
 
+  // Built here, before anything can close the client, so it sees the first
+  // "close" (PR 2688 F7, see `peerClose.ts`).
+  private readonly quitOnce: (reason: string) => Promise<void>;
+
   private constructor(client: Client, nick: string) {
     this.client = client;
     this.nick = nick;
+    this.quitOnce = disconnectOnce(client);
   }
 
   static async connect(opts: { nick: string; gecos?: string; host?: string }): Promise<IrcPeer> {
@@ -773,11 +779,11 @@ export class IrcPeer {
     });
   }
 
+  // Idempotent: on a peer already closed (an earlier disconnect, or the
+  // server) it resolves at once. A `finally { disconnect() }` after a body
+  // disconnect is therefore safe; it used to wait for ever (PR 2688 F7).
   async disconnect(reason: string): Promise<void> {
-    return new Promise((resolve) => {
-      this.client.on("close", () => resolve());
-      this.client.quit(reason);
-    });
+    return this.quitOnce(reason);
   }
 }
 

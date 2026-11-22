@@ -289,7 +289,7 @@ defmodule Grappa.Session.SendTransportFailureTest do
           _ = :sys.get_state(pid)
         end)
 
-      assert log =~ "send_join call timed out"
+      assert log =~ "JOIN timed out on the Client — delivery unknown"
       refute log =~ "transport unavailable"
       assert Process.alive?(pid)
 

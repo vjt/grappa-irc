@@ -329,6 +329,11 @@ defmodule Grappa.Networks.SessionPlan do
       # `pending_password` at 001. One secret, one home.
       perform_list: Credential.perform_list_text(cred),
       oper_pass: Credential.upstream_oper_pass(cred),
+      # issue 2656 — the keepnick switch, read at every (re)connect like the
+      # perform list. A live toggle reaches the running session over the
+      # `user_settings` bridge instead (`Credentials.update_credential_keep_nick/2`),
+      # so this is the boot-time value only.
+      keep_nick: cred.keep_nick,
       # CP22 cluster B (channel-client-polish #14, B-restart) — boot
       # channel list is the union of operator config + last-live snapshot.
       # `autojoin_channels` = "channels you ALWAYS want auto-joined no
@@ -380,6 +385,11 @@ defmodule Grappa.Networks.SessionPlan do
       # is a boot-time snapshot only, not a persister closure like
       # `away_persister`.
       restored_profile: Credential.profile_snapshot(cred),
+      # Issue 2657 — the kick-rejoin opt-in, same boot-time-snapshot posture
+      # as `:restored_profile`: shared by BOTH subjects, re-read on every
+      # (re)start through `refresh_plan`, and updated live over the same
+      # `user_settings` bridge (`Credentials.update_kick_rejoin/2`).
+      restored_kick_rejoin: Credential.kick_rejoin_snapshot(cred),
       # M3a — same boot-time-snapshot posture as `:restored_profile`
       # above; a live edit updates `state.avatar_url` in place via the
       # same `user_settings` bridge topic

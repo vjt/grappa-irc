@@ -127,6 +127,7 @@ defmodule Grappa.Session.Server do
     GhostRecovery,
     IdentityState,
     ISupport,
+    KickRejoin,
     LinksAccum,
     ListModeAccum,
     ListModes,
@@ -203,6 +204,28 @@ defmodule Grappa.Session.Server do
   # Opts-overridable (`:nick_reclaim_ms`) as a test seam, mirroring
   # `@connection_stable_ms` / `@autojoin_defer_ms`; production inherits this.
   @nick_reclaim_ms 12_000
+
+  # issue 2656 — how often keepnick asks again for the configured nick while
+  # the credential opts in. 30s is ZNC keepnick's own cadence (`CTimer(pMod,
+  # 30, 0, …)`), read at the source; it is NOT measured on our networks. The
+  # FIRST try is still `@nick_reclaim_ms` past 001 — that delay is an
+  # ordering against the ghost window, and keepnick inherits it unchanged.
+  # Opts-overridable (`:keep_nick_interval_ms`) as a test seam.
+  @keep_nick_interval_ms 30_000
+
+  # issue 2656 — the NICK-family refusals keepnick reads while one of its own
+  # tries is in flight. 433/437 are swallowed when they name the target nick
+  # (somebody holds it, or a nick delay); every other answer here is about
+  # THIS session's standing and ends the attempt: 432 erroneous / Q:line /
+  # RESV, 435 banned on a channel, 437 naming a CHANNEL (bahamut: banned or
+  # moderated), 438 a `+d` channel or nick-flood, 484 IRCnet's restricted
+  # client, 447 UnrealIRCd `+N`. See `keep_nick_refusal/2`.
+  @keep_nick_refusals [432, 433, 435, 437, 438, 447, 484]
+
+  # The same closed set as a type, built FROM the attribute so the two cannot
+  # drift: `432 | 433 | … | 484`, the stop reasons a refusal can carry.
+  @typep keep_nick_refusal_code ::
+           unquote(@keep_nick_refusals |> Enum.reverse() |> Enum.reduce(&{:|, [], [&1, &2]}))
 
   # #581 — overall deadline for the recover-identity sequence (IDENTIFY →
   # +r → NICK → RECOVER/RELEASE → settle → NICK). Larger than the ghost
@@ -465,6 +488,9 @@ defmodule Grappa.Session.Server do
           # (unlike away, this isn't user-only). Omitted opt boots an
           # all-nil profile (`empty_profile/0`).
           optional(:restored_profile) => profile(),
+          # Issue 2657 — the kick-rejoin opt-in snapshot, BOTH subjects. An
+          # omitted opt boots `:off`, the column default.
+          optional(:restored_kick_rejoin) => KickRejoin.config(),
           # M3a — the credential's own avatar, absolute URL (already
           # `nil`-safe: `Grappa.Networks.Wire.avatar_url/1` returns `nil`
           # when unset). Same both-subjects, omitted-boots-nil shape as
@@ -486,6 +512,9 @@ defmodule Grappa.Session.Server do
           # issue 2253 bounded nick-reclaim delay — test seam. Production
           # omits it and inherits `@nick_reclaim_ms`.
           optional(:nick_reclaim_ms) => pos_integer(),
+          # issue 2656 keepnick re-arm cadence — test seam. Production omits it
+          # and inherits `@keep_nick_interval_ms`.
+          optional(:keep_nick_interval_ms) => pos_integer(),
           # GH #189 — on-connect perform list + its `$oper_pass` secret,
           # decrypted plaintext from the credential (nil when unset). Run at 001
           # before the built-in identify and before autojoin. The `$nickserv_pass`
@@ -493,7 +522,10 @@ defmodule Grappa.Session.Server do
           # credential password (`pending_password`) — there is no second secret
           # to thread any more.
           optional(:perform_list) => String.t() | nil,
-          optional(:oper_pass) => String.t() | nil
+          optional(:oper_pass) => String.t() | nil,
+          # issue 2656 — the credential's keepnick switch (omitted = off).
+          # Kept in sync with the `Grappa.Session.start_opts/0` twin.
+          optional(:keep_nick) => boolean()
         }
 
   @type t :: %{
@@ -602,6 +634,17 @@ defmodule Grappa.Session.Server do
           # key) does not crash — same defensive contract as
           # in_flight_joins (event_router.ex:1323).
           awaiting_invite: MapSet.t(String.t()),
+          # Issue 2657 — the credential's kick-rejoin opt-in
+          # (`KickRejoin.config/0`), booted from the plan's
+          # `:restored_kick_rejoin` and re-tuned live by
+          # `{:credential_kick_rejoin_changed, network_id, _}`. Read again when
+          # a rejoin's delay ends, so switching it off inside the delay cancels.
+          kick_rejoin: KickRejoin.config(),
+          # Issue 2657 — the self-KICK stamps the kick-loop guard counts, per
+          # folded channel (`KickRejoin.kicks/0`), recorded on every self-KICK
+          # whether or not the opt-in is on. Memory only: a crash forgets the
+          # count, and the respawn rejoins through the #2317 plan regardless.
+          kicks: KickRejoin.kicks(),
           auth_method: AuthFSM.auth_method(),
           autojoin: [String.t()],
           # #347 — deferred-autojoin fallback window (config default
@@ -984,6 +1027,22 @@ defmodule Grappa.Session.Server do
           # when the nick already converged. See `@nick_reclaim_ms` and
           # `reclaim_configured_nick/1`.
           nick_reclaim_ms: pos_integer(),
+          # issue 2656 — keepnick. `keep_nick` is the credential's switch
+          # (boot value from the plan, retuned live by
+          # `{:credential_keep_nick_changed, _, _}`); `keep_nick_interval_ms` the
+          # re-arm cadence. The other two are per-REGISTRATION and cancelled at
+          # every 001: the tick ref (unlike the #2253 one-shot, a re-arming
+          # tick must be cancellable, or a re-welcome would start a second
+          # chain at double cadence) — a pending ref IS a running chain, and a
+          # stop is its cancel — and whether one of OUR tries is awaiting its
+          # answer (so a refusal is attributed to keepnick and not to the
+          # operator's own `/nick`). "Trying" itself is DERIVED from the live
+          # nick, never stored. Read via `Map.get` (#229). See
+          # `keep_nick_tick/1`.
+          keep_nick: boolean(),
+          keep_nick_interval_ms: pos_integer(),
+          keep_nick_timer: reference() | nil,
+          keep_nick_in_flight?: boolean(),
           # #543 INC-6 — the derived `::cb` source alias this session owns for
           # its upstream lifetime, or `nil` when the source is not a managed
           # alias (mode 1, a reservation, an admin `server_source` pin, or no
@@ -1264,6 +1323,10 @@ defmodule Grappa.Session.Server do
       e2e_key_answers: E2eKeyAnswers.new(),
       in_flight_joins: %{},
       awaiting_invite: MapSet.new(),
+      # Issue 2657 — an omitted opt boots `:off`, the column default (a plan
+      # always carries it; a hand-built test plan may not).
+      kick_rejoin: Map.get(opts, :restored_kick_rejoin, :off),
+      kicks: %{},
       # UX-4 bucket A — canonicalise the autojoin list at boot so the
       # 001 RPL_WELCOME loop sends `JOIN #chan` (canonical) regardless
       # of whether the operator typed `#Chan` in a mix task pre-
@@ -1444,6 +1507,13 @@ defmodule Grappa.Session.Server do
       # issue 2253 bounded nick reclaim — config default, opts-overridable for
       # tests. No timer ref: the tick is a one-shot that reads the live nick.
       nick_reclaim_ms: Map.get(opts, :nick_reclaim_ms, @nick_reclaim_ms),
+      # issue 2656 keepnick — the switch from the plan (off when omitted), the
+      # cadence (config default, opts-overridable for tests), and the
+      # per-registration pair, idle until a drifted 001 arms the chain.
+      keep_nick: Map.get(opts, :keep_nick, false),
+      keep_nick_interval_ms: Map.get(opts, :keep_nick_interval_ms, @keep_nick_interval_ms),
+      keep_nick_timer: nil,
+      keep_nick_in_flight?: false,
       # #215 — spawn stamp; `connected_at` fills on `:irc_connected`.
       started_at: DateTime.utc_now(),
       connected_at: nil,
@@ -2200,8 +2270,10 @@ defmodule Grappa.Session.Server do
   # ever reached from `Session.send_nick/3` — so nothing here has to guess
   # from the string, which would misread a subject who manually types the
   # very nick we were going to restore them to.
+  # issue 2656 — the same door is what tells keepnick the operator chose a
+  # nick (`keep_nick_on_user_nick/2`), for the reason #1894 gives above.
   def handle_call({:send_nick, new_nick}, _, state) when is_binary(new_nick) do
-    state = Map.put(state, :away_nick_restore, nil)
+    state = state |> Map.put(:away_nick_restore, nil) |> keep_nick_on_user_nick(new_nick)
 
     case Client.send_nick(state.client, new_nick) do
       :ok -> {:reply, :ok, state}
@@ -2493,6 +2565,16 @@ defmodule Grappa.Session.Server do
             |> broadcast_recover_events(:idle, next)
 
           timer = Process.send_after(self(), :recover_timeout, @recover_timeout_ms)
+
+          # issue 2656 — a keepnick try sent just before this is no longer
+          # keepnick's to read. From here the #581 clause owns 433/437, and a
+          # 438/435 answering the sequence's OWN NICK must not be taken for a
+          # refusal of keepnick's try (route + stop + a stop row blaming the
+          # wrong NICK). The tick's identity guard sends no new try while the
+          # sequence runs. GhostRecovery needs no twin of this: it arms only
+          # on a REGISTRATION 433 (`pending_password` is cleared at 001,
+          # before keepnick's chain arms), so no try of ours can be in flight.
+          state = Map.put(state, :keep_nick_in_flight?, false)
           {:reply, :ok, %{state | recover_identity: next, recover_timer: timer}}
 
         {:error, :nothing_to_recover} ->
@@ -3137,16 +3219,6 @@ defmodule Grappa.Session.Server do
   @impl GenServer
   def handle_call({:send_join, channels, key}, _, state)
       when is_list(channels) and (is_nil(key) or is_binary(key)) do
-    # Code-review CRIT-1 (bucket C): post-irc/S2 `Client.send_join`
-    # returns `{:error, :invalid_line}` for malformed channels. The
-    # `Session.send_join/4` facade gates `valid_channel?` per element
-    # before the call (CRIT-1 fix), so reaching this clause with a
-    # malformed channel requires a caller bypassing the facade. Defensive
-    # `{:error, :invalid_line}` arm mirrors the autojoin loop pattern
-    # at handle_info({:irc, %Message{command: {:numeric, 1}}}, …) so
-    # a future bypass-caller logs + drops instead of MatchError-crashing
-    # the Session.
-    #
     # PHASE-1 (post-cr-review cluster): converted from cast to call so
     # the `window_pending` broadcast inside `record_in_flight_join/2`
     # fires BEFORE the REST controller returns 202. Pre-conversion the
@@ -3156,93 +3228,10 @@ defmodule Grappa.Session.Server do
     # rationale. Reply `:ok` AFTER `record_in_flight_join` so the
     # caller's wall clock includes the broadcast.
     #
-    # UX-4 bucket F: `key` is the optional +k channel key (nil for
-    # keyless channels). Client.send_join/3 emits the wire frame in
-    # the keyed or keyless shape based on key.
-    #
     # #382: `channels` is the canonical-folded list from
     # `Session.send_join/4` (a single channel is a list-of-one).
-    # `Client.send_join/3`'s list clause frames ONE multi-target JOIN
-    # line; on `:ok` we `record_in_flight_join/2` PER channel so EACH
-    # window flips to `:pending` and broadcasts `window_pending`.
-    case Client.send_join(state.client, channels, key) do
-      :ok ->
-        state = Enum.reduce(channels, state, &record_in_flight_join(&2, &1))
-        {:reply, :ok, state}
-
-      {:error, :invalid_line} = err ->
-        Logger.warning("send_join call rejected: invalid channel name",
-          channel: inspect(channels)
-        )
-
-        {:reply, err, state}
-
-      # issue 2114 — THE TRANSPORT IS NOT THERE YET. `:no_socket` is the one
-      # transport error this process will outlive: it means `state.client` is
-      # nil (or its socket is), which for a Registry-registered session is the
-      # reconnect ladder itself — `handle_continue({:start_client, _})` defers
-      # the Client spawn by `Backoff.wait_ms/2`, so the session answers every
-      # REST verb through the whole delay with nothing to write on. The prod
-      # journal caught ten JOINs in that window, 1 ms after
-      # `event=backoff delay_ms=3975` and five seconds before
-      # `event=connected`; the door logged all ten and forgot all ten, so the
-      # channels never came back and no error said so.
-      #
-      # So keep them: queue, and let `fire_join_plan/1` put them on the wire at
-      # the SAME seam the autojoin set rides (001, or the #347 +r defer). Not a
-      # retry timer and not a flush at `:irc_connected` — the first duplicates
-      # the backoff ladder, and the second fires before registration, where an
-      # ircd ignores a JOIN. `record_in_flight_join/2` opens the window
-      # `:pending` exactly as the accepted path does, and the reply is `:ok`
-      # (202), because "queued, not yet joined" is what `:pending` already
-      # means and a 400 would now be false.
-      {:error, :no_socket} ->
-        # `info`, not `warning`: this is now a handled, expected state of the
-        # reconnect ladder, and prod runs at `:info` so the operator still sees
-        # it. Promoting it would inflate a level whose value is that it means
-        # something went wrong — the same argument #1677 makes for its
-        # strict-TLS line. No queue-depth key: one global Logger metadata atom
-        # for one line is heavier than the fact, and `channel` already says
-        # which JOIN this is.
-        Logger.info("send_join queued until the transport is up",
-          channel: inspect(channels)
-        )
-
-        state =
-          Enum.reduce(channels, state, fn channel, acc ->
-            acc |> queue_join(channel, key) |> record_in_flight_join(channel)
-          end)
-
-        {:reply, :ok, state}
-
-      # issue 2370 — the Client did not answer in time. Neither branch around
-      # this one fits: the JOIN is not refused (the frame waits in the
-      # Client's mailbox and may still go out, and its echo opens the window
-      # as any JOIN echo does), and the link is not known to be down. So
-      # nothing is recorded and the caller reads the same `:timeout` (504) a
-      # stuck session would give it.
-      {:error, :timeout} = err ->
-        Logger.warning("send_join call timed out on the Client — delivery unknown",
-          channel: inspect(channels)
-        )
-
-        {:reply, err, state}
-
-      # Any OTHER transport failure (`:closed`, an `:inet.posix()`): the socket
-      # WAS there and the write failed, so the Client is on its way down and
-      # this process with it — an in-memory queue would die before it flushed,
-      # and replying `:ok` would be the silent drop issue 2114 is about, told
-      # to the caller as success. Surface `{:error, :not_connected}` so
-      # FallbackController emits the existing 400 `not_connected` body instead
-      # of a CaseClauseError 500ing the cic /join.
-      {:error, reason} ->
-        Logger.warning("send_join call rejected: transport unavailable",
-          channel: inspect(channels),
-          reason: inspect(reason)
-        )
-
-        {:reply, {:error, :not_connected}, state}
-    end
+    {reply, state} = join_channels(state, channels, key)
+    {:reply, reply, state}
   end
 
   # #976 — the operator DECLINED an inbound invite. Purely local: IRC has no
@@ -3659,6 +3648,19 @@ defmodule Grappa.Session.Server do
     {:noreply, %{state | profile: fields}}
   end
 
+  # issue 2656 — the keepnick switch, same bridge and same `network_id`
+  # filter as the profile above. No reconnect: the switch drives a timer in
+  # this process (`apply_keep_nick_toggle/2`).
+  def handle_info({:credential_keep_nick_changed, network_id, _}, %{network_id: other} = state)
+      when network_id != other do
+    {:noreply, state}
+  end
+
+  def handle_info({:credential_keep_nick_changed, network_id, enabled}, %{network_id: network_id} = state)
+      when is_boolean(enabled) do
+    {:noreply, apply_keep_nick_toggle(state, enabled)}
+  end
+
   # M3a — same shape as `:credential_profile_changed` above: a live edit
   # via `PUT`/`DELETE /networks/:id/avatar` broadcasts on the same
   # subject-scoped `user_settings` bridge topic, and `state.avatar_url`
@@ -3671,6 +3673,35 @@ defmodule Grappa.Session.Server do
 
   def handle_info({:credential_avatar_changed, network_id, avatar_url}, %{network_id: network_id} = state) do
     {:noreply, %{state | avatar_url: avatar_url}}
+  end
+
+  # Issue 2657 — same shape as `:credential_profile_changed` above: a live
+  # edit via `Credentials.update_kick_rejoin/2` broadcasts on the
+  # subject-scoped `user_settings` bridge, the `network_id` guard keeps
+  # network A's setting off network B's session, and `state.kick_rejoin`
+  # updates in place for the next kick — and for a rejoin whose delay is
+  # still running, which re-reads it when it ends.
+  def handle_info({:credential_kick_rejoin_changed, network_id, _}, %{network_id: other} = state)
+      when network_id != other do
+    {:noreply, state}
+  end
+
+  def handle_info({:credential_kick_rejoin_changed, network_id, config}, %{network_id: network_id} = state) do
+    {:noreply, %{state | kick_rejoin: config}}
+  end
+
+  # Issue 2657 — a kick rejoin's delay is over. The JOIN goes through the
+  # same `join_channels/3` as a `/join`, so it opens the window `:pending`,
+  # broadcasts `window_pending`, and lands `:joined` or `:failed` through the
+  # arms every JOIN uses. One JOIN per kick, never retried: a refused JOIN
+  # is reported by `:join_failed` and cannot cause another kick.
+  def handle_info({:kick_rejoin, channel, key, kicked_at_ms}, state) do
+    if kick_rejoin_due?(state, channel, kicked_at_ms) do
+      {_, state} = join_channels(state, [channel], key)
+      {:noreply, state}
+    else
+      {:noreply, state}
+    end
   end
 
   # M3b — a peer avatar fetch (`Grappa.Avatars.fetch_and_cache/3`) landed
@@ -3835,6 +3866,19 @@ defmodule Grappa.Session.Server do
       |> maybe_resend_away()
       |> maybe_autojoin_or_defer()
       |> maybe_fire_notify()
+      # issue 2253 — the "nick reconciled" log line below used to be the
+      # WHOLE response to a registration that landed on the wrong nick: it
+      # recorded the drift and the session then wore `<nick>_` until the next
+      # reconnect. Nine prod sessions did exactly that for hours. Arm the
+      # bounded reclaim here, against `configured_nick/1` and NOT
+      # `state.nick`: the log compares a display-honest "did the server rename
+      # us", while the reclaim asks the different question "are we wearing the
+      # nick we were configured with", which is still wrong after a rename the
+      # session itself performed.
+      #
+      # issue 2656 — with keepnick on, the same arm starts the re-arming
+      # chain instead, and every 001 resets keepnick's per-registration facts.
+      |> maybe_arm_nick_reclaim(welcomed_nick)
 
     if welcomed_nick != state.nick do
       Logger.info("nick reconciled at registration",
@@ -3842,16 +3886,6 @@ defmodule Grappa.Session.Server do
         to: welcomed_nick
       )
     end
-
-    # issue 2253 — the log line above used to be the WHOLE response to a
-    # registration that landed on the wrong nick: it recorded the drift and the
-    # session then wore `<nick>_` until the next reconnect. Nine prod sessions
-    # did exactly that for hours. Arm the bounded reclaim here, against
-    # `configured_nick/1` and NOT `state.nick`: the comparison above is a
-    # display-honest "did the server rename us", while the reclaim asks the
-    # different question "are we wearing the nick we were configured with",
-    # which is still wrong after a rename the session itself performed.
-    :ok = maybe_arm_nick_reclaim(state, welcomed_nick)
 
     # #100 sustained-reconnect reset gate: 001 RPL_WELCOME proves upstream
     # accepted us, but a welcome-then-drop flap that reset the Backoff
@@ -4025,6 +4059,22 @@ defmodule Grappa.Session.Server do
     {:noreply, %{state | ghost_recovery: next, ghost_timer: timer}}
   end
 
+  # issue 2656 — a NICK-family refusal while one of keepnick's OWN tries is in
+  # flight. After the two clauses above on purpose: an armed RecoverIdentity
+  # owns 433/437 outright (#581). Nothing of ours is in flight while one is
+  # armed: arming it lowers the flag (`handle_call(:recover_identity, …)`), so
+  # the answer to a try sent just before reaches the FSM, and the tick sends
+  # no new one. With no try in flight this clause does not match and the
+  # numeric routes as it always did — the operator's own `/nick` refusal
+  # included. See `keep_nick_refusal/2`.
+  def handle_info(
+        {:irc, %Message{command: {:numeric, code}} = msg},
+        %{keep_nick_in_flight?: true} = state
+      )
+      when code in @keep_nick_refusals do
+    handle_keep_nick_refusal(msg, state)
+  end
+
   # NickServ NOTICE while ghost recovery is armed — feed into the FSM.
   # GhostRecovery's own clauses guard against non-NickServ sources and
   # off-phase notices, so any benign NOTICE that doesn't belong to the
@@ -4059,8 +4109,21 @@ defmodule Grappa.Session.Server do
   # `maybe_arm_nick_reclaim/2`; a single tick, no armed-guard clause and no
   # sibling `nil` clause, because the decision lives entirely in the LIVE nick
   # the handler reads rather than in a field this could be out of step with.
+  #
+  # issue 2656 — the one-shot is superseded while keepnick is on. It can only
+  # be pending then if the switch was turned on AFTER the 001 that armed it,
+  # and the toggle armed keepnick's own chain: firing both would ask twice,
+  # and the one-shot's refusal would not be attributed to keepnick.
   def handle_info(:nick_reclaim, state) do
-    {:noreply, reclaim_configured_nick(state)}
+    if keep_nick?(state),
+      do: {:noreply, state},
+      else: {:noreply, reclaim_configured_nick(state)}
+  end
+
+  # issue 2656 — keepnick's re-arming tick. The ref is cleared first because
+  # it has fired; `keep_nick_tick/1` decides whether to arm the next one.
+  def handle_info(:keep_nick_tick, state) do
+    {:noreply, state |> Map.put(:keep_nick_timer, nil) |> keep_nick_tick()}
   end
 
   # issue 2089 — one of these is armed per held DCC offer and nothing
@@ -4512,98 +4575,7 @@ defmodule Grappa.Session.Server do
   # consumed here (removed from state) so the map stays bounded.
   # `last_command_window` is NOT updated here — it's a command-send-
   # time snapshot, not a numeric-arrival-time one.
-  def handle_info({:irc, %Message{command: {:numeric, _}} = msg}, state) do
-    state = maybe_release_autojoin_on_401(state, msg)
-    router_state = build_router_state(state)
-
-    case NumericRouter.route(msg, router_state) do
-      :delegated ->
-        # Delegated: existing handlers own this numeric via EventRouter.
-        delegate(msg, state)
-
-      routing ->
-        # Consume label if matched (keeps labels_pending bounded). S10 —
-        # drop the sibling stamp in lockstep so the two maps never diverge.
-        # `labels_pending_at` is a NEW field: read via Map.get / written via
-        # Map.put (NOT map-update syntax) so a HOT reload of a pre-S10 process
-        # — whose state map lacks the key — doesn't KeyError on the next
-        # routed numeric. Same defensive contract as awaiting_invite /
-        # in_flight_joins.
-        label = Message.tag(msg, "label")
-        prev_labels_at = Map.get(state, :labels_pending_at, %{})
-
-        {labels_pending, labels_pending_at} =
-          if label do
-            {Map.delete(state.labels_pending, label), Map.delete(prev_labels_at, label)}
-          else
-            {state.labels_pending, prev_labels_at}
-          end
-
-        state_with_labels =
-          state
-          |> Map.put(:labels_pending, labels_pending)
-          |> Map.put(:labels_pending_at, labels_pending_at)
-
-        numeric_code = numeric_code(msg)
-        trailing = List.last(msg.params)
-        sender = Message.sender_nick(msg)
-
-        # issue 2497 — read BEFORE the #640 gate below: the nick is absent
-        # whether its row lands in the open query or on $server.
-        :ok = maybe_no_such_nick(state, numeric_code, routing)
-
-        # #640 — resolve a {:query, target} decision against actual window
-        # existence: a numeric lands in an EXISTING conversation or on $server,
-        # it never MINTS a query window (see resolve_numeric_query_window/2).
-        routing = resolve_numeric_query_window(routing, state)
-
-        # Persist the numeric as a `:notice` row in the routed window —
-        # iff the trailing param is a string (defensive: malformed numerics
-        # with no trailing text are dropped silently rather than crashing
-        # the changeset on body=nil for body-required kind :notice).
-        persist_state =
-          if is_binary(trailing) do
-            channel = routing_to_channel(routing)
-            severity = NumericRouter.severity(numeric_code)
-            # #424 — `body` is only the TRAILING param, but many numerics carry
-            # their payload in the MIDDLE params (STATS: `213 <nick> C <host>
-            # <*> <server> <port> <class>` → without this, only the trailing
-            # class letter reaches the DB and host/server/port are lost). Keep
-            # the full param list in `raw_params`, mirroring EventRouter's
-            # `persist_raw_event/3`, so cic can render the whole reply. Fixes
-            # the CLASS (every middle-param numeric), not just the STATS example.
-            meta = %{numeric: numeric_code, severity: severity, raw_params: msg.params}
-
-            attrs =
-              Session.put_subject_id(
-                %{
-                  network_id: state.network_id,
-                  channel: channel,
-                  server_time: System.system_time(:millisecond),
-                  sender: sender,
-                  body: trailing,
-                  meta: meta
-                },
-                state.subject
-              )
-
-            apply_effects([{:persist, :notice, attrs}], state_with_labels)
-          else
-            state_with_labels
-          end
-
-        # Also delegate so EventRouter can update state (e.g. 305/306
-        # away_confirmed). EventRouter's catch-all returns `[]` for
-        # numerics we haven't given dedicated handlers, so this is a
-        # no-op for most numerics; the state mutations it owns (e.g.
-        # AWAY confirmation) still flow.
-        {:cont, next_state, effects} = EventRouter.route(msg, persist_state)
-        final_state = effects |> apply_effects(next_state) |> prune_seeded_channels()
-        maybe_broadcast_channels_changed(state, final_state, departed_channels(effects, state))
-        on_own_nick_change(state, final_state)
-        {:noreply, final_state}
-    end
-  end
+  def handle_info({:irc, %Message{command: {:numeric, _}} = msg}, state), do: route_numeric(msg, state)
 
   def handle_info({:irc, %Message{} = msg}, state), do: delegate(msg, state)
 
@@ -5940,14 +5912,29 @@ defmodule Grappa.Session.Server do
   # KeyError on its next 001. The fallback is the module default, which is the
   # production value, so a hot-reloaded session gets the real behaviour rather
   # than a degraded one.
-  @spec maybe_arm_nick_reclaim(t(), String.t()) :: :ok
+  #
+  # issue 2656 — keepnick makes the return value the state: with the switch on
+  # the same delay arms keepnick's CANCELLABLE chain instead of the one-shot
+  # (see `arm_keep_nick_tick/2`), and every 001 — drifted or not — first
+  # cancels the chain of the registration before it, because a fresh
+  # registration is the fresh world the paragraph above describes. With the
+  # switch off the one-shot path below is byte-for-byte what #2253 shipped: no
+  # ref kept.
+  @spec maybe_arm_nick_reclaim(t(), String.t()) :: t()
   defp maybe_arm_nick_reclaim(state, welcomed_nick) do
-    if fold_key(state, welcomed_nick) == fold_key(state, configured_nick(state)) do
-      :ok
-    else
-      delay = Map.get(state, :nick_reclaim_ms, @nick_reclaim_ms)
-      _ = Process.send_after(self(), :nick_reclaim, delay)
-      :ok
+    state = cancel_keep_nick(state)
+    delay = Map.get(state, :nick_reclaim_ms, @nick_reclaim_ms)
+
+    cond do
+      fold_key(state, welcomed_nick) == fold_key(state, configured_nick(state)) ->
+        state
+
+      keep_nick?(state) ->
+        arm_keep_nick_tick(state, delay)
+
+      true ->
+        _ = Process.send_after(self(), :nick_reclaim, delay)
+        state
     end
   end
 
@@ -6015,6 +6002,279 @@ defmodule Grappa.Session.Server do
   defp identity_sequence_armed?(state) do
     match?(%GhostRecovery{}, Map.get(state, :ghost_recovery)) or
       match?(%RecoverIdentity{}, Map.get(state, :recover_identity))
+  end
+
+  # ---------------------------------------------------------------------------
+  # issue 2656 — keepnick: the #2253 reclaim, re-armed while the credential
+  # opts in
+  # ---------------------------------------------------------------------------
+  #
+  # Not a new machine. The #2253 tick already answers "are we wearing the nick
+  # we were configured with?" off the LIVE nick; keepnick asks the same
+  # question every `@keep_nick_interval_ms` instead of once, until the answer
+  # is yes or a stop condition says asking again is pointless or unwanted.
+  # What #2253 did not need and this does:
+  #
+  #   * a cancellable tick (`keep_nick_timer`), because a re-arming chain
+  #     started twice runs twice;
+  #   * attribution (`keep_nick_in_flight?`): a refusal that answers one of
+  #     OUR tries is ours to read, one that answers the operator's `/nick` is
+  #     theirs and routes as it always did;
+  #   * a terminality table per (numeric, state) — `keep_nick_refusal/2`, the
+  #     "say which of the two you are looking at" that #2253's decision-log
+  #     entry demands of any arm that feeds 433/435/437 to a state machine.
+  #
+  # Coexistence with GhostRecovery is vjt's option A (issue 2656, relayed):
+  # keepnick is allowed on every credential and neither sends nor swallows
+  # while `identity_sequence_armed?/1` holds (arming RecoverIdentity also
+  # lowers a try in flight); its first try is the #2253 try, after the ghost
+  # window by ordering. Where services work, the nick is ours
+  # before keepnick looks; where they do not (a ghost that will not die,
+  # services down, a network with none, like IRCnet), keepnick keeps knocking.
+
+  @spec keep_nick?(t()) :: boolean()
+  defp keep_nick?(state), do: Map.get(state, :keep_nick, false) == true
+
+  # The nick keepnick asks for: the configured one, cut to the advertised
+  # NICKLEN (nil before 005 — no cut, as in `away_nick_target/1`). The cut is
+  # what lets a REPEATED try converge: the ircd truncates an over-long NICK
+  # (bahamut `strncpyzt(nick, parv[1], NICKLEN+1)`), so the live nick would
+  # never fold-equal the uncut one and the chain would ask for ever. Nicks are
+  # ASCII by `Identifier.valid_nick?/1`, so bytes are characters here.
+  @spec keep_nick_target(t()) :: String.t()
+  defp keep_nick_target(state) do
+    want = configured_nick(state)
+
+    case ISupport.nicklen(Map.get(state, :isupport, ISupport.default())) do
+      cap when is_integer(cap) and byte_size(want) > cap -> binary_part(want, 0, cap)
+      _ -> want
+    end
+  end
+
+  # One tick. Four arms, and each says what it OBSERVED:
+  #
+  #   * converged — the chain ends: no send, no re-arm, no line (convergence
+  #     already has its own `:nick_change` row in `$server`);
+  #   * an identity sequence owns the nick — skip and LOG, like #2253;
+  #   * an away rename is outstanding — pause without sending. Winning the
+  #     nick now would be undone by `restore_away_nick/1`, which sends us back
+  #     to the nick the away rename left (`vjt_`), losing the primary we just
+  #     took. After the restore the next tick asks again;
+  #   * otherwise — ask. Only a send the socket took marks a try in flight.
+  #
+  # There is no "switched off or stopped" arm, and that is not an omission:
+  # a tick can only fire inside a running chain. Turning the switch off and
+  # every stop go through `cancel_keep_nick/1`, which cancels the pending tick
+  # AND drains one already fired; the review of PR 2688 measured the arm that
+  # used to sit here unreachable (deleting it changed no outcome) and found it
+  # masking a missing cancel on the switch-off path.
+  @spec keep_nick_tick(t()) :: t()
+  defp keep_nick_tick(state) do
+    target = keep_nick_target(state)
+
+    cond do
+      fold_key(state, state.nick) == fold_key(state, target) ->
+        state
+
+      identity_sequence_armed?(state) ->
+        Logger.info("keepnick try skipped — an identity sequence owns the nick", from: state.nick, to: target)
+        rearm_keep_nick(state)
+
+      Map.get(state, :away_nick_restore) != nil ->
+        Logger.debug("keepnick try paused — an away rename is outstanding", from: state.nick, to: target)
+        rearm_keep_nick(state)
+
+      true ->
+        state |> send_keep_nick_try(target) |> rearm_keep_nick()
+    end
+  end
+
+  @spec send_keep_nick_try(t(), String.t()) :: t()
+  defp send_keep_nick_try(state, target) do
+    case Client.send_nick(state.client, target) do
+      :ok ->
+        Logger.debug("keepnick try", from: state.nick, to: target)
+        Map.put(state, :keep_nick_in_flight?, true)
+
+      {:error, _} = err ->
+        maybe_log_send_failure("keep_nick", err)
+        state
+    end
+  end
+
+  @spec rearm_keep_nick(t()) :: t()
+  defp rearm_keep_nick(state),
+    do: arm_keep_nick_tick(state, Map.get(state, :keep_nick_interval_ms, @keep_nick_interval_ms))
+
+  # Every keepnick tick goes through here, and every caller arrives with no
+  # tick pending: the 001 cancels first; a live toggle arms only when the
+  # switch was off, and turning it off cancelled; the tick re-arms from inside
+  # its own fire, whose ref the handler has already cleared. That is what
+  # keeps it ONE chain; a second cancel here would be dead, and mutation
+  # measured that it was.
+  @spec arm_keep_nick_tick(t(), non_neg_integer()) :: t()
+  defp arm_keep_nick_tick(state, delay),
+    do: Map.put(state, :keep_nick_timer, Process.send_after(self(), :keep_nick_tick, delay))
+
+  @spec cancel_keep_nick(t()) :: t()
+  defp cancel_keep_nick(state) do
+    :ok = cancel_and_drain(Map.get(state, :keep_nick_timer), :keep_nick_tick)
+    state |> Map.put(:keep_nick_timer, nil) |> Map.put(:keep_nick_in_flight?, false)
+  end
+
+  # A stop ends the chain for this registration: the cancel, and one line
+  # saying so. The line is written only when there WAS a chain to stop, which
+  # is a pending tick — every arm that keeps asking re-arms in the same tick,
+  # the one that sends included, so a try in flight always has a tick behind
+  # it. A `/nick <other>` on a session that already converged finds none and
+  # logs nothing (log honesty). Nothing records the stop: with the tick gone,
+  # nothing asks again until the next 001 or the switch going off and on.
+  @spec stop_keep_nick(t(), :user_renamed | {:refused, keep_nick_refusal_code()}) :: t()
+  defp stop_keep_nick(state, reason) do
+    if Map.get(state, :keep_nick_timer) != nil,
+      do: Logger.info("keepnick stopped", to: keep_nick_target(state), reason: inspect(reason))
+
+    cancel_keep_nick(state)
+  end
+
+  # The terminality table, for a NICK-family refusal that arrived while one of
+  # our tries was in flight. ONE rule, structural and the same on every ircd
+  # we bind: only a refusal ABOUT THE TARGET NICK is swallowed, and only
+  # 433/437 can be about it in the way that waiting changes —
+  #
+  #   433 [own, target, _]  somebody holds it (bahamut, solanum, IRCnet);
+  #   437 [own, target, _]  a nick delay (solanum `nd_dict`, IRCnet history).
+  #
+  # Everything else is about THIS session and is shown and ends the attempt:
+  # bahamut's 437 carries a CHANNEL in `params[1]` (banned or moderated there,
+  # its only emitter), 435 a channel ban, 432 an erroneous / Q:lined / RESV'd
+  # nick, 438 a `+d` channel or nick-flood, 484 IRCnet's restricted client,
+  # 447 UnrealIRCd's `+N`. Asking again cannot change any of them, and hiding
+  # them would hide why the nick does not come back — #2253's lesson. On
+  # bahamut, 447 and 484 never answer a NICK (`m_nick.c` sends neither; 447 is
+  # ERR_RESTRICTED from `/admin`, `/links` and channel code, 484
+  # ERR_NOUNKNOWNLISTS from `m_list`), so there one can only arrive as the
+  # reply to another verb, caught inside a try's round trip.
+  #
+  # Both ircds check collision (433) BEFORE the ban/moderation checks, so the
+  # channel refusal arrives only on the try where the nick has become free:
+  # that is when it is worth telling the operator, and it is the try this arm
+  # sees.
+  @spec keep_nick_refusal(t(), Message.t()) :: :swallow | :route
+  defp keep_nick_refusal(state, %Message{command: {:numeric, code}, params: [_, about | _]})
+       when code in [433, 437] do
+    if fold_key(state, about) == fold_key(state, keep_nick_target(state)),
+      do: :swallow,
+      else: :route
+  end
+
+  defp keep_nick_refusal(_, _), do: :route
+
+  # A refusal of one of our tries: swallow it, or route it exactly as it
+  # always routed (the operator reads it in `$server`) and then stop with one
+  # structured line saying so. Either way the try is answered. A try in
+  # flight implies a running chain: only `keep_nick_tick/1` raises the flag,
+  # re-arming in the same breath, and every door that turns the switch off or
+  # stops keepnick lowers it (`cancel_keep_nick/1`), as does an identity
+  # sequence arming. So the stop below always describes a live chain.
+  @spec handle_keep_nick_refusal(Message.t(), t()) :: {:noreply, t()}
+  defp handle_keep_nick_refusal(%Message{command: {:numeric, code}} = msg, state) do
+    state = Map.put(state, :keep_nick_in_flight?, false)
+
+    case keep_nick_refusal(state, msg) do
+      :swallow ->
+        {:noreply, state}
+
+      :route ->
+        {:noreply, routed} = route_numeric(msg, state)
+        {:noreply, routed |> stop_keep_nick({:refused, code}) |> persist_keep_nick_stop(code)}
+    end
+  end
+
+  # The "tell the user once" line (ruling point 4): `:server_event` on
+  # `$server`, structured in `meta.keep_nick` for a client to render, with a
+  # plain body for a client that does not know the key — the exception #676
+  # already took for its fallback row, inherited here rather than decided
+  # anew. Anonymous sender: grappa is speaking, nobody on the wire said it
+  # (`persist_link_failure/2`'s posture).
+  @spec persist_keep_nick_stop(t(), keep_nick_refusal_code()) :: t()
+  defp persist_keep_nick_stop(state, code) do
+    target = keep_nick_target(state)
+
+    attrs =
+      Session.put_subject_id(
+        %{
+          network_id: state.network_id,
+          channel: "$server",
+          server_time: System.system_time(:millisecond),
+          sender: Message.anonymous_sender(),
+          body: "stopped trying to get nick #{target} back: the server refused it (#{code})",
+          meta: %{keep_nick: %{outcome: "stopped", target: target, numeric: code}}
+        },
+        state.subject
+      )
+
+    apply_effects([{:persist, :server_event, attrs}], state)
+  end
+
+  # The `/nick` door (#1894's rule: the DOOR tells the operator's rename from
+  # ours, never the string). `/nick <target>` is "try now" and stops nothing;
+  # any other nick is a choice made more recently than ours, and keepnick
+  # stops for this registration rather than overrule it. No "switch on, and
+  # registered" guard: a chain runs only then, and a stop with no chain
+  # running is the no-op `stop_keep_nick/2` describes.
+  @spec keep_nick_on_user_nick(t(), String.t()) :: t()
+  defp keep_nick_on_user_nick(state, new_nick) do
+    if fold_key(state, new_nick) == fold_key(state, keep_nick_target(state)),
+      do: state,
+      else: stop_keep_nick(state, :user_renamed)
+  end
+
+  # A self-NICK echo that lands us ON the target, by any route (our try,
+  # services, the operator): the chain ends here, and the try it answers is
+  # no longer in flight, so a refusal of some LATER rename (an away rename to
+  # a taken nick) routes as the operator's and is not read as keepnick's.
+  # The `:nick` command only: the 001 reconcile moves `state.nick` too.
+  #
+  # Being renamed back OFF the target needs no rule of its own. The chain
+  # ended when we landed on it and nothing re-arms it within the
+  # registration, so a services rename is never fought (ZNC's "do not fight
+  # nickserv" holds by construction). Mutation measured it: a stop rule here
+  # changed no test outcome, because nothing was left running to stop. No
+  # switch guard either: with the switch off there is no chain, and the
+  # cancel is a no-op.
+  @spec keep_nick_on_own_nick(Message.t(), t(), t()) :: t()
+  defp keep_nick_on_own_nick(%Message{command: :nick}, %{nick: prev}, %{nick: next} = state)
+       when prev != next do
+    if fold_key(state, next) == fold_key(state, keep_nick_target(state)),
+      do: cancel_keep_nick(state),
+      else: state
+  end
+
+  defp keep_nick_on_own_nick(_, _, state), do: state
+
+  # A live toggle from `Credentials.update_credential_keep_nick/2`. Off cancels
+  # the chain. On — turning it on IS asking again, so it is also how a stopped
+  # keepnick resumes — starts the chain now if the session is registered,
+  # rather than at the next 001; before 001 the welcome arms it. There is
+  # nothing to cancel on the way in: the switch was off, and off cancelled.
+  # The same value twice is a no-op, so a repeated write cannot start a second
+  # chain beside a running one.
+  @spec apply_keep_nick_toggle(t(), boolean()) :: t()
+  defp apply_keep_nick_toggle(state, enabled) do
+    cond do
+      keep_nick?(state) == enabled ->
+        state
+
+      not enabled ->
+        state |> cancel_keep_nick() |> Map.put(:keep_nick, false)
+
+      Map.get(state, :registered_at) != nil ->
+        state |> Map.put(:keep_nick, true) |> arm_keep_nick_tick(0)
+
+      true ->
+        Map.put(state, :keep_nick, true)
+    end
   end
 
   # #676 h14 — release the advisory EventRouter parked at 001.
@@ -6386,6 +6646,105 @@ defmodule Grappa.Session.Server do
   defp routing_to_channel({:channel, c}) when is_binary(c), do: c
   defp routing_to_channel({:query, n}) when is_binary(n), do: n
   defp routing_to_channel({:server, nil}), do: "$server"
+
+  # The body of the generic numeric `handle_info/2` clause (the CP13 comment
+  # above it describes it), named so the keepnick refusal path (issue 2656)
+  # routes a refusal it does not swallow through the very same door rather
+  # than a copy of it.
+  @spec route_numeric(Message.t(), t()) :: {:noreply, t()}
+  defp route_numeric(msg, state) do
+    state = maybe_release_autojoin_on_401(state, msg)
+    router_state = build_router_state(state)
+
+    case NumericRouter.route(msg, router_state) do
+      :delegated ->
+        # Delegated: existing handlers own this numeric via EventRouter.
+        delegate(msg, state)
+
+      routing ->
+        # Consume label if matched (keeps labels_pending bounded). S10 —
+        # drop the sibling stamp in lockstep so the two maps never diverge.
+        # `labels_pending_at` is a NEW field: read via Map.get / written via
+        # Map.put (NOT map-update syntax) so a HOT reload of a pre-S10 process
+        # — whose state map lacks the key — doesn't KeyError on the next
+        # routed numeric. Same defensive contract as awaiting_invite /
+        # in_flight_joins.
+        label = Message.tag(msg, "label")
+        prev_labels_at = Map.get(state, :labels_pending_at, %{})
+
+        {labels_pending, labels_pending_at} =
+          if label do
+            {Map.delete(state.labels_pending, label), Map.delete(prev_labels_at, label)}
+          else
+            {state.labels_pending, prev_labels_at}
+          end
+
+        state_with_labels =
+          state
+          |> Map.put(:labels_pending, labels_pending)
+          |> Map.put(:labels_pending_at, labels_pending_at)
+
+        numeric_code = numeric_code(msg)
+        trailing = List.last(msg.params)
+        sender = Message.sender_nick(msg)
+
+        # issue 2497 — read BEFORE the #640 gate below: the nick is absent
+        # whether its row lands in the open query or on $server.
+        :ok = maybe_no_such_nick(state, numeric_code, routing)
+
+        # #640 — resolve a {:query, target} decision against actual window
+        # existence: a numeric lands in an EXISTING conversation or on $server,
+        # it never MINTS a query window (see resolve_numeric_query_window/2).
+        routing = resolve_numeric_query_window(routing, state)
+
+        # Persist the numeric as a `:notice` row in the routed window —
+        # iff the trailing param is a string (defensive: malformed numerics
+        # with no trailing text are dropped silently rather than crashing
+        # the changeset on body=nil for body-required kind :notice).
+        persist_state =
+          if is_binary(trailing) do
+            channel = routing_to_channel(routing)
+            severity = NumericRouter.severity(numeric_code)
+            # #424 — `body` is only the TRAILING param, but many numerics carry
+            # their payload in the MIDDLE params (STATS: `213 <nick> C <host>
+            # <*> <server> <port> <class>` → without this, only the trailing
+            # class letter reaches the DB and host/server/port are lost). Keep
+            # the full param list in `raw_params`, mirroring EventRouter's
+            # `persist_raw_event/3`, so cic can render the whole reply. Fixes
+            # the CLASS (every middle-param numeric), not just the STATS example.
+            meta = %{numeric: numeric_code, severity: severity, raw_params: msg.params}
+
+            attrs =
+              Session.put_subject_id(
+                %{
+                  network_id: state.network_id,
+                  channel: channel,
+                  server_time: System.system_time(:millisecond),
+                  sender: sender,
+                  body: trailing,
+                  meta: meta
+                },
+                state.subject
+              )
+
+            apply_effects([{:persist, :notice, attrs}], state_with_labels)
+          else
+            state_with_labels
+          end
+
+        # Also delegate so EventRouter can update state (e.g. 305/306
+        # away_confirmed). EventRouter's catch-all returns `[]` for
+        # numerics we haven't given dedicated handlers, so this is a
+        # no-op for most numerics; the state mutations it owns (e.g.
+        # AWAY confirmation) still flow.
+        {:cont, next_state, effects} = EventRouter.route(msg, persist_state)
+        final_state = effects |> apply_effects(next_state) |> prune_seeded_channels()
+        maybe_broadcast_channels_changed(state, final_state, departed_channels(effects, state))
+        on_own_nick_change(state, final_state)
+        {:noreply, final_state}
+    end
+  end
+
   #
   # Channels-list mutation (self-JOIN / self-PART / self-KICK changes the
   # `state.members` keyset) fires a fan-out broadcast on the per-user
@@ -6405,7 +6764,10 @@ defmodule Grappa.Session.Server do
     # issue 2380 — and send the identify a drifted welcome held, AFTER the
     # recover step so an armed recover is seen and owns the IDENTIFY.
     recovered = maybe_advance_recover_on_nick(state, next_state)
-    {:noreply, maybe_identify_on_reclaimed_nick(state, recovered)}
+    identified = maybe_identify_on_reclaimed_nick(state, recovered)
+    # issue 2656 — last, so keepnick reads the echo after the recover FSM and
+    # the held identify have had theirs.
+    {:noreply, keep_nick_on_own_nick(msg, state, identified)}
   end
 
   # CP24 bucket E web/S8: keep `seeded_channels` consistent with
@@ -7270,7 +7632,9 @@ defmodule Grappa.Session.Server do
   #      `broadcast_window_state/2`) carrying `by` + `reason` so cic can
   #      render the kick reason banner without parsing the scrollback
   #      row. The :persist :kick row alongside is the audit trail.
-  defp apply_effects([{:kicked, channel, by, reason} | rest], state) do
+  #   3. Issue 2657 — the kick is counted for the loop guard and, when the
+  #      credential opted in, one rejoin is armed (`arm_kick_rejoin/3`).
+  defp apply_effects([{:kicked, channel, by, reason, key} | rest], state) do
     broadcast_window_state(
       state,
       SessionWire.kicked(state.network_slug, channel, by, reason)
@@ -7290,7 +7654,7 @@ defmodule Grappa.Session.Server do
       | window_state: WindowState.set_kicked(state.window_state, channel, by, reason)
     }
 
-    apply_effects(rest, state)
+    apply_effects(rest, arm_kick_rejoin(state, channel, key))
   end
 
   # C2 — WHOIS bundle complete (318 RPL_ENDOFWHOIS). Broadcast the
@@ -8100,6 +8464,158 @@ defmodule Grappa.Session.Server do
       |> Enum.map(&{&1, nil})
 
     autojoin ++ queued
+  end
+
+  # The one JOIN verb both the `{:send_join, _, _}` call door and the issue
+  # 2657 kick rejoin go through. Same in-flight tracking, same
+  # `window_pending` broadcast, same `:no_socket` queue, whoever asked. So
+  # its log lines name the JOIN and never the door: the kick rejoin drops
+  # the reply, and a line saying "send_join call" would file a failed
+  # automatic rejoin under a /join nobody typed.
+  #
+  # Code-review CRIT-1 (bucket C): post-irc/S2 `Client.send_join`
+  # returns `{:error, :invalid_line}` for malformed channels. The
+  # `Session.send_join/4` facade gates `valid_channel?` per element
+  # before the call (CRIT-1 fix), so reaching this clause with a
+  # malformed channel requires a caller bypassing the facade. Defensive
+  # `{:error, :invalid_line}` arm mirrors the autojoin loop pattern
+  # at handle_info({:irc, %Message{command: {:numeric, 1}}}, …) so
+  # a future bypass-caller logs + drops instead of MatchError-crashing
+  # the Session.
+  #
+  # UX-4 bucket F: `key` is the optional +k channel key (nil for
+  # keyless channels). Client.send_join/3 emits the wire frame in
+  # the keyed or keyless shape based on key.
+  #
+  # #382: `Client.send_join/3`'s list clause frames ONE multi-target JOIN
+  # line; on `:ok` we `record_in_flight_join/2` PER channel so EACH
+  # window flips to `:pending` and broadcasts `window_pending`.
+  @spec join_channels(t(), [String.t()], String.t() | nil) ::
+          {:ok | {:error, :invalid_line | :timeout | :not_connected}, t()}
+  defp join_channels(state, channels, key) do
+    case Client.send_join(state.client, channels, key) do
+      :ok ->
+        state = Enum.reduce(channels, state, &record_in_flight_join(&2, &1))
+        {:ok, state}
+
+      {:error, :invalid_line} = err ->
+        Logger.warning("JOIN rejected: invalid channel name",
+          channel: inspect(channels)
+        )
+
+        {err, state}
+
+      # issue 2114 — THE TRANSPORT IS NOT THERE YET. `:no_socket` is the one
+      # transport error this process will outlive: it means `state.client` is
+      # nil (or its socket is), which for a Registry-registered session is the
+      # reconnect ladder itself — `handle_continue({:start_client, _})` defers
+      # the Client spawn by `Backoff.wait_ms/2`, so the session answers every
+      # REST verb through the whole delay with nothing to write on. The prod
+      # journal caught ten JOINs in that window, 1 ms after
+      # `event=backoff delay_ms=3975` and five seconds before
+      # `event=connected`; the door logged all ten and forgot all ten, so the
+      # channels never came back and no error said so.
+      #
+      # So keep them: queue, and let `fire_join_plan/1` put them on the wire at
+      # the SAME seam the autojoin set rides (001, or the #347 +r defer). Not a
+      # retry timer and not a flush at `:irc_connected` — the first duplicates
+      # the backoff ladder, and the second fires before registration, where an
+      # ircd ignores a JOIN. `record_in_flight_join/2` opens the window
+      # `:pending` exactly as the accepted path does, and the reply is `:ok`
+      # (202), because "queued, not yet joined" is what `:pending` already
+      # means and a 400 would now be false.
+      {:error, :no_socket} ->
+        # `info`, not `warning`: this is now a handled, expected state of the
+        # reconnect ladder, and prod runs at `:info` so the operator still sees
+        # it. Promoting it would inflate a level whose value is that it means
+        # something went wrong — the same argument #1677 makes for its
+        # strict-TLS line. No queue-depth key: one global Logger metadata atom
+        # for one line is heavier than the fact, and `channel` already says
+        # which JOIN this is.
+        Logger.info("JOIN queued until the transport is up",
+          channel: inspect(channels)
+        )
+
+        state =
+          Enum.reduce(channels, state, fn channel, acc ->
+            acc |> queue_join(channel, key) |> record_in_flight_join(channel)
+          end)
+
+        {:ok, state}
+
+      # issue 2370 — the Client did not answer in time. Neither branch around
+      # this one fits: the JOIN is not refused (the frame waits in the
+      # Client's mailbox and may still go out, and its echo opens the window
+      # as any JOIN echo does), and the link is not known to be down. So
+      # nothing is recorded and the caller reads the same `:timeout` (504) a
+      # stuck session would give it.
+      {:error, :timeout} = err ->
+        Logger.warning("JOIN timed out on the Client — delivery unknown",
+          channel: inspect(channels)
+        )
+
+        {err, state}
+
+      # Any OTHER transport failure (`:closed`, an `:inet.posix()`): the socket
+      # WAS there and the write failed, so the Client is on its way down and
+      # this process with it — an in-memory queue would die before it flushed,
+      # and replying `:ok` would be the silent drop issue 2114 is about, told
+      # to the caller as success. Surface `{:error, :not_connected}` so
+      # FallbackController emits the existing 400 `not_connected` body instead
+      # of a CaseClauseError 500ing the cic /join.
+      {:error, reason} ->
+        Logger.warning("JOIN rejected: transport unavailable",
+          channel: inspect(channels),
+          reason: inspect(reason)
+        )
+
+        {{:error, :not_connected}, state}
+    end
+  end
+
+  # Issue 2657 — a self-KICK just set `channel` `:kicked`. Count it for the
+  # loop guard (always, opt-in or not, so switching the opt-in on during a
+  # loop does not start the count over), then arm the one rejoin this kick
+  # may have. No timer ref is kept: `handle_info({:kick_rejoin, _, _, _})`
+  # re-checks everything it depends on when the delay ends, so nothing ever
+  # needs cancelling. `channel` is already the network-folded key —
+  # `EventRouter` canonicalises the KICK's channel param at ingress, and the
+  # window state above is keyed on the same value.
+  @spec arm_kick_rejoin(t(), String.t(), String.t() | nil) :: t()
+  defp arm_kick_rejoin(state, channel, key) do
+    now_ms = System.monotonic_time(:millisecond)
+    {verdict, kicks} = KickRejoin.record_kick(state.kicks, channel, now_ms)
+
+    case {state.kick_rejoin, verdict} do
+      {:off, _} ->
+        :ok
+
+      {{:on, _}, :stay_out} ->
+        Logger.info(
+          "kick rejoin: #{length(Map.fetch!(kicks, channel))} self-KICKs within " <>
+            "#{div(KickRejoin.window_ms(), 1000)} s reach the limit of #{KickRejoin.kick_limit()} — not rejoining",
+          channel: channel
+        )
+
+      {{:on, delay_seconds}, :rejoin} ->
+        _ = Process.send_after(self(), {:kick_rejoin, channel, key, now_ms}, KickRejoin.delay_ms(delay_seconds))
+        :ok
+    end
+
+    %{state | kicks: kicks}
+  end
+
+  # Issue 2657 — the rejoin fires only if, now that the delay is over, the
+  # opt-in is still on, the window is still `:kicked` (a manual `/join`
+  # moved it to `:pending`, a × to nothing, a JOIN echo to `:joined`), and
+  # this timer belongs to the channel's LATEST kick (kick → manual join →
+  # kick inside the delay must not have the first timer cut the second
+  # kick's delay short). Every input is state the session already keeps.
+  @spec kick_rejoin_due?(t(), String.t(), integer()) :: boolean()
+  defp kick_rejoin_due?(state, channel, kicked_at_ms) do
+    state.kick_rejoin != :off and
+      WindowState.state_of(state.window_state, channel) == :kicked and
+      KickRejoin.latest_kick?(state.kicks, channel, kicked_at_ms)
   end
 
   # issue 2114 — remember a JOIN the transport refused, newest-first. Deduped

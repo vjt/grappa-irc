@@ -39,6 +39,7 @@ defmodule GrappaWeb.NetworksControllerTest do
   alias Grappa.Admission.NetworkCircuit
   alias Grappa.{AdmissionStateHelpers, IRCServer, Networks, Repo, ServerSettings, Session}
   alias Grappa.Networks.{Credential, Credentials}
+  alias Grappa.PubSub.Topic
 
   # U-0 — admission state must start known-empty between tests.
   # The U-0 cap-exceeded + circuit-open tests deliberately drive the
@@ -1067,7 +1068,7 @@ defmodule GrappaWeb.NetworksControllerTest do
       :ok =
         Phoenix.PubSub.subscribe(
           Grappa.PubSub,
-          Grappa.PubSub.Topic.user_settings(Grappa.Subject.label({:user, vjt.name}))
+          Topic.user_settings(Grappa.Subject.label({:user, vjt.name}))
         )
 
       conn
@@ -1080,6 +1081,143 @@ defmodule GrappaWeb.NetworksControllerTest do
 
       assert_receive {:credential_profile_changed, ^network_id,
                       %{age: "30", gender: :female, location: nil, languages: nil, custom: nil}}
+    end
+  end
+
+  describe "PATCH /networks/:network_id/keep_nick (issue 2656)" do
+    defp keep_nick_user_setup(tag) do
+      vjt = user_fixture(name: "vjt-kn#{tag}-#{u()}")
+      session = session_fixture(vjt)
+      slug = "net-kn#{tag}-#{u()}"
+      {network, _} = network_with_server(port: 9_999, slug: slug)
+      _ = credential_fixture(vjt, network, %{nick: "vjt-irc"})
+      %{user: vjt, session: session, slug: slug, network: network}
+    end
+
+    defp patch_keep_nick(conn, session, slug, body) do
+      conn
+      |> put_bearer(session.id)
+      |> put_req_header("content-type", "application/json")
+      |> patch("/networks/#{slug}/keep_nick", body)
+    end
+
+    test "user turns keepnick on → 200 + persisted + the session bridge and the other devices are told",
+         %{conn: conn} do
+      %{user: vjt, session: session, slug: slug, network: network} = keep_nick_user_setup("on")
+      label = Grappa.Subject.label({:user, vjt.name})
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user_settings(label))
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(label))
+
+      body = conn |> patch_keep_nick(session, slug, %{keep_nick: true}) |> json_response(200)
+      assert body["keep_nick"] == true
+
+      {:ok, cred} = Credentials.get_credential(vjt, network)
+      assert cred.keep_nick == true
+
+      network_id = network.id
+      assert_receive {:credential_keep_nick_changed, ^network_id, true}
+
+      assert_receive %Phoenix.Socket.Broadcast{
+        event: "event",
+        payload: %{kind: :keep_nick_changed, network_id: ^network_id, network_slug: ^slug, keep_nick: true}
+      }
+    end
+
+    test "user turns keepnick off again → 200 + persisted false", %{conn: conn} do
+      %{user: vjt, session: session, slug: slug, network: network} = keep_nick_user_setup("off")
+
+      conn |> patch_keep_nick(session, slug, %{keep_nick: true}) |> json_response(200)
+      body = conn |> patch_keep_nick(session, slug, %{keep_nick: false}) |> json_response(200)
+      assert body["keep_nick"] == false
+
+      {:ok, cred} = Credentials.get_credential(vjt, network)
+      assert cred.keep_nick == false
+    end
+
+    test "a body without the key is 400, never an implicit off", %{conn: conn} do
+      %{user: vjt, session: session, slug: slug, network: network} = keep_nick_user_setup("missing")
+      conn |> patch_keep_nick(session, slug, %{keep_nick: true}) |> json_response(200)
+
+      assert conn |> patch_keep_nick(session, slug, %{}) |> json_response(400)
+
+      {:ok, cred} = Credentials.get_credential(vjt, network)
+      assert cred.keep_nick == true, "a refused request must not have written anything"
+    end
+
+    # `before` is the stored value the refused request must leave in place,
+    # chosen opposite to what a coercion would write — Ecto's boolean cast
+    # takes "true"/"1" and "false"/"0" — so a coerced write is visible here
+    # and not only in the status.
+    for {label, value, before} <- [
+          {"a string", "maybe", false},
+          {"null", nil, false},
+          {"a number", 1, false},
+          {~s(the string "true"), "true", false},
+          {~s(the string "1"), "1", false},
+          {~s(the string "false"), "false", true},
+          {~s(the string "0"), "0", true}
+        ] do
+      test "#{label} for keep_nick is 422", %{conn: conn} do
+        %{user: vjt, session: session, slug: slug, network: network} = keep_nick_user_setup("bad")
+        before = unquote(before)
+        if before, do: conn |> patch_keep_nick(session, slug, %{keep_nick: true}) |> json_response(200)
+
+        assert conn |> patch_keep_nick(session, slug, %{keep_nick: unquote(value)}) |> json_response(422)
+
+        {:ok, cred} = Credentials.get_credential(vjt, network)
+        assert cred.keep_nick == before
+      end
+    end
+
+    test "404 when the caller holds no credential on the network", %{conn: conn} do
+      vjt = user_fixture(name: "vjt-knnone-#{u()}")
+      session = session_fixture(vjt)
+      slug = "net-knnone-#{u()}"
+      {:ok, _} = Networks.find_or_create_network(%{slug: slug})
+
+      assert conn |> patch_keep_nick(session, slug, %{keep_nick: true}) |> json_response(404)
+    end
+
+    test "404 on another user's network, and their switch is untouched (ResolveNetwork)", %{conn: conn} do
+      vjt = user_fixture(name: "vjt-knauthz-#{u()}")
+      alice = user_fixture(name: "alice-knauthz-#{u()}")
+      vjt_session = session_fixture(vjt)
+      slug = "net-knauthz-#{u()}"
+      {network, _} = network_with_server(port: 9_999, slug: slug)
+      _ = credential_fixture(alice, network)
+
+      assert conn |> patch_keep_nick(vjt_session, slug, %{keep_nick: true}) |> json_response(404)
+
+      {:ok, cred} = Credentials.get_credential(alice, network)
+      assert cred.keep_nick == false
+    end
+
+    test "visitor turns keepnick on → 200 + persisted on the visitor credential", %{conn: conn} do
+      slug = "net-knvis-#{u()}"
+      {network, _} = network_with_server(port: 9_999, slug: slug, visitor_enabled: true)
+      visitor = visitor_with_credential_fixture(network_slug: slug, nick: "vkn-#{u()}")
+      session = visitor_session_fixture(visitor)
+
+      body = conn |> patch_keep_nick(session, slug, %{keep_nick: true}) |> json_response(200)
+      assert body["keep_nick"] == true
+
+      {:ok, cred} = Credentials.get_visitor_credential(visitor.id, network.id)
+      assert cred.keep_nick == true
+    end
+
+    test "GET /networks rows carry the switch, off by default, for both subjects", %{conn: conn} do
+      %{session: session, slug: slug} = keep_nick_user_setup("get")
+      [row] = conn |> put_bearer(session.id) |> get("/networks") |> json_response(200)
+      assert row["slug"] == slug
+      assert row["keep_nick"] == false
+
+      vslug = "net-knvisget-#{u()}"
+      {:ok, _} = Networks.find_or_create_network(%{slug: vslug})
+      visitor = visitor_with_credential_fixture(network_slug: vslug, nick: "vkg-#{u()}")
+      vsession = visitor_session_fixture(visitor)
+      [vrow] = build_conn() |> put_bearer(vsession.id) |> get("/networks") |> json_response(200)
+      assert vrow["kind"] == "visitor"
+      assert vrow["keep_nick"] == false
     end
   end
 
