@@ -116,6 +116,7 @@ import {
   epochRemainingHolders,
   type GroupSessionsState,
   gkeyInner,
+  hasPendingSends,
   holderNicksOf,
   holdersStale,
   holdGkey,
@@ -808,9 +809,14 @@ export function auditEpochRotation(
 /**
  * Sends the rows queued for `channel` now that an epoch exists, in the
  * order they were queued: the key arrived, so they go out under it.
- * Nothing when no epoch is held — the rows keep waiting — and no event:
- * a sent channel row has nowhere to render yet, so the flush is silent
- * in the report (the door still reconciles a refusal into a drop).
+ * A flush is a send, so it is audited as one first (`forSend`, against
+ * the true roster `deps.rosterFor`): an epoch a departed holder still
+ * holds rotates before any row goes under it. Only a flush that sends
+ * something is audited — with nothing queued nothing is encrypted, so
+ * nothing rotates. The rows keep waiting, never flushed unaudited, when
+ * no roster is known yet; and when no epoch is held after the audit. The
+ * rows themselves raise no event: a sent channel row has nowhere to
+ * render yet (the door still reconciles a refusal into a drop).
  */
 export async function flushPendingSends(
   deps: ChannelE2eDeps,
@@ -818,10 +824,33 @@ export async function flushPendingSends(
   channel: string,
 ): Promise<ChannelE2eResult> {
   const res = emptyResult();
+  if (!hasPendingSends(groups, channel)) return withNetwork(deps, res);
+  const roster = deps.rosterFor?.(channel);
+  if (roster === undefined) return withNetwork(deps, res);
+  const audited = auditEpochRotation(deps, groups, channel, roster, { forSend: true });
+  res.events.push(...audited.events);
+  res.outbound.push(...audited.outbound);
+  res.copies.push(...audited.copies);
   if (epochFor(groups, channel) === undefined) return withNetwork(deps, res);
+  res.outbound.push(...(await encryptQueued(deps, groups, channel)));
+  return withNetwork(deps, res);
+}
+
+/**
+ * The rows queued for `channel`, taken from the queue and encrypted under
+ * its current epoch, in the order they were queued, as channel `:msg`s.
+ * The caller has audited the epoch for a send and holds one: this only
+ * encrypts.
+ */
+async function encryptQueued(
+  deps: ChannelE2eDeps,
+  groups: GroupSessionsState,
+  channel: string,
+): Promise<Outbound[]> {
+  const lines: Outbound[] = [];
   for (const pending of takePendingSends(groups, channel)) {
     const encrypted = await encryptChannel(groups, channel, pending.body, deps.sign);
-    res.outbound.push({
+    lines.push({
       target: channel,
       verb: "msg",
       from: deps.ownDid,
@@ -830,7 +859,7 @@ export async function flushPendingSends(
       priority: "text",
     });
   }
-  return withNetwork(deps, res);
+  return lines;
 }
 
 /**
@@ -875,9 +904,10 @@ export async function sendChannel(
     res.copies.push(...asked.copies);
     return withNetwork(deps, res);
   }
-  const flushed = await flushPendingSends(deps, groups, channel);
-  res.outbound.push(...flushed.outbound);
-  res.copies.push(...flushed.copies);
+  // What waited goes first, in order, under the epoch the audit above
+  // checked against `members`: this send is that audit, so the queue is
+  // not audited again against another roster.
+  res.outbound.push(...(await encryptQueued(deps, groups, channel)));
   const encrypted = await encryptChannel(groups, channel, body, deps.sign);
   res.outbound.push({
     target: channel,

@@ -15,6 +15,7 @@ import {
   designatedRotator,
   distributeKey,
   emitChannelE2eEvents,
+  flushPendingSends,
   GKEY_TAG,
   onChannelE2eEvent,
   onKeyreq,
@@ -1492,6 +1493,119 @@ describe("receiveGkey", () => {
     });
     expect(epochFor(s.bob.groups, CHAN)?.sid).toBe(successor.sid as string);
     expect(epochFor(s.bob.groups, CHAN)?.seq).toBe(1);
+  });
+});
+
+describe("flushPendingSends", () => {
+  /**
+   * Bob queues a line before he holds a key, then imports Alice's: the
+   * rows are waiting and an epoch is held. `roster` is what both sides'
+   * `rosterFor` answers, so a test can take it away.
+   */
+  async function bobQueuedThenKeyed(clock: Clock, roster: { now: string[] | undefined }) {
+    const s = sides(clock, () => roster.now);
+    const queued = await sendChannel(s.bob.deps, s.bob.groups, CHAN, "waiting", ["alice", "bob"]);
+    expect(queued.events.map((e) => e.kind)).toContain("channel_key_missing");
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
+    const gkey = s.alice.dm.sent.find((d) => d.nick === "bob")?.inner;
+    if (gkey === undefined) throw new Error("alice sent bob no gkey");
+    expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
+      expect.objectContaining({ kind: "channel_key_received", from: "alice" }),
+    ]);
+    return s;
+  }
+
+  /** What Alice reads of a flush's channel line. */
+  async function aliceReads(s: ReturnType<typeof sides>, res: { outbound: Outbound[] }) {
+    const payload = channelMsg(res)?.payload ?? "";
+    return (await receiveChannel(s.alice.deps, s.alice.groups, CHAN, "bob", didFor("bob"), payload))
+      .events;
+  }
+
+  it("a flush is a send: an epoch a departed holder still holds rotates before the queued line goes out", async () => {
+    // Alice (the designated rotator, whose cic then closes), Bob and
+    // Carol hold the epoch. Dave joins and types before he holds a key.
+    // Bob, not designated, answers Dave's request; Carol then leaves, and
+    // Bob, still not designated, rotates nothing. Dave imports Bob's answer.
+    const clock = { t: NOW };
+    let members = ["alice", "bob", "carol"];
+    const roster = () => members;
+    const alice = makeSide("alice", clock, roster);
+    const bob = makeSide("bob", clock, roster);
+    const carol = makeSide("carol", clock, roster);
+    const dave = makeSide("dave", clock, roster);
+    distributeKey(alice.deps, alice.groups, CHAN, members);
+    for (const holder of [bob, carol]) {
+      requestKey(holder.deps, holder.groups, CHAN);
+      const gkey = alice.dm.sent.find((d) => d.nick === holder.deps.ownNick)?.inner;
+      if (gkey === undefined) throw new Error(`alice sent ${holder.deps.ownNick} no gkey`);
+      receiveGkey(holder.deps, holder.groups, gkey, "alice", didFor("alice"));
+    }
+    members = ["alice", "bob", "carol", "dave"];
+    const queued = await sendChannel(dave.deps, dave.groups, CHAN, "queued line", members);
+    expect(queued.events.map((e) => e.kind)).toContain("channel_key_missing");
+    onKeyreq(bob.deps, bob.groups, CHAN, "dave", didFor("dave"));
+    const answer = bob.dm.sent.filter((d) => d.nick === "dave").at(-1)?.inner;
+    if (answer === undefined) throw new Error("bob answered dave with no gkey");
+    members = ["alice", "bob", "dave"];
+    expect(onMemberLeft(bob.deps, bob.groups, CHAN, "carol", members).events).toEqual([]);
+    expect(receiveGkey(dave.deps, dave.groups, answer, "bob", didFor("bob"))).toEqual([
+      expect.objectContaining({ kind: "channel_key_received", from: "bob" }),
+    ]);
+    const heldBefore = epochFor(dave.groups, CHAN)?.sid;
+
+    const flushed = await flushPendingSends(dave.deps, dave.groups, CHAN);
+
+    expect(flushed.events).toContainEqual(
+      expect.objectContaining({
+        kind: "channel_rotated",
+        oldSid: heldBefore,
+        reason: "member-left",
+      }),
+    );
+    const line = channelMsg(flushed)?.payload ?? "";
+    expect(decodePayload(line).sid).toBe(epochFor(dave.groups, CHAN)?.sid);
+    expect(decodePayload(line).sid).not.toBe(heldBefore);
+    // Carol holds no key for the epoch the line went out under.
+    expect(
+      (await receiveChannel(carol.deps, carol.groups, CHAN, "dave", didFor("dave"), line)).events,
+    ).toEqual([expect.objectContaining({ kind: "channel_undecryptable", reason: "no-session" })]);
+  });
+
+  it("with no roster known, nothing queued goes out: the rows wait for one to audit against", async () => {
+    const clock = { t: NOW };
+    const roster: { now: string[] | undefined } = { now: ["alice", "bob"] };
+    const s = await bobQueuedThenKeyed(clock, roster);
+    roster.now = undefined;
+
+    const unaudited = await flushPendingSends(s.bob.deps, s.bob.groups, CHAN);
+
+    expect(unaudited.outbound).toEqual([]);
+    // The rows were kept, not lost: with the roster back they go out.
+    roster.now = ["alice", "bob"];
+    const audited = await flushPendingSends(s.bob.deps, s.bob.groups, CHAN);
+    expect(await aliceReads(s, audited)).toEqual([
+      expect.objectContaining({ kind: "channel_received", body: "waiting" }),
+    ]);
+  });
+
+  it("with no epoch held, nothing queued goes out, even with the roster known", async () => {
+    const clock = { t: NOW };
+    const s = sides(clock, () => ["alice", "bob"]);
+    await sendChannel(s.bob.deps, s.bob.groups, CHAN, "waiting", ["alice", "bob"]);
+
+    const keyless = await flushPendingSends(s.bob.deps, s.bob.groups, CHAN);
+
+    expect(keyless.outbound).toEqual([]);
+    // The rows were kept, not lost: once the key arrives they go out.
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
+    const gkey = s.alice.dm.sent.find((d) => d.nick === "bob")?.inner;
+    if (gkey === undefined) throw new Error("alice sent bob no gkey");
+    receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"));
+    const keyed = await flushPendingSends(s.bob.deps, s.bob.groups, CHAN);
+    expect(await aliceReads(s, keyed)).toEqual([
+      expect.objectContaining({ kind: "channel_received", body: "waiting" }),
+    ]);
   });
 });
 

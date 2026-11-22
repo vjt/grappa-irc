@@ -479,6 +479,11 @@ export function queuePendingSend(
   return dropped;
 }
 
+/** Whether rows wait for a key on `channel`; the queue is not touched. */
+export function hasPendingSends(state: GroupSessionsState, channel: string): boolean {
+  return pendingSends(state).some((r) => fold(r.channel) === fold(channel));
+}
+
 /**
  * Takes the rows queued for `channel`: the key arrived, so the caller
  * sends them now, under the new epoch, in the order they were queued.
