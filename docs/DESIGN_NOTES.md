@@ -8479,3 +8479,94 @@ azzurra-testnet (shard 2/4)", log line 6874, shard 292 passed).
 `+bo` (`channelModeEcho`, `e2e/fixtures/ircClient.ts`) and fails on a
 timeout, so that green also measures that bahamut echoed `+bo` in the
 requested order.
+<!-- entry #2690 -->
+
+---
+
+## 2026-11-22 — #2690: a ratchet on Session.Server's state and callbacks, and on every boundary's deps
+
+Architecture review 2026-11-21, finding X1 (COH-A2 + DEP-A5). Session.Server
+keeps absorbing domains, and nothing stopped the next one. The ceiling and the
+split are issue 2133, still waiting on vjt's ruling, and this entry decides
+neither. It adds the cheap half the review asked for whatever 2133 rules:
+growth stays possible, but it stops being free.
+
+### What is counted
+
+All four quantities are read off the build, never off the source text. The
+record was taken on `59bc1ce44`:
+
+* `state_keys:Grappa.Session.Server`: the fields of the `@type t` map in the
+  compiled typespec. **101**, the same as at `9b66302df`.
+* `handle_call_clauses:Grappa.Session.Server` and
+  `handle_info_clauses:Grappa.Session.Server`: the clauses the compiler kept,
+  from the beam's debug_info definitions. **79** and **69**.
+* `deps:<Boundary>` for each of the **126** boundaries declared under `lib/`:
+  the length of its `deps:` list, from the persisted `Boundary` attribute.
+  `deps:Grappa.Session` is **28**. At `9b66302df` there were 125. Issue 2201,
+  which landed while this branch was open, made `Grappa.QueryWindows.Window` a
+  boundary of its own and added it to `Grappa.ReadCursor`'s deps. The ratchet
+  caught both on the rebase, and they are part of the seeded record, not a
+  raise made by this branch.
+
+The review printed two state-key counts: 94 (a regex over the `@type t`
+block) and 96 (TYP). On this tree the compiler says 101. So does an
+independent line count of the block with its comment lines removed: 101 key
+lines, none of them holding two keys. Where 94 and 96 came from is not known,
+and this entry does not explain them away. That disagreement is the reason the
+count goes through the compiler.
+
+### Where the values live, and the two witnesses
+
+`priv/ratchet/ratchet.pin` holds one `key = count` line each. `mix
+grappa.ratchet --check` (check.sh + CI) is red on any difference:
+
+* a rise;
+* a fall, because a record left above the build is slack that hides the next
+  rise;
+* a key not recorded, or a key no longer counted.
+
+`--update` may always rewrite the record. The second witness is this log.
+`scripts/ratchet-gate.sh` (check.sh + CI) walks the branch's commits and
+requires each commit that raises a recorded value to add a line here naming
+the key **in backticks**. The backticks stop a line about
+`deps:Grappa.Accounts.User` from pairing a raise of `deps:Grappa.Accounts`.
+The seed commit, a new key and a lowered value are exempt.
+
+The split between the two follows `mix grappa.wire_pin` and
+`scripts/design-notes-gate.sh`. The task stays offline. The half that needs
+history is a script that takes a base ref, and it fails when the base does
+not resolve.
+
+### The known-answer control
+
+Before any verdict, and before `--update` writes, the task compiles a fixture
+module with known answers and runs it through the same counters. The fixture
+has 3 state keys (one of them optional), 2 `handle_call` clauses, 1
+`handle_info` clause beside the `use GenServer` defaults, and 2 deps. A record
+equal to those counts must pass, and one with a key fewer must fail as a rise.
+Otherwise the task prints NO VERDICT and exits 1.
+
+Measured while building it: under `mix test` the global `debug_info` compiler
+option is `false`. A fixture compiled at run time then carries no debug_info
+chunk, and `Code.Typespec.fetch_types/1` answers `:error`. The fixture
+therefore sets `@compile {:debug_info, true}` itself.
+`Code.with_compiler_options/2`, the first idea, does not exist in
+Elixir 1.19.
+
+### Accepted
+
+* Whether the code agrees with the record is checked at the head that is
+  built, not at every commit. The pairing with this log IS checked per commit.
+* `handle_call` and `handle_info` are two keys, so a clause moved from one to
+  the other reads as a rise.
+* A renamed boundary is one key gone and one new key, and a new key needs no
+  line here.
+* Every boundary's `deps:` count is gated, as issue 2690 asks, not only
+  Session's. Adding a dep anywhere now costs a line here. That is the friction
+  the review asked for. How often it will bite has not been measured.
+* This is not a ceiling: any number can be recorded. The ceiling is issue
+  2133.
+
+Also fixed: `Grappa.Session`'s moduledoc said its deps list could omit
+`Accounts`, which it has declared since issue 2597.
