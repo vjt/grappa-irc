@@ -29,6 +29,13 @@
 # value that falls. The mix task already refuses a record left above the
 # build, so lowering needs no prose.
 #
+# THE RANGE
+#
+# merge-base(<base-ref>, HEAD)..HEAD, merge commits skipped. On a pull_request
+# run that is the PR's commits. On a push run origin/main IS the pushed tip,
+# so CI passes the push event's `before` SHA instead and the range is the
+# commits that push added (.github/workflows/ci.yml).
+#
 # WHY A SEPARATE SCRIPT AND NOT PART OF THE MIX TASK
 #
 # The pairing needs history, and `mix grappa.ratchet` is offline by
@@ -36,26 +43,35 @@
 # scripts/design-notes-gate.sh's: same base-ref argument, same refusal to pass
 # when the base does not resolve.
 #
-# Exit 0 = every raise in range is paired (including "no raise at all", which
-# is reported as observed). Exit 1 = an unpaired raise, or the base ref cannot
-# be resolved. A gate that cannot reach its base FAILS; it never passes
-# vacuously.
+# Exit 0 = every raise in range is paired. "No raise at all" and an empty
+# range ("0 commit(s)") are both reported as observed. Exit 1 = an unpaired
+# raise, or a base the gate cannot reach: a ref that does not resolve, an
+# EMPTY argument (never silently replaced by origin/main) or the all-zeros
+# SHA a push event carries when it creates a ref. A gate that cannot reach its
+# base FAILS; it never passes vacuously.
 
 set -euo pipefail
 
-BASE_REF="${1:-origin/main}"
+# No colon: an EMPTY argument stays empty and is refused below. `${1:-…}`
+# would turn it into origin/main, and on a push run that judges zero commits.
+BASE_REF="${1-origin/main}"
 PIN="priv/ratchet/ratchet.pin"
 NOTES="docs/DESIGN_NOTES.md"
 
 die() {
-	printf 'ratchet-gate: %s\n' "$*" >&2
+	printf 'ratchet-gate: cannot reach its base: %s\n' "$*" >&2
 	exit 1
 }
 
 cd "$(git rev-parse --show-toplevel)"
 
+case "$BASE_REF" in
+"") die "the base ref is EMPTY. Pass nothing for origin/main; an empty argument is a caller that lost its value (in CI, an unset github.event.before)." ;;
+*[!0]*) ;;
+*) die "'$BASE_REF' is the all-zeros SHA, which a push event carries when it CREATES a ref: there is no before to judge against." ;;
+esac
 git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null ||
-	die "base ref '$BASE_REF' does not resolve. In CI this means the checkout is shallow — actions/checkout needs fetch-depth: 0."
+	die "'$BASE_REF' does not resolve to a commit here. In CI that is a shallow checkout (actions/checkout needs fetch-depth: 0) or, on a push, a 'before' that a force-push left unreachable."
 base="$(git merge-base "$BASE_REF" HEAD)" ||
 	die "no merge base between '$BASE_REF' and HEAD"
 

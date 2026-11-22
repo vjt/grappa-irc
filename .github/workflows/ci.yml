@@ -186,10 +186,28 @@ jobs:
       - name: Ratchet raises paired with a DESIGN_NOTES line (issue 2690)
         # The git half of `mix grappa.ratchet --check`: a commit that RAISES a
         # value in priv/ratchet/ratchet.pin must add a docs/DESIGN_NOTES.md
-        # line naming the key in backticks, in the SAME commit. Lowering, a
-        # new key and the seed commit are exempt. Needs the fetch-depth: 0
-        # above, like the gate before it.
-        run: scripts/ratchet-gate.sh
+        # line naming the key in backticks, in the SAME commit. Lowering and a
+        # key the merge base does not carry are exempt. Needs the
+        # fetch-depth: 0 above, like the gate before it.
+        #
+        # What each event judges. pull_request: the default base origin/main,
+        # so the range is the PR's own commits. push: origin/main IS the
+        # pushed tip there and would judge zero commits, so this passes the
+        # event's `before` SHA and judges exactly the commits the push added,
+        # including what reaches main with no PR run (a release bump, a docs
+        # commit). A `before` the checkout cannot reach (all zeros, empty, or
+        # orphaned by a force-push) FAILS the step. Not covered: a push run
+        # the concurrency block above cancels for a newer push judges
+        # nothing, and the newer run's `before` starts after those commits.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = push ]; then
+            scripts/ratchet-gate.sh "$PUSH_BEFORE"
+          else
+            scripts/ratchet-gate.sh
+          fi
 
       - name: POSIX-parse the sh-dialect scripts (#503, derived by #1377)
         # A DIFFERENT property from the lint above, with a different tool:

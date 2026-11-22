@@ -172,6 +172,81 @@ scratch() {
     [[ "$output" == *"; 1 raise(s)"* ]]
 }
 
+@test "the push run: judged from the tip it pushed over, an unpaired raise on main is RED" {
+    scratch
+    git checkout -q main
+    pin "deps:Grappa.Session 29" "deps:Grappa.Accounts 3" "state_keys:Grappa.Session.Server 101"
+    git commit -qam 'grow Session on main'
+    run scripts/ratchet-gate.sh "$(git rev-parse HEAD~1)"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"grow Session on main"* ]]
+    [[ "$output" == *"1 commit(s)"* ]]
+}
+
+# The `run: |` block of ci.yml's ratchet-gate step, verbatim, so the cases
+# below run the workflow's own shell rather than a copy of it.
+ci_run_block() {
+    awk '
+        /- name: Ratchet raises paired/ { step = 1; next }
+        step && /^      - name:/ { exit }
+        step && /^        run: \|$/ { body = 1; next }
+        body && /^          / { sub(/^          /, ""); print; next }
+        body { exit }
+    ' "$BATS_TEST_DIRNAME/../../.github/workflows/ci.yml"
+}
+
+@test "ci.yml's push arm passes the push's before SHA, so the pushed commit is judged" {
+    grep -qF 'PUSH_BEFORE: ${{ github.event.before }}' "$BATS_TEST_DIRNAME/../../.github/workflows/ci.yml"
+    block="$(ci_run_block)"
+    [[ "$block" == *"ratchet-gate.sh"* ]]
+    scratch
+    git checkout -q main
+    pin "deps:Grappa.Session 29" "deps:Grappa.Accounts 3" "state_keys:Grappa.Session.Server 101"
+    git commit -qam 'grow Session on main'
+    # On a push, origin/main IS the pushed tip.
+    git update-ref refs/remotes/origin/main "$(git rev-parse HEAD)"
+    run env EVENT_NAME=push PUSH_BEFORE="$(git rev-parse HEAD~1)" bash -ec "$block"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"UNPAIRED"*"grow Session on main"* ]]
+}
+
+@test "ci.yml's pull_request arm judges the branch against origin/main" {
+    block="$(ci_run_block)"
+    scratch
+    git update-ref refs/remotes/origin/main "$(git rev-parse main)"
+    pin "deps:Grappa.Session 29" "deps:Grappa.Accounts 3" "state_keys:Grappa.Session.Server 101"
+    git commit -qam 'grow Session on the branch'
+    run env EVENT_NAME=pull_request PUSH_BEFORE= bash -ec "$block"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"UNPAIRED"*"grow Session on the branch"* ]]
+}
+
+@test "an empty range passes and SAYS it judged 0 commits" {
+    scratch
+    git checkout -q main
+    pin "deps:Grappa.Session 29" "deps:Grappa.Accounts 3" "state_keys:Grappa.Session.Server 101"
+    git commit -qam 'grow Session on main'
+    run scripts/ratchet-gate.sh main
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"0 commit(s)"* ]]
+}
+
+@test "the all-zeros SHA (a push that CREATED the ref) FAILS: the gate cannot reach a base" {
+    scratch
+    run scripts/ratchet-gate.sh 0000000000000000000000000000000000000000
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"cannot reach"*"all-zeros"* ]]
+}
+
+@test "an EMPTY base ref FAILS instead of falling back to origin/main" {
+    scratch
+    # An origin/main that resolves, so a fallback would pass instead of failing.
+    git update-ref refs/remotes/origin/main "$(git rev-parse main)"
+    run scripts/ratchet-gate.sh ""
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"cannot reach"*"EMPTY"* ]]
+}
+
 @test "a branch that never touches the pin passes and says what it saw" {
     scratch
     note 'just prose'
@@ -187,5 +262,5 @@ scratch() {
     scratch
     run scripts/ratchet-gate.sh no-such-ref
     [ "$status" -eq 1 ]
-    [[ "$output" == *"no-such-ref"* ]]
+    [[ "$output" == *"cannot reach"*"no-such-ref"* ]]
 }
