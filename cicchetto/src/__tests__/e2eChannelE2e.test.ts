@@ -1051,6 +1051,67 @@ describe("sendChannel", () => {
     const newSid = epochFor(s.alice.groups, CHAN)?.sid;
     expect(parseChannelPayload(decodePayload(res.outbound[1]?.payload ?? "")).sid).toBe(newSid);
   });
+
+  it("with no roster known, the row waits under the held epoch: nothing rotates and nothing goes out until a roster audits it", async () => {
+    const clock = { t: NOW };
+    const roster: { now: string[] | undefined } = { now: undefined };
+    const s = sides(clock, () => roster.now);
+    requestKey(s.bob.deps, s.bob.groups, CHAN);
+    distributeKey(s.alice.deps, s.alice.groups, CHAN, ["alice", "bob"]);
+    const gkey = s.alice.dm.sent.find((d) => d.nick === "bob")?.inner;
+    if (gkey === undefined) throw new Error("alice sent bob no gkey");
+    expect(receiveGkey(s.bob.deps, s.bob.groups, gkey, "alice", didFor("alice"))).toEqual([
+      expect.objectContaining({ kind: "channel_key_received", from: "alice" }),
+    ]);
+    const held = epochFor(s.alice.groups, CHAN)?.sid;
+    s.alice.dm.sent.length = 0;
+
+    const res = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "who is here?", undefined);
+
+    // An unknown roster is not an empty one: Bob still holds the epoch,
+    // and nothing says he left, so the epoch is not rotated away from
+    // him, no key goes out, and no line goes out unaudited.
+    expect(res.outbound).toEqual([]);
+    expect(s.alice.dm.sent).toEqual([]);
+    expect(res.events.filter((e) => e.kind === "channel_rotated")).toEqual([]);
+    expect(epochFor(s.alice.groups, CHAN)?.sid).toBe(held);
+    // The row was kept, not lost: with the roster known, the flush
+    // audits it and sends it under the epoch Bob holds.
+    roster.now = ["alice", "bob"];
+    const flushed = await flushPendingSends(s.alice.deps, s.alice.groups, CHAN);
+    const line = channelMsg(flushed)?.payload ?? "";
+    expect(decodePayload(line).sid).toBe(held);
+    expect(
+      (
+        await receiveChannel(
+          s.bob.deps,
+          s.bob.groups,
+          CHAN,
+          "alice",
+          didFor("alice"),
+          line,
+          s.bob.deps.now(),
+        )
+      ).events,
+    ).toEqual([expect.objectContaining({ kind: "channel_received", body: "who is here?" })]);
+  });
+
+  it("with no roster known and no epoch held, the row waits and the key is asked for all the same", async () => {
+    const clock = { t: NOW };
+    const s = sides(clock, () => undefined);
+
+    const res = await sendChannel(s.alice.deps, s.alice.groups, CHAN, "anyone?", undefined);
+
+    // The key request names no member: it goes out on the channel
+    // whether or not a roster is known, and nothing else does.
+    expect(epochFor(s.alice.groups, CHAN)).toBeUndefined();
+    expect(s.alice.dm.sent).toEqual([]);
+    expect(res.outbound.map((o) => decodePayload(o.payload))).toEqual([
+      { v: 4, t: "keyreq", ch: "#grappa" },
+    ]);
+    expect(res.events).toContainEqual({ kind: "channel_key_missing", channel: CHAN });
+    expect(res.events).toContainEqual({ kind: "channel_key_requested", channel: CHAN });
+  });
 });
 
 describe("receiveChannel", () => {

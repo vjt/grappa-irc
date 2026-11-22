@@ -896,25 +896,31 @@ async function encryptLine(
  * a departed holder still reads. When no epoch is held the row waits in
  * queue — it never mints one, and never goes out in the clear: the key
  * request goes out on the channel, and the row goes out under the key
- * once someone with an open cic gives it. What waited before it goes
- * first, in order. The channel `:msg` itself carries no `ref` or `tag`:
- * it has no DM row to move, and the caller must not mistake it for one
- * (`client.ts` flushes untagged payloads without row changes). The
- * caller flushes the outbound, gkey DMs first, in order.
+ * once someone with an open cic gives it. With `members` undefined — no
+ * roster known, which is not an empty one — there is nothing to audit
+ * against, so the row waits in the same queue under the held epoch too,
+ * and goes out when a flush can audit it against a roster. What waited
+ * before it goes first, in order. The channel `:msg` itself carries no
+ * `ref` or `tag`: it has no DM row to move, and the caller must not
+ * mistake it for one (`client.ts` flushes untagged payloads without row
+ * changes). The caller flushes the outbound, gkey DMs first, in order.
  */
 export async function sendChannel(
   deps: ChannelE2eDeps,
   groups: GroupSessionsState,
   channel: string,
   body: string,
-  members: string[],
+  members: string[] | undefined,
 ): Promise<ChannelE2eResult> {
   const res = emptyResult();
-  const audited = auditEpochRotation(deps, groups, channel, members, { forSend: true });
-  res.events.push(...audited.events);
-  res.outbound.push(...audited.outbound);
-  res.copies.push(...audited.copies);
-  if (epochFor(groups, channel) === undefined) {
+  if (members !== undefined) {
+    const audited = auditEpochRotation(deps, groups, channel, members, { forSend: true });
+    res.events.push(...audited.events);
+    res.outbound.push(...audited.outbound);
+    res.copies.push(...audited.copies);
+  }
+  const keyless = epochFor(groups, channel) === undefined;
+  if (keyless || members === undefined) {
     for (const dropped of queuePendingSend(groups, channel, body, deps.now())) {
       res.events.push({
         kind: "channel_dropped",
@@ -923,11 +929,13 @@ export async function sendChannel(
         detail: dropped.body,
       });
     }
-    const asked = requestKey(deps, groups, channel);
-    res.events.push({ kind: "channel_key_missing", channel });
-    res.events.push(...asked.events);
-    res.outbound.push(...asked.outbound);
-    res.copies.push(...asked.copies);
+    if (keyless) {
+      const asked = requestKey(deps, groups, channel);
+      res.events.push({ kind: "channel_key_missing", channel });
+      res.events.push(...asked.events);
+      res.outbound.push(...asked.outbound);
+      res.copies.push(...asked.copies);
+    }
     return withNetwork(deps, res);
   }
   // What waited goes first, in order, under the epoch the audit above

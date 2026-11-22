@@ -326,8 +326,10 @@ const sayEncrypted = async (
 
 // A channel row out encrypted, under the channel's epoch: one encrypted
 // message however many lines the draft held, with the roster the channel
-// window holds. Empty body sends nothing. A send that never reached the
-// engine is logged and rethrown: the caller's pump hands the text back.
+// window holds — none when the members store holds no list for it, which
+// is not an empty roster. Empty body sends nothing. A send that never
+// reached the engine is logged and rethrown: the caller's pump hands the
+// text back.
 const sayChannelEncrypted = async (
   networkSlug: string,
   channel: string,
@@ -336,7 +338,7 @@ const sayChannelEncrypted = async (
 ): Promise<void> => {
   const said = scrubCtcpDelimiters(body);
   if (said.trim() === "") return;
-  const members = membersByChannel()[channelKey(networkSlug, channel)]?.map((m) => m.nick) ?? [];
+  const members = membersByChannel()[channelKey(networkSlug, channel)]?.map((m) => m.nick);
   try {
     await sendChannelEncrypted(networkSlug, channel, wireBody(said, action), members);
   } catch (e) {

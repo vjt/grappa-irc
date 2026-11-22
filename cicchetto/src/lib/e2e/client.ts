@@ -327,9 +327,16 @@ export type E2eClient = {
    * Sends `body` to `channel`, encrypted under the channel's epoch
    * (`channelE2e.sendChannel`): when no epoch is held the row waits in
    * queue for the key — it never mints an epoch of its own, and never
-   * goes out in the clear. The channel message itself takes no DM row.
+   * goes out in the clear; with `members` undefined (no roster known) it
+   * waits for a roster to audit against. The channel message itself
+   * takes no DM row.
    */
-  sendChannel(ctx: E2eContext, channel: string, body: string, members: string[]): Promise<Report>;
+  sendChannel(
+    ctx: E2eContext,
+    channel: string,
+    body: string,
+    members: string[] | undefined,
+  ): Promise<Report>;
   /**
    * Mints the first epoch for `channel` and distributes its key pairwise
    * to `members` (`channelE2e.distributeKey`), then sends the rows queued

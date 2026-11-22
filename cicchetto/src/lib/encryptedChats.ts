@@ -710,15 +710,16 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   /**
    * Sends `body` to `channel`, encrypted under the channel's epoch
    * (wire v4): the key is distributed pairwise first when the epoch is
-   * new. `members` is the roster the channel window holds. It takes the
-   * one own-send door, for the channel's own window (`channelKey(slug,
+   * new. `members` is the roster the channel window holds, or undefined
+   * when it holds none: the row then waits for one. It takes the one
+   * own-send door, for the channel's own window (`channelKey(slug,
    * channel)`), the one compose sent it from.
    */
   const sendChannelEncrypted = (
     slug: string,
     channel: string,
     body: string,
-    members: string[],
+    members: string[] | undefined,
   ): Promise<void> =>
     sendOwn(
       slug,

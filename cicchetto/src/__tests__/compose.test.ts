@@ -7496,6 +7496,58 @@ describe("compose submit — an unreadable list query is reported, not fired (is
   });
 });
 
+// A row said in an encrypted channel goes out with the roster the channel
+// window holds — and with none when the members store holds no list for
+// it: a roster nobody knows is not an empty one, and the channel send
+// keeps the row waiting instead of auditing the epoch against nobody.
+describe("compose in an encrypted channel", () => {
+  it("sends with no roster when the members store holds no list for the channel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const encrypted = await import("../lib/encryptedChats");
+    const members = await import("../lib/members");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#sekrit");
+    vi.mocked(encrypted.channelEncrypted).mockReturnValue(true);
+    vi.mocked(members.membersByChannel).mockReturnValue({});
+    try {
+      compose.setDraft(k, "ciao a tutti");
+      expect(await compose.submit(k, "freenode", "#sekrit")).toEqual({ ok: true });
+
+      expect(vi.mocked(encrypted.sendChannelEncrypted).mock.calls).toEqual([
+        ["freenode", "#sekrit", "ciao a tutti", undefined],
+      ]);
+    } finally {
+      vi.mocked(encrypted.channelEncrypted).mockReturnValue(false);
+    }
+  });
+
+  it("sends with the nicks of the list the members store holds for the channel", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const encrypted = await import("../lib/encryptedChats");
+    const members = await import("../lib/members");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#sekrit");
+    vi.mocked(encrypted.channelEncrypted).mockReturnValue(true);
+    vi.mocked(members.membersByChannel).mockReturnValue({
+      [k]: [
+        { nick: "alice", modes: [] },
+        { nick: "Bob", modes: ["@"] },
+      ],
+    });
+    try {
+      compose.setDraft(k, "ciao a tutti");
+      expect(await compose.submit(k, "freenode", "#sekrit")).toEqual({ ok: true });
+
+      expect(vi.mocked(encrypted.sendChannelEncrypted).mock.calls).toEqual([
+        ["freenode", "#sekrit", "ciao a tutti", ["alice", "Bob"]],
+      ]);
+    } finally {
+      vi.mocked(encrypted.channelEncrypted).mockReturnValue(false);
+      vi.mocked(members.membersByChannel).mockReturnValue({});
+    }
+  });
+});
+
 // issue 2512 — the encrypted query composes in the compose box every window
 // has, and what is typed there goes to the peer, through Olm, as one message.
 // issue 2536 (vjt's ruling) — a slash command runs there as it would in the
