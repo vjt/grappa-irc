@@ -69,13 +69,84 @@ defmodule Grappa.Session.WindowState do
 
   alias Grappa.Session.Wire, as: SessionWire
 
+  @window_states [:pending, :invited, :joined, :failed, :kicked, :parked]
+
+  # issue 2693 — every state is classified HERE, once, on each axis a consumer
+  # reads, and the BUILD fails on a state left out or a relation broken (the
+  # asserts below). Before, each consumer decided with a fallthrough of its own
+  # — `to_wire/3`'s `_ ->`, `rejected_windows/2`'s `in [:failed, :kicked]`,
+  # `Server.apply_invited/3`'s `in [:joined, :pending]` — so a new state was
+  # silently left out of the snapshot, not rejected, and invite-admissible.
+  #
+  # * `snapshot` — the per-channel cold-subscribe payload `to_wire/3` serves:
+  #   `:joined`, `:join_failed` or `:kicked`, the event-time Wire verb of the
+  #   same name. nil when the state has nothing to serve there: `:pending` and
+  #   `:invited` ride the user topic (cic sees them BEFORE it subscribes
+  #   per-channel), and cic does not render `:parked` (T32).
+  # * `rejected` — the channel REJECTED us, and `rejected_windows/2` backfills
+  #   the row on the user topic (issue 2323). That projection is built on
+  #   `to_wire/3`, so a rejected state must have a snapshot (asserted).
+  # * `blocks_invite` — an inbound INVITE leaves the window as it is
+  #   (`invite_blocked?/2`): `:joined` is already in the room and `:pending`
+  #   has a JOIN in flight, and neither may flip to a greyed `:invited` tab.
+  #   Every other state DOES flip — an INVITE after `:failed` / `:kicked` is
+  #   newly actionable, since the invite bypasses +i/+k upstream — and a repeat
+  #   INVITE while `:invited` re-affirms it.
+  @window_state_class [
+    pending: %{snapshot: nil, rejected: false, blocks_invite: true},
+    invited: %{snapshot: nil, rejected: false, blocks_invite: false},
+    joined: %{snapshot: :joined, rejected: false, blocks_invite: true},
+    failed: %{snapshot: :join_failed, rejected: true, blocks_invite: false},
+    kicked: %{snapshot: :kicked, rejected: true, blocks_invite: false},
+    parked: %{snapshot: nil, rejected: false, blocks_invite: false}
+  ]
+
+  if Keyword.keys(@window_state_class) != @window_states do
+    raise "Grappa.Session.WindowState: @window_state_class must classify exactly @window_states, " <>
+            "in the same order — expected #{inspect(@window_states)}, " <>
+            "got #{inspect(Keyword.keys(@window_state_class))}"
+  end
+
+  @window_state_axes [:blocks_invite, :rejected, :snapshot]
+
+  for {state, class} <- @window_state_class do
+    violation =
+      cond do
+        Enum.sort(Map.keys(class)) != @window_state_axes ->
+          "must carry exactly the axes #{inspect(@window_state_axes)}, got #{inspect(Enum.sort(Map.keys(class)))}"
+
+        class.snapshot not in [:joined, :join_failed, :kicked, nil] ->
+          "has snapshot #{inspect(class.snapshot)}; the closed set is :joined | :join_failed | :kicked | nil"
+
+        not (is_boolean(class.rejected) and is_boolean(class.blocks_invite)) ->
+          "has a non-boolean rejected / blocks_invite"
+
+        class.rejected and is_nil(class.snapshot) ->
+          "is rejected but has no snapshot — rejected_windows/2 is built on to_wire/3"
+
+        true ->
+          nil
+      end
+
+    if violation, do: raise("Grappa.Session.WindowState @window_state_class: #{inspect(state)} #{violation}")
+  end
+
+  @rejected_states for {state, %{rejected: true}} <- @window_state_class, do: state
+
+  @invite_blocking_states for {state, %{blocks_invite: true}} <- @window_state_class, do: state
+
   @typedoc """
-  Closed set of per-channel window states. Mirrors
+  Closed set of per-channel window states, DERIVED from `@window_states`
+  (issue 2693) and never restated: `mix grappa.gen_wire_types` emits the
+  wire's `SESSION_WINDOW_STATE_WINDOW_STATE` from this type, and the
+  right-nested fold keeps `@window_states`' order, which is that array's
+  order (the same fold as `Grappa.Scrollback.Message`'s `kind`). Mirrors
   `Session.Server.window_state/0` (the original typedef the server
   used pre-extraction). Atoms are the on-process representation;
   the on-wire string projection is owned by `Session.Wire`.
   """
-  @type window_state :: :pending | :invited | :joined | :failed | :kicked | :parked
+  @type window_state ::
+          unquote(@window_states |> Enum.reverse() |> Enum.reduce(&{:|, [], [&1, &2]}))
 
   @typedoc """
   The bundled window-state struct. Replaces the 4 sibling fields
@@ -398,6 +469,18 @@ defmodule Grappa.Session.WindowState do
   end
 
   @doc """
+  Whether an inbound INVITE must leave `channel`'s window as it is — the
+  `blocks_invite` axis of the state table (issue 2693): `:joined` (already in
+  the room) and `:pending` (a JOIN in flight). An untracked channel is not
+  blocked. Asked BEFORE `invite_admissible?/2`: a blocked window is not a
+  refusal, so it neither counts against the ceiling nor logs one.
+  """
+  @spec invite_blocked?(t(), String.t()) :: boolean()
+  def invite_blocked?(%__MODULE__{} = ws, channel) when is_binary(channel) do
+    state_of(ws, channel) in @invite_blocking_states
+  end
+
+  @doc """
   Returns the recorded kick metadata (`%{by, reason}`) for `channel`,
   or `nil` if the channel is not in `:kicked` state.
 
@@ -431,11 +514,11 @@ defmodule Grappa.Session.WindowState do
           {:ok, Grappa.Session.window_state_snapshot()} | {:error, :not_tracked}
   def to_wire(%__MODULE__{} = ws, network_slug, channel)
       when is_binary(network_slug) and is_binary(channel) do
-    case state_of(ws, channel) do
+    case snapshot_of(state_of(ws, channel)) do
       :joined ->
         {:ok, SessionWire.joined(network_slug, channel)}
 
-      :failed ->
+      :join_failed ->
         {:ok,
          SessionWire.join_failed(
            network_slug,
@@ -448,9 +531,19 @@ defmodule Grappa.Session.WindowState do
         meta = Map.get(ws.kicked_meta, channel, %{by: nil, reason: nil})
         {:ok, SessionWire.kicked(network_slug, channel, meta.by, meta.reason)}
 
-      _ ->
+      nil ->
         {:error, :not_tracked}
     end
+  end
+
+  # The `snapshot` axis of `@window_state_class`, one clause per state, plus
+  # nil for a channel that is not tracked. A state outside the class has no
+  # clause and crashes here rather than falling through to `:not_tracked`.
+  @spec snapshot_of(window_state() | nil) :: :joined | :join_failed | :kicked | nil
+  defp snapshot_of(nil), do: nil
+
+  for {state, %{snapshot: snapshot}} <- @window_state_class do
+    defp snapshot_of(unquote(state)), do: unquote(snapshot)
   end
 
   @doc """
@@ -522,7 +615,7 @@ defmodule Grappa.Session.WindowState do
   """
   @spec rejected_windows(t(), String.t()) :: [Grappa.Session.window_state_snapshot()]
   def rejected_windows(%__MODULE__{states: states} = ws, network_slug) when is_binary(network_slug) do
-    for {channel, state} when state in [:failed, :kicked] <- states do
+    for {channel, state} when state in @rejected_states <- states do
       {:ok, payload} = to_wire(ws, network_slug, channel)
       payload
     end
