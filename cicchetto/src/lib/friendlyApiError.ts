@@ -305,6 +305,12 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // belong to this (subject, network, channel). Request shape was
       // valid; the referenced row is out of scope for the read cursor.
       return "Couldn't update your read position — that message isn't in this conversation.";
+    case "no_query_window":
+      // issue 2201 — 422 from `ReadCursor.set/4`: a DM read cursor for a
+      // query window the subject no longer holds (closed, or never opened).
+      // The write that used to re-create the cursor the close deleted.
+      // Copy not vetted by vjt.
+      return "Couldn't update your read position — that conversation is closed.";
     case "already_attached":
       // #211 phase 4c — 409 from `POST /session/networks` accreting a
       // network the identity already holds a credential for. Not an error

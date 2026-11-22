@@ -43,6 +43,9 @@ defmodule GrappaWeb.ReadCursorController do
       channel) → 422 (caught by `ReadCursor.set/4`'s
       `:invalid_message`). Distinguished from 400 because the request
       shape was valid; the data referenced a different scope.
+    * DM target the subject holds no query window for → 422
+      `no_query_window` (issue 2201): `QueryWindows.close/4` deleted the
+      cursor with the window, and this write would have put it back.
   """
   use GrappaWeb, :controller
 
@@ -59,7 +62,8 @@ defmodule GrappaWeb.ReadCursorController do
   id is clamped to the current cursor).
   """
   @spec create(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :bad_request | :invalid_message | :db_unavailable | Ecto.Changeset.t()}
+          Plug.Conn.t()
+          | {:error, :bad_request | :invalid_message | :no_query_window | :db_unavailable | Ecto.Changeset.t()}
   def create(conn, %{"channel_id" => channel, "message_id" => message_id})
       when is_integer(message_id) and message_id > 0 do
     subject = Subject.to_session(conn.assigns.current_subject)

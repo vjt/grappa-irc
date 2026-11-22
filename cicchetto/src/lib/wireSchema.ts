@@ -1971,6 +1971,7 @@ export const S_ErrorTokensRestErrorToken = {
     { l: "stale_code_path" },
     { l: "stale_toolchain" },
     { l: "invalid_message" },
+    { l: "no_query_window" },
     { l: "anon_collision" },
     { l: "nick_in_use" },
     { l: "cannot_disconnect_self" },

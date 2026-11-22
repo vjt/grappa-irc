@@ -1666,7 +1666,28 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: an older client ignores the unknown
   # field, event and Meta key, and never calls the new door.
-  @protocol_version 64
+  #
+  # ---------------------------------------------------------------------------
+  # 65 — issue 2201: a DM read cursor needs its query window
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: the REST error token `no_query_window` (422), answered by `POST
+  # /networks/:network_id/channels/:channel_id/read-cursor` when the target
+  # is a DM key and the subject holds no query window for it —
+  # `ReadCursor.set/4` refuses instead of re-creating the cursor
+  # `QueryWindows.close/4` just deleted. The token joins the closed
+  # `ErrorTokens` set the client's error union is generated from, which is
+  # a wire-shape change, so the number moves (#1393d).
+  #
+  # Checked for a collision before claiming 65: origin/main carries 64.
+  # Open PR 2620 also claims 65; whoever lands first keeps the number and the
+  # other rebases.
+  #
+  # @min_protocol_version stays at 1: an older client already treats any
+  # non-2xx on this POST as a logged no-op (`readCursor.ts` `setReadCursor`:
+  # one `console.warn`, no retry, no UI), so the new token reaches it as
+  # exactly that.
+  @protocol_version 65
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1707,7 +1728,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 64
+  @spec version() :: 65
   def version, do: @protocol_version
 
   @doc """
