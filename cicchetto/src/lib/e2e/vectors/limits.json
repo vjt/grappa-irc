@@ -1,0 +1,8 @@
+{
+  "wire_version": 2,
+  "max_devices": 4,
+  "device_cap": 3,
+  "max_fragments": 64,
+  "max_hosted_one_time_keys": 50,
+  "max_payload_bytes": 32768
+}
