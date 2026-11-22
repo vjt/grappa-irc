@@ -4,10 +4,19 @@ defmodule Grappa.QueryWindows.Window do
   target_nick) open DM window.
 
   Public API lives in `Grappa.QueryWindows`; callers receive `%Window{}`
-  structs by type and reference the schema only via the parent context.
-  The Boundary annotation on `Grappa.QueryWindows` exports this module
-  so the `t()` cross-module reference resolves cleanly in published
-  docs.
+  structs by type.
+
+  ## Its own leaf boundary (issue 2201)
+
+  `Grappa.ReadCursor.set/4` refuses a DM cursor whose window does not exist,
+  so it has to ask that question, and it cannot ask the context:
+  `QueryWindows.close/4` already deletes the sibling cursor, so `QueryWindows`
+  depends on `ReadCursor` and the reverse edge would close a cycle. The
+  schema is promoted to a top-level boundary instead — the #1398 / #1399
+  rule for a consumer that needs a SCHEMA, not a context — and the one query
+  both contexts ask lives here as `for_target/3`. Deps are measured from this
+  module's outbound edges: `Grappa.Subject` (`validate_xor/1`,
+  `subject_where/2`) and `Grappa.IRC` (the `Identifier.nick_fold/1` macro).
 
   ## Subject XOR
 
@@ -27,13 +36,19 @@ defmodule Grappa.QueryWindows.Window do
   See `Grappa.QueryWindows` for the upsert / delete / list semantics.
   """
 
+  use Boundary, top_level?: true, deps: [Grappa.IRC, Grappa.Subject]
+
   use Ecto.Schema
   import Ecto.Changeset
+  import Ecto.Query, only: [where: 3]
 
   alias Grappa.Accounts.User
+  alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
   alias Grappa.Subject
   alias Grappa.Visitors.Visitor
+
+  require Identifier
 
   @type t :: %__MODULE__{
           id: integer() | nil,
@@ -85,5 +100,24 @@ defmodule Grappa.QueryWindows.Window do
       name: :query_windows_subject_xor,
       message: "user_id and visitor_id are mutually exclusive"
     )
+  end
+
+  @doc """
+  The query for `subject`'s window on `network_id` whose target folds to
+  `folded` — at most one row, by the folded unique index.
+
+  `folded` MUST already be `Identifier.canonical_target/1`-folded by the
+  caller (the value side of the fold); the column side is
+  `Identifier.nick_fold/1`, character-identical to the index expression, so
+  the lookup stays sargable. One question, asked by `QueryWindows` (open,
+  close, the post-conflict re-select) and by `ReadCursor.set/4`.
+  """
+  @spec for_target(Subject.t(), integer(), String.t()) :: Ecto.Query.t()
+  def for_target(subject, network_id, folded)
+      when is_integer(network_id) and is_binary(folded) do
+    __MODULE__
+    |> Subject.subject_where(subject)
+    |> where([w], w.network_id == ^network_id)
+    |> where([w], Identifier.nick_fold(w.target_nick) == ^folded)
   end
 end
