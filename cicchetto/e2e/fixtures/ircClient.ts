@@ -537,7 +537,8 @@ export class IrcPeer {
   // Examples: `mode("#chan", "+i")`, `mode("#chan", "+o", "nick")`,
   // `mode("#chan", "+b", "*!*@evil")`. Param-bearing modes accept a
   // single extra arg (matching irc-framework's `mode(ch, m, extra_args)`
-  // signature; arrays are also accepted by the lib for batched ops).
+  // signature), or an array for a multi-letter token whose letters each
+  // take one — `mode("#chan", "+bo", ["*!*@evil", "nick"])`.
   //
   // Predicate matches `raw_modes` rather than the parsed `modes` array
   // because some servers (bahamut included) echo the modes back with
@@ -551,7 +552,7 @@ export class IrcPeer {
   // `config.h` in `infra/bahamut/Dockerfile`, so the first JOINer
   // auto-ops) — every green `.mode()` call site does exactly that.
   // /OPER is NOT a substitute; see `oper()` and `samode()`.
-  async mode(channel: string, rawModes: string, extraArg?: string): Promise<void> {
+  async mode(channel: string, rawModes: string, extraArg?: string | string[]): Promise<void> {
     const modeEcho = this.channelModeEcho(channel, rawModes, extraArg, "mode");
     this.client.mode(channel, rawModes, extraArg);
     await modeEcho;
@@ -589,16 +590,17 @@ export class IrcPeer {
   private channelModeEcho(
     channel: string,
     rawModes: string,
-    extraArg: string | undefined,
+    extraArg: string | string[] | undefined,
     verb: string,
   ): Promise<IrcEventMap["mode"]> {
+    const shown = Array.isArray(extraArg) ? extraArg.join(" ") : extraArg;
     return onceMatching(
       this.client,
       "mode",
       (event: { target: string; raw_modes: string }) =>
         event.target === channel && event.raw_modes === rawModes,
       MODE_TIMEOUT_MS,
-      `${verb} ${channel} ${rawModes}${extraArg ? ` ${extraArg}` : ""}`,
+      `${verb} ${channel} ${rawModes}${shown ? ` ${shown}` : ""}`,
     );
   }
 
