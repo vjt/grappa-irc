@@ -8503,11 +8503,12 @@ record was taken on `59bc1ce44`:
   from the beam's debug_info definitions. **79** and **69**.
 * `deps:<Boundary>` for each of the **126** boundaries declared under `lib/`:
   the length of its `deps:` list, from the persisted `Boundary` attribute.
-  `deps:Grappa.Session` is **28**. At `9b66302df` there were 125. Issue 2201,
-  which landed while this branch was open, made `Grappa.QueryWindows.Window` a
-  boundary of its own and added it to `Grappa.ReadCursor`'s deps. The ratchet
-  caught both on the rebase, and they are part of the seeded record, not a
-  raise made by this branch.
+  `deps:Grappa.Session` is **28**. Before the rebase, on `9b66302df`, the
+  record counted 125: that tree's 124 plus this branch's own
+  `Mix.Tasks.Grappa.Ratchet`. Issue 2201, which landed while this branch was
+  open, made `Grappa.QueryWindows.Window` a boundary of its own and added it
+  to `Grappa.ReadCursor`'s deps. The ratchet caught both on the rebase, and
+  they are part of the seeded record, not a raise made by this branch.
 
 The review printed two state-key counts: 94 (a regex over the `@type t`
 block) and 96 (TYP). On this tree the compiler says 101. So does an
