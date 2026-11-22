@@ -4,7 +4,6 @@ import type { ChannelKey } from "./channelKey";
 import { identityScopedStore } from "./identityScopedStore";
 import type { Casemapping } from "./isupport";
 import type { ChannelMembers } from "./memberTypes";
-import { applyModeString } from "./modeApply";
 import { nickEquals } from "./nickEquals";
 
 // Per-channel members store. Source-of-truth for the right-pane
@@ -32,6 +31,19 @@ import { nickEquals } from "./nickEquals";
 // reset (dup-A3 close).
 
 export type { ChannelMembers, MemberEntry, MemberGender } from "./memberTypes";
+
+// issue 2692 — `meta.member_modes` off the wire: nick → that member's whole
+// mode list after the MODE. `meta` is typed `unknown` per key, so narrow it
+// here; an entry that is not a string array is dropped rather than applied.
+// `Object.entries` reads own keys only, so a nick spelled like an
+// `Object.prototype` member is matched as the string it is.
+const memberModesOf = (raw: unknown): Array<[string, string[]]> => {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
+  return Object.entries(raw).filter(
+    (entry): entry is [string, string[]] =>
+      Array.isArray(entry[1]) && entry[1].every((mode) => typeof mode === "string"),
+  );
+};
 
 const exports_ = identityScopedStore((onIdentityChange) => {
   const [membersByChannel, setMembersByChannel] = createSignal<Record<ChannelKey, ChannelMembers>>(
@@ -91,13 +103,22 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           return { ...prev, [key]: next };
         }
         case "mode": {
-          const modes = typeof msg.meta.modes === "string" ? msg.meta.modes : null;
-          const args = Array.isArray(msg.meta.args)
-            ? (msg.meta.args.filter((a) => typeof a === "string") as string[])
-            : [];
-          if (!modes) return prev;
-          const next = applyModeString(current, modes, args, casemapping);
-          return { ...prev, [key]: next };
+          // issue 2692 — the server derived what this line did to the roster
+          // (from the network's PREFIX and CHANMODES) and wrote each changed
+          // member's ABSOLUTE modes onto the row. Apply that; never walk
+          // `modes`/`args` here — that is IRC grammar, and the copy that
+          // lived in this client graded the wrong member. A row without the
+          // key changed nobody, or predates protocol 66: leave the roster.
+          const memberModes = memberModesOf(msg.meta.member_modes);
+          if (memberModes.length === 0) return prev;
+          let changed = false;
+          const next = current.map((m) => {
+            const hit = memberModes.find(([nick]) => nickEquals(m.nick, nick, casemapping));
+            if (hit === undefined) return m;
+            changed = true;
+            return { ...m, modes: [...hit[1]] };
+          });
+          return changed ? { ...prev, [key]: next } : prev;
         }
         case "privmsg":
         case "notice":
