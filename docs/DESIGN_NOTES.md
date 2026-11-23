@@ -8929,19 +8929,27 @@ out of the snapshot, not rejected, and invite-admissible.
   `kind_enum` CHECK test, and only by accident. Deriving the type keeps the
   generated array byte-identical: `mix grappa.wire_pin --check` is green
   against the same pin on the base and on the slice, `gen_wire_types --check`
-  is in sync, and there is no protocol bump. The base already had two copies
+  is in sync, and there is no protocol bump. The base already had four copies
   of the fold (`Session.Server`'s `keep_nick_refusal_code`, `Session.Wire`'s
-  `server_reply_source`) and this slice first added two more; all four now
-  call the one leaf. So does `mix grappa.gen_wire_types`, which had a fifth
-  copy nested the other way for a union read back from a beam: every reader
-  there flattens the union first, so the direction never reached the output.
-  Sharing the fold costs three Boundary edges, and the ratchet (issue 2690)
+  `server_reply_source`, and `Themes.TokenModel`'s `font_family` and
+  `size_mode`, spelled with `quote`) and this slice first added two more; all
+  six now call the one leaf. So does `mix grappa.gen_wire_types`, which had a
+  seventh copy nested the other way for a union read back from a beam: every
+  reader there flattens the union first, so the direction never reached the
+  output. The `TokenModel` pair was found in review: the first sweep searched
+  only the `{:|, [],` spelling. The sweep that closed it searched that one,
+  `quote(do: unquote(a) | unquote(b))`, a multi-line `quote` body, `:"|"`,
+  any `{:|` tuple, and then every `@type`/`@typep`/`@spec` in `lib/` that
+  calls `unquote`, whatever its spelling. The other derived types there are
+  singletons or hand-written unions of scalars, not folds over a list.
+  Sharing the fold costs four Boundary edges, and the ratchet (issue 2690)
   records them: `deps:Grappa.Scrollback` 5 → 6, `deps:Grappa.Session`
-  28 → 29, and `deps:Mix.Tasks.Grappa.GenWireTypes` 0 → 1 (the leaf itself
-  is a new key, `deps:Grappa.Typespec` = 0). The edges are real, and
-  measured: Boundary checks a call made at compile time inside `unquote/1`,
-  and with the dep removed the compiler reports a forbidden reference at
-  every call site (five in `Message`; one each in `Server`, `WindowState`,
+  28 → 29, `deps:Grappa.Themes` 12 → 13, and
+  `deps:Mix.Tasks.Grappa.GenWireTypes` 0 → 1 (the leaf itself is a new key,
+  `deps:Grappa.Typespec` = 0). The edges are real, and measured: Boundary
+  checks a call made at compile time inside `unquote/1`, and with the dep
+  removed the compiler reports a forbidden reference at every call site (five
+  in `Message`; two in `TokenModel`; one each in `Server`, `WindowState`,
   `Wire` and the task). `check: [in: false]` on the leaf would have kept the
   counts flat by switching the checker off for it, which is the unrecorded
   growth the ratchet exists to stop.

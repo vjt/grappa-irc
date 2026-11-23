@@ -59,6 +59,9 @@ defmodule Grappa.Themes do
       Grappa.ServerSettings,
       Grappa.Subject,
       Grappa.Sys.HardenedCmd,
+      # Issue 2693 — `TokenModel` builds `font_family` and `size_mode` with
+      # `Typespec.union/1`, a call made at compile time from the module body.
+      Grappa.Typespec,
       Grappa.Uploads,
       Grappa.UserSettings,
       Grappa.Visitors.Visitor
