@@ -1124,7 +1124,7 @@ defmodule Grappa.Session.Server do
   @doc "Returns the via-tuple for the session registered for `(subject, network_id)`."
   @spec via(Grappa.Session.subject(), integer()) ::
           {:via, Registry, {atom(), Grappa.Session.registry_key()}}
-  def via(subject, network_id) when is_tuple(subject) and is_integer(network_id) do
+  def via(subject, network_id) when is_integer(network_id) do
     {:via, Registry, {Grappa.SessionRegistry, Session.registry_key(subject, network_id)}}
   end
 
