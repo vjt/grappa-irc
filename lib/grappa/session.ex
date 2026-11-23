@@ -26,9 +26,12 @@ defmodule Grappa.Session do
   This module is intentionally thin — no business logic. It exists to:
 
     1. Own the registry key and every read of the registry: the key is
-       `registry_key/2`, and `list_live/0`, `count_live/2`,
-       `live_counts_by_network/0` and `count_by_user/0` are the only
-       scans of `Grappa.SessionRegistry` (issue 2696).
+       `registry_key/2`, and every scan of `Grappa.SessionRegistry`
+       builds its match-spec head with the same private builder.
+       `list_live/0`, `count_live/2`, `live_counts_by_network/0` and
+       `count_by_user/0` are the shared scans; `registered_holders/3`
+       keeps its own head because it filters on the entry value
+       (issue 2696).
     2. Hide the `DynamicSupervisor` + `child_spec` plumbing from
        `Grappa.Bootstrap` and from any future REST/WS surface that
        wants to inspect or terminate a session.
@@ -196,7 +199,8 @@ defmodule Grappa.Session do
   @type subject :: Grappa.Subject.t()
 
   # Issue 2696 — the registry key's tag, written once: `key/2` builds every
-  # key and every match-spec head from it, and `registry_key/0` types it.
+  # key and every match-spec head from it, and the `registry_key()` type
+  # reads it.
   @registry_key_tag :session
 
   @typedoc """
