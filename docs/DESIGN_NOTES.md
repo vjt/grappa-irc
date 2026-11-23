@@ -9112,14 +9112,19 @@ so seven match specs in three boundaries spelled the tuple by hand: two in
 
 ### Proof: three arms, each predicted before it ran (full ExUnit, own cache)
 
-The arms ran on `a2f4003e8`, rebased onto `4c60ff8a7`. Two code commits
-came after it. One makes `credo --strict` clean, and the unmutated suite was
-run again on it. The other deletes the dead `Server.registry_key/2`, and only
-the 10 test files it repointed were run on it. This change adds and removes
-no test.
+The arms ran on the `on_exit` hygiene commit ("a failed loudness assert does
+not leave its zombie registered") while it was the branch head: `a2f4003e8`,
+on base `4c60ff8a7`. The branch was later rebased onto `b62b8945d`, where that
+commit became `6a99abe6c` with the same `git patch-id --stable`; the arms did
+not run again there. Two code commits came after it. One makes
+`credo --strict` clean, and the unmutated suite was run again on it. The other
+deletes the dead `Server.registry_key/2`, and only the 10 test files it
+repointed were run on it. The review round after that dropped `Server.via/2`'s
+`is_tuple(subject)` guard and corrected prose, and ran only the five test
+files it touched. This change adds and removes no test.
 
-* **Control, unmutated:** 8986 tests, 0 failures, on `a2f4003e8` and on the
-  credo commit.
+* **Control, unmutated:** 8986 tests, 0 failures, on the hygiene commit
+  (`a2f4003e8`, pre-rebase) and on the credo commit.
 * **Consistent mutant**, `@registry_key_tag :session` → `:session_v2`, one
   line: 8986 tests, 0 failures. Every key and every head moved together, so
   the key really is spelled once and changing it is a one-line edit.
