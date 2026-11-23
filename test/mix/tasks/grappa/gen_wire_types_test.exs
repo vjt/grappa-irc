@@ -210,6 +210,25 @@ defmodule Mix.Tasks.Grappa.GenWireTypesTest do
       assert rendered =~ ~s(export type WireFixtureDegradedMixedKeyPayload = Record<string, unknown>;)
     end
 
+    # Issue 2694 — every field used to get a fixed two-space indent, so a
+    # nested map came out flush with its parent. `gen_wire_types --check`
+    # cannot see that (it compares the generator with itself); biome did,
+    # on the first real case. Each level must sit two spaces deeper.
+    test "renders a nested map literal with each level indented under its parent" do
+      output = GenWireTypes.render_module_for_test(Grappa.WireFixture)
+
+      assert output =~
+               """
+               export type WireFixtureNestedMapPayload = {
+                 outer: {
+                   middle: {
+                     leaf: number;
+                   };
+                 };
+               };\
+               """
+    end
+
     # Pins the real production deliverable: Cic.Wire's `version` is
     # `optional(:version) => String.t()`, so the generated
     # CicWireBundleHashPayload must carry `version?: string`.
