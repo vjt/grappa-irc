@@ -65,7 +65,7 @@ defmodule Mix.Tasks.Grappa.WirePin do
   nothing. All twelve DID carry `@spec`s (29 of them). Issue 2694 named
   the inline envelopes, so today 13 views exist and 3 declare no `@type` of
   their own (Archive, Channels, Members), because every spec of theirs
-  already returns a named `*.Wire` type.
+  already returns a named `*.Wire` type, or a list of one.
 
   So the third component digests what the views **declare** — the
   `@spec`s of their EXPORTED functions, read from BEAM chunks, over a
