@@ -58,10 +58,29 @@ import { type WindowState, windowStateByChannel } from "./windowState";
 // the single surface (issue #902's ruling). The `invited` case is skipped
 // explicitly rather than dropped from the type by accident: an `:invited`
 // key is a normal, expected state to encounter here.
+//
+// issue 2693 — which states draw a row is ONE record over EVERY state, and
+// `PseudoRow.state` is derived from it. A state the server adds is a tsc error
+// here until someone says whether it draws a row; before, the two `continue`s
+// below plus an `Exclude<…>` complement drew it by default.
+const DRAWS_PSEUDO_ROW = {
+  pending: true,
+  invited: false,
+  joined: false,
+  failed: true,
+  kicked: true,
+  parked: true,
+} as const satisfies Record<WindowState, boolean>;
+
+type PseudoRowState = {
+  [S in keyof typeof DRAWS_PSEUDO_ROW]: (typeof DRAWS_PSEUDO_ROW)[S] extends true ? S : never;
+}[keyof typeof DRAWS_PSEUDO_ROW];
+
+const drawsPseudoRow = (state: WindowState): state is PseudoRowState => DRAWS_PSEUDO_ROW[state];
 
 export type PseudoRow = {
   name: string;
-  state: Exclude<WindowState, "invited" | "joined">;
+  state: PseudoRowState;
 };
 
 export function pseudoChannelsForNetwork(slug: string, networkId: number): PseudoRow[] {
@@ -70,10 +89,10 @@ export function pseudoChannelsForNetwork(slug: string, networkId: number): Pseud
   const queries = new Set((queryWindowsByNetwork()[networkId] ?? []).map((qw) => qw.targetNick));
   const out: PseudoRow[] = [];
   for (const [key, state] of Object.entries(states)) {
-    if (state === "joined") continue;
-    // #902 — the banner owns this state; drawing a row too would be the
-    // "second place to look" the issue exists to remove.
-    if (state === "invited") continue;
+    // `joined` is excluded (see above); #902 — the banner owns `invited`,
+    // and drawing a row too would be the "second place to look" the issue
+    // exists to remove.
+    if (!drawsPseudoRow(state)) continue;
     // Codebase audit cic M4 — paired decoder over open-coded
     // `key.startsWith(prefix) + key.slice(prefix.length)`. The
     // composite-key shape is owned by `lib/channelKey.ts`; one site

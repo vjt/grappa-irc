@@ -44,7 +44,7 @@ import {
 } from "./lib/uploadOrchestrator";
 import { encryptedWindowPeer } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
-import { NOT_JOINED_STATES } from "./lib/windowStateSets";
+import { NOT_JOINED } from "./lib/windowStateSets";
 
 // Sticky-bottom compose surface. Reads + writes compose.ts state;
 // dispatches submit on Enter; arrow keys walk per-channel history.
@@ -339,7 +339,7 @@ const ComposeBox: Component<Props> = (props) => {
   const greyed = (): boolean => {
     if (networkGreyedState() !== null) return true;
     const s = windowStateByChannel()[key()];
-    return s !== undefined && NOT_JOINED_STATES.has(s);
+    return s !== undefined && NOT_JOINED[s];
   };
 
   // #1331 — the way OUT, where the operator meets the state. `selection.ts`
