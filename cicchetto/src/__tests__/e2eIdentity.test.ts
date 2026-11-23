@@ -57,8 +57,9 @@ const api = await import("../lib/api");
 const { accountStore, open, seal } = await import("../lib/e2e/accountStore");
 const { Engine, newState } = await import("../lib/e2e/engine");
 const { idBlock } = await import("../lib/e2e/keyBundle");
-const { certSigText, decodePayload, did, encodePayload, listSigText, OTK_SIG_PREFIX } =
-  await import("../lib/e2e/wire");
+const { certSigText, decodePayload, did, encodePayload, listSigText, otkSigText } = await import(
+  "../lib/e2e/wire"
+);
 const {
   abandonJoin,
   accountSlot,
@@ -315,7 +316,7 @@ describe("syncIdentity", () => {
       devices: [
         {
           id: idBlock(bobDevice, bobMaster.ed25519_key()),
-          otk: { key: otk, fallback: false, sig: bobDevice.sign(`${OTK_SIG_PREFIX}${otk}`) },
+          otk: { key: otk, fallback: false, sig: bobDevice.sign(otkSigText(otk)) },
         },
       ],
     });
