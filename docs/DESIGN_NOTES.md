@@ -8975,3 +8975,59 @@ out of the snapshot, not rejected, and invite-admissible.
 * cic's hand mirrors (S2), shottino's unpinned `MESSAGE_KIND_NAMES` (S3),
   and the `kind_enum` CHECK (S4, which waits for vjt's ruling). The
   cross-language parity half of `presence_filter_test.exs` stays as it is.
+<!-- entry #2693b -->
+
+---
+
+## 2026-11-23 — #2693b: every cic classifier over a message kind or a window state is a record over every member (S2: cic, no bump)
+
+**Decision.** Each client classifier that sorts `MessageKind` or `WindowState`
+members into buckets is now `{…} satisfies Record<K, V>`, so a member the server
+adds is a tsc error at the classifier until someone says where it goes. It used
+to be a `Set` of the members it admits, which files every unlisted member in the
+default bucket without a word. This reverses one sentence of CLAUDE.md's
+window-state invariant ("new states automatically inherit synthetic-row +
+greyed-class treatment"): a new state now inherits nothing.
+
+**Measured** (tsc mutants, predictions written before each run, the generated
+`wireTypes.ts` edited and reverted by path):
+
+| mutant | before (7618f6081) | after |
+|---|---|---|
+| `"whisper"` appended to `SCROLLBACK_MESSAGE_KIND` | 2 errors, the two `never` arms | 12 errors in 5 files |
+| `"locked"` appended to `SESSION_WINDOW_STATE_WINDOW_STATE` | 0 errors | 7 errors in 5 files |
+
+With `satisfies`, the record keeps its literal type, so every site that indexes
+it with the widened union also errors (TS7053), next to the one error at the
+record (TS2741). That is why the counts exceed the number of classifiers.
+
+**No bucket moved.** A script compares each old set with its record, member by
+member, against 7618f6081: 9 of 9 identical. `CONTENT_KINDS` and `NOTIFY_KINDS`
+keep their members and order (they filter the generated const through the
+record), and keep their names, which the server's comments cite.
+
+**Named gap: the kind mutant does NOT go red at `presenceFilter.ts`
+(`SUPPRESSED_PRESENCE_KINDS`) or `presencePause.ts` (`PAUSABLE_PRESENCE_KINDS`).**
+Both stay `new Set([...])` (orchestrator's ruling on this slice, overridable by
+vjt). Coverage there is the server parity instead: `presence_filter_test.exs`
+parses each literal by regex and compares it with the server's list, and that
+list is total once issue 2693 S1 derives it from a per-kind record — so a new
+kind must be classified on the server, and the parity test then forces the cic
+copy to follow. Before S1 lands the two stay fail-open, exactly as before this
+slice. The gap closes with the bump variant, if it is ruled: the three
+server-semantic classes become generated consts, which deletes both mirrors and
+both regex tests. Converting them to records now would be churn that ruling can
+throw away, and it would mean changing a server test this cic-only slice does
+not run.
+
+**Not converted, on purpose:**
+- Single-member predicates (`=== "joined"`, `kind === "action"`, Sidebar's
+  `row.state === "pending"` look): each tests one member's identity, and a new
+  member correctly answers false.
+- `EncryptedChatPane`'s searchable filter (`privmsg || action`): it sorts the
+  rows that pane synthesizes itself, which a server kind cannot reach.
+- Connection-state sets (`NETWORK_GREYED_STATES` in Sidebar and ComposeBox,
+  still `Set<string>`): a different closed set, outside issue 2693.
+
+`isPresenceKind` had no production importer and is gone, with the 18 mock lines
+that restated it in 17 test files.
