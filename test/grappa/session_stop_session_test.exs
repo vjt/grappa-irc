@@ -77,7 +77,7 @@ defmodule Grappa.SessionStopSessionTest.Holder do
   # lookup after the `:DOWN` cannot mistake the situation for cleanup lag.
   @impl GenServer
   def terminate(_, %{handoff: squatter} = opts) when is_pid(squatter) do
-    Registry.unregister(Grappa.SessionRegistry, Server.registry_key(opts.subject, opts.network_id))
+    Registry.unregister(Grappa.SessionRegistry, Grappa.Session.registry_key(opts.subject, opts.network_id))
     send(squatter, {:grab, self()})
 
     receive do
@@ -118,7 +118,7 @@ defmodule Grappa.SessionStopSessionTest.Squatter do
 
   use GenServer, restart: :temporary
 
-  alias Grappa.Session.Server
+  alias Grappa.Session
 
   @spec child_spec(map()) :: Supervisor.child_spec()
   def child_spec(opts) do
@@ -138,7 +138,7 @@ defmodule Grappa.SessionStopSessionTest.Squatter do
   @impl GenServer
   def handle_info({:grab, from}, opts) do
     {:ok, _} =
-      Registry.register(Grappa.SessionRegistry, Server.registry_key(opts.subject, opts.network_id), nil)
+      Registry.register(Grappa.SessionRegistry, Session.registry_key(opts.subject, opts.network_id), nil)
 
     send(from, {:grabbed, self()})
     send(opts.observer, {:squatted, self()})

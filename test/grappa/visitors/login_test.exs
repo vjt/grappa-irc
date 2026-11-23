@@ -724,7 +724,7 @@ defmodule Grappa.Visitors.LoginTest do
       {:ok, _} =
         Registry.register(
           Grappa.SessionRegistry,
-          Session.Server.registry_key({:visitor, "fake-vid"}, capped_net.id),
+          Session.registry_key({:visitor, "fake-vid"}, capped_net.id),
           nil
         )
 

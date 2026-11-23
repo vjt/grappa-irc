@@ -7,11 +7,10 @@ defmodule Grappa.AdmissionTest do
   """
   use Grappa.DataCase, async: false
 
-  alias Grappa.{Admission, AdmissionStateHelpers, Repo, SessionRegistry}
+  alias Grappa.{Admission, AdmissionStateHelpers, Repo, Session, SessionRegistry}
   alias Grappa.Admission.Captcha.{Disabled, HCaptcha, Turnstile}
   alias Grappa.Admission.Config
   alias Grappa.Networks.Network
-  alias Grappa.Session.Server, as: SessionServer
 
   setup do
     AdmissionStateHelpers.reset_network_circuit()
@@ -61,7 +60,7 @@ defmodule Grappa.AdmissionTest do
       # U-2: subject-aware split. Visitor flow consults
       # max_concurrent_visitor_sessions; the registry counts live
       # visitor sessions only. Hand-registered key MUST go through
-      # `Server.registry_key/2` + correct subject shape so the
+      # `Session.registry_key/2` + correct subject shape so the
       # production match-spec actually matches.
       {:ok, net} =
         net
@@ -663,7 +662,7 @@ defmodule Grappa.AdmissionTest do
 
   # 10_000_000 + unique offset → guaranteed beyond any factory's
   # sqlite autoincrement range within the suite. The atom-based key
-  # construction in `Session.Server.registry_key/2` doesn't require
+  # construction in `Session.registry_key/2` doesn't require
   # the id to map to an existing Network row.
   defp unique_synthetic_network_id, do: 10_000_000 + System.unique_integer([:positive])
 
@@ -674,7 +673,7 @@ defmodule Grappa.AdmissionTest do
   # clean registry without the 15s `project_network_circuit_ets_leak`
   # timeout.
   defp register_for_test(subject_tag, network_id) do
-    key = SessionServer.registry_key(subject_tag, network_id)
+    key = Session.registry_key(subject_tag, network_id)
     {:ok, _} = Registry.register(SessionRegistry, key, nil)
     on_exit(fn -> _ = Registry.unregister(SessionRegistry, key) end)
   end

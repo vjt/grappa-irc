@@ -38,10 +38,9 @@ defmodule Grappa.DetachedWorkSupervisionTest do
   """
   use Grappa.DataCase, async: false
 
-  alias Grappa.{AuthFixtures, ScrollbackHelpers, UserSettings, WSPresence}
+  alias Grappa.{AuthFixtures, ScrollbackHelpers, Session, UserSettings, WSPresence}
   alias Grappa.Push.Triggers
   alias Grappa.Scrollback.Message
-  alias Grappa.Session.Server
   alias Grappa.WindowCounts.Pusher
 
   @channel "#chan"
@@ -169,7 +168,7 @@ defmodule Grappa.DetachedWorkSupervisionTest do
   # Registered where the session would be; answers nothing, so the caller
   # stays inside its call for as long as the test needs it there.
   defp park_session(subject, network_id) do
-    key = Server.registry_key(subject, network_id)
+    key = Session.registry_key(subject, network_id)
     ready = self()
 
     pid =

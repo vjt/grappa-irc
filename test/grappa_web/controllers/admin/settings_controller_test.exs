@@ -7,9 +7,8 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
 
   alias Grappa.Net.{SourceAliasManager, SourceAliasMock}
   alias Grappa.PubSub.Topic
-  alias Grappa.{Repo, ServerSettings, WSPresence}
+  alias Grappa.{Repo, ServerSettings, Session, WSPresence}
   alias Grappa.ServerSettings.Setting
-  alias Grappa.Session.Server
 
   describe "GET /admin/settings — gate" do
     test "401 without bearer", %{conn: conn} do
@@ -1170,7 +1169,7 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
     # key; what a real session does with the signal is pinned in
     # `Grappa.Session.ServerTest`.
     test "a PUT carrying auto_away signals every live session", %{conn: conn, session: session} do
-      key = Server.registry_key({:user, Ecto.UUID.generate()}, 1)
+      key = Session.registry_key({:user, Ecto.UUID.generate()}, 1)
       {:ok, _} = Registry.register(Grappa.SessionRegistry, key, nil)
 
       assert conn |> put_auto_away(session, 300) |> json_response(200)
@@ -1179,7 +1178,7 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
     end
 
     test "a PUT without auto_away leaves live sessions alone", %{conn: conn, session: session} do
-      key = Server.registry_key({:user, Ecto.UUID.generate()}, 1)
+      key = Session.registry_key({:user, Ecto.UUID.generate()}, 1)
       {:ok, _} = Registry.register(Grappa.SessionRegistry, key, nil)
 
       conn =
@@ -1194,7 +1193,7 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
     test "an empty or null auto_away subtree writes nothing and signals nothing", %{
       session: session
     } do
-      key = Server.registry_key({:user, Ecto.UUID.generate()}, 1)
+      key = Session.registry_key({:user, Ecto.UUID.generate()}, 1)
       {:ok, _} = Registry.register(Grappa.SessionRegistry, key, nil)
 
       for body <- [%{"auto_away" => %{}}, %{"auto_away" => nil}] do

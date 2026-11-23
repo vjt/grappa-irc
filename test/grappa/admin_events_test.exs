@@ -11,11 +11,10 @@ defmodule Grappa.AdminEventsTest do
   """
   use Grappa.DataCase, async: false
 
-  alias Grappa.{AdminEvents, AdmissionStateHelpers, Repo}
+  alias Grappa.{AdminEvents, AdmissionStateHelpers, Repo, Session}
   alias Grappa.AdminEvents.{Event, Wire}
   alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
-  alias Grappa.Session.Server, as: SessionServer
 
   @telemetry_handler_id "grappa-admin-events"
   @telemetry_events [
@@ -481,7 +480,7 @@ defmodule Grappa.AdminEventsTest do
   # Admission.live_counts_for_network/1 to observe; auto-unregister
   # on test exit so sibling tests see a clean registry.
   defp register_fake_session(subject, network_id) do
-    key = SessionServer.registry_key(subject, network_id)
+    key = Session.registry_key(subject, network_id)
     {:ok, _} = Registry.register(Grappa.SessionRegistry, key, nil)
     on_exit(fn -> _ = Registry.unregister(Grappa.SessionRegistry, key) end)
   end
