@@ -36,8 +36,8 @@ import {
   encodePayload,
   fb,
   fold,
-  ID_SIG_PREFIX,
   type IdBlock,
+  idSigText,
   type KeysEntry,
   linesNeeded,
   listSigText,
@@ -864,7 +864,7 @@ function claiming(device: Account, master: Account, curve25519: string, otk: Sig
   const id = {
     curve25519,
     ed25519: keyOf(device),
-    sig: device.sign(`${ID_SIG_PREFIX}${curve25519}:${keyOf(master)}`),
+    sig: device.sign(idSigText(curve25519, keyOf(master))),
   };
   return { id, otk: { ...otk, fallback: false } };
 }
@@ -2674,7 +2674,7 @@ describe("a PKMSG (W receiver checks, in order)", () => {
     paddedMaster.id = {
       curve25519: one.curve25519_key(),
       ed25519: keyOf(one),
-      sig: one.sign(`${ID_SIG_PREFIX}${one.curve25519_key()}:${M}=`),
+      sig: one.sign(idSigText(one.curve25519_key(), `${M}=`)),
     };
     const paddedDevice = written(a, bob, two, text("y"), "one-time");
     paddedDevice.id = { ...idBlock(two, M), ed25519: `${keyOf(two)}=` };
@@ -3078,7 +3078,7 @@ describe("a PKMSG (W receiver checks, in order)", () => {
       id: {
         curve25519: curve,
         ed25519: keyOf(claimant),
-        sig: claimant.sign(`${ID_SIG_PREFIX}${curve}:${keyOf(mallory.master)}`),
+        sig: claimant.sign(idSigText(curve, keyOf(mallory.master))),
       },
     };
 
@@ -3101,7 +3101,7 @@ describe("a PKMSG (W receiver checks, in order)", () => {
       id: {
         curve25519: padded,
         ed25519: keyOf(device),
-        sig: device.sign(`${ID_SIG_PREFIX}${padded}:${keyOf(peer.master)}`),
+        sig: device.sign(idSigText(padded, keyOf(peer.master))),
       },
     };
   };
@@ -6435,7 +6435,7 @@ describe("S1 sibling copies — receive", () => {
           ...genuine,
           id: {
             ...idBlock(b.account, M),
-            sig: c.account.sign(`${ID_SIG_PREFIX}${curveOf(b.account)}:${M}`),
+            sig: c.account.sign(idSigText(curveOf(b.account), M)),
           },
         },
       ],
