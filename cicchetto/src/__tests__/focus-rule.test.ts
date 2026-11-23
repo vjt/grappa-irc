@@ -36,7 +36,6 @@ vi.mock("../lib/api", () => ({
   // memo derivation. Any test importing selection (directly or
   // transitively) needs the classifier in its api mock.
   isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
-  isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
   // #868 — this file drives real messages through subscribe.ts, which now
   // decides the beep via `pushTriggers.shouldNotify` and so reads the
   // notify-worthy kind set from api.ts. Same mirror the classifiers above

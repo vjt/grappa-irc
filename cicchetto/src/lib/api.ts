@@ -133,6 +133,7 @@ import type {
   VisitorsAdminWireT,
   WindowCountsSeverity,
 } from "./wireTypes";
+import { SCROLLBACK_MESSAGE_KIND } from "./wireTypes";
 
 // Exported so sibling REST clients (e.g. `themesApi.ts`) reuse the exact
 // same JSON header shape — content-type + the `x-grappa-client-id` header
@@ -697,46 +698,56 @@ export type DirectoryPage = ChannelDirectoryWireIndexPayload;
 export type MessageKind = ScrollbackMessageKind;
 
 // Kind class for the unread-badge memo derivation (2026-06-01,
-// unread-badges-from-cursor cluster) + the notify/push gate (#395). The
-// content kinds and their unread PROJECTION are declared ONCE here: each
-// content kind maps to whether it is notify-worthy (badge/push eligible).
+// unread-badges-from-cursor cluster) + the notify/push gate (#395). Every
+// kind's unread PROJECTION is declared ONCE here:
 //
 //   * "notify" — privmsg + action (CTCP /me): a real person's message.
 //     Counts as unread AND raises a badge/push.
 //   * "unread" — notice: services chatter (NickServ/ChanServ/bots).
 //     Counts as unread but NEVER badges/pushes.
+//   * null — presence/control: neither.
 //
 // Both CONTENT_KINDS (the "real messages" the operator wants the bold
 // sidebar/bottom-bar badge for — presence kinds are the dimmer indicator)
-// and NOTIFY_KINDS derive from THIS one map, so the notify-worthy set is a
+// and NOTIFY_KINDS derive from THIS one record, so the notify-worthy set is a
 // SUBSET of the unread-content set BY CONSTRUCTION — not two hand-maintained
 // literals that happen to agree (pre-#395, pushTriggers.ts held its own
 // ["privmsg","action"] copy separate from this CONTENT_KINDS). Mirror of the
 // server SSOT `Grappa.Scrollback.Message.@content_kind_projection`
 // (content_kinds/0 + notify_kinds/0). The classifier is single-sourced here
-// so the in-pane unread marker, the sidebar/bottom-bar memos, and the
-// foreground notify gate all share one definition.
-const CONTENT_KIND_PROJECTION: ReadonlyMap<MessageKind, "notify" | "unread"> = new Map<
-  MessageKind,
-  "notify" | "unread"
->([
-  ["privmsg", "notify"],
-  ["notice", "unread"],
-  ["action", "notify"],
-]);
+// so the in-pane unread marker, the sidebar/bottom-bar memos, the presence
+// row class and the foreground notify gate all share one definition.
+//
+// issue 2693 — a record over EVERY kind, not a map of the content ones: a
+// kind the server adds is a tsc error here until someone says which bucket it
+// is in. The map form filed it under "presence" without a word.
+const CONTENT_KIND_PROJECTION = {
+  privmsg: "notify",
+  notice: "unread",
+  action: "notify",
+  join: null,
+  part: null,
+  quit: null,
+  nick_change: null,
+  mode: null,
+  topic: null,
+  kick: null,
+  server_event: null,
+} satisfies Record<MessageKind, "notify" | "unread" | null>;
 
-export const CONTENT_KINDS: ReadonlySet<MessageKind> = new Set(CONTENT_KIND_PROJECTION.keys());
+export const CONTENT_KINDS: ReadonlySet<MessageKind> = new Set(
+  SCROLLBACK_MESSAGE_KIND.filter((k) => CONTENT_KIND_PROJECTION[k] !== null),
+);
 
 // #395 — the notify-worthy subset (the kinds that raise a badge/push).
 // Derived by selecting the "notify" rows of the projection, so it can NEVER
 // contain a kind absent from CONTENT_KINDS: badge-worthy ⊆ unread by
 // construction. `pushTriggers.ts` imports THIS instead of a local literal.
 export const NOTIFY_KINDS: ReadonlySet<MessageKind> = new Set(
-  [...CONTENT_KIND_PROJECTION].filter(([, projection]) => projection === "notify").map(([k]) => k),
+  SCROLLBACK_MESSAGE_KIND.filter((k) => CONTENT_KIND_PROJECTION[k] === "notify"),
 );
 
 export const isContentKind = (k: MessageKind): boolean => CONTENT_KINDS.has(k);
-export const isPresenceKind = (k: MessageKind): boolean => !CONTENT_KINDS.has(k);
 
 export type ScrollbackMessage = ScrollbackWireT;
 

@@ -159,7 +159,6 @@ vi.mock("../lib/api", async (importOriginal) => {
     // memo derivation. Any test importing selection (directly or
     // transitively) needs the classifier in its api mock.
     isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
-    isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
     // #71 INC-1 — the own-nick footer sources the per-network nick via the
     // canonical helper (CLAUDE.md "what is my nick on THIS network"). Use the
     // REAL implementation (pure: `net.nick` guarded on `me != null`) — "use

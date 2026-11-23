@@ -10,7 +10,6 @@ vi.mock("../lib/api", () => ({
   // memo derivation. Any test importing selection (directly or
   // transitively) needs the classifier in its api mock.
   isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
-  isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
 }));
 
 // UX-2 (2026-05-17) — `visibleArchiveForNetwork` reads

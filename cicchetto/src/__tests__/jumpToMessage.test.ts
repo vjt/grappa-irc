@@ -22,7 +22,6 @@ vi.mock("../lib/api", () => ({
   logout: vi.fn(),
   setOn401Handler: vi.fn(),
   isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
-  isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
 }));
 
 vi.mock("../lib/reconnectBackfill", () => ({

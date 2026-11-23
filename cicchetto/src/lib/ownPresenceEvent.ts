@@ -10,11 +10,11 @@
 // so the two signals stay aligned. Adding a future presence kind (e.g.
 // `topic` if operator-set) extends this one predicate.
 //
-// Kind set mirrors subscribe.ts's pre-R-6 inline `isPresenceKind` check.
+// Kind set mirrors subscribe.ts's pre-R-6 inline presence check.
 // `topic` is intentionally NOT included — `kind: "topic"` events arrive
 // via the `topic_changed` WS event surface, not as scrollback rows;
 // when an operator-driven topic change DOES persist as a scrollback
-// `kind: "topic"` row in some future shape, extend the kind set here.
+// `kind: "topic"` row in some future shape, flip `topic` below.
 //
 // CP29 R-6: in-pane unread-marker (ScrollbackPane.tsx:511-514) gating —
 // pre-R-6 the marker filter only excluded `isOperatorActionEcho`, so
@@ -25,18 +25,25 @@
 // derivation in ScrollbackPane was the silent leak class. Same predicate,
 // two surfaces.
 
-import type { ScrollbackMessage } from "./api";
+import type { MessageKind, ScrollbackMessage } from "./api";
 import type { Casemapping } from "./isupport";
 import { nickEquals } from "./nickEquals";
 
-const PRESENCE_KINDS = new Set<ScrollbackMessage["kind"]>([
-  "join",
-  "part",
-  "quit",
-  "nick_change",
-  "mode",
-  "kick",
-]);
+// issue 2693 — over EVERY kind, so a new one is a tsc error here until
+// someone says whether the operator's own row of that kind is presence.
+const OWN_PRESENCE_KIND = {
+  privmsg: false,
+  notice: false,
+  action: false,
+  join: true,
+  part: true,
+  quit: true,
+  nick_change: true,
+  mode: true,
+  topic: false,
+  kick: true,
+  server_event: false,
+} satisfies Record<MessageKind, boolean>;
 
 export const isOwnPresenceEvent = (
   message: ScrollbackMessage,
@@ -44,6 +51,6 @@ export const isOwnPresenceEvent = (
   casemapping: Casemapping,
 ): boolean => {
   if (ownNick === null) return false;
-  if (!PRESENCE_KINDS.has(message.kind)) return false;
+  if (!OWN_PRESENCE_KIND[message.kind]) return false;
   return nickEquals(message.sender, ownNick, casemapping);
 };
