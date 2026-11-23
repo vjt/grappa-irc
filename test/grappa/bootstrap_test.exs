@@ -455,16 +455,12 @@ defmodule Grappa.BootstrapTest do
 
       assert {:ok, %Result{}} = Bootstrap.run()
 
-      # No session row should exist for an expired visitor regardless
-      # of which network they were pinned to. Match against the
-      # Registry key shape from `Server.registry_key/2`:
-      # `{:session, subject, network_id}`.
-      keys =
-        Registry.select(Grappa.SessionRegistry, [
-          {{{:session, {:visitor, :"$1"}, :_}, :_, :_}, [{:==, :"$1", visitor.id}], [:"$_"]}
-        ])
-
-      assert keys == []
+      # No live session should exist for an expired visitor, whichever
+      # network they were pinned to. This asserts an ABSENCE, so it cannot
+      # tell a key change from a filtered visitor (issue 2696): what it pins
+      # is Bootstrap's filter, not the registry key.
+      subject = {:visitor, visitor.id}
+      refute Enum.any?(Session.list_live(), &match?({^subject, _, _}, &1))
     end
 
     # #211 regression: a backfilled visitor Credential (user_id IS NULL,
@@ -646,10 +642,7 @@ defmodule Grappa.BootstrapTest do
 
       on_exit(fn -> AdmissionStateHelpers.clear_registry_for!(network.id, @clear_registry_ms) end)
 
-      started_rows =
-        Registry.select(Grappa.SessionRegistry, [
-          {{{:session, :_, network.id}, :_, :_}, [], [true]}
-        ])
+      started_rows = for {_, network_id, _} = live <- Session.list_live(), network_id == network.id, do: live
 
       assert length(started_rows) == 1
       assert log =~ "skipped — capacity rejected"

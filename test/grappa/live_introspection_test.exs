@@ -117,7 +117,7 @@ defmodule Grappa.LiveIntrospectionTest do
       # count_sessions test — no real Session.Server needed.
       subject = {:visitor, Ecto.UUID.generate()}
       network_id = 424_242
-      key = {:session, subject, network_id}
+      key = Session.registry_key(subject, network_id)
       parent = self()
 
       {:ok, pid} =
@@ -144,18 +144,19 @@ defmodule Grappa.LiveIntrospectionTest do
     end
 
     test "counts registered user sessions grouped by user_id, drops visitor rows" do
-      # Register dummy pids directly under the user-session registry
-      # key shape. We don't need real Session.Servers — the match-spec
-      # only inspects the registration key.
+      # Register dummy pids under `Session.registry_key/2`, the key a real
+      # session registers under. We don't need real Session.Servers — the
+      # count only inspects the registration key (issue 2696: a literal key
+      # here kept agreeing with a literal reader after a key change).
       user_a = Ecto.UUID.generate()
       user_b = Ecto.UUID.generate()
       visitor_x = Ecto.UUID.generate()
 
       keys = [
-        {:session, {:user, user_a}, 1},
-        {:session, {:user, user_a}, 2},
-        {:session, {:user, user_b}, 1},
-        {:session, {:visitor, visitor_x}, 1}
+        Session.registry_key({:user, user_a}, 1),
+        Session.registry_key({:user, user_a}, 2),
+        Session.registry_key({:user, user_b}, 1),
+        Session.registry_key({:visitor, visitor_x}, 1)
       ]
 
       parent = self()
