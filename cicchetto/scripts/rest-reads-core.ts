@@ -367,6 +367,19 @@ export const CONTROLS: ReadonlyArray<readonly [string, string, readonly Spelling
     "<p>Don't</p>\nconst a = (await res.json()) as A; const b = 'x';",
     ["cast"],
   ],
+  // The `${…}` brace counter and the regex `[…]` class: without either, the
+  // lexer closes a literal early and blanks the read after it, GREEN.
+  [
+    "an object literal inside a template expression does not end it",
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the control is a template literal, as text
+    "const t = `x${ {a: 1}.a + ((await res.json()) as A).b }y`;",
+    ["cast"],
+  ],
+  [
+    "a slash and a quote inside a regex character class end nothing",
+    "const re = /[/'\"]/; const a = (await res.json()) as A; const q = 'x';",
+    ["cast"],
+  ],
 ];
 
 export function runSelfTest(): string[] {
