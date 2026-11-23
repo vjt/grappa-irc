@@ -72,8 +72,7 @@ defmodule Grappa.Admission do
   alias Grappa.Accounts.Session, as: AccountSession
   alias Grappa.Admission.{Captcha, NetworkCircuit, Telemetry}
   alias Grappa.Networks.{Credential, Network}
-  alias Grappa.Repo
-  alias Grappa.Session
+  alias Grappa.{Repo, Session}
 
   @type flow ::
           :login_fresh
@@ -300,8 +299,7 @@ defmodule Grappa.Admission do
   """
   @spec live_counts_by_network() :: %{integer() => live_counts()}
   def live_counts_by_network do
-    Session.live_counts_by_network()
-    |> Enum.reduce(%{}, fn {{network_id, subject_tag}, count}, acc ->
+    Enum.reduce(Session.live_counts_by_network(), %{}, fn {{network_id, subject_tag}, count}, acc ->
       Map.update(
         acc,
         network_id,
