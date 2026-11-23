@@ -9068,7 +9068,7 @@ so seven match specs in three boundaries spelled the tuple by hand: two in
   at run time, with `:"$1"` or `:_` where the values go. The tag is one
   attribute, `@registry_key_tag`, which the `registry_key()` type reads too, so
   changing it is a one-line edit. `Server.registry_key/2` now delegates, because
-  13 plain test files still call it.
+  10 plain test files still call it.
 * **Four verbs are the only scans:** `list_live/0`, `count_live/2`,
   `live_counts_by_network/0` and `count_by_user/0`.
   * Admission declares `Grappa.Session` and calls them.
@@ -9106,10 +9106,42 @@ so seven match specs in three boundaries spelled the tuple by hand: two in
     The phase-1 report swapped the line numbers: the select that went red was
     the cap test's.
 
+### Proof: three arms, each predicted before it ran (full ExUnit, own cache)
+
+The arms ran on `a2f4003e8`, rebased onto `4c60ff8a7`. The one later code
+commit only makes `credo --strict` clean, and the unmutated suite was run
+again on it. This change adds and removes no test.
+
+* **Control, unmutated:** 8986 tests, 0 failures, on both commits.
+* **Consistent mutant**, `@registry_key_tag :session` → `:session_v2`, one
+  line: 8986 tests, 0 failures. Every key and every head moved together, so
+  the key really is spelled once and changing it is a one-line edit.
+* **Desync mutant**, where only `registry_key/2`'s body is hand-spelled as
+  `{:session_v2, subject, network_id}`, so registration drifts while every
+  match-spec head stays: 40 failures in 15 modules, every one in a predicted
+  class. Among them are the former survivors (`count_sessions_by_user/0`,
+  `list_sessions/0`) and the purge-survivor test of `AdmissionStateHelpers`,
+  which now goes red instead of agreeing with a blind helper. The
+  expired-visitor absence test stays green, as predicted.
+
+### A test that could poison the rest of the suite
+
+The first desync run never finished. After its first direct reds, 143 tests
+in five other modules failed with "`Grappa.SessionRegistry` still has 1
+entries after 15000ms", and the run was stopped after 50 minutes at 6389 of
+8981 tests. The cause was the purge-survivor test. It registered an unlinked
+`Process.sleep(:infinity)` process and unregistered it on the line after its
+`assert_raise`. When the assert failed, that line never ran, so the process
+stayed registered, and every later `reset_all/0` waited 15 s and raised.
+That shape was already on main: any failure of that one assert poisoned the
+rest of the run. The cleanup is now an `on_exit`, and the same desync mutant
+then finished in 541 s with no such red.
+
 ### Not in this change
 
 * The registry VALUE `{nick, label, registered?}` has the same problem. It is
   still written by hand in `Session.Server.publish_live_nick/5` and matched by
   hand in `current_nick/2` and `registered_holders/3`. Not measured.
-* The 13 plain test files that call `Server.registry_key/2`. Repointing them is
-  mechanical, but it needs a ruling on blast radius first.
+* The 10 plain test files that call `Server.registry_key/2` (13 on main; this
+  change repointed `test/support/mute_session.ex` and two comments). Repointing
+  them is mechanical, but it needs a ruling on blast radius first.
