@@ -8,9 +8,10 @@
 // Exit codes follow `lock-drift.ts`:
 //   0  every file's count equals its pin
 //   1  a count moved — UP (validate the new read) or DOWN (lower the pin)
-//   3  a known-answer control failed, or the walk found nothing — NO verdict is
-//      printed, because a counter that cannot answer a question with a known
-//      answer cannot be believed when it answers one without.
+//   3  a known-answer control failed, the walk found nothing, or a file could
+//      not be lexed — NO verdict is printed, because a counter that cannot
+//      answer a question with a known answer cannot be believed when it
+//      answers one without.
 import {
   countReads,
   EXCLUSIONS,
@@ -35,7 +36,13 @@ if (files.length === 0) {
   process.exit(3);
 }
 
-const counts = countReads(root, files);
+let counts: Map<string, number>;
+try {
+  counts = countReads(root, files);
+} catch (e) {
+  console.error(`rest-reads: ${e instanceof Error ? e.message : String(e)} — refusing a verdict`);
+  process.exit(3);
+}
 const result = verdict(counts, PIN, EXCLUSIONS);
 
 // The per-file counts and the total are the honesty payload, same argument as

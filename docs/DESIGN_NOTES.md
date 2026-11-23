@@ -8715,11 +8715,35 @@ exclusion names its count. A second read in either file counts against the
 pin, so an exclusion is not room, and an exclusion that stops matching is red,
 so it cannot linger.
 
+**What it reads.** Text, not the type checker, after a small lexer blanks the
+comments and the contents of string, template and regex literals. The first
+version blanked comments with two regexes that could not tell a comment from a
+string, so a MIME wildcard (`"image/*"`) or a URL (`"https://…"`) hid every
+read up to the next `*/` or to the end of the line. Measured in the review of
+PR 2704: `const zzAccept = "image/*";` at the top of `api.ts` took the count
+from 64 to 56, and the printed remedy, "lower the pin", would have turned the
+eight hidden reads into room. That errs GREEN, the one direction a ratchet
+must not err. The lexer knows strings, template literals (code again inside
+`${…}`), regex literals (told from a division by the token before the `/`)
+and both comment forms. It does not lex JSX text: a quote there that reaches
+the end of its line opened no string and is left alone, so a misreading costs
+at most that line. A block comment or template literal that never closes is a
+failure (exit 3, naming the file), never a blank to the end of the file:
+TypeScript compiles neither, so on a real tree it can only be the lexer
+misreading. The `narrow` callee needs a left boundary (`unnarrow(` does not
+validate), and a receiver may reach `json` through `?.` or `!.`. Each of
+these cases is a known-answer control.
+
 **What it does not see, deliberately.** It cannot tell a schema from a cast
-that names the right type: `narrow*` is recognised by name. It reads text, not
-the type checker, so a `narrow*` call whose first argument itself contains
-parentheses, or a read wrapped in extra parentheses inside the call, counts as
-unvalidated. That errs RED, and no such shape exists in `src/` today. It also
+that names the right type: `narrow*` is recognised by name. A `narrow*` call
+whose first argument itself contains parentheses, a read wrapped in extra
+parentheses inside the call, or a read assigned to a variable and narrowed
+later counts as unvalidated. That errs RED, and no such shape exists in
+`src/` today. Like every count, it cannot see a swap: one read cured and one
+raw read added in the same file cancel, and the file stays at its pin, green.
+An exclusion has the same blind spot: if `nowPlaying.ts`'s feed read became a
+grappa REST read, the exclusion would still count 1. The ratchet beside it
+(issue 2690) names the same limit, and only review catches a swap. It also
 says nothing about the server half of X3: the 34 inline `json(conn, %{…})`
 renders sit outside both the wire pin and the codegen, which is why the
 ratchet's floor cannot reach zero until issue 2694's open question on them is
