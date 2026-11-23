@@ -118,3 +118,52 @@ test("issue 2323 — kick, rejoin, kick while reading another channel: the row s
   await peer?.kick(channel, specNick(), "loser again");
   await expectGreyedRowStays(page, "second kick");
 });
+
+// The PHONE shape — where the report was actually made. The expected
+// behaviour, as declared for this issue, is that after a kick the channel
+// STAYS in the bottom bar. How that relates to the #902/#402 decision (a
+// kicked window on a phone is reached through the archive) is OPEN, and so
+// is the FORM of the surviving tab (greyed? a ×?): this test asserts only
+// the declared fact — the tab is still there — and nothing about its look.
+//
+// On a phone the members pane is a drawer and the Sidebar pseudo-rows do not
+// exist, so the desktop helpers above do not apply: the join is proven by our
+// own JOIN line (via `selectChannel`'s ownNick wait) and the kick by the KICK
+// line in the focused window. The channel is NOT in autojoin, so after a kick
+// it leaves `channelsBySlug` and the bar has no other source for its tab.
+test("@webkit @touch issue 2323 — kick, rejoin, kick on a phone: the bottom-bar tab stays", async ({
+  page,
+}) => {
+  channel = `#i2323-m-${crypto.randomUUID().slice(0, 8)}`;
+  peer = await IrcPeer.connect({ nick: `i2323m-${crypto.randomUUID().slice(0, 5)}` });
+  await peer.join(channel);
+
+  await loginAs(page, specUser());
+  await selectChannel(page, NETWORK_SLUG, SEED_CHANNEL, { ownNick: specNick() });
+  await composeSend(page, `/join ${channel}`);
+  await selectChannel(page, NETWORK_SLUG, channel, { ownNick: specNick() });
+
+  const tab = sidebarWindow(page, NETWORK_SLUG, channel);
+  const kickLines = page
+    .locator('[data-testid="scrollback-line"][data-kind="kick"]')
+    .filter({ hasText: specNick() });
+
+  async function expectTabStays(reason: string, kicks: number): Promise<void> {
+    await expect(kickLines).toHaveCount(kicks, { timeout: 10_000 });
+    await expect(tab, `after "${reason}" the tab must still be in the bottom bar`).toHaveCount(1);
+    await page.waitForTimeout(SETTLE_MS);
+    await expect(
+      tab,
+      `after "${reason}" + ${SETTLE_MS} ms the tab must still be there`,
+    ).toHaveCount(1);
+  }
+
+  await peer.kick(channel, specNick(), "loser");
+  await expectTabStays("first kick", 1);
+
+  await composeSend(page, `/join ${channel}`);
+  await expect(joinLines(page)).toHaveCount(2, { timeout: 10_000 });
+
+  await peer.kick(channel, specNick(), "loser again");
+  await expectTabStays("second kick", 2);
+});
