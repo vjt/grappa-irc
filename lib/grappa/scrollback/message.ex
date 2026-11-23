@@ -111,8 +111,7 @@ defmodule Grappa.Scrollback.Message do
   alias Grappa.IRC.{E2e, Identifier}
   alias Grappa.Networks.Network
   alias Grappa.Scrollback.Meta
-  alias Grappa.Subject
-  alias Grappa.Typespec
+  alias Grappa.{Subject, Typespec}
   alias Grappa.Visitors.Visitor
 
   @kinds [

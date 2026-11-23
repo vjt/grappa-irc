@@ -70,10 +70,9 @@ defmodule Grappa.Session.Wire do
   its older part was not scanned. `optional` for the same reason.
   """
 
-  alias Grappa.E2eInbox
+  alias Grappa.{E2eInbox, Typespec}
   alias Grappa.IRC.LineSplit
   alias Grappa.Scrollback.Message
-  alias Grappa.Typespec
 
   alias Grappa.Session.{
     EventRouter,
