@@ -1,5 +1,5 @@
 import { assertNever, type ChannelPushError } from "./api";
-import { ERROR_TOKENS_CHANNEL_ERROR_TOKEN, type ErrorTokensChannelErrorToken } from "./wireTypes";
+import { ERROR_JSONCHANNEL_ERROR_TOKEN, type ErrorJSONChannelErrorToken } from "./wireTypes";
 
 // Issue #62: channel-push rejections (`ChannelPushError`) were swallowed by
 // compose.ts into a bare "send failed", hiding the real reason. The live
@@ -15,9 +15,9 @@ import { ERROR_TOKENS_CHANNEL_ERROR_TOKEN, type ErrorTokensChannelErrorToken } f
 // verbs, `resolve_userhost`, `open_query_window`, topic set, etc.
 //
 // #411 D6b — the union AND the runtime narrowing Set are GENERATED, not
-// hand-listed. `ErrorTokensChannelErrorToken` + `ERROR_TOKENS_CHANNEL_ERROR_TOKEN`
+// hand-listed. `ErrorJSONChannelErrorToken` + `ERROR_JSONCHANNEL_ERROR_TOKEN`
 // come from `mix grappa.gen_wire_types` reading
-// `GrappaWeb.ErrorTokens.channel_error_token` — the server's authoritative
+// `GrappaWeb.ErrorJSON.channel_error_token` — the server's authoritative
 // channel-push wire-token set. This DELIBERATELY OVERTURNS the pre-#411
 // "curated subset + loud fallback for unmapped arms" design this comment used
 // to defend: the union is the FULL server contract, so the ONLY hand-kept
@@ -31,14 +31,12 @@ import { ERROR_TOKENS_CHANNEL_ERROR_TOKEN, type ErrorTokensChannelErrorToken } f
 // guard (server ahead of codegen / off-contract string), not the home of
 // un-localized tokens. One arm, one contract.
 
-// The generated `ERROR_TOKENS_CHANNEL_ERROR_TOKEN` array is the single source
+// The generated `ERROR_JSONCHANNEL_ERROR_TOKEN` array is the single source
 // for both the compile-time union and this runtime narrowing Set.
-const KNOWN_CODES: ReadonlySet<ErrorTokensChannelErrorToken> = new Set(
-  ERROR_TOKENS_CHANNEL_ERROR_TOKEN,
-);
+const KNOWN_CODES: ReadonlySet<ErrorJSONChannelErrorToken> = new Set(ERROR_JSONCHANNEL_ERROR_TOKEN);
 
-function isKnownCode(code: string): code is ErrorTokensChannelErrorToken {
-  return KNOWN_CODES.has(code as ErrorTokensChannelErrorToken);
+function isKnownCode(code: string): code is ErrorJSONChannelErrorToken {
+  return KNOWN_CODES.has(code as ErrorJSONChannelErrorToken);
 }
 
 // #630 — the coarse per-subject request budget (spanning every WS verb +
@@ -55,7 +53,7 @@ export function friendlyChannelError(err: ChannelPushError): string {
   return friendlyKnown(err.code);
 }
 
-function friendlyKnown(code: ErrorTokensChannelErrorToken): string {
+function friendlyKnown(code: ErrorJSONChannelErrorToken): string {
   switch (code) {
     case "no_session":
       // The `(subject, network)` has no live `Session.Server` — e.g. a

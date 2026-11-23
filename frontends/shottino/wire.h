@@ -53,17 +53,17 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v65 -> v66 (issue 2692):
- * `member_modes` Meta key on a channel `:mode` row, the absolute modes of
- * every member the line changed. Unread here: the parsers ignore unknown
- * keys and the row's `modes`/`args` are unchanged. This client already
- * refuses to parse mode letters and refetches the roster on a mode row
- * (shottino.c, "Keeping the roster live"); reading the key would save
- * that request, which nothing requires.
+ * Last read, v66 -> v67 (issue 2694):
+ * no byte on the wire moved. What moved is cicchetto's generated mirror:
+ * wireTypes.ts / wireSchema.ts gain the web views' types and seven named
+ * response envelopes, and the error-token arrays are renamed ERROR_JSON*.
+ * The one thing this client reads from wireTypes.ts is the five E2E
+ * closed sets (tests/test_commands.c), which the regeneration did not
+ * touch; nothing here changes.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 66
+#define WIRE_PROTOCOL_VERSION 67
 
 #include <stdbool.h>
 #include <stddef.h>

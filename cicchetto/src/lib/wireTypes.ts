@@ -1,6 +1,6 @@
 // GENERATED FILE — DO NOT EDIT
 // Run `scripts/mix.sh grappa.gen_wire_types` to regenerate.
-// Source: lib/grappa/**/*wire.ex + GrappaWeb.AuthJSON + GrappaWeb.BootJSON + GrappaWeb.ErrorTokens + GrappaWeb.MeJSON
+// Source: lib/grappa/**/*wire.ex + Elixir.GrappaWeb.*JSON.beam
 
 // === External types (referenced by Wire modules) ===
 
@@ -60,6 +60,9 @@ export type NetworksCredentialGender = (typeof NETWORKS_CREDENTIAL_GENDER)[numbe
 
 export const NETWORKS_NETWORK_SERVICES_FLAVOR = ["azzurra", "atheme", "oftc", "unknown"] as const;
 export type NetworksNetworkServicesFlavor = (typeof NETWORKS_NETWORK_SERVICES_FLAVOR)[number];
+
+export const PUSH_SUBSCRIPTION_PROVIDER = ["webpush", "unifiedpush"] as const;
+export type PushSubscriptionProvider = (typeof PUSH_SUBSCRIPTION_PROVIDER)[number];
 
 export const SCROLLBACK_MESSAGE_KIND = [
   "privmsg",
@@ -148,6 +151,39 @@ export type ThemesTokenModelFontFamily = (typeof THEMES_TOKEN_MODEL_FONT_FAMILY)
 
 export const THEMES_TOKEN_MODEL_SIZE_MODE = ["cover", "repeat"] as const;
 export type ThemesTokenModelSizeMode = (typeof THEMES_TOKEN_MODEL_SIZE_MODE)[number];
+
+export type UserSettingsDisplayPrefs = {
+  time_format: string;
+  colored_nicklist: boolean;
+  presence_filter: Record<string, string>;
+  show_bottom_bar: boolean;
+  strip_formatting: boolean;
+  show_event_badge: boolean;
+  bold_mentions: boolean;
+  date_format: string;
+};
+
+export const USER_SETTINGS_IGNORE_OUTCOME = [
+  "added",
+  "already_ignored",
+  "removed",
+  "not_ignored",
+] as const;
+export type UserSettingsIgnoreOutcome = (typeof USER_SETTINGS_IGNORE_OUTCOME)[number];
+
+export type UserSettingsMutedTargets = Record<string, Record<string, number | null>>;
+
+export type UserSettingsNotificationPrefs = {
+  channel_messages_all: boolean;
+  channel_messages_only: string[];
+  channel_mentions: boolean;
+  private_messages_all: boolean;
+  private_messages_only: string[];
+  presence_online: boolean;
+  presence_offline: boolean;
+  muted_targets: UserSettingsMutedTargets;
+  notification_sound: string;
+};
 
 export const WINDOW_COUNTS_SEVERITY = ["mention", "message", "event", "none"] as const;
 export type WindowCountsSeverity = (typeof WINDOW_COUNTS_SEVERITY)[number];
@@ -1945,6 +1981,11 @@ export type AuthJSONVisitorSubjectWire = {
 
 export type AuthJSONSubjectWire = AuthJSONUserSubjectWire | AuthJSONVisitorSubjectWire;
 
+export type AuthJSONLoginResponse = {
+  token: string;
+  subject: AuthJSONSubjectWire;
+};
+
 // === GrappaWeb.BootJSON ===
 
 export type BootJSONChannelTree = Record<string, NetworksWireChannelJson[]>;
@@ -1957,18 +1998,34 @@ export type BootJSONBootJson = {
   heads: BootJSONHeads;
 };
 
-// === GrappaWeb.ErrorTokens ===
+// === GrappaWeb.ClientTokenJSON ===
 
-export const ERROR_TOKENS_SHARED_ERROR_TOKEN = [
+export type ClientTokenJSONIndexResponse = {
+  tokens: AccountsWireClientTokenJson[];
+};
+
+export type ClientTokenJSONCreateResponse = {
+  handle: string;
+  label: string;
+  created_at: string;
+  last_seen_at: string;
+  ip: string | null;
+  user_agent: string | null;
+  token: string;
+};
+
+// === GrappaWeb.ErrorJSON ===
+
+export const ERROR_JSONSHARED_ERROR_TOKEN = [
   "not_found",
   "forbidden",
   "invalid_line",
   "body_too_large",
 ] as const;
-export type ErrorTokensSharedErrorToken = (typeof ERROR_TOKENS_SHARED_ERROR_TOKEN)[number];
+export type ErrorJSONSharedErrorToken = (typeof ERROR_JSONSHARED_ERROR_TOKEN)[number];
 
-export const ERROR_TOKENS_REST_ERROR_TOKEN = [
-  ...ERROR_TOKENS_SHARED_ERROR_TOKEN,
+export const ERROR_JSONREST_ERROR_TOKEN = [
+  ...ERROR_JSONSHARED_ERROR_TOKEN,
   "bad_request",
   "unauthorized",
   "nickserv_pass_retired",
@@ -2058,10 +2115,10 @@ export const ERROR_TOKENS_REST_ERROR_TOKEN = [
   "not_held",
   "validation_failed",
 ] as const;
-export type ErrorTokensRestErrorToken = (typeof ERROR_TOKENS_REST_ERROR_TOKEN)[number];
+export type ErrorJSONRestErrorToken = (typeof ERROR_JSONREST_ERROR_TOKEN)[number];
 
-export const ERROR_TOKENS_CHANNEL_ERROR_TOKEN = [
-  ...ERROR_TOKENS_SHARED_ERROR_TOKEN,
+export const ERROR_JSONCHANNEL_ERROR_TOKEN = [
+  ...ERROR_JSONSHARED_ERROR_TOKEN,
   "unknown_topic",
   "invalid_payload",
   "user_not_found",
@@ -2087,7 +2144,33 @@ export const ERROR_TOKENS_CHANNEL_ERROR_TOKEN = [
   "recovery_in_progress",
   "rate_limited",
 ] as const;
-export type ErrorTokensChannelErrorToken = (typeof ERROR_TOKENS_CHANNEL_ERROR_TOKEN)[number];
+export type ErrorJSONChannelErrorToken = (typeof ERROR_JSONCHANNEL_ERROR_TOKEN)[number];
+
+export type ErrorJSONStatusErrorResponse = {
+  errors: {
+    detail: string;
+  };
+};
+
+// === GrappaWeb.IgnoresJSON ===
+
+export type IgnoresJSONEntry = {
+  mask: string;
+  text_pattern: string | null;
+};
+
+export type IgnoresJSONIndexResponse = {
+  masks: string[];
+  entries: IgnoresJSONEntry[];
+};
+
+export type IgnoresJSONMutationResponse = {
+  masks: string[];
+  entries: IgnoresJSONEntry[];
+  mask: string;
+  text_pattern: string | null;
+  outcome: UserSettingsIgnoreOutcome;
+};
 
 // === GrappaWeb.MeJSON ===
 
@@ -2127,3 +2210,113 @@ export type MeJSONVisitorMeJson = {
 };
 
 export type MeJSONMeJson = MeJSONUserMeJson | MeJSONVisitorMeJson;
+
+// === GrappaWeb.MessagesJSON ===
+
+export type MessagesJSONSplitCountResponse = {
+  count: number;
+  messages: number;
+  events: number;
+};
+
+export type MessagesJSONCappedCountResponse = {
+  count: number;
+};
+
+export type MessagesJSONCountResponse =
+  | MessagesJSONSplitCountResponse
+  | MessagesJSONCappedCountResponse;
+
+// === GrappaWeb.NetworksJSON ===
+
+export type NetworksJSONPerformResponse = {
+  perform_list: string | null;
+  oper_pass_set: boolean;
+};
+
+export type NetworksJSONServerPassResponse = {
+  server_pass_set: boolean;
+};
+
+// === GrappaWeb.PushSubscriptionJSON ===
+
+export type PushSubscriptionJSONSubscriptionSummary = {
+  id: string;
+  provider: PushSubscriptionProvider;
+  user_agent: string | null;
+  label: string | null;
+  created_at: string;
+  last_used_at: string | null;
+};
+
+export type PushSubscriptionJSONCreateResponse = {
+  id: string;
+  created_at: string;
+};
+
+export type PushSubscriptionJSONIndexResponse = {
+  subscriptions: PushSubscriptionJSONSubscriptionSummary[];
+};
+
+// === GrappaWeb.UserSettingsJSON ===
+
+export type UserSettingsJSONNotificationPrefsResponse = {
+  notification_prefs: UserSettingsNotificationPrefs;
+};
+
+export type UserSettingsJSONUploadTtlSecondsResponse = {
+  upload_ttl_seconds: number | null;
+};
+
+export type UserSettingsJSONShowPeerProfilesResponse = {
+  show_peer_profiles: boolean;
+};
+
+export type UserSettingsJSONUploadConfirmEnabledResponse = {
+  upload_confirm_enabled: boolean;
+};
+
+export type UserSettingsJSONBanMaskFormResponse = {
+  ban_mask_form: string;
+};
+
+export type UserSettingsJSONAutoAwayDebounceSecondsResponse = {
+  auto_away_debounce_seconds: number | null;
+};
+
+export type UserSettingsJSONQuitPartReasonResponse = {
+  quit_part_reason: string | null;
+};
+
+export type UserSettingsJSONAutoAwayReasonResponse = {
+  auto_away_reason: string | null;
+};
+
+export type UserSettingsJSONAwayNickSuffixResponse = {
+  away_nick_suffix: string | null;
+};
+
+export type UserSettingsJSONVhostOption = {
+  address: string;
+  in_pool: boolean;
+  granted: boolean;
+  name: string;
+};
+
+export type UserSettingsJSONVhostResponse = {
+  available: UserSettingsJSONVhostOption[];
+  selection: string[];
+};
+
+export type UserSettingsJSONAliasesResponse = {
+  aliases: Record<string, string>;
+};
+
+export type UserSettingsJSONCommandCountsResponse = {
+  command_counts: Record<string, number>;
+};
+
+export type UserSettingsJSONDisplayPrefsResponse = {
+  display_prefs: UserSettingsDisplayPrefs;
+  persisted: boolean;
+};

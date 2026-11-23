@@ -103,7 +103,7 @@ const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknow
   // daily rate_limited "try tomorrow" copy).
   { code: "theme_cap_reached", matches: /theme limit.*make room|make room/i },
   // #411 D6b — the 23 previously-unmapped REST tokens. The client union is
-  // now the FULL `GrappaWeb.ErrorTokens.rest_error_token` set (generated),
+  // now the FULL `GrappaWeb.ErrorJSON.rest_error_token` set (generated),
   // so `assertNever` forces an arm for every one — these matrix rows are the
   // behavioural canary that the arm renders human copy, not a raw wire token.
   // Product copy, vetted by vjt (issue #411 comment).

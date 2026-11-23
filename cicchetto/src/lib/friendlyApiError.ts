@@ -1,6 +1,6 @@
 import { ApiError, assertNever } from "./api";
 import { formatBytes } from "./formatBytes";
-import { ERROR_TOKENS_REST_ERROR_TOKEN, type ErrorTokensRestErrorToken } from "./wireTypes";
+import { ERROR_JSONREST_ERROR_TOKEN, type ErrorJSONRestErrorToken } from "./wireTypes";
 
 // U-3 (UD3): single closed-union typed-error → human copy module.
 // Pre-U-3 the mapping lived only in `Login.tsx`'s local `friendlyMessage`;
@@ -15,9 +15,9 @@ import { ERROR_TOKENS_REST_ERROR_TOKEN, type ErrorTokensRestErrorToken } from ".
 // fallback_controller.ex` moduledoc).
 //
 // #411 D6b — the union AND the runtime narrowing Set are GENERATED, not
-// hand-listed. `ErrorTokensRestErrorToken` + `ERROR_TOKENS_REST_ERROR_TOKEN`
+// hand-listed. `ErrorJSONRestErrorToken` + `ERROR_JSONREST_ERROR_TOKEN`
 // come from `mix grappa.gen_wire_types` reading
-// `GrappaWeb.ErrorTokens.rest_error_token` — the server's authoritative REST
+// `GrappaWeb.ErrorJSON.rest_error_token` — the server's authoritative REST
 // wire-token set. This DELIBERATELY OVERTURNS the pre-#411 "curated subset +
 // noisy fallback" design this comment used to defend: there is no longer a
 // hand-picked subset of tokens "cic knows how to localize." The union is the
@@ -38,13 +38,13 @@ import { ERROR_TOKENS_REST_ERROR_TOKEN, type ErrorTokensRestErrorToken } from ".
 // `__tests__/friendlyApiError.test.ts` enumerate every arm so a server-side
 // rename surfaces here, not in a phantom UX bug.
 
-// The generated `ERROR_TOKENS_REST_ERROR_TOKEN` array is the single source
+// The generated `ERROR_JSONREST_ERROR_TOKEN` array is the single source
 // for both the compile-time union (via `wireTypes`) and this runtime
 // narrowing Set — no second hand-kept list to drift.
-const KNOWN_CODES: ReadonlySet<ErrorTokensRestErrorToken> = new Set(ERROR_TOKENS_REST_ERROR_TOKEN);
+const KNOWN_CODES: ReadonlySet<ErrorJSONRestErrorToken> = new Set(ERROR_JSONREST_ERROR_TOKEN);
 
-function isKnownCode(code: string): code is ErrorTokensRestErrorToken {
-  return KNOWN_CODES.has(code as ErrorTokensRestErrorToken);
+function isKnownCode(code: string): code is ErrorJSONRestErrorToken {
+  return KNOWN_CODES.has(code as ErrorJSONRestErrorToken);
 }
 
 export function friendlyApiError(err: ApiError): string {
@@ -108,7 +108,7 @@ export function operatorApiError(value: unknown, fallback: string): string {
   return detail === null ? value.code : `${value.code} — ${detail}`;
 }
 
-function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
+function friendlyKnown(err: ApiError, code: ErrorJSONRestErrorToken): string {
   switch (code) {
     case "invalid_credentials":
       return "Invalid name or password.";

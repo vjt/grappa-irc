@@ -9,10 +9,10 @@ unread set is a work list instead of invisible weight. It is regenerated
 by `mix grappa.gen_wire_types` and held by the same `--check` that holds
 the two TypeScript artefacts, so it cannot go stale quietly.
 
-    generated                 233
+    generated                 267
     imported by cicchetto     89
     reachable at runtime      165
-    never read                68
+    never read                102
 
 "Reachable" counts a schema nested inside an imported one: the validator
 walks it, so it is load-bearing even though no module names it.
@@ -28,6 +28,7 @@ wire shape cic does not consume at all.
 - S_AccountsWireUserJson
 - S_AdminEventsWireEventKind
 - S_AdmissionNetworkCircuitAdminWireT
+- S_AuthJSONLoginResponse
 - S_AuthJSONSubjectWire
 - S_AuthJSONUserSubjectWire
 - S_AuthJSONVisitorSubjectWire
@@ -35,22 +36,37 @@ wire shape cic does not consume at all.
 - S_BootJSONChannelTree
 - S_BootJSONHeads
 - S_CicWireBundleHashPayload
+- S_ClientTokenJSONCreateResponse
+- S_ClientTokenJSONIndexResponse
 - S_E2ePairingWireOffer
 - S_E2ePairingWireOfferResponse
-- S_ErrorTokensChannelErrorToken
-- S_ErrorTokensRestErrorToken
-- S_ErrorTokensSharedErrorToken
+- S_ErrorJSONChannelErrorToken
+- S_ErrorJSONRestErrorToken
+- S_ErrorJSONSharedErrorToken
+- S_ErrorJSONStatusErrorResponse
 - S_IRCIdentifierCasemapping
+- S_IgnoresJSONEntry
+- S_IgnoresJSONIndexResponse
+- S_IgnoresJSONMutationResponse
+- S_MessagesJSONCappedCountResponse
+- S_MessagesJSONCountResponse
+- S_MessagesJSONSplitCountResponse
 - S_NetworksAdminWireT
 - S_NetworksCredentialsAdminWireIndexPayload
 - S_NetworksCredentialsAdminWireLiveStateJson
 - S_NetworksCredentialsAdminWireSessionAction
 - S_NetworksCredentialsAdminWireSpawnError
 - S_NetworksCredentialsAdminWireT
+- S_NetworksJSONPerformResponse
+- S_NetworksJSONServerPassResponse
 - S_NetworksNetworkServicesFlavor
 - S_NetworksWireConnectionInfo
 - S_NetworksWireNetworkWithNickJson
 - S_NetworksWireVisitorNetworkWithNickJson
+- S_PushSubscriptionJSONCreateResponse
+- S_PushSubscriptionJSONIndexResponse
+- S_PushSubscriptionJSONSubscriptionSummary
+- S_PushSubscriptionProvider
 - S_RateLimitWireWebSessionSeveredEvent
 - S_ReadCursorWireReadCursorSet
 - S_ScrollbackWireEvent
@@ -87,6 +103,24 @@ wire shape cic does not consume at all.
 - S_ThemesTokenModelSizeMode
 - S_ThemesWireBackgroundSize
 - S_ThemesWireFontFamily
+- S_UserSettingsDisplayPrefs
+- S_UserSettingsIgnoreOutcome
+- S_UserSettingsJSONAliasesResponse
+- S_UserSettingsJSONAutoAwayDebounceSecondsResponse
+- S_UserSettingsJSONAutoAwayReasonResponse
+- S_UserSettingsJSONAwayNickSuffixResponse
+- S_UserSettingsJSONBanMaskFormResponse
+- S_UserSettingsJSONCommandCountsResponse
+- S_UserSettingsJSONDisplayPrefsResponse
+- S_UserSettingsJSONNotificationPrefsResponse
+- S_UserSettingsJSONQuitPartReasonResponse
+- S_UserSettingsJSONShowPeerProfilesResponse
+- S_UserSettingsJSONUploadConfirmEnabledResponse
+- S_UserSettingsJSONUploadTtlSecondsResponse
+- S_UserSettingsJSONVhostOption
+- S_UserSettingsJSONVhostResponse
+- S_UserSettingsMutedTargets
+- S_UserSettingsNotificationPrefs
 - S_VisitorsWireCredentialJson
 - S_VisitorsWireT
 - S_WindowCountsSeverity
