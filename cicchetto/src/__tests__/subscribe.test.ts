@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { channelKey } from "../lib/channelKey";
 import { DEFAULT_NOTIFICATION_PREFS, type NotificationPrefs } from "../lib/userSettings";
+import type { WindowState } from "../lib/windowState";
 
 // Boundary: mock REST (`lib/api`) + the socket helpers (`lib/socket`).
 // `subscribe.ts` is a side-effect module — the createRoot installs
@@ -3506,7 +3507,9 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
 // pre-subscribe mechanism as "pending"; parametrized below so a
 // regression in either arm surfaces here.
 describe("subscribe - not-joined pre-subscribe loop (CP15 B5 fix + #78)", () => {
-  const expectPreSubscribeJoinsOnState = async (stateValue: "pending" | "invited") => {
+  // issue 2693 review F3 — the load takes the whole `windowStateByChannel`
+  // map, so one load can seed a pending window beside the state under test.
+  const loadWithWindowStates = async (states: Record<string, WindowState>) => {
     localStorage.setItem("grappa-token", "tok");
     localStorage.setItem(
       "grappa-subject",
@@ -3608,9 +3611,7 @@ describe("subscribe - not-joined pre-subscribe loop (CP15 B5 fix + #78)", () => 
       setFailed: vi.fn(),
       setKicked: vi.fn(),
       setParted: vi.fn(),
-      windowStateByChannel: () => ({
-        [channelKey("freenode", "#new-room")]: stateValue,
-      }),
+      windowStateByChannel: () => states,
       windowFailureByChannel: () => ({}),
       windowKickedMetaByChannel: () => ({}),
       windowIsJoined: vi.fn(() => false),
@@ -3637,7 +3638,12 @@ describe("subscribe - not-joined pre-subscribe loop (CP15 B5 fix + #78)", () => 
     await import("../lib/scrollback");
     await import("../lib/selection");
     await import("../lib/subscribe");
+    return socketFresh;
+  };
 
+  const expectJoinedNewRoom = async (
+    socketFresh: Awaited<ReturnType<typeof loadWithWindowStates>>,
+  ) => {
     await vi.waitFor(() => {
       expect(socketFresh.joinChannel).toHaveBeenCalledWith(
         "alice",
@@ -3649,6 +3655,13 @@ describe("subscribe - not-joined pre-subscribe loop (CP15 B5 fix + #78)", () => 
     });
   };
 
+  const expectPreSubscribeJoinsOnState = async (stateValue: "pending" | "invited") => {
+    const socketFresh = await loadWithWindowStates({
+      [channelKey("freenode", "#new-room")]: stateValue,
+    });
+    await expectJoinedNewRoom(socketFresh);
+  };
+
   it("joins the per-channel topic when windowState transitions to pending", async () => {
     await expectPreSubscribeJoinsOnState("pending");
   });
@@ -3656,6 +3669,25 @@ describe("subscribe - not-joined pre-subscribe loop (CP15 B5 fix + #78)", () => 
   it("joins the per-channel topic when windowState transitions to invited (#78)", async () => {
     await expectPreSubscribeJoinsOnState("invited");
   });
+
+  // issue 2693 review F3 — the FALSE arms of `PRESUBSCRIBES`: a window in one
+  // of these states gets no per-channel join from this loop. The pending
+  // window beside it is the control. The loop joins it in the same pass over
+  // the map, so its join proves the loop ran with the networks loaded, and the
+  // missing join for the other window is the record's answer rather than a
+  // loop that never got that far.
+  it.each(["parked", "failed", "kicked", "joined"] as const)(
+    "does not join the per-channel topic for a window in state %s",
+    async (stateValue) => {
+      const socketFresh = await loadWithWindowStates({
+        [channelKey("freenode", "#new-room")]: "pending",
+        [channelKey("freenode", "#other-room")]: stateValue,
+      });
+      await expectJoinedNewRoom(socketFresh);
+      const joinedNames = vi.mocked(socketFresh.joinChannel).mock.calls.map((call) => call[2]);
+      expect(joinedNames).not.toContain("#other-room");
+    },
+  );
 });
 
 // UX-6-L (2026-05-20) — foreground push → in-app beep.
