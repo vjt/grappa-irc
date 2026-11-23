@@ -51,11 +51,14 @@ defmodule GrappaWeb.AuthJSON do
   # already emits (see the sibling note in `GrappaWeb.MeJSON`).
   @type subject_wire :: user_subject_wire() | visitor_subject_wire()
 
+  @typedoc "A minted bearer and its subject — every `render(:login, …)` site in `AuthController`."
+  @type login_response :: %{token: String.t(), subject: subject_wire()}
+
   @doc "Renders the `:login` action — `{token, subject}`."
   @spec login(%{
           token: String.t(),
           subject: {:user, User.t()} | {:visitor, Visitor.t()}
-        }) :: %{token: String.t(), subject: subject_wire()}
+        }) :: login_response()
   def login(%{token: token, subject: {:user, %User{} = user}}) do
     %{id: id, name: name} = Wire.user_to_credential_json(user)
     %{token: token, subject: %{kind: :user, id: id, name: name}}

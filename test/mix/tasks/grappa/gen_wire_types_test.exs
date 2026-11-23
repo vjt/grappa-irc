@@ -242,43 +242,45 @@ defmodule Mix.Tasks.Grappa.GenWireTypesTest do
   # every member is an atom literal (≠ nil/true/false) OR a same-module
   # user_type ref to another enum, and the array SPREADS the referenced
   # enum's array — mirroring the Elixir `shared | specific` composition in
-  # GrappaWeb.ErrorTokens. This is the codegen source #411 widens the glob
-  # to reach.
-  describe "recursively-enum arrays (GrappaWeb.ErrorTokens)" do
-    test "the widened glob reaches GrappaWeb.ErrorTokens in a full generate/0 run" do
+  # GrappaWeb.ErrorJSON. #411 widened the glob to reach these types; issue
+  # 2694 moved them from `GrappaWeb.ErrorTokens` into the error view, which
+  # the derived view set reaches with no list to remember.
+  describe "recursively-enum arrays (GrappaWeb.ErrorJSON)" do
+    test "the derived view set reaches GrappaWeb.ErrorJSON in a full generate/0 run" do
       full = GenWireTypes.generate()
-      assert full =~ "// === GrappaWeb.ErrorTokens ==="
+      assert full =~ "// === GrappaWeb.ErrorJSON ==="
+      refute full =~ "GrappaWeb.ErrorTokens"
     end
 
     # Substring asserts (robust to biome's inline-vs-multiline wrapping at
     # lineWidth 100 — a long array wraps one-element-per-line; the separate
     # `bun run check` biome gate pins the exact whitespace).
     test "a pure atom-union member type emits its array + derived type" do
-      output = GenWireTypes.render_module_for_test(GrappaWeb.ErrorTokens)
+      output = GenWireTypes.render_module_for_test(GrappaWeb.ErrorJSON)
 
-      assert output =~ ~s|export const ERROR_TOKENS_SHARED_ERROR_TOKEN = [|
+      assert output =~ ~s|export const ERROR_JSONSHARED_ERROR_TOKEN = [|
       assert output =~ ~s|"not_found"|
       assert output =~ ~s|"body_too_large"|
 
       assert output =~
-               ~s|export type ErrorTokensSharedErrorToken = (typeof ERROR_TOKENS_SHARED_ERROR_TOKEN)[number];|
+               ~s|export type ErrorJSONSharedErrorToken = (typeof ERROR_JSONSHARED_ERROR_TOKEN)[number];|
     end
 
     test "a composing enum SPREADS the referenced enum array, not inlined" do
-      output = GenWireTypes.render_module_for_test(GrappaWeb.ErrorTokens)
+      output = GenWireTypes.render_module_for_test(GrappaWeb.ErrorJSON)
 
       # rest_error_token leads with `shared_error_token` then its own atoms,
       # so the array SPREADS the SHARED const rather than re-inlining its
       # tokens (DRY composition, mirroring the Elixir `shared | specific`).
-      assert output =~ ~s|export const ERROR_TOKENS_REST_ERROR_TOKEN = [|
-      assert output =~ ~s|...ERROR_TOKENS_SHARED_ERROR_TOKEN|
+      assert output =~ ~s|export const ERROR_JSONREST_ERROR_TOKEN = [|
+      assert output =~ ~s|...ERROR_JSONSHARED_ERROR_TOKEN|
       assert output =~ ~s|"bad_request"|
 
       assert output =~
-               ~s|export type ErrorTokensRestErrorToken = (typeof ERROR_TOKENS_REST_ERROR_TOKEN)[number];|
+               ~s|export type ErrorJSONRestErrorToken = (typeof ERROR_JSONREST_ERROR_TOKEN)[number];|
 
       # channel_error_token composes the same way.
-      assert output =~ ~s|export const ERROR_TOKENS_CHANNEL_ERROR_TOKEN = [|
+      assert output =~ ~s|export const ERROR_JSONCHANNEL_ERROR_TOKEN = [|
       assert output =~ ~s|"unknown_topic"|
 
       # A shared token appears ONCE (in the SHARED const), never duplicated
@@ -290,9 +292,9 @@ defmodule Mix.Tasks.Grappa.GenWireTypesTest do
     end
 
     test "the SHARED const is emitted before the REST const that spreads it" do
-      output = GenWireTypes.render_module_for_test(GrappaWeb.ErrorTokens)
-      {idx_shared, _} = :binary.match(output, "export const ERROR_TOKENS_SHARED_ERROR_TOKEN")
-      {idx_rest, _} = :binary.match(output, "export const ERROR_TOKENS_REST_ERROR_TOKEN")
+      output = GenWireTypes.render_module_for_test(GrappaWeb.ErrorJSON)
+      {idx_shared, _} = :binary.match(output, "export const ERROR_JSONSHARED_ERROR_TOKEN")
+      {idx_rest, _} = :binary.match(output, "export const ERROR_JSONREST_ERROR_TOKEN")
       assert idx_shared < idx_rest
     end
 
@@ -312,10 +314,10 @@ defmodule Mix.Tasks.Grappa.GenWireTypesTest do
   # whose subject discriminator was typed `String.t()`: a closed set carried
   # as an untyped string, with the literals restated by hand on the cic side
   # and nothing tying the two together. Both render modules live in the web
-  # layer, outside `@wire_glob`, so reaching them is a source-set widen —
-  # the same move #411 made for `GrappaWeb.ErrorTokens`.
+  # layer, outside `@wire_glob`; since issue 2694 the derived view set
+  # reaches them, where #1406 had to list them by hand.
   describe "subject-discriminated JSON views (#1406 X-S10)" do
-    test "the extra source set reaches both subject render modules in generate/0" do
+    test "the derived view set reaches both subject render modules in generate/0" do
       full = GenWireTypes.generate()
 
       assert full =~ "// === GrappaWeb.AuthJSON ==="
@@ -354,26 +356,73 @@ defmodule Mix.Tasks.Grappa.GenWireTypesTest do
   end
 
   # #1406 3b — the EXTERNAL type path renders one alias at a time and keeps no
-  # sibling registry, so a same-module `user_type` ref has nothing to resolve
-  # against. It used to fall back to `camelize/1` and emit an identifier
-  # NOTHING declares, while the runtime emitter computed a DIFFERENT name for
-  # the same type and imported it. The generator exited 0 and the breakage
-  # surfaced in the client compiler as TS2304 + TS2724 with no named culprit.
-  # A codegen hole must be a codegen error, like the unmapped Erlang remote
-  # type and the cyclic enum reference already are.
-  describe "external types referencing a same-module type (#1406 3b)" do
-    test "raise names the external module and the type it cannot resolve" do
-      err =
-        assert_raise RuntimeError, fn ->
-          GenWireTypes.render_external_type_for_test(
-            Grappa.WireExternalRefFixture,
-            :t,
-            "WireExternalRefFixtureT"
-          )
-        end
+  # sibling registry. It used to answer a same-module `user_type` ref with a
+  # `camelize/1` GUESS that nothing declared, while the runtime emitter
+  # computed a DIFFERENT name for the same type and imported it; the
+  # generator exited 0 and the client compiler reported TS2304 + TS2724.
+  # #1406 turned the guess into a raise. Issue 2694 met the raise for real
+  # (`UserSettings.notification_prefs/0` carries `muted_targets/0`), and the
+  # ref now becomes one more external alias under the SAME name the runtime
+  # emitter's `schema_ref/2` already gave it — so the property #1406
+  # defended, "both artefacts name one thing", is asserted directly.
+  describe "external types referencing a same-module type (#1406 3b, issue 2694)" do
+    test "the reference renders as the sibling's own alias, not a camelized guess" do
+      output =
+        GenWireTypes.render_external_type_for_test(
+          Grappa.WireExternalRefFixture,
+          :t,
+          "WireExternalRefFixtureT"
+        )
 
-      assert err.message =~ "Grappa.WireExternalRefFixture.t/0"
-      assert err.message =~ "variant/0"
+      assert output =~ "  variant: WireExternalRefFixtureVariant;"
+      refute output =~ "variant: Variant;"
+    end
+
+    test "on the real tree the sibling is DECLARED in both artefacts under one name" do
+      types = GenWireTypes.generate()
+      schema = GenWireTypes.generate_schema()
+
+      # The referrer, the declaration it needs, and the runtime twin.
+      assert types =~ "  muted_targets: UserSettingsMutedTargets;"
+      assert types =~ "export type UserSettingsMutedTargets = "
+      assert schema =~ "export const S_UserSettingsMutedTargets = "
+    end
+  end
+
+  # Issue 2694 — the codegen used to reach the web views through a hand-kept
+  # `@extra_modules` list of four, while `mix grappa.wire_pin` derived thirteen
+  # from the build output. The two now read ONE function, so every compiled
+  # view that declares a named type gets its section, and none is listed.
+  describe "the derived view set (issue 2694)" do
+    test "every compiled view with a named @type gets a section in generate/0" do
+      full = GenWireTypes.generate()
+
+      typed_views =
+        Enum.filter(GenWireTypes.json_view_modules(), fn mod ->
+          {:ok, types} = Code.Typespec.fetch_types(mod)
+          Enum.any?(types, &match?({:type, _}, &1))
+        end)
+
+      # Positive control on the filter: the views the deleted list carried and
+      # the ones this issue brings in are all among them.
+      for mod <- [
+            GrappaWeb.AuthJSON,
+            GrappaWeb.BootJSON,
+            GrappaWeb.ClientTokenJSON,
+            GrappaWeb.ErrorJSON,
+            GrappaWeb.IgnoresJSON,
+            GrappaWeb.MeJSON,
+            GrappaWeb.MessagesJSON,
+            GrappaWeb.NetworksJSON,
+            GrappaWeb.PushSubscriptionJSON,
+            GrappaWeb.UserSettingsJSON
+          ] do
+        assert mod in typed_views
+      end
+
+      for mod <- typed_views do
+        assert full =~ "// === #{inspect(mod)} ===", "no section for #{inspect(mod)}"
+      end
     end
   end
 

@@ -1,14 +1,297 @@
 defmodule GrappaWeb.ErrorJSON do
   @moduledoc """
-  Default JSON error renderer wired through `render_errors` in
-  `config/config.exs`. Phoenix invokes `render/2` with the template
-  matching the HTTP status (`"404.json"`, `"500.json"`, …); falling
-  back to `status_message_from_template/1` keeps responses stable
-  even before per-status overrides exist.
+  The web layer's two error bodies, and the one place their shapes are
+  declared.
+
+  `render/2` is the default JSON error renderer wired through
+  `render_errors` in `config/config.exs`. Phoenix invokes it with the
+  template matching the HTTP status (`"404.json"`, `"500.json"`, …);
+  falling back to `status_message_from_template/1` keeps responses stable
+  even before per-status overrides exist. Its body is
+  `t:status_error_response/0` — `%{errors: %{detail: …}}`, which is NOT the
+  `%{error: "<token>"}` envelope the token types below describe.
+
+  The token types used to live in `GrappaWeb.ErrorTokens`, which was
+  neither a view nor a `*wire.ex` module and reached the codegen only
+  through a hand-kept list. Issue 2694 deleted that list (the codegen now
+  takes every compiled `GrappaWeb.*JSON` view), and the error envelope is
+  where they belong.
+
+  ## The token space
+
+  The three token types below are the single source of truth for the
+  **wire-level error token space** — the `%{error: "<token>"}` envelope
+  every REST action (via `GrappaWeb.FallbackController`, plus the
+  `uploads`/`test-reset` surfaces) and every `GrappaChannel`/`AdminChannel`
+  push reply speak (#369 D6a).
+
+  ## Why the token types exist
+
+  Before D6a there was NO enumeration of the wire tokens: each emitter
+  hard-coded its `error: "..."` string inline (56 REST + 21 channel
+  tokens across five files), the `@spec` on `FallbackController.call/2`
+  listed the INPUT atoms (not the wire strings — 11 of them bend, e.g.
+  `:ip_cap_exceeded → "too_many_sessions"`), and the cicchetto client
+  hand-maintained a parallel `KnownApiErrorCode` / `KnownChannelErrorCode`
+  union that drifted (23 unmapped REST + 8 unmapped channel tokens; the
+  `invalid_line` / `body_too_large` REST copies fell through to the raw
+  wire string). The 2026-07-20 architecture review (#369 A6) measured
+  the drift; these types are the enumeration that pins it.
+
+  ## What the types mean
+
+  Each `@type` member is the **wire string as an atom** — the string
+  that actually appears in `error: "..."`, NOT the internal error atom
+  the context returns. When `FallbackController` bends an input atom to
+  a different wire string (`:no_session → "not_found"`,
+  `:ip_cap_exceeded → "too_many_sessions"`, `{:start_failed, _} →
+  "upstream_unreachable"`, …), the type lists the WIRE side.
+
+  `t:shared_error_token/0` holds the tokens emitted on **both**
+  transports (`not_found`, `forbidden`, `invalid_line`,
+  `body_too_large`) — declared ONCE so a transport-shared token has a
+  single definition (the root cause of the `invalid_line` /
+  `body_too_large` REST-vs-channel fall-through was that no such shared
+  declaration existed). `t:rest_error_token/0` and
+  `t:channel_error_token/0` each union the shared set with their
+  transport-specific tokens.
+
+  Test-only surfaces are OUT of scope: `TestResetSubjectController` is
+  compile-gated to `:dev`/`:test` ("module + route literally do not
+  exist in the prod release") so its tokens are not part of the
+  product's wire contract. The drift test skips `Mix.env()`-gated
+  emitters accordingly.
+
+  ## How it stays honest
+
+  `test/grappa_web/error_tokens_drift_test.exs` DERIVES the emitted
+  token set by AST-walking every `lib/grappa_web/**/*.ex` emitter
+  (`json(%{error: "..."})` for REST, `{:error, %{error: "..."}}` for
+  channel) and asserts it EQUALS these types. Derive-not-duplicate: a
+  hand-kept second list would be exactly the parallel structure that
+  drifts. Adding, removing, or renaming a wire token is a loud test
+  failure until the type is updated in lockstep.
+
+  ## Downstream
+
+  This module is a codegen source: `mix grappa.gen_wire_types` emits each
+  token type as an `as const` array plus a derived union
+  (`ERROR_JSONREST_ERROR_TOKEN` / `ErrorJSONRestErrorToken`, and the
+  channel twin), which cicchetto's `friendlyApiError.ts` /
+  `friendlyChannelError.ts` narrow against — so a server-side token change
+  is a `tsc` failure on the client, not a silent fall-through.
   """
 
+  # Tokens emitted on BOTH transports (REST json envelope AND channel
+  # push reply). Declared once so a shared token has ONE definition —
+  # the missing shared declaration is why `invalid_line` /
+  # `body_too_large` drifted across transports client-side.
+  @type shared_error_token ::
+          :not_found
+          | :forbidden
+          | :invalid_line
+          | :body_too_large
+
+  @typedoc """
+  Wire tokens emitted by REST actions — `FallbackController` (the
+  `action_fallback` target + the `Plugs.Authn` 401 delegate) and the
+  `UploadsController` not-found path. Values are the snake_case wire
+  strings per the A7 envelope convention.
+  """
+  @type rest_error_token ::
+          shared_error_token
+          | :bad_request
+          | :unauthorized
+          # #124 — 410 Gone: the `nickserv_pass` key on PUT /perform is
+          # permanently withdrawn. Its own token so a client can tell "stop
+          # sending this" apart from "retry".
+          | :nickserv_pass_retired
+          | :file_too_large
+          | :metadata_strip_failed
+          | :insufficient_storage
+          | :unsupported_media_type
+          | :invalid_setting
+          | :addressing_unusable
+          | :rate_limited
+          | :too_many_attempts
+          | :theme_cap_reached
+          | :list_full
+          # issue 2430 — 422: an E2E order's answer whose `expires_at` can
+          # already no longer be met (`E2eController.create/2`).
+          | :too_late
+          # issue 2430, multi-device — 409: a fifth device, a list under
+          # another master, a list whose version does not rise, the removal
+          # of a device the list names; 422: a list naming a key no device
+          # registered, or a send from a device not listed (`E2eController`).
+          | :too_many_devices
+          | :master_mismatch
+          | :stale_list
+          | :unknown_device
+          | :listed_device
+          # issue 2430 S1 — 409: a device claiming its own key or copying to
+          # itself, a sibling with no key left, a key taken meanwhile, a
+          # sibling dropped meanwhile; 413: a sibling's queue, or its share
+          # of the account's own copies, that cannot take a copy
+          # (`E2eController` `claim/2` and `copy/2`).
+          | :same_device
+          | :keyless_device
+          | :key_taken
+          | :removed_device
+          | :inbox_full
+          # issue 2486 — 409: an encrypted-chat request whose state does
+          # not allow the move (answering one not waiting, dismissing an
+          # incoming one still waiting); 422: one side of the requests at
+          # its cap (`E2eController` `ask/2`, `accept/2`, `dismiss/2`).
+          | :request_state
+          | :requests_full
+          # #162 — 422: a `/ignore` mask that `Grappa.IRC.Mask.normalize/1`
+          # rejects (empty, whitespace, CRLF, bad `nick!user@host` order).
+          | :invalid_mask
+          # issue 2294 — 422: the OPTIONAL text pattern half of the same
+          # entry, refused on its own axis (blank, CRLF, over-long). A
+          # distinct token from `:invalid_mask` because the operator typed
+          # two things and only one of them is wrong.
+          | :invalid_text_pattern
+          | :not_raster
+          | :too_large
+          | :ssrf_blocked
+          | :fetch_failed
+          | :image_reencode_failed
+          | :not_connected
+          | :forbidden_vhost
+          | :client_token_scope
+          | :client_token_cap_reached
+          | :invalid_credentials
+          | :invalid_two_factor
+          | :two_factor_challenge_expired
+          | :already_enabled
+          | :too_many_sessions
+          | :network_busy
+          | :network_unreachable
+          | :captcha_required
+          | :captcha_failed
+          | :service_degraded
+          | :db_unavailable
+          | :malformed_nick
+          | :malformed_ident
+          | :password_required
+          | :passkey_required
+          | :passkey_not_configured
+          | :password_mismatch
+          | :network_not_visitor_enabled
+          | :network_ambiguous
+          | :network_unconfigured
+          | :upstream_unreachable
+          | :connect_timeout
+          | :welcome_timeout
+          | :session_timeout
+          | :probe_timeout
+          | :internal
+          | :session_plan_resolve_failed
+          # Operator-facing (POST /admin/reload, loopback-gated): a
+          # pending migration is contract, so the hot deploy is refused
+          # and nothing ran — see Grappa.HotReload.migrate_and_reload/0.
+          | :contract_migrations_pending
+          # Operator-facing, same endpoint, same "nothing ran" — but the
+          # OPPOSITE next move (#1348): two files claim one migration
+          # version, and a cold deploy migrates through the same defect.
+          | :duplicate_migration_versions
+          # Operator-facing, same endpoint, same "nothing ran", and back to
+          # the cold deploy as the fix (#1850) — but for a reason that has
+          # nothing to do with the repo: the build wrote its beams into
+          # `lib/grappa-<new>/ebin` while the node still reads the boot
+          # directory, so the reload could only have loaded stale code.
+          | :stale_code_path
+          # Operator-facing, same endpoint, same "nothing ran", cold deploy
+          # as the fix (issue 1112): the release on disk was built on a
+          # toolchain (ERTS, OTP or Elixir application vsns) the running
+          # node does not run.
+          | :stale_toolchain
+          | :invalid_message
+          # issue 2201 — a DM read cursor for a query window the subject does
+          # not hold (closed, or never opened). 422, like `invalid_message`.
+          | :no_query_window
+          | :anon_collision
+          | :nick_in_use
+          | :cannot_disconnect_self
+          | :source_not_local
+          | :already_exists
+          | :already_attached
+          | :credentials_present
+          | :last_admin
+          | :share_token_expired
+          | :share_token_consumed
+          # issue 2430 X1 — the pairing relay: a used or own rendezvous, a
+          # creator posting before the join, a third device, a spent budget.
+          | :pairing_already_joined
+          | :pairing_own_rendezvous
+          | :pairing_not_joined
+          | :pairing_not_a_party
+          | :pairing_full
+          # #976 — DELETE /networks/:slug/invites/:channel on a window that
+          # holds no invite. Distinct from `not_found` on purpose: the client
+          # derives its decline affordance from server state, so this token
+          # names a real divergence (already joined, or declined on another
+          # device) rather than a bad URL.
+          | :not_invited
+          # issue 2089 — the DCC sibling of `not_invited`, on
+          # `POST /dcc_offers/:id/accept` and `DELETE /dcc_offers/:id`. A
+          # handle that names nothing: resolved on another device, or the
+          # hold elapsed. Distinct from `not_found` for the same reason —
+          # the client's banner is derived from server state, so this is a
+          # real divergence rather than a bad URL.
+          | :not_held
+          | :validation_failed
+
+  @typedoc """
+  Wire tokens emitted by channel push replies — `GrappaChannel`
+  (`handle_in` / `join`) and `AdminChannel` (`join` catch-all). Values
+  are the snake_case wire strings the cicchetto `friendlyChannelError`
+  map consults.
+  """
+  @type channel_error_token ::
+          shared_error_token
+          | :unknown_topic
+          | :invalid_payload
+          | :user_not_found
+          | :network_not_found
+          | :no_session
+          | :not_explicit
+          | :invalid_nick
+          | :not_cached
+          | :lookup_failed
+          | :open_failed
+          | :close_failed
+          | :unknown_event
+          | :save_failed
+          | :invalid_reason
+          | :invalid_mask
+          | :upstream_unavailable
+          | :persist_failed
+          | :invalid_channel
+          | :links_in_flight
+          # #1251 — a channel list-mode query (`banlist`) for a letter this
+          # NETWORK does not advertise as type A, or that grappa knows no
+          # reply-numeric pair for. Typed rather than folded into
+          # `upstream_unavailable`: nothing upstream failed — the query was
+          # refused here precisely so it could never be one that never
+          # terminates.
+          | :unsupported_list_mode
+          | :nothing_to_recover
+          | :already_identified
+          | :recovery_in_progress
+          | :rate_limited
+
+  @typedoc """
+  The body Phoenix renders for a bare HTTP status through `render_errors`
+  (`"404.json"`, `"500.json"`, …). A different envelope from the
+  `%{error: token}` one above: it carries Phoenix's status message, not a
+  wire token.
+  """
+  @type status_error_response :: %{errors: %{detail: String.t()}}
+
   @doc ~S|Renders a JSON error body for the given Phoenix error template (`"404.json"`, `"500.json"`, …).|
-  @spec render(String.t(), map()) :: %{errors: %{detail: String.t()}}
+  @spec render(String.t(), map()) :: status_error_response()
   def render(template, _) do
     %{errors: %{detail: Phoenix.Controller.status_message_from_template(template)}}
   end

@@ -822,7 +822,7 @@ defmodule GrappaWeb.AuthController do
   # network/1` lookups come back empty). Without this clause the atom fell
   # through to the catch-all below and rendered an opaque 500, indistinguish-
   # able from a genuine crash — while the FallbackController 503 clause, the
-  # ErrorTokens union member, and the cic copy were all already in place and
+  # `rest_error_token` union member, and the cic copy were all already in place and
   # unreachable on this path. Every fresh install starts in this state, which
   # is exactly why it must not look like a crash. 503 via FallbackController.
   defp visitor_error_response(_, _, _, :network_unconfigured),
