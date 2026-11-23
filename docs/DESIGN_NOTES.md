@@ -8726,8 +8726,8 @@ eight hidden reads into room. That errs GREEN, the one direction a ratchet
 must not err. The lexer knows strings, template literals (code again inside
 `${…}`), regex literals (told from a division by the token before the `/`)
 and both comment forms. It does not lex JSX text: a quote there that reaches
-the end of its line opened no string and is left alone, so a misreading costs
-at most that line. A block comment or template literal that never closes is a
+the end of its line opened no string and is left alone. A block comment or
+template literal that never closes is a
 failure (exit 3, naming the file), never a blank to the end of the file:
 TypeScript compiles neither, so on a real tree it can only be the lexer
 misreading. The `narrow` callee needs a left boundary (`unnarrow(` does not
@@ -8745,6 +8745,18 @@ An exclusion has the same blind spot: if `nowPlaying.ts`'s feed read became a
 grappa REST read, the exclusion would still count 1. The ratchet beside it
 (issue 2690) names the same limit, and only review catches a swap.
 
+**Where the lexer errs GREEN.** A misreading that never closes is loud (exit
+3); one that closes is silent, and every read it spans is blanked. JSX text is
+not lexed, so a `/*` or a stray backtick there opens a comment or a template
+that runs to its closer, across lines. A closing tag's `</` and a `/` after a
+postfix `!`, `++` or `--` read as a regex up to the next `/` on that line.
+w2's review of PR 2704 found the shapes. Measured on `8931d72d8`: none of the
+110 production `.tsx` files holds a `.json()` read, and no production line
+divides after a postfix `!`, `++` or `--` (0 of 116,865 lines in 441 files).
+Teaching the lexer that those three end an operand was declined while the
+shape is absent: a postfix `!` differs from a prefix one only by what precedes
+it, and prefix `!/re/` is a live production spelling.
+
 **The server half is outside it.** A body rendered inline in a controller sits
 outside both the wire pin (which reads only `GrappaWeb.*JSON` views) and the
 codegen, so a read of it has no generated schema to narrow against: those of
@@ -8754,5 +8766,5 @@ the `json(conn, %{` spelling (34 matches, one of them moduledoc prose in
 `ignores_json.ex`) and 133 of the `|> json(%{` spelling. A map written over
 several lines counts once, and the lines mix error bodies with data. The
 question this slice left open was whether X3 covers those renders or stops at
-the 13 `*JSON` views. vjt answered on 2026-11-23 that it covers them, in a
-later slice at protocol 68 (relayed from IRC; not recorded on the issue).
+the 13 `*JSON` views. vjt ruled (a) on 2026-11-23 (relayed from IRC; not
+recorded on the issue): X3 covers them, in a later slice.
