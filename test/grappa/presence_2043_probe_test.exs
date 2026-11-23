@@ -75,7 +75,7 @@ defmodule Grappa.Presence2043ProbeTest do
     @spec start_link({Grappa.Subject.t(), integer(), map()}) :: GenServer.on_start()
     def start_link({subject, network_id, replies}) do
       name =
-        {:via, Registry, {Grappa.SessionRegistry, Grappa.Session.Server.registry_key(subject, network_id)}}
+        {:via, Registry, {Grappa.SessionRegistry, Grappa.Session.registry_key(subject, network_id)}}
 
       GenServer.start_link(__MODULE__, replies, name: name)
     end

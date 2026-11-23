@@ -50,7 +50,7 @@ defmodule Grappa.Unread2037ProbeTest do
     @spec start_link({Grappa.Subject.t(), integer(), map()}) :: GenServer.on_start()
     def start_link({subject, network_id, replies}) do
       GenServer.start_link(__MODULE__, replies,
-        name: {:via, Registry, {Grappa.SessionRegistry, Grappa.Session.Server.registry_key(subject, network_id)}}
+        name: {:via, Registry, {Grappa.SessionRegistry, Grappa.Session.registry_key(subject, network_id)}}
       )
     end
 

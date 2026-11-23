@@ -9067,8 +9067,10 @@ so seven match specs in three boundaries spelled the tuple by hand: two in
   makes both the concrete key and every match-spec head. A head is data built
   at run time, with `:"$1"` or `:_` where the values go. The tag is one
   attribute, `@registry_key_tag`, which the `registry_key()` type reads too, so
-  changing it is a one-line edit. `Server.registry_key/2` now delegates, because
-  10 plain test files still call it.
+  changing it is a one-line edit. `Server.registry_key/2` is gone. Nothing in
+  `lib/` called it any more, so a delegate kept alive for the tests was dead
+  code in prod (orchestrator's ruling), and the 10 test files that called it
+  now call `Session.registry_key/2`.
 * **Four verbs are the only scans:** `list_live/0`, `count_live/2`,
   `live_counts_by_network/0` and `count_by_user/0`.
   * Admission declares `Grappa.Session` and calls them.
@@ -9108,11 +9110,14 @@ so seven match specs in three boundaries spelled the tuple by hand: two in
 
 ### Proof: three arms, each predicted before it ran (full ExUnit, own cache)
 
-The arms ran on `a2f4003e8`, rebased onto `4c60ff8a7`. The one later code
-commit only makes `credo --strict` clean, and the unmutated suite was run
-again on it. This change adds and removes no test.
+The arms ran on `a2f4003e8`, rebased onto `4c60ff8a7`. Two code commits
+came after it. One makes `credo --strict` clean, and the unmutated suite was
+run again on it. The other deletes the dead `Server.registry_key/2`, and only
+the 10 test files it repointed were run on it. This change adds and removes
+no test.
 
-* **Control, unmutated:** 8986 tests, 0 failures, on both commits.
+* **Control, unmutated:** 8986 tests, 0 failures, on `a2f4003e8` and on the
+  credo commit.
 * **Consistent mutant**, `@registry_key_tag :session` → `:session_v2`, one
   line: 8986 tests, 0 failures. Every key and every head moved together, so
   the key really is spelled once and changing it is a one-line edit.
@@ -9142,6 +9147,3 @@ then finished in 541 s with no such red.
 * The registry VALUE `{nick, label, registered?}` has the same problem. It is
   still written by hand in `Session.Server.publish_live_nick/5` and matched by
   hand in `current_nick/2` and `registered_holders/3`. Not measured.
-* The 10 plain test files that call `Server.registry_key/2` (13 on main; this
-  change repointed `test/support/mute_session.ex` and two comments). Repointing
-  them is mechanical, but it needs a ruling on blast radius first.

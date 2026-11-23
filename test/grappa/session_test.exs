@@ -226,7 +226,7 @@ defmodule Grappa.SessionTest do
       # stand-in for a Session.Server crashing mid-`GenServer.call`.
       net_id = System.unique_integer([:positive])
       subject = {:visitor, "11111111-2222-3333-4444-555555555555"}
-      key = Grappa.Session.Server.registry_key(subject, net_id)
+      key = Session.registry_key(subject, net_id)
       test_pid = self()
 
       {:ok, _} =

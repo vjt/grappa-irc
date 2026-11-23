@@ -1414,7 +1414,7 @@ defmodule GrappaWeb.GrappaChannelTest do
         Networks.find_or_create_network(%{slug: "victimnet-#{System.unique_integer([:positive])}"})
 
       test_pid = self()
-      key = Session.Server.registry_key({:user, victim.id}, network.id)
+      key = Session.registry_key({:user, victim.id}, network.id)
 
       spy =
         spawn(fn ->
@@ -1945,7 +1945,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     # "oper" must NOT short-circuit with `visitor_not_allowed` — it reaches
     # `Session.send_oper` and ships OPER upstream on the visitor's OWN
     # session. Safe because the registry key includes the `{:visitor, id}`
-    # subject tag (`Session.Server.registry_key/2`), so the visitor opers
+    # subject tag (`Session.registry_key/2`), so the visitor opers
     # only its own upstream IRC link (no shared/pooled session), and the
     # ircd O:line is authoritative on whether the creds are accepted. #153
     # generalized this to EVERY verb — see the sibling "op:/topic_set:/raw:

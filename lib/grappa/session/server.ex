@@ -1121,13 +1121,6 @@ defmodule Grappa.Session.Server do
     |> resolve_auto_away_reason()
   end
 
-  @doc """
-  Delegates to `Grappa.Session.registry_key/2`, the one source of the
-  key (issue 2696). Kept for the plain test files that still call it.
-  """
-  @spec registry_key(Grappa.Session.subject(), integer()) :: Grappa.Session.registry_key()
-  defdelegate registry_key(subject, network_id), to: Grappa.Session
-
   @doc "Returns the via-tuple for the session registered for `(subject, network_id)`."
   @spec via(Grappa.Session.subject(), integer()) ::
           {:via, Registry, {atom(), Grappa.Session.registry_key()}}
