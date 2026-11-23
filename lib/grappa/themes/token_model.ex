@@ -30,7 +30,7 @@ defmodule Grappa.Themes.TokenModel do
   avoid two sources of truth (see #75 fork-3 decision).
   """
 
-  alias Grappa.Themes.BuiltinBackgrounds
+  alias Grappa.{Themes.BuiltinBackgrounds, Typespec}
 
   @base_color_keys ~w(bg bg_alt fg accent muted border mention mode_op mode_halfop mode_voiced mode_plain)
   @nick_color_keys Enum.map(0..15, &"nick_#{&1}")
@@ -95,25 +95,13 @@ defmodule Grappa.Themes.TokenModel do
   this type so `mix grappa.gen_wire_types` emits the vocabulary as a generated
   const, and cic stops transcribing it by hand.
   """
-  @type font_family ::
-          unquote(
-            @font_families
-            |> Enum.map(&String.to_atom/1)
-            |> Enum.reverse()
-            |> Enum.reduce(fn arm, acc -> quote(do: unquote(arm) | unquote(acc)) end)
-          )
+  @type font_family :: unquote(Typespec.union(Enum.map(@font_families, &String.to_atom/1)))
 
   @typedoc """
   The closed background sizing modes (#294), as a type. Derived from
   `@size_modes` on the same terms as `font_family/0` above.
   """
-  @type size_mode ::
-          unquote(
-            @size_modes
-            |> Enum.map(&String.to_atom/1)
-            |> Enum.reverse()
-            |> Enum.reduce(fn arm, acc -> quote(do: unquote(arm) | unquote(acc)) end)
-          )
+  @type size_mode :: unquote(Typespec.union(Enum.map(@size_modes, &String.to_atom/1)))
 
   @doc "The frozen list of 27 color token keys (string form)."
   @spec color_keys() :: [String.t()]
