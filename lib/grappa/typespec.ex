@@ -3,14 +3,14 @@ defmodule Grappa.Typespec do
   Builds typespec AST from data, so a closed set spelled once as a list can
   also be its type.
 
-  Issue 2693 — the right-nested union fold had five copies:
+  Issue 2693 — the right-nested union fold had six copies:
   `Grappa.Scrollback.Message` (`kind` and the four subset `@spec`s),
   `Grappa.Session.WindowState` (`window_state`), `Grappa.Session.Server`
   (`keep_nick_refusal_code`), `Grappa.Session.Wire` (`server_reply_source`)
-  and `Grappa.Themes.TokenModel` (`font_family` and `size_mode`, spelled
-  with `quote`). `mix grappa.gen_wire_types` had a sixth, nested the other
-  way, for a union read back from a beam; every reader there flattens the
-  union first, so the direction never reached the output. A
+  and `Grappa.Themes.TokenModel` (two: `font_family` and `size_mode`,
+  spelled with `quote`). `mix grappa.gen_wire_types` had a seventh, nested
+  the other way, for a union read back from a beam; every reader there
+  flattens the union first, so the direction never reached the output. A
   dependency-free leaf, like `Grappa.Ecto.Like` and `Grappa.Wire.Time`, so
   every caller shares one definition.
   """
