@@ -4372,8 +4372,12 @@ static void apply_membership_event(struct app *app, const char *network, const c
              * deliberately does not. Ask, once, for this channel. */
             if (this_channel) refetch = true;
             break;
-        default:
-            break;
+        case MSG_PRIVMSG:
+        case MSG_NOTICE:
+        case MSG_ACTION:
+        case MSG_TOPIC:
+        case MSG_SERVER_EVENT:
+            break; /* not a roster fact */
         }
         if (touched) sort_members_locked(app, w->network, w->members, w->member_count);
     }
@@ -4494,8 +4498,10 @@ static void format_presence_line(const struct wire_scrollback_message *m, const 
         }
         snprintf(out, out_sz, "--- %s", body ? body : "");
         break;
-    default:
-        out[0] = '\0';
+    case MSG_PRIVMSG:
+    case MSG_NOTICE:
+    case MSG_ACTION:
+        out[0] = '\0'; /* conversation, not presence: render_row draws it */
         break;
     }
 }
@@ -5621,7 +5627,14 @@ static void render_row(struct app *app, const struct wire_scrollback_message *m,
             wrote = true;
         }
         break;
-    default: {
+    case MSG_JOIN:
+    case MSG_PART:
+    case MSG_QUIT:
+    case MSG_NICK_CHANGE:
+    case MSG_MODE:
+    case MSG_TOPIC:
+    case MSG_KICK:
+    case MSG_SERVER_EVENT: {
         char line[MAX_LINE];
         format_presence_line(m, sender, line, sizeof(line));
         if (line[0] && !hidden) {
