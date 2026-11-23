@@ -32,7 +32,7 @@ defmodule Grappa.AdminEventsTest do
     # BEFORE the restore and prove nothing.
     maybe_watch_for_escaping_dirt(context)
 
-    # Drain stale `{:session, _, _}` entries left by prior tests.
+    # Drain stale `Session.registry_key/2` entries left by prior tests.
     # `AdmissionStateHelpers.reset_session_supervisor/0` is the canonical
     # purge — it walks `DynamicSupervisor.which_children/1` and calls
     # `terminate_child/2` (atomic: removes the child AND prevents
