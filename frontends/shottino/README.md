@@ -1207,10 +1207,11 @@ before that pin existed.
 architecture review measured that: five pieces of the wire had drifted under a
 green pin, two of them closed sets that made shottino drop an event whole. So
 two more gates sit beside it, and they compare the thing rather than a number:
-the **closed sets** (`connection_state`, the server-reply sources) are pinned
-to the Elixir that declares them, value by value and in order, because the C
-enums are ordinal; and **every event kind cicchetto narrows must be known to
-`wire.c`**. A kind a terminal has no use for — a peer's avatar — is still
+the **closed sets** are pinned value by value and in order, because the C
+enums are ordinal: `connection_state` and the server-reply sources to the
+Elixir that declares them, the message kinds and the five E2E sets to the
+mirror the server generates in cicchetto's `wireTypes.ts`; and **every event
+kind cicchetto narrows must be known to `wire.c`**. A kind a terminal has no use for — a peer's avatar — is still
 narrowed and dropped on purpose, so the unrecognised-kind path keeps meaning
 "the server grew something nobody here has looked at".
 

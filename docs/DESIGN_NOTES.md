@@ -9159,3 +9159,69 @@ then finished in 541 s with no such red.
 * The registry VALUE `{nick, label, registered?}` has the same problem. It is
   still written by hand in `Session.Server.publish_live_nick/5` and matched by
   hand in `current_nick/2` and `registered_holders/3`. Not measured.
+<!-- entry #2693c -->
+
+---
+
+## 2026-11-23 — #2693c: shottino pins its message kinds, and a new kind fails CI's build (S3: shottino)
+
+Before this, `MESSAGE_KIND_NAMES` was the one closed set shottino's parity
+test did not pin. A kind the server adds fails `message_kind_of` at runtime:
+the live `message` event carrying it is dropped as malformed, and a mentions
+payload holding one such row is dropped whole (`check_mention`). Nothing at
+build time noticed. The content predicate (privmsg, notice, action) was
+written inline five times in `shottino.c`, and three of the four kind
+switches ended in `default:`. With a mutant `MSG_WHISPER`, the compiler named
+one site: `ircd_message_line`, the only kind switch already written without a
+default.
+
+### What changed
+
+* `MESSAGE_KIND_NAMES` goes through the `CLOSED_SET` macro the five E2E sets
+  already use, which generates the count the pin needs, and
+  `the_message_kinds_are_the_servers` pins the table to
+  `SCROLLBACK_MESSAGE_KIND` in `wireTypes.ts`, value for value and in order.
+  Order matters twice, because the index is the `MSG_*` value.
+* `wire_message_kind_is_content()` replaces the five inline predicates.
+* That function and the three switches name every kind, with no `default:`.
+  `-Wswitch` is in `-Wall`, and CI's shottino build step compiles with
+  `-Wall -Werror`, so a new `MSG_*` fails CI at five named sites without
+  any build-file change. The shipped Makefile keeps it a warning, as its
+  comment wants for users on newer compilers.
+
+### Measured
+
+In one gcc 14.4 container (aarch64) over `git archive` trees, with the
+predictions written first:
+
+* `"whisper"` appended to `SCROLLBACK_MESSAGE_KIND`: `test_commands` fails 2
+  of 776 checks, both in the new test. The same mutant on the base
+  (`4c60ff8a7`) passes 760 of 760.
+* `MSG_WHISPER` added on the C side only: `test_commands` fails 1 of 775
+  (count 12 against the server's 11), and gcc warns at the same five sites
+  host clang found. CI's exact build step exits 2 with five
+  `-Werror=switch` errors at those sites, and exits 0 on the clean tree.
+
+### Considered, not taken
+
+* **Keeping the defaults and adding `-Wswitch-enum`.** It catches the same
+  five sites. But the flag reaches CI only through `ci.yml`'s two `CFLAGS=`
+  overrides: a command-line `CFLAGS` drops the Makefile's `WARNINGS`
+  (measured with `make -n`). It also fails seven unrelated switches over 19
+  translation units on day one, among them `wire.c`'s `wire_kind` switch,
+  which is missing 66 enumerators. That makes it a policy for all of
+  shottino, not part of this issue.
+
+### Not in this slice
+
+* `wire_message_kind_is_content()` mirrors the server's content kinds, and
+  nothing pins that classification to `@kind_class`. The pin covers the set
+  of kinds, not how they are sorted.
+* Window states are not a wire closed set in shottino: `enum window_state`
+  is derived from user-topic events, so a new server state arrives as a new
+  event kind. For window states, the issue's "fails shottino's parity test"
+  has no table to pin.
+* Seen, not touched: because the CI override drops the Makefile's
+  `WARNINGS` and `HARDENING`, CI never compiles shottino with `-Wformat=2`
+  or the hardening flags. Host clang over `shottino.c` and `wire.c` reports
+  nothing under `-Wformat=2` today; gcc was not measured.
