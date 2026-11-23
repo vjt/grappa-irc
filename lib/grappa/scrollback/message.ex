@@ -112,6 +112,7 @@ defmodule Grappa.Scrollback.Message do
   alias Grappa.Networks.Network
   alias Grappa.Scrollback.Meta
   alias Grappa.Subject
+  alias Grappa.Typespec
   alias Grappa.Visitors.Visitor
 
   @kinds [
@@ -264,11 +265,6 @@ defmodule Grappa.Scrollback.Message do
   # `:notice` became eligible (CP23) and stayed stale.
   @dm_with_error "may only be set on " <> Enum.map_join(@dm_with_eligible_kinds, ", ", &inspect/1) <> " rows"
 
-  # issue 2693 — folds an atom list into the typespec union `a | b | …`,
-  # right-nested so the union keeps the list's order. The typespecs below are
-  # built from the lists with it instead of restating their atoms by hand.
-  atom_union = fn atoms -> atoms |> Enum.reverse() |> Enum.reduce(&{:|, [], [&1, &2]}) end
-
   @doc """
   Returns the closed-set list of valid `:kind` values. Exposed so
   tests can drive coverage assertions over the full enum (e.g.
@@ -288,7 +284,7 @@ defmodule Grappa.Scrollback.Message do
   three atoms. Adding a content kind is one edit, to its `@kind_class`
   row.
   """
-  @spec content_kinds() :: [unquote(atom_union.(@content_kinds)), ...]
+  @spec content_kinds() :: [unquote(Typespec.union(@content_kinds)), ...]
   def content_kinds, do: @content_kinds
 
   @doc """
@@ -302,7 +298,7 @@ defmodule Grappa.Scrollback.Message do
   content_kinds/0 == []` holds by construction. Mirrors the cic
   `NOTIFY_KINDS` set (`cicchetto/src/lib/pushTriggers.ts`).
   """
-  @spec notify_kinds() :: [unquote(atom_union.(@notify_kinds)), ...]
+  @spec notify_kinds() :: [unquote(Typespec.union(@notify_kinds)), ...]
   def notify_kinds, do: @notify_kinds
 
   @doc """
@@ -325,7 +321,7 @@ defmodule Grappa.Scrollback.Message do
   order, so the server history filter and the client live-tail render-filter
   suppress the same rows — enforced by `presence_filter_test.exs`.
   """
-  @spec suppressed_presence_kinds() :: [unquote(atom_union.(@suppressed_presence_kinds)), ...]
+  @spec suppressed_presence_kinds() :: [unquote(Typespec.union(@suppressed_presence_kinds)), ...]
   def suppressed_presence_kinds, do: @suppressed_presence_kinds
 
   @doc """
@@ -350,7 +346,7 @@ defmodule Grappa.Scrollback.Message do
   (`cicchetto/src/lib/presencePause.ts`), same order; `presence_filter_test.exs`
   gates both the subset relation and the cross-language agreement.
   """
-  @spec pausable_presence_kinds() :: [unquote(atom_union.(@pausable_presence_kinds)), ...]
+  @spec pausable_presence_kinds() :: [unquote(Typespec.union(@pausable_presence_kinds)), ...]
   def pausable_presence_kinds, do: @pausable_presence_kinds
 
   @doc """
@@ -400,7 +396,7 @@ defmodule Grappa.Scrollback.Message do
   # never the wire (measured: `:whisper` in `@kinds` alone left the codegen "in
   # sync"). The union keeps `@kinds`' order, which is the generated array's
   # order and shottino's `MESSAGE_KIND_NAMES` index order.
-  @type kind :: unquote(atom_union.(@kinds))
+  @type kind :: unquote(Typespec.union(@kinds))
 
   @type t :: %__MODULE__{
           id: integer() | nil,
