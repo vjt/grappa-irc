@@ -9032,3 +9032,84 @@ cic-only slice does not run.
 
 `isPresenceKind` had no production importer and is gone, with the 18 mock lines
 that restated it in 17 test files.
+<!-- entry #2696 -->
+
+---
+
+## 2026-11-23 — #2696: the session registry key is written once, and `Grappa.Session` owns every scan of it
+
+`Session.Server.registry_key/2` called itself the single source of truth for
+`{:session, subject, network_id}`. A match spec cannot call a function, though,
+so seven match specs in three boundaries spelled the tuple by hand: two in
+`Grappa.Session`, three in `Grappa.LiveIntrospection` and two in
+`Grappa.Admission`. Five test files did the same. Admission read
+`Grappa.SessionRegistry` by atom, so Boundary saw no edge from it to Session.
+
+### Measured first (origin/main `53b167e3f`, full ExUnit each, own cache)
+
+* **Unmutated control:** 8978 tests, 0 failures.
+* **MK-key**, where only `registry_key/2`'s tag drifts: 36 failures, 6 of them
+  in `AdmissionTest`. So on main an admission test already caught a key drift.
+  Two readers survived: `LiveIntrospection.count_sessions_by_user/0` and
+  `count_live/0`. Their only tests registered literal keys, so a drift zeroed
+  the admin per-user counts and the top-bar live count with no test red.
+* **MK-all**, where the key and all seven lib specs move together: 6 failures,
+  exactly the tests that spell the key by hand. One more reader stayed green,
+  and that is the bug this change fixes. The test helper
+  `AdmissionStateHelpers.network_pids/1` silently returned `[]`: it still
+  agreed with its own literal-key test, while every real session had become
+  invisible to it. So the isolation helper stopped terminating sessions, and
+  nothing noticed.
+
+### What changed
+
+* **`Grappa.Session.registry_key/2` is the key.** One private builder, `key/2`,
+  makes both the concrete key and every match-spec head. A head is data built
+  at run time, with `:"$1"` or `:_` where the values go. The tag is one
+  attribute, `@registry_key_tag`, which the `registry_key()` type reads too, so
+  changing it is a one-line edit. `Server.registry_key/2` now delegates, because
+  13 plain test files still call it.
+* **Four verbs are the only scans:** `list_live/0`, `count_live/2`,
+  `live_counts_by_network/0` and `count_by_user/0`.
+  * Admission declares `Grappa.Session` and calls them.
+  * LiveIntrospection enriches `list_live/0` and delegates
+    `count_sessions_by_user/0`.
+  * `LiveIntrospection.count_live/0` is derived from `list_live/0` and still
+    messages no pid.
+  * `lookup_session/2` is built on `Session.whereis/2`. It was not a byte copy
+    of it, since it returns a `SessionEntry`.
+  * `reapply_auto_away_site_default/0` walks `list_live/0`.
+  * `registered_holders/3` keeps its own head, because it filters on the value,
+    but builds it with `key/2`.
+* **`Server` leaves Session's exports.** Measured on that change alone, before
+  any refactor: the dev compile reported 1 forbidden reference
+  (`live_introspection.ex:85`), and `--env=test` reported 2, adding
+  `test/support/mute_session.ex:48`. Plain test `.exs` files are outside every
+  Boundary and are not checked: `session_test.exs:229` calls
+  `Server.registry_key/2` and was not flagged.
+* **Admission → Session is acyclic.** `compile --force --warnings-as-errors`
+  gives rc=0 in dev and in test, with no "dependency cycle found". The positive
+  control, which adds `Grappa.Admission` to Session's deps, prints
+  `Grappa.Admission -> Grappa.Session -> Grappa.Admission`, so Boundary's own
+  cycle check is live.
+* **The ratchet (issue 2690) records the edge:** `deps:Grappa.Admission` goes
+  from 6 to 7. The dependency always existed. A hand-spelled match spec carries
+  no module reference, so Boundary could not see it.
+* **Test side.**
+  * The five test files register under `Session.registry_key/2` or read
+    `Session.list_live/0`.
+  * `AdmissionStateHelpers` declares `Grappa.Session` beside the
+    `Session.Backoff` leaf. That wider dep is the price of `network_pids/1` no
+    longer drifting silently.
+  * `bootstrap_test`'s expired-visitor check asserts an ABSENCE, so it cannot
+    tell a key change from a filtered visitor. That is why it survived MK-all.
+    The phase-1 report swapped the line numbers: the select that went red was
+    the cap test's.
+
+### Not in this change
+
+* The registry VALUE `{nick, label, registered?}` has the same problem. It is
+  still written by hand in `Session.Server.publish_live_nick/5` and matched by
+  hand in `current_nick/2` and `registered_holders/3`. Not measured.
+* The 13 plain test files that call `Server.registry_key/2`. Repointing them is
+  mechanical, but it needs a ruling on blast radius first.

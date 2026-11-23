@@ -33,7 +33,6 @@ defmodule Grappa.MuteSession do
   use Boundary, top_level?: true, deps: [Grappa.Session]
 
   alias Grappa.Session
-  alias Grappa.Session.Server
 
   @doc """
   Occupies `(subject, network_id)`'s registry slot with a process that
@@ -45,7 +44,7 @@ defmodule Grappa.MuteSession do
   @spec register!(Session.subject(), integer()) :: pid()
   def register!(subject, network_id) when is_integer(network_id) do
     test_pid = self()
-    key = Server.registry_key(subject, network_id)
+    key = Session.registry_key(subject, network_id)
 
     pid =
       spawn(fn ->

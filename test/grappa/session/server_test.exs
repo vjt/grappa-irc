@@ -933,12 +933,15 @@ defmodule Grappa.Session.ServerTest do
     # struct door at all, so before 2137 a plan omitting `refresh_plan`
     # slipped through this path without a word. `Deps.refresh!/2` sits ahead
     # of the fork, which is why these four now owe the key.
+    # Each subject is a real `Subject.t()` (a UUID id): since issue 2696 the
+    # via-tuple builds its key with `Session.registry_key/2`, whose guard
+    # refuses the `{:user, 1}` these fixtures used to carry.
 
     test "a {:hold, :no_client_source} source fires the failer and returns :ignore" do
       test_pid = self()
 
       init_opts = %{
-        subject: {:user, 1},
+        subject: {:user, Ecto.UUID.generate()},
         network_id: 1,
         subject_label: "user:hold-test",
         network_slug: "holdnet",
@@ -955,7 +958,7 @@ defmodule Grappa.Session.ServerTest do
       test_pid = self()
 
       init_opts = %{
-        subject: {:user, 1},
+        subject: {:user, Ecto.UUID.generate()},
         network_id: 1,
         subject_label: "user:hold-test",
         network_slug: "holdnet",
@@ -972,7 +975,7 @@ defmodule Grappa.Session.ServerTest do
 
     test "a hold with no credential_failer still returns :ignore (no crash)" do
       init_opts = %{
-        subject: {:user, 1},
+        subject: {:user, Ecto.UUID.generate()},
         network_id: 1,
         subject_label: "user:hold-test",
         network_slug: "holdnet",
@@ -994,7 +997,7 @@ defmodule Grappa.Session.ServerTest do
       test_pid = self()
 
       init_opts = %{
-        subject: {:user, 1},
+        subject: {:user, Ecto.UUID.generate()},
         network_id: 1,
         subject_label: "user:hold-test",
         network_slug: "holdnet",

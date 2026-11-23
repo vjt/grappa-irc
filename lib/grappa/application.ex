@@ -245,7 +245,7 @@ defmodule Grappa.Application do
         {Phoenix.PubSub, name: Grappa.PubSub},
 
         # Registry before DynamicSupervisor — Session.Server registers
-        # itself under {:session, user, network_id} via this Registry,
+        # itself under `Grappa.Session.registry_key/2` via this Registry,
         # and lookups happen in DynamicSupervisor's start_child cascade.
         # Application-wide singleton (`name: Grappa.SessionRegistry`)
         # shared across the entire `mix test` run; tests sharing the

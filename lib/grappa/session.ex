@@ -18,15 +18,17 @@ defmodule Grappa.Session do
   the discriminator.
 
   Sessions are registered in `Grappa.SessionRegistry` (a `:unique`
-  Registry declared in the application supervision tree) under the
-  key `{:session, subject, network_id}`. They run as `:transient`
+  Registry declared in the application supervision tree) under
+  `registry_key/2`. They run as `:transient`
   children of `Grappa.SessionSupervisor` (a `DynamicSupervisor`), so
   abnormal exits trigger a restart while clean shutdowns do not.
 
   This module is intentionally thin — no business logic. It exists to:
 
-    1. Centralize the registry-key shape so callers don't reinvent it
-       (the via-tuple lives in `Grappa.Session.Server`).
+    1. Own the registry key and every read of the registry: the key is
+       `registry_key/2`, and `list_live/0`, `count_live/2`,
+       `live_counts_by_network/0` and `count_by_user/0` are the only
+       scans of `Grappa.SessionRegistry` (issue 2696).
     2. Hide the `DynamicSupervisor` + `child_spec` plumbing from
        `Grappa.Bootstrap` and from any future REST/WS surface that
        wants to inspect or terminate a session.
@@ -70,10 +72,10 @@ defmodule Grappa.Session do
   `Accounts.last_known_ip/1` directly (see its comment in the list).
   """
 
-  # `Server` is exported for the test path only — `server_test.exs`
-  # tweaks per-module log level via `Logger.put_module_level/2`.
-  # Runtime callers go through this facade (`start_session/3`,
-  # `send_*`, `whereis/2`).
+  # `Server` is NOT exported (issue 2696): callers go through this facade
+  # (`start_session/3`, `send_*`, `whereis/2`), and a test that needs a
+  # session-shaped registration uses `registry_key/2`. Plain test `.exs`
+  # files are outside every Boundary, so they may still name `Server`.
   use Boundary,
     top_level?: true,
     deps: [
@@ -154,7 +156,7 @@ defmodule Grappa.Session do
     # secret the on-wire `SET PASSWD` rotates, and both must refuse exactly
     # what Azzurra's services refuse. Sharing the one chain beats a copy that
     # drifts. It is a pure module with no process or state behind it.
-    exports: [NSInterceptor, Server, Wire]
+    exports: [NSInterceptor, Wire]
 
   alias Grappa.{E2eInbox, E2eKeys, E2eRequests}
   alias Grappa.IRC.{AuthFSM, CTCP, E2e, Identifier, Ignore}
@@ -192,6 +194,16 @@ defmodule Grappa.Session do
   same UUID never collide.
   """
   @type subject :: Grappa.Subject.t()
+
+  # Issue 2696 — the registry key's tag, written once: `key/2` builds every
+  # key and every match-spec head from it, and `registry_key/0` types it.
+  @registry_key_tag :session
+
+  @typedoc """
+  A session's key in `Grappa.SessionRegistry`. Build it with
+  `registry_key/2`; never spell the tuple at a call site.
+  """
+  @type registry_key :: {unquote(@registry_key_tag), subject(), integer()}
 
   @typedoc """
   #1088 — the connection an informational reply is addressed to: the
@@ -464,10 +476,86 @@ defmodule Grappa.Session do
   """
   @spec whereis(subject(), integer()) :: pid() | nil
   def whereis(subject, network_id) when is_subject(subject) and is_integer(network_id) do
-    case Registry.lookup(Grappa.SessionRegistry, Server.registry_key(subject, network_id)) do
+    case Registry.lookup(Grappa.SessionRegistry, registry_key(subject, network_id)) do
       [{pid, _}] -> pid
       [] -> nil
     end
+  end
+
+  @doc """
+  Returns the `Grappa.SessionRegistry` key for `(subject, network_id)`.
+
+  The one source of the key (issue 2696): `Session.Server` registers under
+  it, `whereis/2` and `current_nick/2` look it up, and the registry scans
+  below (`list_live/0`, `count_live/2`, `live_counts_by_network/0`,
+  `count_by_user/0`) build their match-spec heads with the same private
+  builder. A match spec cannot call a function, but a head is data built at
+  run time, so the tuple is written once and every reader moves with it. The
+  tagged `subject` keeps a user's and a visitor's session on the same
+  `network_id` apart.
+
+  A test that needs a session-shaped registration registers under this key
+  rather than a literal tuple, so a key change cannot leave it registering
+  something no reader sees.
+  """
+  @spec registry_key(subject(), integer()) :: registry_key()
+  def registry_key(subject, network_id) when is_subject(subject) and is_integer(network_id),
+    do: key(subject, network_id)
+
+  # Issue 2696 — the one builder of the key. `registry_key/2` passes values;
+  # a match-spec head passes match variables (`:"$1"`) or `:_`.
+  defp key(subject, network_id), do: {@registry_key_tag, subject, network_id}
+
+  @doc """
+  Every live session on this node, as `{subject, network_id, pid}`.
+
+  One `Registry.select/2` over `Grappa.SessionRegistry`. No session is
+  messaged, so a wedged mailbox cannot stall it; a caller that wants a
+  session's state asks the pid itself (`Grappa.LiveIntrospection`).
+  """
+  @spec list_live() :: [{subject(), integer(), pid()}]
+  def list_live do
+    Registry.select(Grappa.SessionRegistry, [
+      {{key(:"$1", :"$2"), :"$3", :_}, [], [{{:"$1", :"$2", :"$3"}}]}
+    ])
+  end
+
+  @doc """
+  How many live sessions of `subject_kind` run on `network_id`.
+
+  This is the count `Grappa.Admission` holds against a network's per-kind
+  session cap. One `Registry.count_select/2`; no session is messaged.
+  """
+  @spec count_live(integer(), :user | :visitor) :: non_neg_integer()
+  def count_live(network_id, subject_kind)
+      when is_integer(network_id) and subject_kind in [:user, :visitor] do
+    Registry.count_select(Grappa.SessionRegistry, [
+      {{key({subject_kind, :_}, network_id), :_, :_}, [], [true]}
+    ])
+  end
+
+  @doc """
+  Live sessions per `{network_id, subject_kind}`, for every network, in one
+  `Registry.select/2` scan. A pair with no live session is absent.
+  `Grappa.Admission.live_counts_by_network/0` shapes this for the admin wire.
+  """
+  @spec live_counts_by_network() :: %{{integer(), :user | :visitor} => pos_integer()}
+  def live_counts_by_network do
+    Grappa.SessionRegistry
+    |> Registry.select([{{key({:"$1", :_}, :"$2"), :_, :_}, [], [{{:"$2", :"$1"}}]}])
+    |> Enum.frequencies()
+  end
+
+  @doc """
+  Live user sessions per user id, across networks, in one
+  `Registry.select/2` scan. Visitor sessions are not counted. A user with no
+  live session is absent.
+  """
+  @spec count_by_user() :: %{Ecto.UUID.t() => pos_integer()}
+  def count_by_user do
+    Grappa.SessionRegistry
+    |> Registry.select([{{key({:user, :"$1"}, :_), :_, :_}, [], [:"$1"]}])
+    |> Enum.frequencies()
   end
 
   @doc """
@@ -484,9 +572,7 @@ defmodule Grappa.Session do
   """
   @spec reapply_auto_away_site_default() :: :ok
   def reapply_auto_away_site_default do
-    Grappa.SessionRegistry
-    |> Registry.select([{{{:session, :_, :_}, :"$1", :_}, [], [:"$1"]}])
-    |> Enum.each(&send(&1, :auto_away_site_default_changed))
+    Enum.each(list_live(), fn {_, _, pid} -> send(pid, :auto_away_site_default_changed) end)
   end
 
   @doc """
@@ -2071,7 +2157,7 @@ defmodule Grappa.Session do
   @spec current_nick(subject(), integer()) :: {:ok, String.t()} | {:error, :no_session}
   def current_nick(subject, network_id)
       when is_subject(subject) and is_integer(network_id) do
-    case Registry.lookup(Grappa.SessionRegistry, Server.registry_key(subject, network_id)) do
+    case Registry.lookup(Grappa.SessionRegistry, registry_key(subject, network_id)) do
       [{_, {nick, _, _}}] when is_binary(nick) -> {:ok, nick}
       _ -> {:error, :no_session}
     end
@@ -2096,7 +2182,7 @@ defmodule Grappa.Session do
       when is_integer(network_id) and is_binary(nick_key) and is_atom(casemapping) do
     Grappa.SessionRegistry
     |> Registry.select([
-      {{{:session, :"$1", network_id}, :_, {:"$2", :"$3", true}}, [], [{{:"$1", :"$2", :"$3"}}]}
+      {{key(:"$1", network_id), :_, {:"$2", :"$3", true}}, [], [{{:"$1", :"$2", :"$3"}}]}
     ])
     |> Enum.filter(fn {_, nick, _} -> Identifier.canonical_target(nick, casemapping) == nick_key end)
     |> Enum.map(fn {subject, _, label} -> {subject, label} end)

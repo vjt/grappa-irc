@@ -1393,7 +1393,7 @@ defmodule GrappaWeb.GrappaChannel do
   # Issue #148: visitor-ELIGIBLE (routes via `dispatch_subject_verb/3`,
   # like every verb post-#153). A visitor opering is safe: the session
   # registry key includes the full `{:visitor, id}` subject tag
-  # (`Session.Server.registry_key/2`), so a visitor has its OWN
+  # (`Session.registry_key/2`), so a visitor has its OWN
   # `Session.Server` and opers ONLY its own upstream IRC link — no
   # shared/pooled session to leak across. The ircd O:line is the real
   # authority (the visitor becomes oper only if the upstream accepts the

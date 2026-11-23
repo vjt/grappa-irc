@@ -19,7 +19,7 @@ defmodule Grappa.Admission do
   | cap                   | applies to                  | source                                       |
   |-----------------------|-----------------------------|----------------------------------------------|
   | NetworkCircuit        | all flows                   | ETS via `Admission.NetworkCircuit.check/1`   |
-  | network total         | all flows                   | `Registry.count_select/2` on SessionRegistry |
+  | network total         | all flows                   | `Grappa.Session.count_live/2`                |
   | source-IP per network | all flows w/ non-nil src IP | SQL over accounts_sessions.ip                |
 
   The ONLY per-actor cap is per-(source-IP, network) (#171). It replaced
@@ -57,7 +57,13 @@ defmodule Grappa.Admission do
       Grappa.Networks.Credential,
       Grappa.Networks.Network,
       Grappa.RateLimit,
-      Grappa.Repo
+      Grappa.Repo,
+      # Issue 2696 — the per-network caps count live sessions with
+      # `Session.count_live/2`, and the admin projections read
+      # `Session.live_counts_by_network/0`. Admission used to read
+      # `Grappa.SessionRegistry` by atom with hand-spelled match specs,
+      # which carried no edge, so Boundary never saw this dependency.
+      Grappa.Session
     ],
     exports: [Captcha, Config, NetworkCircuit, NetworkCircuit.AdminWire, Telemetry]
 
@@ -67,6 +73,7 @@ defmodule Grappa.Admission do
   alias Grappa.Admission.{Captcha, NetworkCircuit, Telemetry}
   alias Grappa.Networks.{Credential, Network}
   alias Grappa.Repo
+  alias Grappa.Session
 
   @type flow ::
           :login_fresh
@@ -227,15 +234,14 @@ defmodule Grappa.Admission do
   # populations against DIFFERENT operator-set limits — a network full
   # of anonymous visitors must still admit a registered user, and vice
   # versa. Each clause reads the column matching its subject_kind and
-  # filters the SessionRegistry match-spec head to that subject's
-  # tagged-tuple shape.
+  # counts only that kind's live sessions (`Session.count_live/2`).
   defp check_network_total(network_id, :visitor) do
     case Repo.get(Network, network_id) do
       %Network{max_concurrent_visitor_sessions: nil} ->
         :ok
 
       %Network{max_concurrent_visitor_sessions: cap} ->
-        live = count_live_sessions(network_id, :visitor)
+        live = Session.count_live(network_id, :visitor)
         if live >= cap, do: {:error, :visitor_cap_exceeded}, else: :ok
 
       nil ->
@@ -249,7 +255,7 @@ defmodule Grappa.Admission do
         :ok
 
       %Network{max_concurrent_user_sessions: cap} ->
-        live = count_live_sessions(network_id, :user)
+        live = Session.count_live(network_id, :user)
         if live >= cap, do: {:error, :user_cap_exceeded}, else: :ok
 
       nil ->
@@ -257,27 +263,9 @@ defmodule Grappa.Admission do
     end
   end
 
-  defp count_live_sessions(network_id, subject_kind) do
-    # Registry keys are `{:session, subject, network_id}` per
-    # `Grappa.Session.Server.registry_key/2`. Subject is a 2-tuple
-    # `{:visitor, uuid}` or `{:user, uuid}`. Match-spec head literally
-    # interpolates network_id + the subject tag at construction time
-    # so only sessions of the matching subject_kind on this network
-    # count. `:_` matches any uuid inside the subject tuple.
-    subject_tag =
-      case subject_kind do
-        :visitor -> :visitor
-        :user -> :user
-      end
-
-    Registry.count_select(Grappa.SessionRegistry, [
-      {{{:session, {subject_tag, :_}, network_id}, :_, :_}, [], [true]}
-    ])
-  end
-
   @doc """
   Per-subject live-session count for a single network. Reuses the
-  same Registry match-spec that `check_network_total/2` consults at
+  same `Session.count_live/2` that `check_network_total/2` consults at
   admission time, so the projection cannot drift from the admission
   policy itself (CLAUDE.md "one feature, one code path").
 
@@ -293,15 +281,15 @@ defmodule Grappa.Admission do
   @spec live_counts_for_network(integer()) :: live_counts()
   def live_counts_for_network(network_id) when is_integer(network_id) do
     %{
-      visitors: count_live_sessions(network_id, :visitor),
-      users: count_live_sessions(network_id, :user)
+      visitors: Session.count_live(network_id, :visitor),
+      users: Session.count_live(network_id, :user)
     }
   end
 
   @doc """
   Bulk projection — `%{network_id => live_counts()}` for every network
-  with at least one live session. Single `Registry.select/2` scan
-  + `Enum.frequencies/1` in Elixir, replacing the N×2-scan path the
+  with at least one live session. One registry scan
+  (`Session.live_counts_by_network/0`) reshaped here, replacing the N×2-scan path the
   admin index would otherwise take when iterating per-row.
 
   Networks with zero live sessions are NOT keyed (the caller must
@@ -312,17 +300,7 @@ defmodule Grappa.Admission do
   """
   @spec live_counts_by_network() :: %{integer() => live_counts()}
   def live_counts_by_network do
-    # Match-spec head:  `{:session, {subject_tag, _uuid}, network_id}`
-    # → return  `{network_id, subject_tag}`.  Reuses the same key shape
-    # `count_live_sessions/2` consults — admission policy + projection
-    # share the same Registry ground truth.
-    pairs =
-      Registry.select(Grappa.SessionRegistry, [
-        {{{:session, {:"$1", :_}, :"$2"}, :_, :_}, [], [{{:"$2", :"$1"}}]}
-      ])
-
-    pairs
-    |> Enum.frequencies()
+    Session.live_counts_by_network()
     |> Enum.reduce(%{}, fn {{network_id, subject_tag}, count}, acc ->
       Map.update(
         acc,
