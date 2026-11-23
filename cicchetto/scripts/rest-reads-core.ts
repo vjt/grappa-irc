@@ -346,8 +346,8 @@ export const CONTROLS: ReadonlyArray<readonly [string, string, readonly Spelling
     ["cast"],
   ],
   [
-    "a regex literal after return",
-    "return /^https?:\\/\\//.test(u) || (await res.json()) as A;",
+    "a regex literal after return (holding a quote)",
+    "return /a'/.test(u) || (await res.json()) as A; const b = 'x';",
     ["cast"],
   ],
   [
