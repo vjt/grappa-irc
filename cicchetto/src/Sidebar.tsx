@@ -35,7 +35,7 @@ import {
   SERVER_WINDOW_NAME,
 } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
-import { NOT_JOINED_STATES } from "./lib/windowStateSets";
+import { NOT_JOINED } from "./lib/windowStateSets";
 import NickText from "./NickText";
 import WindowBadges, { EncryptedUnreadBadge } from "./WindowBadges";
 
@@ -194,7 +194,7 @@ const Sidebar: Component<Props> = (props) => {
     const cascade = networkGreyedState(slug);
     if (cascade !== null) return cascade;
     const own = windowStateByChannel()[channelKey(slug, name)];
-    return own !== undefined && NOT_JOINED_STATES.has(own) ? own : null;
+    return own !== undefined && NOT_JOINED[own] ? own : null;
   };
 
   const isGreyed = (slug: string, name: string): boolean => greyedState(slug, name) !== null;

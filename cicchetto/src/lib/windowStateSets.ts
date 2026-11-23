@@ -8,6 +8,11 @@ import type { WindowState } from "./windowState";
 // against `WindowState`, makes a member that stops being a server state a tsc
 // error here.
 //
+// issue 2693 — and a record over EVERY state, not a set of three: a state the
+// server adds is a tsc error here until someone says whether it is joined. The
+// set filed a new not-joined state under "joined" without a word, so its
+// window would have rendered live and its compose box ungreyed.
+//
 // It does NOT live in `windowState.ts` with the type it constrains, and the
 // reason is measured rather than aesthetic: that module builds a Solid module
 // root at import time (via `selection.ts`), so three suites — Sidebar,
@@ -18,10 +23,13 @@ import type { WindowState } from "./windowState";
 // mocks. This module imports `WindowState` as a TYPE, which is erased, so it
 // has no runtime edge to the store and nothing needs to mock it.
 //
-// `invited` is absent by #902: an unanswered invite is announced by the top
+// `invited` is false by #902: an unanswered invite is announced by the top
 // banner, so no sidebar row carries that state to grey out.
-export const NOT_JOINED_STATES: ReadonlySet<WindowState> = new Set<WindowState>([
-  "failed",
-  "kicked",
-  "parked",
-]);
+export const NOT_JOINED = {
+  pending: false,
+  invited: false,
+  joined: false,
+  failed: true,
+  kicked: true,
+  parked: true,
+} satisfies Record<WindowState, boolean>;
