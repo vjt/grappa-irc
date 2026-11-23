@@ -8743,8 +8743,16 @@ later counts as unvalidated. That errs RED, and no such shape exists in
 raw read added in the same file cancel, and the file stays at its pin, green.
 An exclusion has the same blind spot: if `nowPlaying.ts`'s feed read became a
 grappa REST read, the exclusion would still count 1. The ratchet beside it
-(issue 2690) names the same limit, and only review catches a swap. It also
-says nothing about the server half of X3: the 34 inline `json(conn, %{…})`
-renders sit outside both the wire pin and the codegen, which is why the
-ratchet's floor cannot reach zero until issue 2694's open question on them is
-answered.
+(issue 2690) names the same limit, and only review catches a swap.
+
+**The server half is outside it.** A body rendered inline in a controller sits
+outside both the wire pin (which reads only `GrappaWeb.*JSON` views) and the
+codegen, so a read of it has no generated schema to narrow against: those of
+the 64 reads that land on one cannot be cured until the render becomes a view.
+Measured on `7618f6081` by grep, as LINES and not as renders: 33 code lines of
+the `json(conn, %{` spelling (34 matches, one of them moduledoc prose in
+`ignores_json.ex`) and 133 of the `|> json(%{` spelling. A map written over
+several lines counts once, and the lines mix error bodies with data. The
+question this slice left open was whether X3 covers those renders or stops at
+the 13 `*JSON` views. vjt answered on 2026-11-23 that it covers them, in a
+later slice at protocol 68 (relayed from IRC; not recorded on the issue).
