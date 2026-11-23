@@ -170,11 +170,21 @@ defmodule Mix.Tasks.Grappa.WirePinTest do
       # 2694 was such a refactor — the inline return became the named
       # `count_response/0` — so the fields now reach the digest through the
       # CODEGEN component, and the spec component carries the name.
+      #
+      # ONE string for the whole block: `messages: number;` and
+      # `events: number;` each occur in three generated types, so asserting
+      # them line by line stays green after this block loses both fields.
       assert views =~ "GrappaWeb.MessagesJSON"
       assert views =~ "count_response()"
-      assert text =~ "export type MessagesJSONSplitCountResponse = {"
-      assert text =~ "  messages: number;"
-      assert text =~ "  events: number;"
+
+      assert text =~
+               """
+               export type MessagesJSONSplitCountResponse = {
+                 count: number;
+                 messages: number;
+                 events: number;
+               };\
+               """
     end
 
     test "discovery is DERIVED from the build output and finds every view" do
