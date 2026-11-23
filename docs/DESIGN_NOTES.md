@@ -9071,8 +9071,9 @@ so seven match specs in three boundaries spelled the tuple by hand: two in
   `lib/` called it any more, so a delegate kept alive for the tests was dead
   code in prod (orchestrator's ruling), and the 10 test files that called it
   now call `Session.registry_key/2`.
-* **Four verbs are the only scans:** `list_live/0`, `count_live/2`,
-  `live_counts_by_network/0` and `count_by_user/0`.
+* **Every scan builds its head with `key/2`, and four verbs are the shared
+  scans:** `list_live/0`, `count_live/2`, `live_counts_by_network/0` and
+  `count_by_user/0`.
   * Admission declares `Grappa.Session` and calls them.
   * LiveIntrospection enriches `list_live/0` and delegates
     `count_sessions_by_user/0`.
@@ -9087,8 +9088,9 @@ so seven match specs in three boundaries spelled the tuple by hand: two in
   any refactor: the dev compile reported 1 forbidden reference
   (`live_introspection.ex:85`), and `--env=test` reported 2, adding
   `test/support/mute_session.ex:48`. Plain test `.exs` files are outside every
-  Boundary and are not checked: `session_test.exs:229` calls
-  `Server.registry_key/2` and was not flagged.
+  Boundary and are not checked: `session_test.exs:229` called
+  `Server.registry_key/2` and was not flagged (until the commit that deletes
+  the delegate repointed it).
 * **Admission → Session is acyclic.** `compile --force --warnings-as-errors`
   gives rc=0 in dev and in test, with no "dependency cycle found". The positive
   control, which adds `Grappa.Admission` to Session's deps, prints
@@ -9124,8 +9126,9 @@ no test.
 * **Desync mutant**, where only `registry_key/2`'s body is hand-spelled as
   `{:session_v2, subject, network_id}`, so registration drifts while every
   match-spec head stays: 40 failures in 15 modules, every one in a predicted
-  class. Among them are the former survivors (`count_sessions_by_user/0`,
-  `list_sessions/0`) and the purge-survivor test of `AdmissionStateHelpers`,
+  class. Among them are both former survivors, `count_sessions_by_user/0`
+  and `count_live/0` (red through `AdminOverviewTest`, 3 tests), and the
+  purge-survivor test of `AdmissionStateHelpers`,
   which now goes red instead of agreeing with a blind helper. The
   expired-visitor absence test stays green, as predicted.
 
