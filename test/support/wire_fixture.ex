@@ -34,4 +34,10 @@ defmodule Grappa.WireFixture do
   @type union_keyed_payload :: %{
           optional(:alpha | :beta) => term()
         }
+
+  # Issue 2694 — a map literal nested in a field, three levels deep. The
+  # codegen indented every field by a fixed two spaces, so a nested block
+  # came out flush with its parent, which biome rejects. The first real
+  # case was `ErrorJSON.status_error_response`.
+  @type nested_map_payload :: %{outer: %{middle: %{leaf: integer()}}}
 end

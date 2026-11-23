@@ -933,12 +933,18 @@ defmodule Mix.Tasks.Grappa.GenWireTypes do
   defp do_render({:%{}, _, fields}) do
     body =
       Enum.map_join(fields, "\n", fn
-        {{:optional, k}, v} when is_atom(k) -> "  #{k}?: #{do_render(v)};"
-        {k, v} when is_atom(k) -> "  #{k}: #{do_render(v)};"
+        {{:optional, k}, v} when is_atom(k) -> "  #{k}?: #{render_field_value(v)};"
+        {k, v} when is_atom(k) -> "  #{k}: #{render_field_value(v)};"
       end)
 
     "{\n#{body}\n}"
   end
+
+  # A field's value can itself be a multi-line block (a nested map literal).
+  # Its lines are rendered against column 0, so every continuation line moves
+  # two spaces right to sit under its field — the indent biome prints. Applied
+  # once per level, so the nesting depth adds up by itself (issue 2694).
+  defp render_field_value(ast), do: ast |> do_render() |> String.replace("\n", "\n  ")
 
   defp register_external_ref(mod, type, alias_name) do
     # Skip refs that already render via wire-module emission. If `mod`
