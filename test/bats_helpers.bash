@@ -85,3 +85,20 @@ file_mode() {
     fi
     stat -f '%Lp' "$1"
 }
+
+# The `run: |` block of the ci.yml step named "$1…", verbatim, so a case runs
+# the workflow's own shell rather than a copy of it. Shared by the git gates
+# whose push arm passes the push's `before` (ratchet-gate, protocol-bump-gate).
+#
+# The region starts at the step's `- name:` line, never at a mention of it in
+# a comment. A caller still asserts the block names its script: an empty
+# block run through `bash -c` exits 0, which reads as a green.
+ci_run_block() {
+    awk -v name="- name: $1" '
+        index($0, name) == 7 { step = 1; next }
+        step && /^      - name:/ { exit }
+        step && /^        run: \|$/ { body = 1; next }
+        body && /^          / { sub(/^          /, ""); print; next }
+        body { exit }
+    ' "$BATS_TEST_DIRNAME/../../.github/workflows/ci.yml"
+}
