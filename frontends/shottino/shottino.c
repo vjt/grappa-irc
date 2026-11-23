@@ -5392,8 +5392,7 @@ static void render_row(struct app *app, const struct wire_scrollback_message *m,
 
     /* A conversation row with no body is nothing to show; a PRESENCE row
      * with no body is the whole point, so only the former is dropped. */
-    bool conversational =
-        m->kind == MSG_PRIVMSG || m->kind == MSG_NOTICE || m->kind == MSG_ACTION;
+    bool conversational = wire_message_kind_is_content(m->kind);
     if (conversational && !body[0]) return;
 
     /* A CTCP reply is protocol, not conversation: it must not re-key
@@ -28814,7 +28813,7 @@ static void ircd_publish(struct app *app, const struct wire_scrollback_message *
         struct ircd_client *c = &app->ircd.clients[i];
         if (c->fd < 0 || !c->registered) continue;
         if (strcmp(c->network, m->network) != 0) continue;
-        bool conversational = h->kind == MSG_PRIVMSG || h->kind == MSG_NOTICE || h->kind == MSG_ACTION;
+        bool conversational = wire_message_kind_is_content(h->kind);
         /* A client displays its own messages the moment it sends them,
          * so echoing them back doubles every line — unless it asked for
          * echo-message, which exists precisely to move that decision to
@@ -28844,7 +28843,7 @@ static void ircd_replay(struct app *app, struct ircd_client *c) {
         /* Presence rows are noise in a replay: a JOIN from an hour ago
          * tells a client someone is arriving now. Conversation is what
          * was missed. */
-        if (h->kind != MSG_PRIVMSG && h->kind != MSG_NOTICE && h->kind != MSG_ACTION) continue;
+        if (!wire_message_kind_is_content(h->kind)) continue;
         char line[IRCD_LINE_MAX + 256];
         ircd_message_line(h, own, c->cap_server_time, c->cap_tags, NULL, line, sizeof(line));
         if (line[0]) ircd_send_locked(c, "%s", line);
@@ -28876,7 +28875,7 @@ static size_t ircd_history_for(struct app *app, const char *network, const char 
     for (size_t k = 0; k < app->ircd.hist_count && n < max; k++) {
         const struct ircd_hist *h = &app->ircd.hist[(start + k) % IRCD_HISTORY];
         if (strcmp(h->network, network) != 0) continue;
-        if (h->kind != MSG_PRIVMSG && h->kind != MSG_NOTICE && h->kind != MSG_ACTION) continue;
+        if (!wire_message_kind_is_content(h->kind)) continue;
         if (target && !ircd_name_equal(h->channel, target)) continue;
         out[n++] = h;
     }
@@ -29165,7 +29164,7 @@ static void archive_collect(struct app *app, const struct wire_scrollback_messag
     if (out->count >= IRCD_CHATHISTORY_MAX) return;
     /* Conversation only: a JOIN from last week tells a client someone is
      * arriving now, which is the same reason the replay drops them. */
-    if (m->kind != MSG_PRIVMSG && m->kind != MSG_NOTICE && m->kind != MSG_ACTION) return;
+    if (!wire_message_kind_is_content(m->kind)) return;
     if (out->after_ms && m->server_time <= out->after_ms) return;
     if (out->before_ms && m->server_time >= out->before_ms) return;
     if (out->after_id && m->id <= out->after_id) return;

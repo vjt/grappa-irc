@@ -143,6 +143,10 @@ typedef enum {
 } wire_e2e_request_state;
 
 const char *wire_message_kind_name(wire_message_kind k);
+/* Is this a conversation row (privmsg, notice, action) rather than a
+ * presence or event row? The server's content kinds: the `@kind_class`
+ * rows in `Grappa.Scrollback.Message` whose `content` is not false. */
+bool wire_message_kind_is_content(wire_message_kind k);
 const char *wire_connection_state_name(wire_connection_state s);
 /* The server's spelling of each E2E closed-set value; "unknown" out of range. */
 const char *wire_e2e_verb_name(wire_e2e_verb v);
