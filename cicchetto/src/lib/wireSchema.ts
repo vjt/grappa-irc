@@ -1,6 +1,6 @@
 // GENERATED FILE — DO NOT EDIT
 // Run `scripts/mix.sh grappa.gen_wire_types` to regenerate.
-// Source: lib/grappa/**/*wire.ex + GrappaWeb.AuthJSON + GrappaWeb.BootJSON + GrappaWeb.ErrorTokens + GrappaWeb.MeJSON
+// Source: lib/grappa/**/*wire.ex + Elixir.GrappaWeb.*JSON.beam
 //
 // #429 — the RUNTIME twin of `wireTypes.ts`: the same typespecs, emitted
 // as schema literals `wireValidate.ts` interprets. `wireTypes.ts` is
@@ -18,7 +18,7 @@ import {
   E2E_PAIRING_WIRE_CLOSE_REASON,
   E2E_PAIRING_WIRE_SIDE,
   E2E_REQUESTS_WIRE_WIRE_STATE,
-  ERROR_TOKENS_SHARED_ERROR_TOKEN,
+  ERROR_JSONSHARED_ERROR_TOKEN,
   IRCAUTH_FSMAUTH_METHOD,
   IRCIDENTIFIER_CASEMAPPING,
   LIVE_INTROSPECTION_SESSION_ENTRY_DEGRADED_FIELD,
@@ -27,6 +27,7 @@ import {
   NETWORKS_CREDENTIALS_ADMIN_WIRE_SESSION_ACTION,
   NETWORKS_CREDENTIALS_ADMIN_WIRE_SPAWN_ERROR,
   NETWORKS_NETWORK_SERVICES_FLAVOR,
+  PUSH_SUBSCRIPTION_PROVIDER,
   SCROLLBACK_MESSAGE_KIND,
   SESSION_LOG_EVENT,
   SESSION_WINDOW_STATE_WINDOW_STATE,
@@ -40,6 +41,7 @@ import {
   SESSION_WIRE_WIRE_EVENT_KIND,
   THEMES_TOKEN_MODEL_FONT_FAMILY,
   THEMES_TOKEN_MODEL_SIZE_MODE,
+  USER_SETTINGS_IGNORE_OUTCOME,
   WINDOW_COUNTS_SEVERITY,
 } from "./wireTypes";
 
@@ -991,6 +993,9 @@ export const S_NotifyWireNotifyListPayload = {
   o: { kind: { l: "notify_list" }, networks: S_NotifyWireEntriesMap },
 } as const;
 
+// Grappa.Push.Subscription.provider/0
+export const S_PushSubscriptionProvider = { e: [...PUSH_SUBSCRIPTION_PROVIDER] } as const;
+
 // Grappa.QueryWindows.Wire.windows_entry/0
 export const S_QueryWindowsWireWindowsEntry = {
   o: { network_id: "i", target_nick: "s", opened_at: "s" },
@@ -1741,6 +1746,41 @@ export const S_UserSettingsWireQuitPartReasonChangedPayload = {
   o: { kind: { l: "quit_part_reason_changed" }, quit_part_reason: { u: ["s", "z"] } },
 } as const;
 
+// Grappa.UserSettings.display_prefs/0
+export const S_UserSettingsDisplayPrefs = {
+  o: {
+    time_format: "s",
+    colored_nicklist: "b",
+    presence_filter: { r: "s" },
+    show_bottom_bar: "b",
+    strip_formatting: "b",
+    show_event_badge: "b",
+    bold_mentions: "b",
+    date_format: "s",
+  },
+} as const;
+
+// Grappa.UserSettings.ignore_outcome/0
+export const S_UserSettingsIgnoreOutcome = { e: [...USER_SETTINGS_IGNORE_OUTCOME] } as const;
+
+// Grappa.UserSettings.muted_targets/0
+export const S_UserSettingsMutedTargets = { r: { r: { u: ["i", "z"] } } } as const;
+
+// Grappa.UserSettings.notification_prefs/0
+export const S_UserSettingsNotificationPrefs = {
+  o: {
+    channel_messages_all: "b",
+    channel_messages_only: { a: "s" },
+    channel_mentions: "b",
+    private_messages_all: "b",
+    private_messages_only: { a: "s" },
+    presence_online: "b",
+    presence_offline: "b",
+    muted_targets: S_UserSettingsMutedTargets,
+    notification_sound: "s",
+  },
+} as const;
+
 // Grappa.Vhosts.AdminWire.grant_json/0
 export const S_VhostsAdminWireGrantJson = {
   o: {
@@ -1847,6 +1887,11 @@ export const S_AuthJSONSubjectWire = {
   u: [S_AuthJSONUserSubjectWire, S_AuthJSONVisitorSubjectWire],
 } as const;
 
+// GrappaWeb.AuthJSON.login_response/0
+export const S_AuthJSONLoginResponse = {
+  o: { token: "s", subject: S_AuthJSONSubjectWire },
+} as const;
+
 // GrappaWeb.BootJSON.channel_tree/0
 export const S_BootJSONChannelTree = { r: { a: S_NetworksWireChannelJson } } as const;
 
@@ -1864,13 +1909,31 @@ export const S_BootJSONBootJson = {
   },
 } as const;
 
-// GrappaWeb.ErrorTokens.shared_error_token/0
-export const S_ErrorTokensSharedErrorToken = { e: [...ERROR_TOKENS_SHARED_ERROR_TOKEN] } as const;
+// GrappaWeb.ClientTokenJSON.create_response/0
+export const S_ClientTokenJSONCreateResponse = {
+  o: {
+    handle: "s",
+    label: "s",
+    created_at: "s",
+    last_seen_at: "s",
+    ip: { u: ["s", "z"] },
+    user_agent: { u: ["s", "z"] },
+    token: "s",
+  },
+} as const;
 
-// GrappaWeb.ErrorTokens.channel_error_token/0
-export const S_ErrorTokensChannelErrorToken = {
+// GrappaWeb.ClientTokenJSON.index_response/0
+export const S_ClientTokenJSONIndexResponse = {
+  o: { tokens: { a: S_AccountsWireClientTokenJson } },
+} as const;
+
+// GrappaWeb.ErrorJSON.shared_error_token/0
+export const S_ErrorJSONSharedErrorToken = { e: [...ERROR_JSONSHARED_ERROR_TOKEN] } as const;
+
+// GrappaWeb.ErrorJSON.channel_error_token/0
+export const S_ErrorJSONChannelErrorToken = {
   u: [
-    S_ErrorTokensSharedErrorToken,
+    S_ErrorJSONSharedErrorToken,
     { l: "unknown_topic" },
     { l: "invalid_payload" },
     { l: "user_not_found" },
@@ -1898,10 +1961,10 @@ export const S_ErrorTokensChannelErrorToken = {
   ],
 } as const;
 
-// GrappaWeb.ErrorTokens.rest_error_token/0
-export const S_ErrorTokensRestErrorToken = {
+// GrappaWeb.ErrorJSON.rest_error_token/0
+export const S_ErrorJSONRestErrorToken = {
   u: [
-    S_ErrorTokensSharedErrorToken,
+    S_ErrorJSONSharedErrorToken,
     { l: "bad_request" },
     { l: "unauthorized" },
     { l: "nickserv_pass_retired" },
@@ -1993,6 +2056,28 @@ export const S_ErrorTokensRestErrorToken = {
   ],
 } as const;
 
+// GrappaWeb.ErrorJSON.status_error_response/0
+export const S_ErrorJSONStatusErrorResponse = { o: { errors: { o: { detail: "s" } } } } as const;
+
+// GrappaWeb.IgnoresJSON.entry/0
+export const S_IgnoresJSONEntry = { o: { mask: "s", text_pattern: { u: ["s", "z"] } } } as const;
+
+// GrappaWeb.IgnoresJSON.index_response/0
+export const S_IgnoresJSONIndexResponse = {
+  o: { masks: { a: "s" }, entries: { a: S_IgnoresJSONEntry } },
+} as const;
+
+// GrappaWeb.IgnoresJSON.mutation_response/0
+export const S_IgnoresJSONMutationResponse = {
+  o: {
+    masks: { a: "s" },
+    entries: { a: S_IgnoresJSONEntry },
+    mask: "s",
+    text_pattern: { u: ["s", "z"] },
+    outcome: S_UserSettingsIgnoreOutcome,
+  },
+} as const;
+
 // GrappaWeb.MeJSON.read_cursors/0
 export const S_MeJSONReadCursors = { r: { r: "i" } } as const;
 
@@ -2041,3 +2126,110 @@ export const S_MeJSONVisitorMeJson = {
 
 // GrappaWeb.MeJSON.me_json/0
 export const S_MeJSONMeJson = { u: [S_MeJSONUserMeJson, S_MeJSONVisitorMeJson] } as const;
+
+// GrappaWeb.MessagesJSON.capped_count_response/0
+export const S_MessagesJSONCappedCountResponse = { o: { count: "i" } } as const;
+
+// GrappaWeb.MessagesJSON.split_count_response/0
+export const S_MessagesJSONSplitCountResponse = {
+  o: { count: "i", messages: "i", events: "i" },
+} as const;
+
+// GrappaWeb.MessagesJSON.count_response/0
+export const S_MessagesJSONCountResponse = {
+  u: [S_MessagesJSONSplitCountResponse, S_MessagesJSONCappedCountResponse],
+} as const;
+
+// GrappaWeb.NetworksJSON.perform_response/0
+export const S_NetworksJSONPerformResponse = {
+  o: { perform_list: { u: ["s", "z"] }, oper_pass_set: "b" },
+} as const;
+
+// GrappaWeb.NetworksJSON.server_pass_response/0
+export const S_NetworksJSONServerPassResponse = { o: { server_pass_set: "b" } } as const;
+
+// GrappaWeb.PushSubscriptionJSON.create_response/0
+export const S_PushSubscriptionJSONCreateResponse = { o: { id: "s", created_at: "s" } } as const;
+
+// GrappaWeb.PushSubscriptionJSON.subscription_summary/0
+export const S_PushSubscriptionJSONSubscriptionSummary = {
+  o: {
+    id: "s",
+    provider: S_PushSubscriptionProvider,
+    user_agent: { u: ["s", "z"] },
+    label: { u: ["s", "z"] },
+    created_at: "s",
+    last_used_at: { u: ["s", "z"] },
+  },
+} as const;
+
+// GrappaWeb.PushSubscriptionJSON.index_response/0
+export const S_PushSubscriptionJSONIndexResponse = {
+  o: { subscriptions: { a: S_PushSubscriptionJSONSubscriptionSummary } },
+} as const;
+
+// GrappaWeb.UserSettingsJSON.aliases_response/0
+export const S_UserSettingsJSONAliasesResponse = { o: { aliases: { r: "s" } } } as const;
+
+// GrappaWeb.UserSettingsJSON.auto_away_debounce_seconds_response/0
+export const S_UserSettingsJSONAutoAwayDebounceSecondsResponse = {
+  o: { auto_away_debounce_seconds: { u: ["i", "z"] } },
+} as const;
+
+// GrappaWeb.UserSettingsJSON.auto_away_reason_response/0
+export const S_UserSettingsJSONAutoAwayReasonResponse = {
+  o: { auto_away_reason: { u: ["s", "z"] } },
+} as const;
+
+// GrappaWeb.UserSettingsJSON.away_nick_suffix_response/0
+export const S_UserSettingsJSONAwayNickSuffixResponse = {
+  o: { away_nick_suffix: { u: ["s", "z"] } },
+} as const;
+
+// GrappaWeb.UserSettingsJSON.ban_mask_form_response/0
+export const S_UserSettingsJSONBanMaskFormResponse = { o: { ban_mask_form: "s" } } as const;
+
+// GrappaWeb.UserSettingsJSON.command_counts_response/0
+export const S_UserSettingsJSONCommandCountsResponse = {
+  o: { command_counts: { r: "i" } },
+} as const;
+
+// GrappaWeb.UserSettingsJSON.display_prefs_response/0
+export const S_UserSettingsJSONDisplayPrefsResponse = {
+  o: { display_prefs: S_UserSettingsDisplayPrefs, persisted: "b" },
+} as const;
+
+// GrappaWeb.UserSettingsJSON.notification_prefs_response/0
+export const S_UserSettingsJSONNotificationPrefsResponse = {
+  o: { notification_prefs: S_UserSettingsNotificationPrefs },
+} as const;
+
+// GrappaWeb.UserSettingsJSON.quit_part_reason_response/0
+export const S_UserSettingsJSONQuitPartReasonResponse = {
+  o: { quit_part_reason: { u: ["s", "z"] } },
+} as const;
+
+// GrappaWeb.UserSettingsJSON.show_peer_profiles_response/0
+export const S_UserSettingsJSONShowPeerProfilesResponse = {
+  o: { show_peer_profiles: "b" },
+} as const;
+
+// GrappaWeb.UserSettingsJSON.upload_confirm_enabled_response/0
+export const S_UserSettingsJSONUploadConfirmEnabledResponse = {
+  o: { upload_confirm_enabled: "b" },
+} as const;
+
+// GrappaWeb.UserSettingsJSON.upload_ttl_seconds_response/0
+export const S_UserSettingsJSONUploadTtlSecondsResponse = {
+  o: { upload_ttl_seconds: { u: ["i", "z"] } },
+} as const;
+
+// GrappaWeb.UserSettingsJSON.vhost_option/0
+export const S_UserSettingsJSONVhostOption = {
+  o: { address: "s", in_pool: "b", granted: "b", name: "s" },
+} as const;
+
+// GrappaWeb.UserSettingsJSON.vhost_response/0
+export const S_UserSettingsJSONVhostResponse = {
+  o: { available: { a: S_UserSettingsJSONVhostOption }, selection: { a: "s" } },
+} as const;

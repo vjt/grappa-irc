@@ -473,7 +473,16 @@ let _socket: Socket | null = null;
 // from a server predating v66 leaves the roster as it was until the next
 // `members_seeded` — accepted, no fallback. 65 is taken (issue 2201).
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 66;
+//
+// 67 (issue 2694) — no byte on the wire moved. The generated mirror now
+// covers every web view: `wireTypes.ts` / `wireSchema.ts` gain the types of
+// `IgnoresJSON`, `PushSubscriptionJSON`, `UserSettingsJSON` and seven named
+// response envelopes, and the error-token arrays are renamed `ERROR_JSON*`
+// (the types moved from `GrappaWeb.ErrorTokens` into `GrappaWeb.ErrorJSON`).
+// This slice only follows the rename (`friendlyApiError`,
+// `friendlyChannelError`); narrowing responses against the new schemas is
+// the next one. `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 67;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

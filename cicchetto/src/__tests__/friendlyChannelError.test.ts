@@ -32,7 +32,7 @@ const CASES: Array<{ code: string; matches: RegExp }> = [
   { code: "not_found", matches: /highlight list|not in your/i },
   { code: "save_failed", matches: /couldn't save your highlight list/i },
   // #411 D6b — the 8 previously-unmapped channel tokens. The client union is
-  // now the FULL `GrappaWeb.ErrorTokens.channel_error_token` set (generated),
+  // now the FULL `GrappaWeb.ErrorJSON.channel_error_token` set (generated),
   // so `assertNever` forces an arm for every one. Product copy (issue #411).
   { code: "forbidden", matches: /not allowed to do that/i },
   { code: "invalid_payload", matches: /request was malformed/i },

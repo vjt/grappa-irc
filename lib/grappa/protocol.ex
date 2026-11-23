@@ -1709,7 +1709,34 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: an older bundle never reads the key and
   # keeps walking the letters, exactly as before.
-  @protocol_version 66
+  #
+  # ---------------------------------------------------------------------------
+  # 67 — issue 2694: the generated mirror covers every web view
+  # ---------------------------------------------------------------------------
+  #
+  # NOT ONE BYTE ON THE WIRE MOVED. What moved is the generated shape:
+  # `gen_wire_types` used to reach the web views through a hand-kept list of
+  # four (`@extra_modules`), and now takes every compiled `GrappaWeb.*JSON`
+  # view — the set `wire_pin` already derived from the build output. So
+  # `wireTypes.ts` / `wireSchema.ts` gain the types of `IgnoresJSON`,
+  # `PushSubscriptionJSON` and `UserSettingsJSON`, plus seven envelopes that
+  # were inline returns and are now named (`AuthJSON.login_response`,
+  # `ClientTokenJSON.index_response` / `create_response`,
+  # `ErrorJSON.status_error_response`, `MessagesJSON.count_response`,
+  # `NetworksJSON.perform_response` / `server_pass_response`). The error
+  # token types moved from `GrappaWeb.ErrorTokens` into `GrappaWeb.ErrorJSON`,
+  # so their generated names changed (`ErrorTokens*` → `ErrorJSON*`) — a
+  # rename in the CLIENT's source, not on the wire.
+  #
+  # Bumped on the #1393d rule, and here the second reason is the whole
+  # reason: the next cic slice narrows these responses against the new
+  # schemas and so REQUIRES them, which a server below 67 cannot supply. The
+  # pin forces the bump too (`wire_pin`'s digest covers both artefacts), but
+  # the pin is the enforcement, not the argument.
+  #
+  # @min_protocol_version stays at 1: nothing a client sends or receives
+  # changed.
+  @protocol_version 67
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1750,7 +1777,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 66
+  @spec version() :: 67
   def version, do: @protocol_version
 
   @doc """

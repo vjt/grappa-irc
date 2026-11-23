@@ -3,7 +3,7 @@
 // Before #411 the cicchetto client hand-listed a CURATED SUBSET of wire error
 // tokens; the ~30 unmapped ones fell through to the raw `<status> <code>`
 // string in operator-visible banners. #411 generates the FULL server token
-// set into the client union (from `GrappaWeb.ErrorTokens`) and gives every
+// set into the client union (from `GrappaWeb.ErrorJSON`) and gives every
 // previously-unmapped token a real copy arm.
 //
 // This spec asserts the VISIBLE outcome for one such token on an e2e-able
