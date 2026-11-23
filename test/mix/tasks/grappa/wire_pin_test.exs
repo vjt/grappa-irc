@@ -161,23 +161,31 @@ defmodule Mix.Tasks.Grappa.WirePinTest do
     end
 
     test "the #2037 count response is inside the digested text" do
+      text = WirePin.shape_text()
       views = WirePin.json_view_spec_text()
 
       # The exact shape whose ADDITION this gate failed to see. Named rather
-      # than probed generically: if a refactor moves this response out of a
-      # spec the digest reads, the coverage is gone and this says so.
+      # than probed generically: if a refactor moves this response out of
+      # what the digest reads, the coverage is gone and this says so. Issue
+      # 2694 was such a refactor — the inline return became the named
+      # `count_response/0` — so the fields now reach the digest through the
+      # CODEGEN component, and the spec component carries the name.
       assert views =~ "GrappaWeb.MessagesJSON"
-      assert views =~ "messages: non_neg_integer()"
-      assert views =~ "events: non_neg_integer()"
+      assert views =~ "count_response()"
+      assert text =~ "export type MessagesJSONSplitCountResponse = {"
+      assert text =~ "  messages: number;"
+      assert text =~ "  events: number;"
     end
 
     test "discovery is DERIVED from the build output and finds every view" do
-      mods = WirePin.json_view_modules()
+      # ONE view set, shared with the codegen since issue 2694 — the pin reads
+      # it through `json_view_spec_text/0`, so this is the set it digests.
+      mods = GenWireTypes.json_view_modules()
 
       # Positive control: a set this small going empty is the failure mode
       # the component raises on, and an assertion of ">= 1" would not notice
-      # eleven of twelve disappearing.
-      assert length(mods) >= 12
+      # twelve of thirteen disappearing.
+      assert length(mods) >= 13
       assert GrappaWeb.MessagesJSON in mods
       assert GrappaWeb.UserSettingsJSON in mods
       assert GrappaWeb.PushSubscriptionJSON in mods

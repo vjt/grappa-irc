@@ -19,6 +19,12 @@ defmodule GrappaWeb.NetworksJSON do
   alias Grappa.Networks.{Credential, Network, Wire}
   alias Grappa.Session
 
+  @typedoc "Wire shape for `GET`/`PUT /networks/:network_id/perform` — see `perform/1`."
+  @type perform_response :: %{perform_list: String.t() | nil, oper_pass_set: boolean()}
+
+  @typedoc "Wire shape for the server `PASS` set-ness (GH #1044) — see `server_pass/1`."
+  @type server_pass_response :: %{server_pass_set: boolean()}
+
   @doc """
   Renders the `:index` action — flat JSON array of network maps.
 
@@ -68,7 +74,7 @@ defmodule GrappaWeb.NetworksJSON do
   nothing about the stored secret, not even whether there is one).
   """
   @spec perform(%{perform: %{perform_list: String.t() | nil, oper_pass_set: boolean()}}) ::
-          %{perform_list: String.t() | nil, oper_pass_set: boolean()}
+          perform_response()
   def perform(%{perform: %{perform_list: perform_list, oper_pass_set: oper_pass_set}}) do
     %{perform_list: perform_list, oper_pass_set: oper_pass_set}
   end
@@ -79,7 +85,7 @@ defmodule GrappaWeb.NetworksJSON do
   never reaches here, the same write-only posture `oper_pass_set` has above.
   """
   @spec server_pass(%{server_pass: %{server_pass_set: boolean()}}) ::
-          %{server_pass_set: boolean()}
+          server_pass_response()
   def server_pass(%{server_pass: %{server_pass_set: server_pass_set}}) do
     %{server_pass_set: server_pass_set}
   end

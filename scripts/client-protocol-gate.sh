@@ -25,7 +25,8 @@
 # WHY THE SOURCE IS THE GENERATED ARTEFACT
 #
 # `cicchetto/src/lib/wireTypes.ts` is emitted by `mix grappa.gen_wire_types`
-# from `lib/grappa/**/*wire.ex` plus the task's `@extra_modules`, and held by
+# from `lib/grappa/**/*wire.ex` plus every compiled `GrappaWeb.*JSON` view
+# (`json_view_modules/0`, issue 2694), and held by
 # `mix grappa.gen_wire_types --check` in `scripts/check.sh` and CI. So it
 # cannot drift from the typespecs behind the server's back, and reading it
 # here reuses that guarantee instead of re-implementing a typespec walk.

@@ -16,6 +16,21 @@ defmodule GrappaWeb.MessagesJSON do
 
   alias Grappa.Scrollback.{Message, Wire}
 
+  @typedoc "`GET …/messages/count` without `?cap=`: the threshold count AND its display split (#2037)."
+  @type split_count_response :: %{
+          count: non_neg_integer(),
+          messages: non_neg_integer(),
+          events: non_neg_integer()
+        }
+
+  @typedoc "`GET …/messages/count?cap=N`: the threshold count alone (issue 2282) — see `count/1`."
+  @type capped_count_response :: %{count: non_neg_integer()}
+
+  # Named arms, not an inline object union: the committed `wireTypes.ts` has
+  # zero `} | {` unions, and `A | B` of aliases is a shape the generator
+  # already emits (the sibling note in `GrappaWeb.AuthJSON`).
+  @type count_response :: split_count_response() | capped_count_response()
+
   @doc "Renders the `:index` action — a flat JSON array of message maps."
   @spec index(%{messages: [Message.t()]}) :: [Wire.t()]
   def index(%{messages: messages}), do: Enum.map(messages, &Wire.to_json/1)
@@ -70,8 +85,7 @@ defmodule GrappaWeb.MessagesJSON do
   client requires.
   """
   @spec count(%{count: non_neg_integer(), split: Grappa.Scrollback.count_split() | nil}) ::
-          %{count: non_neg_integer(), messages: non_neg_integer(), events: non_neg_integer()}
-          | %{count: non_neg_integer()}
+          count_response()
   def count(%{count: n, split: %{messages: messages, events: events}}),
     do: %{count: n, messages: messages, events: events}
 

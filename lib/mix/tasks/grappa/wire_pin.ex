@@ -55,13 +55,17 @@ defmodule Mix.Tasks.Grappa.WirePin do
   tripwire — and cured it by adding one module to `gen_wire_types`'s
   hand-kept `@extra_modules` and writing a comment telling the next author
   to remember. The note did not hold, and it could not: the list is
-  **fail-OPEN**, so forgetting it costs nothing and says nothing.
+  **fail-OPEN**, so forgetting it costs nothing and says nothing. (Issue
+  2694 deleted the list: the codegen now takes the derived view set below.)
 
-  Widening that list is not the cure either, measured: of the twelve
-  `GrappaWeb.*JSON` views, **eight declare no named `@type` at all** —
-  `MessagesJSON` among them, which is where #2037's fields live. The
-  codegen renders named types, so listing those modules buys exactly
-  nothing. All twelve DO carry `@spec`s (29 of them).
+  Widening that list was not the cure either, measured at #2037: of the
+  twelve `GrappaWeb.*JSON` views then, **eight declared no named `@type` at
+  all** — `MessagesJSON` among them, which is where #2037's fields live. The
+  codegen renders named types, so listing those modules bought exactly
+  nothing. All twelve DID carry `@spec`s (29 of them). Issue 2694 named
+  the inline envelopes, so today 13 views exist and 3 declare no `@type` of
+  their own (Archive, Channels, Members), because every spec of theirs
+  already returns a named `*.Wire` type.
 
   So the third component digests what the views **declare** — the
   `@spec`s of their EXPORTED functions, read from BEAM chunks, over a
@@ -70,10 +74,14 @@ defmodule Mix.Tasks.Grappa.WirePin do
   covered the moment it compiles, and a discovery that finds nothing
   RAISES instead of contributing an empty string.
 
-  Deliberately NOT routed through the codegen: it would drag twelve views'
-  shapes into `wireTypes.ts` and `wireSchema.ts`, and the schema one is
-  RUNTIME validation for cic. Widening a runtime validator is a client
-  change; this is a gate change, and they do not belong in one commit.
+  The module set is `GenWireTypes.json_view_modules/0` — ONE membership
+  rule, read by this gate and by the codegen alike (issue 2694). #2037 kept
+  the views out of the codegen on purpose, because widening the runtime
+  validator in `wireSchema.ts` is a client change and this was a gate
+  change; issue 2694 is that client change, made deliberately, with its own
+  protocol bump. The spec component stays even so: a view whose spec
+  returns an inline map, with no named type behind it, is still invisible
+  to the codegen, and the digest is what keeps that from passing silently.
 
   ⚠️ **Two limits, stated so they are not rediscovered as surprises.**
   A view whose BODY grows a key while its `@spec` stands still is still
@@ -141,10 +149,6 @@ defmodule Mix.Tasks.Grappa.WirePin do
 
   @pin_path "priv/wire/shape.pin"
   @protocol_source "lib/grappa/protocol.ex"
-
-  # The hand-written web JSON views, matched on the BUILD OUTPUT so the set
-  # is derived and cannot be under-kept. See `json_view_modules/0`.
-  @json_view_beam_glob "Elixir.GrappaWeb.*JSON.beam"
 
   @version_re ~r/^protocol_version = (\d+)$/m
   @digest_re ~r/^shape_digest = (sha256:[0-9a-f]+)$/m
@@ -255,45 +259,19 @@ defmodule Mix.Tasks.Grappa.WirePin do
   end
 
   @doc """
-  Every `GrappaWeb.*JSON` view, DERIVED from the compiled beams.
-
-  The module name comes from the beam FILENAME, which IS the module — not
-  from camelizing a source path. That distinction is the one
-  `gen_wire_types` records having been bitten by: `controllers/me_json.ex`
-  camelizes to `GrappaWeb.Controllers.MeJson`, a module that does not
-  exist, which fails `Code.ensure_loaded?`, becomes `nil` and is dropped
-  SILENTLY — zero coverage while looking widened.
-  """
-  @spec json_view_modules() :: [module()]
-  def json_view_modules do
-    Mix.Project.compile_path()
-    |> Path.join(@json_view_beam_glob)
-    |> Path.wildcard()
-    |> Enum.map(&(&1 |> Path.basename(".beam") |> String.to_atom()))
-    |> Enum.sort()
-  end
-
-  @doc """
   What the hand-written views DECLARE they return, as one deterministic
   string — module order sorted, spec order sorted, read from BEAM chunks so
   comments and formatting are invisible to it.
 
-  Raises when discovery finds nothing. An empty contribution would be a
-  silent fail-OPEN, which is the exact defect this component exists to
-  remove: the digest would go on agreeing while covering one component
-  fewer, and nothing would say so.
+  The set is `GenWireTypes.json_view_modules/0`, which RAISES when
+  discovery finds nothing. An empty contribution would be a silent
+  fail-OPEN, which is the exact defect this component exists to remove: the
+  digest would go on agreeing while covering one component fewer, and
+  nothing would say so.
   """
   @spec json_view_spec_text() :: String.t()
   def json_view_spec_text do
-    case json_view_modules() do
-      [] ->
-        raise "wire_pin: no #{@json_view_beam_glob} in #{Mix.Project.compile_path()} — " <>
-                "the hand-written view discovery is broken, and a digest taken without it " <>
-                "would silently cover less than the pin claims"
-
-      mods ->
-        Enum.map_join(mods, "\n", &render_view_specs/1)
-    end
+    Enum.map_join(GenWireTypes.json_view_modules(), "\n", &render_view_specs/1)
   end
 
   defp render_view_specs(mod) do

@@ -2,7 +2,7 @@ defmodule GrappaWeb.ErrorTokensDriftTest do
   @moduledoc """
   Drift pin for the wire-level error token space (#369 D6a).
 
-  `GrappaWeb.ErrorTokens` declares itself THE single source of truth for
+  `GrappaWeb.ErrorJSON` declares itself THE single source of truth for
   every `%{error: "<token>"}` envelope the web layer speaks. That
   contract is only worth anything if it matches what the emitters
   ACTUALLY emit — so this test DERIVES the emitted set from source and
@@ -30,13 +30,13 @@ defmodule GrappaWeb.ErrorTokensDriftTest do
 
   @web_glob "lib/grappa_web/**/*.ex"
 
-  test "REST wire tokens match GrappaWeb.ErrorTokens.rest_error_token/0" do
+  test "REST wire tokens match GrappaWeb.ErrorJSON.rest_error_token/0" do
     {declared, _} = declared_tokens()
     {emitted, _} = emitted_tokens()
     assert_no_drift(emitted, declared, "REST", :rest_error_token)
   end
 
-  test "channel wire tokens match GrappaWeb.ErrorTokens.channel_error_token/0" do
+  test "channel wire tokens match GrappaWeb.ErrorJSON.channel_error_token/0" do
     {_, declared} = declared_tokens()
     {_, emitted} = emitted_tokens()
     assert_no_drift(emitted, declared, "channel", :channel_error_token)
@@ -45,7 +45,7 @@ defmodule GrappaWeb.ErrorTokensDriftTest do
   # ── declared side (read the SSOT @types) ────────────────────────────
 
   defp declared_tokens do
-    {:ok, types} = Code.Typespec.fetch_types(GrappaWeb.ErrorTokens)
+    {:ok, types} = Code.Typespec.fetch_types(GrappaWeb.ErrorJSON)
     by_name = for {:type, {name, ast, _}} <- types, into: %{}, do: {name, ast}
     {resolve(by_name, :rest_error_token), resolve(by_name, :channel_error_token)}
   end
@@ -134,7 +134,7 @@ defmodule GrappaWeb.ErrorTokensDriftTest do
 
     assert missing == [] and stale == [],
            """
-           #{label} wire tokens drifted from GrappaWeb.ErrorTokens.#{type_name}/0.
+           #{label} wire tokens drifted from GrappaWeb.ErrorJSON.#{type_name}/0.
 
            Emitted by lib/grappa_web/** but MISSING from the type (add them):
              #{inspect(missing)}
