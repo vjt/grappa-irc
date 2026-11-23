@@ -8935,6 +8935,16 @@ out of the snapshot, not rejected, and invite-admissible.
   call the one leaf. So does `mix grappa.gen_wire_types`, which had a fifth
   copy nested the other way for a union read back from a beam: every reader
   there flattens the union first, so the direction never reached the output.
+  Sharing the fold costs three Boundary edges, and the ratchet (issue 2690)
+  records them: `deps:Grappa.Scrollback` 5 → 6, `deps:Grappa.Session`
+  28 → 29, and `deps:Mix.Tasks.Grappa.GenWireTypes` 0 → 1 (the leaf itself
+  is a new key, `deps:Grappa.Typespec` = 0). The edges are real, and
+  measured: Boundary checks a call made at compile time inside `unquote/1`,
+  and with the dep removed the compiler reports a forbidden reference at
+  every call site (five in `Message`; one each in `Server`, `WindowState`,
+  `Wire` and the task). `check: [in: false]` on the leaf would have kept the
+  counts flat by switching the checker off for it, which is the unrecorded
+  growth the ratchet exists to stop.
 * **The subset `@spec`s are derived too** (`content_kinds/0`,
   `notify_kinds/0`, `suppressed_presence_kinds/0`,
   `pausable_presence_kinds/0`). The same MS1 run showed dialyzer saying
