@@ -8748,11 +8748,13 @@ grappa REST read, the exclusion would still count 1. The ratchet beside it
 **Where the lexer errs GREEN.** A misreading that never closes is loud (exit
 3); one that closes is silent, and every read it spans is blanked. JSX text is
 not lexed, so a `/*` or a stray backtick there opens a comment or a template
-that runs to its closer, across lines. A closing tag's `</` and a `/` after a
-postfix `!`, `++` or `--` read as a regex up to the next `/` on that line.
-w2's review of PR 2704 found the shapes. Measured on `8931d72d8`: none of the
-110 production `.tsx` files holds a `.json()` read, and no production line
-divides after a postfix `!`, `++` or `--` (0 of 116,865 lines in 441 files).
+that runs to its closer, across lines, and a quote there opens a string to the
+next quote on its line. A closing tag's `</` and a `/` after a postfix `!`,
+`++` or `--` read as a regex up to the next `/` on that line. w2's review of
+PR 2704 found the shapes. Measured on `d84a2437f`: none of the 110 production
+`.tsx` files holds a `.json()` read, and no production line divides after a
+postfix `!`, `++` or `--` (0 of 116,266 lines, counted as `wc -l` counts, in
+the gate's 438 production sources).
 Teaching the lexer that those three end an operand was declined while the
 shape is absent: a postfix `!` differs from a prefix one only by what precedes
 it, and prefix `!/re/` is a live production spelling.
