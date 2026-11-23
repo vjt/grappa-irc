@@ -14,8 +14,11 @@ import { olm } from "./olm";
 export const SLUG = "azzurra";
 
 /**
- * grappa's `frame_budget_base` at LINELEN 512 (`line_split_test.exs`): 512 less
- * the worst-case relayed source prefix, `PRIVMSG :` and CRLF.
+ * An example `frame_budget_base` for the e2e suites (shottino's `test_e2e.c`
+ * uses the same 394), not grappa's at LINELEN 512. That one is 393: 512 less
+ * `relay_frame_overhead("")`, whose `PRIVMSG <target> :` is 10 bytes with an
+ * empty target (two spaces), not the 9 of `PRIVMSG :`
+ * (`docs/E2E_PROTOCOL.md` §2).
  */
 export const FRAME_BUDGET_BASE = 394;
 

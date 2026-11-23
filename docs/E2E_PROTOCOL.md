@@ -15,10 +15,13 @@ relay. Filed as issue 2691, from the 2026-11-21 architecture review (X2).
 | the endpoint protocol | what an endpoint puts in a payload and in an Olm body, how it checks what arrives, SAS, pairing messages | **this document** |
 
 **The source is authoritative**, as in `CLIENT_PROTOCOL.md`: every section
-names the function that implements it, and where this text and the code
-disagree, the code wins and this text is the bug. A cicchetto name lives in
-`cicchetto/src/lib/e2e/wire.ts` unless its module is named beside it;
-shottino's equivalent is in `frontends/shottino/e2e.c` (`e2e_*`).
+that specifies behaviour names the code that implements it, and where this
+text and the code disagree, the code wins and this text is the bug. A
+cicchetto name lives in `cicchetto/src/lib/e2e/wire.ts` unless its module is
+named beside it. A shottino function lives in `frontends/shottino/e2e.c`:
+an `e2e_*` one, or a `static` one named as cicchetto's in snake case
+(`check_master` for `checkMaster`). A shottino constant (`E2E_*`) is a
+`#define` in `frontends/shottino/e2e.h`.
 
 **Scope.** Direct messages between two nicks, across each side's devices,
 and the pairing of a device into its own account. Encrypted **channel**
@@ -110,11 +113,14 @@ shottino's `e2e_lines_needed`). The line budget is the network's published
 with the digits of `n`. The message takes the smallest `n` whose `n` lines
 of room (`budget − head(n)`, which must be positive) cover the payload;
 grappa then cuts exactly `n` lines. No `n` up to 64 means refused (413 at
-the send door). Example, pinned in `lines_needed.json`: with a budget of
-384 (a `frame_budget_base` of 394 less the 10 bytes of `vjt-claude`) and
-an 11-byte msgid, a MSG from
-one did to another holds 334 bytes per line up to `9/9` and 332 from
-`10/10`, so 64 lines hold 21,248 bytes and one byte more is refused.
+the send door). Example, pinned in `lines_needed.json`, which takes the
+budget itself as its input: with a budget of 384 and an 11-byte msgid, a
+MSG from one did to another holds 334 bytes per line up to `9/9` and 332
+from `10/10`, so 64 lines hold 21,248 bytes and one byte more is refused.
+384 is what the 10 bytes of `vjt-claude` leave of a `frame_budget_base` of
+394. That base is an example, not a network's: on a 512-byte line
+`LineSplit.frame_budget_base/1` gives 393 (512 less the 119 bytes of
+`relay_frame_overhead("")`), which leaves `vjt-claude` 383.
 
 ## 3. Identity
 
@@ -138,8 +144,14 @@ where `S1 = E.sign(id text)`.
 
 - 1 to 4 keys on the wire, each canonical; sorted **strictly ascending in
   plain byte order**; no two keys with the same `did`;
-- `N` an integer in 1..2³¹−1, rising with every new list;
+- `N` an integer in 1..2³¹−1 (`validVer`);
 - the master key itself canonical.
+
+A master raises `N` with every new list it signs (§9), but that is not one
+of the rules above: an endpoint applies a list that passes them (cic
+`applyList` in `engine.ts`, shottino `apply_list`) only when its `N` is
+above the stored list's, and ignores one at or below it without a word.
+It never refuses it.
 
 grappa applies a stricter set when a list is PUT
 (`DeviceList.changeset/2`, `E2eKeys.put_list/3`): at most 3 keys, `ver` an
@@ -183,9 +195,10 @@ Versions are decimal. `|` and `:` are literal.
 Every payload is a JSON object with `"v": 2`. A receiver refuses another
 version and **ignores fields it does not know**. A payload that does not
 parse as one JSON object (an array or a scalar, `NaN` or `Infinity`,
-broken text) is undecodable. Shapes are checked first (cic's `parseKeys` / `parsePkmsg` /
-`parseMsg` / `parseNack`, shottino's `e2e_payload_parse`), meaning second
-(§6).
+broken text) is undecodable. Shapes are checked before meaning (cic's
+`parseKeys` / `parsePkmsg` / `parseMsg` / `parseNack`, shottino's
+`e2e_payload_parse`), with one exception: a KEYS nobody asked for is
+dropped before its shape is read (§6).
 
 **`bodies`** (PKMSG, MSG): an object of 1 to 4 entries, each keyed by the
 recipient device's `did` (shape-checked, §1) with a string value, the Olm
@@ -230,10 +243,10 @@ still honoured. Unknown fields are ignored and passed on.
 | `t` | fields | sent by |
 |---|---|---|
 | `text` | `body`: string. `/me` is `body` = `\x01ACTION …\x01` | a person |
-| `file` | `url` (this grappa's own `/uploads/<26-character slug>`, no query or fragment), `key` (base64 of 32 bytes), `iv` (base64 of 12 bytes), `name` (non-empty), `mime` (a `type/subtype`), `size` (integer ≥ 0, plaintext bytes), `category` (`image` / `video` / `document` / `audio`), `expires_at` (a date string); the blob is AES-256-GCM. Only these fields are passed on | a person; optional — cicchetto implements it (`fileInner.ts`), shottino ignores it as an unknown type |
-| `copy` | `peer` (non-empty), `body` (string), `file` (optional: a `t:file` object, `"t":"file"` included) | one of the account's devices to its siblings: what it sent `peer`, through the copy door (`CLIENT_PROTOCOL.md` §4f) |
+| `file` | `url` (this grappa's own `/uploads/<26-character slug>`, no query or fragment), `key` (base64 of 32 bytes), `iv` (base64 of 12 bytes), `name` (non-empty), `mime` (`type/subtype`, each part 1 to 64 characters of RFC 6838's token set, case-insensitive: a letter or digit, then letters, digits and `! # $ & ^ _ . + -`; RFC 6838 allows 127 a part, cicchetto refuses more than 64), `size` (integer ≥ 0, plaintext bytes), `category` (`image` / `video` / `document` / `audio`), `expires_at` (a date string); the blob is AES-256-GCM. Only these fields are passed on | a person; optional — cicchetto implements it (`fileInner.ts`), shottino ignores it as an unknown type |
+| `copy` | `peer` (non-empty), `body` (string), `file` (optional: a `t:file` object, `"t":"file"` included; a copy of an attachment has an empty `body`) | one of the account's devices to its siblings: what it sent `peer`, through the copy door (`CLIENT_PROTOCOL.md` §4f). cicchetto reads `file: null` as no attachment, drops a copy whose `file` is malformed, and shows nothing for an empty `body` with no `file`. shottino ignores `file`, as it ignores `t:file`: a copy of an attachment shows there as an empty sent line |
 | `list` | `master`: `{"ed25519","list":{"ver","devices"},"sig"}` | the engine, to ONE device, at most once per (nick, did) per minute: the answer to a `listreq`, or unasked to a peer device that addressed a device our list does not name |
-| `listreq` | none | the engine, at most once per nick per minute: to the ONE device whose `lv` is above the stored list, or to every device of a master just pinned or verified by SAS |
+| `listreq` | none | the engine, at most once per nick per minute: to the ONE device whose `lv` is above the stored list, or to every device of a master the user just pinned by hand or verified by SAS. The trust-on-first-use pin (§7) asks for nothing |
 | `chal` | `network`, `channel` (non-empty strings), `sender_mask` (string, may be empty), `line_sha256` (64 lower-case hex), `nonce` (non-empty), `expires_at` (integer, unix seconds) | a bot asking whether this user really sent a line (orders) |
 | `ack` | `nonce` | the endpoint, to the CHAL's device only, when the CHAL's sender is a master it has verified and its own send log holds the line |
 | `sas.start` | `tx` (11 base64 characters) | §8 |
@@ -256,7 +269,9 @@ a body: then silently not for us) → the body is base64 → the certificate
 verifies under `master.ed25519` → S1 verifies → the master check (§7) →
 the device's standing (§7) → the curve: not ours or a sibling's, the key
 not already bound with another curve, the curve not bound to another
-device that proved it (one that only claimed it gives it up) → decrypt: with a held
+device that proved it (one that only claimed it gives it up) → the body
+reads as a pre-key message (vodozemac's `pre_key_session_id`), else it is
+dropped without a NACK → decrypt: with a held
 session, failure is NACK `decryption-failed`; otherwise an inbound session
 is created, and a pre-key session id seen before is NACK `replayed-session`,
 a creation failure NACK `session-creation` → the inner message (§5),
@@ -269,26 +284,50 @@ if a trusted device of the pinned master has `ck`: its `did` must equal
 `decryption-failed` otherwise) → if `ck` belongs to any other device:
 dropped → otherwise NACK `no-session`.
 
-**NACK received.** The sender looks up its record of the msgid. A message
-goes out at most twice: it is re-sent once, to that one device only,
-re-keying (at most once a minute per nick) when the failed session was its
-newest. The message is **lost** — tell the user, do not re-key on your own
-(`CLIENT_PROTOCOL.md` §4f) — when the NACK comes from `*`, from a device it
-did not go to that is unknown under that master, or from a device it went
-to that the master no longer vouches for. A NACK from a device it did not
-go to that is bound or listed is ignored.
+**NACK received.** The sender looks up its record of the msgid; a NACK it
+holds no record for is ignored. A message goes out at most twice. The first
+case below that holds decides. A message **lost** is told to the user, never
+re-keyed on the endpoint's own (`CLIENT_PROTOCOL.md` §4f); in parentheses,
+the reason cicchetto reports.
 
-**KEYS received.** Only when asked for. Shape → the list rules (§3) → the
-master check (§7) → per entry: S1, the device's standing, the curve, the
-one-time key's S2, then an outbound session.
+- **The NACK names a device the message did not go to.** From the nick it
+  went to, and from `*` or a device unknown under that master: lost
+  (`unreadable`). From a device that is bound or listed, or from any other
+  nick: ignored.
+- **From another nick, for a device it went to** (the recipient renamed,
+  most likely): lost (`nack-from-another-nick`). This case and every one
+  below name a device the message went to.
+- **The nick is pinned to another master now:** lost (`repinned`).
+- **The master no longer vouches for that device:** lost (`unpinned-key`).
+- **It already went out twice:** lost (`resend-failed`).
+- **Otherwise it is re-sent once, to that one device only.** First, when the
+  failed session was the device's newest, or the device holds no session at
+  all, a re-key is due. It starts unless keys are already being asked of
+  that nick (a KEYREQ within its retry, or a re-key under way), and then it
+  joins those. A re-key that would start within a minute of the nick's last
+  one does not start, and the message is lost (`rekey-throttled`).
+
+**KEYS received.** Only when asked for (otherwise dropped unread). Shape →
+the list rules (§3) → the master check (§7); a key alarm here, or our own
+master, loses every message waiting for that nick's keys (`key-mismatch`)
+→ the list is applied (§3) → per device, its FIRST entry only (a later one
+with the same `ed25519` is skipped): S1, the device's standing, the curve,
+the one-time key's S2, then an outbound session — none when one to that
+curve already exists and the device is not being re-keyed.
 
 **Copies** (`own: true`) come from the account's own devices: the master
 must be ours and the device on our list; a copy is never NACKed.
 
 ## 7. Trust
 
+cic: `checkMaster` (the pin), `standing` and `refusal` (a device), `pin`,
+`verify` and `askList` in `engine.ts`; shottino: `check_master`,
+`standing`, `refusal`, `e2e_pin`, `e2e_verify` and `ask_list`.
+
 - **The peer is its master key, never its nick.** The first master seen
-  for a nick is pinned, unverified (trust on first use). A different
+  for a nick is pinned to it (trust on first use). It is pinned unverified,
+  unless that master was already verified under another nick: verification
+  belongs to the master, not to the nick. A different
   master for a pinned nick raises the **key alarm**: a message under it is
   dropped, and the user decides by re-pinning by hand. A SAS (§8) runs
   against the master already pinned and marks it verified. Our own master
@@ -301,7 +340,8 @@ must be ours and the device on our list; a copy is never NACKed.
   that list does not name, is **stale**. A device learnt from KEYS is
   trusted by the list, which KEYS carries.
 - **The stored list is refreshed** (`listreq`) when a message's `lv` is
-  above it, and when a master is pinned or verified.
+  above it, when the user pins a master by hand, and when a SAS verifies
+  it. The trust-on-first-use pin asks for nothing.
 - **Siblings** (our own other devices) are trusted through our own
   master's signed list and their S1.
 
@@ -315,8 +355,10 @@ Between two people, over the encrypted conversation, with vodozemac's SAS:
 3. A sends `sas.key`; B sends `sas.key`; A checks the commitment.
 4. Both derive **7 emoji**: vodozemac's emoji indices for the `info` of §3
    (the bindings' `emoji_indices(info)` and `vz_established_sas_emoji_indices`)
-   into the 64-entry SAS emoji table (cic `sasEmoji.ts`, shottino
-   `e2e.c`; the two tables are identical).
+   into the 64-entry SAS emoji table (cic `sasEmoji.ts` `SAS_EMOJI`,
+   shottino `e2e.c` `SAS_EMOJI`). The two tables are identical today, by
+   hand: each client keeps its own copy, and no corpus row or test compares
+   them (§12).
 5. After the human confirms a match, each side sends `sas.mac {mac, mmac}`:
    the device MAC over its own `E` and the master MAC over its own `M`, the
    info strings of §3 with the SENDER's curve first.
@@ -359,18 +401,25 @@ is `encrypt` on the established channel.
 
 `reason` is one of `full`, `paired`, `list-changed`, `failed`. An unknown
 `t` or `reason` fails the pairing; unknown fields are ignored. The holder
-signs (cic `issueDevice`, shottino `e2e_pair_issue`): the joiner's keys
+signs (cic `issueDevice` in `pairingMessages.ts`): the joiner's keys
 canonical and its S1 over the holder's master, else `failed`; already
 listed: `paired`; the list at the cap: `full`; otherwise the list at
 `ver + 1`, sorted, and a certificate at `ver + 1`. The joiner accepts
-(`acceptSigned`) only a list that passes the list rules under the offered
-master, names the device, and comes with a certificate that verifies.
+(`acceptSigned` in `pairingMessages.ts`) only a list that passes the list
+rules under the offered master, names the device, and comes with a
+certificate that verifies.
+
+**shottino can join a pairing but not hold one.** It has the signing half,
+`e2e_pair_issue`, and only its tests call it; the holder's doors (opening
+the rendezvous, the typed code, the PUT of the new list) are not written
+(`shottino.c`, "HOLDER HOOK"). A shottino device that holds a master
+cannot add a device to its account.
 
 ## 10. Limits
 
 | limit | value | grappa | cic | shottino |
 |---|---|---|---|---|
-| wire version | 2 | `"v"` | `WIRE_VERSION` | `E2E_WIRE_VERSION` |
+| wire version | 2 | — (a literal `v: 2` in each payload grappa writes: `E2eKeys`, `Session.Server`) | `WIRE_VERSION` | `E2E_WIRE_VERSION` |
 | devices per list / bodies per message (wire) | 4 | — | `MAX_DEVICES` | `E2E_MAX_DEVICES` |
 | devices an identity holds | 3 | `DeviceList.max_devices/0` | `DEVICE_CAP` | `E2E_DEVICE_CAP` |
 | lines per message | 64 | `E2e.max_fragments/0` | `MAX_FRAGMENTS` | `E2E_MAX_FRAGMENTS` |
@@ -391,8 +440,14 @@ most once, 5 sessions per peer device) is each endpoint's own; the values agree 
 `"v": 2` is the wire version of every payload, pinned by every receiver;
 the signed strings carry their own `v1`/`v2` tags and keep them. The
 client-facing REST/WS contract around it is versioned separately by
-`protocol_version` (`CLIENT_PROTOCOL.md`); a change to a payload, a signed
-string or a limit in §10 is a change to this document AND to the corpus.
+`protocol_version` (`CLIENT_PROTOCOL.md`). A change to a payload, a signed
+string, a limit `limits.json` carries, or the version range the endpoints
+apply (`validVer`, pinned by `payloads.json`'s PKMSG certificate rows) is a
+change to this document AND to the corpus. Three rows of §10 have no corpus
+entry. The consent limits and the pairing rendezvous are grappa's to apply
+(shottino carries the rendezvous's 300 s too, as `E2E_PAIRING_LIFETIME_S`),
+and each client keeps its own SAS timeout. A change to one of those is a
+change to this document and to each side's own tests.
 
 ## 12. The conformance corpus
 
@@ -415,6 +470,15 @@ line in each suite that reads it (each enumerates them). A row one
 implementation fails is a divergence to fix in that implementation, never
 a row to delete. The corpus does not pin Olm itself, the SAS emoji
 derivation, or the pairing check code: those are vodozemac's, linked once.
+Nor does it pin the SAS emoji table (§8), the index → emoji map that each
+client keeps its own copy of.
+
+The top-level `msgid` of `lines_needed.json` is read by grappa alone.
+cicchetto and shottino size a line's head with an 11-character placeholder
+(`linesNeeded`, `e2e_lines_needed`), the length of every msgid grappa mints
+(`E2e.new_msgid/0`). So that msgid must stay 11 characters: one of another
+length would move only grappa's answers.
+
 The files live beside cicchetto's other shared truth table
 (`shouldNotifyTruthTable.json`) because the bun container mounts only
 `cicchetto/`; grappa reads them through the mounted `cicchetto/src`, and
