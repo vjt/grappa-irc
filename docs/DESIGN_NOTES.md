@@ -8804,7 +8804,7 @@ spec returns an inline map is in the digest but not in the contract, and
 deriving the set alone would have generated only IgnoresJSON,
 PushSubscriptionJSON and UserSettingsJSON. With the seven named, 3 views
 declare no type of their own (Archive, Channels, Members), and every spec they
-have returns a named `*.Wire` type already.
+have already returns a named `*.Wire` type, or a list of one.
 
 **`ErrorTokens` moved into `ErrorJSON`.** It was neither a view nor a
 `*wire.ex` module, so deleting the list would have dropped it from the codegen
