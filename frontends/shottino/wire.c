@@ -9,8 +9,7 @@
 
 static const char *const CONNECTION_STATE_NAMES[] = {"connected", "failing", "parked", "failed"};
 /* From the table, not from a 3 written twice: the array grows, the two
- * loops that walk it did not. The sibling message_kind_of already used
- * this idiom, which is what made the odd one out visible. */
+ * loops that walk it did not. */
 #define CONNECTION_STATE_COUNT (sizeof(CONNECTION_STATE_NAMES) / sizeof(CONNECTION_STATE_NAMES[0]))
 
 const char *wire_connection_state_name(wire_connection_state s) {
