@@ -8769,3 +8769,115 @@ several lines counts once, and the lines mix error bodies with data. The
 question this slice left open was whether X3 covers those renders or stops at
 the 13 `*JSON` views. vjt ruled (a) on 2026-11-23 (relayed from IRC; not
 recorded on the issue): X3 covers them, in a later slice.
+<!-- entry #2694b -->
+
+---
+
+## 2026-11-23 — #2694b: the codegen and the pin read one view set; seven envelopes get names
+
+**Decision.** `gen_wire_types` takes its web views from
+`GenWireTypes.json_view_modules/0`, every compiled `GrappaWeb.*JSON` beam,
+and `wire_pin` digests the specs of the same set by calling the same
+function. The hand-kept `@extra_modules` list (AuthJSON, BootJSON, ErrorTokens,
+MeJSON) is deleted. Before this, the pin covered 13 views and the codegen 3 of
+them. That is 10 pinned but never generated, not the 9 the issue counted:
+the issue's arithmetic took `ErrorTokens`, which is not a view, as one.
+
+**The membership rule was fail-OPEN twice before.** #1679 found `/boot`
+invisible and added a module to the list with a comment asking the next author
+to remember. #2037 then found `MessagesJSON` invisible and fixed the PIN by
+deriving its set from the build output, but left the codegen on the list. A
+derived set covers a new view the moment it compiles. The empty-discovery raise
+moved into the shared function, so the codegen now fails closed as well, not
+only the pin.
+
+**Seven inline returns are named:**
+- `AuthJSON.login_response`;
+- `ClientTokenJSON.index_response` and `create_response` (the latter was
+  `map()`);
+- `ErrorJSON.status_error_response`;
+- `MessagesJSON.count_response`, over two named arms;
+- `NetworksJSON.perform_response` and `server_pass_response`.
+
+The codegen renders named `@type`s and never reads a `@spec`. So a view whose
+spec returns an inline map is in the digest but not in the contract, and
+deriving the set alone would have generated only IgnoresJSON,
+PushSubscriptionJSON and UserSettingsJSON. With the seven named, 3 views
+declare no type of their own (Archive, Channels, Members), and every spec they
+have returns a named `*.Wire` type already.
+
+**`ErrorTokens` moved into `ErrorJSON`.** It was neither a view nor a
+`*wire.ex` module, so deleting the list would have dropped it from the codegen
+in silence. The error envelope is where the token types belong. Their generated
+names follow the module, so `ErrorTokensRestErrorToken` becomes
+`ErrorJSONRestErrorToken` and the const becomes `ERROR_JSONREST_ERROR_TOKEN`.
+That is `screaming_const_name/1` applied mechanically, the same run-together as
+the existing `IRCAUTH_FSMAUTH_METHOD`. cic's two `friendly*Error.ts` importers
+are renamed in the same commit. `ErrorTokensDriftTest` keeps its name, because
+it is still the error-token drift test.
+
+### DEVIATION from #1406: the external path now resolves a same-module reference
+
+`UserSettingsJSON.notification_prefs_response` references
+`Grappa.UserSettings.notification_prefs/0`, which carries the same-module
+`muted_targets/0`. The TypeScript emitter renders external types one alias at a
+time with no current module. #1406 had answered such a reference with a raise,
+after the earlier camelized guess produced a name nothing declared while the
+runtime emitter computed another. So the moment the view entered the set,
+`generate/0` raised, and `wire_pin` with it.
+
+The runtime emitter never had this hole. `schema_ir`'s `user_type` clause calls
+`schema_ref(mod, name)`, and its fixpoint emits the sibling. The TypeScript side
+now does the same: the reference is registered as one more external ref of that
+module, the existing fixpoint renders it as its own alias, and the alias is
+`render_alias_name/2`, the name the runtime side already uses. `#1406` refused
+"teaching the external path to resolve siblings" on the ground of
+`format_external_typedef/2`'s contract, one alias at a time with no sibling
+registry. This keeps that contract to the letter, since each sibling is a
+separate alias and no registry exists. The one thing it still cannot do is
+SPREAD a composing external enum, and that limit is unchanged and still
+documented there. The 3b test now asserts the property #1406 defended, one name
+in both artefacts, on the real tree. The three comments that carried #1406's
+refusal (two in `gen_wire_types.ex`, one in `Grappa.Themes.Wire` about
+`BuiltinBackgrounds.t/0`) are rewritten in the same change, so no comment is
+left contradicting the code. The deviation was ruled on by the orchestrator, and
+vjt can overrule it.
+
+Two alternatives were rejected:
+- inlining `muted_targets` into `notification_prefs`, which duplicates a type;
+- moving both types into `UserSettings.Wire`, which edits about 15 specs in 3
+  files and makes `Push.Triggers`' domain logic depend on a wire type.
+
+### A nested map literal now indents under its parent
+
+The TS emitter gave every map field a fixed two-space indent. A map nested in a
+field therefore came out flush with its parent. Nothing on main had one (0
+fields open a block in the generated file), so the defect stayed latent until
+`ErrorJSON.status_error_response` (`%{errors: %{detail: …}}`) became the first.
+`gen_wire_types --check` cannot see this, because it compares the generator with
+itself. cic's biome stage caught it.
+
+The fix indents a field value's continuation lines by two spaces, once per level.
+A fixture test pins a three-level block, and was red before the fix. Naming the
+inner map would also have passed biome, but it would only have dodged the case
+and left the next nested map to fail the same way.
+
+### Not done, named
+
+`wire_module?/1` is a third membership rule, by name ("ends in `Wire`"), and the
+schema emitter reads it to choose enum classification. Every view falls on its
+external branch, as the four listed modules always did. Unifying it would
+change `S_ErrorJSONRestErrorToken` from a union into an enum const, which is a
+second shape change with no client asking for it. A view-to-view type
+reference would double-emit, but there is none today, and the failure would be
+a loud `tsc` duplicate.
+
+### Protocol 67, with no byte on the wire moved
+
+Both generated artefacts move, so the pin demands the bump. The argument is the
+#1393d second reason: the next cic slice narrows these responses against the new
+schemas and REQUIRES them. `min_protocol_version` stays at 1.
+
+Deploy: server HOT (no dependency, config, migration or state-shape change;
+types and specs only) plus the cic bundle (generated artefacts, two importers
+renamed, `CLIENT_PROTOCOL_VERSION`).
