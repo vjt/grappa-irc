@@ -320,10 +320,13 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   + greyed-class treatment"):** every cic classifier over `WindowState`
   is a `{…} satisfies Record<WindowState, …>`, so a state the server adds
   is a tsc error at each one until someone classifies it. The same holds
-  for message kinds (`Record<MessageKind, …>`), with two exceptions that
-  are pinned another way: `presenceFilter.ts` / `presencePause.ts` keep a
+  for message kinds (`Record<MessageKind, …>`). DESIGN_NOTES `#2693b`
+  lists what stays unconverted and why; three of those sites sort several
+  message kinds: `presenceFilter.ts` / `presencePause.ts` keep a
   `new Set([...])` because `presence_filter_test.exs` parses that literal
-  against the server's list. A new classifier MUST take the record shape
+  against the server's list, and `EncryptedChatPane`'s search filter
+  (`privmsg || action`) sorts rows that pane synthesizes itself, which no
+  server kind reaches. A new classifier MUST take the record shape
   — a `Set` of the members it admits files every unlisted member in the
   default bucket without a word.
 
