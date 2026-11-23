@@ -1,7 +1,7 @@
 defmodule Grappa.LiveIntrospection do
   @moduledoc """
   Shared live-BEAM introspection helper for the operator surface
-  (M-cluster M-4). Centralizes the `Grappa.SessionRegistry` scan +
+  (M-cluster M-4). Centralizes the `Grappa.Session.list_live/0` read +
   `Process.info/2` projection + `Grappa.Session.list_channels/2`
   call that BOTH `Grappa.Operator`'s tab-separated text formatters
   AND the `GrappaWeb.Admin.*Controller` JSON wires consume.
@@ -36,9 +36,10 @@ defmodule Grappa.LiveIntrospection do
 
   ## Boundary
 
-  Deps: `Grappa.Session` (for `list_channels/2` + `subject` type +
-  `Server.registry_key/2`). `Registry` is Erlang stdlib — no
-  boundary entry. Callers join to DB (Visitors, Credentials) at
+  Deps: `Grappa.Session` only. Every read of `Grappa.SessionRegistry` goes
+  through its verbs (`list_live/0`, `whereis/2`, `count_by_user/0`), so the
+  registry key is spelled in one place (issue 2696); this module enriches
+  what they return. Callers join to DB (Visitors, Credentials) at
   the call site; this module is pure live-state and does NOT
   resolve subjects to domain rows.
   """
@@ -47,7 +48,6 @@ defmodule Grappa.LiveIntrospection do
 
   alias Grappa.LiveIntrospection.SessionEntry
   alias Grappa.Session
-  alias Grappa.Session.Server
 
   @list_channels_timeout_ms 250
   # #550 — same honesty budget as list_channels: an instant state read on a
@@ -61,16 +61,7 @@ defmodule Grappa.LiveIntrospection do
   """
   @spec list_sessions() :: [SessionEntry.t()]
   def list_sessions do
-    # Match spec pins the literal `:session` registry-key tag (mirror of
-    # `Grappa.Session.Server.registry_key/2`): if a future registration
-    # with a different key shape lands in `Grappa.SessionRegistry`, this
-    # verb silently skips it rather than crashing mid-output on a
-    # destructure mismatch.
-    Grappa.SessionRegistry
-    |> Registry.select([
-      {{{:session, :"$1", :"$2"}, :"$3", :_}, [], [{{:"$1", :"$2", :"$3"}}]}
-    ])
-    |> Enum.map(fn {subject, network_id, pid} ->
+    Enum.map(Session.list_live(), fn {subject, network_id, pid} ->
       build_entry(subject, network_id, pid)
     end)
   end
@@ -82,9 +73,9 @@ defmodule Grappa.LiveIntrospection do
   """
   @spec lookup_session(Session.subject(), pos_integer()) :: SessionEntry.t() | nil
   def lookup_session(subject, network_id) when is_integer(network_id) do
-    case Registry.lookup(Grappa.SessionRegistry, Server.registry_key(subject, network_id)) do
-      [{pid, _}] -> build_entry(subject, network_id, pid)
-      [] -> nil
+    case Session.whereis(subject, network_id) do
+      nil -> nil
+      pid -> build_entry(subject, network_id, pid)
     end
   end
 
@@ -99,13 +90,7 @@ defmodule Grappa.LiveIntrospection do
   registry → `%{}`.
   """
   @spec count_sessions_by_user() :: %{Ecto.UUID.t() => non_neg_integer()}
-  def count_sessions_by_user do
-    Grappa.SessionRegistry
-    |> Registry.select([
-      {{{:session, {:user, :"$1"}, :_}, :_, :_}, [], [:"$1"]}
-    ])
-    |> Enum.frequencies()
-  end
+  def count_sessions_by_user, do: Session.count_by_user()
 
   @doc """
   Scalar live counts for the admin top bar (#1075): total registered
@@ -115,25 +100,18 @@ defmodule Grappa.LiveIntrospection do
   Deliberately does NOT reuse `list_sessions/0`. That verb messages every
   pid (joined channels + peer address, 250ms budget each) to enrich its
   rows; a bar refreshing two integers on a timer must not pay
-  `O(N × 250ms)` of session-mailbox traffic. One `Registry.select/2`, no
-  pid touched — but the SAME registry `list_sessions/0` enumerates, so the
-  bar and the Sessions tab can never disagree about which pids exist.
+  `O(N × 250ms)` of session-mailbox traffic. It reads `Session.list_live/0`,
+  the same scan `list_sessions/0` enriches, and touches no pid, so the bar
+  and the Sessions tab can never disagree about which pids exist.
 
   Visitors are counted distinct because a visitor is multi-network: two
   credentials means two pids but one visitor, which is exactly how the
   Visitors tab renders it (one row per visitor, carrying a per-network
   live list).
-
-  Same match-spec discipline as `list_sessions/0` — the literal `:session`
-  key tag is pinned, so a future registration with a different key shape
-  is skipped rather than miscounted.
   """
   @spec count_live() :: %{sessions: non_neg_integer(), visitors: non_neg_integer()}
   def count_live do
-    subjects =
-      Registry.select(Grappa.SessionRegistry, [
-        {{{:session, :"$1", :_}, :_, :_}, [], [:"$1"]}
-      ])
+    subjects = Enum.map(Session.list_live(), fn {subject, _, _} -> subject end)
 
     live_visitors =
       subjects

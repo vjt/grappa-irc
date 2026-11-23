@@ -8,8 +8,8 @@ defmodule Grappa.Session.Server do
   protocol-level work (handshake on init, PONG on PING, JOIN on autojoin)
   is performed via the high-level `Grappa.IRC.Client` helpers.
 
-  Registered under `{:via, Registry, {Grappa.SessionRegistry, {:session,
-  user_id, network_id}}}` so the public `Grappa.Session.whereis/2`
+  Registered under `{:via, Registry, {Grappa.SessionRegistry, key}}`, where
+  `key` is `Grappa.Session.registry_key/2`, so the public `Grappa.Session.whereis/2`
   facade can resolve a pid from the internal identifiers (UUID +
   integer FK) that every authn'd request handler already has.
 
@@ -1122,23 +1122,17 @@ defmodule Grappa.Session.Server do
   end
 
   @doc """
-  Returns the registry key for `(subject, network_id)`. Single source
-  of truth for the `{:session, subject, network_id}` shape — every
-  caller that needs to look up or terminate a session by key must go
-  through this. The tagged-tuple `subject` keeps user-side and
-  visitor-side sessions on the same `network_id` from colliding.
+  Delegates to `Grappa.Session.registry_key/2`, the one source of the
+  key (issue 2696). Kept for the plain test files that still call it.
   """
-  @spec registry_key(Grappa.Session.subject(), integer()) ::
-          {:session, Grappa.Session.subject(), integer()}
-  def registry_key(subject, network_id) when is_tuple(subject) and is_integer(network_id) do
-    {:session, subject, network_id}
-  end
+  @spec registry_key(Grappa.Session.subject(), integer()) :: Grappa.Session.registry_key()
+  defdelegate registry_key(subject, network_id), to: Grappa.Session
 
   @doc "Returns the via-tuple for the session registered for `(subject, network_id)`."
   @spec via(Grappa.Session.subject(), integer()) ::
-          {:via, Registry, {atom(), {:session, Grappa.Session.subject(), integer()}}}
+          {:via, Registry, {atom(), Grappa.Session.registry_key()}}
   def via(subject, network_id) when is_tuple(subject) and is_integer(network_id) do
-    {:via, Registry, {Grappa.SessionRegistry, registry_key(subject, network_id)}}
+    {:via, Registry, {Grappa.SessionRegistry, Session.registry_key(subject, network_id)}}
   end
 
   ## GenServer callbacks
@@ -7011,7 +7005,7 @@ defmodule Grappa.Session.Server do
   @spec publish_live_nick(Grappa.Session.subject(), integer(), String.t(), String.t(), boolean()) :: :ok
   defp publish_live_nick(subject, network_id, nick, label, registered?) do
     {_, _} =
-      Registry.update_value(Grappa.SessionRegistry, registry_key(subject, network_id), fn _ ->
+      Registry.update_value(Grappa.SessionRegistry, Session.registry_key(subject, network_id), fn _ ->
         {nick, label, registered?}
       end)
 

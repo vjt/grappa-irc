@@ -129,7 +129,7 @@ defmodule GrappaWeb.Admin.SessionsController do
 
   # Split the registry-scan into `(user_ids, visitor_ids)` so each
   # context's batched lookup gets the relevant ids only. No `Enum.uniq`
-  # needed: the registry key shape `{:session, subject, network_id}` is
+  # needed: the registry key (`Grappa.Session.registry_key/2`) is
   # unique per `(subject, network_id)` pair, so a single `user_id` can
   # appear N times (one per joined network) — passing the dups to the
   # `id IN ^ids` query is harmless (the DB returns one row per id) and

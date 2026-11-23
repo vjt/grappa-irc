@@ -17,7 +17,7 @@ defmodule Grappa.AdmissionStateHelpers do
     * `Grappa.Session.Backoff` — ETS table `:session_backoff_state`
     * `Grappa.AdminEvents` — GenServer ring buffer, registered as the module
     * `Grappa.SessionSupervisor` + `Grappa.SessionRegistry` — DynamicSupervisor
-      children, indexed by `{:session, subject, network_id}`
+      children, indexed by `Grappa.Session.registry_key/2`
 
   All three carry rows keyed by `network_id`. sqlite recycles
   auto-increment rowids per fresh sandbox transaction, so the next
@@ -58,16 +58,18 @@ defmodule Grappa.AdmissionStateHelpers do
 
   use Boundary,
     top_level?: true,
-    # #1398 §7 — NARROWED to the leaf: this helper's only code reference into
-    # `Grappa.Session` is `Backoff` (the `Grappa.Session{Registry,Supervisor}`
-    # names it passes to `Registry`/`DynamicSupervisor` are process names, not
-    # modules of that boundary). It surfaces ONLY under `--env=test`, because
-    # `MIX_ENV=dev` never compiles `test/support` — the issue's §7 census never
-    # saw it.
-    deps: [Grappa.Admission, Grappa.AdminEvents, Grappa.Session.Backoff]
+    # #1398 §7 narrowed this to the `Backoff` leaf, because the helper then
+    # read `Grappa.SessionRegistry` by atom with a hand-spelled match spec
+    # (`network_pids/1`), which carries no edge. Issue 2696 widened it to
+    # `Grappa.Session`: `network_pids/1` now reads `Session.list_live/0`, so a
+    # key change can no longer leave it returning `[]` while real sessions
+    # stay registered. These edges surface ONLY under `--env=test`, because
+    # `MIX_ENV=dev` never compiles `test/support`.
+    deps: [Grappa.Admission, Grappa.AdminEvents, Grappa.Session, Grappa.Session.Backoff]
 
   alias Grappa.AdminEvents
   alias Grappa.Admission.NetworkCircuit
+  alias Grappa.Session
   alias Grappa.Session.Backoff
 
   # 15s budget for the registry-drain loop. The DOWN-after-terminate
@@ -327,7 +329,7 @@ defmodule Grappa.AdmissionStateHelpers do
   end
 
   defp network_pids(network_id) do
-    Registry.select(Grappa.SessionRegistry, [{{{:session, :_, network_id}, :"$1", :_}, [], [:"$1"]}])
+    for {_, ^network_id, pid} <- Session.list_live(), do: pid
   end
 
   defp sweep_alive(pids, stop_timeout_ms) do
