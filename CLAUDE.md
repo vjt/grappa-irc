@@ -315,9 +315,17 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   server changes; cic just mirrors. The cic-side
   `windowStateByChannel` store is the AUTHORITATIVE sidebar
   projection key — `channelsBySlug` feeds into it but is not the
-  sole source. New states automatically inherit synthetic-row +
-  greyed-class treatment as long as they land in
-  `windowStateByChannel`.
+  sole source. **A new state inherits NO treatment by default
+  (issue 2693, reversing "new states automatically inherit synthetic-row
+  + greyed-class treatment"):** every cic classifier over `WindowState`
+  is a `{…} satisfies Record<WindowState, …>`, so a state the server adds
+  is a tsc error at each one until someone classifies it. The same holds
+  for message kinds (`Record<MessageKind, …>`), with two exceptions that
+  are pinned another way: `presenceFilter.ts` / `presencePause.ts` keep a
+  `new Set([...])` because `presence_filter_test.exs` parses that literal
+  against the server's list. A new classifier MUST take the record shape
+  — a `Set` of the members it admits files every unlisted member in the
+  default bucket without a word.
 
 ## Tech Stack
 
