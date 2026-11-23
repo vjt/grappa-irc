@@ -44,7 +44,7 @@ import {
   MAX_DEVICES,
   MAX_FRAGMENTS,
   type MasterList,
-  OTK_SIG_PREFIX,
+  otkSigText,
   type ReceiveVerb,
   unbase64,
   validMasterList,
@@ -848,7 +848,7 @@ function oneTimeKey(device: Account, signer: Account): SignedKey {
   const keys = device.one_time_keys();
   const key = keys[keys.length - 1];
   if (key === undefined) throw new Error("no one-time key");
-  return { key, sig: signer.sign(`${OTK_SIG_PREFIX}${key}`) };
+  return { key, sig: signer.sign(otkSigText(key)) };
 }
 
 /** `device`'s KEYS entry under `master`: its id block, and a new one-time key it signed. */
@@ -1154,7 +1154,7 @@ describe("a KEYS (W receiver checks, in order)", () => {
       otk: {
         key: KEY_OF_33_BYTES,
         fallback: false,
-        sig: broken.sign(`${OTK_SIG_PREFIX}${KEY_OF_33_BYTES}`),
+        sig: broken.sign(otkSigText(KEY_OF_33_BYTES)),
       },
     };
 
@@ -1257,7 +1257,7 @@ describe("curve rules on a KEYS entry (trust rule 4)", () => {
     const fallback = a.account.fallback_key() ?? "";
     const claim = claiming(liar, bob.master, ours, {
       key: fallback,
-      sig: liar.sign(`${OTK_SIG_PREFIX}${fallback}`),
+      sig: liar.sign(otkSigText(fallback)),
     });
 
     const res = keysAfter(
@@ -1282,7 +1282,7 @@ describe("curve rules on a KEYS entry (trust rule 4)", () => {
     const fallback = a.account.fallback_key() ?? "";
     const claim = claiming(liar, bob.master, padded, {
       key: fallback,
-      sig: liar.sign(`${OTK_SIG_PREFIX}${fallback}`),
+      sig: liar.sign(otkSigText(fallback)),
     });
 
     const res = keysAfter(a, "bob", "hello", keysPayload(bob, 1, [liar], [claim]));
@@ -6597,7 +6597,7 @@ describe("S1 sibling copies — receive", () => {
     const fallback = a.account.fallback_key() ?? "";
     const entry = {
       id: idBlock(a.account, M),
-      otk: { key: fallback, fallback: true, sig: a.account.sign(`${OTK_SIG_PREFIX}${fallback}`) },
+      otk: { key: fallback, fallback: true, sig: a.account.sign(otkSigText(fallback)) },
     };
     const all = alice.devices.map((d) => d.account);
     const keys = keysPayload({ master: alice.master, devices: [] }, 1, all, [entry]);
