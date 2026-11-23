@@ -47,7 +47,6 @@ vi.mock("../lib/api", () => ({
   countMessagesAfter: vi.fn(),
   sendMessage: vi.fn(),
   isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
-  isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
 }));
 
 const mockGetResumeCursor = vi.fn<(slug: string, chan: string) => number | null>(() => null);

@@ -36,7 +36,6 @@ vi.mock("../lib/api", () => ({
   listArchive: vi.fn(),
   setOn401Handler: vi.fn(),
   isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
-  isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
 }));
 
 vi.mock("../lib/selection", () => ({

@@ -15,7 +15,12 @@ import { isDiagEnabled } from "./DiagFloat";
 import E2eRequestBanner from "./E2eRequestBanner";
 import E2eRequestCard from "./E2eRequestCard";
 import LusersCard from "./LusersCard";
-import { isContentKind, ownNickForNetwork, type ScrollbackMessage } from "./lib/api";
+import {
+  isContentKind,
+  type MessageKind,
+  ownNickForNetwork,
+  type ScrollbackMessage,
+} from "./lib/api";
 import { casemappingForSlug, sigilRankForSlug } from "./lib/casemapping";
 import { acceptInvite, confirmJoinChannel } from "./lib/channelJoin";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./lib/channelKey";
@@ -133,7 +138,9 @@ import WhowasCard from "./WhowasCard";
 //
 // C7.2: Muted-events rendering — presence/op event rows get
 // .scrollback-muted (dimmer, smaller, italic) so PRIVMSG/NOTICE/ACTION
-// dominate visually. PRESENCE_KINDS is the closed set.
+// dominate visually. A presence row is every kind `isContentKind` rejects
+// (issue 2693: api.ts's projection covers every kind, so a new one cannot
+// fall into this bucket unclassified).
 //
 // C7.3: Unread marker — when the user opens a channel with a stored read
 // cursor (server-owned; hydrated via getReadCursor from readCursor.ts),
@@ -587,11 +594,24 @@ const userhostSuffix = (msg: ScrollbackMessage): string => {
 // rows: `*!*@host` straight off the row, no USERHOST round-trip, and the only
 // host there is for a nick that has since QUIT. null on every other kind
 // (their meta carries no prefix) and when the meta carries no host at all.
-const isJoinPartQuit = (msg: ScrollbackMessage): boolean =>
-  msg.kind === "join" || msg.kind === "part" || msg.kind === "quit";
+// issue 2693 — over EVERY kind, so a new one is a tsc error here until
+// someone says whether its row offers the ban rows.
+const OFFERS_ROW_BAN = {
+  privmsg: false,
+  notice: false,
+  action: false,
+  join: true,
+  part: true,
+  quit: true,
+  nick_change: false,
+  mode: false,
+  topic: false,
+  kick: false,
+  server_event: false,
+} satisfies Record<MessageKind, boolean>;
 
 const presenceHost = (msg: ScrollbackMessage): string | null => {
-  if (!isJoinPartQuit(msg)) return null;
+  if (!OFFERS_ROW_BAN[msg.kind]) return null;
   const host = msg.meta.sender_host;
   return typeof host === "string" ? host : null;
 };
@@ -1286,17 +1306,6 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
   }
 };
 
-const PRESENCE_KINDS: ReadonlySet<ScrollbackMessage["kind"]> = new Set([
-  "join",
-  "part",
-  "quit",
-  "nick_change",
-  "mode",
-  "topic",
-  "kick",
-  "server_event",
-]);
-
 // issue 2498 — the one renderer of a message line, the scrollback's and the
 // encrypted query's (vjt's ruling): a change to how a message reads lands in
 // both. What the encrypted query adds is decoration, in two slots grappa's
@@ -1322,13 +1331,12 @@ const ScrollbackLine: Component<{
     props.msg.kind === "privmsg" && isMentionRow(props.msg, props.userNick, highlightPatterns());
 
   // C7.2: muted — presence/event kinds are visually de-emphasized.
-  const isMuted = () => PRESENCE_KINDS.has(props.msg.kind);
+  const isMuted = () => !isContentKind(props.msg.kind);
 
   // C7.7 / #370: highlight — content kinds where the row mentions the
   // operator (own nick ∪ custom highlight patterns, own rows excluded).
   const isHighlight = () =>
-    !PRESENCE_KINDS.has(props.msg.kind) &&
-    isMentionRow(props.msg, props.userNick, highlightPatterns());
+    isContentKind(props.msg.kind) && isMentionRow(props.msg, props.userNick, highlightPatterns());
 
   const handlers: NickHandlers = {
     onNickClick: props.onNickClick,
@@ -1345,7 +1353,7 @@ const ScrollbackLine: Component<{
         "scrollback-notice": props.msg.kind === "notice",
         "scrollback-notice-error":
           props.msg.kind === "notice" && props.msg.meta?.severity === "error",
-        "scrollback-presence": PRESENCE_KINDS.has(props.msg.kind),
+        "scrollback-presence": !isContentKind(props.msg.kind),
         "scrollback-muted": isMuted(),
         "scrollback-mention": isMention(),
         "scrollback-highlight": isHighlight(),
@@ -2742,7 +2750,7 @@ const ScrollbackPane: Component<Props> = (props) => {
     const presenceBanTarget = (msg: ScrollbackMessage): BanMenuTarget | null => {
       const nid = networkId();
       if (props.kind !== "channel" || nid === undefined) return null;
-      if (!isJoinPartQuit(msg)) return null;
+      if (!OFFERS_ROW_BAN[msg.kind]) return null;
       return {
         networkId: nid,
         networkSlug: props.networkSlug,

@@ -455,7 +455,6 @@ vi.mock("../lib/api", () => ({
   // memo derivation. Any test importing selection (directly or
   // transitively) needs the classifier in its api mock.
   isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
-  isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
   // #228 — SettingsDrawer's vhost view runs loadVhostSettings on mount and its
   // catch does `err instanceof ApiError`; production ../lib/api DOES export both
   // ApiError and getVhostSettings, so the full-replacement mock must too

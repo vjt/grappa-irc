@@ -1,6 +1,12 @@
 import type { Channel } from "phoenix";
 import { createEffect, on, untrack } from "solid-js";
-import { assertNever, type ChannelEvent, listMembers, ownNickForNetwork } from "./api";
+import {
+  assertNever,
+  type ChannelEvent,
+  listMembers,
+  type MessageKind,
+  ownNickForNetwork,
+} from "./api";
 import { socketUserName, token } from "./auth";
 import { incrementBadge, setBadge } from "./badge";
 import { playBeep } from "./beep";
@@ -130,6 +136,29 @@ import { narrowChannelEvent } from "./wireNarrow";
 // it and the in-`createRoot` `phx.on` handler can read it). Populated
 // ONLY by `__cic_suppressChannelDeliveryForTests`; empty in production.
 const suppressedDeliveryKeys = new Set<ChannelKey>();
+
+// issue 2693 — what a `message` on the own-nick topic does, per kind, over
+// EVERY kind: a new one is a tsc error here until someone routes it.
+//   * "dm" — PRIVMSG/ACTION: an inbound DM or a self-msg echo, re-keyed to
+//     the sender's query window (see `installDmListenerHandler`).
+//   * "peer_notice" — a peer's NOTICE at `channel == ownNick`, same re-key,
+//     no beep (#868); our own echoed NOTICE is still dropped by the sender
+//     guard at the arm.
+//   * "drop" — everything else, deferred to the server-messages window
+//     (feature #4); the row persists server-side at `channel = ownNick`.
+const OWN_NICK_TOPIC_ROUTE = {
+  privmsg: "dm",
+  notice: "peer_notice",
+  action: "dm",
+  join: "drop",
+  part: "drop",
+  quit: "drop",
+  nick_change: "drop",
+  mode: "drop",
+  topic: "drop",
+  kick: "drop",
+  server_event: "drop",
+} satisfies Record<MessageKind, "dm" | "peer_notice" | "drop">;
 
 // #717 — `moduleRoot`, not a bare `createRoot`. The join effects below read
 // `user()` and `channelsBySlug()`; in a bare root a throw from an errored boot
@@ -824,7 +853,8 @@ moduleRoot(() => {
           return;
         case "message": {
           const message = payload.message;
-          if (message.kind === "privmsg" || message.kind === "action") {
+          const route = OWN_NICK_TOPIC_ROUTE[message.kind];
+          if (route === "dm") {
             // DM (inbound or self-msg) — route to the sender's scrollback
             // key. For self-msg (sender = ownNick) this lands in the own-nick
             // window; for inbound (sender = other) in the sender's window.
@@ -861,7 +891,7 @@ moduleRoot(() => {
             return;
           }
           if (
-            message.kind === "notice" &&
+            route === "peer_notice" &&
             !nickEquals(message.sender, ownNick, casemappingForNetwork(networkId))
           ) {
             // Peer-to-peer NOTICE on the own-nick topic — i.e. landed at
@@ -922,10 +952,10 @@ moduleRoot(() => {
             routeMessage(slug, senderKey, peer, message, ownNick);
             return;
           }
-          // mode, join, part, quit, kick, nick_change, topic, etc. on
-          // the own-nick topic → deferred to feature #4 (server-messages
-          // window). Drop silently for now; server-side scrollback row
-          // persists at channel=ownNick and will surface when #4 lands.
+          // "drop" (and our own echoed NOTICE) → deferred to feature #4
+          // (server-messages window). Drop silently for now; server-side
+          // scrollback row persists at channel=ownNick and will surface
+          // when #4 lands.
           return;
         }
         default:

@@ -36,7 +36,6 @@ vi.mock("../lib/api", () => ({
   // derivation. Subscribe imports selection (indirectly via the WS
   // routeMessage path); the mock needs to expose the classifier.
   isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
-  isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
   // #868 — subscribe.ts now decides the beep through `pushTriggers.shouldNotify`,
   // which reads the notify-worthy kind set from here. Same hand-mirrored
   // convention as the two classifiers above: the notify subset is
@@ -3555,7 +3554,6 @@ describe("subscribe - not-joined pre-subscribe loop (CP15 B5 fix + #78)", () => 
       // `NOTIFY_KINDS` is now one of them, because subscribe.ts decides the
       // beep through `pushTriggers.shouldNotify`.
       isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
-      isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
       NOTIFY_KINDS: new Set(["privmsg", "action"]),
       displayNick: (me: { kind: string; name?: string }) => me.name ?? "",
       ownNickForNetwork: (
