@@ -21,7 +21,11 @@ defmodule Grappa.TypespecTest do
     end
 
     test "an empty list raises instead of returning a non-type" do
-      assert_raise FunctionClauseError, fn -> Typespec.union([]) end
+      # A literal `[]` never gets this far: Elixir's type checker reads the
+      # `[_ | _]` guard and rejects it at compile time. This is the runtime
+      # half, for a list that comes out empty while a module body compiles.
+      no_types = Enum.drop([:privmsg], 1)
+      assert_raise FunctionClauseError, fn -> Typespec.union(no_types) end
     end
   end
 
