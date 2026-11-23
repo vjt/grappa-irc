@@ -57,9 +57,9 @@
  * no byte on the wire moved. What moved is cicchetto's generated mirror:
  * wireTypes.ts / wireSchema.ts gain the web views' types and seven named
  * response envelopes, and the error-token arrays are renamed ERROR_JSON*.
- * The one thing this client reads from wireTypes.ts is the five E2E
- * closed sets (tests/test_commands.c), which the regeneration did not
- * touch; nothing here changes.
+ * What this client reads from wireTypes.ts is six closed sets
+ * (tests/test_commands.c): the five E2E ones and SCROLLBACK_MESSAGE_KIND,
+ * none of which the regeneration touched; nothing here changes.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
@@ -75,6 +75,9 @@
  * failure, never a silently-tolerated string — same rule as the project's
  * "atoms or literal unions, never untyped strings" standard. */
 
+/* The message kinds, in `SCROLLBACK_MESSAGE_KIND`'s order (wireTypes.ts,
+ * generated from `Grappa.Scrollback.Message`'s `@type kind`): the value is
+ * the index into wire.c's name table, and test_commands pins the two. */
 typedef enum {
     MSG_PRIVMSG,
     MSG_NOTICE,
@@ -148,6 +151,7 @@ const char *wire_pairing_side_name(wire_pairing_side s);
 const char *wire_pairing_close_reason_name(wire_pairing_close_reason r);
 const char *wire_e2e_request_state_name(wire_e2e_request_state s);
 /* How many values each table holds, for the pin. */
+size_t wire_message_kind_count(void);
 size_t wire_e2e_verb_count(void);
 size_t wire_e2e_drop_reason_count(void);
 size_t wire_pairing_side_count(void);

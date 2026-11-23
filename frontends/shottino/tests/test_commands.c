@@ -450,6 +450,22 @@ TEST(the_e2e_closed_sets_are_the_servers) {
     free(src);
 }
 
+/* The message kinds are the server's too: SCROLLBACK_MESSAGE_KIND, which
+ * `Grappa.Scrollback.Message`'s `@type kind` generates. Order matters
+ * twice here, because the index IS the MSG_* value. Unpinned, a kind the
+ * server adds fails message_kind_of at runtime: the live `message` event
+ * carrying it is dropped as malformed, and a mentions payload holding one
+ * such row is dropped whole (check_mention). Pinned, it reddens here. */
+static const char *spell_kind(size_t i) { return wire_message_kind_name((wire_message_kind)i); }
+
+TEST(the_message_kinds_are_the_servers) {
+    char *src = read_repo_file("cicchetto/src/lib/wireTypes.ts");
+    CHECK(src != NULL);
+    if (!src) return;
+    pin_closed_set(src, "SCROLLBACK_MESSAGE_KIND", spell_kind, wire_message_kind_count());
+    free(src);
+}
+
 /* The number shottino declares is the number the server publishes.
  *
  * `Grappa.Protocol` bumps `@protocol_version` on every wire-shape change,
@@ -754,6 +770,7 @@ int main(void) {
     RUN(the_closed_sets_are_the_servers_in_the_servers_order);
     RUN(every_kind_cicchetto_narrows_is_known_here);
     RUN(the_e2e_closed_sets_are_the_servers);
+    RUN(the_message_kinds_are_the_servers);
     RUN(the_call_defaults_move_the_page_and_the_sfu_together);
     RUN(leaving_stops_a_running_call);
     RUN(a_stopped_call_marks_its_invite_spent);

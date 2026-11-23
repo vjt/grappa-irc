@@ -7,28 +7,6 @@
 
 /* ── Closed-set lookups ───────────────────────────────────────────────── */
 
-static const char *const MESSAGE_KIND_NAMES[] = {
-    "privmsg", "notice", "action", "join", "part",  "quit",
-    "nick_change", "mode", "topic", "kick", "server_event"};
-
-const char *wire_message_kind_name(wire_message_kind k) {
-    size_t i = (size_t)k;
-    return i < sizeof(MESSAGE_KIND_NAMES) / sizeof(MESSAGE_KIND_NAMES[0]) ? MESSAGE_KIND_NAMES[i]
-                                                                          : "unknown";
-}
-
-static bool message_kind_of(const json_value *v, wire_message_kind *out) {
-    const char *s = json_string(v);
-    if (!s) return false;
-    for (size_t i = 0; i < sizeof(MESSAGE_KIND_NAMES) / sizeof(MESSAGE_KIND_NAMES[0]); i++) {
-        if (strcmp(s, MESSAGE_KIND_NAMES[i]) == 0) {
-            *out = (wire_message_kind)i;
-            return true;
-        }
-    }
-    return false;
-}
-
 static const char *const CONNECTION_STATE_NAMES[] = {"connected", "failing", "parked", "failed"};
 /* From the table, not from a 3 written twice: the array grows, the two
  * loops that walk it did not. The sibling message_kind_of already used
@@ -97,6 +75,13 @@ static bool index_in(const char *const *names, size_t n, const json_value *v, in
         return true;                                                                               \
     }
 
+/* The message kinds, in `SCROLLBACK_MESSAGE_KIND`'s order: the index IS the
+ * `MSG_*` value (wire.h). test_commands pins the table to that list. */
+static const char *const MESSAGE_KIND_NAMES[] = {
+    "privmsg", "notice", "action", "join", "part",  "quit",
+    "nick_change", "mode", "topic", "kick", "server_event"};
+
+CLOSED_SET(message_kind, wire_message_kind, MESSAGE_KIND_NAMES)
 CLOSED_SET(e2e_verb, wire_e2e_verb, E2E_VERB_NAMES)
 CLOSED_SET(e2e_drop_reason, wire_e2e_drop_reason, E2E_DROP_REASON_NAMES)
 CLOSED_SET(pairing_side, wire_pairing_side, PAIRING_SIDE_NAMES)
