@@ -8992,7 +8992,7 @@ greyed-class treatment"): a new state now inherits nothing.
 **Measured** (tsc mutants, predictions written before each run, the generated
 `wireTypes.ts` edited and reverted by path):
 
-| mutant | before (7618f6081) | after |
+| mutant | before (7618f6081) | after (a5864ac8c) |
 |---|---|---|
 | `"whisper"` appended to `SCROLLBACK_MESSAGE_KIND` | 2 errors, the two `never` arms | 12 errors in 5 files |
 | `"locked"` appended to `SESSION_WINDOW_STATE_WINDOW_STATE` | 0 errors | 7 errors in 5 files |
@@ -9010,15 +9010,16 @@ record), and keep their names, which the server's comments cite.
 (`SUPPRESSED_PRESENCE_KINDS`) or `presencePause.ts` (`PAUSABLE_PRESENCE_KINDS`).**
 Both stay `new Set([...])` (orchestrator's ruling on this slice, overridable by
 vjt). Coverage there is the server parity instead: `presence_filter_test.exs`
-parses each literal by regex and compares it with the server's list, and that
-list is total once issue 2693 S1 derives it from a per-kind record — so a new
-kind must be classified on the server, and the parity test then forces the cic
-copy to follow. Before S1 lands the two stay fail-open, exactly as before this
-slice. The gap closes with the bump variant, if it is ruled: the three
-server-semantic classes become generated consts, which deletes both mirrors and
-both regex tests. Converting them to records now would be churn that ruling can
-throw away, and it would mean changing a server test this cic-only slice does
-not run.
+parses each literal by regex and compares it with the server's list. Issue 2693
+S1 (entry `#2693`, already in this slice's base) derives both server lists from
+the per-kind `@kind_class` record in `Grappa.Scrollback.Message`, so a new kind
+must be classified on the server, and the parity test then forces the cic copy
+to follow. The two Sets are therefore covered from this slice on; they were
+fail-open only before S1. The gap closes with the bump variant, if it is ruled:
+the three server-semantic classes become generated consts, which deletes both
+mirrors and both regex tests. Converting them to records now would be churn
+that ruling can throw away, and it would mean changing a server test this
+cic-only slice does not run.
 
 **Not converted, on purpose:**
 - Single-member predicates (`=== "joined"`, `kind === "action"`, Sidebar's
