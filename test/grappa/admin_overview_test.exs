@@ -22,20 +22,21 @@ defmodule Grappa.AdminOverviewTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{AdminOverview, AdmissionStateHelpers}
+  alias Grappa.{AdminOverview, AdmissionStateHelpers, Session}
 
   setup do
     AdmissionStateHelpers.reset_all()
     :ok
   end
 
-  # Register the calling process under the same registry-key shape
-  # `Grappa.Session.Server.registry_key/2` uses, so the count sees it
-  # exactly as it sees a real session. Mirror of the idiom in
+  # Register the calling process under `Session.registry_key/2`, the key a
+  # real session registers under, so the count sees it exactly as it sees a
+  # real session (issue 2696: a literal key here would keep matching a
+  # literal reader after a key change). Mirror of the idiom in
   # `Grappa.LiveIntrospectionTest`.
   defp register_session(subject, network_id) do
     {:ok, _} =
-      Registry.register(Grappa.SessionRegistry, {:session, subject, network_id}, nil)
+      Registry.register(Grappa.SessionRegistry, Session.registry_key(subject, network_id), nil)
 
     :ok
   end

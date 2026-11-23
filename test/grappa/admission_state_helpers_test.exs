@@ -17,7 +17,7 @@ defmodule Grappa.AdmissionStateHelpersTest do
   """
   use ExUnit.Case, async: false
 
-  alias Grappa.AdmissionStateHelpers
+  alias Grappa.{AdmissionStateHelpers, Session}
 
   # Small budget: the test's subject is the raise, not the wait. The
   # value is passed at the call site precisely so a test can be cheap
@@ -56,8 +56,11 @@ defmodule Grappa.AdmissionStateHelpersTest do
   # `SessionSupervisor` child, so `terminate_child/2` cannot reach it,
   # and it is not an OTP process, so the `GenServer.stop` sweep times
   # out on it. Exactly the zombie shape the 500ms copies gave up on.
+  # Registered under `Session.registry_key/2` (issue 2696), so the helper
+  # must SEE it: with a literal key, a key change left the helper and this
+  # test agreeing with each other and blind to every real session.
   defp register_unkillable_session(network_id) do
-    key = {:session, {:user, System.unique_integer([:positive])}, network_id}
+    key = Session.registry_key({:user, Ecto.UUID.generate()}, network_id)
     parent = self()
 
     pid =
