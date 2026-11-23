@@ -304,6 +304,7 @@ export const CONTROLS: ReadonlyArray<readonly [string, string, readonly Spelling
   ["validated by narrowRest", "return narrowRest(S_X, await res.json());", []],
   ["validated by a narrow helper", "return narrowThemeResponse(await res.json()).themes;", []],
   ["validated, receiver named response", "const v = narrowRest(S_Y, await response.json());", []],
+  ["validated, non-null receiver", "return narrowRest(S_X, await res!.json());", []],
   ["in a line comment", "// const d = (await res.json()) as D;", []],
   ["in a block comment", "/* (await res.json()) as E */", []],
   ["a json() that is not a read", "const s = toJson(x); JSON.stringify(y);", []],
