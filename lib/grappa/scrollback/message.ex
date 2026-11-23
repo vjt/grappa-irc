@@ -280,9 +280,12 @@ defmodule Grappa.Scrollback.Message do
   S17 SINGLE SOURCE: every consumer that filters
   scrollback to "real message content" (notification counts, mention
   aggregation, DM-peer eligibility, the unread messages-vs-events
-  split) derives from this at compile time instead of restating the
-  three atoms. Adding a content kind is one edit, to its `@kind_class`
-  row.
+  split) derives from this at compile time instead of restating them.
+  Adding a content kind starts at its `@kind_class` row and is not one
+  edit: the partial index `messages_away_window_user_idx` is built on
+  this list (`Grappa.Mentions.away_window_kind_sql/0`), so it also takes
+  a migration rebuilding that index, and `MentionsTest` is red by name
+  until it lands.
   """
   @spec content_kinds() :: [unquote(Typespec.union(@content_kinds)), ...]
   def content_kinds, do: @content_kinds
