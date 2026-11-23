@@ -27,7 +27,7 @@ defmodule Grappa.AdmissionStateHelpersTest do
   describe "clear_registry_for!/2" do
     test "raises when a registered session survives the purge" do
       network_id = System.unique_integer([:positive])
-      _key = register_unkillable_session(network_id)
+      register_unkillable_session(network_id)
 
       assert_raise RuntimeError, ~r/still has 1 session.*network_id=#{network_id}/, fn ->
         AdmissionStateHelpers.clear_registry_for!(network_id, @budget_ms)

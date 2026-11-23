@@ -67,9 +67,8 @@ defmodule Grappa.AdmissionStateHelpers do
     # `MIX_ENV=dev` never compiles `test/support`.
     deps: [Grappa.Admission, Grappa.AdminEvents, Grappa.Session, Grappa.Session.Backoff]
 
-  alias Grappa.AdminEvents
+  alias Grappa.{AdminEvents, Session}
   alias Grappa.Admission.NetworkCircuit
-  alias Grappa.Session
   alias Grappa.Session.Backoff
 
   # 15s budget for the registry-drain loop. The DOWN-after-terminate
