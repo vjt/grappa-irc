@@ -209,6 +209,30 @@ jobs:
             scripts/ratchet-gate.sh
           fi
 
+      - name: Protocol number claimed against main's tip (issue 2695)
+        # `mix grappa.wire_pin --check` above pairs the pin's two facts with
+        # the tree; it cannot see OTHER branches, and two branches cut from N
+        # both claim N+1, each right against its own base. A branch that moves
+        # the facts of priv/wire/shape.pin must claim exactly the base TIP's
+        # protocol_version + 1. Pure git + text; needs the fetch-depth: 0
+        # above. Here with the other git gates, after the tests, so a branch
+        # that only needs a renumber still gets its test signal.
+        #
+        # What each event judges: the same split as the ratchet step above.
+        # The push arm is also the backstop for a branch fast-forwarded on a
+        # green taken before another bump landed: main requires no status
+        # checks, so that red comes after the fact, and a push run the
+        # concurrency block cancels judges nothing at all.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = push ]; then
+            scripts/protocol-bump-gate.sh "$PUSH_BEFORE"
+          else
+            scripts/protocol-bump-gate.sh
+          fi
+
       - name: POSIX-parse the sh-dialect scripts (#503, derived by #1377)
         # A DIFFERENT property from the lint above, with a different tool:
         # the shared deploy lib (infra/lib/deploy_common.sh) and its sh

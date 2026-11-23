@@ -183,21 +183,12 @@ scratch() {
     [[ "$output" == *"1 commit(s)"* ]]
 }
 
-# The `run: |` block of ci.yml's ratchet-gate step, verbatim, so the cases
-# below run the workflow's own shell rather than a copy of it.
-ci_run_block() {
-    awk '
-        /- name: Ratchet raises paired/ { step = 1; next }
-        step && /^      - name:/ { exit }
-        step && /^        run: \|$/ { body = 1; next }
-        body && /^          / { sub(/^          /, ""); print; next }
-        body { exit }
-    ' "$BATS_TEST_DIRNAME/../../.github/workflows/ci.yml"
-}
+# The cases below run the ratchet step's own `run:` block (ci_run_block,
+# test/bats_helpers.bash).
 
 @test "ci.yml's push arm passes the push's before SHA, so the pushed commit is judged" {
     grep -qF 'PUSH_BEFORE: ${{ github.event.before }}' "$BATS_TEST_DIRNAME/../../.github/workflows/ci.yml"
-    block="$(ci_run_block)"
+    block="$(ci_run_block "Ratchet raises paired")"
     [[ "$block" == *"ratchet-gate.sh"* ]]
     scratch
     git checkout -q main
@@ -211,7 +202,7 @@ ci_run_block() {
 }
 
 @test "ci.yml's pull_request arm judges the branch against origin/main" {
-    block="$(ci_run_block)"
+    block="$(ci_run_block "Ratchet raises paired")"
     scratch
     git update-ref refs/remotes/origin/main "$(git rev-parse main)"
     pin "deps:Grappa.Session 29" "deps:Grappa.Accounts 3" "state_keys:Grappa.Session.Server 101"
