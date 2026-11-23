@@ -88,6 +88,28 @@ CLOSED_SET(pairing_side, wire_pairing_side, PAIRING_SIDE_NAMES)
 CLOSED_SET(pairing_close_reason, wire_pairing_close_reason, PAIRING_CLOSE_REASON_NAMES)
 CLOSED_SET(e2e_request_state, wire_e2e_request_state, E2E_REQUEST_STATE_NAMES)
 
+/* No default: a new MSG_* is a -Wswitch warning here until someone says
+ * which side it falls on. The trailing return is unreachable for a
+ * narrowed kind and keeps gcc's -Wreturn-type quiet. */
+bool wire_message_kind_is_content(wire_message_kind k) {
+    switch (k) {
+    case MSG_PRIVMSG:
+    case MSG_NOTICE:
+    case MSG_ACTION:
+        return true;
+    case MSG_JOIN:
+    case MSG_PART:
+    case MSG_QUIT:
+    case MSG_NICK_CHANGE:
+    case MSG_MODE:
+    case MSG_TOPIC:
+    case MSG_KICK:
+    case MSG_SERVER_EVENT:
+        return false;
+    }
+    return false;
+}
+
 /* Severity is deliberately LENIENT: an unrecognised value degrades to
  * "none" rather than dropping the event, because the counts are the
  * load-bearing part and a stale server mid-deploy must not blank them.
