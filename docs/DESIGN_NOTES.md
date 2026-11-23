@@ -8727,12 +8727,11 @@ must not err. The lexer knows strings, template literals (code again inside
 `${…}`), regex literals (told from a division by the token before the `/`)
 and both comment forms. It does not lex JSX text: a quote there that reaches
 the end of its line opened no string and is left alone. A block comment or
-template literal that never closes is a
-failure (exit 3, naming the file), never a blank to the end of the file:
-TypeScript compiles neither, so on a real tree it can only be the lexer
-misreading. The `narrow` callee needs a left boundary (`unnarrow(` does not
-validate), and a receiver may reach `json` through `?.` or `!.`. Each of
-these cases is a known-answer control.
+template literal that never closes is a failure (exit 3, naming the file),
+never a blank to the end of the file: TypeScript compiles neither, so on a
+real tree it can only be the lexer misreading. The `narrow` callee needs a
+left boundary (`unnarrow(` does not validate), and a receiver may reach `json`
+through `?.` or `!.`. Each of these cases is a known-answer control.
 
 **What it does not see, deliberately.** It cannot tell a schema from a cast
 that names the right type: `narrow*` is recognised by name. A `narrow*` call
@@ -8749,15 +8748,15 @@ grappa REST read, the exclusion would still count 1. The ratchet beside it
 3); one that closes is silent, and every read it spans is blanked. JSX text is
 not lexed, so a `/*` or a stray backtick there opens a comment or a template
 that runs to its closer, across lines, and a quote there opens a string to the
-next quote on its line. A closing tag's `</` and a `/` after a postfix `!`,
-`++` or `--` read as a regex up to the next `/` on that line. w2's review of
-PR 2704 found the shapes. Measured on `d84a2437f`: none of the 110 production
-`.tsx` files holds a `.json()` read, and no production line divides after a
-postfix `!`, `++` or `--` (0 of 116,266 lines, counted as `wc -l` counts, in
-the gate's 438 production sources).
-Teaching the lexer that those three end an operand was declined while the
-shape is absent: a postfix `!` differs from a prefix one only by what precedes
-it, and prefix `!/re/` is a live production spelling.
+next matching quote on its line. A closing tag's `</` and a `/` after a
+postfix `!`, `++` or `--` read as a regex up to the next `/` on that line.
+w2's review of PR 2704 found the shapes. Measured on `d84a2437f`: none of the
+110 production `.tsx` files holds a `.json()` read, and no production line
+divides after a postfix `!`, `++` or `--` (0 of 116,266 lines, counted as
+`wc -l` counts, in the gate's 438 production sources). Teaching the lexer that
+those three end an operand was declined while the shape is absent: a postfix
+`!` differs from a prefix one only by what precedes it, and prefix `!/re/` is
+a live production spelling.
 
 **The server half is outside it.** A body rendered inline in a controller sits
 outside both the wire pin (which reads only `GrappaWeb.*JSON` views) and the
