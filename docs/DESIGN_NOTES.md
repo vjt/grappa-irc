@@ -8908,7 +8908,7 @@ out of the snapshot, not rejected, and invite-admissible.
   that `apply_invited/3` asks.
 * **The build checks the table.** Module-body asserts (the
   `Grappa.Session.Deps` `@member_rationale` idiom) raise at compile time in
-  four cases:
+  three cases:
   * the table does not classify exactly the closed set, in its order;
   * a row's axis set or value domain is wrong;
   * a row breaks one of today's relations: suppressed ∩ content = ∅,
@@ -8920,16 +8920,19 @@ out of the snapshot, not rejected, and invite-admissible.
   the run: six mutants (a kind or a state with no row, two rows swapped,
   three relation breaks), each red with its own assert's message.
 * **`@type kind` and `@type window_state` are DERIVED** from the closed set
-  with a right-nested `unquote` fold, which keeps the order. This was a
-  defect, not a tidy-up, and it was measured on the base:
+  with `Grappa.Typespec.union/1`, a right-nested fold that keeps the order.
+  This was a defect, not a tidy-up, and it was measured on the base:
   `mix grappa.gen_wire_types` emits the wire's `SCROLLBACK_MESSAGE_KIND`
   from the TYPE (`Code.Typespec.fetch_types/1`), not from `@kinds`. With
   `:whisper` added to `@kinds` alone, the build compiled, dialyzer passed
   and the codegen answered "in sync". The only test that went red was the
   `kind_enum` CHECK test, and only by accident. Deriving the type keeps the
-  generated array byte-identical: the live wire_pin digest is the same on
-  the base and on the slice (`sha256:c16939a0…`), `gen_wire_types --check`
-  is in sync, and there is no protocol bump.
+  generated array byte-identical: `mix grappa.wire_pin --check` is green
+  against the same pin on the base and on the slice, `gen_wire_types --check`
+  is in sync, and there is no protocol bump. The base already had two copies
+  of the fold (`Session.Server`'s `keep_nick_refusal_code`, `Session.Wire`'s
+  `server_reply_source`) and this slice first added two more; all four now
+  call the one leaf.
 * **The subset `@spec`s are derived too** (`content_kinds/0`,
   `notify_kinds/0`, `suppressed_presence_kinds/0`,
   `pausable_presence_kinds/0`). The same MS1 run showed dialyzer saying
