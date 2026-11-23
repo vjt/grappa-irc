@@ -18,7 +18,7 @@ defmodule Grappa.Push.BadgeCountLiveNickTest do
   `async: false` — the session harness spawns a real `Session.Server`
   under the singleton `SessionRegistry`/`SessionSupervisor` (mirrors
   `Grappa.Session.ServerTest`); concurrent tests would collide on the
-  `{:session, user_id, network_id}` key. `Grappa.DataCase` switches to
+  `Grappa.Session.registry_key/2` key. `Grappa.DataCase` switches to
   shared sandbox mode so the out-of-PID GenServer sees the sandboxed Repo.
   """
   use Grappa.DataCase, async: false

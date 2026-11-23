@@ -23,6 +23,7 @@ defmodule Grappa.SessionStopSessionTest.Holder do
 
   use GenServer, restart: :transient
 
+  alias Grappa.Session
   alias Grappa.Session.Server
 
   @registration_attempts 200
@@ -77,7 +78,7 @@ defmodule Grappa.SessionStopSessionTest.Holder do
   # lookup after the `:DOWN` cannot mistake the situation for cleanup lag.
   @impl GenServer
   def terminate(_, %{handoff: squatter} = opts) when is_pid(squatter) do
-    Registry.unregister(Grappa.SessionRegistry, Grappa.Session.registry_key(opts.subject, opts.network_id))
+    Registry.unregister(Grappa.SessionRegistry, Session.registry_key(opts.subject, opts.network_id))
     send(squatter, {:grab, self()})
 
     receive do

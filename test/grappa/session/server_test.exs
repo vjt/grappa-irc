@@ -18,7 +18,7 @@ defmodule Grappa.Session.ServerTest do
 
   `async: false` because `Grappa.SessionRegistry`,
   `Grappa.SessionSupervisor`, and `Grappa.PubSub` are singletons —
-  concurrent tests would collide on `{:session, user_id, network_id}`
+  concurrent tests would collide on `Session.registry_key/2`
   keys. `Grappa.DataCase` switches to shared sandbox mode automatically
   when `async: false` so the Session GenServer (spawned under the
   application's DynamicSupervisor, outside the test PID) can still see
@@ -1203,8 +1203,8 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "user-subject and visitor-subject sessions for the same network_id coexist on the registry" do
-      # Task 6.5 isolation guarantee. The registry key is
-      # `{:session, subject, network_id}` — different first-tuple-element
+      # Task 6.5 isolation guarantee. `Session.registry_key/2` carries
+      # the whole subject, whose tag (`:user` / `:visitor`)
       # discriminates user from visitor even when the underlying UUID
       # happens to coincide. Both subjects are spawned from the plan their
       # own producer builds — this used to hand-craft the visitor opts

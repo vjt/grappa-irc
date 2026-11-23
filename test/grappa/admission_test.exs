@@ -576,8 +576,8 @@ defmodule Grappa.AdmissionTest do
 
   describe "live_counts_for_network/1 — U-3 admin wire projection" do
     # U-3 (Web M3): SessionRegistry is process-global and async tests
-    # in other modules can register `{:session, {subject, network_id}, ...}`
-    # entries against the same auto-increment id sqlite hands back
+    # in other modules can register `Session.registry_key/2` entries
+    # against the same auto-increment id sqlite hands back
     # inside their own sandbox connection (sqlite reuses id=1 for the
     # first row in every per-test sandbox). Reading via the `net.id`
     # from the shared fixture would observe cross-test residue. Use
