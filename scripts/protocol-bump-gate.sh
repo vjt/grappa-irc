@@ -126,5 +126,8 @@ else
 	printf '\nThat is behind %s.\n' "$BASE_REF"
 fi
 printf 'Rebase onto %s, set @protocol_version (and every site that mirrors it, listed above\n' "$BASE_REF"
+# The backticks are Markdown for the reader; double quotes would hand them to
+# the shell as command substitution.
+# shellcheck disable=SC2016
 printf '`version/0` in lib/grappa/protocol.ex) to %s, run `mix grappa.wire_pin --update`, commit.\n' "$next"
 exit 1
