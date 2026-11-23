@@ -137,6 +137,10 @@ defmodule Grappa.Session do
       Grappa.SessionLog,
       Grappa.Subject,
       Grappa.Notify,
+      # Issue 2693 — `Server`, `Wire` and `WindowState` build their closed-set
+      # types with `Typespec.union/1`, a call made at compile time from the
+      # module body.
+      Grappa.Typespec,
       Grappa.UserSettings,
       Grappa.Version,
       Grappa.WindowCounts,

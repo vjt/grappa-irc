@@ -73,6 +73,7 @@ defmodule Grappa.Session.Wire do
   alias Grappa.E2eInbox
   alias Grappa.IRC.LineSplit
   alias Grappa.Scrollback.Message
+  alias Grappa.Typespec
 
   alias Grappa.Session.{
     EventRouter,
@@ -438,12 +439,7 @@ defmodule Grappa.Session.Wire do
   """
   @server_reply_sources [:info, :version, :motd, :admin]
 
-  @type server_reply_source ::
-          unquote(
-            @server_reply_sources
-            |> Enum.reverse()
-            |> Enum.reduce(fn source, acc -> {:|, [], [source, acc]} end)
-          )
+  @type server_reply_source :: unquote(Typespec.union(@server_reply_sources))
 
   @typedoc """
   #127 — ephemeral server-text reply for an EXPLICIT `/info`, `/version`

@@ -68,6 +68,7 @@ defmodule Grappa.Session.WindowState do
   """
 
   alias Grappa.Session.Wire, as: SessionWire
+  alias Grappa.Typespec
 
   @window_states [:pending, :invited, :joined, :failed, :kicked, :parked]
 
@@ -138,15 +139,14 @@ defmodule Grappa.Session.WindowState do
   @typedoc """
   Closed set of per-channel window states, DERIVED from `@window_states`
   (issue 2693) and never restated: `mix grappa.gen_wire_types` emits the
-  wire's `SESSION_WINDOW_STATE_WINDOW_STATE` from this type, and the
-  right-nested fold keeps `@window_states`' order, which is that array's
-  order (the same fold as `Grappa.Scrollback.Message`'s `kind`). Mirrors
+  wire's `SESSION_WINDOW_STATE_WINDOW_STATE` from this type, and
+  `Grappa.Typespec.union/1` keeps `@window_states`' order, which is that
+  array's order. Mirrors
   `Session.Server.window_state/0` (the original typedef the server
   used pre-extraction). Atoms are the on-process representation;
   the on-wire string projection is owned by `Session.Wire`.
   """
-  @type window_state ::
-          unquote(@window_states |> Enum.reverse() |> Enum.reduce(&{:|, [], [&1, &2]}))
+  @type window_state :: unquote(Typespec.union(@window_states))
 
   @typedoc """
   The bundled window-state struct. Replaces the 4 sibling fields

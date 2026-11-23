@@ -47,6 +47,9 @@ defmodule Grappa.Scrollback do
       Grappa.Networks.Network,
       Grappa.Repo,
       Grappa.Subject,
+      # Issue 2693 — `Message` builds `kind` and the subset `@spec`s with
+      # `Typespec.union/1`, a call made at compile time from the module body.
+      Grappa.Typespec,
       Grappa.Visitors.Visitor
     ],
     exports: [Message, Wire]
