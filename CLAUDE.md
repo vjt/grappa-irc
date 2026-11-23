@@ -261,7 +261,11 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   still number is RED — `mix grappa.gen_wire_types --check` cannot host
   this, measured, because it compares the artefact with its own SOURCE
   and answers `in sync.` in exactly the case to catch (DESIGN_NOTES
-  2026-08-21). `min_protocol_version` is a DIFFERENT axis and does NOT
+  2026-08-21). wire_pin sees ONE branch; WHICH number a branch may claim
+  against a main that moves is `scripts/protocol-bump-gate.sh` (CI +
+  `scripts/bats.sh`, issue 2695): a branch whose pin facts moved since its
+  merge base claims EXACTLY the base tip's `protocol_version` + 1, or is
+  RED. `min_protocol_version` is a DIFFERENT axis and does NOT
   follow the bump: raise it only when old clients can no longer be served —
   the WS handshake then 426s a `?client_proto=` below the floor via the
   endpoint `error_handler` (`UserSocket.handle_ws_error/2`); a below-min

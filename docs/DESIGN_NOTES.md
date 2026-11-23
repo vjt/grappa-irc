@@ -8676,3 +8676,90 @@ also stayed green in the suites that do not read its row.
    shottino ignores them), the `sas.cancel` reason cut (UTF-16 units against
    UTF-8 bytes), and the order-challenge target and slug compare. Each one is
    a corpus row once someone rules which side is right.
+<!-- entry #2695 -->
+
+---
+
+## 2026-11-23 — #2695: a branch that claims a protocol number claims main's NEXT one
+
+S1 of issue 2695. `mix grappa.wire_pin --check` keeps `priv/wire/shape.pin`
+honest against ONE tree: a shape change under a still number is red. What
+it cannot see is the other branches. The number is claimed at write time
+against a main that moves, so two branches cut from 66 both claim 67, each
+right against its own base. The guard was a ritual ("checked for a
+collision" appears 32 times in `lib/grappa/protocol.ex`), and on
+2026-11-23 three open PRs (2644, 2627, 2626) were still titled
+"protocol 64" on a main at 66.
+
+**Decision:** `scripts/protocol-bump-gate.sh`, pure git + text. It reads the
+pin's two facts (`protocol_version`, `shape_digest`) at
+`merge-base(base, HEAD)`, at HEAD and at the base TIP. Facts unchanged
+since the merge base: the branch claims no number and passes, however far
+main has moved. Facts moved: HEAD's number must be EXACTLY the tip's + 1.
+Both refs are needed. At the merge base both colliding branches are a
+correct +1, so the collision does not exist there (the #1428 reason the
+DESIGN_NOTES marker check reads the tip). Judged at the tip alone, a branch
+that never touched the pin goes red the moment main bumps. No mix: the
+pin's agreement with the build is wire_pin's, in the same CI job.
+* CI: one step in the `test` job, after the ratchet git-half step. A
+  `pull_request` run judges against `origin/main`; a `push` run judges from
+  the push's `before`, with the ratchet gate's refusals (empty, all-zeros,
+  unreachable base), so it never passes vacuously.
+* Locally: `scripts/check.sh` reaches it through `scripts/bats.sh`, whose
+  last case runs the gate on the real tree. That case judges against YOUR
+  `origin/main` (docs/TESTING.md): fetch first.
+* `test/bats_helpers.bash` grew `ci_run_block`, so the bats run the
+  workflow's own shell; the ratchet suite now shares it.
+
+**Provisional defaults.** These are the orchestrator's rulings of
+2026-11-23, NOT vjt's. Q1-Q3 are with vjt, and each default is one
+comparison or one fixture to change.
+* Q1, exactly +1: a skip and two numbers on one branch are red alike. The
+  history did both (v19 + v20 on issue 2089; "v5 and not v4").
+* Q2, no coverage exemption: a digest moved under a still number is red,
+  whatever moved it. Neither this gate nor wire_pin can tell a coverage
+  change from a shape change. 6 of the 74 pin commits on main moved the
+  digest and not the number; each would have been red.
+* Q3, no repo setting change (that is vjt's): see the first limit below.
+* Q7: the stale "protocol 64" PRs turn red at their next CI run. They had
+  to renumber anyway.
+
+**What it cannot see.**
+* **A stale green.** `main` requires no status check
+  (`required_status_checks` absent, rulesets `[]`), and a `pull_request`
+  run judges main as it was when the run started. A branch that went green
+  before another bump landed can still merge; the `push` run on main is
+  then the first red, after the fact. Catching it before the merge needs
+  required, up-to-date checks, or a merge ritual that re-runs CI on the
+  rebased head.
+* **An absorbed bump (new question for vjt).** 15 of the 74 pin commits on
+  main moved the number and not the digest. Rebase such a branch onto
+  another branch's identical `protocol_version = N+1` edit and git sees the
+  same change on both sides: the branch's pin stops moving, it claims
+  nothing, and the gate passes two changes under one number. No text gate
+  can see it. A possible cure, NOT built: a per-claim line in the pin that
+  diverges between branches (#1271's marker trick), which is a wire_pin
+  change.
+
+### Measured
+
+* Mutants, each predicted before its run, 18 cases: judging the next
+  number from the merge base turned 3 red (the landed-collision, the
+  pointer-only `protocol.ex`, the `pull_request` arm); `-gt tip` in place
+  of `-eq tip + 1` turned 2 (the skip, the two numbers); dropping the
+  facts-unchanged exit turned 3 (the untouched branch, the header-only
+  edit, the real-repo case). No unpredicted red.
+* With `protocol.ex` cut to a pointer (S5), two identical `66 -> 67` edits
+  merge clean and the collision is still red: the gate does not lean on
+  the prose conflict S5 removes.
+* On the real repo: main (`9dcc37dfa`) claims nothing at 66; main's last
+  bump, `a200c2469`, judged from its parent as its push run was, claims 66
+  over 65 and passes; PR 2706's head `d2f88b1ab` claims 67 from a merge
+  base at 66 with main at 66 and passes.
+
+### Not measured
+
+The step on a real Actions run (bats extract its run block; no push yet).
+A `pull_request` run checks out the PR's merge commit, not the branch
+head; the merge base is then the tip it was computed on and every verdict
+above reads the same, argued, not run.
