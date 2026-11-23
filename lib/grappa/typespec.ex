@@ -7,8 +7,11 @@ defmodule Grappa.Typespec do
   `Grappa.Scrollback.Message` (`kind` and the four subset `@spec`s),
   `Grappa.Session.WindowState` (`window_state`), `Grappa.Session.Server`
   (`keep_nick_refusal_code`) and `Grappa.Session.Wire`
-  (`server_reply_source`). A dependency-free leaf, like `Grappa.Ecto.Like`
-  and `Grappa.Wire.Time`, so every caller shares one definition.
+  (`server_reply_source`). `mix grappa.gen_wire_types` had a fifth, nested
+  the other way, for a union read back from a beam; every reader there
+  flattens the union first, so the direction never reached the output. A
+  dependency-free leaf, like `Grappa.Ecto.Like` and `Grappa.Wire.Time`, so
+  every caller shares one definition.
   """
 
   use Boundary, top_level?: true, deps: []

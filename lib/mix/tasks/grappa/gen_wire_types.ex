@@ -72,9 +72,13 @@ defmodule Mix.Tasks.Grappa.GenWireTypes do
   the declaration order (no sort/dedup) so regen output is stable and
   diffs don't flicker.
   """
-  use Boundary, top_level?: true, deps: []
+  # Issue 2693 — `strip_typespec_metadata/1` folds a union read back from a
+  # beam with `Grappa.Typespec.union/1`, the fold the derived types use.
+  use Boundary, top_level?: true, deps: [Grappa.Typespec]
 
   use Mix.Task
+
+  alias Grappa.Typespec
 
   @output_path "cicchetto/src/lib/wireTypes.ts"
 
@@ -686,7 +690,7 @@ defmodule Mix.Tasks.Grappa.GenWireTypes do
   defp strip_typespec_metadata({:type, _, :union, members}) do
     members
     |> Enum.map(&strip_typespec_metadata/1)
-    |> Enum.reduce(fn r, l -> {:|, [], [l, r]} end)
+    |> Typespec.union()
   end
 
   defp strip_typespec_metadata({:type, _, :list, [inner]}), do: [strip_typespec_metadata(inner)]

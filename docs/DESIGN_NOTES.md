@@ -8932,7 +8932,9 @@ out of the snapshot, not rejected, and invite-admissible.
   is in sync, and there is no protocol bump. The base already had two copies
   of the fold (`Session.Server`'s `keep_nick_refusal_code`, `Session.Wire`'s
   `server_reply_source`) and this slice first added two more; all four now
-  call the one leaf.
+  call the one leaf. So does `mix grappa.gen_wire_types`, which had a fifth
+  copy nested the other way for a union read back from a beam: every reader
+  there flattens the union first, so the direction never reached the output.
 * **The subset `@spec`s are derived too** (`content_kinds/0`,
   `notify_kinds/0`, `suppressed_presence_kinds/0`,
   `pausable_presence_kinds/0`). The same MS1 run showed dialyzer saying
