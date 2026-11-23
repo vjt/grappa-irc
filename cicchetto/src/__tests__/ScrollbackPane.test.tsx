@@ -11,6 +11,9 @@ import { getDraft, setDraft } from "../lib/compose";
 // would leave the wiring untested on both sides.
 import { requestJumpToUnread } from "../lib/jumpToUnreadCommand";
 import { closeMediaViewer, mediaViewerState } from "../lib/mediaViewer";
+// issue 2693 — the REAL message-menu store: the pane is the opener, and what
+// the ban-row tests assert IS the target it opened the menu with.
+import { closeMessageMenu, messageMenu } from "../lib/messageMenu";
 import {
   popOverlay,
   pushOverlay,
@@ -1664,6 +1667,67 @@ describe("ScrollbackPane", () => {
       const line = screen.getByTestId("scrollback-line");
       expect(line.textContent).not.toContain("@");
       expect(line.textContent).toContain("alice");
+    });
+  });
+
+  // issue 2693 review F2 — `OFFERS_ROW_BAN` is the record that decides which
+  // rows' message menu carries the ban rows (issue 2346). The rows themselves
+  // are pinned in MessageContextMenu.test.tsx / opsMenu.test.ts; what is
+  // pinned here is the pane's answer per kind, read off the menu the row's
+  // own right-click opens. The privmsg row carries a host (the server's
+  // `sender_meta` writes one on every user-prefixed row), so its null says the
+  // kind decided, not a missing host.
+  describe("issue 2693 — which rows' message menu offers the ban rows", () => {
+    afterEach(() => closeMessageMenu());
+
+    const HOST_META = { sender_user: "~g", sender_host: "flapper.example.net" };
+    const rowOf = (
+      kind: ScrollbackMessage["kind"],
+      body: string | null,
+      meta: ScrollbackMessage["meta"],
+    ): ScrollbackMessage => ({
+      id: 1,
+      network: "freenode",
+      channel: "#grappa",
+      server_time: 1_700_000_000_000,
+      kind,
+      sender: "Guest123",
+      body,
+      meta,
+    });
+    const rightClickTheRow = (msg: ScrollbackMessage): void => {
+      setScrollback({ "freenode #grappa": [msg] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      screen
+        .getByTestId("scrollback-line")
+        .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    };
+
+    it.each([
+      ["join", null],
+      ["part", "later"],
+      ["quit", "Ping timeout"],
+    ] as const)("a %s row's message menu offers the ban rows with the row's host", (kind, body) => {
+      rightClickTheRow(rowOf(kind, body, HOST_META));
+      expect(messageMenu()?.ban).toMatchObject({
+        networkId: 42,
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        nick: "Guest123",
+        host: "flapper.example.net",
+      });
+    });
+
+    it.each([
+      ["mode", null, { modes: "+o", args: ["heidi"] }],
+      ["kick", "spam", { target: "mallory" }],
+      ["privmsg", "hello", { sender_kind: "user", ...HOST_META }],
+    ] as const)("a %s row's message menu offers no ban rows", (kind, body, meta) => {
+      rightClickTheRow(rowOf(kind, body, meta));
+      // The menu DID open — a null `ban` on a menu that never opened would
+      // pass this test without the record saying anything.
+      expect(messageMenu()).not.toBeNull();
+      expect(messageMenu()?.ban).toBeNull();
     });
   });
 
