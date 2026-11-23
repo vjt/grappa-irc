@@ -27,13 +27,11 @@ defmodule Grappa.AdmissionStateHelpersTest do
   describe "clear_registry_for!/2" do
     test "raises when a registered session survives the purge" do
       network_id = System.unique_integer([:positive])
-      {pid, key} = register_unkillable_session(network_id)
+      _key = register_unkillable_session(network_id)
 
       assert_raise RuntimeError, ~r/still has 1 session.*network_id=#{network_id}/, fn ->
         AdmissionStateHelpers.clear_registry_for!(network_id, @budget_ms)
       end
-
-      unregister(pid, key)
     end
 
     test "returns :ok when nothing is registered for the network" do
@@ -43,12 +41,10 @@ defmodule Grappa.AdmissionStateHelpersTest do
     test "leaves another network's session registered" do
       mine = System.unique_integer([:positive])
       theirs = System.unique_integer([:positive])
-      {pid, key} = register_unkillable_session(theirs)
+      key = register_unkillable_session(theirs)
 
       assert :ok = AdmissionStateHelpers.clear_registry_for!(mine, @budget_ms)
       assert [_] = Registry.lookup(Grappa.SessionRegistry, key)
-
-      unregister(pid, key)
     end
   end
 
@@ -59,6 +55,13 @@ defmodule Grappa.AdmissionStateHelpersTest do
   # Registered under `Session.registry_key/2` (issue 2696), so the helper
   # must SEE it: with a literal key, a key change left the helper and this
   # test agreeing with each other and blind to every real session.
+  #
+  # Cleanup is an `on_exit`, never a line after the assert: a failed
+  # assert ends the test before that line, and this process is unlinked
+  # and sleeps forever, so it stays registered. Every later `reset_all/0`
+  # in the suite then raises after its 15 s wait (issue 2696, measured:
+  # the desync mutant's one red here became 143 reds in 5 other modules
+  # before the run was stopped at 6389 of 8981 tests).
   defp register_unkillable_session(network_id) do
     key = Session.registry_key({:user, Ecto.UUID.generate()}, network_id)
     parent = self()
@@ -71,7 +74,8 @@ defmodule Grappa.AdmissionStateHelpersTest do
       end)
 
     assert_receive :registered, 1_000
-    {pid, key}
+    on_exit(fn -> unregister(pid, key) end)
+    key
   end
 
   defp unregister(pid, key) do
