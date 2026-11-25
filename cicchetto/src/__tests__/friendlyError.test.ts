@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ApiError, ChannelPushError } from "../lib/api";
 import { friendlyError } from "../lib/friendlyError";
+import { NoReply, NotConnected, REPLY_DEADLINE_MS } from "../lib/transportFailure";
 
 // #74 — `friendlyError` is the single dispatcher that maps a thrown error
 // from EITHER send door (REST `ApiError` → `friendlyApiError`, WS
@@ -36,6 +37,22 @@ describe("friendlyError", () => {
   it("maps a send-door rate_limited to the throttle copy, not themes' quota copy", () => {
     expect(friendlyError(new ApiError(429, "rate_limited"))).toBe(
       "You're sending too fast — the server is throttling you. Slow down and try again in a moment.",
+    );
+  });
+
+  // issue 2738 — the transport failures. NoReply is an UNKNOWN outcome, so its
+  // copy must not say the request failed: the line may have gone out, and the
+  // composer hands it back (vjt's D2) for the operator to judge. NotConnected
+  // is known not sent.
+  it("maps NoReply to copy that leaves the outcome open", () => {
+    expect(friendlyError(new NoReply(REPLY_DEADLINE_MS))).toBe(
+      "No answer from the server — it may still have gone through.",
+    );
+  });
+
+  it("maps NotConnected to copy that says nothing was sent", () => {
+    expect(friendlyError(new NotConnected())).toBe(
+      "Not connected — wait for the connection to come back, then try again.",
     );
   });
 

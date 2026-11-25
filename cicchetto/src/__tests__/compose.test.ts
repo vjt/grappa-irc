@@ -5167,6 +5167,42 @@ describe("compose submit — S6 no-silent-drop: invite + query verbs surface rej
   );
 });
 
+// issue 2738 — a push that gets no answer now REJECTS at its deadline instead
+// of hanging, and the composer treats that like any failure: it releases the
+// outbox head and hands the line back (vjt's D2), with copy that does not claim
+// the line failed — the outcome is unknown. A push with no channel is known not
+// sent, and says that instead. (The hang itself cannot be shown here: this file
+// mocks lib/socket, so a never-settling promise would be the mock's choice.
+// pushReplyDeadline.test.ts runs the real phoenix; the e2e runs the composer.)
+describe("issue 2738 — a push with no answer releases the composer", () => {
+  const k = channelKey("freenode", "#a");
+
+  it.each([
+    { kind: "NoReply", copy: /may still have gone through/ },
+    { kind: "NotConnected", copy: /^Not connected/ },
+  ] as const)(
+    "$kind: the line comes back, the outbox is free, the copy says what is known",
+    async ({ kind, copy }) => {
+      localStorage.setItem("grappa-token", "tok");
+      const socket = await import("../lib/socket");
+      const tf = await import("../lib/transportFailure");
+      const { friendlyError } = await import("../lib/friendlyError");
+      const compose = await import("../lib/compose");
+      const err = kind === "NoReply" ? new tf.NoReply(tf.REPLY_DEADLINE_MS) : new tf.NotConnected();
+      vi.mocked(socket.pushRaw).mockRejectedValueOnce(err);
+
+      compose.setDraft(k, "/quote VERSION");
+      const result = await compose.submit(k, "freenode", "#a");
+
+      expect(result).toEqual({ error: friendlyError(err) });
+      expect(friendlyError(err)).toMatch(copy);
+      expect(compose.getDraft(k)).toBe("/quote VERSION");
+      expect(compose.isSending(k)).toBe(false);
+      expect(compose.isQueueFull(k)).toBe(false);
+    },
+  );
+});
+
 describe("compose submit — info verbs (TODO stubs)", () => {
   // #169 — /who is no longer a stub. Push goes through to the server;
   // success returns {ok: true}. The 352 fold → 315 → typed who_reply event
