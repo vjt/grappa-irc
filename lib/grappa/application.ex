@@ -710,7 +710,8 @@ defmodule Grappa.Application do
   # stays writable after boot: `Mix.Tasks.Grappa.Boot.start_app_silent/0`
   # puts `:start_endpoint` and `:start_bootstrap` to false, and on a node
   # that is already running (the test suite's, through the async
-  # `create_user_test.exs`) the tree it would describe was never started.
+  # `create_user_test.exs` and `seed_themes_test.exs`) the tree it would
+  # describe was never started.
   # No default on the read: a node whose `start/2` never ran has no tree to
   # describe. Public for the same reason as `children/1`: the order test
   # proves the RUNNING tree is `children(boot_flags())`.
