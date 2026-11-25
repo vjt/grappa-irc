@@ -9651,3 +9651,129 @@ reads `autojoin_channels` on a JOIN. It now puts autojoin with the fields read
 at the next spawn. `Operator.update_credential/3`'s doc, the admin PATCH
 moduledoc and the `state.autojoin` typedoc say the same. No code, no test, no
 wire.
+<!-- entry #2719 -->
+
+---
+
+## 2026-11-25 — #2719: a join on a network with no session reconnects it first, and a failed join is never silent
+
+An invite link for a network the recipient had PARKED opened the #648 confirm,
+"Join #chan?". On a yes, `POST /networks/:slug/channels` reached
+`Session.send_join`, found no session process, and answered 404 `not_found`
+(S14 folds post-plug `:no_session` into it). `performJoin` sent the error to
+`console.warn` and the screen did not change. Measured twice: a vitest on the
+real `channelJoin.ts` (one POST, one warn, zero focus changes, on both the
+confirm and the invite-CTA door), and the new e2e run against the pre-fix
+bundle, recorded below.
+
+There were two roots, separable:
+
+1. `performJoin` had no error sink. Its comment argued the catch saw "only the
+   REST-level failure (401 / network down)"; it saw every answer the POST can
+   give. Four doors went through it: a `#chan` in scrollback, an invite link,
+   an invite row's [Join], the invite banner.
+2. cic offered a join its own store already said could not be served. The
+   store holds `connection_state`, and ComposeBox already had the one
+   statement of "no session; the way back is a reconnect" (`{parked, failed}`).
+   No join door consulted it. The two doors that did print an error (a
+   directory row, a featured link) printed the S14 copy, "That network or
+   resource doesn't exist.", about the subject's own network; HomePane's
+   parked row renders its featured links beside its own Reconnect button.
+
+### The ruling: reconnect, then join, consent first
+
+The orch ruled Q1 (option A, consent first). It is a DECLARED ruling that goes
+to vjt for confirmation, not one of his. A join on a network with no session
+reconnects it and then joins. On the confirm door the one question names both,
+"<slug> is disconnected. Reconnect it and join <chan>?", labelled "Reconnect
+and join", and it comes BEFORE any request: a park is the person's own act, so
+nothing undoes it without a yes. Cancel sends nothing. A tap door (a directory
+row, a featured link, an invite's [Join] button, a typed `/join`) is the
+intent, and Reconnect never had a modal (#1331), so those reconnect with no
+question. An invite's [Join] answers a question already put (#902), which is
+why it counts as a tap; an `:invited` window on a network with no session is
+an edge case in any event. Option B (refuse honestly,
+send nothing) was simpler, but it sends an invite recipient off to find the
+Reconnect button and click the link again.
+
+The server makes it two awaited calls with no wait between them, both read
+in the code and measured end to end by the e2e. `PATCH connected` spawns the
+session BEFORE it answers and writes `connected` only on spawn success (U-0,
+`NetworksController.apply_transition/5`), so the POST that follows finds a
+live pid. `send_join` holds a JOIN that arrives before 001 until 001 (issue
+2114 / `#2703a`) and opens the window `:pending` at once. `failing` is not
+reconnected: its session is alive and retrying, and the hold covers it.
+
+### One predicate, one verb, four doors, four sinks
+
+* `lib/networkSession.ts` `hasNoLiveSession` — ComposeBox's private Set,
+  hoisted, as a `Record<ConnectionState, boolean>` checked with `satisfies`: a
+  fifth connection state is a tsc error there until someone decides whether it
+  has a session. Issue 2693's rule for `WindowState`, by analogy. ComposeBox
+  greys on it; the join verb reconnects on it. An absent network is `false`
+  (a slug the store does not hold is not a disconnected network).
+* `channelJoin.joinChannel(t, slug, rawChannels, key)` — THE join verb. It
+  replaces four private copies of "POST the join, then focus the folded key":
+  `performJoin`, `DirectoryRow.onJoin`, `FeaturedLinks.onClick`,
+  `joinCommand`. `rawChannels` is a list because `/join #a,#b` is one request
+  on the wire (#516); focus lands on the first. It throws to its caller; a
+  refused reconnect sends no POST; focus moves only after the POST resolves
+  (#244). It re-checks `identityMoved` after each await, so a continuation
+  that outlived its identity sends nothing more and focuses nothing.
+* Each door keeps its own sink: a toast for the confirm and invite doors
+  (they have no line of their own once the modal is gone), the row's inline
+  line for a directory row and a featured link, the compose banner for
+  `/join`. The toast is a new producer on the one surface (`Toasts.tsx`):
+  "Couldn't join <chan> on <slug>: <reason>", the reason being `errorMessage`,
+  i.e. the server's refusal in its friendly copy or a transport failure's own
+  text. It is skipped when the identity moved during the await.
+
+`postJoin` now has one caller. A new join door calls `joinChannel`.
+
+### Accepted, and why
+
+* The confirm reads the store when the question is ASKED; the verb reads it
+  again on the yes. A network another device reconnected meanwhile gets the
+  POST alone, which is right. One another device PARKED meanwhile is
+  reconnected by a yes that named only the join. Accepted: the join needs the
+  session either way, and the window is a cross-device race inside an open
+  modal.
+* The stale store. A store that still reads `connected` for a network the
+  server has parked (an event missed on a WS gap) sends the POST alone, and
+  the toast prints the S14 copy. Closing it needs either a distinguishable
+  error on the wire or a cic re-read after the 404: issue 2725 (S14's
+  `:no_session` copy), filed by the orch.
+* The rest of cic's `console.warn`-only catches on user actions (DCC consent,
+  the window-close park PATCH, the CTCP menu, the mute PUT, a dozen E2E
+  actions) are not this change: issue 2726. `declineInvite`'s stays, argued in
+  its own comment.
+* The Sidebar's `{failed}` and `isNetworkParked` stay their own rules. Each
+  asks a different question of the same column (greyed in place / in the UI at
+  all / has a session), and `#2693b` already lists the Sidebar's Set as
+  unconverted.
+
+### Measured
+
+E1 (`issue2719-join-parked-network.spec.ts`) run against the pre-fix bundle,
+`origin/main` `ec8e66bca` with only the spec added: both tests RED, rc 1, at
+the same assertion and for the same reason. The park and the invite routing
+held: the section left the sidebar, and the confirm opened. The body read
+`Join #i2719-7c1c84?` where the spec expects `bahamut-test is disconnected.
+Reconnect it and join #i2719-7c1c84?`. So the pre-fix confirm asks a plain join
+question about a network it already knows to be parked. What that red does NOT
+show is the silence after the yes, because the spec stops at the body. The
+swallow itself is the vitest measurement above; that nothing then reached the
+screen is a reading of `channelJoin.ts` and `Toasts.tsx`, not a browser
+measurement.
+
+On this branch both tests are green: E1 (one question naming the reconnect,
+nothing sent before the yes, then exactly one `PATCH {connection_state:
+connected}` and one POST, the section back in the sidebar, the window joined
+and selected, no modal and no error toast) and E2 (a cancel sends neither
+request and the network stays parked). A mutant verb with the PATCH removed and
+the consent body kept turns E1 red where the network section should come back
+(0 sections after 15 s): the POST alone opens nothing.
+
+`grappaApi.ts`'s `patchNetworkConnectionState` comment said "lazy spawn at
+next admission run", stale since U-0; it now states the eager order the verb
+relies on.
