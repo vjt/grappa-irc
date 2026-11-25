@@ -6592,6 +6592,7 @@ describe("#1396 — dispatch characterization over every arm", () => {
             "aliasList.aliases()",
             "api.postJoin("tok", "freenode", "#other", null)",
             "api.postPart("tok", "freenode", "#other", "brb")",
+            "networks.networkBySlug("freenode")",
             "networks.networkIdBySlug("freenode")",
             "networks.networkIdBySlug("freenode")",
             "selection.setSelectedChannel({"networkSlug":"freenode","channelName":"#other","kind":"channel"})",
@@ -6680,6 +6681,7 @@ describe("#1396 — dispatch characterization over every arm", () => {
           "effects": [
             "aliasList.aliases()",
             "api.postJoin("tok", "freenode", "#b", null)",
+            "networks.networkBySlug("freenode")",
             "networks.networkIdBySlug("freenode")",
             "selection.setSelectedChannel({"networkSlug":"freenode","channelName":"#b","kind":"channel"})",
           ],

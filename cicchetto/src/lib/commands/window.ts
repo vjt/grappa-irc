@@ -1,7 +1,7 @@
-import { ownNickForNetwork, postJoin, postPart } from "../api";
+import { ownNickForNetwork, postPart } from "../api";
 import { casemappingForSlug } from "../casemapping";
 import { setQuery } from "../channelDirectory";
-import { canonicalChannel } from "../channelKey";
+import { joinChannel } from "../channelJoin";
 import { isChannelName } from "../chantypes";
 import { openEncryptedWindow } from "../encryptedWindow";
 import { networkBySlug, networkIdBySlug, user } from "../networks";
@@ -67,17 +67,15 @@ export const partCommand: CommandHandler<"part"> = async (cmd, ctx) => {
  * untouched; #525). A mixed-case or bracketed first element targets a key no
  * `window_states` entry matches, which opens the empty phantom window #510
  * reported.
+ *
+ * issue 2719 — the POST and the focus are `channelJoin.joinChannel`, the one
+ * join verb all four join doors share. It reconnects a network with no session
+ * before it joins (a typed `/join` is the intent, so no modal), sends the list
+ * as one comma-list with its key, and focuses the folded FIRST channel. It
+ * throws to compose's catch, which is this door's error sink.
  */
 export const joinCommand: CommandHandler<"join"> = async (cmd, ctx) => {
-  await postJoin(ctx.token, ctx.networkSlug, cmd.channels.join(","), cmd.key);
-  setSelectedChannel({
-    networkSlug: ctx.networkSlug,
-    // `channels` is non-empty (the parser errors on a missing name), so `[0]`
-    // is never undefined at runtime; the `?? join(",")` fallback exists only to
-    // satisfy TS noUncheckedIndexedAccess.
-    channelName: canonicalChannel(cmd.channels[0] ?? cmd.channels.join(",")),
-    kind: "channel",
-  });
+  await joinChannel(ctx.token, ctx.networkSlug, cmd.channels, cmd.key);
   return { ok: true };
 };
 
