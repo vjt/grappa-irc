@@ -9280,3 +9280,89 @@ on the base; the other 20 of 24 pass on both.
   `WARNINGS` and `HARDENING`, CI never compiles shottino with `-Wformat=2`
   or the hardening flags. Host clang over `shottino.c` and `wire.c` reports
   nothing under `-Wformat=2` today, and neither does host gcc 14.2.
+<!-- entry #2703a -->
+
+---
+
+## 2026-11-25 — #2703a: a JOIN that arrives before 001 waits for 001
+
+Issue 2703 wants an invite link for a network the recipient has not bound to
+connect that network, then join. The server already has both doors (`POST
+/session/networks`, then `POST /networks/:network_id/channels`). The JOIN
+door, though, had a hole exactly where that sequence lands.
+
+### The hole
+
+`Session.Server.join_channels/3` held a JOIN back in one case only:
+`{:error, :no_socket}`, the reconnect ladder's window with no Client yet
+(issue 2114). A fresh spawn has no such window. `SpawnOrchestrator` resets
+the backoff, `handle_continue({:start_client, _})` starts the Client at once,
+and the Client writes every line as soon as its socket exists. A JOIN that
+reaches the session after the socket is up but before 001 RPL_WELCOME
+therefore went out unregistered. bahamut and solanum answer that with 451.
+`lib/` handled no 451, so the window `record_in_flight_join/2` had opened
+stayed `:pending`, and `:pending` is not TTL-swept. A JOIN sent right after
+the accretion's 204 is always in that window, and with the consent modal
+between connect and join a person's click lands there whenever registration
+is slow. It was never specific to invites: any door's JOIN during
+registration took the same path.
+
+Measured, red first: with a fake ircd that never answers USER, `JOIN #early`
+and `JOIN #locked s3cret` were on the wire before any 001. Ordering came from
+a PING written through the same Client and waited for on the fake (one TCP
+stream, so once the fake has the PING it has everything written before it).
+The 451 itself was not observed on a real ircd. It is the ircds' documented
+answer to an unregistered client, and nothing here could have answered it.
+
+### The gate
+
+`join_channels/3` now asks `registration_pending?/1` first. Before 001 the
+JOIN is validated, queued with `queue_join/3`, and its window opened
+`:pending`. The reply is `:ok` (202), and `fire_join_plan/1` sends it at 001,
+or at the #347 +r defer, the seam the autojoin set already rides. This cannot
+recurse: `fire_join_plan/1` calls `Client.send_join/3` directly, and the 001
+handler `Map.put`s `registered_at` before it delegates to the plan.
+
+* **`{:ok, nil}`, never `Map.get(…) == nil`.** Nothing clears the stamp,
+  because a Session.Server dies with its Client: the EXIT handlers stop it,
+  and a restart is a fresh process with a fresh nil. A process hot-loaded from
+  before issue 2097 has no key at all and registered long ago. Read as nil,
+  every JOIN it is sent would wait for a 001 that already happened. Every
+  other reader of the stamp takes absent as nil, because nil is their safe
+  direction; here it is not.
+* **One validator.** The held channels go out one per line, so the 512-byte
+  check on a multi-target JOIN would never see the list as the wire would.
+  `Client.join_line/2` is that check, extracted from `send_join/3`'s list
+  clause (which now calls it), and the held arm asks it first. A list is
+  refused the same way on both sides of the 001, and a test pins that.
+* **Issue 2114's `:no_socket` arm is gone.** The Client is started once per
+  process, from `init/1`'s continue, so a live session with no Client has not
+  registered yet and takes the gate first. A `:no_socket` past 001 would be a
+  state nothing produces; it now falls into the generic `not_connected` arm
+  rather than a queue that would hide it. Gate forced off, the three issue 2114
+  window tests go red with the new one, so the gate is what serves that window
+  now. Those tests had built it as "registered session, client nil". The real
+  window is a fresh process with no 001 either, so their seam now sets both.
+
+### Nineteen tests encoded the write
+
+Twelve tests in the CP15 B2 in-flight describe, the C3 drift lock's 473 case
+and six `POST /networks/:network_id/channels` tests drove a
+`passthrough_handler/0` fake (no 001, ever) and then waited for `JOIN` on the
+wire. That is the pre-001 write, asserted as the precondition
+of tests about in-flight tracking, window state, numerics and the REST door.
+They now register first with `IRCServer.register/3` (beside
+`await_handshake/2`): a 001, then a PING whose PONG proves the session
+handled it.
+Their credentials carry no autojoin, so the 001 adds no JOIN of its own,
+which keeps each test meaning what it meant. With the fixture's default
+`#sniffo` autojoin, the 001 would have put an in-flight entry on the same
+folded key as the `#Sniffo` JOIN some of them test. That was read, not run.
+
+### Not in this change
+
+* There is still no registration watchdog. A socket that never registers
+  (ident hang, blocked rDNS) holds its JOINs `:pending` for as long as it
+  hangs, the way the backoff window always did.
+* The cic half of issue 2703, attach-then-join from an invite link, is a
+  separate PR on top of this one.
