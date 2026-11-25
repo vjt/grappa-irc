@@ -9540,14 +9540,21 @@ ExUnit pins all four effects:
 Each was red first at its refute, with its instrument passing. A fifth test
 pins the pre-001 PART staying off the wire.
 
-There is no e2e. Both windows are milliseconds wide: socket-up to 001, and
-001 to a local `azzurra-services` +r echo. A browser PART cannot be placed
-inside either one reliably. That is the reason issue 2703's 001 ordering is
-owned by ExUnit too.
+There is no e2e. The windows are not milliseconds wide in general. Before 001,
+a session respawned on a failing network has already run `init/1` and then
+waits out `Backoff.wait_ms/2` with no Client, up to the 300 s cap in prod
+(`config/config.exs`). The +r defer falls back after 60 s
+(`@autojoin_defer_ms`). The e2e testnet is a healthy loopback with a local
+`azzurra-services`, though, and there the two windows are socket-up to 001 and
+001 to the +r echo, both milliseconds. A browser PART cannot be placed inside
+either one reliably, so the reason for no e2e holds on the testnet. That is
+also why issue 2703's 001 ordering is owned by ExUnit.
 
 ### Not in this change
 
 An operator editing `autojoin_channels` through the admin REST while the
-session is live does not refresh `state.autojoin` until the next `init/1`.
-That is the same staleness with a different trigger, running in both
-directions. It is issue 2724.
+session is live does not refresh `state.autojoin`: the edit takes effect at
+the next `init/1`. For a removal the next `init/1` is no cure either: a
+channel the session is sitting in is also in `last_joined_channels`, so the
+next `init/1` keeps it through the union. It is the same staleness with a
+different trigger, running in both directions. It is issue 2724.
