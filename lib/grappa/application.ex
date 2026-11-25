@@ -58,6 +58,15 @@ defmodule Grappa.Application do
 
   use Application
 
+  # issue 2697 — the boot flags that decide which optional children the tree
+  # carries, read once by `start/2` and passed to `children/1`.
+  @type boot_flags :: %{
+          start_bootstrap: boolean(),
+          start_endpoint: boolean(),
+          start_source_alias_manager: boolean(),
+          identd: keyword()
+        }
+
   @impl Application
   def start(_, _) do
     # Boot-time captcha config injection — read :admission keys once,
@@ -202,6 +211,22 @@ defmodule Grappa.Application do
       |> Application.get_env(Grappa.Session.Server, [])
       |> Grappa.ServerSettings.boot()
 
+    # issue 2697 — the four flags that shape the tree are read ONCE, here:
+    # `children/1` builds the tree from them, and the post-start Uploads seed
+    # in `start_tree/1` must see the SAME `start_endpoint` the tree was built
+    # with.
+    start_tree(boot_flags())
+  end
+
+  # issue 2697 — public so the child ORDER is testable against the list the
+  # root supervisor is actually started with, rather than restated in a test
+  # (the `root_supervisor_opts/0` precedent below). The flags are explicit so
+  # a test can build the PRODUCTION shape — every optional child present —
+  # which the test env itself never starts. See
+  # `test/grappa/application_child_order_test.exs`.
+  @doc false
+  @spec children(boot_flags()) :: [Supervisor.module_spec() | Supervisor.child_spec()]
+  def children(flags) do
     # Child order is load-bearing — see CLAUDE.md "Don't touch supervision
     # tree ordering casually." Each comment below documents the WHY so a
     # reorder is a deliberate choice.
@@ -216,308 +241,309 @@ defmodule Grappa.Application do
     # ships hot code-reload has no business demanding a full stop/start
     # cycle just to run a one-off DB mutation alongside it. Found live
     # 2026-07-23 running `grappa.seed_themes` against a live host.
-    children =
+    [
+      # Vault before Repo: Cloak's Ecto types (Grappa.EncryptedBinary)
+      # reach into the Vault GenServer at schema dump/load time. If
+      # Repo loaded a schema with an encrypted field before Vault was
+      # up, the type callback would crash with `:noproc`.
+      Grappa.Vault,
+
+      # LockWatch before Repo (#1420): it owns the ETS table that
+      # `Repo.immediate_transaction/1` writes to on every write
+      # transaction, so the table must exist before the first one can
+      # run. Placing it after Repo would leave a boot window in which
+      # the seam self-disables — and the seam checks for the table
+      # precisely so a watchdog restart can never abort a caller's
+      # transaction. Depends on nothing itself (ETS + a timer).
+      {Grappa.Repo.LockWatch, lock_watch_opts()},
+
+      # Must come first (after Vault): every context that touches the
+      # DB depends on Repo being up. Sessions write Scrollback rows;
+      # Phase 2 schemas (network_credentials) carry encrypted columns
+      # that need Vault — hence Vault first.
+      Grappa.Repo,
+
+      # PubSub before Endpoint — Endpoint's compile-time config names
+      # `pubsub_server: Grappa.PubSub` and the channel layer subscribes
+      # at join time. Sessions broadcast inbound PRIVMSGs over PubSub.
+      {Phoenix.PubSub, name: Grappa.PubSub},
+
+      # Registry before DynamicSupervisor — Session.Server registers
+      # itself under `Grappa.Session.registry_key/2` via this Registry,
+      # and lookups happen in DynamicSupervisor's start_child cascade.
+      # Application-wide singleton (`name: Grappa.SessionRegistry`)
+      # shared across the entire `mix test` run; tests sharing the
+      # same `network_id` would observe each other's registered
+      # session pids. `config :ex_unit, max_cases: 1` in
+      # `config/test.exs` is the global guard. Tests touching this
+      # registry (Session.whereis/2 callers, Bootstrap.spawn_*,
+      # SpawnOrchestrator.spawn/4) MUST stay `async: false`.
+      {Registry, keys: :unique, name: Grappa.SessionRegistry},
+
+      # #543 INC-6 — the derived-source-alias holder index. A `:duplicate`
+      # Registry keyed BY ADDRESS: each `Session.Server` that acquires a
+      # derived `::cb` alias registers itself under that address, so many
+      # NAT-collapsed sessions sharing one `/64` appear as many entries under
+      # the one key. `Grappa.Net.SourceAliasManager` reads it (via the
+      # injected `held_source_fn`) at reconcile to rebuild the held set AFTER
+      # its OWN restart — the refcount table it keeps is authoritative for
+      # prompt bind/unbind but does NOT survive a manager crash, whereas this
+      # Registry is auto-GC'd by the BEAM on holder death and DOES survive.
+      # Before SessionSupervisor (sessions register into it) and before the
+      # manager (the reconcile reader). See `SourceAliasManager.held_addresses/1`
+      # for why the two sources are deliberately not folded.
+      {Registry, keys: :duplicate, name: Grappa.SourceAliasHolders},
+
+      # Backoff before SessionSupervisor — owns the ETS table that
+      # tracks per-(subject, network_id) failure counts across
+      # `:transient` Session.Server respawns. Reads are direct ETS
+      # lookups from `Session.Server.handle_continue/2`'s start path,
+      # so the table MUST exist before the first session spawn. See
+      # `Grappa.Session.Backoff` moduledoc for the curve + rationale.
+      Grappa.Session.Backoff,
+      # WSPresence: tracks live WS socket pids per user_name to drive auto-away
+      # (S3.1). Must come before SessionSupervisor so session processes can subscribe
+      # to its notifications as soon as they start. Restart: :permanent (infrastructure).
+      #
+      # Opts are the CLAUDE.md boot-time injection of the #224 demotion
+      # sweep's interval (prod sets nothing and inherits `stale_ms`); test
+      # env parks the timer because the singleton is shared across the run.
+      {Grappa.WSPresence, ws_presence_opts()},
+      # Grappa.Admission.NetworkCircuit (T31): both ETS-backed
+      # singletons that must exist before the first session spawn or
+      # admission check. NetworkCircuit funnels writes through its
+      # GenServer; the named table is created in init/1.
+      Grappa.Admission.NetworkCircuit,
+      # AdminEvents (M-cluster M-11): singleton GenServer that
+      # attaches :telemetry handlers in init/1 + holds the admin-
+      # events ring buffer. Must boot AFTER NetworkCircuit (which
+      # emits the events we subscribe to) so the first transition
+      # doesn't fire into a non-existent handler; AND BEFORE
+      # SessionSupervisor so any session crash-loop that trips a
+      # circuit on startup already has a handler attached.
+      # Restart: :permanent (infrastructure).
+      #
+      # `attach_telemetry: false` in test env: the global handler
+      # routes admission telemetry from EVERY async test to the
+      # AdminEvents pid, which then calls `Networks.get_network/1`
+      # via Wire.lookup_slug/1 → the sandbox connection is owned
+      # by the EMITTING test's pid, not AdminEvents' pid, so the
+      # lookup crashes with "could not lookup Ecto repo". Per-test
+      # opt-in via `Process.whereis(AdminEvents) |>
+      # Ecto.Adapters.SQL.Sandbox.allow(...)` keeps the
+      # AdminEvents-targeting tests honest without bleeding into
+      # unrelated suites.
+      {Grappa.AdminEvents, attach_telemetry: attach_admin_telemetry?(), persist: persist_admin_events?()},
+      # SessionLog (#215): singleton GenServer sink for the persisted IRC
+      # session-lifecycle log. Attaches `[:grappa, :session, :log, _]`
+      # telemetry in init/1 + persists each event to `session_log_events`.
+      # Same ordering rationale as AdminEvents: boot BEFORE
+      # SessionSupervisor so the first session's connect/disconnect
+      # telemetry has a handler attached. Restart: :permanent
+      # (infrastructure). `attach_telemetry: false` in test env for the
+      # same sandbox-ownership reason as AdminEvents.
+      {Grappa.SessionLog, attach_telemetry: attach_session_log_telemetry?()},
+      # DbLatency (#357): singleton GenServer that attaches :telemetry
+      # handlers in init/1 and folds `[:grappa, :repo, :query]` +
+      # the D1 write-path spans into in-memory latency counters. The
+      # interim in-code consumer for the #357 spans (which "ship no
+      # handler by default") so the 25s-under-load sample survives a
+      # restart instead of being hand-attached over rpc and wiped by
+      # the next cold. Boot alongside the other telemetry sinks
+      # (AdminEvents / SessionLog) and BEFORE SessionSupervisor so the
+      # FIRST session's persist/send spans already have a handler; it
+      # holds no ETS/Registry/DB state of its own — the only ordering
+      # requirement is to EXIST before the emitters fire. Restart:
+      # :permanent (infrastructure). `attach_telemetry: false` in test
+      # env so the global handler doesn't fold every async test's
+      # queries into the shared singleton (per-test opt-in via manual
+      # attach); unlike AdminEvents/SessionLog it needs NO sandbox
+      # allow — the fold touches no Repo.
+      {Grappa.DbLatency, attach_telemetry: attach_db_latency_telemetry?()},
+      # VendorLog (#1321): singleton GenServer that attaches to the
+      # `[:grappa, :push, :vendor_rejection]` event in init/1 (emitted by
+      # `Push.Sender` since it owns the POST, #2401) and logs the
+      # rejection reason a push service returned in the response body.
+      # Same slot as the sinks above and
+      # BEFORE Endpoint, so a delivery triggered by the first WS event
+      # already has a handler; it holds no state at all beyond the
+      # attachment, so nothing orders it against Repo/Registry. Restart:
+      # :permanent (infrastructure). `attach_telemetry: false` in test
+      # env so the handler doesn't write into every suite's captured
+      # Logger stream (per-test opt-in via manual attach).
+      {Grappa.Push.VendorLog, attach_telemetry: attach_push_vendor_log_telemetry?()},
+      # ShareTokens: ETS-backed one-shot set for share-link token
+      # redemption (#1306 — both subject kinds; the ledger keys on the
+      # token string, which carries no kind). Must come before Endpoint
+      # so the consume controller never races a missing table. No
+      # upstream deps; placed here to sit alongside the other ETS
+      # singletons (Backoff, NetworkCircuit) for ordering clarity.
+      Grappa.ShareTokens,
+      # #75 — per-(bucket, subject, day) creation quota. ETS-backed
+      # singleton, sibling of Backoff / NetworkCircuit / ShareTokens:
+      # must exist before Endpoint so `Grappa.Themes.create_theme/2`'s
+      # rate-limit check (via the ThemesController) never races a
+      # missing table. No upstream deps; writes funnel through its
+      # GenServer for atomic check-and-record.
+      Grappa.RateLimit.DailyQuota,
+      # S6 (review 2026-07-19) — per-(bucket, key) failure window.
+      # ETS-backed singleton, sibling of DailyQuota above: must exist
+      # before Endpoint so AuthController's mode-1 login throttle
+      # never races a missing table. Reads are lock-free; failure
+      # writes funnel through its GenServer.
+      Grappa.RateLimit.FailureWindow,
+      # #442 — one-shot WebAuthn ceremonies. Ephemeral by design: a
+      # restart invalidates pending challenges but never credentials.
+      Grappa.Accounts.WebAuthnChallengeStore,
+      # issue 2430 X1 — the blind pairing relay: rendezvous between two
+      # devices of one account, in memory, gone in 300 s. Before Endpoint
+      # so its REST door never races a missing process; no upstream deps
+      # beyond PubSub (above) and TokenBucket (below, reached only on a
+      # call, never at start).
+      Grappa.E2ePairing,
+      # #340 — per-(subject, network) inbound message-send token bucket.
+      # ETS-backed singleton, sibling of DailyQuota / FailureWindow: must
+      # exist before Endpoint so MessagesController.create's send throttle
+      # never races a missing table. The refill-check-consume funnels
+      # through its GenServer for atomicity (no lock-free peek — observing
+      # a token bucket refills it).
+      Grappa.RateLimit.TokenBucket,
+      # #252 — vhost reverse-DNS (PTR) name cache. ETS-backed singleton
+      # sibling of Backoff / NetworkCircuit / ShareTokens: must exist
+      # before Endpoint so `UserSettingsController.show_vhost/2`'s
+      # lock-free `names_for/1` read never races a missing table. The
+      # resolver is injected at boot (test wires an offline stub via
+      # `:vhost_ptr_resolver`); dev/prod fall through to the module's
+      # baked-in real `:inet_res` resolver. No SessionSupervisor /
+      # TaskSupervisor dependency — resolves run in its own cast handler.
+      ptr_cache_child(),
+      # Task.Supervisor for detached fire-and-forget work that must NOT be
+      # linked to the spawning process (S37). `Session.Server`'s terminal-
+      # failure handler runs its `credential_failer` callback here: it
+      # can't run it synchronously (mark_failed → stop_session would
+      # deadlock the exiting server) nor linked (a linked task dies with
+      # the server's :normal exit before the DB transition lands), so it
+      # detaches. `Task.start/1` detached it but left it unsupervised — a
+      # raise in the failer then silently skipped the `:failed` DB
+      # transition. Under this supervisor the task is tracked and its crash
+      # is a visible SASL report. Must precede SessionSupervisor so a
+      # session terminating on its start path can already reach it.
+      {Task.Supervisor, name: Grappa.TaskSupervisor},
+      # #1768 — window_counts snapshot coalescer. AFTER TaskSupervisor
+      # (every flush hands its snapshot to it) and BEFORE
+      # SessionSupervisor, because the first persisted row of the first
+      # session touches it. Its absence is not fatal — `touch/1` is a
+      # cast, so an un-started coalescer silently skips the live-render
+      # optimization instead of crashing the persist path — but that is
+      # a degradation contract, not a licence to start it late.
+      Grappa.WindowCounts.Pusher.Coalescer,
+      # max_restarts: 10_000, max_seconds: 60 — DynamicSupervisor's
+      # default (3 restarts in 5s) is GLOBAL across all children; one
+      # upstream network-wide outage causing several Session.Server
+      # retries blows the budget and the supervisor itself exits
+      # :shutdown, torching every OTHER session under it. Cluster
+      # visitor-auth flake characterization measured ~2000 restarts/sec
+      # for a single session against a refused TCP port (RST returns
+      # immediately, so the `:transient` restart cycle spins at full
+      # CPU speed). Bumping the budget to 10_000 in 60s gives ~167/sec
+      # sustained — enough to absorb 5s of full-rate restart-loop
+      # before tripping, while still catching genuinely catastrophic
+      # loops (10k restarts/min from one session is wildly abnormal).
+      # Phase 5's per-session reconnect/backoff replaces the
+      # exhaust-and-give-up shape with proper session-health tracking
+      # + telemetry — these limits become genuinely-defensive failsafes
+      # rather than the front-line tolerance. See DESIGN_NOTES
+      # 2026-05-02.
+      {DynamicSupervisor, name: Grappa.SessionSupervisor, strategy: :one_for_one, max_restarts: 10_000, max_seconds: 60}
+    ] ++
+      identd_children(flags.identd) ++
+      endpoint_child(flags.start_endpoint) ++
       [
-        # Vault before Repo: Cloak's Ecto types (Grappa.EncryptedBinary)
-        # reach into the Vault GenServer at schema dump/load time. If
-        # Repo loaded a schema with an encrypted field before Vault was
-        # up, the type callback would crash with `:noproc`.
-        Grappa.Vault,
-
-        # LockWatch before Repo (#1420): it owns the ETS table that
-        # `Repo.immediate_transaction/1` writes to on every write
-        # transaction, so the table must exist before the first one can
-        # run. Placing it after Repo would leave a boot window in which
-        # the seam self-disables — and the seam checks for the table
-        # precisely so a watchdog restart can never abort a caller's
-        # transaction. Depends on nothing itself (ETS + a timer).
-        {Grappa.Repo.LockWatch, lock_watch_opts()},
-
-        # Must come first (after Vault): every context that touches the
-        # DB depends on Repo being up. Sessions write Scrollback rows;
-        # Phase 2 schemas (network_credentials) carry encrypted columns
-        # that need Vault — hence Vault first.
-        Grappa.Repo,
-
-        # PubSub before Endpoint — Endpoint's compile-time config names
-        # `pubsub_server: Grappa.PubSub` and the channel layer subscribes
-        # at join time. Sessions broadcast inbound PRIVMSGs over PubSub.
-        {Phoenix.PubSub, name: Grappa.PubSub},
-
-        # Registry before DynamicSupervisor — Session.Server registers
-        # itself under `Grappa.Session.registry_key/2` via this Registry,
-        # and lookups happen in DynamicSupervisor's start_child cascade.
-        # Application-wide singleton (`name: Grappa.SessionRegistry`)
-        # shared across the entire `mix test` run; tests sharing the
-        # same `network_id` would observe each other's registered
-        # session pids. `config :ex_unit, max_cases: 1` in
-        # `config/test.exs` is the global guard. Tests touching this
-        # registry (Session.whereis/2 callers, Bootstrap.spawn_*,
-        # SpawnOrchestrator.spawn/4) MUST stay `async: false`.
-        {Registry, keys: :unique, name: Grappa.SessionRegistry},
-
-        # #543 INC-6 — the derived-source-alias holder index. A `:duplicate`
-        # Registry keyed BY ADDRESS: each `Session.Server` that acquires a
-        # derived `::cb` alias registers itself under that address, so many
-        # NAT-collapsed sessions sharing one `/64` appear as many entries under
-        # the one key. `Grappa.Net.SourceAliasManager` reads it (via the
-        # injected `held_source_fn`) at reconcile to rebuild the held set AFTER
-        # its OWN restart — the refcount table it keeps is authoritative for
-        # prompt bind/unbind but does NOT survive a manager crash, whereas this
-        # Registry is auto-GC'd by the BEAM on holder death and DOES survive.
-        # Before SessionSupervisor (sessions register into it) and before the
-        # manager (the reconcile reader). See `SourceAliasManager.held_addresses/1`
-        # for why the two sources are deliberately not folded.
-        {Registry, keys: :duplicate, name: Grappa.SourceAliasHolders},
-
-        # Backoff before SessionSupervisor — owns the ETS table that
-        # tracks per-(subject, network_id) failure counts across
-        # `:transient` Session.Server respawns. Reads are direct ETS
-        # lookups from `Session.Server.handle_continue/2`'s start path,
-        # so the table MUST exist before the first session spawn. See
-        # `Grappa.Session.Backoff` moduledoc for the curve + rationale.
-        Grappa.Session.Backoff,
-        # WSPresence: tracks live WS socket pids per user_name to drive auto-away
-        # (S3.1). Must come before SessionSupervisor so session processes can subscribe
-        # to its notifications as soon as they start. Restart: :permanent (infrastructure).
-        #
-        # Opts are the CLAUDE.md boot-time injection of the #224 demotion
-        # sweep's interval (prod sets nothing and inherits `stale_ms`); test
-        # env parks the timer because the singleton is shared across the run.
-        {Grappa.WSPresence, ws_presence_opts()},
-        # Grappa.Admission.NetworkCircuit (T31): both ETS-backed
-        # singletons that must exist before the first session spawn or
-        # admission check. NetworkCircuit funnels writes through its
-        # GenServer; the named table is created in init/1.
-        Grappa.Admission.NetworkCircuit,
-        # AdminEvents (M-cluster M-11): singleton GenServer that
-        # attaches :telemetry handlers in init/1 + holds the admin-
-        # events ring buffer. Must boot AFTER NetworkCircuit (which
-        # emits the events we subscribe to) so the first transition
-        # doesn't fire into a non-existent handler; AND BEFORE
-        # SessionSupervisor so any session crash-loop that trips a
-        # circuit on startup already has a handler attached.
-        # Restart: :permanent (infrastructure).
-        #
-        # `attach_telemetry: false` in test env: the global handler
-        # routes admission telemetry from EVERY async test to the
-        # AdminEvents pid, which then calls `Networks.get_network/1`
-        # via Wire.lookup_slug/1 → the sandbox connection is owned
-        # by the EMITTING test's pid, not AdminEvents' pid, so the
-        # lookup crashes with "could not lookup Ecto repo". Per-test
-        # opt-in via `Process.whereis(AdminEvents) |>
-        # Ecto.Adapters.SQL.Sandbox.allow(...)` keeps the
-        # AdminEvents-targeting tests honest without bleeding into
-        # unrelated suites.
-        {Grappa.AdminEvents, attach_telemetry: attach_admin_telemetry?(), persist: persist_admin_events?()},
-        # SessionLog (#215): singleton GenServer sink for the persisted IRC
-        # session-lifecycle log. Attaches `[:grappa, :session, :log, _]`
-        # telemetry in init/1 + persists each event to `session_log_events`.
-        # Same ordering rationale as AdminEvents: boot BEFORE
-        # SessionSupervisor so the first session's connect/disconnect
-        # telemetry has a handler attached. Restart: :permanent
-        # (infrastructure). `attach_telemetry: false` in test env for the
-        # same sandbox-ownership reason as AdminEvents.
-        {Grappa.SessionLog, attach_telemetry: attach_session_log_telemetry?()},
-        # DbLatency (#357): singleton GenServer that attaches :telemetry
-        # handlers in init/1 and folds `[:grappa, :repo, :query]` +
-        # the D1 write-path spans into in-memory latency counters. The
-        # interim in-code consumer for the #357 spans (which "ship no
-        # handler by default") so the 25s-under-load sample survives a
-        # restart instead of being hand-attached over rpc and wiped by
-        # the next cold. Boot alongside the other telemetry sinks
-        # (AdminEvents / SessionLog) and BEFORE SessionSupervisor so the
-        # FIRST session's persist/send spans already have a handler; it
-        # holds no ETS/Registry/DB state of its own — the only ordering
-        # requirement is to EXIST before the emitters fire. Restart:
-        # :permanent (infrastructure). `attach_telemetry: false` in test
-        # env so the global handler doesn't fold every async test's
-        # queries into the shared singleton (per-test opt-in via manual
-        # attach); unlike AdminEvents/SessionLog it needs NO sandbox
-        # allow — the fold touches no Repo.
-        {Grappa.DbLatency, attach_telemetry: attach_db_latency_telemetry?()},
-        # VendorLog (#1321): singleton GenServer that attaches to the
-        # `[:grappa, :push, :vendor_rejection]` event in init/1 (emitted by
-        # `Push.Sender` since it owns the POST, #2401) and logs the
-        # rejection reason a push service returned in the response body.
-        # Same slot as the sinks above and
-        # BEFORE Endpoint, so a delivery triggered by the first WS event
-        # already has a handler; it holds no state at all beyond the
-        # attachment, so nothing orders it against Repo/Registry. Restart:
-        # :permanent (infrastructure). `attach_telemetry: false` in test
-        # env so the handler doesn't write into every suite's captured
-        # Logger stream (per-test opt-in via manual attach).
-        {Grappa.Push.VendorLog, attach_telemetry: attach_push_vendor_log_telemetry?()},
-        # ShareTokens: ETS-backed one-shot set for share-link token
-        # redemption (#1306 — both subject kinds; the ledger keys on the
-        # token string, which carries no kind). Must come before Endpoint
-        # so the consume controller never races a missing table. No
-        # upstream deps; placed here to sit alongside the other ETS
-        # singletons (Backoff, NetworkCircuit) for ordering clarity.
-        Grappa.ShareTokens,
-        # #75 — per-(bucket, subject, day) creation quota. ETS-backed
-        # singleton, sibling of Backoff / NetworkCircuit / ShareTokens:
-        # must exist before Endpoint so `Grappa.Themes.create_theme/2`'s
-        # rate-limit check (via the ThemesController) never races a
-        # missing table. No upstream deps; writes funnel through its
-        # GenServer for atomic check-and-record.
-        Grappa.RateLimit.DailyQuota,
-        # S6 (review 2026-07-19) — per-(bucket, key) failure window.
-        # ETS-backed singleton, sibling of DailyQuota above: must exist
-        # before Endpoint so AuthController's mode-1 login throttle
-        # never races a missing table. Reads are lock-free; failure
-        # writes funnel through its GenServer.
-        Grappa.RateLimit.FailureWindow,
-        # #442 — one-shot WebAuthn ceremonies. Ephemeral by design: a
-        # restart invalidates pending challenges but never credentials.
-        Grappa.Accounts.WebAuthnChallengeStore,
-        # issue 2430 X1 — the blind pairing relay: rendezvous between two
-        # devices of one account, in memory, gone in 300 s. Before Endpoint
-        # so its REST door never races a missing process; no upstream deps
-        # beyond PubSub (above) and TokenBucket (below, reached only on a
-        # call, never at start).
-        Grappa.E2ePairing,
-        # #340 — per-(subject, network) inbound message-send token bucket.
-        # ETS-backed singleton, sibling of DailyQuota / FailureWindow: must
-        # exist before Endpoint so MessagesController.create's send throttle
-        # never races a missing table. The refill-check-consume funnels
-        # through its GenServer for atomicity (no lock-free peek — observing
-        # a token bucket refills it).
-        Grappa.RateLimit.TokenBucket,
-        # #252 — vhost reverse-DNS (PTR) name cache. ETS-backed singleton
-        # sibling of Backoff / NetworkCircuit / ShareTokens: must exist
-        # before Endpoint so `UserSettingsController.show_vhost/2`'s
-        # lock-free `names_for/1` read never races a missing table. The
-        # resolver is injected at boot (test wires an offline stub via
-        # `:vhost_ptr_resolver`); dev/prod fall through to the module's
-        # baked-in real `:inet_res` resolver. No SessionSupervisor /
-        # TaskSupervisor dependency — resolves run in its own cast handler.
-        ptr_cache_child(),
-        # Task.Supervisor for detached fire-and-forget work that must NOT be
-        # linked to the spawning process (S37). `Session.Server`'s terminal-
-        # failure handler runs its `credential_failer` callback here: it
-        # can't run it synchronously (mark_failed → stop_session would
-        # deadlock the exiting server) nor linked (a linked task dies with
-        # the server's :normal exit before the DB transition lands), so it
-        # detaches. `Task.start/1` detached it but left it unsupervised — a
-        # raise in the failer then silently skipped the `:failed` DB
-        # transition. Under this supervisor the task is tracked and its crash
-        # is a visible SASL report. Must precede SessionSupervisor so a
-        # session terminating on its start path can already reach it.
-        {Task.Supervisor, name: Grappa.TaskSupervisor},
-        # #1768 — window_counts snapshot coalescer. AFTER TaskSupervisor
-        # (every flush hands its snapshot to it) and BEFORE
-        # SessionSupervisor, because the first persisted row of the first
-        # session touches it. Its absence is not fatal — `touch/1` is a
-        # cast, so an un-started coalescer silently skips the live-render
-        # optimization instead of crashing the persist path — but that is
-        # a degradation contract, not a licence to start it late.
-        Grappa.WindowCounts.Pusher.Coalescer,
-        # max_restarts: 10_000, max_seconds: 60 — DynamicSupervisor's
-        # default (3 restarts in 5s) is GLOBAL across all children; one
-        # upstream network-wide outage causing several Session.Server
-        # retries blows the budget and the supervisor itself exits
-        # :shutdown, torching every OTHER session under it. Cluster
-        # visitor-auth flake characterization measured ~2000 restarts/sec
-        # for a single session against a refused TCP port (RST returns
-        # immediately, so the `:transient` restart cycle spins at full
-        # CPU speed). Bumping the budget to 10_000 in 60s gives ~167/sec
-        # sustained — enough to absorb 5s of full-rate restart-loop
-        # before tripping, while still catching genuinely catastrophic
-        # loops (10k restarts/min from one session is wildly abnormal).
-        # Phase 5's per-session reconnect/backoff replaces the
-        # exhaust-and-give-up shape with proper session-health tracking
-        # + telemetry — these limits become genuinely-defensive failsafes
-        # rather than the front-line tolerance. See DESIGN_NOTES
-        # 2026-05-02.
-        {DynamicSupervisor,
-         name: Grappa.SessionSupervisor, strategy: :one_for_one, max_restarts: 10_000, max_seconds: 60}
+        # #543 INC-5: source-alias ref-count manager. Placed AFTER Endpoint
+        # and BEFORE Bootstrap deliberately (supervision ordering is
+        # load-bearing — CLAUDE.md). After Endpoint: its `handle_continue`
+        # boot reconcile sweeps orphan aliases a crashed prior run left
+        # bound, and ordering the sweep after the public surface is up keeps
+        # the "everything clients can reach is reconciled" invariant honest
+        # (sibling rationale to the Reapers below). Before Bootstrap: INC-6
+        # sessions call `SourceAliasManager.acquire/1` on their connect path,
+        # so the manager must already exist when Bootstrap spawns them. Its
+        # `init/1` reads `ServerSettings.static_mapping_prefix/0` (Repo is up
+        # this late) to run the platform `arm_check`. Opt-out via
+        # `:start_source_alias_manager` (false in test — its unit tests start
+        # their own Mox-wired instance under the default name).
       ] ++
-        identd_children() ++
-        endpoint_child() ++
-        [
-          # #543 INC-5: source-alias ref-count manager. Placed AFTER Endpoint
-          # and BEFORE Bootstrap deliberately (supervision ordering is
-          # load-bearing — CLAUDE.md). After Endpoint: its `handle_continue`
-          # boot reconcile sweeps orphan aliases a crashed prior run left
-          # bound, and ordering the sweep after the public surface is up keeps
-          # the "everything clients can reach is reconciled" invariant honest
-          # (sibling rationale to the Reapers below). Before Bootstrap: INC-6
-          # sessions call `SourceAliasManager.acquire/1` on their connect path,
-          # so the manager must already exist when Bootstrap spawns them. Its
-          # `init/1` reads `ServerSettings.static_mapping_prefix/0` (Repo is up
-          # this late) to run the platform `arm_check`. Opt-out via
-          # `:start_source_alias_manager` (false in test — its unit tests start
-          # their own Mox-wired instance under the default name).
-        ] ++
-        source_alias_manager_child() ++
-        [
-          # Reaper after Repo (it queries Visitors via Repo) and after
-          # Endpoint, WHEN PRESENT (so a slow boot doesn't sweep before the
-          # public surface is up — Reaper's sweep deletes rows that REST/WS
-          # might reach for; ordering it after Endpoint keeps the
-          # "everything visible to clients is also visible to Reaper"
-          # invariant honest). The `reaper_interval_ms/0` cadence (60s in
-          # prod) is far longer than boot, so the first sweep waits
-          # anyway — ordering is
-          # belt-and-braces. Reaper consumes Grappa.Visitors; the
-          # Application boundary has it listed in deps for that reason.
-          {Grappa.Visitors.Reaper, [interval_ms: reaper_interval_ms()] ++ incognito_grace_opt()},
+      source_alias_manager_child(flags.start_source_alias_manager) ++
+      [
+        # Reaper after Repo (it queries Visitors via Repo) and after
+        # Endpoint, WHEN PRESENT (so a slow boot doesn't sweep before the
+        # public surface is up — Reaper's sweep deletes rows that REST/WS
+        # might reach for; ordering it after Endpoint keeps the
+        # "everything visible to clients is also visible to Reaper"
+        # invariant honest). The `reaper_interval_ms/0` cadence (60s in
+        # prod) is far longer than boot, so the first sweep waits
+        # anyway — ordering is
+        # belt-and-braces. Reaper consumes Grappa.Visitors; the
+        # Application boundary has it listed in deps for that reason.
+        {Grappa.Visitors.Reaper, [interval_ms: reaper_interval_ms()] ++ incognito_grace_opt()},
 
-          # UX-6-B1 (2026-05-20): embedded image uploader Reaper. Same
-          # rationale as Visitors.Reaper for the ordering: after Repo
-          # (it queries `uploads`) + after Endpoint, when present (so the
-          # GET surface is up before sweeps remove rows + files clients
-          # might be reaching for). The Reaper also mkdir_p's the
-          # storage_root in `init/1` so a fresh deploy needs no separate
-          # bootstrap. `:storage_root` is read from
-          # `:grappa, :uploads_storage_root` at THIS boot-time boundary —
-          # the controller + Reaper read from `:persistent_term`
-          # thereafter (CLAUDE.md "Application.{put,get}_env: boot-time
-          # only").
-          {Grappa.Uploads.Reaper, storage_root: uploads_storage_root(), interval_ms: reaper_interval_ms()},
+        # UX-6-B1 (2026-05-20): embedded image uploader Reaper. Same
+        # rationale as Visitors.Reaper for the ordering: after Repo
+        # (it queries `uploads`) + after Endpoint, when present (so the
+        # GET surface is up before sweeps remove rows + files clients
+        # might be reaching for). The Reaper also mkdir_p's the
+        # storage_root in `init/1` so a fresh deploy needs no separate
+        # bootstrap. `:storage_root` is read from
+        # `:grappa, :uploads_storage_root` at THIS boot-time boundary —
+        # the controller + Reaper read from `:persistent_term`
+        # thereafter (CLAUDE.md "Application.{put,get}_env: boot-time
+        # only").
+        {Grappa.Uploads.Reaper, storage_root: uploads_storage_root(), interval_ms: reaper_interval_ms()},
 
-          # M3b — sibling sweep for the peer-avatar cache. Same "why after
-          # Endpoint" rationale as Uploads.Reaper above (the serving route
-          # must be reachable before sweeps start removing rows/files).
-          {Grappa.Avatars.Reaper, storage_root: peer_avatars_storage_root(), interval_ms: reaper_interval_ms()},
+        # M3b — sibling sweep for the peer-avatar cache. Same "why after
+        # Endpoint" rationale as Uploads.Reaper above (the serving route
+        # must be reachable before sweeps start removing rows/files).
+        {Grappa.Avatars.Reaper, storage_root: peer_avatars_storage_root(), interval_ms: reaper_interval_ms()},
 
-          # issue 2089 — the FIFTH reaper, sweeping the DCC spool. Same
-          # "why after Endpoint" rationale as the two above: the
-          # authenticated serving route must be reachable before sweeps
-          # start removing rows and files out from under it.
-          #
-          # A fifth sweeper rather than a branch inside an existing one,
-          # per CLAUDE.md rule 6 — reuse the VERB, not the noun. It is
-          # also only ONE of this feature's three reaping axes, and the
-          # other two are deliberately not here: a HELD offer is reaped by
-          # the session process that owns it (it is a peer's live TCP
-          # endpoint, worthless once that process is gone), and a PARTIAL
-          # file from an aborted transfer is removed inline by
-          # `Grappa.Dcc.Transfer`, because no row is ever written for it
-          # and a sweep has nothing to enumerate.
-          {Grappa.Dcc.Reaper, storage_root: dcc_storage_root(), interval_ms: reaper_interval_ms()},
+        # issue 2089 — the FIFTH reaper, sweeping the DCC spool. Same
+        # "why after Endpoint" rationale as the two above: the
+        # authenticated serving route must be reachable before sweeps
+        # start removing rows and files out from under it.
+        #
+        # A fifth sweeper rather than a branch inside an existing one,
+        # per CLAUDE.md rule 6 — reuse the VERB, not the noun. It is
+        # also only ONE of this feature's three reaping axes, and the
+        # other two are deliberately not here: a HELD offer is reaped by
+        # the session process that owns it (it is a peer's live TCP
+        # endpoint, worthless once that process is gone), and a PARTIAL
+        # file from an aborted transfer is removed inline by
+        # `Grappa.Dcc.Transfer`, because no row is ever written for it
+        # and a sweep has nothing to enumerate.
+        {Grappa.Dcc.Reaper, storage_root: dcc_storage_root(), interval_ms: reaper_interval_ms()},
 
-          # #223: auth-session housekeeping GC. Sibling of Visitors.Reaper
-          # / Uploads.Reaper — a THIRD domain (Accounts) gets its OWN
-          # periodic sweep rather than folding into an unrelated reaper
-          # (CLAUDE.md rule 6 — reuse the verb, not the noun). Same
-          # ordering rationale: after Repo (it queries `sessions`) and
-          # after Endpoint, when present (so the auth surface is up before
-          # the sweep removes idle-expired rows). Bulk `delete_all` over
-          # USER sessions past the 7-day idle window that `authenticate/1`
-          # already rejects; visitor sessions are out of scope (they
-          # CASCADE from the visitor row via Visitors.Reaper). The
-          # `reaper_interval_ms/0` cadence (60s in prod) >> boot, so the
-          # first sweep waits anyway.
-          {Grappa.Accounts.Reaper, interval_ms: reaper_interval_ms()}
+        # #223: auth-session housekeeping GC. Sibling of Visitors.Reaper
+        # / Uploads.Reaper — a THIRD domain (Accounts) gets its OWN
+        # periodic sweep rather than folding into an unrelated reaper
+        # (CLAUDE.md rule 6 — reuse the verb, not the noun). Same
+        # ordering rationale: after Repo (it queries `sessions`) and
+        # after Endpoint, when present (so the auth surface is up before
+        # the sweep removes idle-expired rows). Bulk `delete_all` over
+        # USER sessions past the 7-day idle window that `authenticate/1`
+        # already rejects; visitor sessions are out of scope (they
+        # CASCADE from the visitor row via Visitors.Reaper). The
+        # `reaper_interval_ms/0` cadence (60s in prod) >> boot, so the
+        # first sweep waits anyway.
+        {Grappa.Accounts.Reaper, interval_ms: reaper_interval_ms()}
 
-          # Bootstrap is appended LAST below: it depends on Registry +
-          # SessionSupervisor existing so it can spawn sessions. Conditional
-          # on :start_bootstrap so test boots empty.
-        ] ++ bootstrap_child()
+        # Bootstrap is appended LAST below: it depends on Registry +
+        # SessionSupervisor existing so it can spawn sessions. Conditional
+        # on :start_bootstrap so test boots empty.
+      ] ++ bootstrap_child(flags.start_bootstrap)
+  end
 
-    case Supervisor.start_link(children, root_supervisor_opts()) do
+  @spec start_tree(boot_flags()) :: Supervisor.on_start()
+  defp start_tree(flags) do
+    case Supervisor.start_link(children(flags), root_supervisor_opts()) do
       {:ok, _} = result ->
         # H26 (review 2026-05-22): flip the substrate-readiness flag
         # so `/healthz` returns 200 (vs the default 503-on-not-ready).
@@ -540,7 +566,7 @@ defmodule Grappa.Application do
         # it earlier (measured) crashes boot with "could not find
         # persistent term for endpoint GrappaWeb.Endpoint."
         #
-        # Guarded on the SAME flag `endpoint_child/0` reads: when
+        # Guarded on the SAME flag `endpoint_child/1` reads: when
         # `:start_endpoint` is false there is no Endpoint child, so
         # Phoenix never writes that `:persistent_term` and `url/0`
         # raises the very error the paragraph above describes — which
@@ -554,7 +580,7 @@ defmodule Grappa.Application do
         # same breath). It stays a raise, not a nil, so a caller that
         # DOES reach it on such a node is a contract violation and says
         # so.
-        if Application.get_env(:grappa, :start_endpoint, true) do
+        if flags.start_endpoint do
           :ok = Grappa.Uploads.boot_base_url(GrappaWeb.Endpoint.url())
         end
 
@@ -652,10 +678,23 @@ defmodule Grappa.Application do
     [strategy: :one_for_one, name: Grappa.Supervisor, max_restarts: 80, max_seconds: 120]
   end
 
+  # issue 2697 — the boot-time read of the four flags `children/1` takes.
+  # Defaults are the production behaviour: every optional child on except
+  # identd, which is off unless the operator configures it.
+  @spec boot_flags() :: boot_flags()
+  defp boot_flags do
+    %{
+      start_bootstrap: Application.get_env(:grappa, :start_bootstrap, true),
+      start_endpoint: Application.get_env(:grappa, :start_endpoint, true),
+      start_source_alias_manager: Application.get_env(:grappa, :start_source_alias_manager, true),
+      identd: Application.get_env(:grappa, :identd, [])
+    }
+  end
+
   # Bootstrap is opt-in via the `:start_bootstrap` flag (true in dev/prod,
   # false in test) so the test suite doesn't try to spawn live IRC sessions
   # against the operator's bound DB credentials when running `mix test`.
-  @spec bootstrap_child() :: [] | [Grappa.Bootstrap]
+  @spec bootstrap_child(boolean()) :: [] | [Grappa.Bootstrap]
   # issue 227 — the RFC 1413 ident server, DISABLED BY DEFAULT: an unset
   # `:identd` keyspace returns `[]` here and the tree is byte-identical to
   # what it was. The port is the operator's, and its default is high and
@@ -673,9 +712,8 @@ defmodule Grappa.Application do
   # Order WITHIN the group is load-bearing too: the table before the
   # acceptors that read it, the acceptor supervisor before the listener
   # that starts children under it.
-  defp identd_children do
-    config = Application.get_env(:grappa, :identd, [])
-
+  @spec identd_children(keyword()) :: [module() | {module(), keyword()}]
+  defp identd_children(config) do
     if Keyword.get(config, :enabled, false) do
       [
         Grappa.Identd.Bindings,
@@ -687,8 +725,8 @@ defmodule Grappa.Application do
     end
   end
 
-  defp bootstrap_child do
-    if Application.get_env(:grappa, :start_bootstrap, true) do
+  defp bootstrap_child(start_bootstrap) do
+    if start_bootstrap do
       [Grappa.Bootstrap]
     else
       []
@@ -698,7 +736,7 @@ defmodule Grappa.Application do
   # Endpoint is opt-out via the `:start_endpoint` flag (true everywhere
   # except when a one-shot operator mix task flips it off via
   # `Mix.Tasks.Grappa.Boot.start_app_silent/0` — see that module).
-  # Mirrors `bootstrap_child/0` exactly: same shape, same reason (a
+  # Mirrors `bootstrap_child/1` exactly: same shape, same reason (a
   # caller that only needs the Repo-backed supervision tree shouldn't
   # be forced to also take on a side effect it never asked for — here,
   # binding the HTTP port a live release already owns).
@@ -709,9 +747,9 @@ defmodule Grappa.Application do
   # `Mix.Tasks.Grappa.Boot.start_app_silent/0` second BEAM) has no sockets to
   # close. Started AFTER the Endpoint, so the transport supervisor exists
   # before the first announcement can be translated.
-  @spec endpoint_child() :: [] | [GrappaWeb.Endpoint | {GrappaWeb.SessionRevocationListener, keyword()}]
-  defp endpoint_child do
-    if Application.get_env(:grappa, :start_endpoint, true) do
+  @spec endpoint_child(boolean()) :: [] | [GrappaWeb.Endpoint | {GrappaWeb.SessionRevocationListener, keyword()}]
+  defp endpoint_child(start_endpoint) do
+    if start_endpoint do
       [
         GrappaWeb.Endpoint,
         {GrappaWeb.SessionRevocationListener, name: GrappaWeb.SessionRevocationListener}
@@ -722,14 +760,14 @@ defmodule Grappa.Application do
   end
 
   # #543 INC-5 — the source-alias ref-count manager. Opt-out via
-  # `:start_source_alias_manager` (false in test), mirroring bootstrap_child/0:
+  # `:start_source_alias_manager` (false in test), mirroring bootstrap_child/1:
   # the manager's own unit tests start a Mox-wired instance under the default
   # name, and the arm gate is injected via `SourceAliasManager.put_test_armed/2`
   # — so the live singleton (which would read ServerSettings + the real adapter
   # at boot) must not also run in the test tree.
-  @spec source_alias_manager_child() :: [] | [{Grappa.Net.SourceAliasManager, keyword()}]
-  defp source_alias_manager_child do
-    if Application.get_env(:grappa, :start_source_alias_manager, true) do
+  @spec source_alias_manager_child(boolean()) :: [] | [{Grappa.Net.SourceAliasManager, keyword()}]
+  defp source_alias_manager_child(start_source_alias_manager) do
+    if start_source_alias_manager do
       # #543 INC-6 — inject the live-holder source so the manager's reconcile
       # held set survives its OWN restart. Wired HERE (application.ex deps both
       # Grappa.Net + Grappa.Session) so the manager stays OFF a Grappa.Session
