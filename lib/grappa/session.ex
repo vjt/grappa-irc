@@ -1600,7 +1600,9 @@ defmodule Grappa.Session do
 
   @doc """
   Queues a PART upstream through the session. Cast (see `send_join/4`
-  for the rationale). `{:error, :no_session}` if not registered.
+  for the rationale): nothing the session does with it reaches the
+  caller — the local half cannot fail, and the wire half is best-effort,
+  skipped before 001. `{:error, :no_session}` if no session is running.
 
   `reason` (#1208) is the optional PART message. `nil` — and the empty
   string, which is the same thing — frames the bare `PART <channel>` this
@@ -1609,7 +1611,7 @@ defmodule Grappa.Session do
   would end the PART line early and let the tail parse as its own command.
   """
   @spec send_part(subject(), integer(), String.t(), String.t() | nil) ::
-          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
+          :ok | {:error, :no_session | :invalid_line}
   def send_part(subject, network_id, channel, reason)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              (is_nil(reason) or is_binary(reason)) do
