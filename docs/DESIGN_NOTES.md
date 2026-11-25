@@ -9440,10 +9440,16 @@ network row that exists. The wait is a one-shot effect, the same shape as
 bounded by the identity that clicked (`identityMoved`), not by a timer: after a
 logout or an account switch it ends without asking anyone, so the consent
 question cannot land on an account that did not click. One exit is still
-open: a re-read that itself fails (a blip on `GET /networks`) leaves the wait
-running until the identity ends. The re-reads are fire-and-forget behind the
-issue 2059 coalescing queue, so the verb cannot see them fail, and making them
-observable changes `networks.ts`'s refetch contract for every caller.
+open, and it is narrow (issue 2723). A re-read that itself fails (a blip on
+`GET /networks`) leaves the wait to the next networks refetch. Two arrive on
+their own if this tab's user topic is up when they are sent:
+`network_attached`, which the server sends to every tab of the account, and
+the new session's 001 (`connection_progress` "connected"). Only when neither
+reaches the tab does the wait last until the identity ends: after a 204, a tab
+whose user topic was not up for its own attach; after a 409, the tab of the
+race above. The re-reads are fire-and-forget behind the issue 2059 coalescing
+queue, so the verb cannot see them fail, and making them observable changes
+`networks.ts`'s refetch contract for every caller.
 
 The consent itself stays (issue 2703, Q2). The ruling removes the modal for
 the CONNECTION. A joined channel is a presence other people see, so it keeps
