@@ -9380,3 +9380,77 @@ folded key as the `#Sniffo` JOIN some of them test. That was read, not run.
   hangs, the way the backoff window always did.
 * The cic half of issue 2703, attach-then-join from an invite link, is a
   separate PR on top of this one.
+<!-- entry #2703b -->
+
+---
+
+## 2026-11-25 — #2703b: an invite for an available network attaches it, then joins
+
+`?go=<network>/<channel>` (#793) resolved the network segment against the
+recipient's BOUND networks only. Anything else raised "you are not connected
+to that network" and stopped. That was #793's open decision 1, left open on
+purpose. It is also the common case for a public link: the "Join #disagio with
+grappa" buttons on disagio.sniffo.org point at `?go=ircnet/disagio`, and a
+newcomer holds no ircnet. vjt's ruling (2026-11-22): connect it "senza
+modale", then join as for a bound network. The toast stays for a slug this
+server does not have, and for one the recipient may not bind.
+
+### The gate is the server's own answer
+
+The network segment stays a slug on THIS server. It is not a global
+identifier, and cic keeps no list of its own. `/me`'s
+`home_data.available_networks` already answers "may this subject bind it?" for
+both subject kinds: a visitor gets the `visitor_enabled` networks, a user gets
+those plus their own detached ones, minus whatever is attached. That is the
+set `POST /session/networks` accepts. It is also resolved before the invite
+fires, since the deep-link readiness gate waits on `channelsBySlug`, which is
+keyed on `networks`, which is keyed on `/me`.
+
+`routeInviteTarget` therefore has three branches. A bound network gets the
+#648 confirm-then-join, or a plain switch. A network in the available tier is
+attached, and then gets the same #648 question. Anything else gets the toast.
+"Not on this server" and "not for you" share one sentence, "Invite for
+<slug> — that network is not available here.", because two answers would let
+a stranger enumerate what a deployment carries.
+
+### One attach verb, two doors
+
+HomePane's "Available to connect" row had the attach body inline: `addNetwork`,
+then `refetchUser` + `refetchNetworks`. It moves to `lib/networkAttach.ts`
+(`attachNetwork`), and both doors call it. The verb throws what `addNetwork`
+throws and re-reads nothing on a refusal, so each door keeps its own error
+surface. The home row prints inline. The invite raises its toast with the
+server's reason in localized copy (`errorMessage`). The invite reads exactly
+one refusal as success: 409 `already_attached`, meaning another tab of the
+same account won the race. The network IS there, and the winning tab's
+`network_attached` broadcast brings it into this tab's list.
+
+### The join question waits for the network row
+
+The 204 arrives before the network is in `networks()`. The join question waits
+for `networkBySlug` to resolve: a modal naming a network the sidebar does not
+show yet would be strange, and the window the join opens belongs under a
+network row that exists. The wait is a one-shot effect, the same shape as
+`deferUntilReady`, in a disposing root that the moduleRoot guard admits. It is
+bounded by the identity that clicked (`identityMoved`), not by a timer: after a
+logout or an account switch it ends without asking anyone, so the consent
+question cannot land on an account that did not click.
+
+The consent itself stays (issue 2703, Q2). The ruling removes the modal for
+the CONNECTION. A joined channel is a presence other people see, so it keeps
+its question, and Cancel leaves the network attached.
+
+### Why the server half went first
+
+Without `#2703a` the flow would be broken in exactly the case it creates. A
+fresh accretion's Client writes as soon as its socket is up, so a JOIN
+confirmed before 001 would have been sent unregistered and left `:pending`
+for good. The e2e cannot show this: solanum registers in milliseconds, so the
+confirm always lands after 001. The ExUnit pin in `#2703a` owns that property.
+
+### Not in this change
+
+* A parked network that is bound goes to the confirm and then a silent 404 on
+  the join. That is issue 2719, ruled out of scope here.
+* The toast is the only answer to a refused attach. There is no retry
+  affordance, and the link can simply be clicked again.
