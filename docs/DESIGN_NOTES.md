@@ -9705,3 +9705,53 @@ lost when the attempt dies (2742), a `:pending` window that never ends
 (2740), and the away rename before 001 (2745 cases 2–3) are separate PRs on
 top of this one. `e2e_bank_ms/1`'s `%{client: nil}` clause stays: it asks
 whether there is a Client to ask, which is not the registration question.
+<!-- entry #2728b -->
+
+---
+
+## 2026-11-25 — #2728b: the stored credential changes only after its line left a registered link
+
+A NickServ secret rides a line, and what the session does with it — rotate the
+stored password (SET PASSWD #131, RESETPASS #978) or stage the `+r`
+rendezvous (IDENTIFY, REGISTER #129) — is only true of a line that went out.
+#2728's gate supplies the "registered" half. This entry is the "left" half:
+every door used to capture BEFORE its write, so a write that failed still
+rotated or staged.
+
+- **Capture runs after the write, on the write's result.**
+  `capture_outbound_ns_secret/3` takes that result as its third argument and
+  does nothing on `{:error, _}`, so a door cannot capture without one; the
+  arity change made the compiler list every door. The `handle_call` doors
+  pass their reply (`reply_capturing/2`): it is `:ok` / `{:ok, _}` only once
+  every frame went out, and `{:error, _}` otherwise, including a persist that
+  failed before any write. `/quote`, the 001 perform pass and the
+  sub-machine door (`send_outbound/3`) pass the `Client` result directly.
+- **`:timeout` is not a write.** Its frame waits in the Client's mailbox and
+  may still go out (issue 2370), so the outcome is unknown. Unknown does not
+  rotate: if the frame did get through, the stored password is the old one
+  and retyping it into the network's password field (#124) repairs it, the
+  same repair as for a change services refused. Committing on `:timeout`
+  instead would store a password services may never have seen, with nothing
+  to tell the two cases apart afterwards.
+- **A committed rotation supersedes the staged identify slot.** The 001
+  built-in IDENTIFY stages the secret it sent and waits for its `+r`. A SET
+  PASSWD or RESETPASS that commits inside that window made the staged secret
+  stale, and on a visitor the late `+r` committed it, writing the OLD
+  password back over the new one. `supersede_staged_identify/2` drops the
+  slot when, and only when, the rotation committed; a rotation that was
+  refused (another account, an unidentified visitor) changed nothing stored,
+  so the slot stays.
+- **The capture reads no phase.** Before 001 every user door is refused by
+  the gate, and the 001 handler stamps `registered_at` before its perform
+  pass, so a check inside the capture would have nothing left to refuse.
+
+### Measured
+
+Red first on PR1's head (`c9fa7dd84`), one describe per door in
+`server_test.exs`, a written failure bought with a socketless Client or a
+suspended one: 9 tests, 8 red. SET PASSWD, RESETPASS and `/quote` SET PASSWD
+rotated on `:no_socket`, SET PASSWD rotated on `:timeout`, IDENTIFY and
+REGISTER staged, the refused 001 IDENTIFY staged, and a refused GHOST staged.
+The ninth, a WRITTEN 001 IDENTIFY staging its slot, was green before and after.
+The visitor ordering (no `+r` fed before the rotation) was red in both verbs,
+with the stored password back at the old one after the `+r`.
