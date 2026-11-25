@@ -3,6 +3,7 @@ import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DirectoryPage } from "../lib/api";
 import { channelKey } from "../lib/channelKey";
+import { confirmRequest } from "../lib/confirmDialog";
 import { PULL_COMMIT_PX } from "../lib/pullGesture";
 import { fireTouch } from "./helpers/touchEvents";
 
@@ -70,6 +71,15 @@ const resetDirectoryMock = vi.fn<(slug: string) => void>(() => {});
 // #732 — per-slug load error the pane renders with a retry affordance.
 const directoryErrorMock = vi.fn<(slug: string) => string | null>(() => null);
 
+// issue 2719 — every REST call in the order it went out.
+const wire: string[] = [];
+const patchNetworkMock = vi.fn<
+  (t: string, slug: string, body: { connection_state: string }) => Promise<unknown>
+>(() => Promise.resolve({}));
+const networkBySlugMock = vi.fn<(slug: string) => { connection_state: string } | undefined>(() => ({
+  connection_state: "connected",
+}));
+
 vi.mock("../lib/channelDirectory", () => ({
   directoryError: (slug: string) => directoryErrorMock(slug),
   directoryPage: (slug: string) => directoryPageMock(slug),
@@ -105,11 +115,24 @@ vi.mock("../lib/api", async () => {
     }
   }
   return {
-    postJoin: (t: string, slug: string, name: string, key: string | null) =>
-      postJoinMock(t, slug, name, key),
+    postJoin: (t: string, slug: string, name: string, key: string | null) => {
+      wire.push(`POST ${slug} ${name}`);
+      return postJoinMock(t, slug, name, key);
+    },
+    patchNetwork: (t: string, slug: string, body: { connection_state: string }) => {
+      wire.push(`PATCH ${slug} ${body.connection_state}`);
+      return patchNetworkMock(t, slug, body);
+    },
     ApiError,
   };
 });
+
+// issue 2719 — the row joins through `channelJoin.joinChannel`, which asks the
+// networks store whether the network has a session. Mocked at that boundary:
+// the real module is a resource singleton over the bearer.
+vi.mock("../lib/networks", () => ({
+  networkBySlug: (slug: string) => networkBySlugMock(slug),
+}));
 
 vi.mock("../lib/auth", () => ({
   token: () => tokenMock(),
@@ -197,6 +220,8 @@ describe("DirectoryPane", () => {
     isLoadingMoreMock.mockReturnValue(false);
     loadMoreMock.mockClear();
     resetDirectoryMock.mockClear();
+    wire.length = 0;
+    networkBySlugMock.mockReturnValue({ connection_state: "connected" });
   });
 
   afterEach(() => {
@@ -279,6 +304,42 @@ describe("DirectoryPane", () => {
 
       await new Promise((r) => setTimeout(r, 0));
       expect(postJoinMock).not.toHaveBeenCalled();
+    });
+
+    // issue 2719 — a `failed` network keeps its directory pane reachable (it
+    // stays greyed in the sidebar), and a JOIN to it used to answer 404, which
+    // the row printed as "doesn't exist". The tap is the intent: reconnect,
+    // then join, no modal.
+    it("on a network with no session: reconnects, THEN joins, with no modal (issue 2719)", async () => {
+      networkBySlugMock.mockReturnValue({ connection_state: "failed" });
+      directoryPageMock.mockReturnValue(FRESH_PAGE);
+      render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /join #grappa/i }));
+
+      await waitFor(() => {
+        expect(wire).toEqual([`PATCH ${SLUG} connected`, `POST ${SLUG} #grappa`]);
+      });
+      expect(confirmRequest()).toBeNull();
+      await waitFor(() => {
+        expect(setSelectedChannelMock).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it("prints a refused reconnect inline and sends no POST (issue 2719)", async () => {
+      const { ApiError } = await import("../lib/api");
+      networkBySlugMock.mockReturnValue({ connection_state: "parked" });
+      patchNetworkMock.mockRejectedValueOnce(new ApiError(503, "network_circuit_open"));
+      directoryPageMock.mockReturnValue(FRESH_PAGE);
+      render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /join #grappa/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/friendly: 503 network_circuit_open/)).toBeInTheDocument();
+      });
+      expect(wire).toEqual([`PATCH ${SLUG} connected`]);
+      expect(setSelectedChannelMock).not.toHaveBeenCalled();
     });
 
     it("surfaced friendlyApiError inline on postJoin failure", async () => {

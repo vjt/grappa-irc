@@ -1,5 +1,5 @@
 import { type Component, createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
-import { ApiError, type DirectoryEntry, postJoin } from "./lib/api";
+import { ApiError, type DirectoryEntry } from "./lib/api";
 import { token } from "./lib/auth";
 import {
   directoryError,
@@ -15,6 +15,7 @@ import {
   setSort,
   triggerRefresh,
 } from "./lib/channelDirectory";
+import { joinChannel } from "./lib/channelJoin";
 import { canonicalChannel, channelKey } from "./lib/channelKey";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { bindPullGesture, PULL_COMMIT_PX } from "./lib/pullGesture";
@@ -228,32 +229,16 @@ const DirectoryRow: Component<DirectoryRowProps> = (props) => {
     if (!t) return;
     setError(null);
     try {
-      await postJoin(t, props.networkSlug, props.entry.name, null);
-      // Server broadcasts window_pending on the user topic → cic's
-      // existing dispatch sets the window state. No local pending state
-      // needed here — the windowStateByChannel signal drives the badge.
-      //
-      // #244 — foreground the newly-joined channel. Focus originates HERE,
-      // at the user's tap gesture (the issuing boundary), mirroring
-      // compose.ts `/join` — NOT from the WS join-complete broadcast. That
-      // decoupling is the #200/#125 invariant: WS window-state arms
-      // (userTopic.ts `joined`, subscribe.ts self-JOIN) NEVER originate
-      // selection, so an AUTOMATIC re-join (reconnect auto-rejoin, cross-
-      // device broadcast, pending→joined transition) can't steal focus. The
-      // tap is the ONLY new focus origin. After the awaited postJoin so a
-      // failed join (e.g. +i) never foregrounds a phantom window.
-      //
-      // #731 — the FOLDED name, like channelJoin.switchTo and compose.ts
-      // `/join`. `entry.name` is the raw `/LIST` spelling (the directory is
-      // the documented verbatim-casing exception) while selection and
-      // window_states are keyed folded, so a raw target focuses a window the
-      // sidebar can't match. Only the KEY folds: postJoin above and the
-      // rendered label below keep the display casing.
-      setSelectedChannel({
-        networkSlug: props.networkSlug,
-        channelName: canonicalChannel(props.entry.name),
-        kind: "channel",
-      });
+      // issue 2719 — THE join verb. A tap is the intent, so on a network with
+      // no session it reconnects first with no modal (#1331's posture). It
+      // sends the RAW `/LIST` spelling and then foregrounds the FOLDED key
+      // (#731: the directory is the verbatim-casing exception, selection is
+      // keyed folded). Focus originates at this tap, after the awaited join
+      // (#244): WS window-state arms never originate selection, so an
+      // automatic re-join cannot steal focus, and a refused join (+i) never
+      // foregrounds a phantom window. The server's window_pending broadcast
+      // drives the badge; no local pending state.
+      await joinChannel(t, props.networkSlug, [props.entry.name], null);
     } catch (err) {
       setError(err instanceof ApiError ? friendlyApiError(err) : "join failed");
     }
