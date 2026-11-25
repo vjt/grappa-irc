@@ -263,8 +263,8 @@ async function attachThenJoin(target: PushTarget): Promise<void> {
 // not click. A network that never appears leaves the effect waiting until that
 // identity ends. After a 204 or a 409 the server holds the row the re-reads
 // fetch, so the data rules that out; a re-read that itself fails does not, and
-// that exit has no answer of its own yet (the re-reads are fire-and-forget, so
-// the verb cannot see them fail).
+// that exit has no answer of its own yet, issue 2723 (the re-reads are
+// fire-and-forget, so the verb cannot see them fail).
 function whenBound(t: string, target: PushTarget): void {
   createRoot((dispose) => {
     createEffect(() => {
