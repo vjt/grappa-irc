@@ -29,6 +29,7 @@ import { frameBudgetForTarget } from "./lib/frameBudget";
 import { isComposingKeystroke } from "./lib/imeComposition";
 import { frameBudgetBaseForNetwork } from "./lib/isupport";
 import { createNetworkReconnect } from "./lib/networkReconnect";
+import { hasNoLiveSession } from "./lib/networkSession";
 import { networkBySlug } from "./lib/networks";
 import { routeClipboardPaste, routePastedInput } from "./lib/pasteRoute";
 import { createPointerSend } from "./lib/pointerSend";
@@ -106,14 +107,6 @@ export type Props = {
 // bytes, per the request: enough warning to finish a word, short enough that
 // it is not on screen while composing normally.
 const COUNTDOWN_FROM = 10;
-
-// #1675 — `failing` is deliberately NOT in this set. Greyed means "no
-// live session; the way back is a reconnect action", and a failing
-// network HAS one, retrying on its own — greying it would disable the
-// compose box on every network that blinks. The state is still visible:
-// HomePane routes anything that is not `connected` to the disconnected
-// row, which renders the word AND `connection_state_reason`.
-const NETWORK_GREYED_STATES = new Set(["parked", "failed"]);
 
 // #356 — how long a green success/notice stays up before self-clearing.
 // The notice is a non-blocking confirmation (e.g. "/notify: watching gigi"),
@@ -318,12 +311,16 @@ const ComposeBox: Component<Props> = (props) => {
   // connection_state now" (`NetworksController` moduledoc), whose PATCH door
   // has no subject branch. cic was the last layer still narrowing.
   //
-  // 🔴 `NETWORK_GREYED_STATES` above is UNCHANGED and is deliberately NOT the
-  // Sidebar's. Here it is {parked, failed}; there it is {failed}, because a
-  // parked network leaves the sidebar and has no header left to grey (issue
-  // 1985). Those two differed on the same kind long before this change. The
-  // ruling uniforms WHO the rule applies to, not two rules that were distinct
-  // for a reason — merging them is a separate question, not this one.
+  // 🔴 `hasNoLiveSession` (lib/networkSession.ts, issue 2719, the join verb's
+  // reconnect test too) is deliberately NOT the Sidebar's rule. Here it is
+  // {parked, failed}; there it is {failed}, because a parked network leaves
+  // the sidebar and has no header left to grey (issue 1985). Those two
+  // differed on the same kind long before this change. The ruling uniforms
+  // WHO the rule applies to, not two rules that were distinct for a reason —
+  // merging them is a separate question, not this one. `failing` is in
+  // neither (#1675): its session is alive and retrying, so greying it would
+  // disable the compose box on every network that blinks; HomePane still
+  // shows the state word and `connection_state_reason` on its row.
   //
   // #1331 — split out of `greyed()` because the two causes are no longer
   // equivalent: a parked/failed NETWORK can be reconnected from here, a
@@ -333,7 +330,7 @@ const ComposeBox: Component<Props> = (props) => {
   const networkGreyedState = (): string | null => {
     const net = networkBySlug(props.networkSlug);
     if (net === undefined) return null;
-    return NETWORK_GREYED_STATES.has(net.connection_state) ? net.connection_state : null;
+    return hasNoLiveSession(net) ? net.connection_state : null;
   };
 
   const greyed = (): boolean => {
