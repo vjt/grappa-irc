@@ -9583,8 +9583,11 @@ different trigger, running in both directions. It is issue 2724.
 
 The admin PATCH (`Operator.update_credential/3`) writes the row and nothing
 else. A live `Session.Server` keeps `state.autojoin` as its `init/1` read it,
-narrowed since #2721 by a PART. The edit takes effect at the next `init/1`: a
-restart, a reconnect, or a respawn out of backoff. A PATCH that also carries
+narrowed since #2721 by a PART. The edit takes effect at the next `init/1`,
+i.e. a restart or a reconnect. Each is a fresh process, and its `init/1` reads
+the row BEFORE any backoff wait: `handle_continue({:start_client, _})`
+schedules the Client and the end of the wait reads nothing again, so an edit
+made during that wait waits for the init after it. A PATCH that also carries
 `password` or `auth_method` restarts the session there and then (#2474), so an
 autojoin edit bundled with it arrives at once. That is the written contract,
 ruled by the orch on w2's phase-1 read.
