@@ -21,19 +21,20 @@ defmodule GrappaWeb.Admin.CredentialsController do
 
   ## PATCH /admin/credentials/:user_id/:network_id
 
-  Whitelist body to operator-editable fields: `autojoin_channels`,
-  `nick`, `sasl_user`, `realname`, `auth_method`. Extra keys —
-  ESPECIALLY `password` and `password_encrypted` — collapse to
-  `400 bad_request`. Password rotation is a SEPARATE future
-  endpoint (cluster decision, plan M-6 exit note); operators rotate
-  via `bin/grappa update-network-credential` today.
+  Whitelist body to `@allowed_update_keys`: `autojoin_channels`,
+  `nick`, `ident`, `sasl_user`, `realname`, `auth_method`,
+  `auth_command_template` and `password`. Any other key collapses to
+  `400 bad_request`: `password_encrypted`, and `server_pass` and
+  `tls_verify` deliberately (issue 2107, #1677; the comment on the
+  whitelist says why).
 
-  An `auth_method` change WITHOUT a fresh password surfaces as
-  `422 validation_failed` via the existing `Credential.changeset/2`
-  rule. Operators wanting the auth-method swap with password go
-  through `bin/grappa update-network-credential`; the HTTP endpoint
-  surfaces the validation error cleanly rather than gating
-  controller-side.
+  An `auth_method` change must re-supply its secret in the same
+  PATCH, or it surfaces as `422 validation_failed` through the
+  existing `Credential.changeset/2` rule rather than a controller-side
+  gate. The secret is `password` for every method except two: `:none`
+  needs none, and `:server_pass` needs its own, which this door cannot
+  carry. So a move to `:server_pass` passes only on a row that still
+  holds that secret, and the validator spends it (issue 2107).
 
   A `password` / `auth_method` edit against a LIVE session restarts it
   under the new credential (#2474, `Operator.update_credential/3`); the
@@ -43,10 +44,11 @@ defmodule GrappaWeb.Admin.CredentialsController do
 
   Every other field reaches the session at its next `init/1`,
   `autojoin_channels` included (issue 2724): a live session keeps the
-  autojoin set it read at init, so an added channel is not joined until
-  then. The reply's `autojoin_channels`, like the GET listing's, is the
-  row's and not the session's. In the same PATCH as a `password` / `auth_method` change the
-  new list arrives now, with the restart.
+  autojoin set it read at init, so an added channel is not joined
+  until then. The reply's `autojoin_channels`, like the GET listing's,
+  is the row's and not the session's. In the same PATCH as a
+  `password` / `auth_method` change, the new list arrives now, with
+  the restart.
 
   Returns `200 OK` with the updated row in the same shape as one
   GET row. `404 not_found` on unknown user_id / network_id / binding;
