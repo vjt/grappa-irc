@@ -1,11 +1,14 @@
 import { ApiError, ChannelPushError } from "./api";
 import { friendlyApiError } from "./friendlyApiError";
 import { friendlyChannelError, SEND_THROTTLED_COPY } from "./friendlyChannelError";
+import { NoReply, NotConnected } from "./transportFailure";
 
 // #74 — the single dispatcher that turns a thrown error from EITHER send
 // door into operator-visible human copy:
 //   * REST `ApiError`        → `friendlyApiError`   (login/connect/topic set)
 //   * WS   `ChannelPushError`→ `friendlyChannelError` (away / ops / topic clear)
+//   * `NoReply`              → no answer by the deadline (issue 2738)
+//   * `NotConnected`         → known not sent (issue 2738)
 //   * anything else          → a loud generic "send failed"
 //
 // Extracted from compose.ts's submit catch (which duplicated this exact
@@ -43,5 +46,12 @@ export function friendlyError(e: unknown): string {
     return friendlyApiError(e);
   }
   if (e instanceof ChannelPushError) return friendlyChannelError(e);
+  // issue 2738 — NoReply is an UNKNOWN outcome, so the copy must not call it
+  // a failure: the line may have gone out, and the composer hands it back
+  // (vjt's D2) for the operator to judge, after any echo has had its chance.
+  if (e instanceof NoReply) return "No answer from the server — it may still have gone through.";
+  if (e instanceof NotConnected) {
+    return "Not connected — wait for the connection to come back, then try again.";
+  }
   return "send failed";
 }

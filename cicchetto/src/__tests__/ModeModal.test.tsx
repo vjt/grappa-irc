@@ -46,13 +46,19 @@ vi.mock("../lib/networks", () => {
 });
 
 // ownNickForNetwork resolves the per-network IRC nick — return the seeded
-// network nick (vjt-grappa) so the chanop gate looks it up in members.
-vi.mock("../lib/api", () => ({
+// network nick (vjt-grappa) so the chanop gate looks it up in members. The
+// rest is the real module: a rejected toggle reaches friendlyError, whose
+// `instanceof ApiError` needs the real class (issue 2738).
+vi.mock("../lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/api")>()),
   ownNickForNetwork: (net: { nick: string }) => net.nick,
 }));
 
+import { friendlyError } from "../lib/friendlyError";
 import { DEFAULT_ISUPPORT, seedIsupport } from "../lib/isupport";
 import { closeModeModal, modeModalState, openModeModal } from "../lib/modeModal";
+import { dismissOpsMenuToast, opsMenuToasts } from "../lib/opsMenu";
+import { NoReply, REPLY_DEADLINE_MS } from "../lib/transportFailure";
 import ModeModal from "../ModeModal";
 
 const KEY = "bahamut #bofh";
@@ -60,6 +66,7 @@ const KEY = "bahamut #bofh";
 describe("ModeModal", () => {
   beforeEach(() => {
     socketMock.pushChannelMode.mockClear();
+    for (const t of opsMenuToasts()) dismissOpsMenuToast(t.id);
     mockModes = {};
     mockMembers = {};
     seedIsupport(1, DEFAULT_ISUPPORT);
@@ -125,6 +132,24 @@ describe("ModeModal", () => {
     const { getByLabelText } = render(() => <ModeModal />);
     fireEvent.click(getByLabelText(/secret/i));
     expect(socketMock.pushChannelMode).toHaveBeenCalledWith(1, "#bofh", "+s", []);
+  });
+
+  // issue 2738 (N5) — the toggle is detached (`void` before), so a rejection
+  // had no sink: a server refusal was an unhandled rejection, and once pushes
+  // settle at their deadline every dead link would be one too. It lands on the
+  // app's detached-verb toast instead, named by the mode it tried.
+  it("a toggle that gets no answer becomes a toast naming the mode", async () => {
+    mockModes[KEY] = { modes: [], params: {} };
+    mockMembers[KEY] = [{ nick: "vjt-grappa", modes: ["@"] }];
+    const err = new NoReply(REPLY_DEADLINE_MS);
+    socketMock.pushChannelMode.mockRejectedValueOnce(err);
+    openModeModal("bahamut", "#bofh");
+
+    const { getByLabelText } = render(() => <ModeModal />);
+    fireEvent.click(getByLabelText(/secret/i));
+    await vi.waitFor(() =>
+      expect(opsMenuToasts().map((t) => t.message)).toEqual([`Mode +s: ${friendlyError(err)}`]),
+    );
   });
 
   it("op toggling an active flag mode sends -<letter>", () => {

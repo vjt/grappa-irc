@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
+import { REPLY_DEADLINE_MS } from "../lib/transportFailure";
 
 // `phoenix.Socket` is a class with private fields — vi.fn().mockImplementation
 // doesn't expose a constructor that JS engine accepts under `new`, so we mock
@@ -580,7 +581,11 @@ describe("reportVisibility (#182 — foreground push-suppression signal)", () =>
     socket.reportVisibility();
 
     // jsdom defaults document.visibilityState to "visible".
-    expect(h.mockChannel.push).toHaveBeenCalledWith("visibility", { visible: true });
+    expect(h.mockChannel.push).toHaveBeenCalledWith(
+      "visibility",
+      { visible: true },
+      REPLY_DEADLINE_MS,
+    );
   });
 
   it("reports {visible: false} when the document is hidden", async () => {
@@ -592,7 +597,11 @@ describe("reportVisibility (#182 — foreground push-suppression signal)", () =>
     const spy = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     try {
       socket.reportVisibility();
-      expect(h.mockChannel.push).toHaveBeenCalledWith("visibility", { visible: false });
+      expect(h.mockChannel.push).toHaveBeenCalledWith(
+        "visibility",
+        { visible: false },
+        REPLY_DEADLINE_MS,
+      );
     } finally {
       spy.mockRestore();
     }
@@ -611,7 +620,11 @@ describe("reportVisibility (#182 — foreground push-suppression signal)", () =>
     expect(okCb).toBeTypeOf("function");
     okCb({});
 
-    expect(h.mockChannel.push).toHaveBeenCalledWith("visibility", { visible: true });
+    expect(h.mockChannel.push).toHaveBeenCalledWith(
+      "visibility",
+      { visible: true },
+      REPLY_DEADLINE_MS,
+    );
   });
 
   it("visibilitychange event triggers reportVisibility via document listener", async () => {
@@ -627,7 +640,11 @@ describe("reportVisibility (#182 — foreground push-suppression signal)", () =>
     document.dispatchEvent(new Event("visibilitychange"));
     document.removeEventListener("visibilitychange", reportVisibility);
 
-    expect(h.mockChannel.push).toHaveBeenCalledWith("visibility", { visible: true });
+    expect(h.mockChannel.push).toHaveBeenCalledWith(
+      "visibility",
+      { visible: true },
+      REPLY_DEADLINE_MS,
+    );
   });
 
   it("reports {visible: false} when on-screen but the window is unfocused (#192)", async () => {
@@ -646,7 +663,11 @@ describe("reportVisibility (#182 — foreground push-suppression signal)", () =>
     // visibilityState stays "visible" (jsdom default) — only focus is lost.
     hasFocusSpy.mockReturnValue(false);
     socket.reportVisibility();
-    expect(h.mockChannel.push).toHaveBeenCalledWith("visibility", { visible: false });
+    expect(h.mockChannel.push).toHaveBeenCalledWith(
+      "visibility",
+      { visible: false },
+      REPLY_DEADLINE_MS,
+    );
   });
 });
 
@@ -669,11 +690,15 @@ describe("pushAwaySet / pushAwayUnset (S3.4 — /away channel push)", () => {
     okCb();
     await promise;
 
-    expect(h.mockChannel.push).toHaveBeenCalledWith("away", {
-      action: "set",
-      network: "libera",
-      reason: "brb coffee",
-    });
+    expect(h.mockChannel.push).toHaveBeenCalledWith(
+      "away",
+      {
+        action: "set",
+        network: "libera",
+        reason: "brb coffee",
+      },
+      REPLY_DEADLINE_MS,
+    );
   });
 
   it("pushAwaySet rejects on server error reply", async () => {
@@ -699,10 +724,14 @@ describe("pushAwaySet / pushAwayUnset (S3.4 — /away channel push)", () => {
     okCb();
     await promise;
 
-    expect(h.mockChannel.push).toHaveBeenCalledWith("away", {
-      action: "unset",
-      network: "libera",
-    });
+    expect(h.mockChannel.push).toHaveBeenCalledWith(
+      "away",
+      {
+        action: "unset",
+        network: "libera",
+      },
+      REPLY_DEADLINE_MS,
+    );
   });
 
   it("pushAwayUnset is rejected when no user channel joined", async () => {
@@ -733,7 +762,7 @@ describe("pushLusers (#579 — mask + target server on the wire)", () => {
     okReply();
     await promise;
 
-    expect(h.mockChannel.push).toHaveBeenCalledWith("lusers", { network_id: 7 });
+    expect(h.mockChannel.push).toHaveBeenCalledWith("lusers", { network_id: 7 }, REPLY_DEADLINE_MS);
   });
 
   it("/lusers <mask> carries the mask and still omits server", async () => {
@@ -745,10 +774,14 @@ describe("pushLusers (#579 — mask + target server on the wire)", () => {
     okReply();
     await promise;
 
-    expect(h.mockChannel.push).toHaveBeenCalledWith("lusers", {
-      network_id: 7,
-      mask: "*.azzurra.org",
-    });
+    expect(h.mockChannel.push).toHaveBeenCalledWith(
+      "lusers",
+      {
+        network_id: 7,
+        mask: "*.azzurra.org",
+      },
+      REPLY_DEADLINE_MS,
+    );
   });
 
   it("/lusers <mask> <server> carries both", async () => {
@@ -760,20 +793,24 @@ describe("pushLusers (#579 — mask + target server on the wire)", () => {
     okReply();
     await promise;
 
-    expect(h.mockChannel.push).toHaveBeenCalledWith("lusers", {
-      network_id: 7,
-      mask: "*.azzurra.org",
-      server: "void.azzurra.chat",
-    });
+    expect(h.mockChannel.push).toHaveBeenCalledWith(
+      "lusers",
+      {
+        network_id: 7,
+        mask: "*.azzurra.org",
+        server: "void.azzurra.chat",
+      },
+      REPLY_DEADLINE_MS,
+    );
   });
 });
 
 // S21 (codebase review 2026-07-08) — /topic -delete was fire-and-forget:
 // `pushChannelTopicClear` returned void with no `.receive` chain, so a
 // server {:error,_} or a WS-down was swallowed. It now shares the
-// `pushUserChannelVerb` Promise shape (resolve on "ok", reject with a typed
-// ChannelPushError on "error", reject "not connected" when the socket is
-// down) like every other state-changing verb (#154).
+// `pushWithReply` Promise shape (resolve on "ok", reject with a typed
+// ChannelPushError on "error", NotConnected with no user channel, NoReply at
+// the deadline — issue 2738) like every other state-changing verb (#154).
 describe("pushChannelTopicClear (S21 — /topic -delete verb ack)", () => {
   it("rejects 'not connected' when no user channel joined", async () => {
     localStorage.setItem("grappa-token", "tok-1");
@@ -791,10 +828,14 @@ describe("pushChannelTopicClear (S21 — /topic -delete verb ack)", () => {
     okCb();
     await promise;
 
-    expect(h.mockChannel.push).toHaveBeenCalledWith("topic_clear", {
-      network_id: 7,
-      channel: "#a",
-    });
+    expect(h.mockChannel.push).toHaveBeenCalledWith(
+      "topic_clear",
+      {
+        network_id: 7,
+        channel: "#a",
+      },
+      REPLY_DEADLINE_MS,
+    );
   });
 
   it("rejects on the server 'error' reply (no silent swallow)", async () => {

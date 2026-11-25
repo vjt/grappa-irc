@@ -1,6 +1,7 @@
 import { type Component, For, Show } from "solid-js";
 import { createBackdropDismiss } from "./lib/backdropDismiss";
 import { networkIdBySlug } from "./lib/networks";
+import { runOpsVerb } from "./lib/opsMenu";
 import { createOverlayLock } from "./lib/overlayScrollLock";
 import { pushChannelUmode } from "./lib/socket";
 import { supportedUmodesForNetwork } from "./lib/supportedUmodes";
@@ -70,7 +71,7 @@ const UmodeModal: Component = () => {
     const id = networkId();
     if (id === undefined) return;
     const sign = isActive(m.letter) ? "-" : "+";
-    void pushChannelUmode(id, `${sign}${m.letter}`);
+    runOpsVerb(`User mode ${sign}${m.letter}`, pushChannelUmode(id, `${sign}${m.letter}`));
   };
 
   // Overlay refcount so ScrollbackPane freezes while the modal covers it +

@@ -2,7 +2,7 @@
 // `pushChannelTopicClear` returned void and compose.ts painted { ok: true }
 // SYNCHRONOUSLY, throwing away the server reply. A WS-down / server
 // {:error,_} was swallowed and the compose box showed a false success. The
-// fix gives it the awaited `pushUserChannelVerb` ack shape (#154) so a
+// fix gives it the awaited verb-ack shape (#154, now `pushWithReply`) so a
 // rejection propagates to compose's catch → `friendlyChannelError` inline
 // `.compose-box-error` banner.
 //

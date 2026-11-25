@@ -7,6 +7,7 @@ import { modesByChannel } from "./lib/channelTopic";
 import { isupportForNetwork } from "./lib/isupport";
 import { closeModeModal, modeModalState } from "./lib/modeModal";
 import { networks } from "./lib/networks";
+import { runOpsVerb } from "./lib/opsMenu";
 import { createOverlayLock } from "./lib/overlayScrollLock";
 import { pushChannelMode } from "./lib/socket";
 
@@ -180,7 +181,7 @@ const ModeModal: Component = () => {
     const t = target();
     if (id === undefined || !t) return;
     const sign = isActive(m.letter) ? "-" : "+";
-    void pushChannelMode(id, t.channel, `${sign}${m.letter}`, []);
+    runOpsVerb(`Mode ${sign}${m.letter}`, pushChannelMode(id, t.channel, `${sign}${m.letter}`, []));
   };
 
   // #240 — set a param mode to a value: `+<letter> <value>`.
@@ -189,7 +190,7 @@ const ModeModal: Component = () => {
     const id = networkId();
     const t = target();
     if (id === undefined || !t) return;
-    void pushChannelMode(id, t.channel, `+${m.letter}`, [value]);
+    runOpsVerb(`Mode +${m.letter}`, pushChannelMode(id, t.channel, `+${m.letter}`, [value]));
   };
 
   // #240 — unset a param mode. Type B (key) keeps its arg (`-k <key>`,
@@ -201,7 +202,7 @@ const ModeModal: Component = () => {
     if (id === undefined || !t) return;
     const current = currentParams()[m.letter] ?? null;
     const params = m.paramOnUnset && current !== null ? [current] : [];
-    void pushChannelMode(id, t.channel, `-${m.letter}`, params);
+    runOpsVerb(`Mode -${m.letter}`, pushChannelMode(id, t.channel, `-${m.letter}`, params));
   };
 
   // Overlay refcount so ScrollbackPane freezes while the modal covers it +
