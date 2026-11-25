@@ -2484,6 +2484,39 @@ defmodule GrappaWeb.GrappaChannelTest do
   # visitor reply was `visitor_not_allowed` for every WHOIS — these tests
   # pin the post-fix behaviour and would have caught the original
   # asymmetry.
+  # issue 2728 — the session's `{:error, :not_registered}` must reach the
+  # client as itself through both channel doors that map session errors: the
+  # topic door (whose catch-all would call it `persist_failed`) and
+  # `dispatch_subject_verb/3` (whose catch-all would call it
+  # `upstream_unavailable`). The session is up with its socket connected,
+  # and no 001 has arrived: `passthrough_handler` never sends one.
+  describe "a gated verb before 001 replies not_registered" do
+    setup do
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network} = setup_user_and_network_with_session(port)
+      :ok = IRCServer.await_handshake(irc_server, 1_000)
+
+      {:ok, _, socket} =
+        user.name
+        |> build_socket()
+        |> subscribe_and_join(Topic.user(user.name), %{})
+
+      %{socket: socket, network: network}
+    end
+
+    test "topic_set, through the topic door", %{socket: socket, network: network} do
+      ref = push(socket, "topic_set", %{"network_id" => network.id, "channel" => "#snap", "text" => "early"})
+
+      assert_reply(ref, :error, %{error: "not_registered"})
+    end
+
+    test "whois, through dispatch_subject_verb/3", %{socket: socket, network: network} do
+      ref = push(socket, "whois", %{"network_id" => network.id, "nick" => "alice"})
+
+      assert_reply(ref, :error, %{error: "not_registered"})
+    end
+  end
+
   describe "C3 — visitor WHOIS dispatch carve-out" do
     test "visitor socket: whois with live session sends WHOIS upstream" do
       {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
