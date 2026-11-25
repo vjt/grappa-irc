@@ -291,9 +291,12 @@ export function applyDeepLinkFromUrl(): void {
     // which is why that spec exists).
     //
     // RESOLVED, not non-empty: a recipient with nothing bound still gets an
-    // answer (the not-bound notice) instead of silence. Unauthenticated, the
-    // resource never resolves at all, so the invite simply waits out the
-    // login round-trip and applies once the session is up.
+    // answer (an attach of an available network, or the notice) instead of
+    // silence. `/me` resolves before `networks`, so the available tier the
+    // route consults is already in hand by then (issue 2703).
+    // Unauthenticated, the resource never resolves at all, so the invite
+    // simply waits out the login round-trip and applies once the session is
+    // up.
     ready: () => channelsBySlug() !== undefined,
     flag: "__cicInviteLinkApplied",
   });

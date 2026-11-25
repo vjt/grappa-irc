@@ -6,7 +6,7 @@ import {
   bundleRefreshToasts,
   dismissBundleRefreshToast,
 } from "./lib/bundleRefreshNotice";
-import { dismissInviteToast, inviteToasts } from "./lib/inviteLink";
+import { dismissInviteToast, inviteToasts, inviteToastText } from "./lib/inviteLink";
 import { copyToasts, dismissCopyToast } from "./lib/messageMenu";
 import { dismissPresenceToast, presenceToasts } from "./lib/notifyWatch";
 import { dismissOpsMenuToast, opsMenuToasts } from "./lib/opsMenu";
@@ -101,16 +101,14 @@ const Toasts: Component = () => {
           </ToastRow>
         )}
       </For>
-      {/* #793 — an invite link for a network this account has not bound.
-          Whether that case should offer to add the network is an open product
-          decision; until it is taken, the recipient at least learns why the
-          link they clicked did nothing. */}
+      {/* #793 / issue 2703 — an invite link that could not go anywhere: the
+          network is not one this server offers the recipient, or attaching it
+          was refused. The recipient clicked a link and learns why nothing
+          opened. */}
       <For each={inviteToasts()}>
         {(toast) => (
           <ToastRow tone="error" icon="!" onDismiss={() => dismissInviteToast(toast.id)}>
-            <span class="toast-text">
-              Invite for {toast.networkSlug} — you are not connected to that network.
-            </span>
+            <span class="toast-text">{inviteToastText(toast)}</span>
           </ToastRow>
         )}
       </For>

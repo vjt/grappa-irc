@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../lib/api";
 import { confirmJoinChannel, switchToChannelWindow } from "../lib/channelJoin";
+import { friendlyApiError } from "../lib/friendlyApiError";
 import {
   dismissInviteToast,
   inviteToasts,
+  inviteToastText,
   parseInviteLinkUrl,
   routeInviteTarget,
 } from "../lib/inviteLink";
+import { attachNetwork } from "../lib/networkAttach";
 
 // #793 — shareable channel invite links: `irc.sindro.me/?go=azzurra/sniffo`.
 //
@@ -25,15 +29,47 @@ vi.mock("../lib/channelJoin", () => ({
   switchToChannelWindow: vi.fn(),
 }));
 
-vi.mock("../lib/networks", () => ({
-  // #1861 — casemappingForSlug (lib/casemapping.ts) resolves the fold
-  // through this map, so the mock has to carry it.
-  networkIdBySlug: () => undefined,
-  networkBySlug: vi.fn((slug: string) =>
-    slug === "azzurra" ? { id: 1, slug: "azzurra", kind: "user" } : undefined,
-  ),
-  channelsBySlug: vi.fn(() => ({ azzurra: [{ id: 10, name: "#bofh" }] })),
+// issue 2703 — the bound set and the bearer are SIGNALS, not constants: an
+// invite for an available network attaches it and then waits for it to appear
+// among the bound ones, and only a reactive mock can make that happen
+// mid-test. (Precedent: serverPeek.test.ts builds its mocks the same way.)
+const live = vi.hoisted(() => ({
+  setBound: (_slugs: readonly string[]): void => {},
+  setToken: (_t: string | null): void => {},
+  available: [] as string[],
 }));
+
+vi.mock("../lib/networks", async () => {
+  const { createSignal } = await import("solid-js");
+  const [bound, setBound] = createSignal<readonly string[]>(["azzurra"]);
+  live.setBound = (slugs) => void setBound(slugs);
+  return {
+    // #1861 — casemappingForSlug (lib/casemapping.ts) resolves the fold
+    // through this map, so the mock has to carry it.
+    networkIdBySlug: () => undefined,
+    networkBySlug: (slug: string) =>
+      bound().includes(slug) ? { id: 1, slug, kind: "user" } : undefined,
+    channelsBySlug: vi.fn(() => ({ azzurra: [{ id: 10, name: "#bofh" }] })),
+  };
+});
+
+vi.mock("../lib/auth", async () => {
+  const { createSignal } = await import("solid-js");
+  const [token, setToken] = createSignal<string | null>("tok");
+  live.setToken = (t) => void setToken(t);
+  return { token };
+});
+
+// What `/me` offers this recipient to attach: the server's own answer to "may
+// I bind this network?", for both subject kinds (issue 2703).
+vi.mock("../lib/home", () => ({
+  homeData: () => ({
+    networks: [],
+    available_networks: live.available.map((slug) => ({ slug })),
+  }),
+}));
+
+vi.mock("../lib/networkAttach", () => ({ attachNetwork: vi.fn() }));
 
 describe("parseInviteLinkUrl", () => {
   it("reads ?go=<network>/<channel> and implies the # sigil", () => {
@@ -194,15 +230,108 @@ describe("routeInviteTarget", () => {
     expect(confirmJoinChannel).not.toHaveBeenCalled();
   });
 
-  it("says so, visibly, when the network is not bound for this recipient", () => {
-    // Open decision 1 of #793 — cross-user network identity is unresolved, so
-    // this branch deliberately does NOT join anything. What it must not do is
-    // fail silently: the recipient clicked a link and is owed an answer.
+  it("says so, visibly, when this server offers the recipient no such network", () => {
+    // Not bound AND not in `/me`'s available tier: the slug names a network
+    // this server does not have, or one this recipient may not bind. The two
+    // read the same on purpose (issue 2703, Q4): a different answer for each
+    // would tell a stranger which networks a deployment carries.
     routeInviteTarget({ networkSlug: "libera", channelName: "#sniffo", kind: "channel" });
+    expect(attachNetwork).not.toHaveBeenCalled();
     expect(confirmJoinChannel).not.toHaveBeenCalled();
     expect(switchToChannelWindow).not.toHaveBeenCalled();
     const toasts = inviteToasts();
     expect(toasts).toHaveLength(1);
-    expect(toasts[0]?.networkSlug).toBe("libera");
+    expect(toasts[0]).toMatchObject({ networkSlug: "libera", reason: "unavailable" });
+  });
+});
+
+// issue 2703 — an invite for a network the recipient has not bound, but may:
+// attach it with no modal of its own (vjt's ruling), then ask the #648 join
+// question exactly as for a bound network.
+describe("routeInviteTarget, available network", () => {
+  const disagio = { networkSlug: "azzurra2", channelName: "#disagio", kind: "channel" } as const;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    for (const t of inviteToasts()) dismissInviteToast(t.id);
+    live.setBound(["azzurra"]);
+    live.setToken("tok");
+    live.available = ["azzurra2"];
+  });
+
+  it("attaches it with no modal, and asks to join only once it is bound", async () => {
+    vi.mocked(attachNetwork).mockResolvedValue(undefined);
+    routeInviteTarget(disagio);
+    expect(attachNetwork).toHaveBeenCalledWith("tok", "azzurra2");
+
+    // The attach answered, but the network is not in the list yet: no modal
+    // for a network the sidebar does not show.
+    await vi.waitFor(() => expect(attachNetwork).toHaveReturned());
+    await Promise.resolve();
+    expect(confirmJoinChannel).not.toHaveBeenCalled();
+
+    live.setBound(["azzurra", "azzurra2"]);
+    await vi.waitFor(() => expect(confirmJoinChannel).toHaveBeenCalledWith("azzurra2", "#disagio"));
+    expect(confirmJoinChannel).toHaveBeenCalledTimes(1);
+    expect(inviteToasts()).toHaveLength(0);
+  });
+
+  it("goes on to the join when the attach answers 409 already_attached", async () => {
+    // Another tab of the same account won the race: the network IS attached,
+    // and the `network_attached` broadcast brings it into this tab's list.
+    vi.mocked(attachNetwork).mockRejectedValue(new ApiError(409, "already_attached"));
+    routeInviteTarget(disagio);
+    await vi.waitFor(() => expect(attachNetwork).toHaveBeenCalled());
+
+    live.setBound(["azzurra", "azzurra2"]);
+    await vi.waitFor(() => expect(confirmJoinChannel).toHaveBeenCalledWith("azzurra2", "#disagio"));
+    expect(inviteToasts()).toHaveLength(0);
+  });
+
+  it("raises the server's refusal as the invite toast and joins nothing", async () => {
+    const refusal = new ApiError(403, "network_not_visitor_enabled");
+    vi.mocked(attachNetwork).mockRejectedValue(refusal);
+    routeInviteTarget(disagio);
+
+    await vi.waitFor(() => expect(inviteToasts()).toHaveLength(1));
+    expect(inviteToasts()[0]).toMatchObject({
+      networkSlug: "azzurra2",
+      reason: "attach_failed",
+      message: friendlyApiError(refusal),
+    });
+    live.setBound(["azzurra", "azzurra2"]);
+    await Promise.resolve();
+    expect(confirmJoinChannel).not.toHaveBeenCalled();
+  });
+
+  it("joins nothing for an identity that left while the network was coming up", async () => {
+    vi.mocked(attachNetwork).mockResolvedValue(undefined);
+    routeInviteTarget(disagio);
+    await vi.waitFor(() => expect(attachNetwork).toHaveReturned());
+
+    // Logged out and back in as somebody else who happens to hold the same
+    // network: the consent question belongs to the account that clicked.
+    live.setToken("someone-else");
+    live.setBound(["azzurra", "azzurra2"]);
+    await Promise.resolve();
+    expect(confirmJoinChannel).not.toHaveBeenCalled();
+    expect(inviteToasts()).toHaveLength(0);
+  });
+});
+
+describe("inviteToastText", () => {
+  it("says the network is not available here, whichever of the two it is", () => {
+    // ONE sentence for "this server has no such network" and "you may not
+    // bind it" (issue 2703, Q4): no enumeration oracle.
+    expect(inviteToastText({ networkSlug: "ircnet", reason: "unavailable" })).toBe(
+      "Invite for ircnet — that network is not available here.",
+    );
+  });
+
+  it("carries the server's refusal when the attach was turned down", () => {
+    const message = friendlyApiError(new ApiError(503, "network_busy"));
+    expect(inviteToastText({ networkSlug: "ircnet", reason: "attach_failed", message })).toBe(
+      `Invite for ircnet — ${message}`,
+    );
   });
 });
