@@ -4,9 +4,9 @@ import {
   type AvailableNetworkRow,
   type ConnectionState,
   getFeaturedChannels,
-  postJoin,
 } from "./lib/api";
 import { token } from "./lib/auth";
+import { joinChannel, switchToChannelWindow } from "./lib/channelJoin";
 import { channelKey } from "./lib/channelKey";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { homeData } from "./lib/home";
@@ -46,6 +46,9 @@ const SHOW_NETWORK_MAP = false;
 // Click: not joined → JOIN then focus (intent follows the tap, mirroring
 // compose.ts /join); already joined → focus only (#125 tap-already-
 // joined). Join errors surface inline — never silently swallowed.
+// issue 2719 — the JOIN is `joinChannel`, the one join verb: on a network
+// with no session (this list also renders on a parked/failed row) the tap
+// reconnects it first, no modal, because the tap is the intent.
 // #496 — an explanatory intro line (`homeFeaturedIntroCopy`) precedes the
 // list, gated on the same has-links condition so an empty featured list
 // shows neither the intro nor a dangling heading. `heading` (optional) still
@@ -70,20 +73,19 @@ const FeaturedLinks: Component<{ slug: string; heading?: string }> = (props) => 
 
   const onClick = async (name: string): Promise<void> => {
     setError(null);
-    const joined = windowStateByChannel()[channelKey(props.slug, name)] === "joined";
-    if (!joined) {
-      const t = token();
-      if (!t) return;
-      try {
-        await postJoin(t, props.slug, name, null);
-      } catch (err) {
-        setError(
-          err instanceof ApiError ? `${name}: ${friendlyApiError(err)}` : `${name}: join failed`,
-        );
-        return;
-      }
+    if (windowStateByChannel()[channelKey(props.slug, name)] === "joined") {
+      switchToChannelWindow(props.slug, name);
+      return;
     }
-    setSelectedChannel({ networkSlug: props.slug, channelName: name, kind: "channel" });
+    const t = token();
+    if (!t) return;
+    try {
+      await joinChannel(t, props.slug, [name], null);
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? `${name}: ${friendlyApiError(err)}` : `${name}: join failed`,
+      );
+    }
   };
 
   return (
@@ -462,7 +464,10 @@ const DisconnectedRow: Component<{ row: HomeRow }> = (props) => {
           a STATUS group pairing the state label with the Reconnect action it
           acts on (symmetric with ConnectedRow's state + Disconnect). Reason +
           inline error sit below the heading; no Browse/Register (a
-          parked/failed network has no live session to /LIST or register on). */}
+          parked/failed network has no live session to /LIST or register on).
+          The featured links DO stay: a tap on one reconnects the network
+          and joins (issue 2719, `joinChannel`), where it used to send a JOIN
+          the server answered "doesn't exist". */}
       <hr class="home-pane-network-separator" />
       <div class="home-pane-network-heading">
         <div class="home-pane-network-title home-pane-network-title-static">
