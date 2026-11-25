@@ -714,7 +714,7 @@ const renderRawEvent = (
       // Wire shape: `:vjt!~vjt@host INVITE grappa :#sbiffo`. params =
       // ["grappa" (own_nick), "#sbiffo" (channel)]. Operator can join
       // immediately by clicking [Join] — handler routes through the
-      // existing /join flow (postJoin + setSelectedChannel) wired at
+      // shared join verb (channelJoin.acceptInvite → joinChannel) wired at
       // the ScrollbackLine layer where networkSlug + token are in
       // scope.
       //
@@ -2068,8 +2068,9 @@ const ScrollbackPane: Component<Props> = (props) => {
   // private copy of "postJoin then foreground the folded key" living here,
   // closed over `props.networkSlug`; the invite BANNER needs the identical
   // verb from outside any component, and two copies would have drifted. The
-  // shared one also keeps the #799 fold and adds the REST-failure log this
-  // copy lacked. Server-driven `:pending` origination still flows via
+  // shared one also keeps the #799 fold, and since issue 2719 it reconnects a
+  // network with no session first and raises a toast on a failed join.
+  // Server-driven `:pending` origination still flows via
   // record_in_flight_join; this only initiates.
   //
   // No +k key is passed (no UX surface for it on an invite; keyed-channel

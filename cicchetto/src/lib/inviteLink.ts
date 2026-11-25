@@ -38,9 +38,10 @@ import { createToastQueue } from "./toasts";
 // genuinely new: a second param spelling, and routing to a JOIN instead of a
 // selection.
 //
-// The join itself is the #648 verb — `confirmJoinChannel` — untouched: it
-// already owns confirm -> `postJoin` -> switch, and already switches with no
-// modal when we are in the channel. No new socket call, no second confirm
+// The join itself is the #648 verb — `confirmJoinChannel`: it owns confirm ->
+// `joinChannel` -> switch, and already switches with no modal when we are in
+// the channel. Since issue 2719 a network with no session is reconnected by the
+// same yes, and the question says so. No new socket call, no second confirm
 // implementation, no parallel window state.
 
 // RFC 2812 chantypes. A segment that already starts with one is taken

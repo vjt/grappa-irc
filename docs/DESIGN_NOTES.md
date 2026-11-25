@@ -9704,7 +9704,7 @@ live pid. `send_join` holds a JOIN that arrives before 001 until 001 (issue
 2114 / `#2703a`) and opens the window `:pending` at once. `failing` is not
 reconnected: its session is alive and retrying, and the hold covers it.
 
-### One predicate, one verb, four doors, four sinks
+### One predicate, one verb, every join door, each door's own sink
 
 * `lib/networkSession.ts` `hasNoLiveSession` — ComposeBox's private Set,
   hoisted, as a `Record<ConnectionState, boolean>` checked with `satisfies`: a

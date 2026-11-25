@@ -50,8 +50,9 @@ export function switchToChannelWindow(networkSlug: string, rawChannel: string): 
 }
 
 // issue 2719 — THE join verb: every door that joins a channel goes through it.
-// There are four: this file's confirm and invite doors, a DirectoryPane row
-// tap, a HomePane featured link, and compose's `/join`. Each used to own a
+// It has four callers: `performJoin` below (behind the #648 confirm, the
+// invite link, an invite row's [Join] and the invite banner), a DirectoryPane
+// row tap, a HomePane featured link, and compose's `/join`. Each used to own a
 // private copy of "POST the join, then focus the folded key", and the step
 // they all lacked is the reason this exists:
 //

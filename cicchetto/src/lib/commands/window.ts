@@ -69,7 +69,7 @@ export const partCommand: CommandHandler<"part"> = async (cmd, ctx) => {
  * reported.
  *
  * issue 2719 — the POST and the focus are `channelJoin.joinChannel`, the one
- * join verb all four join doors share. It reconnects a network with no session
+ * join verb every join door shares. It reconnects a network with no session
  * before it joins (a typed `/join` is the intent, so no modal), sends the list
  * as one comma-list with its key, and focuses the folded FIRST channel. It
  * throws to compose's catch, which is this door's error sink.

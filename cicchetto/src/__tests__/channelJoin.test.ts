@@ -264,8 +264,8 @@ describe("joinChannel (issue 2719)", () => {
   );
 
   // #1675 — its session is alive and retrying; the server holds the JOIN
-  // until 001 (issue 2114). A PATCH would bounce a session already on its way
-  // back.
+  // until 001 (issue 2114). A PATCH would be a wasted request that resets the
+  // backoff counter, not a bounce (`Networks.connect/1` is a no-op there).
   it("does not reconnect a failing network", async () => {
     networkBySlugMock.mockReturnValue(netIn("failing"));
     const { joinChannel } = await import("../lib/channelJoin");
