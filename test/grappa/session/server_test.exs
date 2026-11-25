@@ -1919,6 +1919,40 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    test "a PART during the +r defer cancels a JOIN held from before 001 (issue 2703)" do
+      # The held JOINs ride the deferred plan, so the window in which a PART
+      # can overtake one does not close at 001: it runs until the +r echo.
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+
+      {user, network, credential} =
+        setup_user_and_network(port, %{
+          nick: "grappa-test",
+          auth_method: :nickserv_identify,
+          password: "s3cr3t-identify",
+          autojoin_channels: ["#control"]
+        })
+
+      pid = nickserv_plan(user, network, credential, 60_000)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      assert :ok = Session.send_join({:user, user.id}, network.id, "#gone", nil)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      assert :ok = Session.send_part({:user, user.id}, network.id, "#gone", nil)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PART #gone\r\n"), 1_000)
+
+      IRCServer.feed(server, ":irc.test.org MODE grappa-test :+r\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #control\r\n"), 1_000)
+
+      _ = :sys.get_state(pid)
+      wire_barrier(server, pid, "after-defer")
+
+      refute "JOIN #gone\r\n" in IRCServer.sent_lines(server),
+             "the deferred plan sent a JOIN that a PART had cancelled"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "fires autojoin on the fallback ceiling when no +r ever arrives" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
 
@@ -17019,6 +17053,37 @@ defmodule Grappa.Session.ServerTest do
       assert Enum.filter(IRCServer.sent_lines(server), &String.starts_with?(&1, "JOIN ")) == [
                "JOIN #control\r\n"
              ]
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a PART before 001 cancels the JOIN it held", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      # Post-001 a JOIN then a PART reach the ircd in that order and leave the
+      # subject out of the channel. A hold must not reorder them: the PART is
+      # the later intent, so the JOIN it overtook goes with it.
+      assert :ok = Session.send_join({:user, user.id}, network.id, "#gone", nil)
+      assert :ok = Session.send_part({:user, user.id}, network.id, "#gone", nil)
+
+      # The cast writes its PART line last, so a PART on the fake means the
+      # whole cast ran.
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PART #gone\r\n"), 1_000)
+
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      assert await_sent_line_count(server, &(&1 == "JOIN #control\r\n"), 1, 2_000) == :ok,
+             "instrument broken: the 001 never reached the join plan"
+
+      # The whole plan goes out inside the one 001 handler.
+      _ = :sys.get_state(pid)
+      wire_barrier(server, pid, "after-001")
+
+      refute "JOIN #gone\r\n" in IRCServer.sent_lines(server),
+             "a JOIN held before 001 went out after the PART that cancelled it"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
