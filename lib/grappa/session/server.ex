@@ -1736,16 +1736,18 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  # The manager stops BEFORE SessionSupervisor in the supervision order, so at
-  # app-wide shutdown every session terminates AFTER the manager is gone and the
-  # `GenServer.call` exits `:noproc` (or `:timeout` under a wedged mailbox).
-  # Both are EXPECTED shutdown races — swallow them (the OS alias, if leaked, is
-  # reclaimed by the next boot reconcile, the manager's documented backstop),
-  # mirroring the best-effort QUIT catch in the `:shutdown` terminate clause.
-  # Any OTHER exit reason is unexpected and propagates LOUDLY (a narrow
-  # allowlist, not a blanket `:exit, _` — a widened catch hides the next bug).
-  # `release/1` itself always returns `:ok` (it logs adapter failures
-  # internally), so a real unbind failure is already visible in the manager log.
+  # Since issue 2697 the manager starts BEFORE SessionSupervisor, so it stops
+  # AFTER every session: an app-wide shutdown releases into a LIVE manager, and
+  # `:noproc` is no longer the shutdown race it used to be. It now means the
+  # manager itself is down (crashed, its restart not yet registered), and the
+  # alias stays bound until the next boot reconcile, the manager's documented
+  # backstop. `:timeout` means the call was DELIVERED to a slow manager, which
+  # still applies the release when it gets there. Both are swallowed, mirroring
+  # the best-effort QUIT catch in the `:shutdown` terminate clause. Any OTHER
+  # exit reason is unexpected and propagates LOUDLY (a narrow allowlist, not a
+  # blanket `:exit, _` — a widened catch hides the next bug). `release/1`
+  # itself always returns `:ok` (it logs adapter failures internally), so a
+  # real unbind failure is already visible in the manager log.
   @spec release_alias_best_effort(String.t()) :: :ok
   defp release_alias_best_effort(addr) do
     SourceAliasManager.release(addr)

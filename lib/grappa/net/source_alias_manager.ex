@@ -33,9 +33,13 @@ defmodule Grappa.Net.SourceAliasManager do
   `reconcile/0` diffs the OS ground truth (`adapter.list_aliases/1`) against
   the set of addresses that SHOULD remain bound (`held_addresses/1`) and
   releases the orphans a crashed prior run left bound. It runs once at startup
-  via `handle_continue/2` — the child is ordered AFTER the Endpoint (so the
-  public surface is up first) and BEFORE Bootstrap (so the sweep clears stale
-  aliases before sessions re-acquire).
+  via `handle_continue/2`, which the manager processes before any `acquire/1`
+  in its mailbox, so the sweep clears stale aliases before sessions re-acquire.
+
+  The child sits directly after the `Grappa.SourceAliasHolders` Registry it
+  reads, so BEFORE `SessionSupervisor` and the Endpoint (issue 2697): the arm
+  gate is published before any REST door can resolve a plan, and at shutdown
+  (reverse start order) every session releases into a live manager.
 
   ## Boundary
 
