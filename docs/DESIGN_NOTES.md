@@ -9343,6 +9343,20 @@ handler `Map.put`s `registered_at` before it delegates to the plan.
   window tests go red with the new one, so the gate is what serves that window
   now. Those tests had built it as "registered session, client nil". The real
   window is a fresh process with no 001 either, so their seam now sets both.
+* **A PART cancels the hold.** Post-001 a JOIN and then a PART reach the ircd
+  in that order and leave the subject out of the channel. A held JOIN would
+  go out at 001 AFTER the PART and reverse that, and since this change every
+  registration is such a window, including the fresh spawn an invite link
+  lands in. So the `send_part` cast drops the folded key from the queue
+  (`dequeue_join/2`, the supersede half `queue_join/3` already had). It sits
+  in the cast, not in `PartCleanup.cleanup_local/2`: the queue's raw-channel
+  representation, its network-aware fold and its hot-reload shim live in
+  `Session.Server`, and `PartCleanup` mirrors the PART-echo arm, which can
+  never concern a held JOIN. The same drop covers the #347 +r defer, because
+  the queue rides the deferred plan until it fires. What it does not cover is
+  a channel from the AUTOJOIN set parted before 001 or during the defer: the
+  plan still JOINs it from `state.autojoin`, a different source, and that
+  predates this change.
 
 ### Nineteen tests encoded the write
 
