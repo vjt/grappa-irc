@@ -39,6 +39,7 @@ defmodule GrappaWeb.NickControllerTest do
       network = setup_network(vjt, port, slug)
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.welcome(server, 1_000)
 
       conn =
         conn
@@ -110,6 +111,7 @@ defmodule GrappaWeb.NickControllerTest do
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.welcome(server, 1_000)
 
       new_nick = "v9new-#{System.unique_integer([:positive])}"
 
@@ -164,6 +166,7 @@ defmodule GrappaWeb.NickControllerTest do
 
       pid = start_visitor_session_for(visitor, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.welcome(server, 1_000)
 
       conn =
         Phoenix.ConnTest.build_conn()

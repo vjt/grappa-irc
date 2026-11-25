@@ -11,8 +11,9 @@ defmodule Grappa.Session.SendTransportFailureTest do
       `transport_send/2`) — the five arms that used to match only `:ok`
       and `:invalid_line` and raised `CaseClauseError` on anything else;
     * there is no Client at all (`client: nil`, the Backoff-deferred
-      respawn window) — refused BEFORE the persist, so the operator's
-      scrollback does not gain a line that never left;
+      respawn window) — refused BEFORE the persist, as `:not_registered`
+      since issue 2728, so the operator's scrollback does not gain a line
+      that never left;
     * the Client does not answer within the call deadline — `:timeout`
       instead of an exit. Costs the fixed 5 s call deadline in wall clock.
 
@@ -149,9 +150,10 @@ defmodule Grappa.Session.SendTransportFailureTest do
       subject = {:user, user.id}
 
       # Ladder at the cap → the Client spawn is deferred, so the session
-      # serves the calls below with `client: nil`. The `:no_socket` answers
-      # are the precondition: had the deferred spawn won, they would be
-      # `{:ok, _}`.
+      # serves the calls below with `client: nil`. The `:not_registered`
+      # answers (issue 2728 — the same refusal the gate gives a Client whose
+      # 001 has not arrived) are the precondition: had the deferred spawn
+      # won AND registered, they would be `{:ok, _}`.
       :ok = Backoff.reset(subject, network.id)
       Enum.each(1..10, fn _ -> :ok = Backoff.record_failure(subject, network.id) end)
       on_exit(fn -> Backoff.reset(subject, network.id) end)
@@ -163,7 +165,7 @@ defmodule Grappa.Session.SendTransportFailureTest do
 
     test "a PRIVMSG is refused before the persist: no scrollback row, session alive",
          %{user: user, subject: subject, network: network, pid: pid} do
-      assert {:error, :no_socket} = Session.send_privmsg(subject, network.id, "#test", "lost")
+      assert {:error, :not_registered} = Session.send_privmsg(subject, network.id, "#test", "lost")
       assert [] = rows(user, network, "#test")
       assert Process.alive?(pid)
       :ok = GenServer.stop(pid, :normal, 1_000)
@@ -171,7 +173,7 @@ defmodule Grappa.Session.SendTransportFailureTest do
 
     test "a NOTICE is refused before the persist: no scrollback row, session alive",
          %{user: user, subject: subject, network: network, pid: pid} do
-      assert {:error, :no_socket} =
+      assert {:error, :not_registered} =
                Session.send_notice(subject, network.id, "#test", "#test", "lost")
 
       assert [] = rows(user, network, "#test")
@@ -181,7 +183,7 @@ defmodule Grappa.Session.SendTransportFailureTest do
 
     test "an ops-only (STATUSMSG) message is refused before the persist: no scrollback row, session alive",
          %{user: user, subject: subject, network: network, pid: pid} do
-      assert {:error, :no_socket} = Session.send_statusmsg(subject, network.id, "@#test", "lost")
+      assert {:error, :not_registered} = Session.send_statusmsg(subject, network.id, "@#test", "lost")
       assert [] = rows(user, network, "#test")
       assert Process.alive?(pid)
       :ok = GenServer.stop(pid, :normal, 1_000)
@@ -189,7 +191,7 @@ defmodule Grappa.Session.SendTransportFailureTest do
 
     test "a CTCP query is refused before the persist: no scrollback row, session alive",
          %{user: user, subject: subject, network: network, pid: pid} do
-      assert {:error, :no_socket} =
+      assert {:error, :not_registered} =
                Session.send_ctcp(subject, network.id, "#test", "carol", "\x01VERSION\x01")
 
       assert [] = rows(user, network, "#test")

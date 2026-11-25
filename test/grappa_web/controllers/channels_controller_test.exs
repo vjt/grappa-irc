@@ -968,6 +968,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       network = setup_network(vjt, port, slug)
       pid = start_session_for(vjt, network)
       :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.welcome(server, 1_000)
 
       conn =
         conn

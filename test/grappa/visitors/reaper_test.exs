@@ -23,6 +23,7 @@ defmodule Grappa.Visitors.ReaperTest do
     QueryWindows,
     ReadCursor,
     Session,
+    SessionStateHelpers,
     Subject,
     UserSettings,
     Visitors,
@@ -89,6 +90,9 @@ defmodule Grappa.Visitors.ReaperTest do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port, [])
       pid = start_visitor_session_for(visitor, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      # Issue 2728: the reaper's QUIT is refused before 001, so register first.
+      :ok = IRCServer.register(server, pid |> SessionStateHelpers.fetch() |> SessionStateHelpers.nick(), 1_000)
       ref = Process.monitor(pid)
 
       assert Process.alive?(pid)
@@ -203,6 +207,9 @@ defmodule Grappa.Visitors.ReaperTest do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port, incognito: true)
       pid = start_visitor_session_for(visitor, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      # Issue 2728: the reaper's QUIT is refused before 001, so register first.
+      :ok = IRCServer.register(server, pid |> SessionStateHelpers.fetch() |> SessionStateHelpers.nick(), 1_000)
       ref = Process.monitor(pid)
 
       assert visitor.incognito
