@@ -655,8 +655,9 @@ defmodule Grappa.Session.Server do
           # a non-empty autojoin set arms it. See `maybe_autojoin_or_defer/1`.
           autojoin_defer_ms: pos_integer(),
           autojoin_defer_timer: reference() | nil,
-          # issue 2114 — JOINs the door accepted while the transport was not
-          # there yet, oldest-last (prepend + reverse at flush), one entry per
+          # issue 2114 / issue 2703 — JOINs the door accepted before 001 (no
+          # Client yet, or a socket not yet registered), held for the join
+          # plan, oldest-last (prepend + reverse at flush), one entry per
           # network-folded channel with its optional +k key. `state.autojoin` is
           # the OPERATOR's boot set and stays untouched: folding user intent
           # into it would also hand it to `maybe_request_chanserv_invite/3`'s
@@ -1330,7 +1331,8 @@ defmodule Grappa.Session.Server do
       # issue 2388 — the pending-auth ceiling, same init-time copy as above so
       # a hot deploy reaches a live session at its next `init`.
       pending_auth_timeout_ms: Map.get(opts, :pending_auth_timeout_ms, @pending_auth_timeout_ms),
-      # issue 2114 — empty at spawn: a fresh process has refused nothing yet.
+      # issue 2114 / issue 2703 — empty at spawn: a fresh process holds no
+      # JOIN yet.
       queued_joins: [],
       client: nil,
       # #550 — nil until the Client pushes {:irc_peer, _} at connect.
@@ -3359,7 +3361,12 @@ defmodule Grappa.Session.Server do
     # upstream PART line ships the RAW `channel` (wire stays as-typed).
     key = fold_key(state, channel)
     prev = state
-    state = PartCleanup.cleanup_local(state, key)
+
+    # issue 2703 — and a JOIN still held for 001 (or for the #347 +r defer)
+    # is an intent this PART supersedes. Post-001 the two would reach the
+    # ircd in order and leave the subject out of the channel; a held JOIN
+    # left in the queue would go out AFTER the PART and reverse that.
+    state = state |> PartCleanup.cleanup_local(key) |> dequeue_join(key)
     broadcast_channels_changed(state)
 
     # #459 — emit archive_changed from the SESSION, here, once cleanup_local
@@ -8385,8 +8392,9 @@ defmodule Grappa.Session.Server do
   # `:nickserv_identify` (#347).
   #
   # issue 2114 widened WHAT it fires from `state.autojoin` to `join_plan/1` —
-  # the operator set PLUS the JOINs the door queued while the transport was
-  # down. One loop, because the 20% that differs is the +k key and nothing
+  # the operator set PLUS the JOINs the door held before 001 (issue 2703: no
+  # Client yet, or a socket not yet registered, minus any a later PART
+  # cancelled). One loop, because the 20% that differs is the +k key and nothing
   # else: same in-flight tracking, same +r defer, same failure numerics.
   #
   # The queue is emptied BEFORE the loop, not after. A transport error inside
@@ -8430,8 +8438,8 @@ defmodule Grappa.Session.Server do
   #     `last_joined_channels` at reboot), ALWAYS keyless. Keys are not
   #     persisted; the operator re-joins a +k channel with `/join #chan key`.
   #     UX-4 bucket F: the explicit nil keeps the wire frame `JOIN #chan\r\n`.
-  #   * `queued_joins` — refused by a dead transport at the REST door, each
-  #     carrying the +k key the caller supplied. A queued entry WINS a
+  #   * `queued_joins` — held at the REST door before 001, each carrying the
+  #     +k key the caller supplied. A queued entry WINS a
   #     collision with the autojoin set precisely because of that key: the
   #     autojoin copy would frame the same channel keyless and earn a 475.
   #
@@ -8644,19 +8652,28 @@ defmodule Grappa.Session.Server do
       KickRejoin.latest_kick?(state.kicks, channel, kicked_at_ms)
   end
 
-  # issue 2114 — remember a JOIN the transport refused, newest-first. Deduped
-  # on the network-folded channel KEY with the newest entry winning, so a
-  # re-issued JOIN supersedes its predecessor (a corrected +k key is the case
-  # that matters) and the list stays bounded by the number of DISTINCT channels
-  # the subject asked for during one backoff window. No separate cap: that is
-  # the same bound `window_state` and `in_flight_joins` already grow under from
-  # the same door, so this adds no new unbounded axis.
+  # issue 2114 / issue 2703 — remember a JOIN held for 001, newest-first.
+  # Deduped on the network-folded channel KEY with the newest entry winning,
+  # so a re-issued JOIN supersedes its predecessor (a corrected +k key is the
+  # case that matters) and the list stays bounded by the number of DISTINCT
+  # channels the subject asked for during one registration. No separate cap:
+  # that is the same bound `window_state` and `in_flight_joins` already grow
+  # under from the same door, so this adds no new unbounded axis.
   @spec queue_join(t(), String.t(), String.t() | nil) :: t()
   defp queue_join(state, channel, key) do
-    chan_key = fold_key(state, channel)
-    kept = Enum.reject(queued_joins(state), fn {c, _} -> fold_key(state, c) == chan_key end)
+    state = dequeue_join(state, fold_key(state, channel))
+    Map.put(state, :queued_joins, [{channel, key} | queued_joins(state)])
+  end
 
-    Map.put(state, :queued_joins, [{channel, key} | kept])
+  # issue 2703 — forget the held JOIN for one network-folded channel KEY, if
+  # there is one. The supersede half of `queue_join/3`, and the whole of what a
+  # PART owes the queue. The in-flight entry the hold recorded is left to the
+  # lazy TTL sweep, as it is for a PART that overtakes a JOIN already on the
+  # wire.
+  @spec dequeue_join(t(), String.t()) :: t()
+  defp dequeue_join(state, chan_key) do
+    kept = Enum.reject(queued_joins(state), fn {c, _} -> fold_key(state, c) == chan_key end)
+    Map.put(state, :queued_joins, kept)
   end
 
   # `Map.get`, not `state.queued_joins`: the hot-reload shim this file applies
