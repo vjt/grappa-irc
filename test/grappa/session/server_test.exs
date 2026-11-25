@@ -17322,8 +17322,9 @@ defmodule Grappa.Session.ServerTest do
       pid: pid
     } do
       # Before 001 we are in no upstream channel, so there is nothing for a
-      # PART to leave, and an ircd answers any command from an unregistered
-      # client with 451. The local cleanup is the whole of the PART here.
+      # PART to leave, and an ircd answers a PART (like a JOIN) from an
+      # unregistered client with 451; only the registration commands are
+      # accepted before 001. The local cleanup is the whole of the PART here.
       assert :ok = Session.send_part({:user, user.id}, network.id, "#control", nil)
       _ = :sys.get_state(pid)
       wire_barrier(server, pid, "w2721-before-001")
