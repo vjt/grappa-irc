@@ -9882,6 +9882,13 @@ only shortens its window.
 
 ### A release that finds no manager is logged, not swallowed
 
+**Ruled by vjt (issue 2697 Q2): option (b), as built.** A failed alias
+release in `terminate/2` stays caught and logged. Option (a), letting the
+`:noproc` propagate, is rejected: it would make the `:transient`
+`SessionSupervisor` restart a session that is stopping itself (a k-line, a
+SASL failure). That restart is the one measured in the second paragraph
+below.
+
 `Session.Server.release_alias_best_effort/1` still catches `{:noproc, _}` and
 `{:timeout, _}`, and now logs both. `:noproc` is an error naming the address,
 because the alias stays bound until the next boot reconcile; `:timeout` is a
