@@ -893,6 +893,13 @@ defmodule Grappa.Operator do
   change, or no live session, leaves the session alone and the next spawn
   reads the row.
 
+  That includes `:autojoin_channels` (issue 2724). A live session keeps the
+  autojoin set its `init/1` read, so an added channel is not joined and a
+  removed one is not forgotten until the next `init/1`. Even then, a removed
+  channel the session sits in comes back through `last_joined_channels`. In
+  the same edit as a `:password` / `:auth_method` change, the new list
+  arrives now, with the restart.
+
   The third element says what became of the session:
 
     * `:left_alone` — nothing to restart.
@@ -934,9 +941,9 @@ defmodule Grappa.Operator do
       Session.whereis({:user, user_id}, network_id) != nil
   end
 
-  # The fields spent at registration and never again. The rest either reach
-  # the live session on their own (autojoin, on the next JOIN) or are read on
-  # the next spawn.
+  # The fields spent at registration and never again. The rest wait for the
+  # next spawn, `autojoin_channels` included: nothing reads it on a JOIN, and
+  # a live session keeps the set its `init/1` read (issue 2724).
   @spec auth_touching?(map()) :: boolean()
   defp auth_touching?(attrs) do
     keys = attrs |> Map.keys() |> Enum.map(&to_string/1)

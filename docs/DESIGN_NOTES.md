@@ -9558,3 +9558,76 @@ the next `init/1`. For a removal the next `init/1` is no cure either: a
 channel the session is sitting in is also in `last_joined_channels`, so the
 next `init/1` keeps it through the union. It is the same staleness with a
 different trigger, running in both directions. It is issue 2724.
+<!-- entry #2724 -->
+
+---
+
+## 2026-11-25 — #2724: an admin edit of `autojoin_channels` takes effect at the session's next init
+
+The admin PATCH (`Operator.update_credential/3`) writes the row and nothing
+else. A live `Session.Server` keeps `state.autojoin` as its `init/1` read it,
+narrowed since #2721 by a PART. The edit takes effect at the next `init/1`: a
+restart, a reconnect, or a respawn out of backoff. A PATCH that also carries
+`password` or `auth_method` restarts the session there and then (#2474), so an
+autojoin edit bundled with it arrives at once. That is the written contract,
+ruled by the orch on w2's phase-1 read.
+
+### Why not push the edit into the live session
+
+There is a shape for it: four credential fields (profile, keep_nick, avatar,
+kick_rejoin) reach a live session over the `Topic.user_settings/1` bridge.
+`autojoin_channels` does not take it, for two reasons.
+
+* **No product door edits it on a live session.** cic's admin page never sends
+  the field (`AdminUserPage.patchOf`), and the release CLI has no update verb.
+  What remains is a raw PATCH and the source-install
+  `mix grappa.update_network_credential`, which runs in a VM of its own
+  (`Boot.start_app_silent/0`, no Bootstrap, no sessions). No in-VM push reaches
+  that one.
+* **There is no single DB value to push.** `state.autojoin` is init's
+  `autojoin_channels ∪ last_joined_channels`, narrowed by PART and never
+  widened by a JOIN (issue 2114). Recomputing it from the row would widen the
+  `#116` ChanServ gate with every channel joined by hand since init, and could
+  race the session's own `last_joined_channels` write on a concurrent PART.
+  Pushing only the change to `autojoin_channels` disagrees with the next init
+  for a removed channel that `last_joined_channels` still holds. Getting it
+  exact needs per-column provenance inside the session: a second structure.
+
+A restart on an autojoin edit (widening `auth_touching?/1`) was rejected as
+well: it bounces a registered link for a list edit, and #2474 kept restarts for
+the fields spent at registration.
+
+### What is left, known and accepted
+
+* An ADDED channel is not JOINed, and earns no `#116` ChanServ INVITE on a
+  473/475, until the next `init/1`.
+* A REMOVED channel the session is sitting in is also in
+  `last_joined_channels`, so the next `init/1` keeps it through the union.
+  Taking a channel out of `autojoin_channels` means "no longer forced", not
+  "leave". A PART is what takes it out of both columns (#2721).
+* A REMOVED channel absent from `last_joined_channels`, removed before the plan
+  fires, is still JOINed by the plan. That window is before 001, which on a
+  failing network includes the backoff wait (up to the 300 s cap), or inside
+  the `#347` +r defer (60 s fallback). If the JOIN succeeds, its echo writes
+  the channel into `last_joined_channels` and the removal is undone until a
+  PART.
+* The lever for "now" is the existing disconnect/connect toggle, which runs a
+  fresh `init/1`.
+
+### The admin listing shows the row before the session joins
+
+`GET /admin/credentials` and the PATCH reply render `autojoin_channels` from
+the row. So do `GET /networks/:slug/channels` and the boot payload, per
+request. After its next refetch cic lists an added channel as
+`source: autojoin`, `joined: false`, while the session has not JOINed it.
+Nothing broadcasts `channels_changed` on the admin write. Recorded here rather
+than filed, by ruling.
+
+### What changed
+
+Text only. The `Operator.auth_touching?/1` comment said the other fields
+"reach the live session on their own (autojoin, on the next JOIN)", but nothing
+reads `autojoin_channels` on a JOIN. It now puts autojoin with the fields read
+at the next spawn. `Operator.update_credential/3`'s doc, the admin PATCH
+moduledoc and the `state.autojoin` typedoc say the same. No code, no test, no
+wire.

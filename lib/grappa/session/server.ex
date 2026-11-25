@@ -650,6 +650,8 @@ defmodule Grappa.Session.Server do
           # last_joined_channels)` as `init/1` read it, folded. Narrowed by a
           # PART (issue 2721, `drop_from_autojoin/2`), which takes the channel
           # out of both columns; never widened by a JOIN (see `queued_joins`).
+          # An admin edit of `autojoin_channels` does not reach it: the edit
+          # takes effect at the next `init/1` (issue 2724).
           autojoin: [String.t()],
           # #347 — deferred-autojoin fallback window (config default
           # @autojoin_defer_ms, opts-overridable for tests) + the one-shot

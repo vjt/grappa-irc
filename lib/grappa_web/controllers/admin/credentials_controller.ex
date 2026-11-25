@@ -41,6 +41,13 @@ defmodule GrappaWeb.Admin.CredentialsController do
   and a refused restart leaves the row `:parked`, never `:connected`
   with no session.
 
+  Every other field reaches the session at its next `init/1`,
+  `autojoin_channels` included (issue 2724): a live session keeps the
+  autojoin set it read at init, so an added channel is not joined until
+  then. The reply's `autojoin_channels`, like the GET listing's, is the
+  row's and not the session's. In the same PATCH as a `password` / `auth_method` change the
+  new list arrives now, with the restart.
+
   Returns `200 OK` with the updated row in the same shape as one
   GET row. `404 not_found` on unknown user_id / network_id / binding;
   `422 validation_failed` on bad changeset; `400 bad_request` on
