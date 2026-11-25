@@ -775,6 +775,30 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
     end
   end
 
+  # issue 2728 — the session exists and its socket is up, but no 001 has
+  # arrived (`passthrough_handler` never sends one). The refusal must reach
+  # the client as itself, and the row must not exist: an ircd drops the line
+  # with 451 until registration, so a persisted row would be a message the
+  # channel never saw.
+  describe "POST before the network has registered us" do
+    test "answers 503 not_registered and persists no row", %{conn: conn, vjt: vjt} do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/channels/%23sniffo/messages", %{"body" => "too early"})
+
+      assert json_response(conn, 503) == %{"error" => "not_registered"}
+      assert [] = Scrollback.fetch({:user, vjt.id}, network.id, "#sniffo", nil, 10, nil, false)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "POST CRLF guard (S29 C1)" do
     # Body validation happens at the Session facade (and Client too),
     # surfacing as `{:error, :invalid_line}` → 400 invalid_line via
