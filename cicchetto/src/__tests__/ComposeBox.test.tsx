@@ -1559,10 +1559,11 @@ describe("ComposeBox", () => {
     // (`NetworksController` moduledoc), and its PATCH door has no subject
     // branch. cic was the only layer still narrowing.
     //
-    // 🔴 THIS COMPONENT'S SET IS NOT THE SIDEBAR'S and does not become it.
-    // Here it is {parked, failed}; the Sidebar's is {failed}, because a parked
-    // network leaves the sidebar entirely and has no header left to grey
-    // (issue 1985). Those two were already different on the SAME kind before
+    // 🔴 THIS COMPONENT'S RULE IS NOT THE SIDEBAR'S and does not become it.
+    // Here it is `hasNoLiveSession` (lib/networkSession.ts), true for parked
+    // and failed; the Sidebar's `NETWORK_GREYED_STATES` record is true for
+    // failed alone, because a parked network leaves the sidebar entirely and
+    // has no header left to grey (issue 1985). Those two were already different on the SAME kind before
     // this change. vjt's ruling uniforms the SUBJECT, not two rules that were
     // distinct for a reason.
     it("a PARKED VISITOR network greys the compose box, same as a user's (issue 2222)", () => {
