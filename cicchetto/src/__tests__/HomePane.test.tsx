@@ -61,6 +61,11 @@ const userMock = vi.fn<() => unknown>(() => null);
 // #211 phase 6 — visitorSlug() now derives from the list-shaped
 // networks() store (the singular me.network_slug is gone). Mock it.
 const networksMock = vi.fn<() => unknown[]>(() => []);
+// issue 2719 — what the GET /networks store says about a slug. The join verb
+// reads it to decide whether to reconnect first.
+const networkBySlugMock = vi.fn<(slug: string) => { connection_state: string } | undefined>(
+  () => undefined,
+);
 // #283 — ConnectedRow's Disconnect button routes through the #195 confirm
 // modal (windowClose.confirmDisconnectNetwork — "Disconnect from <slug>?"),
 // the SAME verb the sidebar/bottom-bar × fires. Mock it so the unit test
@@ -128,6 +133,7 @@ vi.mock("../lib/api", () => {
 vi.mock("../lib/networks", () => ({
   user: () => userMock(),
   networks: () => networksMock(),
+  networkBySlug: (slug: string) => networkBySlugMock(slug),
   refetchUser: () => refetchUserMock(),
   refetchNetworks: () => refetchNetworksMock(),
   // #349 — the registration button resolves the network id here to look
@@ -214,6 +220,7 @@ describe("HomePane", () => {
     windowStateMock.mockReturnValue({});
     userMock.mockReturnValue(null);
     networksMock.mockReturnValue([]);
+    networkBySlugMock.mockReturnValue(undefined);
     confirmDisconnectNetworkMock.mockClear();
     flavorForSlugMock.mockReturnValue(null);
     identifiedForNetworkMock.mockReturnValue(false);
@@ -278,6 +285,64 @@ describe("HomePane", () => {
         ),
       );
       expect(postJoinMock).not.toHaveBeenCalled();
+    });
+
+    // issue 2719 — a parked or failed row renders its featured links too
+    // (`DisconnectedRow`), and a tap on one used to send a JOIN the server
+    // answered 404, printed as "doesn't exist" beside the row's own
+    // Reconnect button. The tap is the intent: reconnect, then join.
+    const parkedNetworks = (slug: string): HomeDataLocal => ({
+      networks: [
+        {
+          slug,
+          nick: "vjt",
+          connection_state: "parked",
+          connection_state_reason: "manual disconnect",
+          connection_state_changed_at: null,
+        },
+      ],
+      available_networks: [],
+    });
+
+    it("a featured link on a parked row reconnects, THEN joins, then focuses (issue 2719)", async () => {
+      homeDataMock.mockReturnValue(parkedNetworks("azzurra"));
+      networkBySlugMock.mockReturnValue({ connection_state: "parked" });
+      getFeaturedMock.mockResolvedValue([{ name: "#sniffo", description: null }]);
+      render(() => <HomePane />);
+
+      fireEvent.click(await screen.findByText("#sniffo"));
+
+      await waitFor(() =>
+        expect(postJoinMock).toHaveBeenCalledWith("test-token", "azzurra", "#sniffo", null),
+      );
+      expect(patchNetworkMock).toHaveBeenCalledWith("test-token", "azzurra", {
+        connection_state: "connected",
+      });
+      const [patchAt] = patchNetworkMock.mock.invocationCallOrder;
+      const [postAt] = postJoinMock.mock.invocationCallOrder;
+      expect(patchAt).toBeLessThan(postAt ?? 0);
+      await waitFor(() =>
+        expect(setSelectedChannelMock).toHaveBeenCalledWith(
+          expect.objectContaining({ networkSlug: "azzurra", channelName: "#sniffo" }),
+        ),
+      );
+    });
+
+    it("a refused reconnect prints on the row and sends no POST (issue 2719)", async () => {
+      const { ApiError } = await import("../lib/api");
+      patchNetworkMock.mockRejectedValueOnce(new ApiError(503, "network_circuit_open"));
+      homeDataMock.mockReturnValue(parkedNetworks("azzurra"));
+      networkBySlugMock.mockReturnValue({ connection_state: "parked" });
+      getFeaturedMock.mockResolvedValue([{ name: "#sniffo", description: null }]);
+      render(() => <HomePane />);
+
+      fireEvent.click(await screen.findByText("#sniffo"));
+
+      await waitFor(() =>
+        expect(screen.getByText(/#sniffo: friendly: 503 network_circuit_open/)).toBeInTheDocument(),
+      );
+      expect(postJoinMock).not.toHaveBeenCalled();
+      expect(setSelectedChannelMock).not.toHaveBeenCalled();
     });
 
     it("visitor home renders featured for a connected network (via ConnectedRow)", async () => {
