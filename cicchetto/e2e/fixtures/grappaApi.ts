@@ -1088,8 +1088,11 @@ export async function listChannelNames(token: string, networkSlug: string): Prom
 // `Grappa.Networks.disconnect/2` server-side which terminates the
 // Session.Server, broadcasts `connection_state_changed` over WS,
 // and flips the credential row. Setting `connection_state:
-// "connected"` triggers `Grappa.Networks.connect/1` (lazy spawn at
-// next admission run, but the broadcast happens immediately).
+// "connected"` spawns the session BEFORE it answers, and only then
+// writes `connected` and broadcasts (`NetworksController`'s
+// `apply_transition/5`, the U-0 order): a 200 means a live session
+// already exists. (This used to say "lazy spawn at next admission run",
+// which U-0 retired; issue 2719's join verb relies on the eager order.)
 //
 // Body matches `NetworksController.update/2` action: required
 // `connection_state` ("parked" | "connected"), optional `reason`
