@@ -234,6 +234,40 @@ defmodule Grappa.IRCServer do
   @spec register(pid(), binary(), pos_integer()) :: :ok
   def register(server, nick, timeout) when is_binary(nick) do
     feed(server, ":irc.test.org 001 #{nick} :Welcome\r\n")
+    await_handled(server, timeout)
+  end
+
+  @doc """
+  Plays the ircd's half of registration on a `passthrough_handler/0` fake:
+  feeds `001` for the nick the session last sent in a `NICK` line, then
+  returns once the session has handled it (`await_handled/2`). Call it after
+  `await_handshake/2`. Use `register/3` when the test wants 001 to name a
+  nick of its own choosing.
+
+  Issue 2728: a verb that writes a line is refused (`:not_registered`) until
+  the session has handled 001.
+  """
+  @spec welcome(pid(), pos_integer()) :: :ok
+  def welcome(server, timeout) do
+    "NICK " <> nick_line =
+      server |> sent_lines() |> Enum.filter(&String.starts_with?(&1, "NICK ")) |> List.last()
+
+    register(server, String.trim_trailing(nick_line, "\r\n"), timeout)
+  end
+
+  @doc """
+  Returns once the session has handled every line the fake sent it so far —
+  in particular the 001 a `welcome_handler/2` fake sends in reply to USER.
+  Feeds a PING and waits for the PONG: the session reads its socket in
+  order, so the PONG comes after the 001 was processed. Call it after
+  `await_handshake/2`.
+
+  Issue 2728: a verb that writes a line is refused (`:not_registered`) until
+  the session has handled 001. `await_handshake/2` only proves USER was
+  SENT; a test that sends a verb right after it races the 001.
+  """
+  @spec await_handled(pid(), pos_integer()) :: :ok
+  def await_handled(server, timeout) do
     token = "registered-#{System.unique_integer([:positive])}"
     feed(server, "PING :#{token}\r\n")
     {:ok, _} = wait_for_line(server, &(&1 == "PONG :#{token}\r\n"), timeout)
