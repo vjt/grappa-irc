@@ -1,9 +1,11 @@
-import { deleteInvite, postJoin } from "./api";
+import { deleteInvite, patchNetwork, postJoin } from "./api";
 import { token } from "./auth";
 import { canonicalChannel, channelKey } from "./channelKey";
 import { requestConfirm } from "./confirmDialog";
 import { errorMessage } from "./friendlyApiError";
 import { identityMoved } from "./identityMoved";
+import { hasNoLiveSession } from "./networkSession";
+import { networkBySlug } from "./networks";
 import { setSelectedChannel } from "./selection";
 import { createToastQueue } from "./toasts";
 import { windowStateByChannel } from "./windowState";
@@ -13,8 +15,9 @@ import { windowStateByChannel } from "./windowState";
 // thin COMPOSITION of verbs that already exist — it opens no new socket call
 // and holds no parallel state:
 //
-//   * postJoin            — THE join REST call, shared with compose.ts `/join`
-//                           and DirectoryPane row taps.
+//   * joinChannel         — THE join verb (issue 2719, below), shared with
+//                           compose.ts `/join`, DirectoryPane row taps and
+//                           HomePane's featured links.
 //   * setSelectedChannel  — the ONLY cic-originated focus origin (#244): the
 //                           tap. Automatic re-joins never steal focus.
 //   * windowStateByChannel — the server-owned window_states projection, the
@@ -43,6 +46,49 @@ export function switchToChannelWindow(networkSlug: string, rawChannel: string): 
     channelName: canonicalChannel(rawChannel),
     kind: "channel",
   });
+}
+
+// issue 2719 — THE join verb: every door that joins a channel goes through it.
+// There are four: this file's confirm and invite doors, a DirectoryPane row
+// tap, a HomePane featured link, and compose's `/join`. Each used to own a
+// private copy of "POST the join, then focus the folded key", and the step
+// they all lacked is the reason this exists:
+//
+// A JOIN sent to a network with no session answers 404 `not_found` (S14 folds
+// `:no_session` into it) and opens nothing. The store already knows when that
+// is (`hasNoLiveSession`: parked or failed), so the verb reconnects first. The
+// two calls need no wait between them: the PATCH spawns the session before it
+// answers (it writes `connected` only on spawn success), and the server holds a
+// JOIN that arrives before 001 until 001 (issue 2114), opening the window
+// `:pending` at once.
+//
+// Whether the reconnect needs a yes is the DOOR's question, not the verb's. A
+// tap on a channel row is the intent, and Reconnect never had a modal (#1331).
+// The #648 confirm asks one question that names both (`confirmJoinChannel`).
+//
+// Throws what the PATCH or the POST throws, and each door owns its own sink:
+// the toast below, a directory row's inline line, a featured link's inline
+// line, the compose banner. A refused reconnect sends no POST. Focus moves only
+// after the POST resolves, so a refused join never foregrounds a phantom
+// window (#244). `rawChannels` is a list because `/join #a,#b` is ONE request
+// on the wire (#516); focus lands on the first.
+export async function joinChannel(
+  t: string,
+  networkSlug: string,
+  rawChannels: readonly string[],
+  key: string | null,
+): Promise<void> {
+  if (hasNoLiveSession(networkBySlug(networkSlug))) {
+    await patchNetwork(t, networkSlug, { connection_state: "connected" });
+    // identityMoved.ts: a continuation that outlived its identity sends not
+    // one request more.
+    if (identityMoved(t)) return;
+  }
+  // RAW on the wire (display spelling); the server casemaps it.
+  await postJoin(t, networkSlug, rawChannels.join(","), key);
+  if (identityMoved(t)) return;
+  const first = rawChannels[0];
+  if (first !== undefined) switchToChannelWindow(networkSlug, first);
 }
 
 // issue 2719 — the error sink of the two doors that have no line of their own
@@ -78,11 +124,7 @@ async function performJoin(networkSlug: string, rawChannel: string): Promise<voi
   const t = token();
   if (!t) return; // post-logout race — nothing to join with.
   try {
-    // RAW on the wire (display spelling); the server casemaps it.
-    await postJoin(t, networkSlug, rawChannel, null);
-    // Focus originates HERE (the tap), AFTER the awaited join — a rejected
-    // join (+i / +k / +b) never foregrounds a phantom window (#244).
-    switchToChannelWindow(networkSlug, rawChannel);
+    await joinChannel(t, networkSlug, [rawChannel], null);
   } catch (err) {
     // An account that did not click is owed nothing, and must not be told
     // about a channel the previous one asked for.
@@ -151,16 +193,28 @@ export function declineInvite(networkSlug: string, rawChannel: string): void {
 
 // Already in the channel ⇒ switch, no modal. Otherwise confirm, then join on
 // yes. The confirm body names the RAW channel (display casing).
+//
+// issue 2719 — on a network with no session the question names the reconnect
+// too, and comes BEFORE it (the orch's ruling Q1, option A): a park is the
+// person's own act, so nothing undoes it without a yes, and one yes covers
+// both. Cancel sends nothing. The store is read when the question is ASKED;
+// `joinChannel` reads it again when the yes arrives, so a network another
+// device reconnected meanwhile gets the POST alone, and one another device
+// parked meanwhile is reconnected by a yes that named only the join — the join
+// needs the session either way.
 export function confirmJoinChannel(networkSlug: string, rawChannel: string): void {
   const joined = windowStateByChannel()[channelKey(networkSlug, rawChannel)] === "joined";
   if (joined) {
     switchToChannelWindow(networkSlug, rawChannel);
     return;
   }
+  const reconnect = hasNoLiveSession(networkBySlug(networkSlug));
   requestConfirm({
     title: "Join channel",
-    body: `Join ${rawChannel}?`,
-    confirmLabel: "Join",
+    body: reconnect
+      ? `${networkSlug} is disconnected. Reconnect it and join ${rawChannel}?`
+      : `Join ${rawChannel}?`,
+    confirmLabel: reconnect ? "Reconnect and join" : "Join",
     onConfirm: () => void performJoin(networkSlug, rawChannel),
     alternative: null,
     attachments: null,
