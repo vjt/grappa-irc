@@ -9878,3 +9878,22 @@ only shortens its window.
   and are not re-seeded from the holder Registry, so later releases log "unheld" and
   leak, and a fresh acquire+release of a shared address unbinds it under the
   older holders.
+
+### A release that finds no manager is logged, not swallowed
+
+`Session.Server.release_alias_best_effort/1` still catches `{:noproc, _}` and
+`{:timeout, _}`, and now logs both. `:noproc` is an error naming the address,
+because the alias stays bound until the next boot reconcile; `:timeout` is a
+warning, because the call was delivered and the manager still applies it. The
+bare-atom clause beside them was dead, since `GenServer.call/3` wraps every
+exit it raises as `{reason, {GenServer, :call, args}}`, and it is gone.
+
+Letting the `:noproc` propagate was considered and measured. With the manager
+down, `GenServer.stop(pid, :normal)` then exits
+`{{:noproc, …}, {GenServer, :stop, …}}`, the `:transient` `SessionSupervisor`
+restarts the session under a new pid, at least four "terminating" reports
+follow within 200 ms, and the session's Backoff failure count stays 0. Read in
+the source, the same raise makes the `:shutdown` clause skip its upstream QUIT,
+and makes the abnormal clause report the manager instead of the real crash. An
+operator stop (`Session.stop_session/2`) restarts nothing either way: it goes
+through `DynamicSupervisor.terminate_child/2`, which removes the child first.
