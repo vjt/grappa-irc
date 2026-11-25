@@ -4,6 +4,7 @@ import { canonicalChannel, channelKey } from "./channelKey";
 import { requestConfirm } from "./confirmDialog";
 import { errorMessage } from "./friendlyApiError";
 import { identityMoved } from "./identityMoved";
+import { identityScopedStore } from "./identityScopedStore";
 import { hasNoLiveSession } from "./networkSession";
 import { networkBySlug } from "./networks";
 import { setSelectedChannel } from "./selection";
@@ -103,9 +104,18 @@ export async function joinChannel(
 // waited saw nothing. A join REJECTION (channel modes, +i/+k/+b) is still not
 // this path: the POST succeeds and the server reports the refusal as a
 // window_state broadcast.
+//
+// Scoped to the identity, like #247's presence queue: a toast names a channel
+// and a network the signed-in account asked for, so an account switch or a
+// logout takes the rows on screen with it. `performJoin` covers the other
+// half, refusing to raise one once the identity moved during the await.
 type JoinToast = { networkSlug: string; rawChannel: string; message: string };
 
-const failures = createToastQueue<JoinToast>();
+const failures = identityScopedStore((onIdentityChange) => {
+  const queue = createToastQueue<JoinToast>();
+  onIdentityChange(queue.clear);
+  return queue;
+});
 
 export const joinToasts = failures.toasts;
 export const dismissJoinToast = failures.dismiss;

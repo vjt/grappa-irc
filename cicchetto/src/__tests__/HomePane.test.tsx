@@ -48,7 +48,12 @@ const addNetworkMock = vi.fn<(t: string, slug: string) => Promise<void>>(() => P
 const refetchUserMock = vi.fn<() => void>();
 const refetchNetworksMock = vi.fn<() => void>();
 const setSelectedChannelMock = vi.fn<(sel: unknown) => void>();
-const tokenMock = vi.fn<() => string | null>(() => "test-token");
+// Hoisted: `channelJoin`'s toast queue is an identity-scoped store, which
+// reads `token()` while the module graph initialises — before a plain
+// top-level `const` here exists (issue 2719).
+const { tokenMock } = vi.hoisted(() => ({
+  tokenMock: vi.fn<() => string | null>(() => "test-token"),
+}));
 // #85 — featured channels: per-network fetch on home display + join/open.
 const getFeaturedMock = vi.fn<
   (t: string, slug: string) => Promise<{ name: string; description: string | null }[]>
