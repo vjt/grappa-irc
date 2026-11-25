@@ -1057,7 +1057,7 @@ defmodule Grappa.Session.Server do
 
   @spec start_link(init_opts()) :: GenServer.on_start()
   def start_link(%{subject: subject, network_id: network_id} = opts)
-      when is_integer(network_id) and is_tuple(subject) do
+      when is_integer(network_id) do
     GenServer.start_link(__MODULE__, opts, name: via(subject, network_id))
   end
 
