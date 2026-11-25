@@ -76,8 +76,13 @@
  * "atoms or literal unions, never untyped strings" standard. */
 
 /* The message kinds, in `SCROLLBACK_MESSAGE_KIND`'s order (wireTypes.ts,
- * generated from `Grappa.Scrollback.Message`'s `@type kind`): the value is
- * the index into wire.c's name table, and test_commands pins the two. */
+ * generated from `Grappa.Scrollback.Message`'s `@type kind`). Three things
+ * bind them, one link each: wire.c's name table puts every name at its
+ * enumerator (`[MSG_JOIN] = "join"`); CLOSED_SET asserts that the table
+ * ends at MSG_SERVER_EVENT; and test_commands pins the table to
+ * SCROLLBACK_MESSAGE_KIND. A MSG_* appended with no name passes all
+ * three, since the table is then only shorter than the enum and the value
+ * reads "unknown": -Wswitch in the kind switches is what names it. */
 typedef enum {
     MSG_PRIVMSG,
     MSG_NOTICE,
@@ -120,8 +125,10 @@ typedef enum { REPLY_INFO, REPLY_VERSION, REPLY_MOTD, REPLY_ADMIN } wire_reply_s
 /* The E2E closed sets (cicchetto/src/lib/wireTypes.ts SESSION_WIRE_E2E_VERB,
  * SESSION_WIRE_E2E_DROP_REASON, E2E_PAIRING_WIRE_SIDE,
  * E2E_PAIRING_WIRE_CLOSE_REASON, E2E_REQUESTS_WIRE_WIRE_STATE), each in its
- * server order; test_commands pins the tables to those lists. An inbox
- * item is never a keyreq: grappa answers KEYREQs itself. */
+ * server order, bound the way the message kinds are: each name at its
+ * enumerator in wire.c, a CLOSED_SET assert on the last one, and
+ * test_commands pinning the table to the server's list. An inbox item is
+ * never a keyreq: grappa answers KEYREQs itself. */
 typedef enum { WIRE_E2E_KEYS, WIRE_E2E_PKMSG, WIRE_E2E_MSG, WIRE_E2E_NACK } wire_e2e_verb;
 typedef enum {
     WIRE_E2E_DROP_LATE,

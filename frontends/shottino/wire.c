@@ -38,17 +38,40 @@ static bool presence_of(const json_value *v, wire_presence *out) {
     return false;
 }
 
-/* The E2E closed sets, one table each, in the server's order (wire.h). */
+/* The pinned closed sets: one name table per enum in wire.h. Each name
+ * sits at its enumerator, `[MSG_JOIN] = "join"`, so reordering the enum or
+ * the table cannot move a name onto another value, and CLOSED_SET below
+ * asserts where the table ends. test_commands then pins each table to the
+ * list the server generates in cicchetto's wireTypes.ts, value for value
+ * and in order. */
 #define TABLE_LEN(t) (sizeof(t) / sizeof((t)[0]))
-static const char *const E2E_VERB_NAMES[] = {"keys", "pkmsg", "msg", "nack"};
-static const char *const E2E_DROP_REASON_NAMES[] = {"late", "send_failed", "session_ended"};
-static const char *const PAIRING_SIDE_NAMES[] = {"creator", "joiner"};
-static const char *const PAIRING_CLOSE_REASON_NAMES[] = {"closed", "expired", "replaced"};
-static const char *const E2E_REQUEST_STATE_NAMES[] = {"incoming", "outgoing", "accepted",
-                                                      "refused", "expired"};
+static const char *const E2E_VERB_NAMES[] = {
+    [WIRE_E2E_KEYS] = "keys", [WIRE_E2E_PKMSG] = "pkmsg", [WIRE_E2E_MSG] = "msg",
+    [WIRE_E2E_NACK] = "nack"};
+static const char *const E2E_DROP_REASON_NAMES[] = {
+    [WIRE_E2E_DROP_LATE] = "late", [WIRE_E2E_DROP_SEND_FAILED] = "send_failed",
+    [WIRE_E2E_DROP_SESSION_ENDED] = "session_ended"};
+static const char *const PAIRING_SIDE_NAMES[] = {
+    [WIRE_PAIRING_CREATOR] = "creator", [WIRE_PAIRING_JOINER] = "joiner"};
+static const char *const PAIRING_CLOSE_REASON_NAMES[] = {
+    [WIRE_PAIRING_CLOSED] = "closed", [WIRE_PAIRING_EXPIRED] = "expired",
+    [WIRE_PAIRING_REPLACED] = "replaced"};
+static const char *const E2E_REQUEST_STATE_NAMES[] = {
+    [WIRE_E2E_REQ_INCOMING] = "incoming", [WIRE_E2E_REQ_OUTGOING] = "outgoing",
+    [WIRE_E2E_REQ_ACCEPTED] = "accepted", [WIRE_E2E_REQ_REFUSED] = "refused",
+    [WIRE_E2E_REQ_EXPIRED] = "expired"};
+/* In `SCROLLBACK_MESSAGE_KIND`'s order, which is the enum's. */
+static const char *const MESSAGE_KIND_NAMES[] = {
+    [MSG_PRIVMSG] = "privmsg", [MSG_NOTICE] = "notice", [MSG_ACTION] = "action",
+    [MSG_JOIN] = "join", [MSG_PART] = "part", [MSG_QUIT] = "quit",
+    [MSG_NICK_CHANGE] = "nick_change", [MSG_MODE] = "mode", [MSG_TOPIC] = "topic",
+    [MSG_KICK] = "kick", [MSG_SERVER_EVENT] = "server_event"};
 
+/* A designated table can have a hole: an enumerator added in the middle
+ * of its enum with no name beside it is a NULL there. It reads "unknown"
+ * and matches nothing, so the pin names the value instead of crashing. */
 static const char *name_in(const char *const *names, size_t n, size_t i) {
-    return i < n ? names[i] : "unknown";
+    return i < n && names[i] ? names[i] : "unknown";
 }
 
 /* The index of `v`'s string in `names`; false for anything else. */
@@ -56,7 +79,7 @@ static bool index_in(const char *const *names, size_t n, const json_value *v, in
     const char *s = json_string(v);
     if (!s) return false;
     for (size_t i = 0; i < n; i++) {
-        if (strcmp(s, names[i]) == 0) {
+        if (names[i] && strcmp(s, names[i]) == 0) {
             *out = (int)i;
             return true;
         }
@@ -64,7 +87,14 @@ static bool index_in(const char *const *names, size_t n, const json_value *v, in
     return false;
 }
 
-#define CLOSED_SET(fn, type, table)                                                                \
+/* `last` is the enum's last enumerator, and the assert binds the table's
+ * length to it: a name appended past it fails, and so does a name given to
+ * a new last enumerator while `last` still says the old one. An enumerator
+ * appended with no name passes, because the table is then only shorter
+ * than the enum; that value reads "unknown" and narrows from nothing. */
+#define CLOSED_SET(fn, type, table, last)                                                          \
+    _Static_assert(TABLE_LEN(table) == (size_t)(last) + 1,                                         \
+                   #table " must end at " #last ", the last " #type);                              \
     const char *wire_##fn##_name(type v) { return name_in(table, TABLE_LEN(table), (size_t)v); }    \
     size_t wire_##fn##_count(void) { return TABLE_LEN(table); }                                    \
     static bool fn##_of(const json_value *v, type *out) {                                          \
@@ -74,18 +104,15 @@ static bool index_in(const char *const *names, size_t n, const json_value *v, in
         return true;                                                                               \
     }
 
-/* The message kinds, in `SCROLLBACK_MESSAGE_KIND`'s order: the index IS the
- * `MSG_*` value (wire.h). test_commands pins the table to that list. */
-static const char *const MESSAGE_KIND_NAMES[] = {
-    "privmsg", "notice", "action", "join", "part",  "quit",
-    "nick_change", "mode", "topic", "kick", "server_event"};
-
-CLOSED_SET(message_kind, wire_message_kind, MESSAGE_KIND_NAMES)
-CLOSED_SET(e2e_verb, wire_e2e_verb, E2E_VERB_NAMES)
-CLOSED_SET(e2e_drop_reason, wire_e2e_drop_reason, E2E_DROP_REASON_NAMES)
-CLOSED_SET(pairing_side, wire_pairing_side, PAIRING_SIDE_NAMES)
-CLOSED_SET(pairing_close_reason, wire_pairing_close_reason, PAIRING_CLOSE_REASON_NAMES)
-CLOSED_SET(e2e_request_state, wire_e2e_request_state, E2E_REQUEST_STATE_NAMES)
+CLOSED_SET(message_kind, wire_message_kind, MESSAGE_KIND_NAMES, MSG_SERVER_EVENT)
+CLOSED_SET(e2e_verb, wire_e2e_verb, E2E_VERB_NAMES, WIRE_E2E_NACK)
+CLOSED_SET(e2e_drop_reason, wire_e2e_drop_reason, E2E_DROP_REASON_NAMES,
+           WIRE_E2E_DROP_SESSION_ENDED)
+CLOSED_SET(pairing_side, wire_pairing_side, PAIRING_SIDE_NAMES, WIRE_PAIRING_JOINER)
+CLOSED_SET(pairing_close_reason, wire_pairing_close_reason, PAIRING_CLOSE_REASON_NAMES,
+           WIRE_PAIRING_REPLACED)
+CLOSED_SET(e2e_request_state, wire_e2e_request_state, E2E_REQUEST_STATE_NAMES,
+           WIRE_E2E_REQ_EXPIRED)
 
 /* No default: a new MSG_* is a -Wswitch warning here until someone says
  * which side it falls on. The trailing return is unreachable for a
