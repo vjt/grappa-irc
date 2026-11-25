@@ -1752,7 +1752,6 @@ defmodule Grappa.Session.Server do
   defp release_alias_best_effort(addr) do
     SourceAliasManager.release(addr)
   catch
-    :exit, reason when reason in [:noproc, :timeout] -> :ok
     :exit, {reason, _} when reason in [:noproc, :timeout] -> :ok
   end
 
