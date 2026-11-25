@@ -1159,6 +1159,33 @@ defmodule Grappa.Session.ServerTest do
 
       refute log =~ "release of unheld address"
     end
+
+    # issue 2697 — since the manager stops AFTER every session, a release that
+    # finds no manager running is no longer a shutdown race: the manager is
+    # down, and the alias stays bound until the next boot reconcile. That must
+    # reach the log; it used to be swallowed in silence.
+    test "a release that finds no manager running is logged, not swallowed" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, _} = setup_user_and_network(port)
+      addr = "2a03:4000:20:2d3:cb::a5"
+
+      # No release_source expect: with the manager gone the adapter is never
+      # reached, and verify_on_exit! fails an unexpected call.
+      expect(Grappa.Net.SourceAliasMock, :ensure_source, fn ^addr, @inc6_prefix -> :ok end)
+
+      {:ok, pid} =
+        Session.start_session({:user, user.id}, network.id, derived_alias_opts(user, network, addr))
+
+      IRCServer.await_handshake(server, 1_000)
+      stop_supervised!(Grappa.Net.SourceAliasManager)
+
+      # The stop stays :normal (no :transient restart, terminate/2 runs to its
+      # end) and the leak is named.
+      log = capture_log(fn -> :ok = GenServer.stop(pid, :normal, 1_000) end)
+
+      assert log =~ "found no manager running"
+      assert log =~ addr
+    end
   end
 
   describe "registration" do

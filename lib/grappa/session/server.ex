@@ -1738,21 +1738,39 @@ defmodule Grappa.Session.Server do
 
   # Since issue 2697 the manager starts BEFORE SessionSupervisor, so it stops
   # AFTER every session: an app-wide shutdown releases into a LIVE manager, and
-  # `:noproc` is no longer the shutdown race it used to be. It now means the
-  # manager itself is down (crashed, its restart not yet registered), and the
-  # alias stays bound until the next boot reconcile, the manager's documented
-  # backstop. `:timeout` means the call was DELIVERED to a slow manager, which
-  # still applies the release when it gets there. Both are swallowed, mirroring
-  # the best-effort QUIT catch in the `:shutdown` terminate clause. Any OTHER
-  # exit reason is unexpected and propagates LOUDLY (a narrow allowlist, not a
-  # blanket `:exit, _` — a widened catch hides the next bug). `release/1`
-  # itself always returns `:ok` (it logs adapter failures internally), so a
-  # real unbind failure is already visible in the manager log.
+  # neither exit below is a shutdown race any more. Both are caught, and both
+  # are LOGGED (CLAUDE.md "No silent-swallow at boundaries"):
+  #
+  #   - `:noproc` — the manager itself is down (crashed, its restart not yet
+  #     registered). The alias stays bound until the next boot reconcile, the
+  #     manager's documented backstop, so this is an error, naming the address.
+  #   - `:timeout` — the call was DELIVERED to a slow manager, which still
+  #     applies the release when it gets to it. Nothing leaks; a warning says so.
+  #
+  # Caught rather than propagated because this runs inside `terminate/2`: a
+  # raise there replaces the exit reason, so a terminal `{:stop, :normal, _}`
+  # would turn abnormal and be RESTARTED by the `:transient` supervisor, the
+  # `:shutdown` clause would skip its upstream QUIT, and the abnormal clause
+  # would skip `Backoff.record_failure/2` and report the manager instead of the
+  # real crash. Any OTHER exit reason is unexpected and propagates LOUDLY (a
+  # narrow allowlist, not a blanket `:exit, _`). `release/1` itself always
+  # returns `:ok` (it logs adapter failures internally), so a real unbind
+  # failure is already visible in the manager log.
   @spec release_alias_best_effort(String.t()) :: :ok
   defp release_alias_best_effort(addr) do
     SourceAliasManager.release(addr)
   catch
-    :exit, {reason, _} when reason in [:noproc, :timeout] -> :ok
+    :exit, {:noproc, _} ->
+      Logger.error(
+        "source-alias release of #{inspect(addr)} found no manager running: " <>
+          "the alias stays bound until the next boot reconcile"
+      )
+
+    :exit, {:timeout, _} ->
+      Logger.warning(
+        "source-alias release of #{inspect(addr)} timed out: the request was " <>
+          "delivered, and the manager applies it when it gets to it"
+      )
   end
 
   # Clean shutdown — bouncer stopping (SIGTERM, `Application.stop`,
