@@ -8452,7 +8452,7 @@ defmodule Grappa.Session.Server do
 
   # The one JOIN verb both the `{:send_join, _, _}` call door and the issue
   # 2657 kick rejoin go through. Same in-flight tracking, same
-  # `window_pending` broadcast, same `:no_socket` queue, whoever asked. So
+  # `window_pending` broadcast, same pre-001 hold, whoever asked. So
   # its log lines name the JOIN and never the door: the kick rejoin drops
   # the reply, and a line saying "send_join call" would file a failed
   # automatic rejoin under a /join nobody typed.
@@ -8477,46 +8477,56 @@ defmodule Grappa.Session.Server do
   @spec join_channels(t(), [String.t()], String.t() | nil) ::
           {:ok | {:error, :invalid_line | :timeout | :not_connected}, t()}
   defp join_channels(state, channels, key) do
-    case Client.send_join(state.client, channels, key) do
-      :ok ->
-        state = Enum.reduce(channels, state, &record_in_flight_join(&2, &1))
-        {:ok, state}
+    if registration_pending?(state),
+      do: hold_until_registered(state, channels, key),
+      else: write_join(state, channels, key)
+  end
 
-      {:error, :invalid_line} = err ->
-        Logger.warning("JOIN rejected: invalid channel name",
-          channel: inspect(channels)
-        )
-
-        {err, state}
-
-      # issue 2114 — THE TRANSPORT IS NOT THERE YET. `:no_socket` is the one
-      # transport error this process will outlive: it means `state.client` is
-      # nil (or its socket is), which for a Registry-registered session is the
-      # reconnect ladder itself — `handle_continue({:start_client, _})` defers
-      # the Client spawn by `Backoff.wait_ms/2`, so the session answers every
-      # REST verb through the whole delay with nothing to write on. The prod
-      # journal caught ten JOINs in that window, 1 ms after
-      # `event=backoff delay_ms=3975` and five seconds before
-      # `event=connected`; the door logged all ten and forgot all ten, so the
-      # channels never came back and no error said so.
-      #
-      # So keep them: queue, and let `fire_join_plan/1` put them on the wire at
-      # the SAME seam the autojoin set rides (001, or the #347 +r defer). Not a
-      # retry timer and not a flush at `:irc_connected` — the first duplicates
-      # the backoff ladder, and the second fires before registration, where an
-      # ircd ignores a JOIN. `record_in_flight_join/2` opens the window
-      # `:pending` exactly as the accepted path does, and the reply is `:ok`
-      # (202), because "queued, not yet joined" is what `:pending` already
-      # means and a 400 would now be false.
-      {:error, :no_socket} ->
-        # `info`, not `warning`: this is now a handled, expected state of the
-        # reconnect ladder, and prod runs at `:info` so the operator still sees
-        # it. Promoting it would inflate a level whose value is that it means
-        # something went wrong — the same argument #1677 makes for its
-        # strict-TLS line. No queue-depth key: one global Logger metadata atom
-        # for one line is heavier than the fact, and `channel` already says
-        # which JOIN this is.
-        Logger.info("JOIN queued until the transport is up",
+  # issue 2703, widening issue 2114 — NOT REGISTERED YET. An ircd answers a
+  # JOIN from an unregistered client with 451, and nothing here handles 451,
+  # so a JOIN written before 001 is lost and the window
+  # `record_in_flight_join/2` opened stays `:pending` for good. Two states
+  # put a JOIN there, and this one arm answers both:
+  #
+  #   * no Client yet: `handle_continue({:start_client, _})` defers the spawn
+  #     by `Backoff.wait_ms/2`, so a live session answers every REST verb
+  #     through the whole delay with nothing to write on. The prod journal on
+  #     issue 2114 caught ten JOINs there, 1 ms after
+  #     `event=backoff delay_ms=3975` and five seconds before
+  #     `event=connected`; the door logged all ten and forgot all ten.
+  #   * the socket is up but the 001 has not come: a fresh spawn starts its
+  #     Client at once, and the Client writes every line as soon as its
+  #     socket exists. A JOIN sent right after the spawn's 204 is always
+  #     here: that is what an invite link that connects a network and then
+  #     joins one of its channels does.
+  #
+  # So keep them: queue, and let `fire_join_plan/1` put them on the wire at
+  # the SAME seam the autojoin set rides (001, or the #347 +r defer). Not a
+  # retry timer and not a flush at `:irc_connected`: the first duplicates the
+  # backoff ladder, and the second is the 451 this arm exists to avoid.
+  # `record_in_flight_join/2` opens the window `:pending` exactly as the
+  # accepted path does, and the reply is `:ok` (202), because "queued, not
+  # yet joined" is what `:pending` already means.
+  #
+  # The list is validated by `Client.join_line/2` first. The held channels go
+  # out one per line, so without it a list the wire refuses as ONE line would
+  # slip through before 001 and be refused after it.
+  #
+  # Issue 2114's `:no_socket` arm is gone with its case. The Client is started
+  # once per Session.Server, from `init/1`'s continue, and its EXIT stops this
+  # process, so a live session without a Client has not registered yet and
+  # takes this arm first. A `:no_socket` past the 001 would mean a state
+  # nothing produces; it gets the generic `not_connected` in `write_join/3`,
+  # not a queue that would hide it.
+  #
+  # `info`, not `warning`: a handled, expected state, and prod runs at `:info`
+  # so the operator still sees it (#1677's argument for its strict-TLS line).
+  @spec hold_until_registered(t(), [String.t()], String.t() | nil) ::
+          {:ok | {:error, :invalid_line}, t()}
+  defp hold_until_registered(state, channels, key) do
+    case Client.join_line(channels, key) do
+      {:ok, _} ->
+        Logger.info("JOIN queued until registration completes",
           channel: inspect(channels)
         )
 
@@ -8526,6 +8536,32 @@ defmodule Grappa.Session.Server do
           end)
 
         {:ok, state}
+
+      {:error, :invalid_line} ->
+        reject_invalid_join(state, channels)
+    end
+  end
+
+  # issue 2703 — `{:ok, nil}`, never `Map.get(state, :registered_at) == nil`.
+  # The 001 handler stamps the key before the join plan fires, and nothing
+  # clears it, because this process dies with its Client. A process hot-loaded
+  # from before issue 2097 has no key at all; it registered long ago, so the
+  # absent key must keep its JOINs going straight out. The other readers of
+  # the stamp take an absent key as nil because nil is their safe direction;
+  # here nil would hold JOINs for a 001 that already happened.
+  @spec registration_pending?(t()) :: boolean()
+  defp registration_pending?(state), do: Map.fetch(state, :registered_at) == {:ok, nil}
+
+  @spec write_join(t(), [String.t()], String.t() | nil) ::
+          {:ok | {:error, :invalid_line | :timeout | :not_connected}, t()}
+  defp write_join(state, channels, key) do
+    case Client.send_join(state.client, channels, key) do
+      :ok ->
+        state = Enum.reduce(channels, state, &record_in_flight_join(&2, &1))
+        {:ok, state}
+
+      {:error, :invalid_line} ->
+        reject_invalid_join(state, channels)
 
       # issue 2370 — the Client did not answer in time. Neither branch around
       # this one fits: the JOIN is not refused (the frame waits in the
@@ -8540,13 +8576,13 @@ defmodule Grappa.Session.Server do
 
         {err, state}
 
-      # Any OTHER transport failure (`:closed`, an `:inet.posix()`): the socket
-      # WAS there and the write failed, so the Client is on its way down and
-      # this process with it — an in-memory queue would die before it flushed,
-      # and replying `:ok` would be the silent drop issue 2114 is about, told
-      # to the caller as success. Surface `{:error, :not_connected}` so
-      # FallbackController emits the existing 400 `not_connected` body instead
-      # of a CaseClauseError 500ing the cic /join.
+      # Any OTHER transport failure (`:closed`, an `:inet.posix()`, and a
+      # `:no_socket` past the 001, which nothing produces): the Client is on
+      # its way down and this process with it. An in-memory queue would die
+      # before it flushed, and replying `:ok` would be the silent drop issue
+      # 2114 is about, told to the caller as success. Surface
+      # `{:error, :not_connected}` so FallbackController emits the existing 400
+      # `not_connected` body instead of a CaseClauseError 500ing the cic /join.
       {:error, reason} ->
         Logger.warning("JOIN rejected: transport unavailable",
           channel: inspect(channels),
@@ -8555,6 +8591,12 @@ defmodule Grappa.Session.Server do
 
         {{:error, :not_connected}, state}
     end
+  end
+
+  @spec reject_invalid_join(t(), [String.t()]) :: {{:error, :invalid_line}, t()}
+  defp reject_invalid_join(state, channels) do
+    Logger.warning("JOIN rejected: invalid channel name", channel: inspect(channels))
+    {{:error, :invalid_line}, state}
   end
 
   # Issue 2657 — a self-KICK just set `channel` `:kicked`. Count it for the

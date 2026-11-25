@@ -219,6 +219,26 @@ defmodule Grappa.IRCServer do
   end
 
   @doc """
+  Finishes the registration a `passthrough_handler/0` fake never finishes by
+  itself: feeds `001 nick`, then a PING, and returns once the PONG is back,
+  which proves the session has handled the 001. Call it after
+  `await_handshake/2`.
+
+  Issue 2703: the session holds a JOIN that arrives before 001 and sends it
+  at 001, as an ircd would refuse it with 451. A test that wants its JOIN on
+  the wire therefore registers first. `nick` and `timeout` carry no default,
+  for the reason `welcome_handler/2` and `await_handshake/2` give.
+  """
+  @spec register(pid(), binary(), pos_integer()) :: :ok
+  def register(server, nick, timeout) when is_binary(nick) do
+    feed(server, ":irc.test.org 001 #{nick} :Welcome\r\n")
+    token = "registered-#{System.unique_integer([:positive])}"
+    feed(server, "PING :#{token}\r\n")
+    {:ok, _} = wait_for_line(server, &(&1 == "PONG :#{token}\r\n"), timeout)
+    :ok
+  end
+
+  @doc """
   A TCP port with nothing listening on it — bind an ephemeral port, read
   it back, release it, return the number.
 
