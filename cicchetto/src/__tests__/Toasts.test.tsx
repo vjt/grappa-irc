@@ -11,6 +11,7 @@ import {
   dismissBundleRefreshToast,
   markBundleRefreshApplied,
 } from "../lib/bundleRefreshNotice";
+import { acceptInvite, dismissJoinToast, joinToasts } from "../lib/channelJoin";
 import { applyPresenceChange, applyPresenceError, resetNotifyWatch } from "../lib/notifyWatch";
 import { _setScheduleExpiryForTest } from "../lib/toasts";
 import Toasts from "../Toasts";
@@ -40,12 +41,28 @@ vi.mock("../lib/bundleHash", async (importOriginal) => ({
   bootBundleVersionAccessor: () => "0.10.1",
 }));
 
+// issue 2719 — the join toast's producer is the join verb itself, so the case
+// below drives it the way a click does: a bearer to join with and a POST the
+// server refuses. Nothing else in this file reaches either.
+vi.mock("../lib/auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/auth")>()),
+  token: () => "tok",
+}));
+vi.mock("../lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/api")>();
+  return {
+    ...actual,
+    postJoin: () => Promise.reject(new actual.ApiError(503, "upstream_unavailable")),
+  };
+});
+
 beforeEach(() => {
   sessionStorage.clear();
   _setScheduleExpiryForTest(() => {});
   resetNotifyWatch();
   for (const t of bundleRefreshToasts()) dismissBundleRefreshToast(t.id);
   for (const t of audioShareToasts()) dismissAudioShareToast(t.id);
+  for (const t of joinToasts()) dismissJoinToast(t.id);
 });
 
 describe("Toasts", () => {
@@ -92,6 +109,17 @@ describe("Toasts", () => {
 
     expect(container.querySelectorAll(".toast-error")).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: /share refused/ }));
+    expect(container.querySelectorAll(".toast")).toHaveLength(0);
+  });
+
+  it("renders a failed join with the error tone, and dismisses it (issue 2719)", async () => {
+    acceptInvite("azzurra", "#sniffo");
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+
+    const { container } = render(() => <Toasts />);
+
+    expect(container.querySelectorAll(".toast-error")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: /Couldn't join #sniffo on azzurra/ }));
     expect(container.querySelectorAll(".toast")).toHaveLength(0);
   });
 

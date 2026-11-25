@@ -2,7 +2,10 @@ import { deleteInvite, postJoin } from "./api";
 import { token } from "./auth";
 import { canonicalChannel, channelKey } from "./channelKey";
 import { requestConfirm } from "./confirmDialog";
+import { errorMessage } from "./friendlyApiError";
+import { identityMoved } from "./identityMoved";
 import { setSelectedChannel } from "./selection";
+import { createToastQueue } from "./toasts";
 import { windowStateByChannel } from "./windowState";
 
 // #648 — the verb behind a click-to-join `#channel` affordance rendered in
@@ -42,6 +45,35 @@ export function switchToChannelWindow(networkSlug: string, rawChannel: string): 
   });
 }
 
+// issue 2719 — the error sink of the two doors that have no line of their own
+// to print on: the confirm modal is gone by the time the join answers, and an
+// invite's [Join] button sits on a row the join is about to replace. So a
+// failed join is a toast, on the ONE toast surface (Toasts.tsx).
+//
+// It used to be a `console.warn`, argued in a comment that said this catch saw
+// "only the REST-level failure (401 / network down)". It saw every failure the
+// POST can answer, and one of them is the commonest of all: a network with no
+// session answers 404 `not_found`, and the person who clicked, confirmed and
+// waited saw nothing. A join REJECTION (channel modes, +i/+k/+b) is still not
+// this path: the POST succeeds and the server reports the refusal as a
+// window_state broadcast.
+type JoinToast = { networkSlug: string; rawChannel: string; message: string };
+
+const failures = createToastQueue<JoinToast>();
+
+export const joinToasts = failures.toasts;
+export const dismissJoinToast = failures.dismiss;
+
+/**
+ * The toast's sentence, beside its producer so the unit tests match the
+ * production copy instead of a retyped string. `message` is the server's
+ * refusal in its localized copy (`errorMessage`), or a transport failure's own
+ * text.
+ */
+export function joinToastText(toast: JoinToast): string {
+  return `Couldn't join ${toast.rawChannel} on ${toast.networkSlug}: ${toast.message}`;
+}
+
 async function performJoin(networkSlug: string, rawChannel: string): Promise<void> {
   const t = token();
   if (!t) return; // post-logout race — nothing to join with.
@@ -52,13 +84,10 @@ async function performJoin(networkSlug: string, rawChannel: string): Promise<voi
     // join (+i / +k / +b) never foregrounds a phantom window (#244).
     switchToChannelWindow(networkSlug, rawChannel);
   } catch (err) {
-    // Fire-and-forget UI action with no dedicated error surface (unlike the
-    // DirectoryPane row's inline error signal). Log, don't throw — the same
-    // posture windowClose.ts's disconnectNetwork PATCH takes. A join
-    // REJECTION (channel modes) is not this path: postJoin succeeds and the
-    // server reports the failure as a window_state broadcast; this catch is
-    // only the REST-level failure (401 / network down).
-    console.warn(`[#648 join] failed to join ${rawChannel} on ${networkSlug}:`, err);
+    // An account that did not click is owed nothing, and must not be told
+    // about a channel the previous one asked for.
+    if (identityMoved(t)) return;
+    failures.queue({ networkSlug, rawChannel, message: errorMessage(err) });
   }
 }
 
@@ -112,8 +141,8 @@ export function declineInvite(networkSlug: string, rawChannel: string): void {
   // RAW on the wire, as with the JOIN (#510/#516/#525): only the server
   // knows this network's CASEMAPPING, and it folds the window key itself.
   void deleteInvite(t, networkSlug, rawChannel).catch((err: unknown) => {
-    // Same fire-and-forget posture as performJoin: no dedicated error
-    // surface. A `not_invited` here means the window already left `:invited`
+    // Fire-and-forget, no error surface, and deliberately not performJoin's
+    // toast: a `not_invited` here means the window already left `:invited`
     // (joined, or declined on another device) — the banner is about to
     // disappear from that state change anyway.
     console.warn(`[#976 decline] failed to decline ${rawChannel} on ${networkSlug}:`, err);
