@@ -9797,3 +9797,84 @@ the consent body kept turns E1 red where the network section should come back
 `grappaApi.ts`'s `patchNetworkConnectionState` comment said "lazy spawn at
 next admission run", stale since U-0; it now states the eager order the verb
 relies on.
+<!-- entry #2697 -->
+
+---
+
+## 2026-11-25 — #2697: SourceAliasManager starts right after the holder Registry, before the sessions and the Endpoint it serves
+
+**Decision.** `Grappa.Net.SourceAliasManager` moves from after the Endpoint
+(and so after `SessionSupervisor`) to directly after the
+`Grappa.SourceAliasHolders` Registry. Ruled by the orchestrator on w1's phase-1
+reading of issue 2697 (arch DEP-A3).
+
+**Why: two directions, one cause.** The root supervisor is `:one_for_one`;
+OTP starts children in list order and stops them in reverse.
+
+- *Start.* The manager's `init/1` publishes the mode-2 arm gate in
+  `:persistent_term`, whose default is `{false, :not_armed}`. The REST callers
+  of `Grappa.SpawnOrchestrator` sat behind an Endpoint that started first, so
+  a mode-2 plan with no grant resolved in that window returned
+  `{:hold, :mode2_disarmed}`. The held session's `credential_failer` then
+  marked the credential `:failed`, which is terminal: Bootstrap skips it on
+  every later boot. In the same window the admin settings write called
+  `arm/1` on a name nobody had registered yet, which exits. The window's
+  length was never measured.
+- *Stop.* The manager stopped BEFORE `SessionSupervisor`, so every
+  `Session.Server.terminate/2` called `release/1` into a dead manager. The
+  `:noproc` was swallowed, and on FreeBSD every clean shutdown left every
+  derived `lo0` alias bound until the next boot's reconcile. Linux AnyIP's
+  `ensure`/`release` are no-ops, and Docker runs the `Disabled` adapter.
+
+The old why-comment justified "after the Endpoint" by analogy with the Reapers
+("everything clients can reach is reconciled"). The analogy did not hold: the
+reconcile sweeps OS aliases, not rows a client can reach.
+
+**What the manager needs, read in the source:** the Repo
+(`ServerSettings.static_mapping_prefix/0`), the `SourceAlias.Config`
+`:persistent_term` seeded in `start/2`, and the holder Registry
+(`held_source_fn`). The adapters run `System.cmd` and need no process. The
+boot reconcile is unchanged: `handle_continue/2` runs before any `acquire/1`
+in the mailbox.
+
+**The pin.** `Grappa.Application.children/1` (`@doc false`) builds the list
+from four boot flags, which `start/2` reads once through `boot_flags/0`.
+`test/grappa/application_child_order_test.exs` builds the production shape,
+with every optional child on, because the test env starts neither the manager
+nor Bootstrap. It asserts holder Registry < manager < `SessionSupervisor`,
+manager < Endpoint and manager < Bootstrap. Another test proves the running
+tree is `children(boot_flags())`, i.e. that the seam IS the tree. On OTP 28
+`which_children/1` lists children in reverse start order. That is measured,
+not documented, so the test reverses the list and says what to do if an OTP
+upgrade changes it.
+
+### Not the same hazard: identd
+
+identd also starts after `SessionSupervisor`, so it too stops before the
+sessions do, and there a dropped unbind cast costs nothing: its table is in
+memory and dies with the BEAM. The manager's state is OS state that outlives
+the BEAM. Do not move identd by analogy.
+
+### What is left
+
+The manager does not trap exits. A session killed mid-`release/1`, because
+it exceeded its shutdown budget, has already delivered its message, and the
+manager applies it unless its own shutdown signal arrives first with the
+message still queued. Sitting after the holder Registry puts the children
+between it and `SessionSupervisor` on the stop path, which gives the mailbox
+time to drain, but nothing guarantees the drain. The next boot's reconcile
+stays the backstop, and no trap-exit or drain was added. Child order also
+does not gate `grappa add-network`'s hop into the live node
+(`Grappa.Release.LiveNode`): it arrives over distribution, and this placement
+only shortens its window.
+
+### Found while measuring, filed separately
+
+- `Mix.Tasks.Grappa.Boot.start_app_silent/0` turns off Bootstrap and the
+  Endpoint but not the manager, so a `mix grappa.*` task run beside a live
+  node starts a second manager whose boot reconcile can release the live
+  node's aliases (issue 2715).
+- After a manager crash-restart (issue 2716) its `refcounts` start empty
+  and are not re-seeded from the holder Registry, so later releases log "unheld" and
+  leak, and a fresh acquire+release of a shared address unbinds it under the
+  older holders.

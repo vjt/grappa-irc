@@ -2718,10 +2718,13 @@ far end, where nothing you can see locally says why. Settle this first.
   2001:db8:1:2:cafe::/80 dev lo`. `arm_check` verifies both; a missing
   route disarms with `:anyip_route_missing`, a disabled sysctl with
   `:ip_nonlocal_bind_disabled`.
-- **Boot reconcile.** At startup (after the HTTP surface is up, before
-  Bootstrap spawns sessions) the `SourceAliasManager` sweeps orphan
+- **Boot reconcile.** At startup (before the HTTP surface is up and
+  before Bootstrap spawns sessions) the `SourceAliasManager` sweeps orphan
   aliases a crashed prior run left bound (`ifconfig lo0` on FreeBSD;
-  no-op on Linux/AnyIP), so a hard crash does not leak `/128` aliases.
+  no-op on Linux/AnyIP), so a hard crash does not leak `/128` aliases. A
+  clean stop no longer relies on it: the manager stops after every
+  session, so each session's release reaches a live manager (issue 2697).
+  The sweep stays the backstop for a session killed mid-release.
 - **Renumbering (changing the prefix) with LIVE mode-2 sessions leaks the
   old aliases.** A successful `PUT /admin/settings` prefix change takes effect
   at runtime (#609), but sessions already bound to the OLD prefix keep those
