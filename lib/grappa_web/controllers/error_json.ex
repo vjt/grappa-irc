@@ -48,8 +48,7 @@ defmodule GrappaWeb.ErrorJSON do
   "upstream_unreachable"`, …), the type lists the WIRE side.
 
   `t:shared_error_token/0` holds the tokens emitted on **both**
-  transports (`not_found`, `forbidden`, `invalid_line`,
-  `body_too_large`) — declared ONCE so a transport-shared token has a
+  transports — declared ONCE so a transport-shared token has a
   single definition (the root cause of the `invalid_line` /
   `body_too_large` REST-vs-channel fall-through was that no such shared
   declaration existed). `t:rest_error_token/0` and
