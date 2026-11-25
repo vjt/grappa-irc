@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NoReply, NotConnected, REPLY_DEADLINE_MS } from "../lib/transportFailure";
+import { REPLY_DEADLINE_MS } from "../lib/transportFailure";
 
 // issue 2738 — every client→server push that expects an answer must SETTLE,
 // answer or not. Before the cure 26 of the 30 promise helpers had no
@@ -69,6 +69,10 @@ class FakeWebSocket {
 }
 
 type Socket = typeof import("../lib/socket");
+// The failure classes as socket.ts sees them: `vi.resetModules` hands every
+// test a fresh module graph, so a class imported at the top of this file is a
+// different constructor from the one socket.ts throws.
+type Failures = typeof import("../lib/transportFailure");
 
 // One case per promise helper. The guard below fails if socket.ts grows a
 // `push*` export that is in neither this table nor FIRE_AND_FORGET, so a new
@@ -125,15 +129,16 @@ function track(p: Promise<unknown>): { now: () => Outcome } {
   return { now: () => outcome };
 }
 
-async function joinedUserChannel(): Promise<{ socket: Socket; ws: FakeWebSocket }> {
+async function joinedUserChannel(): Promise<{ socket: Socket; tf: Failures; ws: FakeWebSocket }> {
   localStorage.setItem("grappa-token", "tok-2738");
   const socket = await import("../lib/socket");
+  const tf = await import("../lib/transportFailure");
   socket.joinUser("vjt");
   const ws = FakeWebSocket.instances.at(-1);
   if (ws === undefined) throw new Error("socket.ts never dialled the WebSocket");
   ws.open();
   expect(ws.events()).toContain("phx_join");
-  return { socket, ws };
+  return { socket, tf, ws };
 }
 
 beforeEach(() => {
@@ -151,7 +156,7 @@ describe("issue 2738 — a push the server never answers settles at REPLY_DEADLI
   it.each(Object.entries(REPLY_HELPERS))(
     "%s rejects NoReply at the deadline",
     async (_name, call) => {
-      const { socket, ws } = await joinedUserChannel();
+      const { socket, tf, ws } = await joinedUserChannel();
       const sentBefore = ws.sent.length;
 
       const p = track(call(socket));
@@ -167,8 +172,10 @@ describe("issue 2738 — a push the server never answers settles at REPLY_DEADLI
       const outcome = p.now();
       expect(outcome.state).toBe("rejected");
       if (outcome.state !== "rejected") return;
-      expect(outcome.error).toBeInstanceOf(NoReply);
-      expect((outcome.error as NoReply).deadlineMs).toBe(REPLY_DEADLINE_MS);
+      expect(outcome.error).toBeInstanceOf(tf.NoReply);
+      expect((outcome.error as InstanceType<Failures["NoReply"]>).deadlineMs).toBe(
+        REPLY_DEADLINE_MS,
+      );
     },
   );
 
@@ -185,13 +192,14 @@ describe("issue 2738 — a push the server never answers settles at REPLY_DEADLI
 
   it("a push with no user channel rejects NotConnected at once", async () => {
     const socket = await import("../lib/socket");
-    await expect(socket.pushRaw(1, "VERSION")).rejects.toBeInstanceOf(NotConnected);
+    const tf = await import("../lib/transportFailure");
+    await expect(socket.pushRaw(1, "VERSION")).rejects.toBeInstanceOf(tf.NotConnected);
   });
 });
 
 describe("issue 2738 — a push made while the link is down", () => {
   it("rejects NoReply at the deadline, and is NOT sent late when the channel rejoins", async () => {
-    const { socket, ws } = await joinedUserChannel();
+    const { socket, tf, ws } = await joinedUserChannel();
     ws.drop();
 
     // The channel is errored, so phoenix BUFFERS the push — with its timer
@@ -201,7 +209,7 @@ describe("issue 2738 — a push made while the link is down", () => {
     const outcome = p.now();
     expect(outcome.state).toBe("rejected");
     if (outcome.state !== "rejected") return;
-    expect(outcome.error).toBeInstanceOf(NoReply);
+    expect(outcome.error).toBeInstanceOf(tf.NoReply);
 
     // phoenix's reconnect dialled a fresh socket meanwhile; let it open and
     // the channel rejoin. A push that already timed out must not go out now,

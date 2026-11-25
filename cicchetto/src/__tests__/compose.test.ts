@@ -5115,7 +5115,7 @@ describe("compose submit — /topic branches", () => {
 // The query verbs had the worse UX twist: their server-side validation reject
 // (e.g. /whois <malformed> → invalid_nick) fires BEFORE the upstream write, so
 // no bundle and no $server numeric ever arrive — the operator gets literally
-// nothing. All nine now route through the #154(1) `pushUserChannelVerb`
+// nothing. All nine now route through the `pushWithReply`
 // Promise and are AWAITED in compose, exactly like op/deop/kick/ban/mode and
 // the S21 /topic -delete above. `dispatch_subject_verb/3` always replies
 // `{:reply, :ok | {:error, %{error}}}` for every one, so awaiting never hangs.

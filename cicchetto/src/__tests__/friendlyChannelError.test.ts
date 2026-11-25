@@ -5,7 +5,7 @@ import { friendlyChannelError } from "../lib/friendlyChannelError";
 // Issue #62 — exhaustive matrix over the channel-push wire tokens cic
 // surfaces from the awaited `/away` pushes (socket.ts pushAwaySet/Unset) and,
 // since #154(1), the awaited ops verbs (op/deop/voice/devoice/kick/ban/unban/
-// mode/umode via pushUserChannelVerb). Adding an arm to friendlyChannelError
+// mode/umode via pushWithReply). Adding an arm to friendlyChannelError
 // MUST add a matrix entry here so an unmapped arm in production can't ship
 // without a canary. Sibling of friendlyApiError.test.ts; same
 // substring-not-equality contract so copy tweaks don't churn N tests.

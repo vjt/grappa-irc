@@ -1,6 +1,6 @@
 import { type Channel, Socket } from "phoenix";
 import { createEffect, on } from "solid-js";
-import { channelPushError } from "./api";
+import { ChannelPushError, channelPushError } from "./api";
 import { token } from "./auth";
 import { canonicalChannel } from "./channelKey";
 import { isOffline } from "./connectivity";
@@ -12,6 +12,7 @@ import {
   recordSocketError,
   recordSocketOpen,
 } from "./socketHealth";
+import { NoReply, NotConnected, REPLY_DEADLINE_MS } from "./transportFailure";
 
 // Phoenix Channels singleton. Mirrors `auth.ts`'s module-singleton shape:
 // every component that needs the live event-push surface joins via the
@@ -950,6 +951,42 @@ export function joinAdminEvents(): Channel {
   return ch;
 }
 
+// ---------------------------------------------------------------------------
+// issue 2738 — the ONLY two client→server pushes outside the join chains.
+//
+// phoenix.js ends a push that gets no reply ONLY by firing its "timeout"
+// hooks: the reply listener and the push's own timer are its sole exits, and
+// a socket error resets the JOIN push, never an in-flight one. A helper that
+// registers no "timeout" hook returns a promise that can never settle — 26 of
+// 30 did, and a composer awaiting one stayed locked until a reload. So every
+// push that is owed an answer goes through `pushWithReply`, which cannot
+// forget the arm, and the few nobody awaits go through `pushFireAndForget`,
+// by name. pushDoorTotality.test.ts holds the line: a `.push(` anywhere else
+// in this file is red.
+// ---------------------------------------------------------------------------
+
+// Resolves with the server's "ok" reply. Rejects `ChannelPushError` on its
+// "error" reply, `NoReply` when neither arrives by REPLY_DEADLINE_MS, and
+// `NotConnected` when there is no user channel to push on. The deadline rides
+// phoenix's own push timer, so there is no second timer to keep in step.
+function pushWithReply<T>(event: string, payload: object): Promise<T> {
+  const ch = _userChannel;
+  if (ch === null) return Promise.reject(new NotConnected());
+  return new Promise<T>((resolve, reject) => {
+    ch.push(event, payload, REPLY_DEADLINE_MS)
+      .receive("ok", (reply: T) => resolve(reply))
+      .receive("error", (err: unknown) => reject(channelPushError(err)))
+      .receive("timeout", () => reject(new NoReply(REPLY_DEADLINE_MS)));
+  });
+}
+
+// A push nobody awaits: its answer, if any, arrives some other way (a
+// broadcast, a numeric) or not at all. A no-op with no user channel.
+function pushFireAndForget(event: string, payload: object): void {
+  if (_userChannel === null) return;
+  _userChannel.push(event, payload);
+}
+
 // S3.3 — pagehide immediate-away hint.
 //
 // Pushes `client_closing` over the active user-level channel so the
@@ -964,8 +1001,7 @@ export function joinAdminEvents(): Channel {
 // from the real socket close is a no-op if client_closing already
 // fired the notification.
 export function notifyClientClosing(): void {
-  if (_userChannel === null) return;
-  _userChannel.push("client_closing", {});
+  pushFireAndForget("client_closing", {});
 }
 
 // #182 — foreground push-suppression: report the PWA's foreground
@@ -976,8 +1012,10 @@ export function notifyClientClosing(): void {
 // `document.visibilityState` is reliable on iOS PWAs — unlike the SW's
 // `clients.matchAll`, which is the root cause of #182.
 //
-// Fire-and-forget + low frequency (fires on user-channel join and on
-// each `visibilitychange`), so no debounce. No-op before `joinUser`.
+// Not awaited, and low frequency (fires on user-channel join and on each
+// `visibilitychange`), so no debounce. No-op before `joinUser`. The ack feeds
+// only the e2e seam below; a missing one is logged, because the server may
+// then hold a stale presence for this tab until the next report.
 export function reportVisibility(): void {
   if (_userChannel === null) return;
   if (typeof document === "undefined") return;
@@ -989,12 +1027,15 @@ export function reportVisibility(): void {
   // Same predicate as documentVisibility.ts; main.tsx drives this off that
   // module's signal so the blur/focus/visibilitychange listeners are shared.
   const visible = document.visibilityState === "visible" && document.hasFocus();
-  _userChannel.push("visibility", { visible }).receive("ok", () => {
-    // e2e seam: the last server-acked visibility (mirrors beep.ts's
-    // `__lastBeepAt`). Lets a Playwright spec await the WS round-trip
-    // deterministically before asserting delivery/suppression.
-    if (typeof window !== "undefined") window.__visibilityAck = visible;
-  });
+  pushWithReply<void>("visibility", { visible }).then(
+    () => {
+      // e2e seam: the last server-acked visibility (mirrors beep.ts's
+      // `__lastBeepAt`). Lets a Playwright spec await the WS round-trip
+      // deterministically before asserting delivery/suppression.
+      if (typeof window !== "undefined") window.__visibilityAck = visible;
+    },
+    (e: unknown) => console.warn("[grappa] visibility report not acked", e),
+  );
 }
 
 // S3.4 — /away slash-command pushes.
@@ -1006,48 +1047,30 @@ export function reportVisibility(): void {
 // as inline compose-box alerts, same as REST failures. Rejects with
 // a typed `ChannelPushError` carrying the wire `code` ("no_session",
 // "not_explicit", etc.) which compose.ts maps to human copy via
-// `friendlyChannelError`.
+// `friendlyChannelError` — or `NoReply` / `NotConnected` (`pushWithReply`).
 export function pushAwaySet(network: string, reason: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (_userChannel === null) {
-      reject(new Error("not connected"));
-      return;
-    }
-    _userChannel
-      .push("away", { action: "set", network, reason })
-      .receive("ok", () => resolve())
-      .receive("error", (err: unknown) => reject(channelPushError(err)));
-  });
+  return pushWithReply<void>("away", { action: "set", network, reason });
 }
 
 export function pushAwayUnset(network: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (_userChannel === null) {
-      reject(new Error("not connected"));
-      return;
-    }
-    _userChannel
-      .push("away", { action: "unset", network })
-      .receive("ok", () => resolve())
-      .receive("error", (err: unknown) => reject(channelPushError(err)));
-  });
+  return pushWithReply<void>("away", { action: "unset", network });
 }
 
 // C1.4 — open a DM (query) window. Pushes `open_query_window` on the
 // user-level channel; the server upserts the `query_windows` row and
 // broadcasts `query_windows_list` back. Fire-and-forget — the
-// authoritative update arrives via the broadcast event.
+// authoritative update arrives via the broadcast event. The server's own
+// reply goes unheard; whether it should have a listener is issue 2741's call.
 export function pushOpenQueryWindow(networkId: number, targetNick: string): void {
-  if (_userChannel === null) return;
-  _userChannel.push("open_query_window", { network_id: networkId, target_nick: targetNick });
+  pushFireAndForget("open_query_window", { network_id: networkId, target_nick: targetNick });
 }
 
 // C1.2 — close a DM (query) window. Pushes `close_query_window` on
 // the user-level channel; the server deletes the `query_windows` row
-// and broadcasts `query_windows_list` back. Fire-and-forget.
+// and broadcasts `query_windows_list` back. Fire-and-forget, like the open
+// above (issue 2741).
 export function pushCloseQueryWindow(networkId: number, targetNick: string): void {
-  if (_userChannel === null) return;
-  _userChannel.push("close_query_window", { network_id: networkId, target_nick: targetNick });
+  pushFireAndForget("close_query_window", { network_id: networkId, target_nick: targetNick });
 }
 
 // ---------------------------------------------------------------------------
@@ -1057,7 +1080,7 @@ export function pushCloseQueryWindow(networkId: number, targetNick: string): voi
 // dispatches to Session.send_*/2-5 functions.
 //
 // #154(1) — no-silent-drops. State-changing verbs (op/deop/voice/devoice/
-// kick/ban/unban/mode/umode) push WITH a `.receive` chain and return a
+// kick/ban/unban/mode/umode) go through `pushWithReply` and return a
 // Promise, exactly like `pushOper`/`pushRaw`. Pre-fix they were
 // fire-and-forget `: void`, so a server `{:error,_}` (visitor_not_allowed
 // pre-#153, invalid_channel/nick/mask/line, no_session, upstream_unavailable,
@@ -1072,27 +1095,9 @@ export function pushCloseQueryWindow(networkId: number, targetNick: string): voi
 // must surface inline.
 // ---------------------------------------------------------------------------
 
-// Shared promise-shape push for the state-changing channel verbs. Mirrors the
-// `pushOper`/`pushRaw` body: resolve on "ok", reject with a typed
-// `ChannelPushError` (carrying the wire `code`) on "error", reject "not
-// connected" when the socket is down. Single source of the ok/error contract
-// so the nine verb helpers below can't drift from each other.
-function pushUserChannelVerb(event: string, payload: object): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (_userChannel === null) {
-      reject(new Error("not connected"));
-      return;
-    }
-    _userChannel
-      .push(event, payload)
-      .receive("ok", () => resolve())
-      .receive("error", (err: unknown) => reject(channelPushError(err)));
-  });
-}
-
 // /op <nicks...> → MODE #chan +ooo (chunked server-side per ISUPPORT MODES=).
 export function pushChannelOp(networkId: number, channel: string, nicks: string[]): Promise<void> {
-  return pushUserChannelVerb("op", { network_id: networkId, channel, nicks });
+  return pushWithReply<void>("op", { network_id: networkId, channel, nicks });
 }
 
 // /deop <nicks...> → MODE #chan -ooo
@@ -1101,7 +1106,7 @@ export function pushChannelDeop(
   channel: string,
   nicks: string[],
 ): Promise<void> {
-  return pushUserChannelVerb("deop", { network_id: networkId, channel, nicks });
+  return pushWithReply<void>("deop", { network_id: networkId, channel, nicks });
 }
 
 // /voice <nicks...> → MODE #chan +vvv
@@ -1110,7 +1115,7 @@ export function pushChannelVoice(
   channel: string,
   nicks: string[],
 ): Promise<void> {
-  return pushUserChannelVerb("voice", { network_id: networkId, channel, nicks });
+  return pushWithReply<void>("voice", { network_id: networkId, channel, nicks });
 }
 
 // /devoice <nicks...> → MODE #chan -vvv
@@ -1119,7 +1124,7 @@ export function pushChannelDevoice(
   channel: string,
   nicks: string[],
 ): Promise<void> {
-  return pushUserChannelVerb("devoice", { network_id: networkId, channel, nicks });
+  return pushWithReply<void>("devoice", { network_id: networkId, channel, nicks });
 }
 
 // /kick <nick> [reason] → KICK #chan nick :reason
@@ -1129,17 +1134,17 @@ export function pushChannelKick(
   nick: string,
   reason: string,
 ): Promise<void> {
-  return pushUserChannelVerb("kick", { network_id: networkId, channel, nick, reason });
+  return pushWithReply<void>("kick", { network_id: networkId, channel, nick, reason });
 }
 
 // /ban <mask-or-nick> → MODE #chan +b mask (mask derivation server-side if bare nick).
 export function pushChannelBan(networkId: number, channel: string, mask: string): Promise<void> {
-  return pushUserChannelVerb("ban", { network_id: networkId, channel, mask });
+  return pushWithReply<void>("ban", { network_id: networkId, channel, mask });
 }
 
 // /unban <mask> → MODE #chan -b mask
 export function pushChannelUnban(networkId: number, channel: string, mask: string): Promise<void> {
-  return pushUserChannelVerb("unban", { network_id: networkId, channel, mask });
+  return pushWithReply<void>("unban", { network_id: networkId, channel, mask });
 }
 
 // /banlist → MODE #chan <mode> (type-A list query form, no sign); the server
@@ -1148,8 +1153,7 @@ export function pushChannelUnban(networkId: number, channel: string, mask: strin
 // inline). #1251: `mode` is always sent explicitly; the server's own default
 // for an absent field is `b`, which is what a pre-#1251 client relies on.
 export function pushChannelBanlist(networkId: number, channel: string, mode: string): void {
-  if (_userChannel === null) return;
-  _userChannel.push("banlist", { network_id: networkId, channel, mode });
+  pushFireAndForget("banlist", { network_id: networkId, channel, mode });
 }
 
 // #386 — resolve a nick's userhost on demand. cic has NO per-member host
@@ -1157,23 +1161,19 @@ export function pushChannelBanlist(networkId: number, channel: string, mode: str
 // builder ask the server for the offender's {user, host} to build `*!*@host`.
 // Resolves with the server's cached entry, or `null` on a cache MISS
 // (`not_cached` — the fail-closed signal, vjt decision #1, callers turn into
-// "run /whois first"). Rejects on a REAL error (no_session, not connected,
-// timeout) so the caller can surface it distinctly from a plain miss.
+// "run /whois first"). Rejects on a REAL error (a `ChannelPushError` other
+// than the miss, `NotConnected`, `NoReply`) so the caller can surface it
+// distinctly from a plain miss.
 export function resolveUserhost(
   networkId: number,
   nick: string,
 ): Promise<{ user: string; host: string } | null> {
-  const ch = _userChannel;
-  if (ch === null) return Promise.reject(new Error("not connected"));
-  return new Promise((resolve, reject) => {
-    ch.push("resolve_userhost", { network_id: networkId, nick })
-      .receive("ok", (reply: { user: string; host: string }) => resolve(reply))
-      .receive("error", (err: unknown) => {
-        const e = channelPushError(err);
-        if (e.code === "not_cached") resolve(null);
-        else reject(e);
-      })
-      .receive("timeout", () => reject(new Error("timeout")));
+  return pushWithReply<{ user: string; host: string }>("resolve_userhost", {
+    network_id: networkId,
+    nick,
+  }).catch((e: unknown) => {
+    if (e instanceof ChannelPushError && e.code === "not_cached") return null;
+    throw e;
   });
 }
 
@@ -1183,16 +1183,16 @@ export function resolveUserhost(
 // invalid_channel/invalid_nick/no_session/upstream_unavailable via
 // `dispatch_subject_verb/3`. Pre-fix this was fire-and-forget `: void`, so a
 // rejected or WS-down frame was swallowed and compose painted a green ✓.
-// Routed through the #154(1) `pushUserChannelVerb` Promise (mirror of
-// kick/ban) so compose can `await` and surface the failure inline. banlist
+// Routed through `pushWithReply` (mirror of kick/ban) so compose can
+// `await` and surface the failure inline. banlist
 // stays fire-and-forget (its errors surface via the 367/368 numerics).
 export function pushChannelInvite(networkId: number, channel: string, nick: string): Promise<void> {
-  return pushUserChannelVerb("invite", { network_id: networkId, channel, nick });
+  return pushWithReply<void>("invite", { network_id: networkId, channel, nick });
 }
 
 // /umode <modes> → MODE own_nick <modes> (no channel context required).
 export function pushChannelUmode(networkId: number, modes: string): Promise<void> {
-  return pushUserChannelVerb("umode", { network_id: networkId, modes });
+  return pushWithReply<void>("umode", { network_id: networkId, modes });
 }
 
 // /mode <target> <modes> [params...] → MODE target modes params (verbatim, no chunking).
@@ -1202,16 +1202,16 @@ export function pushChannelMode(
   modes: string,
   params: string[],
 ): Promise<void> {
-  return pushUserChannelVerb("mode", { network_id: networkId, target, modes, params });
+  return pushWithReply<void>("mode", { network_id: networkId, target, modes, params });
 }
 
 // /topic -delete → TOPIC #chan : (empty trailing — irssi convention).
 // S21: awaited verb-ack (was fire-and-forget). Routes through the same
-// `pushUserChannelVerb` Promise as the ops verbs — the server handles
+// `pushWithReply` Promise as the ops verbs — the server handles
 // `topic_clear` via `dispatch_subject_verb/3` (`{:reply, :ok | {:error, _}}`),
 // so a WS-down / server rejection now rejects instead of being swallowed.
 export function pushChannelTopicClear(networkId: number, channel: string): Promise<void> {
-  return pushUserChannelVerb("topic_clear", { network_id: networkId, channel });
+  return pushWithReply<void>("topic_clear", { network_id: networkId, channel });
 }
 
 // Bundle C (#20 follow-up) — /oper <name> <password>. The password
@@ -1226,16 +1226,7 @@ export function pushChannelTopicClear(networkId: number, channel: string): Promi
 // (`not connected`) failures as inline alerts — credential-bearing
 // verbs MUST NOT silently no-op (CLAUDE.md `feedback_no_silent_drops_closed`).
 export function pushOper(networkId: number, name: string, password: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (_userChannel === null) {
-      reject(new Error("not connected"));
-      return;
-    }
-    _userChannel
-      .push("oper", { network_id: networkId, name, password })
-      .receive("ok", () => resolve())
-      .receive("error", (err: unknown) => reject(channelPushError(err)));
-  });
+  return pushWithReply<void>("oper", { network_id: networkId, name, password });
 }
 
 // Bundle C (#20 follow-up) — /quote <raw IRC line>. Same Promise shape
@@ -1243,16 +1234,7 @@ export function pushOper(networkId: number, name: string, password: string): Pro
 // the void, so the compose-box error path MUST see WS-disconnected or
 // server-side {:error,_} replies.
 export function pushRaw(networkId: number, line: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (_userChannel === null) {
-      reject(new Error("not connected"));
-      return;
-    }
-    _userChannel
-      .push("raw", { network_id: networkId, line })
-      .receive("ok", () => resolve())
-      .receive("error", (err: unknown) => reject(channelPushError(err)));
-  });
+  return pushWithReply<void>("raw", { network_id: networkId, line });
 }
 
 // ---------------------------------------------------------------------------
@@ -1263,7 +1245,7 @@ export function pushRaw(networkId: number, line: string): Promise<void> {
 // via `dispatch_subject_verb/3` (validation rejects like invalid_nick fire
 // BEFORE the upstream write, so NO bundle and NO $server numeric ever arrive
 // — a swallowed reject left the operator with literally nothing). All now
-// route through the #154(1) `pushUserChannelVerb` Promise so compose can
+// route through the `pushWithReply` Promise so compose can
 // `await` and surface the reject inline. Awaiting only confirms the command
 // was ACCEPTED (validation + upstream write); the actual reply bundle/modal
 // still arrives asynchronously on the user topic, unchanged.
@@ -1294,7 +1276,7 @@ export function pushWhois(
   server: string | null,
   origin: WhoisOrigin = "user",
 ): Promise<void> {
-  return pushUserChannelVerb("whois", { network_id: networkId, nick, server, source: origin });
+  return pushWithReply<void>("whois", { network_id: networkId, nick, server, source: origin });
 }
 
 // P-0c — /whowas <nick> → WHOWAS nick — pushes on the user-level
@@ -1303,7 +1285,7 @@ export function pushWhois(
 // `whowas_bundle` on Topic.user/1. cic dispatches in userTopic.ts
 // and the WhowasCard renders inline above the active window.
 export function pushWhowas(networkId: number, nick: string): Promise<void> {
-  return pushUserChannelVerb("whowas", { network_id: networkId, nick });
+  return pushWithReply<void>("whowas", { network_id: networkId, nick });
 }
 
 // #169 — /who <#channel|nick>. Pushes on the user-level channel; server
@@ -1312,7 +1294,7 @@ export function pushWhowas(networkId: number, nick: string): Promise<void> {
 // ephemeral `who_reply` event on the user topic (WhoModal renders it) — NOT
 // persisted to scrollback. Mirrors `pushNames`.
 export function pushWho(networkId: number, channel: string): Promise<void> {
-  return pushUserChannelVerb("who", { network_id: networkId, channel });
+  return pushWithReply<void>("who", { network_id: networkId, channel });
 }
 
 // P-0d — /lusers [<mask> [<server>]] → LUSERS upstream. Pushes on
@@ -1330,7 +1312,7 @@ export function pushLusers(
   mask: string | null,
   server: string | null,
 ): Promise<void> {
-  return pushUserChannelVerb("lusers", {
+  return pushWithReply<void>("lusers", {
     network_id: networkId,
     ...(mask === null ? {} : { mask }),
     ...(server === null ? {} : { server }),
@@ -1343,11 +1325,11 @@ export function pushLusers(
 // which userTopic.ts routes into the serverReplyModal store (ServerReplyModal
 // renders it). Connect-time MOTD is unaffected (no pending flag → $server).
 export function pushInfo(networkId: number): Promise<void> {
-  return pushUserChannelVerb("info", { network_id: networkId });
+  return pushWithReply<void>("info", { network_id: networkId });
 }
 
 export function pushVersion(networkId: number): Promise<void> {
-  return pushUserChannelVerb("version", { network_id: networkId });
+  return pushWithReply<void>("version", { network_id: networkId });
 }
 
 // #374 — /motd [<target>]. Bare (target null) omits the wire key so grappa
@@ -1355,7 +1337,7 @@ export function pushVersion(networkId: number): Promise<void> {
 // and the 375/372/376 (or 402 ERR_NOSUCHSERVER) reply routes back through
 // the same server_reply modal.
 export function pushMotd(networkId: number, target: string | null): Promise<void> {
-  return pushUserChannelVerb(
+  return pushWithReply<void>(
     "motd",
     target === null ? { network_id: networkId } : { network_id: networkId, target },
   );
@@ -1367,7 +1349,7 @@ export function pushMotd(networkId: number, target: string | null): Promise<void
 // ERR_NOADMININFO / 402 ERR_NOSUCHSERVER / 447 ERR_RESTRICTED) routes back
 // through the same server_reply modal.
 export function pushAdmin(networkId: number, target: string | null): Promise<void> {
-  return pushUserChannelVerb(
+  return pushWithReply<void>(
     "admin",
     target === null ? { network_id: networkId } : { network_id: networkId, target },
   );
@@ -1379,7 +1361,7 @@ export function pushAdmin(networkId: number, target: string | null): Promise<voi
 // userTopic.ts routes into the linksModal store (LinksModal renders the
 // interactive topology map). Mirrors pushMotd's optional-arg omit.
 export function pushLinks(networkId: number, mask: string | null): Promise<void> {
-  return pushUserChannelVerb(
+  return pushWithReply<void>(
     "links",
     mask === null ? { network_id: networkId } : { network_id: networkId, mask },
   );
@@ -1394,7 +1376,7 @@ export function pushLinks(networkId: number, mask: string | null): Promise<void>
 // / `not_visitor`, or a WS-down) rejects with a typed `ChannelPushError` the
 // compose arm maps to friendly copy. Mirror of pushLinks/pushLusers.
 export function pushRecover(networkId: number): Promise<void> {
-  return pushUserChannelVerb("recover", { network_id: networkId });
+  return pushWithReply<void>("recover", { network_id: networkId });
 }
 
 // #140 — /names <#channel>. Pushes on the user-level channel; server
@@ -1402,46 +1384,28 @@ export function pushRecover(networkId: number): Promise<void> {
 // into ONE ephemeral `names_reply` event on the user topic (NamesModal
 // renders it) — NOT persisted. Network-scoped modal, so no origin window.
 export function pushNames(networkId: number, channel: string): Promise<void> {
-  return pushUserChannelVerb("names", { network_id: networkId, channel });
+  return pushWithReply<void>("names", { network_id: networkId, channel });
 }
 
 // C8.3 — Watchlist verbs (/watch /highlight). All push on the user-level
 // channel; server-side GrappaChannel.handle_in("watchlist", ...) handlers
 // are the authority (added in C8 server-side commit). The Promise resolves
-// with {patterns: string[]} on success, rejects on server error or timeout.
+// with {patterns: string[]} on success, rejects like any `pushWithReply`.
 //
 // Pattern semantics: forward-only (changing the list does NOT re-aggregate
 // past scrollback; only future mentions are filtered by the new list).
 export function pushWatchlistAdd(pattern: string): Promise<{ patterns: string[] }> {
-  const ch = _userChannel;
-  if (ch === null) return Promise.reject(new Error("not connected"));
-  return new Promise((resolve, reject) => {
-    ch.push("watchlist", { action: "add", pattern })
-      .receive("ok", (reply: { patterns: string[] }) => resolve(reply))
-      .receive("error", (err: unknown) => reject(channelPushError(err)))
-      .receive("timeout", () => reject(new Error("timeout")));
-  });
+  return pushWithReply<{ patterns: string[] }>("watchlist", { action: "add", pattern });
 }
 
 export function pushWatchlistDel(pattern: string): Promise<{ patterns: string[] }> {
-  const ch = _userChannel;
-  if (ch === null) return Promise.reject(new Error("not connected"));
-  return new Promise((resolve, reject) => {
-    ch.push("watchlist", { action: "del", pattern })
-      .receive("ok", (reply: { patterns: string[] }) => resolve(reply))
-      .receive("error", (err: unknown) => reject(channelPushError(err)))
-      .receive("timeout", () => reject(new Error("timeout")));
-  });
+  return pushWithReply<{ patterns: string[] }>("watchlist", { action: "del", pattern });
 }
 
 export function pushWatchlistList(): Promise<{ patterns: string[] }> {
-  const ch = _userChannel;
-  if (ch === null) return Promise.reject(new Error("not connected"));
-  return new Promise((resolve, reject) => {
-    ch.push("watchlist", { action: "list", pattern: undefined })
-      .receive("ok", (reply: { patterns: string[] }) => resolve(reply))
-      .receive("error", (err: unknown) => reject(channelPushError(err)))
-      .receive("timeout", () => reject(new Error("timeout")));
+  return pushWithReply<{ patterns: string[] }>("watchlist", {
+    action: "list",
+    pattern: undefined,
   });
 }
 
