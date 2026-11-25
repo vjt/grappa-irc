@@ -25,7 +25,8 @@ defmodule Grappa.Session.VerbPolicy do
       without it. Refused with `{:error, :not_registered}` until 001, before
       any row, accumulator or credential is touched.
     * `:held` — writes a line the session keeps until it can be written
-      (JOIN: queued before 001, fired with the join plan).
+      (JOIN: queued before 001 and through the #347 +r defer, fired with the
+      join plan — issue 2744).
     * `:local_first` — a local half that always runs, and a wire half only
       on a registered link (PART).
     * `:desired_state` — records what the operator wants now; the 001
@@ -34,7 +35,8 @@ defmodule Grappa.Session.VerbPolicy do
 
   Only `:needs_registered` is read by code, in the gate head. The other four
   exist so the choice is made and written down per verb: what a verb in them
-  does in the window lives in its own clause.
+  does in the window lives in its own clause, which asks the server's
+  `link_phase/1` (`:no_client | :unregistered | :deferring | :ready`).
   """
 
   @typedoc "What a `Session.Server` request may do before 001."

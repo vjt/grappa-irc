@@ -657,8 +657,10 @@ defmodule Grappa.Session.Server do
           # @autojoin_defer_ms, opts-overridable for tests) + the one-shot
           # latch timer. Non-nil timer = JOINs deferred (waiting on the +r
           # self-MODE echo or this fallback); nil = fired already / never
-          # deferred (SASL/:none fire on 001). Only `:nickserv_identify` with
-          # a non-empty autojoin set arms it. See `maybe_autojoin_or_defer/1`.
+          # deferred (SASL/:none fire on 001). Every session that expects an
+          # identify arms it at 001, empty plan included, and the door holds
+          # its JOINs while it is set (issue 2744, `deferring/1`). See
+          # `maybe_autojoin_or_defer/1`.
           autojoin_defer_ms: pos_integer(),
           autojoin_defer_timer: reference() | nil,
           # issue 2114 / issue 2703 — JOINs the door accepted before 001 (no
@@ -2020,6 +2022,29 @@ defmodule Grappa.Session.Server do
             when :erlang.map_get(:client, state) != nil and
                    not (is_map_key(state, :registered_at) and :erlang.map_get(:registered_at, state) == nil)
 
+  # Issue 2744 — registered, and the join plan has not fired yet: the #347
+  # +r defer is open. The timer ref IS that fact. `maybe_autojoin_or_defer/1`
+  # arms it at 001 for every session that expects an identify, and
+  # `fire_deferred_autojoin/2` clears it when the plan goes out.
+  defguardp deferring(state) when is_reference(:erlang.map_get(:autojoin_defer_timer, state))
+
+  # Issue 2744 — where the upstream link stands, for the verbs whose answer
+  # depends on more than "registered or not" (the `:held` JOIN). Derived
+  # from the guards above, never stored, so the gate head and this function
+  # cannot disagree.
+  #
+  #   * `:no_client` — no Client yet (the Backoff-deferred spawn).
+  #   * `:unregistered` — a socket, no 001 yet.
+  #   * `:deferring` — registered, the join plan waits for the +r.
+  #   * `:ready` — registered, the join plan has fired.
+  @typep link_phase :: :no_client | :unregistered | :deferring | :ready
+
+  @spec link_phase(t()) :: link_phase()
+  defp link_phase(%{client: nil}), do: :no_client
+  defp link_phase(state) when not registered(state), do: :unregistered
+  defp link_phase(state) when deferring(state), do: :deferring
+  defp link_phase(_), do: :ready
+
   # Issue 2728 — every request this module answers, by what it may do before
   # 001 (`Grappa.Session.VerbPolicy` names the policies and checks this table
   # against the clauses at compile time, both ways). Only
@@ -2069,6 +2094,8 @@ defmodule Grappa.Session.Server do
     # A NICK accepted before 001 changed `state.nick` and was then undone by
     # the 001 reclaim, which reads the configured nick (issue 2745).
     send_nick: :needs_registered,
+    # Held until `:ready`, the +r defer included (issue 2744): a JOIN that
+    # beats the identify reaches a +R channel unidentified.
     send_join: :held,
     send_part: :local_first,
     set_explicit_away: :desired_state,
@@ -8347,8 +8374,8 @@ defmodule Grappa.Session.Server do
   # exists, and the upstream sets the self `+r` umode only AFTER 001/end-of-MOTD,
   # so JOINing on 001 races the identify (+R channels 477-reject; ChanServ won't
   # +o an unidentified user). So whenever an identify is EXPECTED
-  # (`identify_expected?/1`) — with a non-empty autojoin set — arm the fallback
-  # timer and defer: the JOINs fire on the EARLIER of the +r self-MODE echo
+  # (`identify_expected?/1`), arm the fallback timer and defer: the JOINs fire
+  # on the EARLIER of the +r self-MODE echo
   # (`fire_deferred_autojoin/1` via `:session_identity_changed, :acquired`) or
   # the `:autojoin_defer` timeout — no NickServ NOTICE-text parsing.
   #
@@ -8362,37 +8389,35 @@ defmodule Grappa.Session.Server do
   #
   # Everything else fires immediately: SASL identifies BEFORE 001 (so the 001
   # autojoin already sees +r), and `:none`/`:server_pass`/`:auto` have no
-  # identify step to wait on. An empty PLAN also fires now (the loop is a
-  # no-op) rather than arming a pointless timer.
+  # identify step to wait on.
   #
-  # issue 2114 — the guard tests the PLAN, not `state.autojoin`. A queued JOIN
-  # needs the +r wait for exactly the reason the operator set does (a +R
-  # channel 477s an unidentified user), and a credential with an EMPTY autojoin
-  # set is the common one at the REST door — gating on `autojoin` would have
-  # fired those queued JOINs straight past the identify.
+  # Issue 2744 — the defer is armed whatever the plan holds, EMPTY included.
+  # It is not only where the boot set waits: it is the window every JOIN the
+  # door accepts after 001 waits in too (`join_channels/3` holds it while
+  # `deferring/1`), for the reason the boot set waits. Issue 2114 already
+  # tested the plan rather than `state.autojoin`, so a JOIN queued before 001
+  # waited; but a credential with an empty autojoin set is the common one at
+  # the REST door — the invite link that connects a network and then joins
+  # one channel — and with nothing planned at 001 it armed no defer at all,
+  # so its JOIN went straight past the identify. An empty plan's defer costs
+  # one timer, and its release logs at `info` (`log_deferred_release/3`).
   #
   # There is deliberately no "already +r, skip the defer" shortcut: `state.umodes`
   # is empty until the 221 RPL_UMODEIS reply (queried at 001, lands after), so
   # there is no honest signal to test here.
   @spec maybe_autojoin_or_defer(t()) :: t()
   defp maybe_autojoin_or_defer(state) do
-    case join_plan(state) do
-      [] ->
-        state
-
-      [_ | _] ->
-        if identify_expected?(state) do
-          # Cancel + drain any prior fallback for the defensive re-welcome case (a
-          # second 001 without an intervening crash) so we never leak a stale fire —
-          # symmetric with the sibling `:connection_stable` timer armed just above in
-          # the numeric-1 handler. The latch already makes an orphaned timer a no-op,
-          # but re-arming cleanly keeps the two 001 timers on one pattern.
-          :ok = cancel_and_drain(state.autojoin_defer_timer, :autojoin_defer)
-          timer = Process.send_after(self(), :autojoin_defer, state.autojoin_defer_ms)
-          %{state | autojoin_defer_timer: timer}
-        else
-          fire_join_plan(state)
-        end
+    if identify_expected?(state) do
+      # Cancel + drain any prior fallback for the defensive re-welcome case (a
+      # second 001 without an intervening crash) so we never leak a stale fire —
+      # symmetric with the sibling `:connection_stable` timer armed just above in
+      # the numeric-1 handler. The latch already makes an orphaned timer a no-op,
+      # but re-arming cleanly keeps the two 001 timers on one pattern.
+      :ok = cancel_and_drain(state.autojoin_defer_timer, :autojoin_defer)
+      timer = Process.send_after(self(), :autojoin_defer, state.autojoin_defer_ms)
+      %{state | autojoin_defer_timer: timer}
+    else
+      fire_join_plan(state)
     end
   end
 
@@ -8459,23 +8484,29 @@ defmodule Grappa.Session.Server do
         false -> state.autojoin_defer_ms
       end
 
-    :ok = log_deferred_release(signal, elapsed_ms)
+    :ok = log_deferred_release(signal, elapsed_ms, join_plan(state))
     :ok = cancel_and_drain(timer, :autojoin_defer)
     fire_join_plan(%{state | autojoin_defer_timer: nil})
   end
 
-  @spec log_deferred_release(defer_release(), non_neg_integer()) :: :ok
-  defp log_deferred_release(:identified, elapsed_ms),
+  # Issue 2744 — a defer with an empty plan released nothing, so its end is
+  # not the harm the two warnings name: it says which signal ended it, at
+  # `info`. Before 2744 such a session armed no defer and logged nothing.
+  @spec log_deferred_release(defer_release(), non_neg_integer(), [{String.t(), String.t() | nil}]) :: :ok
+  defp log_deferred_release(signal, elapsed_ms, []),
+    do: Logger.info("+r defer ended with no JOIN waiting: #{signal}", elapsed_ms: elapsed_ms)
+
+  defp log_deferred_release(:identified, elapsed_ms, _),
     do: Logger.info("deferred autojoin released: identity acquired", elapsed_ms: elapsed_ms)
 
-  defp log_deferred_release(:services_unreachable, elapsed_ms),
+  defp log_deferred_release(:services_unreachable, elapsed_ms, _),
     do:
       Logger.warning(
         "deferred autojoin released unidentified: NickServ unreachable (401)",
         elapsed_ms: elapsed_ms
       )
 
-  defp log_deferred_release(:ceiling, elapsed_ms),
+  defp log_deferred_release(:ceiling, elapsed_ms, _),
     do:
       Logger.warning(
         "deferred autojoin released unidentified: no identity before the ceiling",
@@ -8603,7 +8634,7 @@ defmodule Grappa.Session.Server do
 
   # The one JOIN verb both the `{:send_join, _, _}` call door and the issue
   # 2657 kick rejoin go through. Same in-flight tracking, same
-  # `window_pending` broadcast, same pre-001 hold, whoever asked. So
+  # `window_pending` broadcast, same hold until the plan fires, whoever asked. So
   # its log lines name the JOIN and never the door: the kick rejoin drops
   # the reply, and a line saying "send_join call" would file a failed
   # automatic rejoin under a /join nobody typed.
@@ -8628,16 +8659,17 @@ defmodule Grappa.Session.Server do
   @spec join_channels(t(), [String.t()], String.t() | nil) ::
           {:ok | {:error, :invalid_line | :timeout | :not_connected}, t()}
   defp join_channels(state, channels, key) do
-    if registered(state),
-      do: write_join(state, channels, key),
-      else: hold_until_registered(state, channels, key)
+    case link_phase(state) do
+      :ready -> write_join(state, channels, key)
+      phase -> hold_for_plan(state, channels, key, phase)
+    end
   end
 
-  # issue 2703, widening issue 2114 — NOT REGISTERED YET. An ircd answers a
-  # JOIN from an unregistered client with 451, and nothing here handles 451,
-  # so a JOIN written before 001 is lost and the window
-  # `record_in_flight_join/2` opened stays `:pending` for good. Two states
-  # put a JOIN there, and this one arm answers both:
+  # issue 2703, widening issue 2114 — THE JOIN PLAN HAS NOT FIRED. An ircd
+  # answers a JOIN from an unregistered client with 451, and nothing here
+  # handles 451, so a JOIN written before 001 is lost and the window
+  # `record_in_flight_join/2` opened stays `:pending` for good. Three
+  # phases put a JOIN here, and this one arm answers all of them:
   #
   #   * no Client yet: `handle_continue({:start_client, _})` defers the spawn
   #     by `Backoff.wait_ms/2`, so a live session answers every REST verb
@@ -8650,6 +8682,11 @@ defmodule Grappa.Session.Server do
   #     socket exists. A JOIN sent right after the spawn's 204 is always
   #     here: that is what an invite link that connects a network and then
   #     joins one of its channels does.
+  #   * registered, inside the #347 +r defer (issue 2744): no 451 here, but
+  #     the JOIN would beat the identify for exactly the reason the boot set
+  #     waits — a +R channel 477s an unidentified user, and ChanServ does not
+  #     op one. Written at once, a JOIN of a boot channel also went out a
+  #     second time when the plan fired.
   #
   # So keep them: queue, and let `fire_join_plan/1` put them on the wire at
   # the SAME seam the autojoin set rides (001, or the #347 +r defer). Not a
@@ -8672,14 +8709,14 @@ defmodule Grappa.Session.Server do
   #
   # `info`, not `warning`: a handled, expected state, and prod runs at `:info`
   # so the operator still sees it (#1677's argument for its strict-TLS line).
-  @spec hold_until_registered(t(), [String.t()], String.t() | nil) ::
+  # The line names the phase it observed: the issue 2114 journal had to be
+  # read against the backoff lines to tell "no Client yet" from "no 001 yet".
+  @spec hold_for_plan(t(), [String.t()], String.t() | nil, :no_client | :unregistered | :deferring) ::
           {:ok | {:error, :invalid_line}, t()}
-  defp hold_until_registered(state, channels, key) do
+  defp hold_for_plan(state, channels, key, phase) do
     case Client.join_line(channels, key) do
       {:ok, _} ->
-        Logger.info("JOIN queued until registration completes",
-          channel: inspect(channels)
-        )
+        Logger.info("JOIN queued: #{why_plan_unfired(phase)}", channel: inspect(channels))
 
         state =
           Enum.reduce(channels, state, fn channel, acc ->
@@ -8692,6 +8729,11 @@ defmodule Grappa.Session.Server do
         reject_invalid_join(state, channels)
     end
   end
+
+  @spec why_plan_unfired(:no_client | :unregistered | :deferring) :: String.t()
+  defp why_plan_unfired(:no_client), do: "no upstream connection yet"
+  defp why_plan_unfired(:unregistered), do: "registration still pending"
+  defp why_plan_unfired(:deferring), do: "the join plan waits for the +r"
 
   @spec write_join(t(), [String.t()], String.t() | nil) ::
           {:ok | {:error, :invalid_line | :timeout | :not_connected}, t()}

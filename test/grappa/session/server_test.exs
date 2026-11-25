@@ -1920,6 +1920,72 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # Issue 2744 — a session sitting INSIDE the +r defer: 001 handled, the
+    # built-in IDENTIFY written, no `+r` yet, and the ceiling a minute away.
+    defp inside_defer(autojoin) do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+
+      {user, network, credential} =
+        setup_user_and_network(port, %{
+          nick: "grappa-test",
+          auth_method: :nickserv_identify,
+          password: "s3cr3t-identify",
+          autojoin_channels: autojoin
+        })
+
+      pid = nickserv_plan(user, network, credential, 60_000)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.register(server, "grappa-test", 1_000)
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :IDENTIFY s3cr3t-identify\r\n"),
+          1_000
+        )
+
+      {server, user, network, pid}
+    end
+
+    # Issue 2744 — the JOIN the door accepts inside the defer is held for the
+    # plan, like one accepted before 001: written at once, it reaches a +R
+    # channel unidentified (477) and leaves before ChanServ can op us. An
+    # EMPTY boot set is the case that matters most — the invite link, which
+    # connects a network and then joins one channel — and it used to arm no
+    # defer at all, so there was nothing for the JOIN to wait in.
+    for {label, autojoin} <- [{"a boot set", ["#control"]}, {"an empty boot set", []}] do
+      test "a JOIN between 001 and +r waits for the +r, with #{label} (issue 2744)" do
+        {server, user, network, pid} = inside_defer(unquote(autojoin))
+
+        assert :ok = Session.send_join({:user, user.id}, network.id, "#late", nil)
+        wire_barrier(server, pid, "w2744-held")
+
+        refute "JOIN #late\r\n" in IRCServer.sent_lines(server),
+               "the JOIN went out inside the defer, before the identify landed"
+
+        IRCServer.feed(server, ":irc.test.org MODE grappa-test :+r\r\n")
+        :ok = IRCServer.await_handled(server, 1_000)
+
+        assert Enum.count(IRCServer.sent_lines(server), &(&1 == "JOIN #late\r\n")) == 1,
+               "the +r did not release the held JOIN exactly once"
+
+        :ok = GenServer.stop(pid, :normal, 1_000)
+      end
+    end
+
+    test "a JOIN of a boot channel inside the defer goes out once, with the plan (issue 2744)" do
+      {server, user, network, pid} = inside_defer(["#control"])
+
+      assert :ok = Session.send_join({:user, user.id}, network.id, "#control", nil)
+      IRCServer.feed(server, ":irc.test.org MODE grappa-test :+r\r\n")
+      :ok = IRCServer.await_handled(server, 1_000)
+
+      assert Enum.count(IRCServer.sent_lines(server), &(&1 == "JOIN #control\r\n")) == 1,
+             "the door wrote the JOIN and the deferred plan wrote it again"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "a PART during the +r defer cancels a JOIN held from before 001 (issue 2703)" do
       # The held JOINs ride the deferred plan, so the window in which a PART
       # can overtake one does not close at 001: it runs until the +r echo.
