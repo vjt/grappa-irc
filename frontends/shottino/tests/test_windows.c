@@ -3872,13 +3872,14 @@ TEST(the_unread_divider_belongs_to_a_row_not_to_the_screen) {
 
 /* The bot's door, not its judgement.
  *
- * bot_consider spent its whole life inside the `default:` arm of
- * render_message's kind switch — the arm reached by exactly the kinds that
- * are NOT conversation — so its `conversational &&` guard was false every
- * time it ran and the bot never saw one message. Everything downstream (the
- * approval gate, the grants, the memories) was correct code behind a door
- * that never opened, which is why no test caught it: they all tested the
- * room and none tested the door.
+ * bot_consider spent its whole life inside the `default:` arm of the kind
+ * switch, then in render_message and now render_row's presence arm — the
+ * arm reached by exactly the kinds that are NOT conversation — so its
+ * `conversational &&` guard was false every time it ran and the bot never
+ * saw one message. Everything downstream (the approval gate, the grants,
+ * the memories) was correct code behind a door that never opened, which is
+ * why no test caught it: they all tested the room and none tested the
+ * door.
  *
  * So this asserts reachability, at the only place it can be observed from
  * outside: a mention while /bot is on lands a turn on the llm queue. */
