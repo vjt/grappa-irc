@@ -2136,6 +2136,18 @@ defmodule Grappa.IRC.ClientTest do
       assert {:error, :invalid_line} = Client.send_join(client, channels, nil)
     end
 
+    # issue 2703 — the list clause's checks, without the write (it takes no
+    # client). A JOIN held before 001 asks this, so it is refused exactly as
+    # the wire would refuse it.
+    test "join_line/2 frames the list clause's line and refuses what it refuses" do
+      assert {:ok, "JOIN #a,#b secret\r\n"} = Client.join_line(["#a", "#b"], "secret")
+
+      channels = for i <- 1..30, do: "#c382-#{String.duplicate("x", 20)}-#{i}"
+      assert {:error, :invalid_line} = Client.join_line(channels, nil)
+      assert {:error, :invalid_line} = Client.join_line(["#a", "no-hash"], nil)
+      assert {:error, :invalid_line} = Client.join_line([], nil)
+    end
+
     test "send_part/3 rejects malformed channel (missing #/&/+/!) (irc/S2)", %{client: client} do
       assert {:error, :invalid_line} = Client.send_part(client, "no-hash", nil)
     end

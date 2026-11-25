@@ -619,13 +619,7 @@ defmodule Grappa.IRC.Client do
 
   @spec send_join(pid(), String.t() | [String.t()], String.t() | nil) :: send_result()
   def send_join(client, channels, key) when is_list(channels) do
-    with true <- channels != [] and Enum.all?(channels, &joinable_channel?/1),
-         {:ok, frame} <- join_frame(channels, key),
-         true <- byte_size(frame) <= @rfc_line_limit do
-      send_line(client, frame)
-    else
-      _ -> reject_invalid_line(:join)
-    end
+    with {:ok, frame} <- join_line(channels, key), do: send_line(client, frame)
   end
 
   def send_join(client, channel, nil) do
@@ -642,6 +636,29 @@ defmodule Grappa.IRC.Client do
     if joinable_channel?(channel) and safe_join_key?(key),
       do: send_line(client, "JOIN #{channel} #{key}\r\n"),
       else: reject_invalid_line(:join)
+  end
+
+  @doc """
+  The one multi-target JOIN line `send_join/3`'s list clause writes, or
+  `{:error, :invalid_line}` for a list it would refuse: empty, a
+  malformed member, a bad key, or a frame past the 512-byte line limit.
+  Writes nothing.
+
+  Public for issue 2703: `Session.Server` holds a JOIN that arrives
+  before 001 and sends it at 001, one channel per line, so the
+  512-byte check would never see the list as the wire would have. It asks
+  this function instead, and a list is refused the same way on both sides of
+  the 001.
+  """
+  @spec join_line([String.t()], String.t() | nil) :: {:ok, String.t()} | {:error, :invalid_line}
+  def join_line(channels, key) when is_list(channels) do
+    with true <- channels != [] and Enum.all?(channels, &joinable_channel?/1),
+         {:ok, frame} <- join_frame(channels, key),
+         true <- byte_size(frame) <= @rfc_line_limit do
+      {:ok, frame}
+    else
+      _ -> reject_invalid_line(:join)
+    end
   end
 
   # Builds the multi-target JOIN wire frame (`:error` on a bad key). A
