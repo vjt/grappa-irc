@@ -9814,7 +9814,8 @@ OTP starts children in list order and stops them in reverse.
 - *Start.* The manager's `init/1` publishes the mode-2 arm gate in
   `:persistent_term`, whose default is `{false, :not_armed}`. The REST callers
   of `Grappa.SpawnOrchestrator` sat behind an Endpoint that started first, so
-  a mode-2 plan with no grant resolved in that window returned
+  a mode-2 plan with no admin `server_source` pin and no grant, resolved in
+  that window, returned
   `{:hold, :mode2_disarmed}`. The held session's `credential_failer` then
   marked the credential `:failed`, which is terminal: Bootstrap skips it on
   every later boot. In the same window the admin settings write called
