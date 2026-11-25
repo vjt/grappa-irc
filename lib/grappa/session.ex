@@ -1519,8 +1519,8 @@ defmodule Grappa.Session do
   broadcast has fired.
 
   issue 2114 / issue 2703 — `:ok` ALSO covers "the session has not
-  registered yet", whether its Client has no socket yet (the reconnect
-  backoff) or a socket that is up before 001: the Session.Server holds
+  registered yet", whether it has no Client yet (the reconnect backoff)
+  or a socket that is up before 001: the Session.Server holds
   the JOIN and puts it on the wire at 001 (or at the #347 +r defer),
   opening the window `:pending` in the same breath. A PART that arrives
   in between cancels it. The caller cannot tell a held JOIN from a sent

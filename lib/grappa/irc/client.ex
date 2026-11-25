@@ -645,10 +645,10 @@ defmodule Grappa.IRC.Client do
   Writes nothing.
 
   Public for issue 2703: `Session.Server` holds a JOIN that arrives
-  before 001 and sends it at 001, one channel per line, so the
-  512-byte check would never see the list as the wire would have. It asks
-  this function instead, and a list is refused the same way on both sides of
-  the 001.
+  before 001 and sends it at 001 (or at the #347 +r defer), one channel
+  per line, so the 512-byte check would never see the list as the wire
+  would have. It asks this function instead, and a list is refused the
+  same way on both sides of the 001.
   """
   @spec join_line([String.t()], String.t() | nil) :: {:ok, String.t()} | {:error, :invalid_line}
   def join_line(channels, key) when is_list(channels) do
