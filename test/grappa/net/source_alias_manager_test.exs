@@ -262,4 +262,20 @@ defmodule Grappa.Net.SourceAliasManagerTest do
       assert Manager.disarm_reason() == nil
     end
   end
+
+  describe "release/1 when no manager is running (issue 2697 X1)" do
+    # The exit SHAPE a caller of `release/1` has to catch. `GenServer.call/3`
+    # wraps every exit it raises as `{reason, {GenServer, :call, args}}`: the
+    # unregistered-name branch and the `:gen.call` catch alike
+    # (`gen_server.ex` 1133-1142 in Elixir 1.19). A clause matching a BARE
+    # `:noproc` or `:timeout` therefore never fires, which is why
+    # `Session.Server.release_alias_best_effort/1` catches only the wrapped
+    # form.
+    test "exits {:noproc, {GenServer, :call, _}}, never a bare :noproc" do
+      assert Process.whereis(Manager) == nil
+
+      assert {:noproc, {GenServer, :call, [Manager, {:release, @addr}, _]}} =
+               catch_exit(Manager.release(@addr))
+    end
+  end
 end
