@@ -4,10 +4,10 @@ import { channelKey } from "../lib/channelKey";
 import type { CommandContext } from "../lib/commands/context";
 import { joinCommand } from "../lib/commands/window";
 
-// issue 2719 — `/join` is the fourth door into `channelJoin.joinChannel`, the
-// one join verb. Typed in a window of a network with no session it is rare
-// (ComposeBox greys that box), but a store that has not caught up yet is not,
-// and a door that skips the reconnect is the drift the verb exists to stop.
+// issue 2719 — `/join` is one of the doors into `channelJoin.joinChannel`, the
+// one join verb. ComposeBox greys the box of a network with no session but does
+// not disable it, so `/join` can be typed there, and a door that skipped the
+// reconnect would be the drift the verb exists to stop.
 // The REAL verb runs here; only the REST calls, the bearer, the networks
 // store and the focus setter are mocked, at their boundaries.
 

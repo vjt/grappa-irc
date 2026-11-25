@@ -38,8 +38,10 @@ describe("issue 2719 — hasNoLiveSession", () => {
   });
 
   // #1675 — a failing network's session is alive and retrying, and the
-  // server holds a JOIN sent to it until 001 (issue 2114). Reconnecting it
-  // would park-and-respawn a session that is already on its way back.
+  // server holds a JOIN sent to it until 001 (issue 2114), so there is
+  // nothing to reconnect. A PATCH would not bounce it (`Networks.connect/1`
+  // is a no-op on `:failing` and the spawn keeps the live pid); it would be
+  // a wasted request that also resets the backoff counter.
   it("says no to failing: the session is alive and retrying on its own", () => {
     expect(hasNoLiveSession(net("failing"))).toBe(false);
   });
