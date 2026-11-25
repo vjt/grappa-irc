@@ -9848,10 +9848,14 @@ manager < Endpoint and manager < Bootstrap. Another test proves the running
 tree is `children(boot_flags())`, i.e. that the seam IS the tree. On OTP 28
 `which_children/1` lists children in reverse start order. That is measured,
 not documented, so the test reverses the list and says what to do if an OTP
-upgrade changes it. That second test must read the record, never the env:
-a re-read went red on CI under one test order (run 45533940717), because the
-async `create_user_test.exs` runs `start_app_silent/0`, which puts
-`:start_endpoint` to false on the node that is already running.
+upgrade changes it. That second test must read the record, never the env.
+`start_app_silent/0` puts `:start_endpoint` to false on the node that runs
+it, and two async test files reach it on the already-running test node:
+`create_user_test.exs` and `seed_themes_test.exs`. A re-read went red on CI
+under one test order (run 45533940717); which of the two ran first there is
+not known. Measured: with `create_user_test.exs` required first the re-read
+is red, with the order test first it is green. `seed_themes_test.exs` was not
+run that way.
 
 ### Not the same hazard: identd
 
