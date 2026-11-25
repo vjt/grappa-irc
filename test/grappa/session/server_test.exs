@@ -9628,6 +9628,25 @@ defmodule Grappa.Session.ServerTest do
     IRCServer.await_handled(server, 1_000)
   end
 
+  # A permanent visitor whose 001 built-in IDENTIFY has gone out and whose
+  # `+r` has NOT landed yet: the rendezvous slot holds the old secret. The
+  # SET PASSWD and RESETPASS describes below change the secret inside that
+  # window, then let the `+r` for the earlier IDENTIFY land.
+  defp visitor_awaiting_identify_r(prefix) do
+    nick = "#{prefix}_#{System.unique_integer([:positive])}"
+    {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", nick))
+    {anon_visitor, network} = visitor_with_network(port, nick: nick)
+    {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, network.id, "oldpass")
+    visitor = Grappa.Repo.reload!(anon_visitor)
+    pid = start_visitor_session_for(visitor, network)
+
+    {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PRIVMSG NickServ :IDENTIFY oldpass\r\n"), 1_000)
+    :ok = IRCServer.await_handled(server, 1_000)
+    assert match?({"oldpass", _}, SessionStateHelpers.pending_auth(SessionStateHelpers.fetch(pid)))
+
+    %{server: server, pid: pid, visitor: visitor, network: network, nick: nick}
+  end
+
   describe "in-session SET PASSWD → optimistic commit-on-send (#131, #977)" do
     test "user session: SET PASSWD rotates the bound credential password, no +r needed" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
@@ -9656,6 +9675,26 @@ defmodule Grappa.Session.ServerTest do
       assert is_nil(SessionStateHelpers.pending_auth(state))
       assert is_nil(SessionStateHelpers.pending_auth_timer(state))
       assert is_nil(SessionStateHelpers.pending_registration_secret(state))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "visitor: a SET PASSWD sent before the 001 IDENTIFY's +r is not undone by that +r" do
+      %{server: server, pid: pid, visitor: visitor, network: network, nick: nick} =
+        visitor_awaiting_identify_r("vsp")
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "SET PASSWD oldpass newpass")
+
+      assert visitor_password(visitor, network) == "newpass"
+
+      IRCServer.feed(server, ":irc.test.org MODE #{nick} :+r\r\n")
+      :ok = IRCServer.await_handled(server, 1_000)
+
+      # Services hold the new secret; storing the old one again would make
+      # the next reconnect's IDENTIFY fail.
+      assert visitor_password(visitor, network) == "newpass"
+      assert is_nil(SessionStateHelpers.pending_auth(SessionStateHelpers.fetch(pid)))
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -9778,6 +9817,29 @@ defmodule Grappa.Session.ServerTest do
   # a successful `do_resetpass` calls `user_remove_id`, so the `+r` a staged
   # capture would wait for can never arrive.
   describe "RESETPASS → optimistic commit-on-send (#978)" do
+    test "visitor: a RESETPASS sent before the 001 IDENTIFY's +r is not undone by that +r" do
+      %{server: server, pid: pid, visitor: visitor, network: network, nick: nick} =
+        visitor_awaiting_identify_r("vrp")
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg(
+                 {:visitor, visitor.id},
+                 network.id,
+                 "NickServ",
+                 "RESETPASS #{nick} 12345 newpassword"
+               )
+
+      assert visitor_password(visitor, network) == "newpassword"
+
+      IRCServer.feed(server, ":irc.test.org MODE #{nick} :+r\r\n")
+      :ok = IRCServer.await_handled(server, 1_000)
+
+      assert visitor_password(visitor, network) == "newpassword"
+      assert is_nil(SessionStateHelpers.pending_auth(SessionStateHelpers.fetch(pid)))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "user session: RESETPASS on our own nick stores the THIRD token" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
 
