@@ -86,6 +86,11 @@ function friendlyKnown(code: ErrorJSONChannelErrorToken): string {
       // A free-form token (kick reason, umode/mode string) contained
       // CR/LF/NUL — rejected at the IRC framing boundary.
       return "That contains characters that aren't allowed.";
+    case "not_registered":
+      // issue 2728 — refused before anything was sent: the session is up but
+      // the network has not registered us yet (no 001). The same command
+      // works once the connection completes.
+      return "Still connecting to this network — try again in a moment.";
     case "upstream_unavailable":
       // `Session.send_*` hit a dead upstream socket (no_socket / closed /
       // :inet.posix()). The bouncer is up but the IRC link is down.

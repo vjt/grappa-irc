@@ -1736,7 +1736,25 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: nothing a client sends or receives
   # changed.
-  @protocol_version 67
+  #
+  # ---------------------------------------------------------------------------
+  # 68 — issue 2728: `not_registered`, an IRC verb refused before 001
+  # ---------------------------------------------------------------------------
+  #
+  # A new error token on BOTH transports: REST answers 503
+  # `{"error":"not_registered"}` and a channel push replies
+  # `{"error":"not_registered"}` when the session refuses a verb that writes
+  # a line because the network has not registered us yet — no Client, or no
+  # 001. Before this, the message verbs answered `no_socket` (REST 502
+  # `upstream_unreachable`) with no Client and SUCCEEDED with one, the line
+  # dropped by the ircd with a 451; everything else succeeded in both.
+  #
+  # Additive: an older bundle maps an unknown token through its generic
+  # copy. Bumped on the #1393d rule — the cic slice in the same PR names the
+  # token, and a server below 68 never sends it.
+  #
+  # @min_protocol_version stays at 1.
+  @protocol_version 68
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1777,7 +1795,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 67
+  @spec version() :: 68
   def version, do: @protocol_version
 
   @doc """

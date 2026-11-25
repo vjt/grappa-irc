@@ -91,6 +91,9 @@ defmodule GrappaWeb.ErrorJSON do
           | :forbidden
           | :invalid_line
           | :body_too_large
+          # issue 2728 — an IRC verb refused before any write because the
+          # network has not registered us yet (REST 503).
+          | :not_registered
 
   @typedoc """
   Wire tokens emitted by REST actions — `FallbackController` (the

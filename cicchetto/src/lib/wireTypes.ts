@@ -2021,6 +2021,7 @@ export const ERROR_JSONSHARED_ERROR_TOKEN = [
   "forbidden",
   "invalid_line",
   "body_too_large",
+  "not_registered",
 ] as const;
 export type ErrorJSONSharedErrorToken = (typeof ERROR_JSONSHARED_ERROR_TOKEN)[number];
 
