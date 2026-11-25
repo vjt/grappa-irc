@@ -12,7 +12,7 @@
 //
 // What is proven is the visible chain, for both subject kinds:
 //   1. A signed-in USER opens the link. The network appears in the sidebar,
-//      exactly ONE `POST /session/networks` was made, and the ONLY dialog on
+//      exactly ONE `POST /session/networks` was made, and the ONLY modal on
 //      screen is the join consent naming the channel. Confirming leaves the
 //      channel window joined and selected.
 //   2. A VISITOR with no session, the issue's real case, opens the link,
@@ -66,7 +66,13 @@ async function expectAttachedThenAsked(
   await expect(sidebarWindow(page, OFFERED, "Server")).toBeVisible({ timeout: 30_000 });
   await expect(confirmModal(page)).toBeVisible({ timeout: 15_000 });
   await expect(confirmModalBody(page)).toHaveText(`Join ${channel}?`);
-  await expect(page.getByRole("dialog")).toHaveCount(1);
+  // Count MODALS, not `getByRole("dialog")`: the settings drawer is always
+  // mounted as a non-modal `role="dialog"` and closes by sliding off-canvas,
+  // so a page-wide dialog count reads 2 with nothing extra on screen. Every
+  // modal component carries `aria-modal="true"`; the one there is the join.
+  const modals = page.locator('[role="dialog"][aria-modal="true"]');
+  await expect(modals).toHaveCount(1);
+  await expect(modals).toHaveAttribute("data-testid", "confirm-modal");
   expect(attaches).toHaveLength(1);
 }
 
