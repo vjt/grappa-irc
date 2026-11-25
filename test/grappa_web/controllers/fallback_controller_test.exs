@@ -237,6 +237,16 @@ defmodule GrappaWeb.FallbackControllerTest do
       end
     end
 
+    # issue 2728 — a verb refused before 001. 503, not the 502 above: nothing
+    # upstream failed, the link is still registering, and the same request
+    # succeeds once it has.
+    test "{:error, :not_registered} → 503 not_registered" do
+      conn = FallbackController.call(build_conn_for_call(), {:error, :not_registered})
+
+      assert conn.status == 503
+      assert Jason.decode!(conn.resp_body) == %{"error" => "not_registered"}
+    end
+
     test "{:error, :internal} → 500 internal" do
       conn = FallbackController.call(build_conn_for_call(), {:error, :internal})
 
