@@ -59,7 +59,9 @@ defmodule GrappaWeb.NickController do
   `POST /networks/:network_id/nick` — body `{"nick": "newname"}`. Sends
   `NICK <new>` upstream through the session and returns 202 + `{"ok": true}`.
   Empty / non-string nick → 400. `:no_session` / `:invalid_line` collapse
-  through `FallbackController` to 404 / 400 respectively. Visitor branch
+  through `FallbackController` to 404 / 400 respectively, and a nick sent
+  before the network has registered us (`:not_registered`, issue 2728)
+  answers 503. Visitor branch
   adds 409 `nick_in_use` (target is the login key of another visitor's
   IDENTIFIED credential on the same network — #828) + 400 `malformed_nick` (target rejected by
   `IRC.Identifier.portable_nick?/1` at the boundary, since the visitor
@@ -68,7 +70,7 @@ defmodule GrappaWeb.NickController do
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
-          | {:error, :bad_request | :nick_in_use | :malformed_nick | :no_session | :invalid_line}
+          | {:error, :bad_request | :nick_in_use | :malformed_nick | :no_session | :invalid_line | :not_registered}
   def create(conn, %{"nick" => nick}) when is_binary(nick) and nick != "" do
     case conn.assigns.current_subject do
       {:user, %User{id: user_id}} ->
