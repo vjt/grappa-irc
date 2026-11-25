@@ -1951,6 +1951,7 @@ defmodule Grappa.Session.ServerTest do
         )
 
       assert %DateTime{} = Map.get(:sys.get_state(pid), :registered_at)
+      wire_barrier(server, pid, "at-001")
 
       refute Enum.any?(IRCServer.sent_lines(server), &String.starts_with?(&1, "JOIN")),
              "the defer was not armed: the plan fired at 001"
