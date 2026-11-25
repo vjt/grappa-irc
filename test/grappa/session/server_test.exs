@@ -17258,6 +17258,33 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    test "a boot channel PARTed before 001 under another case is not JOINed by the plan", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      # The REST door hands the cast the channel RAW, while `init/1` stored
+      # the boot set folded. The PART meets the set only through the fold, so
+      # `#CONTROL` has to take `#control` out as surely as `#control` does.
+      assert :ok = Session.send_join({:user, user.id}, network.id, "#other", nil)
+      assert :ok = Session.send_part({:user, user.id}, network.id, "#CONTROL", nil)
+      _ = :sys.get_state(pid)
+
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      assert await_sent_line_count(server, &(&1 == "JOIN #other\r\n"), 1, 2_000) == :ok,
+             "instrument broken: the 001 never reached the join plan"
+
+      _ = :sys.get_state(pid)
+      wire_barrier(server, pid, "w2727-after-001")
+
+      refute "JOIN #control\r\n" in IRCServer.sent_lines(server),
+             "the join plan JOINed a boot channel the subject PARTed under another case"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "a boot channel PARTed before 001 does not come back into last_joined_channels", %{
       server: server,
       user: user,
