@@ -16806,8 +16806,8 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
-  describe "issue 2114 — a JOIN refused by a dead transport survives to the next registration" do
-    # The refusal window is not exotic, it is the reconnect ladder itself:
+  describe "issue 2114 — a JOIN sent in the reconnect backoff survives to the next registration" do
+    # The backoff window is not exotic, it is the reconnect ladder itself:
     # `handle_continue({:start_client, _})` reads `Backoff.wait_ms/2` and DEFERS
     # the Client spawn by that many ms, so a live, Registry-registered
     # Session.Server sits at `client: nil` — and still answers every REST verb —
@@ -16841,7 +16841,7 @@ defmodule Grappa.Session.ServerTest do
       %{server: server, user: user, network: network, pid: pid}
     end
 
-    test "a JOIN refused while the transport was down is JOINed at the next 001", %{
+    test "a JOIN sent in the backoff window is JOINed at the next 001", %{
       server: server,
       user: user,
       network: network,
@@ -16858,7 +16858,7 @@ defmodule Grappa.Session.ServerTest do
       rewelcome_with_autojoin_control(server, pid, client)
 
       assert await_sent_line_count(server, &(&1 == "JOIN #refused\r\n"), 1, 2_000) == :ok,
-             "a JOIN the transport refused was dropped and never retried"
+             "a JOIN held in the backoff window was dropped and never sent"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -16892,7 +16892,7 @@ defmodule Grappa.Session.ServerTest do
       pid: pid
     } do
       # NEGATIVE CONTROL for the same mechanism: the deferral must capture only
-      # what the wire REFUSED. A queue that swallowed every JOIN would pass the
+      # what was held before a 001. A queue that swallowed every JOIN would pass the
       # test above and double-JOIN every channel on every reconnect.
       client = SessionStateHelpers.client(SessionStateHelpers.fetch(pid))
       assert :ok = Session.send_join({:user, user.id}, network.id, "#accepted", nil)
