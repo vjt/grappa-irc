@@ -9500,8 +9500,17 @@ it has always carried the `last_joined` snapshot too, for both subject kinds.
 The comments now say what it is. The narrowing is one-way: a JOIN still never
 widens it, which is issue 2114's decision for the queued JOINs, kept.
 
-The cast is the only place that narrows it. An upstream PART echo arrives
-after the plan has fired, and a self-KICK is not a departure (issue 2317).
+The cast is the only place that narrows it, and the EventRouter echo arm needs
+no copy of the narrowing because every subject PART reaches the cast first:
+`ChannelsController.delete/2` → `Session.send_part/4`, and the cast narrows
+before any echo can come back. The reason is that ordering, not timing. Inside
+the `#347` +r defer a manual JOIN goes straight out (`registration_pending?/1`
+is false after 001), so a JOIN and a PART made there do get their PART echo
+before the deferred plan fires. The one PART that skips the cast is a raw
+`/quote PART` (`Session.send_raw/3`). It narrows nothing, and inside the defer
+the plan still rejoins that channel; but it never takes the channel out of
+`autojoin_channels` either, so it was never a lasting leave. A self-KICK is not
+a departure (issue 2317).
 
 ### A declared change to the `#116` ChanServ gate
 
@@ -9516,17 +9525,21 @@ says "Autojoin-vs-manual is derived, not flagged … A manual `/join` of a
 and a re-JOIN after a PART is a manual `/join`. It is also what the next boot
 already answers, since the channel is in neither column any more. Before this
 change the answer depended on whether the session had restarted in between.
-The orch ruled it on the phase-1 report, and a test pins it.
+The orch ruled it on the phase-1 report, and a test pins it. The clause the
+quote elides, "`state.autojoin` (set once at boot)", no longer holds: a PART
+now narrows the set inside a session, and nothing widens it.
 
 ### Before 001 the PART stays local
 
 Before 001 the session is in no upstream channel, so a PART has nothing to
-leave, and an ircd answers any command from an unregistered client with 451.
-The cast now runs its local cleanup and skips the send while
-`registration_pending?/1` holds, which is the gate that holds a JOIN for 001
-(issue 2703). Tests that sent a PART on a session the fake never registered
-and waited for the line now register first with `IRCServer.register/3`, as
-the JOIN tests did after issue 2703.
+leave, and an ircd answers a PART from an unregistered client with 451, as it
+answers a JOIN. Only the registration commands themselves (`PASS`, `CAP`,
+`NICK`, `USER`, `PING`/`PONG`, `QUIT`) are accepted before 001, and the session
+sends some of those itself. The cast now runs its local cleanup and skips the
+send while `registration_pending?/1` holds, which is the gate that holds a
+JOIN for 001 (issue 2703). Tests that sent a PART on a session the fake never
+registered and waited for the line now register first with
+`IRCServer.register/3`, as the JOIN tests did after issue 2703.
 
 ### Tests, and why there is no e2e
 
@@ -9538,7 +9551,11 @@ ExUnit pins all four effects:
 * the gate.
 
 Each was red first at its refute, with its instrument passing. A fifth test
-pins the pre-001 PART staying off the wire.
+pins the pre-001 PART staying off the wire. A sixth, added by the review's
+follow-up, PARTs `#CONTROL` against a boot set holding `#control`: the other
+five PART the stored spelling, so none of them would notice the cast handing
+`drop_from_autojoin/2` the RAW channel, and this one goes red under exactly
+that mutation.
 
 There is no e2e. The windows are not milliseconds wide in general. Before 001,
 a session respawned on a failing network has already run `init/1` and then
