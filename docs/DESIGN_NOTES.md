@@ -9913,3 +9913,91 @@ the source, the same raise makes the `:shutdown` clause skip its upstream QUIT,
 and makes the abnormal clause report the manager instead of the real crash. An
 operator stop (`Session.stop_session/2`) restarts nothing either way: it goes
 through `DynamicSupervisor.terminate_child/2`, which removes the child first.
+<!-- entry #2738 -->
+
+---
+
+## 2026-11-25 — #2738: a push the server never answers settles at a deadline (PR-A, the push door)
+
+**The defect.** phoenix.js (1.8.16, the pin) ends a push that gets no reply
+ONLY by firing its `"timeout"` hooks. The reply listener and the push's own
+timer are its two exits, and a socket error resets the JOIN push, never an
+in-flight one (`push.js:104-112`, `channel.js:55-60`). 26 of cic's 30
+promise-returning push helpers registered no `"timeout"` hook, so a push with
+no answer (a half-open socket, a stalled channel process) returned a promise
+that could never settle. compose.ts awaits these verbs at the head of the #904
+outbox, so the window's composer stayed busy until a reload: the next Enter
+parked, the one after was refused, and the textarea went readOnly. The issue
+named 10 of the 26. `pushUserChannelVerb` alone carried 22, including the 11
+read-query verbs.
+
+**Measured RED before the cure, not argued.** `pushReplyDeadline.test.ts` runs
+the real phoenix against a fake WebSocket that answers the join and the
+heartbeat and drops everything else.
+- 26 helpers were still pending past the deadline.
+- The four that had a timeout arm (`resolveUserhost`, `watchlist` ×3) rejected
+  an untyped `Error("timeout")` at phoenix's default 10 s.
+- The e2e (`issue2738-push-no-reply-releases-composer.spec.ts`, a route that
+  swallows `raw` frames) found no error banner 30 s after `/quote VERSION`.
+
+**The cure: one door per kind.**
+- `pushWithReply<T>` is every push owed an answer. It resolves on `ok`, rejects
+  `ChannelPushError` on `error`, `NoReply` at the deadline and `NotConnected`
+  with no user channel. The deadline is phoenix's own per-push timer
+  (`channel.push(event, payload, REPLY_DEADLINE_MS)`), so there is no second
+  timer to keep in step.
+- `pushFireAndForget` is the named few nobody awaits: `client_closing`,
+  `banlist`, `open_query_window` and `close_query_window`.
+- All 30 helpers are one-liners now. `pushUserChannelVerb` and the 8
+  hand-rolled promise bodies are deleted, and `socket.ts` is +106 −142.
+- `visibility` moved onto `pushWithReply`. Its ok-ack feeds the e2e seam
+  `__visibilityAck`, and a missing ack is now logged, not silent. So the guard
+  has no exception.
+- **Totality:** `pushDoorTotality.test.ts` fails if any `.push(` in
+  `lib/socket.ts` lies outside the two doors (14 strays before).
+  `pushReplyDeadline.test.ts` fails if a `push*` export is in neither its
+  awaited table nor its fire-and-forget list.
+- **Scope of that guard, stated:** it reads `socket.ts` only. A `Channel`
+  handed out by `joinUser`/`joinChannel` and pushed on elsewhere is not seen,
+  and there is none today.
+
+**The failure union's new members live in `lib/transportFailure.ts`, not
+`api.ts`.** The server-answered members (`ApiError`, `ChannelPushError`) are
+decoded from an envelope. These two are produced by the transport. The
+practical reason is measured: 64 test files mock `lib/api` with a factory, and
+every mock that reaches an `instanceof` would need a hand-copied stub of each
+class.
+
+**Rulings, orch-ruled on w1's phase 1 and declared here so vjt can overturn
+them:**
+- **D1:** ONE `REPLY_DEADLINE_MS` (20 s) for both doors, ABOVE the server's
+  longest bounded wait. That wait is the Repo caller `timeout:` rung in
+  `config/runtime.exs`, which is the SSOT and is deliberately not restated. A
+  client deadline below the server's declares "no answer" for a request the
+  server is about to answer or has committed. phoenix's 10 s did exactly that
+  to `watchlist`, which writes the DB inside the channel process. The price is
+  that a dead link shows its error after 20 s, not 10.
+- **D2:** a `NoReply` line is handed back like any failure. The copy says "it
+  may still have gone through", because the outcome is unknown: never sent (a
+  buffered push that times out is dropped at the rejoin, `push.js:34`, pinned
+  by the test), sent with the reply lost, or answered late (the timeout
+  unbinds the reply listener). Least surprise: never lose typed text. If it
+  did go through, the echo arrives before a retype.
+- **D3** (`redirect: "manual"` on every API request) belongs to PR-B.
+- **D4:** only the new members and their `friendlyError` arms ride here. The
+  `actionFailures` queue, the global `unhandledrejection` listener and the
+  join sink stay in #2726.
+- **D5:** `open_query_window` / `close_query_window` are named fire-and-forget.
+  Whether their reply gets a listener is #2741's call.
+
+**Sinks.** ModeModal (×3) and UmodeModal toggled with `void push…()`, so a
+refusal was an unhandled rejection, and after this cure every dead link would
+be one too (N5). They now ride `runOpsVerb`, the existing detached-verb toast
+("Mode +s: …", "User mode +i: …"). TopicBar's clear path needs no change: its
+catch already releases `saving` once the promise settles. Its `postTopic` path
+is REST, which is PR-B.
+
+**Not in this PR (PR-B / PR-C):** the REST door. That is `request()`, its
+deadline, `NetworkFailure`, the 157 `fetch` sites, and the plain PRIVMSG send
+(`api.sendMessage`), which locks the composer the same way when its POST
+stalls. HomePane's swallowed `/links` / `/recover` catches stay with #2726.
