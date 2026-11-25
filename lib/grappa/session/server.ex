@@ -646,6 +646,10 @@ defmodule Grappa.Session.Server do
           # count, and the respawn rejoins through the #2317 plan regardless.
           kicks: KickRejoin.kicks(),
           auth_method: AuthFSM.auth_method(),
+          # The boot set: `merge_autojoin(autojoin_channels,
+          # last_joined_channels)` as `init/1` read it, folded. Narrowed by a
+          # PART (issue 2721, `drop_from_autojoin/2`), which takes the channel
+          # out of both columns; never widened by a JOIN (see `queued_joins`).
           autojoin: [String.t()],
           # #347 — deferred-autojoin fallback window (config default
           # @autojoin_defer_ms, opts-overridable for tests) + the one-shot
@@ -658,10 +662,10 @@ defmodule Grappa.Session.Server do
           # issue 2114 / issue 2703 — JOINs the door accepted before 001 (no
           # Client yet, or a socket not yet registered), held for the join
           # plan, oldest-last (prepend + reverse at flush), one entry per
-          # network-folded channel with its optional +k key. `state.autojoin` is
-          # the OPERATOR's boot set and stays untouched: folding user intent
-          # into it would also hand it to `maybe_request_chanserv_invite/3`'s
-          # `in_autojoin?` gate, which is a different question. Emptied by
+          # network-folded channel with its optional +k key. They stay out of
+          # `state.autojoin`, the boot set: folding user intent into it would
+          # also hand it to `maybe_request_chanserv_invite/3`'s `in_autojoin?`
+          # gate, which is a different question. Emptied by
           # `fire_join_plan/1`. Read via `Map.get` — a live pre-2114 process
           # hot-reloaded mid-session has no such key.
           queued_joins: [{String.t(), String.t() | nil}],
@@ -3366,7 +3370,14 @@ defmodule Grappa.Session.Server do
     # is an intent this PART supersedes. Post-001 the two would reach the
     # ircd in order and leave the subject out of the channel; a held JOIN
     # left in the queue would go out AFTER the PART and reverse that.
-    state = state |> PartCleanup.cleanup_local(key) |> dequeue_join(key)
+    # Issue 2721 — the same holds for the boot set's copy of the channel,
+    # which the plan sends at the same seam (`drop_from_autojoin/2`).
+    state =
+      state
+      |> PartCleanup.cleanup_local(key)
+      |> dequeue_join(key)
+      |> drop_from_autojoin(key)
+
     broadcast_channels_changed(state)
 
     # #459 — emit archive_changed from the SESSION, here, once cleanup_local
@@ -8181,7 +8192,9 @@ defmodule Grappa.Session.Server do
   # (EventRouter `:invite` clause → {:rejoin_invited, _}). No access /
   # unregistered chan → ChanServ replies a NOTICE, no INVITE arrives,
   # channel stays :failed (the #113 niche). Manual /join never reaches
-  # here for a non-autojoin channel. Map.get/Map.put keep it HOT-safe.
+  # here for a non-autojoin channel, and a re-JOIN after a PART is one: the
+  # PART took the channel out of the set (issue 2721). Map.get/Map.put keep
+  # it HOT-safe.
   @chanserv_invitable_numerics [473, 475]
   @spec maybe_request_chanserv_invite(t(), String.t(), pos_integer()) :: t()
   defp maybe_request_chanserv_invite(state, channel, numeric)
@@ -8434,8 +8447,9 @@ defmodule Grappa.Session.Server do
   # issue 2114 — what this registration owes the wire, as `{channel, key}`
   # pairs. Two sources, and they carry different keys by nature:
   #
-  #   * `state.autojoin` — operator-configured (or persisted from
-  #     `last_joined_channels` at reboot), ALWAYS keyless. Keys are not
+  #   * `state.autojoin` — the boot set (operator-configured plus the
+  #     `last_joined_channels` snapshot, minus what a PART took out since —
+  #     issue 2721), ALWAYS keyless. Keys are not
   #     persisted; the operator re-joins a +k channel with `/join #chan key`.
   #     UX-4 bucket F: the explicit nil keeps the wire frame `JOIN #chan\r\n`.
   #   * `queued_joins` — held at the REST door before 001, each carrying the
@@ -8674,6 +8688,21 @@ defmodule Grappa.Session.Server do
   defp dequeue_join(state, chan_key) do
     kept = Enum.reject(queued_joins(state), fn {c, _} -> fold_key(state, c) == chan_key end)
     Map.put(state, :queued_joins, kept)
+  end
+
+  # Issue 2721 — take one network-folded channel KEY out of the boot set.
+  # `state.autojoin` is this process's copy of `merge_autojoin(autojoin_channels,
+  # last_joined_channels)` as `init/1` read it, and a PART takes the channel out
+  # of both columns (`ChannelsController.delete/2`, then the cast's own
+  # `maybe_persist_last_joined/3`). Keeping the copy in step is the whole cure:
+  # before 001, or inside the #347 +r defer, the plan would otherwise JOIN the
+  # channel and the echo would write it back into `last_joined_channels`.
+  # It also narrows `maybe_request_chanserv_invite/3`'s gate, deliberately: a
+  # re-JOIN after the PART is a manual /join, which #116 leaves at `:failed`.
+  # Compared through `fold_key/2`, as `join_plan/1` compares the same entries.
+  @spec drop_from_autojoin(t(), String.t()) :: t()
+  defp drop_from_autojoin(state, chan_key) do
+    %{state | autojoin: Enum.reject(state.autojoin, &(fold_key(state, &1) == chan_key))}
   end
 
   # `Map.get`, not `state.queued_joins`: the hot-reload shim this file applies

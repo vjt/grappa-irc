@@ -1971,6 +1971,53 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    test "a boot channel PARTed during the +r defer is not JOINed by the deferred plan (issue 2721)" do
+      # Same window as the test above, for the other half of the plan: a
+      # channel of the boot set rather than one the door held.
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+
+      {user, network, credential} =
+        setup_user_and_network(port, %{
+          nick: "grappa-test",
+          auth_method: :nickserv_identify,
+          password: "s3cr3t-identify",
+          autojoin_channels: ["#control", "#gone"]
+        })
+
+      pid = nickserv_plan(user, network, credential, 60_000)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      # Barrier recipe of the test above: the IDENTIFY line and the
+      # `registered_at` stamp say the whole 001 handler ran.
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :IDENTIFY s3cr3t-identify\r\n"),
+          1_000
+        )
+
+      assert %DateTime{} = Map.get(:sys.get_state(pid), :registered_at)
+      wire_barrier(server, pid, "w2721-at-001")
+
+      refute Enum.any?(IRCServer.sent_lines(server), &String.starts_with?(&1, "JOIN")),
+             "the defer was not armed: the plan fired at 001"
+
+      assert :ok = Session.send_part({:user, user.id}, network.id, "#gone", nil)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PART #gone\r\n"), 1_000)
+
+      IRCServer.feed(server, ":irc.test.org MODE grappa-test :+r\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #control\r\n"), 1_000)
+
+      _ = :sys.get_state(pid)
+      wire_barrier(server, pid, "w2721-after-defer")
+
+      refute "JOIN #gone\r\n" in IRCServer.sent_lines(server),
+             "the deferred plan JOINed a boot channel the subject PARTed inside the defer"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "fires autojoin on the fallback ceiling when no +r ever arrives" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
 
@@ -16165,6 +16212,35 @@ defmodule Grappa.Session.ServerTest do
       _ = pid
     end
 
+    test "473 on a boot channel PARTed and then re-JOINed by hand does NOT invite (issue 2721)" do
+      # The PART takes the channel out of the set the gate reads, as it takes
+      # it out of both DB columns the next boot builds that set from. The
+      # re-JOIN is then a manual /join, and #116 leaves a manual /join that
+      # earns a 473 at `:failed`.
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#secret"]})
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      IRCServer.feed(server, ":irc.test 001 grappa-test :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #secret"), 1_000)
+
+      assert :ok = Session.send_part({:user, user.id}, network.id, "#secret", nil)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PART #secret\r\n"), 1_000)
+
+      assert :ok = Session.send_join({:user, user.id}, network.id, "#secret", nil)
+
+      assert await_sent_line_count(server, &(&1 == "JOIN #secret\r\n"), 2, 2_000) == :ok,
+             "instrument broken: the manual re-JOIN never reached the wire"
+
+      IRCServer.feed(server, ":irc.test 473 grappa-test #secret :Cannot join channel (+i)\r\n")
+      flush_server(server)
+
+      refute Enum.any?(IRCServer.sent_lines(server), &(&1 =~ ~r/PRIVMSG ChanServ/i)),
+             "a manual re-JOIN after a PART earned the boot-set ChanServ INVITE"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "non-invitable numerics (471/474/403/405) do NOT invite even for an autojoin channel" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#full"]})
@@ -17135,6 +17211,92 @@ defmodule Grappa.Session.ServerTest do
              "a session without the 2097 stamp held its JOIN"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  describe "issue 2721 — a PART before 001 takes its channel out of the join plan" do
+    # `state.autojoin` is the set this session was told to rejoin at init:
+    # the credential's `autojoin_channels` plus its `last_joined_channels`
+    # snapshot. A PART takes the channel out of both columns, so the
+    # session's copy must lose it too, or the plan JOINs it at 001 and the
+    # JOIN echo writes it back into `last_joined_channels`.
+    #
+    # The fake answers every JOIN with its echo, as an ircd does, so a JOIN
+    # the plan should not have sent also reaches `members` and the persister.
+    setup do
+      {server, port} = IRCServer.start_server(join_echo_handler())
+      {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#control"]})
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      %{server: server, user: user, network: network, pid: pid}
+    end
+
+    test "a boot channel PARTed before 001 is not JOINed by the plan", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      # `#other` is held for 001 too, so the plan has a line to wait for
+      # whatever happens to `#control`: the instrument.
+      assert :ok = Session.send_join({:user, user.id}, network.id, "#other", nil)
+      assert :ok = Session.send_part({:user, user.id}, network.id, "#control", nil)
+      _ = :sys.get_state(pid)
+
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      assert await_sent_line_count(server, &(&1 == "JOIN #other\r\n"), 1, 2_000) == :ok,
+             "instrument broken: the 001 never reached the join plan"
+
+      _ = :sys.get_state(pid)
+      wire_barrier(server, pid, "w2721-after-001")
+
+      refute "JOIN #control\r\n" in IRCServer.sent_lines(server),
+             "the join plan JOINed a channel the subject PARTed before 001"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a boot channel PARTed before 001 does not come back into last_joined_channels", %{
+      server: server,
+      user: user,
+      network: network,
+      pid: pid
+    } do
+      assert :ok = Session.send_join({:user, user.id}, network.id, "#other", nil)
+      assert :ok = Session.send_part({:user, user.id}, network.id, "#control", nil)
+      _ = :sys.get_state(pid)
+
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      assert await_sent_line_count(server, &(&1 == "JOIN #other\r\n"), 1, 2_000) == :ok,
+             "instrument broken: the 001 never reached the join plan"
+
+      # The echoes ride the same socket ahead of this PONG, so once it is back
+      # every echo has been routed and its snapshot write has run.
+      flush_server(server)
+
+      {:ok, cred} = Credentials.get_credential(user, network)
+
+      assert "#other" in cred.last_joined_channels,
+             "instrument broken: the echo of a planned JOIN never reached the snapshot"
+
+      refute "#control" in cred.last_joined_channels,
+             "the echo of a JOIN the PART cancelled was persisted for the next boot"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  # issue 2721 — an ircd's answer to our own JOIN: the echo, from our own
+  # prefix. Registration lines and everything else get no reply.
+  defp join_echo_handler do
+    fn state, line ->
+      case Regex.run(~r/^JOIN (\S+)/, line) do
+        [_, channel] -> {:reply, ":grappa-test!~g@host JOIN #{channel}\r\n", state}
+        nil -> {:reply, nil, state}
+      end
     end
   end
 
